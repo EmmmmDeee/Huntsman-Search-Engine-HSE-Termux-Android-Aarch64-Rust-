@@ -612,3 +612,112 @@ fn tlsrpt_ignores_non_tlsrpt_and_empty() {
     assert!(tlsrpt_entities(&[rec("v=TLSRPTv1;")], "x.com", "s").is_empty());
     assert!(tlsrpt_entities(&[], "x.com", "s").is_empty());
 }
+
+/// A DoH outage must not be reportable as "this domain has no such record".
+///
+/// `query_doh` previously returned a bare `Vec<DohRecord>`, so four different
+/// outcomes collapsed onto the same empty vec: both providers unreachable, both
+/// returning a non-zero DNS status, an undecodable reply, and a domain that
+/// genuinely has no record of that type. On Termux the DoH path is the PRIMARY
+/// transport — the system resolver is routinely blocked — so the outage case is
+/// common, and an operator reading "no MX records" could not tell whether the
+/// domain has none or whether DNS never answered.
+///
+/// `dns_wholly_unreachable` is the predicate that turns the all-unreachable case
+/// into a `ModuleError`. It is pure, so this is hermetic — no live resolver.
+#[test]
+fn an_unreachable_resolver_is_not_the_same_as_a_domain_with_no_records() {
+    use super::{DohOutcome, dns_wholly_unreachable};
+
+    // Every query failed to reach a resolver: nothing was established.
+    assert!(
+        dns_wholly_unreachable(&[DohOutcome::Unreachable, DohOutcome::Unreachable]),
+        "all-unreachable must be reported, not rendered as an empty success"
+    );
+
+    // A resolver that ANSWERED with zero records is a real negative — the domain
+    // genuinely has no record of that type. That must NOT be an error.
+    assert!(
+        !dns_wholly_unreachable(&[DohOutcome::Answered(Vec::new())]),
+        "an empty ANSWER is a real negative, not an outage"
+    );
+
+    // One provider answering rescues the whole query set: DNS demonstrably works,
+    // so the empties are genuine negatives.
+    assert!(
+        !dns_wholly_unreachable(&[
+            DohOutcome::Unreachable,
+            DohOutcome::Answered(Vec::new()),
+            DohOutcome::Unreachable,
+        ]),
+        "a single successful answer proves DNS worked"
+    );
+
+    // No queries ran at all (cancellation) — that is its own condition and must
+    // not be misreported as a DNS outage.
+    assert!(
+        !dns_wholly_unreachable(&[]),
+        "zero queries is cancellation, not an outage"
+    );
+
+    // `records()` must expose Unreachable as carrying nothing, so entity
+    // extension can treat both arms alike while the aggregate check still sees
+    // the difference.
+    assert!(DohOutcome::Unreachable.records().is_empty());
+    assert!(DohOutcome::Answered(Vec::new()).records().is_empty());
+}
+
+/// A resolver FAILING to answer is not a domain having no records — and it must
+/// still fail over to the second provider.
+///
+/// Both findings came from the review on #316, and the second exposed a
+/// regression introduced by the first version of that PR. Before it, the guard
+/// was `... && data.status == 0`, so a SERVFAIL from Cloudflare fell through to
+/// Google. Moving that check inside the return made ANY decodable reply
+/// short-circuit, so a single SERVFAIL silently disabled the Google fallback —
+/// removing exactly the redundancy this module exists to provide on Termux,
+/// where the port-53 transport is frequently blocked.
+///
+/// `classify_status` restores it: only a resolved reply short-circuits.
+#[test]
+fn a_resolver_failure_is_not_a_negative_and_must_fail_over() {
+    use super::classify_status;
+
+    let rec = || super::DohRecord {
+        name: "example.com".to_string(),
+        rtype: 1,
+        data: "93.184.216.34".to_string(),
+    };
+
+    // NOERROR carries the answer through.
+    let got = classify_status(0, vec![rec()]).expect("NOERROR resolves");
+    assert_eq!(got.len(), 1, "NOERROR must carry its records");
+
+    // NOERROR with no answer is a real negative: the type has no records.
+    assert!(
+        classify_status(0, Vec::new())
+            .expect("NOERROR resolves")
+            .is_empty(),
+        "NOERROR with no answer is a genuine empty result"
+    );
+
+    // NXDOMAIN is an AUTHORITATIVE negative — the name does not exist. It
+    // resolves, with zero records, and needs no failover.
+    assert!(
+        classify_status(3, Vec::new())
+            .expect("NXDOMAIN resolves")
+            .is_empty(),
+        "NXDOMAIN is a negative existence proof, not a resolver failure"
+    );
+
+    // SERVFAIL / REFUSED / FORMERR are the resolver failing to answer. They are
+    // NOT proof of absence and MUST fall through to the other provider — `None`
+    // is what makes the `&& let Some(..)` guard continue to the Google arm.
+    for status in [1, 2, 5, 9, 16] {
+        assert!(
+            classify_status(status, Vec::new()).is_none(),
+            "DNS status {status} is a resolver failure and must fail over, \
+             not be reported as 'no records'"
+        );
+    }
+}

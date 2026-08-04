@@ -1099,3 +1099,104 @@ async fn keyed_cascade_json_reads_the_verdict_from_a_200_body() {
     .expect("a genuine in-body miss must not error");
     assert!(absent.is_none(), "Absent verdict must yield Ok(None)");
 }
+
+// ── Error-message quality: what the operator and the DB actually receive ─────
+// Both cases below were observed verbatim in a production `hse doctor` report,
+// where they made the scraper-health section unreadable.
+
+/// A CDN error page must be reduced to the line that names the failure, not
+/// echoed as 200 characters of doctype and IE conditional comments.
+#[tokio::test]
+async fn error_snippet_summarises_an_html_error_page() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut s, _) = listener.accept().await.unwrap();
+        let body = concat!(
+            "<!DOCTYPE html>\n",
+            "<!--[if lt IE 7]> <html class=\"no-js ie6 oldie\" lang=\"en-US\"> <![endif]-->\n",
+            "<!--[if IE 7]>    <html class=\"no-js ie7 oldie\" lang=\"en-US\"> <![endif]-->\n",
+            "<head><title>psbdmp.ws | 523: Origin is unreachable</title></head>\n",
+            "<body><h1>Error 523</h1></body></html>",
+        );
+        let resp = format!(
+            "HTTP/1.1 523 \r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        use tokio::io::AsyncWriteExt as _;
+        let _ = s.write_all(resp.as_bytes()).await;
+    });
+
+    let client = build_client();
+    let resp = client
+        .get(format!("http://{addr}/"))
+        .send()
+        .await
+        .expect("local server responds");
+    let snippet = super::fetch::error_snippet(resp).await;
+
+    assert_eq!(
+        snippet, "psbdmp.ws | 523: Origin is unreachable",
+        "the snippet must be the diagnostic line, not page boilerplate"
+    );
+    assert!(
+        !snippet.contains("DOCTYPE") && !snippet.contains("[if lt IE"),
+        "no markup boilerplate may survive: {snippet}"
+    );
+}
+
+/// A JSON error payload must be left exactly as the upstream sent it — the HTML
+/// summarisation must not reach a body that merely mentions markup.
+#[tokio::test]
+async fn error_snippet_leaves_a_json_payload_verbatim() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut s, _) = listener.accept().await.unwrap();
+        let body = r#"{"error":"Invalid API key","tag":"INVALID_API_KEY"}"#;
+        let resp = format!(
+            "HTTP/1.1 401 Unauthorized\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        use tokio::io::AsyncWriteExt as _;
+        let _ = s.write_all(resp.as_bytes()).await;
+    });
+
+    let client = build_client();
+    let resp = client
+        .get(format!("http://{addr}/"))
+        .send()
+        .await
+        .expect("local server responds");
+    let snippet = super::fetch::error_snippet(resp).await;
+    assert_eq!(
+        snippet, r#"{"error":"Invalid API key","tag":"INVALID_API_KEY"}"#,
+        "a JSON error body carries the real message and must survive untouched"
+    );
+}
+
+/// The transport+fallback message must name the URL once, not twice.
+#[test]
+fn transport_failure_names_the_url_exactly_once() {
+    let url = "https://psbdmp.ws/api/v3/search/ukchemist%40gmail.com";
+    // reqwest's own Display for a send failure already embeds the URL.
+    let reqwest_shaped = format!("error sending request for url ({url})");
+
+    let msg = super::fetch::transport_and_fallback_failed(&reqwest_shaped, url);
+    assert_eq!(
+        msg.matches(url).count(),
+        1,
+        "the URL (which carries the scan target) must appear once: {msg}"
+    );
+    assert!(msg.contains("curl fallback also failed"));
+
+    // A transport error that does NOT name the URL must still identify the
+    // request — dropping it unconditionally would lose that.
+    let bare = super::fetch::transport_and_fallback_failed("connection closed before message", url);
+    assert_eq!(
+        bare.matches(url).count(),
+        1,
+        "an error without the URL must have it appended: {bare}"
+    );
+    assert!(bare.contains("curl fallback failed for"));
+}

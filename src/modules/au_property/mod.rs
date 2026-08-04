@@ -32,8 +32,14 @@
 //! replacement is found, `process()` distinguishes "every portal is down"
 //! (a real `Error::module` failure, surfaced to the operator and to the
 //! T2.7 scraper-health signal) from "a portal responded but had no match for
-//! this name" (the ordinary, honest empty success) — see
-//! `all_legs_unreachable` in this module.
+//! this name" (the ordinary, honest empty success) — see `leg_failure` in this
+//! module.
+//!
+//! That failure message names which of the two possible causes actually
+//! occurred. A dead endpoint and an unreachable host both end a run with no
+//! data, but they call for opposite operator responses — the first is this
+//! module's problem, the second is the device's — and on a Termux handset
+//! (lost mobile data, captive portal, dropped VPN) the second is routine.
 //!
 //! MITRE ATT&CK:
 //!   * T1591.001 — Determine Physical Locations (property address + suburb)
@@ -122,104 +128,60 @@ impl Module for AuProperty {
         let sname = surname(full_name);
         let encoded_full = crate::util::http::urlencode(full_name);
         let encoded_sname = crate::util::http::urlencode(sname);
-        let ua = crate::util::http::UA_BROWSER;
 
         let mut all_entities: Vec<Entity> = Vec::new();
-        // Set whenever ANY leg's HTTP request came back with a success status —
-        // distinguishes "every portal is down" (a real failure worth surfacing)
-        // from "a portal responded but simply had no match for this name" (an
-        // honest empty success). See `all_legs_unreachable`.
-        let mut any_leg_ok = false;
+        // How each leg resolved. Not a single `any_leg_ok: bool`: that could not
+        // tell "the endpoint answered with an error status" from "nothing
+        // answered", and the failure message asserted the former either way.
+        let mut tally = LegTally::default();
 
-        // ── NSW Spatial / ELVIS cadastral ─────────────────────────────────
-        // ELVIS name search endpoint — surname + given name query.
-        let nsw_url = format!(
-            "https://maps.six.nsw.gov.au/services/public/Property_Name_Address?surname={}&givenname={}&maxRows=10",
-            crate::util::http::urlencode(last),
-            crate::util::http::urlencode(first),
-        );
-        if let Ok(resp) = ctx
-            .http
-            .get(&nsw_url)
-            .header("Accept", "application/json,text/html")
-            .header("User-Agent", ua)
-            .send_tagged(SRC)
-            .await
-            && resp.status().is_success()
-        {
-            any_leg_ok = true;
-            if let Some(body) = read_body_capped(resp, 1_000_000).await {
-                all_entities.extend(
-                    parse_nsw_response(&body, full_name)
-                        .iter()
-                        .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
-                );
-            }
-        }
+        // Legs run in order and stop at the first that yields anything — the
+        // portals are alternatives, not a fan-out. Each is a URL, an Accept
+        // header, and a parser; `run_leg` owns the request and the outcome
+        // classification so all three agree on what a failure was.
+        let legs: [(String, &str, fn(&str, &str) -> Vec<parse::PropertyRecord>); 3] = [
+            // NSW Spatial / ELVIS cadastral — surname + given name query.
+            (
+                format!(
+                    "https://maps.six.nsw.gov.au/services/public/Property_Name_Address?surname={}&givenname={}&maxRows=10",
+                    crate::util::http::urlencode(last),
+                    crate::util::http::urlencode(first),
+                ),
+                "application/json,text/html",
+                parse_nsw_response as fn(&str, &str) -> Vec<parse::PropertyRecord>,
+            ),
+            // VIC MapShare — parcel/owner WFS query.
+            (
+                format!(
+                    "https://mapshare.vic.gov.au/mapsharevic/ows?service=WFS&version=1.0.0\
+                     &request=GetFeature&typeName=CADASTRE:PARCEL&outputFormat=application/json\
+                     &CQL_FILTER=OWNER_NAME+LIKE+%27{encoded_sname}%25%27&maxFeatures=10"
+                ),
+                "application/json,text/html",
+                parse_vic_response as fn(&str, &str) -> Vec<parse::PropertyRecord>,
+            ),
+            // QLD Globe / titles — owner search.
+            (
+                format!(
+                    "https://www.qld.gov.au/environment/land/title/searching/owners?owner={encoded_full}"
+                ),
+                "text/html,application/xhtml+xml",
+                parse_qld_response as fn(&str, &str) -> Vec<parse::PropertyRecord>,
+            ),
+        ];
 
-        // ── VIC MapShare ──────────────────────────────────────────────────
-        if all_entities.is_empty() {
-            let vic_url = format!(
-                "https://mapshare.vic.gov.au/mapsharevic/ows?service=WFS&version=1.0.0\
-                 &request=GetFeature&typeName=CADASTRE:PARCEL&outputFormat=application/json\
-                 &CQL_FILTER=OWNER_NAME+LIKE+%27{encoded_sname}%25%27&maxFeatures=10"
-            );
-            if let Ok(resp) = ctx
-                .http
-                .get(&vic_url)
-                .header("Accept", "application/json,text/html")
-                .header("User-Agent", ua)
-                .send_tagged(SRC)
-                .await
-                && resp.status().is_success()
-            {
-                any_leg_ok = true;
-                if let Some(body) = read_body_capped(resp, 1_000_000).await {
-                    all_entities.extend(
-                        parse_vic_response(&body, full_name)
-                            .iter()
-                            .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
-                    );
-                }
+        for (url, accept, parse_fn) in &legs {
+            if !all_entities.is_empty() {
+                break;
             }
-        }
-
-        // ── QLD Globe / titles ────────────────────────────────────────────
-        if all_entities.is_empty() {
-            let qld_url = format!(
-                "https://www.qld.gov.au/environment/land/title/searching/owners?owner={encoded_full}"
-            );
-            if let Ok(resp) = ctx
-                .http
-                .get(&qld_url)
-                .header("Accept", "text/html,application/xhtml+xml")
-                .header("User-Agent", ua)
-                .send_tagged(SRC)
-                .await
-                && resp.status().is_success()
-            {
-                any_leg_ok = true;
-                if let Some(body) = read_body_capped(resp, 1_000_000).await {
-                    all_entities.extend(
-                        parse_qld_response(&body, full_name)
-                            .iter()
-                            .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
-                    );
-                }
-            }
+            tally.record(run_leg(ctx, url, accept, full_name, *parse_fn, &mut all_entities).await);
         }
 
         // Dedup by (kind, value) — different portals may agree on the same suburb.
         dedup_entities(&mut all_entities);
 
-        if all_legs_unreachable(any_leg_ok, !all_entities.is_empty()) {
-            return Err(Error::module(
-                SRC,
-                "all three property-register endpoints (NSW ELVIS, VIC MapShare WFS, QLD \
-                 titles search) returned a non-success HTTP status — likely retired/migrated \
-                 legacy URLs (see this module's doc comment), not \"no property records for \
-                 this name\"",
-            ));
+        if let Some(msg) = leg_failure(tally) {
+            return Err(Error::module(SRC, msg));
         }
 
         let mut result = ModuleResult::new();
@@ -228,16 +190,127 @@ impl Module for AuProperty {
     }
 }
 
-/// Whether `process()` should surface a hard failure rather than its
-/// ordinary empty success: true precisely when every attempted portal leg
-/// failed at the transport/HTTP-status level (`any_leg_http_ok` is false)
-/// AND nothing was found (`found_any_entity` is false). A leg that responded
-/// successfully but simply had no match for this name is not a failure —
-/// only a shared, portal-wide outage is, which is exactly the confirmed
-/// 2026-07-14 state this module's doc comment records. Pure and free of
-/// `ModuleContext`/network so it is unit-testable without a live server —
-/// see `tests::all_legs_unreachable_*`.
+/// What one portal leg actually did.
+///
+/// The distinction a single `any_leg_ok: bool` erased: it was false both when a
+/// response arrived carrying a non-success status and when no response arrived
+/// at all, so the failure message asserted the former while the latter was
+/// equally likely — routine on this module's target platform, where a handset
+/// loses mobile data, sits behind a captive portal, or drops a VPN mid-scan.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum LegOutcome {
+    /// A response arrived with a 2xx status.
+    Ok,
+    /// A response arrived, carrying a non-success status.
+    HttpError,
+    /// No response arrived: DNS, connect, TLS, or timeout failure.
+    Unreachable,
+}
+
+/// How the attempted legs resolved.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+struct LegTally {
+    ok: u8,
+    http_error: u8,
+    unreachable: u8,
+}
+
+impl LegTally {
+    fn record(&mut self, outcome: LegOutcome) {
+        let slot = match outcome {
+            LegOutcome::Ok => &mut self.ok,
+            LegOutcome::HttpError => &mut self.http_error,
+            LegOutcome::Unreachable => &mut self.unreachable,
+        };
+        *slot = slot.saturating_add(1);
+    }
+}
+
+/// The hard failure `process()` should surface, or `None` when the run was an
+/// honest empty success.
+///
+/// Any leg answering 2xx means the registers were genuinely consulted, so an
+/// empty result is a real "no records for this name" — never an error, whatever
+/// the other legs did. Otherwise the message states **what was actually
+/// observed**, because the two failure causes call for opposite operator
+/// responses: a dead endpoint is this module's problem, an unreachable host is
+/// the device's.
+///
+/// This replaces `all_legs_unreachable(any_leg_http_ok, found_any_entity)`,
+/// whose second parameter was dead: entities were only ever appended inside a
+/// leg's own `is_success()` branch, so `found_any_entity` implied
+/// `any_leg_http_ok` and could never change the result. Its doc and a unit test
+/// both presented `(false, true)` as a meaningful case, which was drift-prone in
+/// the dangerous direction — a future caller could trust a guard that does not
+/// guard. `tally.ok > 0` now expresses that condition directly and truthfully.
+///
+/// Pure and network-free, so it is unit-testable without a live server.
 #[must_use]
-fn all_legs_unreachable(any_leg_http_ok: bool, found_any_entity: bool) -> bool {
-    !any_leg_http_ok && !found_any_entity
+fn leg_failure(tally: LegTally) -> Option<String> {
+    if tally.ok > 0 {
+        return None;
+    }
+    let attempted = u16::from(tally.http_error) + u16::from(tally.unreachable);
+    if attempted == 0 {
+        // No leg ran at all (the caller short-circuited); nothing to report on.
+        return None;
+    }
+    Some(match (tally.http_error, tally.unreachable) {
+        (0, _) => format!(
+            "none of the {attempted} property-register endpoints (NSW ELVIS, VIC MapShare WFS, \
+             QLD titles search) could be reached — the requests failed before any reply \
+             (DNS, connect, TLS, or timeout). That is a connectivity failure on this device, \
+             NOT evidence about the registers and NOT \"no property records for this name\"."
+        ),
+        (_, 0) => format!(
+            "all {attempted} property-register endpoints (NSW ELVIS, VIC MapShare WFS, QLD \
+             titles search) returned a non-success HTTP status — likely retired/migrated \
+             legacy URLs (see this module's doc comment), not \"no property records for \
+             this name\""
+        ),
+        (http_error, unreachable) => format!(
+            "no property-register endpoint answered: {http_error} returned a non-success HTTP \
+             status (likely retired/migrated legacy URLs — see this module's doc comment) and \
+             {unreachable} could not be reached at all (DNS, connect, TLS, or timeout). Mixed \
+             causes, so this is not evidence of \"no property records for this name\"."
+        ),
+    })
+}
+
+/// Run one portal leg: request, classify the outcome, and on a 2xx parse the
+/// body into entities appended to `out`.
+///
+/// One definition so the three legs cannot drift in how they classify a failure
+/// — they were three verbatim copies of `if let Ok(resp) = … && resp.status()
+/// .is_success()`, whose discarded `Err` arm is exactly what collapsed
+/// "unreachable" into "non-success status".
+async fn run_leg(
+    ctx: &ModuleContext,
+    url: &str,
+    accept: &str,
+    full_name: &str,
+    parse: fn(&str, &str) -> Vec<parse::PropertyRecord>,
+    out: &mut Vec<Entity>,
+) -> LegOutcome {
+    let Ok(resp) = ctx
+        .http
+        .get(url)
+        .header("Accept", accept)
+        .header("User-Agent", crate::util::http::UA_BROWSER)
+        .send_tagged(SRC)
+        .await
+    else {
+        return LegOutcome::Unreachable;
+    };
+    if !resp.status().is_success() {
+        return LegOutcome::HttpError;
+    }
+    if let Some(body) = read_body_capped(resp, 1_000_000).await {
+        out.extend(
+            parse(&body, full_name)
+                .iter()
+                .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
+        );
+    }
+    LegOutcome::Ok
 }

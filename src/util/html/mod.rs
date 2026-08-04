@@ -62,6 +62,56 @@ pub fn strip_tags_plain(html: &str) -> String {
     out
 }
 
+/// True when `html` looks like an HTML document rather than a JSON/text payload.
+///
+/// Deliberately conservative — it requires an actual document opener at the very
+/// start (`<!doctype …` or `<html …`), not merely an angle bracket somewhere.
+/// A JSON error body that happens to quote markup in a message field must keep
+/// its verbatim treatment, so "contains `<html`" would be the wrong test.
+#[must_use]
+pub fn looks_like_document(html: &str) -> bool {
+    // `find_ascii_ci(…) == Some(0)` rather than `to_lowercase().starts_with(…)`:
+    // allocation-free, and it keeps every offset in this module derived from the
+    // original string (see [`title`] for why that matters).
+    use crate::util::str_util::find_ascii_ci;
+    let head = html.trim_start();
+    find_ascii_ci(head, "<!doctype html") == Some(0) || find_ascii_ci(head, "<html") == Some(0)
+}
+
+/// The document's `<title>` text — decoded and whitespace-collapsed — or `None`
+/// when there is no non-empty title.
+///
+/// For a CDN/WAF/origin error page the title is by far the most informative
+/// line in the document: Cloudflare answers an unreachable origin with
+/// `<title>example.com | 523: Origin is unreachable</title>` while the first
+/// several hundred characters of the same page are doctype and IE conditional
+/// comments carrying no diagnostic content at all.
+#[must_use]
+pub fn title(html: &str) -> Option<String> {
+    // `find_ascii_ci`, NOT `to_lowercase().find(…)`: `to_lowercase` is not
+    // byte-length-preserving (`İ` → `i̇`, `ẞ` → `ß`), so an offset taken from a
+    // lowercased copy can land mid-codepoint when used to slice the original and
+    // panic. Error bodies are fully upstream-controlled, so that input is
+    // reachable by anything an upstream chooses to return. See the helper's own
+    // docs — it exists for exactly this panic class.
+    use crate::util::str_util::find_ascii_ci;
+    let open = find_ascii_ci(html, "<title")?;
+    // Skip any attributes on the tag itself.
+    let after_open = open + html[open..].find('>')? + 1;
+    let close = after_open + find_ascii_ci(&html[after_open..], "</title>")?;
+    let text = collapse_whitespace(&decode_entities(&html[after_open..close]));
+    (!text.is_empty()).then_some(text)
+}
+
+/// Collapse every run of ASCII whitespace to a single space and trim the ends.
+///
+/// Tag-stripped markup is mostly inter-element whitespace, so the raw output of
+/// [`strip_html`] is unusable in a one-line message without this.
+#[must_use]
+pub fn collapse_whitespace(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Decode HTML entities in a single left-to-right pass: the named entities real
 /// markup uses (`&amp; &lt; &gt; &quot; &apos; &nbsp;`, plus the common
 /// typography/symbol set — see [`decode_one_entity`]) and ANY numeric character
