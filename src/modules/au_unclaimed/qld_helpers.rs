@@ -77,12 +77,9 @@ pub(super) fn owner_matches_full_name(owner: &str, seed: &str) -> bool {
     crate::util::str_util::whole_word_token_match(owner, seed)
 }
 
-/// Minimum token length considered a *name* rather than a bare initial. `"M"` in
-/// `"M MCLOUGHLIN"` must not license a match against an unrelated `"M SMITH"`.
-const MIN_QUERY_TOKEN: usize = 2;
-
-/// True if `owner` shares at least one whole-word token (≥ [`MIN_QUERY_TOKEN`]
-/// chars, case-insensitive) with the string we actually **queried** CKAN for.
+/// True if `owner` shares at least one whole-word name token with the string we
+/// actually **queried** CKAN for
+/// ([`shares_whole_word_token`](crate::util::str_util::shares_whole_word_token)).
 ///
 /// # Why this gate exists
 /// CKAN's `datastore_search?q=` is a **full-text search across every column**,
@@ -105,14 +102,7 @@ const MIN_QUERY_TOKEN: usize = 2;
 /// row to `exact-name-match`). It only drops rows that matched some **other**
 /// column entirely.
 pub(super) fn owner_matches_query(owner: &str, query: &str) -> bool {
-    let owner_words: Vec<&str> = owner
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .collect();
-    query
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| t.len() >= MIN_QUERY_TOKEN)
-        .any(|tok| owner_words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
+    crate::util::str_util::shares_whole_word_token(owner, query)
 }
 
 /// Honorific tokens stripped from the FRONT of a parsed owner name, so the real
