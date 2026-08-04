@@ -436,6 +436,14 @@ mod tests {
 
     #[tokio::test]
     async fn cells_clear_succeeds_with_confirm_true() {
+        // clear_cells_db() operates on the real cell-tower DB file (not the
+        // test's in-memory store), and fails if it is absent. `open_rw` creates
+        // the file and its schema — and resolves through `paths::data_file`, so
+        // under `cfg(test)` that is the per-process temp root, and the directory
+        // is created 0700 on the way. No manual `create_dir_all` here: that would
+        // create at the ambient umask and bypass that guarantee.
+        let _db = crate::util::cell_db::open_rw().expect("should create cell DB");
+
         let app = cells_router();
         let loopback: SocketAddr = "127.0.0.1:9999".parse().expect("should succeed");
         let req = req_with_peer(

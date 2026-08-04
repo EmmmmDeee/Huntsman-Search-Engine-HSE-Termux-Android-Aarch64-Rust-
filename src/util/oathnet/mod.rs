@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -144,12 +145,11 @@ fn cache_get(key: &str) -> Option<SearchResult> {
 
 /// Cache the page-set WITH its completeness, so a hit reports the same truth the
 /// original call did.
-///
-/// Takes the items by value: every caller is at a `return` and has no further
-/// use for them, so borrowing only forced a `to_vec()` copy on top of the
-/// `clone()` the cache already needs — two deep copies of a fully-paginated
-/// breach sweep on every write, where one is unavoidable.
 fn cache_put(key: String, items: Vec<Value>, completeness: Completeness) -> SearchResult {
+    // Takes the vec by value so callers move `all_items` in: the cache needs one
+    // copy and the caller needs one, and the previous `&[Value]` signature forced
+    // `to_vec()` on top of that clone — two deep copies of a page set that can
+    // run to thousands of breach rows, on every cache write.
     let res = SearchResult::new(items, completeness);
     RESPONSE_CACHE.put(key, res.clone());
     res
@@ -256,6 +256,10 @@ pub fn real_quota() -> Option<RealQuota> {
 pub fn reset_budget() {
     BUDGET.reset_scan();
     RESPONSE_CACHE.clear();
+    // Per-scan, exactly like the quota latch `reset_scan` clears: a rate limit
+    // one scan hit must not bench the provider for every later scan in a
+    // long-lived `hse serve`/`hse live` process.
+    RATE_LIMITED.store(false, Ordering::Release);
 }
 
 /// True while the shared OathNet budget can absorb at least one more billable
@@ -274,9 +278,37 @@ pub fn set_scan_cap_override(cap: u32) {
     BUDGET.set_scan_cap_override(cap);
 }
 
+/// Set when a 429 outlived its retry budget, so the *reason* the module stopped
+/// survives alongside the stop itself.
+///
+/// The 429 path latches `mark_quota_exhausted()` deliberately — a persistent
+/// rate limit must stop the scan firing at OathNet rather than retry forever —
+/// but that latch is the *daily quota* signal, and reusing it made a burst rate
+/// limit indistinguishable from a spent daily allowance everywhere the latch is
+/// read: the door guard in [`search`], and `"quota_exhausted"` in
+/// `api::key_harvest_handlers`. The two need opposite operator responses —
+/// retry shortly vs. wait for the daily reset, possibly hours — so reporting
+/// the wrong one is exactly the misdirection [`Completeness`] exists to remove.
+///
+/// This records the cause without touching the stop: the quota latch is still
+/// set, so every existing gate behaves precisely as before. Cleared by
+/// [`reset_budget`] at the scan boundary, like the rest of the per-scan state.
+static RATE_LIMITED: AtomicBool = AtomicBool::new(false);
+
 fn mark_quota_exhausted() {
     BUDGET.mark_exhausted();
     tracing::warn!("OathNet daily quota exhausted — skipping remaining queries");
+}
+
+/// Latch that the stop came from a rate limit, not a spent daily quota.
+fn mark_rate_limited() {
+    RATE_LIMITED.store(true, Ordering::Release);
+    tracing::warn!("OathNet rate-limited with retries exhausted — skipping remaining queries");
+}
+
+/// True when this scan stopped querying OathNet because of a persistent 429.
+fn is_rate_limited() -> bool {
+    RATE_LIMITED.load(Ordering::Acquire)
 }
 
 fn base_url() -> String {
@@ -486,27 +518,18 @@ pub async fn search(
     if let Some(cached) = cache_get(&ck) {
         return Ok(cached);
     }
-    // Two ways a query is refused before any request is made, and they are NOT
-    // the same fact: the provider's paid daily quota already being spent is not
-    // the operator's own scan/session cap biting, and the two need different
-    // operator responses (wait for the reset vs. raise a cap that spends money).
-    // Both used to return `Completeness::Complete` — the exact conflation this
-    // type exists to remove, made at the worst place in the module: neither exit
-    // performs a request, so not even the `debug!` line the mid-pagination stops
-    // emit would have appeared. An empty set stamped `Complete` carries no
-    // `coverage:partial` tag in `oathnet_pro` and no warning from
-    // `cli/oathnet_batch`, so a dossier recorded "nothing found" for a query
-    // that was never asked.
-    //
-    // The order matters and is unchanged: the provider-quota latch is checked
-    // first, and short-circuits so a refused query never charges a reservation
-    // against a cap it will not spend.
-    //
-    // Neither is written to the response cache, deliberately. No request was
-    // made, so the refusal says nothing about `(path, field, value)` — only
-    // about budget state at this instant. Caching it would pin a transient
-    // refusal onto that target for the life of the process, and the next scan's
-    // `reset_budget()` would no longer be enough to let it re-query live.
+    // Split deliberately. Both arms return zero rows, but neither is a
+    // finding: no query was made, so nothing was established about this target.
+    // Reporting `Complete` here would have made "we were not allowed to ask"
+    // indistinguishable from "we asked and there is nothing" — the exact
+    // conflation this type exists to remove, one guard earlier than the
+    // pagination exits it was written for.
+    // Checked BEFORE the quota latch, because the 429 path sets both: the quota
+    // latch to stop, this one to say why. Reading the quota latch first would
+    // report every post-rate-limit refusal as a spent daily allowance.
+    if is_rate_limited() {
+        return Ok(SearchResult::new(Vec::new(), Completeness::RateLimited));
+    }
     if is_quota_exhausted() {
         return Ok(SearchResult::new(Vec::new(), Completeness::QuotaExhausted));
     }
@@ -621,7 +644,17 @@ pub async fn search(
                 }
                 if code == 429 {
                     if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
+                        // Both latches: `mark_quota_exhausted` is what actually
+                        // stops the scan re-firing at OathNet (every existing
+                        // gate reads it, unchanged), while `mark_rate_limited`
+                        // records that a 429 — not a spent daily allowance —
+                        // is why. Without the second, this call correctly
+                        // reports `RateLimited` and then every LATER query in
+                        // the scan is refused at the door as `QuotaExhausted`,
+                        // telling the operator to wait hours for a reset that
+                        // was never the problem.
                         mark_quota_exhausted();
+                        mark_rate_limited();
                         return Ok(cache_put(ck, all_items, Completeness::RateLimited));
                     }
                     let delay = RATE_LIMIT_BACKOFF.delay(attempt);

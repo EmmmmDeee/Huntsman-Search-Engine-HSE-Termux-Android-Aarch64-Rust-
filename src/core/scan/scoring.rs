@@ -111,9 +111,10 @@ pub(super) fn auto_min_expand_confidence(depth: u32, has_paid_keys: bool) -> f64
 /// Statistically-grounded expansion depth for a seed and API tier, via a
 /// geometric **yield-curve** model rather than hand-tuned per-kind constants.
 ///
-/// The previous constants (4–5 per kind) were silently flattened by the
-/// [`MAX_DEPTH`] = 3 clamp — every kind resolved to depth 3 — so depth carried
-/// no signal. This model instead schedules the *largest round whose predicted
+/// The previous constants (4–5 per kind) were silently flattened by the old
+/// depth-3 clamp (`MAX_DEPTH` was 3 then, since raised to 5) — every kind
+/// resolved to depth 3 — so depth carried no signal. This model instead
+/// schedules the *largest round whose predicted
 /// marginal yield still clears [`MARGINAL_YIELD_FLOOR`]*:
 ///
 /// ```text

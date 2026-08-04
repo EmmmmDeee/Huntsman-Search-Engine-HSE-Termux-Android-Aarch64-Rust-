@@ -58,7 +58,13 @@ run "check"    cargo check --all-targets --locked
 run "clippy"   cargo clippy --all-targets --locked -- -D warnings
 RUSTDOCFLAGS="$RUSTDOC_LINTS" \
   run "rustdoc lints" cargo doc --no-deps --document-private-items --locked
-run "test"     cargo test --all --locked
+# ci.yml runs ONE `cargo test --all`, which already includes doctests. This gate
+# reports doctests as their own check (`doctests` below), so this step must
+# EXCLUDE them — `--lib --bins --tests` does exactly that. A bare `cargo test
+# --all` here ran the whole doctest suite a second time under `doctests`. Total
+# coverage is unchanged: lib+bins+integration here, doctests below == ci.yml's
+# single `--all`.
+run "test"     cargo test --all --lib --bins --tests --locked
 run "doctests" cargo test --doc --locked
 
 # ── ci.yml: MSRV ─────────────────────────────────────────────────────────────

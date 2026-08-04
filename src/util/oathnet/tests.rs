@@ -723,7 +723,29 @@ use super::*;
             "an already-latched provider quota must not read as the operator's cap"
         );
 
+        // 3. A persistent 429 latches BOTH — the quota latch to stop the scan
+        // re-firing, the rate-limit latch to record why. The door must report
+        // the why. Reading the quota latch first would tell the operator to
+        // wait hours for a daily reset when a short retry was the answer.
         reset_budget();
+        mark_quota_exhausted();
+        mark_rate_limited();
+        let refused = door("unused-the-guard-returns-first");
+        assert!(refused.items.is_empty());
+        assert_eq!(
+            refused.completeness,
+            Completeness::RateLimited,
+            "a stop caused by a persistent 429 must not be reported as a spent daily quota — \
+             the two need opposite operator responses"
+        );
+
+        // The latch is per-scan: a rate limit one scan hit must not bench the
+        // provider for every later scan in a long-lived `serve`/`live` process.
+        reset_budget();
+        assert!(
+            !is_rate_limited(),
+            "reset_budget() must clear the rate-limit latch at the scan boundary"
+        );
     }
 
     /// Each stop reason is distinct and carries an operator-actionable message.

@@ -332,7 +332,7 @@ pub const THROTTLE_CEILING_MS: u64 = 30_000;
 
 /// Default recursive-expansion depth for the `hse scan` product surface when
 /// the operator gives neither an explicit `--depth` nor `--auto`/`--recursive`.
-/// Defaults to the full [`MAX_DEPTH`] so the standard scan is **comprehensive by
+/// Defaults to 3 (three hops) so the standard scan is **comprehensive by
 /// default** — the seed → discovered identifiers → their pivots → infrastructure
 /// chain runs to completion, giving every module a target of a kind it accepts
 /// (e.g. the Email→Domain→IP pipeline only reaches the IP modules at the third
@@ -354,7 +354,7 @@ const _: () = assert!(DEFAULT_SCAN_DEPTH <= MAX_DEPTH);
 
 /// Default hard cap on total entities for the `hse scan` product surface, applied
 /// at the CLI boundary when the operator gives no explicit `--max-entities`. Now
-/// that the default scan is comprehensive (depth [`MAX_DEPTH`], a 0.20 expansion
+/// that the default scan is comprehensive (depth 3, a 0.20 expansion
 /// floor), a common-name seed could otherwise fan the frontier out without bound —
 /// hundreds of breach/permutation identifiers, each re-expanded — and exhaust RAM
 /// on a 4 GB no-root Termux device. This generous ceiling (≈4× a typical scan's
