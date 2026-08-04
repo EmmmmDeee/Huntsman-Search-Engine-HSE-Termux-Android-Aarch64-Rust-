@@ -241,9 +241,11 @@ pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
     let mut infra: Vec<String> = Vec::new();
     for e in entities {
         if e.kind == "domain"
-            && e.tags
-                .iter()
-                .any(|t| KNOWN_ZONE_RECORD_TAGS.contains(&t.to_ascii_lowercase().as_str()))
+            && e.tags.iter().any(|t| {
+                KNOWN_ZONE_RECORD_TAGS
+                    .iter()
+                    .any(|k| t.eq_ignore_ascii_case(k))
+            })
         {
             continue;
         }

@@ -6,10 +6,13 @@
 its features and functionality, benchmarked against its closest competitors,
 with per-competitor gap analysis.
 
-**Explicitly out of scope, at the requester's direction:** customer base,
-installed base, traction, revenue history, and any goodwill or network-effect
-premium. Every figure below is derived from capability and comparable-market
-evidence alone.
+**Explicitly out of scope for Parts I–II, at the requester's direction:**
+customer base, installed base, traction, revenue history, and any goodwill or
+network-effect premium. Those figures are derived from capability and
+comparable-market evidence alone. Part III departs from this deliberately —
+the requester later asked for a customer-base projection directly, so it adds
+one as a separate, explicitly-labelled assumptions-based model (§21 states its
+own limits) rather than reopening the scope of Parts I–II.
 
 ---
 
