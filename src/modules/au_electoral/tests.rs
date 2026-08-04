@@ -258,3 +258,51 @@ mod prop {
         }
     }
 }
+
+// ─── Outage must not read as "not enrolled" ───────────────────────────────
+
+use super::{RollOutcome, rolls_wholly_unreachable};
+
+/// Enrolment is compulsory in Australia, so an empty result from this module
+/// reads as *not on any roll* — a strong negative claim about a person. It must
+/// only be reachable when a commission actually said so.
+///
+/// Before the `RollOutcome` split, each leg was one
+/// `if let Ok(resp) = … && let Some(body) = … && let Some(div) = …` chain, so a
+/// transport failure, an unreadable reply and a page naming no division were
+/// indistinguishable — all three fell through to the same empty `Ok`.
+#[test]
+fn an_unreachable_commission_is_not_the_same_as_an_absent_enrolment() {
+    // All three registries down: nothing was established, so this must be
+    // reported rather than rendered as a clean negative.
+    assert!(rolls_wholly_unreachable(&[
+        RollOutcome::Unreachable,
+        RollOutcome::Unreachable,
+        RollOutcome::Unreachable,
+    ]));
+
+    // A commission that answered with no division is a REAL negative — the
+    // lookup path demonstrably works. This must not be reported as an outage.
+    assert!(!rolls_wholly_unreachable(&[RollOutcome::Answered]));
+
+    // One answer rescues the rest: the empties alongside it are genuine.
+    assert!(!rolls_wholly_unreachable(&[
+        RollOutcome::Unreachable,
+        RollOutcome::Answered,
+        RollOutcome::Unreachable,
+    ]));
+    assert!(!rolls_wholly_unreachable(&[
+        RollOutcome::Unreachable,
+        RollOutcome::Unreachable,
+        RollOutcome::Answered,
+    ]));
+
+    // No legs ran at all — cancellation, or a name that never got queried.
+    // That is its own condition and must NOT be blamed on the registries.
+    assert!(!rolls_wholly_unreachable(&[]));
+
+    // First-hit-wins means a single answering leg is the common success shape,
+    // and one leg is enough to keep the module out of the error path.
+    assert!(!rolls_wholly_unreachable(&[RollOutcome::Answered]));
+    assert!(rolls_wholly_unreachable(&[RollOutcome::Unreachable]));
+}

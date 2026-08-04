@@ -49,7 +49,7 @@ use async_trait::async_trait;
 
 use crate::core::{
     entity::{Entity, EntityKind},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -61,6 +61,83 @@ pub(crate) use parse::extract_division;
 pub(super) const SRC: &str = "au_electoral";
 
 pub struct AuElectoral;
+
+// ─── Outcome of one commission lookup ─────────────────────────────────────
+
+/// What a single electoral-commission leg established.
+///
+/// Carries no payload on purpose: the entities go straight into the result, and
+/// this records only whether the registry *spoke*. That is precisely the
+/// distinction the old code threw away — each leg was a single
+/// `if let Ok(resp) = … && let Some(body) = … && let Some(div) = …` chain, so a
+/// transport failure, an unreadable reply and a page naming no division all
+/// landed on the same "no entities" branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RollOutcome {
+    /// The commission answered and its page was read. Whether it named a
+    /// division or not, this IS a statement about enrolment in that state, and
+    /// an empty result from it is a genuine negative.
+    Answered,
+    /// Nothing was established — the request failed, or the reply could not be
+    /// read. **Not** a statement about enrolment.
+    Unreachable,
+}
+
+/// True when NO commission answered: every leg failed to reach or read a
+/// registry, so the module established nothing about enrolment at all.
+///
+/// This matters more here than for a typical source. Enrolment is *compulsory*
+/// in Australia — the module header leans on exactly that to call this a
+/// "high-confidence residential-address signal" — so "au_electoral returned
+/// nothing" reads to an analyst as *not on any roll*, a strong negative claim
+/// about a person. When all three registries were simply down, nothing
+/// whatsoever supports that claim.
+///
+/// Pure, so the decision that turns a scan into a `ModuleError` is unit-testable
+/// without three live state-government endpoints. Deliberately requires ALL
+/// outcomes to be unreachable: one commission answering, even with no division,
+/// proves the lookup path works and the empties are real negatives.
+///
+/// An empty slice is NOT unreachable — no legs ran (cancellation, or an empty
+/// name), which is its own condition and must not be reported as an outage.
+pub(super) fn rolls_wholly_unreachable(outcomes: &[RollOutcome]) -> bool {
+    !outcomes.is_empty() && outcomes.iter().all(|o| *o == RollOutcome::Unreachable)
+}
+
+/// Query one electoral commission, returning what it established and any
+/// entities its page yielded.
+///
+/// Known limit, stated rather than papered over: a page that is read but names
+/// no division is reported as [`RollOutcome::Answered`] with no entities. That
+/// is right for a genuine "not on this roll", but a changed page layout or an
+/// interstitial block page would also land there and read as a real negative.
+/// Separating those needs a positive "no match found" marker per commission,
+/// which needs live samples of each state's negative-result page — a distinct
+/// unit, and one that must not be guessed at.
+async fn query_roll(url: &str, full_name: &str, ctx: &ModuleContext) -> (RollOutcome, Vec<Entity>) {
+    let Ok(resp) = ctx
+        .http
+        .get(url)
+        .header("Accept", "text/html,application/xhtml+xml")
+        .header("User-Agent", crate::util::http::UA_BROWSER)
+        .send_tagged(SRC)
+        .await
+    else {
+        return (RollOutcome::Unreachable, Vec::new());
+    };
+    let Some(body) = read_body_capped(resp, 1_000_000).await else {
+        // The commission responded but we could not read the reply, so nothing
+        // about enrolment was established. Not a negative.
+        return (RollOutcome::Unreachable, Vec::new());
+    };
+    match extract_division(&body) {
+        Some((div, suburb)) => (
+            RollOutcome::Answered,
+            build_electoral_entities(&div, suburb.as_deref(), full_name, &ctx.scan_id),
+        ),
+        None => (RollOutcome::Answered, Vec::new()),
+    }
+}
 
 // ─── Module impl ──────────────────────────────────────────────────────────
 
@@ -107,76 +184,51 @@ impl Module for AuElectoral {
 
         let encoded = crate::util::http::urlencode(full_name);
         let mut all_entities: Vec<Entity> = Vec::new();
+        let mut outcomes: Vec<RollOutcome> = Vec::new();
 
         // No AEC national leg: `electorate.aec.gov.au/NameSearch.aspx` no
         // longer performs a name search (see the module doc comment) — every
         // call returned the identical generic error page, live-confirmed
         // against both a nonsense name and a real enrolled public figure.
+        let legs = [
+            format!("https://check.elections.nsw.gov.au/search?name={encoded}"),
+            format!("https://check.vec.vic.gov.au/search?name={encoded}"),
+            format!("https://enrol.ecq.qld.gov.au/check?name={encoded}"),
+        ];
 
-        // ── NSW Electoral Commission ─────────────────────────────────────
-        if all_entities.is_empty() {
-            let nsw_url = format!("https://check.elections.nsw.gov.au/search?name={encoded}");
-            if let Ok(resp) = ctx
-                .http
-                .get(&nsw_url)
-                .header("Accept", "text/html,application/xhtml+xml")
-                .header("User-Agent", crate::util::http::UA_BROWSER)
-                .send_tagged(SRC)
-                .await
-                && let Some(body) = read_body_capped(resp, 1_000_000).await
-                && let Some((div, suburb)) = extract_division(&body)
-            {
-                all_entities.extend(build_electoral_entities(
-                    &div,
-                    suburb.as_deref(),
-                    full_name,
-                    &ctx.scan_id,
-                ));
+        for url in &legs {
+            // First hit wins — unchanged. A leg that answered with a division
+            // stops the remaining lookups, exactly as the three `if
+            // all_entities.is_empty()` guards did before.
+            if !all_entities.is_empty() {
+                break;
             }
+            let (outcome, entities) = query_roll(url, full_name, ctx).await;
+            all_entities.extend(entities);
+            outcomes.push(outcome);
         }
 
-        // ── Victorian Electoral Commission ────────────────────────────────
-        if all_entities.is_empty() {
-            let vec_url = format!("https://check.vec.vic.gov.au/search?name={encoded}");
-            if let Ok(resp) = ctx
-                .http
-                .get(&vec_url)
-                .header("Accept", "text/html,application/xhtml+xml")
-                .header("User-Agent", crate::util::http::UA_BROWSER)
-                .send_tagged(SRC)
-                .await
-                && let Some(body) = read_body_capped(resp, 1_000_000).await
-                && let Some((div, suburb)) = extract_division(&body)
-            {
-                all_entities.extend(build_electoral_entities(
-                    &div,
-                    suburb.as_deref(),
-                    full_name,
-                    &ctx.scan_id,
-                ));
-            }
-        }
-
-        // ── ECQ Queensland ───────────────────────────────────────────────
-        if all_entities.is_empty() {
-            let ecq_url = format!("https://enrol.ecq.qld.gov.au/check?name={encoded}");
-            if let Ok(resp) = ctx
-                .http
-                .get(&ecq_url)
-                .header("Accept", "text/html,application/xhtml+xml")
-                .header("User-Agent", crate::util::http::UA_BROWSER)
-                .send_tagged(SRC)
-                .await
-                && let Some(body) = read_body_capped(resp, 1_000_000).await
-                && let Some((div, suburb)) = extract_division(&body)
-            {
-                all_entities.extend(build_electoral_entities(
-                    &div,
-                    suburb.as_deref(),
-                    full_name,
-                    &ctx.scan_id,
-                ));
-            }
+        // Every commission we tried failed to answer, so nothing was
+        // established. Returning an empty success here would render as "not on
+        // the NSW, VIC or QLD roll" — and because enrolment is compulsory, that
+        // reads as a finding about the person rather than about the network.
+        //
+        // Gated on cancellation: an operator stopping the scan (or the
+        // wall-time watchdog firing) leaves the in-flight legs unreachable, and
+        // reporting that as "no electoral commission answered" would blame the
+        // registries for our own stop. The zero-leg case is already excluded
+        // inside `rolls_wholly_unreachable`; this covers partial-then-cancelled.
+        if !ctx.cancel.is_cancelled() && rolls_wholly_unreachable(&outcomes) {
+            return Err(Error::module(
+                SRC,
+                format!(
+                    "no electoral commission answered for {full_name}: all {} lookups \
+                     (NSW, VIC, QLD) failed to respond or returned a reply that could \
+                     not be read. Enrolment is compulsory in Australia, so an empty \
+                     result would read as 'not enrolled' — which nothing established.",
+                    outcomes.len()
+                ),
+            ));
         }
 
         let mut result = ModuleResult::new();
