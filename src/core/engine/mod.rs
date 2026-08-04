@@ -80,6 +80,7 @@ use crate::core::module::ModuleCost;
 
 use crate::core::{
     dependency::ModuleGraph,
+    engine_host::{EngineHost, NoopEngineHost},
     entity::Entity,
     error::{Error, Result},
     event::{Event, EventBus, EventKind},
@@ -105,6 +106,10 @@ pub struct ScanEngine {
     writer: DbWriter,
     /// Module-owned effects supplied by the application composition root.
     module_runtime: Arc<dyn ModuleRuntime>,
+    /// `util`-backed host effects — the egress proxy pool and the module-health
+    /// quarantine — supplied by the same composition root, so `core` drives
+    /// them without naming `util`. See [`crate::core::engine_host`].
+    host: Arc<dyn EngineHost>,
 }
 
 /// Reason an expansion round stopped before depth was exhausted.
@@ -358,12 +363,34 @@ impl ScanEngine {
         Self::with_module_runtime(modules, store, bus, Arc::new(NoopModuleRuntime))
     }
 
-    /// Construct an engine with explicit module-layer runtime effects.
+    /// Construct an engine with explicit module-layer runtime effects and the
+    /// no-op host — no egress refresh, no module quarantine.
     pub fn with_module_runtime(
+        modules: Vec<Arc<dyn Module>>,
+        store: Arc<dyn StoragePort>,
+        bus: EventBus,
+        module_runtime: Arc<dyn ModuleRuntime>,
+    ) -> Self {
+        Self::with_runtime_and_host(
+            modules,
+            store,
+            bus,
+            module_runtime,
+            Arc::new(NoopEngineHost),
+        )
+    }
+
+    /// Construct an engine with both injected contracts.
+    ///
+    /// The application composition root uses this one. `core` must not name the
+    /// `util`-backed host itself — that is the layering edge this indirection
+    /// exists to keep (`core_does_not_import_util_directly`).
+    pub fn with_runtime_and_host(
         mut modules: Vec<Arc<dyn Module>>,
         store: Arc<dyn StoragePort>,
         bus: EventBus,
         module_runtime: Arc<dyn ModuleRuntime>,
+        host: Arc<dyn EngineHost>,
     ) -> Self {
         modules.sort_by_key(|m| std::cmp::Reverse(m.priority()));
         let writer = DbWriter::spawn(Arc::clone(&store));
@@ -377,6 +404,7 @@ impl ScanEngine {
             graph,
             writer,
             module_runtime,
+            host,
         }
     }
 
@@ -584,11 +612,10 @@ impl ScanEngine {
         // before it can make a resource unreachable. Detached (never blocks the
         // scan) and internally throttled; not spawned at all when no proxy/feed
         // is configured, so a proxy-less deployment pays nothing.
-        if crate::util::egress::pool_is_configured()
-            || std::env::var(crate::util::egress::PROXY_FEEDS_ENV).is_ok()
-        {
-            tokio::spawn(async {
-                let (fed, ok) = crate::util::egress::refresh_pool().await;
+        if self.host.egress_is_configured() {
+            let host = Arc::clone(&self.host);
+            tokio::spawn(async move {
+                let (fed, ok) = host.refresh_egress_pool().await;
                 if fed > 0 || ok > 0 {
                     tracing::debug!(fed, validated_ok = ok, "egress proxy pool refreshed");
                 }
@@ -628,12 +655,9 @@ impl ScanEngine {
         // (falls back to an empty set = no quarantine). On a fresh DB the event
         // log is empty, so the set is empty and dispatch is unchanged.
         let quarantined: HashSet<String> = if opts.skip_dead_modules && opts.modules.is_none() {
-            use crate::util::scraper_health::{
-                RECENT_EVENTS_WINDOW, aggregate_source_health, quarantined_modules,
-            };
             self.store
-                .recent_module_outcome_events(RECENT_EVENTS_WINDOW)
-                .map(|evs| quarantined_modules(&aggregate_source_health(&evs)))
+                .recent_module_outcome_events(self.host.health_events_limit())
+                .map(|evs| self.host.quarantined_modules(&evs))
                 .unwrap_or_default()
         } else {
             HashSet::new()

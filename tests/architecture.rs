@@ -99,9 +99,16 @@ fn application_layer_owns_runtime_composition() {
     let runtime = fs::read_to_string(root.join("src/app/runtime.rs")).unwrap();
     for required in [
         "Store::open(",
-        "ScanEngine::with_module_runtime(",
+        // The composition constructor. It gained the host parameter when
+        // `core` stopped reaching into `util` directly; app is the one layer
+        // permitted to name both sides, which is why the wiring lives here.
+        "ScanEngine::with_runtime_and_host(",
         "registry()",
         "module_runtime()",
+        // Pin the REAL host too. Without this the engine would silently fall
+        // back to `NoopEngineHost` — no egress pool refresh, no module-health
+        // quarantine — and every test would still pass.
+        "UtilEngineHost",
     ] {
         assert!(
             runtime.contains(required),
@@ -116,6 +123,7 @@ fn application_layer_owns_runtime_composition() {
                 "fn build_runtime(",
                 "ScanEngine::new(",
                 "ScanEngine::with_module_runtime(",
+                "ScanEngine::with_runtime_and_host(",
                 "Store::open(",
                 "crate::storage",
             ],
@@ -385,111 +393,24 @@ fn core_does_not_import_util_directly() {
         })
         .collect();
 
-    // ── Revealed backlog ─────────────────────────────────────────────────────
-    // These are NOT allow-listed. `util::egress` owns a mutable proxy pool,
-    // reads env, probes the network and spawns a task; `util::scraper_health`
-    // is read from inside the dispatch loop. Neither is the pure, dependency-
-    // free leaf the exceptions above are scoped to, so calling them "allowed"
-    // would be silencing the assertion — which CLAUDE.md forbids: "a change
-    // that trips them is a design decision — raise it, don't silence it."
+    // The revealed backlog is EMPTY and the scaffolding that froze it is gone.
     //
-    // They were invisible until `scan_dir` stopped latching `in_test` on the
-    // first `#[cfg(test)]`. `core/engine/mod.rs` declares that at line 63 of
-    // 2724, so 2661 lines — including every one of these — went unscanned. The
-    // violations pre-date this change by a long way; the guard simply never
-    // reached them.
+    // Un-blinding `scan_dir` (#355) surfaced four real violations here, all in
+    // `core/engine/mod.rs`: three `util::egress` calls and one
+    // `util::scraper_health` import. They were frozen in a shrink-only list
+    // rather than allow-listed, because CLAUDE.md is explicit that a tripped
+    // invariant is a design decision to raise, not silence.
     //
-    // Frozen here so the invariant still bites on GROWTH (a fifth violation
-    // fails immediately) while the design question is raised rather than
-    // buried. Shrink this list; never extend it. Resolving it means giving
-    // `core` a port for egress refresh and module health the way it already has
-    // one for storage — a change to `core`'s dependency surface that needs its
-    // own unit and its own regression evidence, not a drive-by edit inside a
-    // test-tooling fix.
-    const REVEALED: &[(&str, &str)] = &[
-        ("src/core/engine/mod.rs", "util::egress"),
-        ("src/core/engine/mod.rs", "util::egress"),
-        ("src/core/engine/mod.rs", "util::egress"),
-        ("src/core/engine/mod.rs", "util::scraper_health"),
-    ];
-
-    let tally = |rows: &[(String, String)]| {
-        let mut m: std::collections::BTreeMap<(String, String), usize> =
-            std::collections::BTreeMap::new();
-        for r in rows {
-            *m.entry(r.clone()).or_default() += 1;
-        }
-        m
-    };
-    let found: Vec<(String, String)> = allowed
-        .iter()
-        .filter_map(|v| util_violation_key(v))
-        .collect();
-    // Anything the key parser could not read must not be swallowed.
-    let unparsed: Vec<&String> = allowed
-        .iter()
-        .filter(|v| util_violation_key(v).is_none())
-        .collect();
+    // They were then resolved properly: `core::engine_host::EngineHost` is the
+    // contract, `util::engine_host::UtilEngineHost` implements it, and
+    // `app::runtime` injects it — the same `util → core` direction
+    // `storage::Store` already uses for `StoragePort`. With nothing left to
+    // record, this is a plain assertion again.
     assert!(
-        unparsed.is_empty(),
-        "could not key these violations against the revealed backlog, so they \
-         cannot be judged — fix `util_violation_key`:\n{unparsed:#?}"
-    );
-
-    let found_counts = tally(&found);
-    let expected_counts = tally(
-        &REVEALED
-            .iter()
-            .map(|(f, m)| ((*f).to_string(), (*m).to_string()))
-            .collect::<Vec<_>>(),
-    );
-    let added: Vec<String> = found_counts
-        .iter()
-        .filter_map(|(k, n)| {
-            let allow = expected_counts.get(k).copied().unwrap_or(0);
-            (*n > allow).then(|| format!("{} uses `{}` x{} (backlog allows {allow})", k.0, k.1, n))
-        })
-        .collect();
-    let fixed: Vec<String> = expected_counts
-        .iter()
-        .filter_map(|(k, n)| {
-            let actual = found_counts.get(k).copied().unwrap_or(0);
-            (*n > actual).then(|| format!("{} uses `{}` x{} (now only {actual})", k.0, k.1, n))
-        })
-        .collect();
-
-    assert!(
-        added.is_empty(),
-        "core/ must not import util/ (except the allow-listed pure/leaf helpers above).\n\
-         New violation(s) beyond the frozen revealed backlog:\n{added:#?}\n\
-         Full violation list:\n{}",
+        allowed.is_empty(),
+        "core/ must not import util/ (except the allow-listed pure/leaf helpers above).\nViolations:\n{}",
         allowed.join("\n")
     );
-    assert!(
-        fixed.is_empty(),
-        "these revealed-backlog entries are gone (nice — you resolved them). \
-         Delete them from REVEALED so the backlog stays truthful:\n{fixed:#?}"
-    );
-}
-
-/// `(repo-relative file, "util::<module>")` for a `scan_for_violations` line,
-/// which is formatted `<abs path>:<line>: <trimmed source>`.
-///
-/// Line-number free on purpose: an edit above a site must not churn a frozen
-/// list, exactly as in the confidence ratchets.
-fn util_violation_key(v: &str) -> Option<(String, String)> {
-    // The first `": "` is the one after the line number — a path holds no space
-    // and `path:line` holds none either, so this cannot land inside the source.
-    let (loc, code) = v.split_once(": ")?;
-    let path = loc.rsplit_once(':')?.0.replace('\\', "/");
-    let file = path.split_once("/src/").map(|(_, t)| format!("src/{t}"))?;
-    let at = code.find("crate::util::")?;
-    let rest = &code[at + "crate::util::".len()..];
-    let module: String = rest
-        .chars()
-        .take_while(|c| c.is_alphanumeric() || *c == '_')
-        .collect();
-    (!module.is_empty()).then(|| (file, format!("util::{module}")))
 }
 
 #[test]

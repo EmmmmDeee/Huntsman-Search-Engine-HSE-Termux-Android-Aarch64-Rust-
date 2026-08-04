@@ -62,6 +62,7 @@ pub mod scan;
 pub mod scraper_health;
 pub mod see_know;
 
+pub mod engine_host;
 pub mod paths;
 pub mod recon;
 pub mod service_defs;
