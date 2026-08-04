@@ -2747,13 +2747,20 @@ fn is_bare_float(s: &str) -> bool {
         .is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// Blank the *contents* of comments and string/char literals, preserving length
-/// and line structure so the result stays aligned with the input.
+/// Blank the *contents* of comments and string/char literals, preserving **byte**
+/// length and line structure so the result stays offset-aligned with the input.
 ///
 /// Every scanner below counts delimiters, and a brace, quote or semicolon inside
 /// a string or a comment is not a delimiter. Doing this once, up front, is what
 /// lets [`production_source`] brace-match a `#[cfg(test)] mod tests { … }` body
 /// exactly rather than approximately.
+///
+/// Byte length is preserved, not merely character count: a blanked multi-byte
+/// char is replaced by as many spaces as it occupied. That keeps every byte
+/// offset in the output valid in the input too, so a future caller can map a
+/// finding back to a source position — the obvious next step for these ratchets,
+/// which today report file-and-value only. Blanking a 3-byte `…` to one space
+/// would silently shift every offset after the first non-ASCII comment in a file.
 ///
 /// Handles the forms that actually occur in this tree: line comments, *nesting*
 /// block comments, plain and raw strings (`r"…"`, `r#"…"#`), and char literals —
@@ -2762,8 +2769,17 @@ fn is_bare_float(s: &str) -> bool {
 fn blank_strings_and_comments(src: &str) -> String {
     let c: Vec<char> = src.chars().collect();
     let mut out = String::with_capacity(src.len());
-    // Blank one char, keeping newlines so line structure survives.
-    let blank = |out: &mut String, ch: char| out.push(if ch == '\n' { '\n' } else { ' ' });
+    // Blank one char, keeping newlines so line structure survives and padding to
+    // the char's own byte width so offsets survive too.
+    let blank = |out: &mut String, ch: char| {
+        if ch == '\n' {
+            out.push('\n');
+        } else {
+            for _ in 0..ch.len_utf8() {
+                out.push(' ');
+            }
+        }
+    };
     let mut i = 0;
     while i < c.len() {
         let cur = c[i];
@@ -3018,19 +3034,26 @@ pub fn third() -> f64 { 0.42 }
 
 /// A brace, quote or semicolon inside a literal or a comment is not a
 /// delimiter. If this slips, every item boundary after it shifts.
+///
+/// The non-ASCII rows are load-bearing, not decoration: blanking a 3-byte `…` to
+/// a single space would preserve the character count while silently shifting
+/// every *byte* offset after it, which is the alignment the doc promises and
+/// that a future caller mapping a finding back to a source position would rely
+/// on. This tree's comments are full of `—` and `…`, so it is the common case.
 #[test]
 fn lexical_blanking_neutralises_delimiters_in_literals_and_comments() {
-    let out = blank_strings_and_comments(
-        r####"
+    const SRC: &str = r####"
 let a = "a } brace ; and \" quote";
 let b = r#"raw " with }"#;
 let c = '}';
 let d: &'static str = "x";
-// comment with } and ;
-/* nested /* block } */ still comment ; */
+// comment with } and ; — plus an em dash and an ellipsis …
+/* nested /* block } */ still comment ; — and another … */
+let e = "unicode } inside a string: αβγ — …";
 let real = 0.68;
-"####,
-    );
+"####;
+    let out = blank_strings_and_comments(SRC);
+
     assert_eq!(out.matches('}').count(), 0, "a delimiter survived:\n{out}");
     assert!(out.contains("0.68"), "real code was blanked:\n{out}");
     assert!(
@@ -3039,18 +3062,14 @@ let real = 0.68;
     );
     assert_eq!(
         out.lines().count(),
-        r####"
-let a = "a } brace ; and \" quote";
-let b = r#"raw " with }"#;
-let c = '}';
-let d: &'static str = "x";
-// comment with } and ;
-/* nested /* block } */ still comment ; */
-let real = 0.68;
-"####
-            .lines()
-            .count(),
+        SRC.lines().count(),
         "line structure was not preserved"
+    );
+    assert_eq!(
+        out.len(),
+        SRC.len(),
+        "byte length was not preserved, so byte offsets no longer map back to \
+         the source — a multi-byte char was blanked to fewer bytes"
     );
 }
 
