@@ -1,12 +1,13 @@
 {
   "schema": 1,
   "cycle_count": 1,
-  "last_verified_commit": "pending-slot2",
+  "last_verified_commit": "77a98e71",
   "baseline": {
     "commit": "46623417",
     "branch": "claude/huntsman-price-analysis-ewy20t",
     "cargo_build_all_targets": "clean (3m34s)",
-    "note_all_features": "Cargo.toml has NO [features] section and no [workspace]; --all-features is identical to default. The feature matrix is a single point, verified once rather than swept."
+    "note_all_features": "Cargo.toml has NO [features] section and no [workspace]; --all-features is identical to default. The feature matrix is a single point, verified once rather than swept.",
+    "note_main_drift": "main advanced to bf4d8c31 mid-cycle (PR #350 landed and DELETED src/util/entity_extractor/ml_classifier.rs; #318 cells test setup; #363 oathnet). Merged into the slot branch as 77a98e71 and re-verified: 6232 passed / 0 failed, fmt clean, clippy silent."
   },
   "phase_a_findings": {
     "tier1_clean": {
@@ -85,6 +86,15 @@
       "what": "src/util/ahmia/mod.rs:25 doc-comment asserts 'See SECURITY.md: HSE is defensive-only', which now contradicts the maintainer's edited SECURITY.md scope ('all forms (offensive and defensive)'). CLAUDE.md also still states defensive-only and cites SECURITY.md as the authority.",
       "state": "open \u2014 policy question deliberately NOT resolved unilaterally; raised with maintainer twice. Slot 1 fixed only the objective corruption, not the policy.",
       "slot": null
+    }
+  ],
+  "incidents": [
+    {
+      "cycle": 1,
+      "what": "I reported mid-verification that the merge had reverted slot-2 edits in doctor/import/export.",
+      "reality": "FALSE ALARM, my error. git reflog showed 'checkout: moving from claude/huntsman-price-analysis-ewy20t to main' \u2014 an external process had switched the working tree to main, so I was reading main's content and misattributing it to merge damage. Both slot commits were intact on the branch throughout. Nothing was lost.",
+      "how_caught": "Checked reflog + `git merge-base --is-ancestor` before taking any recovery action. Had I 'recovered' from the phantom incident I would have caused real damage.",
+      "lesson": "Verify which ref the working tree is on BEFORE concluding content was lost."
     }
   ]
 }
