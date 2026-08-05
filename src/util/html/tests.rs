@@ -1,6 +1,44 @@
 use super::*;
 
     #[test]
+    fn table_rows_extracts_trimmed_stripped_cells_per_row() {
+        // Two data rows with nested tags + whitespace, plus a `<th>` header row
+        // that yields no `<td>` cells (an empty row the caller drops).
+        let html = "<table>\
+            <tr><th>Name</th><th>No</th></tr>\
+            <tr><td> Jane <b>Doe</b> </td><td>RN123</td><td>Nurse</td></tr>\
+            <tr><td>Bob</td><td> 42 </td><td></td></tr>\
+            </table>";
+        let rows = table_rows(html);
+        assert_eq!(
+            rows,
+            vec![
+                vec![],
+                vec!["Jane Doe".to_string(), "RN123".to_string(), "Nurse".to_string()],
+                vec!["Bob".to_string(), "42".to_string(), String::new()],
+            ]
+        );
+    }
+
+    #[test]
+    fn table_rows_is_total_on_unterminated_markup() {
+        // A `<tr>` with no closing `</tr>` yields nothing (the row is incomplete);
+        // a closed row with an unterminated `<td>` drops that cell. Neither
+        // panics or loops.
+        assert!(table_rows("<tr><td>x").is_empty(), "no </tr> → no row");
+        assert_eq!(
+            table_rows("<tr><td>x</td></tr>"),
+            vec![vec!["x".to_string()]]
+        );
+        assert_eq!(
+            table_rows("<tr><td>ok</td><td>trunc"),
+            Vec::<Vec<String>>::new(),
+            "row without </tr> is not emitted"
+        );
+        assert!(table_rows("no table here").is_empty());
+    }
+
+    #[test]
     fn strips_scripts_styles_and_tags() {
         let html = "<html><script>alert(1)</script><style>.x{}</style>\
                     <body>Hello <b>world</b>!</body></html>";
