@@ -3,18 +3,13 @@
     "Execution-loop bookkeeping for automated contributors. Not consumed by the",
     "crate at build or run time; nothing in src/ or tests/ reads this file.",
     "Kept in-tree so a later cycle (or a different session) can see what has",
-    "already been tried and, more importantly, what was tried and REJECTED \u2014",
+    "already been tried and, more importantly, what was tried and REJECTED —",
     "the rejected list is the part that stops cycles rediscovering the same",
     "non-defects. See CLAUDE.md and docs/OPERATIONAL_CONSTITUTION.md."
   ],
-  "cycle_count": 3,
-  "last_verified_commit": "77e73134",
-  "verified_against": {
-    "note": "This crate declares NO [features]; `--all-features` is a no-op here. The authoritative gate is scripts/gate.sh, which spans several workflow files and includes the rustdoc-lint and MSRV passes that reconstructing from ci.yml alone drops.",
-    "toolchain": "1.97.1 (rust-toolchain.toml)",
-    "msrv": "1.88",
-    "edition": "2024"
-  },
+  "cycle_count": 4,
+  "last_verified_commit": "45fcd1f61",
+  "verified_against": "cargo test --all --locked (5953 lib + 117 api + 56 smoke + all integration suites, 0 failed), cargo clippy --all-targets --locked -- -D warnings (clean), cargo fmt --all -- --check (clean), node --check on every modified JS module. NOT verified on this host: the MSRV 1.88 pin and the aarch64-linux-android cross-build (no Android NDK present) — CI's aarch64-android job is the authority.",
   "completed_slots": [
     {
       "cycle": 0,
@@ -55,19 +50,19 @@
       "slot": 3,
       "category": "COMPLETION",
       "instruction": "Port chess_profile from the closed #305 branch (780e369c) onto current main.",
-      "status": "COMPLETE \u2014 needed ZERO source adaptation; the API it was written against (fetch_json_or_404, urlencode, confidence::HIGH_PLUSPLUS_PLUS, core::tags, the Module trait) is unchanged in main. Only registration + the README/API-reference counts the architecture ratchet enforces. Registry 170 -> 171."
+      "status": "COMPLETE — needed ZERO source adaptation; the API it was written against (fetch_json_or_404, urlencode, confidence::HIGH_PLUSPLUS_PLUS, core::tags, the Module trait) is unchanged in main. Only registration + the README/API-reference counts the architecture ratchet enforces. Registry 170 -> 171."
     },
     {
       "slot": 4,
       "category": "UPGRADE",
       "instruction": "Collapse the MSRV triplication in ci.yml to one source of truth.",
-      "status": "COMPLETE \u2014 resolved as a ratchet test (tests/doc_drift.rs::ci_msrv_job_pins_the_version_cargo_toml_declares) rather than a workflow rewrite. #350 rejected the workflow fix because dtolnay/rust-toolchain@master + a toolchain: input trades a pinned action for a floating one; the test keeps the action pinned and still makes divergence fail a required check."
+      "status": "COMPLETE — resolved as a ratchet test (tests/doc_drift.rs::ci_msrv_job_pins_the_version_cargo_toml_declares) rather than a workflow rewrite. #350 rejected the workflow fix because dtolnay/rust-toolchain@master + a toolchain: input trades a pinned action for a floating one; the test keeps the action pinned and still makes divergence fail a required check."
     },
     {
       "slot": 5,
       "category": "GAP-ANALYSIS",
       "instruction": "Decide and record the DbWriter unbounded-channel question (OD-1).",
-      "status": "COMPLETE \u2014 DECIDED: keep the channel unbounded, and disclose a pathological backlog. Bounding it would force try_send (drops events, breaking the flush() contract) or an async submit() at a sync engine call site. The queue is also already bounded in practice by DEFAULT_MAX_ENTITIES=2500 and the wall-time watchdog. The real defect was that a storage stall was INVISIBLE, so writer_loop now discloses queue depth past BACKLOG_WARN_EVENTS=1024 with hysteresis at half."
+      "status": "COMPLETE — DECIDED: keep the channel unbounded, and disclose a pathological backlog. Bounding it would force try_send (drops events, breaking the flush() contract) or an async submit() at a sync engine call site. The queue is also already bounded in practice by DEFAULT_MAX_ENTITIES=2500 and the wall-time watchdog. The real defect was that a storage stall was INVISIBLE, so writer_loop now discloses queue depth past BACKLOG_WARN_EVENTS=1024 with hysteresis at half."
     }
   ],
   "cycle_2_slots": [
@@ -150,7 +145,27 @@
     {
       "id": "OB-1",
       "summary": "`cargo tree --duplicates` reports getrandom at v0.2.17, v0.3.4 and v0.4.3. All three are transitive and not directly reachable from this crate's manifest: 0.2 via ring -> rustls -> reqwest, 0.3 via proptest -> rand_core (a dev-dependency only), 0.4 separately. Deduplicating would mean forcing versions on ring/rustls, which is a larger risk than the duplication.",
-      "action": "none \u2014 recorded so a later cycle does not re-derive it"
+      "action": "none — recorded so a later cycle does not re-derive it"
+    },
+    {
+      "id": "OB-8",
+      "observation": "CLOSES OB-6. The mid-scan six-zero module counters are fully explained and fixed in cycle 4 slot 1. Evidence chain: Scan::new seeds zeros (core/scan/mod.rs) -> run_with_ledger_inner upserts Running with them (core/engine/mod.rs:653-654) -> finalise_scan is the sole writer (core/engine/mod.rs:991-996). Both uploaded debug bundles were status:Running, which is why both showed zeros while their event streams held ~70 module_start / ~60 module_done / ~9 module_error / ~11 module_skipped.",
+      "action": "closed"
+    },
+    {
+      "id": "OB-9",
+      "observation": "Deliberate design limit recorded so it is not mistaken for an oversight: the event stream CANNOT reconstruct the engine's six counters. There is no distinct EventKind for a timeout (it arrives as a plain ModuleError), a cache replay, or a dedup; and ModuleSkipped is not disjoint from ModuleStart — gate-skips are emitted with no preceding start (Engine::emit_module_skipped, core/engine/mod.rs:477-482) while dispatched-then-opted-out modules emit one first (dispatch.rs:548). ModuleEventTally therefore reports event counts under their event names and offers no in-flight figure.",
+      "action": "documented on the type; no further work"
+    },
+    {
+      "id": "OB-10",
+      "observation": "VERIFIED NEGATIVES for the Termux web-UI crash sweep, so future cycles do not re-investigate. (a) No leaked listeners or observers: every document/window listener (ui.js initMoreSheet/initModals/initTableLabels, helpers.js initDownloads, theme.js, main.js hashchange) is attached exactly once at bootstrap in main.js:113-116, and initDownloads is additionally idempotent via window.__hseDownloadsInit. (b) graph.js attaches only to the svg and to node elements, all inside the replaced subtree, so they are collected with the DOM. (c) Auto-refresh timers cannot stack: main.js render() calls clearScanTimer/clearLiveTimer/clearEnginesTimer/clearOptsTimers before dispatching, and scan-info arms its timer only after its render completes. (d) browse.js was already capped (BROWSE_ROW_CAP) and graph.js already capped (GRAPH_MAX_NODES/GRAPH_MAX_LINKS/CORR_MAX_SPOKES); log.js was the only uncapped per-event view, fixed in slot 2.",
+      "action": "closed"
+    },
+    {
+      "id": "OB-11",
+      "observation": "STILL OPEN, not addressed this cycle. scan_info/index.js fetches ALL FOUR of scan, entities, correlations and relations on every render regardless of which tab is active (index.js:24-26), including the 8s live refresh. The full entity set carries complete evidence chains, so on a large scan this is the heaviest single thing the UI does. Slot 3 stopped it happening for a hidden tab, which removes the unattended case, but a visible scan-info tab still re-pulls everything every 8s. A per-tab fetch projection (or a lightweight counts endpoint for the header stat cards, given scan.entity_count is already in the scan record) would cut it further.",
+      "action": "open — candidate for a future cycle; needs a browser to validate, which this host does not have"
     }
   ],
   "rejected_candidates": [
@@ -168,18 +183,23 @@
       "candidate": "Eliminate unwrap()/panic!/unsafe on fallible paths",
       "reason": "Already absent. Zero `unwrap()` in non-test src/; every `panic!` is in a test file or test helper; `#![forbid(unsafe_code)]` is set in lib.rs and all 6 `unsafe` textual hits are prose explaining its avoidance. Zero TODO/FIXME/HACK; the 16 `XXX` hits are format placeholders (`UA-XXXXXXX-X`), not markers.",
       "cycle": 1
+    },
+    {
+      "id": "RC-4",
+      "candidate": "Trim src/web/css/app.css (80,564 B — the largest embedded asset) by removing unused Bootstrap-style grid classes, for the 'lightweight UI' objective.",
+      "reason": "REJECTED on measurement, not on principle. 30 of the 48 .col-{xs,sm,md,lg}-N rules are provably unreferenced across all JS, spa.html and every .rs file — but they occupy 746 B of 78,704 B (0.9%). The stylesheet is not bloated: 450 rule blocks, 453 distinct selectors, only 9% comments, for a 34-view SPA. A sub-1% saving is not worth the layout-regression risk on classes a future view may legitimately use. NOTE for future cycles: a naive 'unreferenced class' sweep over app.css yields 66 false positives — k-*, lv-*, cost-* and cv-* are all built dynamically (kindPill/costPill in helpers.js, `log-row lv-${...}` in log.js and live.js, `corr-card cv-${...}` in correlations.js) and are LIVE."
     }
   ],
   "open_defects": [
     {
       "id": "OD-1",
       "summary": "DbWriter uses mpsc::unbounded_channel (src/core/engine/writer.rs:39). If event production outpaces sqlite batch writes the queue grows without bound, on a platform whose whole point is a memory-constrained no-root Android device. Exposure INCREASED when #315 raised DEFAULT_SCAN_DEPTH 3->5, since more rounds means more events.",
-      "status": "CLOSED cycle 1 slot 5 \u2014 resolved as a disclosure, not a bound. See src/core/engine/writer.rs module docs for why unbounded is correct here and what actually bounds it."
+      "status": "CLOSED cycle 1 slot 5 — resolved as a disclosure, not a bound. See src/core/engine/writer.rs module docs for why unbounded is correct here and what actually bounds it."
     },
     {
       "id": "OD-2",
       "summary": "Fuzz coverage is one target (fuzz/fuzz_targets/cert_der.rs) for a tool whose ingest path parses fully untrusted text: crawled pages, breach dumps, imported files.",
-      "status": "CLOSED cycle 1 slot 2 \u2014 added fuzz/fuzz_targets/ingest_text.rs over util::entity_extractor::fuzz_entry_extract_text, registered in fuzz/Cargo.toml and fuzz.yml (job renamed, push path filter widened to entity_extractor and str_util). Backed by a stable-toolchain test so the harness cannot rot between Monday schedules."
+      "status": "CLOSED cycle 1 slot 2 — added fuzz/fuzz_targets/ingest_text.rs over util::entity_extractor::fuzz_entry_extract_text, registered in fuzz/Cargo.toml and fuzz.yml (job renamed, push path filter widened to entity_extractor and str_util). Backed by a stable-toolchain test so the harness cannot rot between Monday schedules."
     },
     {
       "id": "OD-3",
@@ -189,12 +209,44 @@
     {
       "id": "OD-4",
       "summary": "ci.yml hardcodes MSRV 1.88 in three places beside Cargo.toml's rust-version. Flagged as latent risk in #350 and left for a conscious maintainer decision.",
-      "status": "CLOSED cycle 1 slot 4 \u2014 guarded by tests/doc_drift.rs::ci_msrv_job_pins_the_version_cargo_toml_declares. Cargo.toml rust-version is now the single source of truth in the sense that matters: divergence from any of the three ci.yml literals fails a required check, without unpinning the action."
+      "status": "CLOSED cycle 1 slot 4 — guarded by tests/doc_drift.rs::ci_msrv_job_pins_the_version_cargo_toml_declares. Cargo.toml rust-version is now the single source of truth in the sense that matters: divergence from any of the three ci.yml literals fails a required check, without unpinning the action."
     },
     {
       "id": "OD-5",
       "summary": "PR #317 carries 4 modules absent from main (builtwith, fofa, proxycurl, key_discovery) behind 11 conflicts and ~20k lines of two-way divergence, with CI never having run on it.",
       "status": "open, decomposition plan recorded on the PR"
+    }
+  ],
+  "cycle_4_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "instruction": "Establish why the dossier/debug bundle prints six zero module counters mid-scan, then fix it without fabricating numbers.",
+      "outcome": "DONE (d4238fa9b). Cause traced end to end: Scan::new seeds modules_* to 0; run_with_ledger_inner (core/engine/mod.rs:653) upserts the Running row with those zeros; the ONLY write is finalise_scan (core/engine/mod.rs:991-996) at scan end; nothing updates the row in between. Fix is disclosure + the number that does exist: ScanStatus::is_terminal(), a NOT-YET-FINAL caveat appended by module_accounting_line() on non-terminal scans (inherited by both renderers from the one single-sourced sentence), and core::event::ModuleEventTally rendered by render_full as an 'observed :' line on the non-terminal path only. 7 tests."
+    },
+    {
+      "slot": 2,
+      "category": "HARDENING",
+      "instruction": "Bound the web scan-log DOM so a long scan cannot exhaust a Termux browser tab, without silently truncating what the operator can save.",
+      "outcome": "DONE (e5899aac9). appendLog created one permanent node per event and removed nothing. LOG_MAX_ROWS=1200, oldest-first, evicted synchronously inside appendLog (a deferred trim would still let the full list exist for a frame during the synchronous history render; the peak is the problem). Disclosed three ways: the By-type breakdown counts events not rows so its totals stay complete, it names the drop and points at Download, and the 'Save shown' header warns the file starts mid-scan."
+    },
+    {
+      "slot": 3,
+      "category": "HARDENING",
+      "instruction": "Stop the three timer-driven views doing full network + render work while nobody is looking at them.",
+      "outcome": "DONE (5f6475bb3). scan-info (8s, four requests + full view rebuild), Live monitor (8s), Engines (30s server-side liveness sweep) all now consult a shared timers.js pageHidden(). Schedule is kept rather than torn down: a hidden tick fires, does nothing, re-arms — chosen over a visibilitychange listener specifically because scan-info re-renders every 8s and would accumulate one listener per render."
+    },
+    {
+      "slot": 4,
+      "category": "UPGRADE",
+      "instruction": "Make the Graph tab usable during a running scan — the 8s refresh was discarding the operator's viewport.",
+      "outcome": "DONE (45fcd1f61). `const view` was declared inside buildGraph, so every 8s rebuild snapped the canvas to origin at scale 1 and the graph could not be panned or zoomed for the whole duration of a scan. Hoisted to module scope, re-applied by buildGraph's closing applyView(), reset per-scan via viewScanId so a different scan starts centred. Node positions deliberately not preserved (layoutConcentric is deterministic; a growing node set legitimately relayouts) and the comment says so."
+    },
+    {
+      "slot": 5,
+      "category": "GAP-ANALYSIS",
+      "instruction": "Record cycle 4, its verified negatives and its one measured rejection, so the next cycle does not re-derive them.",
+      "outcome": "DONE (this entry)."
     }
   ]
 }
