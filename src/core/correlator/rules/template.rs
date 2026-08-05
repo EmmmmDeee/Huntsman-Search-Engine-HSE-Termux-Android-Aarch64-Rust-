@@ -16,7 +16,7 @@
 use std::collections::BTreeSet;
 
 use super::*;
-use crate::core::relation::connection_templates;
+use crate::core::relation::{IDENTITY_LINK_MIN_CONF, connection_templates};
 
 /// AU-064 — Generalized pathway template.
 pub(in crate::core::correlator) fn rule_au_064_generalized_pathway_template(
@@ -29,7 +29,12 @@ pub(in crate::core::correlator) fn rule_au_064_generalized_pathway_template(
     const MAX_HOPS: usize = 4;
 
     let mut out = Vec::new();
-    for ct in connection_templates(entities, relations, MAX_HOPS) {
+    // IDENTITY_LINK_MIN_CONF: repeating a weak, damped-confidence route across
+    // two pairs does not make it a proven attribution pattern — the floor
+    // that keeps AU-060's transitive closure off same-surname-stranger kin
+    // hops applies here too, so connection_templates only generalises over
+    // routes trustworthy enough to repeat.
+    for ct in connection_templates(entities, relations, MAX_HOPS, IDENTITY_LINK_MIN_CONF) {
         if ct.pairs.len() < 2 {
             continue; // a single instance is not yet a generalised pattern
         }
@@ -73,6 +78,81 @@ mod tests {
 
     fn rel(from: &Entity, to: &Entity, kind: RelationKind) -> Relation {
         Relation::new(from.uid.clone(), to.uid.clone(), kind, 0.8, "s")
+    }
+
+    fn rel_conf(from: &Entity, to: &Entity, kind: RelationKind, conf: f64) -> Relation {
+        Relation::new(from.uid.clone(), to.uid.clone(), kind, conf, "s")
+    }
+
+    #[test]
+    fn au064_silent_when_the_repeated_route_is_built_from_damped_edges() {
+        // The same route (Email →belongs_to_domain→ Domain →registered_by→
+        // Person) repeats across two pairs, but every hop is a DAMPED (0.40)
+        // edge — the same magnitude `derive_kinship` produces for a
+        // same-surname pair. Before IDENTITY_LINK_MIN_CONF applied to
+        // connection_templates, repeating this weak route twice was enough to
+        // call it a "reusable attribution pattern" and assert it as proven —
+        // but a weak coincidence repeated twice is still weak, not strong (see
+        // this rule's module doc). With the floor, `identity_paths` still
+        // finds both paths (it does not itself drop low-confidence edges),
+        // but connection_templates excludes any path below the floor from
+        // being grouped, so the template accumulates ZERO pairs and AU-064
+        // never fires.
+        let e1 = id(EntityKind::Email, "a@x.com");
+        let d1 = id(EntityKind::Domain, "x.com");
+        let p1 = id(EntityKind::Person, "Alice");
+        let e2 = id(EntityKind::Email, "b@y.com");
+        let d2 = id(EntityKind::Domain, "y.com");
+        let p2 = id(EntityKind::Person, "Bob");
+        let rels = [
+            rel_conf(&e1, &d1, RelationKind::BelongsToDomain, 0.40),
+            rel_conf(&d1, &p1, RelationKind::RegisteredBy, 0.40),
+            rel_conf(&e2, &d2, RelationKind::BelongsToDomain, 0.40),
+            rel_conf(&d2, &p2, RelationKind::RegisteredBy, 0.40),
+        ];
+        assert!(
+            rule_au_064_generalized_pathway_template(
+                &RuleContext::new(&[e1, d1, p1, e2, d2, p2]),
+                &rels,
+                "s",
+                0
+            )
+            .is_empty(),
+            "a route built entirely from sub-floor damped edges must not \
+             generalise into a proven attribution pattern, however many times \
+             it repeats"
+        );
+    }
+
+    #[test]
+    fn au064_still_fires_when_the_repeated_route_clears_the_floor() {
+        // The same shape, but every hop is a legitimate 0.60 (>=
+        // IDENTITY_LINK_MIN_CONF) — a genuinely repeated, trustworthy route,
+        // which AU-064 must still generalise.
+        let e1 = id(EntityKind::Email, "a@x.com");
+        let d1 = id(EntityKind::Domain, "x.com");
+        let p1 = id(EntityKind::Person, "Alice");
+        let e2 = id(EntityKind::Email, "b@y.com");
+        let d2 = id(EntityKind::Domain, "y.com");
+        let p2 = id(EntityKind::Person, "Bob");
+        let rels = [
+            rel_conf(&e1, &d1, RelationKind::BelongsToDomain, 0.60),
+            rel_conf(&d1, &p1, RelationKind::RegisteredBy, 0.60),
+            rel_conf(&e2, &d2, RelationKind::BelongsToDomain, 0.60),
+            rel_conf(&d2, &p2, RelationKind::RegisteredBy, 0.60),
+        ];
+        assert_eq!(
+            rule_au_064_generalized_pathway_template(
+                &RuleContext::new(&[e1, d1, p1, e2, d2, p2]),
+                &rels,
+                "s",
+                0
+            )
+            .len(),
+            1,
+            "a route whose edges all clear the floor must still generalise \
+             when repeated"
+        );
     }
 
     #[test]

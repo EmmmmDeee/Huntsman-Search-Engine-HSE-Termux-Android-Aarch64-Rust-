@@ -12,7 +12,7 @@ pub(in crate::core::correlator) fn rule_au_002_identity_cluster(
     let entities = context.entities();
     // A confidence floor on top of the upstream candidate-exclusion: a genuine
     // identity cluster is built from corroborated entities, not weak guesses.
-    const MIN_CONF: f64 = 0.50;
+    const MIN_CONF: f64 = crate::core::relation::IDENTITY_LINK_MIN_CONF;
     // One person does not own dozens of distinct emails or phones — that many
     // is the signature of a breach dump spanning many people. Refuse to fuse it
     // into a CRITICAL "one identity" correlation (the exact failure that fused

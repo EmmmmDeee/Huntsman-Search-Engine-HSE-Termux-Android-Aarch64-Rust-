@@ -34,7 +34,7 @@ pub(in crate::core::correlator) fn rule_au_067_resolved_identity_cluster(
     let entities = context.entities();
     const MAX_HOPS: usize = 4;
     const MIN_MEMBERS: usize = 3;
-    const MIN_CONF: f64 = 0.50;
+    const MIN_CONF: f64 = crate::core::relation::IDENTITY_LINK_MIN_CONF;
 
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
 

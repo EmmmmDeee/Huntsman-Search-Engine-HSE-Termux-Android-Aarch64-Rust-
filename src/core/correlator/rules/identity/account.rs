@@ -1251,7 +1251,7 @@ pub(in crate::core::correlator) fn rule_au_080_recurring_cooccurrence_link(
     // both endpoints on a confidence floor, then rank what survives and bound the
     // O(pairs) tail below so the few hub-level pairings that are the actual
     // signal are not buried.
-    const MIN_CONF: f64 = 0.50;
+    const MIN_CONF: f64 = crate::core::relation::IDENTITY_LINK_MIN_CONF;
     const MAX_PAIRS: usize = 12;
     // Distinct entities named in the rolled-up tail edge — bounded so the summary
     // cannot itself become a giant hyperedge.

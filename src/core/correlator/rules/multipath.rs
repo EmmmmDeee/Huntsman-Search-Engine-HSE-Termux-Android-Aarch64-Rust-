@@ -17,7 +17,8 @@ use std::collections::{BTreeSet, HashMap};
 
 use super::*;
 use crate::core::relation::{
-    IDENTITY_PAIR_PROBE_CAP, disjoint_pathways_in, identity_uids, sorted_confined_adjacency,
+    IDENTITY_LINK_MIN_CONF, IDENTITY_PAIR_PROBE_CAP, disjoint_pathways_in, identity_uids,
+    sorted_confined_adjacency,
 };
 
 /// One identity pair whose connection is corroborated by **≥2 edge-disjoint,
@@ -99,7 +100,13 @@ fn multipath_corroborated_links_capped(
                 break 'outer;
             }
             probes += 1;
-            let pathways = disjoint_pathways_in(&adj, a, b, MAX_HOPS, MAX_PATHS);
+            // IDENTITY_LINK_MIN_CONF excludes the exact class of damped,
+            // low-confidence edge (e.g. a same-surname kinship guess) AU-060's
+            // own weakest-link floor was added to keep out of transitive
+            // closure — without it here, "multi-pathway corroboration" could
+            // be built entirely from routes AU-060 itself would refuse.
+            let pathways =
+                disjoint_pathways_in(&adj, a, b, MAX_HOPS, MAX_PATHS, IDENTITY_LINK_MIN_CONF);
             if pathways.len() < 2 {
                 continue; // a single route is not multi-pathway corroboration
             }
@@ -204,6 +211,67 @@ mod tests {
 
     fn rel(from: &Entity, to: &Entity, kind: RelationKind) -> Relation {
         Relation::new(from.uid.clone(), to.uid.clone(), kind, 0.8, "s")
+    }
+
+    fn rel_conf(from: &Entity, to: &Entity, kind: RelationKind, conf: f64) -> Relation {
+        Relation::new(from.uid.clone(), to.uid.clone(), kind, conf, "s")
+    }
+
+    #[test]
+    fn au062_excludes_a_pathway_built_from_a_damped_kinship_edge() {
+        // Two nominally edge-disjoint routes a→b: one via a strong (0.8) domain
+        // link, one via a DAMPED (0.40) edge — the same magnitude
+        // `derive_kinship` produces for a same-surname pair (`0.8 * 0.5`). Before
+        // IDENTITY_LINK_MIN_CONF applied to disjoint_pathways_in, both routes
+        // counted toward "≥2 independent pathways", so this pair could clear
+        // AU-062's corroboration bar on the strength of a link AU-060 itself
+        // refuses to trust (au060_suppresses_chain_through_a_damped_lead_edge,
+        // transitive.rs). With the floor, the damped edge is excluded from the
+        // adjacency before the search even starts, so only the genuine domain
+        // route survives — one pathway, not enough for multi-pathway
+        // corroboration.
+        let a = id(EntityKind::Email, "a@x.com");
+        let b = id(EntityKind::Username, "bob");
+        let d = sourced(EntityKind::Domain, "x.com", "dns_intel");
+        let o = sourced(EntityKind::Organisation, "Acme Pty", "opencorporates");
+        let rels = [
+            rel(&a, &d, RelationKind::BelongsToDomain),
+            rel(&d, &b, RelationKind::DerivedFrom),
+            rel_conf(&a, &o, RelationKind::RegisteredBy, 0.40),
+            rel(&o, &b, RelationKind::DerivedFrom),
+        ];
+        let ents = [a, b, d, o];
+        let context = RuleContext::new(&ents);
+        assert!(
+            rule_au_062_multipath_corroboration(&context, &rels, "s", 0).is_empty(),
+            "a pair corroborated only via a sub-floor damped edge must not fire"
+        );
+    }
+
+    #[test]
+    fn au062_still_fires_when_the_second_pathway_clears_the_floor() {
+        // The same shape, but the second route's edge is a legitimate mid
+        // confidence (0.60, ≥ IDENTITY_LINK_MIN_CONF) rather than a damped lead —
+        // the floor gates only sub-floor edges, not honest structural ones, so
+        // this pair still corroborates across two genuinely independent,
+        // orthogonal routes.
+        let a = id(EntityKind::Email, "a@x.com");
+        let b = id(EntityKind::Username, "bob");
+        let d = sourced(EntityKind::Domain, "x.com", "dns_intel");
+        let o = sourced(EntityKind::Organisation, "Acme Pty", "opencorporates");
+        let rels = [
+            rel(&a, &d, RelationKind::BelongsToDomain),
+            rel(&d, &b, RelationKind::DerivedFrom),
+            rel_conf(&a, &o, RelationKind::RegisteredBy, 0.60),
+            rel(&o, &b, RelationKind::DerivedFrom),
+        ];
+        let ents = [a, b, d, o];
+        let context = RuleContext::new(&ents);
+        assert_eq!(
+            rule_au_062_multipath_corroboration(&context, &rels, "s", 0).len(),
+            1,
+            "two routes whose edges both clear the floor must still corroborate"
+        );
     }
 
     #[test]

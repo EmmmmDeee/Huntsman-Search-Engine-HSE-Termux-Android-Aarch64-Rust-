@@ -2596,7 +2596,12 @@ fn learn_cross_scan_pathway_templates(
                 .into_iter()
                 .map(|l| (l.a_uid, l.b_uid))
                 .collect();
-        for ct in crate::core::relation::connection_templates(&ents, &rels, 4) {
+        for ct in crate::core::relation::connection_templates(
+            &ents,
+            &rels,
+            4,
+            crate::core::relation::IDENTITY_LINK_MIN_CONF,
+        ) {
             let prior = store.pathway_template_count(&ct.template).unwrap_or(0);
             if prior >= 1 {
                 let mut uids: std::collections::BTreeSet<String> =

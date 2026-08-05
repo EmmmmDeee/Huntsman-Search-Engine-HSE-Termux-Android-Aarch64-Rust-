@@ -37,7 +37,7 @@ pub(in crate::core::correlator) fn rule_au_070_connection_broker(
     // Only links at or above the Probable tier may *bind* identities — the same
     // floor AU-067 resolves under. Without it a single weak edge makes a common-name
     // node look like the linchpin of dozens of unrelated namesakes.
-    const MIN_CONF: f64 = 0.50;
+    const MIN_CONF: f64 = crate::core::relation::IDENTITY_LINK_MIN_CONF;
 
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
     let ids = identity_uids(entities);
