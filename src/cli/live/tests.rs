@@ -169,3 +169,23 @@ use super::*;
             .contains("see_know")
         );
     }
+
+    #[test]
+    fn render_event_scan_complete_reflects_terminal_status() {
+        use crate::core::scan::ScanStatus;
+        let ev = |status| EventKind::ScanComplete {
+            scan_id: "s".into(),
+            entity_count: 5,
+            status,
+        };
+        // A clean finish keeps the success line; an aborted or failed sweep must
+        // NOT read as success in this fully-unredacted live view (same defect
+        // class fixed for events.log — the streaming renderer was missed).
+        assert!(render_event(&ev(ScanStatus::Complete)).contains("scan complete"));
+        let aborted = render_event(&ev(ScanStatus::Aborted));
+        assert!(aborted.contains("aborted"), "got: {aborted}");
+        assert!(!aborted.contains("scan complete"));
+        let failed = render_event(&ev(ScanStatus::Failed));
+        assert!(failed.contains("failed"), "got: {failed}");
+        assert!(!failed.contains("scan complete"));
+    }

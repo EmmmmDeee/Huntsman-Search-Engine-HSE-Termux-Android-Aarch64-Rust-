@@ -280,12 +280,25 @@ fn render_event(kind: &crate::core::event::EventKind) -> String {
                 String::new()
             }
         }
-        E::ScanComplete { entity_count, .. } => {
-            format!(
+        E::ScanComplete {
+            entity_count,
+            status,
+            ..
+        } => match status {
+            // Mirror `EventKind::log_summary` (core/event/mod.rs): a cancelled or
+            // failed iteration still emits `ScanComplete`, so this
+            // fully-unredacted live view must state what actually happened
+            // instead of printing the success line for every terminal state.
+            crate::core::scan::ScanStatus::Aborted => format!(
+                "▪ scan aborted — stopped early — {entity_count} entit{}",
+                plural(*entity_count)
+            ),
+            crate::core::scan::ScanStatus::Failed => "▪ scan failed".to_string(),
+            _ => format!(
                 "▪ scan complete — {entity_count} entit{}",
                 plural(*entity_count)
-            )
-        }
+            ),
+        },
         E::LiveStop { reason, .. } => format!("◆ live stop — {reason}"),
     }
 }
