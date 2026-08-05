@@ -89,11 +89,34 @@ export async function renderLog(host, scan){
   if (running){
     status.className = 'label label-info';
     status.innerHTML = '<i class="glyphicon glyphicon-record"></i>&nbsp;live';
+    // When the tailed scan finishes DURING the stream, its terminal
+    // `scan_complete` event arrives here. The one-shot `!running` block further
+    // down only runs for a scan already finished at render time, so without
+    // this the pill would sit 'live'/'reconnecting…' forever. Reflect the true
+    // terminal state (carried on the event since the ScanComplete status fix)
+    // and close the stream — `scan_complete` is the last event, so closing
+    // after it drops nothing.
+    const onTerminal = ev => {
+      const st = $('#log-status'); if (!st) return;
+      const term = ev.status || 'complete';
+      st.className = term === 'failed' ? 'label label-danger'
+                   : term === 'aborted' ? 'label label-warning'
+                   : 'label label-default';
+      st.textContent = term === 'failed' ? 'failed'
+                     : term === 'aborted' ? 'aborted'
+                     : 'complete';
+      closeSse();
+    };
     openSse(scan.id, ev=>{
       if (bufferingMode) buffered.push(ev);
       else appendLog(ev);
+      if (ev && ev.type === 'scan_complete') onTerminal(ev);
     }, (state, es)=>{
       const st = $('#log-status'); if (!st) return;
+      // Once the scan has finished we close the stream and set a terminal pill;
+      // ignore the reconnect/close state flaps that closing itself triggers so
+      // they can't overwrite it (closeSse nulls S.sse).
+      if (!S.sse) return;
       if (state === 'open'){
         st.className = 'label label-info';
         st.innerHTML = '<i class="glyphicon glyphicon-record"></i>&nbsp;live';
