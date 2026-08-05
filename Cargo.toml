@@ -143,8 +143,6 @@ flate2             = "1"
 csv                = "1"
 # Pure-Rust image processing for OCR preprocessing (resize, denoise).
 image              = "0.25"
-# Entity extraction: lazy regex initialization for pattern matching.
-lazy_static        = "1.4"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
