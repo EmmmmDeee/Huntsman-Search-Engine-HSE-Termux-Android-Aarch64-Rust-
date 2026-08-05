@@ -202,6 +202,21 @@
       "id": "OD-6",
       "summary": "util::atomic_file::create_dir_private previously returned Ok(()) for a pre-existing directory it could not chmod to 0700, because DirBuilder::recursive(true) succeeds on an existing dir and the repairing set_permissions was discarded. Its own doc claimed a 0700 guarantee it did not deliver, and key_vault.db / key_pool.json live beneath that directory.",
       "status": "CLOSED cycle 2 slot 1 \u2014 the achieved mode is now verified and a failure is disclosed at warn!, with the Ok contract deliberately unchanged so the infallible path accessors still return a usable PathBuf."
+    },
+    {
+      "id": "redact-uid-leaks-plaintext-hash",
+      "category": "HARDENING / privacy",
+      "severity": "high \u2014 defeats the stated purpose of `hse export --redact`",
+      "evidence_level": "L4 \u2014 reproduced in-tree; password redacted to '[redacted]' while uid stayed a2beb73b\u2026 = SHA-256('hunter2'); coordinates coarsened -27.470125,153.021072 -> -27.5,153.0 while uid still fingerprinted the full-precision original",
+      "detail": "Entity.uid is hex(SHA-256(kind + ':' + normalise(value))) (core/entity/mod.rs:468). redact_credential and redact_coordinates (util/redact.rs) rewrite value/raw_value/evidence but never touch uid, and api/scan_export/mod.rs:156 emits uid as a CSV column. A --redact export therefore ships an unsalted hash of the exact plaintext beside the redacted value. For coordinates this is practically reversible: coarsening to 1 d.p. bounds the original to a 0.1x0.1 degree box, ~1e10 candidates at 6 d.p. against an unsalted SHA-256.",
+      "why_not_fixed_this_cycle": "BLOCKED \u2014 larger than scoped, and every obvious fix breaks something else. app/export/renderers.rs:317 builds a HashMap keyed by entity uid to label relation endpoints, and the relations come from store.relations_for_scan() carrying the ORIGINAL uids. So (a) any change to entity.uid breaks the relation->entity join in the GEXF/graph export, and (b) naive recompute-from-redacted-value collapses every redacted credential of a kind to one uid, so that HashMap keeps only one entity and relations resolve to the wrong label. A correct fix must return an old_uid->new_uid mapping from redact_entities and remap relations' from_uid/to_uid in lockstep at all three renderer call sites \u2014 an API change to the redaction pass, not a local edit.",
+      "options_considered": [
+        "recompute from redacted value (collapses credentials; breaks relation join)",
+        "per-export salted uid (preserves distinctness; breaks relation join harder)",
+        "split by kind (same join problem)",
+        "leave and document (leaves coordinates recoverable)"
+      ],
+      "status": "open \u2014 needs a decision on the redaction API before implementation"
     }
   ],
   "cycle_2_slots": [
@@ -243,7 +258,7 @@
     "method_finding": "Static/grep/directory-proximity heuristics produced 3 false positives on this crate and 0 true defects. Both real defects came from RUNNING THE BINARY. Prefer execution-driven probing in later cycles.",
     "slot_1": "DONE \u2014 DEBUG \u2014 ingest CSV emitted non-RFC-4180 backslash escapes and bypassed the formula-injection guard (69edfcb01)",
     "slot_2": "DONE \u2014 HARDENING \u2014 ingest --min-confidence nan/inf/out-of-range silently discarded the whole result set (3c5702142)",
-    "slot_3": "NOT STARTED \u2014 UPGRADE \u2014 src/util/redact.rs:117 Entity.uid derived from value; redaction mutates value without recomputing uid",
+    "slot_3": "BLOCKED \u2014 UPGRADE \u2014 redact leaves a plaintext-derived uid in --redact exports. Defect PROVEN (see open_defects/redact-uid-leaks-plaintext-hash) but the fix requires remapping relation endpoints through redaction, which is an API change. Escalated to the operator; not attempted.",
     "slot_4": "NOT STARTED \u2014 GAP-ANALYSIS \u2014 src/lib.rs:21 cites ten docs/*.md files that do not exist",
     "slot_5": "NOT STARTED \u2014 COMPLETION \u2014 src/app/cells/mod.rs:400 `hse cells clear` never VACUUMs"
   }
