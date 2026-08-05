@@ -5,17 +5,18 @@
     "Kept in-tree so a later cycle (or a different session) can see what has",
     "already been tried and, more importantly, what was tried and REJECTED —",
     "the rejected list is the part that stops cycles rediscovering the same",
-    "non-defects. See CLAUDE.md and docs/OPERATIONAL_CONSTITUTION.md."
+    "non-defects. See CLAUDE.md and docs/OPERATIONAL_CONSTITUTION.md.",
+    "cycle 9 sweep (wf_e136c553): 5 dims x adversarial verify. REFUTED as not-a-defect (do not re-open): AbortOnDrop doc claim (engine/mod.rs:158 — the doc is actually true); enrich_geospatial catch_unwind is not over-guarding worth removing; diagnostics ModuleLedger HashMap->BTreeMap (failure scenario unachievable); /scans/{id}/stealer-rows 'unbounded' (deliberate, documented, tested design); scan-log DOM O(n) (already capped at LOG_MAX_ROWS=1200, committed design). DEFERRED confirmed findings for a future cycle (recorded, not lost): F2 latest_completed_scan skips Aborted scans (storage/mod.rs:513 — `hse export/diff latest` jumps past an aborted scan); F3 live/radar session cancel handle shared with per-iteration wall-time watchdog (core/live/mod.rs:433); F4 scans.js dashboard has no `aborted` bucket + computes an unrendered `failed` count; F18 SPA discards /entities pagination envelope so Browse understates a truncated large scan (index.js:44); F20 dossier upload reads whole file to a JS string with no client-side size check (new_scan.js:445); F22 Scan-Log SSE never resolves the pill to 'complete' when the tailed scan finishes (log.js:89). These are the top of cycle-10's pool; F2 pairs naturally with cycle-9 slot 1 (both terminal-state correctness)."
   ],
-  "cycle_count": 6,
-  "last_verified_commit": "5e1614053",
+  "cycle_count": 9,
+  "last_verified_commit": "18e3ace99",
   "verified_against": {
-    "note": "This crate declares NO [features]; `--all-features` is a no-op here. The authoritative gate is scripts/gate.sh, which spans several workflow files and includes the rustdoc-lint and MSRV passes that reconstructing from ci.yml alone drops.",
-    "toolchain": "1.97.1 (rust-toolchain.toml)",
-    "msrv": "1.88 — NOT locally verifiable (no MSRV toolchain installed on this host); CI's MSRV job is the authority",
-    "cross_build": "aarch64-linux-android — NOT locally verifiable (no Android NDK on this host); CI's aarch64-android job is the authority",
-    "local_result": "cargo test --all --locked = 5990 lib + 117 api + 56 smoke + all other integration suites, 0 failed; clippy --all-targets --locked -- -D warnings clean; fmt clean; node --check clean on every modified JS file",
-    "ci_result_prior_head": "All 6 GitHub Actions checks (clippy, MSRV 1.88, aarch64-linux-android Termux build, install.sh syntax, Check & test Linux x86_64, rust-clippy analyzing) passed on c532272f0 (the main-merge head, before this cycle's 4 commits) — first green CI run since Actions stopped firing for this branch at 4950b7369. This cycle's 4 commits (a957585c6..5e1614053) are pushed together with this state.json update and still need their own CI pass."
+    "note": "Cycle 9 verified locally on this host; the aarch64-android cross-build and MSRV 1.88 are CI's authority (no Android NDK here) and were GREEN on PR #372 head e579f01cb (the cycle-8 correlator-floor commit) per get_check_runs.",
+    "toolchain": "rustc 1.97.1",
+    "msrv": "1.88 (CI job green on e579f01cb)",
+    "cross_build": "aarch64-linux-android CI job green on e579f01cb; not reproducible on this host (no NDK)",
+    "local_result": "cargo test --all --locked: 6015 lib + all integration binaries + doctests, 0 failed (cycle 9 head 18e3ace99)",
+    "ci_result_prior_head": "PR #372 head e579f01cb: all 7 checks success (Check&test, MSRV 1.88, aarch64-android build, install.sh, clippy x2, bench-smoke)."
   },
   "completed_slots": [
     {
@@ -361,6 +362,60 @@
       "category": "GAP-ANALYSIS",
       "instruction": "Record cycle 6 in .agent/state.json now that the branches are merged into one spine; retire the parallel-track bookkeeping.",
       "outcome": "DONE (this entry). See retirement note below."
+    }
+  ],
+  "cycle_7_slots": [
+    {
+      "slot": 2,
+      "category": "HARDENING",
+      "instruction": "Pause Settings' three background-job pollers when the page is hidden.",
+      "outcome": "DONE (e4d3dc02f). Landed on PR #372 (post-#365)."
+    },
+    {
+      "slot": 3,
+      "category": "UPGRADE",
+      "instruction": "Remove the node graph; use a basic 2D flow-chart entity map (explicit user instruction).",
+      "outcome": "DONE (fe25ae73a). scan_info/graph.js rewritten to a deterministic generation-row flowchart (layoutFlowchart), uniform box nodes, derived_from lineage arrows, drag machinery removed, pan/zoom kept. CSS swatch square. Pinned by embedded_spa_graph_is_a_flowchart_not_a_node_graph. Note: earlier same-session cycles also removed vendored D3 (77e73134) and made the graph a concentric SVG before this flowchart replaced it."
+    }
+  ],
+  "cycle_8_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "instruction": "Bound the identity-path correlator rules by a weak-edge confidence floor (AU-062/063/064 could confirm a finding through a damped sub-0.50 edge, the class AU-060 was patched to exclude).",
+      "outcome": "DONE (e579f01cb). Added core::relation::graph::IDENTITY_LINK_MIN_CONF=0.50, threaded a min_confidence param through disjoint_pathways_in (filter-before-search) and connection_templates; consolidated 10 duplicated MIN_CONF consts. Corrected a misnomer: 0.50 is confidence::MEDIUM, NOT Classification::PROBABLE_MIN (0.40). 6 regression tests + 2 proptests over a new wide-confidence graph strategy (existing graph() only makes >=0.5 edges). CI green on this head incl. aarch64 + MSRV."
+    }
+  ],
+  "cycle_9_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "instruction": "Terminal ScanComplete event must carry the scan's status so an aborted/failed scan's log does not render as a green success.",
+      "outcome": "DONE (79f4d940a). ROOT CAUSE of the device telemetry's `status: Aborted` vs log `✔ scan complete · 325 entities` contradiction: finalise_scan sets the status then emits ScanComplete unconditionally 33 lines later (not a race — same fn); the variant had no status field so log_summary/mapEvent/export-timeline all hard-coded the checkmark. The downloaded events.log is the CLIENT-SAFE artifact, so an aborted/failed scan handed a client an all-clear. Added status: ScanStatus (typed enum, not string) with #[serde(default)]->Complete for pre-field rows; branch complete/aborted/failed in Rust log_summary + web log.js mapEvent. 3 new event tests; SPA parity guard still passes."
+    },
+    {
+      "slot": 2,
+      "category": "GAP-ANALYSIS",
+      "instruction": "Run the dossier-import correlator under the scan path's panic guard (import ran Correlator::run unguarded while both scan paths wrap it).",
+      "outcome": "DONE (3259e8851). Promoted engine::guarded_finalise_correlation to pub(crate) guarded_correlation_pass (one canonical guarded entry for the full engine) and routed both finalise and import through it. A rule panicking on adversarial imported data now degrades to 'no correlations' instead of unwinding the import. Existing panicking-closure unit test covers both callers."
+    },
+    {
+      "slot": 3,
+      "category": "HARDENING",
+      "instruction": "Make text_mentions_ip panic-free on a non-ASCII needle (byte cursor from=i+1 could land mid-UTF-8-char; text[from..] then panics).",
+      "outcome": "DONE (da43fb7f0). Panic reproduced end-to-end: text_mentions_ip(\"aé1\", \"é\"). A real IP needle is ASCII, so the fn now enforces !ip.is_ascii()->false up front (also what makes the cursor advance sound), and the loop slices with text.get(from..) + break-on-None as defence in depth. Regression test covers the repro + v4/v6 non-ASCII + ASCII-unchanged."
+    },
+    {
+      "slot": 4,
+      "category": "UPGRADE",
+      "instruction": "PoolData::services HashMap->BTreeMap for deterministic `hse keys list` block order and byte-reproducible `keys export` JSON.",
+      "outcome": "DONE (306370a56). Drop-in for every op used on the field; makes sorted order the type's guarantee. KeyPool::indices stays HashMap (internal round-robin state, never iterated for output). Test asserts out-of-order inserts come back sorted in snapshot + export, and two exports are byte-identical. NOTE: the sibling finding to change diagnostics ModuleLedger's HashMaps was REFUTED by the sweep verifier (not-a-defect) and deliberately NOT done."
+    },
+    {
+      "slot": 5,
+      "category": "COMPLETION",
+      "instruction": "Cover six untested correlator severity-escalation branches: AU-030, AU-062, AU-064, AU-067, AU-069, AU-070.",
+      "outcome": "DONE (18e3ace99). 8 tests, each asserting out.len()==1 AND the escalated Severity so the fixture provably reaches the branch. Corrected two sweep-finder inaccuracies: AU-030 counts distinct corroborating source NAMES (not families/entity-count); AU-069's 0.75 is the base Medium arm (High@>=0.85 already covered by au069_fires_on_an_end_to_end_strong_route; no Critical rung). Test-only, no production change."
     }
   ]
 }
