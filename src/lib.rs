@@ -18,7 +18,7 @@
 //!     Termux aarch64 (no root), Linux, and CI with no AI or network-inference
 //!     available. AI is a development-time accelerator only. Enforced by the
 //!     `runtime_carries_no_ai_ml_inference_dependency` guard in
-//!     `tests/architecture.rs`; full charter in `docs/RUNTIME_INDEPENDENCE.md`.
+//!     `tests/architecture.rs`, which carries the full rationale.
 
 #![forbid(unsafe_code)]
 // HSE is an *application* crate: its library is read by the maintainer with

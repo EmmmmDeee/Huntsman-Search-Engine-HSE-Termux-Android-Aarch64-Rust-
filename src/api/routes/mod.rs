@@ -123,9 +123,8 @@ const SPA_HTML: &str = include_str!("../../web/spa.html");
 /// replacements (`src/web/js/ui.js`) for the interactive behaviours those
 /// libraries provided (navbar collapse, the About modal, sortable tables,
 /// toast/confirm/prompt dialogs) — see `ui.js`'s own doc comment. Dropping the
-/// vendored alertify build also closed a standing licensing question noted in
-/// `docs/PROBLEM_TREE.md` §7 (Deferred — Privacy/Legal/Licensing): alertify was
-/// GPL-licensed with no accompanying `NOTICE`.
+/// vendored alertify build also closed a standing licensing question: alertify
+/// was GPL-licensed with no accompanying `NOTICE`.
 ///
 /// D3 v3 was the last one out. It was kept while it was a *rendering engine*
 /// rather than a look-and-feel dependency, but on this crate's actual target —

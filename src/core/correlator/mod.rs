@@ -657,7 +657,7 @@ pub(crate) fn correlate_entities(entities: &[Entity], scan_id: &str) -> Vec<Corr
 // `bench_synthetic_entities` is also the single generator `perf`'s in-crate
 // `#[ignore]`d guard (`scaling_baseline`/`pass_is_subquadratic`) delegates
 // to, so the two harnesses can never silently diverge on what "representative
-// load" means (`docs/CONVENTIONS.md` §3, single-sourced vocabularies).
+// load" means — the single-sourced-vocabulary rule.
 
 /// Build a representative confirmed-entity set of `n` entities that exercises
 /// the heavier correlation rules with *real* work (not early-outs):
@@ -779,7 +779,7 @@ const RELATION_RULES: &[RelationRuleFn] = &[
 
 /// `(entity-only rule count, graph-aware relation rule count)` — the live,
 /// authoritative split behind every "N rules (E entity + R graph-aware
-/// relation)" prose mention (`README.md`, `docs/ARCHITECTURE_AUDIT.md`). A
+/// relation)" prose mention (`README.md`). A
 /// hand-maintained copy of this pair drifted silently every time a rule was
 /// added in this same session (four cycles' worth of manual reconciliation
 /// across the docs) — this accessor lets an architecture test tie the prose
