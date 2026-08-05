@@ -251,7 +251,21 @@ impl EventKind {
                 } else {
                     &correlation.rule_name
                 };
-                ("corr", format!("⚡ {name}"))
+                // The rule name alone does not identify the finding. Rules that
+                // fire per-entity — AU-003 "High cross-source corroboration"
+                // emits one `Correlation` for every corroborated entity — repeat
+                // the same headline as many times as they matched: a real
+                // 47-event scan logged nine consecutive, byte-identical
+                // `⚡ High cross-source corroboration` lines, leaving the
+                // operator no way to tell which entities they referred to.
+                // `description` is what distinguishes them (it names the entity
+                // and its C_eff) and was being discarded here, though
+                // `cli::live` has always rendered both.
+                if correlation.description.is_empty() {
+                    ("corr", format!("⚡ {name}"))
+                } else {
+                    ("corr", format!("⚡ {name} · {}", correlation.description))
+                }
             }
             Self::CorrelationsDone { count } => ("corr", format!("correlations done · {count}")),
             Self::LiveStart {
