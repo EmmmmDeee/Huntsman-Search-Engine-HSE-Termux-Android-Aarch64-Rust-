@@ -135,6 +135,41 @@ fn probe_with_no_hits_does_not_echo_the_seed() {
 }
 
 #[test]
+fn blocked_zero_hit_sweep_is_inconclusive_not_a_confirmed_absence() {
+    // M6: a zero-hit run is only a confirmed absence when the probes actually
+    // answered. When at least half returned no definitive answer (curl code 0 —
+    // blocked / unreachable / no egress), the sweep is inconclusive and must be
+    // surfaced as an error, never as a silent empty "not on any platform".
+    let msg = inconclusive_sweep(0, 28, 28).expect("all-blocked zero-hit run is inconclusive");
+    assert!(
+        msg.contains("28/28") && msg.contains("not a confirmed absence"),
+        "message must quantify the blocked probes and disclaim absence: {msg}"
+    );
+    assert!(
+        inconclusive_sweep(0, 14, 28).is_some(),
+        "exactly half blocked is still inconclusive"
+    );
+
+    // A run whose probes mostly ANSWERED (definitive not-founds) with only a few
+    // blocked IS a genuine absence — not inconclusive.
+    assert!(
+        inconclusive_sweep(0, 3, 28).is_none(),
+        "mostly-definitive not-founds are a real absence, not inconclusive"
+    );
+    // Any confirmed hit means the sweep reached the network — never inconclusive,
+    // even if other probes were blocked.
+    assert!(
+        inconclusive_sweep(2, 26, 28).is_none(),
+        "any hit proves reachability, so the run is never inconclusive"
+    );
+    // A fully cancelled/empty sweep (nothing attempted) is not inconclusive.
+    assert!(
+        inconclusive_sweep(0, 0, 0).is_none(),
+        "no probes attempted is not an inconclusive absence claim"
+    );
+}
+
+#[test]
 fn probe_with_a_hit_echoes_the_seed_as_corroboration() {
     assert!(should_echo_target(1));
     let t = Target::new(TargetKind::Username, "haigenb");
