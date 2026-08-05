@@ -739,6 +739,37 @@ use super::*;
     }
 
     #[test]
+    fn embedded_spa_fetches_relations_only_for_the_graph_tab() {
+        // renderScanInfo fetched entities, correlations AND relations on every
+        // render — all 7 tabs, plus this page's own 8s live-refresh while a
+        // scan runs — but S.relations has exactly one consumer: graph.js.
+        // Every other tab paid for a full relations round-trip it never used,
+        // repeated roughly 450 times an hour by a Summary/Browse tab left open
+        // during a scan. Guard the elision so the fetch can't silently
+        // become unconditional again.
+        let index = app_file("js/scan_info/index.js");
+        assert!(
+            index.contains("const wantRelations = activeTab === 'graph';"),
+            "renderScanInfo must gate the relations fetch on the active tab"
+        );
+        assert!(
+            index.contains("wantRelations ? API.relations(id) : Promise.resolve({ relations: [] })"),
+            "the relations fetch must be skipped (not fetched-and-discarded) \
+             on every tab but graph — Promise.resolve avoids the network \
+             round-trip entirely"
+        );
+        // entities/correlations remain UNCONDITIONAL: browse, correlations,
+        // graph and the header stat cards all read them regardless of tab.
+        assert!(
+            index.contains("API.scan(id),") && index.contains("API.entities(id),") && index.contains(
+                "API.correlations(id),"
+            ),
+            "entities and correlations must stay unconditional — only \
+             relations is graph-exclusive"
+        );
+    }
+
+    #[test]
     fn embedded_spa_graph_keeps_the_operators_viewport_across_rebuilds() {
         // While a scan runs, scan-info re-renders every 8s, and that re-runs
         // renderGraph -> buildGraph. The pan/zoom state used to be declared

@@ -21,8 +21,22 @@ export async function renderScanInfo(v){
   const activeTab = (!tab || tab === 'report' || tab === 'network') ? 'summary' : tab;
   // Only the scan itself is required; correlations/relations can 500 on a
   // legacy scan, so one failing sub-resource must not blank the whole page.
+  //
+  // relations is fetched ONLY for the Graph tab — it is the sole consumer
+  // (browse/correlations/report/insights/stealer/log all read S.entities
+  // and/or S.correlations, never S.relations). Every other tab paid for a
+  // full relations round-trip it never used, on EVERY render — including
+  // this page's own 8s live-refresh while a scan runs (scanRefreshTick,
+  // below), so a Summary or Browse tab left open during a scan repeated
+  // that wasted fetch roughly 450 times an hour. Skipped rather than fetched
+  // and discarded: `Promise.resolve` needs no network round-trip at all, so
+  // this is a real elision, not a relabelled one.
+  const wantRelations = activeTab === 'graph';
   const [scanR, entsR, corrsR, relsR] = await Promise.allSettled([
-    API.scan(id), API.entities(id), API.correlations(id), API.relations(id)
+    API.scan(id),
+    API.entities(id),
+    API.correlations(id),
+    wantRelations ? API.relations(id) : Promise.resolve({ relations: [] }),
   ]);
   if (scanR.status !== 'fulfilled') throw scanR.reason;
   const scan = scanR.value;
