@@ -739,6 +739,65 @@ use super::*;
     }
 
     #[test]
+    fn embedded_spa_pauses_every_background_poller() {
+        // Three views poll on a timer, and each tick is a real cost on the one
+        // platform this ships to: scan-info re-pulls the scan plus its FULL
+        // entity, correlation and relation sets every 8s and rebuilds the view
+        // (on the Graph tab, the whole layout); the Live monitor re-pulls the
+        // session list every 8s; the Engines page triggers a multi-engine
+        // server-side liveness sweep every 30s. A no-root Termux device runs
+        // `hse serve` and the browser SIDE BY SIDE, so a tab left in the
+        // background was making the phone do all of that, for nothing,
+        // for as long as the scan lasted.
+        //
+        // Each poller must consult the shared `pageHidden` helper. Single
+        // source so the three can't drift, and so the reasoning lives once.
+        let timers = app_file("js/timers.js");
+        assert!(
+            timers.contains("export function pageHidden()") && timers.contains("document.hidden"),
+            "timers.js must export the shared page-visibility predicate"
+        );
+        for (file, view) in [
+            ("js/scan_info/index.js", "scan-info auto-refresh"),
+            ("js/views/live.js", "Live monitor session poll"),
+            ("js/views/engines.js", "Engines liveness sweep"),
+        ] {
+            let src = app_file(file);
+            assert!(
+                src.contains("pageHidden"),
+                "the {view} ({file}) must skip its poll while the page is \
+                 hidden — a backgrounded tab kept doing the work every tick"
+            );
+            assert!(
+                src.contains("from '/static/js/timers.js'") && src.contains("pageHidden }"),
+                "{file} must import pageHidden from the shared timers module \
+                 rather than re-implementing the visibility check"
+            );
+        }
+        // The scan-info refresh must RE-ARM while hidden rather than tear its
+        // schedule down: dropping the timer would leave the view frozen after
+        // the operator switched away and back, with nothing to restart it (the
+        // alternative — a visibilitychange listener — would be registered on
+        // every one of the many renders this path performs, and leak).
+        let idx = app_file("js/scan_info/index.js");
+        let tick = idx
+            .split_once("function scanRefreshTick()")
+            .and_then(|(_, b)| b.split_once("\n}"))
+            .map(|(b, _)| b)
+            .expect("scanRefreshTick() present in scan_info/index.js");
+        assert!(
+            tick.contains("pageHidden()") && tick.contains("setTimeout(scanRefreshTick"),
+            "the hidden branch must re-arm the tick, so the refresh resumes \
+             within one interval of the tab becoming visible again: {tick}"
+        );
+        assert!(
+            !idx.contains("addEventListener('visibilitychange'"),
+            "no per-render visibilitychange listener — scan-info re-renders \
+             every 8s and would accumulate one listener per render"
+        );
+    }
+
+    #[test]
     fn embedded_spa_bounds_the_event_log_dom_and_discloses_the_drop() {
         // The scan log appended one permanent DOM node per event and removed
         // nothing. Captured runs already reach 598 events, this file's sibling

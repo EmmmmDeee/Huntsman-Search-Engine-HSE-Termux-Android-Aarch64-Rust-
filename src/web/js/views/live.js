@@ -2,7 +2,7 @@ import { API } from '/static/js/api.js';
 import { $, $$, attr, esc, fmtClock, fmtDate, kindPill, saveShownRows, statusPill, toast } from '/static/js/helpers.js';
 import { closeLiveSse, mapEvent, openLiveSse } from '/static/js/scan_info/log.js';
 import { S, TARGET_KINDS } from '/static/js/state.js';
-import { clearLiveTimer } from '/static/js/timers.js';
+import { clearLiveTimer, pageHidden } from '/static/js/timers.js';
 import { render } from '/static/js/main.js';
 
 export function wireLiveStops(){
@@ -226,6 +226,9 @@ export async function renderLive(v){
   // Poll the session list while this page is open so iteration counts climb live.
   clearLiveTimer();
   S.liveTimer = setInterval(async ()=>{
+    // Nobody is watching the counts climb — skip the fetch and the rebuild,
+    // keep the schedule. See `pageHidden`.
+    if (pageHidden()) return;
     try {
       const d = await API.liveList();
       const sessions = d.sessions || [];
