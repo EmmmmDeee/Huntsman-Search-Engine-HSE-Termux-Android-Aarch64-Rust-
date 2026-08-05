@@ -199,12 +199,39 @@ export function renderTypeCounts(){
   host.style.display = '';
 }
 
+/* Coalesce the per-row DOM work that does not have to happen per row.
+   `appendLog` runs once per event, and a real scan emits hundreds (a captured
+   run: 598 events, 371 of them entity_found). Re-sorting the type histogram and
+   rewriting its `innerHTML` on every one of those, then reading
+   `box.scrollHeight` — which forces a synchronous layout — turned each event
+   into a full re-render plus a forced reflow. On a memory- and CPU-constrained
+   Termux/Android browser that is the difference between a scan that streams and
+   a tab that dies.
+
+   Both operations are idempotent and only the LAST one is observable, so they
+   are deferred to one animation frame. The end state is byte-identical: every
+   event is still counted (`bumpTypeCount` stays synchronous, above), the
+   breakdown still shows every event, and the box still ends scrolled to the
+   newest row. */
+let logFlushScheduled = false;
+function scheduleLogFlush(){
+  if (logFlushScheduled) return;
+  logFlushScheduled = true;
+  const flush = ()=>{
+    logFlushScheduled = false;
+    renderTypeCounts();
+    const b = $('#log-box');
+    if (b) b.scrollTop = b.scrollHeight;
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(flush);
+  else setTimeout(flush, 0);
+}
+
 export function appendLog(ev, ts){
   const box = $('#log-box'); if (!box) return;
   // Count every rendered row exactly once — history rows and live SSE rows both
   // land here — so the breakdown always describes precisely what is on screen.
   bumpTypeCount(ev && ev.type);
-  renderTypeCounts();
   const m = mapEvent(ev);
   const row = document.createElement('div');
   row.className = `log-row lv-${m.lv}`;
@@ -213,7 +240,7 @@ export function appendLog(ev, ts){
   const t = ts ? (new Date(ts*1000)).toTimeString().slice(0,8) : fmtClock();
   row.innerHTML = `<span class="ts">${esc(t)}</span><span class="typ">${esc(m.typ)}</span><span class="msg">${m.msg}</span>`;
   box.appendChild(row);
-  box.scrollTop = box.scrollHeight;
+  scheduleLogFlush();
 }
 /* `''` or `'s'` for a counted noun — the browser-side twin of the Rust
    renderers' `plural()`. A live scan routinely reports exactly one of

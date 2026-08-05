@@ -109,6 +109,13 @@ export function buildD3Graph(){
     ((b.corroboration??1)-(a.corroboration??1)));
   const shown = ranked.slice(0, GRAPH_MAX_NODES);
   const shownIds = new Set(shown.map(e=>e.uid));
+  // Uid → entity, built once. The correlation-hub scan below needs an entity's
+  // corroboration per member per correlation; doing that with
+  // `S.entities.find(...)` is a linear scan inside two nested loops —
+  // O(correlations × members × entities). A real 371-entity scan with 32
+  // correlations is already millions of string comparisons on a phone CPU,
+  // burned every re-layout, for a lookup a Map answers in O(1).
+  const entityByUid = new Map(S.entities.map(e=>[e.uid, e]));
   for (const e of shown){
     nodes.push({id:e.uid, kind:e.kind, label:e.value, r: 5 + Math.min(8, Math.log(1+(e.corroboration??1))*3)});
   }
@@ -135,7 +142,7 @@ export function buildD3Graph(){
     // Pick hub by relation degree, then corroboration tie-break (per comment at line 131).
     let hub = members[0], hubScore = -1, hubCorr = -1;
     for (const u of members){
-      const ent = S.entities.find(e => e.uid === u);
+      const ent = entityByUid.get(u);
       const relScore = (relDegree.get(u)||0);
       const corrScore = ent?.corroboration ?? 1;
       if (relScore > hubScore || (relScore === hubScore && corrScore > hubCorr)){
