@@ -739,6 +739,69 @@ use super::*;
     }
 
     #[test]
+    fn embedded_spa_bounds_the_event_log_dom_and_discloses_the_drop() {
+        // The scan log appended one permanent DOM node per event and removed
+        // nothing. Captured runs already reach 598 events, this file's sibling
+        // note records a 764-row log, and DEFAULT_SCAN_DEPTH went 3 -> 5 — so a
+        // deep scan's log grows several times further, under a live SSE stream,
+        // on a no-root Termux/Android browser. Unbounded growth there is how the
+        // tab dies mid-scan. Guard both halves of the fix: the bound exists, and
+        // it is disclosed rather than silently truncating.
+        let log_js = app_file("js/scan_info/log.js");
+        assert!(
+            log_js.contains("const LOG_MAX_ROWS"),
+            "log.js must define a rendered-row ceiling — without it the event \
+             log grows without bound for the life of the view"
+        );
+        assert!(
+            log_js.contains("box.childElementCount > LOG_MAX_ROWS")
+                && log_js.contains("box.removeChild(box.firstElementChild)"),
+            "log.js must actually evict oldest-first once over the cap; \
+             defining the constant without enforcing it is worse than neither"
+        );
+        // Eviction must be synchronous with the append. Deferring it to the
+        // rAF flush would still let the whole unbounded list exist for a frame
+        // during the synchronous history render — and the peak is what OOMs.
+        let append = log_js
+            .split_once("export function appendLog(")
+            .and_then(|(_, b)| b.split_once("\n}"))
+            .map(|(b, _)| b)
+            .expect("appendLog() present in log.js");
+        assert!(
+            append.contains("LOG_MAX_ROWS"),
+            "the cap must be enforced inside appendLog, not deferred to the \
+             coalesced flush: {append}"
+        );
+        // Silent truncation is the failure mode this must not have. The
+        // per-type breakdown counts events (not rows), so it stays complete;
+        // the dropped rows are disclosed on screen and in the saved file.
+        assert!(
+            log_js.contains("logRowsDropped"),
+            "log.js must track how many rows it evicted so the drop can be \
+             disclosed"
+        );
+        assert!(
+            log_js.contains("dropped from view (Download has all)"),
+            "the on-screen breakdown must disclose evicted rows and point at \
+             the complete server-side log"
+        );
+        assert!(
+            log_js.contains("this file starts mid-scan"),
+            "the 'Save shown' header must warn when the saved capture begins \
+             mid-scan because of the display cap"
+        );
+        // bumpTypeCount must run before any eviction, or the breakdown would
+        // undercount and the totals would become as lossy as the rows.
+        let bump = append.find("bumpTypeCount").expect("appendLog counts types");
+        let evict = append.find("LOG_MAX_ROWS").expect("appendLog enforces cap");
+        assert!(
+            bump < evict,
+            "events must be tallied before rows are evicted, so the 'By type' \
+             totals keep describing the whole scan"
+        );
+    }
+
+    #[test]
     fn embedded_spa_tails_the_live_session_event_stream() {
         // The per-session live SSE endpoint (/live/{id}/events) streams a running
         // session's lifecycle + every per-iteration scan's events. It had no SPA
