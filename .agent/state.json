@@ -8,8 +8,8 @@
     "non-defects. See CLAUDE.md and docs/OPERATIONAL_CONSTITUTION.md.",
     "cycle 9 sweep (wf_e136c553): 5 dims x adversarial verify. REFUTED as not-a-defect (do not re-open): AbortOnDrop doc claim (engine/mod.rs:158 — the doc is actually true); enrich_geospatial catch_unwind is not over-guarding worth removing; diagnostics ModuleLedger HashMap->BTreeMap (failure scenario unachievable); /scans/{id}/stealer-rows 'unbounded' (deliberate, documented, tested design); scan-log DOM O(n) (already capped at LOG_MAX_ROWS=1200, committed design). DEFERRED confirmed findings for a future cycle (recorded, not lost): F2 latest_completed_scan skips Aborted scans (storage/mod.rs:513 — `hse export/diff latest` jumps past an aborted scan); F3 live/radar session cancel handle shared with per-iteration wall-time watchdog (core/live/mod.rs:433); F4 scans.js dashboard has no `aborted` bucket + computes an unrendered `failed` count; F18 SPA discards /entities pagination envelope so Browse understates a truncated large scan (index.js:44); F20 dossier upload reads whole file to a JS string with no client-side size check (new_scan.js:445); F22 Scan-Log SSE never resolves the pill to 'complete' when the tailed scan finishes (log.js:89). These are the top of cycle-10's pool; F2 pairs naturally with cycle-9 slot 1 (both terminal-state correctness)."
   ],
-  "cycle_count": 10,
-  "last_verified_commit": "d4f59952a",
+  "cycle_count": 11,
+  "last_verified_commit": "82ed37bab",
   "verified_against": "cargo test --all --locked: 14 binaries + doctests, 0 failed (cycle 10 head d4f59952a). clippy --all-targets -D warnings + fmt clean per slot. aarch64-android + MSRV are CI authority; CI run-creation stalled on this branch since #2142/306370a56 so cycles 9-10 are locally gate-green but CI-unvalidated.",
   "completed_slots": [
     {
@@ -448,5 +448,15 @@
       "summary": "uploadDossier did await f.text() with no size check, spiking memory on a Termux phone for a huge upload that the server's 16MB DefaultBodyLimit would reject anyway. Added a client-side 16MB (MAX_UPLOAD_BYTES) guard before the read."
     }
   ],
-  "cycle_10_provenance": "Slots drawn from the same 27-agent 5-dimension adversarially-verified sweep as cycle 9 (deferred Rust+JS findings). F3 was the last architecturally-significant Rust item. Remaining deferred sweep finding, cycle 11 pool: F22 (scan_info/log.js SSE never resolves to a terminal status when the tailed scan finishes — pill stays live/reconnecting). Cycle-9 refuted findings (do not re-open): F7 AbortOnDrop doc, F8 enrich_geospatial guard, F17 ModuleLedger map type, F19 stealer-rows pagination (deliberate/tested), F21 scan-log DOM cap (already capped/committed design)."
+  "cycle_10_provenance": "Slots drawn from the same 27-agent 5-dimension adversarially-verified sweep as cycle 9 (deferred Rust+JS findings). F3 was the last architecturally-significant Rust item. Remaining deferred sweep finding, cycle 11 pool: F22 (scan_info/log.js SSE never resolves to a terminal status when the tailed scan finishes — pill stays live/reconnecting). Cycle-9 refuted findings (do not re-open): F7 AbortOnDrop doc, F8 enrich_geospatial guard, F17 ModuleLedger map type, F19 stealer-rows pagination (deliberate/tested), F21 scan-log DOM cap (already capped/committed design).",
+  "cycle_11_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "82ed37bab",
+      "finding": "F22",
+      "summary": "renderLog opened SSE only when running at render time and set a terminal pill only in a one-shot !running block, so a scan finishing DURING the stream left the pill 'live'/'reconnecting' forever. Detect the terminal scan_complete event in the SSE callback -> set the pill to its true terminal state (complete/aborted/failed from the carried status) and closeSse(); the state callback bails when S.sse is null so the close-triggered flap can't overwrite it. Drains the last sweep-pool item."
+    }
+  ],
+  "sweep_pool_status": "EXHAUSTED. The cycle-9 27-agent 5-dimension adversarially-verified sweep produced 22 findings; 17 confirmed and now all delivered (cycle 9: F1/F5/F6/F9-F14/F15/F16; cycle 10: F2/F3/F4/F18/F20; cycle 11: F22), 5 refuted-as-not-a-defect and recorded so they are not re-opened (F7/F8/F17/F19/F21). Further work requires a fresh inspection. BLOCKER: GitHub Actions run-creation stalled on this branch since run #2142 (306370a56), so cycles 9-11 are locally gate-green but CI-unvalidated and unmergeable until run-creation recovers."
 }
