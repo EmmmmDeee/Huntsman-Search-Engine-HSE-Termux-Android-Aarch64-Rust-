@@ -2,6 +2,7 @@ import { API } from '/static/js/api.js';
 import { $, $$, attr, esc, fmtDate, healthCell, toast } from '/static/js/helpers.js';
 import { S } from '/static/js/state.js';
 import { render } from '/static/js/main.js';
+import { pageHidden } from '/static/js/timers.js';
 
 /* ═══════════ Page: OPTS / Settings (#/opts) ═══════════ */
 export async function renderOpts(v){
@@ -349,6 +350,11 @@ export function wireUpdate(){
   function startPoll(){
     if (S.optsUpdateTimer) return;
     S.optsUpdateTimer = setInterval(async()=>{
+      // Skip the fetch + status-panel rebuild while nobody is looking; see
+      // `pageHidden`. The schedule is kept (this tick still fires and
+      // re-checks next time), so a self-update finishing while the tab is
+      // backgrounded is still caught on the next visible tick.
+      if (pageHidden()) return;
       const s = await refreshStatus();
       if (!s || ['idle','error'].includes(s.phase||'idle')){
         clearInterval(S.optsUpdateTimer); S.optsUpdateTimer = null;
@@ -393,6 +399,11 @@ export function showRestartOverlay(){
     '<div class="progress-bar progress-bar-striped active" style="width:100%"></div></div></div>';
   document.body.appendChild(overlay);
   const poll = setInterval(async()=>{
+    // Skip the health probe while hidden; see `pageHidden`. Nobody is
+    // watching the overlay either, so delaying detection until the tab is
+    // visible again costs nothing — the very next tick after it becomes
+    // visible reloads as soon as the server responds.
+    if (pageHidden()) return;
     try { await API.health(); clearInterval(poll); location.reload(); } catch {}
   }, 2500);
 }
@@ -462,6 +473,10 @@ export function wireCells(){
   function startPoll(){
     if (S.optsCellsTimer) return;
     S.optsCellsTimer = setInterval(async()=>{
+      // Skip while hidden; see `pageHidden`. The import keeps running
+      // server-side regardless — this only defers the browser noticing it
+      // finished until the tab is visible again.
+      if (pageHidden()) return;
       try {
         const s = await API.cellsStatus();
         const p = s.import_phase || 'idle';

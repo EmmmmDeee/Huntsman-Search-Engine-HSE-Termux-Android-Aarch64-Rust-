@@ -823,18 +823,20 @@ use super::*;
 
     #[test]
     fn embedded_spa_pauses_every_background_poller() {
-        // Three views poll on a timer, and each tick is a real cost on the one
+        // Six views poll on a timer, and each tick is a real cost on the one
         // platform this ships to: scan-info re-pulls the scan plus its FULL
         // entity, correlation and relation sets every 8s and rebuilds the view
         // (on the Graph tab, the whole layout); the Live monitor re-pulls the
         // session list every 8s; the Engines page triggers a multi-engine
-        // server-side liveness sweep every 30s. A no-root Termux device runs
-        // `hse serve` and the browser SIDE BY SIDE, so a tab left in the
-        // background was making the phone do all of that, for nothing,
-        // for as long as the scan lasted.
+        // server-side liveness sweep every 30s; Settings polls a self-update's
+        // phase and a cell-DB import's phase every 2.5s each, plus the
+        // post-update restart overlay's health probe, also every 2.5s. A
+        // no-root Termux device runs `hse serve` and the browser SIDE BY SIDE,
+        // so a tab left in the background was making the phone do all of
+        // that, for nothing, for as long as the job/scan lasted.
         //
         // Each poller must consult the shared `pageHidden` helper. Single
-        // source so the three can't drift, and so the reasoning lives once.
+        // source so none of the six can drift, and so the reasoning lives once.
         let timers = app_file("js/timers.js");
         assert!(
             timers.contains("export function pageHidden()") && timers.contains("document.hidden"),
@@ -844,6 +846,7 @@ use super::*;
             ("js/scan_info/index.js", "scan-info auto-refresh"),
             ("js/views/live.js", "Live monitor session poll"),
             ("js/views/engines.js", "Engines liveness sweep"),
+            ("js/views/opts.js", "Settings update/cells/restart pollers"),
         ] {
             let src = app_file(file);
             assert!(
@@ -857,6 +860,23 @@ use super::*;
                  rather than re-implementing the visibility check"
             );
         }
+        // opts.js carries THREE independent setInterval pollers (update
+        // status, cell-DB import status, restart-overlay health probe) — every
+        // one of them, not just one, must gate on pageHidden.
+        let opts = app_file("js/views/opts.js");
+        let poller_count = opts.matches("setInterval(").count();
+        let guard_count = opts.matches("if (pageHidden()) return;").count();
+        assert_eq!(
+            poller_count, 3,
+            "opts.js poller count changed — update this guard alongside it \
+             instead of letting a new poller go unaudited: {poller_count} \
+             setInterval site(s) found"
+        );
+        assert_eq!(
+            guard_count, poller_count,
+            "every setInterval in opts.js must open with the pageHidden \
+             guard — found {guard_count} guard(s) for {poller_count} poller(s)"
+        );
         // The scan-info refresh must RE-ARM while hidden rather than tear its
         // schedule down: dropping the timer would leave the view frozen after
         // the operator switched away and back, with nothing to restart it (the
