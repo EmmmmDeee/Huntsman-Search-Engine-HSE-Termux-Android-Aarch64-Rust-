@@ -2,26 +2,41 @@ import { API } from '/static/js/api.js';
 import { $, attr } from '/static/js/helpers.js';
 import { S } from '/static/js/state.js';
 
-/* ── Graph tab — dependency-free SVG renderer ──────────────────────────────
-   This view used to be drawn by a vendored D3 v3 (151 KB) force layout. On the
-   platform this tool actually targets — Termux on Android aarch64, no root,
-   RAM shared with the OS — that was the single most expensive thing the UI did:
-   a continuous physics simulation ticking over hundreds of nodes, mutating
-   every `<line>` and `<g>` transform on every frame, while the same device was
-   running the scan that produces those nodes.
+/* ── Graph tab — a basic 2D flow chart, dependency-free ────────────────────
+   This view first replaced a vendored D3 v3 force layout with a deterministic
+   concentric (ring) node-link graph. That was still a GRAPH-VISUALISATION
+   idiom — free-floating circles at computed radii, connected by lines with no
+   inherent direction or reading order. Per the maintainer's direction it is
+   now a FLOW CHART instead: rectangular boxes in rows, one row per expansion
+   generation (row 0 = the seed; row N = entities first found N generations of
+   pivoting later), with arrows showing which entity led to which. That is a
+   more literal, more readable rendering of what a scan actually IS — a
+   directed process of discovery — than a bag of circles ever was.
 
-   It is now a deterministic concentric layout: the seed sits at the centre and
-   entities are placed on rings in rank order. Positions are computed once, in
-   O(nodes), and nothing animates afterwards — there is no simulation to settle,
-   so the graph appears instantly and then costs nothing until the operator
-   touches it.
+   Still deterministic, still O(nodes), still nothing animates after the
+   initial draw — it costs nothing until the operator touches it, same as
+   before. Node dragging is gone: a flow chart's positions are the STRUCTURE
+   (which row, which rank within the row), not something to rearrange, so
+   letting an operator drag a box out of its row would misrepresent the very
+   thing the chart exists to show. That also deletes a real chunk of pointer-
+   tracking code that existed only to keep a dragged node's edges attached to
+   it — with nothing left to drag, there is nothing left to keep attached.
 
-   Nothing was dropped to get there. Node colour by kind, radius by
-   corroboration, truncated labels, hover tooltips, the legend, the capped-view
-   notice, GEXF export, Re-layout, Reset view, node drag, and pinch/scroll zoom
-   with canvas pan all still work — they are just implemented against the DOM
-   directly (pointer events + a `transform` on one group) instead of through a
-   rendering engine. The rendering ceilings below are unchanged. */
+   Kept: node colour by kind, truncated labels, hover tooltips, the legend,
+   the capped-view notice, GEXF export, Reset view, and pinch/scroll zoom with
+   canvas pan. Also kept, but now genuinely meaningful rather than cosmetic:
+   `derived_from` relations (which entity's discovery led to which) become the
+   primary flow-chart arrows, and a plain "found via the seed" line is drawn
+   ONLY for entities with no more specific lineage or relation edge — the prior
+   graph anchored EVERY entity to the seed unconditionally, on top of its
+   relation/correlation edges, which was redundant clutter a flow chart
+   shouldn't repeat.
+
+   Dropped, and not replaced: "Re-layout". It re-ran the SAME deterministic
+   layout function on unchanged input — already a no-op click even before this
+   rewrite, since the prior ring layout was pure arithmetic over an
+   already-sorted node list with no randomness to reshuffle. A control with no
+   observable effect is dead weight, not a feature to preserve. */
 /* The operator's pan/zoom, kept OUTSIDE `buildGraph` so a rebuild does not
    throw it away.
  *
@@ -34,12 +49,7 @@ import { S } from '/static/js/state.js';
  *
  * Kept per-scan: `renderGraph` resets it when the mounted scan changes, so
  * opening a different scan starts centred rather than inheriting the previous
- * one's viewport. "Reset view" resets it on demand.
- *
- * Node positions are NOT preserved across a rebuild. `layoutConcentric` is
- * deterministic, so nodes that were already present land where they were as
- * long as the node set is unchanged; when the scan adds entities the layout
- * legitimately changes, and a dragged node returns to its computed place. */
+ * one's viewport. "Reset view" resets it on demand. */
 const view = { x: 0, y: 0, k: 1 };
 function resetView(){ view.x = 0; view.y = 0; view.k = 1; }
 let viewScanId = null;
@@ -64,18 +74,16 @@ export function renderGraph(host){
         <div class="lr"><span class="sw" style="background:#2c7c40"></span>username</div>
         <div class="lr"><span class="sw" style="background:#8a6d3b"></span>phone</div>
         <div class="lr"><span class="sw" style="background:#9b1f9b"></span>credential</div>
-        <div class="lr"><span class="sw" style="background:#d9822b"></span>relation edge (hover for kind)</div>
+        <div class="lr"><span class="sw" style="background:#d9822b"></span>lineage arrow (hover for kind)</div>
       </div>
       <div class="graph-ctl">
-        <button class="btn btn-default btn-xs" id="g-relayout"><i class="glyphicon glyphicon-refresh"></i>&nbsp;Re-layout</button>
         <button class="btn btn-default btn-xs" id="g-reset"><i class="glyphicon glyphicon-fullscreen"></i>&nbsp;Reset view</button>
         <a class="btn btn-default btn-xs" href="${API.gexfUrl(S.scan.id)}" data-download title="Export graph as GEXF (Gephi)"><i class="glyphicon glyphicon-export"></i>&nbsp;GEXF</a>
       </div>
-      <div class="graph-hint text-muted">Drag nodes · pinch or scroll to zoom · drag canvas to pan</div>
+      <div class="graph-hint text-muted">Pinch or scroll to zoom · drag canvas to pan</div>
     </div>
   `;
   buildGraph();
-  $('#g-relayout').addEventListener('click', buildGraph);
   $('#g-reset').addEventListener('click', ()=>{ if (window.__graphResetZoom) window.__graphResetZoom(); });
 }
 
@@ -90,7 +98,7 @@ export const NODE_COLOR = {
   other:'#888'
 };
 
-// Graph rendering ceilings — keep the graph legible and, above all, stop a
+// Graph rendering ceilings — keep the chart legible and, above all, stop a
 // large scan from locking up the browser tab. Correlation clusters routinely
 // span hundreds of members (real scans produce several 600+-member clusters),
 // so an unbounded render is not a corner case. See buildGraph() for how these
@@ -98,6 +106,14 @@ export const NODE_COLOR = {
 export const GRAPH_MAX_NODES = 240;  // entity nodes rendered (the seed is extra)
 export const GRAPH_MAX_LINKS = 2000; // hard ceiling on edges drawn
 export const CORR_MAX_SPOKES = 8;    // members linked per correlation (star, not clique)
+
+// Flow-chart box geometry — fixed size for every non-seed node, deliberately:
+// a flow chart's boxes are uniform by convention, and a fixed size keeps the
+// row/column layout arithmetic trivial (no per-node measurement pass).
+const BOX_W = 132, BOX_H = 34, SEED_W = 150, SEED_H = 40;
+const ROW_GAP = 78;     // vertical distance between generation rows
+const COL_GAP = 18;     // horizontal gap between boxes in the same row
+const ROW_TOP = 50;     // top margin before row 0 (the seed)
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 function svgEl(name, attrs){
@@ -107,39 +123,41 @@ function svgEl(name, attrs){
 }
 const clamp = (v, lo, hi)=>v < lo ? lo : (v > hi ? hi : v);
 
-/* Deterministic concentric placement. The seed is pinned at the centre and the
-   remaining nodes — already sorted by structural importance — are laid onto
-   rings outward, so the most-connected entities land nearest the seed. Ring
-   capacity is derived from circumference so node spacing stays roughly constant
-   as the graph grows. Pure arithmetic, O(nodes), no iteration to convergence. */
-function layoutConcentric(nodes, W, H){
-  const cx = W / 2, cy = H / 2;
-  if (nodes.length) { nodes[0].x = cx; nodes[0].y = cy; }
-  const rest = nodes.slice(1);
-  if (!rest.length) return;
-  // Ring spacing: fill the smaller viewport axis with however many rings the
-  // node count needs, within sane bounds so small graphs are not sparse and
-  // large ones stay on-canvas.
-  const maxR = Math.max(120, Math.min(W, H) / 2 - 30);
-  const rings = Math.max(1, Math.ceil(Math.sqrt(rest.length / 2.2)));
-  const gap = maxR / rings;
-  let i = 0, ring = 1;
-  while (i < rest.length){
-    const r = Math.min(maxR, ring * gap);
-    // ~46px of arc per node keeps labels from colliding; always leave room for
-    // at least 6 so the innermost ring is never degenerate.
-    const capacity = Math.max(6, Math.floor((2 * Math.PI * r) / 46));
-    const n = Math.min(capacity, rest.length - i);
-    // Offset alternate rings by half a step so nodes do not line up radially.
-    const off = (ring % 2 === 0) ? Math.PI / n : 0;
-    for (let j = 0; j < n; j++){
-      const a = (j / n) * 2 * Math.PI + off;
-      rest[i + j].x = cx + r * Math.cos(a);
-      rest[i + j].y = cy + r * Math.sin(a);
-    }
-    i += n;
-    ring++;
+/* Deterministic flow-chart placement: one row per expansion generation.
+   `nodes[0]` (the seed) occupies row 0 alone; every other node carries a
+   `gen` (its entity's `generation`, defaulted to 0) and is placed in row
+   `gen + 1`, left-to-right in the rank order the caller already sorted it
+   into (most structurally significant first). Pure arithmetic, O(nodes), no
+   iteration to convergence — same complexity budget as the layout this
+   replaces, just organised by "how many pivots from the seed" instead of "how
+   many rings from the centre", which is the literal structure of a scan. */
+function layoutFlowchart(nodes, W){
+  if (!nodes.length) return;
+  const seed = nodes[0];
+  seed.w = SEED_W; seed.h = SEED_H;
+  seed.x = W / 2; seed.y = ROW_TOP;
+
+  const rows = new Map(); // generation -> [nodes], in the order they arrive (already rank-sorted)
+  for (const n of nodes.slice(1)){
+    const g = Math.max(0, n.gen || 0);
+    if (!rows.has(g)) rows.set(g, []);
+    rows.get(g).push(n);
   }
+  const gens = Array.from(rows.keys()).sort((a, b) => a - b);
+  gens.forEach((g, i) => {
+    const rowNodes = rows.get(g);
+    const y = ROW_TOP + (i + 1) * ROW_GAP;
+    const rowWidth = rowNodes.length * BOX_W + (rowNodes.length - 1) * COL_GAP;
+    // Centre the row when it fits the viewport; otherwise start at a fixed
+    // left margin and let pan/zoom (unchanged) reach the overflow — the same
+    // trade-off the ring layout made for a ring wider than the viewport.
+    const startX = rowWidth <= W ? (W - rowWidth) / 2 : COL_GAP;
+    rowNodes.forEach((n, j) => {
+      n.w = BOX_W; n.h = BOX_H;
+      n.x = startX + j * (BOX_W + COL_GAP) + BOX_W / 2;
+      n.y = y;
+    });
+  });
 }
 
 export function buildGraph(){
@@ -149,9 +167,9 @@ export function buildGraph(){
   // attributes here, so the CSS dark-theme rules can't reach them. Read the
   // active theme once per (re)layout and pick contrasting colours.
   const dark = document.body.classList.contains('dark-theme');
-  const labelFill = dark ? '#cfcfcf' : '#444';
+  const labelFill = dark ? '#e8e8e8' : '#222';
   const seedEdge  = dark ? '#4a4a4a' : '#bbb';
-  const nodeHalo  = dark ? '#1a1a1a' : '#fff';
+  const boxHalo   = dark ? '#1a1a1a' : '#fff';
   const seedHalo  = dark ? '#fff'    : '#222';
 
   const rect = svg.getBoundingClientRect();
@@ -159,11 +177,24 @@ export function buildGraph(){
   while (svg.firstChild) svg.removeChild(svg.firstChild);
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
 
+  // Arrowhead marker for lineage edges — drawn once, referenced by every
+  // `derived_from` line via `marker-end`. Flow-chart arrows are directional
+  // (parent -> child); the star/seed edges below stay plain lines, matching
+  // their undirected "these are associated" semantic.
+  const defs = svgEl('defs');
+  const marker = svgEl('marker', {
+    id: 'flow-arrow', viewBox: '0 0 10 10', refX: '9', refY: '5',
+    markerWidth: '6', markerHeight: '6', orient: 'auto-start-reverse',
+  });
+  marker.appendChild(svgEl('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: '#d9822b' }));
+  defs.appendChild(marker);
+  svg.appendChild(defs);
+
   // One group carries the pan/zoom transform; everything else is drawn inside.
   const container = svgEl('g', { class: 'zoom-container' });
   svg.appendChild(container);
 
-  // Build nodes/edges — bounded so the graph stays legible and never locks up
+  // Build nodes/edges — bounded so the chart stays legible and never locks up
   // the tab. A large scan (1000+ entities, correlation clusters spanning
   // hundreds of members) is routine; drawing a *clique* per correlation — the
   // historical behaviour — is O(k²) and, for the 600+-member clusters real
@@ -172,10 +203,11 @@ export function buildGraph(){
   // represent each correlation as a bounded *star*, not a clique. Browse /
   // Relations / GEXF remain the complete, unabridged views.
   const seedId = '__seed__';
-  const nodes = [{id:seedId, kind:S.scan.target.kind, label:S.scan.target.value, isSeed:true, r:12}];
+  const nodes = [{id:seedId, kind:S.scan.target.kind, label:S.scan.target.value, isSeed:true}];
 
   // Rank entities by relation-degree (structural importance) then corroboration,
-  // so that when we cap, the graph's connected core is what survives.
+  // so that when we cap, the chart's connected core is what survives — and,
+  // new here, so each row lists its most significant entities first (left).
   const relList = S.relations || [];
   const relDegree = new Map();
   for (const r of relList){
@@ -187,27 +219,30 @@ export function buildGraph(){
     ((b.corroboration??1)-(a.corroboration??1)));
   const shown = ranked.slice(0, GRAPH_MAX_NODES);
   const shownIds = new Set(shown.map(e=>e.uid));
-  // Uid → entity, built once. The correlation-hub scan below needs an entity's
-  // corroboration per member per correlation; doing that with
-  // `S.entities.find(...)` is a linear scan inside two nested loops —
-  // O(correlations × members × entities). A real 371-entity scan with 32
-  // correlations is already millions of string comparisons on a phone CPU,
-  // burned every re-layout, for a lookup a Map answers in O(1).
-  const entityByUid = new Map(S.entities.map(e=>[e.uid, e]));
   for (const e of shown){
-    nodes.push({id:e.uid, kind:e.kind, label:e.value, r: 5 + Math.min(8, Math.log(1+(e.corroboration??1))*3)});
+    // `generation` is how many pivots from the seed this entity was first
+    // found at (0 = seed round) — see Entity's doc comment. Row = gen + 1,
+    // since row 0 is reserved for the seed itself.
+    nodes.push({id:e.uid, kind:e.kind, label:e.value, gen: e.generation ?? 0});
   }
 
   // Links, in priority order so the global ceiling trims the least-important
-  // first: typed relations → seed anchors → correlation stars. Only edges whose
+  // first: typed relations (lineage first) → correlation stars → a "found via
+  // the seed" fallback for whatever is still unconnected. Only edges whose
   // endpoints are both rendered are built.
   const links = [];
-  // Typed attribution edges (subdomain_of / belongs_to_domain / hosted_on /
-  // derived_from / co_located_with) between entity nodes.
-  for (const r of relList)
-    if (shownIds.has(r.from_uid) && shownIds.has(r.to_uid))
-      links.push({source:r.from_uid, target:r.to_uid, rel:true, kind:r.kind});
-  for (const e of shown) links.push({source:seedId, target:e.uid, corr:false});
+  const touched = new Set(); // node ids with at least one edge already
+  // Typed attribution edges. `derived_from` is the literal expansion-lineage
+  // arrow (child -> the entity that led to it) and is the chart's primary
+  // "flow"; every other kind (subdomain_of / belongs_to_domain / hosted_on /
+  // identified_by / alias_of / located_at / associated_with / same_as / …)
+  // is drawn too, distinguished only by omitting the arrowhead, since those
+  // assert an association rather than a discovery order.
+  for (const r of relList){
+    if (!(shownIds.has(r.from_uid) && shownIds.has(r.to_uid))) continue;
+    links.push({source:r.from_uid, target:r.to_uid, rel:true, kind:r.kind, lineage: r.kind === 'derived_from'});
+    touched.add(r.from_uid); touched.add(r.to_uid);
+  }
   for (const c of S.correlations){
     if (links.length >= GRAPH_MAX_LINKS) break;
     // Star instead of a k² clique — O(k), capped fan-out — keeping the "these
@@ -217,6 +252,7 @@ export function buildGraph(){
     // one, so the visual hub reflects real centrality rather than misleading.
     const members = (c.entity_uids || c.evidence_uids || c.entities || []).filter(u=>shownIds.has(u));
     if (members.length < 2) continue;
+    const entityByUid = new Map(shown.map(e=>[e.uid, e]));
     let hub = members[0], hubScore = -1, hubCorr = -1;
     for (const u of members){
       const ent = entityByUid.get(u);
@@ -231,8 +267,19 @@ export function buildGraph(){
       if (u === hub) continue;
       if (spokes >= CORR_MAX_SPOKES || links.length >= GRAPH_MAX_LINKS) break;
       links.push({source:hub, target:u, corr:true});
+      touched.add(hub); touched.add(u);
       spokes++;
     }
+  }
+  // Fallback anchor: ONLY for entities the loops above never touched at all —
+  // unlike the ring layout (which anchored every node to the seed regardless,
+  // then drew relation/correlation edges on top of that), a flow chart shows
+  // exactly one "how did we get here" line per node when a real one exists,
+  // and falls back to "found via the seed" only when nothing more specific do.
+  for (const e of shown){
+    if (touched.has(e.uid)) continue;
+    if (links.length >= GRAPH_MAX_LINKS) break;
+    links.push({source:seedId, target:e.uid, corr:false});
   }
 
   // Surface when the view is a summary, and point to the complete surfaces.
@@ -250,76 +297,68 @@ export function buildGraph(){
     }
   }
 
-  // Resolve endpoints to node objects and drop links to unknown nodes, so the
-  // draw loop and the drag handler both read positions off one shared object
-  // per node rather than re-looking-up ids.
+  // Resolve endpoints to node objects and drop links to unknown nodes.
   const nodesById = new Map(nodes.map(n=>[n.id, n]));
   const validLinks = links
     .filter(l=>nodesById.has(l.source) && nodesById.has(l.target))
     .map(l=>({...l, source: nodesById.get(l.source), target: nodesById.get(l.target)}));
 
-  layoutConcentric(nodes, W, H);
+  layoutFlowchart(nodes, W);
 
-  // ── Draw: edges first so nodes sit above them ──
+  // ── Draw: edges first so boxes sit above them ──
   const linkG = svgEl('g');
   container.appendChild(linkG);
-  const incident = new Map(); // node id → [{el, end}] for cheap drag updates
   for (const l of validLinks){
     const line = svgEl('line', {
       x1: l.source.x, y1: l.source.y, x2: l.target.x, y2: l.target.y,
-      stroke: l.rel ? '#d9822b' : (l.corr ? '#9b1f9b' : seedEdge),
+      stroke: l.lineage ? '#d9822b' : (l.rel ? '#d9822b' : (l.corr ? '#9b1f9b' : seedEdge)),
       'stroke-opacity': l.rel ? 0.85 : (l.corr ? 0.7 : (dark ? 0.5 : 0.3)),
-      'stroke-width': l.rel ? 2 : (l.corr ? 1.6 : 1),
+      'stroke-width': l.lineage ? 2 : (l.rel ? 1.6 : (l.corr ? 1.6 : 1)),
     });
-    if (l.rel) line.setAttribute('stroke-dasharray', '5,3');
+    if (l.rel && !l.lineage) line.setAttribute('stroke-dasharray', '5,3');
+    if (l.lineage) line.setAttribute('marker-end', 'url(#flow-arrow)');
     const title = svgEl('title');
-    title.textContent = l.rel ? ('relation: ' + l.kind) : (l.corr ? 'correlation' : 'discovered from seed');
+    title.textContent = l.rel ? ('relation: ' + l.kind) : (l.corr ? 'correlation' : 'found via the seed');
     line.appendChild(title);
     linkG.appendChild(line);
-    if (!incident.has(l.source.id)) incident.set(l.source.id, []);
-    if (!incident.has(l.target.id)) incident.set(l.target.id, []);
-    incident.get(l.source.id).push({el: line, end: 1});
-    incident.get(l.target.id).push({el: line, end: 2});
   }
 
   const nodeLayer = svgEl('g');
   container.appendChild(nodeLayer);
   for (const n of nodes){
-    const g = svgEl('g', { transform: `translate(${n.x},${n.y})`, cursor: 'grab' });
-    g.appendChild(svgEl('circle', {
-      r: n.r,
+    const g = svgEl('g', { transform: `translate(${n.x - n.w / 2},${n.y - n.h / 2})` });
+    g.appendChild(svgEl('rect', {
+      width: n.w, height: n.h, rx: 6, ry: 6,
       fill: n.isSeed ? '#059CD7' : (NODE_COLOR[n.kind] || '#888'),
-      stroke: n.isSeed ? seedHalo : nodeHalo,
+      stroke: n.isSeed ? seedHalo : boxHalo,
       'stroke-width': n.isSeed ? 2 : 1.5,
     }));
     const t = svgEl('title');
     t.textContent = `${n.kind}: ${n.label}`;
     g.appendChild(t);
     const label = svgEl('text', {
-      dx: n.r + 4, dy: 4, 'font-size': '11px', fill: labelFill,
+      x: n.w / 2, y: n.h / 2 + 4, 'text-anchor': 'middle',
+      'font-size': '11px', fill: n.isSeed ? '#fff' : labelFill,
     });
+    const maxChars = Math.floor(n.w / 6.5);
     const l = n.label || '';
-    label.textContent = l.length > 28 ? l.slice(0, 26) + '…' : l;
+    label.textContent = l.length > maxChars ? l.slice(0, maxChars - 1) + '…' : l;
     g.appendChild(label);
-    n.el = g;
     nodeLayer.appendChild(g);
   }
 
-  // ── Pan / zoom / drag, via pointer events (touch + mouse, no library) ──
+  // ── Pan / zoom, via pointer events (touch + mouse, no library) ──
   // `view` is module-scoped (see its declaration): the operator's pan and zoom
-  // survive a rebuild, and are re-applied at the end of this function.
+  // survive a rebuild, and are re-applied at the end of this function. Node
+  // dragging is gone — a flow chart's box positions ARE the structure (row =
+  // generation, rank = significance), so there is nothing left to drag.
   const applyView = ()=>container.setAttribute('transform', `translate(${view.x},${view.y}) scale(${view.k})`);
-  // Screen → viewBox units. The SVG is scaled to its box, so undo that first.
   const toViewBox = (clientX, clientY)=>{
     const b = svg.getBoundingClientRect();
     return {
       x: (clientX - b.left) * (W / (b.width || W)),
       y: (clientY - b.top) * (H / (b.height || H)),
     };
-  };
-  const toGraph = (clientX, clientY)=>{
-    const p = toViewBox(clientX, clientY);
-    return { x: (p.x - view.x) / view.k, y: (p.y - view.y) / view.k };
   };
   const zoomAt = (clientX, clientY, factor)=>{
     const p = toViewBox(clientX, clientY);
@@ -337,29 +376,9 @@ export function buildGraph(){
     zoomAt(ev.clientX, ev.clientY, ev.deltaY < 0 ? 1.15 : 1 / 1.15);
   }, { passive: false });
 
-  const pointers = new Map();      // pointerId → {clientX, clientY}
-  let dragNode = null;             // node being dragged, if any
-  let panFrom = null;              // {x, y} viewBox coords at pan start
+  const pointers = new Map(); // pointerId -> {clientX, clientY}
+  let panFrom = null;         // {x, y} viewBox coords at pan start
   let pinchDist = 0;
-
-  const moveNode = (n, gx, gy)=>{
-    n.x = gx; n.y = gy;
-    n.el.setAttribute('transform', `translate(${n.x},${n.y})`);
-    for (const inc of (incident.get(n.id) || [])){
-      inc.el.setAttribute(inc.end === 1 ? 'x1' : 'x2', n.x);
-      inc.el.setAttribute(inc.end === 1 ? 'y1' : 'y2', n.y);
-    }
-  };
-
-  for (const n of nodes){
-    n.el.addEventListener('pointerdown', (ev)=>{
-      ev.stopPropagation();          // a node drag must not also pan the canvas
-      dragNode = n;
-      n.el.setAttribute('cursor', 'grabbing');
-      svg.setPointerCapture(ev.pointerId);
-      pointers.set(ev.pointerId, { clientX: ev.clientX, clientY: ev.clientY });
-    });
-  }
 
   svg.addEventListener('pointerdown', (ev)=>{
     pointers.set(ev.pointerId, { clientX: ev.clientX, clientY: ev.clientY });
@@ -367,8 +386,7 @@ export function buildGraph(){
       const [a, b] = Array.from(pointers.values());
       pinchDist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
       panFrom = null;
-      dragNode = null;
-    } else if (!dragNode){
+    } else {
       const p = toViewBox(ev.clientX, ev.clientY);
       panFrom = { x: p.x - view.x, y: p.y - view.y };
       svg.setPointerCapture(ev.pointerId);
@@ -387,10 +405,7 @@ export function buildGraph(){
       }
       return;
     }
-    if (dragNode){
-      const g = toGraph(ev.clientX, ev.clientY);
-      moveNode(dragNode, g.x, g.y);
-    } else if (panFrom){
+    if (panFrom){
       const p = toViewBox(ev.clientX, ev.clientY);
       view.x = p.x - panFrom.x;
       view.y = p.y - panFrom.y;
@@ -400,7 +415,6 @@ export function buildGraph(){
 
   const endPointer = (ev)=>{
     pointers.delete(ev.pointerId);
-    if (dragNode){ dragNode.el.setAttribute('cursor', 'grab'); dragNode = null; }
     if (pointers.size < 2) pinchDist = 0;
     if (pointers.size === 0) panFrom = null;
   };

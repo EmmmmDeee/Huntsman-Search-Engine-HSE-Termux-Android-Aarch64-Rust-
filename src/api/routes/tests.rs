@@ -443,9 +443,10 @@ use super::*;
         // per frame — on the same device that was running the scan producing
         // those nodes.
         //
-        // It is now a deterministic concentric layout computed once in
-        // O(nodes), drawn against the DOM directly. These asserts pin that the
-        // dependency does not creep back and that no per-frame loop returns.
+        // It is now a deterministic flow chart (one row per expansion
+        // generation) computed once in O(nodes), drawn against the DOM
+        // directly. These asserts pin that the dependency does not creep back
+        // and that no per-frame loop returns.
         let graph = app_file("js/scan_info/graph.js");
         assert!(
             !graph.contains("d3."),
@@ -456,20 +457,20 @@ use super::*;
             assert!(
                 !graph.contains(banned),
                 "graph.js must not run a per-frame simulation loop ({banned}) — \
-                 layout is computed once, then the graph is static until the \
+                 layout is computed once, then the chart is static until the \
                  operator interacts with it"
             );
         }
-        // Endpoints still resolve to shared node objects: the draw loop and the
-        // drag handler both read positions off one object per node.
+        // Endpoints still resolve to shared node objects: the draw loop reads
+        // every position off one object per node rather than re-looking up ids.
         let build = graph
             .split_once("function buildGraph(")
             .map(|(_, b)| b)
             .expect("buildGraph() present in graph.js");
         assert!(
             build.contains("nodesById.get(l.source)") && build.contains("nodesById.get(l.target)"),
-            "link source/target must resolve to node objects via nodesById so \
-             dragging a node can move its incident edges without a re-lookup"
+            "link source/target must resolve to node objects via nodesById \
+             once, rather than re-looking up ids in the draw loop"
         );
         // The vendored asset itself must be gone from the served set.
         assert!(
@@ -773,6 +774,77 @@ use super::*;
             ),
             "entities and correlations must stay unconditional — only \
              relations is graph-exclusive"
+        );
+    }
+
+    #[test]
+    fn embedded_spa_graph_is_a_flowchart_not_a_node_graph() {
+        // The maintainer's explicit direction: remove the node-link graph
+        // (concentric rings of circles, free-form drag) and replace it with a
+        // basic 2D flow chart — rows of boxes by expansion generation, with
+        // arrows showing which entity's discovery led to which. Pin the shape
+        // so a future change can't quietly drift back to a graph-visualisation
+        // idiom.
+        let graph = app_file("js/scan_info/graph.js");
+        assert!(
+            graph.contains("function layoutFlowchart("),
+            "graph.js must lay entities out by expansion generation (row),              not a concentric/ring layout"
+        );
+        assert!(
+            !graph.contains("function layoutConcentric("),
+            "the ring layout this replaced must not still be present"
+        );
+        // Rows come from the entity's own `generation` field (how many pivots
+        // from the seed it was first found at) — the literal structure of a
+        // scan, not an arbitrary rank-derived ring.
+        assert!(
+            graph.contains("gen: e.generation ?? 0"),
+            "each node's row must be derived from the entity's own generation"
+        );
+        // Node dragging must be fully gone: a flow chart's box positions ARE
+        // the structure (row = generation, rank = significance), so letting
+        // an operator drag one out of place would misrepresent it. This also
+        // means no per-node pointerdown listener and no drag state remain.
+        for gone in ["dragNode", "moveNode", "cursor: 'grab'", "n.el.addEventListener('pointerdown'"] {
+            assert!(
+                !graph.contains(gone),
+                "graph.js must not retain node-drag machinery ({gone}) — a                  flow chart's layout is structural, not rearrangeable"
+            );
+        }
+        // "Re-layout" is gone: it re-ran the same deterministic function over
+        // unchanged input, so it was already a no-op click before this
+        // rewrite (the ring layout it used to trigger was equally pure
+        // arithmetic over an already-sorted list, with no randomness to
+        // reshuffle) and remains one now. A control with no observable effect
+        // must not ship.
+        // Checked as the concrete DOM id / wiring, not the bare word
+        // "Re-layout" — that also appears in this file's own explanatory
+        // comment above, which legitimately names the removed feature.
+        assert!(
+            !graph.contains("id=\"g-relayout\"") && !graph.contains("$('#g-relayout')"),
+            "the Re-layout control (button + click handler) must be removed \
+             — it has never had an observable effect on a deterministic layout"
+        );
+        // The seed-anchor fallback edge must be CONDITIONAL — only for nodes
+        // with no other relation/correlation edge — not unconditional for
+        // every entity as the prior graph drew it (redundant on top of the
+        // relation/correlation edges the same node already had).
+        let build = graph
+            .split_once("export function buildGraph()")
+            .map(|(_, b)| b)
+            .expect("buildGraph() present in graph.js");
+        assert!(
+            build.contains("if (touched.has(e.uid)) continue;"),
+            "the seed fallback edge must be skipped for entities that already              have a more specific relation/correlation edge: {build}"
+        );
+        // `derived_from` — the literal expansion-lineage relation — must be
+        // the chart's directional arrow (the other typed relations stay
+        // undirected lines, matching their more associative semantics).
+        assert!(
+            graph.contains("lineage: r.kind === 'derived_from'")
+                && graph.contains("marker-end")
+                && graph.contains("'flow-arrow'"),
+            "derived_from relations must render as directional arrows — the              flow chart's primary lineage signal"
         );
     }
 
