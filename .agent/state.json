@@ -7,13 +7,15 @@
     "the rejected list is the part that stops cycles rediscovering the same",
     "non-defects. See CLAUDE.md and docs/OPERATIONAL_CONSTITUTION.md."
   ],
-  "cycle_count": 5,
-  "last_verified_commit": "2fbbf1ec",
+  "cycle_count": 6,
+  "last_verified_commit": "5e1614053",
   "verified_against": {
     "note": "This crate declares NO [features]; `--all-features` is a no-op here. The authoritative gate is scripts/gate.sh, which spans several workflow files and includes the rustdoc-lint and MSRV passes that reconstructing from ci.yml alone drops.",
     "toolchain": "1.97.1 (rust-toolchain.toml)",
-    "msrv": "1.88",
-    "edition": "2024"
+    "msrv": "1.88 — NOT locally verifiable (no MSRV toolchain installed on this host); CI's MSRV job is the authority",
+    "cross_build": "aarch64-linux-android — NOT locally verifiable (no Android NDK on this host); CI's aarch64-android job is the authority",
+    "local_result": "cargo test --all --locked = 5990 lib + 117 api + 56 smoke + all other integration suites, 0 failed; clippy --all-targets --locked -- -D warnings clean; fmt clean; node --check clean on every modified JS file",
+    "ci_result_prior_head": "All 6 GitHub Actions checks (clippy, MSRV 1.88, aarch64-linux-android Termux build, install.sh syntax, Check & test Linux x86_64, rust-clippy analyzing) passed on c532272f0 (the main-merge head, before this cycle's 4 commits) — first green CI run since Actions stopped firing for this branch at 4950b7369. This cycle's 4 commits (a957585c6..5e1614053) are pushed together with this state.json update and still need their own CI pass."
   },
   "completed_slots": [
     {
@@ -82,6 +84,11 @@
       "id": "OB-1",
       "summary": "`cargo tree --duplicates` reports getrandom at v0.2.17, v0.3.4 and v0.4.3. All three are transitive and not directly reachable from this crate's manifest: 0.2 via ring -> rustls -> reqwest, 0.3 via proptest -> rand_core (a dev-dependency only), 0.4 separately. Deduplicating would mean forcing versions on ring/rustls, which is a larger risk than the duplication.",
       "action": "none — recorded so a later cycle does not re-derive it"
+    },
+    {
+      "id": "OB-12",
+      "observation": "VERIFIED NEGATIVE, so a future cycle does not re-check: neither builtwith nor proxycurl hand-roll URL encoding -- both correctly reuse crate::util::http::urlencode (builtwith/mod.rs:158, proxycurl/url.rs). Also checked and ruled out as a candidate: cargo clippy::must_use_candidate (pedantic, not in clippy::all, not promoted in Cargo.toml's curated list) flags 284 sites crate-wide -- deliberately NOT adopted wholesale here, consistent with the repo's own stated philosophy in Cargo.toml ('Curated high-signal modernizations... deliberately NOT enforced' for stylistic/high-churn lints). A wholesale pedantic-group adoption is not a well-scoped single-cycle slot; if pursued, it should be curated few-at-a-time like the existing promoted lints, not bulk-enabled.",
+      "action": "closed / recorded as deliberate non-adoption"
     }
   ],
   "rejected_candidates": [
@@ -228,7 +235,7 @@
     "5_scope": "Check the module against SECURITY.md and against already-registered peers. proxycurl is the same class as hunter_io/epieos/contact_enrich/emailrep, all already in main."
   },
   "web_console_parallel_track": {
-    "note": "This block records a SECOND autonomous loop that ran on branch claude/pipeline-refactor-repair-urjrgk IN PARALLEL with main's module-extraction cycles (2-5 above). Both forked from #364's cycle-1 state, so both number their own cycles from 2; those numbers are NOT the cycle_2_slots..cycle_5_slots on main's spine, which are unrelated work. Kept as a separate key rather than renumbered into main's sequence because pretending this work came after main's cycle 5 would be false. Its commits landed via PR #365; every one was verified with cargo test --all --locked + clippy -D warnings + fmt before commit.",
+    "note": "This block records a SECOND autonomous loop that ran on branch claude/pipeline-refactor-repair-urjrgk IN PARALLEL with main's module-extraction cycles (2-5 above). Both forked from #364's cycle-1 state, so both number their own cycles from 2; those numbers are NOT the cycle_2_slots..cycle_5_slots on main's spine, which are unrelated work. Kept as a separate key rather than renumbered into main's sequence because pretending this work came after main's cycle 5 would be false. Its commits landed via PR #365; every one was verified with cargo test --all --locked + clippy -D warnings + fmt before commit. RETIRED as of cycle 6: claude/pipeline-refactor-repair-urjrgk merged main (c532272f0) and all subsequent cycles (6+) are recorded directly under cycle_N_slots on this single spine, same as main's own cycles 2-5. This block is kept only as the historical record of the parallel period; no further entries will be added to it.",
     "theme": "The maintainer's two stated goals: make the web console lightweight without losing functionality (esp. the graph), and stop the Termux aarch64 no-root web UI crashing during scans. Driven by real device telemetry (captured event logs of 47/535/587/598 events and debug bundles from the device).",
     "cycles": {
       "track_cycle_1": "Entity-extraction / ingest pipeline: validated IPv4 via Ipv4Addr (was emitting 999.1.2.3 / leading-zero / multicast as valid), validated IPv6 extraction, csv::Writer round-trip for `hse ingest -f csv`, EntityKind to_str<->from round-trip, is_private_ipv4 via Ipv4Addr::is_private, self_restart exit(1) not panic, advisory bench-smoke.yml, entity_extractor ingest-path benchmark, correlation log-line de-duplication.",
@@ -323,5 +330,37 @@
       "candidate": "Trim src/web/css/app.css (80,564 B — the largest embedded asset) by removing unused Bootstrap-style grid classes, for the 'lightweight UI' objective.",
       "reason": "REJECTED on measurement, not on principle. 30 of the 48 .col-{xs,sm,md,lg}-N rules are provably unreferenced across all JS, spa.html and every .rs file — but they occupy 746 B of 78,704 B (0.9%). The stylesheet is not bloated: 450 rule blocks, 453 distinct selectors, only 9% comments, for a 34-view SPA. A sub-1% saving is not worth the layout-regression risk on classes a future view may legitimately use. NOTE for future cycles: a naive 'unreferenced class' sweep over app.css yields 66 false positives — k-*, lv-*, cost-* and cv-* are all built dynamically (kindPill/costPill in helpers.js, `log-row lv-${...}` in log.js and live.js, `corr-card cv-${...}` in correlations.js) and are LIVE."
     }
-  }
+  },
+  "cycle_6_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "instruction": "Escape target values before interpolating into the FOFA search filter, closing a query-injection path reachable via unvalidated pivot targets.",
+      "outcome": "DONE (a957585c6). fofa_filter built ip=\"{value}\"/host=\"{value}\" with target.value interpolated raw. Seed targets are validated (Target::validate restricts Domain to alnum/./-/_, parses IpAddress via std::net::IpAddr) but pivot targets built during expansion (Target::new(tk, entity.value.clone()), core/engine/mod.rs:1490,2121) are NOT revalidated before dispatch -- and this module itself mints Domain/IP entities straight from FOFA's own JSON response (hit.domain, hit.ip in build_entities), untrusted provider data. escape_fofa_value backslash-escapes \\ then \" (order matters). 4 tests: injection neutralized with a decisive substring-absence check, backslash-before-quote ordering, and the ordinary-value no-regression case."
+    },
+    {
+      "slot": 2,
+      "category": "HARDENING",
+      "instruction": "Closes OB-11. Stop scan-info fetching relations on every tab/every 8s refresh when only the Graph tab consumes them.",
+      "outcome": "DONE (5a9b98dca). renderScanInfo fetched entities+correlations+relations unconditionally on every render (all 7 tabs, the 8s live-refresh while a scan runs). Confirmed via grep across every scan_info/*.js that S.relations has exactly one functional consumer: graph.js. wantRelations = activeTab==='graph' gates the fetch; false branch uses Promise.resolve({relations:[]}) (a real elision, zero network round-trips) not a fetch-and-discard. entities/correlations stay unconditional (used by browse/correlations/graph/header stat cards)."
+    },
+    {
+      "slot": 3,
+      "category": "COMPLETION",
+      "instruction": "Remove JS modules orphaned by the tab-streamline refactor and repoint the test that asserted content inside the dead code.",
+      "outcome": "DONE (06a90a358). Discovered TWO dead files during slot 2's verification, not one: status.js (renderStatus) AND relations.js (renderRelations) -- both zero importers since the Correlations-gets-its-own-tab streamline (#301), both still include_bytes!-embedded and served. 6,710 B removed. relations.js was a real capability (sortable typed-edge table), not junk -- disclosed in the commit and to the user rather than silently dropped: the same data remains visible via the Graph tab's edges, GEXF export (does carry relations), and the raw /scans/{id}/relations endpoint; it is NOT in the JSON report bundle (the one place this got strictly harder to reach). Removal, not restoration, matches the maintainer's explicit lightweight/basic-graph direction. Repointed embedded_spa_deep_links_resolve_to_a_visible_section from status.js's dead prose-link to report.js's live nav(...&tab=corr) call."
+    },
+    {
+      "slot": 4,
+      "category": "UPGRADE",
+      "instruction": "resolve_scan_id's non-complete warning wrongly told an Aborted scan its data 'may be incomplete' / 'recovering checkpointed (partial) entities'.",
+      "outcome": "DONE (5e1614053). ScanStatus::Aborted's own doc comment guarantees an aborted scan's persisted entities are as final as a Complete scan's -- no writer racing, no more data arriving. The blanket != Complete check bucketed it with Failed/Pending/Running (which genuinely can still change). Extracted scan_incompleteness_warning(status, raw) -> Option<String>, a pure function, so the distinction is unit-testable without capturing stderr. 3 tests: Complete silent, Aborted gets its own accurate 'stopped early... final' message (asserted to NOT contain the old partial-recovery phrasing), Failed/Pending/Running keep that phrasing verbatim (looped, so a future status isn't silently uncovered)."
+    },
+    {
+      "slot": 5,
+      "category": "GAP-ANALYSIS",
+      "instruction": "Record cycle 6 in .agent/state.json now that the branches are merged into one spine; retire the parallel-track bookkeeping.",
+      "outcome": "DONE (this entry). See retirement note below."
+    }
+  ]
 }
