@@ -7,8 +7,8 @@
     "the rejected list is the part that stops cycles rediscovering the same",
     "non-defects. See CLAUDE.md and docs/OPERATIONAL_CONSTITUTION.md."
   ],
-  "cycle_count": 2,
-  "last_verified_commit": "8da68560",
+  "cycle_count": 3,
+  "last_verified_commit": "77e73134",
   "verified_against": {
     "note": "This crate declares NO [features]; `--all-features` is a no-op here. The authoritative gate is scripts/gate.sh, which spans several workflow files and includes the rustdoc-lint and MSRV passes that reconstructing from ci.yml alone drops.",
     "toolchain": "1.97.1 (rust-toolchain.toml)",
@@ -102,7 +102,36 @@
       "status": "COMPLETE (8da68560) — FOUND IN REAL SCAN TELEMETRY, not by inspection. A 47-event scan logged `⚡ High cross-source corroboration` nine times byte-identically (12 correlations total). AU-003 correctly emits one Correlation per corroborated entity and each carries a distinguishing `description`; EventKind::log_summary printed only rule_name and discarded it. cli::live had always rendered both, so the event log was the outlier. Two regression tests added."
     }
   ],
+  "cycle_3_slots": [
+    {
+      "slot": 1,
+      "category": "UPGRADE",
+      "instruction": "Remove the per-event O(n) work the scan views do in the browser during a live scan.",
+      "status": "COMPLETE (d72041e1) — two hot paths, both behaviour-preserving. (a) scan_info/graph.js resolved correlation-hub corroboration with S.entities.find(...) nested two loops deep: O(correlations x members x entities); a captured 371-entity / 32-correlation scan is millions of string compares per re-layout. Now a uid->entity Map, the pattern the file already used for nodesById. (b) scan_info/log.js re-sorted the type histogram, rewrote its innerHTML, and read box.scrollHeight (forcing synchronous layout) once PER EVENT — ~600 full re-renders and ~600 forced reflows for a 598-event scan. Both are idempotent and only the last is observable, so they coalesce into one animation frame; counting stays synchronous so the breakdown still covers every event."
+    },
+    {
+      "slot": 2,
+      "category": "UPGRADE",
+      "instruction": "Drop the vendored D3 force layout; make the graph extremely basic without losing functionality.",
+      "status": "COMPLETE (77e73134) — D3 v3 was the last vendored front-end asset (151,725 B) and its continuous force simulation was the most expensive thing the UI did, running over hundreds of nodes on the same device running the scan. Replaced by a deterministic concentric SVG layout computed once in O(nodes), drawn against the DOM with pointer events. Preserved: kind colours, corroboration radius, truncated labels, tooltips, legend, #graph-cap notice, GEXF, Re-layout, Reset view, node drag, canvas pan, pinch/scroll zoom, and every ceiling (GRAPH_MAX_NODES/LINKS, CORR_MAX_SPOKES, star-not-clique). src/web 583,772 -> 439,346 B (-24.7%) and the same bytes leave the binary; VENDOR_FILES is now empty. Deleted a bug class too: the old D3-v3 string-endpoint guard test is obsolete, replaced by one asserting the engine cannot creep back and no per-frame loop runs."
+    }
+  ],
   "observations": [
+    {
+      "id": "OB-5",
+      "summary": "OB-4 RESOLVED, and my earlier smtp_vrfy hypothesis was WRONG. Device debug bundles show `status : Running` — the operator exported them mid-scan, so a log ending at a bare `module >` line is an export boundary, not a hang. Confirmed by counter-example: the 535-event log cuts at `> emailrep` while `smtp_vrfy` COMPLETED in that same run (`smtp_vrfy (1 found)`), and the 598-event log cuts at `> smtp_vrfy`. Different terminal modules, no fixed event cap (598 vs 535) — consistent with export-while-running, not with any one module hanging.",
+      "action": "closed — do not re-open on log truncation alone"
+    },
+    {
+      "id": "OB-6",
+      "summary": "OPEN BUG, not yet fixed: the debug bundle's FULL DOSSIER header prints `modules : 0 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped` while the SAME scan's event log records 60 module_done, 9 module_error, 11 module_skipped, 70 module_start (entities 264, status Running). The module counters are dead zeros in the dossier. Cause not yet established — likely the counters are only populated at scan completion, or the dossier reads a default/fresh stats struct. Needs the renderer located (grep for \"timed out\" / \"deduped\") and the data source traced before a fix.",
+      "action": "open — next cycle's highest-value DEBUG candidate"
+    },
+    {
+      "id": "OB-7",
+      "summary": "Web payload after cycle 3: src/web = 439,346 B across 44 files. Remaining weight is css/app.css 80,548 B and js/ 342,781 B (largest: views/opts.js 37,151, views/new_scan.js 36,676, scan_info/stealer.js 24,135). The event log (scan_info/log.js) still appends one DOM row per event with NO cap — ~600 rows for a real scan. Capping it would change what the 'Save shown' button saves, so it needs a deliberate decision rather than a silent truncation.",
+      "action": "open — candidates for the next lightweight pass"
+    },
     {
       "id": "OB-2",
       "summary": "Verified NEGATIVES from the cycle-2 sweep — recorded so later cycles stop re-deriving them. (a) Production `.unwrap()` count is genuinely 0; the 55 production `.expect()` hits are infallible-by-construction (literal Regex::new, aho-corasick over static patterns, tokio runtime / reqwest client init) — the earlier rejection of 'eliminate unwrap/panic/unsafe' is correct as written. (b) All 19 `unsafe` textual hits are CSP header strings ('unsafe-inline') and prose; forbid(unsafe_code) holds. (c) core::classifier does NOT share the IPv4 over-acceptance bug that entity_extractor had: `extract` keeps a dotted-quad only if classify() resolves it to IpAddress, and TargetKind::detect (core/scan/mod.rs:213) gates on `v.parse::<std::net::IpAddr>()`, so 999.1.2.3 and leading-zero forms are already rejected on the engine path. (d) modules/dns_axfr is safe AND already proptested (extract_name_is_total, extract_name_rejects_pointer_loops, build_axfr_query_is_total) — a totality proptest there would be pure duplication.",
