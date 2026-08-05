@@ -544,10 +544,12 @@ pub(crate) fn attachment_response(
 }
 
 /// RFC-4180 CSV field escaping with **formula-injection defanging**: a field
-/// whose first byte is `= + - @ TAB CR` is prefixed with a `'` so Excel /
-/// LibreOffice don't execute it as a formula on open (OWASP CSV-injection), then
-/// any field containing `, " \n \r` is double-quoted with embedded quotes doubled.
-/// Every cell in an exported scan CSV passes through this.
+/// whose first byte is `= + - @ TAB CR` — or `'` itself, which is guarded too so
+/// the escape stays invertible, see [`formula_guard`] — is prefixed with a `'`
+/// so Excel / LibreOffice don't execute it as a formula on open (OWASP
+/// CSV-injection), then any field containing `, " \n \r` is double-quoted with
+/// embedded quotes doubled. Every cell in an exported scan CSV passes through
+/// this.
 pub(crate) fn csv_escape(s: &str) -> String {
     let body = formula_guard(s);
     if body.contains([',', '"', '\n', '\r']) {
