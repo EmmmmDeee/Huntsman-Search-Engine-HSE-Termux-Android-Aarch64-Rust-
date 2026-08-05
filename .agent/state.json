@@ -8,8 +8,8 @@
     "non-defects. See CLAUDE.md and docs/OPERATIONAL_CONSTITUTION.md.",
     "cycle 9 sweep (wf_e136c553): 5 dims x adversarial verify. REFUTED as not-a-defect (do not re-open): AbortOnDrop doc claim (engine/mod.rs:158 — the doc is actually true); enrich_geospatial catch_unwind is not over-guarding worth removing; diagnostics ModuleLedger HashMap->BTreeMap (failure scenario unachievable); /scans/{id}/stealer-rows 'unbounded' (deliberate, documented, tested design); scan-log DOM O(n) (already capped at LOG_MAX_ROWS=1200, committed design). DEFERRED confirmed findings for a future cycle (recorded, not lost): F2 latest_completed_scan skips Aborted scans (storage/mod.rs:513 — `hse export/diff latest` jumps past an aborted scan); F3 live/radar session cancel handle shared with per-iteration wall-time watchdog (core/live/mod.rs:433); F4 scans.js dashboard has no `aborted` bucket + computes an unrendered `failed` count; F18 SPA discards /entities pagination envelope so Browse understates a truncated large scan (index.js:44); F20 dossier upload reads whole file to a JS string with no client-side size check (new_scan.js:445); F22 Scan-Log SSE never resolves the pill to 'complete' when the tailed scan finishes (log.js:89). These are the top of cycle-10's pool; F2 pairs naturally with cycle-9 slot 1 (both terminal-state correctness)."
   ],
-  "cycle_count": 11,
-  "last_verified_commit": "82ed37bab",
+  "cycle_count": 12,
+  "last_verified_commit": "86bfa90f6",
   "verified_against": "cargo test --all --locked: 14 binaries + doctests, 0 failed (cycle 10 head d4f59952a). clippy --all-targets -D warnings + fmt clean per slot. aarch64-android + MSRV are CI authority; CI run-creation stalled on this branch since #2142/306370a56 so cycles 9-10 are locally gate-green but CI-unvalidated.",
   "completed_slots": [
     {
@@ -458,5 +458,43 @@
       "summary": "renderLog opened SSE only when running at render time and set a terminal pill only in a one-shot !running block, so a scan finishing DURING the stream left the pill 'live'/'reconnecting' forever. Detect the terminal scan_complete event in the SSE callback -> set the pill to its true terminal state (complete/aborted/failed from the carried status) and closeSse(); the state callback bails when S.sse is null so the close-triggered flap can't overwrite it. Drains the last sweep-pool item."
     }
   ],
-  "sweep_pool_status": "EXHAUSTED. The cycle-9 27-agent 5-dimension adversarially-verified sweep produced 22 findings; 17 confirmed and now all delivered (cycle 9: F1/F5/F6/F9-F14/F15/F16; cycle 10: F2/F3/F4/F18/F20; cycle 11: F22), 5 refuted-as-not-a-defect and recorded so they are not re-opened (F7/F8/F17/F19/F21). Further work requires a fresh inspection. BLOCKER: GitHub Actions run-creation stalled on this branch since run #2142 (306370a56), so cycles 9-11 are locally gate-green but CI-unvalidated and unmergeable until run-creation recovers."
+  "sweep_pool_status": "EXHAUSTED. The cycle-9 27-agent 5-dimension adversarially-verified sweep produced 22 findings; 17 confirmed and now all delivered (cycle 9: F1/F5/F6/F9-F14/F15/F16; cycle 10: F2/F3/F4/F18/F20; cycle 11: F22), 5 refuted-as-not-a-defect and recorded so they are not re-opened (F7/F8/F17/F19/F21). Further work requires a fresh inspection. BLOCKER: GitHub Actions run-creation stalled on this branch since run #2142 (306370a56), so cycles 9-11 are locally gate-green but CI-unvalidated and unmergeable until run-creation recovers.",
+  "cycle_12_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "a09cab97b",
+      "finding": "F1",
+      "summary": "cli/live render_event ScanComplete arm discarded status, printing 'scan complete' for aborted/failed sweeps in the fully-unredacted `hse live -v` view (same class as cycle-9-slot-1 events.log fix; streaming renderer was missed). Bind status, branch like log_summary. + test."
+    },
+    {
+      "slot": 2,
+      "category": "DEBUG",
+      "commit": "3c3f61f93",
+      "finding": "F8",
+      "summary": "is_tracking_id_shaped GA4 arm accepted G- + 2..=12 alphanumeric, so G-Eazy/G-Unit/G-Dragon (names) were misdetected as TrackingId. Pinned canonical GA4 shape (len==10 AND >=1 digit). Added first tests for the detector (positives all 4 Google forms; negatives the names + malformed; detect() mapping)."
+    },
+    {
+      "slot": 3,
+      "category": "HARDENING",
+      "commit": "df8b1301f",
+      "finding": "F2",
+      "summary": "hse scan --output dispatch special-cased only json/dossier and silently rendered table for anything else, so `--output josn` ran the whole scan then broke `| jq`. Added validate_scan_output_format (pure, tested) up front before scan/batch, mirroring cmd_query."
+    },
+    {
+      "slot": 4,
+      "category": "HARDENING",
+      "commit": "5781ac623",
+      "finding": "F6",
+      "summary": "install.sh built with -C target-cpu=native then cached the binary to Downloads as hse-aarch64-linux-android for 'another aarch64 phone' to reuse -> SIGILL on an older SoC. Dropped target-cpu=native so the redistributed artifact is a portable ARMv8-A baseline (matches CI Release build). Kept --as-needed."
+    },
+    {
+      "slot": 5,
+      "category": "UPGRADE",
+      "commit": "86bfa90f6",
+      "finding": "F5",
+      "summary": "lazy_static was a direct dep used at one site (patterns.rs, 3 regexes) while std LazyLock is used 40+ sites. Migrated to LazyLock<Regex> (derefs identically, no call-site changes), removed lazy_static from Cargo.toml (remains transitively via sharded-slab only)."
+    }
+  ],
+  "cycle_12_provenance": "Slots from a second 14-agent adversarially-verified sweep (workflow wf_c9c3a6b6-580) over areas the cycle-9 sweep did NOT cover: OSINT module family, CLI/runtime, crate-wide failure-isolation, packaging/release/config, non-correlator test gaps. 8 confirmed, 1 refuted (F9 ACN-test-gap). The failure-isolation dimension returned GENUINELY CLEAN (0 production unwrap holds under adversarial-input analysis) — reported honestly, not padded. Deferred to cycle 13 pool with rationale: F3 (fofa produces() advertises Organisation it never emits — low-value misleading-code cleanup), F4 (fofa row-shape/port decode fails on real FOFA response — real but the fix needs FOFA live schema unverifiable from this sandbox; needs a captured response body), F7 (image default-features pull rav1e/exr — real bloat but the fix needs a careful audit of which image formats the code actually decodes before narrowing features). NOTE process slip caught+fixed: slot-2 fmt violation was committed before fmt confirmed (background check masked it); folded into slot 2 via amend (unpushed at the time). Also: cycle-12 full-suite first run failed with ENOSPC at link time (per-session disk allowance spent) NOT a code defect — cleared incremental cache + logs (freed 11G), re-ran green."
 }
