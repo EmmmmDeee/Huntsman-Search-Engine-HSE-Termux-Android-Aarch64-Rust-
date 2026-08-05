@@ -217,6 +217,15 @@
         "leave and document (leaves coordinates recoverable)"
       ],
       "status": "open \u2014 needs a decision on the redaction API before implementation"
+    },
+    {
+      "id": "dangling-docs-citations",
+      "category": "GAP-ANALYSIS",
+      "evidence_level": "L4 \u2014 enumerated exhaustively; every cited docs/*.md path checked against the filesystem",
+      "detail": "26 references to 11 docs/*.md files that do not exist, across 18 files including src/lib.rs:21 and tests/architecture.rs. Missing: ARCHITECTURE_AUDIT(3), CONVENTIONS(4), MODULES(2), OPENAPI_SCHEMA(1), PROBLEM_TREE(3), REGISTRY-API(1), RUNTIME_INDEPENDENCE(3), SEEKNOW_INTEGRATION_SUMMARY(2), SOLUTION_TREE(2), USAGE(3), data_retention_design(2). Several cite SECTION NUMBERS of the nonexistent document (e.g. paths.rs 'PROBLEM_TREE \u00a77 S3', doctor/mod.rs 'CONVENTIONS.md \u00a75', cert_intel 'PROBLEM_TREE.md \u00a73.F').",
+      "why_it_matters": "CLAUDE.md directs contributors (human and agent) to these docs as authority. An agent following 'see docs/CONVENTIONS.md \u00a75' finds nothing and may invent the convention. This is a fabrication vector in a repo whose constitution forbids fabricating sources.",
+      "prescribed_fix": "Do NOT author the 11 documents \u2014 that would fabricate authority that never existed. Strip the dangling path from each citation while KEEPING the substantive prose (most already quote the rule inline, e.g. 'no HashMap-iteration-order leaks into output'), and redirect pure pointers ('full charter in docs/RUNTIME_INDEPENDENCE.md', 'See docs/USAGE.md for the full reference') to the real enforcement site \u2014 tests/architecture.rs guards, `hse --help`, `hse modules` \u2014 which CLAUDE.md already declares the source of truth. 26 sites, each needing individual judgement; not a regex pass.",
+      "status": "open \u2014 verified and scoped, not started"
     }
   ],
   "cycle_2_slots": [
@@ -259,7 +268,8 @@
     "slot_1": "DONE \u2014 DEBUG \u2014 ingest CSV emitted non-RFC-4180 backslash escapes and bypassed the formula-injection guard (69edfcb01)",
     "slot_2": "DONE \u2014 HARDENING \u2014 ingest --min-confidence nan/inf/out-of-range silently discarded the whole result set (3c5702142)",
     "slot_3": "BLOCKED \u2014 UPGRADE \u2014 redact leaves a plaintext-derived uid in --redact exports. Defect PROVEN (see open_defects/redact-uid-leaks-plaintext-hash) but the fix requires remapping relation endpoints through redaction, which is an API change. Escalated to the operator; not attempted.",
-    "slot_4": "NOT STARTED \u2014 GAP-ANALYSIS \u2014 src/lib.rs:21 cites ten docs/*.md files that do not exist",
-    "slot_5": "NOT STARTED \u2014 COMPLETION \u2014 src/app/cells/mod.rs:400 `hse cells clear` never VACUUMs"
+    "slot_4": "NOT STARTED \u2014 GAP-ANALYSIS \u2014 verified: 26 dangling docs/*.md citations across 18 files (see open_defects/dangling-docs-citations). Fully scoped for a later cycle; not begun rather than half-done.",
+    "slot_5": "NOT STARTED \u2014 COMPLETION \u2014 src/app/cells/mod.rs:400 `hse cells clear` never VACUUMs; unverified, inherited from the sweep.",
+    "cycle_outcome": "2 of 5 slots completed and merged-ready (PR #367, 8/8 CI green). Slot 3 BLOCKED on an operator decision and then withdrawn on instruction. Slots 4-5 scoped, not started. Stopped rather than half-do a 26-site edit."
   }
 }
