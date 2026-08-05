@@ -404,9 +404,15 @@ async fn persist_import(
         }
     }
 
+    // Run the full correlator under the same panic guard the scan finalise path
+    // uses (`guarded_correlation_pass`): a rule panicking on adversarial imported
+    // data must degrade to "no correlations", not unwind the whole import after
+    // the entities were already persisted and shown to the operator.
     let mut correlations = 0usize;
-    let correlator = crate::core::correlator::Correlator::new(Arc::clone(&store));
-    if let Ok(hits) = correlator.run(sid) {
+    let guard_store = Arc::clone(&store);
+    if let Some(hits) = crate::core::engine::guarded_correlation_pass(sid, move || {
+        crate::core::correlator::Correlator::new(guard_store).run(sid)
+    }) {
         for c in &hits {
             if store.upsert_correlation(c).is_ok() {
                 correlations += 1;

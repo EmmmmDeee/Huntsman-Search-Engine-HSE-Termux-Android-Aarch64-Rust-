@@ -618,18 +618,18 @@ fn finalise_correlation_pass_survives_a_panicking_rule() {
     // scan harvested. The guard degrades a caught panic to `None` (no finalise
     // correlations), exactly as the live incremental pass does, so the scan still
     // finalises.
-    let panicked = guarded_finalise_correlation("s", || panic!("kaboom in a correlation rule"));
+    let panicked = guarded_correlation_pass("s", || panic!("kaboom in a correlation rule"));
     assert!(
         panicked.is_none(),
         "a panicking finalise pass must be caught and degrade to no firings, not unwind"
     );
 
     // A returned error is likewise swallowed to `None` (unchanged behaviour).
-    let errored = guarded_finalise_correlation("s", || Err(Error::module("correlator", "boom")));
+    let errored = guarded_correlation_pass("s", || Err(Error::module("correlator", "boom")));
     assert!(errored.is_none(), "a returned error yields no firings");
 
     // The happy path passes the firings straight through for emission.
-    let ok = guarded_finalise_correlation("s", || {
+    let ok = guarded_correlation_pass("s", || {
         Ok(vec![Correlation::new(
             "AU-000",
             "test correlation",
