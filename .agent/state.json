@@ -8,16 +8,9 @@
     "non-defects. See CLAUDE.md and docs/OPERATIONAL_CONSTITUTION.md.",
     "cycle 9 sweep (wf_e136c553): 5 dims x adversarial verify. REFUTED as not-a-defect (do not re-open): AbortOnDrop doc claim (engine/mod.rs:158 — the doc is actually true); enrich_geospatial catch_unwind is not over-guarding worth removing; diagnostics ModuleLedger HashMap->BTreeMap (failure scenario unachievable); /scans/{id}/stealer-rows 'unbounded' (deliberate, documented, tested design); scan-log DOM O(n) (already capped at LOG_MAX_ROWS=1200, committed design). DEFERRED confirmed findings for a future cycle (recorded, not lost): F2 latest_completed_scan skips Aborted scans (storage/mod.rs:513 — `hse export/diff latest` jumps past an aborted scan); F3 live/radar session cancel handle shared with per-iteration wall-time watchdog (core/live/mod.rs:433); F4 scans.js dashboard has no `aborted` bucket + computes an unrendered `failed` count; F18 SPA discards /entities pagination envelope so Browse understates a truncated large scan (index.js:44); F20 dossier upload reads whole file to a JS string with no client-side size check (new_scan.js:445); F22 Scan-Log SSE never resolves the pill to 'complete' when the tailed scan finishes (log.js:89). These are the top of cycle-10's pool; F2 pairs naturally with cycle-9 slot 1 (both terminal-state correctness)."
   ],
-  "cycle_count": 9,
-  "last_verified_commit": "18e3ace99",
-  "verified_against": {
-    "note": "Cycle 9 verified locally on this host; the aarch64-android cross-build and MSRV 1.88 are CI's authority (no Android NDK here) and were GREEN on PR #372 head e579f01cb (the cycle-8 correlator-floor commit) per get_check_runs.",
-    "toolchain": "rustc 1.97.1",
-    "msrv": "1.88 (CI job green on e579f01cb)",
-    "cross_build": "aarch64-linux-android CI job green on e579f01cb; not reproducible on this host (no NDK)",
-    "local_result": "cargo test --all --locked: 6015 lib + all integration binaries + doctests, 0 failed (cycle 9 head 18e3ace99)",
-    "ci_result_prior_head": "PR #372 head e579f01cb: all 7 checks success (Check&test, MSRV 1.88, aarch64-android build, install.sh, clippy x2, bench-smoke)."
-  },
+  "cycle_count": 10,
+  "last_verified_commit": "d4f59952a",
+  "verified_against": "cargo test --all --locked: 14 binaries + doctests, 0 failed (cycle 10 head d4f59952a). clippy --all-targets -D warnings + fmt clean per slot. aarch64-android + MSRV are CI authority; CI run-creation stalled on this branch since #2142/306370a56 so cycles 9-10 are locally gate-green but CI-unvalidated.",
   "completed_slots": [
     {
       "cycle": 0,
@@ -417,5 +410,43 @@
       "instruction": "Cover six untested correlator severity-escalation branches: AU-030, AU-062, AU-064, AU-067, AU-069, AU-070.",
       "outcome": "DONE (18e3ace99). 8 tests, each asserting out.len()==1 AND the escalated Severity so the fixture provably reaches the branch. Corrected two sweep-finder inaccuracies: AU-030 counts distinct corroborating source NAMES (not families/entity-count); AU-069's 0.75 is the base Medium arm (High@>=0.85 already covered by au069_fires_on_an_end_to_end_strong_route; no Critical rung). Test-only, no production change."
     }
-  ]
+  ],
+  "cycle_10_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "aa5a0a5fe",
+      "finding": "F2",
+      "summary": "latest_completed_scan filtered status='complete', silently skipping aborted scans (final data). Broadened SQL to IN ('complete','aborted'); renamed latest_finished_scan; resolve_scan_id 'latest' now routes through scan_incompleteness_warning; regression test newest-aborted wins over older-complete, newest-failed does not."
+    },
+    {
+      "slot": 2,
+      "category": "DEBUG/concurrency",
+      "commit": "2c46719fd",
+      "finding": "F3",
+      "summary": "session_loop shared the one session CancelHandle into every iteration's ctx.cancel, so the engine per-iteration wall-time watchdog latched the whole session's one-way flag, ending the live session after one bounded iteration. Each iteration now gets its own handle; spawn_stop_forwarder bridges a session-stop into the in-flight iteration (documented DELETE-aborts-iteration behavior preserved) and is aborted the instant the iteration returns. Tests: session-stop propagates; iteration-cancel never latches session."
+    },
+    {
+      "slot": 3,
+      "category": "DEBUG",
+      "commit": "f5bead6c2",
+      "finding": "F18",
+      "summary": "SPA discarded the /entities pagination envelope, so Browse counts reported the fetched page (default limit 1000) as the whole scan, contradicting the header stat card. Capture S.entitiesTotal from envelope.total; disclose truncation in browse.js ('N of L loaded / T in scan' + a note counts/filters cover the loaded slice, export for the full set)."
+    },
+    {
+      "slot": 4,
+      "category": "DEBUG",
+      "commit": "1ae65e56a",
+      "finding": "F4",
+      "summary": "scanStats had no 'aborted' bucket (aborted scans inflated total/entities but appeared in no tally) and computed a 'failed' count it never rendered. Added aborted bucket; surface aborted+failed as a sub-label under the Complete stat card when non-zero."
+    },
+    {
+      "slot": 5,
+      "category": "HARDENING",
+      "commit": "d4f59952a",
+      "finding": "F20",
+      "summary": "uploadDossier did await f.text() with no size check, spiking memory on a Termux phone for a huge upload that the server's 16MB DefaultBodyLimit would reject anyway. Added a client-side 16MB (MAX_UPLOAD_BYTES) guard before the read."
+    }
+  ],
+  "cycle_10_provenance": "Slots drawn from the same 27-agent 5-dimension adversarially-verified sweep as cycle 9 (deferred Rust+JS findings). F3 was the last architecturally-significant Rust item. Remaining deferred sweep finding, cycle 11 pool: F22 (scan_info/log.js SSE never resolves to a terminal status when the tailed scan finishes — pill stays live/reconnecting). Cycle-9 refuted findings (do not re-open): F7 AbortOnDrop doc, F8 enrich_geospatial guard, F17 ModuleLedger map type, F19 stealer-rows pagination (deliberate/tested), F21 scan-log DOM cap (already capped/committed design)."
 }
