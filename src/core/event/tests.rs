@@ -345,3 +345,43 @@ use super::*;
         .1;
         assert_eq!(line, "⚡ Some rule");
     }
+
+    // ── ModuleEventTally ────────────────────────────────────────────────
+
+    #[test]
+    fn module_event_tally_counts_each_module_kind_and_ignores_the_rest() {
+        let ev = |kind| Event::new("s", kind);
+        let events = vec![
+            ev(EventKind::ModuleStart { module: "a".into() }),
+            ev(EventKind::ModuleStart { module: "b".into() }),
+            ev(EventKind::ModuleDone { module: "a".into(), found: 3 }),
+            ev(EventKind::ModuleError { module: "b".into(), error: "boom".into() }),
+            ev(EventKind::ModuleSkipped { module: "c".into(), reason: "no key".into() }),
+            // Non-module events must not be counted into any bucket.
+            ev(EventKind::ScanComplete { scan_id: "s".into(), entity_count: 9 }),
+            ev(EventKind::ExpansionStop { reason: "depth".into() }),
+        ];
+        let t = ModuleEventTally::from_events(&events);
+        assert_eq!(t.started, 2);
+        assert_eq!(t.done, 1);
+        assert_eq!(t.errored, 1);
+        assert_eq!(t.skipped, 1);
+        assert!(!t.is_empty());
+        assert_eq!(
+            t.summary_line(),
+            "2 module_start, 1 module_done, 1 module_error, 1 module_skipped"
+        );
+    }
+
+    #[test]
+    fn module_event_tally_is_empty_when_no_module_activity_was_recorded() {
+        assert!(ModuleEventTally::from_events(&[]).is_empty());
+        let only_scan = vec![Event::new(
+            "s",
+            EventKind::ScanStart {
+                target_kind: "email".into(),
+                target_value: "a@b.com".into(),
+            },
+        )];
+        assert!(ModuleEventTally::from_events(&only_scan).is_empty());
+    }
