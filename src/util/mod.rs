@@ -37,6 +37,7 @@ pub mod html;
 pub mod http;
 pub mod identity;
 pub mod json;
+pub mod key_fingerprint;
 pub mod key_harvest;
 pub mod key_health;
 pub mod key_pool;
