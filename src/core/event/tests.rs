@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::scan::ScanStatus;
 
     // ── Event::new ──────────────────────────────────────────────────────
 
@@ -10,6 +11,7 @@ use super::*;
             EventKind::ScanComplete {
                 scan_id: "scan-42".into(),
                 entity_count: 0,
+                status: ScanStatus::Complete,
             },
         );
         let after = unix_now();
@@ -106,6 +108,7 @@ use super::*;
         let kind = EventKind::ScanComplete {
             scan_id: "scan-99".into(),
             entity_count: 42,
+            status: ScanStatus::Aborted,
         };
         let json = serde_json::to_string(&kind).expect("should succeed");
         let back: EventKind = serde_json::from_str(&json).expect("should succeed");
@@ -113,12 +116,70 @@ use super::*;
             EventKind::ScanComplete {
                 scan_id,
                 entity_count,
+                status,
             } => {
                 assert_eq!(scan_id, "scan-99");
                 assert_eq!(entity_count, 42);
+                assert_eq!(status, ScanStatus::Aborted);
             }
             other => panic!("expected ScanComplete, got: {other:?}"),
         }
+    }
+
+    /// A `scan_complete` row persisted before the `status` field existed
+    /// deserializes as `Complete` (the back-compat default), so old event logs
+    /// keep rendering exactly as they did. Without `#[serde(default)]` this
+    /// `from_str` would error and the whole row would be silently dropped by
+    /// the `filter_map` on the read path.
+    #[test]
+    fn scan_complete_without_status_defaults_to_complete() {
+        let legacy = r#"{"type":"scan_complete","scan_id":"s","entity_count":7}"#;
+        let back: EventKind = serde_json::from_str(legacy).expect("legacy row must still parse");
+        match back {
+            EventKind::ScanComplete {
+                status,
+                entity_count,
+                ..
+            } => {
+                assert_eq!(status, ScanStatus::Complete);
+                assert_eq!(entity_count, 7);
+            }
+            other => panic!("expected ScanComplete, got: {other:?}"),
+        }
+    }
+
+    /// The terminal event renders its true state: an aborted or failed scan
+    /// must NOT read as a green success. This is the whole point of carrying
+    /// `status` on the event — the downloaded `events.log` is the client-safe
+    /// artifact, and it was asserting completion for scans that were stopped
+    /// early or failed.
+    #[test]
+    fn scan_complete_log_summary_reflects_terminal_status() {
+        let done = EventKind::ScanComplete {
+            scan_id: "s".into(),
+            entity_count: 5,
+            status: ScanStatus::Complete,
+        };
+        let aborted = EventKind::ScanComplete {
+            scan_id: "s".into(),
+            entity_count: 5,
+            status: ScanStatus::Aborted,
+        };
+        let failed = EventKind::ScanComplete {
+            scan_id: "s".into(),
+            entity_count: 0,
+            status: ScanStatus::Failed,
+        };
+        assert_eq!(done.log_summary().1, "✔ scan complete · 5 entities");
+        assert_eq!(
+            aborted.log_summary().1,
+            "■ scan aborted — stopped early · 5 entities"
+        );
+        assert_eq!(failed.log_summary().1, "✗ scan failed");
+        // The failure line must not carry the success glyph a client would read
+        // as "all good".
+        assert!(!failed.log_summary().1.contains('✔'));
+        assert!(!aborted.log_summary().1.contains('✔'));
     }
 
     // ── Wire-contract drift guard (event_type_str ⇄ serde `type`) ───────
@@ -214,6 +275,7 @@ use super::*;
             EventKind::ScanComplete {
                 scan_id: "s".into(),
                 entity_count: 0,
+                status: ScanStatus::Complete,
             },
         ];
 
@@ -358,7 +420,7 @@ use super::*;
             ev(EventKind::ModuleError { module: "b".into(), error: "boom".into() }),
             ev(EventKind::ModuleSkipped { module: "c".into(), reason: "no key".into() }),
             // Non-module events must not be counted into any bucket.
-            ev(EventKind::ScanComplete { scan_id: "s".into(), entity_count: 9 }),
+            ev(EventKind::ScanComplete { scan_id: "s".into(), entity_count: 9, status: ScanStatus::Complete }),
             ev(EventKind::ExpansionStop { reason: "depth".into() }),
         ];
         let t = ModuleEventTally::from_events(&events);

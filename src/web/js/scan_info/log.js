@@ -318,7 +318,17 @@ export function mapEvent(ev){
       msg:`${kindPill(e.kind)} ${esc(e.value)}${conf!=null?` <span class="text-muted">·${esc(conf)}</span>`:''}${cand}`};
   }
   if (t==='scan_start')     return {typ:'scan',   lv:'info',  msg:`scan started · ${esc(ev.target_kind)}=${esc(ev.target_value)}`};
-  if (t==='scan_complete')  return {typ:'scan',   lv:'ok',    msg:`scan complete · ${ev.entity_count} entities`};
+  // Mirrors the three-way branch in the Rust twin (`EventKind::log_summary`,
+  // core/event/mod.rs): a cancelled or failed scan emits this same terminal
+  // event, so it must not read as a green success. `ev.status` is absent on
+  // event rows persisted before the field existed — those were all genuine
+  // completions, so default to 'complete'.
+  if (t==='scan_complete'){
+    const st = ev.status || 'complete';
+    if (st==='aborted') return {typ:'scan', lv:'warn', msg:`scan aborted — stopped early · ${ev.entity_count} entities`};
+    if (st==='failed')  return {typ:'scan', lv:'err',  msg:`scan failed`};
+    return {typ:'scan', lv:'ok', msg:`scan complete · ${ev.entity_count} entities`};
+  }
   if (t==='expansion_tick') return {typ:'expand', lv:'info',  msg:`depth ${ev.depth} · queued ${ev.queued} · visited ${ev.visited}`};
   if (t==='expansion_stop') return {typ:'expand', lv:'warn',  msg:`expansion stopped · ${esc(ev.reason)}`};
   if (t==='entity_excluded') return {typ:'expand', lv:'skip', msg:`⊘ not expanded · ${kindPill(ev.kind)} ${esc(ev.value)} <span class="text-muted">${esc(ev.reason)}</span>`};

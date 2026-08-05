@@ -1013,6 +1013,7 @@ impl ScanEngine {
                     EventKind::ScanComplete {
                         scan_id: scan.id.clone(),
                         entity_count: 0,
+                        status: scan.status,
                     },
                 );
                 return Ok(scan);
@@ -1056,6 +1057,9 @@ impl ScanEngine {
                 EventKind::ScanComplete {
                     scan_id: scan.id.clone(),
                     entity_count,
+                    // `Complete` or `Aborted` per the branch above — carried on
+                    // the event so the log renders the true terminal state.
+                    status: scan.status,
                 },
             );
 

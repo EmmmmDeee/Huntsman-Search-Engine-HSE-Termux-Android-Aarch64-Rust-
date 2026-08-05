@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use crate::core::entity::{Entity, unix_now};
+use crate::core::scan::ScanStatus;
 
 /// Cloneable sender shared across the engine, modules, and consumers.
 pub type EventBus = broadcast::Sender<Event>;
@@ -125,7 +126,26 @@ pub enum EventKind {
     ScanComplete {
         scan_id: String,
         entity_count: usize,
+        /// The scan's terminal status, so the event stream can tell a clean
+        /// finish apart from an operator abort or a failure. Added after this
+        /// event was found to render an aborted **or** failed scan's log as a
+        /// green `✔ scan complete` — and the downloaded `events.log` is the one
+        /// artifact marketed as client-safe (vs the operator-only debug
+        /// bundle), so the abort was being hidden from exactly the audience the
+        /// log is handed to. `#[serde(default)]` keeps event rows persisted
+        /// before this field existed deserializable: they predate
+        /// abort-awareness and every one was a genuine completion, so they
+        /// default to [`ScanStatus::Complete`] and render exactly as before.
+        #[serde(default = "terminal_status_default")]
+        status: ScanStatus,
     },
+}
+
+/// Back-compat default for [`EventKind::ScanComplete`]'s `status` (see the field
+/// doc): a row written before the field existed has no status and was always a
+/// true completion, so it deserializes as [`ScanStatus::Complete`].
+fn terminal_status_default() -> ScanStatus {
+    ScanStatus::Complete
 }
 
 impl EventKind {
@@ -281,9 +301,24 @@ impl EventKind {
             ),
             Self::LiveTick { iteration, .. } => ("live", format!("↻ iteration {iteration}")),
             Self::LiveStop { reason, .. } => ("live", format!("■ live session stopped · {reason}")),
-            Self::ScanComplete { entity_count, .. } => {
-                ("scan", format!("✔ scan complete · {entity_count} entities"))
-            }
+            Self::ScanComplete {
+                entity_count,
+                status,
+                ..
+            } => match status {
+                // A cancelled or failed scan still emits this single terminal
+                // event; branch so its log line states what actually happened
+                // instead of asserting success. `mapEvent` in
+                // `web/js/scan_info/log.js` mirrors these three cases.
+                ScanStatus::Aborted => (
+                    "scan",
+                    format!("■ scan aborted — stopped early · {entity_count} entities"),
+                ),
+                ScanStatus::Failed => ("scan", "✗ scan failed".to_string()),
+                // `Complete`, and the back-compat default for pre-field rows:
+                // the historical success line, unchanged.
+                _ => ("scan", format!("✔ scan complete · {entity_count} entities")),
+            },
         }
     }
 }
