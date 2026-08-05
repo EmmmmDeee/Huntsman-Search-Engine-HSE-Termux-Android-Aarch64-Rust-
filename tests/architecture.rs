@@ -2109,8 +2109,8 @@ fn readme_correlator_rule_count_matches_registry() {
 /// into a mechanical CI check — adding e.g. `candle`, `onnxruntime`, an LLM SDK,
 /// `tokenizers`, or `qdrant-client` fails here. External OSINT *data* APIs
 /// (registries, breach corpora, geocoders) are data sources, not AI services,
-/// and are deliberately unaffected. The principle is stated at the crate root
-/// in `src/lib.rs`.
+/// and are deliberately unaffected. This guard is the authoritative statement of
+/// the rule; the crate root cites it rather than restating it.
 #[test]
 fn runtime_carries_no_ai_ml_inference_dependency() {
     let lock = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"))
@@ -2179,8 +2179,7 @@ fn runtime_carries_no_ai_ml_inference_dependency() {
         "RUNTIME_INDEPENDENCE violation — AI/ML/inference crate(s) entered the \
          dependency tree: {offenders:?}. HSE's runtime must stay deterministic \
          Rust with no AI / LLM / vector / embedding dependency (AI is a \
-         development-time accelerator only). The principle is stated at the \
-         crate root in src/lib.rs."
+         development-time accelerator only)."
     );
 }
 
@@ -3842,23 +3841,49 @@ fn every_src_file_is_wired_into_the_module_tree() {
 fn every_docs_path_cited_from_rust_source_exists() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
-    collect_rs_files(&root.join("src"), &mut files);
-    collect_rs_files(&root.join("tests"), &mut files);
+    // EVERY Rust source tree in the repository, not just the crate's own two:
+    // `benches/` and `build.rs` are compiled by `cargo check --all-targets`, and
+    // the fuzz targets are a separate crate that is still this repository's
+    // code. Scanning only `src`/`tests` would let a citation rot in any of them
+    // while the guard reported all-clear.
+    for dir in ["src", "tests", "benches", "fuzz/fuzz_targets"] {
+        let path = root.join(dir);
+        if path.is_dir() {
+            collect_rs_files(&path, &mut files);
+        }
+    }
+    let build_rs = root.join("build.rs");
+    if build_rs.is_file() {
+        files.push(build_rs);
+    }
+    assert!(
+        files.len() > 100,
+        "expected to scan the whole Rust source tree; found only {} file(s) — \
+         the walk is broken, and a guard that scans nothing passes vacuously",
+        files.len()
+    );
 
     let mut dangling: Vec<String> = Vec::new();
     for file in &files {
-        let Ok(text) = fs::read_to_string(file) else {
-            continue;
-        };
+        // A file that cannot be read is a failure, not a skip. Silently
+        // continuing here would let an unreadable source hide its citations and
+        // still report a pass.
+        let text = fs::read_to_string(file)
+            .unwrap_or_else(|e| panic!("cannot read {} for citation scan: {e}", file.display()));
         for (lineno, line) in text.lines().enumerate() {
             let mut rest = line;
             while let Some(at) = rest.find("docs/") {
                 // A `docs/…` sitting inside an http(s) URL belongs to someone
                 // else's repository (e.g. npm's `REGISTRY-API.md`) and must not
-                // be resolved against this checkout.
+                // be resolved against this checkout. Quotes, backticks and
+                // brackets are token boundaries too — a URL written
+                // `` `https://…/docs/X.md` `` or `"https://…/docs/X.md"` would
+                // otherwise be misread as a local citation and fail the build.
                 let preceding = &rest[..at];
                 let in_url = preceding
-                    .rsplit(|c: char| c.is_whitespace() || c == '(' || c == '<')
+                    .rsplit(|c: char| {
+                        c.is_whitespace() || matches!(c, '(' | '<' | '`' | '"' | '\'' | '[')
+                    })
                     .next()
                     .is_some_and(|tok| tok.starts_with("http"));
 
