@@ -535,20 +535,27 @@ use super::*;
 
     #[test]
     fn embedded_spa_deep_links_resolve_to_a_visible_section() {
-        // The Location "no leads yet" hint and the status correlation-count
-        // callout link to `#/scaninfo?...&tab=network` / `&tab=corr`. Post
-        // streamline, Correlations is its own tab (the &tab=corr link resolves
-        // straight to it) and the network section lives on the Summary (the
-        // &tab=network link folds onto Summary and scrolls to #sum-network).
-        // Guard both the anchor text and the dispatch so a link can never go
-        // inert again.
+        // The Location "no leads yet" hint links to `#/scaninfo?...&tab=network`,
+        // and the Summary's correlation-count callout navigates to `&tab=corr`.
+        // Post streamline, Correlations is its own tab (the tab=corr jump
+        // resolves straight to it) and the network section lives on the
+        // Summary (the &tab=network link folds onto Summary and scrolls to
+        // #sum-network). Guard both the anchor/nav and the dispatch so a link
+        // can never go inert again.
         assert!(
             app_file("js/scan_info/leads.js").contains("tab=network\">Network</a>"),
             "expected deep-link anchor text `tab=network\">Network</a>` in leads.js"
         );
+        // report.js navigates programmatically (`nav(...)`) rather than
+        // rendering an `<a>` — the Summary's correlation-count callout is a
+        // clickable stat card, not inline prose, so it wires a click handler
+        // instead of an anchor. status.js used to carry the equivalent
+        // `<a ...&tab=corr">Correlations</a>` prose link, but it had zero
+        // importers (dead since the tab streamline) and was removed; this is
+        // the live mechanism that actually reaches the Correlations tab today.
         assert!(
-            app_file("js/scan_info/status.js").contains("tab=corr\">Correlations</a>"),
-            "expected deep-link anchor text `tab=corr\">Correlations</a>` in status.js"
+            app_file("js/scan_info/report.js").contains("&tab=corr`"),
+            "expected a tab=corr navigation in report.js's live correlation callout"
         );
         let dispatch = app_file("js/scan_info/index.js")
             .split_once("const body = $('#scan-body');")

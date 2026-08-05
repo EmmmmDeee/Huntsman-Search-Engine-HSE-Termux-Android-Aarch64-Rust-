@@ -274,19 +274,9 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         include_bytes!("../../web/js/scan_info/pivots.js"),
     ),
     (
-        "js/scan_info/relations.js",
-        "application/javascript",
-        include_bytes!("../../web/js/scan_info/relations.js"),
-    ),
-    (
         "js/scan_info/report.js",
         "application/javascript",
         include_bytes!("../../web/js/scan_info/report.js"),
-    ),
-    (
-        "js/scan_info/status.js",
-        "application/javascript",
-        include_bytes!("../../web/js/scan_info/status.js"),
     ),
     (
         "js/scan_info/stealer.js",
