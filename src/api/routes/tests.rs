@@ -434,47 +434,57 @@ use super::*;
     }
 
     #[test]
-    fn embedded_spa_resolves_graph_link_endpoints_to_node_objects() {
-        // buildD3Graph() builds links keyed by entity UID *strings*
-        // (source:seedId, target:e.uid, ...). The vendored d3.min.js is D3 v3,
-        // whose force.start() only auto-resolves *numeric* link.source/target
-        // (treating them as indices into .nodes()); string keys pass through
-        // untouched, and its internal neighbor-seeding pass then does
-        // `e[u.source.index].push(...)` — `.index` on a bare string is
-        // undefined, `e[undefined]` is undefined, and `.push` throws. This was
-        // reproduced directly against src/web/vendor/d3.min.js in a Node vm
-        // sandbox: force.start() threw `TypeError: Cannot read properties of
-        // undefined (reading 'push')` on the very first scan with >=1 entity
-        // (every scan has an unconditional seed->entity link). The fix
-        // resolves source/target to real node object references via a
-        // nodesById map before `.links()` is called — this guard pins that
-        // resolution step so it cannot silently regress.
-        let graph_fn = app_file("js/scan_info/graph.js")
-            .split_once("function buildD3Graph(")
-            .map(|(_, b)| b)
-            .expect("buildD3Graph() present in graph.js");
+    fn embedded_spa_graph_ships_no_vendored_engine_and_runs_no_simulation() {
+        // The graph was drawn by a vendored D3 v3 force layout. Two things made
+        // that the wrong trade for this crate's target (Termux/Android aarch64,
+        // no root, RAM shared with the OS): the 151 KB payload rode along in a
+        // single-binary artefact, and the force simulation ticked continuously
+        // over hundreds of nodes — mutating every `<line>` and `<g>` transform
+        // per frame — on the same device that was running the scan producing
+        // those nodes.
+        //
+        // It is now a deterministic concentric layout computed once in
+        // O(nodes), drawn against the DOM directly. These asserts pin that the
+        // dependency does not creep back and that no per-frame loop returns.
+        let graph = app_file("js/scan_info/graph.js");
         assert!(
-            graph_fn.contains("nodesById"),
-            "buildD3Graph must build a nodesById map to resolve string-keyed \
-             link endpoints to node object references before calling \
-             d3.layout.force().links(...), or D3 v3 throws on any scan with \
-             at least one entity"
+            !graph.contains("d3."),
+            "graph.js must not call into D3 — the graph is drawn directly \
+             against the DOM so no rendering engine ships in the binary"
         );
-        let links_call_idx = graph_fn
-            .find(".links(")
-            .expect("buildD3Graph calls .links(...)");
+        for banned in ["force(", "on('tick'", "requestAnimationFrame("] {
+            assert!(
+                !graph.contains(banned),
+                "graph.js must not run a per-frame simulation loop ({banned}) — \
+                 layout is computed once, then the graph is static until the \
+                 operator interacts with it"
+            );
+        }
+        // Endpoints still resolve to shared node objects: the draw loop and the
+        // drag handler both read positions off one object per node.
+        let build = graph
+            .split_once("function buildGraph(")
+            .map(|(_, b)| b)
+            .expect("buildGraph() present in graph.js");
         assert!(
-            graph_fn[..links_call_idx].contains("nodesById.get(l.source)")
-                && graph_fn[..links_call_idx].contains("nodesById.get(l.target)"),
-            "link source/target must be resolved via nodesById.get(...) before \
-             the .links(...) call, matching the tick handler's existing \
-             d.source.x/d.target.x object-reference assumption"
+            build.contains("nodesById.get(l.source)") && build.contains("nodesById.get(l.target)"),
+            "link source/target must resolve to node objects via nodesById so \
+             dragging a node can move its incident edges without a re-lookup"
+        );
+        // The vendored asset itself must be gone from the served set.
+        assert!(
+            !SPA_HTML.contains("d3.min.js"),
+            "spa.html must not load a vendored d3.min.js"
+        );
+        assert!(
+            !VENDOR_FILES.iter().any(|(n, _, _)| n.contains("d3")),
+            "d3 must not be embedded in VENDOR_FILES"
         );
     }
 
     #[test]
     fn embedded_spa_graph_is_bounded_and_never_builds_correlation_cliques() {
-        // buildD3Graph historically drew a *clique* per correlation cluster:
+        // buildGraph historically drew a *clique* per correlation cluster:
         //   for (let i=0;i<uids.length;i++) for (let j=i+1;j<uids.length;j++)
         //     links.push({source:uids[i], target:uids[j], corr:true});
         // That is O(k²) in the cluster size. Real scans routinely produce
@@ -501,17 +511,17 @@ use super::*;
              as a bounded star (CORR_MAX_SPOKES) instead"
         );
         let build = graph
-            .split_once("function buildD3Graph(")
+            .split_once("function buildGraph(")
             .map(|(_, b)| b)
-            .expect("buildD3Graph() present in graph.js");
+            .expect("buildGraph() present in graph.js");
         assert!(
             build.contains(".slice(0, GRAPH_MAX_NODES)"),
-            "buildD3Graph must cap rendered entity nodes via \
+            "buildGraph must cap rendered entity nodes via \
              .slice(0, GRAPH_MAX_NODES)"
         );
         assert!(
             build.contains("CORR_MAX_SPOKES") && build.contains("GRAPH_MAX_LINKS"),
-            "buildD3Graph must bound correlation fan-out (CORR_MAX_SPOKES) and \
+            "buildGraph must bound correlation fan-out (CORR_MAX_SPOKES) and \
              the total edge count (GRAPH_MAX_LINKS)"
         );
         // The summary notice element that tells the operator the view is capped

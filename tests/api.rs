@@ -2491,9 +2491,13 @@ async fn spa_served_with_required_ui_structure() {
         // palette legitimately moves — it exists to catch shipping a *light*
         // default, not to freeze one shade.
         "#0a0d11",
-        "/static/d3.min.js", // interactive node graph (D3)
-        "tablesorter",       // sortable data tables
-        "#/dash",            // tabbed navigation (client-side hash routes)
+        // SPA module entry point. This slot used to pin `/static/d3.min.js`,
+        // the vendored force-graph engine; the graph is now a dependency-free
+        // concentric SVG layout in `js/scan_info/graph.js`, so the thing worth
+        // pinning is that the module graph still has a root to load.
+        "/static/js/main.js",
+        "tablesorter", // sortable data tables
+        "#/dash",      // tabbed navigation (client-side hash routes)
         "#/scans",
         "#/newscan",
         "EventSource", // live event log (SSE)

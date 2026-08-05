@@ -2,7 +2,26 @@ import { API } from '/static/js/api.js';
 import { $, attr } from '/static/js/helpers.js';
 import { S } from '/static/js/state.js';
 
-/* ── Graph tab (D3 v3 force layout — matches Spiderfoot's stack) ── */
+/* ── Graph tab — dependency-free SVG renderer ──────────────────────────────
+   This view used to be drawn by a vendored D3 v3 (151 KB) force layout. On the
+   platform this tool actually targets — Termux on Android aarch64, no root,
+   RAM shared with the OS — that was the single most expensive thing the UI did:
+   a continuous physics simulation ticking over hundreds of nodes, mutating
+   every `<line>` and `<g>` transform on every frame, while the same device was
+   running the scan that produces those nodes.
+
+   It is now a deterministic concentric layout: the seed sits at the centre and
+   entities are placed on rings in rank order. Positions are computed once, in
+   O(nodes), and nothing animates afterwards — there is no simulation to settle,
+   so the graph appears instantly and then costs nothing until the operator
+   touches it.
+
+   Nothing was dropped to get there. Node colour by kind, radius by
+   corroboration, truncated labels, hover tooltips, the legend, the capped-view
+   notice, GEXF export, Re-layout, Reset view, node drag, and pinch/scroll zoom
+   with canvas pan all still work — they are just implemented against the DOM
+   directly (pointer events + a `transform` on one group) instead of through a
+   rendering engine. The rendering ceilings below are unchanged. */
 export function renderGraph(host){
   if (!S.entities.length){
     host.innerHTML = '<div class="empty-state"><h3>No entities to graph</h3><p>The Graph view becomes available once the scan produces entities.</p></div>';
@@ -29,8 +48,8 @@ export function renderGraph(host){
       <div class="graph-hint text-muted">Drag nodes · pinch or scroll to zoom · drag canvas to pan</div>
     </div>
   `;
-  buildD3Graph();
-  $('#g-relayout').addEventListener('click', buildD3Graph);
+  buildGraph();
+  $('#g-relayout').addEventListener('click', buildGraph);
   $('#g-reset').addEventListener('click', ()=>{ if (window.__graphResetZoom) window.__graphResetZoom(); });
 }
 
@@ -45,54 +64,87 @@ export const NODE_COLOR = {
   other:'#888'
 };
 
-// Graph rendering ceilings — keep the interactive SVG force graph legible and,
-// above all, stop a large scan from locking up the browser tab. Correlation
-// clusters routinely span hundreds of members (real scans produce several
-// 600+-member clusters), so an unbounded render is not a corner case. See
-// buildD3Graph() for how these are applied.
+// Graph rendering ceilings — keep the graph legible and, above all, stop a
+// large scan from locking up the browser tab. Correlation clusters routinely
+// span hundreds of members (real scans produce several 600+-member clusters),
+// so an unbounded render is not a corner case. See buildGraph() for how these
+// are applied.
 export const GRAPH_MAX_NODES = 240;  // entity nodes rendered (the seed is extra)
-export const GRAPH_MAX_LINKS = 2000; // hard ceiling on edges handed to D3
+export const GRAPH_MAX_LINKS = 2000; // hard ceiling on edges drawn
 export const CORR_MAX_SPOKES = 8;    // members linked per correlation (star, not clique)
 
-export function buildD3Graph(){
-  if (typeof d3==='undefined') return;
-  // Theme-aware palette: the graph is drawn by D3 (inline styles), so the
-  // CSS dark-theme rules can't reach the node labels / seed edges. Read the
-  // active theme once per (re)layout and pick contrasting colours, so the
-  // signature graph view stays legible in the default dark mode.
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function svgEl(name, attrs){
+  const e = document.createElementNS(SVG_NS, name);
+  if (attrs) for (const k of Object.keys(attrs)) e.setAttribute(k, attrs[k]);
+  return e;
+}
+const clamp = (v, lo, hi)=>v < lo ? lo : (v > hi ? hi : v);
+
+/* Deterministic concentric placement. The seed is pinned at the centre and the
+   remaining nodes — already sorted by structural importance — are laid onto
+   rings outward, so the most-connected entities land nearest the seed. Ring
+   capacity is derived from circumference so node spacing stays roughly constant
+   as the graph grows. Pure arithmetic, O(nodes), no iteration to convergence. */
+function layoutConcentric(nodes, W, H){
+  const cx = W / 2, cy = H / 2;
+  if (nodes.length) { nodes[0].x = cx; nodes[0].y = cy; }
+  const rest = nodes.slice(1);
+  if (!rest.length) return;
+  // Ring spacing: fill the smaller viewport axis with however many rings the
+  // node count needs, within sane bounds so small graphs are not sparse and
+  // large ones stay on-canvas.
+  const maxR = Math.max(120, Math.min(W, H) / 2 - 30);
+  const rings = Math.max(1, Math.ceil(Math.sqrt(rest.length / 2.2)));
+  const gap = maxR / rings;
+  let i = 0, ring = 1;
+  while (i < rest.length){
+    const r = Math.min(maxR, ring * gap);
+    // ~46px of arc per node keeps labels from colliding; always leave room for
+    // at least 6 so the innermost ring is never degenerate.
+    const capacity = Math.max(6, Math.floor((2 * Math.PI * r) / 46));
+    const n = Math.min(capacity, rest.length - i);
+    // Offset alternate rings by half a step so nodes do not line up radially.
+    const off = (ring % 2 === 0) ? Math.PI / n : 0;
+    for (let j = 0; j < n; j++){
+      const a = (j / n) * 2 * Math.PI + off;
+      rest[i + j].x = cx + r * Math.cos(a);
+      rest[i + j].y = cy + r * Math.sin(a);
+    }
+    i += n;
+    ring++;
+  }
+}
+
+export function buildGraph(){
+  const svg = $('#graph-svg');
+  if (!svg) return;
+  // Theme-aware palette: node labels and seed edges are set as presentation
+  // attributes here, so the CSS dark-theme rules can't reach them. Read the
+  // active theme once per (re)layout and pick contrasting colours.
   const dark = document.body.classList.contains('dark-theme');
   const labelFill = dark ? '#cfcfcf' : '#444';
   const seedEdge  = dark ? '#4a4a4a' : '#bbb';
   const nodeHalo  = dark ? '#1a1a1a' : '#fff';
   const seedHalo  = dark ? '#fff'    : '#222';
-  const svg = d3.select('#graph-svg');
-  const rect = svg.node().getBoundingClientRect();
-  const W = rect.width, H = rect.height || 560;
-  svg.selectAll('*').remove();
-  svg.attr('viewBox', `0 0 ${W} ${H}`);
 
-  // Pan/zoom container — pinch-zoom + one-finger pan work natively on
-  // Chrome-on-Android via d3 v3's touch-aware zoom behavior. Without this a
-  // multi-node graph is unusable on a phone screen (SpiderFoot 4.0 parity).
-  const container = svg.append('g').attr('class','zoom-container');
-  const zoom = d3.behavior.zoom().scaleExtent([0.2, 5]).on('zoom', ()=>{
-    container.attr('transform', `translate(${d3.event.translate})scale(${d3.event.scale})`);
-  });
-  svg.call(zoom).on('dblclick.zoom', null);
-  // Expose a reset so the "Reset view" button can recentre/rescale.
-  window.__graphResetZoom = ()=>{
-    zoom.translate([0,0]).scale(1);
-    container.transition().duration(250).attr('transform', 'translate(0,0)scale(1)');
-  };
+  const rect = svg.getBoundingClientRect();
+  const W = rect.width || 800, H = rect.height || 560;
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
 
-  // Build nodes/edges — bounded so the SVG force graph stays legible and, above
-  // all, never locks up the tab. A large scan (1000+ entities, correlation
-  // clusters spanning hundreds of members) is routine; drawing a *clique* per
-  // correlation — the historical behaviour — is O(k²) and, for the 600+-member
-  // clusters real scans produce, builds ~15M edges that hang or crash the
-  // renderer and yield an unreadable hairball. We render the most-connected
-  // slice of nodes and represent each correlation as a bounded *star*, not a
-  // clique. Browse / Relations / GEXF remain the complete, unabridged views.
+  // One group carries the pan/zoom transform; everything else is drawn inside.
+  const container = svgEl('g', { class: 'zoom-container' });
+  svg.appendChild(container);
+
+  // Build nodes/edges — bounded so the graph stays legible and never locks up
+  // the tab. A large scan (1000+ entities, correlation clusters spanning
+  // hundreds of members) is routine; drawing a *clique* per correlation — the
+  // historical behaviour — is O(k²) and, for the 600+-member clusters real
+  // scans produce, builds ~15M edges that hang or crash the renderer and yield
+  // an unreadable hairball. We render the most-connected slice of nodes and
+  // represent each correlation as a bounded *star*, not a clique. Browse /
+  // Relations / GEXF remain the complete, unabridged views.
   const seedId = '__seed__';
   const nodes = [{id:seedId, kind:S.scan.target.kind, label:S.scan.target.value, isSeed:true, r:12}];
 
@@ -139,7 +191,6 @@ export function buildD3Graph(){
     // one, so the visual hub reflects real centrality rather than misleading.
     const members = (c.entity_uids || c.evidence_uids || c.entities || []).filter(u=>shownIds.has(u));
     if (members.length < 2) continue;
-    // Pick hub by relation degree, then corroboration tie-break (per comment at line 131).
     let hub = members[0], hubScore = -1, hubCorr = -1;
     for (const u of members){
       const ent = entityByUid.get(u);
@@ -173,68 +224,161 @@ export function buildD3Graph(){
     }
   }
 
-  // Drop links to unknown nodes, then resolve source/target to the actual
-  // node object references. D3 v3's force layout only auto-resolves
-  // *numeric* link.source/target (treating them as indices into .nodes());
-  // our ids are entity UID strings, which it leaves untouched, so its
-  // internal neighbor-seeding pass (`e[u.source.index].push(...)`) reads
-  // `.index` off a bare string, gets undefined, and throws on the very
-  // first `.start()` call for any scan with at least one entity. Handing
-  // it real node references up front — same object identity the `tick`
-  // handler below already expects via `d.source.x`/`d.target.x` — avoids
-  // that path entirely.
-  const ids = new Set(nodes.map(n=>n.id));
+  // Resolve endpoints to node objects and drop links to unknown nodes, so the
+  // draw loop and the drag handler both read positions off one shared object
+  // per node rather than re-looking-up ids.
   const nodesById = new Map(nodes.map(n=>[n.id, n]));
   const validLinks = links
-    .filter(l=>ids.has(l.source) && ids.has(l.target))
+    .filter(l=>nodesById.has(l.source) && nodesById.has(l.target))
     .map(l=>({...l, source: nodesById.get(l.source), target: nodesById.get(l.target)}));
 
-  const force = d3.layout.force()
-    .nodes(nodes)
-    .links(validLinks)
-    .charge(-260)
-    .linkDistance(90)
-    .size([W, H])
-    .start();
-  // Pin seed at centre.
-  const seedNode = nodes.find(n=>n.isSeed);
-  if (seedNode){ seedNode.fixed = true; seedNode.x = W/2; seedNode.y = H/2; }
+  layoutConcentric(nodes, W, H);
 
-  const link = container.append('g').selectAll('line')
-    .data(validLinks).enter().append('line')
-    .style('stroke', d=>d.rel?'#d9822b':(d.corr?'#9b1f9b':seedEdge))
-    .style('stroke-opacity', d=>d.rel?0.85:(d.corr?0.7:(dark?0.5:0.3)))
-    .style('stroke-width', d=>d.rel?2:(d.corr?1.6:1))
-    .style('stroke-dasharray', d=>d.rel?'5,3':'none');
-  // Hover a typed edge to see its relation kind.
-  link.append('title').text(d=>d.rel?('relation: '+d.kind):(d.corr?'correlation':'discovered from seed'));
+  // ── Draw: edges first so nodes sit above them ──
+  const linkG = svgEl('g');
+  container.appendChild(linkG);
+  const incident = new Map(); // node id → [{el, end}] for cheap drag updates
+  for (const l of validLinks){
+    const line = svgEl('line', {
+      x1: l.source.x, y1: l.source.y, x2: l.target.x, y2: l.target.y,
+      stroke: l.rel ? '#d9822b' : (l.corr ? '#9b1f9b' : seedEdge),
+      'stroke-opacity': l.rel ? 0.85 : (l.corr ? 0.7 : (dark ? 0.5 : 0.3)),
+      'stroke-width': l.rel ? 2 : (l.corr ? 1.6 : 1),
+    });
+    if (l.rel) line.setAttribute('stroke-dasharray', '5,3');
+    const title = svgEl('title');
+    title.textContent = l.rel ? ('relation: ' + l.kind) : (l.corr ? 'correlation' : 'discovered from seed');
+    line.appendChild(title);
+    linkG.appendChild(line);
+    if (!incident.has(l.source.id)) incident.set(l.source.id, []);
+    if (!incident.has(l.target.id)) incident.set(l.target.id, []);
+    incident.get(l.source.id).push({el: line, end: 1});
+    incident.get(l.target.id).push({el: line, end: 2});
+  }
 
-  const drag = force.drag().on('dragstart', function(){ d3.select(this).style('cursor','grabbing'); });
+  const nodeLayer = svgEl('g');
+  container.appendChild(nodeLayer);
+  for (const n of nodes){
+    const g = svgEl('g', { transform: `translate(${n.x},${n.y})`, cursor: 'grab' });
+    g.appendChild(svgEl('circle', {
+      r: n.r,
+      fill: n.isSeed ? '#059CD7' : (NODE_COLOR[n.kind] || '#888'),
+      stroke: n.isSeed ? seedHalo : nodeHalo,
+      'stroke-width': n.isSeed ? 2 : 1.5,
+    }));
+    const t = svgEl('title');
+    t.textContent = `${n.kind}: ${n.label}`;
+    g.appendChild(t);
+    const label = svgEl('text', {
+      dx: n.r + 4, dy: 4, 'font-size': '11px', fill: labelFill,
+    });
+    const l = n.label || '';
+    label.textContent = l.length > 28 ? l.slice(0, 26) + '…' : l;
+    g.appendChild(label);
+    n.el = g;
+    nodeLayer.appendChild(g);
+  }
 
-  const nodeG = container.append('g').selectAll('g').data(nodes).enter().append('g').call(drag);
-  // Stop a node-drag from also panning the canvas (d3 v3 zoom vs drag).
-  nodeG.on('mousedown', ()=>{ if (d3.event) d3.event.stopPropagation(); });
-  nodeG.append('circle')
-    .attr('r', d=>d.r)
-    .style('fill', d=>d.isSeed?'#059CD7':(NODE_COLOR[d.kind]||'#888'))
-    .style('stroke', d=>d.isSeed?seedHalo:nodeHalo)
-    .style('stroke-width', d=>d.isSeed?2:1.5)
-    .style('cursor','grab');
-  nodeG.append('title').text(d=>`${d.kind}: ${d.label}`);
-  nodeG.append('text')
-    .attr('dx', d=>d.r + 4)
-    .attr('dy', 4)
-    .style('font-size','11px')
-    .style('fill',labelFill)
-    .text(d=>{const l = d.label||''; return l.length>28?l.slice(0,26)+'…':l;});
+  // ── Pan / zoom / drag, via pointer events (touch + mouse, no library) ──
+  const view = { x: 0, y: 0, k: 1 };
+  const applyView = ()=>container.setAttribute('transform', `translate(${view.x},${view.y}) scale(${view.k})`);
+  // Screen → viewBox units. The SVG is scaled to its box, so undo that first.
+  const toViewBox = (clientX, clientY)=>{
+    const b = svg.getBoundingClientRect();
+    return {
+      x: (clientX - b.left) * (W / (b.width || W)),
+      y: (clientY - b.top) * (H / (b.height || H)),
+    };
+  };
+  const toGraph = (clientX, clientY)=>{
+    const p = toViewBox(clientX, clientY);
+    return { x: (p.x - view.x) / view.k, y: (p.y - view.y) / view.k };
+  };
+  const zoomAt = (clientX, clientY, factor)=>{
+    const p = toViewBox(clientX, clientY);
+    const g = { x: (p.x - view.x) / view.k, y: (p.y - view.y) / view.k };
+    view.k = clamp(view.k * factor, 0.2, 5);
+    view.x = p.x - g.x * view.k;
+    view.y = p.y - g.y * view.k;
+    applyView();
+  };
 
-  force.on('tick', ()=>{
-    link.attr('x1', d=>d.source.x).attr('y1', d=>d.source.y)
-        .attr('x2', d=>d.target.x).attr('y2', d=>d.target.y);
-    nodeG.attr('transform', d=>`translate(${d.x},${d.y})`);
+  window.__graphResetZoom = ()=>{ view.x = 0; view.y = 0; view.k = 1; applyView(); };
+
+  svg.addEventListener('wheel', (ev)=>{
+    ev.preventDefault();
+    zoomAt(ev.clientX, ev.clientY, ev.deltaY < 0 ? 1.15 : 1 / 1.15);
+  }, { passive: false });
+
+  const pointers = new Map();      // pointerId → {clientX, clientY}
+  let dragNode = null;             // node being dragged, if any
+  let panFrom = null;              // {x, y} viewBox coords at pan start
+  let pinchDist = 0;
+
+  const moveNode = (n, gx, gy)=>{
+    n.x = gx; n.y = gy;
+    n.el.setAttribute('transform', `translate(${n.x},${n.y})`);
+    for (const inc of (incident.get(n.id) || [])){
+      inc.el.setAttribute(inc.end === 1 ? 'x1' : 'x2', n.x);
+      inc.el.setAttribute(inc.end === 1 ? 'y1' : 'y2', n.y);
+    }
+  };
+
+  for (const n of nodes){
+    n.el.addEventListener('pointerdown', (ev)=>{
+      ev.stopPropagation();          // a node drag must not also pan the canvas
+      dragNode = n;
+      n.el.setAttribute('cursor', 'grabbing');
+      svg.setPointerCapture(ev.pointerId);
+      pointers.set(ev.pointerId, { clientX: ev.clientX, clientY: ev.clientY });
+    });
+  }
+
+  svg.addEventListener('pointerdown', (ev)=>{
+    pointers.set(ev.pointerId, { clientX: ev.clientX, clientY: ev.clientY });
+    if (pointers.size === 2){
+      const [a, b] = Array.from(pointers.values());
+      pinchDist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+      panFrom = null;
+      dragNode = null;
+    } else if (!dragNode){
+      const p = toViewBox(ev.clientX, ev.clientY);
+      panFrom = { x: p.x - view.x, y: p.y - view.y };
+      svg.setPointerCapture(ev.pointerId);
+    }
   });
-  // Stop after a few seconds — saves CPU on Termux when the graph
-  // is rendered but idle.
-  setTimeout(()=>force.stop(), 6000);
-}
 
+  svg.addEventListener('pointermove', (ev)=>{
+    if (!pointers.has(ev.pointerId)) return;
+    pointers.set(ev.pointerId, { clientX: ev.clientX, clientY: ev.clientY });
+    if (pointers.size === 2 && pinchDist > 0){
+      const [a, b] = Array.from(pointers.values());
+      const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+      if (d > 0){
+        zoomAt((a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2, d / pinchDist);
+        pinchDist = d;
+      }
+      return;
+    }
+    if (dragNode){
+      const g = toGraph(ev.clientX, ev.clientY);
+      moveNode(dragNode, g.x, g.y);
+    } else if (panFrom){
+      const p = toViewBox(ev.clientX, ev.clientY);
+      view.x = p.x - panFrom.x;
+      view.y = p.y - panFrom.y;
+      applyView();
+    }
+  });
+
+  const endPointer = (ev)=>{
+    pointers.delete(ev.pointerId);
+    if (dragNode){ dragNode.el.setAttribute('cursor', 'grab'); dragNode = null; }
+    if (pointers.size < 2) pinchDist = 0;
+    if (pointers.size === 0) panFrom = null;
+  };
+  svg.addEventListener('pointerup', endPointer);
+  svg.addEventListener('pointercancel', endPointer);
+
+  applyView();
+}
