@@ -7,9 +7,14 @@
     "the rejected list is the part that stops cycles rediscovering the same",
     "non-defects. See CLAUDE.md and docs/OPERATIONAL_CONSTITUTION.md."
   ],
-  "cycle_count": 4,
-  "last_verified_commit": "45fcd1f61",
-  "verified_against": "cargo test --all --locked (5953 lib + 117 api + 56 smoke + all integration suites, 0 failed), cargo clippy --all-targets --locked -- -D warnings (clean), cargo fmt --all -- --check (clean), node --check on every modified JS module. NOT verified on this host: the MSRV 1.88 pin and the aarch64-linux-android cross-build (no Android NDK present) — CI's aarch64-android job is the authority.",
+  "cycle_count": 5,
+  "last_verified_commit": "2fbbf1ec",
+  "verified_against": {
+    "note": "This crate declares NO [features]; `--all-features` is a no-op here. The authoritative gate is scripts/gate.sh, which spans several workflow files and includes the rustdoc-lint and MSRV passes that reconstructing from ci.yml alone drops.",
+    "toolchain": "1.97.1 (rust-toolchain.toml)",
+    "msrv": "1.88",
+    "edition": "2024"
+  },
   "completed_slots": [
     {
       "cycle": 0,
@@ -31,6 +36,13 @@
       "slot": 3,
       "outcome": "oathnet door-guard completeness. Copilot's finding on #362 confirmed against source. #363 landed the equivalent code fix in parallel, so #364 narrowed to what #363 shipped without: the pinning test, a fix for a pre-existing test-suite race (reset_budget clears RESPONSE_CACHE, racing the cache tests), and the rate-limit misdiagnosis #363's change made reachable.",
       "commit": "0b281b8b"
+    },
+    {
+      "cycle": 1,
+      "slot": "all",
+      "category": "DEBUG/HARDENING/COMPLETION/UPGRADE/GAP-ANALYSIS",
+      "outcome": "Cycle 1 landed whole in 4111299e: oathnet rate-limit misdiagnosis, ingest fuzz target, chess_profile recovery, MSRV drift ratchet, DbWriter backlog disclosure.",
+      "commit": "4111299e"
     }
   ],
   "cycle_1_slots": [
@@ -38,7 +50,7 @@
       "slot": 1,
       "category": "DEBUG",
       "instruction": "Drive PR #364 to green and merge it.",
-      "status": "CI-bound"
+      "status": "COMPLETE — PR #364 merged, squashed to main as 4111299e, 6/6 CI green."
     },
     {
       "slot": 2,
@@ -65,107 +77,11 @@
       "status": "COMPLETE — DECIDED: keep the channel unbounded, and disclose a pathological backlog. Bounding it would force try_send (drops events, breaking the flush() contract) or an async submit() at a sync engine call site. The queue is also already bounded in practice by DEFAULT_MAX_ENTITIES=2500 and the wall-time watchdog. The real defect was that a storage stall was INVISIBLE, so writer_loop now discloses queue depth past BACKLOG_WARN_EVENTS=1024 with hysteresis at half."
     }
   ],
-  "cycle_2_slots": [
-    {
-      "slot": 1,
-      "category": "DEBUG",
-      "instruction": "Make app::update::self_restart honour its documented contract on current_exe() failure.",
-      "status": "COMPLETE (2597c1f9) — the fn documents 'prints a diagnostic and exits with code 1' but current_exe().expect(...) panicked. current_exe() is a real syscall (/proc/self/exe) and this is the site most likely to see it fail: a self-restart runs right after an update rewrote or unlinked the running binary."
-    },
-    {
-      "slot": 2,
-      "category": "HARDENING",
-      "instruction": "Close OD-3: make the benchmarks execute somewhere.",
-      "status": "COMPLETE (7a3aff62) — .github/workflows/bench-smoke.yml runs `cargo bench --locked -- --test` (Criterion test mode: each bench runs once, no timing). Deliberately NOT regression detection: ephemeral-runner wall-clock is too noisy to threshold. Follows the audit.yml/fuzz.yml precedent (own workflow, advisory, Monday 09:00 UTC + path filter + dispatch). Verified locally: both benches pass, exit 0."
-    },
-    {
-      "slot": 3,
-      "category": "COMPLETION",
-      "instruction": "Benchmark the ingest parse path (extract_by_patterns), which had no coverage.",
-      "status": "COMPLETE (dd7b5572) — `entity_extract` group in benches/scan_throughput.rs, two shapes (dense_all_kinds / prose_no_matches) with Throughput::Bytes. Ordered AFTER slot 2 on purpose: adding a bench before anything executed benches would have widened OD-3, not closed it."
-    },
-    {
-      "slot": 4,
-      "category": "UPGRADE",
-      "instruction": "Re-scoped mid-slot from 'reword the 3 contentless expect(\"should succeed\") messages' to 'delete them' — all three panics were unreachable, so removing them beats documenting them.",
-      "status": "COMPLETE (73f268be) — EntityClassifier::default and EntityExtractor::default construct from fields (their fallible new() only propagates an infallible constructor); dehashed::build's `1 =>` arm collapsed into the `_` arm because join(\", \") over one element yields that element. Mid-slot clippy failure (default_constructed_unit_struct on EntityClassifier::default()) fixed in place before advancing, per the verify-before-advance rule."
-    },
-    {
-      "slot": 5,
-      "category": "DEBUG",
-      "instruction": "Fix correlation event lines that render identically for per-entity rules.",
-      "status": "COMPLETE (8da68560) — FOUND IN REAL SCAN TELEMETRY, not by inspection. A 47-event scan logged `⚡ High cross-source corroboration` nine times byte-identically (12 correlations total). AU-003 correctly emits one Correlation per corroborated entity and each carries a distinguishing `description`; EventKind::log_summary printed only rule_name and discarded it. cli::live had always rendered both, so the event log was the outlier. Two regression tests added."
-    }
-  ],
-  "cycle_3_slots": [
-    {
-      "slot": 1,
-      "category": "UPGRADE",
-      "instruction": "Remove the per-event O(n) work the scan views do in the browser during a live scan.",
-      "status": "COMPLETE (d72041e1) — two hot paths, both behaviour-preserving. (a) scan_info/graph.js resolved correlation-hub corroboration with S.entities.find(...) nested two loops deep: O(correlations x members x entities); a captured 371-entity / 32-correlation scan is millions of string compares per re-layout. Now a uid->entity Map, the pattern the file already used for nodesById. (b) scan_info/log.js re-sorted the type histogram, rewrote its innerHTML, and read box.scrollHeight (forcing synchronous layout) once PER EVENT — ~600 full re-renders and ~600 forced reflows for a 598-event scan. Both are idempotent and only the last is observable, so they coalesce into one animation frame; counting stays synchronous so the breakdown still covers every event."
-    },
-    {
-      "slot": 2,
-      "category": "UPGRADE",
-      "instruction": "Drop the vendored D3 force layout; make the graph extremely basic without losing functionality.",
-      "status": "COMPLETE (77e73134) — D3 v3 was the last vendored front-end asset (151,725 B) and its continuous force simulation was the most expensive thing the UI did, running over hundreds of nodes on the same device running the scan. Replaced by a deterministic concentric SVG layout computed once in O(nodes), drawn against the DOM with pointer events. Preserved: kind colours, corroboration radius, truncated labels, tooltips, legend, #graph-cap notice, GEXF, Re-layout, Reset view, node drag, canvas pan, pinch/scroll zoom, and every ceiling (GRAPH_MAX_NODES/LINKS, CORR_MAX_SPOKES, star-not-clique). src/web 583,772 -> 439,346 B (-24.7%) and the same bytes leave the binary; VENDOR_FILES is now empty. Deleted a bug class too: the old D3-v3 string-endpoint guard test is obsolete, replaced by one asserting the engine cannot creep back and no per-frame loop runs."
-    }
-  ],
   "observations": [
-    {
-      "id": "OB-5",
-      "summary": "OB-4 RESOLVED, and my earlier smtp_vrfy hypothesis was WRONG. Device debug bundles show `status : Running` — the operator exported them mid-scan, so a log ending at a bare `module >` line is an export boundary, not a hang. Confirmed by counter-example: the 535-event log cuts at `> emailrep` while `smtp_vrfy` COMPLETED in that same run (`smtp_vrfy (1 found)`), and the 598-event log cuts at `> smtp_vrfy`. Different terminal modules, no fixed event cap (598 vs 535) — consistent with export-while-running, not with any one module hanging.",
-      "action": "closed — do not re-open on log truncation alone"
-    },
-    {
-      "id": "OB-6",
-      "summary": "OPEN BUG, not yet fixed: the debug bundle's FULL DOSSIER header prints `modules : 0 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped` while the SAME scan's event log records 60 module_done, 9 module_error, 11 module_skipped, 70 module_start (entities 264, status Running). The module counters are dead zeros in the dossier. Cause not yet established — likely the counters are only populated at scan completion, or the dossier reads a default/fresh stats struct. Needs the renderer located (grep for \"timed out\" / \"deduped\") and the data source traced before a fix.",
-      "action": "open — next cycle's highest-value DEBUG candidate"
-    },
-    {
-      "id": "OB-7",
-      "summary": "Web payload after cycle 3: src/web = 439,346 B across 44 files. Remaining weight is css/app.css 80,548 B and js/ 342,781 B (largest: views/opts.js 37,151, views/new_scan.js 36,676, scan_info/stealer.js 24,135). The event log (scan_info/log.js) still appends one DOM row per event with NO cap — ~600 rows for a real scan. Capping it would change what the 'Save shown' button saves, so it needs a deliberate decision rather than a silent truncation.",
-      "action": "open — candidates for the next lightweight pass"
-    },
-    {
-      "id": "OB-2",
-      "summary": "Verified NEGATIVES from the cycle-2 sweep — recorded so later cycles stop re-deriving them. (a) Production `.unwrap()` count is genuinely 0; the 55 production `.expect()` hits are infallible-by-construction (literal Regex::new, aho-corasick over static patterns, tokio runtime / reqwest client init) — the earlier rejection of 'eliminate unwrap/panic/unsafe' is correct as written. (b) All 19 `unsafe` textual hits are CSP header strings ('unsafe-inline') and prose; forbid(unsafe_code) holds. (c) core::classifier does NOT share the IPv4 over-acceptance bug that entity_extractor had: `extract` keeps a dotted-quad only if classify() resolves it to IpAddress, and TargetKind::detect (core/scan/mod.rs:213) gates on `v.parse::<std::net::IpAddr>()`, so 999.1.2.3 and leading-zero forms are already rejected on the engine path. (d) modules/dns_axfr is safe AND already proptested (extract_name_is_total, extract_name_rejects_pointer_loops, build_axfr_query_is_total) — a totality proptest there would be pure duplication.",
-      "action": "none — negative results, kept to prevent rediscovery"
-    },
-    {
-      "id": "OB-3",
-      "summary": "Real-device scan telemetry (two logs, 598 and 47 events, 2026-08-05 and 2026-08-03) shows four module timeouts (nostr 8s, fediverse 8s, signal_radar 14s, device_sensors) and two auth failures that are configuration rather than defects (breach-source HTTP 401 'Invalid or missing API key', github_code_search HTTP 401 'Bad credentials'). crtsh appears as 'capability-quarantined — persistent drift', i.e. the drift system behaving as designed.",
-      "action": "none this cycle — timeouts are per-module budgets working, not failures; the 401s are unconfigured keys"
-    },
-    {
-      "id": "OB-4",
-      "summary": "UNRESOLVED, needs device-side evidence: the 598-event log ends at `04:55:25 module ▶ smtp_vrfy` with no matching ✓/✗ and NO `scan complete` line, whereas the 47-event log terminates cleanly with `✔ scan complete · 10 entities`. Either the scan hung/died in smtp_vrfy (plausible — it dials port 25, which mobile carriers routinely blackhole, so a connect can stall past any read timeout) or the export simply truncated at 598 events. Cannot distinguish from the log alone.",
-      "action": "open — before treating as a defect, confirm whether the exporter caps event count; if it does not, audit smtp_vrfy's connect timeout specifically (a read timeout does not bound a TCP connect that never completes)"
-    },
     {
       "id": "OB-1",
       "summary": "`cargo tree --duplicates` reports getrandom at v0.2.17, v0.3.4 and v0.4.3. All three are transitive and not directly reachable from this crate's manifest: 0.2 via ring -> rustls -> reqwest, 0.3 via proptest -> rand_core (a dev-dependency only), 0.4 separately. Deduplicating would mean forcing versions on ring/rustls, which is a larger risk than the duplication.",
       "action": "none — recorded so a later cycle does not re-derive it"
-    },
-    {
-      "id": "OB-8",
-      "observation": "CLOSES OB-6. The mid-scan six-zero module counters are fully explained and fixed in cycle 4 slot 1. Evidence chain: Scan::new seeds zeros (core/scan/mod.rs) -> run_with_ledger_inner upserts Running with them (core/engine/mod.rs:653-654) -> finalise_scan is the sole writer (core/engine/mod.rs:991-996). Both uploaded debug bundles were status:Running, which is why both showed zeros while their event streams held ~70 module_start / ~60 module_done / ~9 module_error / ~11 module_skipped.",
-      "action": "closed"
-    },
-    {
-      "id": "OB-9",
-      "observation": "Deliberate design limit recorded so it is not mistaken for an oversight: the event stream CANNOT reconstruct the engine's six counters. There is no distinct EventKind for a timeout (it arrives as a plain ModuleError), a cache replay, or a dedup; and ModuleSkipped is not disjoint from ModuleStart — gate-skips are emitted with no preceding start (Engine::emit_module_skipped, core/engine/mod.rs:477-482) while dispatched-then-opted-out modules emit one first (dispatch.rs:548). ModuleEventTally therefore reports event counts under their event names and offers no in-flight figure.",
-      "action": "documented on the type; no further work"
-    },
-    {
-      "id": "OB-10",
-      "observation": "VERIFIED NEGATIVES for the Termux web-UI crash sweep, so future cycles do not re-investigate. (a) No leaked listeners or observers: every document/window listener (ui.js initMoreSheet/initModals/initTableLabels, helpers.js initDownloads, theme.js, main.js hashchange) is attached exactly once at bootstrap in main.js:113-116, and initDownloads is additionally idempotent via window.__hseDownloadsInit. (b) graph.js attaches only to the svg and to node elements, all inside the replaced subtree, so they are collected with the DOM. (c) Auto-refresh timers cannot stack: main.js render() calls clearScanTimer/clearLiveTimer/clearEnginesTimer/clearOptsTimers before dispatching, and scan-info arms its timer only after its render completes. (d) browse.js was already capped (BROWSE_ROW_CAP) and graph.js already capped (GRAPH_MAX_NODES/GRAPH_MAX_LINKS/CORR_MAX_SPOKES); log.js was the only uncapped per-event view, fixed in slot 2.",
-      "action": "closed"
-    },
-    {
-      "id": "OB-11",
-      "observation": "STILL OPEN, not addressed this cycle. scan_info/index.js fetches ALL FOUR of scan, entities, correlations and relations on every render regardless of which tab is active (index.js:24-26), including the 8s live refresh. The full entity set carries complete evidence chains, so on a large scan this is the heaviest single thing the UI does. Slot 3 stopped it happening for a hidden tab, which removes the unattended case, but a visible scan-info tab still re-pulls everything every 8s. A per-tab fetch projection (or a lightweight counts endpoint for the header stat cards, given scan.entity_count is already in the scan record) would cut it further.",
-      "action": "open — candidate for a future cycle; needs a browser to validate, which this host does not have"
     }
   ],
   "rejected_candidates": [
@@ -183,6 +99,26 @@
       "candidate": "Eliminate unwrap()/panic!/unsafe on fallible paths",
       "reason": "Already absent. Zero `unwrap()` in non-test src/; every `panic!` is in a test file or test helper; `#![forbid(unsafe_code)]` is set in lib.rs and all 6 `unsafe` textual hits are prose explaining its avoidance. Zero TODO/FIXME/HACK; the 16 `XXX` hits are format placeholders (`UA-XXXXXXX-X`), not markers.",
       "cycle": 1
+    },
+    {
+      "candidate": "Audit the ~252 `let _ =` result-swallowing sites",
+      "reason": "Measured all 233 on non-test paths. 175 are `let _ = writeln!/write!` to stdout (a broken pipe is not actionable and panicking on it is worse); 23 are inside inline #[cfg(test)] modules; 6 are bus/oneshot sends that fail only when no receiver exists; 5 are the deliberate discards in fuzz_entry_parse_der. Of the ~17 filesystem/process operations, exactly ONE was a real defect — the create_dir_private chain, fixed as cycle 2 slot 1 — plus one minor silent write fixed as slot 3.",
+      "cycle": 2
+    },
+    {
+      "candidate": "Audit the 20 statement-position `.ok();` sites",
+      "reason": "Zero of 20 are Result-swallowing. 13 are `remove_dir_all().ok()` test cleanup inside data_log.rs's inline test module (cfg(test) begins at line 306 of 623); the remaining 7 bind an Option that is then used. The grep pattern `\\.ok();$` was matching the last line of multi-line expressions whose value IS bound.",
+      "cycle": 2
+    },
+    {
+      "candidate": "OD-3 — wire benches into CI so perf regressions are visible",
+      "reason": "Premise was wrong, verified empirically: `cargo check --all-targets --locked` — which ci.yml's check job already runs — DOES compile both benches (confirmed by touching them and watching the rebuild; `--lib` does not). So they are already guarded against perf-path API drift, exactly as CLAUDE.md states. What is genuinely absent is EXECUTING them for regression detection, and that is not a defensible increment on shared GitHub-hosted runners: Criterion variance there is large enough that a threshold gate produces false failures — the same \"gate that passes while measuring the wrong thing\" failure mode cycle 1 slot 4 existed to remove. Needs dedicated hardware or a statistical baseline, not a workflow line.",
+      "cycle": 2
+    },
+    {
+      "candidate": "Add rustdoc to the 240 undocumented public items",
+      "reason": "Measured 240 of 1252 top-level pub items without a preceding doc/attr line. Deprioritised rather than rejected outright: this crate is `publish = false` and its lib is never consumed as an external API (see the crate-root doc comment), so the readers are the maintainers, who already have the architecture docs and the running binary as reference. Bulk-documenting self-evident items would add noise faster than signal. Worth revisiting as a targeted `missing_docs` lint on core/ and util/ only.",
+      "cycle": 2
     },
     {
       "id": "RC-4",
@@ -204,7 +140,7 @@
     {
       "id": "OD-3",
       "summary": "benches/correlation_pass.rs and benches/scan_throughput.rs compile under `cargo check --all-targets` but no workflow ever executes them, so performance regressions are invisible.",
-      "status": "CLOSED cycle 2 slot 2 — .github/workflows/bench-smoke.yml executes them via `cargo bench --locked -- --test`. Scoped honestly: it proves the benches still RUN (catching the runtime breakage compilation cannot see), and deliberately does not attempt timing-regression detection, because wall-clock from a shared ephemeral runner has no stable baseline to threshold against. Measuring performance remains a local/manual `cargo bench`."
+      "status": "CLOSED cycle 2 as REJECTED — benches ARE compiled by CI. See rejected_candidates."
     },
     {
       "id": "OD-4",
@@ -214,39 +150,178 @@
     {
       "id": "OD-5",
       "summary": "PR #317 carries 4 modules absent from main (builtwith, fofa, proxycurl, key_discovery) behind 11 conflicts and ~20k lines of two-way divergence, with CI never having run on it.",
-      "status": "open, decomposition plan recorded on the PR"
+      "status": "IN PROGRESS — fofa (a703caa5), builtwith (2fbbf1ec) and proxycurl (cycle 5) landed. ONE remaining: key_discovery (468 lines, only util::key_pool::global_pool). It scans local config files for API keys — read src/modules/key_discovery/config_scan.rs against SECURITY.md and confirm it inventories the OPERATOR'S OWN keys rather than harvesting third-party credentials BEFORE landing it. \"Out of scope, do not land\" is an acceptable outcome."
+    },
+    {
+      "id": "OD-6",
+      "summary": "util::atomic_file::create_dir_private previously returned Ok(()) for a pre-existing directory it could not chmod to 0700, because DirBuilder::recursive(true) succeeds on an existing dir and the repairing set_permissions was discarded. Its own doc claimed a 0700 guarantee it did not deliver, and key_vault.db / key_pool.json live beneath that directory.",
+      "status": "CLOSED cycle 2 slot 1 — the achieved mode is now verified and a failure is disclosed at warn!, with the Ok contract deliberately unchanged so the infallible path accessors still return a usable PathBuf."
+    }
+  ],
+  "cycle_2_slots": [
+    {
+      "slot": 1,
+      "category": "HARDENING",
+      "instruction": "create_dir_private must not report Ok for a directory it failed to make private; verify the achieved mode and disclose.",
+      "status": "COMPLETE"
+    },
+    {
+      "slot": 2,
+      "category": "GAP-ANALYSIS",
+      "instruction": "Close the result-swallowing audit with a per-class verdict.",
+      "status": "COMPLETE — 233 non-test sites classified; exactly ONE real defect (the create_dir_private chain, slot 1) plus one minor silent write (capability_probe). The rest are justified."
+    },
+    {
+      "slot": 3,
+      "category": "DEBUG",
+      "instruction": "Disclose the silent drift-map write in selftest::capability_probe::record_confirmed_drift_at.",
+      "status": "COMPLETE — re-resolved after the original slot 3 (data_log rotation) was aborted as a non-defect."
+    },
+    {
+      "slot": 4,
+      "category": "UPGRADE",
+      "instruction": "OD-3 — wire the Criterion benches into CI.",
+      "status": "ABORTED — the premise was false. See rejected_candidates."
+    },
+    {
+      "slot": 5,
+      "category": "COMPLETION",
+      "instruction": "Extract one self-contained module from PR #317 onto current main (OD-5).",
+      "status": "NOT STARTED — carried to cycle 3. The largest remaining item and deliberately not rushed."
+    }
+  ],
+  "cycle_3_slots": [
+    {
+      "slot": 1,
+      "category": "COMPLETION",
+      "instruction": "Extract the most self-contained module from PR #317 onto current main (OD-5), one module per PR.",
+      "status": "COMPLETE — fofa chosen on a measured dependency footprint: 300 lines needing only core::scan and two util::http helpers, against proxycurl (1056 lines, 13 helpers), builtwith (447) and key_discovery (468, a config-file key scanner that deserves its own security review). Source needed NO adaptation; the three architecture ratchets that fired were all integration requirements #317 never learned because CI never ran on it. Registry 171 -> 172."
     }
   ],
   "cycle_4_slots": [
     {
       "slot": 1,
-      "category": "DEBUG",
-      "instruction": "Establish why the dossier/debug bundle prints six zero module counters mid-scan, then fix it without fabricating numbers.",
-      "outcome": "DONE (d4238fa9b). Cause traced end to end: Scan::new seeds modules_* to 0; run_with_ledger_inner (core/engine/mod.rs:653) upserts the Running row with those zeros; the ONLY write is finalise_scan (core/engine/mod.rs:991-996) at scan end; nothing updates the row in between. Fix is disclosure + the number that does exist: ScanStatus::is_terminal(), a NOT-YET-FINAL caveat appended by module_accounting_line() on non-terminal scans (inherited by both renderers from the one single-sourced sentence), and core::event::ModuleEventTally rendered by render_full as an 'observed :' line on the non-terminal path only. 7 tests."
-    },
-    {
-      "slot": 2,
-      "category": "HARDENING",
-      "instruction": "Bound the web scan-log DOM so a long scan cannot exhaust a Termux browser tab, without silently truncating what the operator can save.",
-      "outcome": "DONE (e5899aac9). appendLog created one permanent node per event and removed nothing. LOG_MAX_ROWS=1200, oldest-first, evicted synchronously inside appendLog (a deferred trim would still let the full list exist for a frame during the synchronous history render; the peak is the problem). Disclosed three ways: the By-type breakdown counts events not rows so its totals stay complete, it names the drop and points at Download, and the 'Save shown' header warns the file starts mid-scan."
-    },
-    {
-      "slot": 3,
-      "category": "HARDENING",
-      "instruction": "Stop the three timer-driven views doing full network + render work while nobody is looking at them.",
-      "outcome": "DONE (5f6475bb3). scan-info (8s, four requests + full view rebuild), Live monitor (8s), Engines (30s server-side liveness sweep) all now consult a shared timers.js pageHidden(). Schedule is kept rather than torn down: a hidden tick fires, does nothing, re-arms — chosen over a visibilitychange listener specifically because scan-info re-renders every 8s and would accumulate one listener per render."
-    },
-    {
-      "slot": 4,
-      "category": "UPGRADE",
-      "instruction": "Make the Graph tab usable during a running scan — the 8s refresh was discarding the operator's viewport.",
-      "outcome": "DONE (45fcd1f61). `const view` was declared inside buildGraph, so every 8s rebuild snapped the canvas to origin at scale 1 and the graph could not be panned or zoomed for the whole duration of a scan. Hoisted to module scope, re-applied by buildGraph's closing applyView(), reset per-scan via viewScanId so a different scan starts centred. Node positions deliberately not preserved (layoutConcentric is deterministic; a growing node set legitimately relayouts) and the comment says so."
-    },
-    {
-      "slot": 5,
-      "category": "GAP-ANALYSIS",
-      "instruction": "Record cycle 4, its verified negatives and its one measured rejection, so the next cycle does not re-derive them.",
-      "outcome": "DONE (this entry)."
+      "category": "COMPLETION",
+      "instruction": "Extract builtwith from PR #317 (second module).",
+      "status": "COMPLETE — only the README ratchet fired, because env_template.txt already carried HUNTSMAN_BUILTWITH_KEY and the confidence literals were mapped up front from the cycle-3 checklist. The real find was NOT a ratchet: builtwith emitted registrant contact emails with no role/infra gate, reintroducing the leakage #351 removed from cert_intel/crtsh/ip_registry/doh_resolver. Its own existing test asserted the leaky behaviour and had to be rewritten."
     }
-  ]
+  ],
+  "cycle_5_slots": [
+    {
+      "slot": 1,
+      "category": "COMPLETION",
+      "instruction": "Extract proxycurl from PR #317 (third module).",
+      "status": "COMPLETE — registry 173 -> 174. See module_extraction_checklist; the key ratchet guards FOUR locations, not one."
+    }
+  ],
+  "module_extraction_checklist": {
+    "$note": "Learned across cycles 3-5 extracting fofa, builtwith, proxycurl from #317. Run BEFORE extracting.",
+    "1_key_registration_FOUR_places": [
+      "src/cli/env_template.txt — what `hse provision` offers",
+      "src/util/keys/constants.rs KNOWN_KEYS — what the Settings UI can surface",
+      "src/util/keys/constants.rs signup_hint() — the \"needs key\" notice; say PAID explicitly when there is no free tier",
+      ".env.example at repo root — the provider catalogue an operator browses"
+    ],
+    "2_confidence": "Map every bare literal onto an EXISTING confidence:: rung. proxycurl had 0.68, which is NOT a rung (HIGH 0.65 / HIGH_PLUS 0.70) — resolved DOWNWARD because the entities are tagged `derived` and the module doc calls them weaker than their source. Never invent a rung.",
+    "3_readme": "Three figures: line ~11 total, the `hse modules` line ~169, Module Overview header ~237 with its free vs key-gated/paid split. ModuleCost::Paid counts in the key-gated/paid figure.",
+    "4_privacy_NOT_ratcheted": "No architecture test catches PII defects. builtwith emitted registrant contact emails with no role/infra gate, reintroducing the #351 leak, and its own test asserted the leaky behaviour. But do NOT apply the gate reflexively: proxycurl reads profile.personal_emails (the subject OWN addresses) rather than registrant contact blocks, so is_infrastructure_email would drop a sole trader's genuine sales@theirfirm.com. Reason about the data class, do not pattern-match.",
+    "5_scope": "Check the module against SECURITY.md and against already-registered peers. proxycurl is the same class as hunter_io/epieos/contact_enrich/emailrep, all already in main."
+  },
+  "web_console_parallel_track": {
+    "note": "This block records a SECOND autonomous loop that ran on branch claude/pipeline-refactor-repair-urjrgk IN PARALLEL with main's module-extraction cycles (2-5 above). Both forked from #364's cycle-1 state, so both number their own cycles from 2; those numbers are NOT the cycle_2_slots..cycle_5_slots on main's spine, which are unrelated work. Kept as a separate key rather than renumbered into main's sequence because pretending this work came after main's cycle 5 would be false. Its commits landed via PR #365; every one was verified with cargo test --all --locked + clippy -D warnings + fmt before commit.",
+    "theme": "The maintainer's two stated goals: make the web console lightweight without losing functionality (esp. the graph), and stop the Termux aarch64 no-root web UI crashing during scans. Driven by real device telemetry (captured event logs of 47/535/587/598 events and debug bundles from the device).",
+    "cycles": {
+      "track_cycle_1": "Entity-extraction / ingest pipeline: validated IPv4 via Ipv4Addr (was emitting 999.1.2.3 / leading-zero / multicast as valid), validated IPv6 extraction, csv::Writer round-trip for `hse ingest -f csv`, EntityKind to_str<->from round-trip, is_private_ipv4 via Ipv4Addr::is_private, self_restart exit(1) not panic, advisory bench-smoke.yml, entity_extractor ingest-path benchmark, correlation log-line de-duplication.",
+      "track_cycle_2": "D3 removal (dropped the last vendored front-end asset, 151,725 B; graph is now a dependency-free deterministic concentric SVG layout, O(nodes), no simulation) and per-event O(n) removal in graph.js/log.js.",
+      "track_cycle_4_slots": [
+        {
+          "slot": 1,
+          "category": "DEBUG",
+          "instruction": "Establish why the dossier/debug bundle prints six zero module counters mid-scan, then fix it without fabricating numbers.",
+          "outcome": "DONE (d4238fa9b). Cause traced end to end: Scan::new seeds modules_* to 0; run_with_ledger_inner (core/engine/mod.rs:653) upserts the Running row with those zeros; the ONLY write is finalise_scan (core/engine/mod.rs:991-996) at scan end; nothing updates the row in between. Fix is disclosure + the number that does exist: ScanStatus::is_terminal(), a NOT-YET-FINAL caveat appended by module_accounting_line() on non-terminal scans (inherited by both renderers from the one single-sourced sentence), and core::event::ModuleEventTally rendered by render_full as an 'observed :' line on the non-terminal path only. 7 tests."
+        },
+        {
+          "slot": 2,
+          "category": "HARDENING",
+          "instruction": "Bound the web scan-log DOM so a long scan cannot exhaust a Termux browser tab, without silently truncating what the operator can save.",
+          "outcome": "DONE (e5899aac9). appendLog created one permanent node per event and removed nothing. LOG_MAX_ROWS=1200, oldest-first, evicted synchronously inside appendLog (a deferred trim would still let the full list exist for a frame during the synchronous history render; the peak is the problem). Disclosed three ways: the By-type breakdown counts events not rows so its totals stay complete, it names the drop and points at Download, and the 'Save shown' header warns the file starts mid-scan."
+        },
+        {
+          "slot": 3,
+          "category": "HARDENING",
+          "instruction": "Stop the three timer-driven views doing full network + render work while nobody is looking at them.",
+          "outcome": "DONE (5f6475bb3). scan-info (8s, four requests + full view rebuild), Live monitor (8s), Engines (30s server-side liveness sweep) all now consult a shared timers.js pageHidden(). Schedule is kept rather than torn down: a hidden tick fires, does nothing, re-arms — chosen over a visibilitychange listener specifically because scan-info re-renders every 8s and would accumulate one listener per render."
+        },
+        {
+          "slot": 4,
+          "category": "UPGRADE",
+          "instruction": "Make the Graph tab usable during a running scan — the 8s refresh was discarding the operator's viewport.",
+          "outcome": "DONE (45fcd1f61). `const view` was declared inside buildGraph, so every 8s rebuild snapped the canvas to origin at scale 1 and the graph could not be panned or zoomed for the whole duration of a scan. Hoisted to module scope, re-applied by buildGraph's closing applyView(), reset per-scan via viewScanId so a different scan starts centred. Node positions deliberately not preserved (layoutConcentric is deterministic; a growing node set legitimately relayouts) and the comment says so."
+        },
+        {
+          "slot": 5,
+          "category": "GAP-ANALYSIS",
+          "instruction": "Record cycle 4, its verified negatives and its one measured rejection, so the next cycle does not re-derive them.",
+          "outcome": "DONE (this entry)."
+        }
+      ]
+    },
+    "observations_not_on_main_spine": [
+      {
+        "id": "OB-2",
+        "summary": "Verified NEGATIVES from the cycle-2 sweep — recorded so later cycles stop re-deriving them. (a) Production `.unwrap()` count is genuinely 0; the 55 production `.expect()` hits are infallible-by-construction (literal Regex::new, aho-corasick over static patterns, tokio runtime / reqwest client init) — the earlier rejection of 'eliminate unwrap/panic/unsafe' is correct as written. (b) All 19 `unsafe` textual hits are CSP header strings ('unsafe-inline') and prose; forbid(unsafe_code) holds. (c) core::classifier does NOT share the IPv4 over-acceptance bug that entity_extractor had: `extract` keeps a dotted-quad only if classify() resolves it to IpAddress, and TargetKind::detect (core/scan/mod.rs:213) gates on `v.parse::<std::net::IpAddr>()`, so 999.1.2.3 and leading-zero forms are already rejected on the engine path. (d) modules/dns_axfr is safe AND already proptested (extract_name_is_total, extract_name_rejects_pointer_loops, build_axfr_query_is_total) — a totality proptest there would be pure duplication.",
+        "action": "none — negative results, kept to prevent rediscovery"
+      },
+      {
+        "id": "OB-3",
+        "summary": "Real-device scan telemetry (two logs, 598 and 47 events, 2026-08-05 and 2026-08-03) shows four module timeouts (nostr 8s, fediverse 8s, signal_radar 14s, device_sensors) and two auth failures that are configuration rather than defects (breach-source HTTP 401 'Invalid or missing API key', github_code_search HTTP 401 'Bad credentials'). crtsh appears as 'capability-quarantined — persistent drift', i.e. the drift system behaving as designed.",
+        "action": "none this cycle — timeouts are per-module budgets working, not failures; the 401s are unconfigured keys"
+      },
+      {
+        "id": "OB-4",
+        "summary": "UNRESOLVED, needs device-side evidence: the 598-event log ends at `04:55:25 module ▶ smtp_vrfy` with no matching ✓/✗ and NO `scan complete` line, whereas the 47-event log terminates cleanly with `✔ scan complete · 10 entities`. Either the scan hung/died in smtp_vrfy (plausible — it dials port 25, which mobile carriers routinely blackhole, so a connect can stall past any read timeout) or the export simply truncated at 598 events. Cannot distinguish from the log alone.",
+        "action": "open — before treating as a defect, confirm whether the exporter caps event count; if it does not, audit smtp_vrfy's connect timeout specifically (a read timeout does not bound a TCP connect that never completes)"
+      },
+      {
+        "id": "OB-5",
+        "summary": "OB-4 RESOLVED, and my earlier smtp_vrfy hypothesis was WRONG. Device debug bundles show `status : Running` — the operator exported them mid-scan, so a log ending at a bare `module >` line is an export boundary, not a hang. Confirmed by counter-example: the 535-event log cuts at `> emailrep` while `smtp_vrfy` COMPLETED in that same run (`smtp_vrfy (1 found)`), and the 598-event log cuts at `> smtp_vrfy`. Different terminal modules, no fixed event cap (598 vs 535) — consistent with export-while-running, not with any one module hanging.",
+        "action": "closed — do not re-open on log truncation alone"
+      },
+      {
+        "id": "OB-6",
+        "summary": "OPEN BUG, not yet fixed: the debug bundle's FULL DOSSIER header prints `modules : 0 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped` while the SAME scan's event log records 60 module_done, 9 module_error, 11 module_skipped, 70 module_start (entities 264, status Running). The module counters are dead zeros in the dossier. Cause not yet established — likely the counters are only populated at scan completion, or the dossier reads a default/fresh stats struct. Needs the renderer located (grep for \"timed out\" / \"deduped\") and the data source traced before a fix.",
+        "action": "open — next cycle's highest-value DEBUG candidate"
+      },
+      {
+        "id": "OB-7",
+        "summary": "Web payload after cycle 3: src/web = 439,346 B across 44 files. Remaining weight is css/app.css 80,548 B and js/ 342,781 B (largest: views/opts.js 37,151, views/new_scan.js 36,676, scan_info/stealer.js 24,135). The event log (scan_info/log.js) still appends one DOM row per event with NO cap — ~600 rows for a real scan. Capping it would change what the 'Save shown' button saves, so it needs a deliberate decision rather than a silent truncation.",
+        "action": "open — candidates for the next lightweight pass"
+      },
+      {
+        "id": "OB-8",
+        "observation": "CLOSES OB-6. The mid-scan six-zero module counters are fully explained and fixed in cycle 4 slot 1. Evidence chain: Scan::new seeds zeros (core/scan/mod.rs) -> run_with_ledger_inner upserts Running with them (core/engine/mod.rs:653-654) -> finalise_scan is the sole writer (core/engine/mod.rs:991-996). Both uploaded debug bundles were status:Running, which is why both showed zeros while their event streams held ~70 module_start / ~60 module_done / ~9 module_error / ~11 module_skipped.",
+        "action": "closed"
+      },
+      {
+        "id": "OB-9",
+        "observation": "Deliberate design limit recorded so it is not mistaken for an oversight: the event stream CANNOT reconstruct the engine's six counters. There is no distinct EventKind for a timeout (it arrives as a plain ModuleError), a cache replay, or a dedup; and ModuleSkipped is not disjoint from ModuleStart — gate-skips are emitted with no preceding start (Engine::emit_module_skipped, core/engine/mod.rs:477-482) while dispatched-then-opted-out modules emit one first (dispatch.rs:548). ModuleEventTally therefore reports event counts under their event names and offers no in-flight figure.",
+        "action": "documented on the type; no further work"
+      },
+      {
+        "id": "OB-10",
+        "observation": "VERIFIED NEGATIVES for the Termux web-UI crash sweep, so future cycles do not re-investigate. (a) No leaked listeners or observers: every document/window listener (ui.js initMoreSheet/initModals/initTableLabels, helpers.js initDownloads, theme.js, main.js hashchange) is attached exactly once at bootstrap in main.js:113-116, and initDownloads is additionally idempotent via window.__hseDownloadsInit. (b) graph.js attaches only to the svg and to node elements, all inside the replaced subtree, so they are collected with the DOM. (c) Auto-refresh timers cannot stack: main.js render() calls clearScanTimer/clearLiveTimer/clearEnginesTimer/clearOptsTimers before dispatching, and scan-info arms its timer only after its render completes. (d) browse.js was already capped (BROWSE_ROW_CAP) and graph.js already capped (GRAPH_MAX_NODES/GRAPH_MAX_LINKS/CORR_MAX_SPOKES); log.js was the only uncapped per-event view, fixed in slot 2.",
+        "action": "closed"
+      },
+      {
+        "id": "OB-11",
+        "observation": "STILL OPEN, not addressed this cycle. scan_info/index.js fetches ALL FOUR of scan, entities, correlations and relations on every render regardless of which tab is active (index.js:24-26), including the 8s live refresh. The full entity set carries complete evidence chains, so on a large scan this is the heaviest single thing the UI does. Slot 3 stopped it happening for a hidden tab, which removes the unattended case, but a visible scan-info tab still re-pulls everything every 8s. A per-tab fetch projection (or a lightweight counts endpoint for the header stat cards, given scan.entity_count is already in the scan record) would cut it further.",
+        "action": "open — candidate for a future cycle; needs a browser to validate, which this host does not have"
+      }
+    ],
+    "rejected_candidate": {
+      "id": "RC-4",
+      "candidate": "Trim src/web/css/app.css (80,564 B — the largest embedded asset) by removing unused Bootstrap-style grid classes, for the 'lightweight UI' objective.",
+      "reason": "REJECTED on measurement, not on principle. 30 of the 48 .col-{xs,sm,md,lg}-N rules are provably unreferenced across all JS, spa.html and every .rs file — but they occupy 746 B of 78,704 B (0.9%). The stylesheet is not bloated: 450 rule blocks, 453 distinct selectors, only 9% comments, for a 34-view SPA. A sub-1% saving is not worth the layout-regression risk on classes a future view may legitimately use. NOTE for future cycles: a naive 'unreferenced class' sweep over app.css yields 66 false positives — k-*, lv-*, cost-* and cv-* are all built dynamically (kindPill/costPill in helpers.js, `log-row lv-${...}` in log.js and live.js, `corr-card cv-${...}` in correlations.js) and are LIVE."
+    }
+  }
 }

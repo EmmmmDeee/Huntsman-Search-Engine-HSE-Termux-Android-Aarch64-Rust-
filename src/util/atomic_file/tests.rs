@@ -95,3 +95,47 @@ use super::*;
             "a pre-existing loose dir must be re-tightened to owner-only"
         );
     }
+
+/// The privacy classification tests the property that matters — no group or
+/// other access — not equality with `0o700`.
+///
+/// This is what decides whether `create_dir_private` stays quiet or warns that
+/// secrets are exposed, so both kinds of wrongness cost something real: a false
+/// negative leaves `key_vault.db` readable by other local UIDs with nobody told,
+/// and a false positive cries wolf on a directory that is perfectly private and
+/// trains operators to ignore the warning.
+///
+/// Driven by values rather than by contriving a filesystem this process cannot
+/// chmod, which is not reproducible in a unit test — the same reason the
+/// per-host circuit breaker takes `now` as a parameter.
+#[cfg(unix)]
+#[test]
+fn private_mode_classification_looks_at_group_and_other_only() {
+    // Private: nothing for group or other, whatever the owner holds.
+    for mode in [0o700, 0o600, 0o500, 0o400, 0o000, 0o300] {
+        assert!(
+            is_private_mode(mode),
+            "{mode:o} grants no group/other access and must count as private"
+        );
+    }
+
+    // Exposed: any single group or other bit is enough.
+    for mode in [0o755, 0o750, 0o705, 0o701, 0o710, 0o770, 0o777, 0o644, 0o007] {
+        assert!(
+            !is_private_mode(mode),
+            "{mode:o} is reachable by another local UID and must NOT count as private"
+        );
+    }
+
+    // Real modes from `metadata()` carry the file-type bits above 0o7777
+    // (S_IFDIR = 0o040000). Those must not be mistaken for permission bits, or
+    // every directory would be classified from the wrong field.
+    assert!(
+        is_private_mode(0o040700),
+        "the S_IFDIR type bits must not affect the classification"
+    );
+    assert!(
+        !is_private_mode(0o040755),
+        "a 0755 directory is exposed regardless of its type bits"
+    );
+}
