@@ -298,6 +298,59 @@ mod tests {
     }
 
     #[test]
+    fn au062_escalates_to_high_on_three_pathways() {
+        // Three edge-disjoint routes a→b through non-identity intermediates. Two
+        // families (infra + identity_registry) is enough to EMIT; the THIRD
+        // pathway is what escalates Medium→High via the first disjunct
+        // (pathways >= 3). The two-pathway sibling above covers the base arm.
+        let a = id(EntityKind::Email, "a@x.com");
+        let b = id(EntityKind::Username, "bob");
+        let d = sourced(EntityKind::Domain, "x.com", "dns_intel"); // infra
+        let o = sourced(EntityKind::Organisation, "Acme Pty", "opencorporates"); // identity_registry
+        let ip = sourced(EntityKind::IpAddress, "1.2.3.4", "shodan"); // infra
+        let rels = [
+            rel(&a, &d, RelationKind::BelongsToDomain),
+            rel(&d, &b, RelationKind::DerivedFrom),
+            rel(&a, &o, RelationKind::RegisteredBy),
+            rel(&o, &b, RelationKind::DerivedFrom),
+            rel(&a, &ip, RelationKind::ResolvesTo),
+            rel(&ip, &b, RelationKind::DerivedFrom),
+        ];
+        let ents = [a.clone(), b.clone(), d, o, ip];
+        let context = RuleContext::new(&ents);
+        let out = rule_au_062_multipath_corroboration(&context, &rels, "s", 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rule_id, "AU-062");
+        assert_eq!(out[0].severity, Severity::High);
+        assert!(out[0].entity_uids.contains(&a.uid));
+        assert!(out[0].entity_uids.contains(&b.uid));
+    }
+
+    #[test]
+    fn au062_escalates_to_high_on_three_source_families() {
+        // Only TWO pathways, but THREE orthogonal families — the second disjunct
+        // (families >= 3). The third family comes from sourcing an ENDPOINT: `a`
+        // is breach-sourced, the two intermediates are infra and
+        // identity_registry.
+        let a = sourced(EntityKind::Email, "a@x.com", "hibp"); // breach
+        let b = id(EntityKind::Username, "bob");
+        let d = sourced(EntityKind::Domain, "x.com", "dns_intel"); // infra
+        let o = sourced(EntityKind::Organisation, "Acme Pty", "opencorporates"); // identity_registry
+        let rels = [
+            rel(&a, &d, RelationKind::BelongsToDomain),
+            rel(&d, &b, RelationKind::DerivedFrom),
+            rel(&a, &o, RelationKind::RegisteredBy),
+            rel(&o, &b, RelationKind::DerivedFrom),
+        ];
+        let ents = [a.clone(), b.clone(), d, o];
+        let context = RuleContext::new(&ents);
+        let out = rule_au_062_multipath_corroboration(&context, &rels, "s", 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rule_id, "AU-062");
+        assert_eq!(out[0].severity, Severity::High);
+    }
+
+    #[test]
     fn multipath_links_are_pair_probe_capped_deterministically() {
         // Two independent components, each an identity pair joined by two orthogonal
         // routes → two multipath links. The O(n²) pair sweep must honour the cap,

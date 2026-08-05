@@ -137,6 +137,44 @@ mod tests {
     }
 
     #[test]
+    fn au070_escalates_to_high_brokering_five_identities() {
+        // A domain hub is the sole link binding FIVE identities → severity
+        // escalates Medium→High (n = broker.brokered.len() >= 5). The
+        // three-identity sibling above covers the base Medium arm. Identity
+        // kinds span Person/Email/Phone/Username, so a second Email reaches five.
+        let hub = mk(EntityKind::Domain, "x.com");
+        let email = mk(EntityKind::Email, "a@x.com");
+        let uname = mk(EntityKind::Username, "alice");
+        let person = mk(EntityKind::Person, "Bob");
+        let phone = mk(EntityKind::Phone, "+61400000000");
+        let email2 = mk(EntityKind::Email, "c@x.com");
+        let rels = [
+            edge(&email, &hub),
+            edge(&uname, &hub),
+            edge(&person, &hub),
+            edge(&phone, &hub),
+            edge(&email2, &hub),
+        ];
+        let ents = [
+            hub.clone(),
+            email.clone(),
+            uname.clone(),
+            person.clone(),
+            phone.clone(),
+            email2.clone(),
+        ];
+
+        let ctx = RuleContext::new(&ents);
+        let out = rule_au_070_connection_broker(&ctx, &rels, "s", 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rule_id, "AU-070");
+        assert_eq!(out[0].severity, Severity::High);
+        for uid in [&email.uid, &uname.uid, &person.uid, &phone.uid, &email2.uid] {
+            assert!(out[0].entity_uids.contains(uid));
+        }
+    }
+
+    #[test]
     fn au070_silent_on_a_two_identity_bridge() {
         // The hub joins only two identities — a single fragile pair, AU-063's job,
         // below the ≥3 broker floor.

@@ -128,6 +128,45 @@ mod tests {
     }
 
     #[test]
+    fn au067_escalates_to_high_for_a_four_identity_cluster() {
+        // A fourth identity off the same domain hub grows the transitive
+        // equivalence class to FOUR members → severity escalates Medium→High
+        // (n = cluster.members.len() >= 4). The three-member sibling above
+        // covers the base Medium arm.
+        let email = mk(EntityKind::Email, "a@x.com");
+        let domain = mk(EntityKind::Domain, "x.com");
+        let person = mk(EntityKind::Person, "Alice");
+        let uname = mk(EntityKind::Username, "alice");
+        let phone = mk(EntityKind::Phone, "+61400000000");
+        let rels = [
+            rel(&email, &domain, RelationKind::BelongsToDomain, 0.8),
+            rel(&domain, &person, RelationKind::RegisteredBy, 0.8),
+            rel(&domain, &uname, RelationKind::DerivedFrom, 0.8),
+            rel(&domain, &phone, RelationKind::DerivedFrom, 0.8),
+        ];
+        let ents = [
+            email.clone(),
+            domain.clone(),
+            person.clone(),
+            uname.clone(),
+            phone.clone(),
+        ];
+
+        let out = rule_au_067_resolved_identity_cluster(&RuleContext::new(&ents), &rels, "s", 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rule_id, "AU-067");
+        assert_eq!(out[0].severity, Severity::High);
+        // All four identities are members; the conduit domain is not.
+        for id in [&email.uid, &person.uid, &uname.uid, &phone.uid] {
+            assert!(out[0].entity_uids.contains(id), "identity must be a member");
+        }
+        assert!(
+            !out[0].entity_uids.contains(&domain.uid),
+            "a conduit hub is not part of the resolved identity"
+        );
+    }
+
+    #[test]
     fn au067_silent_on_a_single_pair() {
         // Only two identities (email, person) — a pair is AU-060's job, not a cluster.
         let email = mk(EntityKind::Email, "a@x.com");

@@ -7924,6 +7924,41 @@ fn au030_fires_for_three_source_geo_cluster() {
 }
 
 #[test]
+fn au030_escalates_to_high_for_four_source_geo_convergence() {
+    // Four distinct person-anchoring corroborating source NAMES across two
+    // coordinate entities → sources.len() == 4 → High. (The ladder counts
+    // distinct corroborating source names, not source families or entity
+    // count.) Each entity carries an anchoring geo source so neither is dropped
+    // as infrastructure geo.
+    let mut c1 = Entity::new(EntityKind::Coordinates, "51.5,0.1", 0.7, "s");
+    c1.add_evidence(Evidence::new("geocode", "x"));
+    c1.add_evidence(Evidence::new("wigle", "x"));
+    let mut c2 = Entity::new(EntityKind::Coordinates, "51.6,0.2", 0.7, "s");
+    c2.add_evidence(Evidence::new("exif_geo", "x"));
+    c2.add_evidence(Evidence::new("photon", "x"));
+    let r = rule_au_030_geo_convergence_score(&RuleContext::new(&[c1, c2]), "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-030");
+    assert_eq!(r[0].severity, Severity::High);
+}
+
+#[test]
+fn au030_escalates_to_critical_for_five_source_geo_convergence() {
+    // Five distinct corroborating source names → sources.len() == 5 → Critical.
+    let mut c1 = Entity::new(EntityKind::Coordinates, "51.5,0.1", 0.7, "s");
+    c1.add_evidence(Evidence::new("geocode", "x"));
+    c1.add_evidence(Evidence::new("wigle", "x"));
+    c1.add_evidence(Evidence::new("mylnikov", "x"));
+    let mut c2 = Entity::new(EntityKind::Coordinates, "51.6,0.2", 0.7, "s");
+    c2.add_evidence(Evidence::new("exif_geo", "x"));
+    c2.add_evidence(Evidence::new("photon", "x"));
+    let r = rule_au_030_geo_convergence_score(&RuleContext::new(&[c1, c2]), "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-030");
+    assert_eq!(r[0].severity, Severity::Critical);
+}
+
+#[test]
 fn au062_multipath_corroboration_fires_on_orthogonal_routes() {
     use crate::core::relation::{Relation, RelationKind};
     let mk_rel = |from: &Entity, to: &Entity, kind: RelationKind| {

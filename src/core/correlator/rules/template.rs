@@ -187,6 +187,44 @@ mod tests {
     }
 
     #[test]
+    fn au064_escalates_to_medium_when_the_route_repeats_across_three_pairs() {
+        // Three pairs share the route Email →belongs_to_domain→ Domain
+        // →registered_by→ Person → ct.pairs.len() == 3 → severity escalates
+        // Low→Medium. The two-pair sibling above covers the base Low arm.
+        let e1 = id(EntityKind::Email, "a@x.com");
+        let d1 = id(EntityKind::Domain, "x.com");
+        let p1 = id(EntityKind::Person, "Alice");
+        let e2 = id(EntityKind::Email, "b@y.com");
+        let d2 = id(EntityKind::Domain, "y.com");
+        let p2 = id(EntityKind::Person, "Bob");
+        let e3 = id(EntityKind::Email, "c@z.com");
+        let d3 = id(EntityKind::Domain, "z.com");
+        let p3 = id(EntityKind::Person, "Carol");
+        let rels = [
+            rel(&e1, &d1, RelationKind::BelongsToDomain),
+            rel(&d1, &p1, RelationKind::RegisteredBy),
+            rel(&e2, &d2, RelationKind::BelongsToDomain),
+            rel(&d2, &p2, RelationKind::RegisteredBy),
+            rel(&e3, &d3, RelationKind::BelongsToDomain),
+            rel(&d3, &p3, RelationKind::RegisteredBy),
+        ];
+        let out = rule_au_064_generalized_pathway_template(
+            &RuleContext::new(&[e1, d1, p1, e2, d2, p2, e3, d3, p3]),
+            &rels,
+            "s",
+            0,
+        );
+        assert_eq!(
+            out.len(),
+            1,
+            "one generalised template across the three pairs"
+        );
+        assert_eq!(out[0].rule_id, "AU-064");
+        assert_eq!(out[0].severity, Severity::Medium);
+        assert!(out[0].description.contains("3 distinct identity pairs"));
+    }
+
+    #[test]
     fn au064_silent_on_a_single_instance() {
         // One pair, one route — nothing to generalise yet.
         let e1 = id(EntityKind::Email, "a@x.com");
