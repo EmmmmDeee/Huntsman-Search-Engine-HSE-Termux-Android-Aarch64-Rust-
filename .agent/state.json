@@ -7,13 +7,15 @@
     "the rejected list is the part that stops cycles rediscovering the same",
     "non-defects. See CLAUDE.md and docs/OPERATIONAL_CONSTITUTION.md."
   ],
-  "cycle_count": 3,
-  "last_verified_commit": "259f27725",
+  "cycle_count": 6,
+  "last_verified_commit": "16f1045a9",
   "verified_against": {
     "note": "This crate declares NO [features]; `--all-features` is a no-op here. The authoritative gate is scripts/gate.sh, which spans several workflow files and includes the rustdoc-lint and MSRV passes that reconstructing from ci.yml alone drops.",
     "toolchain": "1.97.1 (rust-toolchain.toml)",
-    "msrv": "1.88",
-    "edition": "2024"
+    "msrv": "1.88 \u2014 NOT locally verifiable (no MSRV toolchain installed on this host); CI's MSRV job is the authority",
+    "cross_build": "aarch64-linux-android \u2014 NOT locally verifiable (no Android NDK on this host); CI's aarch64-android job is the authority",
+    "local_result": "cargo test --all --locked = 5990 lib + 117 api + 56 smoke + all other integration suites, 0 failed; clippy --all-targets --locked -- -D warnings clean; fmt clean; node --check clean on every modified JS file",
+    "ci_result_prior_head": "All 6 GitHub Actions checks (clippy, MSRV 1.88, aarch64-linux-android Termux build, install.sh syntax, Check & test Linux x86_64, rust-clippy analyzing) passed on c532272f0 (the main-merge head, before this cycle's 4 commits) \u2014 first green CI run since Actions stopped firing for this branch at 4950b7369. This cycle's 4 commits (a957585c6..5e1614053) are pushed together with this state.json update and still need their own CI pass."
   },
   "completed_slots": [
     {
@@ -43,41 +45,6 @@
       "category": "DEBUG/HARDENING/COMPLETION/UPGRADE/GAP-ANALYSIS",
       "outcome": "Cycle 1 landed whole in 4111299e: oathnet rate-limit misdiagnosis, ingest fuzz target, chess_profile recovery, MSRV drift ratchet, DbWriter backlog disclosure.",
       "commit": "4111299e"
-    },
-    {
-      "cycle": 3,
-      "slot": 1,
-      "category": "DEBUG",
-      "title": "ingest CSV export emitted non-RFC-4180 backslash escapes and bypassed the formula-injection guard",
-      "files": [
-        "src/cli/ingest/mod.rs"
-      ],
-      "evidence_level": "L4 (reproduced end-to-end with the real binary before and after)",
-      "before": "hse ingest -F csv on a value containing commas produced a 6-field row against a 4-field header",
-      "after": "all rows parse as 4 fields; value quoted per RFC 4180; kind/source_pattern also escaped; formula guard applied",
-      "verified": "scripts/gate.sh --quick: 7 executed checks PASS, 4 skipped (MSRV, aarch64 cross-build, shellcheck, audit/deny/machete)",
-      "tests_added": 3,
-      "session": "claude/new-session-56pt8z (PR #367)"
-    },
-    {
-      "cycle": 3,
-      "slot": 2,
-      "category": "HARDENING",
-      "title": "hse ingest --min-confidence nan|inf|out-of-range silently discarded the entire result set",
-      "files": [
-        "src/util/entity_extractor/mod.rs",
-        "src/util/entity_extractor/extractor.rs",
-        "src/util/entity_extractor/classifier.rs",
-        "src/cli/command.rs"
-      ],
-      "evidence_level": "L4 (reproduced end-to-end with the real binary before and after)",
-      "before": "--min-confidence nan -> exit 0, empty deliverable, 3 entities dropped with no error",
-      "after": "nan/inf/5.0 -> exit 2 with a clap usage error naming the reason; 0.0/0.30/1.0 unaffected",
-      "also": "typed ExtractionError::InvalidConfidenceFloor; both Default impls de-panicked (now structurally panic-free); Debug/Clone/Copy derived on EntityExtractor and EntityClassifier",
-      "verified": "scripts/gate.sh --quick: 7 executed checks PASS, 4 skipped",
-      "tests_added": 9,
-      "note": "clippy caught default_constructed_unit_structs on the first attempt; fixed in place before commit",
-      "session": "claude/new-session-56pt8z (PR #367)"
     }
   ],
   "cycle_1_slots": [
@@ -117,6 +84,11 @@
       "id": "OB-1",
       "summary": "`cargo tree --duplicates` reports getrandom at v0.2.17, v0.3.4 and v0.4.3. All three are transitive and not directly reachable from this crate's manifest: 0.2 via ring -> rustls -> reqwest, 0.3 via proptest -> rand_core (a dev-dependency only), 0.4 separately. Deduplicating would mean forcing versions on ring/rustls, which is a larger risk than the duplication.",
       "action": "none \u2014 recorded so a later cycle does not re-derive it"
+    },
+    {
+      "id": "OB-12",
+      "observation": "VERIFIED NEGATIVE, so a future cycle does not re-check: neither builtwith nor proxycurl hand-roll URL encoding -- both correctly reuse crate::util::http::urlencode (builtwith/mod.rs:158, proxycurl/url.rs). Also checked and ruled out as a candidate: cargo clippy::must_use_candidate (pedantic, not in clippy::all, not promoted in Cargo.toml's curated list) flags 284 sites crate-wide -- deliberately NOT adopted wholesale here, consistent with the repo's own stated philosophy in Cargo.toml ('Curated high-signal modernizations... deliberately NOT enforced' for stylistic/high-churn lints). A wholesale pedantic-group adoption is not a well-scoped single-cycle slot; if pursued, it should be curated few-at-a-time like the existing promoted lints, not bulk-enabled.",
+      "action": "closed / recorded as deliberate non-adoption"
     }
   ],
   "rejected_candidates": [
@@ -156,20 +128,9 @@
       "cycle": 2
     },
     {
-      "candidate": "Test-coverage gap in util/geohash/country.rs",
-      "why": "FALSE POSITIVE \u2014 tests live in a sibling tests.rs wired via mod.rs; 18 assertions incl. the shadow test. Directory-proximity heuristics do not work on this crate."
-    },
-    {
-      "candidate": "Test-coverage gap in core/correlator/rules/geo/profile.rs (AU-018)",
-      "why": "FALSE POSITIVE \u2014 correlator/tests.rs:5193 calls rule_au_018_email_address_colocation directly; extract_ratemyagent_suburb tested in geo/mod.rs:506."
-    },
-    {
-      "candidate": "Dedupe the 7 duplicate dependency roots",
-      "why": "Only tower-http is direct; the rest are transitive, mostly via the criterion dev-dependency. Churning them buys nothing and cannot be verified here (cargo-tree only)."
-    },
-    {
-      "candidate": "Panic-surface audit of .expect() call sites",
-      "why": "Naive greps overstate by ~6x (393 -> 59 after excluding tests.rs, inline cfg(test) mods, and doc examples). All 59 survivors are guarded by an immediately-preceding invariant that the message names. Zero unwrap/panic/unreachable in production code."
+      "id": "RC-4",
+      "candidate": "Trim src/web/css/app.css (80,564 B \u2014 the largest embedded asset) by removing unused Bootstrap-style grid classes, for the 'lightweight UI' objective.",
+      "reason": "REJECTED on measurement, not on principle. 30 of the 48 .col-{xs,sm,md,lg}-N rules are provably unreferenced across all JS, spa.html and every .rs file \u2014 but they occupy 746 B of 78,704 B (0.9%). The stylesheet is not bloated: 450 rule blocks, 453 distinct selectors, only 9% comments, for a 34-view SPA. A sub-1% saving is not worth the layout-regression risk on classes a future view may legitimately use. NOTE for future cycles: a naive 'unreferenced class' sweep over app.css yields 66 false positives \u2014 k-*, lv-*, cost-* and cv-* are all built dynamically (kindPill/costPill in helpers.js, `log-row lv-${...}` in log.js and live.js, `corr-card cv-${...}` in correlations.js) and are LIVE."
     }
   ],
   "open_defects": [
@@ -196,7 +157,7 @@
     {
       "id": "OD-5",
       "summary": "PR #317 carries 4 modules absent from main (builtwith, fofa, proxycurl, key_discovery) behind 11 conflicts and ~20k lines of two-way divergence, with CI never having run on it.",
-      "status": "open, decomposition plan recorded on the PR"
+      "status": "IN PROGRESS \u2014 fofa (a703caa5), builtwith (2fbbf1ec) and proxycurl (cycle 5) landed. ONE remaining: key_discovery (468 lines, only util::key_pool::global_pool). It scans local config files for API keys \u2014 read src/modules/key_discovery/config_scan.rs against SECURITY.md and confirm it inventories the OPERATOR'S OWN keys rather than harvesting third-party credentials BEFORE landing it. \"Out of scope, do not land\" is an acceptable outcome."
     },
     {
       "id": "OD-6",
@@ -204,28 +165,10 @@
       "status": "CLOSED cycle 2 slot 1 \u2014 the achieved mode is now verified and a failure is disclosed at warn!, with the Ok contract deliberately unchanged so the infallible path accessors still return a usable PathBuf."
     },
     {
-      "id": "redact-uid-leaks-plaintext-hash",
-      "category": "HARDENING / privacy",
-      "severity": "high \u2014 defeats the stated purpose of `hse export --redact`",
-      "evidence_level": "L4 \u2014 reproduced in-tree; password redacted to '[redacted]' while uid stayed a2beb73b\u2026 = SHA-256('hunter2'); coordinates coarsened -27.470125,153.021072 -> -27.5,153.0 while uid still fingerprinted the full-precision original",
-      "detail": "Entity.uid is hex(SHA-256(kind + ':' + normalise(value))) (core/entity/mod.rs:468). redact_credential and redact_coordinates (util/redact.rs) rewrite value/raw_value/evidence but never touch uid, and api/scan_export/mod.rs:156 emits uid as a CSV column. A --redact export therefore ships an unsalted hash of the exact plaintext beside the redacted value. For coordinates this is practically reversible: coarsening to 1 d.p. bounds the original to a 0.1x0.1 degree box, ~1e10 candidates at 6 d.p. against an unsalted SHA-256.",
-      "why_not_fixed_this_cycle": "BLOCKED \u2014 larger than scoped, and every obvious fix breaks something else. app/export/renderers.rs:317 builds a HashMap keyed by entity uid to label relation endpoints, and the relations come from store.relations_for_scan() carrying the ORIGINAL uids. So (a) any change to entity.uid breaks the relation->entity join in the GEXF/graph export, and (b) naive recompute-from-redacted-value collapses every redacted credential of a kind to one uid, so that HashMap keeps only one entity and relations resolve to the wrong label. A correct fix must return an old_uid->new_uid mapping from redact_entities and remap relations' from_uid/to_uid in lockstep at all three renderer call sites \u2014 an API change to the redaction pass, not a local edit.",
-      "options_considered": [
-        "recompute from redacted value (collapses credentials; breaks relation join)",
-        "per-export salted uid (preserves distinctness; breaks relation join harder)",
-        "split by kind (same join problem)",
-        "leave and document (leaves coordinates recoverable)"
-      ],
-      "status": "open \u2014 needs a decision on the redaction API before implementation"
-    },
-    {
-      "id": "dangling-docs-citations",
-      "category": "GAP-ANALYSIS",
-      "evidence_level": "L4 \u2014 enumerated exhaustively; every cited docs/*.md path checked against the filesystem",
-      "detail": "26 references to 11 docs/*.md files that do not exist, across 18 files including src/lib.rs:21 and tests/architecture.rs. Missing: ARCHITECTURE_AUDIT(3), CONVENTIONS(4), MODULES(2), OPENAPI_SCHEMA(1), PROBLEM_TREE(3), REGISTRY-API(1), RUNTIME_INDEPENDENCE(3), SEEKNOW_INTEGRATION_SUMMARY(2), SOLUTION_TREE(2), USAGE(3), data_retention_design(2). Several cite SECTION NUMBERS of the nonexistent document (e.g. paths.rs 'PROBLEM_TREE \u00a77 S3', doctor/mod.rs 'CONVENTIONS.md \u00a75', cert_intel 'PROBLEM_TREE.md \u00a73.F').",
-      "why_it_matters": "CLAUDE.md directs contributors (human and agent) to these docs as authority. An agent following 'see docs/CONVENTIONS.md \u00a75' finds nothing and may invent the convention. This is a fabrication vector in a repo whose constitution forbids fabricating sources.",
-      "prescribed_fix": "Do NOT author the 11 documents \u2014 that would fabricate authority that never existed. Strip the dangling path from each citation while KEEPING the substantive prose (most already quote the rule inline, e.g. 'no HashMap-iteration-order leaks into output'), and redirect pure pointers ('full charter in docs/RUNTIME_INDEPENDENCE.md', 'See docs/USAGE.md for the full reference') to the real enforcement site \u2014 tests/architecture.rs guards, `hse --help`, `hse modules` \u2014 which CLAUDE.md already declares the source of truth. 26 sites, each needing individual judgement; not a regex pass.",
-      "status": "open \u2014 verified and scoped, not started"
+      "id": "ingest-csv-lacks-formula-injection-guard",
+      "category": "HARDENING / security",
+      "detail": "#365's csv::Writer fix made `hse ingest -F csv` structurally valid RFC 4180, but it does not apply the anti-formula-injection guard that api::scan_export::csv_escape applies on the scan-export path. Ingest's input is an UNTRUSTED document, so a value beginning =/+/-/@/CR/TAB is written verbatim and executes when the operator opens the export in Excel or LibreOffice. The scan-export path is guarded; the ingest path is not.",
+      "status": "being fixed this cycle"
     }
   ],
   "cycle_2_slots": [
@@ -260,16 +203,170 @@
       "status": "NOT STARTED \u2014 carried to cycle 3. The largest remaining item and deliberately not rushed."
     }
   ],
-  "cycle_3_slots": {
-    "branch": "claude/new-session-56pt8z",
-    "pr": 367,
-    "baseline_note": "Counts exclude *tests.rs, inline #[cfg(test)] mod blocks, AND doc comments. Naive greps overstate ~6x: .expect() is 59 in production code, not 393; panic!/unreachable! is 0, not 9; .unwrap() is 0.",
-    "method_finding": "Static/grep/directory-proximity heuristics produced 3 false positives on this crate and 0 true defects. Both real defects came from RUNNING THE BINARY. Prefer execution-driven probing in later cycles.",
-    "slot_1": "DONE \u2014 DEBUG \u2014 ingest CSV emitted non-RFC-4180 backslash escapes and bypassed the formula-injection guard (69edfcb01)",
-    "slot_2": "DONE \u2014 HARDENING \u2014 ingest --min-confidence nan/inf/out-of-range silently discarded the whole result set (3c5702142)",
-    "slot_3": "BLOCKED \u2014 UPGRADE \u2014 redact leaves a plaintext-derived uid in --redact exports. Defect PROVEN (see open_defects/redact-uid-leaks-plaintext-hash) but the fix requires remapping relation endpoints through redaction, which is an API change. Escalated to the operator; not attempted.",
-    "slot_4": "NOT STARTED \u2014 GAP-ANALYSIS \u2014 verified: 26 dangling docs/*.md citations across 18 files (see open_defects/dangling-docs-citations). Fully scoped for a later cycle; not begun rather than half-done.",
-    "slot_5": "NOT STARTED \u2014 COMPLETION \u2014 src/app/cells/mod.rs:400 `hse cells clear` never VACUUMs; unverified, inherited from the sweep.",
-    "cycle_outcome": "2 of 5 slots completed and merged-ready (PR #367, 8/8 CI green). Slot 3 BLOCKED on an operator decision and then withdrawn on instruction. Slots 4-5 scoped, not started. Stopped rather than half-do a 26-site edit."
-  }
+  "cycle_3_slots": [
+    {
+      "slot": 1,
+      "category": "COMPLETION",
+      "instruction": "Extract the most self-contained module from PR #317 onto current main (OD-5), one module per PR.",
+      "status": "COMPLETE \u2014 fofa chosen on a measured dependency footprint: 300 lines needing only core::scan and two util::http helpers, against proxycurl (1056 lines, 13 helpers), builtwith (447) and key_discovery (468, a config-file key scanner that deserves its own security review). Source needed NO adaptation; the three architecture ratchets that fired were all integration requirements #317 never learned because CI never ran on it. Registry 171 -> 172."
+    }
+  ],
+  "cycle_4_slots": [
+    {
+      "slot": 1,
+      "category": "COMPLETION",
+      "instruction": "Extract builtwith from PR #317 (second module).",
+      "status": "COMPLETE \u2014 only the README ratchet fired, because env_template.txt already carried HUNTSMAN_BUILTWITH_KEY and the confidence literals were mapped up front from the cycle-3 checklist. The real find was NOT a ratchet: builtwith emitted registrant contact emails with no role/infra gate, reintroducing the leakage #351 removed from cert_intel/crtsh/ip_registry/doh_resolver. Its own existing test asserted the leaky behaviour and had to be rewritten."
+    }
+  ],
+  "cycle_5_slots": [
+    {
+      "slot": 1,
+      "category": "COMPLETION",
+      "instruction": "Extract proxycurl from PR #317 (third module).",
+      "status": "COMPLETE \u2014 registry 173 -> 174. See module_extraction_checklist; the key ratchet guards FOUR locations, not one."
+    }
+  ],
+  "module_extraction_checklist": {
+    "$note": "Learned across cycles 3-5 extracting fofa, builtwith, proxycurl from #317. Run BEFORE extracting.",
+    "1_key_registration_FOUR_places": [
+      "src/cli/env_template.txt \u2014 what `hse provision` offers",
+      "src/util/keys/constants.rs KNOWN_KEYS \u2014 what the Settings UI can surface",
+      "src/util/keys/constants.rs signup_hint() \u2014 the \"needs key\" notice; say PAID explicitly when there is no free tier",
+      ".env.example at repo root \u2014 the provider catalogue an operator browses"
+    ],
+    "2_confidence": "Map every bare literal onto an EXISTING confidence:: rung. proxycurl had 0.68, which is NOT a rung (HIGH 0.65 / HIGH_PLUS 0.70) \u2014 resolved DOWNWARD because the entities are tagged `derived` and the module doc calls them weaker than their source. Never invent a rung.",
+    "3_readme": "Three figures: line ~11 total, the `hse modules` line ~169, Module Overview header ~237 with its free vs key-gated/paid split. ModuleCost::Paid counts in the key-gated/paid figure.",
+    "4_privacy_NOT_ratcheted": "No architecture test catches PII defects. builtwith emitted registrant contact emails with no role/infra gate, reintroducing the #351 leak, and its own test asserted the leaky behaviour. But do NOT apply the gate reflexively: proxycurl reads profile.personal_emails (the subject OWN addresses) rather than registrant contact blocks, so is_infrastructure_email would drop a sole trader's genuine sales@theirfirm.com. Reason about the data class, do not pattern-match.",
+    "5_scope": "Check the module against SECURITY.md and against already-registered peers. proxycurl is the same class as hunter_io/epieos/contact_enrich/emailrep, all already in main."
+  },
+  "web_console_parallel_track": {
+    "note": "This block records a SECOND autonomous loop that ran on branch claude/pipeline-refactor-repair-urjrgk IN PARALLEL with main's module-extraction cycles (2-5 above). Both forked from #364's cycle-1 state, so both number their own cycles from 2; those numbers are NOT the cycle_2_slots..cycle_5_slots on main's spine, which are unrelated work. Kept as a separate key rather than renumbered into main's sequence because pretending this work came after main's cycle 5 would be false. Its commits landed via PR #365; every one was verified with cargo test --all --locked + clippy -D warnings + fmt before commit. RETIRED as of cycle 6: claude/pipeline-refactor-repair-urjrgk merged main (c532272f0) and all subsequent cycles (6+) are recorded directly under cycle_N_slots on this single spine, same as main's own cycles 2-5. This block is kept only as the historical record of the parallel period; no further entries will be added to it.",
+    "theme": "The maintainer's two stated goals: make the web console lightweight without losing functionality (esp. the graph), and stop the Termux aarch64 no-root web UI crashing during scans. Driven by real device telemetry (captured event logs of 47/535/587/598 events and debug bundles from the device).",
+    "cycles": {
+      "track_cycle_1": "Entity-extraction / ingest pipeline: validated IPv4 via Ipv4Addr (was emitting 999.1.2.3 / leading-zero / multicast as valid), validated IPv6 extraction, csv::Writer round-trip for `hse ingest -f csv`, EntityKind to_str<->from round-trip, is_private_ipv4 via Ipv4Addr::is_private, self_restart exit(1) not panic, advisory bench-smoke.yml, entity_extractor ingest-path benchmark, correlation log-line de-duplication.",
+      "track_cycle_2": "D3 removal (dropped the last vendored front-end asset, 151,725 B; graph is now a dependency-free deterministic concentric SVG layout, O(nodes), no simulation) and per-event O(n) removal in graph.js/log.js.",
+      "track_cycle_4_slots": [
+        {
+          "slot": 1,
+          "category": "DEBUG",
+          "instruction": "Establish why the dossier/debug bundle prints six zero module counters mid-scan, then fix it without fabricating numbers.",
+          "outcome": "DONE (d4238fa9b). Cause traced end to end: Scan::new seeds modules_* to 0; run_with_ledger_inner (core/engine/mod.rs:653) upserts the Running row with those zeros; the ONLY write is finalise_scan (core/engine/mod.rs:991-996) at scan end; nothing updates the row in between. Fix is disclosure + the number that does exist: ScanStatus::is_terminal(), a NOT-YET-FINAL caveat appended by module_accounting_line() on non-terminal scans (inherited by both renderers from the one single-sourced sentence), and core::event::ModuleEventTally rendered by render_full as an 'observed :' line on the non-terminal path only. 7 tests."
+        },
+        {
+          "slot": 2,
+          "category": "HARDENING",
+          "instruction": "Bound the web scan-log DOM so a long scan cannot exhaust a Termux browser tab, without silently truncating what the operator can save.",
+          "outcome": "DONE (e5899aac9). appendLog created one permanent node per event and removed nothing. LOG_MAX_ROWS=1200, oldest-first, evicted synchronously inside appendLog (a deferred trim would still let the full list exist for a frame during the synchronous history render; the peak is the problem). Disclosed three ways: the By-type breakdown counts events not rows so its totals stay complete, it names the drop and points at Download, and the 'Save shown' header warns the file starts mid-scan."
+        },
+        {
+          "slot": 3,
+          "category": "HARDENING",
+          "instruction": "Stop the three timer-driven views doing full network + render work while nobody is looking at them.",
+          "outcome": "DONE (5f6475bb3). scan-info (8s, four requests + full view rebuild), Live monitor (8s), Engines (30s server-side liveness sweep) all now consult a shared timers.js pageHidden(). Schedule is kept rather than torn down: a hidden tick fires, does nothing, re-arms \u2014 chosen over a visibilitychange listener specifically because scan-info re-renders every 8s and would accumulate one listener per render."
+        },
+        {
+          "slot": 4,
+          "category": "UPGRADE",
+          "instruction": "Make the Graph tab usable during a running scan \u2014 the 8s refresh was discarding the operator's viewport.",
+          "outcome": "DONE (45fcd1f61). `const view` was declared inside buildGraph, so every 8s rebuild snapped the canvas to origin at scale 1 and the graph could not be panned or zoomed for the whole duration of a scan. Hoisted to module scope, re-applied by buildGraph's closing applyView(), reset per-scan via viewScanId so a different scan starts centred. Node positions deliberately not preserved (layoutConcentric is deterministic; a growing node set legitimately relayouts) and the comment says so."
+        },
+        {
+          "slot": 5,
+          "category": "GAP-ANALYSIS",
+          "instruction": "Record cycle 4, its verified negatives and its one measured rejection, so the next cycle does not re-derive them.",
+          "outcome": "DONE (this entry)."
+        }
+      ]
+    },
+    "observations_not_on_main_spine": [
+      {
+        "id": "OB-2",
+        "summary": "Verified NEGATIVES from the cycle-2 sweep \u2014 recorded so later cycles stop re-deriving them. (a) Production `.unwrap()` count is genuinely 0; the 55 production `.expect()` hits are infallible-by-construction (literal Regex::new, aho-corasick over static patterns, tokio runtime / reqwest client init) \u2014 the earlier rejection of 'eliminate unwrap/panic/unsafe' is correct as written. (b) All 19 `unsafe` textual hits are CSP header strings ('unsafe-inline') and prose; forbid(unsafe_code) holds. (c) core::classifier does NOT share the IPv4 over-acceptance bug that entity_extractor had: `extract` keeps a dotted-quad only if classify() resolves it to IpAddress, and TargetKind::detect (core/scan/mod.rs:213) gates on `v.parse::<std::net::IpAddr>()`, so 999.1.2.3 and leading-zero forms are already rejected on the engine path. (d) modules/dns_axfr is safe AND already proptested (extract_name_is_total, extract_name_rejects_pointer_loops, build_axfr_query_is_total) \u2014 a totality proptest there would be pure duplication.",
+        "action": "none \u2014 negative results, kept to prevent rediscovery"
+      },
+      {
+        "id": "OB-3",
+        "summary": "Real-device scan telemetry (two logs, 598 and 47 events, 2026-08-05 and 2026-08-03) shows four module timeouts (nostr 8s, fediverse 8s, signal_radar 14s, device_sensors) and two auth failures that are configuration rather than defects (breach-source HTTP 401 'Invalid or missing API key', github_code_search HTTP 401 'Bad credentials'). crtsh appears as 'capability-quarantined \u2014 persistent drift', i.e. the drift system behaving as designed.",
+        "action": "none this cycle \u2014 timeouts are per-module budgets working, not failures; the 401s are unconfigured keys"
+      },
+      {
+        "id": "OB-4",
+        "summary": "UNRESOLVED, needs device-side evidence: the 598-event log ends at `04:55:25 module \u25b6 smtp_vrfy` with no matching \u2713/\u2717 and NO `scan complete` line, whereas the 47-event log terminates cleanly with `\u2714 scan complete \u00b7 10 entities`. Either the scan hung/died in smtp_vrfy (plausible \u2014 it dials port 25, which mobile carriers routinely blackhole, so a connect can stall past any read timeout) or the export simply truncated at 598 events. Cannot distinguish from the log alone.",
+        "action": "open \u2014 before treating as a defect, confirm whether the exporter caps event count; if it does not, audit smtp_vrfy's connect timeout specifically (a read timeout does not bound a TCP connect that never completes)"
+      },
+      {
+        "id": "OB-5",
+        "summary": "OB-4 RESOLVED, and my earlier smtp_vrfy hypothesis was WRONG. Device debug bundles show `status : Running` \u2014 the operator exported them mid-scan, so a log ending at a bare `module >` line is an export boundary, not a hang. Confirmed by counter-example: the 535-event log cuts at `> emailrep` while `smtp_vrfy` COMPLETED in that same run (`smtp_vrfy (1 found)`), and the 598-event log cuts at `> smtp_vrfy`. Different terminal modules, no fixed event cap (598 vs 535) \u2014 consistent with export-while-running, not with any one module hanging.",
+        "action": "closed \u2014 do not re-open on log truncation alone"
+      },
+      {
+        "id": "OB-6",
+        "summary": "OPEN BUG, not yet fixed: the debug bundle's FULL DOSSIER header prints `modules : 0 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped` while the SAME scan's event log records 60 module_done, 9 module_error, 11 module_skipped, 70 module_start (entities 264, status Running). The module counters are dead zeros in the dossier. Cause not yet established \u2014 likely the counters are only populated at scan completion, or the dossier reads a default/fresh stats struct. Needs the renderer located (grep for \"timed out\" / \"deduped\") and the data source traced before a fix.",
+        "action": "open \u2014 next cycle's highest-value DEBUG candidate"
+      },
+      {
+        "id": "OB-7",
+        "summary": "Web payload after cycle 3: src/web = 439,346 B across 44 files. Remaining weight is css/app.css 80,548 B and js/ 342,781 B (largest: views/opts.js 37,151, views/new_scan.js 36,676, scan_info/stealer.js 24,135). The event log (scan_info/log.js) still appends one DOM row per event with NO cap \u2014 ~600 rows for a real scan. Capping it would change what the 'Save shown' button saves, so it needs a deliberate decision rather than a silent truncation.",
+        "action": "open \u2014 candidates for the next lightweight pass"
+      },
+      {
+        "id": "OB-8",
+        "observation": "CLOSES OB-6. The mid-scan six-zero module counters are fully explained and fixed in cycle 4 slot 1. Evidence chain: Scan::new seeds zeros (core/scan/mod.rs) -> run_with_ledger_inner upserts Running with them (core/engine/mod.rs:653-654) -> finalise_scan is the sole writer (core/engine/mod.rs:991-996). Both uploaded debug bundles were status:Running, which is why both showed zeros while their event streams held ~70 module_start / ~60 module_done / ~9 module_error / ~11 module_skipped.",
+        "action": "closed"
+      },
+      {
+        "id": "OB-9",
+        "observation": "Deliberate design limit recorded so it is not mistaken for an oversight: the event stream CANNOT reconstruct the engine's six counters. There is no distinct EventKind for a timeout (it arrives as a plain ModuleError), a cache replay, or a dedup; and ModuleSkipped is not disjoint from ModuleStart \u2014 gate-skips are emitted with no preceding start (Engine::emit_module_skipped, core/engine/mod.rs:477-482) while dispatched-then-opted-out modules emit one first (dispatch.rs:548). ModuleEventTally therefore reports event counts under their event names and offers no in-flight figure.",
+        "action": "documented on the type; no further work"
+      },
+      {
+        "id": "OB-10",
+        "observation": "VERIFIED NEGATIVES for the Termux web-UI crash sweep, so future cycles do not re-investigate. (a) No leaked listeners or observers: every document/window listener (ui.js initMoreSheet/initModals/initTableLabels, helpers.js initDownloads, theme.js, main.js hashchange) is attached exactly once at bootstrap in main.js:113-116, and initDownloads is additionally idempotent via window.__hseDownloadsInit. (b) graph.js attaches only to the svg and to node elements, all inside the replaced subtree, so they are collected with the DOM. (c) Auto-refresh timers cannot stack: main.js render() calls clearScanTimer/clearLiveTimer/clearEnginesTimer/clearOptsTimers before dispatching, and scan-info arms its timer only after its render completes. (d) browse.js was already capped (BROWSE_ROW_CAP) and graph.js already capped (GRAPH_MAX_NODES/GRAPH_MAX_LINKS/CORR_MAX_SPOKES); log.js was the only uncapped per-event view, fixed in slot 2.",
+        "action": "closed"
+      },
+      {
+        "id": "OB-11",
+        "observation": "STILL OPEN, not addressed this cycle. scan_info/index.js fetches ALL FOUR of scan, entities, correlations and relations on every render regardless of which tab is active (index.js:24-26), including the 8s live refresh. The full entity set carries complete evidence chains, so on a large scan this is the heaviest single thing the UI does. Slot 3 stopped it happening for a hidden tab, which removes the unattended case, but a visible scan-info tab still re-pulls everything every 8s. A per-tab fetch projection (or a lightweight counts endpoint for the header stat cards, given scan.entity_count is already in the scan record) would cut it further.",
+        "action": "open \u2014 candidate for a future cycle; needs a browser to validate, which this host does not have"
+      }
+    ],
+    "rejected_candidate": {
+      "id": "RC-4",
+      "candidate": "Trim src/web/css/app.css (80,564 B \u2014 the largest embedded asset) by removing unused Bootstrap-style grid classes, for the 'lightweight UI' objective.",
+      "reason": "REJECTED on measurement, not on principle. 30 of the 48 .col-{xs,sm,md,lg}-N rules are provably unreferenced across all JS, spa.html and every .rs file \u2014 but they occupy 746 B of 78,704 B (0.9%). The stylesheet is not bloated: 450 rule blocks, 453 distinct selectors, only 9% comments, for a 34-view SPA. A sub-1% saving is not worth the layout-regression risk on classes a future view may legitimately use. NOTE for future cycles: a naive 'unreferenced class' sweep over app.css yields 66 false positives \u2014 k-*, lv-*, cost-* and cv-* are all built dynamically (kindPill/costPill in helpers.js, `log-row lv-${...}` in log.js and live.js, `corr-card cv-${...}` in correlations.js) and are LIVE."
+    }
+  },
+  "cycle_6_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "instruction": "Escape target values before interpolating into the FOFA search filter, closing a query-injection path reachable via unvalidated pivot targets.",
+      "outcome": "DONE (a957585c6). fofa_filter built ip=\"{value}\"/host=\"{value}\" with target.value interpolated raw. Seed targets are validated (Target::validate restricts Domain to alnum/./-/_, parses IpAddress via std::net::IpAddr) but pivot targets built during expansion (Target::new(tk, entity.value.clone()), core/engine/mod.rs:1490,2121) are NOT revalidated before dispatch -- and this module itself mints Domain/IP entities straight from FOFA's own JSON response (hit.domain, hit.ip in build_entities), untrusted provider data. escape_fofa_value backslash-escapes \\ then \" (order matters). 4 tests: injection neutralized with a decisive substring-absence check, backslash-before-quote ordering, and the ordinary-value no-regression case."
+    },
+    {
+      "slot": 2,
+      "category": "HARDENING",
+      "instruction": "Closes OB-11. Stop scan-info fetching relations on every tab/every 8s refresh when only the Graph tab consumes them.",
+      "outcome": "DONE (5a9b98dca). renderScanInfo fetched entities+correlations+relations unconditionally on every render (all 7 tabs, the 8s live-refresh while a scan runs). Confirmed via grep across every scan_info/*.js that S.relations has exactly one functional consumer: graph.js. wantRelations = activeTab==='graph' gates the fetch; false branch uses Promise.resolve({relations:[]}) (a real elision, zero network round-trips) not a fetch-and-discard. entities/correlations stay unconditional (used by browse/correlations/graph/header stat cards)."
+    },
+    {
+      "slot": 3,
+      "category": "COMPLETION",
+      "instruction": "Remove JS modules orphaned by the tab-streamline refactor and repoint the test that asserted content inside the dead code.",
+      "outcome": "DONE (06a90a358). Discovered TWO dead files during slot 2's verification, not one: status.js (renderStatus) AND relations.js (renderRelations) -- both zero importers since the Correlations-gets-its-own-tab streamline (#301), both still include_bytes!-embedded and served. 6,710 B removed. relations.js was a real capability (sortable typed-edge table), not junk -- disclosed in the commit and to the user rather than silently dropped: the same data remains visible via the Graph tab's edges, GEXF export (does carry relations), and the raw /scans/{id}/relations endpoint; it is NOT in the JSON report bundle (the one place this got strictly harder to reach). Removal, not restoration, matches the maintainer's explicit lightweight/basic-graph direction. Repointed embedded_spa_deep_links_resolve_to_a_visible_section from status.js's dead prose-link to report.js's live nav(...&tab=corr) call."
+    },
+    {
+      "slot": 4,
+      "category": "UPGRADE",
+      "instruction": "resolve_scan_id's non-complete warning wrongly told an Aborted scan its data 'may be incomplete' / 'recovering checkpointed (partial) entities'.",
+      "outcome": "DONE (5e1614053). ScanStatus::Aborted's own doc comment guarantees an aborted scan's persisted entities are as final as a Complete scan's -- no writer racing, no more data arriving. The blanket != Complete check bucketed it with Failed/Pending/Running (which genuinely can still change). Extracted scan_incompleteness_warning(status, raw) -> Option<String>, a pure function, so the distinction is unit-testable without capturing stderr. 3 tests: Complete silent, Aborted gets its own accurate 'stopped early... final' message (asserted to NOT contain the old partial-recovery phrasing), Failed/Pending/Running keep that phrasing verbatim (looped, so a future status isn't silently uncovered)."
+    },
+    {
+      "slot": 5,
+      "category": "GAP-ANALYSIS",
+      "instruction": "Record cycle 6 in .agent/state.json now that the branches are merged into one spine; retire the parallel-track bookkeeping.",
+      "outcome": "DONE (this entry). See retirement note below."
+    }
+  ]
 }

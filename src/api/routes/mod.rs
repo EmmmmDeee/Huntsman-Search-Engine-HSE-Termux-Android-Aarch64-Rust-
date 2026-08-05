@@ -117,30 +117,33 @@ use super::{
 /// so the release artefact is still a single file.
 const SPA_HTML: &str = include_str!("../../web/spa.html");
 
-/// Vendor bundle — now just D3 v3, the force-directed graph rendering
-/// engine. Bootstrap, jQuery, tablesorter, and alertify (SpiderFoot's
-/// original UI-framework stack) were dropped entirely in favour of a
+/// Vendor bundle — now **empty**. Bootstrap, jQuery, tablesorter, and alertify
+/// (SpiderFoot's original UI-framework stack) were dropped in favour of a
 /// from-scratch design system (`src/web/css/app.css`) plus small vanilla-JS
-/// replacements (`src/web/js/ui.js`) for the handful of interactive
-/// behaviours those libraries provided (navbar collapse, the About modal,
-/// sortable tables, toast/confirm/prompt dialogs) — see `ui.js`'s own doc
-/// comment. D3 stays vendored because it is a rendering engine, not a
-/// look-and-feel dependency: every visual property of the graph (node
-/// colours, sizes, the canvas background) is already this project's own
-/// code. Dropping the vendored alertify build also happens to close a
-/// standing licensing question noted in `docs/PROBLEM_TREE.md` §7
-/// (Deferred — Privacy/Legal/Licensing): alertify was GPL-licensed with no
-/// accompanying `NOTICE`.
+/// replacements (`src/web/js/ui.js`) for the interactive behaviours those
+/// libraries provided (navbar collapse, the About modal, sortable tables,
+/// toast/confirm/prompt dialogs) — see `ui.js`'s own doc comment. Dropping the
+/// vendored alertify build also closed a standing licensing question noted in
+/// `docs/PROBLEM_TREE.md` §7 (Deferred — Privacy/Legal/Licensing): alertify was
+/// GPL-licensed with no accompanying `NOTICE`.
 ///
-/// Embedded at compile time so the release artefact is still a single
-/// binary. Served from `/static/{*file}`, alongside [`APP_FILES`], with a
-/// one-hour `Cache-Control: must-revalidate` header — see
+/// D3 v3 was the last one out. It was kept while it was a *rendering engine*
+/// rather than a look-and-feel dependency, but on this crate's actual target —
+/// Termux/Android aarch64, no root — its force simulation was the most
+/// expensive thing the UI did, and it cost 151 KB in a binary whose whole
+/// selling point is that it is one file you can carry. The graph is now a
+/// deterministic concentric SVG layout drawn against the DOM directly
+/// (`src/web/js/scan_info/graph.js`), with no feature removed.
+///
+/// The constant stays (rather than being deleted) because it is the seam where
+/// a future vendored asset would land, and [`vendor_handler`] already chains it
+/// with [`APP_FILES`]; an empty slice simply contributes nothing.
+///
+/// Anything listed here is embedded at compile time so the release artefact is
+/// still a single binary, and served from `/static/{*file}` alongside
+/// [`APP_FILES`] with a one-hour `Cache-Control: must-revalidate` header — see
 /// [`vendor_handler`]'s ETag/conditional-GET handling for why.
-const VENDOR_FILES: &[(&str, &str, &[u8])] = &[(
-    "d3.min.js",
-    "application/javascript",
-    include_bytes!("../../web/vendor/d3.min.js"),
-)];
+const VENDOR_FILES: &[(&str, &str, &[u8])] = &[];
 
 /// First-party SPA modules (split from the former monolithic `spa.html` for
 /// maintainability — see each module's own doc comment in `src/web/js/`).
@@ -271,19 +274,9 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         include_bytes!("../../web/js/scan_info/pivots.js"),
     ),
     (
-        "js/scan_info/relations.js",
-        "application/javascript",
-        include_bytes!("../../web/js/scan_info/relations.js"),
-    ),
-    (
         "js/scan_info/report.js",
         "application/javascript",
         include_bytes!("../../web/js/scan_info/report.js"),
-    ),
-    (
-        "js/scan_info/status.js",
-        "application/javascript",
-        include_bytes!("../../web/js/scan_info/status.js"),
     ),
     (
         "js/scan_info/stealer.js",
@@ -898,7 +891,7 @@ async fn vendor_handler(Path(file): Path<String>, headers: HeaderMap) -> Respons
             // ETag is the crate version (which uniquely identifies the
             // embedded bytes — the bundle ships in-binary). We deliberately
             // do NOT use `Cache-Control: immutable` because the URL
-            // (`/static/d3.min.js`) is stable across upgrades;
+            // (e.g. `/static/js/main.js`) is stable across upgrades;
             // pairing immutable with a stable URL leaves the browser stuck
             // on old bytes after a binary upgrade. Instead `must-revalidate`
             // plus the conditional-request handling below lets the browser

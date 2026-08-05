@@ -1,0 +1,67 @@
+name: Bench smoke
+
+# Executes the Criterion benchmarks once each, in test mode, so they cannot rot
+# unnoticed.
+#
+# `cargo check --all-targets` (ci.yml) already COMPILES benches/, which catches
+# perf-path API drift — that is why `benches/scan_throughput.rs` documents
+# itself as "CI only compiles them (`--no-run`)". What nothing caught until now
+# is RUNTIME breakage: a benchmark that still compiles but panics, indexes past
+# a shortened fixture, or loops on an input a refactor changed the shape of.
+# Because no workflow ever ran them, that failure could sit in the tree
+# indefinitely and would only surface for whoever next tried to measure
+# performance — exactly when they are trying to do something else.
+#
+# `cargo bench -- --test` is Criterion's test mode: it runs each benchmark a
+# single time and asserts it completes, WITHOUT timing it. That is the property
+# worth gating on here. Wall-clock numbers from a shared, ephemeral GitHub
+# runner are too noisy to threshold against, so this workflow deliberately does
+# not attempt regression detection — it answers "do the benchmarks still run?",
+# not "are they still fast?".
+#
+# Its own workflow rather than a job in ci.yml, for the same reason audit.yml
+# and fuzz.yml are: benches build with the `bench` profile (a full optimised
+# rebuild of the crate), which is too slow to sit on every push/PR. Advisory —
+# NOT a required check, so a runner hiccup never blocks an unrelated PR.
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'   # Mondays 09:00 UTC (audit 06:00, fuzz 07:00, live-drift 08:00)
+  workflow_dispatch:
+  push:
+    paths:
+      - 'benches/**'
+      # The library surfaces the benchmarks measure. A change here can break a
+      # bench at runtime while `cargo check` stays green.
+      - 'src/util/str_util/**'
+      - 'src/util/geohash/**'
+      - 'src/util/scan/**'
+      - 'src/util/entity_extractor/**'
+      - 'src/core/correlator/**'
+      - '.github/workflows/bench-smoke.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench-smoke:
+    name: cargo bench --test (Criterion, no timing)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No toolchain action: rust-toolchain.toml pins the stable version this
+      # repo verifies against, and benches build on stable — unlike fuzz.yml,
+      # nothing here needs nightly.
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # `--` forwards `--test` to each Criterion binary (they are `harness =
+      # false`). Criterion then runs every benchmark once and reports "Success"
+      # per case, failing the step on a panic. `--locked` matches the rest of CI.
+      - name: Run benchmarks in test mode
+        run: cargo bench --locked -- --test

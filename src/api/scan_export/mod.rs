@@ -549,32 +549,48 @@ pub(crate) fn attachment_response(
 /// any field containing `, " \n \r` is double-quoted with embedded quotes doubled.
 /// Every cell in an exported scan CSV passes through this.
 pub(crate) fn csv_escape(s: &str) -> String {
-    // Formula-injection neutralization: a leading =/+/-/@/CR/TAB causes
-    // Excel and LibreOffice to interpret the cell as a formula on file
-    // open — a hostile API response with `first_name = "=cmd|'/c calc'!A1"`
-    // could otherwise turn an exported scan CSV into RCE on the operator's
-    // workstation. Prepend a single quote to defang per OWASP guidance.
-    //
-    // A leading apostrophe is ALSO guarded (doubled). Without that the escape
-    // isn't invertible: a genuine value like `'=hunter` would export unchanged
-    // as `'=hunter`, indistinguishable from a guarded `=hunter`, and the import
-    // reverse (`strip_csv_formula_guard`) would strip its real apostrophe. By
-    // escaping any leading `'` too, this is a clean bijection — export prepends
-    // `'` iff the first byte is a trigger OR `'`, and import strips exactly one
-    // leading `'` — so every value round-trips byte-for-byte at any nesting.
-    let needs_formula_guard = s
-        .as_bytes()
-        .first()
-        .is_some_and(|b| matches!(*b, b'=' | b'+' | b'-' | b'@' | b'\t' | b'\r' | b'\''));
-    let body = if needs_formula_guard {
-        format!("'{s}")
-    } else {
-        s.to_string()
-    };
+    let body = formula_guard(s);
     if body.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", body.replace('"', "\"\""))
     } else {
-        body
+        body.into_owned()
+    }
+}
+
+/// Neutralise a spreadsheet formula trigger at the start of a CSV field,
+/// **without** applying RFC-4180 quoting.
+///
+/// A leading `=`/`+`/`-`/`@`/CR/TAB causes Excel and LibreOffice to interpret
+/// the cell as a formula on file open — a hostile API response with
+/// `first_name = "=cmd|'/c calc'!A1"` could otherwise turn an exported CSV into
+/// RCE on the operator's workstation. Prepend a single quote to defang, per
+/// OWASP guidance.
+///
+/// A leading apostrophe is ALSO guarded (doubled). Without that the escape
+/// isn't invertible: a genuine value like `'=hunter` would export unchanged as
+/// `'=hunter`, indistinguishable from a guarded `=hunter`, and the import
+/// reverse (`app::import::csv`'s `strip_csv_formula_guard`) would strip
+/// its real apostrophe. By escaping any leading `'` too, this is a clean
+/// bijection — export prepends `'` iff the first byte is a trigger OR `'`, and
+/// import strips exactly one leading `'` — so every value round-trips
+/// byte-for-byte at any nesting.
+///
+/// Split out of [`csv_escape`] so the two CSV writers in this crate can share
+/// **one** guard while differing on who does the quoting. [`csv_escape`] quotes
+/// by hand for the scan export; `cli::ingest` hands its fields to `csv::Writer`,
+/// which RFC-4180-quotes them itself — passing them through `csv_escape` first
+/// would double-quote. Returns [`std::borrow::Cow::Borrowed`] when no guard is
+/// needed, which is the overwhelmingly common case (emails, IPs, domains,
+/// hashes), so the shared guard costs no allocation on the hot path.
+pub(crate) fn formula_guard(s: &str) -> std::borrow::Cow<'_, str> {
+    let needs_guard = s
+        .as_bytes()
+        .first()
+        .is_some_and(|b| matches!(*b, b'=' | b'+' | b'-' | b'@' | b'\t' | b'\r' | b'\''));
+    if needs_guard {
+        std::borrow::Cow::Owned(format!("'{s}"))
+    } else {
+        std::borrow::Cow::Borrowed(s)
     }
 }
 

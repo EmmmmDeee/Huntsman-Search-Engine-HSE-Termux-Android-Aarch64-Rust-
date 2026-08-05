@@ -119,7 +119,16 @@ impl Default for EntityExtractor {
     /// failure is an out-of-range floor, and this floor is a constant this
     /// module owns.)
     fn default() -> Self {
+        // Built from its fields rather than through `new().expect(...)`:
+        // `EntityExtractor::new` is fallible only because it propagates
+        // `EntityClassifier::new`, which cannot fail, so the `Err` arm was
+        // unreachable and the `expect` was a panic path that could never fire.
+        // Constructing directly removes it. The floor comes from
+        // `DEFAULT_MIN_CONFIDENCE` so the constant `new` validates against and
+        // the one `Default` uses cannot drift apart.
         Self {
+            // The unit struct itself, not `EntityClassifier::default()`:
+            // clippy::default_constructed_unit_struct rejects the latter.
             classifier: EntityClassifier,
             min_confidence: DEFAULT_MIN_CONFIDENCE,
         }

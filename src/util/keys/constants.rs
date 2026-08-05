@@ -11,6 +11,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_HIBP_KEY",
     "HUNTSMAN_DEHASHED_KEY",
     "HUNTSMAN_HUNTER_KEY",
+    "HUNTSMAN_PROXYCURL_KEY",
     "HUNTSMAN_INTELX_KEY",
     // Infrastructure / threat intel
     "HUNTSMAN_SHODAN_KEY",
@@ -88,6 +89,12 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
             "SecurityTrails — free tier at https://securitytrails.com/app/signup"
         }
         "HUNTSMAN_HUNTER_KEY" => "Hunter.io — free tier at https://hunter.io/users/sign_up",
+        // No free tier, unlike most of this list: proxycurl is `ModuleCost::Paid`
+        // and bills per credit, so the hint points at pricing rather than a
+        // signup that would imply the key costs nothing.
+        "HUNTSMAN_PROXYCURL_KEY" => {
+            "Proxycurl — paid, per-credit; see https://nubela.co/proxycurl/pricing"
+        }
         "HUNTSMAN_GREYNOISE_KEY" => "GreyNoise — free key at https://viz.greynoise.io/signup",
         "HUNTSMAN_URLSCAN_KEY" => "urlscan.io — free key at https://urlscan.io/user/signup",
         "HUNTSMAN_LEAKIX_KEY" => "LeakIX — free key at https://leakix.net/auth/register",

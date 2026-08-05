@@ -244,4 +244,49 @@ mod tests {
         assert_eq!(EntityKind::Email.to_str(), "email");
         assert_eq!(EntityKind::Person.to_str(), "person");
     }
+
+    #[test]
+    fn to_str_from_round_trips_for_every_kind() {
+        // `to_str` and `From<&str>` are the two halves of the on-the-wire
+        // taxonomy: JSONL/CSV/`hse` output emit `to_str`, and `--kind` plus
+        // re-ingest parse back through `from`. They are hand-maintained as two
+        // separate `match`es, so renaming a label on one side silently breaks
+        // the other — the non-obvious one is `SocialHandle`, which emits
+        // "social" and must map back from "social", not "socialhandle". Pin the
+        // round-trip for every concrete variant so any drift fails a test rather
+        // than corrupting a serialized entity.
+        use EntityKind::{
+            Domain, Email, Hash, Identifier, IpRange, Ipv4, Ipv6, Organization, Person, Phone,
+            Port, SocialHandle, Url, Username,
+        };
+        let kinds = [
+            Email,
+            Phone,
+            Ipv4,
+            Ipv6,
+            Domain,
+            Username,
+            Hash,
+            Person,
+            Organization,
+            Url,
+            SocialHandle,
+            IpRange,
+            Port,
+            Identifier,
+        ];
+        for k in kinds {
+            assert_eq!(
+                EntityKind::from(k.to_str()),
+                k,
+                "to_str/from round-trip drifted for {k:?} (to_str = {:?})",
+                k.to_str()
+            );
+        }
+
+        // `Unknown` round-trips too, as long as its payload is not itself a
+        // known label (an unmodelled kind in a document must survive intact).
+        let unknown = EntityKind::Unknown("custom-kind".to_string());
+        assert_eq!(EntityKind::from(unknown.to_str()), unknown);
+    }
 }

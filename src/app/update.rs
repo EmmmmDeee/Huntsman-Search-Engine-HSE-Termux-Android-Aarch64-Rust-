@@ -318,10 +318,23 @@ pub async fn apply_update(ref_: Option<String>) -> Result<()> {
 /// On failure it prints a diagnostic and exits with code 1.
 ///
 /// `CommandExt::exec` is a safe function — it is not declared `unsafe`.
+///
+/// Both failure modes take the documented path. `current_exe()` is a real
+/// syscall (`/proc/self/exe` on Linux/Android), not an infallible lookup, and
+/// this is the one call site where it is *most* likely to fail: a self-restart
+/// follows an update that has just rewritten or unlinked the running binary.
+/// Panicking there would contradict the contract above and dump a backtrace on
+/// an operator instead of the one-line diagnostic the rest of this path emits.
 #[cfg(unix)]
 pub fn self_restart() -> ! {
     use std::os::unix::process::CommandExt;
-    let exe = std::env::current_exe().expect("cannot determine current exe");
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(err) => {
+            eprintln!("hse: self-restart failed: cannot determine current executable: {err}");
+            std::process::exit(1);
+        }
+    };
     let args: Vec<String> = std::env::args().skip(1).collect();
     let err = std::process::Command::new(&exe).args(&args).exec();
     // exec() only returns on failure

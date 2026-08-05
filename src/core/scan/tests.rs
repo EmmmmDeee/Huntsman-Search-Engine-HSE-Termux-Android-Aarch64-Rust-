@@ -1570,3 +1570,71 @@ mod prop {
         }
     }
 }
+
+#[test]
+fn module_accounting_line_discloses_that_a_running_scan_has_no_counters_yet() {
+    // The defect this pins: `modules_*` are written once, in `finalise_scan`.
+    // A dossier or debug bundle exported mid-scan therefore read
+    // "0 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped" — six
+    // zeros that an operator reads as "nothing ran" — for scans whose own
+    // event streams recorded 60 modules done, 9 errored and 11 skipped.
+    let mut scan = Scan::new("scan-live", Target::new(TargetKind::Email, "a@b.com"));
+    scan.status = ScanStatus::Running;
+    let line = scan.module_accounting_line();
+
+    // The counts are still reported verbatim — nothing is invented or hidden.
+    assert!(
+        line.starts_with("0 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped"),
+        "the six columns must still be reported as-is: {line}"
+    );
+    // …but they must never stand alone as if they were final.
+    assert!(
+        line.contains("NOT YET FINAL"),
+        "a non-terminal scan must disclose that its counters are unwritten: {line}"
+    );
+    assert!(
+        line.contains("running"),
+        "the disclosure must name the state that makes them unwritten: {line}"
+    );
+
+    // Pending has the same problem — the row exists before dispatch begins.
+    scan.status = ScanStatus::Pending;
+    assert!(scan.module_accounting_line().contains("NOT YET FINAL"));
+}
+
+#[test]
+fn module_accounting_line_is_bare_counts_once_the_scan_is_terminal() {
+    // The disclosure must not leak into the common case: for every terminal
+    // status the counters ARE final, and the sentence stays the canonical
+    // six-count string every renderer has always printed.
+    for status in [
+        ScanStatus::Complete,
+        ScanStatus::Failed,
+        ScanStatus::Aborted,
+    ] {
+        let mut scan = Scan::new("scan-done", Target::new(TargetKind::Email, "a@b.com"));
+        scan.status = status;
+        scan.modules_run = 12;
+        scan.modules_errored = 2;
+        scan.modules_timed_out = 3;
+        scan.modules_skipped = 1;
+        scan.modules_cached = 4;
+        scan.modules_deduped = 5;
+        assert_eq!(
+            scan.module_accounting_line(),
+            "12 run, 2 errored, 3 timed out, 1 skipped, 4 cached, 5 deduped",
+            "terminal status {status:?} must render bare counts with no caveat"
+        );
+    }
+}
+
+#[test]
+fn scan_status_is_terminal_partitions_every_variant() {
+    // Exhaustive: `is_terminal` gates whether the derived columns can be
+    // trusted, so a new variant must be classified deliberately, not defaulted.
+    assert!(!ScanStatus::Pending.is_terminal());
+    assert!(!ScanStatus::Running.is_terminal());
+    assert!(ScanStatus::Complete.is_terminal());
+    assert!(ScanStatus::Failed.is_terminal());
+    assert!(ScanStatus::Aborted.is_terminal());
+}

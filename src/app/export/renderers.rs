@@ -133,6 +133,24 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
     // header historically dropped. A timed-out module is a stronger
     // incompleteness signal than a dedup, so total transparency requires it.
     let _ = writeln!(s, "modules    : {}", scan.module_accounting_line());
+    // …and, for a scan that has not finalised, the live tally from the event
+    // stream. `module_accounting_line` already discloses that its six columns
+    // are unwritten before finalise; this is the number that IS available, so
+    // an operator exporting mid-scan sees the work that has actually happened
+    // instead of only being told the counters are empty. Queried solely on the
+    // non-terminal path: a completed scan pays nothing, and its bundle stays
+    // byte-identical across exports (the determinism contract in
+    // `render_debug_bundle`) because no live-varying line is added to it.
+    if !scan.status.is_terminal() {
+        let tally = crate::core::event::ModuleEventTally::from_events(&store.events_for_scan(sid)?);
+        if !tally.is_empty() {
+            let _ = writeln!(
+                s,
+                "observed   : {}  (live, counted from this scan's event stream)",
+                tally.summary_line()
+            );
+        }
+    }
 
     // Exposure Index — the calibrated 0–100 headline with its transparent
     // per-signal breakdown, mirroring the live dossier (`print_dossier`) so the

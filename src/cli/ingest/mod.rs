@@ -356,34 +356,37 @@ fn format_output(
         )
         .to_string()),
 
-        // Emitted through the crate's single CSV escaper — the same one
-        // `api::scan_export` uses and `app::import::csv` inverts — rather than a
-        // local rule. The previous `value.replace(',', "\\,")` was not CSV at
-        // all: RFC 4180 escapes by quoting the field, not by backslashing the
-        // delimiter, so a value carrying a comma (an extracted URL such as
-        // `https://example.com/path,with,commas` is the common case) split into
-        // extra columns in every conforming reader, and a value carrying `"`,
-        // CR or LF broke the row structure outright. Escaping only `value` also
-        // left the other three columns unguarded.
-        //
-        // The bypass additionally skipped [`csv_escape`]'s formula-injection
-        // guard, which matters more here than on any other export path: ingest's
-        // input is an untrusted document, so a crafted value beginning `=`/`+`/
-        // `-`/`@` became a live formula when the operator opened the export in
-        // Excel or LibreOffice — the exact OWASP case that guard exists to defang.
+        // Emit through the same `csv` crate that `csv_parse` reads with, so the
+        // output round-trips. The previous hand-rolled writer replaced only `,`
+        // with `\,` and left `"`, `\n`, and `\r` untouched — which HSE's own
+        // `csv::Reader` parses as extra fields (and a newline in a value splits
+        // the row), so `hse ingest -f csv` produced CSV that `hse` could not
+        // re-ingest. `csv::Writer` RFC-4180-quotes only the fields that need it,
+        // so plain values (emails, IPs) are unchanged.
+        // `csv::Writer` makes the output structurally valid, but it does not —
+        // and should not — know about spreadsheet formula injection. Ingest's
+        // input is an UNTRUSTED document, so a value beginning `=`/`+`/`-`/`@`/
+        // CR/TAB executes as a formula the moment the operator opens the export
+        // in Excel or LibreOffice. The scan-export path has always defanged
+        // that; this one did not, so each field goes through the shared
+        // [`formula_guard`] first. Only the guard is shared, not the whole of
+        // `csv_escape`: that also RFC-4180-quotes, which would double-quote
+        // everything `csv::Writer` is about to quote itself.
         "csv" => {
-            use crate::api::scan_export::csv_escape;
-            let mut csv = String::from("kind,value,confidence,source_pattern\n");
+            use crate::api::scan_export::formula_guard;
+            let mut wtr = csv::Writer::from_writer(Vec::new());
+            wtr.write_record(["kind", "value", "confidence", "source_pattern"])?;
             for e in entities {
-                csv.push_str(&format!(
-                    "{},{},{},{}\n",
-                    csv_escape(e.kind.to_str()),
-                    csv_escape(&e.value),
-                    e.confidence,
-                    csv_escape(&e.source_pattern)
-                ));
+                let confidence = e.confidence.to_string();
+                wtr.write_record([
+                    formula_guard(e.kind.to_str()).as_ref(),
+                    formula_guard(&e.value).as_ref(),
+                    formula_guard(&confidence).as_ref(),
+                    formula_guard(&e.source_pattern).as_ref(),
+                ])?;
             }
-            Ok(csv)
+            let bytes = wtr.into_inner().map_err(csv::IntoInnerError::into_error)?;
+            Ok(String::from_utf8(bytes)?)
         }
 
         "table" => {
@@ -559,6 +562,57 @@ mod tests {
                 .any(|e| e.source.contains("notes.txt")),
             "evidence must name the source document"
         );
+    }
+
+    #[test]
+    fn format_csv_round_trips_through_the_csv_reader() {
+        // The old hand-rolled writer escaped only `,` as `\,` and left `"` and
+        // `\n` untouched, so HSE's own `csv::Reader` re-parsed the row into the
+        // wrong number of fields (and a newline split it into two rows). A value
+        // carrying all three delimiter hazards must survive extract -> csv ->
+        // re-read byte-for-byte.
+        let mut ents = sample();
+        ents[0].value = "a,b\"c\nd".to_string();
+        let csv = format_output(&ents, "csv", "notes.txt").expect("csv format should succeed");
+
+        let mut reader = csv::ReaderBuilder::new().from_reader(csv.as_bytes());
+        let headers = reader.headers().expect("must have a header row").clone();
+        assert_eq!(
+            headers.iter().collect::<Vec<_>>(),
+            ["kind", "value", "confidence", "source_pattern"]
+        );
+        let records: Vec<_> = reader
+            .records()
+            .collect::<Result<_, _>>()
+            .expect("every row must parse as exactly one record");
+        assert_eq!(records.len(), 1, "one entity must yield exactly one row");
+        assert_eq!(&records[0][0], "email");
+        assert_eq!(
+            &records[0][1], "a,b\"c\nd",
+            "value must survive the CSV round-trip unchanged"
+        );
+        assert_eq!(&records[0][3], "email_rfc5322");
+    }
+
+    #[test]
+    fn format_json_emits_a_parseable_array_carrying_boost_reason() {
+        // "json" (distinct from the newline-delimited "jsonl") was the only
+        // output format with no test. Unlike jsonl it also carries
+        // `boost_reason`; assert the whole is one parseable array and that the
+        // boost reason survives.
+        let mut ents = sample();
+        ents[0].boost_reason = Some("RFC 5322 compliant".to_string());
+        let output = format_output(&ents, "json", "notes.txt").expect("json format should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output).expect("json output must parse as JSON");
+        let arr = parsed.as_array().expect("json output must be a JSON array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["kind"], "email");
+        assert_eq!(arr[0]["value"], "test@example.com");
+        assert_eq!(arr[0]["confidence"], 0.85);
+        assert_eq!(arr[0]["source_pattern"], "email_rfc5322");
+        assert_eq!(arr[0]["boost_reason"], "RFC 5322 compliant");
     }
 
     #[test]
