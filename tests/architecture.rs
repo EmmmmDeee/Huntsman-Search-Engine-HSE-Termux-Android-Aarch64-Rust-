@@ -3917,3 +3917,93 @@ fn every_docs_path_cited_from_rust_source_exists() {
         dangling.join("\n  ")
     );
 }
+
+/// Every `f64` clap argument must declare a `value_parser`.
+///
+/// `f64::from_str` accepts `nan` and `inf`, and clap's stock `f64` parser takes
+/// them verbatim. A NaN threshold makes every `>=`/`<` comparison against it
+/// false, so a filter built on one silently inverts or disables itself — the
+/// silent-under-reporting failure this crate treats as its cardinal sin. An
+/// out-of-range finite value (`--min-confidence 5.0`) is just as bad in the
+/// other direction: it is accepted, unsatisfiable, and reported as success.
+///
+/// This shipped once already. `hse ingest --min-confidence nan` exited 0 having
+/// emitted an empty deliverable, and the fix added a `value_parser` to that ONE
+/// flag while seven others kept clap's stock parser — `scan`/`live`
+/// `--min-confidence`, `--min-expand-confidence` and `--min-marginal-yield`, and
+/// `keys prune --min-success-rate`. Fixing one instance of a class and leaving
+/// its siblings is what this guard exists to prevent.
+///
+/// The library layer coerces non-finite values defensively
+/// (`ScanOptions::effective_*`), but silently: the operator's flag is discarded
+/// with no message. Validation belongs at the argument boundary, where it can
+/// still be a usage error before any work is done.
+#[test]
+fn every_f64_cli_argument_declares_a_value_parser() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    collect_rs_files(&root.join("src/cli"), &mut files);
+    assert!(
+        !files.is_empty(),
+        "no CLI sources found — the walk is broken and this guard would pass vacuously"
+    );
+
+    let mut unguarded: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+    for file in &files {
+        let text = fs::read_to_string(file)
+            .unwrap_or_else(|e| panic!("cannot read {} for f64-arg scan: {e}", file.display()));
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let t = line.trim();
+            // A clap field declaration: `name: f64,` or `name: Option<f64>,`.
+            if !(t.ends_with(": f64,") || t.ends_with(": Option<f64>,")) {
+                continue;
+            }
+            // Walk back over the doc comments to the nearest `#[arg(...)]`. A
+            // field with no `#[arg]` at all is a plain struct field, not a CLI
+            // argument, and is none of this guard's business.
+            let mut attr: Option<String> = None;
+            for back in (0..i).rev() {
+                let p = lines[back].trim();
+                if p.starts_with("#[arg(") {
+                    // The attribute may wrap across lines; join until the field.
+                    attr = Some(lines[back..i].join(" "));
+                    break;
+                }
+                if !(p.starts_with("///")
+                    || p.starts_with("//")
+                    || p.starts_with('#')
+                    || p.is_empty())
+                {
+                    break;
+                }
+            }
+            let Some(attr) = attr else { continue };
+            checked += 1;
+            if !attr.contains("value_parser") {
+                unguarded.push(format!(
+                    "{}:{} {}",
+                    file.strip_prefix(root).unwrap_or(file).display(),
+                    i + 1,
+                    t
+                ));
+            }
+        }
+    }
+
+    assert!(
+        checked >= 8,
+        "expected to find the known f64 CLI arguments; found only {checked} — the \
+         scan is broken and this guard would pass vacuously"
+    );
+    assert!(
+        unguarded.is_empty(),
+        "{} f64 CLI argument(s) use clap's stock parser, which accepts `nan` and \
+         `inf` and enforces no range. Add `value_parser = confidence_floor` (a \
+         0.0-1.0 probability) or `value_parser = non_negative_rate` (a \
+         non-negative rate):\n  {}",
+        unguarded.len(),
+        unguarded.join("\n  ")
+    );
+}
