@@ -28,8 +28,10 @@ import { API } from '/static/js/api.js';
 export async function renderLog(host, scan){
   const running = scan.status==='running' || scan.status==='pending';
   // Fresh tally per view — otherwise opening a second scan's log would add its
-  // events to the previous scan's breakdown.
+  // events to the previous scan's breakdown. The eviction counter resets with
+  // it, for the same reason: it describes THIS view's box.
   typeCounts.clear();
+  logRowsDropped = 0;
   host.innerHTML = `
     <div class="panel panel-default">
       <div class="panel-heading">
@@ -55,6 +57,7 @@ export async function renderLog(host, scan){
   $('#log-clear').addEventListener('click', ()=>{
     $('#log-box').innerHTML='';
     typeCounts.clear();
+    logRowsDropped = 0;
     renderTypeCounts();
   });
   // "Save shown" — serialise exactly the rendered rows to a .log file. This is
@@ -66,7 +69,14 @@ export async function renderLog(host, scan){
     header: (n) =>
       `# HSE scan event log (as shown in the browser)\n` +
       `# scan ${scan.id}\n` +
-      `# ${n} event(s)` + (running ? ' — live capture, may be partial\n' : '\n') + `\n`,
+      `# ${n} event(s)` + (running ? ' — live capture, may be partial\n' : '\n') +
+      // The box is row-capped, so "as shown" can be a suffix of the scan. Say
+      // so in the artifact itself — a saved log that silently omits its start
+      // is worse than no log, and the complete one is a click away.
+      (logRowsDropped
+        ? `# NOTE: the oldest ${logRowsDropped} row(s) were dropped from view (display cap ${LOG_MAX_ROWS});\n` +
+          `#       this file starts mid-scan. Use the Download button for the complete log.\n`
+        : '') + `\n`,
     filename: `hse-events-shown-${scan.id.slice(0, 12)}.log`,
   }));
 
@@ -195,8 +205,67 @@ export function renderTypeCounts(){
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([t, n]) => `<span style="display:inline-block;margin-right:12px"><code>${esc(t)}</code> <b>${n}</b></span>`);
   const total = Array.from(typeCounts.values()).reduce((a, b) => a + b, 0);
-  host.innerHTML = `<b>By type</b> <span style="margin-right:12px">(${total} event${total===1?'':'s'})</span>${parts.join('')}`;
+  // These totals count EVENTS, not rows on screen — `bumpTypeCount` runs
+  // before any eviction — so they stay true for the whole scan even once the
+  // box is capped. When rows have been dropped, say so here rather than let
+  // the operator infer the timeline is complete from a complete breakdown.
+  const dropped = logRowsDropped
+    ? ` <span class="text-muted" title="The rendered timeline is capped at ${LOG_MAX_ROWS} rows to keep the page responsive on a phone. These per-type totals still cover every event; use Download for the complete log.">· oldest ${logRowsDropped} row${logRowsDropped===1?'':'s'} dropped from view (Download has all)</span>`
+    : '';
+  host.innerHTML = `<b>By type</b> <span style="margin-right:12px">(${total} event${total===1?'':'s'})</span>${parts.join('')}${dropped}`;
   host.style.display = '';
+}
+
+/* Coalesce the per-row DOM work that does not have to happen per row.
+   `appendLog` runs once per event, and a real scan emits hundreds (a captured
+   run: 598 events, 371 of them entity_found). Re-sorting the type histogram and
+   rewriting its `innerHTML` on every one of those, then reading
+   `box.scrollHeight` — which forces a synchronous layout — turned each event
+   into a full re-render plus a forced reflow. On a memory- and CPU-constrained
+   Termux/Android browser that is the difference between a scan that streams and
+   a tab that dies.
+
+   Both operations are idempotent and only the LAST one is observable, so they
+   are deferred to one animation frame. The end state is byte-identical: every
+   event is still counted (`bumpTypeCount` stays synchronous, above), the
+   breakdown still shows every event, and the box still ends scrolled to the
+   newest row. */
+/* Hard bound on how many rows the log box holds at once.
+
+   Every event previously became a permanent DOM node: three spans inside a
+   div, kept for the life of the view, with nothing ever removed. Captured
+   runs already reach 598 events (371 of them entity_found) and this file's
+   own "By type" note records a 764-row log; DEFAULT_SCAN_DEPTH went 3→5 in
+   #315, so a deep scan's event count is several times that. On a no-root
+   Termux/Android browser — the only platform this ships to — an unbounded,
+   monotonically growing node list under a live SSE stream is the classic way
+   to lose the tab.
+
+   1200 sits deliberately above every run observed so far, so a normal scan
+   evicts nothing at all and looks exactly as it did; only the pathological
+   tail is bounded. Eviction is from the top (oldest first), which is the
+   right end to lose: the newest rows are the ones an operator is watching.
+
+   Nothing is silently lost. The "By type" breakdown counts events, not rows
+   (`bumpTypeCount` runs before any eviction), so it keeps reporting the true
+   totals for the whole scan; the drop is disclosed there and in the "Save
+   shown" header; and the complete persisted log is always one click away on
+   the Download button, which streams it from the server. */
+const LOG_MAX_ROWS = 1200;
+let logRowsDropped = 0;
+
+let logFlushScheduled = false;
+function scheduleLogFlush(){
+  if (logFlushScheduled) return;
+  logFlushScheduled = true;
+  const flush = ()=>{
+    logFlushScheduled = false;
+    renderTypeCounts();
+    const b = $('#log-box');
+    if (b) b.scrollTop = b.scrollHeight;
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(flush);
+  else setTimeout(flush, 0);
 }
 
 export function appendLog(ev, ts){
@@ -204,7 +273,6 @@ export function appendLog(ev, ts){
   // Count every rendered row exactly once — history rows and live SSE rows both
   // land here — so the breakdown always describes precisely what is on screen.
   bumpTypeCount(ev && ev.type);
-  renderTypeCounts();
   const m = mapEvent(ev);
   const row = document.createElement('div');
   row.className = `log-row lv-${m.lv}`;
@@ -213,7 +281,16 @@ export function appendLog(ev, ts){
   const t = ts ? (new Date(ts*1000)).toTimeString().slice(0,8) : fmtClock();
   row.innerHTML = `<span class="ts">${esc(t)}</span><span class="typ">${esc(m.typ)}</span><span class="msg">${m.msg}</span>`;
   box.appendChild(row);
-  box.scrollTop = box.scrollHeight;
+  // Evict oldest-first the moment we exceed the cap. Synchronous rather than
+  // deferred to the flush below: the history render appends its whole result
+  // set in one synchronous loop, so a deferred trim would still let the full
+  // unbounded list exist for a frame — and it is the peak, not the steady
+  // state, that takes the tab down.
+  while (box.childElementCount > LOG_MAX_ROWS && box.firstElementChild){
+    box.removeChild(box.firstElementChild);
+    logRowsDropped++;
+  }
+  scheduleLogFlush();
 }
 /* `''` or `'s'` for a counted noun — the browser-side twin of the Rust
    renderers' `plural()`. A live scan routinely reports exactly one of

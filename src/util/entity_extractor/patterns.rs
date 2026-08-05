@@ -21,7 +21,7 @@ use super::{EntityKind, ExtractedEntity};
 use crate::util::str_util::char_window;
 use lazy_static::lazy_static;
 use regex::Regex;
-use std::net::Ipv6Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 // Canonical locators from `core::classifier`. Re-exported under the legacy names
 // so existing call sites keep compiling after the duplicate regex definitions
@@ -69,20 +69,34 @@ pub fn extract_by_patterns(text: &str) -> Vec<ExtractedEntity> {
         });
     }
 
-    // IPv4 extraction
+    // IPv4 extraction. The candidate regex `(\d{1,3}\.){3}\d{1,3}` is deliberately
+    // loose and does NOT range-check octets, so it also matches `999.1.2.3` and
+    // leading-zero forms like `192.168.01.1` (a parser-confusion / SSRF vector).
+    // The old arm trusted the raw match after only a `255.`/`0.` prefix test and
+    // stamped it "Valid IPv4 range" — emitting values that `Ipv4Addr::from_str`,
+    // and therefore any downstream scanner, rejects, under a boost reason that was
+    // untrue. Validate through `Ipv4Addr` exactly as the IPv6 arm does: parse
+    // (rejecting out-of-range and leading-zero octets), drop the non-host ranges
+    // the prefix test already excluded (0.0.0.0/8 and 255.0.0.0/8) plus multicast
+    // (224.0.0.0/4 — the "not a broadcast or multicast" the old comment claimed
+    // but never enforced), and emit the canonical dotted-quad so the value
+    // re-parses stably.
     for cap in IPV4_PATTERN.find_iter(text) {
-        let value = cap.as_str();
-        // Validate not a broadcast or multicast
-        if !value.starts_with("255.") && !value.starts_with("0.") {
-            entities.push(ExtractedEntity {
-                kind: EntityKind::Ipv4,
-                value: value.to_string(),
-                confidence: 0.90,
-                context: extract_context(text, cap.start()),
-                source_pattern: "ipv4_quad_decimal".to_string(),
-                boost_reason: Some("Valid IPv4 range".to_string()),
-            });
+        let Ok(addr) = cap.as_str().parse::<Ipv4Addr>() else {
+            continue;
+        };
+        let octets = addr.octets();
+        if octets[0] == 0 || octets[0] == 255 || addr.is_multicast() {
+            continue;
         }
+        entities.push(ExtractedEntity {
+            kind: EntityKind::Ipv4,
+            value: addr.to_string(),
+            confidence: 0.90,
+            context: extract_context(text, cap.start()),
+            source_pattern: "ipv4_quad_decimal".to_string(),
+            boost_reason: Some("Valid IPv4 range (std-parsed)".to_string()),
+        });
     }
 
     // IPv6 extraction. The candidate regex over-matches (hex + colons), so every
@@ -249,6 +263,29 @@ mod tests {
             entities
                 .iter()
                 .any(|e| e.kind == EntityKind::Ipv4 && e.value == "192.168.1.1")
+        );
+    }
+
+    #[test]
+    fn ipv4_extraction_rejects_non_addresses() {
+        // The candidate regex `(\d{1,3}\.){3}\d{1,3}` does NOT range-check octets,
+        // so it also matches `999.1.2.3` (out of range), `192.168.01.1` (leading
+        // zeros — a parser-confusion / SSRF vector `Ipv4Addr` rejects), and
+        // `224.0.0.1` (multicast, which the arm's own comment always claimed to
+        // exclude). The old arm trusted the raw match after only a `255.`/`0.`
+        // prefix test and stamped it "Valid IPv4 range", emitting values that
+        // `Ipv4Addr::from_str` — and therefore any downstream scanner — rejects.
+        // Only the single real host quad may survive.
+        let text = "multicast 224.0.0.1, bad 999.1.2.3, ambiguous 192.168.01.1, good 192.168.1.42";
+        let ipv4: Vec<String> = extract_by_patterns(text)
+            .into_iter()
+            .filter(|e| e.kind == EntityKind::Ipv4)
+            .map(|e| e.value)
+            .collect();
+        assert_eq!(
+            ipv4,
+            ["192.168.1.42"],
+            "only the valid host quad may survive"
         );
     }
 
@@ -440,5 +477,94 @@ mod multibyte_tests {
                 .any(|e| e.kind == EntityKind::Email && e.value == "john@example.com"),
             "the email must still be extracted: {hit:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// `extract_by_patterns` is reached from `hse ingest --file` OUTSIDE every
+        /// `catch_unwind` in the engine (see `extract_context`), so a panic on any
+        /// document byte-sequence would terminate the whole process. The sibling
+        /// `multibyte_tests` pin specific accented/emoji/CJK cases; this generalises
+        /// them: over *arbitrary* Unicode text (any `char`, including control
+        /// characters and newlines) the extractor must be TOTAL — never panic —
+        /// every emitted `context` must be a real substring of the input (no
+        /// fabricated provenance), and no entity may carry an empty value.
+        #[test]
+        fn extract_by_patterns_is_total_over_arbitrary_text(
+            s in proptest::collection::vec(any::<char>(), 0..200)
+                .prop_map(|cs| cs.into_iter().collect::<String>())
+        ) {
+            let entities = extract_by_patterns(&s);
+            for e in &entities {
+                prop_assert!(!e.value.is_empty(), "empty value emitted for {:?}", e.kind);
+                if let Some(ctx) = &e.context {
+                    prop_assert!(
+                        s.contains(ctx.as_str()),
+                        "context {ctx:?} is not a substring of the input"
+                    );
+                }
+            }
+        }
+
+        /// Every IPv4 the arm emits must be a real, canonical address. Octets are
+        /// drawn `0..=999`, so most generated quads carry an out-of-range octet:
+        /// the loose candidate regex still MATCHES those, so this actively probes
+        /// the `Ipv4Addr` gate rather than the happy path. Whatever survives must
+        /// re-parse and equal its own canonical `to_string()` — the ingest→scan
+        /// value contract a downstream scanner relies on.
+        #[test]
+        fn ipv4_arm_emits_only_parseable_canonical_quads(
+            a in 0u16..=999,
+            b in 0u16..=999,
+            c in 0u16..=999,
+            d in 0u16..=999,
+        ) {
+            let text = format!("addr {a}.{b}.{c}.{d} end");
+            for e in extract_by_patterns(&text)
+                .into_iter()
+                .filter(|e| e.kind == EntityKind::Ipv4)
+            {
+                let parsed = e.value.parse::<Ipv4Addr>();
+                prop_assert!(
+                    parsed.is_ok(),
+                    "emitted non-parseable Ipv4 {:?} from {text:?}",
+                    e.value
+                );
+                prop_assert_eq!(
+                    parsed.unwrap().to_string(),
+                    e.value.clone(),
+                    "Ipv4 value is not canonical"
+                );
+            }
+        }
+
+        /// A full eight-group IPv6 is always a valid address. Written in
+        /// *uncompressed* form and embedded in prose, it must be extracted exactly
+        /// once and emitted in the canonical compressed form `Ipv6Addr::to_string()`
+        /// produces — so equivalent spellings collapse to one value downstream.
+        #[test]
+        fn ipv6_full_form_is_emitted_canonically(
+            g in proptest::array::uniform8(any::<u16>()),
+        ) {
+            let addr = Ipv6Addr::new(g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7]);
+            // The arm deliberately drops loopback/unspecified; skip those inputs.
+            prop_assume!(!addr.is_loopback() && !addr.is_unspecified());
+            let full = format!(
+                "{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}",
+                g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7]
+            );
+            let text = format!("v6 {full} end");
+            let emitted: Vec<_> = extract_by_patterns(&text)
+                .into_iter()
+                .filter(|e| e.kind == EntityKind::Ipv6)
+                .collect();
+            prop_assert_eq!(emitted.len(), 1, "expected exactly one IPv6 from {:?}", text);
+            prop_assert_eq!(&emitted[0].value, &addr.to_string());
+        }
     }
 }

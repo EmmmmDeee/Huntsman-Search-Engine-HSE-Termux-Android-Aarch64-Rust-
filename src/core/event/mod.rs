@@ -251,7 +251,21 @@ impl EventKind {
                 } else {
                     &correlation.rule_name
                 };
-                ("corr", format!("⚡ {name}"))
+                // The rule name alone does not identify the finding. Rules that
+                // fire per-entity — AU-003 "High cross-source corroboration"
+                // emits one `Correlation` for every corroborated entity — repeat
+                // the same headline as many times as they matched: a real
+                // 47-event scan logged nine consecutive, byte-identical
+                // `⚡ High cross-source corroboration` lines, leaving the
+                // operator no way to tell which entities they referred to.
+                // `description` is what distinguishes them (it names the entity
+                // and its C_eff) and was being discarded here, though
+                // `cli::live` has always rendered both.
+                if correlation.description.is_empty() {
+                    ("corr", format!("⚡ {name}"))
+                } else {
+                    ("corr", format!("⚡ {name} · {}", correlation.description))
+                }
             }
             Self::CorrelationsDone { count } => ("corr", format!("correlations done · {count}")),
             Self::LiveStart {
@@ -271,6 +285,80 @@ impl EventKind {
                 ("scan", format!("✔ scan complete · {entity_count} entities"))
             }
         }
+    }
+}
+
+/// Module accounting observed directly from a scan's persisted event stream.
+///
+/// This exists because [`Scan`](crate::core::scan::Scan)'s `modules_*` columns
+/// are written once, at finalise: a dossier or debug bundle exported while the
+/// scan is still `Running` reads six zeros no matter how much work has already
+/// happened. The event log, by contrast, is persisted continuously — so for a
+/// non-terminal scan it is the only honest source of "what has run so far".
+///
+/// # These are event counts, not the engine's counters
+///
+/// Every field is a straight tally of how many events of one kind the stream
+/// holds. It deliberately stops there rather than reconstructing the engine's
+/// six columns, because the event stream cannot support that reconstruction:
+///
+/// - There is no distinct event kind for a timeout, a cache replay, or a
+///   dedup, so `timed_out` / `cached` / `deduped` are simply not derivable.
+///   A timeout arrives as a `ModuleError` like any other failure.
+/// - `skipped` is not disjoint from `started`. Gate-skips are emitted without
+///   a preceding `ModuleStart` (`Engine::emit_module_skipped`), whereas a
+///   module that dispatched and then cleanly opted out for a missing API key
+///   emits `ModuleSkipped` *after* its `ModuleStart` (`dispatch.rs`). So
+///   `started - done - errored - skipped` is not an in-flight count, and no
+///   in-flight figure is offered.
+///
+/// Presenting these as the real counters would be a guess dressed as a
+/// measurement; presenting them as event counts is exactly what they are.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ModuleEventTally {
+    /// `module_start` events — modules that reached dispatch.
+    pub started: usize,
+    /// `module_done` events — modules that completed and reported a find count.
+    pub done: usize,
+    /// `module_error` events — failures, timeouts included (they are not
+    /// distinguishable at this layer).
+    pub errored: usize,
+    /// `module_skipped` events — gate-skips plus dispatched-then-opted-out.
+    pub skipped: usize,
+}
+
+impl ModuleEventTally {
+    /// Tally `events` by kind. Pure; every non-module event is ignored.
+    #[must_use]
+    pub fn from_events(events: &[Event]) -> Self {
+        let mut t = Self::default();
+        for ev in events {
+            match ev.kind {
+                EventKind::ModuleStart { .. } => t.started += 1,
+                EventKind::ModuleDone { .. } => t.done += 1,
+                EventKind::ModuleError { .. } => t.errored += 1,
+                EventKind::ModuleSkipped { .. } => t.skipped += 1,
+                _ => {}
+            }
+        }
+        t
+    }
+
+    /// True when the stream carried no module activity at all — the case where
+    /// printing the tally would add nothing over the counters.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.started == 0 && self.done == 0 && self.errored == 0 && self.skipped == 0
+    }
+
+    /// The tally as one human sentence, named after the events it counts so a
+    /// reader can never mistake it for the engine's `modules_*` columns.
+    #[must_use]
+    pub fn summary_line(&self) -> String {
+        format!(
+            "{} module_start, {} module_done, {} module_error, {} module_skipped",
+            self.started, self.done, self.errored, self.skipped
+        )
     }
 }
 

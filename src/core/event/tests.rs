@@ -288,3 +288,100 @@ use super::*;
             other => panic!("expected ModuleDone, got: {other:?}"),
         }
     }
+
+    // ── Correlation log lines must be distinguishable ───────────────────
+
+    #[test]
+    fn correlation_log_summary_distinguishes_repeats_of_one_rule() {
+        // Regression, from a real 47-event scan log: rules that fire per-entity
+        // (AU-003 "High cross-source corroboration" emits one Correlation per
+        // corroborated entity) produced nine consecutive, byte-identical
+        // `⚡ High cross-source corroboration` lines, because `log_summary`
+        // rendered only `rule_name` and dropped the `description` that names
+        // the entity. Two findings of the same rule must not render alike.
+        use crate::core::correlator::{Correlation, Severity};
+
+        let mk = |desc: &str| {
+            EventKind::CorrelationFound {
+                correlation: Correlation::new(
+                    "AU-003",
+                    "High cross-source corroboration",
+                    Severity::Medium,
+                    desc.into(),
+                    vec!["u".into()],
+                    "scan-1",
+                    0,
+                ),
+            }
+            .log_summary()
+            .1
+        };
+
+        let a = mk("Email entity 'a@example.com' corroborated by 3 independent source(s)");
+        let b = mk("Domain entity 'example.com' corroborated by 4 independent source(s)");
+
+        assert_ne!(a, b, "per-entity findings must not render identically");
+        assert!(a.contains("High cross-source corroboration"), "{a}");
+        assert!(a.contains("a@example.com"), "log line must name the entity: {a}");
+        assert!(b.contains("example.com"), "{b}");
+    }
+
+    #[test]
+    fn correlation_log_summary_omits_separator_when_description_is_empty() {
+        use crate::core::correlator::{Correlation, Severity};
+
+        let line = EventKind::CorrelationFound {
+            correlation: Correlation::new(
+                "AU-001",
+                "Some rule",
+                Severity::High,
+                String::new(),
+                vec!["u".into()],
+                "scan-1",
+                0,
+            ),
+        }
+        .log_summary()
+        .1;
+        assert_eq!(line, "⚡ Some rule");
+    }
+
+    // ── ModuleEventTally ────────────────────────────────────────────────
+
+    #[test]
+    fn module_event_tally_counts_each_module_kind_and_ignores_the_rest() {
+        let ev = |kind| Event::new("s", kind);
+        let events = vec![
+            ev(EventKind::ModuleStart { module: "a".into() }),
+            ev(EventKind::ModuleStart { module: "b".into() }),
+            ev(EventKind::ModuleDone { module: "a".into(), found: 3 }),
+            ev(EventKind::ModuleError { module: "b".into(), error: "boom".into() }),
+            ev(EventKind::ModuleSkipped { module: "c".into(), reason: "no key".into() }),
+            // Non-module events must not be counted into any bucket.
+            ev(EventKind::ScanComplete { scan_id: "s".into(), entity_count: 9 }),
+            ev(EventKind::ExpansionStop { reason: "depth".into() }),
+        ];
+        let t = ModuleEventTally::from_events(&events);
+        assert_eq!(t.started, 2);
+        assert_eq!(t.done, 1);
+        assert_eq!(t.errored, 1);
+        assert_eq!(t.skipped, 1);
+        assert!(!t.is_empty());
+        assert_eq!(
+            t.summary_line(),
+            "2 module_start, 1 module_done, 1 module_error, 1 module_skipped"
+        );
+    }
+
+    #[test]
+    fn module_event_tally_is_empty_when_no_module_activity_was_recorded() {
+        assert!(ModuleEventTally::from_events(&[]).is_empty());
+        let only_scan = vec![Event::new(
+            "s",
+            EventKind::ScanStart {
+                target_kind: "email".into(),
+                target_value: "a@b.com".into(),
+            },
+        )];
+        assert!(ModuleEventTally::from_events(&only_scan).is_empty());
+    }

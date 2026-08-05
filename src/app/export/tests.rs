@@ -1319,3 +1319,117 @@ fn system_bundle_reports_all_clear_when_healthy() {
     );
     assert!(out.contains("HUNTSMAN SYSTEM DEBUG BUNDLE"));
 }
+
+#[test]
+fn render_full_shows_the_live_event_tally_while_a_scan_is_still_running() {
+    // Regression, from two real debug bundles: both exported mid-scan, both
+    // headed `status : Running`, and both printing
+    // `modules : 0 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped`
+    // while the SAME scan's event stream held ~70 module_start, ~60
+    // module_done, ~9 module_error and ~11 module_skipped. The counters are
+    // written once, in `finalise_scan`, so mid-scan they are structurally
+    // zero — the header must say so AND surface the tally that does exist.
+    use crate::core::event::{Event, EventKind};
+    let dir = tempfile::tempdir().expect("tempdir should be creatable");
+    let db = dir.path().join("running_tally.db");
+    let store = Store::open(db.to_str().expect("db path should be UTF-8"))
+        .expect("store should open on a fresh temp db");
+
+    let mut scan = Scan::new("scan-running", Target::new(TargetKind::Email, "a@b.com"));
+    scan.status = ScanStatus::Running;
+    store.upsert_scan(&scan).expect("scan row should persist");
+
+    for (module, done) in [("dns", true), ("whois", true), ("crtsh", false)] {
+        store
+            .insert_event(&Event::new(
+                "scan-running",
+                EventKind::ModuleStart {
+                    module: module.into(),
+                },
+            ))
+            .expect("module_start should persist");
+        let kind = if done {
+            EventKind::ModuleDone {
+                module: module.into(),
+                found: 2,
+            }
+        } else {
+            EventKind::ModuleError {
+                module: module.into(),
+                error: "timed out".into(),
+            }
+        };
+        store
+            .insert_event(&Event::new("scan-running", kind))
+            .expect("module outcome should persist");
+    }
+    store
+        .insert_event(&Event::new(
+            "scan-running",
+            EventKind::ModuleSkipped {
+                module: "shodan".into(),
+                reason: "needs API key".into(),
+            },
+        ))
+        .expect("module_skipped should persist");
+
+    let out = render_full(&store, "scan-running").expect("render_full should succeed");
+
+    // The zeros are still printed — but never bare.
+    assert!(
+        out.contains("0 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped"),
+        "the persisted counters must still be reported verbatim: {out}"
+    );
+    assert!(
+        out.contains("NOT YET FINAL"),
+        "mid-scan zeros must be disclosed as unwritten, not left to read as \
+         'nothing ran': {out}"
+    );
+    // …and the work that HAS happened is surfaced from the event stream.
+    assert!(
+        out.contains(
+            "observed   : 3 module_start, 2 module_done, 1 module_error, 1 module_skipped"
+        ),
+        "the live event tally must appear for a non-terminal scan: {out}"
+    );
+}
+
+#[test]
+fn render_full_omits_the_live_tally_once_the_scan_is_terminal() {
+    // The determinism contract in `render_debug_bundle` requires a completed
+    // scan to export byte-identically every time, so the live line must be
+    // strictly a non-terminal-path addition — and a finalised scan's own
+    // counters are authoritative, making it redundant as well as unsafe.
+    use crate::core::event::{Event, EventKind};
+    let dir = tempfile::tempdir().expect("tempdir should be creatable");
+    let db = dir.path().join("complete_tally.db");
+    let store = Store::open(db.to_str().expect("db path should be UTF-8"))
+        .expect("store should open on a fresh temp db");
+
+    let mut scan = Scan::new("scan-complete", Target::new(TargetKind::Email, "a@b.com"));
+    scan.status = ScanStatus::Complete;
+    scan.modules_run = 2;
+    store.upsert_scan(&scan).expect("scan row should persist");
+    store
+        .insert_event(&Event::new(
+            "scan-complete",
+            EventKind::ModuleStart {
+                module: "dns".into(),
+            },
+        ))
+        .expect("module_start should persist");
+
+    let out = render_full(&store, "scan-complete").expect("render_full should succeed");
+    assert!(
+        out.contains("2 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped"),
+        "a terminal scan reports its real counters: {out}"
+    );
+    assert!(
+        !out.contains("NOT YET FINAL"),
+        "no caveat belongs on a finalised scan: {out}"
+    );
+    assert!(
+        !out.contains("observed   :"),
+        "the live tally must not appear on a finalised scan: {out}"
+    );
+}

@@ -36,6 +36,63 @@ fn fofa_filter_rejects_unsupported_target() {
     assert!(filter.is_none());
 }
 
+// ── Filter-injection hardening ──
+//
+// `Target::validate` restricts a seed Domain to ASCII alphanumeric/./-/_ and
+// parses a seed IpAddress through `std::net::IpAddr` — neither can carry a
+// `"`. But a PIVOT target built during expansion
+// (`Target::new(tk, entity.value.clone())`, core/engine/mod.rs) is dispatched
+// without going through that gate, and this very module mints Domain/IP
+// entities straight from FOFA's own JSON response (`build_entities`, below).
+// These tests construct that exact shape directly — a Target carrying a
+// value `Target::validate` would already reject — to prove `fofa_filter`
+// itself is safe independent of whether any particular caller validated
+// first. Constructed via `Target { kind, value }` field literals rather than
+// `Target::new(...)` followed by `.validate()`, since asserting the value
+// SURVIVES unvalidated into the filter is exactly the point.
+
+#[test]
+fn fofa_filter_escapes_a_quote_that_would_close_the_filter_early() {
+    let target = Target::new(TargetKind::Domain, "example.com\" || host=\"evil.com");
+    let filter = fofa_filter(&target).expect("domain target");
+    // The embedded quote must be escaped, not left to terminate the literal.
+    assert_eq!(filter, "host=\"example.com\\\" || host=\\\"evil.com\"");
+    // Decisive check: unescaped, exactly this substring would appear verbatim
+    // and the filter would contain a live, unescaped `" || host="` splice.
+    assert!(
+        !filter.contains("\" || host=\""),
+        "an unescaped injection substring must not survive into the filter: {filter}"
+    );
+}
+
+#[test]
+fn fofa_filter_escapes_a_literal_backslash_before_the_quote() {
+    // Order matters: escaping the quote before the backslash would
+    // double-escape the backslash this transform itself inserts. A value
+    // ending in a backslash immediately before the closing position is the
+    // case that catches getting the order wrong.
+    let target = Target::new(TargetKind::IpAddress, "1.2.3.4\\");
+    // IpAddress' own filter arm ignores parse-validity (fofa_filter is pure
+    // and does not re-validate), so this constructs the same "value a real
+    // Target::validate would reject" shape as the quote-injection test.
+    let filter = fofa_filter(&target).expect("ip arm always returns Some");
+    assert_eq!(filter, "ip=\"1.2.3.4\\\\\"");
+}
+
+#[test]
+fn fofa_filter_leaves_an_ordinary_value_unescaped() {
+    // No regression for the overwhelmingly common case: a clean domain/IP
+    // round-trips with no backslashes inserted.
+    assert_eq!(
+        fofa_filter(&Target::new(TargetKind::Domain, "example.com")).unwrap(),
+        "host=\"example.com\""
+    );
+    assert_eq!(
+        fofa_filter(&Target::new(TargetKind::IpAddress, "1.2.3.4")).unwrap(),
+        "ip=\"1.2.3.4\""
+    );
+}
+
 #[test]
 fn build_entities_emits_ip_domain_from_results() {
     let resp = FofaResp {
