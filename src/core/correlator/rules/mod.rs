@@ -61,6 +61,19 @@ fn text_mentions_ip(text: &str, ip: &str) -> bool {
     if ip.is_empty() {
         return false;
     }
+    // A real IP needle is ASCII. Enforce it rather than trusting the caller's
+    // entity kind: a non-ASCII `ip` is never a valid address (so the answer is
+    // `false`), and it is also what keeps the byte-cursor advance below sound —
+    // `from = i + 1` past a match only lands on a char boundary because an ASCII
+    // match starts with a one-byte char. A multi-byte needle whose match failed
+    // the boundary check would put `from` inside a char, and the next
+    // `text.get(from..)` would have panicked as a raw `text[from..]` slice
+    // (reproduced end-to-end: `text_mentions_ip("aé1", "é")`). The loop also
+    // slices with `get(..)` so any future change here degrades to "no match"
+    // instead of a panic.
+    if !ip.is_ascii() {
+        return false;
+    }
     let is_v6 = ip.contains(':');
     let lowered;
     let text = if is_v6 {
@@ -79,7 +92,8 @@ fn text_mentions_ip(text: &str, ip: &str) -> bool {
         }
     };
     let mut from = 0;
-    while let Some(rel) = text[from..].find(ip) {
+    while let Some(hay) = text.get(from..) {
+        let Some(rel) = hay.find(ip) else { break };
         let i = from + rel;
         let before_ok = i == 0 || !extends(bytes[i - 1]);
         let after_ok = i + n >= bytes.len() || !extends(bytes[i + n]);

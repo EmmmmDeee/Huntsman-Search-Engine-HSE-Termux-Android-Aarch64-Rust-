@@ -32,6 +32,23 @@ use crate::core::entity::Evidence;
     }
 
     #[test]
+    fn text_mentions_ip_does_not_panic_on_a_non_ascii_needle() {
+        // Regression: a non-ASCII `ip` whose match failed the boundary check
+        // advanced the byte cursor by +1 into the middle of a multi-byte char,
+        // and the next `text[from..]` slice panicked. `"aé1"` / `"é"` is the
+        // minimal reproduction — `é` (2 bytes) is found at offset 1, the
+        // following digit `1` fails the after-boundary test, `from` becomes 2
+        // (the é continuation byte), and slicing there is not on a char
+        // boundary. A non-ASCII string is never a valid address, so the answer
+        // is simply `false` — and, crucially, no panic.
+        assert!(!text_mentions_ip("aé1", "é"));
+        assert!(!text_mentions_ip("café at 1.2.3.4", "café"));
+        assert!(!text_mentions_ip("2001:db8::café", "café"));
+        // ASCII matching is unchanged by the guard.
+        assert!(text_mentions_ip("café near 1.2.3.4 today", "1.2.3.4"));
+    }
+
+    #[test]
     fn source_family_covers_every_registered_coarse_geo_provider() {
         // The sibling providers of the already-listed ipinfo/ipquery/wigle —
         // these fell through to "other" and were excluded from cross-family
