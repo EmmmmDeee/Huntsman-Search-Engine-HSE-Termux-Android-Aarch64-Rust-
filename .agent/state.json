@@ -7,8 +7,8 @@
     "the rejected list is the part that stops cycles rediscovering the same",
     "non-defects. See CLAUDE.md and docs/OPERATIONAL_CONSTITUTION.md."
   ],
-  "cycle_count": 1,
-  "last_verified_commit": "pending-slot5",
+  "cycle_count": 2,
+  "last_verified_commit": "8da68560",
   "verified_against": {
     "note": "This crate declares NO [features]; `--all-features` is a no-op here. The authoritative gate is scripts/gate.sh, which spans several workflow files and includes the rustdoc-lint and MSRV passes that reconstructing from ci.yml alone drops.",
     "toolchain": "1.97.1 (rust-toolchain.toml)",
@@ -70,7 +70,54 @@
       "status": "COMPLETE \u2014 DECIDED: keep the channel unbounded, and disclose a pathological backlog. Bounding it would force try_send (drops events, breaking the flush() contract) or an async submit() at a sync engine call site. The queue is also already bounded in practice by DEFAULT_MAX_ENTITIES=2500 and the wall-time watchdog. The real defect was that a storage stall was INVISIBLE, so writer_loop now discloses queue depth past BACKLOG_WARN_EVENTS=1024 with hysteresis at half."
     }
   ],
+  "cycle_2_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "instruction": "Make app::update::self_restart honour its documented contract on current_exe() failure.",
+      "status": "COMPLETE (2597c1f9) — the fn documents 'prints a diagnostic and exits with code 1' but current_exe().expect(...) panicked. current_exe() is a real syscall (/proc/self/exe) and this is the site most likely to see it fail: a self-restart runs right after an update rewrote or unlinked the running binary."
+    },
+    {
+      "slot": 2,
+      "category": "HARDENING",
+      "instruction": "Close OD-3: make the benchmarks execute somewhere.",
+      "status": "COMPLETE (7a3aff62) — .github/workflows/bench-smoke.yml runs `cargo bench --locked -- --test` (Criterion test mode: each bench runs once, no timing). Deliberately NOT regression detection: ephemeral-runner wall-clock is too noisy to threshold. Follows the audit.yml/fuzz.yml precedent (own workflow, advisory, Monday 09:00 UTC + path filter + dispatch). Verified locally: both benches pass, exit 0."
+    },
+    {
+      "slot": 3,
+      "category": "COMPLETION",
+      "instruction": "Benchmark the ingest parse path (extract_by_patterns), which had no coverage.",
+      "status": "COMPLETE (dd7b5572) — `entity_extract` group in benches/scan_throughput.rs, two shapes (dense_all_kinds / prose_no_matches) with Throughput::Bytes. Ordered AFTER slot 2 on purpose: adding a bench before anything executed benches would have widened OD-3, not closed it."
+    },
+    {
+      "slot": 4,
+      "category": "UPGRADE",
+      "instruction": "Re-scoped mid-slot from 'reword the 3 contentless expect(\"should succeed\") messages' to 'delete them' — all three panics were unreachable, so removing them beats documenting them.",
+      "status": "COMPLETE (73f268be) — EntityClassifier::default and EntityExtractor::default construct from fields (their fallible new() only propagates an infallible constructor); dehashed::build's `1 =>` arm collapsed into the `_` arm because join(\", \") over one element yields that element. Mid-slot clippy failure (default_constructed_unit_struct on EntityClassifier::default()) fixed in place before advancing, per the verify-before-advance rule."
+    },
+    {
+      "slot": 5,
+      "category": "DEBUG",
+      "instruction": "Fix correlation event lines that render identically for per-entity rules.",
+      "status": "COMPLETE (8da68560) — FOUND IN REAL SCAN TELEMETRY, not by inspection. A 47-event scan logged `⚡ High cross-source corroboration` nine times byte-identically (12 correlations total). AU-003 correctly emits one Correlation per corroborated entity and each carries a distinguishing `description`; EventKind::log_summary printed only rule_name and discarded it. cli::live had always rendered both, so the event log was the outlier. Two regression tests added."
+    }
+  ],
   "observations": [
+    {
+      "id": "OB-2",
+      "summary": "Verified NEGATIVES from the cycle-2 sweep — recorded so later cycles stop re-deriving them. (a) Production `.unwrap()` count is genuinely 0; the 55 production `.expect()` hits are infallible-by-construction (literal Regex::new, aho-corasick over static patterns, tokio runtime / reqwest client init) — the earlier rejection of 'eliminate unwrap/panic/unsafe' is correct as written. (b) All 19 `unsafe` textual hits are CSP header strings ('unsafe-inline') and prose; forbid(unsafe_code) holds. (c) core::classifier does NOT share the IPv4 over-acceptance bug that entity_extractor had: `extract` keeps a dotted-quad only if classify() resolves it to IpAddress, and TargetKind::detect (core/scan/mod.rs:213) gates on `v.parse::<std::net::IpAddr>()`, so 999.1.2.3 and leading-zero forms are already rejected on the engine path. (d) modules/dns_axfr is safe AND already proptested (extract_name_is_total, extract_name_rejects_pointer_loops, build_axfr_query_is_total) — a totality proptest there would be pure duplication.",
+      "action": "none — negative results, kept to prevent rediscovery"
+    },
+    {
+      "id": "OB-3",
+      "summary": "Real-device scan telemetry (two logs, 598 and 47 events, 2026-08-05 and 2026-08-03) shows four module timeouts (nostr 8s, fediverse 8s, signal_radar 14s, device_sensors) and two auth failures that are configuration rather than defects (breach-source HTTP 401 'Invalid or missing API key', github_code_search HTTP 401 'Bad credentials'). crtsh appears as 'capability-quarantined — persistent drift', i.e. the drift system behaving as designed.",
+      "action": "none this cycle — timeouts are per-module budgets working, not failures; the 401s are unconfigured keys"
+    },
+    {
+      "id": "OB-4",
+      "summary": "UNRESOLVED, needs device-side evidence: the 598-event log ends at `04:55:25 module ▶ smtp_vrfy` with no matching ✓/✗ and NO `scan complete` line, whereas the 47-event log terminates cleanly with `✔ scan complete · 10 entities`. Either the scan hung/died in smtp_vrfy (plausible — it dials port 25, which mobile carriers routinely blackhole, so a connect can stall past any read timeout) or the export simply truncated at 598 events. Cannot distinguish from the log alone.",
+      "action": "open — before treating as a defect, confirm whether the exporter caps event count; if it does not, audit smtp_vrfy's connect timeout specifically (a read timeout does not bound a TCP connect that never completes)"
+    },
     {
       "id": "OB-1",
       "summary": "`cargo tree --duplicates` reports getrandom at v0.2.17, v0.3.4 and v0.4.3. All three are transitive and not directly reachable from this crate's manifest: 0.2 via ring -> rustls -> reqwest, 0.3 via proptest -> rand_core (a dev-dependency only), 0.4 separately. Deduplicating would mean forcing versions on ring/rustls, which is a larger risk than the duplication.",
@@ -108,7 +155,7 @@
     {
       "id": "OD-3",
       "summary": "benches/correlation_pass.rs and benches/scan_throughput.rs compile under `cargo check --all-targets` but no workflow ever executes them, so performance regressions are invisible.",
-      "status": "open"
+      "status": "CLOSED cycle 2 slot 2 — .github/workflows/bench-smoke.yml executes them via `cargo bench --locked -- --test`. Scoped honestly: it proves the benches still RUN (catching the runtime breakage compilation cannot see), and deliberately does not attempt timing-regression detection, because wall-clock from a shared ephemeral runner has no stable baseline to threshold against. Measuring performance remains a local/manual `cargo bench`."
     },
     {
       "id": "OD-4",
