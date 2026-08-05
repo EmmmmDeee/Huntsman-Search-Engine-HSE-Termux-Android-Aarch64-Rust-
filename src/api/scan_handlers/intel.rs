@@ -114,19 +114,9 @@ pub async fn scan_communities(
     if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
-            store.entities_for_scan(&id2)?,
-            store.relations_for_scan(&id2)?,
-        ))
-    })
-    .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    let (entities, relations) = match super::entities_and_relations(&s, &id).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
     };
     let communities = crate::core::community::detect(&entities, &relations);
     ok_list("communities", communities)
@@ -145,19 +135,9 @@ pub async fn scan_trust(
     if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
-            store.entities_for_scan(&id2)?,
-            store.relations_for_scan(&id2)?,
-        ))
-    })
-    .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    let (entities, relations) = match super::entities_and_relations(&s, &id).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
     };
     let scores = crate::core::trust::propagate(&entities, &relations);
     ok_list("trust", scores)

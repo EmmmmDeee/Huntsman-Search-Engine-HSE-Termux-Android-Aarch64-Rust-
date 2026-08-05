@@ -487,19 +487,9 @@ pub async fn scan_network(
     if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
-            store.entities_for_scan(&id2)?,
-            store.relations_for_scan(&id2)?,
-        ))
-    })
-    .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    let (entities, relations) = match super::entities_and_relations(&s, &id).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
     };
     // Hide quarantined `candidate` entities (and any edge to them) unless opted
     // in, so the Network graph can't re-leak a non-subject the entity list hides.
@@ -763,19 +753,9 @@ pub async fn scan_snake_svg(
         Some(_) => return bad_request("size must be a number between 200 and 4000"),
     };
 
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
-            store.entities_for_scan(&id2)?,
-            store.relations_for_scan(&id2)?,
-        ))
-    })
-    .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    let (entities, relations) = match super::entities_and_relations(&s, &id).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
     };
     // Hide quarantined candidates AND every edge touching one, so the drawing
     // re-leaks a non-subject neither as a labelled node nor as a stub edge.
