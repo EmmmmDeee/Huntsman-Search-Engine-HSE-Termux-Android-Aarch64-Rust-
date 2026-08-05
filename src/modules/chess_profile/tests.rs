@@ -154,6 +154,16 @@ fn normalise_links_filters_noise_and_dedups() {
 }
 
 #[test]
+fn normalise_links_trims_trailing_sentence_punctuation() {
+    let got = normalise_links("see github.com/x) and also https://example.com/x.\nmas.to/@a,");
+    assert_eq!(
+        got,
+        vec!["https://github.com/x", "https://example.com/x", "https://mas.to/@a"],
+        "trailing sentence punctuation must not sink an otherwise-valid link: {got:?}"
+    );
+}
+
+#[test]
 fn normalise_links_caps_output_at_max_links() {
     let raw = (0..MAX_LINKS + 15)
         .map(|i| format!("https://example.com/{i}"))

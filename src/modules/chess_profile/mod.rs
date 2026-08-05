@@ -422,15 +422,15 @@ fn iso_country_from_url(url: &str) -> Option<String> {
         .then(|| code.to_ascii_uppercase())
 }
 
-/// Split a Lichess `links` blob into normalised absolute URLs. Tokens are
-/// whitespace/newline separated and often scheme-less (`github.com/ornicar`); a
-/// missing scheme is filled with `https://`, and only tokens that then parse to
-/// a URL with a dotted host survive — so free-text noise never mints a Url.
 /// Hard cap on links minted from a single profile's free-text `links` field —
 /// it's user-controlled, so an adversarial profile can't be used to bloat the
 /// entity graph with unbounded `Url` pivots.
 const MAX_LINKS: usize = 20;
 
+/// Split a Lichess `links` blob into normalised absolute URLs. Tokens are
+/// whitespace/newline separated and often scheme-less (`github.com/ornicar`); a
+/// missing scheme is filled with `https://`, and only tokens that then parse to
+/// a URL with a dotted host survive — so free-text noise never mints a Url.
 fn normalise_links(raw: &str) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
@@ -438,7 +438,10 @@ fn normalise_links(raw: &str) -> Vec<String> {
         if out.len() >= MAX_LINKS {
             break;
         }
-        let tok = tok.trim().trim_end_matches([',', ';']);
+        // Trailing sentence punctuation (mirrors `util::extract::urls`'s
+        // canonical trim set) so `github.com/x)` or `example.com/x.` doesn't
+        // fail to parse and get silently dropped.
+        let tok = tok.trim().trim_end_matches(['.', ',', ';', ')']);
         if tok.is_empty() {
             continue;
         }
@@ -458,8 +461,10 @@ fn normalise_links(raw: &str) -> Vec<String> {
 }
 
 /// Value-level admission: a chess handle is 2–30 chars, ASCII alphanumeric plus
-/// `_`/`-`, with at least one letter. Chess.com allows `-`; Lichess is
-/// alphanumeric + `_`. Rejecting all-digit / shapeless seeds keeps a numeric
+/// `_`/`-`, with at least one letter. This is deliberately the union of both
+/// platforms' grammars (Chess.com allows `-`; Lichess is alphanumeric + `_`
+/// only) rather than a per-platform check, so one shared gate covers both
+/// concurrent lookups. Rejecting all-digit / shapeless seeds keeps a numeric
 /// breach id or token from hammering the APIs.
 fn accepts_value(v: &str) -> bool {
     let len = v.chars().count();
