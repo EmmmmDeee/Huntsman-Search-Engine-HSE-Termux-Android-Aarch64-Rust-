@@ -477,53 +477,14 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
 /// matching how this module already gates its DMARC/SOA email emission.
 /// **Pure** (no network/IO), unit-tested directly.
 pub(super) fn tlsrpt_entities(txts: &[String], domain: &str, scan_id: &str) -> Vec<Entity> {
-    let mut out = Vec::new();
-    for raw in txts {
-        let txt = raw.trim_matches('"');
-        let Some(parsed) = crate::util::tlsrpt::parse(txt) else {
-            continue;
-        };
-        for addr in &parsed.emails {
-            if crate::util::domains::is_infrastructure_email(addr) {
-                continue;
-            }
-            let mut e = Entity::new(EntityKind::Email, addr, confidence::ATTRIBUTED, scan_id);
-            e.tag("dns");
-            e.tag("tlsrpt-report");
-            e.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("TLSRPT (SMTP-TLS) report address for {domain}"),
-                )
-                .with_attr("record_type", "TLSRPT")
-                .with_attr("parent_domain", domain),
-            );
-            out.push(e);
-        }
-        for url in &parsed.urls {
-            if let Some(host) = crate::util::url_util::host_from_url(url)
-                && host.contains('.')
-                && host != domain
-            {
-                let mut d =
-                    Entity::new(EntityKind::Domain, &host, confidence::MEDIUM_SOLID, scan_id);
-                d.tag("dns");
-                d.tag("tlsrpt-report");
-                d.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!("TLSRPT (SMTP-TLS) reporting endpoint host for {domain}"),
-                    )
-                    .with_attr("record_type", "TLSRPT")
-                    .with_attr("rua", url.as_str()),
-                );
-                out.push(d);
-            }
-        }
-        // Only one TLSRPT record is valid per domain (first `v=TLSRPTv1` wins).
-        break;
-    }
-    out
+    // hickory hands back each TXT string with its surrounding quotes; strip them
+    // per record, then delegate to the shared builder so this transport and
+    // `doh_resolver` emit an identical entity set (confidence, tags, gating).
+    let unquoted: Vec<String> = txts
+        .iter()
+        .map(|raw| raw.trim_matches('"').to_string())
+        .collect();
+    crate::util::tlsrpt::report_entities(&unquoted, domain, scan_id, SRC)
 }
 
 /// CAA record inspection (RFC 8659).

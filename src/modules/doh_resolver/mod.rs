@@ -338,53 +338,16 @@ fn caa_entities(records: &[DohRecord], domain: &str, scan_id: &str) -> Vec<Entit
 /// `sts-reports@google.com` is not clustered as the subject. **Pure** (no
 /// network/IO).
 fn tlsrpt_entities(records: &[DohRecord], domain: &str, scan_id: &str) -> Vec<Entity> {
-    let mut out = Vec::new();
-    for rec in records {
-        let txt = unquote_txt(rec.data.trim());
-        let Some(parsed) = crate::util::tlsrpt::parse(&txt) else {
-            continue;
-        };
-        for addr in &parsed.emails {
-            if crate::util::domains::is_infrastructure_email(addr) {
-                continue;
-            }
-            let mut e = Entity::new(EntityKind::Email, addr, 0.68, scan_id);
-            e.tag("dns");
-            e.tag("tlsrpt-report");
-            e.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("TLSRPT (SMTP-TLS) report address for {domain}"),
-                )
-                .with_attr("record_type", "TLSRPT")
-                .with_attr("domain", domain),
-            );
-            out.push(e);
-        }
-        for url in &parsed.urls {
-            if let Some(host) = crate::util::url_util::host_from_url(url)
-                && host.contains('.')
-                && host != domain
-            {
-                let mut d =
-                    Entity::new(EntityKind::Domain, &host, confidence::MEDIUM_SOLID, scan_id);
-                d.tag("dns");
-                d.tag("tlsrpt-report");
-                d.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!("TLSRPT (SMTP-TLS) reporting endpoint host for {domain}"),
-                    )
-                    .with_attr("record_type", "TLSRPT")
-                    .with_attr("rua", url.as_str()),
-                );
-                out.push(d);
-            }
-        }
-        // A domain has at most one valid TLSRPT record; the first wins.
-        break;
-    }
-    out
+    // DoH TXT may arrive as multiple quoted chunks that RFC 1035 §3.3.14
+    // concatenates with no separator, so unquote each record with `unquote_txt`
+    // (not a bare `trim_matches('"')`) before handing the reassembled strings to
+    // the shared builder. The entity shape, confidence, and gating are
+    // single-sourced with the `dns_intel` transport in `util::tlsrpt`.
+    let txts: Vec<String> = records
+        .iter()
+        .map(|rec| unquote_txt(rec.data.trim()))
+        .collect();
+    crate::util::tlsrpt::report_entities(&txts, domain, scan_id, SRC)
 }
 
 /// Resolve a target to the domain to query. **Pure**: a `Url` is reduced to its
