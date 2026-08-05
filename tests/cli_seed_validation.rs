@@ -185,11 +185,42 @@ fn import_json_stdout_is_pure_json_summary_on_stderr() {
 
 // ── stream discipline: a command's primary output belongs on stdout ─────────
 
-/// Run `hse <args>`; return (stdout, stderr).
+/// Every status marker the self-test can render, read from the source of truth
+/// rather than copied. A hand-written subset is how `[fail]` (lowercase) got in
+/// here — a branch that could never match the rendered `[FAIL]`, silently
+/// weakening the assertion it appeared in.
+///
+/// The variant list is still written out here; adding a fourth `Status` means
+/// adding it below. The marker STRINGS, which is what actually drifted, are no
+/// longer duplicated.
+fn markers() -> [&'static str; 3] {
+    use huntsman_search_engine::selftest::Status;
+    [Status::Pass, Status::Warn, Status::Fail].map(Status::marker)
+}
+
+/// Count rendered self-test check lines, whatever their outcome.
+///
+/// Counting only `[ok]` would make these tests depend on every check PASSING,
+/// which is not what they are about: they assert WHICH STREAM the report lands
+/// on. A warn or a fail is still a check line that must appear on stdout.
+fn check_line_count(text: &str) -> usize {
+    text.lines()
+        .filter(|l| markers().iter().any(|m| l.contains(m)))
+        .count()
+}
+
+/// Run `hse <args>` with an isolated `HOME`; return (stdout, stderr).
+///
+/// `hse selftest` reads `~/.huntsman.env` and writes under `~/.huntsman`, so
+/// without this the result would depend on the developer's or runner's real home
+/// directory — and the run would leave state in it. The temp dir lives until the
+/// child has exited and its output is collected.
 fn run_streams(args: &[&str]) -> (String, String) {
+    let home = tempfile::tempdir().expect("temp HOME");
     let out = Command::new(BIN)
         .args(args)
         .env("RUST_LOG", "off")
+        .env("HOME", home.path())
         .output()
         .expect("spawn hse");
     (
@@ -213,7 +244,7 @@ fn selftest_text_report_goes_to_stdout_so_it_can_be_redirected() {
          stdout was:\n{stdout}"
     );
     assert!(
-        stdout.contains("[ok]") || stdout.contains("[fail]") || stdout.contains("[warn]"),
+        check_line_count(&stdout) > 0,
         "stdout must carry the individual check lines, not just a header:\n{stdout}"
     );
 }
@@ -229,7 +260,7 @@ fn selftest_json_mode_keeps_stdout_a_single_parseable_document() {
         "`selftest --json` stdout must parse as one JSON document; got:\n{stdout}"
     );
     assert!(
-        !stdout.contains("[ok]"),
+        check_line_count(&stdout) == 0,
         "the human table must not appear in --json stdout:\n{stdout}"
     );
 }
@@ -245,7 +276,7 @@ fn diagnostics_text_report_carries_its_selftest_section_on_stdout() {
         stdout.contains("self-test"),
         "diagnostics stdout must contain the self-test section:\n{stdout}"
     );
-    let check_lines = stdout.lines().filter(|l| l.contains("[ok]")).count();
+    let check_lines = check_line_count(&stdout);
     assert!(
         check_lines >= 5,
         "diagnostics stdout must carry the self-test CHECK LINES, not just the \
