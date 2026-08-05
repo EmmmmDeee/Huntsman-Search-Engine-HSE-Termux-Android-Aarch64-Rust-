@@ -739,6 +739,51 @@ use super::*;
     }
 
     #[test]
+    fn embedded_spa_graph_keeps_the_operators_viewport_across_rebuilds() {
+        // While a scan runs, scan-info re-renders every 8s, and that re-runs
+        // renderGraph -> buildGraph. The pan/zoom state used to be declared
+        // INSIDE buildGraph, so every rebuild snapped the canvas back to
+        // origin at scale 1 — for the whole duration of a scan the Graph tab
+        // could not usefully be panned or zoomed, which is exactly when it is
+        // most worth exploring.
+        let graph = app_file("js/scan_info/graph.js");
+        let build = graph
+            .split_once("export function buildGraph()")
+            .map(|(_, b)| b)
+            .expect("buildGraph() present in graph.js");
+        assert!(
+            !build.contains("const view = {"),
+            "the pan/zoom state must not be re-created inside buildGraph — \
+             that is what discarded the viewport on every 8s refresh"
+        );
+        let head = graph
+            .split_once("export function renderGraph(")
+            .map(|(h, _)| h)
+            .expect("renderGraph() present in graph.js");
+        assert!(
+            head.contains("const view = { x: 0, y: 0, k: 1 };") && head.contains("function resetView()"),
+            "graph.js must hold pan/zoom at module scope so a rebuild re-applies it"
+        );
+        // Retained state must still be scoped to ONE scan: opening a different
+        // scan should start centred, not inherit the previous scan's viewport.
+        let render = graph
+            .split_once("export function renderGraph(")
+            .and_then(|(_, b)| b.split_once("\n}"))
+            .map(|(b, _)| b)
+            .expect("renderGraph() body present");
+        assert!(
+            render.contains("viewScanId") && render.contains("resetView()"),
+            "renderGraph must reset the viewport when the mounted scan changes: {render}"
+        );
+        // And "Reset view" must still work — it is now the only thing that
+        // recentres, so losing it would leave a zoomed-in operator stuck.
+        assert!(
+            graph.contains("window.__graphResetZoom = ()=>{ resetView(); applyView(); }"),
+            "the Reset view control must recentre through the shared resetView"
+        );
+    }
+
+    #[test]
     fn embedded_spa_pauses_every_background_poller() {
         // Three views poll on a timer, and each tick is a real cost on the one
         // platform this ships to: scan-info re-pulls the scan plus its FULL

@@ -22,7 +22,33 @@ import { S } from '/static/js/state.js';
    with canvas pan all still work — they are just implemented against the DOM
    directly (pointer events + a `transform` on one group) instead of through a
    rendering engine. The rendering ceilings below are unchanged. */
+/* The operator's pan/zoom, kept OUTSIDE `buildGraph` so a rebuild does not
+   throw it away.
+ *
+ * While a scan runs, scan-info re-renders every 8s and that re-runs
+ * `renderGraph` → `buildGraph`. With the view state declared inside the build,
+ * every one of those rebuilds snapped the canvas back to origin at scale 1 —
+ * so for the whole duration of a scan the Graph tab could not usefully be
+ * panned or zoomed at all: whatever the operator did was undone within eight
+ * seconds. That is precisely when the graph is most worth exploring.
+ *
+ * Kept per-scan: `renderGraph` resets it when the mounted scan changes, so
+ * opening a different scan starts centred rather than inheriting the previous
+ * one's viewport. "Reset view" resets it on demand.
+ *
+ * Node positions are NOT preserved across a rebuild. `layoutConcentric` is
+ * deterministic, so nodes that were already present land where they were as
+ * long as the node set is unchanged; when the scan adds entities the layout
+ * legitimately changes, and a dragged node returns to its computed place. */
+const view = { x: 0, y: 0, k: 1 };
+function resetView(){ view.x = 0; view.y = 0; view.k = 1; }
+let viewScanId = null;
+
 export function renderGraph(host){
+  // A different scan gets a fresh viewport; the same scan re-rendering (the
+  // 8s live refresh, or a tab switch back) keeps the operator's.
+  const sid = S.scan && S.scan.id;
+  if (viewScanId !== sid){ resetView(); viewScanId = sid; }
   if (!S.entities.length){
     host.innerHTML = '<div class="empty-state"><h3>No entities to graph</h3><p>The Graph view becomes available once the scan produces entities.</p></div>';
     return;
@@ -280,7 +306,8 @@ export function buildGraph(){
   }
 
   // ── Pan / zoom / drag, via pointer events (touch + mouse, no library) ──
-  const view = { x: 0, y: 0, k: 1 };
+  // `view` is module-scoped (see its declaration): the operator's pan and zoom
+  // survive a rebuild, and are re-applied at the end of this function.
   const applyView = ()=>container.setAttribute('transform', `translate(${view.x},${view.y}) scale(${view.k})`);
   // Screen → viewBox units. The SVG is scaled to its box, so undo that first.
   const toViewBox = (clientX, clientY)=>{
@@ -303,7 +330,7 @@ export function buildGraph(){
     applyView();
   };
 
-  window.__graphResetZoom = ()=>{ view.x = 0; view.y = 0; view.k = 1; applyView(); };
+  window.__graphResetZoom = ()=>{ resetView(); applyView(); };
 
   svg.addEventListener('wheel', (ev)=>{
     ev.preventDefault();
