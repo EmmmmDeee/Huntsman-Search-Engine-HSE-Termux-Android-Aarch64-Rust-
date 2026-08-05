@@ -413,7 +413,9 @@ pub enum Command {
         /// Minimum confidence threshold (0.0-1.0, default 0.30).
         #[arg(long, default_value = "0.30")]
         min_confidence: f64,
-        /// Auto-scan extracted entities (NOT IMPLEMENTED — warns and runs no scan).
+        /// Also persist the extracted entities as a completed, correlated scan
+        /// (offline — no module dispatch, no network), so they show in `hse
+        /// list` and every view/export. The output is still written as usual.
         #[arg(long)]
         auto_scan: bool,
         /// Output file (default: stdout).

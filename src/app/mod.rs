@@ -12,6 +12,7 @@ pub mod doctor;
 pub mod export;
 pub mod gap;
 pub mod import;
+pub mod persist;
 pub mod runtime;
 pub mod tidy;
 pub mod update;

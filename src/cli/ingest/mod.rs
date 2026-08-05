@@ -1,9 +1,14 @@
 //! `hse ingest` command: Parse documents → extract entities → output JSONL batch.
 //!
-//! `--auto-scan` is reserved for feeding extracted entities into the HSE scan
-//! engine, but that wiring is NOT implemented: the flag warns and runs no scan
-//! (entities are still extracted and written). It exists so the CLI surface and
-//! `converter::extracted_to_hse_entity` are ready for when the engine is wired.
+//! With `--auto-scan`, the extracted entities are ALSO persisted as a completed,
+//! correlated scan (via [`crate::app::persist`], the same use case `hse import`
+//! runs) — so they appear in `hse list` and every view/export works on them — in
+//! addition to being written to the chosen output. This is a deterministic,
+//! offline persist-and-correlate: no modules are dispatched and no network is
+//! touched. The engine seeds from a single live target, so feeding a whole batch
+//! of document-extracted entities into it as seeds is deliberately NOT what this
+//! does; auto-launching network reconnaissance against every entity found in an
+//! arbitrary document would be both non-deterministic and a footgun.
 
 mod converter;
 
@@ -35,7 +40,8 @@ pub struct IngestArgs {
     /// Minimum confidence threshold (0.0-1.0)
     pub min_confidence: f64,
 
-    /// Auto-scan extracted entities (NOT IMPLEMENTED — warns and runs no scan)
+    /// Persist the extracted entities as a completed, correlated scan (offline;
+    /// no module dispatch) in addition to writing them to the output.
     pub auto_scan: bool,
 
     /// Output file (default: stdout)
@@ -274,24 +280,34 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
         }
     }
 
-    // --auto-scan is NOT implemented: extracted entities are not fed into the
-    // scan engine. Warn (not info!, which is usually silent) so the flag never
-    // reads as a silent success — the run still emits the extraction output
-    // below, so the work is not wasted. Wiring it in means: convert via
-    // converter::extracted_to_hse_entity, upsert under a scan_id, then run the
-    // engine over the entities as seeds.
-    if args.auto_scan {
-        tracing::warn!(
-            "--auto-scan is not implemented: entities were extracted but no scan was run"
-        );
-    }
-
-    // Format output
+    // The file the entities came from — recorded on each entity's evidence chain
+    // (via the `hse` converter) so a persisted or exported entity is attributable
+    // back to its source document. Needed by `--auto-scan` below and the output
+    // formatter, so it is computed once here.
     let document_source = args
         .file
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("ingest");
+
+    // --auto-scan: persist the extracted entities as a completed, correlated
+    // scan (offline — no module dispatch, no network) so they land in `hse list`
+    // and every view/export, in ADDITION to the extraction output written below.
+    // Best-effort, exactly like the import path: the entities are still emitted,
+    // so a persistence hiccup must warn, never fail the ingest.
+    if args.auto_scan {
+        match run_auto_scan(&entities, document_source).await {
+            Ok((sid, n, relations, correlations)) => info!(
+                "auto-scan: stored scan {sid} ({n} entities, {relations} relations, \
+                 {correlations} correlations) — view with `hse list`"
+            ),
+            Err(e) => {
+                tracing::warn!("auto-scan: could not persist extracted entities: {e}");
+            }
+        }
+    }
+
+    // Format output
     let output_text = format_output(&entities, &args.output_format, document_source)?;
 
     // Write output
@@ -303,6 +319,42 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
     }
 
     Ok(())
+}
+
+/// Persist the extracted `entities` as a completed, correlated scan — the
+/// `--auto-scan` action.
+///
+/// Converts each [`ExtractedEntity`](crate::util::entity_extractor::ExtractedEntity)
+/// to a core [`Entity`](crate::core::entity::Entity) (attributed to
+/// `document_source`) under a fresh `ingest-<unix>` scan id, then delegates to
+/// the shared [`crate::app::persist`] use case that `hse import` also runs —
+/// offline geospatial enrichment, deterministic relation derivation, and
+/// correlation. Store construction lives in that application-layer use case, not
+/// here, so the CLI never opens the store directly (`tests/architecture.rs`).
+///
+/// Returns the new scan id and its `(entities, relations, correlations)` counts.
+/// Entirely offline and deterministic: no module dispatch, no network.
+async fn run_auto_scan(
+    entities: &[crate::util::entity_extractor::ExtractedEntity],
+    document_source: &str,
+) -> crate::core::error::Result<(String, usize, usize, usize)> {
+    let sid = format!("ingest-{}", crate::core::entity::unix_now());
+    let converted: Vec<crate::core::entity::Entity> = entities
+        .iter()
+        .map(|e| converter::extracted_to_hse_entity(e, &sid, document_source))
+        .collect();
+    let label = crate::app::persist::strongest_identity_label(
+        &converted,
+        format!("ingested document: {document_source}"),
+    );
+    let (relations, correlations) = crate::app::persist::persist_entities_as_scan(
+        &sid,
+        label,
+        crate::core::scan::TargetKind::FullName,
+        &converted,
+    )
+    .await?;
+    Ok((sid, converted.len(), relations, correlations))
 }
 
 /// Format entities as JSONL, JSON, CSV, HSE entities, or human-readable table.
@@ -426,6 +478,27 @@ mod tests {
         let output = format_output(&sample(), "jsonl", "notes.txt").expect("should succeed");
         assert!(output.contains("test@example.com"));
         assert!(output.contains("email"));
+    }
+
+    #[tokio::test]
+    async fn auto_scan_converts_and_persists_the_extracted_batch() {
+        // --auto-scan is wired end to end: the extracted batch is converted to
+        // core entities and persisted (via app::persist) as a fresh
+        // `ingest-<unix>` scan — `run_auto_scan` only returns Ok if that
+        // persistence succeeded. Before this wiring the flag merely warned and
+        // this function did not exist. Under cfg(test) the store is rooted in a
+        // temp dir, so this touches no real ~/.huntsman.
+        let (sid, n, _relations, _correlations) = run_auto_scan(&sample(), "notes.txt")
+            .await
+            .expect("auto-scan should persist the extracted entities");
+        assert!(
+            sid.starts_with("ingest-"),
+            "the scan id must mark it as an ingest-originated scan: {sid}"
+        );
+        assert_eq!(
+            n, 1,
+            "the one extracted entity must be converted and counted"
+        );
     }
 
     #[test]

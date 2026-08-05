@@ -354,67 +354,20 @@ pub(crate) fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>
 /// carries the same graph a live scan would. Best-effort on relations and
 /// correlations: an import whose entities already persisted must not fail on a
 /// hiccup there. Returns `(relations, correlations)` persisted, for the summary.
+///
+/// The store-opening / finalise body is the shared [`crate::app::persist`] use
+/// case — `hse ingest --auto-scan` persists document-extracted entities through
+/// the exact same path, so the two can never drift on how a batch becomes a scan.
 async fn persist_import(
     sid: &str,
     entities: &[crate::core::entity::Entity],
 ) -> Result<(usize, usize)> {
-    use crate::core::StoragePort;
-    use crate::core::entity::{EntityKind, unix_now};
-    use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
-    use std::sync::Arc;
+    use crate::core::scan::TargetKind;
 
     // A readable scan label: the strongest identity in the file, else generic —
     // matches the web upload handler so the two paths label imports identically.
-    let label = entities
-        .iter()
-        .find(|e| e.kind == EntityKind::Person)
-        .or_else(|| entities.iter().find(|e| e.kind == EntityKind::Email))
-        .map_or_else(|| "imported dossier".to_string(), |e| e.value.clone());
-
-    // Offline geospatial enrichment, exactly as the live scan finalise does:
-    // parse each Address, geohash/timezone/country-tag each Coordinates, and
-    // derive Coordinates from any Address whose city resolves offline — so an
-    // imported dossier's addresses feed the geo-correlation stack (AU-014/017/
-    // 032/056/057/085, co-location) instead of sitting inert. Deterministic, no
-    // network; runs before relations/correlations so the derived fixes are
-    // persisted, related and correlated in this same pass.
-    let mut entities = entities.to_vec();
-    crate::core::engine::enrich_offline_geo(&mut entities, sid);
-    let entities = &entities[..];
-
-    let store: Arc<dyn StoragePort> =
-        Arc::new(crate::storage::Store::open(&crate::default_db_path())?);
-
-    let mut scan = Scan::new(sid.to_string(), Target::new(TargetKind::FullName, label));
-    scan.status = ScanStatus::Complete;
-    scan.finished_at = Some(unix_now());
-    scan.entity_count = entities.len();
-    store.upsert_scan(&scan)?;
-    store.upsert_entities_batch(entities)?;
-
-    let mut relations = 0usize;
-    // Bound derivation by wall-clock, identically to a live scan
-    // (engine::derive_and_persist_relations): a large imported dossier must not
-    // run the super-linear derivation pass chain for minutes. Partial relations
-    // still persist.
-    let derive_deadline = Some(std::time::Instant::now() + crate::core::relation::DERIVE_BUDGET);
-    for r in &crate::core::relation::derive_all_within(entities, sid, derive_deadline) {
-        if store.upsert_relation(r).is_ok() {
-            relations += 1;
-        }
-    }
-
-    let mut correlations = 0usize;
-    let correlator = crate::core::correlator::Correlator::new(Arc::clone(&store));
-    if let Ok(hits) = correlator.run(sid) {
-        for c in &hits {
-            if store.upsert_correlation(c).is_ok() {
-                correlations += 1;
-            }
-        }
-    }
-
-    Ok((relations, correlations))
+    let label = crate::app::persist::strongest_identity_label(entities, "imported dossier");
+    crate::app::persist::persist_entities_as_scan(sid, label, TargetKind::FullName, entities).await
 }
 
 /// Persist a parsed import and emit a one-line summary on the appropriate stream.
