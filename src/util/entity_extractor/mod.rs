@@ -146,6 +146,15 @@ pub enum ExtractionError {
     PatternError(String),
     #[error("Invalid entity: {0}")]
     ValidationError(String),
+    /// The confidence floor handed to [`extractor::EntityExtractor::new`] was
+    /// not a usable threshold.
+    ///
+    /// A typed variant rather than a `ValidationError(String)` because callers
+    /// must be able to tell "your threshold is unusable" (a caller/CLI mistake,
+    /// fixable by the operator) from "this extracted entity is malformed" (a
+    /// property of the document) without matching on prose.
+    #[error("confidence floor must be a finite value between 0.0 and 1.0, got {0}")]
+    InvalidConfidenceFloor(f64),
 }
 
 pub type ExtractionResult<T> = Result<T, ExtractionError>;

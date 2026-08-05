@@ -43,6 +43,7 @@ fn core_kind_to_extractor(core: &CoreEntityKind, value: &str) -> EntityKind {
 }
 
 /// Classifier for assigning entity kinds + confidence scores.
+#[derive(Debug, Clone, Copy)]
 pub struct EntityClassifier;
 
 impl EntityClassifier {
@@ -114,6 +115,10 @@ impl EntityClassifier {
 }
 
 impl Default for EntityClassifier {
+    /// `EntityClassifier` is a unit struct with no configuration to load, so
+    /// this is a direct construction. It previously unwrapped `Self::new()`,
+    /// whose `ExtractionResult` is statically always `Ok` — an unwrap that
+    /// could never fire but read as though it might.
     fn default() -> Self {
         // Constructed directly rather than through `new().expect(...)`. The
         // classifier is a unit struct — it holds no state that can fail to
