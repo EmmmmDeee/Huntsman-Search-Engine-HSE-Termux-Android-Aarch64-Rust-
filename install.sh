@@ -697,17 +697,18 @@ if [[ $IS_TERMUX -eq 1 ]]; then
 fi
 
 # This build has no `--target` — it always compiles for whatever `rustc`'s host
-# is, i.e. host == target, unconditionally (on a real Termux device that's
-# aarch64-linux-android; on a dev's own machine it's whatever that machine is).
-# `-C target-cpu=native` is therefore always safe HERE specifically — unlike in
-# `.cargo/config.toml`, which is keyed by target triple and can't tell this
-# native build apart from CI's cross-compile of the SAME triple from a
-# different host arch (where "native" would mean the wrong CPU). Exporting
-# RUSTFLAGS (rather than editing config.toml) confines the flag to this one
-# on-device invocation; it also REPLACES rather than merges with config.toml's
-# `target.*.rustflags` for this call, so `--as-needed` is repeated here to keep
-# that benefit rather than silently dropping it.
-export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native -C link-arg=-Wl,--as-needed"
+# is, i.e. host == target (on a real Termux device that's aarch64-linux-android).
+# `-C target-cpu=native` would be safe for a binary that only ever ran on THIS
+# device — but the freshly-built binary is deliberately cached back to Downloads
+# (see the self-bootstrapping prebuilt cache below) so "another aarch64 phone"
+# reuses it on its prebuilt fast path. A native-tuned binary bakes in the build
+# device's exact microarchitecture (e.g. ARMv8.2+ instructions); reused on an
+# older ARMv8.0 SoC it would SIGILL. The redistributed artifact must therefore be
+# a portable ARMv8-A baseline build — matching how CI builds the Release binary —
+# so target-cpu is left at the safe default. `--as-needed` is still repeated here
+# because exporting RUSTFLAGS REPLACES (not merges) config.toml's
+# `target.*.rustflags` for this call, so dropping it would lose that benefit.
+export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,--as-needed"
 
 # Live progress so a long build never looks frozen:
 #  1. Force cargo's progress bar ON even though stdout is piped to `tee` (a pipe
