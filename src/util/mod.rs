@@ -53,6 +53,7 @@ pub mod phone;
 pub mod place_grain;
 pub mod postcode_au;
 pub mod preflight;
+pub mod probe;
 pub mod probe_confidence;
 pub mod raw_archive;
 pub mod redact;
