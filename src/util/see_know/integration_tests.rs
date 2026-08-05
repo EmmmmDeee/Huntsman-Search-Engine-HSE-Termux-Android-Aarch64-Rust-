@@ -1,5 +1,5 @@
 //! Honest coverage ledger for SeekNow's documented API surface (24 endpoints
-//! per `docs/SEEKNOW_SETUP.md`/`docs/SEEKNOW_INTEGRATION_SUMMARY.md`) against
+//! per `docs/SEEKNOW_SETUP.md`) against
 //! what HSE actually calls.
 //!
 //! This file previously claimed ("Comprehensive integration tests for all 24
@@ -84,8 +84,8 @@ mod seeknow_full_integration {
         wired: Wired,
     }
 
-    /// The 24 SeekNow API endpoints named in `docs/SEEKNOW_SETUP.md` /
-    /// `docs/SEEKNOW_INTEGRATION_SUMMARY.md`, each with its REAL,
+    /// The 24 SeekNow API endpoints named in `docs/SEEKNOW_SETUP.md`, each
+    /// with its REAL,
     /// live-verified-or-code-confirmed wiring status — not an assumption.
     const ENDPOINTS: &[EndpointSpec] = &[
         // Search (2 endpoints documented, both actually wired)

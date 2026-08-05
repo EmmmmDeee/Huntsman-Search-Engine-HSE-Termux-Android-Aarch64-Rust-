@@ -806,8 +806,8 @@ fn join_or_dash_empty_iterator_is_explicit_none() {
 //
 // `export_formats_determinism_audit` above proves byte-reproducibility for one
 // hand-built fixture (double-rendering the same store). This generalises that
-// to the stronger, doctrine-defining property (`docs/CONVENTIONS.md` §5:
-// output is "independent of `HashMap` iteration or task-completion order"):
+// to the stronger, doctrine-defining property: output is "independent of
+// `HashMap` iteration or task-completion order":
 // the SAME entities inserted in TWO different orders must export byte-
 // identically. That exercises both order-sensitive legs at once — the store's
 // merge-on-conflict fold and every renderer's own attribute/tag/evidence

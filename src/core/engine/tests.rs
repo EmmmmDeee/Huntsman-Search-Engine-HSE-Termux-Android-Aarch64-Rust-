@@ -767,7 +767,7 @@ fn cmp_expansion_candidates_is_a_consistent_total_order() {
 
 #[test]
 fn allowlist_applies_on_expansion_rounds_not_just_the_seed() {
-    // Regression: the allowlist ("only these modules run", docs/USAGE.md) was
+    // Regression: the allowlist ("only these modules run", `hse --help`) was
     // gated by `!is_expansion`, so non-allowlisted modules ran on discovered
     // entities during expansion — a real defect (focused/offline scans fanned
     // out to every network module the moment they expanded).
