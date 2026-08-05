@@ -1191,9 +1191,10 @@ fn target_kind_canonical_str_matches_serde() {
 #[test]
 fn scan_status_as_str_matches_serde() {
     // §3 pin. as_str is the persisted `scans.status` value AND
-    // `latest_completed_scan` hard-codes the string in its SQL
-    // `json_extract(...) = 'complete'` probe — a drift between as_str and the
-    // serde form would silently break that query (no Complete scan found).
+    // `latest_finished_scan` hard-codes these strings in its SQL
+    // `json_extract(...) IN ('complete', 'aborted')` probe — a drift between
+    // as_str and the serde form would silently break that query (no finished
+    // scan found).
     for st in [
         ScanStatus::Pending,
         ScanStatus::Running,
