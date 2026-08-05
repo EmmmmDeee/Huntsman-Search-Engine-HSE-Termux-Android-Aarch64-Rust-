@@ -101,10 +101,15 @@ fn flatten_record(item: &Value) -> Value {
             let nv = match v {
                 Value::Array(_) => {
                     let strs = field_strings(item, k);
-                    match strs.len() {
-                        0 => v.clone(),
-                        1 => Value::String(strs.into_iter().next().expect("should succeed")),
-                        _ => Value::String(strs.join(", ")),
+                    // The one- and many-element cases collapse: `join(", ")`
+                    // over a single element yields that element unchanged. The
+                    // separate `1 =>` arm only existed to hand-unwrap it, and
+                    // needed an `expect` to do so — a panic path guarded solely
+                    // by the `len()` match right above it.
+                    if strs.is_empty() {
+                        v.clone()
+                    } else {
+                        Value::String(strs.join(", "))
                     }
                 }
                 other => other.clone(),

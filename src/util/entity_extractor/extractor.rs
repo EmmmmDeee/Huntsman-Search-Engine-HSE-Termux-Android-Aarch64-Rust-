@@ -82,7 +82,18 @@ impl EntityExtractor {
 
 impl Default for EntityExtractor {
     fn default() -> Self {
-        Self::new(0.30).expect("should succeed") // MVP: confidence floor 0.30 (candidate tier)
+        // Built from its fields rather than through `new().expect(...)`:
+        // `EntityExtractor::new` is fallible only because it propagates
+        // `EntityClassifier::new`, which cannot fail, so the `Err` arm was
+        // unreachable and the `expect` was a panic path that could never fire.
+        // Constructing directly removes it. 0.30 is the MVP confidence floor
+        // (candidate tier).
+        Self {
+            // The unit struct itself, not `EntityClassifier::default()`:
+            // clippy::default_constructed_unit_struct rejects the latter.
+            classifier: EntityClassifier,
+            min_confidence: 0.30,
+        }
     }
 }
 

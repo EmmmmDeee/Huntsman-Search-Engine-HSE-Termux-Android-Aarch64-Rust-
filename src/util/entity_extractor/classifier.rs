@@ -115,7 +115,12 @@ impl EntityClassifier {
 
 impl Default for EntityClassifier {
     fn default() -> Self {
-        Self::new().expect("should succeed")
+        // Constructed directly rather than through `new().expect(...)`. The
+        // classifier is a unit struct — it holds no state that can fail to
+        // build (its regexes are `LazyLock`s in `core::classifier`) — so the
+        // fallible constructor's `Err` arm is unreachable here. Naming the
+        // struct removes the panic path instead of documenting it.
+        Self
     }
 }
 
