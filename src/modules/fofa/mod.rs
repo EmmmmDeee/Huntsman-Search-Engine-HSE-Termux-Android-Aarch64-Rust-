@@ -72,12 +72,50 @@ pub(super) fn encode_fofa_query(filter: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(filter.as_bytes())
 }
 
+/// Escape a value for embedding inside a double-quoted FOFA filter literal.
+///
+/// # Why this exists
+///
+/// [`fofa_filter`] builds `ip="{value}"` / `host="{value}"` and the whole
+/// filter is base64'd, not JSON- or URL-encoded, so nothing downstream
+/// escapes it — this is the only point that can. `target.value` reaches here
+/// from two different places with two different trust levels:
+///
+/// - **Seed targets** go through [`Target::validate`](crate::core::scan::Target::validate),
+///   which restricts a `Domain` to ASCII alphanumeric/`.`/`-`/`_` and parses an
+///   `IpAddress` through [`std::net::IpAddr`] — neither can contain a `"`.
+/// - **Pivot targets**, built during expansion from an entity's value
+///   (`Target::new(tk, entity.value.clone())` in `core/engine/mod.rs`), do
+///   **not** go through that gate before dispatch. And a Domain/IP entity can
+///   come from this very module: [`build_entities`] mints one straight from
+///   `hit.domain` / `hit.ip` in FOFA's own JSON response — a field describing
+///   whatever the scanned host presents, not something this crate controls.
+///
+/// So an unescaped `"` in a later round's pivot value would close the filter
+/// early and splice arbitrary FOFA query syntax into a search run under the
+/// operator's own paid key. Escaping here removes that path regardless of
+/// which caller the value came from, rather than trusting every caller to
+/// have validated first.
+///
+/// FOFA's own escaping grammar is not verified against live documentation
+/// (unavailable from this environment); this applies the minimal transform
+/// correct for virtually every quoted-string query DSL — backslash-escape `\`
+/// first, then `"` — so a value can never terminate the literal early. Order
+/// matters: escaping the quote before the backslash would double-escape the
+/// backslash just inserted.
+fn escape_fofa_value(v: &str) -> String {
+    v.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 /// Build the FOFA filter for a target. IP → `ip="x.x.x.x"`, Domain → `host="domain.com"`,
 /// Email → fall back to a domain-extraction search (if the email part looks domain-like).
 pub(super) fn fofa_filter(target: &Target) -> Option<String> {
     match target.kind {
-        TargetKind::IpAddress => Some(format!("ip=\"{}\"", target.value.trim())),
-        TargetKind::Domain => Some(format!("host=\"{}\"", target.value.trim())),
+        TargetKind::IpAddress => Some(format!("ip=\"{}\"", escape_fofa_value(target.value.trim()))),
+        TargetKind::Domain => Some(format!(
+            "host=\"{}\"",
+            escape_fofa_value(target.value.trim())
+        )),
         _ => None,
     }
 }
