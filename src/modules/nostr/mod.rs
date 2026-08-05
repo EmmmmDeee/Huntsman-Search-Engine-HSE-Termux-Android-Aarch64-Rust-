@@ -329,7 +329,7 @@ fn decode_npub(s: &str) -> Option<String> {
     // Checksum: polymod over hrp-expand("npub") ++ data must equal 1.
     let mut chk_input = hrp_expand("npub");
     chk_input.extend_from_slice(&values);
-    if bech32_polymod(&chk_input) != 1 {
+    if crate::core::crypto::bech32_polymod(&chk_input) != 1 {
         return None;
     }
     // Drop the 6-symbol checksum, then regroup 5-bit → 8-bit.
@@ -354,35 +354,13 @@ fn encode_npub(hex_pubkey: &str) -> Option<String> {
     let mut chk_input = hrp_expand("npub");
     chk_input.extend_from_slice(&data);
     chk_input.extend_from_slice(&[0u8; 6]);
-    let polymod = bech32_polymod(&chk_input) ^ 1;
+    let polymod = crate::core::crypto::bech32_polymod(&chk_input) ^ 1;
     for i in 0..6 {
         data.push(((polymod >> (5 * (5 - i))) & 0x1f) as u8);
     }
     let mut out = String::from("npub1");
     out.extend(data.iter().map(|&v| BECH32[v as usize] as char));
     Some(out)
-}
-
-/// bech32 checksum polynomial (BIP-173).
-fn bech32_polymod(values: &[u8]) -> u32 {
-    const GEN: [u32; 5] = [
-        0x3b6a_57b2,
-        0x2650_8e6d,
-        0x1ea1_19fa,
-        0x3d42_33dd,
-        0x2a14_62b3,
-    ];
-    let mut chk: u32 = 1;
-    for &v in values {
-        let b = chk >> 25;
-        chk = ((chk & 0x1ff_ffff) << 5) ^ u32::from(v);
-        for (i, g) in GEN.iter().enumerate() {
-            if (b >> i) & 1 == 1 {
-                chk ^= g;
-            }
-        }
-    }
-    chk
 }
 
 /// Expand a human-readable prefix into the bech32 checksum pre-image.
