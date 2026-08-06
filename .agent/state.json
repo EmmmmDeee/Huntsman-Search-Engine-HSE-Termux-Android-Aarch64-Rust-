@@ -8,8 +8,8 @@
     "non-defects. See CLAUDE.md and docs/OPERATIONAL_CONSTITUTION.md.",
     "cycle 9 sweep (wf_e136c553): 5 dims x adversarial verify. REFUTED as not-a-defect (do not re-open): AbortOnDrop doc claim (engine/mod.rs:158 — the doc is actually true); enrich_geospatial catch_unwind is not over-guarding worth removing; diagnostics ModuleLedger HashMap->BTreeMap (failure scenario unachievable); /scans/{id}/stealer-rows 'unbounded' (deliberate, documented, tested design); scan-log DOM O(n) (already capped at LOG_MAX_ROWS=1200, committed design). DEFERRED confirmed findings for a future cycle (recorded, not lost): F2 latest_completed_scan skips Aborted scans (storage/mod.rs:513 — `hse export/diff latest` jumps past an aborted scan); F3 live/radar session cancel handle shared with per-iteration wall-time watchdog (core/live/mod.rs:433); F4 scans.js dashboard has no `aborted` bucket + computes an unrendered `failed` count; F18 SPA discards /entities pagination envelope so Browse understates a truncated large scan (index.js:44); F20 dossier upload reads whole file to a JS string with no client-side size check (new_scan.js:445); F22 Scan-Log SSE never resolves the pill to 'complete' when the tailed scan finishes (log.js:89). These are the top of cycle-10's pool; F2 pairs naturally with cycle-9 slot 1 (both terminal-state correctness)."
   ],
-  "cycle_count": 29,
-  "last_verified_commit": "85aae6e9c",
+  "cycle_count": 30,
+  "last_verified_commit": "5a12b7f8c",
   "verified_against": {
     "note": "This crate declares NO [features]; `--all-features` is a no-op here (main's #379 correction, preserved across the merge). The authoritative gate is scripts/gate.sh, which spans several workflow files and includes the rustdoc-lint and MSRV passes that reconstructing from ci.yml alone drops.",
     "toolchain": "1.97.1 (rust-toolchain.toml)",
@@ -241,7 +241,7 @@
       "loc": "src/util/address_au/mod.rs:784",
       "severity": "Medium",
       "source": "wave4 infra auditor (cycle 24)",
-      "status": "OPEN — agent-reported, pending independent code-trace + fix",
+      "status": "CLOSED cycle 30 (commit 5a12b7f8c) — ambiguous common-word brands (belong/dodo/tangerine) gated to structured operator fields via au_network_operator_split; descr prose no longer fabricates them; genuine structured attributions preserved; regressions added; gate green.",
       "summary": "Operator table includes common English words as brand tokens ('belong'; review 'dodo'/'tangerine'). au_network_word_in whole-word-matches 'belong' appearing in a RIPE descr/org prose field -> false ('Belong', Consumer) AU-ISP attribution -> AU-097 Medium false residency claim. The word-boundary check cannot prevent it because the token IS a whole word.",
       "fix_direction": "Drop common-English-word tokens (belong; review dodo/tangerine) from the operator table, or require ambiguous tokens to co-occur with an ASN/ISP context marker. Independent of OD-11 (the token table is wrong on its own)."
     },
@@ -254,6 +254,16 @@
       "status": "OPEN — deferred, needs AU-050 grouping refactor",
       "summary": "AU-050 business-service veto calls au_phone_line_type on the +-stripped normalise_phone digits key. An AU freephone/premium in +61 INTERNATIONAL form (+61 1800 xxx xxx -> key 611800xxxxxx) is NOT recognised by au_phone_line_type (it strips '61' only when the value still contains '+', which the key lost) -> classifier returns None -> veto skipped -> AU-050 fires a false High associate cluster on a shared 1800/190x business desk. Rarer than the false-negative (1800 numbers are seldom stored in +61 form) but real in messy breach data.",
       "fix_direction": "Classify the ORIGINAL +-bearing phone value for the veto, not the digits key: thread a representative original phone string through entity_phones -> Group -> the veto (or canonicalise +61/0061 to AU national form in a shared normaliser). Also make au_phone_line_type return None for a '+' followed by a non-61 country code (a foreign E.164 number is definitionally non-AU), generalising the existing '+1 555…'->None doctest. Verify against both callers (AU-050, geo::jurisdiction:304) + doctest."
+    },
+    {
+      "id": "OD-15",
+      "rule": "n/a (observability)",
+      "loc": "src/util/see_know/budget.rs:~203",
+      "severity": "Low (observability)",
+      "source": "cycle 30 — observed in a live `hse doctor` run pasted by the user",
+      "status": "CANDIDATE — observed in doctor output, NOT yet verified against the code",
+      "summary": "`hse doctor` prints SeekNow `api base: https://see-know.ru/api/v1` but the budget WARN one line below reads 'SeekNow (see-know.eu) lookups disabled…' (target huntsman_search_engine::util::see_know::budget line ~203). The .eu vs .ru mismatch looks like a stale domain literal in the WARN string — misleads an operator about which service failed.",
+      "fix_direction": "Grep util/see_know for 'see-know.eu' / 'see-know.ru'; if .eu is a stale literal in the WARN message, correct it to the canonical see-know.ru (matching the api base + docs/SEEKNOW_SETUP.md). Verify it isn't an intentional dual-domain alias first (separate observation from inference)."
     }
   ],
   "cycle_2_slots": [
@@ -784,5 +794,15 @@
       "summary": "AU-111 CDN-origin candidate flags a domain as globally DNS-fronted via has_tag('waf:{p}') for p in DNS_FRONTING_CDN_PROVIDERS, then treats an SPF-authorised IP as an origin-leak pivot. The list held 'CloudFront' and 'Incapsula' but waf_detect tags waf:'AWS CloudFront' and waf:'Imperva/Incapsula' (mod.rs:95 tag(format!('waf:{}', d.provider))). Exact-match has_tag -> those two NEVER matched -> AU-111 silently never fired for any CloudFront-/Incapsula-fronted domain (silent false negative, SPF-origin-leak pivot lost for 2 of 8 named CDNs). Fix: use the exact waf_detect strings. Verified all 8 against the full signature table: other 6 (Cloudflare/Akamai/Fastly/Sucuri/StackPath/KeyCDN) already matched; StackPath+KeyCDN ARE emitted (no dead entries). Regression au111_fires_for_cloudfront_and_incapsula_using_waf_detect_names (cdn_fronted_domain tags waf:{provider} exactly as the module does; prior test masked it via 'Cloudflare' which happened to match). scripts/gate.sh --quick GREEN (foreground)."
     }
   ],
-  "cycle_29_provenance": "Cycle 29 closes OD-12 — a consumer list drifting from its producer's source of truth (waf_detect provider names). Same defect FAMILY as the canonical-guard-drift theme, on the tag-string axis. Remaining wave4 backlog: OD-13 AU_NETWORK_OPERATORS 'belong' common-word token (Medium — NEEDS CARE: 'belong' is a real AU ISP, so dropping it outright trades a false-positive for a false-negative; the right fix requires ISP/ASN context, not deletion), OD-14 AU-050 +61-intl-form false-positive (High-rarer, deferred, needs AU-050 grouping refactor)."
+  "cycle_29_provenance": "Cycle 29 closes OD-12 — a consumer list drifting from its producer's source of truth (waf_detect provider names). Same defect FAMILY as the canonical-guard-drift theme, on the tag-string axis. Remaining wave4 backlog: OD-13 AU_NETWORK_OPERATORS 'belong' common-word token (Medium — NEEDS CARE: 'belong' is a real AU ISP, so dropping it outright trades a false-positive for a false-negative; the right fix requires ISP/ASN context, not deletion), OD-14 AU-050 +61-intl-form false-positive (High-rarer, deferred, needs AU-050 grouping refactor).",
+  "cycle_30_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "5a12b7f8c",
+      "finding": "OD-13 / wave4 infra auditor DEFECT 4 (AU_NETWORK_OPERATORS -> AU-097)",
+      "summary": "au_network_of flattened an IP/ASN's operator fields (incl. RIPE free-text descr) into one haystack and whole-word-matched AU_NETWORK_OPERATORS. 'belong'/'dodo'/'tangerine' are real AU ISPs whose tokens are also ordinary words; a descr like 'address space that used to belong to X' matched 'belong' -> fabricated a Belong residency attribution (AU-097 Medium). Word-boundary guard can't help (token IS a whole word). Fix (context-gating, NOT deletion which would trade FP->FN): 4th table field ambiguous=true on those 3; new au_network_operator_split(structured, descr) trusts every brand in structured (isp/org/as/...) but only UNAMBIGUOUS brands in descr; au_network_of now splits attrs into the two tiers (descr removed from STRUCTURED_KEYS). Genuine Belong in a structured isp/org field still attributes; unambiguous Telstra still matches in descr; single-arg au_network_operator (doctest API) unchanged. Regressions: au_network_operator_split_gates_common_word_brands_to_structured_fields (unit) + au097_does_not_attribute_belong_isp_from_descr_prose (e2e). scripts/gate.sh --quick GREEN."
+    }
+  ],
+  "cycle_30_provenance": "Cycle 30 closes OD-13 with the CORRECT context-gating fix (not the lazy token deletion the audit's phrasing suggested, which trades a false-positive for a false-negative on genuine Belong/Dodo/Tangerine attributions). This exhausts the wave4 correctness backlog EXCEPT OD-14 (deliberately deferred). NEW candidate observed from a live `hse doctor` run the user pasted: OD-15 (Observability, low) — doctor prints SeekNow api base https://see-know.ru but util::see_know::budget:203 WARN says 'see-know.eu'; a domain-string mismatch, NOT yet verified against the code (could be an intentional alias). Remaining: OD-14 (AU-050 +61-intl-form false-pos, High-rarer, deferred, needs AU-050 grouping refactor), OD-15 (see-know.eu/.ru, low, verify first)."
 }
