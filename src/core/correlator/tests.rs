@@ -2257,9 +2257,15 @@ fn au031_benign_infra_verdict_vetoes_adjacency() {
 #[test]
 fn au032_fires_on_three_node_colocation_cluster() {
     use crate::core::relation::{Relation, RelationKind};
-    let c1 = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.9, "s");
-    let c2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
-    let c3 = Entity::new(EntityKind::Coordinates, "-27.471000,153.021000", 0.7, "s");
+    // Anchored to a real person-fixing source (device GPS) so the coordinates are
+    // NOT infrastructure geo; otherwise the co-location edges are (correctly)
+    // dropped. See au032_excludes_infrastructure_colocations.
+    let mut c1 = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.9, "s");
+    c1.add_evidence(Evidence::new("device_sensors", "gps"));
+    let mut c2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
+    c2.add_evidence(Evidence::new("device_sensors", "gps"));
+    let mut c3 = Entity::new(EntityKind::Coordinates, "-27.471000,153.021000", 0.7, "s");
+    c3.add_evidence(Evidence::new("device_sensors", "gps"));
     // Chain c1–c2–c3 → one connected component of 3.
     let rels = vec![
         Relation::new(
@@ -2283,6 +2289,43 @@ fn au032_fires_on_three_node_colocation_cluster() {
     assert_eq!(r[0].severity, Severity::Medium);
     assert_eq!(r[0].entity_uids.len(), 3);
     assert!(r[0].description.contains("3 coordinates"));
+}
+
+#[test]
+fn au032_excludes_infrastructure_colocations() {
+    use crate::core::relation::{Relation, RelationKind};
+    // Three co-located datacentre coordinates are infrastructure, not a personal
+    // convergence — the co-location edges between them are dropped, so no cluster
+    // forms. The same chain, person-anchored, still fires (control).
+    let colo = |a: &Entity, b: &Entity| {
+        Relation::new(a.uid.clone(), b.uid.clone(), RelationKind::CoLocatedWith, 0.9, "s")
+    };
+
+    let mut h1 = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.9, "s");
+    h1.tag(crate::core::tags::HOSTING);
+    let mut h2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
+    h2.tag(crate::core::tags::HOSTING);
+    let mut h3 = Entity::new(EntityKind::Coordinates, "-27.471000,153.021000", 0.7, "s");
+    h3.tag(crate::core::tags::HOSTING);
+    let rels = vec![colo(&h1, &h2), colo(&h2, &h3)];
+    assert!(
+        rule_au_032_colocation_cluster(&RuleContext::new(&[h1, h2, h3]), &rels, "s", 0).is_empty(),
+        "co-located datacentres must not form a convergence cluster"
+    );
+
+    // Control: the same chain, person-anchored, fires.
+    let mut a1 = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.9, "s");
+    a1.add_evidence(Evidence::new("device_sensors", "gps"));
+    let mut a2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
+    a2.add_evidence(Evidence::new("device_sensors", "gps"));
+    let mut a3 = Entity::new(EntityKind::Coordinates, "-27.471000,153.021000", 0.7, "s");
+    a3.add_evidence(Evidence::new("device_sensors", "gps"));
+    let rels2 = vec![colo(&a1, &a2), colo(&a2, &a3)];
+    assert_eq!(
+        rule_au_032_colocation_cluster(&RuleContext::new(&[a1, a2, a3]), &rels2, "s", 0).len(),
+        1,
+        "person-anchored co-located coordinates still cluster"
+    );
 }
 
 #[test]
