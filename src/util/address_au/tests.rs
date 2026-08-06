@@ -364,6 +364,26 @@ use super::*;
     }
 
     #[test]
+    fn au_phone_line_type_rejects_foreign_plus_country_codes() {
+        // A `+` explicitly marks the country code; if it isn't 61/0061 the number
+        // is foreign, so it must be `None` even when its leading national digit
+        // would otherwise look like an AU class. Reachable via geo::jurisdiction,
+        // which classifies an entity's `+`-carrying value directly.
+        assert!(au_phone_line_type("+44 1800 123456").is_none()); // UK — was AU "Mobile" off the 4
+        assert!(au_phone_line_type("+81 3 1234 5678").is_none()); // JP — was AU "GeographicFixed" off the 8
+        assert!(au_phone_line_type("+49 151 2345678").is_none()); // DE — was AU "Mobile" off the 4
+        // AU numbers via +61 / 0061 still classify (the country code IS stripped).
+        assert_eq!(
+            au_phone_line_type("+61 2 9876 5432").expect("au geo").0,
+            AuLineType::GeographicFixed
+        );
+        assert_eq!(
+            au_phone_line_type("0061 412 345 678").expect("au mobile").0,
+            AuLineType::Mobile
+        );
+    }
+
+    #[test]
     fn au_line_type_predicates_split_personal_from_business() {
         assert!(!AuLineType::Mobile.is_business_service());
         assert!(AuLineType::Freephone.is_business_service());

@@ -486,14 +486,22 @@ pub fn au_phone_line_type(value: &str) -> Option<(AuLineType, &'static str)> {
     // country code — a plain `61…` foreign number is left intact (→ `None`).
     let plus = value.contains('+');
     let digits = crate::util::str_util::ascii_digits(value);
-    let nat = if let Some(rest) = digits.strip_prefix("0061") {
+    // Resolve the national significant number, honouring an explicit country code.
+    // `0061` is stripped whether or not a `+` was present (an unambiguous
+    // international access prefix). A `+` marks the country code explicitly, so if
+    // it is present but NOT `61`/`0061` the number is foreign, not AU — return
+    // early rather than mis-reading its national digits (`+44 1800…` → `441800…` →
+    // leading `4` → AU Mobile, `+81 3…` → leading `8` → AU fixed line).
+    let nsn = if let Some(rest) = digits.strip_prefix("0061") {
         rest
-    } else if plus && let Some(rest) = digits.strip_prefix("61") {
-        rest
+    } else if plus {
+        // Strip `61` for AU; any other country code is foreign, never AU, so bail
+        // (`?` → `None`) rather than mis-reading its national digits.
+        digits.strip_prefix("61")?
     } else {
         digits.as_str()
-    }
-    .trim_start_matches('0');
+    };
+    let nat = nsn.trim_start_matches('0');
     // The `1800`/`1300`/`190x` service numbers are EXACTLY 10 national digits
     // (the `13xxxx` short form is the sole 6-digit exception). A LONGER number
     // that merely begins with these digits is not an AU service line — most
