@@ -21,9 +21,14 @@ pub(crate) fn extract_division(html: &str) -> Option<(String, Option<String>)> {
     // `[start, end)` from original bytes — no offset-on-a-copy panic risk.
     if let Some((pos, end)) = DIVISION_MARKER.find_range(&text) {
         let rest = &text[end..];
+        // Allow apostrophes: real AU divisions/suburbs carry them (the federal
+        // Division of O'Connor, the ACT suburb O'Malley). Without `'\''` the
+        // name truncates at the apostrophe — "O'Connor" became "O" — and the
+        // subject is stamped with the wrong division. Matches the sibling
+        // `au_property::extract_suburb_from_line` allow-list; keep them in step.
         let name: String = rest
             .chars()
-            .take_while(|c| c.is_alphabetic() || *c == '-' || *c == ' ')
+            .take_while(|c| c.is_alphabetic() || *c == '-' || *c == ' ' || *c == '\'')
             .collect();
         let name = name.trim().to_string();
         if !name.is_empty() && name.len() < 40 {
@@ -39,7 +44,7 @@ pub(crate) fn extract_division(html: &str) -> Option<(String, Option<String>)> {
         let rest = &text[end..];
         let name: String = rest
             .chars()
-            .take_while(|c| c.is_alphabetic() || *c == '-' || *c == ' ')
+            .take_while(|c| c.is_alphabetic() || *c == '-' || *c == ' ' || *c == '\'')
             .collect();
         let name = name.trim().to_string();
         if !name.is_empty() && name.len() < 40 {
@@ -104,7 +109,7 @@ fn extract_suburb_hint(window: &str) -> Option<String> {
             let suburb: String = before
                 .chars()
                 .rev()
-                .take_while(|c| c.is_alphabetic() || *c == ' ')
+                .take_while(|c| c.is_alphabetic() || *c == ' ' || *c == '\'')
                 .collect::<String>()
                 .chars()
                 .rev()
@@ -155,6 +160,17 @@ mod extract_division_tests {
         let (name, _) = extract_division(html).expect("should succeed");
         assert_eq!(name, "Melbourne");
     }
+
+    #[test]
+    fn apostrophe_division_name_is_not_truncated() {
+        // Regression: the federal Division of O'Connor (WA) is a real division.
+        // Without an apostrophe in the name allow-list the take_while stopped at
+        // the `'`, so "O'Connor" was emitted as "O" and the subject was stamped
+        // with the wrong electoral division.
+        let html = "<div>You are enrolled for the Division of O'Connor (2026)</div>";
+        let (name, _) = extract_division(html).expect("should succeed");
+        assert_eq!(name, "O'Connor");
+    }
 }
 
 #[cfg(test)]
@@ -194,5 +210,15 @@ mod suburb_hint_tests {
         assert_eq!(extract_suburb_hint("Bondi Beach 20267"), None);
         // A digit-prefixed run is likewise rejected (no valid standalone code).
         assert_eq!(extract_suburb_hint("Bondi Beach 12026"), None);
+    }
+
+    #[test]
+    fn apostrophe_suburb_hint_is_not_truncated() {
+        // The ACT suburb O'Malley (postcode 2606) carries an apostrophe; the
+        // hint must keep it rather than degrade to "Malley".
+        assert_eq!(
+            extract_suburb_hint("O'Malley 2606"),
+            Some("O'Malley".to_string())
+        );
     }
 }
