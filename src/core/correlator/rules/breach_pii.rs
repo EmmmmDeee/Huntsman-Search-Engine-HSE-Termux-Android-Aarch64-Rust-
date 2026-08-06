@@ -153,6 +153,30 @@ pub(crate) fn normalise_dob(raw: &str) -> Option<String> {
     (!s.is_empty()).then(|| s.to_string())
 }
 
+/// The breach **corpus** a record came from — the unit corroboration, reuse, and
+/// cross-corpus contradiction are all measured across. Reads the breach-name
+/// attribute across the spellings providers stamp — `dbname` (OathNet/stealer),
+/// `breach`, and `source_db` (the field the `see_know` extractor renames a
+/// record's raw breach name to, so it can't clobber the provenance `source`) —
+/// and falls back to the provenance `source` when a record carries no breach-name
+/// attribute.
+///
+/// Canonical so AU-105 (reused-secret span) and the breach-consensus audit
+/// (distinct-corpora corroboration count and the cross-corpus contradiction
+/// detector) cannot disagree on what "one corpus" is: two SeekNow breaches under
+/// distinct `source_db` are two corpora, not one collapsed `see_know` — the
+/// distinction that lets the contradiction detector see two aggregated corpora
+/// disagree and the corroboration counter avoid under-crediting a real
+/// cross-corpus confirmation.
+pub(crate) fn breach_corpus_key(ev: &crate::core::entity::Evidence) -> String {
+    ev.attributes
+        .get("dbname")
+        .or_else(|| ev.attributes.get("breach"))
+        .or_else(|| ev.attributes.get("source_db"))
+        .map_or(ev.source.as_str(), String::as_str)
+        .to_string()
+}
+
 /// Derive a person's whole-year age from a canonical `YYYY-MM-DD` date of birth
 /// as of `now_unix` (Unix seconds), or `None` for an unparseable / non-ISO date or
 /// a future DOB. Dependency-free (no `chrono`): converts the calendar DOB to a day
@@ -1462,23 +1486,13 @@ pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
     let mut digest_bridge: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
 
-    // The breach a record came from — the unit reuse is measured across. Read
-    // the breach-name attr across the spellings the providers actually stamp:
-    // `dbname` (OathNet/stealer), `breach`, and `source_db` — the key the
-    // `see_know` extractor renames a record's raw `source` breach-name field to
-    // (so it can't clobber the provenance `source` attr). Without `source_db`,
-    // every SeekNow breach collapsed to the bare module name `see_know`, so a
-    // genuine password reused across two SeekNow breaches counted as ONE and
-    // AU-105 stayed silent — an under-count that suppressed the most actionable
-    // people-centric finding on a primary paid breach source.
-    let breach_of = |ev: &crate::core::entity::Evidence| -> String {
-        ev.attributes
-            .get("dbname")
-            .or_else(|| ev.attributes.get("breach"))
-            .or_else(|| ev.attributes.get("source_db"))
-            .map_or(ev.source.as_str(), String::as_str)
-            .to_string()
-    };
+    // The breach a record came from — the unit reuse is measured across. The
+    // canonical `breach_corpus_key` (shared with the breach-consensus audit so
+    // reuse-span, corroboration count, and contradiction detection agree on what
+    // "one corpus" is) reads `dbname`/`breach`/`source_db` and falls back to the
+    // provenance `source`, so two SeekNow breaches under distinct `source_db`
+    // stay two corpora instead of collapsing to the bare module name `see_know`.
+    let breach_of = breach_corpus_key;
 
     // Pass 1 — plaintext secrets, and the digest bridge for the uncommon ones.
     for e in entities {

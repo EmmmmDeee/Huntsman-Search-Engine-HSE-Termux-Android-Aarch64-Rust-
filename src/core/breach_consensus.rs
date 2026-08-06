@@ -25,7 +25,7 @@
 //! The audit is therefore adversarial toward the scan's own output: every flag
 //! it raises is a reason to trust a finding *less*.
 
-use crate::core::correlator::{DOB_KEYS, is_breach_source, normalise_dob};
+use crate::core::correlator::{DOB_KEYS, breach_corpus_key, is_breach_source, normalise_dob};
 use crate::core::entity::{CONSENSUS_SOURCE, Classification, Entity, Evidence};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -257,16 +257,24 @@ pub fn run_consensus_pass(entities: &mut [Entity], scan_id: &str) -> BreachConse
 
 /// Distinct breach corpora attesting `entity`, sorted.
 ///
-/// Reads only sources that already count toward corroboration, so a source the
-/// entity model deliberately discounts (recall replay, cross-scan history, this
-/// pass's own summary) can never be mistaken for an attesting corpus.
+/// Counts distinct [`breach_corpus_key`]s (not bare provider names), so two
+/// breaches an aggregator delivers under distinct `source_db` are two attesting
+/// corpora rather than one — the same canonical corpus unit the contradiction
+/// detector and AU-105 use. Reads only records whose source already counts
+/// toward corroboration, so one the entity model discounts (recall replay,
+/// cross-scan history, this pass's own summary) can never be mistaken for an
+/// attesting corpus.
 fn breach_sources_of(entity: &Entity) -> Vec<String> {
-    let sources: BTreeSet<&str> = entity
-        .corroborating_sources()
-        .into_iter()
-        .filter(|s| is_breach_source(s))
+    let corpora: BTreeSet<String> = entity
+        .evidence
+        .iter()
+        .filter(|ev| {
+            is_breach_source(&ev.source)
+                && !crate::core::entity::is_non_corroborating_source(&ev.source)
+        })
+        .map(breach_corpus_key)
         .collect();
-    sources.into_iter().map(str::to_string).collect()
+    corpora.into_iter().collect()
 }
 
 /// Build the consensus verdict for one entity, flags and all.
@@ -341,7 +349,14 @@ fn conflicting_attributes(entity: &Entity) -> Vec<AuditFlag> {
     for key in single_valued_keys() {
         // Source → first value that source gave for `key`. BTreeMap so the pair
         // chosen for the flag is deterministic rather than hash-order dependent.
-        let mut by_source: BTreeMap<&str, &str> = BTreeMap::new();
+        // Corpus → first value that corpus gave for `key`. Keyed on the canonical
+        // `breach_corpus_key` (not the bare provider name), so two breaches an
+        // aggregator delivers under distinct `source_db` count as two corpora —
+        // a real cross-corpus contradiction between them is seen, instead of the
+        // second value silently collapsing onto the first under one `see_know`
+        // key and the flag never firing. BTreeMap so the pair chosen is
+        // deterministic.
+        let mut by_corpus: BTreeMap<String, &str> = BTreeMap::new();
         for ev in &entity.evidence {
             if !is_breach_source(&ev.source) {
                 continue;
@@ -353,10 +368,10 @@ fn conflicting_attributes(entity: &Entity) -> Vec<AuditFlag> {
             if value.is_empty() {
                 continue;
             }
-            by_source.entry(ev.source.as_str()).or_insert(value);
+            by_corpus.entry(breach_corpus_key(ev)).or_insert(value);
         }
 
-        if by_source.len() < 2 {
+        if by_corpus.len() < 2 {
             continue;
         }
 
@@ -376,17 +391,18 @@ fn conflicting_attributes(entity: &Entity) -> Vec<AuditFlag> {
             }
         };
 
-        // One flag per key: the first pair, in sorted-source order, that differs.
-        let entries: Vec<(&&str, &&str)> = by_source.iter().collect();
-        'outer: for (i, (left_source, left)) in entries.iter().enumerate() {
-            for (right_source, right) in entries.iter().skip(i + 1) {
+        // One flag per key: the first pair, in sorted-corpus order, that differs.
+        let entries: Vec<(&str, &str)> = by_corpus.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        'outer: for i in 0..entries.len() {
+            let (left_source, left) = entries[i];
+            for &(right_source, right) in &entries[i + 1..] {
                 if differs(left, right) {
                     flags.push(AuditFlag::ConflictingAttributes {
                         attribute: key.to_string(),
-                        left_source: (*left_source).to_string(),
-                        left: (*left).to_string(),
-                        right_source: (*right_source).to_string(),
-                        right: (*right).to_string(),
+                        left_source: left_source.to_string(),
+                        left: left.to_string(),
+                        right_source: right_source.to_string(),
+                        right: right.to_string(),
                     });
                     break 'outer;
                 }
@@ -583,6 +599,36 @@ mod tests {
             "same date in two breach spellings must not be a contradiction"
         );
         assert!(report.verdict.can_use_for_correlation());
+    }
+
+    #[test]
+    fn two_corpora_from_one_aggregator_can_contradict() {
+        // Regression: a single aggregator (`see_know`) delivering TWO breaches
+        // under distinct `source_db` must count as two corpora, so a genuine
+        // cross-corpus DOB disagreement between them is flagged — not silently
+        // collapsed onto one `see_know` key so the flag never fires. Keying on the
+        // canonical `breach_corpus_key` (source_db, not the provider name) is what
+        // makes the two corpora distinct.
+        let mut e = entity(0.8);
+        e.add_evidence(
+            Evidence::new("see_know", "breach record")
+                .with_attr("source_db", "CorpusA")
+                .with_attr("dob", "1980-11-08"),
+        );
+        e.add_evidence(
+            Evidence::new("see_know", "breach record")
+                .with_attr("source_db", "CorpusB")
+                .with_attr("dob", "1975-02-01"),
+        );
+        let mut ents = vec![e];
+
+        let report = run_consensus_pass(&mut ents, "scan-1");
+
+        assert!(
+            report.flags().any(AuditFlag::is_hard_conflict),
+            "two distinct see_know corpora disagreeing on DOB must be flagged"
+        );
+        assert_eq!(report.verdict, AuditVerdict::FailsAudit);
     }
 
     #[test]
