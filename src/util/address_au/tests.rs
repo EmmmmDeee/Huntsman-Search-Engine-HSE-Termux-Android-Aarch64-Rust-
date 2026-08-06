@@ -440,3 +440,30 @@ use super::*;
         // Short brand must be whole-word, not a substring.
         assert_eq!(au_network_operator("ACMETPGENETICS LIMITED"), None);
     }
+
+    #[test]
+    fn is_standalone_postcode_at_accepts_only_bounded_in_range_codes() {
+        // Does ANY scan position of `s` satisfy the predicate? Mirrors how the
+        // au_property / au_electoral parsers call it.
+        fn any(s: &str) -> bool {
+            let b = s.as_bytes();
+            (0..b.len().saturating_sub(3)).any(|i| is_standalone_postcode_at(b, i))
+        }
+        // Standalone, in range.
+        assert!(any("Bondi Beach 2026 NSW"));
+        assert!(any("2000")); // exact four bytes, low end of range
+        assert!(any("end 4017")); // final four bytes of the window
+        // Below the 2000 floor.
+        assert!(!any("Suburbia 1234"));
+        // 5+ digit runs: neither the 4-digit prefix nor suffix may match, and an
+        // in-range code embedded in a longer run is rejected.
+        assert!(!any("20267")); // prefix 2026 must not match
+        assert!(!any("12026")); // suffix 2026 must not match
+        assert!(!any("902000")); // embedded 2000 must not match
+        // Too short / non-digit.
+        assert!(!any("202"));
+        assert!(!any("abcd"));
+        // Totality: never panics on an out-of-range index.
+        assert!(!is_standalone_postcode_at(b"12", 0));
+        assert!(!is_standalone_postcode_at(b"", 0));
+    }

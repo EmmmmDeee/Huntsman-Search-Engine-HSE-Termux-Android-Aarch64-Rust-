@@ -71,21 +71,17 @@ pub(crate) fn extract_state(text: &str) -> Option<&'static str> {
 }
 
 /// Extract a 4-digit AU postcode in range 2000–9999 from a text window. Pure.
+///
+/// The standalone-postcode boundary test is the shared
+/// [`crate::util::address_au::is_standalone_postcode_at`] so this and the
+/// `au_electoral` suburb-hint scan cannot diverge on what a postcode is.
 pub(crate) fn extract_postcode(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     for i in 0..bytes.len().saturating_sub(3) {
-        if bytes[i].is_ascii_digit()
-            && bytes[i + 1].is_ascii_digit()
-            && bytes[i + 2].is_ascii_digit()
-            && bytes[i + 3].is_ascii_digit()
-            // Reject 5+ digit runs (not a standalone 4-digit code).
-            && !bytes.get(i + 4).is_some_and(u8::is_ascii_digit)
-            && (i == 0 || !bytes[i - 1].is_ascii_digit())
-        {
-            let pc: u32 = text[i..i + 4].parse().ok()?;
-            if (2000..=9999).contains(&pc) {
-                return Some(text[i..i + 4].to_string());
-            }
+        if crate::util::address_au::is_standalone_postcode_at(bytes, i) {
+            // The predicate confirmed four ASCII digits, so `i..i + 4` is a
+            // valid char boundary.
+            return Some(text[i..i + 4].to_string());
         }
     }
     None

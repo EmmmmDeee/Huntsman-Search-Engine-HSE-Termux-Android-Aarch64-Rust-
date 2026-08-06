@@ -89,33 +89,29 @@ pub(super) fn strip_electoral_html(html: &str) -> String {
 /// Extract a suburb hint from the text window around a division match.
 /// Looks for AU postcode patterns to anchor a suburb name. Pure.
 fn extract_suburb_hint(window: &str) -> Option<String> {
-    // A 4-digit postcode in range 2000..9999 indicates a suburb is nearby.
+    // A standalone 4-digit postcode in range 2000..=9999 indicates a suburb is
+    // nearby. The boundary test is the shared
+    // `crate::util::address_au::is_standalone_postcode_at`, so this scan and the
+    // sibling `au_property::extract_postcode` agree on what a postcode is — in
+    // particular a 5+ digit run (`20267`) is rejected rather than anchoring a
+    // suburb on its spurious 4-digit prefix. `saturating_sub(3)` (not 4) so a
+    // postcode occupying the final 4 bytes of the window is still examined.
     let bytes = window.as_bytes();
-    // `saturating_sub(3)` (not 4): a 4-digit postcode occupying the final 4 bytes of
-    // the window must still be examined — `saturating_sub(4)` skipped it. Matches the
-    // sibling au_property::extract_postcode bound.
     for i in 0..bytes.len().saturating_sub(3) {
-        if bytes[i].is_ascii_digit()
-            && bytes[i + 1].is_ascii_digit()
-            && bytes[i + 2].is_ascii_digit()
-            && bytes[i + 3].is_ascii_digit()
-        {
-            let pc: u32 = window[i..i + 4].parse().ok()?;
-            if (2000..=9999).contains(&pc) {
-                // Walk backwards to collect the suburb name before the postcode.
-                let before = window[..i].trim_end();
-                let suburb: String = before
-                    .chars()
-                    .rev()
-                    .take_while(|c| c.is_alphabetic() || *c == ' ')
-                    .collect::<String>()
-                    .chars()
-                    .rev()
-                    .collect();
-                let suburb = suburb.trim().to_string();
-                if !suburb.is_empty() && suburb.len() < 30 {
-                    return Some(suburb);
-                }
+        if crate::util::address_au::is_standalone_postcode_at(bytes, i) {
+            // Walk backwards to collect the suburb name before the postcode.
+            let before = window[..i].trim_end();
+            let suburb: String = before
+                .chars()
+                .rev()
+                .take_while(|c| c.is_alphabetic() || *c == ' ')
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            let suburb = suburb.trim().to_string();
+            if !suburb.is_empty() && suburb.len() < 30 {
+                return Some(suburb);
             }
         }
     }
@@ -186,5 +182,17 @@ mod suburb_hint_tests {
     #[test]
     fn postcode_with_no_preceding_alpha_yields_none() {
         assert_eq!(extract_suburb_hint("2000 only"), None);
+    }
+
+    #[test]
+    fn five_digit_run_is_not_a_postcode() {
+        // Regression: a 5+ digit run must NOT anchor a suburb on its spurious
+        // 4-digit prefix. Previously this scan lacked the digit-run boundary
+        // guard its `au_property` sibling had, so `20267` was read as `2026` and
+        // wrongly produced a "Bondi Beach" hint. Now both share
+        // `util::address_au::is_standalone_postcode_at`.
+        assert_eq!(extract_suburb_hint("Bondi Beach 20267"), None);
+        // A digit-prefixed run is likewise rejected (no valid standalone code).
+        assert_eq!(extract_suburb_hint("Bondi Beach 12026"), None);
     }
 }

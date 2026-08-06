@@ -837,6 +837,42 @@ pub fn au_network_operator(haystack: &str) -> Option<(&'static str, AuNetworkKin
         .map(|(_, canon, kind)| (*canon, *kind))
 }
 
+/// True when the four bytes `bytes[i..i + 4]` form a **standalone** Australian
+/// postcode: four ASCII digits parsing to `2000..=9999` that are not part of a
+/// longer digit run on either side — so `20267` is rejected rather than read as
+/// `2026`, and `12026` is not read as `2026` either.
+///
+/// This is the single canonical postcode-boundary predicate shared by the AU
+/// free-text parsers (`modules::au_property::extract_postcode` and
+/// `modules::au_electoral`'s suburb-hint scan). It replaces two hand-rolled
+/// copies that had **diverged**: one enforced the digit-run boundary guards and
+/// the other did not, so the second anchored a suburb hint on a spurious 4-digit
+/// prefix of a 5-digit number. Collapsing them here makes that divergence
+/// impossible to reintroduce. Pure, total, allocation-free.
+///
+/// Callers scan `for i in 0..bytes.len().saturating_sub(3)`, where `i + 3` is
+/// always in bounds; the explicit `i + 3 < bytes.len()` guard keeps the
+/// predicate total (panic-free) for any `(bytes, i)`.
+#[must_use]
+pub fn is_standalone_postcode_at(bytes: &[u8], i: usize) -> bool {
+    i + 3 < bytes.len()
+        && bytes[i].is_ascii_digit()
+        && bytes[i + 1].is_ascii_digit()
+        && bytes[i + 2].is_ascii_digit()
+        && bytes[i + 3].is_ascii_digit()
+        // Not part of a longer digit run — a 5+ digit number is never a postcode.
+        && !bytes.get(i + 4).is_some_and(u8::is_ascii_digit)
+        && (i == 0 || !bytes[i - 1].is_ascii_digit())
+        && {
+            // Four ASCII digits always fit a u32; range-gate to the AU span.
+            let pc = u32::from(bytes[i] - b'0') * 1000
+                + u32::from(bytes[i + 1] - b'0') * 100
+                + u32::from(bytes[i + 2] - b'0') * 10
+                + u32::from(bytes[i + 3] - b'0');
+            (2000..=9999).contains(&pc)
+        }
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");
