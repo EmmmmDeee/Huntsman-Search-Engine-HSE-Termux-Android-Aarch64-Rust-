@@ -146,6 +146,7 @@ mod tests {
             "s",
         );
         gps.tag("geoint");
+        gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
         // Same-surname family, all `family-candidate`, postcode in value or evidence.
         let mut near_addr = Entity::new(EntityKind::Address, "QLD 4518, Australia", 0.32, "s");
         near_addr.tag("family-candidate"); // Beerwah (45xx) — ~40 km
@@ -205,6 +206,7 @@ mod tests {
             "s",
         ); // Brisbane
         gps.tag("geoint");
+        gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
         let mut subject = Entity::new(
             EntityKind::Person,
             subject_full_name,
@@ -280,6 +282,7 @@ mod tests {
             "s",
         );
         gps.tag("geoint");
+        gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
         let mut subject = Entity::new(
             EntityKind::Person,
             "Dana Bamford",

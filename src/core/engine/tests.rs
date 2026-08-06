@@ -89,6 +89,7 @@ fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
     // Subject's confirmed GPS near Woodford, QLD.
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     gps.tag("geoint");
+    gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
     // A single-source (QLD register) family-candidate near the subject.
     let mut erik = Entity::new(EntityKind::Person, "Erik Moreau", 0.32, "s");
     erik.tag("family-candidate");
@@ -164,6 +165,7 @@ fn promote_breach_candidate_geo_corroborated_lifts_same_place_same_name_records(
     // Subject's confirmed GPS in Brisbane.
     let mut gps = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
     gps.tag("geoint");
+    gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
 
     // A same-name breach candidate in the same metro (South Brisbane 4101, ~2 km).
     let mut near = Entity::new(EntityKind::Email, "matt@example.com", 0.25, "s");
@@ -242,6 +244,7 @@ fn reconsider_working_set_still_promotes_above_the_live_correlation_bound() {
     // candidate (South Brisbane 4101, ~2 km) that reconsideration should lift.
     let mut gps = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
     gps.tag("geoint");
+    gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
     map.insert(gps.uid.clone(), gps);
     let mut cand = Entity::new(EntityKind::Email, "matt@example.com", 0.25, "s");
     cand.tag(crate::core::tags::CANDIDATE);
@@ -450,6 +453,7 @@ fn flag_geo_discordant_namesakes_is_surname_aware_and_tag_only() {
     // Subject's confirmed GPS near Woodford, QLD (Brisbane catchment).
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     gps.tag("geoint");
+    gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
     // Far (Perth, ~3600 km) COMMON-surname candidate → a likely namesake.
     let mut common = Entity::new(EntityKind::Person, "Curt Smith", 0.32, "s");
     common.tag("family-candidate");
@@ -527,6 +531,7 @@ fn namesake_flagging_uses_the_subject_surname() {
 
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     gps.tag("geoint");
+    gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
     // A far family-candidate Address (no name of its own) in Perth, WA.
     let mut far = Entity::new(EntityKind::Address, "WA 6000, Australia", 0.32, "s");
     far.tag("family-candidate");
