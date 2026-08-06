@@ -4,6 +4,7 @@
 
 use serde_json::{Map, Value};
 
+use crate::core::confidence;
 use crate::core::entity::{Entity, EntityKind, Evidence};
 use crate::util::ckan::field_str;
 use crate::util::url_util::host_from_url;
@@ -43,6 +44,29 @@ pub(super) fn other_names(rec: &Map<String, Value>) -> Vec<String> {
 /// and compares with `eq_ignore_ascii_case` (no per-token `String` allocation).
 pub(super) fn name_matches_query(name: &str, query: &str) -> bool {
     crate::util::str_util::whole_word_token_match(name, query)
+}
+
+/// True if the charity's legal name or any of its other names shares at least
+/// one whole-word token with the seed
+/// ([`shares_whole_word_token`](crate::util::str_util::shares_whole_word_token)).
+///
+/// The emission floor, distinct from [`record_is_exact`]'s all-tokens test.
+/// CKAN's `datastore_search?q=` is full-text across EVERY column, so a seed like
+/// `"Sydney Community Trust"` also matches every row whose `Town_City` is
+/// Sydney, and those rows were emitted as `name-candidate` Organisations
+/// attributed to the subject — Australian charity names carry city and suburb
+/// words constantly, so the false-hit volume is high. A row that matched only on
+/// an address/town column shares no NAME token and is dropped; a genuine partial
+/// name match ("Marshall Family Foundation" for seed "smith family") still
+/// survives as a candidate, which the stricter exactness test would have
+/// rejected. Same defect and same fix as `au_unclaimed`'s `owner_matches_query`.
+pub(super) fn record_name_shares_token(rec: &Map<String, Value>, query: &str) -> bool {
+    field_str(rec, "Charity_Legal_Name")
+        .as_deref()
+        .is_some_and(|n| crate::util::str_util::shares_whole_word_token(n, query))
+        || other_names(rec)
+            .iter()
+            .any(|n| crate::util::str_util::shares_whole_word_token(n, query))
 }
 
 /// True if the seed matches the charity's legal name or any of its other names.
@@ -151,6 +175,12 @@ pub(super) fn records_to_entities(
         let Some(legal) = field_str(rec, "Charity_Legal_Name") else {
             continue;
         };
+        // CKAN full-text-matched this row on SOME column; if no NAME token
+        // matched, the row is about an unrelated charity and nothing on it
+        // belongs in this scan. See [`record_name_shares_token`].
+        if !record_name_shares_token(rec, query) {
+            continue;
+        }
         let exact = record_is_exact(rec, query);
         let conf = if exact { ORG_EXACT } else { ORG_CANDIDATE };
 
@@ -228,7 +258,12 @@ pub(super) fn records_to_entities(
             // Inline Coordinates for immediate AU-052/053 participation.
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.62, scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::NOTABLE,
+                    scan_id,
+                );
                 c.tag("addr-derived");
                 c.tag("geoint");
                 c.tag("acnc");

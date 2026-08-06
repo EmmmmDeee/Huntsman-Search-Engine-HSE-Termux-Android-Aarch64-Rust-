@@ -124,6 +124,39 @@ mod tests {
     }
 
     #[test]
+    fn au069_medium_band_route_and_boundary_pins() {
+        // email —c— person —0.9— username; c is the weakest link, so
+        // path.min_confidence == c. The High (>= VERY_STRONG 0.85) arm is
+        // already covered by au069_fires_on_an_end_to_end_strong_route (0.9);
+        // this pins the Medium base band (0.70 <= min < 0.85) and both const
+        // boundaries. There are only two rungs — Medium and High, no Critical.
+        let build = |c: f64| {
+            let a = mk(EntityKind::Email, "a@x.com");
+            let mid = mk(EntityKind::Person, "Alice");
+            let b = mk(EntityKind::Username, "alice");
+            let rels = [edge(&a, &mid, c), edge(&mid, &b, 0.9)];
+            rule_au_069_high_integrity_connection(&RuleContext::new(&[a, mid, b]), &rels, "s", 0)
+        };
+
+        // ~0.75: inside the medium band 0.70 <= min < 0.85 → Medium.
+        let mid_out = build(0.75);
+        assert_eq!(mid_out.len(), 1);
+        assert_eq!(mid_out[0].rule_id, "AU-069");
+        assert_eq!(mid_out[0].severity, Severity::Medium);
+
+        // Exactly 0.85 (VERY_STRONG): the `>=` boundary is inclusive → High.
+        let hi = build(0.85);
+        assert_eq!(hi.len(), 1);
+        assert_eq!(hi[0].severity, Severity::High);
+
+        // Exactly 0.70 (STRONG): the `< STRONG` suppression is exclusive, so the
+        // route is NOT suppressed and lands in the medium band → Medium.
+        let lo = build(0.70);
+        assert_eq!(lo.len(), 1);
+        assert_eq!(lo[0].severity, Severity::Medium);
+    }
+
+    #[test]
     fn au069_silent_when_a_link_is_weak() {
         // The only route has a weak hop (0.3) — present but not reliable end to end.
         let a = mk(EntityKind::Email, "a@x.com");

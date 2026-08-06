@@ -269,10 +269,7 @@ pub(super) fn link_cross_scan_kind_aliases(
                 break;
             }
             probes += 1;
-            let uid = crate::core::entity::derive_uid(
-                &EntityKind::Username,
-                &crate::core::entity::normalise(&EntityKind::Username, &handle),
-            );
+            let uid = crate::core::entity::uid_for(&EntityKind::Username, &handle);
             let Ok(ids) = store.scan_ids_for_entity(&uid) else {
                 continue;
             };
@@ -502,11 +499,19 @@ const MAX_RECALLED_RELATIONS_PER_ENTITY: usize = 8;
 /// recalling that a domain once resolved to an IP is not the human-network bridge
 /// this pass exists to surface.
 ///
-/// The affiliation edges qualify for exactly that reason: "this person was a
-/// director of that company in an earlier investigation" is a human-network
-/// bridge of the same class as a declared association, and often to an
-/// organisation not present in the current scan at all — the case this pass is
-/// most valuable in.
+/// The person↔organisation and corporate-control affiliation edges
+/// (`OfficerOf` / `EmployedBy` / `MemberOf` / `ControlledBy`) qualify for exactly
+/// that reason: "this person was a director of that company in an earlier
+/// investigation" is a human-network bridge of the same class as a declared
+/// association, and often to an organisation not present in the current scan at
+/// all — the case this pass is most valuable in.
+///
+/// [`RelationKind::OperatedBy`] is deliberately NOT recalled, even though it is
+/// an affiliation kind: its subject is an *asset* (an IP / ASN / wallet / domain),
+/// so it is asset→operator attribution, not a person/organisation identity
+/// bridge. It is grouped with the excluded infrastructure edges — alongside its
+/// symmetric cousin [`RelationKind::SameOperator`] — so this pass stays a
+/// human-network recall, not an infrastructure-attribution one.
 fn is_identity_relation(kind: RelationKind) -> bool {
     matches!(
         kind,

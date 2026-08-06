@@ -53,6 +53,7 @@ HUNTSMAN_ONYPHE_KEY="insert_onyphe_key_here"
 HUNTSMAN_NETLAS_KEY="insert_netlas_key_here"
 HUNTSMAN_CRIMINALIP_KEY="insert_criminalip_key_here"
 HUNTSMAN_ZOOMEYE_KEY="insert_zoomeye_key_here"
+HUNTSMAN_FOFA_KEY="insert_fofa_key_here"
 HUNTSMAN_BINARYEDGE_KEY="insert_binaryedge_key_here"
 HUNTSMAN_DOMAINSDB_KEY="insert_domainsdb_key_here"
 HUNTSMAN_WHOISXML_KEY="insert_whoisxml_key_here"
@@ -65,12 +66,16 @@ HUNTSMAN_OSINTCAT_KEY="insert_osintcat_key_here"
 HUNTSMAN_SEON_KEY="insert_seon_key_here"
 HUNTSMAN_OPENSANCTIONS_KEY="insert_opensanctions_key_here"
 HUNTSMAN_EMAILREP_KEY="insert_emailrep_key_here"
-HUNTSMAN_PROXYCURL_KEY="insert_proxycurl_key_here"
 HUNTSMAN_OPENCORP_KEY="insert_opencorporates_key_here"
+# GitHub PAT — optional for github_user / github_code_search / github_commits:
+# they all run key-free, but unauthenticated calls share GitHub's 60 req/hour
+# core limit, and a token raises it (no extra scopes needed for public data):
+HUNTSMAN_GITHUB_TOKEN="insert_github_personal_access_token_here"
 # Australian archives:
 HUNTSMAN_TROVE_KEY="insert_nla_trove_key_here"
 HUNTSMAN_BREACHDIR_KEY="insert_breachdirectory_key_here"
 HUNTSMAN_HUNTER_KEY="insert_hunter_io_key_here"
+HUNTSMAN_PROXYCURL_KEY="insert_proxycurl_key_here"
 # [RESERVED] not yet wired to a module (xposed_or_not + hudsonrock modules run
 # key-free today; these keys are placeholders for future paid tiers):
 HUNTSMAN_XPOSEDORNOT_KEY="insert_xposedornot_key_here"

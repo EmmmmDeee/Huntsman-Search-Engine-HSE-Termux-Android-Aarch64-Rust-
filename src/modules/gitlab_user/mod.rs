@@ -23,6 +23,9 @@
 //! cross-service diversity to AU-045 multi-service identity confirmation and the
 //! AU-062 multi-pathway corroboration rule. Official, stable, keyless.
 
+#[cfg(test)]
+mod tests;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -197,7 +200,7 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
 
     // Real name → Person (non-placeholder, ≥ 2 tokens).
     if let Some(name) = user.name.as_deref()
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.72, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::ATTRIBUTED, scan_id)
     {
         p.tag("gitlab");
         p.tag("derived");
@@ -292,7 +295,12 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
     // Website URL + Domain. The Url and Domain carry distinct evidence, so the
     // kit's stable [Url, Domain] ordering is decorated per-kind.
     if let Some(site) = user.website_url.as_deref() {
-        for mut e in profile_kit::website_url_and_domain(site, 0.72, confidence::HIGH, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(
+            site,
+            confidence::ATTRIBUTED,
+            confidence::HIGH,
+            scan_id,
+        ) {
             match e.kind {
                 EntityKind::Domain => {
                     e.tag("gitlab");
@@ -356,7 +364,7 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
 
     // Bio: extract emails.
     if let Some(bio) = user.bio.as_deref() {
-        for mut e in profile_kit::bio_emails(bio, 0.72, scan_id) {
+        for mut e in profile_kit::bio_emails(bio, confidence::ATTRIBUTED, scan_id) {
             e.tag("gitlab");
             e.tag("public-profile");
             e.add_evidence(
@@ -368,130 +376,4 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
     }
 
     result.entities
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_user(
-        username: &str,
-        name: Option<&str>,
-        twitter: Option<&str>,
-        website: Option<&str>,
-        location: Option<&str>,
-        org: Option<&str>,
-    ) -> GlUser {
-        GlUser {
-            username: username.to_string(),
-            name: name.map(str::to_string),
-            public_email: None,
-            bio: None,
-            website_url: website.map(str::to_string),
-            location: location.map(str::to_string),
-            organization: org.map(str::to_string),
-            twitter: twitter.map(str::to_string),
-            linkedin: None,
-            created_at: Some("2019-01-01T00:00:00Z".to_string()),
-        }
-    }
-
-    #[test]
-    fn builds_username_entity_confirmed_on_gitlab() {
-        let user = make_user("gluser", None, None, None, None, None);
-        let ents = build_entities(user, "scan-gl-001");
-        let u = ents
-            .iter()
-            .find(|e| e.kind == EntityKind::Username && e.value == "gluser");
-        assert!(u.is_some(), "must emit Username entity");
-        assert!((u.expect("should succeed").confidence - confidence::VERY_HIGH_PLUS).abs() < 0.01);
-        assert!(
-            u.expect("should succeed").has_tag("gitlab")
-                && u.expect("should succeed").has_tag("code")
-        );
-    }
-
-    #[test]
-    fn emits_person_from_full_name() {
-        let user = make_user("gluser", Some("Alice Coder"), None, None, None, None);
-        let ents = build_entities(user, "scan-gl-002");
-        let p = ents.iter().find(|e| e.kind == EntityKind::Person);
-        assert!(p.is_some(), "must emit Person from multi-word name");
-        assert_eq!(p.expect("should succeed").value, "Alice Coder");
-    }
-
-    #[test]
-    fn emits_twitter_pivot_stripping_at() {
-        let user = make_user("gluser", None, Some("@alicetw"), None, None, None);
-        let ents = build_entities(user, "scan-gl-003");
-        let tw = ents
-            .iter()
-            .find(|e| e.kind == EntityKind::Username && e.has_tag("twitter"));
-        assert_eq!(tw.map(|e| e.value.as_str()), Some("alicetw"));
-    }
-
-    #[test]
-    fn emits_website_url_and_domain() {
-        let user = make_user("gluser", None, None, Some("https://alice.dev"), None, None);
-        let ents = build_entities(user, "scan-gl-004");
-        assert!(
-            ents.iter()
-                .any(|e| e.kind == EntityKind::Url && e.value == "https://alice.dev")
-        );
-        assert!(
-            ents.iter()
-                .any(|e| e.kind == EntityKind::Domain && e.value == "alice.dev")
-        );
-    }
-
-    #[test]
-    fn emits_address_from_location() {
-        let user = make_user("gluser", None, None, None, Some("Berlin, DE"), None);
-        let ents = build_entities(user, "scan-gl-005");
-        let a = ents.iter().find(|e| e.kind == EntityKind::Address);
-        assert!(a.is_some());
-        assert_eq!(a.expect("should succeed").value, "Berlin, DE");
-        assert!(a.expect("should succeed").has_tag("self-asserted"));
-    }
-
-    #[test]
-    fn emits_organisation_from_org_field() {
-        let user = make_user("gluser", None, None, None, None, Some("Acme Corp"));
-        let ents = build_entities(user, "scan-gl-006");
-        let o = ents.iter().find(|e| e.kind == EntityKind::Organisation);
-        assert!(o.is_some(), "must emit Organisation from org field");
-        assert_eq!(o.expect("should succeed").value, "Acme Corp");
-    }
-
-    #[test]
-    fn no_entities_for_absent_optional_fields() {
-        let user = make_user("quietuser", None, None, None, None, None);
-        let ents = build_entities(user, "scan-gl-007");
-        assert_eq!(ents.len(), 1, "only Username when no optional fields");
-        assert_eq!(ents[0].kind, EntityKind::Username);
-    }
-
-    #[test]
-    fn emits_public_email_the_keyless_endpoint_actually_returns() {
-        // `public_email` is the one rich field the unauthenticated
-        // /users?username= response carries (confirmed live) — it must surface as
-        // a high-confidence Email, not be dropped.
-        let mut user = make_user("gluser", None, None, None, None, None);
-        user.public_email = Some("dev@example.com".to_string());
-        let ents = build_entities(user, "scan-gl-email");
-        let em = ents
-            .iter()
-            .find(|e| e.kind == EntityKind::Email && e.value == "dev@example.com")
-            .expect("public_email → Email entity");
-        assert!(em.has_tag("gitlab") && em.has_tag("public-profile"));
-        assert!((em.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
-        // A blank / malformed public_email is not surfaced.
-        let mut u2 = make_user("gluser", None, None, None, None, None);
-        u2.public_email = Some(String::new());
-        assert!(
-            build_entities(u2, "s")
-                .iter()
-                .all(|e| e.kind != EntityKind::Email)
-        );
-    }
 }

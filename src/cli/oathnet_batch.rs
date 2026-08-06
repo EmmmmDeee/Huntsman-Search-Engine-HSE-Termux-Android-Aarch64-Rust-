@@ -270,11 +270,23 @@ async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result
         // `join_all` preserves input order, so `rows` stays deterministic.
         for (q, res) in join_all(futures).await {
             match res {
-                Ok(items) => {
+                Ok(found) => {
                     dispatched += 1;
-                    total_hits += items.len();
-                    if !items.is_empty() {
-                        rows.push((dispatched, q, items.len()));
+                    total_hits += found.items.len();
+                    // A short enumeration is real data, but the row count is a
+                    // COVERAGE claim — say so rather than let the summary read
+                    // as the complete answer.
+                    if let Some(reason) = found.completeness.reason() {
+                        tracing::warn!(
+                            surface = q.surface.label(),
+                            field = q.field,
+                            value = %q.value,
+                            fetched = found.items.len(),
+                            "oathnet-batch result is PARTIAL: {reason}"
+                        );
+                    }
+                    if !found.items.is_empty() {
+                        rows.push((dispatched, q, found.items.len()));
                     }
                 }
                 Err(e) => {

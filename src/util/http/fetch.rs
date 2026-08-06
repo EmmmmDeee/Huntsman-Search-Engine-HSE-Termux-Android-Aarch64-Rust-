@@ -7,6 +7,7 @@ use crate::util::circuit_breaker;
 
 use super::keys::scan_for_api_keys;
 use super::redact::redact_credentials;
+use super::url::RequestBuilderExt;
 
 /// True if an HTTP status is a *server-side* fault that should count against a
 /// host's circuit breaker: any 5xx, or 429 (rate-limited / quota-exhausted).
@@ -83,14 +84,47 @@ pub async fn error_snippet(resp: reqwest::Response) -> String {
     let redacted = redact_credentials(&body);
     let trimmed = redacted.trim();
     if trimmed.is_empty() {
-        "<empty>".to_string()
-    } else {
-        trimmed
-            .replace(['\n', '\r'], " ")
-            .chars()
-            .take(200)
-            .collect()
+        return "<empty>".to_string();
     }
+    // An HTML document's first 200 characters are doctype and IE conditional
+    // comments, so the verbatim path below reduces a CDN/WAF/origin error page
+    // to pure boilerplate. Observed in production: a 523 from an unreachable
+    // origin was persisted, and reported by `hse doctor`, as
+    // `HTTP 523 <unknown status code>: <!DOCTYPE html> <!--[if lt IE 7]> …` —
+    // 200 characters that name neither the host nor the failure. Summarise the
+    // document instead; a JSON/text payload is untouched.
+    if let Some(summary) = html_error_summary(trimmed) {
+        return summary;
+    }
+    trimmed
+        .replace(['\n', '\r'], " ")
+        .chars()
+        .take(SNIPPET_CHARS)
+        .collect()
+}
+
+/// Characters of body text kept in an error message. Enough for a real API error
+/// payload; short enough that a persisted `ModuleError` event stays readable.
+const SNIPPET_CHARS: usize = 200;
+
+/// Reduce an HTML error page to its single most diagnostic line, or `None` when
+/// the body is not an HTML document (leaving JSON/text payloads verbatim).
+///
+/// Prefers `<title>`, which for every common error page — Cloudflare, nginx,
+/// Apache, IIS, AWS ALB — is a one-line statement of the failure
+/// (`example.com | 523: Origin is unreachable`, `504 Gateway Time-out`). Falls
+/// back to the tag-stripped body when a page has no usable title, which is still
+/// strictly better than raw markup.
+fn html_error_summary(body: &str) -> Option<String> {
+    use crate::util::html;
+    if !html::looks_like_document(body) {
+        return None;
+    }
+    let text = html::title(body).or_else(|| {
+        let stripped = html::collapse_whitespace(&html::strip_html(body));
+        (!stripped.is_empty()).then_some(stripped)
+    })?;
+    Some(text.chars().take(SNIPPET_CHARS).collect())
 }
 
 /// Read a response body but stop after `cap` bytes. A hostile or misconfigured
@@ -333,6 +367,32 @@ fn transport_is_transient(e: &reqwest::Error) -> bool {
     e.is_timeout() || e.is_connect()
 }
 
+/// The message for "reqwest could not send it, and the curl fallback failed too",
+/// naming the URL exactly once.
+///
+/// `reqwest`'s own send-failure `Display` already embeds the URL
+/// (`error sending request for url (https://…)`), so unconditionally appending
+/// `for {url}` printed it twice. In production that produced
+/// `transport error (error sending request for url (https://psbdmp.ws/api/v3/search/…))
+/// and curl fallback failed for https://psbdmp.ws/api/v3/search/…` — double the
+/// length for no extra information, and, because these URLs carry the scan
+/// target in the path, the subject's email address written twice into a
+/// persisted error event.
+///
+/// The URL is only appended when the transport message does not already contain
+/// it: not every `reqwest::Error` variant names the URL, and dropping it
+/// unconditionally would lose the one detail that identifies which request
+/// failed.
+pub(super) fn transport_and_fallback_failed(transport: &str, url: &str) -> String {
+    let transport = redact_credentials(transport);
+    let url = redact_credentials(url);
+    if transport.contains(url.as_str()) {
+        format!("transport error ({transport}); curl fallback also failed")
+    } else {
+        format!("transport error ({transport}) and curl fallback failed for {url}")
+    }
+}
+
 /// Read, scan for leaked API keys, and JSON-decode a successful response body — the
 /// shared success tail of the JSON fetch helpers.
 async fn decode_json_body<T: DeserializeOwned>(resp: reqwest::Response, module: &str) -> Result<T> {
@@ -395,11 +455,7 @@ async fn fetch_json_inner<T: DeserializeOwned>(
                     }
                     Err(Error::module(
                         module,
-                        format!(
-                            "transport error ({}) and curl fallback failed for {}",
-                            redact_credentials(&transport.to_string()),
-                            redact_credentials(url)
-                        ),
+                        transport_and_fallback_failed(&transport.to_string(), url),
                     ))
                 }
             }
@@ -698,6 +754,261 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
             return Err(Error::module(module, format!("HTTP {status}: {snippet}")));
         }
         return Ok(Some(decode_json_body(resp, module).await?));
+    }
+}
+
+/// The general form of [`fetch_keyed_json`]'s cascade for a provider whose auth
+/// scheme or HTTP method the GET-plus-single-header-value shape can't express —
+/// a `bearer` prefix, extra headers, or a POST body. [`fetch_keyed_json`] owns
+/// the request; this owns only the cascade, and the caller supplies the request
+/// via `build`.
+///
+/// This is the exact outer loop that 9+ modules (`onyphe`, `threatfox`,
+/// `criminal_ip`, `dehashed`, `leakix`, `securitytrails`, `ipqs`, `zoomeye`,
+/// `intelx`, `hibp`, `niamonx`) hand-rolled identically because
+/// [`fetch_keyed_json`] couldn't cover their request shape: begin on
+/// `initial_key`, retry in place on a 429 with a real `Retry-After` sleep, up
+/// to twice per key (via [`handle_keyed_error`]'s own retry budget), and on a
+/// terminal key failure — 401/403/429, or
+/// a 400 whose body is an auth failure in disguise (some providers, e.g.
+/// ONYPHE/Netlas, answer a dead key with 400 rather than 401 — see
+/// [`is_auth_failure_400_body`]) — rotate to the next usable pooled key and
+/// retry, so one call spends every credential the pool holds before it fails.
+///
+/// `build(key)` constructs a fresh [`reqwest::RequestBuilder`] for one attempt
+/// (a `RequestBuilder` isn't `Clone`, so it must be rebuilt per attempt, not
+/// reused). On a 2xx the caller decodes the returned `Response` itself — some
+/// providers scan the body for leaked API keys ([`super::json_scanned`]), some
+/// don't ([`super::json_decode`]); that choice is the caller's, not this
+/// primitive's, so it isn't lost in the consolidation.
+///
+/// `absent_statuses` names which non-2xx codes mean "no data for this
+/// selector" rather than a failure — mirrors [`fetch_json_inner`]'s own
+/// parameter for the identical reason: not every provider agrees. ONYPHE
+/// answers an unknown selector with a real `404`, but ThreatFox's fixed POST
+/// endpoint never returns one for a per-query miss (a miss is signalled in
+/// the response *body*, `query_status: "no_result"`), so a caller that never
+/// special-cased 404 must keep not special-casing it — pass `&[]`. Returns
+/// `Ok(None)` for a code in `absent_statuses`, or if the scan is cancelled
+/// mid-cascade (`ctx.cancel`, checked at the top of every attempt, so a
+/// cancellation before a request is sent or between retries is observed
+/// promptly — the one exception is *during* a 429's own backoff sleep inside
+/// [`handle_keyed_error`], which is not itself cancel-aware and runs to
+/// completion, clamped to 4 s, before the next check) — externally identical
+/// either way to what every hand-rolled copy already did (`return
+/// Ok(ModuleResult::new())` at the `process()` level).
+pub async fn keyed_cascade<F>(
+    ctx: &crate::core::module::ModuleContext,
+    module: &'static str,
+    initial_key: &str,
+    absent_statuses: &[u16],
+    build: F,
+) -> Result<Option<reqwest::Response>>
+where
+    F: FnMut(&str) -> reqwest::RequestBuilder,
+{
+    Ok(
+        keyed_cascade_with_key(ctx, module, initial_key, absent_statuses, build)
+            .await?
+            .map(|(resp, _)| resp),
+    )
+}
+
+/// [`keyed_cascade`], additionally returning **which key actually served the
+/// response** — the cascade may have rotated away from `initial_key`, so a
+/// caller that stamps key provenance onto its findings must fingerprint the
+/// winning key, not the one it started with.
+///
+/// Split out rather than folded into [`keyed_cascade`]'s return type so the
+/// common case (callers that don't care which key won) stays a plain
+/// `Option<Response>` with no destructuring. `dehashed` needs this: it stamps
+/// `api_key_origin` on every emitted record, and pinning that to the initial
+/// key after a rotation would misattribute the finding's provenance.
+pub async fn keyed_cascade_with_key<F>(
+    ctx: &crate::core::module::ModuleContext,
+    module: &'static str,
+    initial_key: &str,
+    absent_statuses: &[u16],
+    mut build: F,
+) -> Result<Option<(reqwest::Response, String)>>
+where
+    F: FnMut(&str) -> reqwest::RequestBuilder,
+{
+    let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut key = initial_key.to_string();
+    loop {
+        // Record BEFORE attempting: a burned key must never be re-handed by
+        // `next_pooled_key`, including the initial one.
+        tried.insert(key.clone());
+        match attempt_with_key(ctx, module, &key, absent_statuses, &mut build).await {
+            Attempt::Ok(resp) => return Ok(Some((resp, key))),
+            Attempt::Absent | Attempt::Cancelled => return Ok(None),
+            Attempt::Failed(e) => return Err(e),
+            Attempt::Rotate(e) => match ctx.next_pooled_key(module, &tried) {
+                Some(next) => key = next,
+                None => return Err(e),
+            },
+        }
+    }
+}
+
+/// What one key's attempt produced. The cascade drivers
+/// ([`keyed_cascade_with_key`], [`keyed_cascade_json`]) differ only in what they
+/// do with a 2xx; extracting the attempt keeps the retry/burn/classification
+/// policy in one place instead of duplicating it per driver.
+enum Attempt {
+    /// A 2xx response on this key.
+    Ok(reqwest::Response),
+    /// A status the caller declared absent — a clean miss, not a failure.
+    Absent,
+    /// This key is dead or exhausted and has already been burned. Carries the
+    /// error to surface if no untried key remains to rotate to.
+    Rotate(Error),
+    /// Terminal and not key-related; no rotation can help.
+    Failed(Error),
+    /// The scan was cancelled.
+    Cancelled,
+}
+
+/// Drive ONE key: send, honour a 429 backoff in place (up to
+/// [`handle_keyed_error`]'s budget), and classify the outcome. Never rotates —
+/// key selection belongs to the caller, which owns the `tried` set.
+async fn attempt_with_key<F>(
+    ctx: &crate::core::module::ModuleContext,
+    module: &'static str,
+    key: &str,
+    absent_statuses: &[u16],
+    build: &mut F,
+) -> Attempt
+where
+    F: FnMut(&str) -> reqwest::RequestBuilder,
+{
+    let mut retries = 2u8;
+    loop {
+        if ctx.cancel.is_cancelled() {
+            return Attempt::Cancelled;
+        }
+        let resp = match build(key).send_tagged(module).await {
+            Ok(r) => r,
+            Err(e) => return Attempt::Failed(e),
+        };
+        let status = resp.status();
+        if absent_statuses.contains(&status.as_u16()) {
+            return Attempt::Absent;
+        }
+        if status.is_success() {
+            return Attempt::Ok(resp);
+        }
+        let code = status.as_u16();
+        if handle_keyed_error(code, resp.headers(), &mut retries, module, key, ctx).await {
+            continue;
+        }
+        let snippet = error_snippet(resp).await;
+        // handle_keyed_error already burned 401/403/429 internally; the
+        // ambiguous-400-as-auth-failure case is this cascade's own extra check,
+        // so it burns the key itself when that's what fired.
+        let keyed =
+            is_keyed_error_status(code) || (code == 400 && is_auth_failure_400_body(&snippet));
+        let err = Error::module(module, format!("HTTP {status}: {snippet}"));
+        if keyed {
+            if code == 400 {
+                ctx.report_key_exhausted(module, key, code);
+            }
+            return Attempt::Rotate(err);
+        }
+        return Attempt::Failed(err);
+    }
+}
+
+/// What an inspected response BODY says about the key that produced it.
+///
+/// Some providers answer a dead or exhausted key with `HTTP 200` and an
+/// in-body status rather than a 401/403/429 — Criminal IP reports
+/// `status: 401|402|429` inside the JSON, IPQS reports `success: false` with a
+/// quota/auth message. Those are key failures the HTTP-status cascade cannot
+/// see, so without inspecting the body a dead key is indistinguishable from a
+/// clean empty result and the pool never rotates past it.
+pub enum BodyVerdict {
+    /// A real answer; return it.
+    Accept,
+    /// An auth/quota failure reported in the body.
+    KeyFailure {
+        /// The provider's own status, used when reporting the key to the pool.
+        code: u16,
+        /// The provider's own explanation, surfaced VERBATIM in the terminal
+        /// error once no untried key remains. IPQS distinguishes quota
+        /// exhaustion from a bad key from a plan limit only in this text, and
+        /// summarising it away would leave the operator unable to tell which —
+        /// so it is carried through rather than collapsed into the status code.
+        /// `None` where the provider offers no detail beyond the status.
+        detail: Option<String>,
+    },
+    /// A genuine miss for this query — not a key problem. Yields `Ok(None)`.
+    Absent,
+}
+
+/// [`keyed_cascade`] for a provider that reports key failures **in the response
+/// body on an HTTP 2xx**, which the status-only cascade cannot detect.
+///
+/// Decodes each successful response and asks `verdict` what the body means. On
+/// [`BodyVerdict::KeyFailure`] it burns the key and rotates exactly as an
+/// HTTP 401/403/429 would, so one call still spends every credential the pool
+/// holds. Decoding uses [`super::json_decode`] — both current callers
+/// (`criminal_ip`, `ipqs`) use it; a key-scanning variant belongs here only when
+/// a caller actually needs one.
+pub async fn keyed_cascade_json<T, F, V>(
+    ctx: &crate::core::module::ModuleContext,
+    module: &'static str,
+    initial_key: &str,
+    absent_statuses: &[u16],
+    mut build: F,
+    verdict: V,
+) -> Result<Option<T>>
+where
+    T: DeserializeOwned,
+    F: FnMut(&str) -> reqwest::RequestBuilder,
+    V: Fn(&T) -> BodyVerdict,
+{
+    let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut key = initial_key.to_string();
+    loop {
+        // Record BEFORE attempting — see `keyed_cascade_with_key`.
+        tried.insert(key.clone());
+        let rotate_err = match attempt_with_key(ctx, module, &key, absent_statuses, &mut build)
+            .await
+        {
+            Attempt::Absent | Attempt::Cancelled => return Ok(None),
+            Attempt::Failed(e) => return Err(e),
+            Attempt::Rotate(e) => e,
+            Attempt::Ok(resp) => {
+                let decoded: T = super::json_decode(module, resp).await?;
+                match verdict(&decoded) {
+                    BodyVerdict::Accept => return Ok(Some(decoded)),
+                    BodyVerdict::Absent => return Ok(None),
+                    BodyVerdict::KeyFailure { code, detail } => {
+                        ctx.report_key_exhausted(module, &key, code);
+                        // Carry the provider's own words through: they are
+                        // what distinguishes quota from auth from plan
+                        // limit, and the status code alone cannot.
+                        Error::module(
+                            module,
+                            match detail {
+                                Some(d) => format!(
+                                    "{module} reported an in-body key failure (status {code}): {d}"
+                                ),
+                                None => format!(
+                                    "{module} reported an in-body key failure (status {code})"
+                                ),
+                            },
+                        )
+                    }
+                }
+            }
+        };
+        match ctx.next_pooled_key(module, &tried) {
+            Some(next) => key = next,
+            None => return Err(rotate_err),
+        }
     }
 }
 

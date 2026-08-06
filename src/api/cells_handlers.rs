@@ -238,7 +238,21 @@ pub async fn cells_clear(
         return bad_request("set confirm: true to clear the cell tower database");
     }
     match clear_cells_db() {
-        Ok(()) => Json(json!({ "cleared": true })).into_response(),
+        // The byte figures are reported, not just `cleared: true`: a `DELETE`
+        // does not shrink a SQLite file, so before the vacuum this endpoint
+        // could answer "cleared" having returned nothing to the filesystem.
+        // `vacuum_error` is `null` on success and carries the reason when the
+        // rows went but the file could not be shrunk — a real outcome on a
+        // storage-constrained device, and one the caller must be able to see.
+        Ok(report) => Json(json!({
+            "cleared": true,
+            "rows_deleted": report.rows_deleted,
+            "bytes_before": report.bytes_before,
+            "bytes_after": report.bytes_after,
+            "bytes_reclaimed": report.bytes_reclaimed(),
+            "vacuum_error": report.vacuum_error,
+        }))
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
@@ -436,6 +450,14 @@ mod tests {
 
     #[tokio::test]
     async fn cells_clear_succeeds_with_confirm_true() {
+        // clear_cells_db() operates on the real cell-tower DB file (not the
+        // test's in-memory store), and fails if it is absent. `open_rw` creates
+        // the file and its schema — and resolves through `paths::data_file`, so
+        // under `cfg(test)` that is the per-process temp root, and the directory
+        // is created 0700 on the way. No manual `create_dir_all` here: that would
+        // create at the ambient umask and bypass that guarantee.
+        let _db = crate::util::cell_db::open_rw().expect("should create cell DB");
+
         let app = cells_router();
         let loopback: SocketAddr = "127.0.0.1:9999".parse().expect("should succeed");
         let req = req_with_peer(

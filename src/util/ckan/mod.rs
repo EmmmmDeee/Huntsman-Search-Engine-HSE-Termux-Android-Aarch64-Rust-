@@ -8,6 +8,7 @@
 //! contract, not per-portal), so they live here once rather than being
 //! re-implemented — and re-tested — in each module.
 
+use crate::core::error::{Error, Result};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -67,6 +68,54 @@ pub fn datastore_search_url(action_base: &str, resource_id: &str, q: &str, limit
         "{action_base}/datastore_search?resource_id={resource_id}&q={}&limit={limit}",
         crate::util::http::urlencode(q)
     )
+}
+
+/// Enforce the CKAN application-error invariant on a parsed [`Response`],
+/// returning the `result` set (or `None` for a genuine empty answer).
+///
+/// CKAN `action` endpoints return **HTTP 200 even on application errors** — a
+/// bad resource id, an offline datastore, a rate-limit — signalling the failure
+/// only via `success: false` in the body. `fetch_json` cannot see that (it sees
+/// a 2xx with a parseable body), so without this check every one of those
+/// failures collapses into an empty record set indistinguishable from a genuine
+/// "no match", and a portal outage reads to the operator as a confirmed
+/// negative. This is the one correctness property every CKAN caller needs, so it
+/// lives here once — pure and unit-testable — rather than being re-implemented,
+/// with an identical error string, in each register module (the ASIC banned /
+/// business-names / persons modules, ACNC charities, and the QLD unclaimed-money
+/// module all shared a verbatim copy before this was hoisted).
+///
+/// A `success: false` envelope becomes an [`Error::module`] tagged with the
+/// caller's `module` name. `success: true` or an absent flag passes through,
+/// yielding `resp.result` — `None` when the portal returned no `result` object
+/// at all, which callers treat as the honest empty answer.
+pub fn check_envelope(resp: Response, module: &'static str) -> Result<Option<ResultSet>> {
+    if resp.success == Some(false) {
+        return Err(Error::module(
+            module,
+            "CKAN datastore_search returned success=false (bad resource id or portal error)",
+        ));
+    }
+    Ok(resp.result)
+}
+
+/// Fetch a CKAN `datastore_search` `url` and validate its envelope in one step:
+/// [`crate::util::http::fetch_json`] (which surfaces transport / non-2xx / parse
+/// failures via `?`) composed with [`check_envelope`] (which surfaces the
+/// HTTP-200 `success:false` application error). Returns the matched
+/// [`ResultSet`], or `None` for a genuine empty answer.
+///
+/// The single entry point every register module uses for its primary query, so
+/// the "a CKAN failure must not masquerade as no-findings" guarantee cannot be
+/// forgotten by a new caller — build the URL with [`datastore_search_url`], pass
+/// it here, and the envelope is checked for you.
+pub async fn validated_result(
+    client: &reqwest::Client,
+    module: &'static str,
+    url: &str,
+) -> Result<Option<ResultSet>> {
+    let resp: Response = crate::util::http::fetch_json(client, module, url).await?;
+    check_envelope(resp, module)
 }
 
 #[cfg(test)]

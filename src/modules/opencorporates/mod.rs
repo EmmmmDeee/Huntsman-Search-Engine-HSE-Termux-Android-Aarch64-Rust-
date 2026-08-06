@@ -33,7 +33,7 @@ use serde::Deserialize;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -95,7 +95,7 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
         entity.tag("dissolved");
         // A dissolved company is less likely to be the current operating entity;
         // pull confidence down slightly so live entities rank above it.
-        entity.confidence = (entity.confidence - 0.10).max(0.10);
+        entity.confidence = confidence::derived_from(entity.confidence);
     }
 
     let mut ev = [
@@ -140,7 +140,12 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
 
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(addr) {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.62, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::NOTABLE,
+                scan_id,
+            );
             c.tag("addr-derived");
             c.tag("geoint");
             c.tag("opencorporates");
@@ -289,7 +294,12 @@ pub(super) fn build_officer_entities(
     if let Some(co) = officer.company.as_ref() {
         let co_name = co.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
         if let Some(name) = co_name {
-            let mut org = Entity::new(EntityKind::Organisation, name, 0.72, scan_id);
+            let mut org = Entity::new(
+                EntityKind::Organisation,
+                name,
+                confidence::ATTRIBUTED,
+                scan_id,
+            );
             org.tag("opencorporates");
             if co.jurisdiction_code.as_deref() == Some("au") {
                 org.tag("country:AU");
@@ -329,7 +339,7 @@ pub(super) fn build_officer_entities(
                 && !num.is_empty()
                 && co.jurisdiction_code.as_deref() == Some("au")
             {
-                let mut acn = Entity::new(EntityKind::AbnAcn, num, 0.78, scan_id);
+                let mut acn = Entity::new(EntityKind::AbnAcn, num, confidence::STRONG, scan_id);
                 acn.tag("opencorporates");
                 acn.tag("company-number");
                 acn.add_evidence(
@@ -343,7 +353,7 @@ pub(super) fn build_officer_entities(
 
     // Corroborating Person entity for the officer name (confirms handle→identity).
     if let Some(name) = officer_name.filter(|n| n.contains(' ')) {
-        let mut pe = Entity::new(EntityKind::Person, name, 0.72, scan_id);
+        let mut pe = Entity::new(EntityKind::Person, name, confidence::ATTRIBUTED, scan_id);
         pe.tag("opencorporates");
         pe.tag("officer");
         if let Some(p) = position {
@@ -506,7 +516,7 @@ impl Module for OpenCorporates {
             return Ok(ModuleResult::new());
         }
         if !status.is_success() {
-            return Err(Error::module(SRC, format!("HTTP {status}")));
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
         let mut result = ModuleResult::new();

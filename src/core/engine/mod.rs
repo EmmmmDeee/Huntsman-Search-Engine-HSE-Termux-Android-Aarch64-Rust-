@@ -50,8 +50,9 @@ use passes::{
 };
 pub use ranking::{
     AutonomousPlan, AutonomousTarget, ClusteredTarget, DEFAULT_SWEEP_DIVERSITY, LeverageRanked,
-    autonomous_target_score, enrich_offline_geo, kind_pivot_value, plan_autonomous_sweep,
-    rank_autonomous_targets, rank_enrichment_leverage, rank_identity_aware_targets,
+    autonomous_target_score, enrich_offline_geo, is_autonomous_seed_candidate, kind_pivot_value,
+    plan_autonomous_sweep, rank_autonomous_targets, rank_enrichment_leverage,
+    rank_identity_aware_targets,
 };
 use writer::DbWriter;
 // The per-target dispatch context (`DispatchCx`) and the mutable accumulator
@@ -80,6 +81,7 @@ use crate::core::module::ModuleCost;
 
 use crate::core::{
     dependency::ModuleGraph,
+    engine_host::{EngineHost, NoopEngineHost},
     entity::Entity,
     error::{Error, Result},
     event::{Event, EventBus, EventKind},
@@ -105,6 +107,10 @@ pub struct ScanEngine {
     writer: DbWriter,
     /// Module-owned effects supplied by the application composition root.
     module_runtime: Arc<dyn ModuleRuntime>,
+    /// `util`-backed host effects — the egress proxy pool and the module-health
+    /// quarantine — supplied by the same composition root, so `core` drives
+    /// them without naming `util`. See [`crate::core::engine_host`].
+    host: Arc<dyn EngineHost>,
 }
 
 /// Reason an expansion round stopped before depth was exhausted.
@@ -134,6 +140,33 @@ pub(crate) struct ModuleStats {
     /// Modules whose result was replayed from the inter-scan entity cache
     /// (C9 / SOL-CACHE-INTERSCAN). Not counted in `run`.
     pub cached: usize,
+}
+
+/// A `JoinHandle` that aborts its task when dropped.
+///
+/// Dropping a bare `tokio::JoinHandle` **detaches** the task — it does not
+/// abort it. `Cargo.toml` sets `panic = "unwind"` (deliberately: a panicking
+/// module is caught at the dispatch boundary rather than killing the process),
+/// so any panic between spawning the wall-time watchdog and the explicit
+/// `abort()` at the end of the scan body unwound straight past that abort and
+/// left the watchdog running. It then slept out its full deadline and fired
+/// `cancel()` on the caller's context long after the scan was gone — poisoning
+/// a shared token under a long-lived `serve`/`radar`, so an unrelated later
+/// scan was cancelled for no operator-visible reason.
+///
+/// This is not hypothetical: the scan body already documents that exact hazard
+/// for the *error* path, and it is reachable — `run_gap_fill` calls
+/// `correlator::gap_fill_probes` unguarded, while the sibling
+/// `correlate_incremental` wraps the same rule engine in `catch_unwind`.
+///
+/// Aborting on drop makes the cleanup unconditional: normal return, `?`
+/// early-exit and unwind all reap the task.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// The scan-wide working entity set, wrapping `HashMap<String, Entity>` to
@@ -211,6 +244,33 @@ impl TrackedEntityMap {
             .collect()
     }
 
+    /// The full working set as a **deterministically ordered** `Vec`, sorted by
+    /// `uid`.
+    ///
+    /// The single accessor every correlation/reporting snapshot must use.
+    /// `self.map` is a `HashMap`, so `values().cloned().collect()` yields
+    /// whatever order the hasher happens to produce — and that order is not
+    /// cosmetic here. `correlator::confirmed_only` returns `Cow::Borrowed` in
+    /// the common case, so caller order reaches the rules verbatim; rules that
+    /// build `entity_uids` in slice order (AU-002's identity cluster, for one)
+    /// then bake it into a persisted correlation row. `rank_and_sort`'s
+    /// tie-break even documents the assumption that "the per-group entity_uids
+    /// are already individually sorted" — which was false on the live path.
+    ///
+    /// The finalise pass could not repair it either: `Store::upsert_correlation`
+    /// short-circuits on `if new_set.is_subset(&old_set)`, so the row written
+    /// during the live scan survives. Two runs over identical inputs could
+    /// therefore persist different `entity_uids` orderings for the same
+    /// finding — a reproducibility break in an evidentiary tool.
+    ///
+    /// `uid` is a SHA-256 and unique per entity, so this is a total order and
+    /// needs no secondary tie-break.
+    fn snapshot(&self) -> Vec<Entity> {
+        let mut out: Vec<Entity> = self.map.values().cloned().collect();
+        out.sort_by(|a, b| a.uid.cmp(&b.uid));
+        out
+    }
+
     /// Unwrap into the plain map for the one-time final flush
     /// (`finalise_scan` persists everything unconditionally, dirty or not,
     /// so it has no use for dirty-tracking).
@@ -225,6 +285,71 @@ impl std::ops::Deref for TrackedEntityMap {
     fn deref(&self) -> &HashMap<String, Entity> {
         &self.map
     }
+}
+
+/// Upper bound on the working set for the per-round reconsideration pass
+/// ([`reconsider_working_set`]).
+///
+/// Deliberately far larger than [`ScanEngine::INCREMENTAL_CORRELATE_MAX_ENTITIES`]
+/// (the live-correlation preview bound), because the two passes have opposite
+/// deferrability. The live pass evaluates all 34 correlation rules — genuinely
+/// expensive — and deferring it loses nothing, since the complete,
+/// budget-bounded pass still runs at finalise. Reconsideration is the opposite:
+/// a reconsideration deferred past its round is a set-aside lead **never
+/// expanded** (finalise re-promotes it, but finalise is after the last
+/// expansion round), so it must keep running well past the point where the live
+/// preview sensibly defers.
+///
+/// Its per-round cost is lighter than the live pass but not free: two of the
+/// three promotion passes are O(n) tag/geo scans, while
+/// [`promote_multipath_corroborated`] runs the AU-062 multipath detector, whose
+/// identity-pair probing is bounded by
+/// [`crate::core::relation::graph::IDENTITY_PAIR_PROBE_CAP`] (so it is capped,
+/// not linear). This bound therefore exists to cap that probe and the per-round
+/// working-set clone on a pathologically large set — not to trade away recall,
+/// which is why it sits far above the live-pass bound.
+const RECONSIDER_MAX_ENTITIES: usize = 20_000;
+
+/// Free/offline reconsideration of the whole working set: re-promote, in place,
+/// any set-aside lead that evidence gathered since now corroborates, so it
+/// clears the expansion floor and is selected as a candidate THIS round instead
+/// of only at finalise (too late to expand). Returns the number promoted.
+///
+/// Runs the three cross-angle promotion passes — geo-corroborated family,
+/// multi-path corroboration, and geo-corroborated breach candidates — over a
+/// snapshot, then writes back only the entities a pass actually changed through
+/// [`TrackedEntityMap::insert`] so those re-promotions are dirty-tracked and
+/// checkpointed. Idempotent: each pass is tag-guarded, so re-running across
+/// rounds never double-promotes. Bounded by [`RECONSIDER_MAX_ENTITIES`] so a
+/// pathologically large set cannot make the per-round clone stall a round.
+fn reconsider_working_set(entity_map: &mut TrackedEntityMap, relations: &[Relation]) -> usize {
+    if entity_map.len() > RECONSIDER_MAX_ENTITIES {
+        return 0;
+    }
+    let mut snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+    let promoted = promote_geo_corroborated_family(&mut snapshot)
+        + promote_multipath_corroborated(&mut snapshot, relations)
+        + promote_breach_candidate_geo_corroborated(&mut snapshot);
+    if promoted > 0 {
+        for e in snapshot {
+            // Write back ONLY the entities a pass mutated. `insert` marks the
+            // uid dirty unconditionally, so re-inserting the whole snapshot
+            // would dirty every entity in the working set on a single
+            // promotion, forcing the round's checkpoint to persist all of them
+            // and defeating dirty-tracking. Each promotion pass ADDS a
+            // corroboration evidence record to every entity it lifts (and never
+            // removes one), so a changed entity is exactly one whose evidence
+            // count grew over the stored copy — the cheap, allocation-free
+            // signal used here in place of a full entity comparison.
+            let changed = entity_map
+                .get(&e.uid)
+                .is_none_or(|stored| stored.evidence.len() != e.evidence.len());
+            if changed {
+                entity_map.insert(e.uid.clone(), e);
+            }
+        }
+    }
+    promoted
 }
 
 /// Mutable scan-wide accumulators threaded through the expansion loop: the
@@ -293,12 +418,34 @@ impl ScanEngine {
         Self::with_module_runtime(modules, store, bus, Arc::new(NoopModuleRuntime))
     }
 
-    /// Construct an engine with explicit module-layer runtime effects.
+    /// Construct an engine with explicit module-layer runtime effects and the
+    /// no-op host — no egress refresh, no module quarantine.
     pub fn with_module_runtime(
+        modules: Vec<Arc<dyn Module>>,
+        store: Arc<dyn StoragePort>,
+        bus: EventBus,
+        module_runtime: Arc<dyn ModuleRuntime>,
+    ) -> Self {
+        Self::with_runtime_and_host(
+            modules,
+            store,
+            bus,
+            module_runtime,
+            Arc::new(NoopEngineHost),
+        )
+    }
+
+    /// Construct an engine with both injected contracts.
+    ///
+    /// The application composition root uses this one. `core` must not name the
+    /// `util`-backed host itself — that is the layering edge this indirection
+    /// exists to keep (`core_does_not_import_util_directly`).
+    pub fn with_runtime_and_host(
         mut modules: Vec<Arc<dyn Module>>,
         store: Arc<dyn StoragePort>,
         bus: EventBus,
         module_runtime: Arc<dyn ModuleRuntime>,
+        host: Arc<dyn EngineHost>,
     ) -> Self {
         modules.sort_by_key(|m| std::cmp::Reverse(m.priority()));
         let writer = DbWriter::spawn(Arc::clone(&store));
@@ -312,6 +459,7 @@ impl ScanEngine {
             graph,
             writer,
             module_runtime,
+            host,
         }
     }
 
@@ -519,11 +667,10 @@ impl ScanEngine {
         // before it can make a resource unreachable. Detached (never blocks the
         // scan) and internally throttled; not spawned at all when no proxy/feed
         // is configured, so a proxy-less deployment pays nothing.
-        if crate::util::egress::pool_is_configured()
-            || std::env::var(crate::util::egress::PROXY_FEEDS_ENV).is_ok()
-        {
-            tokio::spawn(async {
-                let (fed, ok) = crate::util::egress::refresh_pool().await;
+        if self.host.egress_is_configured() {
+            let host = Arc::clone(&self.host);
+            tokio::spawn(async move {
+                let (fed, ok) = host.refresh_egress_pool().await;
                 if fed > 0 || ok > 0 {
                     tracing::debug!(fed, validated_ok = ok, "egress proxy pool refreshed");
                 }
@@ -563,12 +710,9 @@ impl ScanEngine {
         // (falls back to an empty set = no quarantine). On a fresh DB the event
         // log is empty, so the set is empty and dispatch is unchanged.
         let quarantined: HashSet<String> = if opts.skip_dead_modules && opts.modules.is_none() {
-            use crate::util::scraper_health::{
-                RECENT_EVENTS_WINDOW, aggregate_source_health, quarantined_modules,
-            };
             self.store
-                .recent_module_outcome_events(RECENT_EVENTS_WINDOW)
-                .map(|evs| quarantined_modules(&aggregate_source_health(&evs)))
+                .recent_module_outcome_events(self.host.health_events_limit())
+                .map(|evs| self.host.quarantined_modules(&evs))
                 .unwrap_or_default()
         } else {
             HashSet::new()
@@ -592,12 +736,15 @@ impl ScanEngine {
         // `Aborted` with all collected entities persisted — so the scan stops
         // promptly AND still prints/streams what it found (the "always display
         // results" + "fallback bound that actually bounds" requirements).
+        // `AbortOnDrop`, not a bare `JoinHandle`: dropping a handle detaches the
+        // task rather than aborting it, so a panic anywhere below unwound past
+        // the explicit stop and leaked the watchdog onto a shared cancel token.
         let wall_watchdog = opts.max_wall_time_secs.map(|secs| {
             let cancel = ctx.cancel.clone();
-            tokio::spawn(async move {
+            AbortOnDrop(tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(secs)).await;
                 cancel.cancel();
-            })
+            }))
         });
 
         let mut entity_map: TrackedEntityMap =
@@ -717,7 +864,7 @@ impl ScanEngine {
         // just the dirty subset) — see [`TrackedEntityMap`]'s doc for why.
         let mut seed_dirty: Vec<Entity> = entity_map.take_dirty();
         self.checkpoint_entities(&scan.id, &mut seed_dirty);
-        let seed_snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+        let seed_snapshot: Vec<Entity> = entity_map.snapshot();
         self.correlate_incremental(&scan.id, &seed_snapshot, &mut emitted_corr);
 
         if opts.depth > 0 {
@@ -787,9 +934,9 @@ impl ScanEngine {
         // Scan body done — stop the wall-time watchdog so it can't fire after
         // we've already finished (and is reaped promptly rather than sleeping
         // out its full deadline in the background on a long-lived `serve`).
-        if let Some(handle) = wall_watchdog {
-            handle.abort();
-        }
+        // Dropping the guard aborts it; the unwind and `?` paths get the same
+        // cleanup from `AbortOnDrop` without needing a line here.
+        drop(wall_watchdog);
 
         let outcome = self
             .finalise_scan(
@@ -866,6 +1013,7 @@ impl ScanEngine {
                     EventKind::ScanComplete {
                         scan_id: scan.id.clone(),
                         entity_count: 0,
+                        status: scan.status,
                     },
                 );
                 return Ok(scan);
@@ -909,6 +1057,9 @@ impl ScanEngine {
                 EventKind::ScanComplete {
                     scan_id: scan.id.clone(),
                     entity_count,
+                    // `Complete` or `Aborted` per the branch above — carried on
+                    // the event so the log renders the true terminal state.
+                    status: scan.status,
                 },
             );
 
@@ -1091,7 +1242,7 @@ impl ScanEngine {
         scan_id: &str,
         allow_live_sensors: bool,
     ) -> Vec<Entity> {
-        use crate::core::entity::{EntityKind, Evidence, derive_uid, normalise};
+        use crate::core::entity::{EntityKind, Evidence, uid_for};
         const MAX_PRIOR_SCANS: usize = 8;
         const MAX_ENTITIES: usize = 300;
         const VALUE_MATCH_CAP: usize = 64;
@@ -1116,7 +1267,7 @@ impl ScanEngine {
         // Gather candidate scan-id lists from both recall paths, then flatten
         // into a recency-ordered, de-duplicated list (excluding this scan).
         let kind = target.kind.to_entity_kind();
-        let seed_uid = derive_uid(&kind, &normalise(&kind, &target.value));
+        let seed_uid = uid_for(&kind, &target.value);
         let mut id_lists: Vec<Vec<String>> = Vec::new();
         match self.store.scan_ids_for_entity(&seed_uid) {
             Ok(ids) => id_lists.push(ids),
@@ -1313,7 +1464,7 @@ impl ScanEngine {
         // The gap analysis needs the full relation graph the finaliser will build:
         // the in-flight lineage edges plus the structural edges derivable from the
         // current entity set. Derive once, off a snapshot.
-        let ents: Vec<Entity> = entity_map.values().cloned().collect();
+        let ents: Vec<Entity> = entity_map.snapshot();
         let mut rels = relations.clone();
         rels.extend(crate::core::relation::derive_all(&ents, scan_id));
 
@@ -1504,7 +1655,7 @@ impl ScanEngine {
             return 0;
         }
 
-        let ents: Vec<Entity> = entity_map.values().cloned().collect();
+        let ents: Vec<Entity> = entity_map.snapshot();
         let plan = crate::core::breach_sweep::compile(
             &ents,
             crate::core::breach_sweep::SweepInputs {
@@ -1629,7 +1780,7 @@ impl ScanEngine {
     /// it only attaches its summary and its flags, so this is safe to run after
     /// every gate the scan has already applied.
     fn run_consensus_audit(&self, scan_id: &str, entity_map: &mut TrackedEntityMap) {
-        let mut ents: Vec<Entity> = entity_map.values().cloned().collect();
+        let mut ents: Vec<Entity> = entity_map.snapshot();
         let report = crate::core::breach_consensus::run_consensus_pass(&mut ents, scan_id);
         if report.entities_examined == 0 {
             return;
@@ -1750,33 +1901,18 @@ impl ScanEngine {
             // ── Reconsideration: "return to old data when downstream adds
             // credibility" ──────────────────────────────────────────────────
             // Before selecting this round's candidates, re-run the free/offline
-            // promotion passes over the WHOLE accumulated working set, so any
-            // prior entity that the evidence gathered since now corroborates is
-            // lifted in place (a corroboration tag + evidence → higher
-            // `c_effective`) ABOVE the expansion floor and is therefore picked up
-            // as a candidate THIS round — instead of that re-promotion only
-            // happening at finalise (too late to expand it). This is the
-            // autonomous mechanism that lets the scan come back to a lead it had
-            // set aside once later rounds make it credible. Idempotent
-            // (tag-guarded — a promotion never double-stamps across rounds) and
-            // bounded by working-set size exactly like the live correlation pass,
-            // so it can never itself stall a round.
-            if entity_map.len() <= Self::INCREMENTAL_CORRELATE_MAX_ENTITIES {
-                let mut snapshot: Vec<Entity> = entity_map.values().cloned().collect();
-                let promoted = promote_geo_corroborated_family(&mut snapshot)
-                    + promote_multipath_corroborated(&mut snapshot, relations.as_slice())
-                    + promote_breach_candidate_geo_corroborated(&mut snapshot);
-                if promoted > 0 {
-                    for e in snapshot {
-                        entity_map.insert(e.uid.clone(), e);
-                    }
-                    debug!(
-                        scan_id,
-                        promoted,
-                        round = depth,
-                        "reconsidered prior data — re-promoted candidates on new downstream corroboration"
-                    );
-                }
+            // promotion passes over the WHOLE accumulated working set so any
+            // prior lead that later evidence now corroborates is lifted in place
+            // and picked up as a candidate THIS round (see
+            // [`reconsider_working_set`]).
+            let promoted = reconsider_working_set(entity_map, relations.as_slice());
+            if promoted > 0 {
+                debug!(
+                    scan_id,
+                    promoted,
+                    round = depth,
+                    "reconsidered prior data — re-promoted candidates on new downstream corroboration"
+                );
             }
             // Snapshot the entity set at round start — entities discovered
             // during this round will be expansion candidates in the next round,
@@ -2202,7 +2338,7 @@ impl ScanEngine {
                 // miss cross-round correlations.
                 let mut dirty: Vec<Entity> = entity_map.take_dirty();
                 self.checkpoint_entities(scan_id, &mut dirty);
-                let snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+                let snapshot: Vec<Entity> = entity_map.snapshot();
                 self.correlate_incremental(scan_id, &snapshot, emitted_corr);
             }
 
@@ -2407,14 +2543,14 @@ fn derive_and_persist_relations(
 /// `CorrelationFound` only for correlations not already streamed live during
 /// ingestion (deduped via `emitted_corr`); `CorrelationsDone`'s count is the
 /// authoritative total. Guarded against a rule panicking on adversarial
-/// persisted data — see [`guarded_finalise_correlation`]'s own doc comment.
+/// persisted data — see [`guarded_correlation_pass`]'s own doc comment.
 fn run_finalise_correlation_and_emit(
     store: &Arc<dyn StoragePort>,
     emitter: &EventEmitter,
     scan_id: &str,
     emitted_corr: &mut HashSet<String>,
 ) {
-    if let Some(firings) = guarded_finalise_correlation(scan_id, || {
+    if let Some(firings) = guarded_correlation_pass(scan_id, || {
         crate::core::correlator::Correlator::new(Arc::clone(store)).run(scan_id)
     }) {
         for c in &firings {
@@ -2464,7 +2600,12 @@ fn learn_cross_scan_pathway_templates(
                 .into_iter()
                 .map(|l| (l.a_uid, l.b_uid))
                 .collect();
-        for ct in crate::core::relation::connection_templates(&ents, &rels, 4) {
+        for ct in crate::core::relation::connection_templates(
+            &ents,
+            &rels,
+            4,
+            crate::core::relation::IDENTITY_LINK_MIN_CONF,
+        ) {
             let prior = store.pathway_template_count(&ct.template).unwrap_or(0);
             if prior >= 1 {
                 let mut uids: std::collections::BTreeSet<String> =
@@ -2606,22 +2747,23 @@ fn run_finalise_housekeeping(store: &dyn StoragePort, scan_id: &str) {
     }
 }
 
-/// Run the authoritative finalise-time correlation pass under a panic guard.
+/// Run a `Correlator::run` pass under a panic guard — the single canonical way
+/// any caller invokes the full finalise-time rule engine.
 ///
-/// Returns `Some(firings)` on success (the caller emits `CorrelationFound` +
-/// `CorrelationsDone`), or `None` when the pass returned an error OR **panicked**
-/// — in which case the caller skips emission but `finalise_scan` still proceeds
-/// to `ScanComplete` and the key-pool restoration that follow.
+/// Returns `Some(firings)` on success, or `None` when the pass returned an error
+/// OR **panicked** — the caller degrades to "no correlations" and carries on.
 ///
 /// The live incremental pass already wraps `correlate_entities` in `catch_unwind`
-/// (`correlate_incremental`), but the finalise pass ran `Correlator::run`
-/// unguarded: a rule panicking on adversarial persisted data (a slice-index bug
-/// over a crafted entity) would unwind the entire finalise block, losing the
-/// terminal `ScanComplete` event AND the API-key pool the scan harvested. This
-/// closes that asymmetry — a caught panic degrades to "no finalise correlations,"
-/// exactly as the live pass does. Pure control-flow wrapper; unit-tested with a
-/// deliberately panicking closure.
-fn guarded_finalise_correlation(
+/// (`correlate_incremental`), but the full-engine `Correlator::run` used to be
+/// called unguarded by BOTH the scan finalise path and the dossier-import path.
+/// A rule panicking on adversarial persisted data (e.g. a slice-index bug over a
+/// crafted entity) would unwind the whole caller: on finalise, losing the
+/// terminal `ScanComplete` event and the harvested API-key pool; on import,
+/// aborting the import after the entities were already shown. Routing every
+/// caller through this one guard closes that asymmetry — a caught panic degrades
+/// uniformly to "no correlations," exactly as the live pass does. Pure
+/// control-flow wrapper; unit-tested with a deliberately panicking closure.
+pub(crate) fn guarded_correlation_pass(
     scan_id: &str,
     run: impl FnOnce() -> crate::core::error::Result<Vec<crate::core::correlator::Correlation>>,
 ) -> Option<Vec<crate::core::correlator::Correlation>> {
@@ -2634,7 +2776,7 @@ fn guarded_finalise_correlation(
         Err(_) => {
             warn!(
                 scan_id,
-                "finalise correlation pass panicked — scan still completes, finalise correlations skipped"
+                "correlation pass panicked — caller still completes, correlations skipped"
             );
             None
         }

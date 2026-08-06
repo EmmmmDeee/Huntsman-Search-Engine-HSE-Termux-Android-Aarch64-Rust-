@@ -21,6 +21,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "webserver_banner";
 
@@ -91,7 +92,7 @@ impl Module for WebserverBanner {
         let port_suffix = port.map_or(String::new(), |p| format!(":{p}"));
         for scheme in ["https", "http"] {
             let url = format!("{scheme}://{host}{port_suffix}/");
-            let Ok(resp) = ctx.http.head(&url).send().await else {
+            let Ok(resp) = ctx.http.head(&url).send_tagged(SRC).await else {
                 continue;
             };
             let status = resp.status();

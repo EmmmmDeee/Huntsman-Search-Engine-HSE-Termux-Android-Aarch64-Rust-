@@ -945,6 +945,32 @@ fn au004_no_fire_without_tag() {
     assert!(rule_au_004_malicious_infrastructure(&RuleContext::new(&[e]), "s", 0).is_empty());
 }
 
+#[test]
+fn au004_no_fire_on_single_threat_source_plus_enrichment() {
+    // Regression: the ≥2 bar must count THREAT sources, not every corroborating
+    // source. `ip_geo` is geolocation enrichment — it is NOT in
+    // ENRICHMENT_ONLY_SOURCES, so it counts toward `Entity::source_count`, yet it
+    // asserts nothing about maliciousness. One blocklist hit (`ip_reputation`)
+    // plus a routine `ip_geo` record previously reached source_count == 2 and
+    // fired a CRITICAL "malicious" finding on a shared-edge IP. Only one threat
+    // source actually flagged it, so AU-004 must stay silent (AU-015 still
+    // reports the single-source hit at its own severity).
+    let mut e = tagged(
+        EntityKind::IpAddress,
+        "45.79.10.20",
+        &[crate::core::tags::MALICIOUS],
+    );
+    e.add_evidence(Evidence::new(
+        "ip_reputation",
+        "flagged malicious".to_string(),
+    ));
+    e.add_evidence(Evidence::new("ip_geo", "Sydney, AU".to_string()));
+    assert!(
+        rule_au_004_malicious_infrastructure(&RuleContext::new(&[e]), "s", 0).is_empty(),
+        "one threat source + geolocation enrichment is not two agreeing threat verdicts"
+    );
+}
+
 // ── AU-005 ──────────────────────────────────────────────────────────
 
 #[test]
@@ -1361,11 +1387,48 @@ fn au013_no_fire_on_one_lan_entity() {
 
 #[test]
 fn au014_fires_on_two_geo_sources() {
-    let mut e = Entity::new(EntityKind::Coordinates, "0,0", 0.9, "s");
+    // A real coordinate — not the "0,0" radar sentinel, which is infrastructure
+    // geo — anchored by two ANCHORING sources (wigle + device GPS).
+    let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
     e.add_evidence(Evidence::new("wigle", "test"));
     e.add_evidence(Evidence::new("device_sensors", "test"));
     let r = rule_au_014_geo_cluster(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
+}
+
+#[test]
+fn au014_excludes_infrastructure_coordinates() {
+    // A datacentre/hosting centroid — even corroborated by two geo sources — is
+    // NOT a personal geo lead (parity with AU-017). A HOSTING-tagged coordinate,
+    // and a bare coordinate whose sources are non-anchoring (ip_geo/ipinfo), are
+    // both infrastructure_geo and must be filtered; the same point, person-
+    // anchored, still fires.
+    let mut hosting = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    hosting.tag(crate::core::tags::HOSTING);
+    hosting.add_evidence(Evidence::new("ip_geo", "geolocated"));
+    hosting.add_evidence(Evidence::new("ipinfo", "geolocated"));
+    assert!(
+        rule_au_014_geo_cluster(&RuleContext::new(&[hosting]), "s", 0).is_empty(),
+        "a hosting-tagged coordinate must not fire AU-014"
+    );
+
+    let mut bare = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    bare.add_evidence(Evidence::new("ip_geo", "geolocated"));
+    bare.add_evidence(Evidence::new("ipinfo", "geolocated"));
+    assert!(
+        rule_au_014_geo_cluster(&RuleContext::new(&[bare]), "s", 0).is_empty(),
+        "a bare IP-geo coordinate (no anchoring source) must not fire AU-014"
+    );
+
+    // Control: the same point, anchored by real person-fixing sources, fires.
+    let mut anchored = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    anchored.add_evidence(Evidence::new("exif_geo", "photo GPS"));
+    anchored.add_evidence(Evidence::new("device_sensors", "gps"));
+    assert_eq!(
+        rule_au_014_geo_cluster(&RuleContext::new(&[anchored]), "s", 0).len(),
+        1,
+        "an anchored two-source coordinate still fires AU-014"
+    );
 }
 
 #[test]
@@ -2228,9 +2291,15 @@ fn au031_benign_infra_verdict_vetoes_adjacency() {
 #[test]
 fn au032_fires_on_three_node_colocation_cluster() {
     use crate::core::relation::{Relation, RelationKind};
-    let c1 = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.9, "s");
-    let c2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
-    let c3 = Entity::new(EntityKind::Coordinates, "-27.471000,153.021000", 0.7, "s");
+    // Anchored to a real person-fixing source (device GPS) so the coordinates are
+    // NOT infrastructure geo; otherwise the co-location edges are (correctly)
+    // dropped. See au032_excludes_infrastructure_colocations.
+    let mut c1 = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.9, "s");
+    c1.add_evidence(Evidence::new("device_sensors", "gps"));
+    let mut c2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
+    c2.add_evidence(Evidence::new("device_sensors", "gps"));
+    let mut c3 = Entity::new(EntityKind::Coordinates, "-27.471000,153.021000", 0.7, "s");
+    c3.add_evidence(Evidence::new("device_sensors", "gps"));
     // Chain c1–c2–c3 → one connected component of 3.
     let rels = vec![
         Relation::new(
@@ -2254,6 +2323,49 @@ fn au032_fires_on_three_node_colocation_cluster() {
     assert_eq!(r[0].severity, Severity::Medium);
     assert_eq!(r[0].entity_uids.len(), 3);
     assert!(r[0].description.contains("3 coordinates"));
+}
+
+#[test]
+fn au032_excludes_infrastructure_colocations() {
+    use crate::core::relation::{Relation, RelationKind};
+    // Three co-located datacentre coordinates are infrastructure, not a personal
+    // convergence — the co-location edges between them are dropped, so no cluster
+    // forms. The same chain, person-anchored, still fires (control).
+    let colo = |a: &Entity, b: &Entity| {
+        Relation::new(
+            a.uid.clone(),
+            b.uid.clone(),
+            RelationKind::CoLocatedWith,
+            0.9,
+            "s",
+        )
+    };
+
+    let mut h1 = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.9, "s");
+    h1.tag(crate::core::tags::HOSTING);
+    let mut h2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
+    h2.tag(crate::core::tags::HOSTING);
+    let mut h3 = Entity::new(EntityKind::Coordinates, "-27.471000,153.021000", 0.7, "s");
+    h3.tag(crate::core::tags::HOSTING);
+    let rels = vec![colo(&h1, &h2), colo(&h2, &h3)];
+    assert!(
+        rule_au_032_colocation_cluster(&RuleContext::new(&[h1, h2, h3]), &rels, "s", 0).is_empty(),
+        "co-located datacentres must not form a convergence cluster"
+    );
+
+    // Control: the same chain, person-anchored, fires.
+    let mut a1 = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.9, "s");
+    a1.add_evidence(Evidence::new("device_sensors", "gps"));
+    let mut a2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
+    a2.add_evidence(Evidence::new("device_sensors", "gps"));
+    let mut a3 = Entity::new(EntityKind::Coordinates, "-27.471000,153.021000", 0.7, "s");
+    a3.add_evidence(Evidence::new("device_sensors", "gps"));
+    let rels2 = vec![colo(&a1, &a2), colo(&a2, &a3)];
+    assert_eq!(
+        rule_au_032_colocation_cluster(&RuleContext::new(&[a1, a2, a3]), &rels2, "s", 0).len(),
+        1,
+        "person-anchored co-located coordinates still cluster"
+    );
 }
 
 #[test]
@@ -5287,6 +5399,9 @@ fn au027_chains_only_the_dominant_coherent_location() {
     let coord = |v: &str| {
         let mut e = Entity::new(EntityKind::Coordinates, v, 0.75, "scan");
         e.tag("geocoded");
+        // Anchoring source (reverse-geocoded from the address) so the coordinate
+        // is person-anchored, not infrastructure geo.
+        e.add_evidence(Evidence::new("geocode", "reverse-geocoded"));
         e
     };
     let mut brisbane_addr = Entity::new(EntityKind::Address, "Brisbane, QLD", 0.80, "scan");
@@ -5342,6 +5457,60 @@ fn au027_never_anchors_on_the_radar_sentinel() {
         out.is_empty(),
         "the radar sentinel must never anchor an AU-027 chain: {out:?}"
     );
+}
+
+#[test]
+fn au027_excludes_infrastructure_coordinates() {
+    use super::rules::rule_au_027_address_coordinates_chain;
+    // The geo-tag gate is an OR the ADDRESS satisfies alone, so datacentre
+    // coordinates could ride in and anchor the chain, fusing the host's location
+    // with the subject's real address. Hosting/IP-geo coordinates must be
+    // excluded; person-anchored coordinates at real spots still chain (control).
+    let mut addr = Entity::new(EntityKind::Address, "Brisbane, QLD", 0.80, "scan");
+    addr.tag("geoint");
+
+    let hosting = |v: &str| {
+        let mut e = Entity::new(EntityKind::Coordinates, v, 0.80, "scan");
+        e.tag("geocoded");
+        e.tag(crate::core::tags::HOSTING);
+        e
+    };
+    let out = rule_au_027_address_coordinates_chain(
+        &RuleContext::new(&[
+            addr.clone(),
+            hosting("-33.8688,151.2093"),
+            hosting("-33.8690,151.2100"),
+        ]),
+        "scan",
+        0,
+    );
+    assert!(
+        out.is_empty(),
+        "hosting datacentre coordinates must not anchor an AU-027 chain: {out:?}"
+    );
+
+    // Control: person-anchored (geocoded) coordinates DO chain with the address.
+    let anchored = |v: &str| {
+        let mut e = Entity::new(EntityKind::Coordinates, v, 0.80, "scan");
+        e.tag("geocoded");
+        e.add_evidence(Evidence::new("geocode", "reverse-geocoded"));
+        e
+    };
+    let out2 = rule_au_027_address_coordinates_chain(
+        &RuleContext::new(&[
+            addr,
+            anchored("-27.4698,153.0251"),
+            anchored("-27.4690,153.0235"),
+        ]),
+        "scan",
+        0,
+    );
+    assert_eq!(
+        out2.len(),
+        1,
+        "anchored coordinates still chain with the address"
+    );
+    assert_eq!(out2[0].rule_id, "AU-027");
 }
 
 #[test]
@@ -5506,6 +5675,36 @@ fn au049_fires_on_two_people_one_residence() {
     assert_eq!(hits.len(), 1, "one household cluster expected");
     assert_eq!(hits[0].rule_id, "AU-049");
     assert!(hits[0].description.contains("2 people"));
+}
+
+#[test]
+fn au049_unit_address_and_street_number_are_not_one_household() {
+    // Regression (address unit separator): `1/2 Oak Street` (unit 1 of number 2)
+    // and `12 Oak Street` (number 12) are DIFFERENT dwellings. Deleting `/` in
+    // normalisation collapsed them onto one key and fired AU-049 — a fabricated
+    // household between strangers. They must not group.
+    let strangers = vec![
+        person_at("Jordan Meyers", "1/2 Oak Street, Sydney NSW 2000"),
+        person_at("Dana Lin", "12 Oak Street, Sydney NSW 2000"),
+    ];
+    assert!(
+        super::rules::rule_au_049_shared_address_association(&RuleContext::new(&strangers), "s", 0)
+            .is_empty(),
+        "a unit address and a street number are not one household"
+    );
+    // Control: two people genuinely at the SAME unit still form one household —
+    // the folded unit form remains a valid, groupable residence key.
+    let cohabitants = vec![
+        person_at("Jordan Meyers", "1/2 Oak Street, Sydney NSW 2000"),
+        person_at("Dana Meyers", "1/2 oak street sydney nsw 2000"),
+    ];
+    let hits = super::rules::rule_au_049_shared_address_association(
+        &RuleContext::new(&cohabitants),
+        "s",
+        0,
+    );
+    assert_eq!(hits.len(), 1, "same unit is one household");
+    assert_eq!(hits[0].rule_id, "AU-049");
 }
 
 #[test]
@@ -5676,6 +5875,57 @@ fn au050_excludes_shared_business_and_service_lines() {
 }
 
 #[test]
+fn au050_vetoes_au_business_line_in_plus61_international_form() {
+    // Regression (OD-14): an AU freephone/local-rate line stored in +61
+    // international form reaches the veto as a `+`-stripped digits key
+    // ("+61 1800 123 456" → key "611800123456") that au_phone_line_type can't see
+    // as domestic 1800. It must still be vetoed as a shared business desk, not fire
+    // a false associate cluster.
+    for service in ["+61 1800 123 456", "+61 1300 975 707"] {
+        let ents = vec![
+            person_with_phone("Jordan Meyers", service),
+            person_with_phone("Casey Lin", service),
+        ];
+        assert!(
+            super::rules::rule_au_050_shared_phone_association(&RuleContext::new(&ents), "s", 0)
+                .is_empty(),
+            "a +61-international-form AU business line must not link unrelated people: {service}"
+        );
+    }
+    // A personal AU mobile in +61 form is not a business line and still links.
+    let mobile = vec![
+        person_with_phone("Jordan Meyers", "+61 412 345 678"),
+        person_with_phone("Casey Lin", "61 412 345 678"),
+    ];
+    let hits =
+        super::rules::rule_au_050_shared_phone_association(&RuleContext::new(&mobile), "s", 0);
+    assert_eq!(hits.len(), 1, "a shared +61 mobile still links: {hits:?}");
+    assert_eq!(hits[0].rule_id, "AU-050");
+}
+
+#[test]
+fn au050_links_nanp_number_colliding_with_au_service_prefix() {
+    // Regression (phone line-type false negative): a shared US number whose digits
+    // collide with an AU service prefix must still link two people. `+1 909 555
+    // 0142` (San Bernardino) normalises to the key `19095550142`, which the
+    // line-type classifier used to read as AU premium `190x` and veto as a
+    // "business/service line" — silently dropping the real association. It is 11
+    // digits (NANP `1` + area code), not a 10-digit AU service number, so it is a
+    // personal line and AU-050 must fire.
+    let ents = vec![
+        person_with_phone("Jordan Meyers", "+1 909 555 0142"),
+        person_with_phone("Casey Lin", "1 (909) 555-0142"),
+    ];
+    let hits = super::rules::rule_au_050_shared_phone_association(&RuleContext::new(&ents), "s", 0);
+    assert_eq!(
+        hits.len(),
+        1,
+        "a shared NANP line colliding with AU 190x must still link: {hits:?}"
+    );
+    assert_eq!(hits[0].rule_id, "AU-050");
+}
+
+#[test]
 fn au051_shared_surname_at_residence_is_kin() {
     let ents = vec![
         person_at("Jordan Meyers", "123 Main St, Springfield"),
@@ -5782,6 +6032,25 @@ fn au087_excludes_freemail_and_isp_webmail() {
         super::rules::rule_au_087_shared_org_email_domain(&RuleContext::new(&isp), "s", 0)
             .is_empty()
     );
+    // Regression: consumer webmail OUTSIDE the `is_noncentral_domain` damping list
+    // must be excluded too. `gmail.com`/`bigpond.com` above happen to sit in
+    // `MEGA_DOMAINS`, so `is_noncentral_domain` alone caught them — but the ~40
+    // other freemail domains (Yahoo/Hotmail country variants, Chinese providers,
+    // legacy Yahoo brands) do not, and previously slipped through to fire a false
+    // employer/institution affiliation between strangers. The canonical
+    // `is_freemail` guard now closes that gap. Every domain below is in FREEMAIL
+    // yet absent from `MEGA_DOMAINS`/`INFRA_DOMAINS`.
+    for freemail in ["qq.com", "163.com", "rocketmail.com", "yahoo.co.uk"] {
+        let pair = vec![
+            org_email_ent(&format!("john.smith@{freemail}")),
+            org_email_ent(&format!("jane.doe@{freemail}")),
+        ];
+        assert!(
+            super::rules::rule_au_087_shared_org_email_domain(&RuleContext::new(&pair), "s", 0)
+                .is_empty(),
+            "{freemail} is consumer webmail, not an organisational affiliation surface"
+        );
+    }
 }
 
 #[test]
@@ -6119,11 +6388,66 @@ fn au097_ignores_foreign_and_non_network_entities() {
 }
 
 #[test]
+fn au097_does_not_attribute_belong_isp_from_descr_prose() {
+    // Regression (OD-13): `belong` is a real AU ISP AND a common verb. A RIPE
+    // `descr` naming the verb ("…used to belong to LegacyCorp") must NOT fabricate
+    // a Belong residency attribution; only a structured isp/org field naming the
+    // operator should.
+    let mut prose = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.8, "s");
+    prose.add_evidence(Evidence::new("ripestat", "asn").with_attr(
+        "descr",
+        "address space that used to belong to LegacyCorp Pty Ltd",
+    ));
+    assert!(
+        super::rules::rule_au_097_au_isp_network(&RuleContext::new(&[prose]), "s", 0).is_empty(),
+        "`belong` as a verb in descr prose must not attribute the Belong ISP"
+    );
+    // A genuine Belong customer IP (structured isp field) still fires.
+    let mut genuine = Entity::new(EntityKind::IpAddress, "1.2.3.5", 0.8, "s");
+    genuine.add_evidence(Evidence::new("ip_geo", "geo").with_attr("isp", "Belong"));
+    let r = super::rules::rule_au_097_au_isp_network(&RuleContext::new(&[genuine]), "s", 0);
+    assert_eq!(
+        r.len(),
+        1,
+        "a structured Belong isp field is a real attribution"
+    );
+    assert_eq!(r[0].rule_id, "AU-097");
+}
+
+#[test]
 fn au097_short_token_needs_word_boundary() {
     // "tpg" must not match inside a longer word (no false AU attribution).
     let mut ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.8, "s");
     ip.add_evidence(Evidence::new("ripestat", "asn").with_attr("descr", "ACMETPGENETICS LIMITED"));
     assert!(super::rules::rule_au_097_au_isp_network(&RuleContext::new(&[ip]), "s", 0).is_empty());
+}
+
+#[test]
+fn au097_skips_hosting_and_platform_infra_entities() {
+    // Regression: a hosting/datacentre IP that resolves to an AU network operator
+    // is a SERVER (mail host, CDN edge, the box a linked page resolves to), not
+    // the subject's access connection — attributing AU residency/affiliation to it
+    // fabricates a network-layer signal from pure infrastructure. Same Telstra IP
+    // as the Medium-residency test, but tagged `hosting` → must stay silent.
+    let mut host = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.8, "s");
+    host.add_evidence(
+        Evidence::new("ip_geo", "geo")
+            .with_attr("isp", "Telstra")
+            .with_attr("as", "AS1221 Telstra"),
+    );
+    host.tag(crate::core::tags::HOSTING);
+    assert!(
+        super::rules::rule_au_097_au_isp_network(&RuleContext::new(&[host]), "s", 0).is_empty(),
+        "a hosting-tagged server IP is not the subject's AU access connection"
+    );
+    // A platform-infra-tagged ASN (e.g. an AARNet-hosted cloud range) is likewise
+    // not the subject's institutional affiliation.
+    let mut asn = Entity::new(EntityKind::Asn, "AS7575 AARNet", 0.8, "s");
+    asn.tag(crate::core::tags::PLATFORM_INFRA);
+    assert!(
+        super::rules::rule_au_097_au_isp_network(&RuleContext::new(&[asn]), "s", 0).is_empty(),
+        "a platform-infra-tagged ASN is not the subject's institutional affiliation"
+    );
 }
 
 #[test]
@@ -7958,6 +8282,41 @@ fn au030_fires_for_three_source_geo_cluster() {
 }
 
 #[test]
+fn au030_escalates_to_high_for_four_source_geo_convergence() {
+    // Four distinct person-anchoring corroborating source NAMES across two
+    // coordinate entities → sources.len() == 4 → High. (The ladder counts
+    // distinct corroborating source names, not source families or entity
+    // count.) Each entity carries an anchoring geo source so neither is dropped
+    // as infrastructure geo.
+    let mut c1 = Entity::new(EntityKind::Coordinates, "51.5,0.1", 0.7, "s");
+    c1.add_evidence(Evidence::new("geocode", "x"));
+    c1.add_evidence(Evidence::new("wigle", "x"));
+    let mut c2 = Entity::new(EntityKind::Coordinates, "51.6,0.2", 0.7, "s");
+    c2.add_evidence(Evidence::new("exif_geo", "x"));
+    c2.add_evidence(Evidence::new("photon", "x"));
+    let r = rule_au_030_geo_convergence_score(&RuleContext::new(&[c1, c2]), "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-030");
+    assert_eq!(r[0].severity, Severity::High);
+}
+
+#[test]
+fn au030_escalates_to_critical_for_five_source_geo_convergence() {
+    // Five distinct corroborating source names → sources.len() == 5 → Critical.
+    let mut c1 = Entity::new(EntityKind::Coordinates, "51.5,0.1", 0.7, "s");
+    c1.add_evidence(Evidence::new("geocode", "x"));
+    c1.add_evidence(Evidence::new("wigle", "x"));
+    c1.add_evidence(Evidence::new("mylnikov", "x"));
+    let mut c2 = Entity::new(EntityKind::Coordinates, "51.6,0.2", 0.7, "s");
+    c2.add_evidence(Evidence::new("exif_geo", "x"));
+    c2.add_evidence(Evidence::new("photon", "x"));
+    let r = rule_au_030_geo_convergence_score(&RuleContext::new(&[c1, c2]), "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-030");
+    assert_eq!(r[0].severity, Severity::Critical);
+}
+
+#[test]
 fn au062_multipath_corroboration_fires_on_orthogonal_routes() {
     use crate::core::relation::{Relation, RelationKind};
     let mk_rel = |from: &Entity, to: &Entity, kind: RelationKind| {
@@ -8603,6 +8962,28 @@ fn au111_fires_on_cloudflare_fronted_domain_with_spf_ip() {
 }
 
 #[test]
+fn au111_fires_for_cloudfront_and_incapsula_using_waf_detect_names() {
+    // Regression: the fronting-provider list must use the EXACT strings
+    // `waf_detect` emits (`AWS CloudFront`, `Imperva/Incapsula`). An earlier list
+    // had `CloudFront`/`Incapsula`, so `has_tag("waf:CloudFront")` never matched
+    // the real `waf:AWS CloudFront` tag and AU-111 silently never fired for those
+    // two global CDNs — the SPF-origin-leak pivot was lost. `cdn_fronted_domain`
+    // fabricates the tag exactly as `waf_detect` does (`waf:{provider}`), so this
+    // exercises the real tag string.
+    for provider in ["AWS CloudFront", "Imperva/Incapsula"] {
+        let dom = cdn_fronted_domain("example.com", provider);
+        let ip = spf_ip("203.0.113.9", "example.com");
+        let r = rule_au_111_cdn_origin_candidate(&RuleContext::new(&[dom, ip]), "s", 0);
+        assert_eq!(
+            r.len(),
+            1,
+            "AU-111 must fire for a {provider}-fronted domain with an SPF IP"
+        );
+        assert_eq!(r[0].rule_id, "AU-111");
+    }
+}
+
+#[test]
 fn au111_does_not_fire_without_cdn_fingerprint() {
     // A domain with no `waf-detected` tag at all — no CDN evidence, no fire
     // even though an SPF IP exists for it.
@@ -8999,17 +9380,25 @@ fn au076_consolidates_permutation_flood_into_one_per_canonical_handle() {
     // canonicalise to the SAME handle "matthewdiegmann". A naive per-pair emission
     // would fire len(emails)×len(usernames) High findings; consolidation must emit
     // exactly ONE, listing every form, with no value lost.
+    // Each form carries a genuine, independent corroborating source — the emails
+    // from a breach dump, the usernames from a live platform probe — so the bridge
+    // clears AU-076's >= 2-distinct-source independence gate. This test exercises
+    // the CONSOLIDATION of the permutation flood, not the gate itself.
     let mut ents = Vec::new();
     for host in ["yahoo.com", "msn.com", "gmail.com", "outlook.com"] {
-        ents.push(Entity::new(
+        let mut e = Entity::new(
             EntityKind::Email,
             format!("matthew.diegmann@{host}"),
             0.3,
             "s",
-        ));
+        );
+        e.add_evidence(Evidence::new("breach", "dump".to_string()));
+        ents.push(e);
     }
     for u in ["matthew.diegmann", "matthewdiegmann", "matthew_diegmann"] {
-        ents.push(Entity::new(EntityKind::Username, u, 0.3, "s"));
+        let mut e = Entity::new(EntityKind::Username, u, 0.3, "s");
+        e.add_evidence(Evidence::new("github_user", "profile".to_string()));
+        ents.push(e);
     }
     let r = rule_au_076_email_username_localpart_bridge(&RuleContext::new(&ents), "s", 0);
     assert_eq!(
@@ -9026,6 +9415,26 @@ fn au076_consolidates_permutation_flood_into_one_per_canonical_handle() {
     assert!(r[0].description.contains("3 username form"));
     // All 7 contributing entities are referenced for pivoting.
     assert_eq!(r[0].entity_uids.len(), 7);
+}
+
+#[test]
+fn au076_single_source_self_derivation_is_suppressed() {
+    use super::rules::rule_au_076_email_username_localpart_bridge;
+    // The false positive AU-076's independence gate closes: an email and a
+    // username that canonicalise to the same handle but carry FEWER than two
+    // distinct corroborating sources. Here both are attested only by a single
+    // `name_intel` self-derivation (a non-corroborating pass), so the handles
+    // match by construction, not by independent observation — exactly the
+    // single-source name-seed flood that must NOT emit a High identity bridge.
+    let mut email = Entity::new(EntityKind::Email, "cameron.tyler@acme.com", 0.3, "s");
+    email.add_evidence(Evidence::new("name_intel", "derived".to_string()));
+    let mut uname = Entity::new(EntityKind::Username, "cameron.tyler", 0.3, "s");
+    uname.add_evidence(Evidence::new("name_intel", "derived".to_string()));
+    let r = rule_au_076_email_username_localpart_bridge(&RuleContext::new(&[email, uname]), "s", 0);
+    assert!(
+        r.is_empty(),
+        "AU-076 must not fire on a single-source (name_intel) self-derivation: {r:?}"
+    );
 }
 
 #[test]
@@ -9054,6 +9463,81 @@ fn au077_name_derived_username_confirmed_fires_on_predict_plus_confirm() {
     let r2 =
         rule_au_077_name_derived_username_confirmed(&RuleContext::new(&[derived_only]), "s", 0);
     assert!(r2.is_empty(), "derivation alone must not fire AU-077");
+}
+
+#[test]
+fn au077_does_not_fire_on_a_status_only_username_search_summary() {
+    use super::rules::rule_au_077_name_derived_username_confirmed;
+    // The false positive: name_intel DERIVES a handle, then username_search re-emits
+    // a summary Username for it whose hits were ALL status-only guesses
+    // (hits_verified == 0). The two merge by value — two stacked guesses with zero
+    // verified confirmation must NOT fire a High "confirmed" identity bridge.
+    let mut u = Entity::new(EntityKind::Username, "jsmith", 0.8, "s");
+    u.add_evidence(Evidence::new(
+        "name_intel",
+        "Derived from John Smith".to_string(),
+    ));
+    u.add_evidence(
+        Evidence::new(
+            "username_search",
+            "@jsmith found on 3 platform(s)".to_string(),
+        )
+        .with_attr("hits_verified", "0")
+        .with_attr("hits_status_only", "3"),
+    );
+    let r = rule_au_077_name_derived_username_confirmed(&RuleContext::new(&[u]), "s", 0);
+    assert!(
+        r.is_empty(),
+        "AU-077 must not confirm on an all-status-only username_search summary: {r:?}"
+    );
+}
+
+#[test]
+fn au077_fires_when_username_search_has_a_verified_hit() {
+    use super::rules::rule_au_077_name_derived_username_confirmed;
+    // The genuine case the guard must still allow: at least one platform VERIFIED
+    // the derived handle (hits_verified >= 1) — a real prediction-confirmed bridge.
+    let mut u = Entity::new(EntityKind::Username, "jsmith", 0.8, "s");
+    u.add_evidence(Evidence::new(
+        "name_intel",
+        "Derived from John Smith".to_string(),
+    ));
+    u.add_evidence(
+        Evidence::new(
+            "username_search",
+            "@jsmith found on 2 platform(s)".to_string(),
+        )
+        .with_attr("hits_verified", "2")
+        .with_attr("hits_status_only", "1"),
+    );
+    let r = rule_au_077_name_derived_username_confirmed(&RuleContext::new(&[u]), "s", 0);
+    assert_eq!(
+        r.len(),
+        1,
+        "a verified username_search hit is a genuine confirmation"
+    );
+    assert_eq!(r[0].severity, super::Severity::High);
+}
+
+#[test]
+fn au077_does_not_fire_on_a_status_only_per_record_discovery() {
+    use super::rules::rule_au_077_name_derived_username_confirmed;
+    // Per-record variant: a discovery module (social_probe) that tags its hit
+    // `detection: status-only` is a bare-status guess, not a confirmation.
+    let mut u = Entity::new(EntityKind::Username, "jsmith", 0.8, "s");
+    u.add_evidence(Evidence::new(
+        "name_intel",
+        "Derived from John Smith".to_string(),
+    ));
+    u.add_evidence(
+        Evidence::new("social_probe", "status 200 for jsmith".to_string())
+            .with_attr("detection", "status-only"),
+    );
+    let r = rule_au_077_name_derived_username_confirmed(&RuleContext::new(&[u]), "s", 0);
+    assert!(
+        r.is_empty(),
+        "a status-only per-record discovery must not confirm AU-077: {r:?}"
+    );
 }
 
 #[test]
@@ -9147,6 +9631,10 @@ fn au079_bio_cross_mention_fires_on_at_mention_in_bio() {
     let r = rule_au_079_bio_cross_mention(&RuleContext::new(&[gh, reddit]), "s", 0);
     assert!(!r.is_empty(), "AU-079 must fire on @-mention in bio");
     assert_eq!(r[0].rule_id, "AU-079");
+    // A free-text bio @-mention is a Medium lead — the mentioned handle may be a
+    // third party the subject merely names, not a self-attribution — unlike the
+    // structured-attribute path (twitter/instagram/…), which fires High.
+    assert_eq!(r[0].severity, super::Severity::Medium);
     // Must NOT fire linking entity to itself (no self-loop)
     let no_self: Vec<_> = r
         .iter()
@@ -9362,11 +9850,12 @@ fn au081_common_name_is_a_medium_lead_not_a_high_assert() {
         r[0].description
     );
 
-    // Control: a DISTINCTIVE full name (no common token) stays a High
-    // identity bridge — the discount must not blunt genuine matches.
+    // Control: a DISTINCTIVE full name (no common token) whose two records agree on
+    // order — here via an explicit "Last, First" comma — stays a High identity
+    // bridge; the common-surname discount must not blunt genuine matches.
     let mut breach_d = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
     breach_d.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
-    let mut social_d = Entity::new(EntityKind::Person, "Bamford Haigen", 0.75, "s");
+    let mut social_d = Entity::new(EntityKind::Person, "Bamford, Haigen", 0.75, "s");
     social_d.add_evidence(Evidence::new("proxycurl", "LinkedIn profile".to_string()));
     let rd =
         rule_au_081_canonical_person_name_match(&RuleContext::new(&[breach_d, social_d]), "s", 0);
@@ -9380,6 +9869,49 @@ fn au081_common_name_is_a_medium_lead_not_a_high_assert() {
         rd[0].description.contains("same individual"),
         "a distinctive-name match keeps the confident 'same individual' wording: {}",
         rd[0].description
+    );
+}
+
+#[test]
+fn au081_bare_transposition_is_a_medium_lead_not_a_high_merge() {
+    use super::rules::rule_au_081_canonical_person_name_match;
+    // "Haigen Bamford" and "Bamford Haigen" (distinctive tokens, neither a common
+    // surname) are two plausibly-DIFFERENT people. Matched only by reordering, with
+    // no "Last, First" comma to confirm which token is the surname, this is a Medium
+    // lead — NOT the High identity merge the sorted-canonical grouping alone asserts.
+    let mut breach = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
+    breach.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
+    let mut social = Entity::new(EntityKind::Person, "Bamford Haigen", 0.75, "s");
+    social.add_evidence(Evidence::new("proxycurl", "LinkedIn profile".to_string()));
+    let r = rule_au_081_canonical_person_name_match(&RuleContext::new(&[breach, social]), "s", 0);
+    assert!(
+        !r.is_empty(),
+        "AU-081 still surfaces the transposition as a lead"
+    );
+    assert_eq!(
+        r[0].severity,
+        super::Severity::Medium,
+        "a bare (comma-less) transposition of a distinctive name is a Medium lead"
+    );
+    assert!(
+        r[0].description.contains("VERIFY"),
+        "a transposition match must be phrased as a lead to verify: {}",
+        r[0].description
+    );
+
+    // Control: the same two tokens, but one record declares surname-first with a
+    // comma — the order is confirmed, so the distinctive-name match is High.
+    let mut breach_c = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
+    breach_c.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
+    let mut social_c = Entity::new(EntityKind::Person, "Bamford, Haigen", 0.75, "s");
+    social_c.add_evidence(Evidence::new("proxycurl", "LinkedIn profile".to_string()));
+    let rc =
+        rule_au_081_canonical_person_name_match(&RuleContext::new(&[breach_c, social_c]), "s", 0);
+    assert_eq!(rc.len(), 1);
+    assert_eq!(
+        rc[0].severity,
+        super::Severity::High,
+        "a comma-confirmed 'Last, First' order makes the distinctive-name match High"
     );
 }
 
@@ -9421,7 +9953,9 @@ fn au081_still_fires_when_a_genuine_second_source_is_also_name_enriched() {
     let mut e1 = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
     e1.add_evidence(Evidence::new("github_user", "GitHub profile".to_string()));
     e1.add_evidence(Evidence::new("name_intel", "Derived from name".to_string()));
-    let mut e2 = Entity::new(EntityKind::Person, "Bamford Haigen", 0.75, "s");
+    // "Last, First" comma form so the match is order-confirmed (High), isolating
+    // this test to the independence gate rather than the transposition discount.
+    let mut e2 = Entity::new(EntityKind::Person, "Bamford, Haigen", 0.75, "s");
     e2.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
     let r = rule_au_081_canonical_person_name_match(&RuleContext::new(&[e1, e2]), "s", 0);
     assert!(
@@ -9721,7 +10255,7 @@ fn bench_correlate_entities_matches_the_internal_pass_and_is_deterministic() {
         "bench_correlate_entities must be a pure delegation to correlate_entities, \
          not an independently-drifting copy"
     );
-    // Determinism-by-construction (docs/CONVENTIONS.md §5): running the pass
+    // Determinism-by-construction: running the pass
     // twice over the same input must yield identical rule decisions — the
     // property the criterion bench and the perf module's
     // `pass_is_subquadratic` guard both implicitly rely on when comparing
@@ -9770,5 +10304,81 @@ fn bench_correlate_entities_is_ts_blind_deterministic_across_a_real_second_bound
         ts_blind_json(&second),
         "rule firings/attribution/ranking must stay identical even when the \
          two calls land in different wall-clock seconds"
+    );
+}
+
+/// The condition that voids the whole correlation phase without anyone noticing.
+///
+/// `confirmed_only` strips `candidate`-quarantined entities, and the rules only
+/// ever see what survives. In a real 1081-entity dossier the subject never
+/// gained a confirmed location, so `promote_breach_candidate_geo_corroborated`
+/// promoted nothing and effectively every breach record stayed quarantined —
+/// leaving a handful of entities for the rules. The scan reported 0
+/// correlations, which reads as "nothing correlated" when the truth was
+/// "almost nothing was examined". Those demand opposite operator responses.
+///
+/// This pins the shape so the alarm threshold stays meaningful: a scan can be
+/// overwhelmingly quarantined, and the examined set is what the correlation
+/// count is really a statement about.
+#[test]
+fn a_mostly_quarantined_scan_leaves_the_rules_almost_nothing_to_examine() {
+    let mut ents = vec![ent(
+        EntityKind::Email,
+        "subject@example.com",
+        0.8,
+        "s",
+        false,
+    )];
+    for i in 0..99 {
+        ents.push(ent(
+            EntityKind::Email,
+            &format!("breach{i}@example.com"),
+            0.25,
+            "s",
+            true, // candidate-quarantined
+        ));
+    }
+
+    let examined = confirmed_only(&ents).len();
+    let quarantined = ents.len() - examined;
+    assert_eq!(examined, 1, "only the confirmed entity reaches the rules");
+    assert_eq!(quarantined, 99);
+
+    // The alarm condition the correlator now reports on: under 1/N examined.
+    assert!(
+        examined * QUARANTINE_ALARM_RATIO < ents.len(),
+        "this shape must trip the quarantine alarm"
+    );
+}
+
+/// The alarm must NOT fire for a healthy scan that merely carries some
+/// candidates — quarantining a minority is the system working as intended, and
+/// an alarm that cries wolf on normal scans is worse than none.
+#[test]
+fn a_normally_quarantined_scan_does_not_trip_the_alarm() {
+    let mut ents = Vec::new();
+    for i in 0..90 {
+        ents.push(ent(
+            EntityKind::Email,
+            &format!("ok{i}@example.com"),
+            0.8,
+            "s",
+            false,
+        ));
+    }
+    for i in 0..10 {
+        ents.push(ent(
+            EntityKind::Email,
+            &format!("cand{i}@example.com"),
+            0.25,
+            "s",
+            true,
+        ));
+    }
+    let examined = confirmed_only(&ents).len();
+    assert_eq!(examined, 90);
+    assert!(
+        examined * QUARANTINE_ALARM_RATIO >= ents.len(),
+        "90% examined must not raise an alarm"
     );
 }

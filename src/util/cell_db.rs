@@ -203,6 +203,24 @@ pub fn count_by_mcc(conn: &Connection) -> rusqlite::Result<Vec<(i64, u64)>> {
     rows.collect()
 }
 
+/// Map a cell tower's reported accuracy radius (metres) to a coordinate
+/// confidence score: a tight urban small-cell (≤100 m) is highly trusted;
+/// a rural macro-cell (>10 km centroid) is only loosely trusted.
+///
+/// Single authoritative implementation shared by `cell_intel`, `cell_local`,
+/// and `opencellid` — all three modules use the same [`CellRow::range_m`] field
+/// so the scale must be identical across them.
+pub fn accuracy_to_confidence(range_m: u64) -> f64 {
+    use crate::core::confidence;
+    match range_m {
+        0..=100 => confidence::HIGH_PLUSPLUS_PLUS,
+        101..=500 => confidence::VERY_HIGH,
+        501..=2000 => confidence::HIGH,
+        2001..=10000 => confidence::MEDIUM,
+        _ => 0.35,
+    }
+}
+
 // ── Import history ─────────────────────────────────────────────────────────────
 
 /// Record a completed import in `cell_imports`.

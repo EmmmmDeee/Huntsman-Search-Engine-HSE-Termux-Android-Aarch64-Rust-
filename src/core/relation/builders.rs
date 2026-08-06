@@ -135,7 +135,7 @@ pub fn derive_colocation(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
 ///
 /// One cleaner, shared by every builder that mines free-text evidence for a named
 /// endpoint — [`derive_resolution`] (domains named in a DNS record) and
-/// [`derive_asset_operator`](super::derive_asset_operator) (the network an
+/// [`derive_asset_operator`] (the network an
 /// organisation is recorded as operating). Both rest on the same module
 /// convention of writing the far endpoint into the summary, so both must agree
 /// on exactly what a token is.
@@ -659,8 +659,18 @@ fn persona_key(e: &Entity) -> Option<String> {
         return None;
     }
     let key = crate::core::scan::identity_norm(&e.value);
-    // 4 = IDENTITY_OVERLAP_MIN: shorter handles alias too readily.
-    (key.len() >= 4 && !key.bytes().all(|b| b.is_ascii_digit())).then_some(key)
+    // 4 = IDENTITY_OVERLAP_MIN: shorter handles alias too readily. Also reject a
+    // generic role mailbox / placeholder handle (`info`, `support`, `sales`,
+    // `admin`, `noreply`, …) via the canonical `is_generic_handle` taxonomy every
+    // correlator identity rule already applies (AU-034/045/076). Without it
+    // `info@org-a` and `info@org-b` share the key `"info"` and `derive_handles`
+    // draws a full-confidence, undamped `AliasOf` edge that fuses two unrelated
+    // organisations' mailboxes into one identity cluster. `identity_norm` yields
+    // the alphanumeric-folded form `is_generic_handle` expects.
+    (key.len() >= 4
+        && !key.bytes().all(|b| b.is_ascii_digit())
+        && !crate::core::correlator::is_generic_handle(&key))
+    .then_some(key)
 }
 
 /// The folded last whitespace token of a Person value — a family key. `None` when

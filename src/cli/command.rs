@@ -9,6 +9,56 @@ use clap::{Parser, Subcommand};
 
 use super::keys_cmd::KeysAction;
 
+/// Parse a `--min-confidence` argument, rejecting anything that is not a usable
+/// threshold.
+///
+/// `f64::from_str` accepts `nan` and `inf`, and clap's default `f64` parser
+/// takes them verbatim. A NaN floor makes the extractor's
+/// `confidence >= min_confidence` filter false for every entity, so the command
+/// used to exit 0 having silently discarded its entire result set — the failure
+/// mode this crate treats as its cardinal sin. Rejecting at the argument
+/// boundary turns that into a clap usage error, before any work is done, and
+/// finally enforces the `(0.0-1.0)` range the flag's own help text has always
+/// advertised.
+pub(crate) fn confidence_floor(s: &str) -> Result<f64, String> {
+    let v: f64 = s
+        .parse()
+        .map_err(|_| format!("`{s}` is not a number (expected 0.0-1.0)"))?;
+    if !v.is_finite() {
+        return Err(format!("`{s}` is not a finite number (expected 0.0-1.0)"));
+    }
+    if !(0.0..=1.0).contains(&v) {
+        return Err(format!("`{s}` is outside the range 0.0-1.0"));
+    }
+    Ok(v)
+}
+
+/// Parser for a floor that is a **rate**, not a probability: finite and
+/// non-negative, with no upper bound.
+///
+/// `--min-marginal-yield` is "entities discovered per dispatched target"
+/// (default 0.75), so a value above 1.0 is meaningful — a demanding operator can
+/// legitimately require 2 entities per target before continuing to recurse.
+/// Clamping it to `0.0..=1.0` like a confidence would reject valid input, which
+/// is why this is a separate parser rather than a reuse of
+/// [`confidence_floor`]. Non-finite and negative are still rejected: a negative
+/// yield floor is unsatisfiable in the wrong direction (every round "passes"),
+/// and NaN inverts the comparison exactly as it does for a confidence.
+pub(crate) fn non_negative_rate(s: &str) -> Result<f64, String> {
+    let v: f64 = s
+        .parse()
+        .map_err(|_| format!("`{s}` is not a number (expected 0.0 or greater)"))?;
+    if !v.is_finite() {
+        return Err(format!(
+            "`{s}` is not a finite number (expected 0.0 or greater)"
+        ));
+    }
+    if v < 0.0 {
+        return Err(format!("`{s}` is negative (expected 0.0 or greater)"));
+    }
+    Ok(v)
+}
+
 #[derive(Parser)]
 #[command(
     name = "hse",
@@ -63,7 +113,7 @@ pub enum Command {
         #[arg(short, long, default_value_t = 250)]
         throttle: u64,
         /// Drop entities whose base confidence is below this.
-        #[arg(long)]
+        #[arg(long, value_parser = confidence_floor)]
         min_confidence: Option<f64>,
         /// Skip key-gated and paid modules.
         #[arg(long)]
@@ -76,20 +126,21 @@ pub enum Command {
         timeout: Option<u64>,
         /// Recursive expansion depth. 0 = single round; 1+ auto-feeds discovered
         /// entities back as new scan targets, up to N rounds deep. Omit to use
-        /// the comprehensive product default (MAX_DEPTH = 3); `--auto` overrides an
+        /// the comprehensive product default (`DEFAULT_SCAN_DEPTH`, the full
+        /// `MAX_DEPTH`); `--auto` overrides an
         /// omitted value.
         #[arg(short, long)]
         depth: Option<u32>,
-        /// Shorthand for deep recursive expansion: pins depth to MAX_DEPTH (3) and
+        /// Shorthand for deep recursive expansion: pins depth to `MAX_DEPTH` and
         /// clamps the expansion floor to ≤0.40. With the comprehensive default
-        /// (depth 3, floor 0.20) this now matches the default; kept for explicitness
+        /// (full depth, floor 0.20) this now matches the default; kept for explicitness
         /// and for use alongside a raised `--min-expand-confidence`. Overridden by
         /// an explicit --depth.
         #[arg(short = 'R', long)]
         recursive: bool,
         /// COMPLETE scan — the no-compromise preset. Auto-detects the seed kind,
         /// runs EVERY module (overrides --free-only/--passive-only/--modules),
-        /// expands to MAX_DEPTH (3) at the Probable floor, and disables ROI
+        /// expands to `MAX_DEPTH` at the Probable floor, and disables ROI
         /// pruning so nothing is skipped. The single "get everything" option.
         #[arg(
             short = 'F',
@@ -112,11 +163,11 @@ pub enum Command {
         /// applies its own strict floors, so recall is wide while the resolved
         /// findings stay precise. Raise it (e.g. 0.50 Probable, 0.75 Verified-only),
         /// or pass `--gate-speculative`, for a tighter, faster sweep.
-        #[arg(long, default_value_t = crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE)]
+        #[arg(long, default_value_t = crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE, value_parser = confidence_floor)]
         min_expand_confidence: f64,
         /// Hard cap on total entities; stops expansion when reached. Omitted ⇒ the
         /// product default (2500) — a generous Termux on-device safety bound for the
-        /// comprehensive depth-3 default sweep. Pass a larger value (or use a
+        /// comprehensive full-depth default sweep. Pass a larger value (or use a
         /// profile) to go further.
         #[arg(long)]
         max_entities: Option<usize>,
@@ -165,7 +216,7 @@ pub enum Command {
         no_regional: bool,
         /// When `--max-roi` is set, override the default marginal-yield
         /// floor (0.75). Lower = recurse further before giving up.
-        #[arg(long)]
+        #[arg(long, value_parser = non_negative_rate)]
         min_marginal_yield: Option<f64>,
         /// Expansion ordering strategy: `geo_converge` (default; legacy),
         /// `breadth_first`, `depth_first`, `richest_first`. Changes how
@@ -233,6 +284,38 @@ pub enum Command {
         /// Output as JSON instead of the status table.
         #[arg(long)]
         json: bool,
+    },
+    /// General web search: run an everyday free-text query across every free
+    /// search engine and print ranked results.
+    ///
+    /// Unlike `hse search`, which treats its input as an OSINT target
+    /// (email / username / domain / …) and wraps it in `site:`/`intext:` dorks,
+    /// `query` searches the text verbatim — e.g.
+    /// `hse query "buy panadeine forte online"` — and returns the raw web
+    /// results, deduplicated across engines and ranked by how many independent
+    /// engines surfaced each URL.
+    Query {
+        /// The free-text search query. Quote multi-word queries.
+        #[arg(allow_hyphen_values = true)]
+        query: String,
+        /// Maximum results to print (0 = no limit).
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+        /// Dark-web EXPOSURE search: query Ahmia's onion index over clearnet
+        /// (no Tor required) to find hidden-service pages that mention the
+        /// search term — e.g. your own domain or brand appearing in a leak
+        /// listing. Reports where a mention exists; HSE never fetches the
+        /// onion addresses it reports.
+        #[arg(long)]
+        dark: bool,
+        /// Overall time budget in seconds (clamped to 3–60). Bounds the whole
+        /// command: every engine request self-clamps to it on the default path,
+        /// and it caps the single Ahmia request under `--dark`.
+        #[arg(long)]
+        timeout: Option<u64>,
+        /// Output format: `table` (default) or `json`.
+        #[arg(short, long, default_value = "table")]
+        output: String,
     },
     /// View or set persistent capability toggles (universal toggleability,
     /// SpiderFoot-style). No args lists all toggles; `hse config <key> <on|off>`
@@ -335,6 +418,14 @@ pub enum Command {
         /// Show the merged env content without writing to disk.
         #[arg(long)]
         dry_run: bool,
+        /// Autonomously discover HUNTSMAN_* API keys already present in the
+        /// process environment (exported in a shell rc, CI, or passed inline)
+        /// that the env file doesn't yet carry, and pre-configure them into
+        /// `~/.huntsman.env`. Turns any key the operator already has into a
+        /// persisted, active one with zero manual `keys set`. No-op under
+        /// `--verify-only` (which never touches the env file).
+        #[arg(long)]
+        discover: bool,
     },
 
     /// Write a single `HUNTSMAN_*` key to `$HOME/.huntsman.env`.
@@ -356,7 +447,7 @@ pub enum Command {
         #[arg(short, long, default_value = "table")]
         output: String,
     },
-    /// Parse documents (image/PDF/CSV/JSON/JSONL/text), extract entities (email, phone, IP, domain, hash, etc.),
+    /// Parse documents (image/PDF/CSV/JSON/JSONL/text), extract entities (email, IPv4, IPv6, domain, URL, social handle, MD5/SHA hashes),
     /// classify by kind, assign confidence scores, and output as HSE-ready batch queries (JSONL/JSON/CSV/table).
     Ingest {
         /// Input file path (image, PDF, CSV, JSON, JSONL, text).
@@ -370,9 +461,11 @@ pub enum Command {
         #[arg(short = 'F', long, default_value = "jsonl")]
         output_format: String,
         /// Minimum confidence threshold (0.0-1.0, default 0.30).
-        #[arg(long, default_value = "0.30")]
+        #[arg(long, default_value = "0.30", value_parser = confidence_floor)]
         min_confidence: f64,
-        /// Auto-scan extracted entities (future integration).
+        /// Also persist the extracted entities as a completed, correlated scan
+        /// (offline — no module dispatch, no network), so they show in `hse
+        /// list` and every view/export. The output is still written as usual.
         #[arg(long)]
         auto_scan: bool,
         /// Output file (default: stdout).
@@ -447,10 +540,10 @@ pub enum Command {
         #[arg(long, default_value_t = 0)]
         throttle: u64,
         /// Same as `scan --min-confidence`.
-        #[arg(long)]
+        #[arg(long, value_parser = confidence_floor)]
         min_confidence: Option<f64>,
         /// Same as `scan --min-expand-confidence`.
-        #[arg(long, default_value_t = crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE)]
+        #[arg(long, default_value_t = crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE, value_parser = confidence_floor)]
         min_expand_confidence: f64,
         /// Same as `scan --max-entities` — applies per iteration. Omitted ⇒ the
         /// product default (2500), matching `hse scan` and the API's live/scan
@@ -477,7 +570,7 @@ pub enum Command {
         #[arg(long = "no-regional", action = clap::ArgAction::SetTrue)]
         no_regional: bool,
         /// Same as `scan --min-marginal-yield`.
-        #[arg(long)]
+        #[arg(long, value_parser = non_negative_rate)]
         min_marginal_yield: Option<f64>,
         /// Same as `scan --expansion-strategy`.
         #[arg(long, default_value = "geo_converge")]
@@ -638,6 +731,29 @@ pub enum Command {
         action: crate::app::cells::CellsAction,
     },
 
+    /// Housekeeping: keep the on-device `~/.huntsman` footprint bounded and
+    /// arranged.
+    ///
+    /// Trims the rendered-dossier cache to its newest 500 files (each is a
+    /// regenerable render of a stored scan — `hse export --format full`
+    /// recreates any of them, so nothing unrecoverable is removed), applies the
+    /// canonical event-log / raw-archive retention bounds as a safety net for an
+    /// install that runs `serve` for weeks without completing a scan, truncates
+    /// the SQLite WAL, and re-asserts the data directory's `0700` layout.
+    ///
+    /// The scan database, key pool, key vault and harvested credentials are
+    /// never touched. Runs automatically on the `serve` maintenance tick; this
+    /// command is the on-demand form.
+    #[command(visible_alias = "clean")]
+    Tidy {
+        /// Report what would be reclaimed without changing anything on disk.
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit the machine-readable JSON report instead of the text summary.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Upgrade hse in place: `git pull` + rebuild + atomic binary swap.
     ///
     /// Finds the source directory (from `HUNTSMAN_INSTALL_DIR` written by
@@ -673,5 +789,102 @@ mod tests {
     #[test]
     fn cli_definition_is_internally_consistent() {
         Cli::command().debug_assert();
+    }
+
+    /// `hse tidy`'s help text quotes the dossier-cache cap as a literal, because
+    /// clap renders doc comments verbatim to the operator and a rustdoc
+    /// intra-doc link would leak as raw `[`crate::…`]` markup in `--help`. A
+    /// literal can drift from the constant it describes, so assert the two
+    /// agree: change `DOSSIER_MAX_FILES` and this fails until the help text is
+    /// updated with it.
+    #[test]
+    fn tidy_help_quotes_the_real_dossier_cap() {
+        let cap = crate::app::tidy::DOSSIER_MAX_FILES;
+        let tidy = Cli::command()
+            .get_subcommands()
+            .find(|c| c.get_name() == "tidy")
+            .expect("tidy subcommand is registered")
+            .clone();
+        let help = tidy
+            .get_long_about()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(
+            help.contains(&format!("newest {cap} files")),
+            "tidy --help must quote DOSSIER_MAX_FILES ({cap}); help was: {help}"
+        );
+    }
+
+    #[test]
+    fn confidence_floor_accepts_the_documented_range_inclusive() {
+        for s in ["0.0", "0.30", "0.5", "1.0"] {
+            assert!(
+                confidence_floor(s).is_ok(),
+                "{s} is inside the advertised 0.0-1.0 range"
+            );
+        }
+    }
+
+    #[test]
+    fn confidence_floor_rejects_non_finite_values() {
+        // Regression: `f64::from_str` accepts these, and clap's stock f64
+        // parser passed them straight through. A NaN floor made the extractor's
+        // `confidence >= floor` filter false for EVERY entity, so
+        // `hse ingest --min-confidence nan` exited 0 having emitted nothing at
+        // all — silent total data loss, no error, no warning.
+        for s in ["nan", "NaN", "inf", "-inf", "infinity"] {
+            let err = confidence_floor(s).expect_err("{s} must be rejected");
+            assert!(
+                err.contains("finite"),
+                "the message must name the reason, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn confidence_floor_rejects_values_outside_zero_to_one() {
+        for s in ["1.0001", "5.0", "-0.5", "1e9"] {
+            let err = confidence_floor(s).expect_err("{s} must be rejected");
+            assert!(
+                err.contains("0.0-1.0"),
+                "the message must name the range, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_negative_rate_accepts_values_above_one() {
+        // The distinguishing property vs `confidence_floor`: `--min-marginal-yield`
+        // is entities-per-target, so "require 2 entities per dispatched target"
+        // is a legitimate demand, not out-of-range input.
+        for s in ["0.0", "0.75", "1.0", "2.0", "1000.0"] {
+            assert!(
+                non_negative_rate(s).is_ok(),
+                "{s} is a valid marginal-yield floor"
+            );
+        }
+    }
+
+    #[test]
+    fn non_negative_rate_rejects_non_finite_and_negative() {
+        for s in ["nan", "NaN", "inf", "-inf"] {
+            assert!(
+                non_negative_rate(s).is_err(),
+                "{s} must be rejected: NaN inverts the comparison and inf is unsatisfiable"
+            );
+        }
+        for s in ["-0.1", "-1.0", "-1000.0"] {
+            assert!(
+                non_negative_rate(s).is_err(),
+                "{s} must be rejected: a negative yield floor passes every round"
+            );
+        }
+        assert!(non_negative_rate("banana").is_err());
+    }
+
+    #[test]
+    fn confidence_floor_rejects_non_numeric_input() {
+        let err = confidence_floor("high").expect_err("non-numeric must be rejected");
+        assert!(err.contains("not a number"), "got: {err}");
     }
 }

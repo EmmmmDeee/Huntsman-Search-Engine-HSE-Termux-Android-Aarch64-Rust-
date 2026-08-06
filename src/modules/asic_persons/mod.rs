@@ -37,8 +37,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::ckan::{Response as CkanResp, datastore_search_url, field_str};
-use crate::util::http::fetch_json;
+use crate::util::ckan::{datastore_search_url, field_str};
 
 const SRC: &str = "asic_persons";
 /// data.gov.au CKAN action base — `datastore_search` is appended by
@@ -173,11 +172,12 @@ impl Module for AsicPersons {
 }
 
 /// Query one CKAN datastore resource by free-text name, via the shared CKAN
-/// envelope (T2.118). Returns the matched records, or a real `Error` when the
+/// helper (T2.118). Returns the matched records, or a real `Error` when the
 /// register genuinely failed to answer — a transport error, non-2xx status, or
 /// unparseable body (propagated by `fetch_json` via `?`), or a CKAN application
 /// error (`success: false`, which CKAN returns with HTTP 200 on a bad resource
-/// id / offline datastore / rate-limit). Previously every one of these
+/// id / offline datastore / rate-limit), both enforced by
+/// [`crate::util::ckan::validated_result`]. Previously every one of these
 /// collapsed into an empty `Vec` indistinguishable from a genuine "not in this
 /// register"; `process()` now folds the three registers' results so a real
 /// outage surfaces instead (see its `or_hard_failure` fold).
@@ -187,14 +187,10 @@ async fn ckan_query(
     name: &str,
 ) -> Result<Vec<Map<String, Value>>> {
     let url = datastore_search_url(CKAN_BASE, resource_id, name, MAX_HITS);
-    let resp: CkanResp = fetch_json(&ctx.http, SRC, &url).await?;
-    if resp.success == Some(false) {
-        return Err(Error::module(
-            SRC,
-            "CKAN datastore_search returned success=false (bad resource id or portal error)",
-        ));
-    }
-    Ok(resp.result.map(|r| r.records).unwrap_or_default())
+    Ok(crate::util::ckan::validated_result(&ctx.http, SRC, &url)
+        .await?
+        .map(|r| r.records)
+        .unwrap_or_default())
 }
 
 /// Lower-cased alphabetic name tokens (≥2 chars) of a full name.
@@ -361,7 +357,12 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResu
     // The licensee the adviser operates under — an employer/affiliation pivot.
     let licensee = field(rec, "LICENCE_NAME");
     if let Some(licensee) = &licensee {
-        let mut org = Entity::new(EntityKind::Organisation, licensee, 0.62, scan_id);
+        let mut org = Entity::new(
+            EntityKind::Organisation,
+            licensee,
+            confidence::NOTABLE,
+            scan_id,
+        );
         org.tag("au");
         org.tag("asic");
         org.tag("afs-licensee");
@@ -382,7 +383,7 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResu
     if let Some(raw) = field(rec, "LICENCE_CONTROLLED_BY") {
         for (name, ceased) in parse_controllers(&raw) {
             let (kind, value) = classify_linked(&name);
-            let mut ent = Entity::new(kind, &value, 0.58, scan_id);
+            let mut ent = Entity::new(kind, &value, confidence::MEDIUM_SOLID, scan_id);
             ent.tag("au");
             ent.tag("asic");
             ent.tag("afs-licensee-controller");
@@ -448,7 +449,7 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResu
         if let Some(abn) =
             field(rec, key).filter(|a| a.chars().filter(char::is_ascii_digit).count() == 11)
         {
-            let mut e = Entity::new(EntityKind::AbnAcn, &abn, 0.62, scan_id);
+            let mut e = Entity::new(EntityKind::AbnAcn, &abn, confidence::NOTABLE, scan_id);
             e.tag("au");
             e.tag("asic");
             e.add_evidence(

@@ -1,7 +1,7 @@
 import { API } from '/static/js/api.js';
 import { $, $$, attr, esc, kindPill, toast } from '/static/js/helpers.js';
 import { S } from '/static/js/state.js';
-import { clearEnginesTimer } from '/static/js/timers.js';
+import { clearEnginesTimer, pageHidden } from '/static/js/timers.js';
 
 export async function renderEngines(v){
   let health, toggles, scraperHealth;
@@ -75,7 +75,10 @@ export async function renderEngines(v){
   renderCapabilityProbePanel($('#capprobe-host'));
   renderModuleGraph($('#modgraph-host'));
   clearEnginesTimer();
-  S.enginesTimer = setInterval(refreshEngines, 30000);
+  // Skipped while the page is out of sight; see `pageHidden`. The sweep is a
+  // multi-engine liveness probe on the server, so a background tab was making
+  // the device do real network work for nothing.
+  S.enginesTimer = setInterval(()=>{ if (!pageHidden()) refreshEngines(); }, 30000);
 }
 
 /* Per-source scraper health (T2.7 / SOL-HEALTH-SIGNAL): the au_people /

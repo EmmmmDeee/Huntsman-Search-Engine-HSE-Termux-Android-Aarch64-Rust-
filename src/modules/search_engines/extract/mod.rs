@@ -167,7 +167,7 @@ pub(super) async fn recycle_entities(
                     let mut c = Entity::new(
                         EntityKind::Coordinates,
                         &coord_val,
-                        base_conf - 0.10,
+                        confidence::derived_from(base_conf),
                         &scan_id,
                     );
                     c.tag("addr-derived");
@@ -257,7 +257,14 @@ fn extract_coords_from_text(text: &str) -> Vec<String> {
     {
         // Trim trailing sentence punctuation a snippet may append (`geo:1,2.`).
         let cand = tok.trim_end_matches(['.', ',', ';', '!', '?']);
-        let is_geo = cand.len() > 4 && cand[..4].eq_ignore_ascii_case("geo:");
+        // Compare the scheme over BYTES, not a `str` slice: `cand[..4]` panics
+        // when the 4th byte falls inside a multi-byte character (`"Cruíz"` —
+        // 'í' spans bytes 3..5), which is ordinary in real snippet prose and
+        // took the whole module down for that target. Byte slicing has no
+        // boundary rule, and the `len() > 4` guard already covers the range.
+        // Matches the crate's established prefix-test idiom (`util::dmarc`,
+        // `util::spf`, `util::tlsrpt`, `core::scan::classify`).
+        let is_geo = cand.len() > 4 && cand.as_bytes()[..4].eq_ignore_ascii_case(b"geo:");
         // A Plus Code always carries exactly one '+' with 8 chars before it; a
         // cheap pre-filter before the full OLC parse.
         let is_plus = cand.contains('+') && cand.find('+') == Some(8);

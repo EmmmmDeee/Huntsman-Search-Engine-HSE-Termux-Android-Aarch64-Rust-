@@ -39,8 +39,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::RequestBuilderExt;
-use crate::util::http::{handle_keyed_error, urlencode};
+use crate::util::http::urlencode;
 
 const KEY_ENV: &str = "HUNTSMAN_ONYPHE_KEY";
 const SRC: &str = "onyphe";
@@ -135,70 +134,38 @@ impl Module for Onyphe {
         );
 
         // Key cascade: begin on the hot-injected key and, on a terminal
-        // 401/403/429, rotate to the next usable pooled ONYPHE key and retry, so
-        // one process() call spends every credential the pool holds before it
-        // fails. `tried` stops a burned key being re-handed.
-        let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut key = initial_key.to_string();
-        let body: OnypheResp = 'cascade: loop {
-            tried.insert(key.clone());
-            let mut retries = 2u8;
-            loop {
-                if ctx.cancel.is_cancelled() {
-                    return Ok(ModuleResult::new());
-                }
-                let resp = ctx
-                    .http
+        // 401/403/429 (or an auth-shaped 400 — ONYPHE answers a missing/
+        // malformed key with `400 Bad Request` + "Invalid API key format", not
+        // 401), rotate to the next usable pooled ONYPHE key and retry, so one
+        // process() call spends every credential the pool holds before it
+        // fails. Delegates to the shared cascade primitive (T2: keyed-API
+        // consolidation) — the retry/rotate/cancel loop is identical to what
+        // `threatfox` and 9 other keyed modules hand-rolled; only the request
+        // shape (bearer auth, GET) and the decode (scan for leaked keys) stay
+        // module-specific.
+        let Some(resp) = crate::util::http::keyed_cascade(
+            ctx,
+            SRC,
+            initial_key,
+            // Unknown selector returns 404 — not an error, just no data.
+            &[404],
+            |key| {
+                ctx.http
                     .get(&url)
                     // ONYPHE documents a lowercase `bearer` scheme.
                     .header("Authorization", format!("bearer {key}"))
                     .header("Accept", "application/json")
-                    .send_tagged(SRC)
-                    .await?;
-
-                let status = resp.status();
-                // Unknown selector returns 404 — not an error, just no data.
-                if status.as_u16() == 404 {
-                    return Ok(ModuleResult::new());
-                }
-                if !status.is_success() {
-                    let code = status.as_u16();
-                    if handle_keyed_error(code, resp.headers(), &mut retries, SRC, &key, ctx).await
-                    {
-                        continue;
-                    }
-                    // Terminal 401/403/429 (already burned by handle_keyed_error): cascade.
-                    if crate::util::http::is_keyed_error_status(code)
-                        && let Some(next) = ctx.next_pooled_key(SRC, &tried)
-                    {
-                        key = next;
-                        continue 'cascade;
-                    }
-                    // ONYPHE answers a missing/malformed key with `400 Bad Request`
-                    // + "Invalid API key format" — NOT 401 — so an auth-shaped 400
-                    // must burn + rotate the key like a real key error rather than
-                    // erroring out and wasting the module every scan. Body-scoped so a
-                    // genuine bad-query 400 is untouched.
-                    let snippet = crate::util::http::error_snippet(resp).await;
-                    if code == 400 && crate::util::http::is_auth_failure_400_body(&snippet) {
-                        ctx.report_key_exhausted(SRC, &key, code);
-                        if let Some(next) = ctx.next_pooled_key(SRC, &tried) {
-                            key = next;
-                            continue 'cascade;
-                        }
-                    }
-                    return Err(crate::core::error::Error::module(
-                        SRC,
-                        format!("HTTP {status}: {snippet}"),
-                    ));
-                }
-                // json_scanned: onyphe search results may contain leaked credentials —
-                // scan the raw body for embedded API keys.
-                break 'cascade crate::util::http::json_scanned(resp, SRC)
-                    .await
-                    .map_err(|e| crate::core::error::Error::module(SRC, e))?;
-            }
+            },
+        )
+        .await?
+        else {
+            return Ok(ModuleResult::new());
         };
+        // json_scanned: onyphe search results may contain leaked credentials —
+        // scan the raw body for embedded API keys.
+        let body: OnypheResp = crate::util::http::json_scanned(resp, SRC)
+            .await
+            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
 
         // error != 0 ⇒ no results / rate-limited / plan limit — treat as empty.
         if body.error != 0 || body.results.is_empty() {

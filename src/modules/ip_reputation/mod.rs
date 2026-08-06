@@ -33,7 +33,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{fetch_json_or_404, fetch_keyed_json, urlencode};
+use crate::util::http::{RequestBuilderExt, fetch_json_or_404, fetch_keyed_json, urlencode};
 use crate::util::threat::is_meaningful_tag;
 
 // ── OTX response types ─────────────────────────────────────────────
@@ -101,7 +101,7 @@ const TOR_EXIT_LIST_URL: &str = "https://check.torproject.org/exit-addresses";
 /// "checked, this IP isn't a Tor exit" from the operator's side.
 async fn fetch_exit_set(http: &reqwest::Client, url: &str) -> Result<HashSet<String>> {
     let body_res = tokio::time::timeout(Duration::from_secs(8), async {
-        let resp = http.get(url).send().await?;
+        let resp = http.get(url).send_tagged(SRC).await?;
         if !resp.status().is_success() {
             return Err(Error::module(
                 SRC,
@@ -391,7 +391,12 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
         let name = a.split('(').next().unwrap_or(a).trim();
         let capped: String = name.chars().take(64).collect();
         if capped.len() >= 2 {
-            let mut o = Entity::new(EntityKind::Organisation, &capped, 0.58, &ctx.scan_id);
+            let mut o = Entity::new(
+                EntityKind::Organisation,
+                &capped,
+                confidence::MEDIUM_SOLID,
+                &ctx.scan_id,
+            );
             o.tag(crate::core::tags::THREAT_INTEL);
             o.tag("adversary");
             o.add_evidence(
@@ -479,7 +484,7 @@ fn passive_dns_entities(rows: &[PassiveDnsRow], domain: &str, scan_id: &str) -> 
             && addr.parse::<std::net::IpAddr>().is_ok()
             && seen_ips.insert(addr.to_string())
         {
-            let mut e = Entity::new(EntityKind::IpAddress, addr, 0.62, scan_id);
+            let mut e = Entity::new(EntityKind::IpAddress, addr, confidence::NOTABLE, scan_id);
             e.tag(SRC);
             e.tag("otx");
             e.tag("passive-dns");

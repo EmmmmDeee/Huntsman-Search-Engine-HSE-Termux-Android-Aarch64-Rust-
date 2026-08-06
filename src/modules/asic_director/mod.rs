@@ -20,11 +20,23 @@
 //!   * ACN emitted for downstream abn_lookup: 0.82
 //!   * Address from registered office: 0.72
 //!
-//! Note: ASIC Connect Online is rate-limited by IP. This module uses a light
-//! scraping strategy with a single polite request per scan. The ABN/ACN pivot
-//! via `abn_lookup` then enriches the full company record including HQ address
-//! and geolocation — making this the highest-confidence AU geo pivot after a
-//! FullName seed.
+//! **Live status (2026-08-04):** a direct request to the endpoint above
+//! returns `403` — including with a full browser `User-Agent` header — which
+//! is an anti-bot/WAF (or JS-challenge) block, NOT the plain IP rate-limiting
+//! this doc previously assumed. A rate limit would show as an eventual `429`
+//! or a delayed `200`; an immediate, UA-independent `403` on every request
+//! means no plain HTTP client (this module's `reqwest`/`curl` transport
+//! included) can currently pass it without a headless-browser-class
+//! workaround. Confirmed live from a non-residential IP; not yet confirmed
+//! whether a Termux/mobile-carrier IP fares differently. No fix attempted
+//! here — this is the module's next candidate work, the same
+//! "confirmed-dead-endpoint, no rewrite yet" pattern already documented for
+//! `au_property`'s three legs.
+//!
+//! This module uses a light scraping strategy with a single polite request
+//! per scan. The ABN/ACN pivot via `abn_lookup` then enriches the full
+//! company record including HQ address and geolocation — making this the
+//! highest-confidence AU geo pivot after a FullName seed, when reachable.
 //!
 //! `process()` distinguishes "the request never actually got a readable
 //! response" (a real `Error::module` failure, surfaced to the operator and to
@@ -131,7 +143,12 @@ fn build_director_entities(
     if !acn.is_empty() {
         let acn_clean: String = acn.chars().filter(char::is_ascii_digit).collect();
         if acn_clean.len() == 9 {
-            let mut acn_e = Entity::new(EntityKind::AbnAcn, &acn_clean, 0.82, scan_id);
+            let mut acn_e = Entity::new(
+                EntityKind::AbnAcn,
+                &acn_clean,
+                confidence::CORROBORATED,
+                scan_id,
+            );
             acn_e.tag(SRC);
             acn_e.tag("asic");
             acn_e.tag("acn");
@@ -148,7 +165,7 @@ fn build_director_entities(
 
     // Address from registered office.
     if let Some(addr) = address.filter(|s| !s.trim().is_empty()) {
-        let mut ae = Entity::new(EntityKind::Address, addr, 0.72, scan_id);
+        let mut ae = Entity::new(EntityKind::Address, addr, confidence::ATTRIBUTED, scan_id);
         ae.tag(SRC);
         ae.tag("asic");
         ae.tag("registered-office");
@@ -160,7 +177,12 @@ fn build_director_entities(
         out.push(ae);
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(addr) {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.62, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::NOTABLE,
+                scan_id,
+            );
             c.tag(SRC);
             c.tag("addr-derived");
             c.tag("geoint");

@@ -18,8 +18,6 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::RequestBuilderExt;
-use crate::util::http::handle_keyed_error;
 
 const KEY_ENV: &str = "HUNTSMAN_CRIMINALIP_KEY";
 
@@ -235,14 +233,12 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
         }
         if let Some(asn) = w.as_no {
             let asn_str = format!("AS{asn}");
-            let mut ae = Entity::new(
-                EntityKind::Asn,
-                &asn_str,
-                confidence::HIGH_PLUSPLUS,
-                scan_id,
-            );
+            // Shared, byte-identical ASN birth — the same `0.80` + `ASN for {ip}`
+            // evidence every IP-geo provider emits, single-sourced so it can't
+            // drift (see `util::geo::ip_asn_entity`). The provider tag layers on
+            // after, as at the helper's other call sites.
+            let mut ae = crate::util::geo::ip_asn_entity(&asn_str, SRC, ip, scan_id);
             ae.tag("criminal_ip");
-            ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
             out.push(ae);
         }
         // Whois geolocation → a real `Coordinates` fix (guarded so the API's
@@ -254,7 +250,12 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
             && crate::util::geo::is_valid_coords(lat, lon)
         {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut ce = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+            let mut ce = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::LOW_MEDIUM,
+                scan_id,
+            );
             ce.tag("criminal_ip");
             ce.tag("geoint");
             ce.add_evidence(Evidence::new(SRC, format!("Whois geolocation for {ip}")));
@@ -267,7 +268,7 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
                 .map(str::to_uppercase)
                 .unwrap_or_default();
             let addr = crate::util::geo::compose_address(city, region, &country);
-            let mut ae = Entity::new(EntityKind::Address, &addr, 0.50, scan_id);
+            let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM, scan_id);
             ae.tag("criminal_ip");
             ae.tag("geoint");
             ae.add_evidence(Evidence::new(SRC, format!("Whois location for {ip}")));
@@ -344,64 +345,35 @@ impl Module for CriminalIp {
             return Ok(ModuleResult::new());
         }
         let url = format!("https://api.criminalip.io/v1/asset/ip/report?ip={ip}");
-        // Key cascade: begin on the hot-injected key and, on a terminal key
-        // failure — an HTTP 401/403/429 OR an in-body 401/402/429 status (Criminal
-        // IP reports a dead key that way on an HTTP 200) — rotate to the next
-        // usable pooled key and retry, so one process() call spends every
-        // credential the pool holds before it fails. `tried` stops a burned key
-        // being re-handed.
-        let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut key = initial_key.to_string();
-        let body: Resp = 'cascade: loop {
-            tried.insert(key.clone());
-            let mut retries = 2u8;
-            let parsed: Resp = loop {
-                if ctx.cancel.is_cancelled() {
-                    return Ok(ModuleResult::new());
-                }
-                let resp = ctx
-                    .http
-                    .get(&url)
-                    .header("x-api-key", &key)
-                    .send_tagged(SRC)
-                    .await?;
-                let status = resp.status();
-                if !status.is_success() {
-                    let code = status.as_u16();
-                    if handle_keyed_error(code, resp.headers(), &mut retries, SRC, &key, ctx).await
-                    {
-                        continue;
-                    }
-                    if crate::util::http::is_keyed_error_status(code)
-                        && let Some(next) = ctx.next_pooled_key(SRC, &tried)
-                    {
-                        key = next;
-                        continue 'cascade;
-                    }
-                    return Err(crate::util::http::http_status_error("criminal_ip", resp).await);
-                }
-                break crate::util::http::json_decode(SRC, resp).await?;
-            };
-            // Criminal IP reports auth/quota failures as an IN-BODY status on an
-            // HTTP 200, so a dead/exhausted key would otherwise be indistinguishable
-            // from a clean empty result. On 401/402/429 cascade to the next pooled
-            // key (and, if none remains, surface report + Err so the failure is
-            // visible); any other non-200 stays a genuine empty result.
-            match parsed.status {
-                Some(200) => break 'cascade parsed,
+        // Key cascade via the shared primitive. Criminal IP reports auth/quota
+        // failures as an IN-BODY status on an HTTP 200, so a dead or exhausted
+        // key is invisible to a status-only cascade and would read as a clean
+        // empty result. `keyed_cascade_json` inspects the decoded body and
+        // rotates on that verdict exactly as it would on an HTTP 401/403/429.
+        let Some(body): Option<Resp> = crate::util::http::keyed_cascade_json(
+            ctx,
+            SRC,
+            initial_key,
+            &[],
+            |key| ctx.http.get(&url).header("x-api-key", key),
+            |parsed: &Resp| match parsed.status {
+                Some(200) => crate::util::http::BodyVerdict::Accept,
+                // A dead/exhausted key, reported in-body on a 200.
                 Some(code @ (401 | 402 | 429)) => {
-                    ctx.report_key_exhausted(SRC, &key, code as u16);
-                    if let Some(next) = ctx.next_pooled_key(SRC, &tried) {
-                        key = next;
-                        continue 'cascade;
+                    // Criminal IP supplies no message beyond the in-body status,
+                    // so there is no detail to carry — the code IS the diagnosis.
+                    crate::util::http::BodyVerdict::KeyFailure {
+                        code: code as u16,
+                        detail: None,
                     }
-                    return Err(crate::core::error::Error::module(
-                        SRC,
-                        format!("criminal_ip in-body status {code} (key auth/quota failure)"),
-                    ));
                 }
-                _ => return Ok(ModuleResult::new()),
-            }
+                // Any other in-body status is a genuine empty result.
+                _ => crate::util::http::BodyVerdict::Absent,
+            },
+        )
+        .await?
+        else {
+            return Ok(ModuleResult::new());
         };
 
         let mut result = ModuleResult::new();

@@ -48,6 +48,7 @@ mod fetch;
 pub(crate) mod health;
 mod helpers;
 mod queries;
+pub(crate) mod websearch;
 
 use build::build_entities;
 use engines::{ENGINES, EngineSpec, reliable_engines};
@@ -216,14 +217,21 @@ const PIVOT_ENGINE_CAP: usize = 8;
 /// pass reach it via `super::`, so it never needs `pub(super)` (which would
 /// over-expose it past the module-private `EngineSpec` return type).
 fn proven_live_engines() -> Vec<&'static EngineSpec> {
-    let proven: std::collections::BTreeSet<&'static str> = SESSION_EMPTY_COUNTS
+    pivot_engine_set(&proven_engine_names())
+}
+
+/// Snapshot (one lock) of the engines that have returned ≥1 result this session
+/// — the `proven` input to [`order_engines_for_primary`] and
+/// [`pivot_engine_set`]. Shared by the OSINT primary pass, the pivot pass, and
+/// the `websearch` general-search path so all three read liveness identically.
+fn proven_engine_names() -> std::collections::BTreeSet<&'static str> {
+    SESSION_EMPTY_COUNTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
         .filter(|(_, live)| live.ever_hit)
         .map(|(name, _)| *name)
-        .collect();
-    pivot_engine_set(&proven)
+        .collect()
 }
 
 /// Pure core of [`proven_live_engines`]: the reliable core UNIONed with the
@@ -346,6 +354,40 @@ async fn fetch_engine(
         }
     }
     (engine.name, Some(acc))
+}
+
+/// Fan one query out across `engines` — already filtered and ordered by the
+/// caller (via [`order_engines_for_primary`]) — with the module's bounded
+/// concurrency, then return the batch name-sorted so the result never depends on
+/// which engine happened to answer first (Determinism Requirement).
+///
+/// Single source of the map→[`fetch_engine`]→`buffer_unordered`→sort mechanism
+/// shared by the OSINT primary pass ([`SearchEngines::process`]) and the general
+/// [`websearch::web_search`] path, so the concurrency width and the determinism
+/// sort can never drift between them. `qi` is the query index passed through to
+/// `fetch_engine` (0 enables its pagination); `proven`-set snapshotting stays at
+/// the caller so a multi-query scan's engine ordering is fixed once, not
+/// recomputed per query.
+async fn run_engine_batch(
+    engines: Vec<&'static EngineSpec>,
+    query: &str,
+    qi: usize,
+    deadline: std::time::Instant,
+) -> Vec<(&'static str, Option<Vec<SearchResult>>)> {
+    let futs: Vec<_> = engines
+        .into_iter()
+        .map(|engine| {
+            let url = (engine.build_url)(query);
+            let post_body = engine.build_post.map(|f| f(query));
+            fetch_engine(engine, url, post_body, query.to_string(), qi, deadline)
+        })
+        .collect();
+    let mut batch: Vec<(&'static str, Option<Vec<SearchResult>>)> = futures::stream::iter(futs)
+        .buffer_unordered(ENGINE_CONCURRENCY)
+        .collect()
+        .await;
+    batch.sort_by(|a, b| a.0.cmp(b.0));
+    batch
 }
 
 fn is_social_host(host: &str) -> bool {
@@ -531,15 +573,7 @@ impl Module for SearchEngines {
             // fill the bounded concurrency slots first — under a tight deadline
             // their results survive, while unproven/blocked engines no longer
             // occupy the early slots purely by declaration order.
-            let proven: std::collections::BTreeSet<&'static str> = {
-                let map = SESSION_EMPTY_COUNTS
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                map.iter()
-                    .filter(|(_, l)| l.ever_hit)
-                    .map(|(n, _)| *n)
-                    .collect()
-            };
+            let proven = proven_engine_names();
             let reliable: std::collections::BTreeSet<&'static str> =
                 reliable_engines().iter().map(|e| e.name).collect();
             let live: Vec<&'static EngineSpec> = ENGINES
@@ -550,24 +584,15 @@ impl Module for SearchEngines {
                         && !(qi > 0 && dead_engines.contains(e.name))
                 })
                 .collect();
-            let futs: Vec<_> = order_engines_for_primary(live, &proven, &reliable)
-                .into_iter()
-                .map(|engine| {
-                    let url = (engine.build_url)(query);
-                    let post_body = engine.build_post.map(|f| f(query));
-                    fetch_engine(engine, url, post_body, query.clone(), qi, primary_deadline)
-                })
-                .collect();
-            let mut batch: Vec<(&'static str, Option<Vec<SearchResult>>)> =
-                futures::stream::iter(futs)
-                    .buffer_unordered(ENGINE_CONCURRENCY)
-                    .collect()
-                    .await;
-
-            // Completion order is racy, so order the batch by engine name before
-            // appending — the persisted result must not depend on which engine
-            // happened to answer first (Determinism Requirement).
-            batch.sort_by(|a, b| a.0.cmp(b.0));
+            // Fan out this query across the ordered live set with bounded
+            // concurrency; the batch comes back name-sorted (see run_engine_batch).
+            let batch = run_engine_batch(
+                order_engines_for_primary(live, &proven, &reliable),
+                query,
+                qi,
+                primary_deadline,
+            )
+            .await;
             for (name, res) in batch {
                 match res {
                     Some(mut results) => {

@@ -411,7 +411,7 @@ impl Module for SeekNow {
                         &mut seen,
                         &mut result,
                     );
-                    store_api_credential(item, SRC);
+                    store_api_credential(item, SRC, &ctx.scan_id, &mut seen, &mut result);
                     extract_api_keys_from_item(item, &ctx.scan_id, SRC, &mut seen, &mut result);
                     // Geo-specific extraction — pull coordinates/timezone/
                     // location directly when the endpoint returns them.
@@ -505,7 +505,7 @@ fn absorb_search_hits(
             seen,
             result,
         );
-        store_api_credential(item, SRC);
+        store_api_credential(item, SRC, scan_id, seen, result);
         extract_api_keys_from_item(item, scan_id, SRC, seen, result);
         // Geo-conscious extraction — coordinates/timezone/location on a record.
         // `/search` and `/search/deep` are SeekNow's broadest, highest-yield
@@ -732,7 +732,7 @@ fn extract_pivot_entities(
                 item, seed_value, &match_ctx, scan_id, endpoint, key_fp, seen, result,
             );
             extract_geo_entities(item, endpoint, scan_id, seen, result);
-            store_api_credential(item, SRC);
+            store_api_credential(item, SRC, scan_id, seen, result);
             extract_api_keys_from_item(item, scan_id, SRC, seen, result);
         }
     }

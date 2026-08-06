@@ -104,9 +104,10 @@ pub(in crate::core::correlator) fn rule_au_118_lookalike_domain_impersonation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
 
     fn dom(v: &str) -> Entity {
-        Entity::new(EntityKind::Domain, v, 0.8, "s")
+        Entity::new(EntityKind::Domain, v, confidence::HIGH_PLUSPLUS, "s")
     }
 
     #[test]

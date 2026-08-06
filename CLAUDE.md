@@ -46,23 +46,46 @@ Proprietary; `publish = false` — never publish to crates.io.
 
 ## Commands
 
-These mirror CI (`.github/workflows/ci.yml`); run them before pushing.
+Run the whole gate before pushing — one command:
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --all --locked
+scripts/gate.sh            # everything CI runs that this host can run
+scripts/gate.sh --quick    # inner loop: skips MSRV and the cross-build
 ```
 
-Cross-compilation check for the real target:
+It reports every check as PASS, FAIL, or **SKIP with the reason**, so a check
+that could not run here is visible rather than silently missing. Use it instead
+of assembling the list by hand: the gate spans several workflow files, and
+reconstructing it from `ci.yml` alone reliably drops the rustdoc lint pass and
+the MSRV pin — both of which have broken this repo before.
 
-```sh
-cargo build --locked --lib --bin hse --target aarch64-linux-android
-```
+What it runs, and where each comes from:
 
-Benchmarks (Criterion, `harness = false`): `cargo bench`. CI only compiles them
-(`cargo bench --no-run`), so a perf-path API change fails the build rather than
-rotting silently.
+| Check | Source |
+|---|---|
+| `cargo fmt --all -- --check` | `ci.yml` |
+| `cargo check --all-targets --locked` | `ci.yml` |
+| `cargo clippy --all-targets --locked -- -D warnings` | `ci.yml` |
+| `cargo doc --no-deps --document-private-items` with `RUSTDOCFLAGS` denying broken intra-doc links, bare URLs, invalid HTML | `ci.yml` |
+| `cargo test --all --locked` + doctests | `ci.yml` |
+| `cargo +<MSRV> check --all-targets --locked` | `ci.yml` (MSRV job) |
+| `cargo build`/`test --no-run` for `aarch64-linux-android` | `ci.yml` (Termux target job) |
+| `bash -n install.sh`, ShellCheck | `ci.yml` |
+| `cargo audit`, `cargo deny check`, `cargo machete` | `audit.yml` — only when a manifest changed |
+
+The cross-build needs the Android NDK: `libsqlite3-sys` and `ring` both have C
+build scripts, so without `aarch64-linux-android-clang` even `cargo check
+--target` fails. Where the NDK is absent, CI's `aarch64-android` job is the
+authority — do not claim the target builds without it.
+
+`rust-clippy.yml` also runs on every PR (clippy → SARIF → CodeQL); it is the same
+lint pass the gate already runs. `fuzz.yml` (nightly + `cargo-fuzz`) and
+`live-drift.yml` run on a schedule or on their own path filters, not on a
+typical PR.
+
+Benchmarks (Criterion, `harness = false`): `cargo bench`. No workflow executes
+them, but `cargo check --all-targets` compiles them, so a perf-path API change
+fails the build rather than rotting silently.
 
 Live-network drift tests are `#[ignore]`d by default and run in their own
 workflow: `cargo test --test live_drift --locked -- --ignored --nocapture`.

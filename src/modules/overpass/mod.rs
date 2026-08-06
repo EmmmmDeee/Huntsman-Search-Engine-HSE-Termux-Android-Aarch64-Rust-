@@ -288,7 +288,7 @@ out center;"#
 
         let status = resp.status();
         if !status.is_success() {
-            return Err(Error::module(SRC, format!("HTTP {status}")));
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
         let body: OverpassResp = crate::util::http::json_scanned(resp, SRC)

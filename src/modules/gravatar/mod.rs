@@ -302,7 +302,7 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
             .map(str::trim)
             .filter(|e| e.contains('@') && e.len() >= 5)
         {
-            let mut e = Entity::new(EntityKind::Email, addr, 0.82, scan_id);
+            let mut e = Entity::new(EntityKind::Email, addr, confidence::CORROBORATED, scan_id);
             e.tag(SRC);
             e.tag("public-profile");
             let mut mev = ev.clone().with_attr("source_field", "emails");

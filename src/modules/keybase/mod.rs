@@ -241,7 +241,7 @@ pub(super) fn build_entities(body: KbResp, query_username: &str, scan_id: &str) 
         if let Some(loc) = profile.location.as_deref()
             && loc.len() >= 3
         {
-            let mut ae = Entity::new(EntityKind::Address, loc, 0.52, scan_id);
+            let mut ae = Entity::new(EntityKind::Address, loc, confidence::MEDIUM_LIGHT, scan_id);
             ae.tag("keybase");
             ae.tag("geoint");
             ae.tag("self-reported");

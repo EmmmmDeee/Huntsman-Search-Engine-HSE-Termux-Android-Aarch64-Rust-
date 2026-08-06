@@ -126,19 +126,9 @@ pub async fn scan_metrics(
     if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
-            store.entities_for_scan(&id2)?,
-            store.relations_for_scan(&id2)?,
-        ))
-    })
-    .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    let (entities, relations) = match super::entities_and_relations(&s, &id).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
     };
     let metrics = crate::core::metrics::compute(&entities, &relations);
     (StatusCode::OK, Json(metrics)).into_response()
@@ -172,19 +162,9 @@ pub async fn scan_pivots(
     if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
-            store.entities_for_scan(&id2)?,
-            store.relations_for_scan(&id2)?,
-        ))
-    })
-    .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    let (entities, relations) = match super::entities_and_relations(&s, &id).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
     };
     let pivots = crate::core::pivot::detect(&entities, &relations);
     let bridges = crate::core::pivot::bridges(&entities, &relations);
@@ -208,19 +188,9 @@ pub async fn scan_gaps(
     if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
-            store.entities_for_scan(&id2)?,
-            store.relations_for_scan(&id2)?,
-        ))
-    })
-    .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    let (entities, relations) = match super::entities_and_relations(&s, &id).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
     };
 
     let report = crate::core::gap::analyze(&entities, &relations);

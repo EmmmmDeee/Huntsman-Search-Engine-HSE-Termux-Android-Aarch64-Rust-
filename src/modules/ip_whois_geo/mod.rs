@@ -71,9 +71,10 @@ struct Connection {
 /// directly off JSON fixtures.
 ///
 /// Gates internally (both moved here from the transport shell so they are
-/// tested): a `success:false` lookup yields an empty `Vec`, and a CDN/anycast
-/// edge IP — [`crate::core::validation::is_cdn_edge_ip`] — is skipped (its geo
-/// is the datacenter's, not the subject's).
+/// tested): a `success:false` lookup yields an empty `Vec`, and an IP the shared
+/// [`crate::core::validation::untrusted_ip_geo_reason`] gate flags as
+/// infrastructure (CDN/anycast edge, …) is skipped (its geo is the datacenter's,
+/// not the subject's) — the same policy every other IP-geo provider applies.
 ///
 /// Coordinates are gated by the coarse-provider
 /// [`crate::util::geo::is_plausible_provider_coord`] (null-island band /
@@ -86,9 +87,20 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
         return Vec::new();
     }
 
-    // CDN/anycast edge IP → datacenter location, not the subject. Skip (see
-    // ip_geo.rs); prevents false identity-location correlations.
-    if crate::core::validation::is_cdn_edge_ip(ip) {
+    // Shared trust gate (same policy as ip_geo/ipinfo/ip2location/ipquery): an
+    // IP whose geolocation is infrastructure — a CDN/anycast edge, and whatever
+    // else `untrusted_ip_geo_reason` grows to cover — is the datacenter's
+    // location, not the subject's. Routing through the one gate (instead of a
+    // local `is_cdn_edge_ip` call) keeps the policy consistent across every
+    // IP-geo provider and logs *why* it was skipped (no black-box).
+    if let Some(reason) = crate::core::validation::untrusted_ip_geo_reason(ip) {
+        tracing::debug!(
+            target: "huntsman::geo",
+            module = SRC,
+            ip,
+            reason,
+            "skipping IP-geo — location is the infrastructure, not the subject"
+        );
         return Vec::new();
     }
 

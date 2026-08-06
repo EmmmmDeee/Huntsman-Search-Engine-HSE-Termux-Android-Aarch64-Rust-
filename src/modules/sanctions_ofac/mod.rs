@@ -125,7 +125,9 @@ async fn screen_wallet(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         return Ok(result);
     }
 
-    let records = fetch_sdn_list(ctx).await;
+    // `?`: a list that could not be loaded must NOT read as "no designations
+    // matched" — see `list::degrade_on_fetch_failure`.
+    let records = fetch_sdn_list(ctx).await?;
     for (rec, sa) in crypto::screen_address(&records, addr) {
         if let Some(e) = build_subject(rec, &ctx.scan_id, Provenance::Address) {
             result.push(e);
@@ -151,7 +153,9 @@ async fn screen_name(target: &Target, ctx: &ModuleContext) -> Result<ModuleResul
         return Ok(result);
     }
 
-    let records = fetch_sdn_list(ctx).await;
+    // `?`: a list that could not be loaded must NOT read as "no designations
+    // matched" — see `list::degrade_on_fetch_failure`.
+    let records = fetch_sdn_list(ctx).await?;
     let matches: Vec<&SdnRecord> = records
         .iter()
         .filter(|r| record_name_matches(&r.name, &tokens))

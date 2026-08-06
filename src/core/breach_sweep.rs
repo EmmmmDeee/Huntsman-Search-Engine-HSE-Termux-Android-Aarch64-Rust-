@@ -308,6 +308,7 @@ fn cmp_probes(a: &(usize, SweepProbe), b: &(usize, SweepProbe)) -> std::cmp::Ord
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::entity::{Entity, EntityKind, Evidence};
 
     fn ent(kind: EntityKind, value: &str, conf: f64) -> Entity {
@@ -557,7 +558,12 @@ mod tests {
     #[test]
     fn a_confidence_floor_of_zero_still_excludes_recycled_snippets() {
         let (p, q) = empty();
-        let mut recycled = Entity::new(EntityKind::Username, "maybehandle", 0.4, "scan-1");
+        let mut recycled = Entity::new(
+            EntityKind::Username,
+            "maybehandle",
+            confidence::LOW,
+            "scan-1",
+        );
         recycled.add_evidence(Evidence::new("search_engines", "snippet"));
         recycled.tag("recycled");
         assert!(

@@ -104,7 +104,12 @@ fn build_associated_entity(
     {
         return None;
     }
-    let mut e = Entity::new(EntityKind::Domain, hostname, 0.82, scan_id);
+    let mut e = Entity::new(
+        EntityKind::Domain,
+        hostname,
+        confidence::CORROBORATED,
+        scan_id,
+    );
     e.tag("securitytrails");
     e.tag("reverse-ip");
     e.add_evidence(

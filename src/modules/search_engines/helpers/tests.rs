@@ -48,6 +48,39 @@ fn strip_tags_inserts_word_boundary_between_adjacent_elements() {
 }
 
 #[test]
+fn strip_tags_does_not_leak_img_attributes_with_gt_in_a_quoted_value() {
+    // Real Brave (Svelte) SERP shape from an on-device scan (target "Jeremy
+    // Stewart"): a favicon <img>'s base64 `src` + `loading`/`onerror` attributes
+    // leaked into the page_title, because a '>' inside a quoted attribute value
+    // desynced the naive tag scanner and dumped the rest of the tag as text.
+    let html = "<div class=\"title search-snippet-title\">\
+                <img class=\"favicon\" onerror=\"if(w>0)this.hidden=1\" \
+                src=\"https://imgs.search.brave.com/aHR0cDovL2Zhdmljb25zLnNlYXJjaC5icmF2ZQ\" \
+                loading=\"lazy\"/>Kylo - YouTube</div>";
+    let got = strip_tags(html, 200);
+    assert_eq!(got, "Kylo - YouTube");
+    assert!(
+        !got.contains("aHR0cDov"),
+        "base64 favicon src must not leak: {got}"
+    );
+    assert!(
+        !got.contains("loading="),
+        "img attributes must not leak: {got}"
+    );
+    assert!(!got.contains("onerror="));
+}
+
+#[test]
+fn strip_tags_drops_html_comments_including_ones_with_a_stray_gt() {
+    // Svelte hydration markers (`<!--[-->`, `<!--]-->`) fill Brave SERPs; a comment
+    // carrying a stray '>' must not desync the scanner and leak following markup.
+    let html = "<!--[--><span>Real Title</span><!-- note: a>b legacy --><img src=\"x\"/><!--]-->";
+    let got = strip_tags(html, 200);
+    assert_eq!(got, "Real Title");
+    assert!(!got.contains("legacy") && !got.contains("a>b") && !got.contains("src="));
+}
+
+#[test]
 fn extract_snippet_near_does_not_dump_anchor_tag_attributes() {
     // Real Startpage capture: the snippet slice begins right after the matched
     // href URL — INSIDE the `<a …>` tag. Its attributes (rel/target/aria-label/
@@ -685,6 +718,47 @@ fn extract_key_phrase_returns_empty_when_no_terms_match() {
     assert!(result.is_empty(), "expected no match, got: {result}");
 }
 
+// ── display_key_phrase ───────────────────────────────────────────────────────
+
+#[test]
+fn display_key_phrase_prefers_the_snippet_clause() {
+    let phrase = display_key_phrase(
+        "Kylo Ren — Wikipedia",
+        "Intro text. Kylo Ren is a fictional character in Star Wars.",
+        "kylo ren",
+    );
+    assert!(
+        phrase.contains("Kylo Ren is a fictional character"),
+        "expected the snippet's matching clause, got: {phrase}"
+    );
+}
+
+#[test]
+fn display_key_phrase_falls_back_to_title() {
+    // Snippet has no query overlap → the title's matching fragment is used.
+    let phrase = display_key_phrase(
+        "Adam Driver as Kylo Ren — IGN",
+        "Nothing relevant in this snippet at all.",
+        "kylo ren",
+    );
+    assert!(
+        phrase.to_lowercase().contains("kylo ren"),
+        "expected the title fragment, got: {phrase}"
+    );
+}
+
+#[test]
+fn display_key_phrase_empty_when_nothing_matches() {
+    assert_eq!(
+        display_key_phrase(
+            "Homepage",
+            "Unrelated content about gardening today.",
+            "kylo ren"
+        ),
+        ""
+    );
+}
+
 // ── dedup_results ────────────────────────────────────────────────────────────
 
 #[test]
@@ -789,6 +863,44 @@ fn extract_surrounding_text_does_not_leak_a_straddling_svg_paths_raw_data() {
     assert!(
         out.contains("Real Co"),
         "genuine visible text near the anchor must still be kept: {out:?}"
+    );
+}
+
+#[test]
+fn extract_surrounding_text_does_not_leak_a_straddling_img_tags_base64_attrs() {
+    // Regression, found via a real live Brave capture: a "Data from Wikipedia"
+    // knowledge-panel result with no visible title fell back to this ±300-char
+    // window. The window's start landed strictly INSIDE the PRECEDING result's
+    // favicon `<img src="data:image/…;base64,…" loading="lazy"
+    // onerror="…"/>` tag — the tag's own opening `<img` sits further back,
+    // outside the window — so `strip_tags`'s `in_tag` state started FALSE and
+    // dumped the raw base64/attribute text straight into the extracted text as
+    // if it were visible content. Unlike the svg/style/script case, `<img>` has
+    // no closing tag to search for — `skip_straddling_tag_attrs` handles it by
+    // finding the tag's own real (quote-aware) closing `>` instead.
+    let long_base64 = "QUFBQUFBQUFBQUFB".repeat(30); // well over 300 chars
+    let html = format!(
+        r#"<img src="data:image/png;base64,{long_base64}" loading="lazy" onerror="this.__e=event"/><p>Data from Wikipedia</p><a href="ANCHOR">Real Title</a>"#
+    );
+    let pos = html.find("ANCHOR").expect("should succeed");
+    let img_open = html.find("<img").expect("should succeed");
+    let img_close = html.find("\"/>").expect("should succeed") + 3; // just past the tag's own '>'
+    let naive_start = pos.saturating_sub(300);
+    assert!(
+        naive_start > img_open && naive_start < img_close,
+        "test setup sanity: the naive window start ({naive_start}) must land \
+         strictly INSIDE the img tag ({img_open}..{img_close}), or this test \
+         doesn't reproduce the bug"
+    );
+    let out = extract_surrounding_text(&html, "ANCHOR", 200);
+    assert!(
+        !out.contains("QUFBQUFB") && !out.contains("onerror") && !out.contains("loading"),
+        "the preceding result's raw favicon <img> attribute data must not leak \
+         into the extracted text: {out:?}"
+    );
+    assert!(
+        out.contains("Data from Wikipedia") || out.contains("Real Title"),
+        "genuine visible text near the anchor must still be kept, not over-skipped: {out:?}"
     );
 }
 

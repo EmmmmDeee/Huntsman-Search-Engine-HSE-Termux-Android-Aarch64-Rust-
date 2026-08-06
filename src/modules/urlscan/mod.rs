@@ -402,7 +402,7 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
             })
             .map(|digits| {
                 let asn = format!("AS{digits}");
-                let mut e = Entity::new(EntityKind::Asn, &asn, 0.55, scan_id);
+                let mut e = Entity::new(EntityKind::Asn, &asn, confidence::MEDIUM_HIGH, scan_id);
                 e.tag("urlscan");
                 e.add_evidence(Evidence::new(
                     SRC,
@@ -425,7 +425,7 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
                     && p.to_ascii_lowercase() != target_lc
             })
             .map(|p| {
-                let mut e = Entity::new(EntityKind::Domain, p, 0.55, scan_id);
+                let mut e = Entity::new(EntityKind::Domain, p, confidence::MEDIUM_HIGH, scan_id);
                 e.tag("urlscan");
                 e.tag("ptr");
                 e.add_evidence(Evidence::new(

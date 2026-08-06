@@ -35,8 +35,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::RequestBuilderExt;
-use crate::util::http::{handle_keyed_error, json_decode, urlencode};
+use crate::util::http::{json_decode, urlencode};
 
 const KEY_ENV: &str = "HUNTSMAN_ZOOMEYE_KEY";
 const SRC: &str = "zoomeye";
@@ -53,6 +52,56 @@ struct ZoomResp {
     /// `{"error": …}` body with no matches, which deserialises to empty here.
     #[serde(default)]
     matches: Vec<Value>,
+}
+
+/// Build the ZoomEye selector dork for a target — `ip:{ip}` or
+/// `hostname:{domain}` — or `None` when the target can't address one.
+///
+/// # Why this validates rather than escapes
+///
+/// The whole dork is URL-encoded for transport (`urlencode(&dork)` at the
+/// call site), but that only protects the HTTP query string — ZoomEye's own
+/// server decodes it back to plain text before its dork parser ever sees it.
+/// Unlike [`crate::modules::fofa::fofa_filter`]'s `field="value"` shape,
+/// ZoomEye's `field:value` dork has no quoting to escape a value into: a
+/// value containing whitespace or a second `:` would simply read as
+/// additional dork tokens once decoded server-side (ZoomEye's own docs
+/// describe space-separated `field:value` terms), the same class of
+/// query-injection FOFA's quoted filter was fixed against, just with no
+/// escape sequence available for this grammar.
+///
+/// So this validates instead of escaping — reachable via the same
+/// unvalidated-pivot-target path documented on `fofa_filter` (a Domain/IP
+/// entity minted straight from a provider's own response, e.g. this
+/// module's own `geoinfo`/hostname fields, then pivoted into a `Target`
+/// without going through [`Target::validate`](crate::core::scan::Target::validate)):
+///
+/// - `IpAddress` is parsed through [`std::net::IpAddr`] and the **parsed,
+///   reformatted** address is used — not the raw string — so even a
+///   technically-parseable-but-unusual representation is canonicalized
+///   before it reaches the dork. A real parser rather than a character-class
+///   check, consistent with how the standalone IPv4/IPv6 extractors validate.
+/// - `Domain` is checked against the exact ASCII alphanumeric/`.`/`-`/`_`
+///   class [`Target::validate`] already enforces for a *seed* Domain — a
+///   pivot value failing that same class is exactly the malformed/malicious
+///   case to reject, not the ordinary case to accept.
+#[must_use]
+fn zoomeye_dork(target: &Target) -> Option<String> {
+    match target.kind {
+        TargetKind::IpAddress => {
+            let addr: std::net::IpAddr = target.value.trim().parse().ok()?;
+            Some(format!("ip:{addr}"))
+        }
+        TargetKind::Domain => {
+            let domain = target.value.trim();
+            let valid = !domain.is_empty()
+                && domain
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_');
+            valid.then(|| format!("hostname:{domain}"))
+        }
+        _ => None,
+    }
 }
 
 pub struct ZoomEye;
@@ -114,64 +163,30 @@ impl Module for ZoomEye {
         };
 
         let value = target.value.trim();
-        if value.is_empty() {
+        let Some(dork) = zoomeye_dork(target) else {
             return Ok(ModuleResult::new());
-        }
-        // The selector dork: an IP is queried verbatim; a domain is queried by
-        // hostname so ZoomEye returns the hosts it has indexed for that name.
-        let dork = match target.kind {
-            TargetKind::IpAddress => format!("ip:{value}"),
-            TargetKind::Domain => format!("hostname:{value}"),
-            _ => return Ok(ModuleResult::new()),
         };
         let url = format!(
             "https://api.zoomeye.org/host/search?query={}&page=1",
             urlencode(&dork)
         );
 
-        // Key cascade: begin on the hot-injected key and, on a terminal
-        // 401/403/429, rotate to the next usable pooled ZoomEye key and retry, so
-        // one process() call spends every credential the pool holds before it
-        // fails. `tried` stops a burned key being re-handed.
-        let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut key = initial_key.to_string();
-        let body: ZoomResp = 'cascade: loop {
-            tried.insert(key.clone());
-            let mut retries = 2u8;
-            loop {
-                if ctx.cancel.is_cancelled() {
-                    return Ok(ModuleResult::new());
-                }
-                let resp = ctx
-                    .http
-                    .get(&url)
-                    .header("API-KEY", &key)
-                    .header("Accept", "application/json")
-                    .send_tagged(SRC)
-                    .await?;
-
-                let status = resp.status();
-                // 404 = nothing indexed for this selector — a clean miss, not an error.
-                if status.as_u16() == 404 {
-                    return Ok(ModuleResult::new());
-                }
-                if !status.is_success() {
-                    let code = status.as_u16();
-                    if handle_keyed_error(code, resp.headers(), &mut retries, SRC, &key, ctx).await
-                    {
-                        continue;
-                    }
-                    if crate::util::http::is_keyed_error_status(code)
-                        && let Some(next) = ctx.next_pooled_key(SRC, &tried)
-                    {
-                        key = next;
-                        continue 'cascade;
-                    }
-                    return Err(crate::util::http::http_status_error(SRC, resp).await);
-                }
-                break 'cascade json_decode(SRC, resp).await?;
-            }
+        // Key cascade via the shared primitive: on a terminal key quota/auth
+        // failure, rotate to the next untried usable pooled key so one call
+        // spends every credential the pool holds. `absent_statuses: &[404]` —
+        // 404 means nothing indexed for this selector, a clean miss rather than
+        // an error, exactly as this module treated it before.
+        let Some(resp) = crate::util::http::keyed_cascade(ctx, SRC, initial_key, &[404], |key| {
+            ctx.http
+                .get(&url)
+                .header("API-KEY", key)
+                .header("Accept", "application/json")
+        })
+        .await?
+        else {
+            return Ok(ModuleResult::new());
         };
+        let body: ZoomResp = json_decode(SRC, resp).await?;
 
         if body.matches.is_empty() {
             return Ok(ModuleResult::new());

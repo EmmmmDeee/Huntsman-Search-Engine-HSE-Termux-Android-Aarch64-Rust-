@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
 use crate::core::relation::{
-    IDENTITY_PAIR_PROBE_CAP, PathStep, disjoint_pathways_in, identity_uids,
+    IDENTITY_LINK_MIN_CONF, IDENTITY_PAIR_PROBE_CAP, PathStep, disjoint_pathways_in, identity_uids,
     sorted_confined_adjacency,
 };
 
@@ -112,7 +112,14 @@ fn single_route_identity_links_capped(
                 break 'outer;
             }
             probes += 1;
-            let mut pathways = disjoint_pathways_in(&adj, a, b, MAX_HOPS, MAX_PATHS);
+            // IDENTITY_LINK_MIN_CONF excludes damped, sub-floor edges from the
+            // search — the same floor AU-060's transitive closure applies —
+            // so a "single fragile route" reported here (and the identical
+            // gap the engine's gap-fill probing targets, since this detector
+            // is shared) is never actually built from a link too weak to
+            // trust in the first place.
+            let mut pathways =
+                disjoint_pathways_in(&adj, a, b, MAX_HOPS, MAX_PATHS, IDENTITY_LINK_MIN_CONF);
             // Connected by exactly ONE route, and it is a transitive chain (≥2
             // hops): a direct one-hop link is already solid.
             if pathways.len() != 1 || pathways[0].len() < 2 {
@@ -383,6 +390,56 @@ mod tests {
 
     fn rel(from: &Entity, to: &Entity, kind: RelationKind) -> Relation {
         Relation::new(from.uid.clone(), to.uid.clone(), kind, 0.8, "s")
+    }
+
+    fn rel_conf(from: &Entity, to: &Entity, kind: RelationKind, conf: f64) -> Relation {
+        Relation::new(from.uid.clone(), to.uid.clone(), kind, conf, "s")
+    }
+
+    #[test]
+    fn single_route_link_excludes_a_route_built_from_a_damped_edge() {
+        // a→m→b via a DAMPED (0.40) first edge — the same magnitude
+        // `derive_kinship` produces for a same-surname pair. Before
+        // IDENTITY_LINK_MIN_CONF applied to disjoint_pathways_in, this counted
+        // as one single-route link, so AU-063 would flag it as a "fragile
+        // connection worth corroborating" — but a damped lead is not a
+        // connection at all, let alone a fragile one, and flagging it invites
+        // the engine's gap-fill probing (this exact detector) to chase a
+        // connection that shouldn't be trusted in the first place. With the
+        // floor, the damped edge is excluded before the search starts, so `a`
+        // and `b` are simply disconnected — no link, no gap to report.
+        let a = id(EntityKind::Email, "a@x.com");
+        let m = id(EntityKind::Domain, "x.com");
+        let b = id(EntityKind::Username, "bob");
+        let rels = [
+            rel_conf(&a, &m, RelationKind::BelongsToDomain, 0.40),
+            rel(&m, &b, RelationKind::DerivedFrom),
+        ];
+        let ents = [a, m, b];
+        assert!(
+            single_route_identity_links(&RuleContext::new(&ents), &rels).is_empty(),
+            "a route built from a sub-floor damped edge must not surface as a gap"
+        );
+    }
+
+    #[test]
+    fn single_route_link_still_flags_a_route_whose_edges_clear_the_floor() {
+        // The same shape, but the first edge is a legitimate 0.60 (≥
+        // IDENTITY_LINK_MIN_CONF) — a genuinely fragile-but-real single route,
+        // which AU-063 must still flag.
+        let a = id(EntityKind::Email, "a@x.com");
+        let m = id(EntityKind::Domain, "x.com");
+        let b = id(EntityKind::Username, "bob");
+        let rels = [
+            rel_conf(&a, &m, RelationKind::BelongsToDomain, 0.60),
+            rel(&m, &b, RelationKind::DerivedFrom),
+        ];
+        let ents = [a, m, b];
+        assert_eq!(
+            single_route_identity_links(&RuleContext::new(&ents), &rels).len(),
+            1,
+            "a single route whose edges all clear the floor must still be flagged"
+        );
     }
 
     #[test]

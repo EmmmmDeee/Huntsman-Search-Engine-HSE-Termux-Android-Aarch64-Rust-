@@ -21,6 +21,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use std::collections::HashSet;
 
+use crate::core::confidence;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -132,7 +133,12 @@ fn build_entities(entries: &[Issuance], domain_base: &str, scan_id: &str) -> Vec
         if !seen_issuers.insert(org.to_lowercase()) {
             return None;
         }
-        let mut o = Entity::new(EntityKind::Organisation, org, 0.55, scan_id);
+        let mut o = Entity::new(
+            EntityKind::Organisation,
+            org,
+            confidence::MEDIUM_HIGH,
+            scan_id,
+        );
         o.tag(tags::CT_LOG);
         o.tag("certificate-issuer");
         o.tag("derived");

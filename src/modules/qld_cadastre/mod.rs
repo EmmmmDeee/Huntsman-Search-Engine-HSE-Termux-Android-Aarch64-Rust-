@@ -100,7 +100,7 @@ fn build_entities(coord: &str, attrs: &HashMap<String, Value>, scan_id: &str) ->
 
     let mut out = Vec::new();
 
-    let mut coords = Entity::new(EntityKind::Coordinates, coord, 0.78, scan_id);
+    let mut coords = Entity::new(EntityKind::Coordinates, coord, confidence::STRONG, scan_id);
     coords.tag(SRC);
     coords.tag("geoint");
     coords.tag("country:AU");
@@ -216,7 +216,7 @@ impl Module for QldCadastre {
 
         let status = resp.status();
         if !status.is_success() {
-            return Err(Error::module(SRC, format!("HTTP {status}")));
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
         let body: QueryResp = crate::util::http::json_scanned(resp, SRC)

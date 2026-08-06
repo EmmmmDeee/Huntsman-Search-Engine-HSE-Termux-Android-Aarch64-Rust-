@@ -28,6 +28,7 @@ pub mod beacondb;
 pub mod bgpview;
 pub mod bitbucket_user;
 pub mod bluesky_user;
+pub mod builtwith;
 // Shared "maximum raw data" breach/stealer extractor — a `pub(crate)` HELPER
 // (no `Module` impl), consumed by see_know / oathnet_pro / dehashed via
 // `crate::modules::breach_rich::extract_rich_detail`, not a registered module.
@@ -42,6 +43,7 @@ pub mod censys;
 pub mod cert_intel;
 pub mod certspotter;
 pub mod chain_intel;
+pub mod chess_profile;
 pub mod cloud_storage;
 pub mod codeberg_user;
 pub mod codewars_user;
@@ -77,6 +79,7 @@ pub mod epieos;
 pub mod exa_search;
 pub mod exif_geo;
 pub mod fediverse;
+pub mod fofa;
 pub mod fullcontact;
 pub mod gaming_profile;
 pub mod geo_domain_classifier;
@@ -118,6 +121,7 @@ pub mod leakix;
 pub mod lobsters;
 pub mod local_net;
 pub mod mastodon_user;
+pub mod mnemonic_pdns;
 pub mod mylnikov;
 pub mod name_intel;
 pub mod netblock;
@@ -128,6 +132,7 @@ pub mod npm_author;
 pub mod numverify;
 pub mod oathnet_pro;
 pub mod onyphe;
+pub mod open_meteo_geo;
 pub mod opencellid;
 pub mod opencorporates;
 pub mod opensanctions;
@@ -172,6 +177,7 @@ pub mod stackoverflow_user;
 pub mod steam_profile;
 pub mod streaming_probe;
 pub mod structured_id;
+pub mod subdomain_center;
 pub mod subdomain_takeover;
 pub mod sunrise_sunset;
 // Shared Termux sensor-tool output contract (blank vs unparseable) — a
@@ -360,9 +366,12 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(criminal_ip::CriminalIp),
             Arc::new(onyphe::Onyphe),
             Arc::new(zoomeye::ZoomEye),
+            Arc::new(fofa::Fofa),
+            Arc::new(builtwith::BuiltWith),
             Arc::new(ipqs::IpQs),
             Arc::new(contact_enrich::ContactEnrich),
             Arc::new(hunter_io::HunterIo),
+            Arc::new(proxycurl::Proxycurl),
             Arc::new(disposable_check::DisposableCheck),
             Arc::new(discord_snowflake::DiscordSnowflake),
             Arc::new(wigle::Wigle),
@@ -386,6 +395,12 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(geo_intel::GeoIntel),
             Arc::new(geocode::Geocode),
             Arc::new(hackertarget::HackerTarget),
+            // Keyless historical passive DNS (domain↔IP over time) — the reverse
+            // and historical view the live resolvers above can't give.
+            Arc::new(mnemonic_pdns::MnemonicPdns),
+            // Keyless subdomain enumeration from an aggregated CT/passive corpus,
+            // distinct from crtsh/certspotter/anubis — more independent coverage.
+            Arc::new(subdomain_center::SubdomainCenter),
             Arc::new(threatfox::ThreatFox),
             Arc::new(rdap_domain::RdapDomain),
             Arc::new(ripestat::RipeStat),
@@ -405,6 +420,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(github_user::GithubUser),
             Arc::new(github_code_search::GithubCodeSearch),
             Arc::new(github_commits::GithubCommits),
+            Arc::new(chess_profile::ChessProfile),
             Arc::new(gaming_profile::GamingProfile),
             Arc::new(steam_profile::SteamProfile),
             Arc::new(structured_id::StructuredId),
@@ -457,10 +473,13 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(keybase::Keybase),
             Arc::new(emailrep::EmailRep),
             Arc::new(epieos::Epieos),
-            Arc::new(proxycurl::Proxycurl),
             Arc::new(fullcontact::FullContact),
             Arc::new(numverify::NumVerify),
             Arc::new(photon::Photon),
+            // Third keyless forward geocoder alongside `geocode` (Nominatim) and
+            // `photon` (Komoot): resolves self-reported place-names to coordinates
+            // and adds timezone/population/place-class the others don't return.
+            Arc::new(open_meteo_geo::OpenMeteoGeo),
             Arc::new(mylnikov::Mylnikov),
             // Keyless BSSID geolocation alongside `mylnikov`: two independent
             // free corpora answering the same question, so an outage or a miss

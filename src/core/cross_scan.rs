@@ -843,7 +843,12 @@ mod tests {
             ))
             .expect("should succeed");
         for scan in ["scan-2", "scan-3"] {
-            let mut c = Entity::new(EntityKind::Email, "stranger@breach.test", 0.9, scan);
+            let mut c = Entity::new(
+                EntityKind::Email,
+                "stranger@breach.test",
+                confidence::VERY_HIGH_PLUS,
+                scan,
+            );
             c.tag(crate::core::tags::CANDIDATE);
             store.upsert_entity(&c).expect("should succeed");
         }
@@ -919,7 +924,13 @@ mod tests {
             .collect();
         let mut scans: Vec<&str> = vec!["scan-2"];
         scans.extend(hub_scans.iter().map(String::as_str));
-        observe(&store, EntityKind::Username, "support", 0.9, &scans);
+        observe(
+            &store,
+            EntityKind::Username,
+            "support",
+            confidence::VERY_HIGH_PLUS,
+            &scans,
+        );
         // Something reachable ONLY by walking on through the hub.
         observe(
             &store,
@@ -982,7 +993,13 @@ mod tests {
             bridge_scans.push(format!("prior-{i:02}"));
         }
         let refs: Vec<&str> = bridge_scans.iter().map(String::as_str).collect();
-        observe(&store, EntityKind::Email, "jordan@corp.test", 0.9, &refs);
+        observe(
+            &store,
+            EntityKind::Email,
+            "jordan@corp.test",
+            confidence::VERY_HIGH_PLUS,
+            &refs,
+        );
         store
             .upsert_entity(&entity(
                 EntityKind::Email,

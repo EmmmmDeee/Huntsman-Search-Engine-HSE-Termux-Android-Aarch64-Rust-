@@ -106,7 +106,25 @@ async fn run_batch(base: ScanCmd, path: &str) -> crate::core::error::Result<()> 
     Ok(())
 }
 
+/// The output formats `hse scan` accepts, validated up front. The tail dispatch
+/// only special-cases `json`/`dossier` and treats every other value as `table`,
+/// so without this an unknown format is silently downgraded — `cmd_query`
+/// already guards its own format the same way.
+fn validate_scan_output_format(output: &str) -> crate::core::error::Result<()> {
+    match output {
+        "table" | "json" | "dossier" => Ok(()),
+        other => Err(crate::core::error::Error::Other(format!(
+            "unknown --output format {other:?} (expected `table`, `json`, or `dossier`)"
+        ))),
+    }
+}
+
 pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
+    // Validate the output format up front — BEFORE running the scan or entering
+    // batch mode — so a typo like `--output josn` fails fast with a clear
+    // message instead of paying for the full scan and then silently rendering
+    // the human table (which breaks `hse scan … --output json | jq`).
+    validate_scan_output_format(&cmd.output)?;
     // Batch mode short-circuit: `--input-file` runs the whole pipeline once per
     // file seed, reusing this same function (value is overwritten per seed).
     if let Some(path) = cmd.input_file.clone() {
@@ -144,7 +162,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     // Depth resolution. `--auto`/`--recursive` only kick in when the operator
     // gave no explicit `--depth` (sentinel: `cmd.depth.is_none()`); otherwise an
     // omitted `--depth` falls back to the comprehensive product default
-    // (DEFAULT_SCAN_DEPTH = MAX_DEPTH). `--recursive`'s `.min(0.40)` never raises
+    // (DEFAULT_SCAN_DEPTH = 3). `--recursive`'s `.min(0.40)` never raises
     // the floor above the operator's value, so with the comprehensive default it
     // stays at the 0.20 expansion floor.
     let (depth, min_expand_confidence, max_concurrent) = if cmd.auto && cmd.depth.is_none() {
@@ -609,8 +627,26 @@ fn entity_source_labels(e: &crate::core::entity::Entity) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::entity::{Entity, EntityKind, Evidence};
     use std::cell::Cell;
+
+    #[test]
+    fn scan_output_format_is_validated_up_front() {
+        for ok in ["table", "json", "dossier"] {
+            assert!(
+                validate_scan_output_format(ok).is_ok(),
+                "{ok} must be accepted"
+            );
+        }
+        // A typo must be rejected with a message that names the bad value and the
+        // valid set — not silently downgraded to the table view.
+        let err = validate_scan_output_format("josn")
+            .expect_err("a typo must be rejected")
+            .to_string();
+        assert!(err.contains("josn"), "error names the bad value: {err}");
+        assert!(err.contains("json"), "error lists the valid formats: {err}");
+    }
 
     #[test]
     fn parse_seed_list_skips_blanks_comments_and_dedups() {
@@ -679,9 +715,19 @@ alice@example.com
         // showed platform-infra entities regardless of the flag, unlike
         // `hse export` / the API which quarantine them by default. Pin the
         // actual filter behaviour the flag now drives.
-        let mut infra = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.6, "s");
+        let mut infra = Entity::new(
+            EntityKind::IpAddress,
+            "104.16.0.1",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         infra.tag(crate::core::tags::PLATFORM_INFRA);
-        let subject = Entity::new(EntityKind::Domain, "example-subject.test", 0.9, "s");
+        let subject = Entity::new(
+            EntityKind::Domain,
+            "example-subject.test",
+            confidence::VERY_HIGH_PLUS,
+            "s",
+        );
         let mut entities = vec![infra, subject];
 
         filter_infra_entities(&mut entities, false);
@@ -691,7 +737,12 @@ alice@example.com
 
     #[test]
     fn filter_infra_entities_restores_infra_when_flag_set() {
-        let mut infra = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.6, "s");
+        let mut infra = Entity::new(
+            EntityKind::IpAddress,
+            "104.16.0.1",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         infra.tag(crate::core::tags::PLATFORM_INFRA);
         let mut entities = vec![infra];
 
@@ -708,7 +759,12 @@ alice@example.com
         // A scan seeded with a datacenter/CDN IP that an IP module re-emits as
         // `hosting`, which then merges `platform-infra` onto the seed anchor —
         // the seed must still appear in its own report.
-        let mut seed = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.9, "s");
+        let mut seed = Entity::new(
+            EntityKind::IpAddress,
+            "104.16.0.1",
+            confidence::VERY_HIGH_PLUS,
+            "s",
+        );
         seed.tag(crate::core::tags::PLATFORM_INFRA);
         seed.tag("seed");
         let mut entities = vec![seed];
@@ -790,7 +846,7 @@ alice@example.com
 
     #[test]
     fn source_labels_prefer_source_attr_then_dedup_and_sort() {
-        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.5, "s");
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", confidence::MEDIUM, "s");
         // A "source" attr overrides the raw evidence source name.
         e.add_evidence(Evidence::new("modB", "m").with_attr("source", "haveibeenpwned"));
         // No "source" attr → falls back to ev.source ("modA")…
@@ -803,7 +859,7 @@ alice@example.com
 
     #[test]
     fn source_labels_em_dash_when_no_evidence() {
-        let e = Entity::new(EntityKind::Email, "x@y.com", 0.5, "s");
+        let e = Entity::new(EntityKind::Email, "x@y.com", confidence::MEDIUM, "s");
         assert_eq!(entity_source_labels(&e), "—");
     }
 

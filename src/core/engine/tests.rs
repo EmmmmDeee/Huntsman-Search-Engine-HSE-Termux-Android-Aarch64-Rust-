@@ -89,6 +89,7 @@ fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
     // Subject's confirmed GPS near Woodford, QLD.
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     gps.tag("geoint");
+    gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
     // A single-source (QLD register) family-candidate near the subject.
     let mut erik = Entity::new(EntityKind::Person, "Erik Moreau", 0.32, "s");
     erik.tag("family-candidate");
@@ -164,6 +165,7 @@ fn promote_breach_candidate_geo_corroborated_lifts_same_place_same_name_records(
     // Subject's confirmed GPS in Brisbane.
     let mut gps = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
     gps.tag("geoint");
+    gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
 
     // A same-name breach candidate in the same metro (South Brisbane 4101, ~2 km).
     let mut near = Entity::new(EntityKind::Email, "matt@example.com", 0.25, "s");
@@ -222,6 +224,92 @@ fn promote_breach_candidate_geo_corroborated_lifts_same_place_same_name_records(
         e
     }];
     assert_eq!(promote_breach_candidate_geo_corroborated(&mut lone), 0);
+}
+
+/// Reconsideration must keep running on a LARGE working set — the case where
+/// coming back to a set-aside lead matters most. Before this was split from the
+/// live-correlation bound, a working set over 400 entities skipped the whole
+/// free/offline re-promotion pass, so a breach candidate that a later round had
+/// geo-corroborated was never lifted above the expansion floor and so never
+/// expanded (finalise re-promotes it, but finalise is after the last expansion
+/// round). This builds a set well past the old bound and asserts the promotion
+/// still happens AND is written back dirty-tracked so it is checkpointed.
+#[test]
+fn reconsider_working_set_still_promotes_above_the_live_correlation_bound() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    let mut map = TrackedEntityMap::new();
+
+    // Subject's confirmed GPS in Brisbane, and a same-metro same-name breach
+    // candidate (South Brisbane 4101, ~2 km) that reconsideration should lift.
+    let mut gps = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    gps.tag("geoint");
+    gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
+    map.insert(gps.uid.clone(), gps);
+    let mut cand = Entity::new(EntityKind::Email, "matt@example.com", 0.25, "s");
+    cand.tag(crate::core::tags::CANDIDATE);
+    cand.tag("breach");
+    cand.add_evidence(Evidence::new("oathnet_pro", "breach row").with_attr("postcode", "4101"));
+    let cand_uid = cand.uid.clone();
+    map.insert(cand_uid.clone(), cand);
+
+    // Pad with inert entities until the set is comfortably past the OLD bound
+    // (the live-correlation threshold), so the only thing that lets the
+    // promotion run is reconsideration's own, higher bound.
+    let pad_target = ScanEngine::INCREMENTAL_CORRELATE_MAX_ENTITIES + 100;
+    for i in 0..pad_target {
+        let e = Entity::new(EntityKind::Username, format!("filler{i}"), 0.8, "s");
+        map.insert(e.uid.clone(), e);
+    }
+    assert!(
+        map.len() > ScanEngine::INCREMENTAL_CORRELATE_MAX_ENTITIES,
+        "set must exceed the old gate for this test to be meaningful"
+    );
+    assert!(map.len() <= RECONSIDER_MAX_ENTITIES);
+
+    // Clear the dirty set the setup inserts left behind, so the next
+    // `take_dirty()` reflects ONLY what reconsideration itself changed.
+    let _ = map.take_dirty();
+
+    let promoted = reconsider_working_set(&mut map, &[]);
+    assert_eq!(
+        promoted, 1,
+        "the geo-corroborated breach candidate is promoted"
+    );
+
+    // The re-promotion is visible in the map (written back)...
+    let lifted = map.get(&cand_uid).expect("candidate still present");
+    assert!(
+        !lifted.has_tag(crate::core::tags::CANDIDATE),
+        "un-quarantined"
+    );
+    assert!(lifted.has_tag("breach-corroborated"));
+    assert!(lifted.confidence >= 0.50, "lifted to Probable");
+    // ...and ONLY it is dirty-tracked. Writing the whole snapshot back would
+    // dirty every entity in the working set on this single promotion and force
+    // the round's checkpoint to persist all ~500 — the dirty set must contain
+    // exactly the one entity that actually changed.
+    let dirty = map.take_dirty();
+    assert_eq!(
+        dirty.len(),
+        1,
+        "exactly one entity changed, so exactly one must be dirty (got {})",
+        dirty.len()
+    );
+    assert_eq!(dirty[0].uid, cand_uid);
+
+    // A pathologically huge set is bounded out (the per-round clone guard), and
+    // returns 0 rather than stalling.
+    let mut huge = TrackedEntityMap::new();
+    for i in 0..(RECONSIDER_MAX_ENTITIES + 1) {
+        let e = Entity::new(EntityKind::Username, format!("u{i}"), 0.5, "s");
+        huge.insert(e.uid.clone(), e);
+    }
+    assert_eq!(
+        reconsider_working_set(&mut huge, &[]),
+        0,
+        "over-bound is skipped"
+    );
 }
 
 /// Free, offline: an identity pair joined by two orthogonal pathways has BOTH
@@ -365,6 +453,7 @@ fn flag_geo_discordant_namesakes_is_surname_aware_and_tag_only() {
     // Subject's confirmed GPS near Woodford, QLD (Brisbane catchment).
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     gps.tag("geoint");
+    gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
     // Far (Perth, ~3600 km) COMMON-surname candidate → a likely namesake.
     let mut common = Entity::new(EntityKind::Person, "Curt Smith", 0.32, "s");
     common.tag("family-candidate");
@@ -442,6 +531,7 @@ fn namesake_flagging_uses_the_subject_surname() {
 
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     gps.tag("geoint");
+    gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
     // A far family-candidate Address (no name of its own) in Perth, WA.
     let mut far = Entity::new(EntityKind::Address, "WA 6000, Australia", 0.32, "s");
     far.tag("family-candidate");
@@ -533,18 +623,18 @@ fn finalise_correlation_pass_survives_a_panicking_rule() {
     // scan harvested. The guard degrades a caught panic to `None` (no finalise
     // correlations), exactly as the live incremental pass does, so the scan still
     // finalises.
-    let panicked = guarded_finalise_correlation("s", || panic!("kaboom in a correlation rule"));
+    let panicked = guarded_correlation_pass("s", || panic!("kaboom in a correlation rule"));
     assert!(
         panicked.is_none(),
         "a panicking finalise pass must be caught and degrade to no firings, not unwind"
     );
 
     // A returned error is likewise swallowed to `None` (unchanged behaviour).
-    let errored = guarded_finalise_correlation("s", || Err(Error::module("correlator", "boom")));
+    let errored = guarded_correlation_pass("s", || Err(Error::module("correlator", "boom")));
     assert!(errored.is_none(), "a returned error yields no firings");
 
     // The happy path passes the firings straight through for emission.
-    let ok = guarded_finalise_correlation("s", || {
+    let ok = guarded_correlation_pass("s", || {
         Ok(vec![Correlation::new(
             "AU-000",
             "test correlation",
@@ -682,7 +772,7 @@ fn cmp_expansion_candidates_is_a_consistent_total_order() {
 
 #[test]
 fn allowlist_applies_on_expansion_rounds_not_just_the_seed() {
-    // Regression: the allowlist ("only these modules run", docs/USAGE.md) was
+    // Regression: the allowlist ("only these modules run", `hse --help`) was
     // gated by `!is_expansion`, so non-allowlisted modules ran on discovered
     // entities during expansion — a real defect (focused/offline scans fanned
     // out to every network module the moment they expanded).
@@ -2128,6 +2218,89 @@ async fn recall_resolves_a_fullname_seed_despite_reformatting() {
     cleanup(&path);
 }
 
+/// Real-behaviour regression (execution-validated): recall re-injects STORED
+/// entities the database already counts, so re-persisting them across repeated
+/// warm re-scans must be IDEMPOTENT in corroboration — the corroboration-0 reset
+/// in [`ScanEngine::recall_prior_entities`] keeps the GREATEST-merge from
+/// compounding the DB's count every scan. A live `see-know.xyz` run once
+/// ballooned a recalled node to corroboration 396 this way, and a synthetic
+/// name_intel re-scan loop reproduced 2 → 8 → 42 → 296 before the reset landed.
+///
+/// This pins the END-TO-END property the single-call `recall_resets_generation_
+/// to_zero` test structurally cannot reach: the blow-up only emerges across
+/// multiple persist→recall→persist cycles through the real merge. Drive eight
+/// real recall/re-persist cycles against the SQLite store and assert the count
+/// stays bounded — deleting the `corroboration = 0` line turns this into a
+/// ≥ 2ⁿ explosion the bound catches immediately.
+#[tokio::test]
+async fn recall_re_persist_does_not_inflate_corroboration_across_rescans() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::storage::Store;
+
+    let path = format!(
+        "{}/.hse-recall-inflation-{}.db",
+        std::env::temp_dir().to_string_lossy(),
+        std::process::id()
+    );
+    let cleanup = |p: &str| {
+        let _ = std::fs::remove_file(p);
+        let _ = std::fs::remove_file(format!("{p}-wal"));
+        let _ = std::fs::remove_file(format!("{p}-shm"));
+    };
+    cleanup(&path);
+    let store: Arc<dyn StoragePort> = Arc::new(Store::open(&path).expect("should succeed"));
+
+    // Scan 1 persists the seed + one discovered lead (each at the default
+    // corroboration 1) — the state a warm-database re-scan starts from.
+    store
+        .upsert_scan(&Scan::new(
+            "scan-1",
+            Target::new(TargetKind::Username, "invtarget"),
+        ))
+        .expect("should succeed");
+    let mut seed = Entity::new(EntityKind::Username, "invtarget", 0.9, "scan-1");
+    seed.add_evidence(Evidence::new("anchor", "seed"));
+    let mut lead = Entity::new(EntityKind::Email, "invlead@gmail.com", 0.8, "scan-1");
+    lead.add_evidence(Evidence::new("hibp", "breach"));
+    let lead_uid = lead.uid.clone();
+    store.upsert_entity(&seed).expect("should succeed");
+    store.upsert_entity(&lead).expect("should succeed");
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let engine = ScanEngine::new(vec![], store.clone(), bus);
+    let target = Target::new(TargetKind::Username, "invtarget");
+
+    // Eight warm re-scans: each recalls the prior entities (as the engine's seed
+    // round does) and re-persists them (as checkpoint/finalise does).
+    let mut corrs = Vec::new();
+    for i in 2..=9 {
+        let scan = format!("scan-{i}");
+        let recalled = engine.recall_prior_entities(&target, &scan, true);
+        assert!(
+            recalled.iter().any(|e| e.uid == lead_uid),
+            "recall must surface the prior lead on re-scan {i}"
+        );
+        store
+            .upsert_entities_batch(&recalled)
+            .expect("should succeed");
+        let held = store
+            .get_entity(&lead_uid)
+            .expect("should succeed")
+            .expect("lead persists across re-scans");
+        corrs.push(held.corroboration);
+    }
+
+    // Idempotent: re-persisting recalled (count-0) data never compounds the
+    // store's true count, so it stays flat. Without the reset this is the
+    // 2 → 8 → 42 → 296 blow-up (≥ 2ⁿ), which this bound catches at cycle 3.
+    assert!(
+        corrs.iter().all(|&c| c <= 2),
+        "recall re-persist inflated corroboration across re-scans (must stay bounded): {corrs:?}"
+    );
+
+    cleanup(&path);
+}
+
 /// The seed-aware incidental-infrastructure admission gate
 /// ([`dispatch::is_incidental_infra_entity`]): on an identity-seeded scan, shared
 /// provider/CDN/registrar/DNS estate and role mailboxes are dropped as noise,
@@ -2820,11 +2993,18 @@ fn rank_autonomous_targets_orders_excludes_and_truncates() {
     use crate::core::scan::TargetKind;
     use std::collections::HashSet;
 
+    // The fixture's coordinate is tagged COARSE so it is excluded for the reason
+    // this test's comment always claimed — its GRAIN. It previously carried no
+    // tag and was excluded merely because the gate refused every Coordinates by
+    // kind, so it passed for the wrong reason; a precise fix is now seedable and
+    // only a coarse centroid is not.
+    let mut coarse_fix = Entity::new(EntityKind::Coordinates, "-33.8,151.2", 0.9, "s");
+    coarse_fix.tag(crate::core::tags::COARSE);
     let entities = vec![
         Entity::new(EntityKind::Email, "a@b.com", 0.9, "s"),
         Entity::new(EntityKind::Phone, "+61400111222", 0.9, "s"),
         Entity::new(EntityKind::Credential, "secret", 0.9, "s"), // not a cross-scan candidate
-        Entity::new(EntityKind::Coordinates, "-33.8,151.2", 0.9, "s"), // coarse geo — gated out
+        coarse_fix,                                              // coarse geo — gated out by grain
         Entity::new(EntityKind::Username, "alice", 0.6, "s"),
     ];
     // Uniform degree so the ordering is decided by pivot × confidence alone.
@@ -2835,7 +3015,8 @@ fn rank_autonomous_targets_orders_excludes_and_truncates() {
     assert_eq!(
         ranked.len(),
         3,
-        "only the cross-scan-candidate pivots (email/phone/username) survive the gate"
+        "the seedable pivots survive; a Credential is non-pivotable and a COARSE \
+         centroid is too imprecise to seed"
     );
     assert_eq!(ranked[0].kind, TargetKind::Email, "email pivots strongest");
     assert_eq!(ranked[1].kind, TargetKind::Phone, "phone next");
@@ -3791,4 +3972,271 @@ async fn the_audit_does_not_inflate_the_confidence_it_grades() {
             e.value
         );
     }
+}
+
+/// The autonomous sweep must be able to seed the GEOLOCATION pivots — a hardware
+/// BSSID, a person-named SSID, a precise fix — while still refusing the ones that
+/// geolocate nobody.
+///
+/// Both halves matter. Before `is_autonomous_seed_candidate` existed, the sweep
+/// gated on `history::is_cross_scan_candidate`, whose `_ => false` arm rejected
+/// all three kinds outright: the engine rated MacAddress/Ssid at `geo_npv` 14.0
+/// with a 2.0x geo-proximity boost on the in-scan path, then refused to point a
+/// scan at them on the autonomous path. And a gate that admitted them
+/// indiscriminately would be just as wrong — it would flood the queue with
+/// randomised privacy MACs and carrier-default network names that no observation
+/// corpus can resolve to a place.
+///
+/// Also pins the two invariants the change must not break: the history gate's own
+/// semantics are untouched, and `kind_pivot_value` ranks the geo kinds explicitly
+/// instead of dumping them on the `_ => 0.12` catch-all floor.
+#[test]
+fn autonomous_sweep_seeds_specific_geo_pivots_and_refuses_generic_ones() {
+    use super::{is_autonomous_seed_candidate, kind_pivot_value, rank_autonomous_targets};
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::scan::TargetKind;
+    use std::collections::HashSet;
+
+    // ── Admitted: each resolves to ONE place ────────────────────────────────
+    let email = Entity::new(EntityKind::Email, "a@b.com", 0.90, "s");
+    // 0x3c: U/L bit clear (a real IEEE-assigned OUI), I/G bit clear (unicast).
+    let bssid = Entity::new(EntityKind::MacAddress, "3C:5A:B4:11:22:33", 0.60, "s");
+    // A person-chosen name — the exact false-positive class the whole-token
+    // matcher in `util::wifi` exists to protect.
+    let ssid = Entity::new(EntityKind::Ssid, "Freeman-Family", 0.55, "s");
+    // A genuine person-anchored fix carries an anchoring geo source (here an
+    // EXIF GPS tag); without one `is_infrastructure_geo` treats a bare lat/lon as
+    // an IP/WHOIS-derived infrastructure location, correctly NOT seedable.
+    let mut fix = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.90, "s");
+    fix.add_evidence(Evidence::new("exif_geo", "photo GPS"));
+
+    // ── Refused: each geolocates nobody ─────────────────────────────────────
+    // 0xaa: U/L bit set — a randomised privacy address that rotates ~15 min.
+    let random_mac = Entity::new(EntityKind::MacAddress, "AA:BB:CC:DD:EE:FF", 0.90, "s");
+    // All-zero placeholder: not a device.
+    let zero_mac = Entity::new(EntityKind::MacAddress, "00:00:00:00:00:00", 0.90, "s");
+    // Vendor default — thousands of unrelated routers share it.
+    let generic_ssid = Entity::new(EntityKind::Ssid, "NETGEAR-7788", 0.90, "s");
+    // Below the 4-character floor.
+    let tiny_ssid = Entity::new(EntityKind::Ssid, "hub", 0.90, "s");
+    // A region centroid a module explicitly flagged as non-specific.
+    let mut coarse_fix = Entity::new(EntityKind::Coordinates, "-25.2744,133.7751", 0.90, "s");
+    coarse_fix.tag(crate::core::tags::COARSE);
+    // A datacentre fix — locates a server, never a person.
+    let mut hosting_fix = Entity::new(EntityKind::Coordinates, "37.7749,-122.4194", 0.90, "s");
+    hosting_fix.tag(crate::core::tags::HOSTING);
+    // A real BSSID heard only faintly: ambient, below the confidence floor.
+    let faint_bssid = Entity::new(EntityKind::MacAddress, "3C:5A:B4:99:88:77", 0.45, "s");
+    // Group addresses. All are UNIVERSALLY administered — the U/L bit is clear —
+    // so the U/L test alone lets them through; only the I/G bit rejects them.
+    // Each names a protocol group, never one device at one premises.
+    let ipv4_multicast = Entity::new(EntityKind::MacAddress, "01:00:5E:00:00:FB", 0.90, "s");
+    let ipv6_multicast = Entity::new(EntityKind::MacAddress, "33:33:00:00:00:01", 0.90, "s");
+    let broadcast = Entity::new(EntityKind::MacAddress, "FF:FF:FF:FF:FF:FF", 0.90, "s");
+    // The radar sweep's `0,0` sentinel: minted seed/subject each sweep, but it
+    // locates nobody — `is_infrastructure_geo`'s sentinel check rejects it, so it
+    // can never seed an autonomous scan on null island.
+    let mut sentinel_fix = Entity::new(EntityKind::Coordinates, "0.000000,0.000000", 0.90, "s");
+    sentinel_fix.tag("seed");
+    sentinel_fix.tag("subject");
+    // An `infra:` map feature — a CCTV camera / cell tower scraped near a fix.
+    let mut infra_poi = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.55, "s");
+    infra_poi.tag("infra:surveillance");
+    // A WHOIS registrant / privacy-service address: the domain owner's filing
+    // location, not the subject's — the AU-092 class, now also excluded here.
+    let mut registrant_addr = Entity::new(EntityKind::Address, "VIC, Australia", 0.50, "s");
+    registrant_addr.tag(crate::core::tags::REGISTRANT);
+
+    let admitted = [&email, &bssid, &ssid, &fix];
+    let refused = [
+        &random_mac,
+        &zero_mac,
+        &generic_ssid,
+        &tiny_ssid,
+        &coarse_fix,
+        &hosting_fix,
+        &faint_bssid,
+        &ipv4_multicast,
+        &ipv6_multicast,
+        &broadcast,
+        &sentinel_fix,
+        &infra_poi,
+        &registrant_addr,
+    ];
+
+    // 1) The predicate itself, named per entity so a regression is diagnosable.
+    for e in admitted {
+        assert!(
+            is_autonomous_seed_candidate(e),
+            "{:?} {} must be seedable — it resolves to one place",
+            e.kind,
+            e.value
+        );
+    }
+    for e in refused {
+        assert!(
+            !is_autonomous_seed_candidate(e),
+            "{:?} {} must NOT seed a scan — it geolocates nobody",
+            e.kind,
+            e.value
+        );
+    }
+
+    // 2) The HISTORY gate is unchanged: none of the geo kinds became a
+    //    cross-investigation join key. This is the constraint the separate
+    //    predicate exists to honour — widening the shared gate instead would
+    //    pass (1) and fail here.
+    for e in [&bssid, &ssid, &fix] {
+        assert!(
+            !super::history::is_cross_scan_candidate(e),
+            "{:?} is a SEED, never a cross-scan join key — history semantics must not move",
+            e.kind
+        );
+    }
+
+    // 3) End to end through the ranker.
+    let mut entities: Vec<Entity> = Vec::new();
+    entities.extend(admitted.iter().map(|e| (*e).clone()));
+    entities.extend(refused.iter().map(|e| (*e).clone()));
+    let degree_of = |_uid: &str| 2usize;
+    let exclude = HashSet::new();
+
+    let ranked = rank_autonomous_targets(&entities, degree_of, &exclude, 50);
+    let kinds: HashSet<TargetKind> = ranked.iter().map(|t| t.kind).collect();
+    for k in [
+        TargetKind::Email,
+        TargetKind::MacAddress,
+        TargetKind::Ssid,
+        TargetKind::Coordinates,
+    ] {
+        assert!(kinds.contains(&k), "{k:?} must be seedable by the sweep");
+    }
+    assert_eq!(ranked.len(), 4, "exactly the four admitted entities");
+    for e in refused {
+        assert!(
+            ranked.iter().all(|t| t.uid != e.uid),
+            "{} leaked into the autonomous queue",
+            e.value
+        );
+    }
+
+    // 4) The geo kinds are ranked on their merits, not on the catch-all floor.
+    let mac = kind_pivot_value(&EntityKind::MacAddress);
+    let net = kind_pivot_value(&EntityKind::Ssid);
+    let coord = kind_pivot_value(&EntityKind::Coordinates);
+    assert!(
+        mac > net && net > coord,
+        "BSSID (unique hardware) > SSID (a colliding name) > coordinate (terminal): \
+         {mac} / {net} / {coord}"
+    );
+    assert!(
+        coord > kind_pivot_value(&EntityKind::Domain),
+        "a precise fix out-pivots shared infrastructure"
+    );
+    assert!(
+        net > kind_pivot_value(&EntityKind::Credential),
+        "the geo kinds must not sit on the `_ => 0.12` catch-all floor"
+    );
+}
+
+/// The working-set snapshot every correlation pass reads must be deterministic.
+///
+/// `TrackedEntityMap` wraps a `HashMap`, so the old
+/// `entity_map.values().cloned().collect()` handed the correlator whatever
+/// order the hasher produced. That order is not cosmetic:
+/// `correlator::confirmed_only` returns `Cow::Borrowed` in the common case, so
+/// caller order reaches the rules verbatim, and rules that build `entity_uids`
+/// in slice order bake it into a PERSISTED correlation row. `rank_and_sort`'s
+/// tie-break even documents the assumption that "the per-group entity_uids are
+/// already individually sorted" — false on the live path. The finalise pass
+/// could not repair it, because `Store::upsert_correlation` short-circuits when
+/// the new uid set is a subset of the old, so the live row survives.
+///
+/// Net effect: two runs over identical inputs could persist different
+/// `entity_uids` orderings for the same finding. This pins the fix at the one
+/// accessor all six snapshot sites now share.
+#[test]
+fn the_working_set_snapshot_is_deterministically_ordered() {
+    use crate::core::entity::{Entity, EntityKind};
+
+    // Insert in two different orders — what different hash seeds / different
+    // module completion orders produce across runs.
+    let values = [
+        ("a@example.com", EntityKind::Email),
+        ("b@example.com", EntityKind::Email),
+        ("+61400111222", EntityKind::Phone),
+        ("alice", EntityKind::Username),
+        ("example.com", EntityKind::Domain),
+    ];
+
+    let mut forward = super::TrackedEntityMap::new();
+    for (v, k) in &values {
+        let e = Entity::new(k.clone(), *v, 0.8, "s");
+        forward.insert(e.uid.clone(), e);
+    }
+
+    let mut backward = super::TrackedEntityMap::new();
+    for (v, k) in values.iter().rev() {
+        let e = Entity::new(k.clone(), *v, 0.8, "s");
+        backward.insert(e.uid.clone(), e);
+    }
+
+    let a: Vec<String> = forward.snapshot().into_iter().map(|e| e.uid).collect();
+    let b: Vec<String> = backward.snapshot().into_iter().map(|e| e.uid).collect();
+
+    assert_eq!(
+        a, b,
+        "two insertion orders of the same entities must snapshot identically — \
+         the correlator persists this order into entity_uids"
+    );
+    assert_eq!(a.len(), values.len(), "no entity lost by the snapshot");
+
+    // And the order is the documented one: sorted by uid, a total order since
+    // uid is a SHA-256 unique per entity.
+    let mut expected = a.clone();
+    expected.sort();
+    assert_eq!(a, expected, "snapshot must be sorted by uid");
+}
+
+/// A watchdog task must be reaped when its owner unwinds, not detached.
+///
+/// The wall-time watchdog was held in a bare `tokio::JoinHandle`, aborted only
+/// on the straight-line path at the end of the scan body. Dropping a
+/// `JoinHandle` DETACHES the task — it does not abort it — and `Cargo.toml`
+/// sets `panic = "unwind"`, so any panic between the spawn and that abort
+/// unwound straight past it. The watchdog then slept out its full deadline and
+/// fired `cancel()` on the caller's context long after the scan was gone,
+/// poisoning a shared token under a long-lived `serve`/`radar` so an unrelated
+/// later scan was cancelled with no operator-visible reason.
+///
+/// Drives the real hazard: a panic while the guard is live.
+#[tokio::test]
+async fn a_watchdog_guard_aborts_its_task_when_its_owner_unwinds() {
+    use crate::core::cancel::CancelHandle;
+
+    let cancel = CancelHandle::new();
+    let cancel_task = cancel.clone();
+
+    // Spawn under the guard, then panic while it is still in scope — exactly
+    // what a panicking module below the watchdog spawn does to the scan body.
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = super::AbortOnDrop(tokio::spawn(async move {
+            // Far shorter than a real deadline so the test is fast; the point
+            // is that it must never get to run this at all.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            cancel_task.cancel();
+        }));
+        panic!("a module panicked below the watchdog spawn");
+    }));
+    assert!(panicked.is_err(), "the test must actually unwind");
+
+    // Well past the task's own deadline. If the guard had merely detached it,
+    // the task would have woken and cancelled the caller's token by now.
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+    assert!(
+        !cancel.is_cancelled(),
+        "an unwound scan must not leave a watchdog alive to cancel a token it \
+         no longer owns — a later, unrelated scan would die for no visible reason"
+    );
 }

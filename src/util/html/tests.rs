@@ -1,6 +1,44 @@
 use super::*;
 
     #[test]
+    fn table_rows_extracts_trimmed_stripped_cells_per_row() {
+        // Two data rows with nested tags + whitespace, plus a `<th>` header row
+        // that yields no `<td>` cells (an empty row the caller drops).
+        let html = "<table>\
+            <tr><th>Name</th><th>No</th></tr>\
+            <tr><td> Jane <b>Doe</b> </td><td>RN123</td><td>Nurse</td></tr>\
+            <tr><td>Bob</td><td> 42 </td><td></td></tr>\
+            </table>";
+        let rows = table_rows(html);
+        assert_eq!(
+            rows,
+            vec![
+                vec![],
+                vec!["Jane Doe".to_string(), "RN123".to_string(), "Nurse".to_string()],
+                vec!["Bob".to_string(), "42".to_string(), String::new()],
+            ]
+        );
+    }
+
+    #[test]
+    fn table_rows_is_total_on_unterminated_markup() {
+        // A `<tr>` with no closing `</tr>` yields nothing (the row is incomplete);
+        // a closed row with an unterminated `<td>` drops that cell. Neither
+        // panics or loops.
+        assert!(table_rows("<tr><td>x").is_empty(), "no </tr> → no row");
+        assert_eq!(
+            table_rows("<tr><td>x</td></tr>"),
+            vec![vec!["x".to_string()]]
+        );
+        assert_eq!(
+            table_rows("<tr><td>ok</td><td>trunc"),
+            Vec::<Vec<String>>::new(),
+            "row without </tr> is not emitted"
+        );
+        assert!(table_rows("no table here").is_empty());
+    }
+
+    #[test]
     fn strips_scripts_styles_and_tags() {
         let html = "<html><script>alert(1)</script><style>.x{}</style>\
                     <body>Hello <b>world</b>!</body></html>";
@@ -86,6 +124,124 @@ use super::*;
         assert_eq!(decode_entities("R&D"), "R&D");
         assert_eq!(decode_entities("&#xZZ;"), "&#xZZ;");
         assert_eq!(decode_entities("&café"), "&café");
+    }
+
+    /// The exact shape a CDN returns when an origin is unreachable — the first
+    /// 200 characters are doctype and IE conditional comments, and the title is
+    /// the only line that names the failure.
+    const CLOUDFLARE_523: &str = concat!(
+        "<!DOCTYPE html>\n",
+        "<!--[if lt IE 7]> <html class=\"no-js ie6 oldie\" lang=\"en-US\"> <![endif]-->\n",
+        "<!--[if IE 7]>    <html class=\"no-js ie7 oldie\" lang=\"en-US\"> <![endif]-->\n",
+        "<!--[if IE 8]>    <html class=\"no-js ie8 oldie\" lang=\"en-US\"> <![endif]-->\n",
+        "<head>\n<title>psbdmp.ws | 523: Origin is unreachable</title>\n",
+        "<style>.x{color:red}</style>\n</head>\n",
+        "<body><h1>Error 523</h1><p>Origin is unreachable</p></body></html>",
+    );
+
+    #[test]
+    fn title_of_an_error_page_names_the_failure() {
+        assert_eq!(
+            title(CLOUDFLARE_523).as_deref(),
+            Some("psbdmp.ws | 523: Origin is unreachable"),
+            "the title is the whole diagnostic value of a CDN error page"
+        );
+    }
+
+    #[test]
+    fn title_decodes_entities_and_collapses_whitespace() {
+        assert_eq!(
+            title("<html><title>\n  Bad\n  &amp;  broken\n</title>").as_deref(),
+            Some("Bad & broken")
+        );
+    }
+
+    #[test]
+    fn title_tolerates_attributes_and_reports_absence() {
+        assert_eq!(
+            title("<title lang=\"en\">Gateway Time-out</title>").as_deref(),
+            Some("Gateway Time-out")
+        );
+        assert_eq!(title("<html><body>no title here</body></html>"), None);
+        assert_eq!(title("<title></title>"), None, "an empty title is no title");
+        assert_eq!(title("<title>unterminated"), None);
+    }
+
+    #[test]
+    fn looks_like_document_requires_an_opener_not_a_stray_bracket() {
+        assert!(looks_like_document(CLOUDFLARE_523));
+        assert!(looks_like_document("  \n<html lang=\"en\">"));
+        assert!(looks_like_document("<!doctype HTML PUBLIC ..."));
+
+        // The case that must NOT be treated as a document: a JSON error payload
+        // that merely quotes markup. Rewriting it would destroy the real message.
+        assert!(!looks_like_document(
+            r#"{"error":"unexpected <html> in response"}"#
+        ));
+        assert!(!looks_like_document("plain text failure"));
+        assert!(!looks_like_document(""));
+        assert!(
+            !looks_like_document("<result><html>x</html></result>"),
+            "an XML payload whose first element is not <html> is not a document"
+        );
+    }
+
+    /// The panic class `find_ascii_ci` exists to prevent, exercised on the
+    /// characters that actually trigger it.
+    ///
+    /// `to_lowercase()` is not byte-length-preserving — `İ` (U+0130, 2 bytes)
+    /// lowercases to `i̇` (3 bytes) and `ẞ` to `ß` — so an offset taken from a
+    /// lowercased copy and used to slice the ORIGINAL can land mid-codepoint and
+    /// panic. Error bodies are entirely upstream-controlled, so this input is
+    /// reachable by anything a server chooses to return.
+    #[test]
+    fn title_and_document_detection_survive_length_changing_lowercase() {
+        // `İ`/`ẞ` BEFORE the tag, so a lowercased-copy offset would be shifted
+        // past a char boundary in the original.
+        let html = "İİİẞ<html><head><title>İstanbul ẞ Error</title></head>";
+        assert_eq!(title(html).as_deref(), Some("İstanbul ẞ Error"));
+
+        // Same characters inside the title text itself.
+        assert_eq!(
+            title("<title>İ ẞ İ</title>").as_deref(),
+            Some("İ ẞ İ"),
+            "title text must round-trip unchanged"
+        );
+
+        // And in a document that must still be detected.
+        assert!(looks_like_document("<HTML lang=\"tr\">İ"));
+        assert!(!looks_like_document("İ<html>"), "not at position 0");
+
+        // The two concrete failures of the `to_lowercase()`-offset shape, both
+        // reproduced against it before this fix:
+        //   * silent corruption — it returned "日本語<", trailing garbage from a
+        //     close offset shifted 2 bytes by `İ` (2 bytes → 3);
+        //   * an outright panic — `ẞ` (3 bytes) → `ß` (2) shifts the offset
+        //     backwards into the middle of an emoji.
+        assert_eq!(title("İ<title>日本語</title>").as_deref(), Some("日本語"));
+        assert_eq!(title("ẞ<title>😀😀</title>").as_deref(), Some("😀😀"));
+
+        // Total over arbitrary placements: must never panic.
+        for filler in ["İ", "ẞ", "İẞ", "e\u{301}", "😀"] {
+            for tpl in [
+                "{f}<title>x</title>",
+                "<title>{f}</title>",
+                "<title{f}>x</title>",
+                "<html>{f}<title>{f}x{f}</title>{f}",
+                "{f}",
+                "<title>{f}",
+            ] {
+                let s = tpl.replace("{f}", filler);
+                let _ = title(&s);
+                let _ = looks_like_document(&s);
+            }
+        }
+    }
+
+    #[test]
+    fn collapse_whitespace_flattens_stripped_markup() {
+        assert_eq!(collapse_whitespace("  a\n\n\tb   c \r\n"), "a b c");
+        assert_eq!(collapse_whitespace("   "), "");
     }
 
 // ── Property tests: the HTML helpers never panic on hostile bytes ───────────

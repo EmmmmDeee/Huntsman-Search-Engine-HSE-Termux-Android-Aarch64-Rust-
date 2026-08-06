@@ -835,6 +835,27 @@ pub(in crate::core::correlator) fn rule_au_076_email_username_localpart_bridge(
     let mut out: Vec<Correlation> = Vec::new();
     for (canon, emails) in &emails_by_canon {
         let usernames = &usernames_by_canon[canon];
+
+        // Source-independence gate (mirrors sibling AU-034). The High "same
+        // identity" claim requires the bridged email and username to be attested
+        // by >= 2 DISTINCT corroborating sources. `corroborating_sources()`
+        // excludes the self-enrichment / replay passes (name_intel, geo_normalize,
+        // recall, cross_scan …), so an email + username both MINTED from one seed
+        // — a single name_intel derivation shares `canonical_handle` by
+        // construction — cannot manufacture two "distinct sources" and
+        // self-correlate into a phantom High identity bridge on a single-source
+        // scan. A genuine cross-source match (a breach email + a platform-confirmed
+        // username) still clears the gate.
+        const MIN_DISTINCT_SOURCES: usize = 2;
+        let sources: HashSet<&str> = emails
+            .iter()
+            .chain(usernames.iter())
+            .flat_map(|e| e.corroborating_sources())
+            .collect();
+        if sources.len() < MIN_DISTINCT_SOURCES {
+            continue;
+        }
+
         let email_vals: BTreeSet<&str> = emails.iter().map(|e| e.value.as_str()).collect();
         let uname_vals: BTreeSet<&str> = usernames.iter().map(|e| e.value.as_str()).collect();
 
@@ -898,26 +919,41 @@ pub(in crate::core::correlator) fn rule_au_077_name_derived_username_confirmed(
     ts: u64,
 ) -> Vec<Correlation> {
     let entities = context.entities();
+    // A discovery source CONFIRMS the handle only when it actually DETECTED it, not
+    // when it merely guessed from a bare HTTP status. `social_probe`/`username_search`
+    // tag a status guess `detection: status-only`; `username_search`'s aggregate
+    // summary entity instead carries `hits_verified`/`hits_status_only`, so an
+    // all-guess summary (`hits_verified == 0`) is NOT a confirmation — and because it
+    // merges by value with a `name_intel`-derived handle, counting it fired a false
+    // High "prediction confirmed" on two stacked guesses with zero verified hits.
+    // Mirror the status-only discount AU-045/AU-003/AU-055 already apply.
+    fn is_verified_discovery(ev: &crate::core::entity::Evidence) -> bool {
+        USERNAME_DISCOVERY_SOURCES.contains(&ev.source.as_str())
+            && ev.attributes.get("detection").map(String::as_str) != Some("status-only")
+            && ev
+                .attributes
+                .get("hits_verified")
+                .and_then(|v| v.parse::<u32>().ok())
+                .is_none_or(|n| n > 0)
+    }
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::Username)
         .filter(|e| {
-            // Must carry at least one derivation AND at least one discovery source.
+            // Must carry a derivation AND at least one VERIFIED discovery (a genuine
+            // detection, not a status-only guess).
             let has_derived = e
                 .evidence
                 .iter()
                 .any(|ev| USERNAME_DERIVATION_SOURCES.contains(&ev.source.as_str()));
-            let has_confirmed = e
-                .evidence
-                .iter()
-                .any(|ev| USERNAME_DISCOVERY_SOURCES.contains(&ev.source.as_str()));
+            let has_confirmed = e.evidence.iter().any(is_verified_discovery);
             has_derived && has_confirmed
         })
         .map(|e| {
             let confirmed_by: Vec<&str> = e
                 .evidence
                 .iter()
-                .filter(|ev| USERNAME_DISCOVERY_SOURCES.contains(&ev.source.as_str()))
+                .filter(|ev| is_verified_discovery(ev))
                 .map(|ev| ev.source.as_str())
                 .collect::<std::collections::BTreeSet<&str>>()
                 .into_iter()
@@ -1191,11 +1227,17 @@ pub(in crate::core::correlator) fn rule_au_079_bio_cross_mention(
                         out.push(Correlation {
                             rule_id: "AU-079".into(),
                             rule_name: "Profile attribute cross-mention identity bridge".into(),
-                            severity: Severity::High,
+                            // A structured platform field (twitter/instagram/…) is the
+                            // subject's own declared link → High above. A free-text bio
+                            // @-mention is NOT self-attribution: the subject may simply be
+                            // naming a third party ("follow @someone"). It is a lead to
+                            // VERIFY, not a confirmed identity bridge, so it fires Medium.
+                            severity: Severity::Medium,
                             description: format!(
-                                "Username '{}' profile bio (@-mention) names '{}' — explicit \
-                                 cross-platform self-reference written by the subject in their \
-                                 '{attr}' field (free, offline identity bridge)",
+                                "Username '{}' profile bio names '{}' via an @-mention in their \
+                                 '{attr}' field — a possible cross-platform reference (the subject \
+                                 themselves OR a third party they mention); verify before treating \
+                                 as the same identity (free, offline lead)",
                                 entity.value, mentioned_e.value,
                             ),
                             entity_uids: uids,
@@ -1251,7 +1293,7 @@ pub(in crate::core::correlator) fn rule_au_080_recurring_cooccurrence_link(
     // both endpoints on a confidence floor, then rank what survives and bound the
     // O(pairs) tail below so the few hub-level pairings that are the actual
     // signal are not buried.
-    const MIN_CONF: f64 = 0.50;
+    const MIN_CONF: f64 = crate::core::relation::IDENTITY_LINK_MIN_CONF;
     const MAX_PAIRS: usize = 12;
     // Distinct entities named in the rolled-up tail edge — bounded so the summary
     // cannot itself become a giant hyperedge.
@@ -1435,6 +1477,24 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
         Some(tokens.join(" "))
     }
 
+    // The name's tokens in ORIGINAL order (unsorted). Two records that group on the
+    // same sorted canonical but differ here matched only by REORDERING.
+    fn ordered_tokens(s: &str) -> Vec<String> {
+        s.split(|c: char| c.is_whitespace() || c == ',' || c == '-' || c == '.')
+            .filter(|t| !t.is_empty())
+            .map(str::to_lowercase)
+            .filter(|t| t.len() >= 2)
+            .collect()
+    }
+    // A "bare transposition": the two names share a token multiset (they already
+    // grouped on the sorted canonical) but differ in order, and NEITHER declared
+    // surname-first with a comma. "Cameron Tyler" and "Tyler Cameron" are then two
+    // plausibly-DIFFERENT people, so the match is a Medium lead, not a High merge —
+    // whereas "Bamford, Haigen" (comma) vs "Haigen Bamford" is a confident match.
+    fn is_bare_transposition(a: &str, b: &str) -> bool {
+        ordered_tokens(a) != ordered_tokens(b) && !a.contains(',') && !b.contains(',')
+    }
+
     let persons: Vec<(String, &Entity)> = entities
         .iter()
         .filter(|e| e.kind == EntityKind::Person)
@@ -1571,11 +1631,22 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
                 .0
                 .split(' ')
                 .any(crate::util::surnames::is_common);
+            // A bare token transposition ("Cameron Tyler" vs "Tyler Cameron", no
+            // comma to declare surname-first) may be two DIFFERENT people, so it is
+            // a lead to VERIFY, not a confident merge — even for a distinctive name.
+            // An exact-order or comma-confirmed match stays High.
             let (severity, tail) = if common {
                 (
                     Severity::Medium,
                     "a COMMON name many unrelated people share — a lead to VERIFY, \
                      not a confirmed merge",
+                )
+            } else if is_bare_transposition(&e1.value, &e2.value) {
+                (
+                    Severity::Medium,
+                    "matched only by reordering the name tokens, with no 'Last, First' \
+                     comma to confirm the order — a possible transposition of two \
+                     different people; a lead to VERIFY, not a confirmed merge",
                 )
             } else {
                 (

@@ -338,7 +338,14 @@ fn parse_iso_epoch(s: &str) -> Option<u64> {
     let year: i64 = parts.next()?.parse().ok()?;
     let month: i64 = parts.next()?.parse().ok()?;
     let day: i64 = parts.next()?.parse().ok()?;
-    if year < 2000 || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    // Year is bounded ABOVE as well as below: `date_compromised` is fully
+    // attacker-influenced (an untrusted breach-API field), and an out-of-range
+    // year overflows `days_from_civil`'s `era * 146097` (i64) and the `days *
+    // 86400` (u64) below — a panic under overflow-checks (debug/CI/fuzz) and a
+    // wrapped garbage epoch (→ a wrong freshness verdict) in the release profile.
+    // 2000..=2100 is the realistic breach-compromise window and mirrors the upper
+    // bound `core::timeline::parse_date` applies.
+    if !(2000..=2100).contains(&year) || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }
     // Exact day count (Howard Hinnant via core::timeline) — the previous

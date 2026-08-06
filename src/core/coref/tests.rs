@@ -175,3 +175,173 @@ fn noisy_or_is_bounded_and_order_independent() {
     // Adding a signal never lowers the score (monotonic).
     assert!(noisy_or([0.5, 0.3]) >= noisy_or([0.5]));
 }
+
+// ── Different mailboxes are different accounts ──────────────────────────────
+
+/// The production defect, reproduced exactly.
+///
+/// A real dossier emitted ~200 pairs claiming one named individual held
+/// mailboxes at dozens of unrelated employers, every one scored 0.86 —
+/// `W_HANDLE_EQUIV` (0.80) fused with a single shared source (0.30) — because
+/// `identity_norm` discards the domain and every `jstewart@*` normalises to
+/// `jstewart`. The two are provably different accounts.
+#[test]
+fn a_shared_local_part_across_employers_is_not_the_same_person() {
+    let mut a = Entity::new(EntityKind::Email, "jstewart@blueorigin.com", 0.7, "s");
+    a.add_evidence(Evidence::new("search_engines", "snippet"));
+    let mut b = Entity::new(EntityKind::Email, "jstewart@navy.mil", 0.7, "s");
+    b.add_evidence(Evidence::new("search_engines", "snippet"));
+
+    let out = resolve_coreferences(&[a, b], DEFAULT_MIN_SCORE, 50);
+    assert!(
+        out.is_empty(),
+        "two mailboxes at unrelated domains must not be claimed as one person \
+         on a shared local part alone: {out:?}"
+    );
+}
+
+/// Suppressing only the top tier would have fixed nothing, and this is the test
+/// that proves it: two identical handles ALSO satisfy `identity_overlaps`, so a
+/// demotion to `W_SUBSTRING` (0.45) fused with one shared source (0.30) reaches
+/// 0.615 — still over `DEFAULT_MIN_SCORE`. The whole string ladder must be
+/// suppressed for this pair, not just `handle-equivalence`.
+#[test]
+fn no_string_tier_survives_for_cross_domain_mailboxes() {
+    assert!(
+        string_signal(
+            "jstewart@blueorigin.com",
+            "jstewart@navy.mil",
+            "jstewart",
+            "jstewart",
+            false,
+            false,
+        )
+        .is_none(),
+        "no string tier — not handle-equivalence, not substring-overlap"
+    );
+    // The arithmetic the suppression exists to prevent.
+    assert!(
+        noisy_or([W_SUBSTRING, 1.0 - SHARED_SOURCE_BASE]) > DEFAULT_MIN_SCORE,
+        "a mere demotion would still clear the threshold, so it is not a fix"
+    );
+}
+
+/// The suppression must not become a blanket ban on linking mailboxes: real
+/// corroboration still links them. Three independent shared sources reach 0.657
+/// on `shared-source` alone, above the threshold — evidence earned rather than
+/// granted by spelling.
+#[test]
+fn corroboration_still_links_mailboxes_at_different_domains() {
+    let sources = ["oathnet_pro", "dehashed", "intelx"];
+    let mut a = Entity::new(EntityKind::Email, "jstewart@blueorigin.com", 0.7, "s");
+    let mut b = Entity::new(EntityKind::Email, "jstewart@navy.mil", 0.7, "s");
+    for s in sources {
+        a.add_evidence(Evidence::new(s, "breach record"));
+        b.add_evidence(Evidence::new(s, "breach record"));
+    }
+
+    let out = resolve_coreferences(&[a, b], DEFAULT_MIN_SCORE, 50);
+    assert_eq!(out.len(), 1, "three shared sources is real evidence");
+    assert!(
+        out[0].signals.contains(&"shared-source"),
+        "and it must be attributed to corroboration, not to the handle"
+    );
+    assert!(!out[0].signals.contains(&"handle-equivalence"));
+}
+
+/// Two addresses at the SAME domain are not the cross-domain case and keep the
+/// full ladder — `j.smith@acme.com` and `jsmith@acme.com` are one mail system's
+/// aliases for, very likely, one person.
+#[test]
+fn same_domain_mailboxes_keep_the_full_string_ladder() {
+    let a = Entity::new(EntityKind::Email, "j.smith@acme.com", 0.7, "s");
+    let b = Entity::new(EntityKind::Email, "jsmith@ACME.com", 0.7, "s");
+    let out = resolve_coreferences(&[a, b], DEFAULT_MIN_SCORE, 50);
+    assert_eq!(out.len(), 1, "same-domain aliases still co-refer");
+    assert!(
+        out[0].signals.contains(&"handle-equivalence"),
+        "domain comparison is case-insensitive: {:?}",
+        out[0].signals
+    );
+}
+
+/// The cross-KIND tie handle-equivalence was designed for is untouched — the
+/// suppression requires BOTH sides to be mailboxes.
+#[test]
+fn the_cross_kind_username_to_email_tie_is_unaffected() {
+    let user = Entity::new(EntityKind::Username, "jsmith", 0.7, "s");
+    let email = Entity::new(EntityKind::Email, "jsmith@gmail.com", 0.7, "s");
+    let out = resolve_coreferences(&[user, email], DEFAULT_MIN_SCORE, 50);
+    assert_eq!(out.len(), 1);
+    assert!(out[0].signals.contains(&"handle-equivalence"));
+}
+
+/// `email_domain` must only fire on real mailboxes: a handle that merely
+/// contains `@`, or a domain with no dot, is not an address, and treating it as
+/// one would suppress genuine links.
+#[test]
+fn email_domain_only_recognises_real_addresses() {
+    assert_eq!(email_domain("jstewart@navy.mil"), Some("navy.mil"));
+    assert_eq!(email_domain("  a@b.co  "), Some("b.co"));
+    for not_an_email in ["@handle", "jsmith", "a@b", "a@@b.com", "@", ""] {
+        assert_eq!(
+            email_domain(not_an_email),
+            None,
+            "{not_an_email:?} is not a mailbox"
+        );
+    }
+}
+
+/// Measured effect at the observed scale, as a regression guard on the fix's
+/// magnitude rather than just its direction.
+///
+/// The real dossier carried one common local part across dozens of employer
+/// domains, each pair sharing one crawl source. That is a complete graph: 40
+/// mailboxes produce 40·39/2 = 780 pairs, every one of which formerly scored
+/// 0.86 and cleared the threshold. The report surfaced 200 of them (its display
+/// cap) and buried the genuine links underneath.
+///
+/// The assertion is exact, not approximate: the count must go to ZERO. A
+/// partial reduction would mean the suppression is firing on some pairs and not
+/// others, which for a symmetric property like "different domains" would signal
+/// a subtler bug than the one being fixed.
+#[test]
+fn the_observed_false_positive_cluster_collapses_completely() {
+    const N: usize = 40;
+    let entities: Vec<Entity> = (0..N)
+        .map(|i| {
+            let mut e = Entity::new(
+                EntityKind::Email,
+                format!("jstewart@employer{i}.com"),
+                0.7,
+                "s",
+            );
+            // The single shared crawl source every observed pair had.
+            e.add_evidence(Evidence::new("search_engines", "snippet"));
+            e
+        })
+        .collect();
+
+    // Ask for far more than the complete graph could yield, so the count is the
+    // scorer's own output and not a truncation artefact.
+    let out = resolve_coreferences(&entities, DEFAULT_MIN_SCORE, N * N);
+
+    assert!(
+        out.is_empty(),
+        "{} mailboxes at unrelated domains produced {} co-reference claims; \
+         every one asserts a person's employer on nothing but a shared local \
+         part",
+        N,
+        out.len()
+    );
+
+    // Pin the arithmetic that made them all clear the bar, so the number in the
+    // module docs stays honest if a weight is ever retuned.
+    let former = noisy_or([W_HANDLE_EQUIV, 1.0 - SHARED_SOURCE_BASE]);
+    assert!(
+        (former - 0.86).abs() < 0.005,
+        "the observed 0.86 was handle-equivalence fused with one shared \
+         source; got {former}"
+    );
+    assert!(former > DEFAULT_MIN_SCORE);
+}

@@ -128,6 +128,60 @@ pub const CROSS_SCAN_SOURCE: &str = "cross_scan_history";
 /// [`Entity::source_count`] / `c_effective`.
 pub const CONSENSUS_SOURCE: &str = "breach_consensus";
 
+/// Evidence source name emitted by the multipath-corroboration promotion pass
+/// (`promote_multipath_corroborated` in `crate::core::engine::passes`).
+///
+/// This is a DERIVED signal: it records that the engine found two identity
+/// endpoints connected across ≥2 edge-disjoint paths — it is NOT a new
+/// independent data source. It may amplify an already-grounded entity's
+/// `source_count`, but it must never be the sole reason an entity is considered
+/// corroborated (see [`source_count`][Entity::source_count]).
+pub const MULTIPATH_CORROBORATION_SOURCE: &str = "multipath_corroboration";
+
+/// Evidence source name emitted by the cross-scan-corroboration promotion pass
+/// (`promote_cross_scan_corroborated` in `crate::core::engine::passes`).
+///
+/// Same semantics as [`MULTIPATH_CORROBORATION_SOURCE`]: engine-derived signal,
+/// not an independent observation.
+pub const CROSS_SCAN_CORROBORATION_SOURCE: &str = "cross_scan_corroboration";
+
+/// Evidence source name emitted by the geo-corroboration promotion passes
+/// (`promote_geo_corroborated_family` / `promote_breach_candidate_geo_corroborated`
+/// in `crate::core::engine::passes`). Engine-derived agreement signal, not an
+/// independent observation.
+pub const GEO_CORROBORATION_SOURCE: &str = "geo_corroboration";
+
+/// True if `source` is an engine **promotion pass** rather than an independent
+/// observation. Promotion passes amplify entities that are already grounded by
+/// real sources; they must never GROUND an entity by themselves.
+///
+/// This is distinct from [`is_non_corroborating_source`]: non-corroborating
+/// sources are NEVER counted; promotion sources ARE counted, but only when the
+/// entity already has at least one real corroborating source (the grounding gate
+/// in [`Entity::source_count`]).
+#[inline]
+pub fn is_promotion_source(source: &str) -> bool {
+    source == MULTIPATH_CORROBORATION_SOURCE || source == CROSS_SCAN_CORROBORATION_SOURCE
+}
+
+/// True if `source` is an engine-derived corroboration signal — multipath,
+/// cross-scan, or geo agreement — rather than an independent observation. Such a
+/// signal must classify as the unscored `"other"`
+/// [`source_family`](crate::core::correlator::source_family): it records that
+/// existing sources agree, so counting it as its own family would manufacture a
+/// phantom orthogonal source family. (`geo_corroboration`'s name contains the
+/// `"geo"` substring the family classifier keys `"infra"` on, so without an
+/// exact-match guard it was hijacked to `"infra"` and inflated AU-062 multipath /
+/// AU-063 gap / AU-082 alerts.) Broader than [`is_promotion_source`]:
+/// `geo_corroboration` still counts as a real source for corroboration DEPTH, but
+/// must never add family BREADTH.
+#[inline]
+pub fn is_engine_corroboration_source(source: &str) -> bool {
+    source == MULTIPATH_CORROBORATION_SOURCE
+        || source == CROSS_SCAN_CORROBORATION_SOURCE
+        || source == GEO_CORROBORATION_SOURCE
+}
+
 /// True if `source` must NOT count toward cross-source corroboration — a
 /// deterministic self-enrichment pass ([`ENRICHMENT_ONLY_SOURCES`]), the recall
 /// replay ([`RECALL_SOURCE`]), the cross-scan history link ([`CROSS_SCAN_SOURCE`]),
@@ -550,21 +604,45 @@ impl Entity {
         // overhead. A source is counted exactly once, at its first occurrence:
         // for each record we scan only the evidence *before* it for the same
         // source. Entity evidence chains are short (a handful of sources), so
-        // this O(k²) scan over tiny `k` beats hashing + heap allocation, and the
-        // distinct set it yields is identical to `corroborating_sources().len()`.
-        let mut distinct: u32 = 0;
+        // this O(k²) scan over tiny `k` beats hashing + heap allocation.
+        //
+        // GROUNDING GATE: promotion-pass sources (`multipath_corroboration`,
+        // `cross_scan_corroboration`) are tracked separately and only COUNT
+        // when the entity is already independently grounded. They re-fire every
+        // scan, so a value the engine merely DERIVED (a name→email permutation,
+        // an inferred handle — the `derived` tag) whose lone real source is its
+        // own generator must NOT be lifted into apparent cross-source agreement.
+        // Gate: for observed entities (no `derived` tag) 1 real source suffices;
+        // for derived entities we require ≥2 real (corroborating, non-promotion)
+        // sources before promotion counts. If the generator is itself
+        // non-corroborating (e.g. `name_intel`), it does not contribute to
+        // `real`, so external confirmation is needed regardless.
+        let derived = self.has_tag("derived");
+        let mut real: u32 = 0;
+        let mut promo: u32 = 0;
         for (i, ev) in self.evidence.iter().enumerate() {
             let s = ev.source.as_str();
             if is_non_corroborating_source(s) {
                 continue;
             }
-            if !self.evidence[..i]
+            if self.evidence[..i]
                 .iter()
                 .any(|prev| prev.source == ev.source)
             {
-                distinct += 1;
+                continue; // duplicate source — only count first occurrence
+            }
+            if is_promotion_source(s) {
+                promo += 1;
+            } else {
+                real += 1;
             }
         }
+        // For observed entities: 1 real source satisfies the gate.
+        // For derived entities: need ≥2 real corroborating sources before
+        // promotion passes count. Non-corroborating generators (e.g. `name_intel`)
+        // do not contribute to `real`, so they do not satisfy the gate alone.
+        let grounded = real >= if derived { 2 } else { 1 };
+        let distinct = real + if grounded { promo } else { 0 };
         if distinct > 0 {
             // Evidence is attached: distinct *corroborating* sources is the
             // authoritative cross-correlation count. The summed `corroboration`
@@ -1150,10 +1228,86 @@ impl From<&Entity> for EntityRef {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/// Fold a normalised value into the form that defines **identity**, as distinct
+/// from the form that is **displayed**.
+///
+/// For most kinds these coincide and this borrows unchanged. For free-text NAME
+/// kinds they must not: a person's identity does not depend on the capitalisation
+/// or the run of spaces a particular source happened to emit, but the display
+/// value very much does — nobody wants a dossier headed `jeremy stewart`.
+///
+/// [`normalise`] cannot do this job, because its output IS the display value
+/// (`Entity::value`). Its catch-all arm is `value.trim()`, so `Person` receives
+/// no folding whatsoever, and three sightings of one person fork into three
+/// graph nodes:
+///
+/// ```text
+/// "Jeremy Stewart"    -> bf2bbc2d…
+/// "jeremy stewart"    -> c9973045…
+/// "Jeremy  Stewart"   -> f0523905…
+/// ```
+///
+/// Each fragment carries only the evidence of the source that spelled it that
+/// way, so `corroborated_fraction` — the share of entities backed by ≥2 distinct
+/// sources — is structurally suppressed toward zero no matter how many sources
+/// agree. A real 1081-entity dossier drawing on 11 sources reported **0%**
+/// corroborated, and listed `Jeremy Stewart` and `jeremy stewart` as separate
+/// co-reference endpoints. `derive_canonical_identities` papers over the split
+/// with `SameAs` edges, but an edge between two half-evidenced nodes is not the
+/// same thing as one fully-evidenced node.
+///
+/// Excluded on purpose:
+/// * `Ssid` — Wi-Fi network names are case-SENSITIVE by IEEE 802.11; folding
+///   them would merge two genuinely different networks.
+/// * `Address` — real address equivalence needs component parsing
+///   (`Street`/`St`, unit notation), not case folding. Folding case alone would
+///   imply a normalisation that has not happened.
+/// * Every identifier kind — `Email`, `Username`, `Domain`, `Phone`,
+///   `IpAddress`, `MacAddress`, `Url`, `Coordinates` — already normalises to a
+///   canonical form in [`normalise`], where identity and display legitimately
+///   coincide. Their UIDs are byte-identical before and after this change.
+fn identity_fold<'a>(kind: &EntityKind, normalised: &'a str) -> std::borrow::Cow<'a, str> {
+    match kind {
+        EntityKind::Person | EntityKind::Organisation => {
+            // `split_whitespace` collapses runs AND trims, so "Jeremy  Stewart"
+            // and " Jeremy Stewart " reach the same key as "Jeremy Stewart".
+            let folded = normalised
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase();
+            if folded == normalised {
+                std::borrow::Cow::Borrowed(normalised)
+            } else {
+                std::borrow::Cow::Owned(folded)
+            }
+        }
+        _ => std::borrow::Cow::Borrowed(normalised),
+    }
+}
+
 /// Derive a deterministic SHA-256 UID from kind + normalised value.
 ///
-/// Format: `hex(SHA-256("<kind_str>:<normalised_value>"))`
+/// Format: `hex(SHA-256("<kind_str>:<identity_fold(normalised_value)>"))`
+///
+/// The fold lives HERE rather than in [`Entity::new`] because `derive_uid` is
+/// not the private helper of one constructor — it is called from six places,
+/// and one of them is the engine deriving the **seed's** UID from the operator's
+/// target string (`core::engine`), with others in dispatch and history. Folding
+/// in the constructor alone would give a seed typed as `Jeremy Stewart` a
+/// different UID from the `jeremy stewart` its own modules emit: the seed would
+/// land in the graph as an isolated node while every derived edge attached to a
+/// twin it could not reach. That is precisely the "subject has no derived
+/// connections" state observed in a real dossier, so fixing identity anywhere
+/// but at the single authoritative definition would have reproduced the defect
+/// while appearing to cure it.
+///
+/// Migration: `Person` and `Organisation` UIDs computed before this change do
+/// not match those computed after, so entities already persisted under a
+/// mixed-case spelling are reachable only by re-scanning. Every other kind is
+/// bit-for-bit unchanged.
 pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
+    let normalised_value = &*identity_fold(kind, normalised_value);
     // digest 0.11 dropped the `io::Write` impl for hashers. Stream the `Display`
     // of `<kind>` straight into the hasher through [`HashWrite`] so the
     // per-entity hot path (every `Entity::new`) allocates NO intermediate
@@ -1186,6 +1340,29 @@ pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
     }
     h.update(normalised_value.as_bytes());
     hex::encode(h.finalize())
+}
+
+/// Mint an entity UID from a **raw, un-normalised** value — the single entry
+/// point for the two-step `normalise` → [`derive_uid`] contract that identity
+/// callers previously copy-pasted (engine seed derivation, dispatch source
+/// counting, username history bridging). Folding the two steps here means a
+/// caller with a raw operator/target string can never accidentally hash a
+/// value that skipped [`normalise`] — which would land it in the graph under a
+/// UID no module's emitted entity shares.
+///
+/// The result is byte-identical to `derive_uid(kind, &normalise(kind, value))`,
+/// so this preserves the SHA-256-deterministic-UID invariant exactly.
+///
+/// NOT used by:
+/// * [`Entity::new`], which needs the intermediate normalised form for its own
+///   `value` field and so computes `normalise` once and calls [`derive_uid`]
+///   directly — routing it through here would recompute `normalise` on every
+///   entity constructed (the hottest path in the engine).
+/// * Callers that already hold a **normalised** (`canon`) value; they call
+///   [`derive_uid`] directly, because re-normalising a canonical value is at
+///   best wasted work and at worst not provably idempotent for every kind.
+pub(crate) fn uid_for(kind: &EntityKind, value: &str) -> String {
+    derive_uid(kind, &normalise(kind, value))
 }
 
 /// A [`fmt::Write`] shim that streams formatted text straight into a SHA-256

@@ -15,14 +15,14 @@ use serde_json::{Map, Value};
 
 use async_trait::async_trait;
 
+use crate::core::confidence;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::ckan::{Response as CkanResp, datastore_search_url, field_str};
-use crate::util::http::fetch_json;
+use crate::util::ckan::{datastore_search_url, field_str};
 
 const SRC: &str = "asic_business_names";
 /// data.gov.au CKAN action base — `datastore_search` is appended by
@@ -103,22 +103,19 @@ impl Module for AsicBusinessNames {
 }
 
 /// Query the Business Names datastore by free-text name, via the shared CKAN
-/// envelope (T2.118). Every real failure now surfaces instead of collapsing into
-/// an empty `Vec` indistinguishable from "no registration by this name":
-/// `fetch_json` propagates transport/status/parse failures via `?`, and a
+/// helper (T2.118). Every real failure surfaces through
+/// [`crate::util::ckan::validated_result`] instead of collapsing into an empty
+/// `Vec` indistinguishable from "no registration by this name": `fetch_json`
+/// propagates transport/status/parse failures via `?`, and a
 /// `success == Some(false)` envelope (returned by CKAN with HTTP 200 on a bad
 /// resource id / portal error) becomes an explicit `Error::module`. A genuine
 /// empty result set is still the honest clean miss.
 async fn ckan_query(ctx: &ModuleContext, name: &str) -> Result<Vec<Map<String, Value>>> {
     let url = datastore_search_url(CKAN_BASE, RES, name, MAX_HITS);
-    let resp: CkanResp = fetch_json(&ctx.http, SRC, &url).await?;
-    if resp.success == Some(false) {
-        return Err(Error::module(
-            SRC,
-            "CKAN datastore_search returned success=false (bad resource id or portal error)",
-        ));
-    }
-    Ok(resp.result.map(|r| r.records).unwrap_or_default())
+    Ok(crate::util::ckan::validated_result(&ctx.http, SRC, &url)
+        .await?
+        .map(|r| r.records)
+        .unwrap_or_default())
 }
 
 /// Lower-cased alphanumeric name tokens (≥2 chars).
@@ -166,7 +163,12 @@ fn emit_business_name(
     }
 
     // The confirmed registered trading name.
-    let mut org = Entity::new(EntityKind::Organisation, &bn_name, 0.58, scan_id);
+    let mut org = Entity::new(
+        EntityKind::Organisation,
+        &bn_name,
+        confidence::MEDIUM_SOLID,
+        scan_id,
+    );
     org.tag("au");
     org.tag("asic");
     org.tag("business-name");
@@ -181,7 +183,7 @@ fn emit_business_name(
         field(rec, "BN_ABN").filter(|a| a.chars().filter(char::is_ascii_digit).count() == 11)
         && seen_abn.insert(abn.clone())
     {
-        let mut e = Entity::new(EntityKind::AbnAcn, &abn, 0.62, scan_id);
+        let mut e = Entity::new(EntityKind::AbnAcn, &abn, confidence::NOTABLE, scan_id);
         e.tag("au");
         e.tag("asic");
         e.tag("business-name");

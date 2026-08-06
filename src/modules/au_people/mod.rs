@@ -110,7 +110,7 @@ pub(super) fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<
                 })
             })
             .map(|line| {
-                let mut ae = Entity::new(EntityKind::Address, line, 0.52, scan_id);
+                let mut ae = Entity::new(EntityKind::Address, line, confidence::MEDIUM_LIGHT, scan_id);
                 ae.tag(SRC);
                 ae.tag("au-directory");
                 ae.tag("tps-au");
@@ -451,7 +451,12 @@ impl Module for AuPeople {
         // Emit a Person anchor for the name if we got any results — confirms
         // the name exists in AU residential directories.
         if !result.entities.is_empty() {
-            let mut person = Entity::new(EntityKind::Person, full_name, 0.62, &ctx.scan_id);
+            let mut person = Entity::new(
+                EntityKind::Person,
+                full_name,
+                confidence::NOTABLE,
+                &ctx.scan_id,
+            );
             person.tag(SRC);
             person.tag("au-directory");
             person.tag("confirmed-in-directory");

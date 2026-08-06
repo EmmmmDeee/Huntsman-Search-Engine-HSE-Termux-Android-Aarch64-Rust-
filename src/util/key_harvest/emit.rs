@@ -3,6 +3,7 @@
 //! parent items (DetectionConfidence, tags, …) via `use super::*`.
 
 use super::*;
+use crate::core::confidence;
 
 /// Emit a key whose provenance is the schema/shape baseline (the direct
 /// [`identify_api_key`] paths, which carry no corroborating context). Delegates
@@ -39,7 +40,12 @@ pub(super) fn emit_key_with(
     // machinery entirely: it can't authenticate anything.
     if let Some(chain) = service.strip_prefix("crypto_") {
         if seen.insert(format!("@crypto:{key_val}")) {
-            let mut e = Entity::new(EntityKind::CryptoAddress, key_val, 0.80, scan_id);
+            let mut e = Entity::new(
+                EntityKind::CryptoAddress,
+                key_val,
+                confidence::HIGH_PLUSPLUS,
+                scan_id,
+            );
             e.tag("crypto-address");
             e.tag(format!("chain:{chain}"));
             e.add_evidence(
@@ -73,7 +79,12 @@ pub(super) fn emit_key_with(
     } else {
         detection
     };
-    let mut entity = Entity::new(EntityKind::ApiKey, key_val, 0.80, scan_id);
+    let mut entity = Entity::new(
+        EntityKind::ApiKey,
+        key_val,
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
     entity.tag("api-key");
     entity.tag(format!("service:{service}"));
     // Hyphenated form, matching the caller's own entity-tagging convention
@@ -175,9 +186,27 @@ pub(super) fn emit_key_with(
     crate::util::key_pool::persist_off_thread(pool);
 }
 
-/// Routes a stealer/breach record to the key pool when the URL matches
-/// a known service domain. See [`emit_key`] for `src`.
-pub fn store_api_credential(item: &Value, src: &str) {
+/// Reports a stealer/breach record's password as a [`EntityKind::Credential`]
+/// finding when its URL matches a known service domain. See [`emit_key`] for
+/// `src`.
+///
+/// This intentionally only REPORTS the discovery — it never auto-pools the
+/// credential into [`crate::util::key_pool`] for HSE's own future live use.
+/// A breach-log password is a third party's captured secret of unverified
+/// ownership, not a key the operator supplied; auto-enrolling it would mean
+/// HSE authenticates against a real third-party service with someone else's
+/// credential on its own initiative. The operator can still check whether it
+/// is live by explicitly adding it (`hse keys add`) after reviewing this
+/// finding — reuse now requires a deliberate operator action, not an
+/// automatic one. The [`is_credential_kind`](crate::util::redact::is_credential_kind)
+/// export-redaction path already treats this entity's value as a secret.
+pub fn store_api_credential(
+    item: &Value,
+    src: &str,
+    scan_id: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
     let url = val_str(item, "url")
         .or_else(|| val_str(item, "url_str"))
         .or_else(|| val_str(item, "domain"))
@@ -219,22 +248,38 @@ pub fn store_api_credential(item: &Value, src: &str) {
         return;
     };
 
-    let pool = crate::util::key_pool::global_pool();
-
-    let mut entry = crate::util::key_pool::KeyEntry::new(&password);
-    entry.notes = Some(format!(
-        "{src} stealer: user={} url={}",
-        crate::util::str_util::truncate_safe(&username, 30),
-        crate::util::str_util::truncate_safe(&url, 60)
-    ));
-    // Off the async runtime (see `emit_key_with` above): `pool` is reused below,
-    // so this first persist clones the Arc (cheap — a refcount bump, not a pool
-    // copy) rather than moving it.
-    if pool.add(service, entry) {
-        crate::util::key_pool::persist_off_thread(std::sync::Arc::clone(&pool));
+    // Hash the password into the dedup key rather than embedding it whole: a
+    // stealer/breach `password` field is an arbitrary-length attacker/victim-
+    // supplied string, unlike `emit_key_with`'s `key_val` (bounded by
+    // `KEY_PATTERNS`'s own regexes) — an unbounded value here would both
+    // allocate unboundedly and retain a second plaintext copy of the secret in
+    // `seen` for the rest of the page's processing.
+    if !seen.insert(format!(
+        "@breach-cred:{service}:{}",
+        crate::util::key_pool::key_id(&password)
+    )) {
+        return;
     }
-
-    let user_entry = crate::util::key_pool::KeyEntry::new(format!("{username}:{password}"));
-    pool.add(&format!("{service}_login"), user_entry);
-    crate::util::key_pool::persist_off_thread(pool);
+    let mut entity = Entity::new(
+        EntityKind::Credential,
+        &password,
+        confidence::MEDIUM_PLUS,
+        scan_id,
+    );
+    entity.tag("stealer-credential");
+    entity.tag(format!("service:{service}"));
+    entity.tag(src.replace('_', "-"));
+    entity.add_evidence(
+        Evidence::new(
+            src,
+            format!("Possible {service} credential from a breach/stealer record"),
+        )
+        .with_attr("service", service)
+        .with_attr(
+            "username",
+            crate::util::str_util::truncate_safe(&username, 60),
+        )
+        .with_attr("url", crate::util::str_util::truncate_safe(&url, 80)),
+    );
+    result.push(entity);
 }

@@ -2,6 +2,17 @@ import { API } from '/static/js/api.js';
 import { $, ENRICHMENT_SOURCES, attr, attrText, classify, effC, esc, extLink, fmtDate, kindPill, sourceCount } from '/static/js/helpers.js';
 import { S } from '/static/js/state.js';
 
+// A large scan can produce thousands of entities; rendering each as two <tr>s
+// with its full (hidden) evidence detail, and re-running that + re-initialising
+// tablesorter on every filter keystroke, is heavy on a Termux phone. Cap what
+// is rendered (the count label still reports the full match total) and debounce
+// the filter. Entities arrive confidence-ranked, so the top slice is shown.
+const BROWSE_ROW_CAP = 500;
+function debounce(fn, ms) {
+  let t;
+  return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
+
 /* ── Browse tab ── */
 export function renderBrowse(host){
   const kinds = Array.from(new Set(S.entities.map(e=>e.kind))).sort();
@@ -68,13 +79,20 @@ export function renderBrowse(host){
       (e.value||'').toLowerCase().includes(q)
       || (e.tags||[]).some(t=>t.toLowerCase().includes(q))
       || (e.evidence||[]).some(ev=>(ev.summary||'').toLowerCase().includes(q) || (ev.source||'').toLowerCase().includes(q)));
-    $('#b-ct').textContent = `${rows.length} of ${S.entities.length}`;
-    $('#b-table-host').innerHTML = renderBrowseTable(rows);
-    if (window.jQuery && jQuery.fn.tablesorter && rows.length){
+    const loaded = S.entities.length;
+    const scanTotal = S.entitiesTotal ?? loaded;
+    // When the server truncated the fetch (scan has more entities than the
+    // page limit), say so — otherwise "N of loaded" reads as "N of all".
+    $('#b-ct').textContent = scanTotal > loaded
+      ? `${rows.length} of ${loaded} loaded · ${scanTotal} in scan`
+      : `${rows.length} of ${loaded}`;
+    const shown = rows.length > BROWSE_ROW_CAP ? rows.slice(0, BROWSE_ROW_CAP) : rows;
+    $('#b-table-host').innerHTML = renderBrowseTable(shown, rows.length);
+    if (window.jQuery && jQuery.fn.tablesorter && shown.length){
       try { jQuery('#browse-table').tablesorter({sortList:[[2,1]]}); } catch {}
     }
   }
-  $('#b-q').addEventListener('input', refresh);
+  $('#b-q').addEventListener('input', debounce(refresh, 180));
   $('#b-cls').addEventListener('change', refresh);
   // Sidebar: click a row to filter by kind (toggle off if already active)
   host.querySelectorAll('.rollup-row').forEach(tr=>tr.addEventListener('click', ()=>{
@@ -90,10 +108,20 @@ export function renderBrowse(host){
   if (S.route.query.q){ $('#b-q').value = S.route.query.q; }
   refresh();
 }
-export function renderBrowseTable(rows){
+export function renderBrowseTable(rows, total){
+  // Server-fetch truncation (distinct from the client render cap below): the
+  // scan holds more entities than the page fetched, so counts/filters here
+  // cover only the loaded slice. Shown even when the current filter matches
+  // nothing loaded, since the sought entity may be in the unfetched remainder.
+  const fetchNote = (S.entitiesTotal != null && S.entitiesTotal > S.entities.length)
+    ? `<div class="text-warning" style="font-size:11px;margin-bottom:6px">This scan has ${S.entitiesTotal} entities; the browser loaded the confidence-ranked top ${S.entities.length}. Counts and filters below apply to the loaded slice — export CSV/JSON for the complete set.</div>`
+    : '';
   if (!rows.length){
-    return '<div class="empty-state"><h3>No entities match</h3><p>Adjust the filter, or check the Scan Log if the scan is still running.</p></div>';
+    return `${fetchNote}<div class="empty-state"><h3>No entities match</h3><p>Adjust the filter, or check the Scan Log if the scan is still running.</p></div>`;
   }
+  const capNote = (total != null && total > rows.length)
+    ? `<div class="text-muted" style="font-size:11px;margin-bottom:6px">Showing the top ${rows.length} of ${total} matching entities (confidence-ranked) — filter by type or search to narrow, or export CSV/JSON for the full set.</div>`
+    : '';
   const body = rows.map((e,idx)=>{
     const eff = effC(e), tier = classify(eff), srcN = sourceCount(e);
     const sources = Array.from(new Set((e.evidence||[]).map(ev=>ev.source))).sort();
@@ -129,7 +157,7 @@ export function renderBrowseTable(rows){
       ${evDetail || '<span class="text-muted">No evidence attached</span>'}
     </div></td></tr>`;
   }).join('');
-  return `<div class="table-responsive"><table class="table table-striped table-condensed tablesorter" id="browse-table">
+  return `${fetchNote}${capNote}<div class="table-responsive"><table class="table table-striped table-condensed tablesorter" id="browse-table">
     <thead><tr>
       <th>Type</th><th>Value</th><th class="text-right">C_eff</th><th class="text-right" title="Base confidence, before corroboration boost">Conf</th>
       <th class="text-right">Corr</th><th class="text-right" title="Distinct corroborating sources">Src</th><th>Tier</th>

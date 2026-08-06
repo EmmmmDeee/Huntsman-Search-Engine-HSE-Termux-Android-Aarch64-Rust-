@@ -53,6 +53,20 @@ fn parse_kv(line: &str) -> Option<(String, String)> {
     if trimmed.starts_with('#') || trimmed.is_empty() {
         return None;
     }
+    // `export KEY=value` is a real shell idiom, it is what
+    // `docs/SEEKNOW_SETUP.md` instructs operators to append, and `dotenvy`
+    // (util::keys::io) accepts it — so the key WORKS, right up until the next
+    // `curl … | bash`. Without stripping the keyword the name below parses as
+    // `export HUNTSMAN_…`, fails the `HUNTSMAN_` test, and the line becomes
+    // invisible: `merge_template` then writes the template PLACEHOLDER over the
+    // operator's real key, and `count_keys` under-reports what is configured.
+    //
+    // Stripped only when `export` stands alone as a keyword, so an ordinary key
+    // that merely begins with those letters (`exported=1`) is left untouched.
+    let trimmed = trimmed
+        .strip_prefix("export")
+        .filter(|rest| rest.starts_with([' ', '\t']))
+        .map_or(trimmed, str::trim_start);
     let eq = trimmed.find('=')?;
     let key = trimmed[..eq].trim();
     if !key.starts_with("HUNTSMAN_") {
@@ -133,6 +147,68 @@ pub fn merge_template(existing: &str, template: &str) -> String {
     out
 }
 
+/// Autonomous key discovery: the `HUNTSMAN_*` keys present in `env` as real
+/// values that `existing` does not yet carry as a real (non-placeholder,
+/// non-empty) value.
+///
+/// These are keys the operator already has in their environment — exported in a
+/// shell rc, injected by CI, or passed inline (`HUNTSMAN_X=… hse provision
+/// --discover`) — but has never persisted to `~/.huntsman.env`. Discovery
+/// promotes them into the canonical file so they survive and light up their
+/// modules with no manual `keys set`. A value that is empty, a template
+/// placeholder, or contains a `"` (it could not round-trip through the
+/// `KEY="value"` env-file writer) is skipped.
+///
+/// Pure over the `(existing-content, env-pairs)` inputs — the CLI driver passes
+/// `std::env::vars()`, tests pass a fixture — so the selection logic is verified
+/// without touching the real environment. Returns a key-sorted, de-duplicated
+/// list (first value wins on a duplicate key).
+pub fn discover_env_keys<I>(existing: &str, env: I) -> Vec<(String, String)>
+where
+    I: IntoIterator<Item = (String, String)>,
+{
+    let mut have: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for line in existing.lines() {
+        if let Some((k, v)) = parse_kv(line)
+            && !is_placeholder(&v)
+            && !v.is_empty()
+        {
+            have.insert(k);
+        }
+    }
+
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    for (k, v) in env {
+        if !k.starts_with("HUNTSMAN_") {
+            continue;
+        }
+        let v = v.trim().to_string();
+        if v.is_empty() || is_placeholder(&v) || v.contains('"') || have.contains(&k) {
+            continue;
+        }
+        out.entry(k).or_insert(v);
+    }
+    out.into_iter().collect()
+}
+
+/// Append `discovered` keys to `existing` as `KEY="value"` lines so
+/// [`merge_template`] then treats them as real existing values — substituted in
+/// place of a template placeholder, or preserved in the user-custom section
+/// otherwise. Pure; returns `existing` unchanged when nothing was discovered.
+fn inject_discovered(existing: &str, discovered: &[(String, String)]) -> String {
+    if discovered.is_empty() {
+        return existing.to_string();
+    }
+    let mut s = String::from(existing);
+    if !s.is_empty() && !s.ends_with('\n') {
+        s.push('\n');
+    }
+    for (k, v) in discovered {
+        s.push_str(&format!("{k}=\"{v}\"\n"));
+    }
+    s
+}
+
 /// Write the merged content to `path` atomically (temp-file + rename),
 /// after first backing up any pre-existing file to `path + .bak.<ts>`.
 /// File mode is 0600 on Unix; on non-Unix the OS-default mode applies.
@@ -199,10 +275,15 @@ fn read_existing_env(path: &Path) -> Result<String> {
     }
 }
 
-pub(super) async fn cmd_provision(env_only: bool, verify_only: bool, dry_run: bool) -> Result<()> {
+pub(super) async fn cmd_provision(
+    env_only: bool,
+    verify_only: bool,
+    dry_run: bool,
+    discover: bool,
+) -> Result<()> {
     println!("HSE v{} — provision", crate::VERSION);
     if !verify_only {
-        cmd_provision_env(dry_run)?;
+        cmd_provision_env(dry_run, discover)?;
     }
     if !env_only && !dry_run {
         cmd_provision_verify().await?;
@@ -214,9 +295,31 @@ pub(super) async fn cmd_provision(env_only: bool, verify_only: bool, dry_run: bo
 }
 
 /// Run the env-merge phase. Prints a summary of what changed.
-fn cmd_provision_env(dry_run: bool) -> Result<()> {
+fn cmd_provision_env(dry_run: bool, discover: bool) -> Result<()> {
     let path = PathBuf::from(keys::env_path());
-    let existing = read_existing_env(&path)?;
+    let original = read_existing_env(&path)?;
+
+    // Autonomous discovery: fold any HUNTSMAN_* key already in the process
+    // environment (but not yet persisted) into the file so it survives and
+    // activates its module — key names only are printed, never the secret value.
+    let existing = if discover {
+        let found = discover_env_keys(&original, std::env::vars());
+        if found.is_empty() {
+            println!("==> Phase: discover — no new HUNTSMAN_* keys in the environment");
+        } else {
+            println!(
+                "==> Phase: discover — pre-configuring {} key(s) found in the environment:",
+                found.len()
+            );
+            for (k, _) in &found {
+                println!("    + {k}");
+            }
+        }
+        inject_discovered(&original, &found)
+    } else {
+        original.clone()
+    };
+
     let merged = merge_template(&existing, ENV_TEMPLATE);
 
     let (template_keys, real_keys, custom_keys) = count_keys(&existing);
@@ -231,6 +334,13 @@ fn cmd_provision_env(dry_run: bool) -> Result<()> {
         println!("    (--dry-run; no changes written)");
         println!("\n--- merged content preview ---");
         println!("{merged}");
+        return Ok(());
+    }
+
+    // Idempotent: skip the write + backup when the merge changed nothing, so
+    // re-running provision on every install/upgrade never churns a backup file.
+    if merged == original {
+        println!("    no changes (file already current)");
         return Ok(());
     }
 

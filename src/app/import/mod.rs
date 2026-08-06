@@ -20,6 +20,7 @@ mod txt;
 
 // Format parsers live in the per-format submodules; pull their entry points
 // into scope for the dispatcher, the web-upload router and the tests.
+use crate::core::confidence;
 use combined::{cmd_import_combined, looks_like_combined_search, parse_combined_search};
 use csv::{
     cmd_import_csv, cmd_import_hse_csv, looks_like_dehashed_csv, looks_like_hse_csv,
@@ -37,8 +38,9 @@ pub async fn cmd_import(path: &str, output: &str) -> Result<()> {
     // File-size cap before read_to_string — mirrors MAX_UPLOAD_BYTES in the API
     // upload handler (16 MB) so both paths enforce the same memory bound.
     const MAX_IMPORT_BYTES: u64 = 16 * 1024 * 1024;
-    let meta =
-        std::fs::metadata(path).map_err(|e| Error::Other(format!("cannot stat {path}: {e}")))?;
+    let meta = tokio::fs::metadata(path)
+        .await
+        .map_err(|e| Error::Other(format!("cannot stat {path}: {e}")))?;
     // A directory path is a LOCAL-STORAGE SCRAPE: every recognised artifact under
     // the tree (scan/dossier/stealer-log/breach export/debug bundle) is imported
     // through the same content-based dispatcher and aggregated into one scan.
@@ -53,7 +55,8 @@ pub async fn cmd_import(path: &str, output: &str) -> Result<()> {
             meta.len()
         )));
     }
-    let body = std::fs::read_to_string(path)
+    let body = tokio::fs::read_to_string(path)
+        .await
         .map_err(|e| Error::Other(format!("cannot read {path}: {e}")))?;
 
     // Dispatch on the shared, CONTENT-based detector so a file imports the same
@@ -242,9 +245,6 @@ pub(crate) async fn entities_from_upload(
         ImportFormat::OathnetTxt => (parse_oathnet_txt(body, sid).0, "oathnet-txt"),
     };
     deduplicate_by_uid(&mut entities);
-    for e in &mut entities {
-        e.canonicalize_order();
-    }
     Ok((entities, label))
 }
 
@@ -338,6 +338,13 @@ pub(crate) fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>
         .into_iter()
         .filter_map(|uid| by_uid.remove(&uid))
         .collect();
+    // `merge` appends evidence in arrival order; the union of two canonical
+    // orderings is not itself canonical. Canonicalise here so every caller —
+    // CLI and web — emits the same byte-identical representation regardless of
+    // the order entities arrived in the source file.
+    for e in entities.iter_mut() {
+        e.canonicalize_order();
+    }
 }
 
 /// Persist a parsed import as a completed scan in the default store — the CLI
@@ -349,62 +356,20 @@ pub(crate) fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>
 /// carries the same graph a live scan would. Best-effort on relations and
 /// correlations: an import whose entities already persisted must not fail on a
 /// hiccup there. Returns `(relations, correlations)` persisted, for the summary.
+///
+/// The store-opening / finalise body is the shared [`crate::app::persist`] use
+/// case — `hse ingest --auto-scan` persists document-extracted entities through
+/// the exact same path, so the two can never drift on how a batch becomes a scan.
 async fn persist_import(
     sid: &str,
     entities: &[crate::core::entity::Entity],
 ) -> Result<(usize, usize)> {
-    use crate::core::StoragePort;
-    use crate::core::entity::{EntityKind, unix_now};
-    use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
-    use std::sync::Arc;
+    use crate::core::scan::TargetKind;
 
     // A readable scan label: the strongest identity in the file, else generic —
     // matches the web upload handler so the two paths label imports identically.
-    let label = entities
-        .iter()
-        .find(|e| e.kind == EntityKind::Person)
-        .or_else(|| entities.iter().find(|e| e.kind == EntityKind::Email))
-        .map_or_else(|| "imported dossier".to_string(), |e| e.value.clone());
-
-    // Offline geospatial enrichment, exactly as the live scan finalise does:
-    // parse each Address, geohash/timezone/country-tag each Coordinates, and
-    // derive Coordinates from any Address whose city resolves offline — so an
-    // imported dossier's addresses feed the geo-correlation stack (AU-014/017/
-    // 032/056/057/085, co-location) instead of sitting inert. Deterministic, no
-    // network; runs before relations/correlations so the derived fixes are
-    // persisted, related and correlated in this same pass.
-    let mut entities = entities.to_vec();
-    crate::core::engine::enrich_offline_geo(&mut entities, sid);
-    let entities = &entities[..];
-
-    let store: Arc<dyn StoragePort> =
-        Arc::new(crate::storage::Store::open(&crate::default_db_path())?);
-
-    let mut scan = Scan::new(sid.to_string(), Target::new(TargetKind::FullName, label));
-    scan.status = ScanStatus::Complete;
-    scan.finished_at = Some(unix_now());
-    scan.entity_count = entities.len();
-    store.upsert_scan(&scan)?;
-    store.upsert_entities_batch(entities)?;
-
-    let mut relations = 0usize;
-    for r in &crate::core::relation::derive_all(entities, sid) {
-        if store.upsert_relation(r).is_ok() {
-            relations += 1;
-        }
-    }
-
-    let mut correlations = 0usize;
-    let correlator = crate::core::correlator::Correlator::new(Arc::clone(&store));
-    if let Ok(hits) = correlator.run(sid) {
-        for c in &hits {
-            if store.upsert_correlation(c).is_ok() {
-                correlations += 1;
-            }
-        }
-    }
-
-    Ok((relations, correlations))
+    let label = crate::app::persist::strongest_identity_label(entities, "imported dossier");
+    crate::app::persist::persist_entities_as_scan(sid, label, TargetKind::FullName, entities).await
 }
 
 /// Persist a parsed import and emit a one-line summary on the appropriate stream.
@@ -492,7 +457,7 @@ fn detect_and_create_api_key_entity(
     let prefix: String = pw.chars().take(8).collect();
     let suffix: String = pw.chars().skip(char_len.saturating_sub(4)).collect();
     let display = format!("{service}:{prefix}...{suffix}");
-    let mut e = Entity::new(EntityKind::ApiKey, &display, 0.80, sid);
+    let mut e = Entity::new(EntityKind::ApiKey, &display, confidence::HIGH_PLUSPLUS, sid);
     e.tag("api-key");
     e.tag(format!("service:{service}"));
     e.tag("import");
@@ -522,7 +487,7 @@ fn push_macs(
     use crate::core::entity::{Entity, EntityKind, Evidence};
     let mut n = 0;
     for mac in crate::util::extract::macs(text) {
-        let mut e = Entity::new(EntityKind::MacAddress, &mac, 0.55, sid);
+        let mut e = Entity::new(EntityKind::MacAddress, &mac, confidence::MEDIUM_HIGH, sid);
         e.tag("import");
         e.tag(source_tag);
         e.tag("bssid");
@@ -567,7 +532,7 @@ fn push_crypto(
             continue;
         }
         let coin = chain.strip_prefix("crypto_").unwrap_or(chain);
-        let mut e = Entity::new(EntityKind::CryptoAddress, tok, 0.70, sid);
+        let mut e = Entity::new(EntityKind::CryptoAddress, tok, confidence::HIGH_PLUS, sid);
         e.tag("import");
         e.tag(source_tag);
         e.tag("crypto-address");
@@ -651,7 +616,12 @@ fn push_ibans(
     use crate::core::entity::{Entity, EntityKind, Evidence};
     let mut n = 0;
     for iban in crate::util::extract::ibans(text) {
-        let mut e = Entity::new(EntityKind::Other("iban".into()), &iban, 0.62, sid);
+        let mut e = Entity::new(
+            EntityKind::Other("iban".into()),
+            &iban,
+            confidence::NOTABLE,
+            sid,
+        );
         e.tag("import");
         e.tag(source_tag);
         e.tag("iban");
@@ -683,7 +653,7 @@ fn push_ssids(
     use crate::core::entity::{Entity, EntityKind, Evidence};
     let mut n = 0;
     for ssid in crate::util::extract::labeled_ssids(text) {
-        let mut e = Entity::new(EntityKind::Ssid, &ssid, 0.60, sid);
+        let mut e = Entity::new(EntityKind::Ssid, &ssid, confidence::MEDIUM_PLUS, sid);
         e.tag("import");
         e.tag(source_tag);
         e.tag("wifi-network");
@@ -723,6 +693,7 @@ fn create_geolocation_entities(
     entities: &mut Vec<crate::core::entity::Entity>,
     stats: &mut ImportStats,
 ) {
+    use crate::core::confidence;
     use crate::core::entity::{Entity, EntityKind, Evidence};
 
     if let (Some(la), Some(lo)) = (geo.lat, geo.lon)
@@ -730,7 +701,7 @@ fn create_geolocation_entities(
         && lo.abs() > 0.01
     {
         let coords = format!("{la:.4},{lo:.4}");
-        let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.70, sid);
+        let mut ce = Entity::new(EntityKind::Coordinates, &coords, confidence::HIGH_PLUS, sid);
         ce.tag("geoint");
         ce.tag("import");
         ce.add_evidence(Evidence::new(
@@ -745,7 +716,7 @@ fn create_geolocation_entities(
     }
     if !geo.city.is_empty() {
         let addr = format!("{}, {}, {}", geo.city, geo.region, geo.country);
-        let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, sid);
+        let mut ae = Entity::new(EntityKind::Address, &addr, confidence::HIGH, sid);
         ae.tag("import");
         entities.push(ae);
         stats.addresses += 1;

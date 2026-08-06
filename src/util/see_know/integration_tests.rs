@@ -1,5 +1,5 @@
 //! Honest coverage ledger for SeekNow's documented API surface (24 endpoints
-//! per `docs/SEEKNOW_SETUP.md`/`docs/SEEKNOW_INTEGRATION_SUMMARY.md`) against
+//! per `docs/SEEKNOW_SETUP.md`) against
 //! what HSE actually calls.
 //!
 //! This file previously claimed ("Comprehensive integration tests for all 24
@@ -9,11 +9,13 @@
 //! it never touched `search()`, `get_path()`, or any real client function,
 //! so it could not catch drift between "endpoints we claim to support" and
 //! "endpoints we actually call." Live-verified 2026-07-15: of the 24
-//! documented endpoints, only 18 are ever actually invoked; `/stealer` was
+//! documented endpoints, only 19 are ever actually invoked; `/stealer` was
 //! tried and found to live-verified-404 (correctly removed — see
 //! `modules::see_know::endpoints::tests::plan_email_addon_is_only_email_check`);
-//! `/search/deep`, the three `/enterprise/discord/*`, and `/status` were
-//! never built at all. [`ENDPOINTS`] now records the REAL status of every
+//! the three `/enterprise/discord/*` and `/status` were never built at all
+//! (`/search/deep` is wired as a fast-miss fallback — see
+//! `modules::see_know::Module::process`). [`ENDPOINTS`] now records the REAL
+//! status of every
 //! entry with a citation, and the tests assert the table's own internal
 //! bookkeeping is self-consistent — legitimate as a documentation-accuracy
 //! check, but this file still cannot verify real HTTP wiring (that would
@@ -82,11 +84,11 @@ mod seeknow_full_integration {
         wired: Wired,
     }
 
-    /// The 24 SeekNow API endpoints named in `docs/SEEKNOW_SETUP.md` /
-    /// `docs/SEEKNOW_INTEGRATION_SUMMARY.md`, each with its REAL,
+    /// The 24 SeekNow API endpoints named in `docs/SEEKNOW_SETUP.md`, each
+    /// with its REAL,
     /// live-verified-or-code-confirmed wiring status — not an assumption.
     const ENDPOINTS: &[EndpointSpec] = &[
-        // Search (2 endpoints documented, 1 actually wired)
+        // Search (2 endpoints documented, both actually wired)
         EndpointSpec {
             name: "Search (Fast)",
             path: "/search",
@@ -103,7 +105,7 @@ mod seeknow_full_integration {
             credits: 1,
             target_type: "email|username|phone|domain|ip|name",
             description: "Deep search (~40s), max coverage including slow sources",
-            wired: Wired::NotImplemented,
+            wired: Wired::Yes,
         },
         // Stealer (1 endpoint documented, removed after live-verified 404)
         EndpointSpec {
@@ -316,7 +318,7 @@ mod seeknow_full_integration {
     ];
 
     #[test]
-    fn endpoint_ledger_matches_the_24_documented_and_18_actually_wired() {
+    fn endpoint_ledger_matches_the_24_documented_and_19_actually_wired() {
         assert_eq!(
             ENDPOINTS.len(),
             24,
@@ -332,16 +334,16 @@ mod seeknow_full_integration {
             .filter(|e| e.wired == Wired::NotImplemented)
             .count();
         assert_eq!(
-            wired, 18,
-            "18 of the 24 documented endpoints are actually called"
+            wired, 19,
+            "19 of the 24 documented endpoints are actually called"
         );
         assert_eq!(
             removed_404, 1,
             "exactly /stealer was live-verified 404 and removed"
         );
         assert_eq!(
-            not_implemented, 5,
-            "/search/deep + the 3 /enterprise/discord/* + /status were never built"
+            not_implemented, 4,
+            "the 3 /enterprise/discord/* + /status were never built"
         );
         assert_eq!(wired + removed_404 + not_implemented, ENDPOINTS.len());
     }
@@ -350,7 +352,7 @@ mod seeknow_full_integration {
     fn credit_cost_calculation_covers_every_documented_endpoint() {
         // This counts documented cost regardless of wiring status — it
         // describes the vendor's published price list, not what HSE spends
-        // (HSE only ever pays the 18 `Wired::Yes` entries' costs).
+        // (HSE only ever pays the 19 `Wired::Yes` entries' costs).
         let free = ENDPOINTS.iter().filter(|e| e.credits == 0).count();
         let paid = ENDPOINTS.iter().filter(|e| e.credits > 0).count();
         assert_eq!(free, 2, "exactly 2 free endpoints (meta)");

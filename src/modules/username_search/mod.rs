@@ -27,34 +27,21 @@ use std::time::Duration;
 /// concurrent + 4.5s/probe + 334 sites that's ~47s — fits inside the
 /// 60s `max_timeout_ms` budget below with comfortable slack.
 const MAX_CONCURRENT_PROBES: usize = 32;
-/// Cap each profile-probe body read so a hostile site can't OOM the 32-way
-/// fan-out; 256 KiB is far more than any needle check needs.
-const BODY_PROBE_CAP: usize = 256 * 1024;
-
-/// Browser-shaped User-Agent for the per-site probes.
-///
-/// Until v1.2 the module used reqwest's default client UA
-/// (`huntsman-search-engine/x.y.z (+url)`), which Cloudflare /
-/// PerimeterX / Akamai-fronted social platforms routinely 403'd as a
-/// bot signal — meaning ~30% of the SITES table was returning Error
-/// even when the username existed. Sending a real Chrome-on-Android
-/// UA (chosen to match the `util::curl_client` fingerprint used by
-/// the paid OSINT modules) restores hit rate.
-const BROWSER_UA: &str = crate::util::curl::UA_MOBILE;
-
-/// Accept header — wide image/html/anything spec that matches what a
-/// browser sends. Some WAFs (notably Akamai Bot Manager) score
-/// requests with `accept: */*` as suspicious.
-const BROWSER_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;\
-    q=0.9,image/avif,image/webp,*/*;q=0.8";
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::urlencode;
+use crate::util::http::{RequestBuilderExt, urlencode};
+// Shared existence-probe plumbing — the browser headers, body cap, outcome
+// enum, per-site adapter, and the M6 zero-hit disambiguation are single-sourced
+// in `util::probe` (see `streaming_probe`, which shares the same primitives).
+use crate::util::probe::{
+    BODY_PROBE_CAP, BROWSER_ACCEPT, BROWSER_UA, ProbeResult, WithSite, inconclusive,
+};
 
 const SRC: &str = "username_search";
 
@@ -172,7 +159,7 @@ impl Module for UsernameSearch {
                 // the MAX_CONCURRENT_PROBES slots for ~34.5s and shrink coverage on
                 // exactly the flaky mobile links this module targets.
                 let probe = async {
-                    let resp = match req.send().await {
+                    let resp = match req.send_tagged(SRC).await {
                         Ok(r) => r,
                         Err(_) => return ProbeResult::Error,
                     };
@@ -315,7 +302,12 @@ impl Module for UsernameSearch {
         // the SPA's Entities table shows a single "N platforms" row for
         // the username itself, alongside the per-platform Url entities.
         if !found_names.is_empty() {
-            let mut summary = Entity::new(EntityKind::Username, username, 0.95, &ctx.scan_id);
+            let mut summary = Entity::new(
+                EntityKind::Username,
+                username,
+                confidence::VERY_HIGH_PLUSPLUS,
+                &ctx.scan_id,
+            );
             summary.tag("multi-platform");
 
             // Tag each category that had at least one hit.
@@ -381,18 +373,6 @@ impl Module for UsernameSearch {
     }
 }
 
-enum ProbeResult {
-    Found {
-        url: String,
-        /// Confidence to stamp on the emitted `Url`, tiered by detection rigor.
-        confidence: f64,
-        /// True when corroborated by a body marker (vs. a bare status code).
-        verified: bool,
-    },
-    NotFound,
-    Error,
-}
-
 /// Confidence and provenance for a positive hit, tiered by how rigorously a
 /// site's detection rule actually corroborates that the account exists.
 ///
@@ -414,36 +394,6 @@ fn detection_strength(detect: &Detect) -> (f64, bool) {
         Detect::StatusAndBody(..) | Detect::StatusAndNotBody(..)
     ))
 }
-
-/// True when a zero-hit run is *inconclusive* rather than a confirmed absence:
-/// nothing was found AND at least half the probes were blocked/unreachable, so
-/// most sites never gave a definitive answer. Pure (unit-tested) so the M6
-/// disambiguation policy is verifiable without the network.
-fn inconclusive(found: usize, errored: usize, total: usize) -> bool {
-    found == 0 && total > 0 && errored * 2 >= total
-}
-
-/// Pair the future's outcome with the site name + category for the
-/// consumer loop — avoids cloning the &'static strs into the async block.
-trait WithSite: Sized + std::future::Future<Output = ProbeResult> {
-    fn then_with_site(
-        self,
-        name: &'static str,
-        cat: &'static str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = (&'static str, &'static str, ProbeResult)> + Send>,
-    >
-    where
-        Self: Send + 'static,
-    {
-        Box::pin(async move {
-            let out = self.await;
-            (name, cat, out)
-        })
-    }
-}
-
-impl<F> WithSite for F where F: std::future::Future<Output = ProbeResult> + Send + 'static {}
 
 fn scan_text_for_keys(body: &str) {
     use crate::util::found_keys::{MAX_TOKEN, key_tokens};

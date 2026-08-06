@@ -77,6 +77,52 @@ use super::*;
     }
 
     #[test]
+    fn check_envelope_maps_success_false_to_a_module_error() {
+        // The load-bearing guard: HTTP 200 + success=false is a portal failure,
+        // not an empty answer. It must become a module error naming the caller,
+        // never `Ok(None)` (which reads as a confirmed negative downstream).
+        let resp: Response =
+            serde_json::from_str(r#"{"success":false,"error":{"message":"Resource not found"}}"#)
+                .expect("should succeed");
+        let err = check_envelope(resp, "test_register").expect_err("success=false must be an error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("test_register"),
+            "error must name the calling module: {msg}"
+        );
+        assert!(
+            msg.contains("success=false"),
+            "error must state the CKAN application failure: {msg}"
+        );
+    }
+
+    #[test]
+    fn check_envelope_passes_through_a_real_result_set() {
+        // success=true with a result: the caller gets the records back.
+        let resp: Response = serde_json::from_str(
+            r#"{"success":true,"result":{"total":1,"records":[{"_id":1,"Owner":"A"}]}}"#,
+        )
+        .expect("should succeed");
+        let res = check_envelope(resp, "test_register")
+            .expect("success=true must not error")
+            .expect("a present result set survives");
+        assert_eq!(res.total, Some(1));
+        assert_eq!(res.records.len(), 1);
+    }
+
+    #[test]
+    fn check_envelope_treats_absent_result_as_a_clean_empty() {
+        // A missing `result` (or `success` absent entirely) is the honest empty
+        // answer — Ok(None), NOT an error. This is what lets a genuine "no match"
+        // stay distinct from a portal failure.
+        for body in [r#"{"success":true}"#, "{}"] {
+            let resp: Response = serde_json::from_str(body).expect("should succeed");
+            let out = check_envelope(resp, "test_register").expect("no result is not an error");
+            assert!(out.is_none(), "absent result must be Ok(None) for {body}");
+        }
+    }
+
+    #[test]
     fn response_defaults_are_lenient() {
         // A bare/empty object must deserialize (every field is `#[serde(default)]`)
         // so a truncated or unexpected body degrades to "no findings", not a parse

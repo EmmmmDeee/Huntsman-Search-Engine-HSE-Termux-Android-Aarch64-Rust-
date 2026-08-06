@@ -37,7 +37,7 @@ pub(in crate::core::correlator) fn rule_au_070_connection_broker(
     // Only links at or above the Probable tier may *bind* identities — the same
     // floor AU-067 resolves under. Without it a single weak edge makes a common-name
     // node look like the linchpin of dozens of unrelated namesakes.
-    const MIN_CONF: f64 = 0.50;
+    const MIN_CONF: f64 = crate::core::relation::IDENTITY_LINK_MIN_CONF;
 
     let by_uid = context.by_uid();
     let ids = identity_uids(entities);
@@ -132,6 +132,44 @@ mod tests {
         assert_eq!(out[0].rule_id, "AU-070");
         // The finding references the broker and every brokered identity.
         for uid in [&hub.uid, &email.uid, &uname.uid, &person.uid] {
+            assert!(out[0].entity_uids.contains(uid));
+        }
+    }
+
+    #[test]
+    fn au070_escalates_to_high_brokering_five_identities() {
+        // A domain hub is the sole link binding FIVE identities → severity
+        // escalates Medium→High (n = broker.brokered.len() >= 5). The
+        // three-identity sibling above covers the base Medium arm. Identity
+        // kinds span Person/Email/Phone/Username, so a second Email reaches five.
+        let hub = mk(EntityKind::Domain, "x.com");
+        let email = mk(EntityKind::Email, "a@x.com");
+        let uname = mk(EntityKind::Username, "alice");
+        let person = mk(EntityKind::Person, "Bob");
+        let phone = mk(EntityKind::Phone, "+61400000000");
+        let email2 = mk(EntityKind::Email, "c@x.com");
+        let rels = [
+            edge(&email, &hub),
+            edge(&uname, &hub),
+            edge(&person, &hub),
+            edge(&phone, &hub),
+            edge(&email2, &hub),
+        ];
+        let ents = [
+            hub.clone(),
+            email.clone(),
+            uname.clone(),
+            person.clone(),
+            phone.clone(),
+            email2.clone(),
+        ];
+
+        let ctx = RuleContext::new(&ents);
+        let out = rule_au_070_connection_broker(&ctx, &rels, "s", 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rule_id, "AU-070");
+        assert_eq!(out[0].severity, Severity::High);
+        for uid in [&email.uid, &uname.uid, &person.uid, &phone.uid, &email2.uid] {
             assert!(out[0].entity_uids.contains(uid));
         }
     }

@@ -74,7 +74,7 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
             // WAL high-water mark: a never-checkpointed `-wal` can grow without
             // bound under a long-lived process. Report it so the operator can
             // see (and a TRUNCATE checkpoint at the next scan boundary resets it).
-            if let Ok(meta) = std::fs::metadata(format!("{db_path}-wal")) {
+            if let Ok(meta) = tokio::fs::metadata(format!("{db_path}-wal")).await {
                 let kib = meta.len() / 1024;
                 println!("  WAL size:   {kib} KiB");
                 if meta.len() > 64 * 1024 * 1024 {
@@ -254,8 +254,10 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
                     );
                     for i in &rejected {
                         // The upstream's own words, char-safely capped so a long
-                        // JSON body can't flood the terminal.
-                        let detail: String = i.detail.chars().take(160).collect();
+                        // JSON body can't flood the terminal — and the cap is
+                        // disclosed, so a clipped message is never mistaken for
+                        // the upstream's complete reply.
+                        let detail = i.detail_capped(160);
                         match i.likely_env_var {
                             Some(env) => println!("    - {:<20} {env}\n      {detail}", i.module),
                             None => println!("    - {:<20}\n      {detail}", i.module),
@@ -505,7 +507,7 @@ fn seeknow_unreachable_guidance(detail: &str) -> String {
 /// The loaded `HUNTSMAN_*` key names, sorted for stable, run-to-run-identical
 /// output — `loaded` is a `HashMap`, so an unsorted iteration would print a
 /// different order on every invocation against the identical environment
-/// (`docs/CONVENTIONS.md` §5: "no HashMap-iteration-order leaks into output"),
+/// (the standing "no HashMap-iteration-order leaks into output" rule),
 /// exactly the class of bug `rank_unset_keys` just below already guards
 /// against for the unset-keys listing.
 ///
@@ -669,12 +671,63 @@ fn format_weak_findings(anomalies: &[EvidenceAnomaly]) -> String {
     if anomalies.is_empty() {
         return "  no weak findings in the tracked window\n".to_string();
     }
-    const SHOWN: usize = 20;
     let mut out = format!(
         "  {} weak finding(s) — review before trusting as evidence:\n",
         anomalies.len()
     );
-    for a in anomalies.iter().take(SHOWN) {
+
+    // Per-module totals first. One module emitting at a flat floor dominates the
+    // raw list entirely, so the counts are the only place its share is legible:
+    // a real report showed 1346 findings whose every printed row was the same
+    // module at the same confidence, which reads as "1346 things to review"
+    // rather than "one module emits 1340 speculative pivots at its floor".
+    let mut tally: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for a in anomalies {
+        *tally.entry(a.module_name.as_str()).or_default() += 1;
+    }
+    // Sorted into a total order (count desc, then name) — a HashMap's iteration
+    // order is arbitrary, and a diagnostic report that reshuffles between runs on
+    // identical data is not one an operator can diff.
+    let mut counts: Vec<(&str, usize)> = tally.into_iter().collect();
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    out.push_str("    by module: ");
+    out.push_str(
+        &counts
+            .iter()
+            .map(|(m, n)| format!("{m} {n}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    out.push('\n');
+
+    // Then a sample, capped PER MODULE.
+    //
+    // The rows are weakest-first, and the weakest confidence any module routinely
+    // emits is a flat speculative floor — so an unbounded `take(SHOWN)` printed
+    // that one module's rows and nothing else, every time. The entities this
+    // section exists to surface (a breach-pool near-miss demoted to 0.25, say)
+    // were unreachable without lowering the threshold below the floor, which
+    // prints nothing at all. Capping per module guarantees every module with
+    // weak findings is represented.
+    const SHOWN: usize = 20;
+    const PER_MODULE: usize = 3;
+    let mut printed_per_module: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::new();
+    let mut printed = 0usize;
+    for a in anomalies {
+        if printed >= SHOWN {
+            break;
+        }
+        // Lookup only — the ROWS keep `anomalies`' own weakest-first order, so
+        // the map's arbitrary iteration order never reaches the output.
+        let seen = printed_per_module
+            .entry(a.module_name.as_str())
+            .or_insert(0);
+        if *seen >= PER_MODULE {
+            continue;
+        }
+        *seen += 1;
+        printed += 1;
         let observed = timefmt::ymd_utc(a.created_at).unwrap_or_else(|| "unknown date".to_string());
         // uid is a SHA-256 hex digest; the first 12 chars are enough to
         // cross-reference against `hse export`/`--output json` without
@@ -685,8 +738,11 @@ fn format_weak_findings(anomalies: &[EvidenceAnomaly]) -> String {
             a.confidence, a.module_name, short_uid, observed
         ));
     }
-    if anomalies.len() > SHOWN {
-        out.push_str(&format!("    … and {} more\n", anomalies.len() - SHOWN));
+    if anomalies.len() > printed {
+        out.push_str(&format!(
+            "    … and {} more (at most {PER_MODULE} shown per module)\n",
+            anomalies.len() - printed
+        ));
     }
     out
 }

@@ -16,6 +16,7 @@
 
 use super::*;
 
+use crate::core::confidence;
 use crate::core::entity::{Entity, EntityKind, Evidence};
 
 /// Detect a DeHashed-style breach CSV from its header row: an identity column
@@ -119,7 +120,10 @@ pub(super) fn parse_dehashed_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportS
             && !crate::core::validation::is_fragment_value(&EntityKind::Email, em)
             && seen.insert(format!("em:{em}"))
         {
-            push(Entity::new(EntityKind::Email, em, 0.72, sid), "breach");
+            push(
+                Entity::new(EntityKind::Email, em, confidence::ATTRIBUTED, sid),
+                "breach",
+            );
             stats.emails += 1;
         }
         if let Some(un) = get(user_i)
@@ -127,7 +131,10 @@ pub(super) fn parse_dehashed_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportS
             && !un.contains('@')
             && seen.insert(format!("un:{}", un.to_lowercase()))
         {
-            push(Entity::new(EntityKind::Username, un, 0.60, sid), "breach");
+            push(
+                Entity::new(EntityKind::Username, un, confidence::MEDIUM_PLUS, sid),
+                "breach",
+            );
             stats.usernames += 1;
         }
         if let Some(nm) = get(name_i)
@@ -135,7 +142,10 @@ pub(super) fn parse_dehashed_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportS
             && !crate::core::validation::is_placeholder_entity(&EntityKind::Person, nm)
             && seen.insert(format!("pn:{}", nm.to_lowercase()))
         {
-            push(Entity::new(EntityKind::Person, nm, 0.62, sid), "breach");
+            push(
+                Entity::new(EntityKind::Person, nm, confidence::NOTABLE, sid),
+                "breach",
+            );
             stats.persons += 1;
         }
         // Plaintext password — a cross-account reuse join-key; emit per row.
@@ -146,7 +156,7 @@ pub(super) fn parse_dehashed_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportS
                 stats.credentials += 1;
             }
             push(
-                Entity::new(EntityKind::Credential, pw, 0.58, sid),
+                Entity::new(EntityKind::Credential, pw, confidence::MEDIUM_SOLID, sid),
                 "plaintext-credential",
             );
         }
@@ -159,7 +169,7 @@ pub(super) fn parse_dehashed_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportS
                     stats.credentials += 1;
                 }
                 push(
-                    Entity::new(EntityKind::Credential, h, 0.60, sid),
+                    Entity::new(EntityKind::Credential, h, confidence::MEDIUM_PLUS, sid),
                     "password-hash",
                 );
             }
@@ -167,21 +177,30 @@ pub(super) fn parse_dehashed_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportS
         if let Some(ph) = get(phone_i).and_then(crate::core::validation::to_e164_au)
             && seen.insert(format!("ph:{ph}"))
         {
-            push(Entity::new(EntityKind::Phone, &ph, 0.62, sid), "breach");
+            push(
+                Entity::new(EntityKind::Phone, &ph, confidence::NOTABLE, sid),
+                "breach",
+            );
             stats.phones += 1;
         }
         if let Some(addr) = get(addr_i)
             && crate::core::validation::is_specific_residence(addr)
             && seen.insert(format!("ad:{}", addr.to_ascii_lowercase()))
         {
-            push(Entity::new(EntityKind::Address, addr, 0.58, sid), "breach");
+            push(
+                Entity::new(EntityKind::Address, addr, confidence::MEDIUM_SOLID, sid),
+                "breach",
+            );
             stats.addresses += 1;
         }
         if let Some(u) = get(url_i)
             && u.starts_with("http")
             && seen.insert(format!("u:{u}"))
         {
-            push(Entity::new(EntityKind::Url, u, 0.55, sid), "breach");
+            push(
+                Entity::new(EntityKind::Url, u, confidence::MEDIUM_HIGH, sid),
+                "breach",
+            );
             stats.urls += 1;
         }
 

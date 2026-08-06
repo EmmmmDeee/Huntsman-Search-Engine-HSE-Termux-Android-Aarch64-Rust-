@@ -41,6 +41,7 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "web_crawler";
 
@@ -59,6 +60,15 @@ pub(super) const BINARY_EXTENSIONS: &[&str] = &[
     "avi", "mov", "flv", "mpg", "mpeg", "mkv", "wmv", "exe", "bin", "dmg", "msi", "deb", "rpm",
     "woff", "woff2", "ttf", "eot", "otf", "css", "map",
 ];
+
+/// Cap on image URLs surfaced as EXIF leads from one crawl.
+///
+/// Each lead becomes a `Url` entity the expansion loop may hand to
+/// `modules::exif_geo`, which fetches up to 8 MiB per image — so an unbounded
+/// gallery page would turn one crawl into hundreds of downloads. The count of
+/// images actually seen is recorded on the crawl evidence either way, so hitting
+/// this cap is visible in the output rather than silent.
+const IMAGE_LEADS_CAP: usize = 40;
 
 const NOTABLE_PAGES_CAP: usize = 20;
 const NOTABLE_PAGE_TYPES: &[&str] = &["login_form", "file_upload", "admin_panel", "api_reference"];
@@ -86,6 +96,28 @@ pub(super) struct CrawlState {
     internal_links: usize,
     external_links: usize,
     pub(super) notable_pages: Vec<String>,
+    /// Image URLs discovered on crawled pages, in discovery order.
+    ///
+    /// These are NEVER enqueued for crawling — a JPEG is not a page — but each
+    /// is an EXIF lead: `modules::exif_geo` accepts an image `Url` target and
+    /// reads the GPS IFD out of it. Held here and emitted as entities in
+    /// [`build_entities`] so the expansion loop can dispatch them.
+    ///
+    /// Bounded by `IMAGE_LEADS_CAP`; the true discovered total lives in
+    /// [`CrawlState::image_urls_seen`], which is what the evidence reports.
+    pub(super) image_urls: Vec<String>,
+    /// EVERY distinct image URL the crawl saw, including those past
+    /// `IMAGE_LEADS_CAP`.
+    ///
+    /// Kept separately because `image_urls` saturates at the cap, so its length
+    /// cannot distinguish "found exactly 40 images" from "found 400 and kept
+    /// 40". Reporting only the capped figure would present a truncated list as a
+    /// complete one — the crawl's own output must state how many images it
+    /// actually found. Unbounded in principle but small in practice: link
+    /// extraction only ever sees `MAX_PAGES` bodies, each capped at `BODY_CAP`
+    /// bytes, and the module already keeps comparable sets for emails, phones
+    /// and external domains.
+    pub(super) image_urls_seen: HashSet<String>,
 }
 
 #[async_trait]
@@ -191,10 +223,12 @@ impl Module for WebCrawler {
             internal_links: 0,
             external_links: 0,
             notable_pages: Vec::new(),
+            image_urls: Vec::new(),
+            image_urls_seen: HashSet::new(),
         };
 
         fetch_robots(&ctx.http, &seed_url, &mut state.disallow_rules).await;
-        let leaks = probe_config_leaks(&ctx.http, seed_url.as_str(), &domain).await;
+        let leaks = probe_config_leaks(&ctx.http, seed_url.as_str(), &domain, &ctx.cancel).await;
 
         // Convert each discovered key into an ApiKey entity so it shows up
         // in the operator's scan results and triggers AU-021 correlation.
@@ -266,7 +300,7 @@ impl Module for WebCrawler {
                 continue;
             }
 
-            let resp = match ctx.http.get(&url).send().await {
+            let resp = match ctx.http.get(&url).send_tagged(SRC).await {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::debug!(url = %url, error = %e, "web_crawler: fetch failed");
@@ -453,6 +487,15 @@ fn build_entities(
     ev = ev.with_attr("subdomains_found", state.subdomains.len().to_string());
     ev = ev.with_attr("emails_found", state.emails.len().to_string());
     ev = ev.with_attr("phones_found", state.phones.len().to_string());
+    // Report the TRUE discovered total (not the capped, emitted count), so a
+    // crawl that hit `IMAGE_LEADS_CAP` shows how many images it actually found
+    // rather than presenting the truncated list as complete. When the total
+    // exceeds what was emitted, say so explicitly.
+    ev = ev.with_attr("image_leads_found", state.image_urls_seen.len().to_string());
+    ev = ev.with_attr("image_leads_emitted", state.image_urls.len().to_string());
+    if state.image_urls_seen.len() > state.image_urls.len() {
+        ev = ev.with_attr("image_leads_capped", IMAGE_LEADS_CAP.to_string());
+    }
 
     if !missing_headers.is_empty() {
         ev = ev.with_attr("missing_security_headers", missing_headers.join(", "));
@@ -470,13 +513,47 @@ fn build_entities(
     entity.add_evidence(ev);
     state.result.push(entity);
 
+    // Image URLs — EXIF leads for `modules::exif_geo`, which accepts an image
+    // `Url` target and reads the GPS IFD out of it. Emitted as entities because
+    // only a typed entity becomes a scan target: until now the crawler found
+    // these links and discarded them, so any coordinates embedded in a site's
+    // own photographs were lost. Discovery order is already deterministic (the
+    // crawl walks pages in queue order and links in document order), so no sort
+    // is needed to keep output stable.
+    //
+    // Confidence is LOW: the image was merely present on a crawled page, which
+    // is no evidence that it depicts — or was taken by — the subject. It sits
+    // above the expansion floor so the EXIF fetch runs, and below MEDIUM so
+    // nothing downstream reads the mere presence of a photo as a link. Whatever
+    // `exif_geo` recovers carries its own, independently-earned confidence.
+    let image_leads: Vec<Entity> = state
+        .image_urls
+        .iter()
+        .map(|u| {
+            let mut e = Entity::new(EntityKind::Url, u, confidence::LOW, scan_id);
+            e.tag(tags::WEB);
+            e.tag("image");
+            e.tag("exif-lead");
+            e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("Image linked from {domain} — EXIF-geolocation lead"),
+                )
+                .with_attr("discovered_by", "web_crawler")
+                .with_attr("source_domain", domain),
+            );
+            e
+        })
+        .collect();
+    state.result.extend(image_leads);
+
     // Subdomain entities — feed back into expansion. Sorted before emission so
     // the HashSet's randomised iteration order never leaks into entity order
     // (the same determinism-leak class fixed for `reddit_user`/`hacker_news`).
     let mut subs: Vec<&str> = state.subdomains.iter().map(String::as_str).collect();
     subs.sort_unstable();
     state.result.extend(subs.into_iter().map(|sub| {
-        let mut e = Entity::new(EntityKind::Domain, sub, 0.82, scan_id);
+        let mut e = Entity::new(EntityKind::Domain, sub, confidence::CORROBORATED, scan_id);
         e.tag(tags::WEB);
         e.tag(tags::SUBDOMAIN);
         e.add_evidence(

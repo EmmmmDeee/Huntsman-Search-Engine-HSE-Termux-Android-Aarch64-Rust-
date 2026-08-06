@@ -379,27 +379,6 @@ pub fn slugify(s: &str) -> String {
     slug
 }
 
-/// Char-boundary-safe truncation that appends `…` when the string exceeds
-/// `max_chars`. Uses char count, not byte length, so multibyte characters
-/// are never split.
-///
-/// ```
-/// use huntsman_search_engine::util::str_util::truncate_display;
-///
-/// assert_eq!(truncate_display("hello", 10), "hello");
-/// assert_eq!(truncate_display("hello world", 5), "hello…");
-/// ```
-#[must_use]
-pub fn truncate_display(s: &str, max_chars: usize) -> String {
-    let mut chars = s.chars();
-    let head: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{head}…")
-    } else {
-        head
-    }
-}
-
 /// Mask a secret (API key, token, password) for display: a 4+4 head/tail hint
 /// for a value long enough that 8 exposed characters are a small fraction,
 /// full masking otherwise. The single-sourced policy for every UI that shows a
@@ -495,6 +474,57 @@ pub fn whole_word_token_match(haystack: &str, needle: &str) -> bool {
         && tokens
             .iter()
             .all(|tok| words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
+}
+
+/// Minimum token length [`shares_whole_word_token`] considers a *name* rather
+/// than a bare initial: `"M"` in `"M MCLOUGHLIN"` must not license a match
+/// against an unrelated `"M SMITH"`.
+pub const MIN_SHARED_TOKEN: usize = 2;
+
+/// True when **at least one** alphanumeric token of `needle` (of at least
+/// [`MIN_SHARED_TOKEN`] chars) appears as a WHOLE WORD in `haystack`.
+///
+/// The permissive counterpart to [`whole_word_token_match`]: that one answers
+/// *"is this row the seeded subject?"* (every token must land), this one answers
+/// *"did this row match on the field we meant at all?"* (any real token will do).
+///
+/// # Why a floor gate exists at all
+/// CKAN's `datastore_search?q=` — behind every `util::ckan` register lookup — is
+/// a **full-text search across every column**, not a scoped name lookup. A query
+/// for `"shop"` also returns rows whose *address* reads `"Shop 4, 123 Main St"`
+/// (ubiquitous in Australian retail), and a query containing `"Sydney"` matches
+/// every row whose `Town_City` is Sydney. Those rows come back with a name that
+/// shares nothing with the seed, so emitting them attributes unrelated real
+/// parties — and their PII — to the subject. Callers use this to drop rows that
+/// matched some *other* column, while still keeping genuine partial name matches
+/// (a surname-only relative, a charity sharing one name word) that the stricter
+/// all-tokens predicate would wrongly reject.
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::shares_whole_word_token;
+///
+/// // Genuine partial name matches survive.
+/// assert!(shares_whole_word_token("Marshall Family Foundation", "smith family"));
+/// assert!(shares_whole_word_token("JUNES CARD & GIFT SHOP", "shop"));
+/// // A row that matched on some other column shares nothing.
+/// assert!(!shares_whole_word_token("Gavin Williams", "shop"));
+/// // Whole word, not substring.
+/// assert!(!shares_whole_word_token("Mildred Trust", "red"));
+/// // A bare initial is not a name token.
+/// assert!(!shares_whole_word_token("M Smith", "M Mcloughlin"));
+/// // An empty or initials-only needle matches nothing.
+/// assert!(!shares_whole_word_token("anything at all", ""));
+/// ```
+#[must_use]
+pub fn shares_whole_word_token(haystack: &str, needle: &str) -> bool {
+    let words: Vec<&str> = haystack
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect();
+    needle
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| t.len() >= MIN_SHARED_TOKEN)
+        .any(|tok| words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
 }
 
 #[cfg(test)]

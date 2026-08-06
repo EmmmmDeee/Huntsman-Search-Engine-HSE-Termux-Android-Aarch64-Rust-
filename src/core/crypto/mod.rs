@@ -105,7 +105,13 @@ fn base58check_valid(s: &str) -> bool {
 }
 
 /// BIP-173 bech32 polynomial checksum over 5-bit groups.
-fn bech32_polymod(values: &[u8]) -> u32 {
+///
+/// The one canonical copy of the checksum polynomial: this crypto module's
+/// address validator ([`bech32_checksum_valid`]) and the `nostr` module's
+/// `npub` encoder both drive it, so it is `pub(crate)` rather than duplicated —
+/// a second hand-copied generator constant table is exactly the kind of thing
+/// that silently drifts one bit and breaks a checksum on one path only.
+pub(crate) fn bech32_polymod(values: &[u8]) -> u32 {
     const GEN: [u32; 5] = [
         0x3b6a_57b2,
         0x2650_8e6d,

@@ -92,6 +92,45 @@ pub(crate) async fn scan_missing(s: &AppState, id: &str) -> Option<axum::respons
     }
 }
 
+/// Load a scan's entities and relations together, off the async reactor.
+///
+/// Both reads are synchronous SQLite under the global connection mutex, so they
+/// run on the blocking pool in ONE hop rather than stalling one of the ~2 async
+/// workers. This is THE place every read-only synthesis handler that needs the
+/// full graph (communities, trust, metrics, pivots, gaps, network, snake-svg)
+/// loads it — seven handlers had an identical hand-rolled `spawn_blocking`
+/// copy — so a new such handler cannot reintroduce a raw off-reactor copy or,
+/// worse, forget the hop and block a worker on the persisted read.
+///
+/// Returns the `(entities, relations)` pair, or the ready `Response` (500) to
+/// return on a store or join failure. The caller is expected to have already run
+/// the [`scan_missing`] 404 probe, exactly as the inline copies did.
+pub(super) async fn entities_and_relations(
+    s: &AppState,
+    id: &str,
+) -> Result<
+    (
+        Vec<crate::core::entity::Entity>,
+        Vec<crate::core::relation::Relation>,
+    ),
+    axum::response::Response,
+> {
+    let store = std::sync::Arc::clone(&s.store);
+    let id = id.to_string();
+    match tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id)?,
+            store.relations_for_scan(&id)?,
+        ))
+    })
+    .await
+    {
+        Ok(Ok(pair)) => Ok(pair),
+        Ok(Err(e)) => Err(internal_error(&e)),
+        Err(e) => Err(internal_error(&format!("query task failed: {e}"))),
+    }
+}
+
 /// True if the request opts into quarantined `candidate` entities via
 /// `?include_candidates=1|true|yes|on`. Default is to hide them.
 pub(crate) fn wants_candidates(params: &std::collections::HashMap<String, String>) -> bool {

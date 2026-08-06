@@ -382,6 +382,108 @@ fn source_count_ignores_stored_field_when_all_evidence_is_noncorroborating() {
 }
 
 #[test]
+fn promotion_source_alone_does_not_ground_entity() {
+    // A multipath_corroboration evidence item with no real source underneath
+    // must NOT push source_count above 1 — the grounding gate is the guard.
+    let mut e = Entity::new(EntityKind::Email, "x@example.com", 0.55, "s");
+    e.add_evidence(Evidence::new(
+        MULTIPATH_CORROBORATION_SOURCE,
+        "Seen on two graph paths",
+    ));
+    assert_eq!(
+        e.source_count(),
+        1,
+        "promotion source alone: no real source → gate blocks it, falls to fallback=1"
+    );
+}
+
+#[test]
+fn promotion_source_amplifies_grounded_entity() {
+    // One real source grounds the entity; a multipath_corroboration on top
+    // must count as a second distinct source (the gate is satisfied).
+    let mut e = Entity::new(EntityKind::Email, "x@example.com", 0.55, "s");
+    e.add_evidence(Evidence::new("haveibeenpwned", "Found in breach dataset"));
+    e.add_evidence(Evidence::new(
+        MULTIPATH_CORROBORATION_SOURCE,
+        "Seen on two graph paths",
+    ));
+    assert_eq!(
+        e.source_count(),
+        2,
+        "real_src=1 satisfies the gate → promotion source counts"
+    );
+}
+
+#[test]
+fn cross_scan_corroboration_gated_same_as_multipath() {
+    // CROSS_SCAN_CORROBORATION_SOURCE is the same tier as multipath — it is a
+    // promotion source and must be gated identically.
+    let mut solo = Entity::new(EntityKind::Email, "y@example.com", 0.55, "s");
+    solo.add_evidence(Evidence::new(
+        CROSS_SCAN_CORROBORATION_SOURCE,
+        "Matched across scan boundary",
+    ));
+    assert_eq!(
+        solo.source_count(),
+        1,
+        "no real source → gate blocks cross_scan"
+    );
+
+    let mut grounded = Entity::new(EntityKind::Email, "y@example.com", 0.55, "s");
+    grounded.add_evidence(Evidence::new("snusbase", "Found in leak"));
+    grounded.add_evidence(Evidence::new(
+        CROSS_SCAN_CORROBORATION_SOURCE,
+        "Matched across scan boundary",
+    ));
+    assert_eq!(
+        grounded.source_count(),
+        2,
+        "grounded entity → cross_scan counts"
+    );
+}
+
+#[test]
+fn derived_entity_needs_two_real_sources_for_promotion_to_count() {
+    // A `derived` entity (e.g. a name→email permutation) whose generator is a
+    // non-corroborating source (here: `name_intel`) contributes real=0.
+    // The derived gate requires real≥2, so promotion is blocked even when a
+    // promotion pass has also fired. Two independent corroborating sources are
+    // needed before promotion is allowed to amplify the count.
+    let mut one_real = Entity::new(EntityKind::Email, "guess@example.com", 0.55, "s");
+    one_real.tag("derived");
+    one_real.add_evidence(Evidence::new("name_intel", "Permuted from name")); // non-corroborating
+    one_real.add_evidence(Evidence::new(
+        MULTIPATH_CORROBORATION_SOURCE,
+        "Seen on two graph paths",
+    ));
+    // name_intel is non-corroborating, so real=0, gate(derived)=false → promotion blocked
+    assert_eq!(
+        one_real.source_count(),
+        1,
+        "derived with 1 non-corroborating source + promotion: gate still blocks"
+    );
+
+    // Now add a genuine real source — that satisfies the derived gate (real >= 2
+    // counting only corroborating; name_intel is non-corroborating so a real
+    // observed source is the second corroborating one).
+    let mut two_real = Entity::new(EntityKind::Email, "guess@example.com", 0.55, "s");
+    two_real.tag("derived");
+    two_real.add_evidence(Evidence::new("name_intel", "Permuted from name")); // non-corroborating
+    two_real.add_evidence(Evidence::new("haveibeenpwned", "Confirmed in breach")); // real
+    two_real.add_evidence(Evidence::new("snusbase", "Confirmed in second breach")); // real
+    two_real.add_evidence(Evidence::new(
+        MULTIPATH_CORROBORATION_SOURCE,
+        "Seen on two graph paths",
+    ));
+    // real=2 (hibp + snusbase), derived gate: real >= 2 → grounded → promo counts
+    assert_eq!(
+        two_real.source_count(),
+        3,
+        "derived with 2 real sources satisfies the gate → promotion also counts"
+    );
+}
+
+#[test]
 fn c_eff_clamped_to_one() {
     let mut e = email("a@b.com");
     e.confidence = 0.99;
@@ -1929,5 +2031,104 @@ mod prop {
             // Monotonic non-decreasing in the source count.
             prop_assert!(c_n1 + 1e-12 >= c_n, "c_eff not monotonic: {} -> {}", c_n, c_n1);
         }
+    }
+}
+
+// ── Identity vs display: one person, one node ───────────────────────────────
+
+/// The observed fragmentation, pinned. One person spelled three ways by three
+/// sources produced three UIDs — and therefore three graph nodes, each holding
+/// only its own source's evidence.
+#[test]
+fn person_case_and_spacing_variants_resolve_to_one_identity() {
+    let variants = [
+        "Jeremy Stewart",
+        "jeremy stewart",
+        "JEREMY STEWART",
+        "Jeremy  Stewart",
+        "  Jeremy Stewart  ",
+    ];
+    let uids: std::collections::BTreeSet<String> = variants
+        .iter()
+        .map(|v| Entity::new(EntityKind::Person, *v, 0.7, "s").uid)
+        .collect();
+    assert_eq!(
+        uids.len(),
+        1,
+        "one person must be one node; got {} distinct UIDs from {variants:?}",
+        uids.len()
+    );
+}
+
+/// Identity folding must not cost display quality: the dossier still shows the
+/// name as the source spelled it. This is the reason the fold lives in
+/// `derive_uid` rather than in `normalise`, whose output IS the display value.
+#[test]
+fn folding_identity_does_not_downcase_the_displayed_name() {
+    let e = Entity::new(EntityKind::Person, "Jeremy Stewart", 0.7, "s");
+    assert_eq!(e.value, "Jeremy Stewart", "display value is preserved");
+    assert_eq!(e.raw_value, "Jeremy Stewart");
+}
+
+/// The symptom this actually cures. The engine derives the SEED's UID from the
+/// operator's target string via `derive_uid`, while modules derive theirs from
+/// whatever spelling they emit. When those disagree the seed is an isolated node
+/// and every derived edge attaches to a twin it cannot reach — "the subject has
+/// no derived connections yet", on a graph holding thousands of edges.
+#[test]
+fn a_seed_and_the_entity_its_modules_emit_are_the_same_node() {
+    // Exactly what `core::engine` does for the seed.
+    let typed = "Jeremy Stewart";
+    let seed_uid = derive_uid(&EntityKind::Person, &normalise(&EntityKind::Person, typed));
+    // What a module emits after a breach source lower-cased it.
+    let emitted = Entity::new(EntityKind::Person, "jeremy stewart", 0.7, "s");
+    assert_eq!(
+        seed_uid, emitted.uid,
+        "the seed must BE the node its own modules populate"
+    );
+}
+
+/// Organisations carry the same free-text spelling variance as people.
+#[test]
+fn organisation_case_variants_resolve_to_one_identity() {
+    let a = Entity::new(EntityKind::Organisation, "Acme Corp", 0.7, "s");
+    let b = Entity::new(EntityKind::Organisation, "ACME  CORP", 0.7, "s");
+    assert_eq!(a.uid, b.uid);
+    assert_eq!(
+        a.value, "Acme Corp",
+        "display is still the original spelling"
+    );
+}
+
+/// SSIDs are case-SENSITIVE by IEEE 802.11 — folding them would merge two
+/// genuinely different networks, which for a geolocation tool is a false
+/// identity claim about a physical place.
+#[test]
+fn ssids_are_never_folded_because_case_is_significant() {
+    let a = Entity::new(EntityKind::Ssid, "HomeNet", 0.7, "s");
+    let b = Entity::new(EntityKind::Ssid, "homenet", 0.7, "s");
+    assert_ne!(a.uid, b.uid, "two distinct networks must stay distinct");
+}
+
+/// Every kind that already canonicalises in `normalise` must hash exactly as it
+/// did before the fold existed — the change is scoped to free-text name kinds,
+/// and a silent UID shift elsewhere would strand persisted entities.
+#[test]
+fn identifier_kinds_keep_their_pre_existing_uids() {
+    for (kind, value) in [
+        (EntityKind::Email, "Alice@Example.COM"),
+        (EntityKind::Username, "@Alice"),
+        (EntityKind::Domain, "Example.com."),
+        (EntityKind::IpAddress, "1.1.1.1"),
+        (EntityKind::Url, "https://example.com/a"),
+    ] {
+        let normalised = normalise(&kind, value);
+        // The fold must be a no-op for these: UID == hash of the normalised
+        // value with no further transformation.
+        assert_eq!(
+            Entity::new(kind.clone(), value, 0.7, "s").uid,
+            derive_uid(&kind, &normalised),
+            "{kind} UID must be unchanged by identity folding"
+        );
     }
 }

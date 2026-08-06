@@ -109,9 +109,10 @@ pub(in crate::core::correlator) fn rule_au_120_monetized_creator_exposure(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
 
     fn creator_profile(url: &str, platform: &str, cat: &str, verified: bool) -> Entity {
-        let mut e = Entity::new(EntityKind::Url, url, 0.9, "s");
+        let mut e = Entity::new(EntityKind::Url, url, confidence::VERY_HIGH_PLUS, "s");
         e.tag(format!("platform:{platform}"));
         e.tag(format!("cat:{cat}"));
         e.tag(if verified {

@@ -174,20 +174,9 @@ pub fn resolve_key(ctx_key: Option<&str>) -> &str {
 /// fix this mirrors, in `see_know::extract`).
 #[must_use]
 pub fn key_fingerprint(key: &str) -> String {
-    let k = key.trim();
-    if k.is_empty() {
-        return "see-know:(no key)".to_string();
-    }
-    if k.len() <= 18 {
-        return format!("see-know:{k}");
-    }
-    let head: String = k.chars().take(13).collect();
-    let tail: String = {
-        let mut t: Vec<char> = k.chars().rev().take(6).collect();
-        t.reverse();
-        t.into_iter().collect()
-    };
-    format!("see-know:{head}\u{2026}{tail}")
+    // Shared implementation in `util::key_fingerprint`; this fixes see-know's
+    // label and truncation widths (show ≤18-byte keys whole, else 13…6).
+    crate::util::key_fingerprint::fingerprint("see-know", key, 18, 13, 6)
 }
 
 /// Body signature of a key that cannot retrieve data — so the whole scan should
@@ -226,9 +215,22 @@ enum Terminal {
     RateLimited,
 }
 
-/// True if either `credits_remaining` meter (top-level, or nested under `data`)
-/// reads exactly 0 — the JSON-scoped quota signal.
+/// True when a body signals true daily-quota exhaustion: a zero
+/// `credits_remaining` meter (top-level, or nested under `data`) on a body that
+/// is NOT a success. A `success:true` body is excluded even at zero credits —
+/// it still carries the data of the paid call that spent the last credit, so it
+/// must be returned rather than dropped (see the body comment).
 fn credits_exhausted(v: &Value) -> bool {
+    // A SUCCESSFUL body that merely spent its last credit still carries its
+    // data (`success:true, results:[...], credits_remaining:0`). Treating that
+    // as exhaustion returned `Ok(Value::Null)` from `parse_response`, silently
+    // dropping the results of a paid call — the final successful lookup before
+    // the quota ran out lost its answer. True exhaustion is a NON-success body
+    // (the 429 / error envelope) reporting zero credits, so only classify the
+    // zero-credit meter as terminal when the body is not a success.
+    if v.get("success").and_then(Value::as_bool) == Some(true) {
+        return false;
+    }
     let zero = |o: &Value| o.get("credits_remaining").and_then(Value::as_i64) == Some(0);
     zero(v) || v.get("data").is_some_and(zero)
 }

@@ -282,3 +282,57 @@ use super::*;
 
         assert_eq!(sessions.read().len(), 5, "under the cap, nothing is evicted");
     }
+
+    #[tokio::test]
+    async fn stop_forwarder_propagates_a_session_stop_to_the_iteration() {
+        // The documented behaviour that per-iteration cancel isolation must not
+        // regress: an operator `DELETE /api/v1/live/{id}` (which cancels the
+        // SESSION handle) must still abort the in-flight iteration. The
+        // forwarder bridges the session stop into the iteration's own handle.
+        let session = CancelHandle::new();
+        let iter = CancelHandle::new();
+        let fwd = spawn_stop_forwarder(session.clone(), iter.clone());
+
+        assert!(!iter.is_cancelled(), "iteration is live before any stop");
+        session.cancel();
+
+        // Poll generously (many multiples of STOP_FORWARD_POLL) so the test is
+        // not timing-fragile on a loaded CI runner.
+        let mut propagated = false;
+        for _ in 0..100 {
+            if iter.is_cancelled() {
+                propagated = true;
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            propagated,
+            "a session stop must propagate to the in-flight iteration's cancel handle"
+        );
+        fwd.abort();
+    }
+
+    #[tokio::test]
+    async fn an_iteration_cancel_never_latches_the_session() {
+        // The core of the bug this fix closes: the engine's per-iteration
+        // wall-time watchdog cancels the ITERATION handle. That must NEVER latch
+        // the session's one-way flag — otherwise a single wall-time-bounded
+        // iteration would silently end the whole live session. The forwarder is
+        // strictly one-directional (session → iteration), so cancelling the
+        // iteration leaves the session untouched.
+        let session = CancelHandle::new();
+        let iter = CancelHandle::new();
+        let fwd = spawn_stop_forwarder(session.clone(), iter.clone());
+
+        // Simulate the wall-time watchdog firing on this iteration.
+        iter.cancel();
+        // Wait well past several poll intervals; the session must stay live.
+        sleep(Duration::from_millis(350)).await;
+        assert!(
+            !session.is_cancelled(),
+            "an iteration-level cancel (e.g. a per-scan wall-time timeout) must \
+             not latch the session — the live loop has to keep re-scanning"
+        );
+        fwd.abort();
+    }

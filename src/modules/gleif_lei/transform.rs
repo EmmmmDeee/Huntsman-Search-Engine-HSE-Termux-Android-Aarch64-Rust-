@@ -1,5 +1,6 @@
 //! Pure transform: GLEIF API response → entities.
 
+use crate::core::confidence;
 use crate::core::entity::{Entity, EntityKind, Evidence};
 
 use super::{
@@ -90,7 +91,7 @@ pub(super) fn records_to_entities(resp: &GleifResp, query: &str, scan_id: &str) 
             }
             Some("INACTIVE" | "ANNULLED") => {
                 org.tag("inactive");
-                org.confidence = (org.confidence - 0.10).max(0.10);
+                org.confidence = confidence::derived_from(org.confidence);
             }
             _ => {}
         }
@@ -158,7 +159,12 @@ pub(super) fn records_to_entities(resp: &GleifResp, query: &str, scan_id: &str) 
             // Inline Coordinates via city lookup.
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(&loc) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.62, scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::NOTABLE,
+                    scan_id,
+                );
                 c.tag("addr-derived");
                 c.tag("geoint");
                 c.tag("gleif");

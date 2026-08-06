@@ -192,6 +192,7 @@ pub(in crate::modules::search_engines) fn extract_surrounding_text(
     let end = ceil_char_boundary(html, (pos + anchor.len() + 300).min(html.len()));
     let start = floor_char_boundary(html, pos.saturating_sub(300));
     let start = floor_char_boundary(html, skip_straddling_inline_block(html, start).min(end));
+    let start = floor_char_boundary(html, skip_straddling_tag_attrs(html, start).min(end));
     strip_tags(&html[start..end], max_len)
 }
 
@@ -259,6 +260,52 @@ fn skip_straddling_inline_block(html: &str, pos: usize) -> usize {
             }
         }
     }
+}
+
+/// If `pos` sits inside SOME tag's `<…>` span — the nearest `<` within
+/// [`STRADDLE_LOOKBACK`] before `pos` has no real (quote-aware) `>` before
+/// `pos` — returns the byte offset just past that tag's own closing `>`
+/// instead. Unlike [`skip_straddling_inline_block`] (svg/style/script, whose
+/// BODY must also be skipped), a void/self-closing element like `<img>` has no
+/// body: skipping past its own `>` is sufficient.
+///
+/// A long attribute value — Brave's favicon `<img src="data:image/…;base64,
+/// <hundreds of chars>" loading="lazy" onerror="…"/>` — can easily exceed the
+/// ±300-char `extract_surrounding_text` window. When the window's start lands
+/// mid-attribute, `strip_tags`'s `in_tag` state starts FALSE (it never saw the
+/// truncated-away `<img`), so it treats the base64/attribute text as ordinary
+/// visible content. A real Brave capture demonstrated exactly this: an
+/// icon-only result with no title text fell back to this window, which began
+/// mid-way through the PRECEDING result's favicon `<img>` tag, and its raw
+/// base64 `src` leaked into the extracted text as if it were the title.
+///
+/// Single quote-aware forward pass from the tag's own `<`, mirroring
+/// `strip_tags`'s own `in_tag`/`attr_quote` state machine so the two can never
+/// disagree about where a tag really ends.
+fn skip_straddling_tag_attrs(html: &str, pos: usize) -> usize {
+    let lookback = floor_char_boundary(html, pos.saturating_sub(STRADDLE_LOOKBACK));
+    let Some(open_rel) = html[lookback..pos].rfind('<') else {
+        return pos;
+    };
+    let tag_start = lookback + open_rel;
+    let mut attr_quote: Option<char> = None;
+    let mut idx = tag_start + 1;
+    for c in html[tag_start + 1..].chars() {
+        match attr_quote {
+            Some(q) if c == q => attr_quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => attr_quote = Some(c),
+            None if c == '>' => {
+                // The tag's real close: before `pos` means it closed cleanly
+                // and `pos` sits outside it; at-or-after `pos` means `pos`
+                // fell inside the tag's own span — resume just past this `>`.
+                return if idx < pos { pos } else { idx + c.len_utf8() };
+            }
+            None => {}
+        }
+        idx += c.len_utf8();
+    }
+    html.len()
 }
 
 pub(in crate::modules::search_engines) fn extract_snippet_near(
@@ -343,9 +390,30 @@ pub(in crate::modules::search_engines) fn strip_tags(html: &str, max_len: usize)
     let cleaned = strip_inline_blocks(html);
     let mut out = String::with_capacity(max_len);
     let mut in_tag = false;
+    // Track the quote char of an attribute value while inside a tag, so a '>'
+    // that appears INSIDE a quoted attribute — a JS `onerror="a=>b"`, a data URI,
+    // a URL query, a `srcset` — does not prematurely close the tag and leak the
+    // rest of it as visible text. This was dumping Brave's favicon `<img
+    // src="…base64…" loading="lazy" onerror="…"/>` base64 `src` straight into the
+    // result `page_title`. The same class of stray-'>' desync that
+    // `strip_inline_blocks` already defends svg/style/script (and now comments)
+    // against, handled here for every other tag.
+    let mut attr_quote: Option<char> = None;
     for c in cleaned.chars() {
         if out.len() >= max_len {
             break;
+        }
+        if in_tag {
+            match attr_quote {
+                Some(q) if c == q => attr_quote = None,
+                Some(_) => {}
+                None => match c {
+                    '"' | '\'' => attr_quote = Some(c),
+                    '>' => in_tag = false,
+                    _ => {}
+                },
+            }
+            continue;
         }
         match c {
             '<' => {
@@ -353,22 +421,20 @@ pub(in crate::modules::search_engines) fn strip_tags(html: &str, max_len: usize)
                 // (`</h3><span>`) do not fuse into "Facebookhttps…". The same
                 // `!ends_with(' ') && !is_empty()` guards used for whitespace
                 // prevent a leading or doubled space.
-                if !in_tag && !out.is_empty() && !out.ends_with(' ') {
+                if !out.is_empty() && !out.ends_with(' ') {
                     out.push(' ');
                 }
                 in_tag = true;
             }
-            '>' => in_tag = false,
-            _ if !in_tag => {
-                if c.is_whitespace() {
-                    if !out.ends_with(' ') && !out.is_empty() {
-                        out.push(' ');
-                    }
-                } else {
-                    out.push(c);
+            // A '>' outside any tag is stray markup, never visible text — drop it
+            // (the previous scanner never emitted a bare '>' either).
+            '>' => {}
+            _ if c.is_whitespace() => {
+                if !out.ends_with(' ') && !out.is_empty() {
+                    out.push(' ');
                 }
             }
-            _ => {}
+            _ => out.push(c),
         }
     }
     decode_html_entities(out.trim())
@@ -388,13 +454,41 @@ fn strip_inline_blocks(html: &str) -> Cow<'_, str> {
     // `to_ascii_lowercase().contains(ascii_needle)` is exactly ASCII-CI matching,
     // so this is byte-for-byte equivalent while turning two per-call full-buffer
     // allocations into zero on the overwhelmingly common no-block path.
-    if find_ascii_ci(html, "<svg").is_none()
+    if !html.contains("<!--")
+        && find_ascii_ci(html, "<svg").is_none()
         && find_ascii_ci(html, "<style").is_none()
         && find_ascii_ci(html, "<script").is_none()
     {
         return Cow::Borrowed(html);
     }
     let mut s = html.to_string();
+
+    // HTML comments first. Svelte-rendered SERPs (Brave) are dense with hydration
+    // markers (`<!--[-->`, `<!--]-->`), and a comment carrying a stray '>' would
+    // desync the tag scanner and leak the following markup — the same failure the
+    // svg/style/script strip below prevents. Comments delimit with `<!-- … -->`
+    // (not `</tag>`), so they get their own pass; an unclosed comment drops to
+    // end-of-string. Literal markers (comments are not case-folded).
+    if s.contains("<!--") {
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        let mut from = 0;
+        while let Some(rel) = s[from..].find("<!--") {
+            let start = from + rel;
+            let end = match s[start + 4..].find("-->") {
+                Some(r) => start + 4 + r + 3,
+                None => s.len(),
+            };
+            ranges.push((start, end));
+            if end >= s.len() {
+                break;
+            }
+            from = end;
+        }
+        for (start, end) in ranges.into_iter().rev() {
+            s.replace_range(start..end, " ");
+        }
+    }
+
     for tag in ["svg", "style", "script"] {
         let open = format!("<{tag}");
         let close = format!("</{tag}>");
@@ -464,6 +558,23 @@ pub(in crate::modules::search_engines) fn extract_key_phrase(snippet: &str, quer
     } else {
         String::new()
     }
+}
+
+/// The query-matching phrase to DISPLAY for a web result: the informative clause
+/// from the `snippet` when one overlaps the query, otherwise a query-overlapping
+/// fragment of the `title`. Empty when neither shares a query term — there is then
+/// nothing worth quoting. Used by the `hse query` renderer to show WHY a result
+/// matched, since the raw snippet is not printed on that path.
+pub(in crate::modules::search_engines) fn display_key_phrase(
+    title: &str,
+    snippet: &str,
+    query: &str,
+) -> String {
+    let from_snippet = extract_key_phrase(snippet, query);
+    if !from_snippet.is_empty() {
+        return from_snippet;
+    }
+    extract_key_phrase(title, query)
 }
 
 /// Semantic similarity between two strings using character bigram

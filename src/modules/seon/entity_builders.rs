@@ -141,7 +141,12 @@ fn carrier_entity(carrier: &str, phone: &str, scan_id: &str) -> Option<Entity> {
     if carrier.len() < 2 {
         return None;
     }
-    let mut oe = Entity::new(EntityKind::Organisation, carrier, 0.62, scan_id);
+    let mut oe = Entity::new(
+        EntityKind::Organisation,
+        carrier,
+        confidence::NOTABLE,
+        scan_id,
+    );
     oe.tag("seon");
     oe.tag("carrier");
     oe.add_evidence(
@@ -338,14 +343,19 @@ fn domain_registration_entities(reg: &DomainRegistration, who: &str, scan_id: &s
     if let Some(name) =
         nonempty(&reg.full_name).filter(|n| n.len() >= 4 && n.contains(' ') && !is_redacted(n))
     {
-        let mut pe = Entity::new(EntityKind::Person, name, 0.72, scan_id);
+        let mut pe = Entity::new(EntityKind::Person, name, confidence::ATTRIBUTED, scan_id);
         pe.tag("seon");
         pe.tag(tags::REGISTRANT);
         pe.add_evidence(ev());
         out.push(pe);
     }
     if let Some(org) = nonempty(&reg.company_name).filter(|n| n.len() >= 3 && !is_redacted(n)) {
-        let mut oe = Entity::new(EntityKind::Organisation, org, 0.72, scan_id);
+        let mut oe = Entity::new(
+            EntityKind::Organisation,
+            org,
+            confidence::ATTRIBUTED,
+            scan_id,
+        );
         oe.tag("seon");
         oe.tag(tags::REGISTRANT);
         oe.add_evidence(ev());

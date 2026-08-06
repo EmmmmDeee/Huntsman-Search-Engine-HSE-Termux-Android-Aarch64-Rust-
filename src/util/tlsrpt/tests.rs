@@ -57,3 +57,77 @@ fn parse_skips_malformed_mailto() {
     let r = parse("v=TLSRPTv1; rua=mailto:bogus,mailto:ok@ex.com").expect("should succeed");
     assert_eq!(r.emails, vec!["ok@ex.com".to_string()]);
 }
+
+#[test]
+fn report_entities_builds_gated_email_and_domain_at_named_confidence() {
+    use crate::core::confidence;
+    use crate::core::entity::EntityKind;
+
+    let out = report_entities(
+        &["v=TLSRPTv1; rua=mailto:tlsrpt@fabrikam.example,https://tlsrpt.azurewebsites.net/report"
+            .to_string()],
+        "fabrikam.example",
+        "scan",
+        "unit_test",
+    );
+
+    let email = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("mailto rua → Email");
+    assert_eq!(email.value, "tlsrpt@fabrikam.example");
+    assert!(email.has_tag("dns") && email.has_tag("tlsrpt-report"));
+    // The single canonical rung both DNS transports now share — no bare literal.
+    assert!((email.confidence - confidence::ATTRIBUTED).abs() < 1e-9);
+
+    let dom = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain)
+        .expect("https rua → Domain lead");
+    assert_eq!(dom.value, "tlsrpt.azurewebsites.net");
+    assert!((dom.confidence - confidence::MEDIUM_SOLID).abs() < 1e-9);
+}
+
+#[test]
+fn report_entities_gates_infrastructure_mailboxes_and_self_endpoints() {
+    use crate::core::entity::EntityKind;
+
+    // A provider-desk reporting mailbox is dropped (not clustered as the subject),
+    // and an endpoint host equal to the queried domain is not re-emitted — the
+    // parity contract both DNS transports document.
+    let out = report_entities(
+        &["v=TLSRPTv1; rua=mailto:sts-reports@google.com,https://google.com/tlsrpt".to_string()],
+        "google.com",
+        "scan",
+        "unit_test",
+    );
+    assert!(out.iter().all(|e| e.kind != EntityKind::Email), "infra mailbox gated");
+    assert!(
+        out.iter().all(|e| e.value != "google.com"),
+        "self-reporting endpoint host is not re-emitted"
+    );
+}
+
+#[test]
+fn report_entities_takes_the_first_parseable_record_and_ignores_the_rest() {
+    use crate::core::entity::EntityKind;
+
+    // A leading non-TLSRPT TXT is skipped; the first TLSRPT record wins and a
+    // second TLSRPT record is ignored (one valid record per domain).
+    let out = report_entities(
+        &[
+            "v=spf1 -all".to_string(),
+            "v=TLSRPTv1; rua=mailto:first@ex.com".to_string(),
+            "v=TLSRPTv1; rua=mailto:second@ex.com".to_string(),
+        ],
+        "ex.com",
+        "scan",
+        "unit_test",
+    );
+    let emails: Vec<&str> = out
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert_eq!(emails, vec!["first@ex.com"]);
+}

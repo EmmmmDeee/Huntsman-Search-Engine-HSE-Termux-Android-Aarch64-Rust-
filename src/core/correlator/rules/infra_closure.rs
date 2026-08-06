@@ -48,7 +48,7 @@ pub(in crate::core::correlator) fn rule_au_116_infrastructure_pivot_closure(
     let entities = context.entities();
     /// Weakest edge confidence that still counts as a real infrastructure link
     /// (mirrors the Probable floor the identity-graph rules resolve under).
-    const MIN_CONF: f64 = 0.50;
+    const MIN_CONF: f64 = crate::core::relation::IDENTITY_LINK_MIN_CONF;
     const MIN_DOMAINS: usize = 3;
     const MIN_IPS: usize = 2;
 
@@ -189,13 +189,14 @@ pub(in crate::core::correlator) fn rule_au_116_infrastructure_pivot_closure(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::relation::{Relation, RelationKind};
 
     fn dom(v: &str) -> Entity {
-        Entity::new(EntityKind::Domain, v, 0.8, "s")
+        Entity::new(EntityKind::Domain, v, confidence::HIGH_PLUSPLUS, "s")
     }
     fn ip(v: &str) -> Entity {
-        Entity::new(EntityKind::IpAddress, v, 0.8, "s")
+        Entity::new(EntityKind::IpAddress, v, confidence::HIGH_PLUSPLUS, "s")
     }
     fn edge(from: &Entity, to: &Entity, kind: RelationKind) -> Relation {
         Relation::new(from.uid.clone(), to.uid.clone(), kind, 0.8, "s")

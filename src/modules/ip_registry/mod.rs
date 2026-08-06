@@ -269,7 +269,12 @@ fn build_registrant_org(contacts: &[RdapContact], ip: &str, scan_id: &str) -> Op
         .map(|s| s.trim().to_string())
         .filter(|s| s.len() >= 3)?;
 
-    let mut oe = Entity::new(EntityKind::Organisation, &name, 0.72, scan_id);
+    let mut oe = Entity::new(
+        EntityKind::Organisation,
+        &name,
+        confidence::ATTRIBUTED,
+        scan_id,
+    );
     oe.tag("rdap");
     oe.tag("ip-registrant");
     oe.add_evidence(
@@ -285,10 +290,17 @@ fn build_abuse_email(contacts: &[RdapContact], ip: &str, scan_id: &str) -> Optio
     let vc = find_contact(contacts, "abuse")?.vcard_array.as_ref()?;
     let email = crate::modules::whois::vcard_field(vc, "email")?;
     let email = email.trim();
-    if !crate::util::extract::looks_like_email(email) {
+    // An RDAP abuse contact resolves to a registrar/provider desk by
+    // construction, but it is still free-text-sourced — a role-local-part or
+    // provider-domain address (hostmaster@, dns@cloudflare.com) is
+    // infrastructure contact, never the subject's own mail. Same gate
+    // whois/dns_intel already apply to their own abuse/admin contacts.
+    if !crate::util::extract::looks_like_email(email)
+        || crate::util::domains::is_infrastructure_email(email)
+    {
         return None;
     }
-    let mut ee = Entity::new(EntityKind::Email, email, 0.78, scan_id);
+    let mut ee = Entity::new(EntityKind::Email, email, confidence::STRONG, scan_id);
     ee.tag("rdap-contact");
     ee.tag("role:abuse");
     ee.add_evidence(
@@ -361,7 +373,12 @@ fn build_asn_entities(body: &AsnResp, asn: u64, scan_id: &str) -> Vec<Entity> {
     let asn_str = asn.to_string();
     let mut result = Vec::new();
 
-    let mut entity = Entity::new(EntityKind::Asn, &asn_label, 0.92, scan_id);
+    let mut entity = Entity::new(
+        EntityKind::Asn,
+        &asn_label,
+        confidence::AUTHORITATIVE,
+        scan_id,
+    );
     entity.tag("registered");
     let mut ev = Evidence::new(SRC, format!("ASN {asn_label} registry record"))
         .with_attr("asn_number", &asn_str);
@@ -456,9 +473,17 @@ fn contact_emails(
     emails
         .unwrap_or_default()
         .iter()
-        .filter(|email| crate::util::extract::looks_like_email(email))
+        .filter(|email| {
+            crate::util::extract::looks_like_email(email)
+                && !crate::util::domains::is_infrastructure_email(email)
+        })
         .map(|email| {
-            let mut e = Entity::new(EntityKind::Email, email.as_str(), 0.78, scan_id);
+            let mut e = Entity::new(
+                EntityKind::Email,
+                email.as_str(),
+                confidence::STRONG,
+                scan_id,
+            );
             e.tag("asn-contact");
             e.tag(format!("role:{role}"));
             e.add_evidence(

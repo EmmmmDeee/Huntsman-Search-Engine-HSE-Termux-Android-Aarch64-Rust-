@@ -165,7 +165,7 @@ fn historical_subdomains(rows: &[Row], domain: &str, scan_id: &str) -> Vec<Entit
         .into_iter()
         .take(MAX_HISTORICAL_SUBDOMAINS)
         .map(|host| {
-            let mut e = Entity::new(EntityKind::Domain, &host, 0.55, scan_id);
+            let mut e = Entity::new(EntityKind::Domain, &host, confidence::MEDIUM_HIGH, scan_id);
             e.tag("archived");
             e.tag("wayback-historical");
             e.add_evidence(Evidence::new(

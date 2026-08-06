@@ -86,7 +86,7 @@ pub(super) fn build_entities(user: GtUser, scan_id: &str) -> Vec<Entity> {
     out.push(e);
 
     // Profile URL.
-    let mut u = Entity::new(EntityKind::Url, &profile_url, 0.78, scan_id);
+    let mut u = Entity::new(EntityKind::Url, &profile_url, confidence::STRONG, scan_id);
     u.tag("gitea");
     u.add_evidence(ev());
     out.push(u);
@@ -131,8 +131,12 @@ pub(super) fn build_entities(user: GtUser, scan_id: &str) -> Vec<Entity> {
 
     // Personal website URL + Domain.
     if let Some(site) = user.website.as_deref() {
-        for mut e in profile_kit::website_url_and_domain(site, confidence::HIGH_PLUS, 0.62, scan_id)
-        {
+        for mut e in profile_kit::website_url_and_domain(
+            site,
+            confidence::HIGH_PLUS,
+            confidence::NOTABLE,
+            scan_id,
+        ) {
             e.tag("gitea");
             if e.kind == EntityKind::Domain {
                 e.tag("derived");

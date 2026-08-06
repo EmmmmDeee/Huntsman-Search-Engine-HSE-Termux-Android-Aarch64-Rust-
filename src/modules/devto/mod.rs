@@ -19,6 +19,9 @@
 //! independent of HN, Reddit, and Lobste.rs, it adds genuine cross-service
 //! diversity to AU-045. Official, stable, keyless.
 
+#[cfg(test)]
+mod tests;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -164,7 +167,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
     if let Some(ref gh) = user.github_username
         && !gh.is_empty()
     {
-        let mut g = Entity::new(EntityKind::Username, gh, 0.82, scan_id);
+        let mut g = Entity::new(EntityKind::Username, gh, confidence::CORROBORATED, scan_id);
         g.tag("github");
         g.tag("devto-pivot");
         g.add_evidence(
@@ -183,7 +186,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
     {
         let tw_clean = tw.trim_start_matches('@');
         if !tw_clean.is_empty() {
-            let mut t = Entity::new(EntityKind::Username, tw_clean, 0.78, scan_id);
+            let mut t = Entity::new(EntityKind::Username, tw_clean, confidence::STRONG, scan_id);
             t.tag("twitter");
             t.tag("devto-pivot");
             t.add_evidence(
@@ -203,7 +206,12 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
 
     // Personal website URL + Domain extraction.
     if let Some(ref site) = user.website_url {
-        for mut e in profile_kit::website_url_and_domain(site, 0.72, confidence::HIGH, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(
+            site,
+            confidence::ATTRIBUTED,
+            confidence::HIGH,
+            scan_id,
+        ) {
             e.tag("devto");
             match e.kind {
                 EntityKind::Domain => {
@@ -234,7 +242,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
 
     // Location → coarse Address (geo-hint, not a precise address).
     if let Some(ref loc) = user.location
-        && let Some(mut a) = profile_kit::location_address(loc, 0.35, scan_id)
+        && let Some(mut a) = profile_kit::location_address(loc, confidence::TENTATIVE, scan_id)
     {
         a.tag("devto");
         a.tag("self-asserted");
@@ -251,7 +259,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
             .with_attr("devto_user", &user.username),
         );
         result.push(a);
-        if let Some(mut c) = profile_kit::location_coordinates(loc, 0.25, scan_id) {
+        if let Some(mut c) = profile_kit::location_coordinates(loc, confidence::VERY_LOW, scan_id) {
             c.tag("devto");
             c.add_evidence(
                 Evidence::new(
@@ -267,7 +275,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
     // Bio/summary: extract emails and URLs.
     if let Some(bio) = user.summary.as_deref() {
         for email in crate::util::extract::emails(bio) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.72, scan_id);
+            let mut e = Entity::new(EntityKind::Email, &email, confidence::ATTRIBUTED, scan_id);
             e.tag("devto");
             e.tag("public-profile");
             e.add_evidence(
@@ -289,132 +297,4 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
     }
 
     result.entities
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_user(
-        username: &str,
-        name: Option<&str>,
-        github: Option<&str>,
-        twitter: Option<&str>,
-        website: Option<&str>,
-        location: Option<&str>,
-    ) -> DevUser {
-        DevUser {
-            username: username.to_string(),
-            name: name.map(str::to_string),
-            summary: None,
-            twitter_username: twitter.map(str::to_string),
-            github_username: github.map(str::to_string),
-            website_url: website.map(str::to_string),
-            location: location.map(str::to_string),
-            joined_at: Some("Jan 1, 2020".to_string()),
-        }
-    }
-
-    #[test]
-    fn builds_username_entity_confirmed_on_devto() {
-        let user = make_user("devuser", None, None, None, None, None);
-        let ents = build_entities(user, "scan-dt-001");
-        let u = ents
-            .iter()
-            .find(|e| e.kind == EntityKind::Username && e.value == "devuser");
-        assert!(u.is_some(), "must emit Username entity");
-        assert!((u.expect("should succeed").confidence - confidence::EXPERT).abs() < 0.01);
-        assert!(u.expect("should succeed").has_tag("devto"));
-    }
-
-    #[test]
-    fn emits_person_from_full_name() {
-        let user = make_user("devuser", Some("Alice Developer"), None, None, None, None);
-        let ents = build_entities(user, "scan-dt-002");
-        let p = ents.iter().find(|e| e.kind == EntityKind::Person);
-        assert!(p.is_some(), "must emit Person from multi-word name");
-        assert_eq!(p.expect("should succeed").value, "Alice Developer");
-    }
-
-    #[test]
-    fn no_person_from_single_word_name() {
-        let user = make_user("devuser", Some("devuser"), None, None, None, None);
-        let ents = build_entities(user, "scan-dt-003");
-        assert!(
-            ents.iter().all(|e| e.kind != EntityKind::Person),
-            "single-token name must not produce a Person entity"
-        );
-    }
-
-    #[test]
-    fn emits_github_and_twitter_pivots() {
-        let user = make_user(
-            "devuser",
-            None,
-            Some("devuser-gh"),
-            Some("devtw"),
-            None,
-            None,
-        );
-        let ents = build_entities(user, "scan-dt-004");
-        let gh = ents
-            .iter()
-            .find(|e| e.kind == EntityKind::Username && e.value == "devuser-gh");
-        assert!(
-            gh.is_some() && gh.expect("should succeed").has_tag("github"),
-            "must emit GitHub pivot"
-        );
-        let tw = ents
-            .iter()
-            .find(|e| e.kind == EntityKind::Username && e.value == "devtw");
-        assert!(
-            tw.is_some() && tw.expect("should succeed").has_tag("twitter"),
-            "must emit Twitter pivot"
-        );
-    }
-
-    #[test]
-    fn emits_website_url_and_domain() {
-        let user = make_user(
-            "devuser",
-            None,
-            None,
-            None,
-            Some("https://devuser.io"),
-            None,
-        );
-        let ents = build_entities(user, "scan-dt-005");
-        assert!(
-            ents.iter().any(|e| e.kind == EntityKind::Url),
-            "must emit website URL"
-        );
-        assert!(
-            ents.iter()
-                .any(|e| e.kind == EntityKind::Domain && e.value == "devuser.io"),
-            "must emit domain from website"
-        );
-    }
-
-    #[test]
-    fn emits_address_from_location() {
-        let user = make_user("devuser", None, None, None, None, Some("Sydney, AU"));
-        let ents = build_entities(user, "scan-dt-006");
-        let a = ents.iter().find(|e| e.kind == EntityKind::Address);
-        assert!(a.is_some(), "must emit Address from location field");
-        assert!(a.expect("should succeed").has_tag("self-asserted"));
-    }
-
-    #[test]
-    fn strips_at_from_twitter_username() {
-        let user = make_user("devuser", None, None, Some("@twitterhandle"), None, None);
-        let ents = build_entities(user, "scan-dt-007");
-        let tw = ents
-            .iter()
-            .find(|e| e.kind == EntityKind::Username && e.has_tag("twitter"));
-        assert_eq!(
-            tw.map(|e| e.value.as_str()),
-            Some("twitterhandle"),
-            "must strip leading @ from twitter_username"
-        );
-    }
 }

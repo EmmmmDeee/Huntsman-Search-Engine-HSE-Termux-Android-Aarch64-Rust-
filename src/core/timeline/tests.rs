@@ -1,6 +1,18 @@
 use super::*;
     use crate::core::entity::{Entity, EntityKind, Evidence};
 
+    #[test]
+    fn utc_date_known_and_edge_instants() {
+        // The canonical epoch->civil inverse shared by structured_id /
+        // discord_snowflake. Cover the Unix epoch, the Discord epoch, a leap
+        // day, and a pre-1970 negative (exercising the div_euclid floor).
+        assert_eq!(utc_date(0), "1970-01-01");
+        assert_eq!(utc_date(1_420_070_400), "2015-01-01");
+        assert_eq!(utc_date(1_577_836_800), "2020-01-01");
+        assert_eq!(utc_date(951_782_400), "2000-02-29");
+        assert_eq!(utc_date(-1), "1969-12-31");
+    }
+
     fn entity_with_attrs(
         kind: EntityKind,
         value: &str,

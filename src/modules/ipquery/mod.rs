@@ -271,7 +271,12 @@ fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
 
         // Confidence recalibrated 0.68 → 0.58 — see ip_geo.rs.
         if let (Some(lat), Some(lon)) = (loc.latitude, loc.longitude)
-            && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, 0.58, scan_id)
+            && let Some(mut ce) = crate::util::geo::coarse_provider_coords(
+                lat,
+                lon,
+                confidence::MEDIUM_SOLID,
+                scan_id,
+            )
         {
             ce.tag("ipquery");
             crate::util::geo::tag_au_state(&mut ce, lat, lon);
@@ -284,7 +289,7 @@ fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
         let country = loc.country.as_deref().unwrap_or("");
         if !city.is_empty() && !country.is_empty() {
             let addr = crate::util::geo::compose_address(city, state, country);
-            let mut ae = Entity::new(EntityKind::Address, &addr, 0.62, scan_id);
+            let mut ae = Entity::new(EntityKind::Address, &addr, confidence::NOTABLE, scan_id);
             ae.tag("ipquery");
             if cc.eq_ignore_ascii_case("AU") {
                 ae.tag("country:AU");

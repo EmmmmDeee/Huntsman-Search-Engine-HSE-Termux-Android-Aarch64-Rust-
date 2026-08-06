@@ -28,6 +28,40 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use super::{Relation, RelationKind};
 use crate::core::entity::{Entity, EntityKind};
 
+/// The confidence floor below which a signal is too weak to *bind* two
+/// identities together into one conclusion. Two related uses share it:
+///
+/// - **Edge/path binding** — every graph primitive in this module that fuses
+///   entities on the strength of a path between them
+///   ([`resolve_identity_clusters`], [`connection_brokers`], and, since the
+///   audit that added it, [`disjoint_pathways_in`] and [`connection_templates`])
+///   refuses to bind across a link weaker than this.
+/// - **Entity-confidence gate** — a small number of correlator rules
+///   (`identity::cluster` AU-002, `identity::account` AU-080) apply the same
+///   numeric floor directly to an entity's own confidence before folding it
+///   into an identity conclusion, rather than to a path's weakest edge. Same
+///   bar — "trustworthy enough to build an identity conclusion on" — applied
+///   at a different granularity.
+///
+/// Single-sourced here after **ten** call sites across the correlator rules
+/// (and `cli::scan::dossier::analysis`) each independently declared their own
+/// `const MIN_CONF: f64 = 0.50;` — identical in value and purpose, several
+/// explicitly commented as "mirroring AU-067's `MIN_CONF`", but copy-pasted
+/// rather than shared. A future recalibration had to find and change all ten
+/// (or silently miss one); this makes that one constant, not eleven.
+///
+/// Several of those comments additionally called this "the Probable floor" —
+/// which is imprecise and worth correcting here rather than propagating
+/// further: the crate's actual classification-tier boundary,
+/// [`Classification::PROBABLE_MIN`](crate::core::entity::Classification::PROBABLE_MIN),
+/// is `0.40`, not `0.50`. This constant happens to equal
+/// [`crate::core::confidence::MEDIUM`] numerically, but is declared
+/// independently and on purpose: it answers a different question ("is this
+/// link trustworthy enough to fuse two identities?") from either of those,
+/// and a future change to the generic confidence-tier ladder should not
+/// silently move this floor along with it.
+pub const IDENTITY_LINK_MIN_CONF: f64 = 0.50;
+
 /// The relation graph as an undirected adjacency list: each node UID maps to its
 /// incident `(neighbour UID, edge kind, edge confidence)` edges. Borrows from the
 /// `relations`/`entities` it is built from (see [`undirected_adjacency`]).
@@ -227,11 +261,21 @@ pub fn identity_paths(
     // Identity endpoints in sorted UID order — each pair is computed once from
     // the smaller UID, fixing both orientation and shortest-path tie-breaks.
     let identity_uids = identity_uids(entities);
-    let identity_set: HashSet<&str> = identity_uids.iter().copied().collect();
 
     let mut out: Vec<IdentityPath> = Vec::new();
 
-    for &start in &identity_uids {
+    // Bound the O(identities²) sweep to a deterministic pair-count prefix, exactly
+    // as the AU-062/AU-063 sibling sweeps do (see [`IDENTITY_PAIR_PROBE_CAP`]). A
+    // permutation-heavy `full_name` scan derives hundreds of name-permutation
+    // identity entities; uncapped this both burns CPU and — via AU-060 (transitive
+    // correlation, which persists one correlation per emitted path) — floods the
+    // result with links. `identity_uids` is sorted, so stopping at the cap yields
+    // a byte-identical deterministic prefix.
+    let mut probes = 0usize;
+    'outer: for (i, &start) in identity_uids.iter().enumerate() {
+        if probes >= IDENTITY_PAIR_PROBE_CAP {
+            break;
+        }
         // BFS from `start`, recording each node's shortest-path predecessor edge.
         let mut dist: HashMap<&str, usize> = HashMap::new();
         let mut prev: HashMap<&str, (&str, RelationKind, f64)> = HashMap::new();
@@ -254,11 +298,14 @@ pub fn identity_paths(
         }
 
         // Emit a path to every identity destination with a *larger* UID (the
-        // canonical pair direction), reachable within the hop budget.
-        for &dest in &identity_uids {
-            if dest <= start || !identity_set.contains(dest) {
-                continue;
+        // canonical pair direction), reachable within the hop budget. The sorted
+        // suffix `[i + 1..]` is exactly the larger-UID identities; counting each
+        // as one probe bounds the inner sweep to the same deterministic cap.
+        for &dest in &identity_uids[i + 1..] {
+            if probes >= IDENTITY_PAIR_PROBE_CAP {
+                break 'outer;
             }
+            probes += 1;
             let Some(&hops) = dist.get(dest) else {
                 continue;
             };
@@ -335,6 +382,15 @@ pub const IDENTITY_PAIR_PROBE_CAP: usize = 6_000;
 /// Deterministic — the adjacency is sorted (fixing each greedy shortest path) and
 /// edges are removed by value. Each pathway is a `Vec<PathStep>` leaving
 /// `from_uid`; the final step's `to_uid` is `to_uid`.
+///
+/// Only edges with confidence `>= min_confidence` may appear in a returned
+/// pathway — pass `0.0` to search over every edge regardless of confidence.
+/// Added alongside [`IDENTITY_LINK_MIN_CONF`] once an audit found this search
+/// had no floor at all: unlike [`resolve_identity_clusters`] and
+/// [`connection_brokers`] (which have always taken an explicit
+/// `min_confidence`), a caller here had no way to exclude the exact class of
+/// damped, low-confidence edge — e.g. a same-surname kinship guess — that
+/// [`identity_paths`]' own weakest-link floor was added to keep out of AU-060.
 pub fn disjoint_pathways(
     entities: &[Entity],
     relations: &[Relation],
@@ -342,12 +398,13 @@ pub fn disjoint_pathways(
     to_uid: &str,
     max_hops: usize,
     max_paths: usize,
+    min_confidence: f64,
 ) -> Vec<Vec<PathStep>> {
     if from_uid == to_uid || max_hops == 0 || max_paths == 0 {
         return Vec::new();
     }
     let adj = sorted_confined_adjacency(entities, relations);
-    disjoint_pathways_in(&adj, from_uid, to_uid, max_hops, max_paths)
+    disjoint_pathways_in(&adj, from_uid, to_uid, max_hops, max_paths, min_confidence)
 }
 
 /// [`disjoint_pathways`] over a **prebuilt** [`sorted_confined_adjacency`] — for a
@@ -363,6 +420,7 @@ pub fn disjoint_pathways_in(
     to_uid: &str,
     max_hops: usize,
     max_paths: usize,
+    min_confidence: f64,
 ) -> Vec<Vec<PathStep>> {
     if from_uid == to_uid || max_hops == 0 || max_paths == 0 {
         return Vec::new();
@@ -370,6 +428,16 @@ pub fn disjoint_pathways_in(
     // A mutable working copy: the greedy search removes each route's edges so the
     // next route must be edge-disjoint.
     let mut adj = adj.clone();
+    // Drop every edge below the floor ONCE, before any route is searched for —
+    // not after. A route built from a sub-floor edge and filtered out afterward
+    // would still have consumed that edge (removed by `remove_pair_edges` on the
+    // way to being discarded), silently starving a later, more valid route of a
+    // connection it could have used. Filtering the adjacency up front means no
+    // returned pathway can ever contain a link below `min_confidence`, matching
+    // the guarantee `resolve_identity_clusters` already makes the same way.
+    for es in adj.values_mut() {
+        es.retain(|&(_, _, c)| c >= min_confidence);
+    }
 
     let mut pathways: Vec<Vec<PathStep>> = Vec::new();
     for _ in 0..max_paths {
@@ -611,10 +679,19 @@ fn render_template(node_kinds: &[String], rel_strs: &[&str]) -> String {
 /// pathway template, grouped with the identity pairs it linked. Deterministic,
 /// sorted by template. The basis for AU-064 (a template repeated *within* a scan)
 /// and the engine's cross-scan template store (repeated *across* scans).
+///
+/// Only paths with weakest-link confidence `>= min_confidence` may contribute
+/// to a template — pass `0.0` to generalise over every path regardless of
+/// confidence. Added alongside [`IDENTITY_LINK_MIN_CONF`]: `path.min_confidence`
+/// was already computed by [`identity_paths`] but went unchecked here, so a
+/// route built entirely from damped, low-confidence edges could be
+/// "generalised" into a proven attribution pattern on the strength of nothing
+/// but repetition — repeating a weak coincidence does not make it strong.
 pub fn connection_templates(
     entities: &[Entity],
     relations: &[Relation],
     max_hops: usize,
+    min_confidence: f64,
 ) -> Vec<ConnectionTemplate> {
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
     let kind_of = |uid: &str| -> String {
@@ -628,6 +705,9 @@ pub fn connection_templates(
     for path in identity_paths(entities, relations, max_hops) {
         if path.hops < 2 {
             continue; // a direct one-hop link is not a multi-step route to generalise
+        }
+        if path.min_confidence < min_confidence {
+            continue; // a weak path repeated is still weak, not a proven pattern
         }
         let mut node_kinds: Vec<String> = Vec::with_capacity(path.hops + 1);
         node_kinds.push(kind_of(&path.from_uid));
@@ -898,6 +978,7 @@ pub fn connection_brokers<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::relation::Relation;
 
     #[test]
@@ -934,8 +1015,8 @@ mod tests {
 
     #[test]
     fn resolve_identity_clusters_empty_without_links() {
-        let a = Entity::new(EntityKind::Email, "a@x.com", 0.8, "s");
-        let b = Entity::new(EntityKind::Username, "bob", 0.8, "s");
+        let a = Entity::new(EntityKind::Email, "a@x.com", confidence::HIGH_PLUSPLUS, "s");
+        let b = Entity::new(EntityKind::Username, "bob", confidence::HIGH_PLUSPLUS, "s");
         assert!(resolve_identity_clusters(&[a, b], &[], 4, 0.0).is_empty());
     }
 
@@ -1150,8 +1231,8 @@ mod tests {
 
     #[test]
     fn strongest_path_none_when_unreachable() {
-        let a = Entity::new(EntityKind::Email, "a@x.com", 0.8, "s");
-        let b = Entity::new(EntityKind::Username, "bob", 0.8, "s");
+        let a = Entity::new(EntityKind::Email, "a@x.com", confidence::HIGH_PLUSPLUS, "s");
+        let b = Entity::new(EntityKind::Username, "bob", confidence::HIGH_PLUSPLUS, "s");
         assert!(strongest_path(&[a.clone(), b.clone()], &[], &a.uid, &b.uid, 4).is_none());
     }
 
@@ -1367,7 +1448,7 @@ mod tests {
             rel(&m2, &b, RelationKind::IdentifiedBy, 0.8),
         ];
         let ents = [a.clone(), b.clone(), m1, m2];
-        let paths = disjoint_pathways(&ents, &rels, &a.uid, &b.uid, 4, 4);
+        let paths = disjoint_pathways(&ents, &rels, &a.uid, &b.uid, 4, 4, 0.0);
         assert_eq!(paths.len(), 2, "two independent routes");
         for p in &paths {
             assert_eq!(p.len(), 2);
@@ -1389,7 +1470,7 @@ mod tests {
         ];
         let ents = [a.clone(), b.clone(), m];
         assert_eq!(
-            disjoint_pathways(&ents, &rels, &a.uid, &b.uid, 4, 4).len(),
+            disjoint_pathways(&ents, &rels, &a.uid, &b.uid, 4, 4, 0.0).len(),
             1
         );
     }
@@ -1407,10 +1488,10 @@ mod tests {
             rel(&m2, &b, RelationKind::IdentifiedBy, 0.8),
         ];
         let ents = [a.clone(), b.clone(), m1, m2];
-        let forward = disjoint_pathways(&ents, &rels, &a.uid, &b.uid, 4, 4);
+        let forward = disjoint_pathways(&ents, &rels, &a.uid, &b.uid, 4, 4, 0.0);
         let mut reversed = rels.clone();
         reversed.reverse();
-        let backward = disjoint_pathways(&ents, &reversed, &a.uid, &b.uid, 4, 4);
+        let backward = disjoint_pathways(&ents, &reversed, &a.uid, &b.uid, 4, 4, 0.0);
         assert_eq!(forward, backward, "pathways independent of edge order");
     }
 
@@ -1429,7 +1510,7 @@ mod tests {
             rel(&e2, &d2, RelationKind::BelongsToDomain, 0.8),
             rel(&d2, &p2, RelationKind::RegisteredBy, 0.8),
         ];
-        let cts = connection_templates(&[e1, d1, p1, e2, d2, p2], &rels, 4);
+        let cts = connection_templates(&[e1, d1, p1, e2, d2, p2], &rels, 4, 0.0);
         assert_eq!(cts.len(), 1, "both pairs share one canonical template");
         assert_eq!(cts[0].pairs.len(), 2);
         assert!(cts[0].template.contains("email") && cts[0].template.contains("person"));
@@ -1569,6 +1650,155 @@ mod tests {
                     (Some(x), Some(y)) => prop_assert!((x - y).abs() < 1e-9),
                     (None, None) => {}
                     _ => prop_assert!(false, "reachability must be symmetric"),
+                }
+            }
+        }
+
+        /// A graph strategy whose edge confidence spans BOTH sides of an
+        /// arbitrary floor (unlike [`graph`], whose edges are all `>= 0.5` by
+        /// construction) — needed to exercise `disjoint_pathways_in`'s
+        /// `min_confidence` floor, which [`graph`]'s narrower range could never
+        /// falsify (every edge it generates already clears 0.5).
+        /// `(from_index, to_index, kind_selector, confidence_selector)` — raw
+        /// edge tuple shape generated by [`graph_with_wide_confidence`] below,
+        /// factored out so the `prop_map` closure doesn't trip
+        /// `clippy::type_complexity`.
+        type RawEdge = (usize, usize, u8, u8);
+
+        fn graph_with_wide_confidence() -> impl Strategy<Value = (Vec<Entity>, Vec<Relation>)> {
+            let kinds = proptest::collection::vec(0u8..6, 2..6);
+            (
+                kinds,
+                proptest::collection::vec((0usize..6, 0usize..6, 0u8..11, 0u8..10), 0..10),
+            )
+                .prop_map(|(ks, raw_edges): (Vec<u8>, Vec<RawEdge>)| {
+                    let mk = |i: usize, k: u8| {
+                        let kind = match k {
+                            0 => EntityKind::Email,
+                            1 => EntityKind::Username,
+                            2 => EntityKind::Person,
+                            3 => EntityKind::Phone,
+                            4 => EntityKind::Domain,
+                            _ => EntityKind::IpAddress,
+                        };
+                        Entity::new(kind, format!("n{i}"), 0.8, "s")
+                    };
+                    let mut ents: Vec<Entity> = Vec::new();
+                    ents.push(mk(0, 0));
+                    ents.push(mk(1, 1));
+                    for (i, &k) in ks.iter().enumerate() {
+                        ents.push(mk(i + 2, k));
+                    }
+                    let kind_of = |k: usize| match k % 11 {
+                        0 => RelationKind::SubdomainOf,
+                        1 => RelationKind::BelongsToDomain,
+                        2 => RelationKind::HostedOn,
+                        3 => RelationKind::ResolvesTo,
+                        4 => RelationKind::RegisteredBy,
+                        5 => RelationKind::CoLocatedWith,
+                        6 => RelationKind::DerivedFrom,
+                        7 => RelationKind::IdentifiedBy,
+                        8 => RelationKind::AliasOf,
+                        9 => RelationKind::LocatedAt,
+                        _ => RelationKind::AssociatedWith,
+                    };
+                    let n = ents.len();
+                    // Confidence spans 0.05..0.95 — deliberately straddling
+                    // IDENTITY_LINK_MIN_CONF (0.50) on both sides, unlike
+                    // `graph()`'s all-strong 0.5..0.83 range.
+                    let rels = raw_edges
+                        .into_iter()
+                        .filter(|(a, b, _, _)| a != b && *a < n && *b < n)
+                        .map(|(a, b, k, c)| {
+                            rel(
+                                &ents[a],
+                                &ents[b],
+                                kind_of(k as usize),
+                                0.05 + (c as f64) / 11.0,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    (ents, rels)
+                })
+        }
+
+        proptest! {
+            /// The floor invariant `disjoint_pathways_in` exists to guarantee:
+            /// no returned pathway may contain an edge weaker than the
+            /// `min_confidence` it was called with. Checked at three arbitrary
+            /// floors (0.0 — the historical no-floor behaviour; 0.5 —
+            /// `IDENTITY_LINK_MIN_CONF`; 0.9 — a near-total exclusion) over the
+            /// same wide-confidence random graph, so the property holds
+            /// regardless of where the floor is drawn, not just at the one value
+            /// the rules happen to use today.
+            #[test]
+            fn disjoint_pathways_in_never_returns_a_sub_floor_edge(
+                (ents, rels) in graph_with_wide_confidence(),
+                floor in prop::sample::select(vec![0.0f64, 0.5, 0.9]),
+            ) {
+                let (a, b) = (ents[0].uid.clone(), ents[1].uid.clone());
+                let adj = sorted_confined_adjacency(&ents, &rels);
+                // `graph_with_wide_confidence` can generate *parallel* edges — two
+                // relations with the same (from, to, kind) but different
+                // confidence, e.g. HostedOn fired twice at 0.05 and 0.5045. A
+                // `PathStep` records only `{kind, to_uid}`, not which parallel
+                // edge was actually traversed, so this can't check "the edge this
+                // step used clears the floor" by picking any one matching edge
+                // (an ascending-sorted `.find()` would always surface the
+                // *weakest* duplicate and falsely fail even when the search
+                // genuinely walked the strong one). The property this can
+                // actually verify — and the one `disjoint_pathways_in`'s
+                // filter-before-search actually guarantees — is weaker but
+                // sound: for every step, *some* real edge for that (from, to,
+                // kind) clears the floor.
+                let has_floor_clearing_edge = |from: &str, to: &str, kind: RelationKind| -> bool {
+                    adj.get(from)
+                        .into_iter()
+                        .flatten()
+                        .any(|&(nbr, k, c)| nbr == to && k == kind && c >= floor - 1e-9)
+                };
+                for pathway in disjoint_pathways_in(&adj, &a, &b, 4, 4, floor) {
+                    let mut cur = a.as_str();
+                    for step in &pathway {
+                        prop_assert!(
+                            has_floor_clearing_edge(cur, &step.to_uid, step.kind),
+                            "pathway stepped {cur} -> {} ({:?}) but no real edge for \
+                             that hop clears the floor {floor}",
+                            step.to_uid,
+                            step.kind
+                        );
+                        cur = &step.to_uid;
+                    }
+                }
+            }
+
+            /// The same guarantee for [`connection_templates`]: no generalised
+            /// template may be built from a path whose weakest edge is below the
+            /// floor it was called with.
+            #[test]
+            fn connection_templates_never_generalises_a_sub_floor_path(
+                (ents, rels) in graph_with_wide_confidence(),
+                floor in prop::sample::select(vec![0.0f64, 0.5, 0.9]),
+            ) {
+                // Reconstruct, per pair the templates report, whether a path at
+                // or above the floor actually exists — connection_templates must
+                // never report a pair unless identity_paths independently agrees
+                // a strong-enough path connects it.
+                for ct in connection_templates(&ents, &rels, 4, floor) {
+                    for (from_uid, to_uid) in &ct.pairs {
+                        let strong_path_exists = identity_paths(&ents, &rels, 4).into_iter().any(
+                            |p| {
+                                &p.from_uid == from_uid
+                                    && &p.to_uid == to_uid
+                                    && p.min_confidence >= floor - 1e-9
+                            },
+                        );
+                        prop_assert!(
+                            strong_path_exists,
+                            "template reported pair ({from_uid}, {to_uid}) with no \
+                             path clearing the floor {floor}"
+                        );
+                    }
                 }
             }
         }

@@ -91,6 +91,8 @@ fn corroboration_needs_a_confirmed_subject_fix_and_proximity() {
     // anchor (only ≥0.60 confirmed fixes do).
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     gps.tag("geoint");
+    // Anchoring source (handset GNSS) — a real person fix, not infrastructure geo.
+    gps.add_evidence(Evidence::new("signal_radar", "gps"));
     let weak = Entity::new(EntityKind::Coordinates, "-20.0,145.0", 0.4, "s");
 
     let subject = subject_locations(&[gps.clone(), weak.clone()]);
@@ -145,6 +147,7 @@ fn radar_sentinel_never_anchors_a_subject_fix() {
     sentinel.tag("subject");
     let mut real_gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     real_gps.tag("geoint");
+    real_gps.add_evidence(Evidence::new("signal_radar", "gps"));
 
     let fixes = subject_fixes(&[sentinel.clone(), real_gps.clone()]);
     assert_eq!(
@@ -164,6 +167,8 @@ fn discordant_namesake_is_the_far_complement_of_corroboration() {
     // Subject's confirmed GPS near Woodford, QLD (Brisbane catchment).
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     gps.tag("geoint");
+    // Anchoring source (handset GNSS) — a real person fix, not infrastructure geo.
+    gps.add_evidence(Evidence::new("signal_radar", "gps"));
     let subject = subject_locations(&[gps]);
 
     // A same-surname candidate in Perth, WA (~3600 km) — shares the name, but a
@@ -206,6 +211,38 @@ fn discordant_namesake_is_the_far_complement_of_corroboration() {
     assert!(
         !is_namesake(&near, &subject, true),
         "a near relative is never a namesake, common surname or not"
+    );
+}
+
+#[test]
+fn subject_fix_excludes_infrastructure_coordinates() {
+    // A datacentre/hosting coordinate can clear SUBJECT_FIX_MIN yet is NOT the
+    // subject's location: anchoring on it would widen the "confirmed area" to the
+    // host's metro, so a same-surname candidate near the DATACENTRE reads as kin.
+    // A HOSTING-tagged coord and a bare coord (no anchoring source) must both be
+    // excluded from subject_fixes; a person-anchored coord is included (control).
+    let mut hosting = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    hosting.tag(crate::core::tags::HOSTING);
+    hosting.add_evidence(Evidence::new("ip_geo", "geolocated"));
+    assert!(
+        subject_fixes(&[hosting]).is_empty(),
+        "a hosting coordinate must not anchor the subject"
+    );
+
+    let mut bare = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    bare.add_evidence(Evidence::new("ip_geo", "geolocated"));
+    assert!(
+        subject_fixes(&[bare]).is_empty(),
+        "a bare IP-geo coordinate (no anchoring source) must not anchor the subject"
+    );
+
+    // Control: the same point, person-anchored (device GPS), IS a subject fix.
+    let mut anchored = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    anchored.add_evidence(Evidence::new("signal_radar", "gps"));
+    assert_eq!(
+        subject_fixes(&[anchored]).len(),
+        1,
+        "a person-anchored coordinate still anchors the subject"
     );
 }
 

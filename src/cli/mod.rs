@@ -4,7 +4,7 @@
 //! Surfaces every `ScanOptions` field as a flag so each scan is fully
 //! customisable before launch. `serve` boots the HTTP server + SPA;
 //! `live` re-runs the same scan on a fixed interval. `update` upgrades
-//! the binary in place via `install.sh`. See `docs/USAGE.md` for the
+//! the binary in place via `install.sh`. See `hse --help` for the
 //! full reference.
 
 pub(crate) mod config;
@@ -13,10 +13,12 @@ mod engines;
 mod ingest;
 mod keys_cmd;
 mod live;
+mod live_frame;
 mod logging;
 mod modules;
 mod oathnet_batch;
 mod provision;
+mod query;
 mod radar;
 mod scan;
 mod selftest;
@@ -142,6 +144,13 @@ async fn run_command(command: Command) -> Result<()> {
         }
         Command::Modules { category, json } => modules::cmd_modules(category, json),
         Command::Engines { json } => engines::cmd_engines(json).await,
+        Command::Query {
+            query,
+            limit,
+            dark,
+            timeout,
+            output,
+        } => query::cmd_query(query, limit, dark, timeout, output).await,
         Command::Config { key, value } => config::cmd_config(key, value),
         Command::Diagnostics { json } => diagnostics::cmd_diagnostics(json).await,
         Command::Audit {
@@ -158,7 +167,8 @@ async fn run_command(command: Command) -> Result<()> {
             env_only,
             verify_only,
             dry_run,
-        } => provision::cmd_provision(env_only, verify_only, dry_run).await,
+            discover,
+        } => provision::cmd_provision(env_only, verify_only, dry_run, discover).await,
         Command::SetKey { name, value } => keys_cmd::cmd_set_key(name, value),
         Command::Keys { action } => keys_cmd::cmd_keys(action).await,
         Command::Import { file, output } => cmd_import(&file, &output).await,
@@ -286,6 +296,7 @@ async fn run_command(command: Command) -> Result<()> {
             .await
         }
         Command::Cells { action } => crate::app::cells::cmd_cells(action).await,
+        Command::Tidy { dry_run, json } => crate::app::tidy::cmd_tidy(dry_run, json),
     }
 }
 

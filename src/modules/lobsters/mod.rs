@@ -21,6 +21,9 @@
 //! Lobste.rs dropped Twitter linking for the fediverse, so the live API no
 //! longer returns it; `mastodon_username` is its replacement.)
 
+#[cfg(test)]
+mod tests;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -160,7 +163,7 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
     if let Some(ref gh) = user.github_username
         && !gh.is_empty()
     {
-        let mut g = Entity::new(EntityKind::Username, gh, 0.82, scan_id);
+        let mut g = Entity::new(EntityKind::Username, gh, confidence::CORROBORATED, scan_id);
         g.tag("github");
         g.tag("lobsters-pivot");
         g.add_evidence(
@@ -214,7 +217,7 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
     {
         let tw_clean = tw.trim_start_matches('@');
         if !tw_clean.is_empty() {
-            let mut t = Entity::new(EntityKind::Username, tw_clean, 0.78, scan_id);
+            let mut t = Entity::new(EntityKind::Username, tw_clean, confidence::STRONG, scan_id);
             t.tag("twitter");
             t.tag("lobsters-pivot");
             t.add_evidence(
@@ -336,159 +339,4 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
     }
 
     result.entities
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_user(
-        username: &str,
-        karma: i64,
-        github: Option<&str>,
-        twitter: Option<&str>,
-        about: Option<&str>,
-    ) -> LobstersUser {
-        LobstersUser {
-            username: username.to_string(),
-            created_at: Some("2015-03-01T00:00:00Z".to_string()),
-            karma: Some(karma),
-            about: about.map(str::to_string),
-            is_moderator: Some(false),
-            github_username: github.map(str::to_string),
-            twitter_username: twitter.map(str::to_string),
-            mastodon_username: None,
-            invited_by_user: None,
-        }
-    }
-
-    fn user_with_mastodon(username: &str, mastodon: &str) -> LobstersUser {
-        let mut u = make_user(username, 100, None, None, None);
-        u.mastodon_username = Some(mastodon.to_string());
-        u
-    }
-
-    #[test]
-    fn builds_username_entity_with_correct_confidence() {
-        let user = make_user("devuser", 500, None, None, None);
-        let entities = build_entities(user, "scan-lob-001");
-        let u = entities
-            .iter()
-            .find(|e| e.kind == EntityKind::Username && e.value == "devuser");
-        assert!(u.is_some(), "must emit Username entity for the account");
-        assert!((u.expect("should succeed").confidence - confidence::VERY_HIGH_PLUS).abs() < 0.01);
-    }
-
-    #[test]
-    fn emits_github_username_pivot() {
-        let user = make_user("devuser", 500, Some("devuser-gh"), None, None);
-        let entities = build_entities(user, "scan-lob-002");
-        let gh = entities
-            .iter()
-            .find(|e| e.kind == EntityKind::Username && e.value == "devuser-gh");
-        assert!(gh.is_some(), "must emit GitHub username pivot");
-        assert!(
-            gh.expect("should succeed").has_tag("github"),
-            "pivot entity must carry 'github' tag"
-        );
-    }
-
-    #[test]
-    fn emits_invited_by_username_pivot() {
-        let mut user = make_user("devuser", 500, None, None, None);
-        user.invited_by_user = Some("founder".to_string());
-        let entities = build_entities(user, "scan-lob-006");
-        let inv = entities
-            .iter()
-            .find(|e| e.kind == EntityKind::Username && e.value == "founder")
-            .expect("must emit invited-by username pivot");
-        assert!(
-            inv.has_tag("lobsters-invited-by"),
-            "pivot entity must carry 'lobsters-invited-by' tag"
-        );
-    }
-
-    #[test]
-    fn emits_twitter_username_pivot_stripping_at_prefix() {
-        let user = make_user("devuser", 200, None, Some("@twitterhandle"), None);
-        let entities = build_entities(user, "scan-lob-003");
-        let tw = entities
-            .iter()
-            .find(|e| e.kind == EntityKind::Username && e.value == "twitterhandle");
-        assert!(tw.is_some(), "must strip @ and emit Twitter username");
-    }
-
-    #[test]
-    fn emits_bare_mastodon_username_pivot() {
-        // The live shape for most accounts: a bare fediverse handle (no server).
-        let entities = build_entities(user_with_mastodon("pushcx", "lobsters"), "scan-lob-md1");
-        let m = entities
-            .iter()
-            .find(|e| e.kind == EntityKind::Username && e.value == "lobsters")
-            .expect("must emit the mastodon username pivot");
-        assert!(m.has_tag("mastodon") && m.has_tag("fediverse") && m.has_tag("lobsters-pivot"));
-        // No server → no homeserver Domain entity.
-        assert!(!entities.iter().any(|e| e.kind == EntityKind::Domain));
-    }
-
-    #[test]
-    fn emits_qualified_mastodon_handle_and_homeserver_domain() {
-        // A fully-qualified `@user@server` handle → Username(local) + Domain(server).
-        let entities = build_entities(
-            user_with_mastodon("dev", "@alice@fosstodon.org"),
-            "scan-lob-md2",
-        );
-        let m = entities
-            .iter()
-            .find(|e| e.kind == EntityKind::Username && e.value == "alice")
-            .expect("local part → Username");
-        assert!(m.has_tag("mastodon"));
-        assert_eq!(
-            m.evidence[0]
-                .attributes
-                .get("homeserver")
-                .map(String::as_str),
-            Some("fosstodon.org")
-        );
-        let d = entities
-            .iter()
-            .find(|e| e.kind == EntityKind::Domain && e.value == "fosstodon.org")
-            .expect("homeserver → Domain pivot");
-        assert!(d.has_tag("mastodon-homeserver"));
-    }
-
-    #[test]
-    fn extracts_email_and_url_from_bio() {
-        let about = "contact me at dev@example.com or visit https://example.com/about";
-        let user = make_user("devuser", 100, None, None, Some(about));
-        let entities = build_entities(user, "scan-lob-004");
-        assert!(
-            entities
-                .iter()
-                .any(|e| e.kind == EntityKind::Email && e.value == "dev@example.com"),
-            "must extract email from bio"
-        );
-        assert!(
-            entities.iter().any(|e| e.kind == EntityKind::Url),
-            "must extract URL from bio"
-        );
-        assert!(
-            entities
-                .iter()
-                .any(|e| e.kind == EntityKind::Domain && e.value == "example.com"),
-            "must emit Domain entity from bio URL"
-        );
-    }
-
-    #[test]
-    fn no_entities_for_empty_optional_fields() {
-        let user = make_user("quietuser", 10, None, None, None);
-        let entities = build_entities(user, "scan-lob-005");
-        assert_eq!(
-            entities.len(),
-            1,
-            "only the Username entity when no pivots or bio"
-        );
-        assert_eq!(entities[0].kind, EntityKind::Username);
-    }
 }

@@ -625,8 +625,8 @@ pub(in crate::core::correlator) fn rule_au_113_direct_connect_origin_candidate(
 /// the two addresses may be one person's work aliases or two colleagues', and
 /// either reading is useful intelligence about where the subject is affiliated.
 ///
-/// Precision: the domain must be specific (`!is_noncentral_domain`, contains a
-/// dot) and the cluster must hold ≥2 distinct addresses. Confirmed entities only
+/// Precision: the domain must be specific (not freemail, `!is_noncentral_domain`,
+/// contains a dot) and the cluster must hold ≥2 distinct addresses. Confirmed entities only
 /// (the caller quarantines `candidate`s), so a broad name search's namesake
 /// emails can't manufacture a false affiliation. Deterministic: domains and the
 /// displayed addresses are iterated in sorted (`BTreeMap`/`BTreeSet`) order.
@@ -656,8 +656,15 @@ pub(in crate::core::correlator) fn rule_au_087_shared_org_email_domain(
         };
         // A real address needs a local-part and a dotted domain; the domain must
         // be a specific organisation, not freemail / ISP webmail / shared infra.
+        // Freemail is excluded through the canonical `is_freemail` authority (the
+        // same guard the sibling AU-100 uses): `is_noncentral_domain` only damps
+        // major platforms + shared DNS/CDN/registrar infra, so on its own it lets
+        // the ~40 consumer-webmail domains outside that list (yahoo.co.uk, qq.com,
+        // rocketmail.com, 163.com, …) through — and two strangers on qq.com are
+        // not an employer affiliation.
         if local.is_empty()
             || !domain.contains('.')
+            || crate::util::domains::is_freemail(domain)
             || crate::core::scan::is_noncentral_domain(domain)
         {
             continue;

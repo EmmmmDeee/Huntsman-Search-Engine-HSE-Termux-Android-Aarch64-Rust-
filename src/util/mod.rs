@@ -2,6 +2,7 @@
 
 pub mod abn;
 pub mod address_au;
+pub mod ahmia;
 pub mod atomic_file;
 pub mod atproto;
 pub mod backoff;
@@ -36,6 +37,7 @@ pub mod html;
 pub mod http;
 pub mod identity;
 pub mod json;
+pub mod key_fingerprint;
 pub mod key_harvest;
 pub mod key_health;
 pub mod key_pool;
@@ -52,6 +54,7 @@ pub mod phone;
 pub mod place_grain;
 pub mod postcode_au;
 pub mod preflight;
+pub mod probe;
 pub mod probe_confidence;
 pub mod raw_archive;
 pub mod redact;
@@ -61,6 +64,7 @@ pub mod scan;
 pub mod scraper_health;
 pub mod see_know;
 
+pub mod engine_host;
 pub mod paths;
 pub mod recon;
 pub mod service_defs;
@@ -77,4 +81,5 @@ pub mod tlsrpt;
 pub mod uid;
 pub mod union_find;
 pub mod url_util;
+pub mod wifi;
 pub mod wigle;

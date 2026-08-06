@@ -100,7 +100,6 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **EmailRep** | email reputation/profile | free (ltd) | alnum | M K D |
 | **Epieos** | email→linked accounts (Google, etc.) | ltd | alnum | M K D |
 | **FullContact** | person/company enrichment | ltd | 32 alnum | M K D |
-| **Proxycurl** | LinkedIn person/company data | paid | alnum | M K D |
 | **Seon** | fraud/digital-footprint enrichment | trial | alnum | M K D |
 | **OpenSanctions** | sanctions/PEP/watchlist screening (incl. Australia's DFAT list) | free trial/nonprofit | alnum | M K D |
 | **OFAC (US Treasury)** | SDN + Consolidated sanctions-list screening | free | — (no key) | M D |
@@ -156,6 +155,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **ViewDNS.info** | DNS/WHOIS/reverse tools | ltd | alnum | D C |
 | **DNSDumpster / domainsdb** | subdomain/passive DNS | free / key-gated (domainsdb, 2026: anonymous access disabled) | domainsdb: alnum | M(domainsdb) K D |
 | **IP2WHOIS** | WHOIS lookup | free (500/mo) | alnum | D C |
+| **Mnemonic Passive DNS** | historical domain↔IP resolutions (forward + reverse), CNAME/MX/NS graph | free (keyless, TLP:WHITE) | — | M |
 | *(keyless)* **dns_intel / doh_resolver / dns_axfr / rdap_domain / whois** | DNS records, DoH, AXFR, RDAP, WHOIS | free | — | M |
 
 ## 8. Search / SERP / scraping (recon)
@@ -181,7 +181,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | *(keyless)* **social_probe / social_location / profile_kit** | profile presence, geo, dossier | free | — | M |
 | **GitHub / GitLab / Bitbucket / Gitea / Codeberg** | user/commit/code search | free + token | `ghp_`/`glpat-`/… | M K D |
 | **Reddit / Mastodon / Bluesky / Nostr / Fediverse** | social profile/post data | free/token | varies | M |
-| **Steam / gaming_profile / streaming_probe** | gaming & streaming identity | free/key | Steam key 32-hex | M |
+| **Steam / gaming_profile / chess_profile / streaming_probe** | gaming & streaming identity | free/key | Steam key 32-hex | M |
 | **Keybase / Gravatar / WikiData / Hacker News / Lobsters** | identity/avatar/knowledge | free | — | M |
 | **Social Links / Maltego / Lampyre / SpiderFoot HX** | commercial link-analysis platforms | paid | — | D C |
 | **Discord (snowflake) / discord token** | ID→timestamp; token detection | free | `discord` token | M D |
@@ -237,6 +237,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **Gravatar** | email→avatar/profile | free | M |
 | **EmailRep / disposable_check / email_locale / email_header_geo** | email reputation, disposable, locale, header geo | free | M |
 | **Sunrise-Sunset / Overpass (OSM) / Photon / Geocode / Nominatim** | solar position, map features, geocoding | free | M |
+| **Open-Meteo Geocoding** (GeoNames) | place-name→coordinates + timezone, population, place-class, elevation, postcodes | free (keyless) | M |
 | **EXIF geo** | image metadata → coordinates | free (offline) | M |
 | **Wayback Machine / archive.org** | historical snapshots | free | M |
 | **Blockchain OSINT** — Etherscan, BscScan, Blockchair, Bitquery, Chainalysis | wallet/tx intelligence | ltd/key | C |
@@ -249,7 +250,7 @@ HSE reads keys from `HUNTSMAN_*` env vars (or the UI Settings panel). Recognised
 keyed providers include:
 
 `OATHNET, NIAMONX, SEEKNOW, HIBP, DEHASHED, INTELX, HUNTER, EMAILREP, EPIEOS,
-FULLCONTACT, PROXYCURL, SEON, OPENSANCTIONS, OSINTCAT, SHODAN, CENSYS (ID+SECRET),
+FULLCONTACT, SEON, OPENSANCTIONS, OSINTCAT, SHODAN, CENSYS (ID+SECRET),
 ZOOMEYE, BINARYEDGE, FOFA, NETLAS, ONYPHE, FULLHUNT, CRIMINALIP, LEAKIX, GREYNOISE,
 VIRUSTOTAL, ABUSEIPDB, ABUSECH, THREATFOX, ALIENVAULT, URLSCAN, PULSEDIVE,
 PASSIVETOTAL, SECTRAILS, WHOISXML, DOMAINSDB, BUILTWITH, C99, BREACHDIR, NUMVERIFY,

@@ -33,14 +33,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const MAX_CONCURRENT_PROBES: usize = 16;
-const BODY_PROBE_CAP: usize = 256 * 1024;
 
-/// Browser-shaped UA — same rationale as `username_search`: Cloudflare and
-/// PerimeterX score non-browser TLS fingerprints as bots and 403 them.
-const BROWSER_UA: &str = crate::util::curl::UA_MOBILE;
-const BROWSER_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;\
-    q=0.9,image/avif,image/webp,*/*;q=0.8";
-
+use crate::core::confidence;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
@@ -48,6 +42,12 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::http::urlencode;
+// Shared existence-probe plumbing (browser headers, body cap, outcome enum,
+// per-site adapter, M6 disambiguation), single-sourced in `util::probe` and
+// shared with `username_search`.
+use crate::util::probe::{
+    BODY_PROBE_CAP, BROWSER_ACCEPT, BROWSER_UA, ProbeResult, WithSite, inconclusive,
+};
 
 const SRC: &str = "streaming_probe";
 
@@ -126,43 +126,58 @@ impl Module for StreamingProbe {
             let sem = Arc::clone(&sem);
             async move {
                 let _permit = sem.acquire().await;
-                let req = match site.method {
-                    Method::Get => client.get(&url),
-                    Method::Head => client.head(&url),
-                };
-                let req = req
-                    .header("User-Agent", BROWSER_UA)
-                    .header("Accept", BROWSER_ACCEPT)
-                    .header("Accept-Language", "en-US,en;q=0.9");
-                let resp = tokio::time::timeout(per_site_timeout, req.send()).await;
-                let resp = match resp {
-                    Ok(Ok(r)) => r,
-                    _ => return ProbeResult::Error,
-                };
+                // `per_site_timeout` must bound the WHOLE probe, not just
+                // `send()`. It previously wrapped only the send, leaving
+                // `read_body_capped` below to run unbounded under the semaphore
+                // permit acquired above — a server that answers headers promptly
+                // and then trickles the body held the permit indefinitely. The
+                // module's own 30s envelope (`max_timeout_ms`) then expired and
+                // the engine discarded EVERY already-completed site hit, turning
+                // one slow server into a total loss for the module. This is the
+                // same defect `username_search` already fixed; its probe body is
+                // built as a future and awaited inside a single timeout, and this
+                // now matches.
+                let probe = async {
+                    let req = match site.method {
+                        Method::Get => client.get(&url),
+                        Method::Head => client.head(&url),
+                    };
+                    let req = req
+                        .header("User-Agent", BROWSER_UA)
+                        .header("Accept", BROWSER_ACCEPT)
+                        .header("Accept-Language", "en-US,en;q=0.9");
+                    let Ok(resp) = req.send().await else {
+                        return ProbeResult::Error;
+                    };
 
-                let status = resp.status().as_u16();
-                let (confidence, verified) = detection_strength(&site.detect);
-                match site.detect {
-                    Detect::StatusEq(want) if status == want => ProbeResult::Found {
-                        url,
-                        confidence,
-                        verified,
-                    },
-                    Detect::StatusEq(_) => ProbeResult::NotFound,
-                    Detect::StatusAndNotBody(want, needle) => {
-                        if status != want {
-                            return ProbeResult::NotFound;
-                        }
-                        match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP).await {
-                            Some(body) if body.contains(needle) => ProbeResult::NotFound,
-                            Some(_) => ProbeResult::Found {
-                                url,
-                                confidence,
-                                verified,
-                            },
-                            None => ProbeResult::Error,
+                    let status = resp.status().as_u16();
+                    let (confidence, verified) = detection_strength(&site.detect);
+                    match site.detect {
+                        Detect::StatusEq(want) if status == want => ProbeResult::Found {
+                            url,
+                            confidence,
+                            verified,
+                        },
+                        Detect::StatusEq(_) => ProbeResult::NotFound,
+                        Detect::StatusAndNotBody(want, needle) => {
+                            if status != want {
+                                return ProbeResult::NotFound;
+                            }
+                            match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP).await {
+                                Some(body) if body.contains(needle) => ProbeResult::NotFound,
+                                Some(_) => ProbeResult::Found {
+                                    url,
+                                    confidence,
+                                    verified,
+                                },
+                                None => ProbeResult::Error,
+                            }
                         }
                     }
+                };
+                match tokio::time::timeout(per_site_timeout, probe).await {
+                    Ok(result) => result,
+                    Err(_) => ProbeResult::Error,
                 }
             }
             .then_with_site(site.name, site.cat)
@@ -217,16 +232,6 @@ impl Module for StreamingProbe {
             },
         ))
     }
-}
-
-enum ProbeResult {
-    Found {
-        url: String,
-        confidence: f64,
-        verified: bool,
-    },
-    NotFound,
-    Error,
 }
 
 /// A confirmed profile hit, carrying the confidence its detection method earns.
@@ -328,7 +333,12 @@ fn build_entities(username: &str, scan_id: &str, hits: &[Hit], tally: &ProbeTall
         module_result.push(e);
     }
 
-    let mut summary = Entity::new(EntityKind::Username, username, 0.95, scan_id);
+    let mut summary = Entity::new(
+        EntityKind::Username,
+        username,
+        confidence::VERY_HIGH_PLUSPLUS,
+        scan_id,
+    );
     summary.tag("streaming-identity");
     cat_counts
         .keys()
@@ -379,33 +389,6 @@ fn build_entities(username: &str, scan_id: &str, hits: &[Hit], tally: &ProbeTall
     module_result.push(summary);
     module_result
 }
-
-/// True when a zero-hit run is inconclusive (most probes were blocked) rather
-/// than a confirmed absence. Mirrors `username_search::inconclusive` — same M6
-/// disambiguation policy, independently testable.
-fn inconclusive(found: usize, errored: usize, total: usize) -> bool {
-    found == 0 && total > 0 && errored * 2 >= total
-}
-
-trait WithSite: Sized + std::future::Future<Output = ProbeResult> {
-    fn then_with_site(
-        self,
-        name: &'static str,
-        cat: &'static str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = (&'static str, &'static str, ProbeResult)> + Send>,
-    >
-    where
-        Self: Send + 'static,
-    {
-        Box::pin(async move {
-            let out = self.await;
-            (name, cat, out)
-        })
-    }
-}
-
-impl<F> WithSite for F where F: std::future::Future<Output = ProbeResult> + Send + 'static {}
 
 #[cfg(test)]
 mod tests {

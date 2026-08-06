@@ -346,6 +346,40 @@ impl LiveScanner {
 
 // ─── Loop ────────────────────────────────────────────────────────────────────
 
+/// Poll interval for [`spawn_stop_forwarder`]. A live iteration is only
+/// cancellable at the engine's module boundaries, which are orders of magnitude
+/// coarser than this, so 100 ms adds no observable abort latency while keeping
+/// the forwarder's idle cost negligible.
+const STOP_FORWARD_POLL: Duration = Duration::from_millis(100);
+
+/// Spawn a task that propagates a **session** cancellation into a single
+/// iteration's cancel handle, and return its [`JoinHandle`](tokio::task::JoinHandle).
+///
+/// Each live iteration runs under its own [`CancelHandle`] so the engine's
+/// per-iteration wall-time watchdog can bound just that iteration without
+/// latching the session's one-way flag. That isolation would also sever the
+/// operator's `DELETE /api/v1/live/{id}` stop from an in-flight iteration — so
+/// this bridges it back: once the session handle is cancelled, the iteration
+/// handle is too, and the engine aborts at its next module boundary exactly as
+/// when the handles were shared.
+///
+/// `CancelHandle` is a bare atomic with no async notification, so the bridge is
+/// a short poll ([`STOP_FORWARD_POLL`]). The caller MUST abort the returned
+/// handle when the iteration finishes; the task is otherwise bounded only by a
+/// session stop, so without the abort a never-stopped session would leak one
+/// poller per iteration.
+fn spawn_stop_forwarder(
+    session_cancel: CancelHandle,
+    iter_cancel: CancelHandle,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while !session_cancel.is_cancelled() {
+            sleep(STOP_FORWARD_POLL).await;
+        }
+        iter_cancel.cancel();
+    })
+}
+
 async fn session_loop(
     inner: Arc<LiveInner>,
     live_id: String,
@@ -416,21 +450,34 @@ async fn session_loop(
             },
         ));
 
+        // Each iteration gets its OWN cancel handle, distinct from the session
+        // handle. The engine's per-iteration wall-time watchdog
+        // (`max_wall_time_secs`) cancels whatever handle it is given; giving it
+        // this per-iteration handle bounds just this iteration. Sharing the
+        // session handle here (as this once did) let a single iteration's
+        // wall-time timeout latch the whole session's cancel flag — a one-way
+        // atomic — silently ending the live session after one bounded iteration
+        // instead of continuing to re-scan every interval.
+        let iter_cancel = CancelHandle::new();
+
+        // Forward an operator session-stop into the in-flight iteration, so
+        // `DELETE /api/v1/live/{id}` still aborts it at the next module boundary
+        // (its scan completes `Aborted` with partial entities preserved, exactly
+        // as before). `CancelHandle` is a bare atomic with no async notify, so a
+        // short poll is the propagation mechanism — and the module-boundary
+        // granularity the engine actually acts on is far coarser than this
+        // interval, so it adds no meaningful abort latency. The forwarder is
+        // aborted the instant the iteration returns (below), so it can never
+        // outlive the iteration or leak across ticks.
+        let cancel_forwarder = spawn_stop_forwarder(cancel.clone(), iter_cancel.clone());
+
         let scan = Scan::new(sid.clone(), target.clone()).with_options(scan_options.clone());
         let ctx = ModuleContext {
             scan_id: sid.clone(),
             bus: inner.bus.clone(),
             http: http.clone(),
             keys: loaded_keys.clone(),
-            // Plumb the SAME live-session cancel handle into the engine
-            // so `DELETE /api/v1/live/{id}` aborts the in-flight
-            // iteration at the next module boundary (the iteration's
-            // scan completes with `ScanStatus::Aborted` and partial
-            // entities are preserved exactly as for one-shot scans).
-            // Without this share-rather-than-replace, stop() only
-            // affected the outer loop and the iteration had to run to
-            // its full expansion depth before stopping.
-            cancel: cancel.clone(),
+            cancel: iter_cancel,
         };
 
         // Radar mode threads the persistent ledger so keyed modules skip
@@ -444,6 +491,10 @@ async fn session_loop(
             }
             None => inner.engine.run_panic_safe(scan, target.clone(), ctx).await,
         };
+        // The iteration has returned; stop the session→iteration forwarder so it
+        // cannot outlive this iteration (idempotent whether it is still polling
+        // or already propagated a stop).
+        cancel_forwarder.abort();
         if let Err(e) = iteration_result {
             warn!(live_id = %live_id, scan_id = %sid, error = %e, "iteration failed");
         }

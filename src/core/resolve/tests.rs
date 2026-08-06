@@ -102,24 +102,44 @@ fn country_code_difference_is_not_inferred_away() {
 // ── Person: token-multiset equality, not partial overlap ──────────────────────
 
 #[test]
-fn name_order_insensitive_full_multiset_groups() {
-    // "Jane Citizen" and "Citizen, Jane" are one person (same token multiset).
+fn name_comma_reversal_groups_to_natural_order() {
+    // "Jane Citizen" and the surname-first "Citizen, Jane" are one person: the
+    // comma folds to natural order, so both canonicalise to "jane citizen".
     let a = ent(EntityKind::Person, "Jane Citizen");
     let b = ent(EntityKind::Person, "Citizen, Jane");
     assert_ne!(a.uid, b.uid);
     let g = only_group(&[a.clone(), b.clone()]);
     assert_eq!(g.kind, "person");
-    assert_eq!(g.canonical, "citizen jane");
+    assert_eq!(g.canonical, "jane citizen");
     assert_eq!(g.members, sorted_uids(&[&a, &b]));
 }
 
 #[test]
 fn shared_surname_only_does_not_group() {
     // A mere shared surname is NOT a same-entity signal — different given names
-    // → different multisets → no group (false-merge guard).
+    // → no group (false-merge guard).
     let a = ent(EntityKind::Person, "Jane Citizen");
     let b = ent(EntityKind::Person, "John Citizen");
     assert!(suggest_merges(&[a, b]).is_empty());
+}
+
+#[test]
+fn token_swapped_names_are_distinct_people() {
+    // Regression: two DISTINCT people whose names are token permutations of each
+    // other (no comma) must NOT merge. The previous implementation sorted the
+    // whole token multiset, collapsing "Cameron Tyler" and "Tyler Cameron" to one
+    // key and fusing them via an undamped SameAs. Only an explicit surname-first
+    // comma justifies reordering.
+    let a = ent(EntityKind::Person, "Cameron Tyler");
+    let b = ent(EntityKind::Person, "Tyler Cameron");
+    assert!(
+        suggest_merges(&[a, b]).is_empty(),
+        "token-swapped names without a comma are two different people"
+    );
+    // The same for another common given/given pair.
+    let c = ent(EntityKind::Person, "Grace Kelly");
+    let d = ent(EntityKind::Person, "Kelly Grace");
+    assert!(suggest_merges(&[c, d]).is_empty());
 }
 
 // ── Username: formatting noise only ───────────────────────────────────────────

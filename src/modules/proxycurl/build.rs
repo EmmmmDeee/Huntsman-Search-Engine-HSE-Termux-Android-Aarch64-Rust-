@@ -28,7 +28,15 @@ pub(super) fn email_domain(email: &str) -> Option<String> {
 ///
 /// Confidences encode source authority: a named LinkedIn profile is strong
 /// (confidence::HIGH_PLUSPLUS_PLUS); a personal email is strong (confidence::HIGH_PLUSPLUS); a domain *derived* from that email
-/// is weaker (0.68); a self-reported location is soft (confidence::MEDIUM_PLUS).
+/// is weaker (confidence::HIGH); a self-reported location is soft
+/// (confidence::MEDIUM_PLUS).
+///
+/// The derived-domain rung was a bare `0.68`, which is not a rung at all — it
+/// sits between `HIGH` (0.65) and `HIGH_PLUS` (0.70). Resolved DOWNWARD to
+/// `HIGH` rather than up: these entities are tagged `derived` and the gradient
+/// above exists to say they are weaker than the email they came from, so
+/// rounding toward the stronger rung would work against the very distinction
+/// the doc is drawing. No new rung was invented for it.
 pub(super) fn build_entities(
     profile: &LinkedInProfile,
     target: &Target,
@@ -109,7 +117,7 @@ pub(super) fn build_entities(
         let mut ue = Entity::new(
             EntityKind::Username,
             format!("linkedin:{pid}"),
-            0.80,
+            confidence::HIGH_PLUSPLUS,
             scan_id,
         );
         ue.tag("proxycurl");
@@ -155,7 +163,12 @@ pub(super) fn build_entities(
 
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(&location) {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.52, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::MEDIUM_LIGHT,
+                scan_id,
+            );
             c.tag("proxycurl");
             c.tag("linkedin");
             c.tag("addr-derived");
@@ -200,7 +213,7 @@ pub(super) fn build_entities(
             && !is_freemail(&domain)
             && seen_domains.insert(domain.clone())
         {
-            let mut de = Entity::new(EntityKind::Domain, &domain, 0.68, scan_id);
+            let mut de = Entity::new(EntityKind::Domain, &domain, confidence::HIGH, scan_id);
             de.tag("proxycurl");
             de.tag("linkedin");
             de.tag("derived");
@@ -290,7 +303,7 @@ pub(super) fn build_entities(
         .map(str::trim)
         .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
     {
-        let mut ue = Entity::new(EntityKind::Url, url, 0.72, scan_id);
+        let mut ue = Entity::new(EntityKind::Url, url, confidence::ATTRIBUTED, scan_id);
         ue.tag("proxycurl");
         ue.tag("linkedin");
         ue.add_evidence(Evidence::new(SRC, "Website URL from LinkedIn profile"));
@@ -300,7 +313,7 @@ pub(super) fn build_entities(
             && !host.eq_ignore_ascii_case("linkedin.com")
             && !host.eq_ignore_ascii_case("lnkd.in")
         {
-            let mut de = Entity::new(EntityKind::Domain, &host, 0.68, scan_id);
+            let mut de = Entity::new(EntityKind::Domain, &host, confidence::HIGH, scan_id);
             de.tag("proxycurl");
             de.tag("linkedin");
             de.tag("derived");

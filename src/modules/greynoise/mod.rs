@@ -190,7 +190,7 @@ fn build_entities_from_signal(sig: &Signal, ip: &str, scan_id: &str) -> Vec<Enti
         .map(str::trim)
         .filter(|n| n.len() >= 2 && !n.eq_ignore_ascii_case("unknown"))
     {
-        let mut o = Entity::new(EntityKind::Organisation, name, 0.62, scan_id);
+        let mut o = Entity::new(EntityKind::Organisation, name, confidence::NOTABLE, scan_id);
         o.tag("greynoise");
         o.tag("ip-operator");
         o.add_evidence(

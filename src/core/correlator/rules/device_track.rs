@@ -125,9 +125,15 @@ pub(in crate::core::correlator) fn rule_au_122_trackable_rf_device(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
 
     fn rf_mac(value: &str, tag: &str) -> Entity {
-        let mut e = Entity::new(EntityKind::MacAddress, value, 0.8, "s");
+        let mut e = Entity::new(
+            EntityKind::MacAddress,
+            value,
+            confidence::HIGH_PLUSPLUS,
+            "s",
+        );
         e.tag(tag);
         e
     }
@@ -169,7 +175,12 @@ mod tests {
     fn au115_ignores_a_non_rf_breach_sourced_mac() {
         // A universally-administered MAC WITHOUT an RF provenance tag (e.g. a
         // breach-sourced router BSSID) is AU-106's domain, not a radar sighting.
-        let breach_bssid = Entity::new(EntityKind::MacAddress, "3C:5A:B4:11:22:33", 0.6, "s");
+        let breach_bssid = Entity::new(
+            EntityKind::MacAddress,
+            "3C:5A:B4:11:22:33",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         let rnd = rf_mac("36:32:62:36:31:33", "bluetooth");
         assert!(
             rule_au_122_trackable_rf_device(&RuleContext::new(&[breach_bssid, rnd]), "s", 0)

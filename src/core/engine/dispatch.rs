@@ -274,8 +274,7 @@ pub(super) fn target_distinct_sources(
     target: &Target,
 ) -> usize {
     let entity_kind = target.kind.to_entity_kind();
-    let normalised = normalise(&entity_kind, &target.value);
-    let uid = crate::core::entity::derive_uid(&entity_kind, &normalised);
+    let uid = crate::core::entity::uid_for(&entity_kind, &target.value);
     entity_map
         .get(&uid)
         .map_or(0, |e| e.corroborating_sources().len())
@@ -289,7 +288,7 @@ pub(super) fn module_skip_reason(
     target_distinct_sources: usize,
 ) -> Option<&'static str> {
     let name = module.name();
-    // The allowlist means "ONLY these modules run" (docs/USAGE.md) — and that
+    // The allowlist means "ONLY these modules run" (`hse --help`) — and that
     // must hold on EVERY round, not just the seed. Gating it with `!is_expansion`
     // let every non-allowlisted module run on discovered entities during
     // expansion, contradicting the documented contract and (on the Termux target)

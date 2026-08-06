@@ -147,7 +147,7 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
 
     // Real name → Person (multi-word only).
     if let Some(name) = author.name.as_deref()
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.72, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::ATTRIBUTED, scan_id)
     {
         p.tag("cpan");
         p.add_evidence(
@@ -175,8 +175,12 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
 
     // Personal websites → URL + Domain — all of them (the author's own sites).
     for site in author.website.iter().map(String::as_str) {
-        for mut e in profile_kit::website_url_and_domain(site, confidence::HIGH_PLUS, 0.62, scan_id)
-        {
+        for mut e in profile_kit::website_url_and_domain(
+            site,
+            confidence::HIGH_PLUS,
+            confidence::NOTABLE,
+            scan_id,
+        ) {
             e.tag("cpan");
             if e.kind == EntityKind::Domain {
                 e.tag("derived");
@@ -226,7 +230,9 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
 
     // Blog / weblog URL(s) → URL + Domain (the author's own publishing surface).
     for url in author.blog.iter().filter_map(|b| b.url.as_deref()) {
-        for mut e in profile_kit::website_url_and_domain(url, 0.66, 0.58, scan_id) {
+        for mut e in
+            profile_kit::website_url_and_domain(url, 0.66, confidence::MEDIUM_SOLID, scan_id)
+        {
             e.tag("cpan");
             if e.kind == EntityKind::Domain {
                 e.tag("derived");

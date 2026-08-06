@@ -1,0 +1,844 @@
+{
+  "$comment": [
+    "Execution-loop bookkeeping for automated contributors. Not consumed by the",
+    "crate at build or run time; nothing in src/ or tests/ reads this file.",
+    "Kept in-tree so a later cycle (or a different session) can see what has",
+    "already been tried and, more importantly, what was tried and REJECTED —",
+    "the rejected list is the part that stops cycles rediscovering the same",
+    "non-defects. See CLAUDE.md and docs/OPERATIONAL_CONSTITUTION.md.",
+    "cycle 9 sweep (wf_e136c553): 5 dims x adversarial verify. REFUTED as not-a-defect (do not re-open): AbortOnDrop doc claim (engine/mod.rs:158 — the doc is actually true); enrich_geospatial catch_unwind is not over-guarding worth removing; diagnostics ModuleLedger HashMap->BTreeMap (failure scenario unachievable); /scans/{id}/stealer-rows 'unbounded' (deliberate, documented, tested design); scan-log DOM O(n) (already capped at LOG_MAX_ROWS=1200, committed design). DEFERRED confirmed findings for a future cycle (recorded, not lost): F2 latest_completed_scan skips Aborted scans (storage/mod.rs:513 — `hse export/diff latest` jumps past an aborted scan); F3 live/radar session cancel handle shared with per-iteration wall-time watchdog (core/live/mod.rs:433); F4 scans.js dashboard has no `aborted` bucket + computes an unrendered `failed` count; F18 SPA discards /entities pagination envelope so Browse understates a truncated large scan (index.js:44); F20 dossier upload reads whole file to a JS string with no client-side size check (new_scan.js:445); F22 Scan-Log SSE never resolves the pill to 'complete' when the tailed scan finishes (log.js:89). These are the top of cycle-10's pool; F2 pairs naturally with cycle-9 slot 1 (both terminal-state correctness)."
+  ],
+  "cycle_count": 32,
+  "last_verified_commit": "096505426",
+  "verified_against": {
+    "note": "This crate declares NO [features]; `--all-features` is a no-op here (main's #379 correction, preserved across the merge). The authoritative gate is scripts/gate.sh, which spans several workflow files and includes the rustdoc-lint and MSRV passes that reconstructing from ci.yml alone drops.",
+    "toolchain": "1.97.1 (rust-toolchain.toml)",
+    "msrv": "1.88 — NOT locally verifiable (no MSRV toolchain installed on this host); CI's MSRV job is the authority",
+    "cross_build": "aarch64-linux-android — NOT locally verifiable (no Android NDK on this host); CI's aarch64-android job is the authority",
+    "local_result": "cycles 9-14 verified locally: cargo test (lib + api + smoke + integration) 0 failed; clippy --all-targets --locked -- -D warnings clean; fmt clean per slot. GitHub Actions run-creation has been stalled for this branch, so these cycles are locally gate-green but CI-unvalidated until Actions recovers."
+  },
+  "completed_slots": [
+    {
+      "cycle": 0,
+      "category": "DEBUG",
+      "slot": 1,
+      "outcome": "PR #315 repaired and merged. Red since 2026-08-02 on one rustdoc error; root cause was structural, not a typo: a commit inserted `struct AbortOnDrop` between `TrackedEntityMap`'s 26-line doc comment and the struct, so AbortOnDrop adopted another type's documentation and `Self::take_dirty` could not resolve. Moved the block back rather than rewriting the link. 5 merge conflicts resolved per-hunk on evidence.",
+      "commit": "c866f0db"
+    },
+    {
+      "cycle": 0,
+      "category": "GAP-ANALYSIS",
+      "slot": 2,
+      "outcome": "PRs #302 and #305 closed: both descend from root fed9a5e7 while main descends from 9ec08790, so `git merge-tree` reports 'refusing to merge unrelated histories' and GitHub could never have merged them. Both also register FEWER modules than main (167 and 166 vs 169). PR #317 deliberately kept OPEN: it registers 173 modules and carries builtwith/fofa/proxycurl/key_discovery, none of which exist in main.",
+      "commit": null
+    },
+    {
+      "cycle": 0,
+      "category": "HARDENING",
+      "slot": 3,
+      "outcome": "oathnet door-guard completeness. Copilot's finding on #362 confirmed against source. #363 landed the equivalent code fix in parallel, so #364 narrowed to what #363 shipped without: the pinning test, a fix for a pre-existing test-suite race (reset_budget clears RESPONSE_CACHE, racing the cache tests), and the rate-limit misdiagnosis #363's change made reachable.",
+      "commit": "0b281b8b"
+    },
+    {
+      "cycle": 1,
+      "slot": "all",
+      "category": "DEBUG/HARDENING/COMPLETION/UPGRADE/GAP-ANALYSIS",
+      "outcome": "Cycle 1 landed whole in 4111299e: oathnet rate-limit misdiagnosis, ingest fuzz target, chess_profile recovery, MSRV drift ratchet, DbWriter backlog disclosure.",
+      "commit": "4111299e"
+    }
+  ],
+  "cycle_1_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "instruction": "Drive PR #364 to green and merge it.",
+      "status": "COMPLETE — PR #364 merged, squashed to main as 4111299e, 6/6 CI green."
+    },
+    {
+      "slot": 2,
+      "category": "HARDENING",
+      "instruction": "Add a cargo-fuzz target for the util::entity_extractor ingest path and register it in fuzz.yml.",
+      "status": "COMPLETE"
+    },
+    {
+      "slot": 3,
+      "category": "COMPLETION",
+      "instruction": "Port chess_profile from the closed #305 branch (780e369c) onto current main.",
+      "status": "COMPLETE — needed ZERO source adaptation; the API it was written against (fetch_json_or_404, urlencode, confidence::HIGH_PLUSPLUS_PLUS, core::tags, the Module trait) is unchanged in main. Only registration + the README/API-reference counts the architecture ratchet enforces. Registry 170 -> 171."
+    },
+    {
+      "slot": 4,
+      "category": "UPGRADE",
+      "instruction": "Collapse the MSRV triplication in ci.yml to one source of truth.",
+      "status": "COMPLETE — resolved as a ratchet test (tests/doc_drift.rs::ci_msrv_job_pins_the_version_cargo_toml_declares) rather than a workflow rewrite. #350 rejected the workflow fix because dtolnay/rust-toolchain@master + a toolchain: input trades a pinned action for a floating one; the test keeps the action pinned and still makes divergence fail a required check."
+    },
+    {
+      "slot": 5,
+      "category": "GAP-ANALYSIS",
+      "instruction": "Decide and record the DbWriter unbounded-channel question (OD-1).",
+      "status": "COMPLETE — DECIDED: keep the channel unbounded, and disclose a pathological backlog. Bounding it would force try_send (drops events, breaking the flush() contract) or an async submit() at a sync engine call site. The queue is also already bounded in practice by DEFAULT_MAX_ENTITIES=2500 and the wall-time watchdog. The real defect was that a storage stall was INVISIBLE, so writer_loop now discloses queue depth past BACKLOG_WARN_EVENTS=1024 with hysteresis at half."
+    }
+  ],
+  "observations": [
+    {
+      "id": "OB-1",
+      "summary": "`cargo tree --duplicates` reports getrandom at v0.2.17, v0.3.4 and v0.4.3. All three are transitive and not directly reachable from this crate's manifest: 0.2 via ring -> rustls -> reqwest, 0.3 via proptest -> rand_core (a dev-dependency only), 0.4 separately. Deduplicating would mean forcing versions on ring/rustls, which is a larger risk than the duplication.",
+      "action": "none — recorded so a later cycle does not re-derive it"
+    },
+    {
+      "id": "OB-12",
+      "observation": "VERIFIED NEGATIVE, so a future cycle does not re-check: neither builtwith nor proxycurl hand-roll URL encoding -- both correctly reuse crate::util::http::urlencode (builtwith/mod.rs:158, proxycurl/url.rs). Also checked and ruled out as a candidate: cargo clippy::must_use_candidate (pedantic, not in clippy::all, not promoted in Cargo.toml's curated list) flags 284 sites crate-wide -- deliberately NOT adopted wholesale here, consistent with the repo's own stated philosophy in Cargo.toml ('Curated high-signal modernizations... deliberately NOT enforced' for stylistic/high-churn lints). A wholesale pedantic-group adoption is not a well-scoped single-cycle slot; if pursued, it should be curated few-at-a-time like the existing promoted lints, not bulk-enabled.",
+      "action": "closed / recorded as deliberate non-adoption"
+    },
+    {
+      "id": "OB-13",
+      "summary": "CORRECTION to an earlier claim of mine: this container is NOT network-blocked. `hse engines` reaches every engine — bing and startpage return results (9 and 10), while 11 are soft-blocked or serve an anti-bot interstitial and 4 are down. A live `hse scan -v iana.org --depth 0` yields 500-600 entities, not the 1 I previously reported; that 1-entity result came from `--passive-only`, which I wrongly attributed to a network restriction. PR #376's body states the out-of-range-floor harm was unverifiable 'because sandbox network restrictions leave a scan with only its seed entity' — that stated reason is wrong, though hedging the claim was correct.",
+      "action": "none — recorded so a later cycle does not repeat the false constraint or re-derive the correction"
+    },
+    {
+      "id": "OB-14",
+      "summary": "Following the correction in OB-13, the min_confidence harm hypothesised in #376 IS now verified empirically, which #376 could only infer: on the same seed at depth 0, --min-confidence 0.99 collapses the result set to 1 entity while 0.30 yields 543, and the command still exits 0. An unreachable floor does produce a silently near-empty deliverable, exactly as the boundary validation added in #376 assumes.",
+      "action": "none — closes the 'Not claimed as done' caveat in PR #376's body"
+    },
+    {
+      "id": "OB-15",
+      "summary": "A live scan is NOT a valid instrument for measuring entity-count differences here. Three runs at an IDENTICAL floor (0.30, same seed, depth 0) returned 543, 582 and 561 entities — a 39-entity spread driven by which search engines and modules happen to succeed. An apparent non-monotonicity (0.0 yielding 462 vs 0.30 yielding 543) is within that order of magnitude and is NOT evidence of a filter bug; the filter is monotonic by construction over a fixed entity set. Any future claim about relative entity counts needs a deterministic fixture, not a live scan.",
+      "action": "none — recorded so a later cycle does not mistake live variance for a correctness defect"
+    }
+  ],
+  "rejected_candidates": [
+    {
+      "candidate": "Add test coverage to the 8 src/modules/* directories with no tests.rs",
+      "reason": "Not a gap. All 8 (bluesky_user, codeberg_user, devto, gitlab_user, lobsters, mastodon_user, stackoverflow_user, url_extract) carry an inline `#[cfg(test)] mod tests` in mod.rs. The missing-file signal was an artefact of this repo's two valid test layouts.",
+      "cycle": 1
+    },
+    {
+      "candidate": "Replace the 9 `map_err(|_| ...)` sites that discard the cause",
+      "reason": "All 9 discard either a `tokio::time::error::Elapsed` (carries no information beyond 'it timed out', which the replacement message states) or a std parse error where the replacement is strictly more informative to an operator. Nothing is lost.",
+      "cycle": 1
+    },
+    {
+      "candidate": "Eliminate unwrap()/panic!/unsafe on fallible paths",
+      "reason": "Already absent. Zero `unwrap()` in non-test src/; every `panic!` is in a test file or test helper; `#![forbid(unsafe_code)]` is set in lib.rs and all 6 `unsafe` textual hits are prose explaining its avoidance. Zero TODO/FIXME/HACK; the 16 `XXX` hits are format placeholders (`UA-XXXXXXX-X`), not markers.",
+      "cycle": 1
+    },
+    {
+      "candidate": "Audit the ~252 `let _ =` result-swallowing sites",
+      "reason": "Measured all 233 on non-test paths. 175 are `let _ = writeln!/write!` to stdout (a broken pipe is not actionable and panicking on it is worse); 23 are inside inline #[cfg(test)] modules; 6 are bus/oneshot sends that fail only when no receiver exists; 5 are the deliberate discards in fuzz_entry_parse_der. Of the ~17 filesystem/process operations, exactly ONE was a real defect — the create_dir_private chain, fixed as cycle 2 slot 1 — plus one minor silent write fixed as slot 3.",
+      "cycle": 2
+    },
+    {
+      "candidate": "Audit the 20 statement-position `.ok();` sites",
+      "reason": "Zero of 20 are Result-swallowing. 13 are `remove_dir_all().ok()` test cleanup inside data_log.rs's inline test module (cfg(test) begins at line 306 of 623); the remaining 7 bind an Option that is then used. The grep pattern `\\.ok();$` was matching the last line of multi-line expressions whose value IS bound.",
+      "cycle": 2
+    },
+    {
+      "candidate": "OD-3 — wire benches into CI so perf regressions are visible",
+      "reason": "Premise was wrong, verified empirically: `cargo check --all-targets --locked` — which ci.yml's check job already runs — DOES compile both benches (confirmed by touching them and watching the rebuild; `--lib` does not). So they are already guarded against perf-path API drift, exactly as CLAUDE.md states. What is genuinely absent is EXECUTING them for regression detection, and that is not a defensible increment on shared GitHub-hosted runners: Criterion variance there is large enough that a threshold gate produces false failures — the same \"gate that passes while measuring the wrong thing\" failure mode cycle 1 slot 4 existed to remove. Needs dedicated hardware or a statistical baseline, not a workflow line.",
+      "cycle": 2
+    },
+    {
+      "candidate": "Add rustdoc to the 240 undocumented public items",
+      "reason": "Measured 240 of 1252 top-level pub items without a preceding doc/attr line. Deprioritised rather than rejected outright: this crate is `publish = false` and its lib is never consumed as an external API (see the crate-root doc comment), so the readers are the maintainers, who already have the architecture docs and the running binary as reference. Bulk-documenting self-evident items would add noise faster than signal. Worth revisiting as a targeted `missing_docs` lint on core/ and util/ only.",
+      "cycle": 2
+    },
+    {
+      "id": "RC-4",
+      "candidate": "Trim src/web/css/app.css (80,564 B — the largest embedded asset) by removing unused Bootstrap-style grid classes, for the 'lightweight UI' objective.",
+      "reason": "REJECTED on measurement, not on principle. 30 of the 48 .col-{xs,sm,md,lg}-N rules are provably unreferenced across all JS, spa.html and every .rs file — but they occupy 746 B of 78,704 B (0.9%). The stylesheet is not bloated: 450 rule blocks, 453 distinct selectors, only 9% comments, for a 34-view SPA. A sub-1% saving is not worth the layout-regression risk on classes a future view may legitimately use. NOTE for future cycles: a naive 'unreferenced class' sweep over app.css yields 66 false positives — k-*, lv-*, cost-* and cv-* are all built dynamically (kindPill/costPill in helpers.js, `log-row lv-${...}` in log.js and live.js, `corr-card cv-${...}` in correlations.js) and are LIVE."
+    }
+  ],
+  "open_defects": [
+    {
+      "id": "OD-1",
+      "summary": "DbWriter uses mpsc::unbounded_channel (src/core/engine/writer.rs:39). If event production outpaces sqlite batch writes the queue grows without bound, on a platform whose whole point is a memory-constrained no-root Android device. Exposure INCREASED when #315 raised DEFAULT_SCAN_DEPTH 3->5, since more rounds means more events.",
+      "status": "CLOSED cycle 1 slot 5 — resolved as a disclosure, not a bound. See src/core/engine/writer.rs module docs for why unbounded is correct here and what actually bounds it."
+    },
+    {
+      "id": "OD-2",
+      "summary": "Fuzz coverage is one target (fuzz/fuzz_targets/cert_der.rs) for a tool whose ingest path parses fully untrusted text: crawled pages, breach dumps, imported files.",
+      "status": "CLOSED cycle 1 slot 2 — added fuzz/fuzz_targets/ingest_text.rs over util::entity_extractor::fuzz_entry_extract_text, registered in fuzz/Cargo.toml and fuzz.yml (job renamed, push path filter widened to entity_extractor and str_util). Backed by a stable-toolchain test so the harness cannot rot between Monday schedules."
+    },
+    {
+      "id": "OD-3",
+      "summary": "benches/correlation_pass.rs and benches/scan_throughput.rs compile under `cargo check --all-targets` but no workflow ever executes them, so performance regressions are invisible.",
+      "status": "CLOSED cycle 2 as REJECTED — benches ARE compiled by CI. See rejected_candidates."
+    },
+    {
+      "id": "OD-4",
+      "summary": "ci.yml hardcodes MSRV 1.88 in three places beside Cargo.toml's rust-version. Flagged as latent risk in #350 and left for a conscious maintainer decision.",
+      "status": "CLOSED cycle 1 slot 4 — guarded by tests/doc_drift.rs::ci_msrv_job_pins_the_version_cargo_toml_declares. Cargo.toml rust-version is now the single source of truth in the sense that matters: divergence from any of the three ci.yml literals fails a required check, without unpinning the action."
+    },
+    {
+      "id": "OD-5",
+      "summary": "PR #317 carries 4 modules absent from main (builtwith, fofa, proxycurl, key_discovery) behind 11 conflicts and ~20k lines of two-way divergence, with CI never having run on it.",
+      "status": "IN PROGRESS — fofa (a703caa5), builtwith (2fbbf1ec) and proxycurl (cycle 5) landed. ONE remaining: key_discovery (468 lines, only util::key_pool::global_pool). It scans local config files for API keys — read src/modules/key_discovery/config_scan.rs against SECURITY.md and confirm it inventories the OPERATOR'S OWN keys rather than harvesting third-party credentials BEFORE landing it. \"Out of scope, do not land\" is an acceptable outcome."
+    },
+    {
+      "id": "OD-6",
+      "summary": "util::atomic_file::create_dir_private previously returned Ok(()) for a pre-existing directory it could not chmod to 0700, because DirBuilder::recursive(true) succeeds on an existing dir and the repairing set_permissions was discarded. Its own doc claimed a 0700 guarantee it did not deliver, and key_vault.db / key_pool.json live beneath that directory.",
+      "status": "CLOSED cycle 2 slot 1 — the achieved mode is now verified and a failure is disclosed at warn!, with the Ok contract deliberately unchanged so the infallible path accessors still return a usable PathBuf."
+    },
+    {
+      "id": "ingest-csv-lacks-formula-injection-guard",
+      "category": "HARDENING / security",
+      "detail": "#365's csv::Writer fix made `hse ingest -F csv` structurally valid RFC 4180, but it does not apply the anti-formula-injection guard that api::scan_export::csv_escape applies on the scan-export path. Ingest's input is an UNTRUSTED document, so a value beginning =/+/-/@/CR/TAB is written verbatim and executes when the operator opens the export in Excel or LibreOffice. The scan-export path is guarded; the ingest path is not.",
+      "status": "recorded on main via #379; carried across the merge into this branch — a candidate for a future cycle if not already fixed on main"
+    },
+    {
+      "id": "OD-8",
+      "rule": "AU-050",
+      "loc": "src/core/correlator/rules/assoc.rs:334",
+      "severity": "High",
+      "source": "wave4 assoc/gap auditor (cycle 24)",
+      "status": "PARTIALLY CLOSED cycle 28 (commit c8070060f) — false-NEGATIVE half fixed (NANP over-length numbers no longer misread as AU service lines; exact-length gate in au_phone_line_type). False-POSITIVE half split to OD-14.",
+      "summary": "Shared-phone associate veto calls au_phone_line_type on the +-stripped normalise_phone key, so its internal contains('+') country-code strip never fires. FALSE POS: '+61 1800 xxx xxx' AU freephone in intl form -> key '611800…' -> classifier returns None -> is_business_service veto skipped -> fabricated High associate cluster on a shared business desk. FALSE NEG: '+1 90x xxx xxxx' NANP numbers -> key '190x…' collides with AU premium 190x/freephone 1800 -> genuine shared-line associations dropped for NANP area codes 901-909. Comment at 332-333 ('Non-AU numbers stay grouped') is false.",
+      "fix_direction": "Gate the business-service veto on confirmed-AU membership (to_e164_au/validate_phone_e164) before classifying; normalise +61-form to national number first so a NANP '1…' key can never match 1800/190x."
+    },
+    {
+      "id": "OD-9",
+      "rule": "AU-049 / AU-051",
+      "loc": "src/core/correlator/rules/assoc.rs:26 (normalise_address)",
+      "severity": "High/Critical",
+      "source": "wave4 assoc/gap auditor (cycle 24)",
+      "status": "CLOSED cycle 26 (commit 3363313f5) — normalise_address folds '# - / \\\\' to space, keeps '.' deleted; unit '1/2' no longer collides with '12'; regressions added; gate green.",
+      "summary": "normalise_address DELETES '/ - # . \\\\' instead of folding to space. AU '/' is the unit separator. FALSE POS: '1/2 Oak Street' (unit 1, #2) and '12 Oak Street' (#12) both normalise to '12 oak street …' -> is_specific_residence accepts -> residence_groups fuses two strangers -> AU-049 High household/associate cluster; AU-051 kin escalation if surnames coincide. FALSE NEG: '123 Main-St' vs '123 Main St' never merge.",
+      "fix_direction": "Fold '# - / \\\\' to whitespace (NOT '.': keep deleting '.' so intra-token abbreviations survive — N.S.W -> nsw == NSW, St. -> st; folding '.' would break AU state matching). This keeps '1 2 oak st' distinct from '12 oak st' and 'main st' == 'main-st'. Update blessing test normalise_address_drops_format_punctuation_and_trims (currently expects 'main-st'->'mainst'; becomes 'main st'). [refined during cycle-25 pre-verification of the assoc.rs normalise_address source]"
+    },
+    {
+      "id": "OD-10",
+      "rule": "AU-004",
+      "loc": "src/core/correlator/rules/infra.rs:26",
+      "severity": "Critical",
+      "source": "wave4 infra auditor (cycle 24)",
+      "status": "CLOSED cycle 25 (commit d304d60e2) — AU-004 now counts threat_source_count via canonical THREAT_INTEL_SOURCES; AU-015 consolidated onto the same set; regression added; gate green.",
+      "summary": "Malicious-infrastructure gate uses entity-wide source_count() >= 2, counting ANY corroborating sources (routine ip_geo/DNS enrichment), not the count asserting the malicious verdict. FALSE POS (Critical): one blocklist hit + one geo enrichment on a lesser-known shared VPS (not is_benign_infra) clears the >=2 bar -> Critical 'flagged malicious by blocklist sources'. The gate's own comment says the malicious VERDICT must be corroborated by >=2 sources; it does not enforce that. au004_fires uses two threat sources so it passes for the wrong reason.",
+      "fix_direction": "Count distinct evidence records whose source is in a recognised blocklist/threat-source set (require >=2), not entity-wide source_count()."
+    },
+    {
+      "id": "OD-11",
+      "rule": "AU-097",
+      "loc": "src/core/correlator/rules/infra.rs:536,553-567",
+      "severity": "High",
+      "source": "wave4 infra auditor (cycle 24)",
+      "status": "CLOSED cycle 27 (commit 2158d222d) — AU-097 excludes tags::HOSTING/PLATFORM_INFRA and no longer overclaims 'not hosting infrastructure'; regression added; gate green. Residual (untagged server IPs) noted in cycle_27_provenance.",
+      "summary": "Seeds a person-level residency/institutional-affiliation claim from a pure-infrastructure IpAddress/Asn entity with no check it is the subject's own access connection and no HOSTING/PLATFORM_INFRA exclusion. FALSE POS: resolved university/AARNet server IP -> High 'institutional affiliation'; small-business web/mail server on a Telstra/Optus business IP -> Medium 'a person on a domestic network, not hosting infrastructure' for an IP that IS hosting infra. Violates the infra-must-not-seed-identity discipline; tags::HOSTING/PLATFORM_INFRA already exist and are ignored.",
+      "fix_direction": "Skip entities tagged HOSTING/PLATFORM_INFRA (and/or restrict to the subject's own access IP); stop asserting 'not hosting infrastructure' for un-vetted IPs."
+    },
+    {
+      "id": "OD-12",
+      "rule": "AU-111",
+      "loc": "src/core/correlator/rules/infra.rs:595,597",
+      "severity": "Medium (missing intel / silent false negative)",
+      "source": "wave4 infra auditor (cycle 24)",
+      "status": "CLOSED cycle 29 (commit 85aae6e9c) — DNS_FRONTING_CDN_PROVIDERS now uses waf_detect's exact provider strings ('AWS CloudFront','Imperva/Incapsula'); regression added; gate green.",
+      "summary": "CDN-origin rule matches waf:{p} by exact has_tag with p from DNS_FRONTING_CDN_PROVIDERS ('CloudFront','Incapsula'), but waf_detect emits 'waf:AWS CloudFront' and 'waf:Imperva/Incapsula'. SILENT FALSE NEG: AU-111 never fires for CloudFront- or Incapsula-fronted domains -> SPF-origin-leak pivot omitted for 2 of 8 named CDNs. The other 6 (Cloudflare/Akamai/Fastly/Sucuri/StackPath/KeyCDN) match. Test masks it: cdn_fronted_domain fabricates the tag with the same wrong name the rule checks.",
+      "fix_direction": "Match the exact strings waf_detect emits, or key both modules off one shared canonical provider id matched case-insensitively."
+    },
+    {
+      "id": "OD-13",
+      "rule": "AU_NETWORK_OPERATORS -> AU-097",
+      "loc": "src/util/address_au/mod.rs:784",
+      "severity": "Medium",
+      "source": "wave4 infra auditor (cycle 24)",
+      "status": "CLOSED cycle 30 (commit 5a12b7f8c) — ambiguous common-word brands (belong/dodo/tangerine) gated to structured operator fields via au_network_operator_split; descr prose no longer fabricates them; genuine structured attributions preserved; regressions added; gate green.",
+      "summary": "Operator table includes common English words as brand tokens ('belong'; review 'dodo'/'tangerine'). au_network_word_in whole-word-matches 'belong' appearing in a RIPE descr/org prose field -> false ('Belong', Consumer) AU-ISP attribution -> AU-097 Medium false residency claim. The word-boundary check cannot prevent it because the token IS a whole word.",
+      "fix_direction": "Drop common-English-word tokens (belong; review dodo/tangerine) from the operator table, or require ambiguous tokens to co-occur with an ASN/ISP context marker. Independent of OD-11 (the token table is wrong on its own)."
+    },
+    {
+      "id": "OD-14",
+      "rule": "AU-050",
+      "loc": "src/core/correlator/rules/assoc.rs:344 + normalise_phone/entity_phones/Group",
+      "severity": "High (rarer than OD-8's neg half)",
+      "source": "cycle 28 split from OD-8",
+      "status": "CLOSED cycle 31 (commit 0f33bf491) — AU-050 veto also classifies the '61'-stripped key, catching +61-international-form business lines; personal +61 lines still group; regression added; gate green.",
+      "summary": "AU-050 business-service veto calls au_phone_line_type on the +-stripped normalise_phone digits key. An AU freephone/premium in +61 INTERNATIONAL form (+61 1800 xxx xxx -> key 611800xxxxxx) is NOT recognised by au_phone_line_type (it strips '61' only when the value still contains '+', which the key lost) -> classifier returns None -> veto skipped -> AU-050 fires a false High associate cluster on a shared 1800/190x business desk. Rarer than the false-negative (1800 numbers are seldom stored in +61 form) but real in messy breach data.",
+      "fix_direction": "Classify the ORIGINAL +-bearing phone value for the veto, not the digits key: thread a representative original phone string through entity_phones -> Group -> the veto (or canonicalise +61/0061 to AU national form in a shared normaliser). Also make au_phone_line_type return None for a '+' followed by a non-61 country code (a foreign E.164 number is definitionally non-AU), generalising the existing '+1 555…'->None doctest. Verify against both callers (AU-050, geo::jurisdiction:304) + doctest."
+    },
+    {
+      "id": "OD-15",
+      "rule": "n/a (observability)",
+      "loc": "src/util/see_know/budget.rs:~203",
+      "severity": "Low (observability)",
+      "source": "cycle 30 — observed in a live `hse doctor` run pasted by the user",
+      "status": "CLOSED cycle 32 (verified NOT a defect) — the see-know.eu vs .ru split is INTENTIONAL: api base/DEFAULT_BASE is https://see-know.ru/api/v1 (client.rs:88) while the .eu references (budget.rs WARN, pricing https://see-know.eu/pricing, the rejected-key body the service returns) are the account/pricing domain; base_urls_for accepts see-know.eu/.ru/.xyz/.icu as valid aliases (tests.rs:675-677). No fix warranted — changing .eu->.ru would break the real pricing URL. Observation (two domains differ) was correct; the stale-literal inference was wrong. Verification prevented a spurious change.",
+      "summary": "`hse doctor` prints SeekNow `api base: https://see-know.ru/api/v1` but the budget WARN one line below reads 'SeekNow (see-know.eu) lookups disabled…' (target huntsman_search_engine::util::see_know::budget line ~203). The .eu vs .ru mismatch looks like a stale domain literal in the WARN string — misleads an operator about which service failed.",
+      "fix_direction": "Grep util/see_know for 'see-know.eu' / 'see-know.ru'; if .eu is a stale literal in the WARN message, correct it to the canonical see-know.ru (matching the api base + docs/SEEKNOW_SETUP.md). Verify it isn't an intentional dual-domain alias first (separate observation from inference)."
+    },
+    {
+      "id": "OD-16",
+      "rule": "au_phone_line_type -> AU-098/geo::jurisdiction",
+      "loc": "src/util/address_au/mod.rs:~487 (au_phone_line_type)",
+      "severity": "Low (Correctness edge, low frequency)",
+      "source": "cycle 31 — identified during OD-14 analysis",
+      "status": "CLOSED cycle 32 (commit 096505426) — au_phone_line_type returns None for a '+' with a non-61/0061 country code; foreign numbers no longer mis-signal AU jurisdiction; regression added; gate green.",
+      "summary": "au_phone_line_type, given a value with a '+' whose country code is NOT 61/0061, falls through to classify by the leading national digit instead of returning None: '+44 1800 123 456' -> nat '441800123456' -> first char '4' -> AU Mobile. Its caller geo/jurisdiction.rs:304 passes e.value (with '+'), so a foreign phone can mis-signal AU jurisdiction. (AU-050 is unaffected — it passes +-stripped keys, plus=false.) The existing doctest already asserts '+1 555 123 4567' -> None, but only because 155x matches no prefix and '1' isn't a valid first digit; other country codes with a valid-looking first digit slip through.",
+      "fix_direction": "In au_phone_line_type, when `plus` is true and neither the '0061' nor the (plus-gated) '61' country code was stripped, return None (a '+' explicitly marks the country code; not 61 => not AU). Verify the +61/0061 paths + both callers (assoc.rs:344 passes stripped keys so unaffected; geo/jurisdiction.rs:304) + the doctest + cycle-28 NANP tests still pass."
+    }
+  ],
+  "cycle_2_slots": [
+    {
+      "slot": 1,
+      "category": "HARDENING",
+      "instruction": "create_dir_private must not report Ok for a directory it failed to make private; verify the achieved mode and disclose.",
+      "status": "COMPLETE"
+    },
+    {
+      "slot": 2,
+      "category": "GAP-ANALYSIS",
+      "instruction": "Close the result-swallowing audit with a per-class verdict.",
+      "status": "COMPLETE — 233 non-test sites classified; exactly ONE real defect (the create_dir_private chain, slot 1) plus one minor silent write (capability_probe). The rest are justified."
+    },
+    {
+      "slot": 3,
+      "category": "DEBUG",
+      "instruction": "Disclose the silent drift-map write in selftest::capability_probe::record_confirmed_drift_at.",
+      "status": "COMPLETE — re-resolved after the original slot 3 (data_log rotation) was aborted as a non-defect."
+    },
+    {
+      "slot": 4,
+      "category": "UPGRADE",
+      "instruction": "OD-3 — wire the Criterion benches into CI.",
+      "status": "ABORTED — the premise was false. See rejected_candidates."
+    },
+    {
+      "slot": 5,
+      "category": "COMPLETION",
+      "instruction": "Extract one self-contained module from PR #317 onto current main (OD-5).",
+      "status": "NOT STARTED — carried to cycle 3. The largest remaining item and deliberately not rushed."
+    }
+  ],
+  "cycle_3_slots": [
+    {
+      "slot": 1,
+      "category": "COMPLETION",
+      "instruction": "Extract the most self-contained module from PR #317 onto current main (OD-5), one module per PR.",
+      "status": "COMPLETE — fofa chosen on a measured dependency footprint: 300 lines needing only core::scan and two util::http helpers, against proxycurl (1056 lines, 13 helpers), builtwith (447) and key_discovery (468, a config-file key scanner that deserves its own security review). Source needed NO adaptation; the three architecture ratchets that fired were all integration requirements #317 never learned because CI never ran on it. Registry 171 -> 172."
+    }
+  ],
+  "cycle_4_slots": [
+    {
+      "slot": 1,
+      "category": "COMPLETION",
+      "instruction": "Extract builtwith from PR #317 (second module).",
+      "status": "COMPLETE — only the README ratchet fired, because env_template.txt already carried HUNTSMAN_BUILTWITH_KEY and the confidence literals were mapped up front from the cycle-3 checklist. The real find was NOT a ratchet: builtwith emitted registrant contact emails with no role/infra gate, reintroducing the leakage #351 removed from cert_intel/crtsh/ip_registry/doh_resolver. Its own existing test asserted the leaky behaviour and had to be rewritten."
+    }
+  ],
+  "cycle_5_slots": [
+    {
+      "slot": 1,
+      "category": "COMPLETION",
+      "instruction": "Extract proxycurl from PR #317 (third module).",
+      "status": "COMPLETE — registry 173 -> 174. See module_extraction_checklist; the key ratchet guards FOUR locations, not one."
+    }
+  ],
+  "module_extraction_checklist": {
+    "$note": "Learned across cycles 3-5 extracting fofa, builtwith, proxycurl from #317. Run BEFORE extracting.",
+    "1_key_registration_FOUR_places": [
+      "src/cli/env_template.txt — what `hse provision` offers",
+      "src/util/keys/constants.rs KNOWN_KEYS — what the Settings UI can surface",
+      "src/util/keys/constants.rs signup_hint() — the \"needs key\" notice; say PAID explicitly when there is no free tier",
+      ".env.example at repo root — the provider catalogue an operator browses"
+    ],
+    "2_confidence": "Map every bare literal onto an EXISTING confidence:: rung. proxycurl had 0.68, which is NOT a rung (HIGH 0.65 / HIGH_PLUS 0.70) — resolved DOWNWARD because the entities are tagged `derived` and the module doc calls them weaker than their source. Never invent a rung.",
+    "3_readme": "Three figures: line ~11 total, the `hse modules` line ~169, Module Overview header ~237 with its free vs key-gated/paid split. ModuleCost::Paid counts in the key-gated/paid figure.",
+    "4_privacy_NOT_ratcheted": "No architecture test catches PII defects. builtwith emitted registrant contact emails with no role/infra gate, reintroducing the #351 leak, and its own test asserted the leaky behaviour. But do NOT apply the gate reflexively: proxycurl reads profile.personal_emails (the subject OWN addresses) rather than registrant contact blocks, so is_infrastructure_email would drop a sole trader's genuine sales@theirfirm.com. Reason about the data class, do not pattern-match.",
+    "5_scope": "Check the module against SECURITY.md and against already-registered peers. proxycurl is the same class as hunter_io/epieos/contact_enrich/emailrep, all already in main."
+  },
+  "web_console_parallel_track": {
+    "note": "This block records a SECOND autonomous loop that ran on branch claude/pipeline-refactor-repair-urjrgk IN PARALLEL with main's module-extraction cycles (2-5 above). Both forked from #364's cycle-1 state, so both number their own cycles from 2; those numbers are NOT the cycle_2_slots..cycle_5_slots on main's spine, which are unrelated work. Kept as a separate key rather than renumbered into main's sequence because pretending this work came after main's cycle 5 would be false. Its commits landed via PR #365; every one was verified with cargo test --all --locked + clippy -D warnings + fmt before commit. RETIRED as of cycle 6: claude/pipeline-refactor-repair-urjrgk merged main (c532272f0) and all subsequent cycles (6+) are recorded directly under cycle_N_slots on this single spine, same as main's own cycles 2-5. This block is kept only as the historical record of the parallel period; no further entries will be added to it.",
+    "theme": "The maintainer's two stated goals: make the web console lightweight without losing functionality (esp. the graph), and stop the Termux aarch64 no-root web UI crashing during scans. Driven by real device telemetry (captured event logs of 47/535/587/598 events and debug bundles from the device).",
+    "cycles": {
+      "track_cycle_1": "Entity-extraction / ingest pipeline: validated IPv4 via Ipv4Addr (was emitting 999.1.2.3 / leading-zero / multicast as valid), validated IPv6 extraction, csv::Writer round-trip for `hse ingest -f csv`, EntityKind to_str<->from round-trip, is_private_ipv4 via Ipv4Addr::is_private, self_restart exit(1) not panic, advisory bench-smoke.yml, entity_extractor ingest-path benchmark, correlation log-line de-duplication.",
+      "track_cycle_2": "D3 removal (dropped the last vendored front-end asset, 151,725 B; graph is now a dependency-free deterministic concentric SVG layout, O(nodes), no simulation) and per-event O(n) removal in graph.js/log.js.",
+      "track_cycle_4_slots": [
+        {
+          "slot": 1,
+          "category": "DEBUG",
+          "instruction": "Establish why the dossier/debug bundle prints six zero module counters mid-scan, then fix it without fabricating numbers.",
+          "outcome": "DONE (d4238fa9b). Cause traced end to end: Scan::new seeds modules_* to 0; run_with_ledger_inner (core/engine/mod.rs:653) upserts the Running row with those zeros; the ONLY write is finalise_scan (core/engine/mod.rs:991-996) at scan end; nothing updates the row in between. Fix is disclosure + the number that does exist: ScanStatus::is_terminal(), a NOT-YET-FINAL caveat appended by module_accounting_line() on non-terminal scans (inherited by both renderers from the one single-sourced sentence), and core::event::ModuleEventTally rendered by render_full as an 'observed :' line on the non-terminal path only. 7 tests."
+        },
+        {
+          "slot": 2,
+          "category": "HARDENING",
+          "instruction": "Bound the web scan-log DOM so a long scan cannot exhaust a Termux browser tab, without silently truncating what the operator can save.",
+          "outcome": "DONE (e5899aac9). appendLog created one permanent node per event and removed nothing. LOG_MAX_ROWS=1200, oldest-first, evicted synchronously inside appendLog (a deferred trim would still let the full list exist for a frame during the synchronous history render; the peak is the problem). Disclosed three ways: the By-type breakdown counts events not rows so its totals stay complete, it names the drop and points at Download, and the 'Save shown' header warns the file starts mid-scan."
+        },
+        {
+          "slot": 3,
+          "category": "HARDENING",
+          "instruction": "Stop the three timer-driven views doing full network + render work while nobody is looking at them.",
+          "outcome": "DONE (5f6475bb3). scan-info (8s, four requests + full view rebuild), Live monitor (8s), Engines (30s server-side liveness sweep) all now consult a shared timers.js pageHidden(). Schedule is kept rather than torn down: a hidden tick fires, does nothing, re-arms — chosen over a visibilitychange listener specifically because scan-info re-renders every 8s and would accumulate one listener per render."
+        },
+        {
+          "slot": 4,
+          "category": "UPGRADE",
+          "instruction": "Make the Graph tab usable during a running scan — the 8s refresh was discarding the operator's viewport.",
+          "outcome": "DONE (45fcd1f61). `const view` was declared inside buildGraph, so every 8s rebuild snapped the canvas to origin at scale 1 and the graph could not be panned or zoomed for the whole duration of a scan. Hoisted to module scope, re-applied by buildGraph's closing applyView(), reset per-scan via viewScanId so a different scan starts centred. Node positions deliberately not preserved (layoutConcentric is deterministic; a growing node set legitimately relayouts) and the comment says so."
+        },
+        {
+          "slot": 5,
+          "category": "GAP-ANALYSIS",
+          "instruction": "Record cycle 4, its verified negatives and its one measured rejection, so the next cycle does not re-derive them.",
+          "outcome": "DONE (this entry)."
+        }
+      ]
+    },
+    "observations_not_on_main_spine": [
+      {
+        "id": "OB-2",
+        "summary": "Verified NEGATIVES from the cycle-2 sweep — recorded so later cycles stop re-deriving them. (a) Production `.unwrap()` count is genuinely 0; the 55 production `.expect()` hits are infallible-by-construction (literal Regex::new, aho-corasick over static patterns, tokio runtime / reqwest client init) — the earlier rejection of 'eliminate unwrap/panic/unsafe' is correct as written. (b) All 19 `unsafe` textual hits are CSP header strings ('unsafe-inline') and prose; forbid(unsafe_code) holds. (c) core::classifier does NOT share the IPv4 over-acceptance bug that entity_extractor had: `extract` keeps a dotted-quad only if classify() resolves it to IpAddress, and TargetKind::detect (core/scan/mod.rs:213) gates on `v.parse::<std::net::IpAddr>()`, so 999.1.2.3 and leading-zero forms are already rejected on the engine path. (d) modules/dns_axfr is safe AND already proptested (extract_name_is_total, extract_name_rejects_pointer_loops, build_axfr_query_is_total) — a totality proptest there would be pure duplication.",
+        "action": "none — negative results, kept to prevent rediscovery"
+      },
+      {
+        "id": "OB-3",
+        "summary": "Real-device scan telemetry (two logs, 598 and 47 events, 2026-08-05 and 2026-08-03) shows four module timeouts (nostr 8s, fediverse 8s, signal_radar 14s, device_sensors) and two auth failures that are configuration rather than defects (breach-source HTTP 401 'Invalid or missing API key', github_code_search HTTP 401 'Bad credentials'). crtsh appears as 'capability-quarantined — persistent drift', i.e. the drift system behaving as designed.",
+        "action": "none this cycle — timeouts are per-module budgets working, not failures; the 401s are unconfigured keys"
+      },
+      {
+        "id": "OB-4",
+        "summary": "UNRESOLVED, needs device-side evidence: the 598-event log ends at `04:55:25 module ▶ smtp_vrfy` with no matching ✓/✗ and NO `scan complete` line, whereas the 47-event log terminates cleanly with `✔ scan complete · 10 entities`. Either the scan hung/died in smtp_vrfy (plausible — it dials port 25, which mobile carriers routinely blackhole, so a connect can stall past any read timeout) or the export simply truncated at 598 events. Cannot distinguish from the log alone.",
+        "action": "open — before treating as a defect, confirm whether the exporter caps event count; if it does not, audit smtp_vrfy's connect timeout specifically (a read timeout does not bound a TCP connect that never completes)"
+      },
+      {
+        "id": "OB-5",
+        "summary": "OB-4 RESOLVED, and my earlier smtp_vrfy hypothesis was WRONG. Device debug bundles show `status : Running` — the operator exported them mid-scan, so a log ending at a bare `module >` line is an export boundary, not a hang. Confirmed by counter-example: the 535-event log cuts at `> emailrep` while `smtp_vrfy` COMPLETED in that same run (`smtp_vrfy (1 found)`), and the 598-event log cuts at `> smtp_vrfy`. Different terminal modules, no fixed event cap (598 vs 535) — consistent with export-while-running, not with any one module hanging.",
+        "action": "closed — do not re-open on log truncation alone"
+      },
+      {
+        "id": "OB-6",
+        "summary": "OPEN BUG, not yet fixed: the debug bundle's FULL DOSSIER header prints `modules : 0 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped` while the SAME scan's event log records 60 module_done, 9 module_error, 11 module_skipped, 70 module_start (entities 264, status Running). The module counters are dead zeros in the dossier. Cause not yet established — likely the counters are only populated at scan completion, or the dossier reads a default/fresh stats struct. Needs the renderer located (grep for \"timed out\" / \"deduped\") and the data source traced before a fix.",
+        "action": "open — next cycle's highest-value DEBUG candidate"
+      },
+      {
+        "id": "OB-7",
+        "summary": "Web payload after cycle 3: src/web = 439,346 B across 44 files. Remaining weight is css/app.css 80,548 B and js/ 342,781 B (largest: views/opts.js 37,151, views/new_scan.js 36,676, scan_info/stealer.js 24,135). The event log (scan_info/log.js) still appends one DOM row per event with NO cap — ~600 rows for a real scan. Capping it would change what the 'Save shown' button saves, so it needs a deliberate decision rather than a silent truncation.",
+        "action": "open — candidates for the next lightweight pass"
+      },
+      {
+        "id": "OB-8",
+        "observation": "CLOSES OB-6. The mid-scan six-zero module counters are fully explained and fixed in cycle 4 slot 1. Evidence chain: Scan::new seeds zeros (core/scan/mod.rs) -> run_with_ledger_inner upserts Running with them (core/engine/mod.rs:653-654) -> finalise_scan is the sole writer (core/engine/mod.rs:991-996). Both uploaded debug bundles were status:Running, which is why both showed zeros while their event streams held ~70 module_start / ~60 module_done / ~9 module_error / ~11 module_skipped.",
+        "action": "closed"
+      },
+      {
+        "id": "OB-9",
+        "observation": "Deliberate design limit recorded so it is not mistaken for an oversight: the event stream CANNOT reconstruct the engine's six counters. There is no distinct EventKind for a timeout (it arrives as a plain ModuleError), a cache replay, or a dedup; and ModuleSkipped is not disjoint from ModuleStart — gate-skips are emitted with no preceding start (Engine::emit_module_skipped, core/engine/mod.rs:477-482) while dispatched-then-opted-out modules emit one first (dispatch.rs:548). ModuleEventTally therefore reports event counts under their event names and offers no in-flight figure.",
+        "action": "documented on the type; no further work"
+      },
+      {
+        "id": "OB-10",
+        "observation": "VERIFIED NEGATIVES for the Termux web-UI crash sweep, so future cycles do not re-investigate. (a) No leaked listeners or observers: every document/window listener (ui.js initMoreSheet/initModals/initTableLabels, helpers.js initDownloads, theme.js, main.js hashchange) is attached exactly once at bootstrap in main.js:113-116, and initDownloads is additionally idempotent via window.__hseDownloadsInit. (b) graph.js attaches only to the svg and to node elements, all inside the replaced subtree, so they are collected with the DOM. (c) Auto-refresh timers cannot stack: main.js render() calls clearScanTimer/clearLiveTimer/clearEnginesTimer/clearOptsTimers before dispatching, and scan-info arms its timer only after its render completes. (d) browse.js was already capped (BROWSE_ROW_CAP) and graph.js already capped (GRAPH_MAX_NODES/GRAPH_MAX_LINKS/CORR_MAX_SPOKES); log.js was the only uncapped per-event view, fixed in slot 2.",
+        "action": "closed"
+      },
+      {
+        "id": "OB-11",
+        "observation": "STILL OPEN, not addressed this cycle. scan_info/index.js fetches ALL FOUR of scan, entities, correlations and relations on every render regardless of which tab is active (index.js:24-26), including the 8s live refresh. The full entity set carries complete evidence chains, so on a large scan this is the heaviest single thing the UI does. Slot 3 stopped it happening for a hidden tab, which removes the unattended case, but a visible scan-info tab still re-pulls everything every 8s. A per-tab fetch projection (or a lightweight counts endpoint for the header stat cards, given scan.entity_count is already in the scan record) would cut it further.",
+        "action": "open — candidate for a future cycle; needs a browser to validate, which this host does not have"
+      }
+    ],
+    "rejected_candidate": {
+      "id": "RC-4",
+      "candidate": "Trim src/web/css/app.css (80,564 B — the largest embedded asset) by removing unused Bootstrap-style grid classes, for the 'lightweight UI' objective.",
+      "reason": "REJECTED on measurement, not on principle. 30 of the 48 .col-{xs,sm,md,lg}-N rules are provably unreferenced across all JS, spa.html and every .rs file — but they occupy 746 B of 78,704 B (0.9%). The stylesheet is not bloated: 450 rule blocks, 453 distinct selectors, only 9% comments, for a 34-view SPA. A sub-1% saving is not worth the layout-regression risk on classes a future view may legitimately use. NOTE for future cycles: a naive 'unreferenced class' sweep over app.css yields 66 false positives — k-*, lv-*, cost-* and cv-* are all built dynamically (kindPill/costPill in helpers.js, `log-row lv-${...}` in log.js and live.js, `corr-card cv-${...}` in correlations.js) and are LIVE."
+    }
+  },
+  "cycle_6_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "instruction": "Escape target values before interpolating into the FOFA search filter, closing a query-injection path reachable via unvalidated pivot targets.",
+      "outcome": "DONE (a957585c6). fofa_filter built ip=\"{value}\"/host=\"{value}\" with target.value interpolated raw. Seed targets are validated (Target::validate restricts Domain to alnum/./-/_, parses IpAddress via std::net::IpAddr) but pivot targets built during expansion (Target::new(tk, entity.value.clone()), core/engine/mod.rs:1490,2121) are NOT revalidated before dispatch -- and this module itself mints Domain/IP entities straight from FOFA's own JSON response (hit.domain, hit.ip in build_entities), untrusted provider data. escape_fofa_value backslash-escapes \\ then \" (order matters). 4 tests: injection neutralized with a decisive substring-absence check, backslash-before-quote ordering, and the ordinary-value no-regression case."
+    },
+    {
+      "slot": 2,
+      "category": "HARDENING",
+      "instruction": "Closes OB-11. Stop scan-info fetching relations on every tab/every 8s refresh when only the Graph tab consumes them.",
+      "outcome": "DONE (5a9b98dca). renderScanInfo fetched entities+correlations+relations unconditionally on every render (all 7 tabs, the 8s live-refresh while a scan runs). Confirmed via grep across every scan_info/*.js that S.relations has exactly one functional consumer: graph.js. wantRelations = activeTab==='graph' gates the fetch; false branch uses Promise.resolve({relations:[]}) (a real elision, zero network round-trips) not a fetch-and-discard. entities/correlations stay unconditional (used by browse/correlations/graph/header stat cards)."
+    },
+    {
+      "slot": 3,
+      "category": "COMPLETION",
+      "instruction": "Remove JS modules orphaned by the tab-streamline refactor and repoint the test that asserted content inside the dead code.",
+      "outcome": "DONE (06a90a358). Discovered TWO dead files during slot 2's verification, not one: status.js (renderStatus) AND relations.js (renderRelations) -- both zero importers since the Correlations-gets-its-own-tab streamline (#301), both still include_bytes!-embedded and served. 6,710 B removed. relations.js was a real capability (sortable typed-edge table), not junk -- disclosed in the commit and to the user rather than silently dropped: the same data remains visible via the Graph tab's edges, GEXF export (does carry relations), and the raw /scans/{id}/relations endpoint; it is NOT in the JSON report bundle (the one place this got strictly harder to reach). Removal, not restoration, matches the maintainer's explicit lightweight/basic-graph direction. Repointed embedded_spa_deep_links_resolve_to_a_visible_section from status.js's dead prose-link to report.js's live nav(...&tab=corr) call."
+    },
+    {
+      "slot": 4,
+      "category": "UPGRADE",
+      "instruction": "resolve_scan_id's non-complete warning wrongly told an Aborted scan its data 'may be incomplete' / 'recovering checkpointed (partial) entities'.",
+      "outcome": "DONE (5e1614053). ScanStatus::Aborted's own doc comment guarantees an aborted scan's persisted entities are as final as a Complete scan's -- no writer racing, no more data arriving. The blanket != Complete check bucketed it with Failed/Pending/Running (which genuinely can still change). Extracted scan_incompleteness_warning(status, raw) -> Option<String>, a pure function, so the distinction is unit-testable without capturing stderr. 3 tests: Complete silent, Aborted gets its own accurate 'stopped early... final' message (asserted to NOT contain the old partial-recovery phrasing), Failed/Pending/Running keep that phrasing verbatim (looped, so a future status isn't silently uncovered)."
+    },
+    {
+      "slot": 5,
+      "category": "GAP-ANALYSIS",
+      "instruction": "Record cycle 6 in .agent/state.json now that the branches are merged into one spine; retire the parallel-track bookkeeping.",
+      "outcome": "DONE (this entry). See retirement note below."
+    }
+  ],
+  "cycle_7_slots": [
+    {
+      "slot": 2,
+      "category": "HARDENING",
+      "instruction": "Pause Settings' three background-job pollers when the page is hidden.",
+      "outcome": "DONE (e4d3dc02f). Landed on PR #372 (post-#365)."
+    },
+    {
+      "slot": 3,
+      "category": "UPGRADE",
+      "instruction": "Remove the node graph; use a basic 2D flow-chart entity map (explicit user instruction).",
+      "outcome": "DONE (fe25ae73a). scan_info/graph.js rewritten to a deterministic generation-row flowchart (layoutFlowchart), uniform box nodes, derived_from lineage arrows, drag machinery removed, pan/zoom kept. CSS swatch square. Pinned by embedded_spa_graph_is_a_flowchart_not_a_node_graph. Note: earlier same-session cycles also removed vendored D3 (77e73134) and made the graph a concentric SVG before this flowchart replaced it."
+    }
+  ],
+  "cycle_8_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "instruction": "Bound the identity-path correlator rules by a weak-edge confidence floor (AU-062/063/064 could confirm a finding through a damped sub-0.50 edge, the class AU-060 was patched to exclude).",
+      "outcome": "DONE (e579f01cb). Added core::relation::graph::IDENTITY_LINK_MIN_CONF=0.50, threaded a min_confidence param through disjoint_pathways_in (filter-before-search) and connection_templates; consolidated 10 duplicated MIN_CONF consts. Corrected a misnomer: 0.50 is confidence::MEDIUM, NOT Classification::PROBABLE_MIN (0.40). 6 regression tests + 2 proptests over a new wide-confidence graph strategy (existing graph() only makes >=0.5 edges). CI green on this head incl. aarch64 + MSRV."
+    }
+  ],
+  "cycle_9_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "instruction": "Terminal ScanComplete event must carry the scan's status so an aborted/failed scan's log does not render as a green success.",
+      "outcome": "DONE (79f4d940a). ROOT CAUSE of the device telemetry's `status: Aborted` vs log `✔ scan complete · 325 entities` contradiction: finalise_scan sets the status then emits ScanComplete unconditionally 33 lines later (not a race — same fn); the variant had no status field so log_summary/mapEvent/export-timeline all hard-coded the checkmark. The downloaded events.log is the CLIENT-SAFE artifact, so an aborted/failed scan handed a client an all-clear. Added status: ScanStatus (typed enum, not string) with #[serde(default)]->Complete for pre-field rows; branch complete/aborted/failed in Rust log_summary + web log.js mapEvent. 3 new event tests; SPA parity guard still passes."
+    },
+    {
+      "slot": 2,
+      "category": "GAP-ANALYSIS",
+      "instruction": "Run the dossier-import correlator under the scan path's panic guard (import ran Correlator::run unguarded while both scan paths wrap it).",
+      "outcome": "DONE (3259e8851). Promoted engine::guarded_finalise_correlation to pub(crate) guarded_correlation_pass (one canonical guarded entry for the full engine) and routed both finalise and import through it. A rule panicking on adversarial imported data now degrades to 'no correlations' instead of unwinding the import. Existing panicking-closure unit test covers both callers."
+    },
+    {
+      "slot": 3,
+      "category": "HARDENING",
+      "instruction": "Make text_mentions_ip panic-free on a non-ASCII needle (byte cursor from=i+1 could land mid-UTF-8-char; text[from..] then panics).",
+      "outcome": "DONE (da43fb7f0). Panic reproduced end-to-end: text_mentions_ip(\"aé1\", \"é\"). A real IP needle is ASCII, so the fn now enforces !ip.is_ascii()->false up front (also what makes the cursor advance sound), and the loop slices with text.get(from..) + break-on-None as defence in depth. Regression test covers the repro + v4/v6 non-ASCII + ASCII-unchanged."
+    },
+    {
+      "slot": 4,
+      "category": "UPGRADE",
+      "instruction": "PoolData::services HashMap->BTreeMap for deterministic `hse keys list` block order and byte-reproducible `keys export` JSON.",
+      "outcome": "DONE (306370a56). Drop-in for every op used on the field; makes sorted order the type's guarantee. KeyPool::indices stays HashMap (internal round-robin state, never iterated for output). Test asserts out-of-order inserts come back sorted in snapshot + export, and two exports are byte-identical. NOTE: the sibling finding to change diagnostics ModuleLedger's HashMaps was REFUTED by the sweep verifier (not-a-defect) and deliberately NOT done."
+    },
+    {
+      "slot": 5,
+      "category": "COMPLETION",
+      "instruction": "Cover six untested correlator severity-escalation branches: AU-030, AU-062, AU-064, AU-067, AU-069, AU-070.",
+      "outcome": "DONE (18e3ace99). 8 tests, each asserting out.len()==1 AND the escalated Severity so the fixture provably reaches the branch. Corrected two sweep-finder inaccuracies: AU-030 counts distinct corroborating source NAMES (not families/entity-count); AU-069's 0.75 is the base Medium arm (High@>=0.85 already covered by au069_fires_on_an_end_to_end_strong_route; no Critical rung). Test-only, no production change."
+    }
+  ],
+  "cycle_10_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "aa5a0a5fe",
+      "finding": "F2",
+      "summary": "latest_completed_scan filtered status='complete', silently skipping aborted scans (final data). Broadened SQL to IN ('complete','aborted'); renamed latest_finished_scan; resolve_scan_id 'latest' now routes through scan_incompleteness_warning; regression test newest-aborted wins over older-complete, newest-failed does not."
+    },
+    {
+      "slot": 2,
+      "category": "DEBUG/concurrency",
+      "commit": "2c46719fd",
+      "finding": "F3",
+      "summary": "session_loop shared the one session CancelHandle into every iteration's ctx.cancel, so the engine per-iteration wall-time watchdog latched the whole session's one-way flag, ending the live session after one bounded iteration. Each iteration now gets its own handle; spawn_stop_forwarder bridges a session-stop into the in-flight iteration (documented DELETE-aborts-iteration behavior preserved) and is aborted the instant the iteration returns. Tests: session-stop propagates; iteration-cancel never latches session."
+    },
+    {
+      "slot": 3,
+      "category": "DEBUG",
+      "commit": "f5bead6c2",
+      "finding": "F18",
+      "summary": "SPA discarded the /entities pagination envelope, so Browse counts reported the fetched page (default limit 1000) as the whole scan, contradicting the header stat card. Capture S.entitiesTotal from envelope.total; disclose truncation in browse.js ('N of L loaded / T in scan' + a note counts/filters cover the loaded slice, export for the full set)."
+    },
+    {
+      "slot": 4,
+      "category": "DEBUG",
+      "commit": "1ae65e56a",
+      "finding": "F4",
+      "summary": "scanStats had no 'aborted' bucket (aborted scans inflated total/entities but appeared in no tally) and computed a 'failed' count it never rendered. Added aborted bucket; surface aborted+failed as a sub-label under the Complete stat card when non-zero."
+    },
+    {
+      "slot": 5,
+      "category": "HARDENING",
+      "commit": "d4f59952a",
+      "finding": "F20",
+      "summary": "uploadDossier did await f.text() with no size check, spiking memory on a Termux phone for a huge upload that the server's 16MB DefaultBodyLimit would reject anyway. Added a client-side 16MB (MAX_UPLOAD_BYTES) guard before the read."
+    }
+  ],
+  "cycle_10_provenance": "Slots drawn from the same 27-agent 5-dimension adversarially-verified sweep as cycle 9 (deferred Rust+JS findings). F3 was the last architecturally-significant Rust item. Remaining deferred sweep finding, cycle 11 pool: F22 (scan_info/log.js SSE never resolves to a terminal status when the tailed scan finishes — pill stays live/reconnecting). Cycle-9 refuted findings (do not re-open): F7 AbortOnDrop doc, F8 enrich_geospatial guard, F17 ModuleLedger map type, F19 stealer-rows pagination (deliberate/tested), F21 scan-log DOM cap (already capped/committed design).",
+  "cycle_11_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "82ed37bab",
+      "finding": "F22",
+      "summary": "renderLog opened SSE only when running at render time and set a terminal pill only in a one-shot !running block, so a scan finishing DURING the stream left the pill 'live'/'reconnecting' forever. Detect the terminal scan_complete event in the SSE callback -> set the pill to its true terminal state (complete/aborted/failed from the carried status) and closeSse(); the state callback bails when S.sse is null so the close-triggered flap can't overwrite it. Drains the last sweep-pool item."
+    }
+  ],
+  "sweep_pool_status": "EXHAUSTED. The cycle-9 27-agent 5-dimension adversarially-verified sweep produced 22 findings; 17 confirmed and now all delivered (cycle 9: F1/F5/F6/F9-F14/F15/F16; cycle 10: F2/F3/F4/F18/F20; cycle 11: F22), 5 refuted-as-not-a-defect and recorded so they are not re-opened (F7/F8/F17/F19/F21). Further work requires a fresh inspection. BLOCKER: GitHub Actions run-creation stalled on this branch since run #2142 (306370a56), so cycles 9-11 are locally gate-green but CI-unvalidated and unmergeable until run-creation recovers.",
+  "cycle_12_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "a09cab97b",
+      "finding": "F1",
+      "summary": "cli/live render_event ScanComplete arm discarded status, printing 'scan complete' for aborted/failed sweeps in the fully-unredacted `hse live -v` view (same class as cycle-9-slot-1 events.log fix; streaming renderer was missed). Bind status, branch like log_summary. + test."
+    },
+    {
+      "slot": 2,
+      "category": "DEBUG",
+      "commit": "3c3f61f93",
+      "finding": "F8",
+      "summary": "is_tracking_id_shaped GA4 arm accepted G- + 2..=12 alphanumeric, so G-Eazy/G-Unit/G-Dragon (names) were misdetected as TrackingId. Pinned canonical GA4 shape (len==10 AND >=1 digit). Added first tests for the detector (positives all 4 Google forms; negatives the names + malformed; detect() mapping)."
+    },
+    {
+      "slot": 3,
+      "category": "HARDENING",
+      "commit": "df8b1301f",
+      "finding": "F2",
+      "summary": "hse scan --output dispatch special-cased only json/dossier and silently rendered table for anything else, so `--output josn` ran the whole scan then broke `| jq`. Added validate_scan_output_format (pure, tested) up front before scan/batch, mirroring cmd_query."
+    },
+    {
+      "slot": 4,
+      "category": "HARDENING",
+      "commit": "5781ac623",
+      "finding": "F6",
+      "summary": "install.sh built with -C target-cpu=native then cached the binary to Downloads as hse-aarch64-linux-android for 'another aarch64 phone' to reuse -> SIGILL on an older SoC. Dropped target-cpu=native so the redistributed artifact is a portable ARMv8-A baseline (matches CI Release build). Kept --as-needed."
+    },
+    {
+      "slot": 5,
+      "category": "UPGRADE",
+      "commit": "86bfa90f6",
+      "finding": "F5",
+      "summary": "lazy_static was a direct dep used at one site (patterns.rs, 3 regexes) while std LazyLock is used 40+ sites. Migrated to LazyLock<Regex> (derefs identically, no call-site changes), removed lazy_static from Cargo.toml (remains transitively via sharded-slab only)."
+    }
+  ],
+  "cycle_12_provenance": "Slots from a second 14-agent adversarially-verified sweep (workflow wf_c9c3a6b6-580) over areas the cycle-9 sweep did NOT cover: OSINT module family, CLI/runtime, crate-wide failure-isolation, packaging/release/config, non-correlator test gaps. 8 confirmed, 1 refuted (F9 ACN-test-gap). The failure-isolation dimension returned GENUINELY CLEAN (0 production unwrap holds under adversarial-input analysis) — reported honestly, not padded. Deferred to cycle 13 pool with rationale: F3 (fofa produces() advertises Organisation it never emits — low-value misleading-code cleanup), F4 (fofa row-shape/port decode fails on real FOFA response — real but the fix needs FOFA live schema unverifiable from this sandbox; needs a captured response body), F7 (image default-features pull rav1e/exr — real bloat but the fix needs a careful audit of which image formats the code actually decodes before narrowing features). NOTE process slip caught+fixed: slot-2 fmt violation was committed before fmt confirmed (background check masked it); folded into slot 2 via amend (unpushed at the time). Also: cycle-12 full-suite first run failed with ENOSPC at link time (per-session disk allowance spent) NOT a code defect — cleared incremental cache + logs (freed 11G), re-ran green.",
+  "cycle_13_slots": [
+    {
+      "slot": 1,
+      "category": "UPGRADE",
+      "commit": "ee617c055",
+      "finding": "F7",
+      "summary": "image crate default-features pulled rav1e (AVIF encode asm) + exr encoder, neither used (code only DECODES). Narrowed to 12 real decoders + rayon; ~10MiB lighter aarch64 artifact. Verified rav1e/exr absent from default tree via cargo tree -i ('nothing to print')."
+    },
+    {
+      "slot": 2,
+      "category": "UPGRADE",
+      "commit": "1e03f5807",
+      "summary": "Structured JSON-lines scan event log (user request: clean structured logging, no unnecessary symbols). Added Event::to_log_line() {time,level,kind,...fields}, EventKind::log_level() (error=module_error/failed, warn=aborted, info else) + log_fields(). render_event_log emits pure JSON lines (shared by events.log endpoint + debug bundle §3). entity_found->entity_kind/value/confidence/candidate; correlation_found->rule_id/rule/severity/description; entity_excluded renames kind->entity_kind to avoid top-level collision; scan_complete->status/entities. Stripped box-drawing headers from both debug bundles. Values go through serde_json so untrusted module/error text can't break a line. Pinning tests rewritten to parse JSON + assert fields; events.log integration test asserts glyph-free + parseable."
+    },
+    {
+      "slot": 3,
+      "category": "UPGRADE",
+      "commit": "b0de6aaec",
+      "summary": "hse live -v text cleaned of decorative glyphs (◆━▸·✓✗↻◼⊘⇉⚖⚑▪ + tree ├─│) -> plain ASCII labels. Fully-unredacted transparency contract preserved (every entity/evidence/attribute still verbatim); only presentation changed. Added glyph-free guard test over representative event kinds."
+    },
+    {
+      "slot": 4,
+      "category": "UPGRADE",
+      "commit": "de1f06ac5",
+      "summary": "Web Scan Log mapEvent reads structured JSON fields (confidence number, candidate bool, entity_kind, status, severity) instead of parsing glyphed summary strings; emits clean human messages, same category/level colours, same detail. Block comments updated to the structured-event schema."
+    }
+  ],
+  "cycle_13_provenance": "User-requested logging refactor: 'I require much more organised and structured logging and debugging. It must be clean without unnecessary symbols.' Chose JSON-lines format (one object per event, fields not glyphs) across ALL surfaces (events.log/export, hse live -v, web Scan Log, debug bundle). Validated locally: cargo test --all --locked exit 0; clippy --all-targets -D warnings clean; fmt clean. 4 commits on claude/pipeline-refactor-repair-urjrgk (PR #372). NOTE: mid-session the per-session disk volume filled to 0 bytes (cargo target/ + accumulated scratchpad logs), which blocked ALL Bash (harness could not mkdir its task dir). Recovered WITHOUT a fresh session by: truncating scratchpad build logs via the Write tool (frees blocks even at 100% full since truncation deallocates), which freed just enough for the harness mkdir, then running a zero-output 'rm -rf target' (a silent command survives the 0-byte-free state because it writes no stdout/stderr for the harness to capture) -> freed ~10G, restoring full shell. A corrupted partial write to this ledger from a python heredoc that died on ENOSPC was detected (invalid JSON) and restored from HEAD before re-recording. Deferred to cycle 14: rebuild/upgrade the free (keyless) search-engine scan/scrape/parse pipeline with deeper recursion + intelligent permutations (user request); verified-negative recorded that API-key handling already satisfies 'never delete a unique key, always browsable' — key_pool::remove is CLI-only (hse keys remove), and every key found mid-scan is minted as an append-only foreign-key entity via found_keys at the raw_archive chokepoint, so no scan path deletes or hides keys.",
+  "cycle_14_slots": [
+    {
+      "slot": 1,
+      "category": "UPGRADE",
+      "commit": "32f4545ad",
+      "summary": "Free search-engine username pivot: base-handle recovery. generate_username_variants ADDED trailing digits (jdespal->jdespal1/2) but never STRIPPED them, so a numbered seed (jsmith88) never yielded the bare base identity (jsmith) — a top cross-platform username-reuse pivot. Added the inverse: strip a trailing digit run + any dangling separator (jsmith88->jsmith, agent_007->agent), high-precision (only fires when seed ends in a digit AND recovered base is a distinct >=3-char handle; x99->x and 007 rejected). Base flows into the existing bounded pivot fan-out — no budget loosened. 3 tests. Motivated by the user's 'penetrate further / intelligent permutations' directive; validated offline since the uploaded logs are all domain scans (no username targets to A/B empirically)."
+    },
+    {
+      "slot": "followup",
+      "category": "DEBUG",
+      "commit": "ce45afd9b",
+      "summary": "Repaired an fmt violation that shipped in cycle-13 slot-3 (b0de6aaec): the de-glyphed hse live ScanComplete 'complete' arm collapsed to a >100-col single line and was committed without cargo fmt --check (that slot ran tests+clippy only). cargo fmt --all rewraps it; whitespace-only. Reinforces the pre-commit fmt-verify discipline adopted in cycle 12."
+    }
+  ],
+  "cycle_14_provenance": "User directive: 'rebuilding the API free search engine scanning, scraping and parsing' + 'upgrade the recursion... penetrates further... intelligent permutations... based on what works.' Inspected the full free search_engines pipeline (mod/queries/fetch/extract): it is mature — 17-engine keyless dork sweep, session-liveness tracking, two-tier CAPTCHA/block detection, bounded-concurrency fan-out, username+@mention pivots, bio-aggregator + social-title extraction, and a recursive entity recycler. The one clear high-precision gap was base-handle recovery (slot 1). Deliberately chose ONE high-signal permutation over several speculative ones (leetspeak/year-suffix noise) per the false-positive-averse doctrine. Validated: cargo test modules::search_engines + cli::live = 356 passed / 0 failed; clippy --all-targets -D warnings clean; fmt clean (after repairing the slot-13-3 followup). Disk recovered earlier this session (was 0 bytes free, blocking all Bash) via Write-tool log truncation + zero-output rm -rf target. Deferred cycle-15 candidates: the primary-pass MAX_ACCUMULATED_RESULTS/pivot .take() caps vs Termux budget (needs live A/B, externally blocked from this sandbox); Google /url?q= parser is dead since Google's 2025 JS requirement (known/accepted, GoogleUrlIter yields 0 from DC IPs — not fixable without a headless browser, out of scope for keyless curl).",
+  "cycle_14_ci_recovery": "GitHub Actions run-creation recovered and ran the 'Check & test (Linux x86_64, stable)' job on the branch for the first time since it stalled at cycle 10. It surfaced TWO latent failures that had shipped unvalidated while Actions was down, both now fixed and pushed: (1) fad4b0367 — a broken rustdoc intra-doc link `[ScanStatus::Aborted]` in src/storage/mod.rs (from cycle 10, aa5a0a5fe); the cargo-doc `-D rustdoc::broken_intra_doc_links` pass caught it. Fixed with the explicit path crate::core::scan::ScanStatus::Aborted. (2) 353b39c86 — the `core_does_not_import_util_directly` architecture invariant (tests/architecture.rs) failed on core::event::Event::to_log_line calling crate::util::timefmt::hms_utc (from cycle 13, 1e03f5807). Allow-listed the pure/offline/dependency-free hms_utc leaf (same category as the already-exempt geohash/geometry/spf/oui helpers), since to_log_line is the single canonical log-line formatter and duplicating the time maths into core would violate single-canonical-implementation. PROCESS LESSON (important for future cycles): the per-slot local gate used `cargo test --lib`, which does NOT run integration tests under tests/*.rs — so tests/architecture.rs and the rustdoc pass were never exercised locally. Cycle 13's claimed `cargo test --all` green was a FALSE assumption: that run's output was lost to the ENOSPC disk-fill, so its exit code was never actually observed. CORRECTIVE STANDARD: run the FULL scripts/gate.sh (or at minimum `cargo test --all` + the RUSTDOCFLAGS cargo-doc pass) and OBSERVE the output before claiming a slot verified — never infer green from a background wrapper's exit code when the command's own output was lost. All CI-job steps now reproduced locally on 353b39c86: fmt clean, cargo doc exit 0, cargo test --all 0 failed (14 suites), clippy --all-targets -D warnings clean. MSRV 1.88 + aarch64-android remain CI-authority (no local toolchain/NDK); the changes are pure Rust/doc/test with nothing MSRV- or Android-specific.",
+  "cycle_15_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "1083ad552",
+      "finding": "F3 (cycle-12 deferred)",
+      "summary": "fofa produces() advertised EntityKind::Organisation and the module docs claimed org output, but build_entities only emits IpAddress+Domain and FofaResult decodes no org field. Emitting Organisation would require a live-schema field name unverifiable from this sandbox (same blocker as F4), so honesty is the only grounded fix, not fabrication. Removed the phantom kind from produces(), corrected 3 doc sites, and added produces_lists_exactly_the_kinds_build_entities_emits (bidirectional contract guard). Full gate green (fmt/clippy/test --all/rustdoc)."
+    }
+  ],
+  "cycle_15_provenance": "Autonomous-loop cycle operating from latest main (branch 36 ahead / 0 behind after this session's merge). Established baseline with the FULL scripts/gate.sh --quick (not `cargo test --lib`, per this session's process lesson): all 7 executable checks PASS (fmt/check/clippy/rustdoc-lints/test/doctests/install.sh), 6048 lib + 117 api + 56 smoke + 48 architecture + others, 0 failed. Gap analysis: 0 TODO/FIXME, 0 production unwrap (the one hit is inside a proptest prop_assert block), no stray ignored tests. VERIFIED-CLOSED before acting: the #379 ingest-csv-formula-injection defect is ALREADY FIXED on main (src/cli/ingest/mod.rs routes each CSV field through the shared api::scan_export::formula_guard; test format_csv_defangs_a_spreadsheet_formula_from_an_ingested_document covers it) — discarded as completed work rather than re-implemented. Chose the top confirmed deferred finding (fofa F3) as the highest-return GROUNDED gap; F4 (fofa row-shape/port decode vs real FOFA) remains externally blocked (needs a captured live response body). CI recovered this session and ran on the branch: 4/6 green at cycle start (clippy, rust-clippy SARIF, MSRV 1.88, install.sh), Check&test + aarch64 in-progress and expected green (all their steps reproduced locally).",
+  "verified_negatives_recent": [
+    "cycle24 wave: gap.rs (AU-063 + single_route_identity_links/gap_fill_probes) CLEAN — families counted only via canonical source_families->corroborating_sources+source_family, 'other' dropped at both call sites; engine-synthesised/enrichment/recall/consensus correctly excluded; >=2-hop / one-edge-disjoint gate and caps have no triggerable off-by-one.",
+    "cycle24 wave: AU-112 SPF Ipv4Cidr/Ipv6Cidr parse+containment CORRECT (real Ipv4Addr/Ipv6Addr parsers, proper masking, /0 guarded, prefix bounds enforced, no cross-family match); MIN_IPV4/6_CIDR_PREFIX narrow-block gate not inverted.",
+    "cycle24 wave: AU-116 registrable_domain subdomain fold + IPv6-canonical dedup + benign-CDN veto + union-find SOUND; AU-031 flagged/benign direction + fan-out dedup CORRECT.",
+    "cycle24 wave: org.rs AU-089/094 ABN/ACN checksum + fmt_abn slicing panic-free (keys always 9/11-char ASCII digits); AU-087 k-mer identity-overlap reimpl faithful to identity_overlaps; AU-109/110/113 registrant/co-host/CDN-unmask guards correctly applied; AU-107 raw-source-name corroboration is a deliberate codebase-wide convention (matches AU-073), not a drift.",
+    "cycle32 OD-15: SeekNow see-know.eu (WARN/pricing/account) vs see-know.ru (api base DEFAULT_BASE) is an INTENTIONAL dual-domain setup, not a typo — base_urls_for whitelists both. Do NOT 'fix' the WARN domain.",
+    "cycle33 (pipeline-refactor audit @47f8065a1): util::document_parse cluster CLEAN — csv_parse/json_parse/pdf_parse/exif + cli/ingest dispatch route untrusted bytes through vetted crates (csv, serde_json, exif, image) with ?-propagation and length/finite/Null-Island bounds; serde_json's 128-level recursion cap makes flatten_json_to_text stack-safe on hostile nesting; all 10 DocumentFormat variants are dispatched (Yaml/Toml/Env/Xml read as UTF-8 text) — no unrouted variant, no panic. Do not re-audit.",
+    "cycle33 (pipeline-refactor audit): timeline days_from_civil overflow is UNREACHABLE from every caller — parse_date guards 1900..=2100, correlator age_from_dob bounds the year to 4 ASCII digits (<=9999), hudsonrock parse_iso_epoch guards 2000..=2100 (#388). #388 was the sufficient+correct fix (root cause = an undocumented caller-must-bound-year precondition on the pub(crate) primitive, now documented in the docstring). Do NOT add a code guard against input that cannot arrive.",
+    "cycle33 (pipeline-refactor audit): correlator age_from_dob (runs OUTSIDE per-module catch_unwind) is panic-safe AND exhaustively fuzz-tested — au073_* tests slide a 3-byte char through every byte position + a 4-emoji year + control/short/empty forms, each asserting no-panic; year bounded to 4 digits so no overflow path. No coverage gap; do not re-open.",
+    "cycle33 (pipeline-refactor audit): PDF real-text extraction (pdf_parse returns a descriptive message, not extracted content) is a genuine Priority-2 completion GAP but a RAISE-to-maintainer, not an autonomous fix — NO pdf crate is in Cargo.lock, so it needs a brand-new dependency with aarch64-android cross-compile + MSRV 1.88 + cargo-deny/audit implications that CI's Android job (not this NDK-less host) is the authority on. Flagged for a maintainer dependency decision.",
+    "cycle33 (pipeline-refactor audit): runtime truth-source GREEN — hse selftest 10/10 pass 0 warn 0 fail (174 modules uniquely named+wired, correlator DB round-trip, core.math invariants hold); hse diagnostics ALL PASS. Search-engine parse path proven live (bing 2 + startpage 10 results); remaining engines soft-blocked by datacenter-IP anti-bot (host/network condition, not a code defect)."
+  ],
+  "cycle_16_gap_analysis": "VERIFIED NEGATIVE — do not re-run the produces()-phantom audit. Ran a repository-wide heuristic audit of every module's Module::produces() vs the EntityKind values it constructs (motivated by cycle-15's genuine fofa phantom). The heuristic (kind named only inside produces()) flagged ~37 candidates across ~18 modules, but it is dominated by FALSE POSITIVES because modules routinely emit entities via SHARED HELPERS and to_entity() rather than naming EntityKind::X inline: verified emailrep (emits Email via build_email_entity), shodan (emits Asn via util::geo::ip_asn_entity), au_people (constructs Phone directly at line 406), social_probe (emits via to_entity/direct Url+Domain) are ALL correct produces() declarations. produces() IS load-bearing (consumed by core::dependency::reachability, core::dependency::mod, and convex::module_cascade for scan planning), so genuine phantoms would matter — but fofa was the lone genuine instance and it is fixed (cycle 15). Conclusion: the phantom class is cleared; hand-verifying the remaining ~33 candidates is high-effort/near-zero-yield (regression risk on each wrong removal since removing a helper-emitted kind would break reachability planning), i.e. negligible verified engineering return. Baseline re-confirmed green this cycle via full scripts/gate.sh --quick (all 7 executable checks PASS). CI recovered and is running green on the branch head (install.sh done, Check&test/MSRV/aarch64/clippy in progress, no failures). No substantive Rust change this cycle: exhaustive gap analysis shows the readily-executable improvements are now at negligible return or externally blocked (fofa F4 needs a captured live FOFA response — fabrication-forbidden). Next productive step requires a deep multi-agent adversarial sweep (orchestration opt-in), not surface analysis.",
+  "cycle_17_gap_analysis": "Two more VERIFIED NEGATIVES (do not re-investigate). (1) Dependency/reachability graph (core::dependency::reachability) is COMPLETE and ENFORCED: fully_wired() + unreachable_modules() prove no module is globally dead, guarded by tests no_registered_module_is_globally_unreachable and every_module_is_reachable_from_every_realistic_seed. (2) UTF-8 slice-panic sweep over production &str indexing ([i..i+k], [..i], [i..]) across all modules: every candidate is safe by construction — au_property/parse.rs:85 and search_engines extractors.rs:380 guard bytes[i..i+4] all-ASCII before slicing text; web_crawler/crawl_util:566/577 scan ASCII domain/local chars around '@'; au_electoral/parse.rs:23 uses boundary-safe find_range; doh_resolver slices &[u8] (no boundary rule). The authors consistently DOCUMENT their char-boundary reasoning (propagated the cycle-9 text_mentions_ip UTF-8 fix repository-wide). CUMULATIVE FINDING across cycles 15-17: the codebase is exceptionally mature (0 TODO/FIXME, 0 production unwrap, no stray ignored tests, full gate green, ~6100 tests, defensively engineered with documented invariants). Every targeted/surface correctness avenue is exhausted with a single genuine fix (fofa F3, cycle 15); all other leads are verified-negatives. Remaining repository-controlled improvements reachable by single-threaded targeted analysis offer NEGLIGIBLE verified return. The productive next tier is a multi-agent adversarial sweep (token-intensive, needs explicit opt-in) or is externally blocked (fofa F4 needs a captured live FOFA response — fabrication-forbidden).",
+  "cycle_17_engine_concurrency_audit": "VERIFIED NEGATIVE (deep single-threaded audit of the async scan engine's concurrency/cancellation/resource-control — the user-selected subsystem for cycle 17). Findings, all clean: (1) Every tokio::spawn is safe — the wall-time watchdog (engine/mod.rs:744) is AbortOnDrop-wrapped with a comment explaining that a bare JoinHandle would detach-and-leak on panic; the egress-pool refresh (mod.rs:672) is documented detached fire-and-forget, throttled and gated on egress_is_configured; the DbWriter actor (writer.rs) drains on drop. (2) live::session_loop spawn_stop_forwarder (the cycle-10 hotspot) is aborted UNCONDITIONALLY after every iteration (live/mod.rs:497), with no early continue/break/`?`/panic path between spawn and abort (run_*_panic_safe catch panics so the .await never unwinds) — no per-iteration poller leak; per-iteration CancelHandle correctly isolates the wall-time watchdog from the session's one-way flag. (3) Lock discipline: circuit-breaker (circuit/mod.rs) guards are held synchronously with NO .await under lock, poison-safe via PoisonError::into_inner, deterministic via explicit `now` params. No races, no lock-across-await, no unbounded spawn, no task leak found. The engine is defensively engineered with the exact concurrency hazards documented inline. Reinforces the cumulative cycle-15-17 finding: the codebase is exceptionally mature; readily-discoverable high-return defects are exhausted across the correctness-critical subsystems (produces, reachability, UTF-8 slicing, engine concurrency).",
+  "cycle_18_storage_audit": "VERIFIED NEGATIVE (deep single-threaded audit of storage/migrations — data-integrity, Correctness #1). Findings, all clean: (1) Connection model is a single conn: Mutex<Connection>; every read/write serializes through one lock held for the FULL transaction lifetime (lock -> unchecked_transaction -> commit in one scope), so unchecked_transaction() has no concurrent-'transaction within a transaction' hazard. (2) All multi-table write paths (entities.rs:96/110, mod.rs:592/686/725/839, stealer_rows.rs:21) are wrapped in a transaction with commit(); an early `?` drops the tx and rusqlite's default DropBehavior::Rollback rolls back -> atomic, no orphaned rows on error/crash-mid-batch. (3) Schema versioning: PRAGMA user_version stamped on first open, forward-compat break (DB newer than binary) warns rather than corrupts, additive CREATE TABLE IF NOT EXISTS DDL. (4) Backfills (entity_observations, FTS rebuild when fts_count==0 && ent_count>0) are idempotent and best-effort-with-trace. (5) WAL + synchronous=NORMAL + foreign_keys=ON + integrity_check available. The single-Mutex serialization trades read concurrency for simplicity+correctness — a deliberate, correct choice for an on-device single-user tool, not a defect. CUMULATIVE (cycles 15-18): deep-audited produces()-honesty, dependency/reachability, UTF-8 slicing, engine concurrency/cancellation, and storage/migrations. ONE genuine fix (fofa F3, cycle 15); everything else verified-negative. The single-threaded-audit tier has reached the directive's own termination condition: remaining repository-controlled improvements accessible to single-threaded analysis offer negligible verified return. Higher-yield avenues remaining: (a) a multi-agent adversarial sweep (needs explicit opt-in; the only tool that finds what single-threaded reading has not), or (b) externally-blocked work (fofa F4 needs a captured live FOFA response).",
+  "cycle_18_correlator_determinism_audit": "VERIFIED NEGATIVE (correlator determinism, the top correctness property of the largest 28k-line subsystem). rank_and_sort (mod.rs:154) applies a TOTAL order rank->severity->rule_id->entity_uids with the final entity_uids tie-break explicitly documented to keep ordering deterministic when one rule fires for several groups; entity_uids within each correlation are individually sorted (set identity, order-independent). Enforced by rank_and_sort_is_deterministic_for_same_rule_ties, au037_entity_uids_are_deterministic_under_input_order, au109_deterministic_across_edge_order, and ts-blind determinism benches, among 412 correlator test fns. Output order AND content are deterministic regardless of HashMap iteration order.",
+  "single_threaded_audit_track_status": "CONCLUSIVELY EXHAUSTED as of cycle 18. Six consecutive deep single-threaded subsystem/property audits (produces-honesty, dependency/reachability, UTF-8 slice-panic, engine concurrency/cancellation, storage/migrations, correlator determinism) yielded ONE genuine fix (fofa F3, cycle 15) and five verified-negatives; a sixth (correlator) is also negative. The codebase is exceptionally mature (0 TODO/FIXME, 0 production unwrap, no stray ignored tests, full gate green, ~6100 tests, defensively engineered with documented invariants and determinism/UTF-8/concurrency hazards handled inline). Per the loop's own termination clause, the remaining repository-controlled improvements reachable by single-threaded targeted analysis offer NEGLIGIBLE verified engineering return. The only higher-yield avenues left are: (a) a multi-agent adversarial sweep (token-intensive; requires explicit user opt-in per tooling rules; the sole mechanism that can surface what single-threaded reading has not across 4 cycles), or (b) externally-blocked work (fofa F4 needs a captured live FOFA response body — fabrication-forbidden). Recommendation to the operator: authorise the sweep, or treat PR #372 (41 validated commits, CI green, merge-clean with main) as the integration deliverable.",
+  "cycle_19_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "3cb3ab438",
+      "summary": "AU postcode-boundary canonicalisation. Two hand-rolled 4-digit AU-postcode scanners diverged: au_property::extract_postcode enforced digit-run boundary guards (reject 5+ digit runs / digit-prefixed), au_electoral's suburb-hint scan did NOT -> 'Bondi Beach 20267' anchored a suburb hint on the spurious prefix 2026 (wrong geolocation hint). Fixed by canonicalisation (not synchronisation): added util::address_au::is_standalone_postcode_at(bytes,i) (pure/total/alloc-free) and routed BOTH scanners through it. au_property behaviour-preserving; au_electoral now rejects 5+ digit runs. 2 regression tests. Full gate green."
+    }
+  ],
+  "cycle_19_provenance": "ADVERSARIAL SUBAGENT AUDIT (escalation past single-threaded reading, using the Agent tool for individual subagents — permitted without the Workflow-orchestration opt-in). Dispatched 3 independent, skeptical, read-only auditors: (A) src/api HTTP/handler surface, (B) src/modules byte/protocol parsers, (C) error-handling completeness across cli/app/core/util. Results: A = NO GENUINE DEFECTS (every request input clamped/validated, no traversal/injection, candidate-quarantine uniform); C = NO GENUINE DEFECTS (57 panic-family sites all guarded/infallible, 219 `let _ =` mostly infallible fmt::Write or documented best-effort, ssrf.rs fail-closed); B = ONE genuine finding (the au_electoral postcode divergence, slot 1) plus a rejected non-defect (cert_intel OID-scan final-bytes bound has no observable effect). So the 3-agent sweep confirmed the codebase is clean apart from a single minor correctness inconsistency, now fixed. CI milestone: the Actions run-creation stall RESOLVED — head 363f81ccf went FULLY GREEN across all 6 checks incl. MSRV 1.88 + aarch64-linux-android Termux cross-build (both previously CI-only), mergeable_state=clean. Independent multi-perspective confirmation strengthens the cycle-15-18 conclusion: remaining repository-controlled return is now genuinely at the negligible margin.",
+  "cycle_20_signal_interference_investigation": "Applied the SIGNAL-INTERFERENCE / structure-recovery lens to the codebase's OWN signal/noise engine (the correlator + entity corroboration model). Falsifiable hypothesis: does the engine ever count two derivatives of one origin as two INDEPENDENT corroborations (the 'consensus != independence' error)? HYPOTHESIS REJECTED ON EVIDENCE. Recovered structure — a deliberate two-tier source taxonomy in core::entity that implements the framework's principles faithfully: (1) NON-CORROBORATING sources (never counted): ENRICHMENT_ONLY_SOURCES {geo_normalize,name_intel,payid} (deterministic self-enrichment = a transformation, not a new observation), RECALL_SOURCE (memory replay), CROSS_SCAN_SOURCE (recurrence can't distinguish re-scan from separate sighting), CONSENSUS_SOURCE=breach_consensus (a SUMMARY of observations — 'counting it would let an entity corroborate itself' = the exact anti-circular-reasoning principle). (2) PROMOTION sources {multipath_corroboration,cross_scan_corroboration} amplify but can NEVER ground (grounding gate in Entity::source_count). corroborating_sources() filters non-corroborating; corroborating_records() keys co-occurrence on (source,summary) PAIRS to stop one module's fan-out enumeration (e.g. username_search across N platforms) forming a false N-clique. handle_variant guards a single module's permutation output from counting as independent corroboration. DRIFT GUARDS present: payid/tests.rs pins its classification; api/routes/tests.rs::spa_enrichment_sources_matches_backend_is_non_corroborating_source cross-checks frontend/backend (documents a past CONSENSUS_SOURCE drift it now catches). enrichment-only-ness has NO independent module declaration, so the central list is authoritative and cannot drift from another source of truth. VERIFIED NEGATIVE: the corroboration-independence model is a complete, correct, guarded implementation of the independence/lineage/count-once principles. No defect; no fabricated fix made.",
+  "cycle_21_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "aa887cbc6",
+      "summary": "AU-092/098/101 infra-geo divergence: the Address location-class admitted any Address>=0.50 via bare state_code(), omitting !is_infrastructure_geo that coord_state + siblings AU-056/085 apply -> a WHOIS registrant / hosting address voted the SUBJECT's jurisdiction, fabricating a false AU-092 breach-vs-footprint conflict and a false AU-098 2-of-2 residency consensus. Fixed via canonical geo::address_state (analogue of coord_state) routed into AU-092/098, + the infra guard on AU-101's address facet. Test address_state_excludes_infrastructure_addresses."
+    },
+    {
+      "slot": 2,
+      "category": "DEBUG",
+      "commit": "83f911e24",
+      "summary": "relation persona_key omitted the generic-handle guard -> derive_handles drew undamped AliasOf edges between role mailboxes (info@org-a <-> info@org-b) at 0.7 >= IDENTITY_LINK_MIN_CONF, fusing unrelated orgs into one identity cluster. Fixed by sharing the canonical is_generic_handle (exposed pub(in crate::core), re-exported from correlator) in persona_key. Test role_mailboxes_do_not_alias_across_organisations."
+    },
+    {
+      "slot": 3,
+      "category": "DEBUG",
+      "commit": "cb2b1813a",
+      "summary": "resolve canonical_name sorted the whole name-token multiset -> two DISTINCT people with token-swapped names (Cameron Tyler / Tyler Cameron) collided on one key -> false undamped SameAs merge via derive_canonical_identities. Fixed to fold ONLY the explicit comma surname-first form, else preserve token order. Tests token_swapped_names_are_distinct_people + updated comma-reversal test (canonical now natural-order)."
+    }
+  ],
+  "cycle_21_provenance": "SECOND ADVERSARIAL SUBAGENT WAVE (3 read-only auditors on the un-swept Correctness-#1 surfaces: correlator rule-logic, entity-resolution/relation-graph, pure computational util helpers). Yield: 3 GENUINE defects (slots 1-3) + util agent NO DEFECTS (algorithms pinned by Wolfram/40-town/50k-sample tests). ALL THREE defects are the SAME root pattern as cycle-19's postcode fix: an undamped hard-identity/jurisdiction decision that OMITS a canonical precision guard its siblings apply (is_infrastructure_geo / is_generic_handle / comma-only reversal). Fixed each by CONSOLIDATION onto the one canonical predicate, not a spot patch, so the divergence can't reappear. Each fix has a regression test; full scripts/gate.sh --quick green (7/7 executable checks). IMPORTANT HONESTY UPDATE: this REVISES the cycle-15-20 'near-exhaustion' conclusion. Single-threaded reading + the first subagent wave (api/parsers/error-handling) found only 1 minor defect; but fresh-context subagents on the DEEPER LOGIC surfaces (correlator rules, identity resolution) found 3 real Correctness-#1 defects that corrupt the primary intelligence output (residency determination, identity clustering). Lesson: 'mature + green gate + my own reading clean' != defect-free in the deep semantic layers; adversarial multi-perspective audit of rule/merge LOGIC is the method that surfaces these. Dependency hygiene also verified clean (kamadak-exif/md-5 flagged were renamed-crate false positives, both used). Deferred awareness (not a defect): is_standalone_postcode_at 2000-floor excludes leading-zero NT/ACT free-text postcodes (deliberate precision choice; state_for_postcode handles those ranges).",
+  "cycle_22_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "9b9e1a98c",
+      "finding": "wave3-A",
+      "summary": "breach_consensus conflicting_attributes compared DOB as raw strings, omitting canonical normalise_dob -> same date in two breach spellings (1980-11-08 vs ISO 1980-11-08T00:00:00) flagged as HARD contradiction -> FailsAudit -> blocked a genuinely corroborated finding from correlation. Exposed normalise_dob pub(crate), re-exported from correlator, routed DOB-key compare through it. Test same_dob_in_two_formats_is_not_a_contradiction."
+    },
+    {
+      "slot": 2,
+      "category": "DEBUG",
+      "commit": "e38e30b97",
+      "finding": "wave3-C",
+      "summary": "source_family classifies by substring needles; geo_corroboration (engine geo-agreement promotion source) contains 'geo' -> mis-classified 'infra', a PHANTOM independent family that tripped AU-062 multipath / AU-063 gap / AU-082, laundering one breach sighting into multi-family corroboration + confidence/tier boost. Added GEO_CORROBORATION_SOURCE const + is_engine_corroboration_source; short-circuit multipath/cross_scan/geo -> 'other' before needles (exact-match so real geo modules ip_geo/geocode stay 'infra'). Test extended."
+    },
+    {
+      "slot": "3 (D+E)",
+      "category": "DEBUG",
+      "commit": "6e2678ea6",
+      "finding": "wave3-D+E",
+      "summary": "is_autonomous_seed_candidate Coordinates arm hand-rolled a partial infra-tag subset (!HOSTING only) and Address arm delegated to the dual-purpose cross-scan bridging predicate, both omitting canonical is_infrastructure_geo -> the radar 0,0 sentinel seeded an autonomous scan on null island (and climbed the queue via observation_count), an infra: coordinate (CCTV/tower) and a WHOIS REGISTRANT address seeded scans on infrastructure. Widened is_infrastructure_geo to pub(in crate::core), re-exported from correlator, gated Coordinates+Address seed arms on it (also correctly excludes bare source-less lat/lons = IP/WHOIS-derived). Seed-candidate test extended."
+    }
+  ],
+  "cycle_22_provenance": "THIRD ADVERSARIAL SUBAGENT WAVE (engine promotion/confidence passes; breach_consensus/cross_scan; ranking/seeding/expansion). Yield: FIVE genuine Correctness-#1 findings (A DOB-format false-contradiction, B corpus-identity miscount, C geo_corroboration phantom family, D radar-sentinel/infra autonomous seed, E registrant-address autonomous seed) — ALL the SAME architectural root cause: the canonical guards (is_infrastructure_geo, is_generic_handle, normalise_dob, source_family classification) are scoped pub(in crate::core::correlator) or private, so the engine and breach_consensus HAND-ROLL partial/drifting subsets. Fixed 4 this cycle (A, C, D+E) by the same remedy: widen/expose the ONE canonical predicate and route the caller through it. Full scripts/gate.sh --quick green (7/7). cross_scan.rs cleared (its handle probe correctly uses is_anchorable_handle; self-corroboration correctly excluded). DEFERRED: Finding B (breach_consensus corpus-identity keyed on provider name ev.source instead of the canonical breach_of/source_db key AU-105 uses -> two see_know corpora collapse to one, missing a real cross-corpus DOB contradiction; the OVER-count inverse partly conflicts with an existing provider-name test, so it needs careful separate treatment) — queued for cycle 23. META-LESSON reinforced from cycle 21: the deep semantic layers (correlator confidence/corroboration/seeding) held a RICH vein of false-intelligence defects that surface-level and single-threaded audits missed; adversarial multi-perspective audits of rule/pass LOGIC are the method, and the unifying fix is CANONICAL-GUARD ACCESSIBILITY (make the one predicate reachable, don't let callers re-derive it).",
+  "cycle_23_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "685c3623e",
+      "finding": "wave3-B (queued from cycle 22)",
+      "summary": "breach_consensus keyed corpus identity on bare provider name (ev.source) in BOTH the cross-corpus contradiction detector (conflicting_attributes) and the corroboration count (breach_sources_of), while AU-105 knew the corpus unit is the breach name (dbname/breach/source_db -> fallback source). Two see_know breaches under distinct source_db collapsed to one key -> a real cross-corpus DOB contradiction was never flagged (verdict depended on delivery provider) and corroboration under-counted. Extracted the private AU-105 closure into breach_pii::breach_corpus_key (pub(crate), re-exported from correlator), routed all THREE sites through it. Fallback to source keeps attr-less evidence (hibp/dehashed) as distinct corpora -> existing tests unchanged. Regression test two_corpora_from_one_aggregator_can_contradict. Full gate green."
+    }
+  ],
+  "cycle_23_provenance": "Completed the deferred wave-3 Finding B (the 5th and final finding from the third adversarial subagent wave). This closes the cycle-21+22+23 arc: NINE genuine Correctness-#1 false-intelligence defects across identity resolution, correlation confidence, corroboration counting, breach grading, and autonomous seeding — EVERY one the same architectural root cause (a canonical guard/key scoped too narrowly, so a caller hand-rolls a drifting subset). The unifying remedy applied throughout: EXPOSE the one canonical predicate (is_infrastructure_geo, is_generic_handle, normalise_dob, breach_corpus_key, source_family classification) and route every caller through it -> CANONICAL-GUARD ACCESSIBILITY as an architectural-integrity theme. Handled the breach_sources_of corroboration-count change carefully (the agent's lower-confidence corollary): the breach_corpus_key fallback-to-source preserves all attr-less existing behavior, and the full gate confirmed no downstream grading regression. NOTE: a mid-turn user message 'seek-0199c53c7fa45b2b461960a881abe9f95aa415b5c9994468' arrived (opaque token/hash, no actionable meaning derivable) — did NOT act on it, asked the user for clarification rather than fabricate an interpretation. Wave-3 defect set now fully closed (A/B/C/D/E all fixed + validated + pushed).",
+  "cycle_24_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "971cf3ae2",
+      "finding": "wave4 org auditor DEFECT 1 (AU-087)",
+      "summary": "AU-087 shared-org-email-domain hand-rolled its freemail exclusion through core::scan::is_noncentral_domain (= is_mega_domain || is_infra_domain), which damps only major platforms (MEGA_DOMAINS) + shared DNS/CDN/registrar infra (INFRA_DOMAINS). The consumer webmail domains in the canonical FREEMAIL authority that sit OUTSIDE MEGA/INFRA (yahoo.co.uk + Yahoo/Hotmail country variants, qq.com, 163.com, rocketmail.com, ~40 more) slipped through -> two unrelated people on qq.com/yahoo.co.uk fired a false Medium employer/institution affiliation and rode person<->person ride-along links. Routed the exclusion through canonical crate::util::domains::is_freemail (the guard sibling AU-100 already uses) -> one authority, no drift; purely additive (can only skip more, never fewer). Regression extends au087_excludes_freemail_and_isp_webmail with qq.com/163.com/rocketmail.com/yahoo.co.uk (all confirmed in FREEMAIL and absent from MEGA/INFRA, so they genuinely exercise the fix; the old test used gmail.com/bigpond.com which happen to be in MEGA and passed for the wrong reason). Architecture guard core_does_not_import_util_directly did not trip (AU-100 precedent). scripts/gate.sh --quick GREEN."
+    }
+  ],
+  "cycle_24_provenance": "Cycle 24 = wave4 adversarial correctness audit of the previously un-swept correlator rule families. Three read-only general-purpose auditors ran in parallel over (a) org.rs, (b) infra.rs+infra_closure.rs, (c) assoc.rs+gap.rs, each hunting false-intelligence defects with a concrete reproducing scenario. Yield: 7 genuine defects. FIXED this cycle: AU-087 (org freemail drift, commit 971cf3ae2). QUEUED as OD-8..OD-13 (agent-reported, each pending independent code-trace + fix, ranked for subsequent cycles): OD-10 AU-004 malicious-infra source miscount (Critical); OD-9 AU-049/051 address normaliser deletes unit separators -> fabricated household/kin (High/Critical); OD-11 AU-097 infra IP/ASN seeds identity, ignores HOSTING/PLATFORM_INFRA (High); OD-8 AU-050 phone line-type veto on +-stripped key (High); OD-12 AU-111 CDN tag-string drift from waf_detect (Medium, silent false neg); OD-13 AU_NETWORK_OPERATORS 'belong' common-word token (Medium). CLEARED (verified_negatives_recent): gap.rs source-independence, AU-112 SPF CIDR maths, AU-116/AU-031, org ABN/ACN checksums + AU-107 convention. This decisively overturns the earlier near-exhaustion hypothesis: the deep semantic rule families held a rich vein of canonical-guard-drift and infra-seeds-identity defects that surface audits missed.",
+  "cycle_25_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "d304d60e2",
+      "finding": "OD-10 / wave4 infra auditor DEFECT 1 (AU-004)",
+      "summary": "AU-004 malicious-infrastructure escalates to CRITICAL when a `malicious` tag is corroborated by >=2 'independent sources', but gated on Entity::source_count() >= 2 which counts EVERY corroborating source. ENRICHMENT_ONLY_SOURCES is only {geo_normalize,name_intel,payid}, so geolocation enrichment (ip_geo/ipinfo) is NOT excluded and counts -> one blocklist hit + one routine geo record reached 2 and fired CRITICAL on shared CDN/ESP edge IPs (geolocation is no opinion on maliciousness). Fix: canonical THREAT_INTEL_SOURCES (evidence sources of every tags::MALICIOUS-tagging module: abuseipdb/chain_intel/greynoise/onyphe/threatfox/urlhaus/virustotal + ip_reputation aggregate) + threat_source_count helper in rules/mod.rs; AU-004 now requires >=2 distinct THREAT sources. AU-015 reuses the same set, deleting its duplicate local TI_SOURCES -> one authority, no drift (verified its 3 attribution tests still pass: names ip_reputation/threatfox, excludes whois/dns_resolver). Single-source malicious still surfaces via AU-015 at its severity. Regression au004_no_fire_on_single_threat_source_plus_enrichment (MALICIOUS + ip_reputation + ip_geo -> old source_count=2 fired, new threat_source_count=1 silent). scripts/gate.sh --quick GREEN (fmt fix required a re-run; final run all 7 checks pass)."
+    }
+  ],
+  "cycle_25_provenance": "Cycle 25 closes OD-10 (the highest-severity wave4 defect: AU-004 CRITICAL false positive). Root cause verified against source: is_non_corroborating_source -> is_enrichment_source -> ENRICHMENT_ONLY_SOURCES = ['geo_normalize','name_intel','payid'] does NOT include ip_geo/ipinfo, so geo enrichment counts toward source_count(). Fix consolidates the scattered threat-source notion (AU-015's TI_SOURCES=[ip_reputation,threatfox] was a 2-element subset; the runtime MALICIOUS-taggers emit 7 distinct SRCs) into one canonical THREAT_INTEL_SOURCES + threat_source_count, used by AU-004 (gate) and AU-015 (attribution). Process note: first gate run FAILED fmt only (all tests/clippy/rustdoc/doctests/install passed); cargo fmt reformatted the 3 edited files (whitespace only), re-verified fmt clean, re-ran full gate -> GATE_EXIT=0 all green. Remaining wave4 backlog ranked for subsequent cycles: OD-9 AU-049/051 address normaliser (High/Critical; refined fix = fold '# - / \\\\' to space but KEEP '.' deleted so N.S.W==NSW survives; update blessing test normalise_address_drops_format_punctuation_and_trims), OD-11 AU-097, OD-8 AU-050, OD-12 AU-111, OD-13 AU_NETWORK_OPERATORS 'belong'.",
+  "cycle_26_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "3363313f5",
+      "finding": "OD-9 / wave4 assoc auditor DEFECT 2 (AU-049 / AU-051)",
+      "summary": "assoc::normalise_address (household-grouping key for AU-049 shared-residence + AU-051 shared-surname kin) DELETED '# . - / \\\\'. Deleting the unit/range separators '/' and '-' collapsed distinct dwellings: '1/2 Oak St' (unit 1 of #2) and '12 Oak St' (#12) both -> '12 oak st', fusing two unrelated people into one false household (AU-049 High) and, on a shared surname, a false kin finding (AU-051). Fix: fold '# - / \\\\' to a single space (so '1 2 oak st' != '12 oak st', and 'Main-St' == 'Main St'), but KEEP dropping '.' so intra-token abbreviations still collapse (N.S.W -> nsw == NSW; folding '.' would split them — a refinement over the raw audit suggestion, verified against is_specific_residence which counts comma/whitespace tokens). Unit form stays a valid specific residence, so genuine co-residents at the same unit still group. Updated blessing test (renamed normalise_address_folds_separators_and_trims: Main-St. -> 'main st'); added regressions normalise_address_keeps_unit_and_range_separators_distinct + end-to-end au049_unit_address_and_street_number_are_not_one_household. No existing AU-049/051 test fed an affected char (all use '123 Main St, Springfield' style). scripts/gate.sh --quick GREEN, fmt run pre-gate."
+    }
+  ],
+  "cycle_26_provenance": "Cycle 26 closes OD-9 (fabricated household/kin — the scariest false-intelligence class in the wave4 backlog). Root cause verified against source: the normalise_address match arm deleted 5 chars incl. the AU unit separator '/'. Refinement discovered during verification: fold '# - / \\\\' but NOT '.' — deleting '.' preserves N.S.W==NSW that folding would break (is_specific_residence splits tokens on comma/whitespace, so the '1 2 oak...' unit form still qualifies as a residence with 6 tokens). Process: ran cargo fmt BEFORE the gate this cycle (cycle-25 lesson) -> single green gate run, no fmt-fail-rerun. Remaining wave4 backlog ranked: OD-11 AU-097 infra-seeds-identity (High; pre-verified this session — fix = skip tags::HOSTING/PLATFORM_INFRA in the IpAddress|Asn filter at infra.rs:544-546, soften 'not hosting infrastructure' text), OD-8 AU-050 phone line-type, OD-12 AU-111 CDN tag drift, OD-13 AU_NETWORK_OPERATORS 'belong' (also feeds AU-097).",
+  "cycle_27_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "2158d222d",
+      "finding": "OD-11 / wave4 infra auditor DEFECT 2 (AU-097)",
+      "summary": "AU-097 AU-ISP/network attribution reads an AU network operator off an IpAddress/Asn's isp/org/as fields and asserts person-level residency (consumer ISP -> Medium) or institutional affiliation (AARNet -> High), iterating EVERY IpAddress|Asn with no check it is the subject's own access connection and no hosting/datacentre exclusion. A resolved SERVER (mail host, CDN edge, the box a linked page resolves to) on an AU operator -> fired AU-097, fabricating a network-layer geo signal from pure infra; the text even claimed 'not hosting infrastructure' for un-vetted IPs. Fix: exclude entities tagged tags::HOSTING/PLATFORM_INFRA (applied by abuseipdb usage=datacenter, ip_geo, engine enrich) from the filter; dropped the 'not hosting infrastructure' overclaim. Bare consumer/AARNet IP w/o hosting tag still fires. Regression au097_skips_hosting_and_platform_infra_entities (Telstra IP tagged hosting + AARNet ASN tagged platform-infra both silent). Note: residual = untagged server IPs still slip through (full fix = distinguish subject's access IP from resolved IPs, a larger change); this removes the clearest FPs. scripts/gate.sh --quick GREEN."
+    }
+  ],
+  "cycle_27_provenance": "Cycle 27 closes OD-11. tags::HOSTING='hosting' / PLATFORM_INFRA='platform-infra' (tags.rs:26,33) verified to be applied by abuseipdb (datacenter usage), ip_geo, engine/enrich.rs to exactly the resolved-server IPs AU-097 mis-attributed. Fix is the infrastructure-must-not-seed-identity discipline applied to the network-attribution rule. Residual documented: an untagged server IP still fires (the audit's deeper 'is this the subject's access connection?' question needs discovery-provenance, out of scope for a surgical fix). Remaining wave4 backlog: OD-8 AU-050 phone line-type (High), OD-12 AU-111 CDN tag drift (Medium), OD-13 AU_NETWORK_OPERATORS 'belong' common-word token (Medium; also feeds AU-097 — its FP now excluded only when the IP is also hosting-tagged, so OD-13 remains independently worth fixing).",
+  "cycle_28_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "c8070060f",
+      "finding": "OD-8 / wave4 assoc auditor DEFECT 1 (AU-050) — false-negative half",
+      "summary": "au_phone_line_type read an 11-digit NANP number as a 10-digit AU service line when its '1' country code + area code matched a service prefix: +1 800.. (US toll-free) -> '1800..' Freephone; +1 900/90x (US premium / area codes 900-909) -> '190..' Premium. AU-050 then vetoed the shared line as a business desk and DROPPED the real association (false negative). Root cause: the classifier had no length gate, so any over-length number beginning with a service prefix matched. Fix: AU 1800/1300/190x are EXACTLY 10 national digits (13xxxx the sole 6-digit form) -> enforce nat.len()==10 on those three arms; an over-length number falls through to None (non-AU) -> personal-line grouping, not the veto. Fixes the whole NANP-collision class (800/900/909/etc.), not one area code; also corrects the other caller geo::jurisdiction. All existing AU classifications unchanged. Regressions: au_phone_line_type_rejects_nanp_numbers_that_collide_with_service_prefixes + au050_links_nanp_number_colliding_with_au_service_prefix. NOTE the agent's proposed fix referenced to_e164_au/validate_phone_e164 which DO NOT EXIST (only au_phone_region + au_phone_line_type). scripts/gate.sh --quick GREEN (foreground run)."
+    }
+  ],
+  "cycle_28_provenance": "Cycle 28 closes the false-NEGATIVE half of OD-8 (the more common/clearer bug). The classifier fix is canonical (exact ACMA national-number lengths) and lives in the shared helper so both callers benefit. The sibling false-POSITIVE (an AU 1800/190x stored in +61 international form reaching AU-050 as a +-stripped key that au_phone_line_type won't recognise because it needs the '+' to strip '61') is SPLIT to OD-14 (deferred): it needs AU-050 to classify the original +-bearing phone value, not the normalise_phone digits key — an associates-grouping change (thread an original value through entity_phones->Group->veto) plus rejecting non-61 '+' country codes in au_phone_line_type. Deferred deliberately: larger blast radius on a widely-used grouping path, warrants its own careful cycle rather than being rushed. Remaining wave4 backlog: OD-14 (AU-050 false-pos, +61 intl form), OD-12 AU-111 CDN tag drift (Medium, clean), OD-13 AU_NETWORK_OPERATORS 'belong' (Medium, clean).",
+  "cycle_29_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "85aae6e9c",
+      "finding": "OD-12 / wave4 infra auditor DEFECT 3 (AU-111)",
+      "summary": "AU-111 CDN-origin candidate flags a domain as globally DNS-fronted via has_tag('waf:{p}') for p in DNS_FRONTING_CDN_PROVIDERS, then treats an SPF-authorised IP as an origin-leak pivot. The list held 'CloudFront' and 'Incapsula' but waf_detect tags waf:'AWS CloudFront' and waf:'Imperva/Incapsula' (mod.rs:95 tag(format!('waf:{}', d.provider))). Exact-match has_tag -> those two NEVER matched -> AU-111 silently never fired for any CloudFront-/Incapsula-fronted domain (silent false negative, SPF-origin-leak pivot lost for 2 of 8 named CDNs). Fix: use the exact waf_detect strings. Verified all 8 against the full signature table: other 6 (Cloudflare/Akamai/Fastly/Sucuri/StackPath/KeyCDN) already matched; StackPath+KeyCDN ARE emitted (no dead entries). Regression au111_fires_for_cloudfront_and_incapsula_using_waf_detect_names (cdn_fronted_domain tags waf:{provider} exactly as the module does; prior test masked it via 'Cloudflare' which happened to match). scripts/gate.sh --quick GREEN (foreground)."
+    }
+  ],
+  "cycle_29_provenance": "Cycle 29 closes OD-12 — a consumer list drifting from its producer's source of truth (waf_detect provider names). Same defect FAMILY as the canonical-guard-drift theme, on the tag-string axis. Remaining wave4 backlog: OD-13 AU_NETWORK_OPERATORS 'belong' common-word token (Medium — NEEDS CARE: 'belong' is a real AU ISP, so dropping it outright trades a false-positive for a false-negative; the right fix requires ISP/ASN context, not deletion), OD-14 AU-050 +61-intl-form false-positive (High-rarer, deferred, needs AU-050 grouping refactor).",
+  "cycle_30_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "5a12b7f8c",
+      "finding": "OD-13 / wave4 infra auditor DEFECT 4 (AU_NETWORK_OPERATORS -> AU-097)",
+      "summary": "au_network_of flattened an IP/ASN's operator fields (incl. RIPE free-text descr) into one haystack and whole-word-matched AU_NETWORK_OPERATORS. 'belong'/'dodo'/'tangerine' are real AU ISPs whose tokens are also ordinary words; a descr like 'address space that used to belong to X' matched 'belong' -> fabricated a Belong residency attribution (AU-097 Medium). Word-boundary guard can't help (token IS a whole word). Fix (context-gating, NOT deletion which would trade FP->FN): 4th table field ambiguous=true on those 3; new au_network_operator_split(structured, descr) trusts every brand in structured (isp/org/as/...) but only UNAMBIGUOUS brands in descr; au_network_of now splits attrs into the two tiers (descr removed from STRUCTURED_KEYS). Genuine Belong in a structured isp/org field still attributes; unambiguous Telstra still matches in descr; single-arg au_network_operator (doctest API) unchanged. Regressions: au_network_operator_split_gates_common_word_brands_to_structured_fields (unit) + au097_does_not_attribute_belong_isp_from_descr_prose (e2e). scripts/gate.sh --quick GREEN."
+    }
+  ],
+  "cycle_30_provenance": "Cycle 30 closes OD-13 with the CORRECT context-gating fix (not the lazy token deletion the audit's phrasing suggested, which trades a false-positive for a false-negative on genuine Belong/Dodo/Tangerine attributions). This exhausts the wave4 correctness backlog EXCEPT OD-14 (deliberately deferred). NEW candidate observed from a live `hse doctor` run the user pasted: OD-15 (Observability, low) — doctor prints SeekNow api base https://see-know.ru but util::see_know::budget:203 WARN says 'see-know.eu'; a domain-string mismatch, NOT yet verified against the code (could be an intentional alias). Remaining: OD-14 (AU-050 +61-intl-form false-pos, High-rarer, deferred, needs AU-050 grouping refactor), OD-15 (see-know.eu/.ru, low, verify first).",
+  "cycle_31_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "0f33bf491",
+      "finding": "OD-14 / AU-050 false-positive half (split from OD-8, cycle 28)",
+      "summary": "AU-050 business-service veto classifies the digits-only group key, but normalise_phone drops the '+', so au_phone_line_type (which strips '61' only when the value still has '+') can't see a domestic 1800/1300/190x under a +61 country code. '+61 1800 123 456' -> key '611800123456' -> classifier None -> veto skipped -> false High associate cluster on a shared business desk. Fix (veto-side, NOT the risky AU-050 grouping refactor): a domestic AU national number never begins '61', so ALSO classify phone.strip_prefix(\"61\") — a leading 61 that reveals a business/service line is a +61-prefixed AU one. Personal +61 mobiles/landlines classify non-business -> still group (no association lost); non-AU keys don't begin 61 or don't form a service number after strip -> unaffected (cycle-28 NANP regression preserved). Regression au050_vetoes_au_business_line_in_plus61_international_form. scripts/gate.sh --quick GREEN."
+    }
+  ],
+  "cycle_31_provenance": "Cycle 31 closes OD-14 with a minimal low-risk veto-side compensation instead of the deferred AU-050 grouping refactor — complete fix for the false-positive class, no hot-path blast radius. This EXHAUSTS the wave4 correctness backlog: all 7 audit findings (AU-087 + OD-8..OD-13) plus the OD-14 split are now closed across cycles 24-31. Remaining items are NON-correctness / lower priority: OD-15 (Observability, low — see-know.eu vs .ru WARN-string mismatch observed in hse doctor, still UNVERIFIED against code) and new OD-16 (Correctness edge, low freq — identified during OD-14 analysis: au_phone_line_type classifies a foreign '+NN' number by first digit when NN!=61, e.g. '+44 1800…' -> AU Mobile, mis-signalling AU jurisdiction via geo/jurisdiction.rs:304; fix = return None for a '+' with a non-61/0061 country code, generalising the existing '+1 555…'->None doctest; AU-050 unaffected since it passes +-stripped keys).",
+  "cycle_32_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "096505426",
+      "finding": "OD-16 (identified during cycle-31 OD-14 analysis)",
+      "summary": "au_phone_line_type, given a value with a '+' whose country code was NOT 61/0061, fell through to classify by the leading national digit: '+44 1800…' -> '441800…' -> '4' -> AU Mobile; '+81 3…' -> '8' -> AU GeographicFixed. Caller geo::jurisdiction.rs:304 classifies an entity's +-carrying value directly, so a foreign phone mis-signalled AU jurisdiction. Fix: a '+' marks the country code explicitly, so strip 61 else bail (digits.strip_prefix(\"61\")? -> None). 0061 still stripped with/without '+'. AU-050 unaffected (passes +-stripped keys, plus=false). Regression au_phone_line_type_rejects_foreign_plus_country_codes. Note: first gate run FAILED clippy::question_mark (match -> ?), fixed and re-ran GREEN."
+    }
+  ],
+  "cycle_32_provenance": "Cycle 32 closes OD-16, the last known CORRECTNESS defect. State of the correctness work: the entire wave4 adversarial-audit backlog (AU-087 + OD-8..OD-14) AND the two follow-ups it spawned (OD-14 split, OD-16) are now CLOSED across cycles 24-32 — NINE correctness fixes this session, each root-caused against source, canonically fixed, regression-tested, full-gate-green, and integrated. NO known Correctness (#1) defect remains open. Only OD-15 remains: Observability (#6), LOW — the see-know.eu vs .ru WARN-string mismatch observed in a live hse doctor run, still UNVERIFIED against the code (grep util/see_know for 'see-know.eu' to confirm before fixing). Per the priority ladder the next verified-return work is either OD-15 (low obs) or a fresh adversarial audit of the un-swept correlator families (identity/account.rs 74 rules, transitive/reuse_closure/handle_variant, geo/chain) to surface new correctness defects — the latter is likely higher return but a larger investment."
+}

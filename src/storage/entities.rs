@@ -323,7 +323,10 @@ impl super::Store {
              ORDER BY observed_at DESC, scan_id DESC",
         )?;
         let rows = stmt.query_map(params![entity_uid], |r| r.get::<_, String>(0))?;
-        Ok(rows.flatten().collect())
+        // `collect_rows`, not `.flatten()`: a dropped row here silently removes a
+        // whole PRIOR SCAN from cross-scan recall, so the read error must be
+        // logged rather than swallowed.
+        Ok(super::collect_rows(rows, "scan_ids_for_entity"))
     }
 
     pub fn observation_count(&self, entity_uid: &str) -> Result<usize> {
@@ -399,19 +402,16 @@ impl super::Store {
         let rows = stmt.query_map(params![scan_id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
         })?;
-        Ok(rows.flatten().collect())
+        // As above: a silently dropped facet row understates a kind's count with
+        // no trace that anything was lost.
+        Ok(super::collect_rows(rows, "entity_facets"))
     }
 
     pub fn get_entity(&self, uid: &str) -> Result<Option<Entity>> {
-        let json: Option<String> = {
-            let conn = self.conn.lock();
-            let mut stmt = conn.prepare_cached("SELECT data_json FROM entities WHERE uid = ?1")?;
-            let mut rows = stmt.query(params![uid])?;
-            rows.next()?.map(|r| r.get(0)).transpose()?
-        };
-        json.map(|j| serde_json::from_str(&j))
-            .transpose()
-            .map_err(Into::into)
+        self.query_one_json(
+            "SELECT data_json FROM entities WHERE uid = ?1",
+            params![uid],
+        )
     }
 
     /// Full-text entity search over the synchronized FTS5 index, ranked by
@@ -502,6 +502,7 @@ fn is_incidental_infra(e: &Entity) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::entity::EntityKind;
     use crate::storage::Store;
 
@@ -520,7 +521,12 @@ mod tests {
         store.upsert_entity(&weak).expect("should succeed");
 
         // Strong + recent → above the threshold, not an anomaly.
-        let mut strong = Entity::new(EntityKind::Email, "real@example.com", 0.80, "scan-a");
+        let mut strong = Entity::new(
+            EntityKind::Email,
+            "real@example.com",
+            confidence::HIGH_PLUSPLUS,
+            "scan-a",
+        );
         strong.observed_at = now;
         store.upsert_entity(&strong).expect("should succeed");
 
@@ -586,13 +592,18 @@ mod tests {
     #[test]
     fn is_incidental_infra_flags_cdn_edge_ip() {
         // A Cloudflare anycast edge IP — high-confidence but shared infrastructure.
-        let e = Entity::new(EntityKind::IpAddress, "104.20.37.187", 0.95, "s");
+        let e = Entity::new(
+            EntityKind::IpAddress,
+            "104.20.37.187",
+            confidence::VERY_HIGH_PLUSPLUS,
+            "s",
+        );
         assert!(is_incidental_infra(&e));
     }
 
     #[test]
     fn is_incidental_infra_flags_mega_domain() {
-        let e = Entity::new(EntityKind::Domain, "facebook.com", 0.50, "s");
+        let e = Entity::new(EntityKind::Domain, "facebook.com", confidence::MEDIUM, "s");
         assert!(is_incidental_infra(&e));
     }
 
@@ -600,8 +611,13 @@ mod tests {
     fn is_incidental_infra_ignores_non_infra_kinds() {
         // The default arm: a person/username is never "shared infrastructure",
         // regardless of value.
-        let person = Entity::new(EntityKind::Person, "104.20.37.187", 0.50, "s");
-        let user = Entity::new(EntityKind::Username, "facebook.com", 0.50, "s");
+        let person = Entity::new(EntityKind::Person, "104.20.37.187", confidence::MEDIUM, "s");
+        let user = Entity::new(
+            EntityKind::Username,
+            "facebook.com",
+            confidence::MEDIUM,
+            "s",
+        );
         assert!(!is_incidental_infra(&person));
         assert!(!is_incidental_infra(&user));
     }

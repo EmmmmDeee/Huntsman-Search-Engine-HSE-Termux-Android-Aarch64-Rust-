@@ -246,7 +246,12 @@ impl Module for ExaSearch {
                 .map(str::trim)
                 .filter(|a| a.chars().count() >= 4 && a.contains(' ') && !a.contains('@'))
             {
-                let mut pe = Entity::new(EntityKind::Person, author, 0.35, &ctx.scan_id);
+                let mut pe = Entity::new(
+                    EntityKind::Person,
+                    author,
+                    confidence::TENTATIVE,
+                    &ctx.scan_id,
+                );
                 pe.tag("exa-search");
                 pe.tag("byline");
                 pe.tag("derived");

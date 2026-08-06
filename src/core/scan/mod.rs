@@ -701,6 +701,23 @@ impl ScanStatus {
             Self::Aborted => "aborted",
         }
     }
+
+    /// Whether the scan has stopped for good — no further work will be
+    /// dispatched and no further columns will be written to its row.
+    ///
+    /// This is the predicate that tells a reader whether the scan record's
+    /// derived columns can be trusted. The `modules_*` counters in particular
+    /// are written **once**, in `Engine::finalise_scan`, so on a `Pending` or
+    /// `Running` row they still hold the zeros [`Scan::new`] seeded — see
+    /// [`Scan::module_accounting_line`], which uses this to say so rather than
+    /// let six zeros read as "nothing ran".
+    #[must_use]
+    pub fn is_terminal(self) -> bool {
+        match self {
+            Self::Pending | Self::Running => false,
+            Self::Complete | Self::Failed | Self::Aborted => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -744,8 +761,27 @@ impl Scan {
     /// counts in the same order and can never again disagree — the drift this
     /// prevents is exactly what once left the dossier showing only 3 of the 6.
     /// Callers prepend their own label/prefix.
+    ///
+    /// # Non-terminal scans
+    ///
+    /// All six columns are written in exactly one place — `finalise_scan`, at
+    /// the end of the run. The row inserted when the scan goes `Running`
+    /// carries the zeros [`Scan::new`] seeded, and nothing updates them in
+    /// between. So a dossier or debug bundle exported **mid-scan** read
+    /// `0 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped` for a
+    /// scan whose own event stream showed 60 modules done, 9 errored and 11
+    /// skipped — six zeros that say "nothing ran" when plenty had.
+    ///
+    /// The counters are still genuinely unavailable before finalise (there is
+    /// no cheaper truth to print — they live in the engine's in-memory
+    /// `ModuleStats` until then), so the fix is disclosure, not fabrication:
+    /// on a non-terminal scan the sentence states that the columns are not yet
+    /// written. Renderers with the event stream to hand additionally show the
+    /// live observed tally — see
+    /// [`ModuleEventTally`](crate::core::event::ModuleEventTally).
+    #[must_use]
     pub fn module_accounting_line(&self) -> String {
-        format!(
+        let counts = format!(
             "{} run, {} errored, {} timed out, {} skipped, {} cached, {} deduped",
             self.modules_run,
             self.modules_errored,
@@ -753,7 +789,16 @@ impl Scan {
             self.modules_skipped,
             self.modules_cached,
             self.modules_deduped
-        )
+        );
+        if self.status.is_terminal() {
+            counts
+        } else {
+            format!(
+                "{counts}  (NOT YET FINAL — this scan is {}; the counters are written once, at \
+                 finalise, so they read as zeros until then)",
+                self.status.as_str()
+            )
+        }
     }
 
     pub fn new(id: impl Into<String>, target: Target) -> Self {
@@ -790,7 +835,7 @@ pub struct ScanRequest {
     pub kind: Option<TargetKind>,
     pub value: String,
     /// Per-scan options. Defaults to [`default_scan_options`] — the
-    /// **comprehensive** product defaults (depth 3, expansion floor 0.20, entity
+    /// **comprehensive** product defaults (depth `DEFAULT_SCAN_DEPTH`, expansion floor 0.20, entity
     /// cap 2500), matching `hse scan` — when omitted, so a bare
     /// `{"value": "..."}` request is as thorough as the CLI and web UI. The same
     /// values are the per-field serde defaults, so an `options` object that omits

@@ -1191,9 +1191,10 @@ fn target_kind_canonical_str_matches_serde() {
 #[test]
 fn scan_status_as_str_matches_serde() {
     // §3 pin. as_str is the persisted `scans.status` value AND
-    // `latest_completed_scan` hard-codes the string in its SQL
-    // `json_extract(...) = 'complete'` probe — a drift between as_str and the
-    // serde form would silently break that query (no Complete scan found).
+    // `latest_finished_scan` hard-codes these strings in its SQL
+    // `json_extract(...) IN ('complete', 'aborted')` probe — a drift between
+    // as_str and the serde form would silently break that query (no finished
+    // scan found).
     for st in [
         ScanStatus::Pending,
         ScanStatus::Running,
@@ -1407,11 +1408,72 @@ fn empty_options_object_matches_product_defaults() {
     assert_eq!(explicit.max_concurrent, 0);
 }
 
+/// Every seed must get the FULL recursion budget to converge on geolocation —
+/// permanently, on every product surface, without the operator asking for it.
+///
+/// The default expansion strategy is `GeoConverge`, which weights each round
+/// toward the candidates one hop from an Address/Coordinates. That weighting can
+/// only pay off if the recursion is actually allowed to run far enough for the
+/// longest geo chains to close. `Email → Person → Address → Coordinates` needs
+/// four hops; `Username → Person → Domain → IpAddress → Coordinates` needs five.
+/// While the product default sat at 3 (below the `MAX_DEPTH` ceiling of 5), those
+/// chains were cut off mid-walk no matter how strongly the strategy favoured
+/// them — the scan converged toward a location it was never given the budget to
+/// reach.
+///
+/// This pins the guarantee on the two surfaces that serve real scans — the CLI
+/// product options and an API request that omits `depth` — so a future
+/// "let's make the default cheaper" change has to break a test that states the
+/// cost of doing so, rather than silently shortening every geo chain.
+#[test]
+fn every_seed_gets_the_full_recursion_budget_to_reach_geolocation() {
+    // The product default is the ceiling, not some fraction of it.
+    assert_eq!(
+        DEFAULT_SCAN_DEPTH, MAX_DEPTH,
+        "a seed must be able to walk the full {MAX_DEPTH}-hop chain to a coordinate; \
+         defaulting below the ceiling truncates the longest geo paths"
+    );
+
+    // Surface 1: the CLI/product options bundle.
+    let product = default_scan_options();
+    assert_eq!(
+        product.depth, MAX_DEPTH,
+        "`hse scan` with no --depth must run the full recursion"
+    );
+    assert_eq!(
+        product.expansion_strategy,
+        ExpansionStrategy::GeoConverge,
+        "the depth budget only converges on geo because GeoConverge is the default \
+         weighting — if this ever changes, the depth rationale above no longer holds"
+    );
+
+    // Surface 2: an API/web request that omits `depth` entirely.
+    let from_api: ScanOptions =
+        serde_json::from_str(r#"{}"#).expect("an empty options object must deserialise");
+    assert_eq!(
+        from_api.depth, MAX_DEPTH,
+        "an API scan that omits depth must be as deep as the CLI's — the web UI is \
+         the primary surface and must not silently get a shallower geo walk"
+    );
+
+    // The depth is spendable: the ceiling clamp must not fight the default, or
+    // every single scan would emit the "clamped to MAX_DEPTH" warning.
+    let clamped = ScanOptions {
+        depth: DEFAULT_SCAN_DEPTH,
+        ..ScanOptions::default()
+    }
+    .clamp_depth();
+    assert_eq!(
+        clamped.depth, DEFAULT_SCAN_DEPTH,
+        "the product default must sit AT the ceiling, never above it"
+    );
+}
+
 /// Locks the DECOUPLING of the library default from the serde field defaults.
 /// The library `ScanOptions::default()` — used by programmatic callers and the
 /// test suite — must STAY conservative (depth 0 single-round, expansion floor
 /// 0.50 Probable, uncapped) for determinism, even though the CLI/API/web product
-/// surface now defaults to the comprehensive depth 3 / floor 0.20 / cap 2500.
+/// surface now defaults to the comprehensive full depth / floor 0.20 / cap 2500.
 #[test]
 fn library_default_stays_conservative_and_decoupled_from_serde() {
     let d = ScanOptions::default();
@@ -1430,14 +1492,18 @@ fn library_default_stays_conservative_and_decoupled_from_serde() {
 
 /// A `ScanRequest` deserialised either with the whole `options` object omitted
 /// or with a present-but-empty `options:{}` must yield the SAME comprehensive
-/// product defaults as `hse scan`: depth 3, expansion floor 0.20, entity cap
+/// product defaults as `hse scan`: DEFAULT_SCAN_DEPTH, expansion floor 0.20, entity cap
 /// 2500. This is the API/SPA-thoroughness guarantee.
 #[test]
 fn scan_request_defaults_to_comprehensive_options() {
     for body in [r#"{"value":"x"}"#, r#"{"value":"x","options":{}}"#] {
         let req: ScanRequest = serde_json::from_str(body).expect("should succeed");
         assert_eq!(req.options.depth, DEFAULT_SCAN_DEPTH, "depth for {body}");
-        assert_eq!(req.options.depth, 3, "depth literal for {body}");
+        // Deliberately a LITERAL as well as the symbolic assertion above, so
+        // moving the constant can never silently change the API's behaviour.
+        // 5 = the full `MAX_DEPTH` recursion budget: an API/web scan must get
+        // the same complete geo walk as the CLI, not a truncated one.
+        assert_eq!(req.options.depth, 5, "depth literal for {body}");
         assert!(
             (req.options.min_expand_confidence - DEFAULT_MIN_EXPAND_CONFIDENCE).abs() < 1e-9,
             "expansion floor for {body}"
@@ -1504,4 +1570,72 @@ mod prop {
             let _ = t.validate();
         }
     }
+}
+
+#[test]
+fn module_accounting_line_discloses_that_a_running_scan_has_no_counters_yet() {
+    // The defect this pins: `modules_*` are written once, in `finalise_scan`.
+    // A dossier or debug bundle exported mid-scan therefore read
+    // "0 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped" — six
+    // zeros that an operator reads as "nothing ran" — for scans whose own
+    // event streams recorded 60 modules done, 9 errored and 11 skipped.
+    let mut scan = Scan::new("scan-live", Target::new(TargetKind::Email, "a@b.com"));
+    scan.status = ScanStatus::Running;
+    let line = scan.module_accounting_line();
+
+    // The counts are still reported verbatim — nothing is invented or hidden.
+    assert!(
+        line.starts_with("0 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped"),
+        "the six columns must still be reported as-is: {line}"
+    );
+    // …but they must never stand alone as if they were final.
+    assert!(
+        line.contains("NOT YET FINAL"),
+        "a non-terminal scan must disclose that its counters are unwritten: {line}"
+    );
+    assert!(
+        line.contains("running"),
+        "the disclosure must name the state that makes them unwritten: {line}"
+    );
+
+    // Pending has the same problem — the row exists before dispatch begins.
+    scan.status = ScanStatus::Pending;
+    assert!(scan.module_accounting_line().contains("NOT YET FINAL"));
+}
+
+#[test]
+fn module_accounting_line_is_bare_counts_once_the_scan_is_terminal() {
+    // The disclosure must not leak into the common case: for every terminal
+    // status the counters ARE final, and the sentence stays the canonical
+    // six-count string every renderer has always printed.
+    for status in [
+        ScanStatus::Complete,
+        ScanStatus::Failed,
+        ScanStatus::Aborted,
+    ] {
+        let mut scan = Scan::new("scan-done", Target::new(TargetKind::Email, "a@b.com"));
+        scan.status = status;
+        scan.modules_run = 12;
+        scan.modules_errored = 2;
+        scan.modules_timed_out = 3;
+        scan.modules_skipped = 1;
+        scan.modules_cached = 4;
+        scan.modules_deduped = 5;
+        assert_eq!(
+            scan.module_accounting_line(),
+            "12 run, 2 errored, 3 timed out, 1 skipped, 4 cached, 5 deduped",
+            "terminal status {status:?} must render bare counts with no caveat"
+        );
+    }
+}
+
+#[test]
+fn scan_status_is_terminal_partitions_every_variant() {
+    // Exhaustive: `is_terminal` gates whether the derived columns can be
+    // trusted, so a new variant must be classified deliberately, not defaulted.
+    assert!(!ScanStatus::Pending.is_terminal());
+    assert!(!ScanStatus::Running.is_terminal());
+    assert!(ScanStatus::Complete.is_terminal());
+    assert!(ScanStatus::Failed.is_terminal());
+    assert!(ScanStatus::Aborted.is_terminal());
 }

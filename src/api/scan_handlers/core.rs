@@ -86,6 +86,15 @@ pub async fn scan_profiles() -> impl IntoResponse {
 /// its own full-history aggregation, so the two full-history reads agree.
 const AUTONOMOUS_POOL_MAX_SCANS: usize = 10_000;
 
+/// Total-entity ceiling on the in-memory autonomous target pool. `MAX_SCANS`
+/// alone bounds the number of scans read, but 10_000 scans × hundreds of
+/// entities each is millions of `Entity` structs in one `Vec` — multi-hundred-MB
+/// on a 2–4 GB Termux phone, before `plan_autonomous_sweep` even runs. The pool
+/// is a target-selection heuristic, so a deterministic prefix of the (recent-
+/// first) scan history is more than enough to pick the top `limit` (≤200)
+/// targets. Loading stops once the pool reaches this size.
+const AUTONOMOUS_POOL_MAX_ENTITIES: usize = 50_000;
+
 /// The operator-local default seed (`HUNTSMAN_DEFAULT_SEED`), with its kind
 /// auto-detected from the value — the autonomous scan's fallback when the local
 /// intelligence base is still empty.
@@ -126,6 +135,9 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
             let mut seen: HashSet<String> = HashSet::new();
             let mut rel_seen: HashSet<String> = HashSet::new();
             for sc in &scans {
+                if pool.len() >= AUTONOMOUS_POOL_MAX_ENTITIES {
+                    break;
+                }
                 for e in store.entities_for_scan(&sc.id)? {
                     if seen.insert(e.uid.clone()) {
                         pool.push(e);
@@ -253,6 +265,9 @@ pub async fn scan_auto_plan(
             let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
             let mut seen: HashSet<String> = HashSet::new();
             for sc in &scans {
+                if pool.len() >= AUTONOMOUS_POOL_MAX_ENTITIES {
+                    break;
+                }
                 for e in store.entities_for_scan(&sc.id)? {
                     if seen.insert(e.uid.clone()) {
                         pool.push(e);
@@ -328,6 +343,9 @@ pub async fn scan_auto_sweep(
             let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
             let mut seen: HashSet<String> = HashSet::new();
             for sc in &scans {
+                if pool.len() >= AUTONOMOUS_POOL_MAX_ENTITIES {
+                    break;
+                }
                 for e in store.entities_for_scan(&sc.id)? {
                     if seen.insert(e.uid.clone()) {
                         pool.push(e);
@@ -660,7 +678,12 @@ pub async fn scan_import(
                 return Ok((0usize, 0usize, false));
             }
             let mut relations = 0usize;
-            for r in &crate::core::relation::derive_all(&entities, &sid2) {
+            // Wall-clock bound on the super-linear derivation chain, matching a
+            // live scan (the entity-count guard above already skips the
+            // pathological case; this bounds the rest).
+            let derive_deadline =
+                Some(std::time::Instant::now() + crate::core::relation::DERIVE_BUDGET);
+            for r in &crate::core::relation::derive_all_within(&entities, &sid2, derive_deadline) {
                 if store.upsert_relation(r).is_ok() {
                     relations += 1;
                 }
@@ -887,8 +910,8 @@ pub async fn radar_live(State(s): State<Arc<AppState>>) -> impl IntoResponse {
 /// reconstructing "what was around me" after the fact doesn't need to
 /// remember a session id — only that a radar sweep ran at some point. This
 /// is the sole purpose-built historical-review surface for the live radar
-/// feature (`docs/PROBLEM_TREE.md`/`docs/SOLUTION_TREE.md`: personal-safety
-/// / situational-awareness review under limited information).
+/// feature: personal-safety / situational-awareness review under limited
+/// information.
 pub async fn radar_history(
     State(s): State<Arc<AppState>>,
     Query(params): Query<std::collections::HashMap<String, String>>,
@@ -920,7 +943,6 @@ pub async fn radar_recurring(
     State(s): State<Arc<AppState>>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    use crate::core::entity::EntityKind;
     use crate::core::radar_track::{Sweep, SweepObservation, recurring_devices};
 
     let limit: usize = params
@@ -945,28 +967,14 @@ pub async fn radar_recurring(
             let Ok(entities) = store.entities_for_scan(&scan.id) else {
                 continue;
             };
+            // This review folds in Wi-Fi APs as well as Bluetooth; the mapping
+            // itself is shared with the CLI's live radar (see
+            // `radar_track::observation_from_entity`) so the two cannot drift in
+            // how they read a name/bond state off an entity.
             let devices: Vec<SweepObservation> = entities
                 .iter()
-                .filter(|e| {
-                    e.kind == EntityKind::MacAddress
-                        && (e.has_tag("bluetooth") || e.has_tag(crate::core::tags::WIFI_AP))
-                })
-                .map(|e| {
-                    let name = e
-                        .evidence
-                        .iter()
-                        .find_map(|ev| {
-                            ev.attributes
-                                .get("name")
-                                .or_else(|| ev.attributes.get("ssid"))
-                        })
-                        .map(String::to_string);
-                    SweepObservation {
-                        mac: e.value.clone(),
-                        name,
-                        bonded: e.has_tag("bond:bonded"),
-                    }
-                })
+                .filter(|e| e.has_tag("bluetooth") || e.has_tag(crate::core::tags::WIFI_AP))
+                .filter_map(crate::core::radar_track::observation_from_entity)
                 .collect();
             sweeps.push(Sweep {
                 scan_id: scan.id.clone(),

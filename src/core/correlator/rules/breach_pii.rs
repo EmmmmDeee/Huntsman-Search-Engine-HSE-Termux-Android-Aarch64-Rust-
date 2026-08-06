@@ -138,7 +138,7 @@ pub(crate) const DOB_KEYS: &[&str] = &[
 /// (the dominant breach format, including ISO date-times like
 /// `1980-11-08T00:00:00`); otherwise return the trimmed value verbatim (a
 /// non-ISO form like `08/11/1980` is left as-is rather than guess DD-vs-MM).
-fn normalise_dob(raw: &str) -> Option<String> {
+pub(crate) fn normalise_dob(raw: &str) -> Option<String> {
     let s = raw.trim();
     let b = s.as_bytes();
     if s.len() >= 10
@@ -151,6 +151,30 @@ fn normalise_dob(raw: &str) -> Option<String> {
         return Some(s[..10].to_string());
     }
     (!s.is_empty()).then(|| s.to_string())
+}
+
+/// The breach **corpus** a record came from — the unit corroboration, reuse, and
+/// cross-corpus contradiction are all measured across. Reads the breach-name
+/// attribute across the spellings providers stamp — `dbname` (OathNet/stealer),
+/// `breach`, and `source_db` (the field the `see_know` extractor renames a
+/// record's raw breach name to, so it can't clobber the provenance `source`) —
+/// and falls back to the provenance `source` when a record carries no breach-name
+/// attribute.
+///
+/// Canonical so AU-105 (reused-secret span) and the breach-consensus audit
+/// (distinct-corpora corroboration count and the cross-corpus contradiction
+/// detector) cannot disagree on what "one corpus" is: two SeekNow breaches under
+/// distinct `source_db` are two corpora, not one collapsed `see_know` — the
+/// distinction that lets the contradiction detector see two aggregated corpora
+/// disagree and the corroboration counter avoid under-crediting a real
+/// cross-corpus confirmation.
+pub(crate) fn breach_corpus_key(ev: &crate::core::entity::Evidence) -> String {
+    ev.attributes
+        .get("dbname")
+        .or_else(|| ev.attributes.get("breach"))
+        .or_else(|| ev.attributes.get("source_db"))
+        .map_or(ev.source.as_str(), String::as_str)
+        .to_string()
 }
 
 /// Derive a person's whole-year age from a canonical `YYYY-MM-DD` date of birth
@@ -186,13 +210,9 @@ pub(in crate::core::correlator) fn age_from_dob(dob: &str, now_unix: u64) -> Opt
     if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
         return None;
     }
-    // days_from_civil (Hinnant): days since the Unix epoch (1970-01-01).
-    let yy = y - i64::from(m <= 2);
-    let era = (if yy >= 0 { yy } else { yy - 399 }) / 400;
-    let yoe = yy - era * 400;
-    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
+    // Days since the Unix epoch via the one canonical Hinnant forward algorithm
+    // (core→core; the same helper `hudsonrock`'s freshness check reuses).
+    let days = crate::core::timeline::days_from_civil(y, m, d);
     let dob_unix = days * 86_400;
     let now = i64::try_from(now_unix).ok()?;
     if now < dob_unix {
@@ -758,10 +778,11 @@ fn footprint_states(entities: &[Entity]) -> BTreeMap<&'static str, BTreeSet<Stri
     for e in entities {
         if let Some(state) = super::geo::coord_state(e) {
             states.entry(state).or_default().insert(e.uid.clone());
-        } else if e.kind == EntityKind::Address
-            && e.confidence >= 0.50
-            && let Some(state) = crate::util::address_au::state_code(&e.value)
-        {
+        } else if let Some(state) = super::geo::address_state(e) {
+            // `address_state` applies the SAME infrastructure guard as
+            // `coord_state` above — a registrant/hosting address must not vote
+            // the subject's footprint (it once let a domain's registrar
+            // manufacture a false jurisdiction conflict).
             states.entry(state).or_default().insert(e.uid.clone());
         }
     }
@@ -1076,10 +1097,10 @@ pub(in crate::core::correlator) fn rule_au_098_residency_consensus(
     for e in entities {
         if let Some(state) = super::geo::coord_state(e) {
             coord.entry(state).or_default().insert(e.uid.clone());
-        } else if e.kind == EntityKind::Address
-            && e.confidence >= 0.50
-            && let Some(state) = crate::util::address_au::state_code(&e.value)
-        {
+        } else if let Some(state) = super::geo::address_state(e) {
+            // Same infrastructure guard as the coordinate class — a
+            // registrant/hosting address is not a subject residency signal, so
+            // it must not manufacture a false residency-consensus class.
             addr.entry(state).or_default().insert(e.uid.clone());
         } else if e.kind == EntityKind::Phone
             && let Some((_, _, states)) = crate::util::address_au::au_phone_region(&e.value)
@@ -1235,7 +1256,13 @@ pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
             EntityKind::Email => "email",
             EntityKind::Phone => "phone",
             EntityKind::Username => "username",
-            EntityKind::Address if e.confidence >= 0.50 => "physical address",
+            // Exclude an infrastructure address (registrant/hosting) — it is not
+            // the subject's physical address, so it must not inflate the
+            // identity-resolution breadth `n` toward the Medium/High thresholds.
+            // Same guard AU-092/AU-098's address class applies via `address_state`.
+            EntityKind::Address if e.confidence >= 0.50 && !is_infrastructure_geo(e) => {
+                "physical address"
+            }
             EntityKind::AbnAcn => "business identifier",
             _ => continue,
         };
@@ -1459,23 +1486,13 @@ pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
     let mut digest_bridge: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
 
-    // The breach a record came from — the unit reuse is measured across. Read
-    // the breach-name attr across the spellings the providers actually stamp:
-    // `dbname` (OathNet/stealer), `breach`, and `source_db` — the key the
-    // `see_know` extractor renames a record's raw `source` breach-name field to
-    // (so it can't clobber the provenance `source` attr). Without `source_db`,
-    // every SeekNow breach collapsed to the bare module name `see_know`, so a
-    // genuine password reused across two SeekNow breaches counted as ONE and
-    // AU-105 stayed silent — an under-count that suppressed the most actionable
-    // people-centric finding on a primary paid breach source.
-    let breach_of = |ev: &crate::core::entity::Evidence| -> String {
-        ev.attributes
-            .get("dbname")
-            .or_else(|| ev.attributes.get("breach"))
-            .or_else(|| ev.attributes.get("source_db"))
-            .map_or(ev.source.as_str(), String::as_str)
-            .to_string()
-    };
+    // The breach a record came from — the unit reuse is measured across. The
+    // canonical `breach_corpus_key` (shared with the breach-consensus audit so
+    // reuse-span, corroboration count, and contradiction detection agree on what
+    // "one corpus" is) reads `dbname`/`breach`/`source_db` and falls back to the
+    // provenance `source`, so two SeekNow breaches under distinct `source_db`
+    // stay two corpora instead of collapsing to the bare module name `see_know`.
+    let breach_of = breach_corpus_key;
 
     // Pass 1 — plaintext secrets, and the digest bridge for the uncommon ones.
     for e in entities {

@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{ModuleContext, ModuleResult},
@@ -212,7 +213,12 @@ pub(super) fn build_freeipapi_entity(
         return None;
     }
     let coords = format!("{lat:.4},{lon:.4}");
-    let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.62, scan_id);
+    let mut e = Entity::new(
+        EntityKind::Coordinates,
+        &coords,
+        confidence::NOTABLE,
+        scan_id,
+    );
     tag_country(&mut e, data.country_code.as_deref(), lat, lon);
 
     let ev = [
@@ -239,10 +245,16 @@ pub(super) fn build_freeipapi_entity(
 #[cfg(test)]
 mod tag_country_tests {
     use super::tag_country;
+    use crate::core::confidence;
     use crate::core::entity::{Entity, EntityKind};
 
     fn coord_entity() -> Entity {
-        Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.6, "s")
+        Entity::new(
+            EntityKind::Coordinates,
+            "-33.8688,151.2093",
+            confidence::MEDIUM_PLUS,
+            "s",
+        )
     }
 
     #[test]

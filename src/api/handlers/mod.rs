@@ -91,6 +91,29 @@ pub(crate) fn ok_list<T: Serialize>(key: &str, items: Vec<T>) -> axum::response:
     (StatusCode::OK, Json(Value::Object(map))).into_response()
 }
 
+/// Paginated list response: `{ "<key>": [items…], "count": <returned>, "total": <all>, "offset": <o>, "limit": <l> }`.
+/// The `count` field holds the returned item count; `total` is the full size before pagination.
+/// Enables clients to track position in a large result set without materialising everything.
+pub(crate) fn ok_paginated_list<T: Serialize>(
+    key: &str,
+    items: Vec<T>,
+    total: usize,
+    offset: usize,
+    limit: usize,
+) -> axum::response::Response {
+    let count = items.len();
+    let mut map = serde_json::Map::new();
+    map.insert(
+        key.to_string(),
+        serde_json::to_value(items).unwrap_or(Value::Null),
+    );
+    map.insert("count".to_string(), Value::Number(count.into()));
+    map.insert("total".to_string(), Value::Number(total.into()));
+    map.insert("offset".to_string(), Value::Number(offset.into()));
+    map.insert("limit".to_string(), Value::Number(limit.into()));
+    (StatusCode::OK, Json(Value::Object(map))).into_response()
+}
+
 /// Dispatch a created `scan` to run on the async runtime — the HTTP layer's
 /// fire-and-forget hand-off to the engine (the request returns `202` immediately).
 ///
@@ -670,6 +693,25 @@ pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({ "modules": mods, "count": count }))
 }
 
+/// Wire shape of `GET /api/v1/modules/graph`.
+///
+/// [`crate::core::dependency::ModuleGraphSummary`] is `#[serde(flatten)]`ed rather than re-listed field
+/// by field, which is how this payload used to be built. Hand-copying meant the
+/// wire format was a second, unchecked definition of a type that already derives
+/// `Serialize`: `terminal_kinds` was added to the summary and silently never
+/// reached a single client, because the handler simply did not mention it.
+/// Flattening keeps the existing top-level keys (`kinds`, `edges`) exactly where
+/// clients expect them while making the struct the only definition.
+#[derive(serde::Serialize)]
+struct ModuleGraphResponse {
+    #[serde(flatten)]
+    graph: crate::core::dependency::ModuleGraphSummary,
+    /// Distinct entity kinds any module emits. Derived, so it is not part of the
+    /// summary itself.
+    produced_kinds: Vec<String>,
+    module_count: usize,
+}
+
 /// `GET /api/v1/modules/graph` — pre-computed module dependency graph.
 ///
 /// Returns the per-`TargetKind` dispatch index (with module counts and
@@ -680,12 +722,14 @@ pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
 pub async fn modules_graph(State(s): State<Arc<AppState>>) -> Json<Value> {
     let graph = s.engine.graph();
     let summary = graph.to_summary(s.engine.modules());
-    Json(json!({
-        "kinds":           summary.kinds,
-        "edges":           summary.edges,
-        "produced_kinds":  summary.produced_entity_kinds(),
-        "module_count":    s.engine.modules().len(),
-    }))
+    Json(
+        serde_json::to_value(ModuleGraphResponse {
+            produced_kinds: summary.produced_entity_kinds(),
+            module_count: s.engine.modules().len(),
+            graph: summary,
+        })
+        .unwrap_or_else(|_| json!({})),
+    )
 }
 
 pub async fn entity_get(

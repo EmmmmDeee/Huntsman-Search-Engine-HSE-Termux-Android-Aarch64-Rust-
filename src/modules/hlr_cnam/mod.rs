@@ -207,7 +207,7 @@ fn build_hlr_entities(hlr: &HlrResp, number: &str, scan_id: &str) -> Vec<Entity>
         .map(str::trim)
         .filter(|n| n.len() >= 2)
     {
-        let mut oe = Entity::new(EntityKind::Organisation, net, 0.62, scan_id);
+        let mut oe = Entity::new(EntityKind::Organisation, net, confidence::NOTABLE, scan_id);
         oe.tag("hlr-cnam");
         oe.tag("carrier");
         oe.add_evidence(

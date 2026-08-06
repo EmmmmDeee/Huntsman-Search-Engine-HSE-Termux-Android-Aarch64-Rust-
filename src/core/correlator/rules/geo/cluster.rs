@@ -47,6 +47,12 @@ pub(in crate::core::correlator) fn rule_au_014_geo_cluster(
     const GEO_TAGS: &[&str] = &["geoint", "wifi-observed"];
     entities_of_kind(entities, EntityKind::Coordinates)
         .into_iter()
+        // Mirror AU-017: a coordinate must clear a confidence floor AND not be
+        // infrastructure geo — a datacentre/hosting/CDN point, or any bare
+        // IP/WHOIS coordinate with no anchoring source. Without this a hosting
+        // centroid that merely carries two enrichment sources surfaced as a
+        // confirmed personal geo lead.
+        .filter(|e| e.confidence >= 0.50 && !is_infrastructure_geo(e))
         .filter_map(|e| {
             let hits: Vec<&str> = GEO_TAGS.iter().copied().filter(|t| e.has_tag(t)).collect();
             // Corroborating sources only: the deterministic `geo_normalize`
@@ -90,10 +96,26 @@ pub(in crate::core::correlator) fn rule_au_032_colocation_cluster(
 ) -> Vec<Correlation> {
     use std::collections::{HashMap, HashSet};
 
-    // Undirected adjacency from CoLocatedWith edges only.
+    let by_uid = context.by_uid();
+
+    // Undirected adjacency from CoLocatedWith edges — but ONLY between two
+    // non-infrastructure coordinates. A datacentre/hosting/CDN point (or any bare
+    // IP-geo coordinate with no anchoring source) must not be a node in a
+    // co-location cluster: a shared host would otherwise bridge unrelated people
+    // into a false "geographic convergence", and a cluster of co-located
+    // datacentres would report as one. Gating the EDGES (not just the final
+    // component) stops an infra node from transitively linking two real
+    // person-clusters before it could be pruned.
     let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
     for r in relations {
-        if r.kind == RelationKind::CoLocatedWith {
+        if r.kind == RelationKind::CoLocatedWith
+            && by_uid
+                .get(r.from_uid.as_str())
+                .is_some_and(|e| !is_infrastructure_geo(e))
+            && by_uid
+                .get(r.to_uid.as_str())
+                .is_some_and(|e| !is_infrastructure_geo(e))
+        {
             adj.entry(r.from_uid.as_str()).or_default().push(&r.to_uid);
             adj.entry(r.to_uid.as_str()).or_default().push(&r.from_uid);
         }
@@ -101,8 +123,6 @@ pub(in crate::core::correlator) fn rule_au_032_colocation_cluster(
     if adj.is_empty() {
         return Vec::new();
     }
-
-    let by_uid = context.by_uid();
 
     // Connected components via DFS (stack). Iterate seed nodes in sorted order
     // so the emitted clusters are deterministic regardless of edge ordering.

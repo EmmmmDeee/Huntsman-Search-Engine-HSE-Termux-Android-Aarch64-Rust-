@@ -216,7 +216,12 @@ impl Shodan {
         }
 
         // Enrich the originating IP with port/vuln summary.
-        let mut entity = Entity::new(EntityKind::IpAddress, ip, 0.92, &ctx.scan_id);
+        let mut entity = Entity::new(
+            EntityKind::IpAddress,
+            ip,
+            confidence::AUTHORITATIVE,
+            &ctx.scan_id,
+        );
         entity.tag("shodan-internetdb");
         if !body.vulns.is_empty() {
             entity.tag(crate::core::tags::VULNERABLE);
@@ -405,7 +410,12 @@ fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
             .into_iter()
             .filter(|host| !host.is_empty())
             .map(|host| {
-                let mut d = Entity::new(EntityKind::Domain, &host, 0.85, scan_id);
+                let mut d = Entity::new(
+                    EntityKind::Domain,
+                    &host,
+                    confidence::HIGH_PLUSPLUS_PLUS,
+                    scan_id,
+                );
                 d.tag("shodan");
                 d.tag(tags::PTR);
                 d.add_evidence(
@@ -422,7 +432,8 @@ fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
             .into_iter()
             .filter(|dom| !dom.is_empty())
             .map(|dom| {
-                let mut d = Entity::new(EntityKind::Domain, &dom, 0.80, scan_id);
+                let mut d =
+                    Entity::new(EntityKind::Domain, &dom, confidence::HIGH_PLUSPLUS, scan_id);
                 d.tag("shodan");
                 d.add_evidence(
                     Evidence::new(SRC, format!("Domain associated with {ip}")).with_attr("ip", ip),
@@ -439,7 +450,12 @@ fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
     if let Some(org) = &body.org
         && !org.is_empty()
     {
-        let mut oe = Entity::new(EntityKind::Organisation, org, 0.70, scan_id);
+        let mut oe = Entity::new(
+            EntityKind::Organisation,
+            org,
+            confidence::HIGH_PLUS,
+            scan_id,
+        );
         oe.tag("shodan");
         oe.add_evidence(Evidence::new(SRC, format!("Organisation for {ip}")));
         result.push(oe);
@@ -450,7 +466,7 @@ fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
         let isp = isp.trim();
         let isp_lc = isp.to_ascii_lowercase();
         if !isp.is_empty() && org_lc.as_deref() != Some(isp_lc.as_str()) {
-            let mut ie = Entity::new(EntityKind::Organisation, isp, 0.65, scan_id);
+            let mut ie = Entity::new(EntityKind::Organisation, isp, confidence::HIGH, scan_id);
             ie.tag("shodan");
             ie.tag("isp");
             ie.add_evidence(Evidence::new(SRC, format!("ISP for {ip}")));
@@ -460,9 +476,11 @@ fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
     if let Some(asn) = &body.asn
         && !asn.is_empty()
     {
-        let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, scan_id);
+        // Shared, byte-identical ASN birth (see `util::geo::ip_asn_entity`) —
+        // single-sourced so the `0.80` + `ASN for {ip}` evidence can't drift
+        // from the other IP-geo providers; the provider tag layers on after.
+        let mut ae = crate::util::geo::ip_asn_entity(asn, SRC, ip, scan_id);
         ae.tag("shodan");
-        ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
         result.push(ae);
     }
     // Prefer Shodan's own host coordinates (guarded so the `(0,0)`
@@ -474,7 +492,12 @@ fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
     };
     if let Some((lat, lon)) = real_coords {
         let coord_val = format!("{lat:.4},{lon:.4}");
-        let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.60, scan_id);
+        let mut c = Entity::new(
+            EntityKind::Coordinates,
+            &coord_val,
+            confidence::MEDIUM_PLUS,
+            scan_id,
+        );
         c.tag("shodan");
         c.tag("geoint");
         c.add_evidence(Evidence::new(
@@ -492,7 +515,12 @@ fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
             && let Some((lat, lon)) = crate::util::city_coords::city_coords(country)
         {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::LOW_MEDIUM,
+                scan_id,
+            );
             c.tag("shodan");
             c.tag("addr-derived");
             c.tag("geoint");
@@ -510,7 +538,12 @@ fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
             Some(city) => crate::util::geo::compose_address(city, "", country),
             None => country.clone(),
         };
-        let mut addr = Entity::new(EntityKind::Address, &addr_val, 0.55, scan_id);
+        let mut addr = Entity::new(
+            EntityKind::Address,
+            &addr_val,
+            confidence::MEDIUM_HIGH,
+            scan_id,
+        );
         addr.tag("shodan");
         addr.tag("geoint");
         addr.add_evidence(Evidence::new(SRC, format!("Location for {ip}")));

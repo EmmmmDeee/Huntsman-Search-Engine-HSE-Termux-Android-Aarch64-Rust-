@@ -338,11 +338,11 @@ fn debug_bundle_includes_dossier_sequence_and_audit() {
     assert!(out.contains("HUNTSMAN FULL DOSSIER")); // §1 embeds render_full
     assert!(out.contains("── EXPOSURE INDEX")); // §1 headline mirrors live dossier
     assert!(out.contains("── CORRELATIONS")); // §2
-    assert!(out.contains("── SCAN SEQUENCE · 2 events")); // §3 header
-    assert!(out.contains("module_start")); // per-type breakdown
-    assert!(out.contains("▶ hibp")); // module_start rendered in the human timeline
-    assert!(out.contains("⊘ not expanded · username stranger")); // exclusion event rendered readably, with its reason
-    assert!(out.contains("identity_mismatch")); // …and its reason is preserved on that line
+    assert!(out.contains("SCAN SEQUENCE")); // §3 header (plain ASCII, no box glyphs)
+    assert!(out.contains("\"kind\":\"module_start\"")); // events as structured JSON lines
+    assert!(out.contains("\"module\":\"hibp\"")); // module_start rendered in the sequence
+    assert!(out.contains("\"kind\":\"entity_excluded\"")); // exclusion event present
+    assert!(out.contains("\"reason\":\"identity_mismatch\"")); // …with its reason preserved
     assert!(out.contains("── SELF-AUDIT")); // §4
     assert!(out.contains("score      :"));
     assert!(out.contains("exclusions : identity_mismatch×1")); // ledger folded in
@@ -404,28 +404,62 @@ fn event_log_renders_a_readable_aligned_timeline() {
             EventKind::ScanComplete {
                 scan_id: "s".into(),
                 entity_count: 2,
+                status: crate::core::scan::ScanStatus::Complete,
             },
         ),
     ];
     let out = crate::app::export::render_event_log(&evs);
 
-    // Structure: header with count, a by-type breakdown, and a UTC timeline.
-    assert!(out.contains("── SCAN SEQUENCE · 8 events ──"));
-    assert!(out.contains("By type:"));
-    assert!(out.contains("Timeline (UTC):"));
-    // Each event kind renders as a readable, glyph-led line (spacing-agnostic).
-    assert!(out.contains("● scan started · username=alameddine"));
-    assert!(out.contains("▶ dehashed"));
-    assert!(out.contains("✓ dehashed  (0 found)"));
-    assert!(out.contains("◌ psbdmp  capability-quarantined"));
-    assert!(out.contains("+ email  a@b.com  ·0.90"));
-    assert!(out.contains("(candidate)")); // candidate entity flagged
-    assert!(out.contains("⊘ not expanded · username stranger  identity_mismatch"));
-    assert!(out.contains("✔ scan complete · 2 entities"));
-    // Category columns present for grouping.
-    for cat in ["scan", "module", "entity", "expand"] {
-        assert!(out.contains(cat), "category column `{cat}` must appear");
+    // Structured JSON lines: one parseable JSON object per event, in order, with
+    // no decorative header, histogram, box-drawing, or status glyphs.
+    assert!(
+        !out.contains('●')
+            && !out.contains('▶')
+            && !out.contains('✔')
+            && !out.contains('⊘')
+            && !out.contains('─'),
+        "the structured log must carry no status/box glyphs, got:\n{out}"
+    );
+    let lines: Vec<serde_json::Value> = out
+        .lines()
+        .map(|l| {
+            serde_json::from_str(l).unwrap_or_else(|e| panic!("line is not JSON: {l:?} — {e}"))
+        })
+        .collect();
+    assert_eq!(lines.len(), 8, "one JSON object per event");
+
+    // Every object leads with time/level/kind.
+    for (v, ev) in lines.iter().zip(&evs) {
+        assert!(v["time"].is_string());
+        assert_eq!(v["level"], "info");
+        assert_eq!(v["kind"], ev.kind.event_type_str());
     }
+
+    // scan_start carries the target.
+    assert_eq!(lines[0]["kind"], "scan_start");
+    assert_eq!(lines[0]["target_kind"], "username");
+    assert_eq!(lines[0]["target_value"], "alameddine");
+    // module_start / module_done / module_skipped keep their concise fields.
+    assert_eq!(lines[1]["module"], "dehashed");
+    assert_eq!(lines[2]["found"], 0);
+    assert_eq!(lines[3]["reason"], "capability-quarantined");
+    // entity_found reduces the Entity to a handful of fields; the candidate flag
+    // is a boolean, not prose.
+    assert_eq!(lines[4]["entity_kind"], "email");
+    assert_eq!(lines[4]["value"], "a@b.com");
+    assert_eq!(lines[4]["confidence"], 0.9);
+    assert_eq!(lines[4]["candidate"], false);
+    assert_eq!(lines[5]["candidate"], true);
+    // entity_excluded renames its `kind` to `entity_kind` so it never collides
+    // with the line's top-level `kind`, and preserves the reason.
+    assert_eq!(lines[6]["kind"], "entity_excluded");
+    assert_eq!(lines[6]["entity_kind"], "username");
+    assert_eq!(lines[6]["value"], "stranger");
+    assert_eq!(lines[6]["reason"], "identity_mismatch");
+    // scan_complete reports status + entity count as data.
+    assert_eq!(lines[7]["kind"], "scan_complete");
+    assert_eq!(lines[7]["status"], "complete");
+    assert_eq!(lines[7]["entities"], 2);
 
     println!("\n===== render_event_log sample =====\n{out}=====");
 }
@@ -806,8 +840,8 @@ fn join_or_dash_empty_iterator_is_explicit_none() {
 //
 // `export_formats_determinism_audit` above proves byte-reproducibility for one
 // hand-built fixture (double-rendering the same store). This generalises that
-// to the stronger, doctrine-defining property (`docs/CONVENTIONS.md` §5:
-// output is "independent of `HashMap` iteration or task-completion order"):
+// to the stronger, doctrine-defining property: output is "independent of
+// `HashMap` iteration or task-completion order":
 // the SAME entities inserted in TWO different orders must export byte-
 // identically. That exercises both order-sensitive legs at once — the store's
 // merge-on-conflict fold and every renderer's own attribute/tag/evidence
@@ -1318,4 +1352,118 @@ fn system_bundle_reports_all_clear_when_healthy() {
         "empty log ring must be stated, not silently omitted"
     );
     assert!(out.contains("HUNTSMAN SYSTEM DEBUG BUNDLE"));
+}
+
+#[test]
+fn render_full_shows_the_live_event_tally_while_a_scan_is_still_running() {
+    // Regression, from two real debug bundles: both exported mid-scan, both
+    // headed `status : Running`, and both printing
+    // `modules : 0 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped`
+    // while the SAME scan's event stream held ~70 module_start, ~60
+    // module_done, ~9 module_error and ~11 module_skipped. The counters are
+    // written once, in `finalise_scan`, so mid-scan they are structurally
+    // zero — the header must say so AND surface the tally that does exist.
+    use crate::core::event::{Event, EventKind};
+    let dir = tempfile::tempdir().expect("tempdir should be creatable");
+    let db = dir.path().join("running_tally.db");
+    let store = Store::open(db.to_str().expect("db path should be UTF-8"))
+        .expect("store should open on a fresh temp db");
+
+    let mut scan = Scan::new("scan-running", Target::new(TargetKind::Email, "a@b.com"));
+    scan.status = ScanStatus::Running;
+    store.upsert_scan(&scan).expect("scan row should persist");
+
+    for (module, done) in [("dns", true), ("whois", true), ("crtsh", false)] {
+        store
+            .insert_event(&Event::new(
+                "scan-running",
+                EventKind::ModuleStart {
+                    module: module.into(),
+                },
+            ))
+            .expect("module_start should persist");
+        let kind = if done {
+            EventKind::ModuleDone {
+                module: module.into(),
+                found: 2,
+            }
+        } else {
+            EventKind::ModuleError {
+                module: module.into(),
+                error: "timed out".into(),
+            }
+        };
+        store
+            .insert_event(&Event::new("scan-running", kind))
+            .expect("module outcome should persist");
+    }
+    store
+        .insert_event(&Event::new(
+            "scan-running",
+            EventKind::ModuleSkipped {
+                module: "shodan".into(),
+                reason: "needs API key".into(),
+            },
+        ))
+        .expect("module_skipped should persist");
+
+    let out = render_full(&store, "scan-running").expect("render_full should succeed");
+
+    // The zeros are still printed — but never bare.
+    assert!(
+        out.contains("0 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped"),
+        "the persisted counters must still be reported verbatim: {out}"
+    );
+    assert!(
+        out.contains("NOT YET FINAL"),
+        "mid-scan zeros must be disclosed as unwritten, not left to read as \
+         'nothing ran': {out}"
+    );
+    // …and the work that HAS happened is surfaced from the event stream.
+    assert!(
+        out.contains(
+            "observed   : 3 module_start, 2 module_done, 1 module_error, 1 module_skipped"
+        ),
+        "the live event tally must appear for a non-terminal scan: {out}"
+    );
+}
+
+#[test]
+fn render_full_omits_the_live_tally_once_the_scan_is_terminal() {
+    // The determinism contract in `render_debug_bundle` requires a completed
+    // scan to export byte-identically every time, so the live line must be
+    // strictly a non-terminal-path addition — and a finalised scan's own
+    // counters are authoritative, making it redundant as well as unsafe.
+    use crate::core::event::{Event, EventKind};
+    let dir = tempfile::tempdir().expect("tempdir should be creatable");
+    let db = dir.path().join("complete_tally.db");
+    let store = Store::open(db.to_str().expect("db path should be UTF-8"))
+        .expect("store should open on a fresh temp db");
+
+    let mut scan = Scan::new("scan-complete", Target::new(TargetKind::Email, "a@b.com"));
+    scan.status = ScanStatus::Complete;
+    scan.modules_run = 2;
+    store.upsert_scan(&scan).expect("scan row should persist");
+    store
+        .insert_event(&Event::new(
+            "scan-complete",
+            EventKind::ModuleStart {
+                module: "dns".into(),
+            },
+        ))
+        .expect("module_start should persist");
+
+    let out = render_full(&store, "scan-complete").expect("render_full should succeed");
+    assert!(
+        out.contains("2 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped"),
+        "a terminal scan reports its real counters: {out}"
+    );
+    assert!(
+        !out.contains("NOT YET FINAL"),
+        "no caveat belongs on a finalised scan: {out}"
+    );
+    assert!(
+        !out.contains("observed   :"),
+        "the live tally must not appear on a finalised scan: {out}"
+    );
 }

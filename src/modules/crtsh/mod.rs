@@ -178,7 +178,10 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
                 return None;
             }
             if crate::util::extract::looks_like_email(&name) {
-                if name.len() < MIN_EMAIL_LEN || !seen_emails.insert(name.clone()) {
+                if name.len() < MIN_EMAIL_LEN
+                    || !seen_emails.insert(name.clone())
+                    || crate::util::domains::is_infrastructure_email(&name)
+                {
                     return None;
                 }
                 let mut e = Entity::new(EntityKind::Email, &name, confidence::HIGH_PLUS, scan_id);

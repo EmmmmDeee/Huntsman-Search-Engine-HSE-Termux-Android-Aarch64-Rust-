@@ -125,7 +125,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
         let rname_raw = soa_data.rname.to_ascii();
         let admin_email = soa_rname_to_email(rname_raw.trim_end_matches('.'));
 
-        let mut e = Entity::new(EntityKind::Domain, domain, 0.92, &ctx.scan_id);
+        let mut e = Entity::new(
+            EntityKind::Domain,
+            domain,
+            confidence::AUTHORITATIVE,
+            &ctx.scan_id,
+        );
         e.tag("soa");
         let mut ev = Evidence::new(SRC, format!("SOA record for {domain}"))
             .with_attr("record_type", "SOA")
@@ -422,7 +427,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                 if crate::util::domains::is_infrastructure_email(addr) {
                     continue;
                 }
-                let mut ee = Entity::new(EntityKind::Email, addr, 0.72, &ctx.scan_id);
+                let mut ee = Entity::new(
+                    EntityKind::Email,
+                    addr,
+                    confidence::ATTRIBUTED,
+                    &ctx.scan_id,
+                );
                 ee.tag("dmarc-report");
                 ee.tag("dns");
                 ee.add_evidence(
@@ -467,52 +477,14 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
 /// matching how this module already gates its DMARC/SOA email emission.
 /// **Pure** (no network/IO), unit-tested directly.
 pub(super) fn tlsrpt_entities(txts: &[String], domain: &str, scan_id: &str) -> Vec<Entity> {
-    let mut out = Vec::new();
-    for raw in txts {
-        let txt = raw.trim_matches('"');
-        let Some(parsed) = crate::util::tlsrpt::parse(txt) else {
-            continue;
-        };
-        for addr in &parsed.emails {
-            if crate::util::domains::is_infrastructure_email(addr) {
-                continue;
-            }
-            let mut e = Entity::new(EntityKind::Email, addr, 0.72, scan_id);
-            e.tag("dns");
-            e.tag("tlsrpt-report");
-            e.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("TLSRPT (SMTP-TLS) report address for {domain}"),
-                )
-                .with_attr("record_type", "TLSRPT")
-                .with_attr("parent_domain", domain),
-            );
-            out.push(e);
-        }
-        for url in &parsed.urls {
-            if let Some(host) = crate::util::url_util::host_from_url(url)
-                && host.contains('.')
-                && host != domain
-            {
-                let mut d = Entity::new(EntityKind::Domain, &host, 0.58, scan_id);
-                d.tag("dns");
-                d.tag("tlsrpt-report");
-                d.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!("TLSRPT (SMTP-TLS) reporting endpoint host for {domain}"),
-                    )
-                    .with_attr("record_type", "TLSRPT")
-                    .with_attr("rua", url.as_str()),
-                );
-                out.push(d);
-            }
-        }
-        // Only one TLSRPT record is valid per domain (first `v=TLSRPTv1` wins).
-        break;
-    }
-    out
+    // hickory hands back each TXT string with its surrounding quotes; strip them
+    // per record, then delegate to the shared builder so this transport and
+    // `doh_resolver` emit an identical entity set (confidence, tags, gating).
+    let unquoted: Vec<String> = txts
+        .iter()
+        .map(|raw| raw.trim_matches('"').to_string())
+        .collect();
+    crate::util::tlsrpt::report_entities(&unquoted, domain, scan_id, SRC)
 }
 
 /// CAA record inspection (RFC 8659).
@@ -692,6 +664,59 @@ pub(super) async fn reverse_lookup(target: &Target, ctx: &ModuleContext) -> Resu
     Ok(entities)
 }
 
+/// How a DNSBL sweep actually went, as opposed to how many zones we tried.
+///
+/// The old code kept a single `checked` counter incremented once per zone
+/// regardless of outcome, and treated `lookup_ip(..).is_ok()` as the only
+/// signal. "Listed" is `Ok`; **everything else** — a genuine NXDOMAIN *and* a
+/// SERVFAIL *and* a timeout — was `Err` and therefore silently "not listed".
+/// With DNS down, all eight zones failed, `listed_on` stayed empty, `checked`
+/// reached 8, and the module emitted `status: clean`, `checked_count: 8`,
+/// "clean on 8 blocklists". That is not a missing result; it is a fabricated
+/// positive reputation verdict about an address.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct BlocklistTally {
+    /// Zones queried before cancellation.
+    pub(super) attempted: u32,
+    /// Zones that actually answered — listed, or authoritatively not listed.
+    /// This, not `attempted`, is the honest denominator for a verdict.
+    pub(super) answered: u32,
+    /// Zones that established nothing (SERVFAIL, REFUSED, timeout, no route).
+    pub(super) unresolved: u32,
+}
+
+impl BlocklistTally {
+    /// True when zones were tried and **none** answered, so no reputation
+    /// statement of any kind is supported.
+    ///
+    /// Pure, so the decision that turns a sweep into a `ModuleError` is
+    /// unit-testable without eight live blocklist zones. Requires
+    /// `attempted > 0`: a sweep where nothing ran (cancelled before the first
+    /// zone) established nothing either, but that is the operator's doing and
+    /// is not an outage to report.
+    ///
+    /// A single answering zone is enough to keep the verdict honest — it proves
+    /// the resolver path works, so the silence from the others is a real
+    /// negative for those zones and is disclosed as partial coverage rather
+    /// than counted as a pass.
+    pub(super) fn is_wholly_unresolved(&self) -> bool {
+        self.attempted > 0 && self.answered == 0
+    }
+
+    /// True when at least one zone answered, so a reputation verdict is
+    /// supported at all.
+    ///
+    /// This is the emission guard, and it is deliberately blind to *why* there
+    /// were no answers. Gating only the outage ERROR on cancellation was not
+    /// enough: a sweep cancelled before any zone answered then fell past the
+    /// error and emitted `status: clean, checked_count: 0` — "clean on 0
+    /// blocklists" — which is the same verdict-without-evidence reached by
+    /// another route. No answers, no verdict, whatever the cause.
+    pub(super) fn supports_a_verdict(&self) -> bool {
+        self.answered > 0
+    }
+}
+
 /// DNSBL reputation check against 8 blocklists.
 pub(super) async fn blocklist_check(target: &Target, ctx: &ModuleContext) -> Result<Vec<Entity>> {
     use super::constants::BLOCKLISTS;
@@ -709,18 +734,63 @@ pub(super) async fn blocklist_check(target: &Target, ctx: &ModuleContext) -> Res
 
     let resolver = shared_resolver();
     let mut listed_on: Vec<&str> = Vec::new();
-    let mut checked = 0u32;
+    let mut tally = BlocklistTally::default();
 
     for (zone, label) in BLOCKLISTS {
         if ctx.cancel.is_cancelled() {
             break;
         }
+        tally.attempted += 1;
         let query = format!("{reversed}.{zone}");
-        if resolver.lookup_ip(query.as_str()).await.is_ok() {
-            listed_on.push(label);
+        match resolver.lookup_ip(query.as_str()).await {
+            // A DNSBL publishes an A record (127.0.0.x) for a listed address.
+            Ok(_) => {
+                listed_on.push(label);
+                tally.answered += 1;
+            }
+            // The zone authoritatively said "no such record" — NXDOMAIN, or
+            // NOERROR with no answers. That is the DNSBL saying *not listed*,
+            // and it is a real check.
+            //
+            // `is_no_records_found()` is exactly this and nothing more:
+            // hickory maps SERVFAIL/REFUSED/FORMERR and friends to
+            // `ResponseCode(..)`, never to `NoRecordsFound`, so a failing
+            // resolver cannot slip through here dressed as a clean result.
+            Err(e) if e.is_no_records_found() => tally.answered += 1,
+            // SERVFAIL, REFUSED, timeout, no route. The zone established
+            // nothing, so it must not be counted as a check that passed.
+            Err(_) => tally.unresolved += 1,
         }
-        checked += 1;
     }
+
+    // No zone answered, so nothing supports a verdict. Two ways to get here and
+    // they are not the same thing:
+    //
+    //   * zones were tried and every one failed — a DNS outage, worth reporting;
+    //   * the sweep was cancelled (before the first zone, or after some failed)
+    //     — the operator's own stop, which is not the network's fault and is not
+    //     an error.
+    //
+    // Both must skip the entity entirely. Gating only the ERROR on cancellation
+    // was not enough: the cancelled path then fell through and emitted
+    // `status: clean`, `checked_count: 0` — "clean on 0 blocklists" — which is
+    // the very verdict-without-evidence this change exists to stop, just reached
+    // by a different route.
+    if !tally.supports_a_verdict() {
+        if !ctx.cancel.is_cancelled() && tally.is_wholly_unresolved() {
+            return Err(crate::core::error::Error::module(
+                SRC,
+                format!(
+                    "no DNSBL answered for {ip}: all {} blocklist zones failed to resolve. \
+                     Reporting this as 'clean' would be a reputation verdict nothing \
+                     established.",
+                    tally.attempted
+                ),
+            ));
+        }
+        return Ok(Vec::new());
+    }
+    let checked = tally.answered;
 
     let mut entity = Entity::new(
         EntityKind::IpAddress,
@@ -731,32 +801,50 @@ pub(super) async fn blocklist_check(target: &Target, ctx: &ModuleContext) -> Res
     entity.tag("dnsbl-checked");
 
     if listed_on.is_empty() {
-        entity.add_evidence(
-            Evidence::new(SRC, format!("{ip} clean on {checked} blocklists"))
-                .with_attr("listed_count", "0")
-                .with_attr("checked_count", checked.to_string())
-                .with_attr("status", "clean"),
-        );
+        // `checked` is now the count that ANSWERED, not the count attempted, so
+        // "clean on N" is a claim each of those N zones actually made. Any zone
+        // that failed to resolve is disclosed rather than folded into N — an
+        // undisclosed partial sweep reads as full coverage.
+        let mut ev = Evidence::new(SRC, format!("{ip} clean on {checked} blocklists"))
+            .with_attr("listed_count", "0")
+            .with_attr("checked_count", checked.to_string())
+            .with_attr("status", "clean");
+        if tally.unresolved > 0 {
+            ev = ev
+                .with_attr("unresolved_count", tally.unresolved.to_string())
+                .with_attr("attempted_count", tally.attempted.to_string())
+                .with_attr("coverage", "partial");
+        }
+        entity.add_evidence(ev);
     } else {
         entity.tag("blocklisted");
         if listed_on.len() >= 3 {
             entity.tag("high-risk");
         }
         listed_on.sort_unstable();
-        entity.add_evidence(
-            Evidence::new(
-                SRC,
-                format!(
-                    "{ip} listed on {} of {} blocklists",
-                    listed_on.len(),
-                    checked
-                ),
-            )
-            .with_attr("listed_count", listed_on.len().to_string())
-            .with_attr("checked_count", checked.to_string())
-            .with_attr("listed_on", listed_on.join(", "))
-            .with_attr("status", "listed"),
-        );
+        // Same disclosure as the clean branch: "listed on 1 of 3" must not hide
+        // that five more zones were asked and never answered. A listing is a
+        // positive finding and stands on its own, but the DENOMINATOR is a
+        // coverage claim, and an undisclosed partial denominator overstates it.
+        let mut ev = Evidence::new(
+            SRC,
+            format!(
+                "{ip} listed on {} of {} blocklists",
+                listed_on.len(),
+                checked
+            ),
+        )
+        .with_attr("listed_count", listed_on.len().to_string())
+        .with_attr("checked_count", checked.to_string())
+        .with_attr("listed_on", listed_on.join(", "))
+        .with_attr("status", "listed");
+        if tally.unresolved > 0 {
+            ev = ev
+                .with_attr("unresolved_count", tally.unresolved.to_string())
+                .with_attr("attempted_count", tally.attempted.to_string())
+                .with_attr("coverage", "partial");
+        }
+        entity.add_evidence(ev);
     }
 
     Ok(vec![entity])

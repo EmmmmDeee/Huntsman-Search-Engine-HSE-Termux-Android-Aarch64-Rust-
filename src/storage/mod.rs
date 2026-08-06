@@ -420,16 +420,35 @@ impl Store {
         Ok(())
     }
 
-    pub fn get_scan(&self, id: &str) -> Result<Option<Scan>> {
+    /// Run a query that yields at most one `data_json` column and deserialize it
+    /// to `T`, or `None` when no row matched.
+    ///
+    /// THE single place the "load one JSON-blob row and parse it" shape lives, so
+    /// [`Store::get_scan`], [`Store::get_entity`] and [`Store::latest_finished_scan`]
+    /// (and any future single-row accessor) cannot drift on the two properties
+    /// that matter: an absent row is `Ok(None)`, but a **corrupt** `data_json` on
+    /// a matched row is an `Err` (the parse failure propagates), never a silent
+    /// `None` that would misreport corruption as "not found". `params` is any
+    /// `rusqlite::Params` — a keyed lookup (`params![id]`) or a fixed no-arg query
+    /// (`params![]`).
+    fn query_one_json<T, P>(&self, sql: &str, params: P) -> Result<Option<T>>
+    where
+        T: serde::de::DeserializeOwned,
+        P: rusqlite::Params,
+    {
         let json: Option<String> = {
             let conn = self.conn.lock();
-            let mut stmt = conn.prepare_cached("SELECT data_json FROM scans WHERE id = ?1")?;
-            let mut rows = stmt.query(params![id])?;
+            let mut stmt = conn.prepare_cached(sql)?;
+            let mut rows = stmt.query(params)?;
             rows.next()?.map(|r| r.get(0)).transpose()?
         };
         json.map(|j| serde_json::from_str(&j))
             .transpose()
             .map_err(Into::into)
+    }
+
+    pub fn get_scan(&self, id: &str) -> Result<Option<Scan>> {
+        self.query_one_json("SELECT data_json FROM scans WHERE id = ?1", params![id])
     }
 
     pub fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
@@ -452,7 +471,7 @@ impl Store {
     /// (`Coordinates "0,0"` or `MacAddress "00:00:00:00:00:00"`; the sensors
     /// ignore the value, so it is never a real target). Filters at the SQL
     /// layer with the same `json_extract` technique as
-    /// [`Store::latest_completed_scan`], so a deployment with thousands of
+    /// [`Store::latest_finished_scan`], so a deployment with thousands of
     /// ordinary scans doesn't pay to deserialise every one just to find the
     /// radar-tagged handful.
     ///
@@ -489,36 +508,39 @@ impl Store {
         Ok(deserialize_rows(raw, "radar_history"))
     }
 
-    /// Return the most recent scan whose serialised status matches
-    /// `complete` (the lower-case canonical form used by ScanStatus::
-    /// as_str). Filters at the SQL layer using a JSON-extract probe
-    /// so we don't deserialise dozens of non-Complete rows just to
-    /// find one Complete record. Used by `hse export latest …` and
-    /// the SPA's "open latest scan" affordance.
+    /// Return the most recent scan in a **terminal state that carries final
+    /// data** — `complete` or `aborted` (the lower-case canonical forms from
+    /// ScanStatus::as_str). Filters at the SQL layer with a JSON-extract probe
+    /// so we don't deserialise dozens of non-matching rows to find one. Used by
+    /// `hse export/diff/audit latest …` and the SPA's "open latest scan".
     ///
-    /// Returns `Ok(None)` only when no complete scan exists — a genuine SQL
-    /// failure or a corrupted `data_json` on the matched row propagates as
-    /// `Err`, exactly like [`Store::get_scan`], so a corrupt row is never
-    /// misreported as "no completed scans" to `resolve_scan_id`'s callers
-    /// (`export`/`diff`/`audit latest`).
-    pub fn latest_completed_scan(&self) -> Result<Option<Scan>> {
-        let json: Option<String> = {
-            let conn = self.conn.lock();
-            let mut stmt = conn.prepare_cached(
-                // Deterministic tie-break on `id` (PRIMARY KEY): `started_at` is
-                // 1-second resolution, so without it two scans completing in the
-                // same second make `latest` non-deterministic — `export/diff/audit
-                // latest` could resolve to a different scan on identical state.
-                "SELECT data_json FROM scans
-                 WHERE json_extract(data_json, '$.status') = 'complete'
-                 ORDER BY started_at DESC, id DESC LIMIT 1",
-            )?;
-            let mut rows = stmt.query(params![])?;
-            rows.next()?.map(|r| r.get(0)).transpose()?
-        };
-        json.map(|j| serde_json::from_str(&j))
-            .transpose()
-            .map_err(Into::into)
+    /// `aborted` is included deliberately: an operator-cancelled scan keeps the
+    /// entities and correlations produced before the stop, "persisted as for a
+    /// `Complete` scan" (see [`ScanStatus::Aborted`](crate::core::scan::ScanStatus::Aborted)), and
+    /// [`scan_incompleteness_warning`](crate::app::runtime) already reports its
+    /// data as final. Excluding it made `latest` silently skip a perfectly good
+    /// aborted scan — the exact scenario a wall-time budget or an operator
+    /// cancel produces — and resolve to an older complete one (or none). `failed`
+    /// is NOT included: it has no usable entities (its `entity_count` is 0).
+    /// Non-terminal states (`pending`/`running`) are excluded because their rows
+    /// are still changing.
+    ///
+    /// Returns `Ok(None)` only when no such scan exists — a genuine SQL failure
+    /// or a corrupted `data_json` on the matched row propagates as `Err`, exactly
+    /// like [`Store::get_scan`], so a corrupt row is never misreported as "no
+    /// finished scans" to `resolve_scan_id`'s callers (`export`/`diff`/`audit
+    /// latest`).
+    pub fn latest_finished_scan(&self) -> Result<Option<Scan>> {
+        // Deterministic tie-break on `id` (PRIMARY KEY): `started_at` is
+        // 1-second resolution, so without it two scans finishing in the same
+        // second make `latest` non-deterministic — `export/diff/audit latest`
+        // could resolve to a different scan on identical state.
+        self.query_one_json(
+            "SELECT data_json FROM scans
+             WHERE json_extract(data_json, '$.status') IN ('complete', 'aborted')
+             ORDER BY started_at DESC, id DESC LIMIT 1",
+            params![],
+        )
     }
 
     // ── Correlations ───────────────────────────────────────────────────────

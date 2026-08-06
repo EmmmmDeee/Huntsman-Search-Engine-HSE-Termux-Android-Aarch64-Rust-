@@ -284,7 +284,7 @@ pub(super) fn extract_breach_page(
         // Unconditional — independent of the candidate cap and the target
         // match (see the doc comment), kept after PII extraction to preserve
         // the original per-row ordering.
-        store_api_credential(item, SRC);
+        store_api_credential(item, SRC, scan_id, seen, result);
         extract_api_keys_from_item(item, scan_id, SRC, seen, result);
     }
 }
@@ -513,7 +513,12 @@ pub(super) fn extract_breach_entities_with(
         {
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.30, scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::SPECULATIVE,
+                    scan_id,
+                );
                 c.tag("addr-derived");
                 c.tag("geoint");
                 c.tag("breach");
@@ -542,7 +547,7 @@ pub(super) fn extract_breach_entities_with(
             Entity::new(
                 EntityKind::Username,
                 format!("discord:{did}"),
-                0.55,
+                confidence::MEDIUM_HIGH,
                 scan_id,
             ),
             &ev,
@@ -561,7 +566,12 @@ pub(super) fn extract_breach_entities_with(
     {
         push_oathnet_entity(
             result,
-            Entity::new(EntityKind::Username, format!("steam:{sid}"), 0.60, scan_id),
+            Entity::new(
+                EntityKind::Username,
+                format!("steam:{sid}"),
+                confidence::MEDIUM_PLUS,
+                scan_id,
+            ),
             &ev,
             &["steam"],
             is_target_row,
@@ -606,7 +616,7 @@ pub(super) fn extract_breach_entities_with(
                 Entity::new(
                     EntityKind::Username,
                     format!("linkedin:{li}"),
-                    0.55,
+                    confidence::MEDIUM_HIGH,
                     scan_id,
                 ),
                 &ev,
@@ -799,7 +809,7 @@ pub(super) fn extract_breach_entities_with(
             Entity::new(
                 EntityKind::Other("iban".to_string()),
                 iban.trim(),
-                0.70,
+                confidence::HIGH_PLUS,
                 scan_id,
             ),
             &ev,

@@ -206,7 +206,7 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
 
     // Profile URL.
     if !profile_url.is_empty() && profile_url.starts_with("http") {
-        let mut url_e = Entity::new(EntityKind::Url, &profile_url, 0.78, scan_id);
+        let mut url_e = Entity::new(EntityKind::Url, &profile_url, confidence::STRONG, scan_id);
         url_e.tag("mastodon");
         url_e.add_evidence(Evidence::new(
             SRC,
@@ -255,7 +255,7 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
             if link.contains(instance) {
                 continue;
             }
-            let mut url_e = Entity::new(EntityKind::Url, link, 0.58, scan_id);
+            let mut url_e = Entity::new(EntityKind::Url, link, confidence::MEDIUM_SOLID, scan_id);
             url_e.tag("mastodon");
             url_e.add_evidence(
                 Evidence::new(
@@ -412,7 +412,7 @@ fn emit_domain_from_url(
     if !host.contains('.') || host == instance || is_common_platform(&host) {
         return;
     }
-    let mut d = Entity::new(EntityKind::Domain, &host, 0.52, scan_id);
+    let mut d = Entity::new(EntityKind::Domain, &host, confidence::MEDIUM_LIGHT, scan_id);
     d.tag("mastodon");
     d.tag("derived");
     d.add_evidence(

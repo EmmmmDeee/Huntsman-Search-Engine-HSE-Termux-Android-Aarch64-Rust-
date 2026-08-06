@@ -342,7 +342,7 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
         if !crate::util::extract::looks_like_email(&v.to_lowercase()) {
             continue;
         }
-        push(&mut out, EntityKind::Email, v, 0.70, &[]);
+        push(&mut out, EntityKind::Email, v, confidence::HIGH_PLUS, &[]);
         if let Some(label) = lv.label.as_deref().map(str::trim).filter(|s| !s.is_empty())
             && let Some(e) = out.last_mut()
         {
@@ -356,7 +356,7 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
         if v.chars().filter(char::is_ascii_digit).count() < 7 {
             continue;
         }
-        push(&mut out, EntityKind::Phone, v, 0.65, &[]);
+        push(&mut out, EntityKind::Phone, v, confidence::HIGH, &[]);
         if let Some(label) = lv.label.as_deref().map(str::trim).filter(|s| !s.is_empty())
             && let Some(e) = out.last_mut()
         {

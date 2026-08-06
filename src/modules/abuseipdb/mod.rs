@@ -108,7 +108,7 @@ impl Module for AbuseIpDb {
 /// first-class DNS/cert/WHOIS pivots the module used to discard.
 fn build_entities(data: &AbuseData, ip: &str, scan_id: &str) -> Vec<Entity> {
     let abuse_score = data.abuse_confidence_score.unwrap_or(0);
-    let confidence = confidence::MEDIUM_PLUS + (abuse_score as f64 / 100.0) * 0.35;
+    let confidence = abuse_confidence(abuse_score);
 
     let mut ip_entity = Entity::new(EntityKind::IpAddress, ip, confidence, scan_id);
     ip_entity.tag(crate::core::tags::THREAT_INTEL);
@@ -184,7 +184,7 @@ fn build_entities(data: &AbuseData, ip: &str, scan_id: &str) -> Vec<Entity> {
                     && seen.insert(h.clone())
             })
             .map(|host| {
-                let mut d = Entity::new(EntityKind::Domain, &host, 0.72, scan_id);
+                let mut d = Entity::new(EntityKind::Domain, &host, confidence::ATTRIBUTED, scan_id);
                 d.tag("abuseipdb");
                 d.tag("resolved-domain");
                 d.add_evidence(
@@ -257,6 +257,10 @@ struct AbuseData {
 struct Report {
     #[serde(default)]
     categories: Vec<u16>,
+}
+
+fn abuse_confidence(score: u32) -> f64 {
+    confidence::MEDIUM_PLUS + (score as f64 / 100.0) * 0.35
 }
 
 /// Map an AbuseIPDB numeric report-category id to its label. `None` for an

@@ -155,6 +155,24 @@ fn build_entities(target: &Target, attrs: &VtAttributes, scan_id: &str) -> Vec<E
     let mut out = vec![e];
     let label = target.value.as_str();
 
+    // Never drop silently. Unlike `overpass`, whose per-node cap is backed by a
+    // summary entity carrying the true total, nothing here records the records
+    // beyond the cap — so a domain with 200 historical entries would present 30
+    // as though that were all of them. An operator reading a passive-DNS pivot
+    // list must be able to tell "this domain has 30 records" from "30 of 200 are
+    // shown", exactly as `sanctions_ofac` does for its own bounded emission.
+    let dns_total = attrs.last_dns_records.len();
+    if dns_total > MAX_DNS_RECORDS {
+        tracing::warn!(
+            module = SRC,
+            domain = label,
+            total = dns_total,
+            emitted = MAX_DNS_RECORDS,
+            "VirusTotal passive DNS truncated — the remaining records are NOT in this \
+             scan's results"
+        );
+    }
+
     for rec in attrs.last_dns_records.iter().take(MAX_DNS_RECORDS) {
         let Some(rtype) = rec.record_type.as_deref().map(str::trim) else {
             continue;
@@ -170,7 +188,12 @@ fn build_entities(target: &Target, attrs: &VtAttributes, scan_id: &str) -> Vec<E
         match rtype.to_ascii_uppercase().as_str() {
             "A" | "AAAA" => {
                 if value.parse::<std::net::IpAddr>().is_ok() {
-                    let mut ip = Entity::new(EntityKind::IpAddress, value, 0.82, scan_id);
+                    let mut ip = Entity::new(
+                        EntityKind::IpAddress,
+                        value,
+                        confidence::CORROBORATED,
+                        scan_id,
+                    );
                     ip.tag(SRC);
                     ip.tag("resolved");
                     ip.add_evidence(
@@ -189,7 +212,7 @@ fn build_entities(target: &Target, attrs: &VtAttributes, scan_id: &str) -> Vec<E
                     && host.parse::<std::net::IpAddr>().is_err()
                     && !host.contains(char::is_whitespace)
                 {
-                    let mut d = Entity::new(EntityKind::Domain, host, 0.78, scan_id);
+                    let mut d = Entity::new(EntityKind::Domain, host, confidence::STRONG, scan_id);
                     d.tag(SRC);
                     d.tag("passive-dns");
                     d.add_evidence(

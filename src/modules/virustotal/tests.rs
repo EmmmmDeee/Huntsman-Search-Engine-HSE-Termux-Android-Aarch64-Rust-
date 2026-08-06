@@ -221,3 +221,46 @@ use super::*;
             "expected at most {MAX_DNS_RECORDS} IP pivots, got {ip_count}"
         );
     }
+
+    /// A bounded emission must stay bounded — the cap exists to keep graph
+    /// expansion finite on a long-lived domain.
+    #[test]
+    fn passive_dns_expansion_stays_within_its_cap() {
+        let recs: Vec<String> = (0..MAX_DNS_RECORDS + 25)
+            .map(|i| format!(r#"{{"type":"A","value":"10.0.{}.{}"}}"#, i / 256, i % 256))
+            .collect();
+        let json = format!(
+            r#"{{"data":{{"attributes":{{"last_dns_records":[{}]}}}}}}"#,
+            recs.join(",")
+        );
+        let target = Target::new(TargetKind::Domain, "evil.example");
+        let out = build_all(&target, &json);
+        let ips = out
+            .iter()
+            .filter(|e| e.kind == EntityKind::IpAddress)
+            .count();
+        assert_eq!(
+            ips, MAX_DNS_RECORDS,
+            "passive-DNS pivots must be capped at MAX_DNS_RECORDS"
+        );
+    }
+
+    /// The cap must not be reached by dropping records that parse — a record
+    /// under the cap is emitted, so the count above is a real bound and not an
+    /// artefact of parse failures masking the truncation.
+    #[test]
+    fn every_record_under_the_cap_is_emitted() {
+        let recs: Vec<String> = (0..3)
+            .map(|i| format!(r#"{{"type":"A","value":"10.0.0.{i}"}}"#))
+            .collect();
+        let json = format!(
+            r#"{{"data":{{"attributes":{{"last_dns_records":[{}]}}}}}}"#,
+            recs.join(",")
+        );
+        let target = Target::new(TargetKind::Domain, "evil.example");
+        let ips = build_all(&target, &json)
+            .into_iter()
+            .filter(|e| e.kind == EntityKind::IpAddress)
+            .count();
+        assert_eq!(ips, 3, "an under-cap set must be emitted in full");
+    }

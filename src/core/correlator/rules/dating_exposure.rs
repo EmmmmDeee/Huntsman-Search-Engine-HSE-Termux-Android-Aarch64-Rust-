@@ -107,9 +107,10 @@ pub(in crate::core::correlator) fn rule_au_119_dating_platform_exposure(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
 
     fn dating_profile(url: &str, platform: &str, verified: bool) -> Entity {
-        let mut e = Entity::new(EntityKind::Url, url, 0.8, "s");
+        let mut e = Entity::new(EntityKind::Url, url, confidence::HIGH_PLUSPLUS, "s");
         e.tag("social-profile");
         e.tag(format!("platform:{platform}"));
         e.tag("cat:dating");
@@ -161,7 +162,12 @@ mod tests {
 
     #[test]
     fn au119_ignores_non_dating_profiles() {
-        let mut github = Entity::new(EntityKind::Url, "https://github.com/x", 0.8, "s");
+        let mut github = Entity::new(
+            EntityKind::Url,
+            "https://github.com/x",
+            confidence::HIGH_PLUSPLUS,
+            "s",
+        );
         github.tag("cat:dev");
         github.tag("verified-detection");
         assert!(

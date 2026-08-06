@@ -102,14 +102,14 @@ pub(super) fn build_entities(person: LpPerson, scan_id: &str) -> Vec<Entity> {
     out.push(e);
 
     // Profile URL.
-    let mut u = Entity::new(EntityKind::Url, &profile_url, 0.78, scan_id);
+    let mut u = Entity::new(EntityKind::Url, &profile_url, confidence::STRONG, scan_id);
     u.tag("launchpad");
     u.add_evidence(ev());
     out.push(u);
 
     // Display name → Person (multi-word only).
     if let Some(name) = person.display_name.as_deref()
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.72, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::ATTRIBUTED, scan_id)
     {
         p.tag("launchpad");
         p.add_evidence(ev().with_attr("source_field", "display_name"));

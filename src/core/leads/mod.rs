@@ -130,6 +130,11 @@ fn pivot(kind: &str) -> Option<(&'static str, f64)> {
         "email" => Some(("email", 0.9)),
         "username" => Some(("username", 0.7)),
         "phone" => Some(("phone", 0.55)),
+        // A domain is a container seed — it fans out to subdomains, DNS, WHOIS
+        // and hosting — so it is independently pivotable, the same class of
+        // scannable container as an organisation. (RegisteredBy / ResolvesTo
+        // surface domains; without this arm they never become one-tap leads.)
+        "domain" => Some(("domain", 0.5)),
         // An organisation the subject is affiliated with (a company they direct,
         // an employer) is a rich, scannable seed: re-scanning it surfaces the
         // other officers, the corporate family and the registered offices — the

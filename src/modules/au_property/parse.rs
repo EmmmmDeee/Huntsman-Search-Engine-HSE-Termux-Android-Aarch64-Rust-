@@ -71,21 +71,17 @@ pub(crate) fn extract_state(text: &str) -> Option<&'static str> {
 }
 
 /// Extract a 4-digit AU postcode in range 2000–9999 from a text window. Pure.
+///
+/// The standalone-postcode boundary test is the shared
+/// [`crate::util::address_au::is_standalone_postcode_at`] so this and the
+/// `au_electoral` suburb-hint scan cannot diverge on what a postcode is.
 pub(crate) fn extract_postcode(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     for i in 0..bytes.len().saturating_sub(3) {
-        if bytes[i].is_ascii_digit()
-            && bytes[i + 1].is_ascii_digit()
-            && bytes[i + 2].is_ascii_digit()
-            && bytes[i + 3].is_ascii_digit()
-            // Reject 5+ digit runs (not a standalone 4-digit code).
-            && !bytes.get(i + 4).is_some_and(u8::is_ascii_digit)
-            && (i == 0 || !bytes[i - 1].is_ascii_digit())
-        {
-            let pc: u32 = text[i..i + 4].parse().ok()?;
-            if (2000..=9999).contains(&pc) {
-                return Some(text[i..i + 4].to_string());
-            }
+        if crate::util::address_au::is_standalone_postcode_at(bytes, i) {
+            // The predicate confirmed four ASCII digits, so `i..i + 4` is a
+            // valid char boundary.
+            return Some(text[i..i + 4].to_string());
         }
     }
     None
@@ -190,23 +186,48 @@ pub(crate) fn record_to_entities(rec: &PropertyRecord, scan_id: &str) -> Vec<Ent
     addr.tag("exact-name-match");
     out.push(addr);
 
-    // Derive coordinates from the suburb centroid via the offline city table.
+    // Derive coordinates by an HONEST precision ladder — a coarse guess must
+    // never masquerade as a name-matched suburb centroid:
+    //   1. suburb centroid (precise, name-matched)        -> MEDIUM_PLUS
+    //   2. the parsed postcode's exact gazetteer centroid -> MEDIUM
+    //   3. the postcode's leading-two-digit region centroid -> LOW_MEDIUM
+    //   4. the state capital, last resort                 -> LOW, coarse
+    // Previously every suburb miss fell straight to the state capital yet was
+    // stamped MEDIUM_PLUS + exact-name-match + derived_from:suburb_centroid, so a
+    // rural owner was pinned to the capital indistinguishably from a real suburb
+    // fix, and the parsed postcode (a finer, honest signal, already in the
+    // Address) was never used to geocode.
     let suburb_lc = rec.suburb.to_lowercase();
-    if let Some((lat, lon)) = crate::util::city_coords::city_coords(&suburb_lc).or_else(|| {
-        // State-capital fallback when suburb not in the offline table.
-        state_capital_coords(rec.state)
-    }) {
+    let coord_fix: Option<((f64, f64), f64, &str, bool)> =
+        crate::util::city_coords::city_coords(&suburb_lc)
+            .map(|c| (c, confidence::MEDIUM_PLUS, "suburb_centroid", true))
+            .or_else(|| {
+                let pc = rec.postcode.as_deref()?;
+                crate::util::city_coords::postcode_coords(pc)
+                    .map(|c| (c, confidence::MEDIUM, "postcode_centroid", false))
+                    .or_else(|| {
+                        crate::util::city_coords::au_postcode_region(pc)
+                            .map(|c| (c, confidence::LOW_MEDIUM, "postcode_region", false))
+                    })
+            })
+            .or_else(|| {
+                state_capital_coords(rec.state)
+                    .map(|c| (c, confidence::LOW, "state_capital_fallback", false))
+            });
+    if let Some(((lat, lon), coord_conf, derived_from, name_matched)) = coord_fix {
         let coord_value = format!("{lat:.4},{lon:.4}");
-        let mut coord = Entity::new(
-            EntityKind::Coordinates,
-            &coord_value,
-            confidence::MEDIUM_PLUS,
-            scan_id,
-        );
-        coord.add_evidence(evid.with_attr("derived_from", "suburb_centroid"));
+        let mut coord = Entity::new(EntityKind::Coordinates, &coord_value, coord_conf, scan_id);
+        coord.add_evidence(evid.with_attr("derived_from", derived_from));
         coord.tag(format!("au-state:{}", rec.state));
         coord.tag("country:AU");
-        coord.tag("exact-name-match");
+        // `exact-name-match` (which lets the correlator anchor this as a precise
+        // residence) belongs only to a genuine suburb centroid; every fallback is
+        // region-grain and is tagged `coarse` instead.
+        if name_matched {
+            coord.tag("exact-name-match");
+        } else {
+            coord.tag("coarse");
+        }
         out.push(coord);
     }
 

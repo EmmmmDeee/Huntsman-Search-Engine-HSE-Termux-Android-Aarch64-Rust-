@@ -40,10 +40,33 @@ mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/hse-install.log"
 : > "$LOG_FILE"
 
+# Sample interactivity BEFORE the redirect below. `exec > >(tee …)` replaces
+# fd 1 with a pipe (process substitution always yields one), so every `-t 1`
+# test after that point is unconditionally false — on a piped install AND on a
+# fully interactive one. Testing afterwards silently disabled colour and, far
+# worse, made the termux-setup-storage prompt unreachable, so ~/storage was
+# never linked and every sensor module no-opped while the installer reported
+# success. Cache the answer here; nothing below may re-test fd 1.
+# Two DIFFERENT capabilities, deliberately sampled separately:
+#   COLOR_TTY  — is stdout a terminal? (governs ANSI colour)
+#   CAN_PROMPT — is a controlling terminal reachable? (governs asking questions)
+# A combined `-t 0 && -t 1` test conflates them and fails exactly where it
+# matters: the documented one-line install `curl -fsSL … | bash` hands the
+# script a PIPE on stdin (the script text itself) while stdout is still the
+# user's terminal. Gating on stdin there would disable colour AND the storage
+# prompt for the primary install path. Prompts read /dev/tty, not stdin, so
+# stdin's type is irrelevant to whether we can ask.
+COLOR_TTY=0
+[[ -t 1 ]] && COLOR_TTY=1
+CAN_PROMPT=0
+if [[ -e /dev/tty ]] && (exec 3</dev/tty) 2>/dev/null; then
+    CAN_PROMPT=1
+fi
+
 # Mirror everything to the log file from here on.
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-if [[ -t 1 ]]; then
+if [[ $COLOR_TTY -eq 1 ]]; then
     BOLD=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[0;31m'; GREEN=$'\033[0;32m'
     YELLOW=$'\033[1;33m'; BLUE=$'\033[0;34m'; CYAN=$'\033[0;36m'; NC=$'\033[0m'
 else
@@ -80,6 +103,87 @@ if [[ -z "${HSE_INSTALL_DIR:-}" && -d .git && -f Cargo.toml ]] \
 fi
 HSE_INSTALL_DIR="${HSE_INSTALL_DIR:-$HOME/.local/share/hse}"
 RUST_MIN_VERSION="1.88"
+
+# ─── Stale-install cleanup (definitions; invoked after the new binary lands) ──
+# Signature stamped into every wrapper this installer generates, and present for
+# free in the compiled binary (its clap `about` string). Cleanup removes ONLY
+# files carrying one of these signatures, so it can never touch user data.
+HSE_MANAGED_MARKER="HSE-MANAGED: created by the HSE installer; safe for it to remove"
+# The compiled binary's built-in banner — present in the bytes of any real `hse`
+# binary, so a stale copy is identified WITHOUT executing it.
+HSE_BINARY_SIGNATURE="Huntsman Search Engine (HSE)"
+# Every executable name this installer places in the bin dir.
+HSE_OWNED_NAMES=(hse hse-bg hse-watch hse-wakelock)
+
+# True iff FILE is an HSE-owned artifact: a generated wrapper (carries the
+# marker) or a compiled `hse` (carries the embedded banner). `grep -a` scans
+# binary bytes and reads through a live symlink, so nothing is executed. A
+# broken symlink fails the `-f` test → reported NOT owned (handled separately as
+# a dangling link).
+_hse_is_owned() {
+    local f="$1"
+    [[ -f "$f" ]] || return 1
+    grep -qaF "$HSE_MANAGED_MARKER" "$f" 2>/dev/null && return 0
+    grep -qaF "$HSE_BINARY_SIGNATURE" "$f" 2>/dev/null && return 0
+    return 1
+}
+
+# Remove old / duplicate HSE artifacts so a fresh install can never be shadowed
+# by a stale one (the classic "an old `hse` in another PATH dir keeps winning").
+# Runs AFTER the new binary + wrappers are in place, so the current copies in
+# $HSE_BIN_DIR are skipped. Touches ONLY hse-named executables it can positively
+# identify as its own, plus its own staging temp files — never ~/.huntsman.env,
+# ~/.huntsman/, or anything unrecognised. Best-effort: a cleanup failure never
+# fails the install.
+purge_stale_installs() {
+    step "Removing stale / duplicate HSE installs"
+    local removed=0 tmp dir name f fresh keep
+    local -a path_dirs
+
+    # 1. This installer's own staging temp files, left by a crashed prior run.
+    for tmp in "$HSE_BIN_DIR"/.hse.new.*; do
+        [[ -e "$tmp" ]] || continue
+        rm -f "$tmp" 2>/dev/null && { ok "removed stale staging file: $tmp"; removed=$((removed + 1)); }
+    done
+
+    # 2. Duplicate hse binaries / wrappers in OTHER PATH directories. Splitting
+    #    PATH via `read -ra` (not word-splitting) keeps entries containing spaces
+    #    intact.
+    IFS=: read -ra path_dirs <<< "$PATH"
+    for dir in "${path_dirs[@]}"; do
+        [[ -n "$dir" && -d "$dir" ]] || continue
+        for name in "${HSE_OWNED_NAMES[@]}"; do
+            f="$dir/$name"
+            # Never touch the current install: skip anything that is the SAME
+            # file as any freshly-installed artifact — a hardlink, or a symlink
+            # pointing at it (under this or any other name). `-ef` follows links
+            # and is a portable bash builtin (no realpath/readlink -f needed).
+            if [[ -e "$f" ]]; then
+                keep=0
+                for fresh in "${HSE_OWNED_NAMES[@]}"; do
+                    [[ "$f" -ef "$HSE_BIN_DIR/$fresh" ]] && { keep=1; break; }
+                done
+                [[ $keep -eq 1 ]] && continue
+            fi
+            # A dangling hse* symlink: broken leftover from a removed install.
+            if [[ -L "$f" && ! -e "$f" ]]; then
+                rm -f "$f" 2>/dev/null && { ok "removed dangling symlink: $f"; removed=$((removed + 1)); }
+                continue
+            fi
+            # A real, positively-identified HSE artifact shadowing the fresh one.
+            if _hse_is_owned "$f"; then
+                rm -f "$f" 2>/dev/null \
+                    && { log_warn "removed stale HSE '$name' at $f (was shadowing $HSE_BIN_DIR/$name)"; removed=$((removed + 1)); }
+            fi
+        done
+    done
+
+    if [[ $removed -eq 0 ]]; then
+        ok "no stale HSE artifacts found"
+    else
+        ok "cleaned $removed stale HSE artifact(s)"
+    fi
+}
 
 # ─── Detect environment ──────────────────────────────────────────────────────
 step "Detecting environment"
@@ -593,17 +697,18 @@ if [[ $IS_TERMUX -eq 1 ]]; then
 fi
 
 # This build has no `--target` — it always compiles for whatever `rustc`'s host
-# is, i.e. host == target, unconditionally (on a real Termux device that's
-# aarch64-linux-android; on a dev's own machine it's whatever that machine is).
-# `-C target-cpu=native` is therefore always safe HERE specifically — unlike in
-# `.cargo/config.toml`, which is keyed by target triple and can't tell this
-# native build apart from CI's cross-compile of the SAME triple from a
-# different host arch (where "native" would mean the wrong CPU). Exporting
-# RUSTFLAGS (rather than editing config.toml) confines the flag to this one
-# on-device invocation; it also REPLACES rather than merges with config.toml's
-# `target.*.rustflags` for this call, so `--as-needed` is repeated here to keep
-# that benefit rather than silently dropping it.
-export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native -C link-arg=-Wl,--as-needed"
+# is, i.e. host == target (on a real Termux device that's aarch64-linux-android).
+# `-C target-cpu=native` would be safe for a binary that only ever ran on THIS
+# device — but the freshly-built binary is deliberately cached back to Downloads
+# (see the self-bootstrapping prebuilt cache below) so "another aarch64 phone"
+# reuses it on its prebuilt fast path. A native-tuned binary bakes in the build
+# device's exact microarchitecture (e.g. ARMv8.2+ instructions); reused on an
+# older ARMv8.0 SoC it would SIGILL. The redistributed artifact must therefore be
+# a portable ARMv8-A baseline build — matching how CI builds the Release binary —
+# so target-cpu is left at the safe default. `--as-needed` is still repeated here
+# because exporting RUSTFLAGS REPLACES (not merges) config.toml's
+# `target.*.rustflags` for this call, so dropping it would lose that benefit.
+export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,--as-needed"
 
 # Live progress so a long build never looks frozen:
 #  1. Force cargo's progress bar ON even though stdout is piped to `tee` (a pipe
@@ -667,6 +772,13 @@ step "Installing binary to $HSE_BIN_DIR/hse"
 RESTART_BG=0
 RESTART_BARE=0
 BG_PID_FILE="$HOME/.cache/hse-bg.pid"
+# Deliberately a bare liveness probe, not the hse_pid_matches identity check the
+# wrappers use: that helper lives in the hse-wakelock file, which this run has
+# not written yet (and any copy on disk belongs to the OLD install). It is safe
+# to be approximate here because this only sets a flag — the actions it triggers
+# are `hse-bg stop` then `hse-bg start`, both of which re-probe with the real
+# identity check. A recycled pid therefore costs a start that reports itself as
+# a restart, never a signal to an unrelated process.
 if [[ -f "$BG_PID_FILE" ]] && kill -0 "$(cat "$BG_PID_FILE" 2>/dev/null)" 2>/dev/null; then
     RESTART_BG=1
     ok "Detected a running hse-bg server — will restart it onto the new build"
@@ -728,13 +840,28 @@ if [[ $IS_TERMUX -eq 1 ]]; then
     # Shared-storage symlink — needed for import command + sensor modules
     # that read GPS NMEA logs / WiFi scans from external storage.
     if [[ ! -d "$HOME/storage" ]]; then
-        if [[ -t 0 && -t 1 ]]; then
-            printf "  ${CYAN}?${NC} Grant shared-storage access now? (recommended for sensor modules) [y/N] "
-            read -r reply || reply=""
+        if [[ $CAN_PROMPT -eq 1 ]]; then
+            printf "  %s?%s Grant shared-storage access now? (recommended for sensor modules) [y/N] " "$CYAN" "$NC"
+            read -r reply </dev/tty || reply=""
             if [[ "${reply,,}" == "y" || "${reply,,}" == "yes" ]]; then
-                termux-setup-storage \
-                    && ok "Shared storage linked at $HOME/storage" \
-                    || log_warn "termux-setup-storage failed (denied permission?)"
+                # `termux-setup-storage` returns BEFORE the Android permission
+                # dialog is answered, so its exit status reports nothing about
+                # the outcome. Check the filesystem instead.
+                termux-setup-storage || true
+                # The Android permission dialog is ASYNCHRONOUS —
+                # termux-setup-storage returns long before the user taps Allow.
+                # Poll for the result rather than declaring failure after a
+                # fixed guess, which would warn while the dialog is still up.
+                for _ in $(seq 1 30); do
+                    [[ -d "$HOME/storage" ]] && break
+                    sleep 1
+                done
+                if [[ -d "$HOME/storage" ]]; then
+                    ok "Shared storage linked at $HOME/storage"
+                else
+                    log_warn "shared storage not linked (permission denied or still pending)"
+                    hint "Re-run later: termux-setup-storage"
+                fi
             else
                 hint "Skipped. Run later: termux-setup-storage"
             fi
@@ -745,44 +872,202 @@ if [[ $IS_TERMUX -eq 1 ]]; then
         ok "Shared storage already configured at $HOME/storage"
     fi
 
+    # Shared, REFERENCE-COUNTED wake-lock manager.
+    #
+    # Termux's `termux-wake-lock` / `termux-wake-unlock` act on ONE app-wide
+    # lock; they are not reference counted. `hse-bg` and `hse-watch` are meant
+    # to run at the same time (the Termux:Boot script starts BOTH), so when each
+    # one called the raw unlock itself, stopping either released the lock the
+    # other was still relying on — and Android then killed the survivor at
+    # screen-off. Unattended collection died silently, which is the exact
+    # failure the wake-lock exists to prevent.
+    #
+    # Both wrappers now register as named holders here, and the shared lock is
+    # only dropped once the LAST holder is gone. This is also the single
+    # definition of that logic, replacing the copy each wrapper used to carry.
+    WAKELOCK_HELPER="$HSE_BIN_DIR/hse-wakelock"
+    printf '#!%s/bin/bash\n' "$PREFIX" > "$WAKELOCK_HELPER"
+    printf '# %s\n' "$HSE_MANAGED_MARKER" >> "$WAKELOCK_HELPER"
+    cat >> "$WAKELOCK_HELPER" <<'WAKELOCK'
+# hse-wakelock — reference-counted wrapper around Termux's process-global wake
+# lock. Sourced by hse-bg and hse-watch; not meant to be run directly.
+#
+#   hse_wakelock_acquire <holder> [pid]  register <holder> and hold the lock
+#   hse_wakelock_release <holder>        drop <holder>; unlock if none remain
+#
+# [pid] defaults to the calling shell. Pass it explicitly when the process that
+# must keep the lock alive is NOT the caller — hse-bg registers the backgrounded
+# `hse serve` pid, because the launcher exits immediately and would otherwise be
+# garbage-collected as a dead holder on the next release.
+#
+# Holder files record the owning PID so a wrapper killed with SIGKILL (no trap)
+# cannot strand the lock forever — the next release garbage-collects it.
+HSE_WAKELOCK_DIR="${HSE_WAKELOCK_DIR:-$HOME/.cache/hse-wakelock.d}"
+
+# True when $1 is a live pid that is still one of OUR processes.
+#
+#   $2  expected basename of the running executable, or "" to skip that test
+#   $3  substring the command line must contain, or "" to skip that test
+#
+# `kill -0` alone is NOT a sound test for a pid read back from a file. Linux
+# wraps pids at /proc/sys/kernel/pid_max — 32768 on stock Termux — and Android's
+# low-memory killer reaps background processes as a matter of course, which is
+# the entire reason this wake-lock exists. A recorded pid whose process was
+# reaped is therefore genuinely likely to have been REUSED by an unrelated
+# process the user owns, and `kill -0` cannot tell the two apart.
+#
+# Both directions of error do damage, so neither test may guess:
+#   * a false "still ours" makes `stop` SIGTERM that innocent process, and
+#     leaves the wake-lock held by a dead holder;
+#   * a false "not ours" makes `start` launch a SECOND server against a port
+#     the first one still holds.
+hse_pid_matches() {
+    _pid="${1:-}"
+    _exe="${2:-}"
+    _argv="${3:-}"
+    # Reject non-numeric before it can reach `kill`, and reject 0 specially:
+    # `kill 0` signals the caller's entire process group — from `hse-bg stop`
+    # that is the operator's shell. A truncated pid file must never do that.
+    case "$_pid" in
+        '' | 0 | *[!0-9]*) return 1 ;;
+    esac
+    kill -0 "$_pid" 2>/dev/null || return 1
+
+    # Preferred signal: which binary is actually running. Unlike an argv match
+    # this cannot be fooled by an unrelated path that happens to contain "hse",
+    # nor broken by a future change to how the server is invoked.
+    if [ -n "$_exe" ]; then
+        _t="$(readlink "/proc/$_pid/exe" 2>/dev/null || true)"
+        if [ -n "$_t" ]; then
+            # An upgrade renames the new binary over the running one, after
+            # which the kernel reports the target as "<path> (deleted)". That
+            # is precisely when install.sh restarts the server, so it has to
+            # keep counting as ours.
+            _t="${_t% (deleted)}"
+            [ "${_t##*/}" = "$_exe" ] && return 0
+            return 1
+        fi
+    fi
+
+    # Fallback — and the only usable signal for a shell wrapper, whose
+    # executable is bash rather than anything named after us.
+    if [ -n "$_argv" ] && [ -r "/proc/$_pid/cmdline" ]; then
+        # Tested with `if`, not run as a bare pipeline whose status is returned:
+        # "no match" is a normal answer here, not an error. Every caller today
+        # invokes this from a condition, where `set -e` is suspended for the
+        # whole call — but that leaves correctness resting on the call site, and
+        # a future caller running it as a plain command would turn "not ours"
+        # into a wrapper that exits part-way through `stop`.
+        # `-F`: the contract is a literal substring, never a regex.
+        if tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null | grep -qF -- "$_argv"; then
+            return 0
+        fi
+        return 1
+    fi
+
+    # /proc unreadable, or nothing to compare against. Answer on liveness alone
+    # rather than guessing "dead": that is exactly the old behaviour, whereas a
+    # wrong "dead" would introduce the double-start failure above.
+    return 0
+}
+
+hse_wakelock_gc() {
+    [ -d "$HSE_WAKELOCK_DIR" ] || return 0
+    for _h in "$HSE_WAKELOCK_DIR"/*; do
+        [ -e "$_h" ] || continue
+        _p="$(cat "$_h" 2>/dev/null || true)"
+        # The two holders record different KINDS of pid, so they need different
+        # identity tests: hse-bg registers the `hse` server itself, hse-watch
+        # registers its own shell wrapper.
+        case "${_h##*/}" in
+            hse-bg)    hse_pid_matches "$_p" hse ''         || rm -f "$_h" ;;
+            hse-watch) hse_pid_matches "$_p" ''  hse-watch  || rm -f "$_h" ;;
+            *)         hse_pid_matches "$_p" ''  ''         || rm -f "$_h" ;;
+        esac
+    done
+}
+
+hse_wakelock_acquire() {
+    mkdir -p "$HSE_WAKELOCK_DIR"
+    echo "${2:-$$}" > "$HSE_WAKELOCK_DIR/$1"
+    command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock || true
+}
+
+hse_wakelock_release() {
+    rm -f "$HSE_WAKELOCK_DIR/$1"
+    hse_wakelock_gc
+    # Only surrender the shared lock when nobody else is holding it.
+    if [ -z "$(ls -A "$HSE_WAKELOCK_DIR" 2>/dev/null)" ]; then
+        command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock || true
+    fi
+}
+WAKELOCK
+    chmod 0755 "$WAKELOCK_HELPER"
+    ok "Installed hse-wakelock (refcounted wake-lock shared by hse-bg + hse-watch)"
+
     # Background-scan wrapper. Wraps `hse serve` in nohup + wake-lock so
     # the scan engine survives Android's aggressive process kills.
     BG_WRAPPER="$HSE_BIN_DIR/hse-bg"
-    cat > "$BG_WRAPPER" <<'WRAPPER'
-#!/data/data/com.termux/files/usr/bin/bash
+    printf '#!%s/bin/bash\n' "$PREFIX" > "$BG_WRAPPER"
+    printf '# %s\n' "$HSE_MANAGED_MARKER" >> "$BG_WRAPPER"
+    # Absolute path to the shared helper, resolved at INSTALL time. Deriving it
+    # from $0 works for a PATH lookup (argv[1] is the resolved path) but not for
+    # `bash hse-bg` from another directory, and this costs nothing.
+    printf 'HSE_WAKELOCK_HELPER="%s/hse-wakelock"\n' "$HSE_BIN_DIR" >> "$BG_WRAPPER"
+    cat >> "$BG_WRAPPER" <<'WRAPPER'
 # hse-bg — run `hse serve` in background with wake-lock so Android can't
 # kill the process when the screen turns off. Stop with: hse-bg stop
 set -e
 PID_FILE="$HOME/.cache/hse-bg.pid"
 LOG_FILE="$HOME/.cache/hse-bg.log"
 mkdir -p "$(dirname "$PID_FILE")"
+# Refcounted wake-lock, shared with hse-watch (see hse-wakelock).
+. "$HSE_WAKELOCK_HELPER"
+
+# Is the recorded pid still OUR server? See hse_pid_matches — a bare `kill -0`
+# trusts a recycled pid, which on Android is a routine occurrence rather than a
+# corner case.
+bg_running() {
+    [[ -f "$PID_FILE" ]] || return 1
+    # The recorded pid is the server itself: `nohup hse serve` execs, so the
+    # pid `$!` captured below IS the `hse` binary.
+    hse_pid_matches "$(cat "$PID_FILE" 2>/dev/null)" hse 'hse serve'
+}
 
 case "${1:-start}" in
     start)
-        if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        if bg_running; then
             echo "hse-bg already running (pid $(cat "$PID_FILE"))"
             exit 0
         fi
-        command -v termux-wake-lock >/dev/null && termux-wake-lock || true
         nohup hse serve >> "$LOG_FILE" 2>&1 &
         echo $! > "$PID_FILE"
+        # Register the SERVER's pid as the holder, not this short-lived
+        # launcher's — the launcher exits immediately and would otherwise be
+        # garbage-collected as a dead holder on the next release.
+        hse_wakelock_acquire hse-bg "$(cat "$PID_FILE")"
         echo "Started hse serve (pid $(cat "$PID_FILE"))"
         echo "Logs: $LOG_FILE"
         echo "Open: http://127.0.0.1:8080"
         ;;
     stop)
-        if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-            kill "$(cat "$PID_FILE")"
+        if bg_running; then
+            # `|| true`: the pid can exit between the probe above and here.
+            # Under `set -e` a failed kill would abort BEFORE the release
+            # below, stranding the holder file — and if this was the last holder,
+            # nothing would ever trigger the GC that drops the shared wake-lock.
+            kill "$(cat "$PID_FILE")" 2>/dev/null || true
             rm -f "$PID_FILE"
-            command -v termux-wake-unlock >/dev/null && termux-wake-unlock || true
+            hse_wakelock_release hse-bg
             echo "Stopped"
         else
             echo "Not running"
             rm -f "$PID_FILE"
+            hse_wakelock_release hse-bg
         fi
         ;;
     status)
-        if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        if bg_running; then
             echo "Running: pid $(cat "$PID_FILE")"
         else
             echo "Not running"
@@ -800,6 +1085,160 @@ WRAPPER
     chmod 0755 "$BG_WRAPPER"
     ok "Installed hse-bg wrapper (start|stop|status|log)"
 
+    # Unattended recurring collection. `hse-watch` sweeps a watchlist of seeds on
+    # a fixed interval (wake-lock held) via `hse scan --input-file`, accumulating
+    # findings in the local store for later review in the web UI. Opt-in: it stays
+    # idle until the watchlist has at least one seed.
+    WATCH_WRAPPER="$HSE_BIN_DIR/hse-watch"
+    printf '#!%s/bin/bash\n' "$PREFIX" > "$WATCH_WRAPPER"
+    printf '# %s\n' "$HSE_MANAGED_MARKER" >> "$WATCH_WRAPPER"
+    # Absolute path to the shared helper, resolved at INSTALL time (see hse-bg).
+    printf 'HSE_WAKELOCK_HELPER="%s/hse-wakelock"\n' "$HSE_BIN_DIR" >> "$WATCH_WRAPPER"
+    cat >> "$WATCH_WRAPPER" <<'WATCH'
+# hse-watch — unattended, recurring OSINT collection over a watchlist.
+#
+# Sweeps every seed in the watchlist on a fixed interval, accumulating findings
+# in the local store, holding a wake-lock so Android can't kill it when the
+# screen is off. Review results any time in the web UI (hse-bg start →
+# http://127.0.0.1:8080). Opt-in: it stays idle until the watchlist has a seed.
+#
+#   Watchlist : $HSE_WATCHLIST       (default ~/.huntsman/watchlist.txt)
+#               one seed per line; blank lines and # comments are ignored.
+#   Interval  : $HSE_WATCH_INTERVAL  (default 3600 = one sweep per hour)
+#   Scan args : $HSE_WATCH_ARGS      (default empty — hse's comprehensive default)
+#
+# Control: hse-watch [start|stop|status|log|run-once]
+set -euo pipefail
+
+WATCHLIST="${HSE_WATCHLIST:-$HOME/.huntsman/watchlist.txt}"
+INTERVAL="${HSE_WATCH_INTERVAL:-3600}"
+PID_FILE="$HOME/.cache/hse-watch.pid"
+LOG_FILE="$HOME/.cache/hse-watch.log"
+mkdir -p "$(dirname "$PID_FILE")"
+# Refcounted wake-lock, shared with hse-bg (see hse-wakelock).
+. "$HSE_WAKELOCK_HELPER"
+
+stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# Count non-blank, non-comment seeds (0 when the file is absent). `grep -c`
+# exits 1 on a zero count, so `|| true` keeps it from tripping `set -e`.
+seed_count() {
+    [ -f "$WATCHLIST" ] || { echo 0; return; }
+    grep -cvE '^[[:space:]]*(#|$)' "$WATCHLIST" || true
+}
+
+sweep_once() {
+    if [ "$(seed_count)" -eq 0 ]; then
+        echo "$(stamp) no active seeds in $WATCHLIST — nothing to do"
+        return 0
+    fi
+    echo "$(stamp) sweep start — $(seed_count) seed(s) from $WATCHLIST"
+    # SC2086: HSE_WATCH_ARGS is an intentional, user-supplied argument list.
+    # shellcheck disable=SC2086
+    hse scan --input-file "$WATCHLIST" ${HSE_WATCH_ARGS:-} \
+        || echo "$(stamp) sweep reported an error (see log above)"
+    echo "$(stamp) sweep done"
+}
+
+run_loop() {
+    # Registers THIS loop as a named wake-lock holder. The shared lock is only
+    # surrendered once hse-bg has also let go (see hse-wakelock).
+    hse_wakelock_acquire hse-watch
+    trap 'hse_wakelock_release hse-watch; exit 0' TERM INT
+    while true; do
+        sweep_once
+        sleep "$INTERVAL"
+    done
+}
+
+# Is the recorded pid still OUR loop? See hse_pid_matches. The pid recorded here
+# is the backgrounded `"$0" run-loop` wrapper, so its command line carries the
+# wrapper's own name.
+watch_running() {
+    [ -f "$PID_FILE" ] || return 1
+    # No exe test here: the recorded pid is the backgrounded `"$0" run-loop`
+    # shell, whose executable is bash. Its argv carries the wrapper's path,
+    # which is what identifies it.
+    hse_pid_matches "$(cat "$PID_FILE" 2>/dev/null)" '' 'hse-watch'
+}
+
+case "${1:-start}" in
+    start)
+        if watch_running; then
+            echo "hse-watch already running (pid $(cat "$PID_FILE"))"
+            exit 0
+        fi
+        if [ "$(seed_count)" -eq 0 ]; then
+            echo "watchlist $WATCHLIST has no seeds — add one per line, then: hse-watch start"
+            exit 0
+        fi
+        nohup "$0" run-loop >>"$LOG_FILE" 2>&1 &
+        echo $! >"$PID_FILE"
+        echo "Started hse-watch (pid $(cat "$PID_FILE"); every ${INTERVAL}s; $(seed_count) seed(s))"
+        echo "Logs: $LOG_FILE"
+        ;;
+    run-loop)
+        run_loop
+        ;;
+    run-once)
+        sweep_once
+        ;;
+    stop)
+        if watch_running; then
+            # `|| true`: the pid can exit between the probe above and here.
+            # Under `set -e` a failed kill would abort BEFORE the release
+            # below, stranding the holder file — and if this was the last holder,
+            # nothing would ever trigger the GC that drops the shared wake-lock.
+            kill "$(cat "$PID_FILE")" 2>/dev/null || true
+            rm -f "$PID_FILE"
+            # The killed loop's TERM trap releases too; release is idempotent.
+            hse_wakelock_release hse-watch
+            echo "Stopped"
+        else
+            echo "Not running"
+            rm -f "$PID_FILE"
+            hse_wakelock_release hse-watch
+        fi
+        ;;
+    status)
+        if watch_running; then
+            echo "Running: pid $(cat "$PID_FILE"); $(seed_count) seed(s); every ${INTERVAL}s"
+        else
+            echo "Not running; $(seed_count) seed(s) in $WATCHLIST"
+        fi
+        ;;
+    log)
+        tail -f "$LOG_FILE"
+        ;;
+    *)
+        echo "usage: hse-watch [start|stop|status|log|run-once]"
+        exit 1
+        ;;
+esac
+WATCH
+    chmod 0755 "$WATCH_WRAPPER"
+    ok "Installed hse-watch wrapper (start|stop|status|log|run-once)"
+
+    # Example watchlist so the operator only has to add seeds. Kept empty
+    # (comments only) so `hse-watch` / the boot script stay idle until opted in.
+    WATCHLIST_PATH="$HOME/.huntsman/watchlist.txt"
+    if [[ ! -f "$WATCHLIST_PATH" ]]; then
+        mkdir -p "$(dirname "$WATCHLIST_PATH")"
+        cat > "$WATCHLIST_PATH" <<'WATCHLIST'
+# hse-watch watchlist — one seed per line; blank lines and # comments ignored.
+# The kind is auto-detected from the value; findings accumulate in the store.
+# Add your seeds below, then start recurring collection:
+#   hse-watch start          # sweep every hour (HSE_WATCH_INTERVAL to change)
+#   hse-watch status
+# Examples (uncomment / replace):
+# example.com
+# alice@example.com
+# 8.8.8.8
+WATCHLIST
+        chmod 0600 "$WATCHLIST_PATH"
+        ok "Created example watchlist at $WATCHLIST_PATH (empty → hse-watch idle)"
+    fi
+
     # Termux:Boot autostart — only set up if the boot dir already exists
     # (created by Termux:Boot app). We don't force-create it because that
     # implies the user installed the APK.
@@ -807,10 +1246,17 @@ WRAPPER
     if [[ -d "$BOOT_DIR" ]]; then
         BOOT_SCRIPT="$BOOT_DIR/hse-autostart"
         if [[ ! -f "$BOOT_SCRIPT" ]]; then
-            cat > "$BOOT_SCRIPT" <<'BOOT'
-#!/data/data/com.termux/files/usr/bin/bash
-termux-wake-lock 2>/dev/null || true
+            printf '#!%s/bin/bash\n' "$PREFIX" > "$BOOT_SCRIPT"
+            cat >> "$BOOT_SCRIPT" <<'BOOT'
+# Autostart for Termux:Boot. Deliberately takes NO wake-lock of its own:
+# hse-bg and hse-watch each register with the refcounted hse-wakelock helper,
+# so the lock is held for exactly as long as one of them is running. A raw
+# `termux-wake-lock` here would be an unowned fourth holder that nothing ever
+# releases.
 hse-bg start
+# Recurring collection — no-op while the watchlist is empty, so this is safe to
+# leave on; it begins sweeping only once you add a seed to ~/.huntsman/watchlist.txt.
+hse-watch start
 BOOT
             chmod 0755 "$BOOT_SCRIPT"
             ok "Termux:Boot autostart installed → ${BOOT_SCRIPT}"
@@ -847,94 +1293,26 @@ BOOT
     fi
 fi
 
-# ─── Keys template ───────────────────────────────────────────────────────────
+# ─── Purge stale / duplicate installs ────────────────────────────────────────
+# The fresh binary + wrappers are now in $HSE_BIN_DIR; remove any older copies
+# elsewhere on PATH so a bare `hse` can never resolve to a previous version.
+# Runs on every install (Termux and standard Unix), and only after a build has
+# actually produced a new binary — HSE_SKIP_BUILD exits long before this point,
+# so cleanup never runs without a replacement in place.
+purge_stale_installs || log_warn "stale-install cleanup skipped (non-fatal)"
+
+# ─── Keys / env file (single canonical template) ───────────────────────────────────
+# Delegate to `hse provision` — the Rust-native env-merge that owns the ONE
+# canonical template (src/cli/env_template.txt). A second, hand-maintained copy
+# of the template used to live here and could drift out of sync; there is now
+# exactly one source. `--discover` autonomously folds any HUNTSMAN_* key already
+# present in the environment into the file, pre-configuring it with no manual
+# step. Idempotent: the merge preserves every real value, adds only newly-shipped
+# template keys, and skips the write entirely when nothing changed.
 KEYS_PATH="$HOME/.huntsman.env"
-if [[ ! -f "$KEYS_PATH" ]]; then
-    step "Creating keys template at $KEYS_PATH"
-    cat > "$KEYS_PATH" <<'TEMPLATE'
-# Huntsman Search Engine (HSE) — API keys & configuration
-# All-source OSINT / GEOINT / NETINT recon in the GhostSec tradition (SpiderFoot-inspired).
-#
-# Uncomment and paste a value to enable the corresponding key-gated module.
-# File is chmod 0600 — never commit this file.
-#
-# The large majority of modules are free and need no keys at all — only the
-# key-gated sources listed below require one. Run `hse doctor` for the live
-# free / key-gated / paid split, or `hse keys status` for the key pool.
-# The Settings page (hse serve → http://127.0.0.1:8080/settings) lets you
-# paste and save any key directly from Chrome on the device.
-#
-# ── Identity / breach ─────────────────────────────────────────────────────────
-#HUNTSMAN_HIBP_KEY=
-#HUNTSMAN_OATHNET_KEY=
-#HUNTSMAN_SEEKNOW_KEY=
-#HUNTSMAN_FULLCONTACT_KEY=
-#HUNTSMAN_NIAMONX_KEY=
-# DeHashed — active search subscription + credits required:
-#HUNTSMAN_DEHASHED_KEY=
-#HUNTSMAN_INTELX_KEY=
-#HUNTSMAN_HUNTER_KEY=
-#HUNTSMAN_OPENSANCTIONS_KEY=
-# ── Infrastructure / threat intel ─────────────────────────────────────────────
-#HUNTSMAN_SHODAN_KEY=
-#HUNTSMAN_SECTRAILS_KEY=
-#HUNTSMAN_CENSYS_ID=
-#HUNTSMAN_CENSYS_SECRET=
-#HUNTSMAN_NETLAS_KEY=
-#HUNTSMAN_ONYPHE_KEY=
-#HUNTSMAN_LEAKIX_KEY=
-#HUNTSMAN_ABUSEIPDB_KEY=
-# abuse.ch — one key powers URLhaus, ThreatFox and MalwareBazaar:
-#HUNTSMAN_ABUSECH_KEY=
-#HUNTSMAN_THREATFOX_KEY=
-#HUNTSMAN_ALIENVAULT_KEY=
-#HUNTSMAN_GREYNOISE_KEY=
-#HUNTSMAN_URLSCAN_KEY=
-#HUNTSMAN_DOMAINSDB_KEY=
-#HUNTSMAN_CRIMINALIP_KEY=
-#HUNTSMAN_IPQS_KEY=
-#HUNTSMAN_VIRUSTOTAL_KEY=
-#HUNTSMAN_ZOOMEYE_KEY=
-#HUNTSMAN_OSINTCAT_KEY=
-# ── Search ────────────────────────────────────────────────────────────────────
-#HUNTSMAN_EXA_KEY=
-# ── Phone / HLR ───────────────────────────────────────────────────────────────
-#HUNTSMAN_HLR_KEY=
-#HUNTSMAN_OPENCNAM_KEY=
-# ── Geolocation / cell towers ─────────────────────────────────────────────────
-#HUNTSMAN_OPENCELLID_KEY=
-# ── Validation / enrichment ───────────────────────────────────────────────────
-#HUNTSMAN_NUMVERIFY_KEY=
-#HUNTSMAN_WHOISXML_KEY=
-#HUNTSMAN_WIGLE_USER=
-#HUNTSMAN_WIGLE_TOKEN=
-#HUNTSMAN_TROVE_KEY=
-#HUNTSMAN_ABR_GUID=
-# ── OSINT orchestration / identity ────────────────────────────────────────────
-#HUNTSMAN_SEON_KEY=
-#HUNTSMAN_EMAILREP_KEY=
-#HUNTSMAN_EPIEOS_KEY=
-#HUNTSMAN_PROXYCURL_KEY=
-#HUNTSMAN_OPENCORP_KEY=
-#
-# ── Operator defaults ─────────────────────────────────────────────────────────
-# Set your own default scan target to avoid retyping --value every run.
-# An explicit --value always overrides this.
-#HUNTSMAN_DEFAULT_SEED=
-#
-# ── Egress rotation (optional) ────────────────────────────────────────────────
-# Route scans through a proxy / rotate DNS resolvers to avoid per-source limits.
-# Hosts listed here are auto-excluded from being scanned as targets.
-#   HUNTSMAN_SEARCH_PROXY=socks5://127.0.0.1:9050,http://host:3128
-#   HUNTSMAN_DNS_RESOLVERS=cloudflare,google,quad9
-#HUNTSMAN_SEARCH_PROXY=
-#HUNTSMAN_DNS_RESOLVERS=
-TEMPLATE
-    chmod 0600 "$KEYS_PATH"
-    ok "Template created (chmod 0600)"
-else
-    ok "Keys file already present at $KEYS_PATH"
-fi
+step "Configuring keys at $KEYS_PATH (canonical template + autonomous key discovery)"
+"$HSE_BIN_DIR/hse" provision --env-only --discover \
+    || log_warn "hse provision failed — configure keys later: hse provision --env-only --discover"
 
 # ─── Record install location for `hse update` ────────────────────────────────
 # hse update reads HUNTSMAN_INSTALL_DIR from ~/.huntsman.env to find install.sh.
@@ -1002,6 +1380,12 @@ if [[ $IS_TERMUX -eq 1 ]]; then
     printf '  hse-bg log                                          # tail the log\n'
     printf '  hse-bg stop                                         # release wake-lock\n'
     printf '  Then open: %shttp://127.0.0.1:8080%s in Chrome on the device\n\n' "$BOLD" "$NC"
+    printf '%sUnattended recurring collection (Termux):%s\n' "$CYAN" "$NC"
+    printf '  Add seeds to %s~/.huntsman/watchlist.txt%s (one per line), then:\n' "$BOLD" "$NC"
+    printf '  hse-watch start                                     # sweep the watchlist hourly\n'
+    printf '  hse-watch status                                    # seeds + running state\n'
+    printf '  hse-watch run-once                                  # one immediate sweep\n'
+    printf '  HSE_WATCH_INTERVAL=1800 hse-watch start             # change the cadence (sec)\n\n'
     printf '%sBattery & process survival:%s\n' "$CYAN" "$NC"
     printf '  Android > Settings > Apps > Termux > Battery: unrestricted\n'
     printf '  Android > Settings > Apps > Termux > Allow background data\n\n'

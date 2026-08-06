@@ -208,7 +208,12 @@ pub(super) fn build_entities(
     let mut result = ModuleResult::new();
 
     // Confirmed-on-StackOverflow username.
-    let mut u = Entity::new(EntityKind::Username, &user.display_name, 0.82, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        &user.display_name,
+        confidence::CORROBORATED,
+        scan_id,
+    );
     u.tag("stackoverflow");
     u.tag("forum");
     let mut ev = Evidence::new(
@@ -267,7 +272,7 @@ pub(super) fn build_entities(
             continue;
         }
         let profile = format!("{}/users/{uid}", site_url.trim_end_matches('/'));
-        let mut e = Entity::new(EntityKind::Url, &profile, 0.72, scan_id);
+        let mut e = Entity::new(EntityKind::Url, &profile, confidence::ATTRIBUTED, scan_id);
         e.tag("stackexchange");
         e.tag("cross-platform");
         let mut pev = Evidence::new(
@@ -323,8 +328,12 @@ pub(super) fn build_entities(
 
     // Personal website URL + Domain.
     if let Some(ref site) = user.website_url {
-        for mut e in profile_kit::website_url_and_domain(site, confidence::HIGH_PLUS, 0.62, scan_id)
-        {
+        for mut e in profile_kit::website_url_and_domain(
+            site,
+            confidence::HIGH_PLUS,
+            confidence::NOTABLE,
+            scan_id,
+        ) {
             e.tag("stackoverflow");
             match e.kind {
                 EntityKind::Domain => {

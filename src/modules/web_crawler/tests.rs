@@ -192,6 +192,8 @@ use super::*;
             internal_links: 0,
             external_links: 0,
             notable_pages: Vec::new(),
+            image_urls: Vec::new(),
+            image_urls_seen: HashSet::new(),
         };
 
         build_entities(
@@ -252,4 +254,146 @@ use super::*;
             .map(|e| e.value.as_str())
             .collect();
         assert_eq!(tracking_ids, vec!["UA-111", "UA-999"]);
+    }
+
+    /// A `CrawlState` with everything empty — for exercising one behaviour at a
+    /// time without restating every field.
+    fn empty_state() -> CrawlState {
+        CrawlState {
+            visited: HashSet::new(),
+            queue: VecDeque::new(),
+            pages_fetched: 0,
+            disallow_rules: Vec::new(),
+            result: ModuleResult::new(),
+            external_domains: HashSet::new(),
+            subdomains: HashSet::new(),
+            emails: HashSet::new(),
+            phones: HashSet::new(),
+            tracking_ids: HashSet::new(),
+            hydration_findings: Vec::new(),
+            frameworks: HashSet::new(),
+            page_types: HashSet::new(),
+            security_headers: Vec::new(),
+            internal_links: 0,
+            external_links: 0,
+            notable_pages: Vec::new(),
+            image_urls: Vec::new(),
+            image_urls_seen: HashSet::new(),
+        }
+    }
+
+    #[test]
+    fn crawl_evidence_reports_true_image_total_and_flags_the_cap() {
+        // The evidence must state how many images were actually found, not the
+        // saturated emitted count, so a truncated list is never presented as
+        // complete. Here twice the cap was discovered but only the cap emitted.
+        let mut state = empty_state();
+        state.image_urls_seen = (0..IMAGE_LEADS_CAP * 2)
+            .map(|i| format!("https://example.com/img{i}.jpg"))
+            .collect();
+        state.image_urls = (0..IMAGE_LEADS_CAP)
+            .map(|i| format!("https://example.com/img{i}.jpg"))
+            .collect();
+        build_entities(
+            "example.com",
+            "example.com",
+            "scan-1",
+            MAX_DEPTH,
+            false,
+            "https://example.com",
+            &mut state,
+        );
+        let attrs = &state
+            .result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Domain && e.value == "example.com")
+            .expect("domain entity")
+            .evidence[0]
+            .attributes;
+        // True discovered total, the (capped) emitted count, and an explicit
+        // flag that truncation occurred.
+        assert_eq!(
+            attrs.get("image_leads_found").map(String::as_str),
+            Some((IMAGE_LEADS_CAP * 2).to_string().as_str())
+        );
+        assert_eq!(
+            attrs.get("image_leads_emitted").map(String::as_str),
+            Some(IMAGE_LEADS_CAP.to_string().as_str())
+        );
+        assert_eq!(
+            attrs.get("image_leads_capped").map(String::as_str),
+            Some(IMAGE_LEADS_CAP.to_string().as_str())
+        );
+    }
+
+    #[test]
+    fn crawl_evidence_omits_the_cap_flag_when_nothing_was_truncated() {
+        // When every discovered image fit under the cap, there is no truncation
+        // to announce — the `image_leads_capped` flag must be absent.
+        let mut state = empty_state();
+        state.image_urls_seen = ["https://example.com/a.jpg", "https://example.com/b.jpg"]
+            .into_iter()
+            .map(ToString::to_string)
+            .collect();
+        state.image_urls = state.image_urls_seen.iter().cloned().collect();
+        build_entities(
+            "example.com",
+            "example.com",
+            "scan-1",
+            MAX_DEPTH,
+            false,
+            "https://example.com",
+            &mut state,
+        );
+        let attrs = &state
+            .result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Domain && e.value == "example.com")
+            .expect("domain entity")
+            .evidence[0]
+            .attributes;
+        assert_eq!(
+            attrs.get("image_leads_found").map(String::as_str),
+            Some("2")
+        );
+        assert!(
+            !attrs.contains_key("image_leads_capped"),
+            "no truncation occurred, so the cap flag must be absent"
+        );
+    }
+
+    #[test]
+    fn image_leads_become_low_confidence_url_entities_for_exif_geo() {
+        let mut state = empty_state();
+        state.image_urls = vec!["https://example.com/photos/family.jpg".to_string()];
+        build_entities(
+            "example.com",
+            "example.com",
+            "scan-1",
+            MAX_DEPTH,
+            false,
+            "https://example.com",
+            &mut state,
+        );
+
+        let lead = state
+            .result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Url && e.value.contains("family.jpg"))
+            .expect("image URL emitted as a Url entity");
+        assert!(lead.tags.iter().any(|t| t == "exif-lead"));
+        assert!(lead.tags.iter().any(|t| t == "image"));
+        // Presence on a page is not evidence the photo depicts the subject: the
+        // lead sits below MEDIUM so nothing downstream reads it as a link, but
+        // above the expansion floor so the EXIF fetch still runs.
+        assert!(
+            lead.confidence < confidence::MEDIUM,
+            "an image's mere presence must not read as an established link"
+        );
+        // The entity must be the shape `exif_geo` actually accepts, or the lead
+        // is a dead node.
+        assert!(crate::util::exif::looks_like_image_url(&lead.value));
     }
