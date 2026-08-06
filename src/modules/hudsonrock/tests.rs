@@ -162,6 +162,25 @@ use super::*;
     }
 
     #[test]
+    fn parse_iso_epoch_rejects_out_of_range_year_without_overflow() {
+        // `date_compromised` is an attacker-influenced breach-API field. An
+        // out-of-range year must be rejected as None, never reach days_from_civil
+        // (`era * 146097`, i64) or the `days * 86400` (u64) — which under the test
+        // profile's overflow-checks would PANIC (and in release wrap to a garbage
+        // epoch → a wrong freshness verdict). Pre-fix, the first assertion overflowed
+        // `days * 86400` and panicked here.
+        assert!(parse_iso_epoch("9999999999999-01-01").is_none());
+        assert!(parse_iso_epoch("999999999999999999-12-31T00:00:00Z").is_none());
+        assert!(parse_iso_epoch("3000-01-01").is_none(), "above the 2100 ceiling");
+        assert!(parse_iso_epoch("1999-12-31").is_none(), "below the 2000 floor");
+        // A year string so long it can't fit i64 is rejected at the parse step.
+        assert!(parse_iso_epoch("99999999999999999999-01-01").is_none());
+        // The realistic breach-compromise window still parses.
+        assert!(parse_iso_epoch("2000-01-01").is_some());
+        assert!(parse_iso_epoch("2100-12-31").is_some());
+    }
+
+    #[test]
     fn module_metadata_full() {
         let m = HudsonRock;
         assert_eq!(m.name(), "hudsonrock");

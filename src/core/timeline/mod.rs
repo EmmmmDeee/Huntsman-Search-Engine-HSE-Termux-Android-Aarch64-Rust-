@@ -415,7 +415,19 @@ pub fn movement_path(events: &[TimelineEvent]) -> Option<Movement> {
 // ─── Dependency-free date parsing ────────────────────────────────────────────
 
 /// Days from the civil date 1970-01-01 to `y-m-d` (Howard Hinnant's algorithm).
-/// Valid for any Gregorian date; returns a signed day count.
+/// Exact for every real Gregorian date; returns a signed day count.
+///
+/// **Caller precondition — bound the year first.** This helper does *not*
+/// validate its inputs, and neither its own `era * 146097` nor the `days *
+/// 86_400` that every second-converting caller applies to the result is
+/// overflow-checked — so an absurd, out-of-calendar-range year wraps (release)
+/// or panics under overflow-checks (test) instead of erroring. Real calendar
+/// years are nowhere near that bound, but a caller parsing an *untrusted* date
+/// string must reject a wild year before calling, as every current caller
+/// already does: `parse_date` (`1900..=2100`), `age_from_dob` (a 4-ASCII-digit
+/// year, so `<= 9999`), and `hudsonrock`'s `parse_iso_epoch` (`2000..=2100`).
+/// That last guard is not decoration: a 13-digit year reaching this function
+/// unbounded was the root of the hudsonrock breach-date overflow.
 ///
 /// `pub(crate)` so other modules that need an exact date→epoch conversion can
 /// reuse this leap-year-correct implementation rather than re-deriving an
