@@ -358,8 +358,12 @@ mod tests {
         assert_eq!(address_state(&registrant), None);
 
         // A HOSTING/CDN location is likewise excluded.
-        let mut hosting =
-            Entity::new(EntityKind::Address, "NSW, Australia", confidence::MEDIUM, "s");
+        let mut hosting = Entity::new(
+            EntityKind::Address,
+            "NSW, Australia",
+            confidence::MEDIUM,
+            "s",
+        );
         hosting.tag(crate::core::tags::HOSTING);
         assert_eq!(address_state(&hosting), None);
 
