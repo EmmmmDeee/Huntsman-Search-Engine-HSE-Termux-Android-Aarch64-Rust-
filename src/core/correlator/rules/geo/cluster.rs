@@ -47,6 +47,12 @@ pub(in crate::core::correlator) fn rule_au_014_geo_cluster(
     const GEO_TAGS: &[&str] = &["geoint", "wifi-observed"];
     entities_of_kind(entities, EntityKind::Coordinates)
         .into_iter()
+        // Mirror AU-017: a coordinate must clear a confidence floor AND not be
+        // infrastructure geo — a datacentre/hosting/CDN point, or any bare
+        // IP/WHOIS coordinate with no anchoring source. Without this a hosting
+        // centroid that merely carries two enrichment sources surfaced as a
+        // confirmed personal geo lead.
+        .filter(|e| e.confidence >= 0.50 && !is_infrastructure_geo(e))
         .filter_map(|e| {
             let hits: Vec<&str> = GEO_TAGS.iter().copied().filter(|t| e.has_tag(t)).collect();
             // Corroborating sources only: the deterministic `geo_normalize`

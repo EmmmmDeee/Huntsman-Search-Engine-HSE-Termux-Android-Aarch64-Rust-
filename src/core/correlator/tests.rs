@@ -1353,11 +1353,48 @@ fn au013_no_fire_on_one_lan_entity() {
 
 #[test]
 fn au014_fires_on_two_geo_sources() {
-    let mut e = Entity::new(EntityKind::Coordinates, "0,0", 0.9, "s");
+    // A real coordinate — not the "0,0" radar sentinel, which is infrastructure
+    // geo — anchored by two ANCHORING sources (wigle + device GPS).
+    let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
     e.add_evidence(Evidence::new("wigle", "test"));
     e.add_evidence(Evidence::new("device_sensors", "test"));
     let r = rule_au_014_geo_cluster(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
+}
+
+#[test]
+fn au014_excludes_infrastructure_coordinates() {
+    // A datacentre/hosting centroid — even corroborated by two geo sources — is
+    // NOT a personal geo lead (parity with AU-017). A HOSTING-tagged coordinate,
+    // and a bare coordinate whose sources are non-anchoring (ip_geo/ipinfo), are
+    // both infrastructure_geo and must be filtered; the same point, person-
+    // anchored, still fires.
+    let mut hosting = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    hosting.tag(crate::core::tags::HOSTING);
+    hosting.add_evidence(Evidence::new("ip_geo", "geolocated"));
+    hosting.add_evidence(Evidence::new("ipinfo", "geolocated"));
+    assert!(
+        rule_au_014_geo_cluster(&RuleContext::new(&[hosting]), "s", 0).is_empty(),
+        "a hosting-tagged coordinate must not fire AU-014"
+    );
+
+    let mut bare = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    bare.add_evidence(Evidence::new("ip_geo", "geolocated"));
+    bare.add_evidence(Evidence::new("ipinfo", "geolocated"));
+    assert!(
+        rule_au_014_geo_cluster(&RuleContext::new(&[bare]), "s", 0).is_empty(),
+        "a bare IP-geo coordinate (no anchoring source) must not fire AU-014"
+    );
+
+    // Control: the same point, anchored by real person-fixing sources, fires.
+    let mut anchored = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    anchored.add_evidence(Evidence::new("exif_geo", "photo GPS"));
+    anchored.add_evidence(Evidence::new("device_sensors", "gps"));
+    assert_eq!(
+        rule_au_014_geo_cluster(&RuleContext::new(&[anchored]), "s", 0).len(),
+        1,
+        "an anchored two-source coordinate still fires AU-014"
+    );
 }
 
 #[test]
