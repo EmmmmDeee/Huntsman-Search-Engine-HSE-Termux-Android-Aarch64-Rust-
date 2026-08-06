@@ -718,6 +718,47 @@ fn extract_key_phrase_returns_empty_when_no_terms_match() {
     assert!(result.is_empty(), "expected no match, got: {result}");
 }
 
+// ── display_key_phrase ───────────────────────────────────────────────────────
+
+#[test]
+fn display_key_phrase_prefers_the_snippet_clause() {
+    let phrase = display_key_phrase(
+        "Kylo Ren — Wikipedia",
+        "Intro text. Kylo Ren is a fictional character in Star Wars.",
+        "kylo ren",
+    );
+    assert!(
+        phrase.contains("Kylo Ren is a fictional character"),
+        "expected the snippet's matching clause, got: {phrase}"
+    );
+}
+
+#[test]
+fn display_key_phrase_falls_back_to_title() {
+    // Snippet has no query overlap → the title's matching fragment is used.
+    let phrase = display_key_phrase(
+        "Adam Driver as Kylo Ren — IGN",
+        "Nothing relevant in this snippet at all.",
+        "kylo ren",
+    );
+    assert!(
+        phrase.to_lowercase().contains("kylo ren"),
+        "expected the title fragment, got: {phrase}"
+    );
+}
+
+#[test]
+fn display_key_phrase_empty_when_nothing_matches() {
+    assert_eq!(
+        display_key_phrase(
+            "Homepage",
+            "Unrelated content about gardening today.",
+            "kylo ren"
+        ),
+        ""
+    );
+}
+
 // ── dedup_results ────────────────────────────────────────────────────────────
 
 #[test]
