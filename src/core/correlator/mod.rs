@@ -309,6 +309,11 @@ pub(in crate::core) use rules::source_family;
 // secrets/handles qualify.
 pub(in crate::core) use rules::Secret;
 pub(in crate::core) use rules::is_anchorable_handle;
+// Shared with `core::relation::builders::persona_key` so the AliasOf handle-pivot
+// excludes the SAME generic role-mailbox / placeholder handles the correlator's
+// identity rules exclude — a `info@`/`support@` address must never fan a
+// cross-org identity clique.
+pub(in crate::core) use rules::is_generic_handle;
 // The breach/stealer corpus classifier: `core::breach_consensus` grades an
 // entity's corroboration by counting DISTINCT breach sources, and must agree
 // exactly with the correlator on which sources those are — a second, drifting

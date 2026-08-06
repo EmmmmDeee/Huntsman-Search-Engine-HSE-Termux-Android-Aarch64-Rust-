@@ -209,7 +209,7 @@ fn join_capped<'a>(values: impl Iterator<Item = &'a str> + Clone, cap: usize) ->
 /// True if `handle` (already canonicalised) is too generic to identify a
 /// person — a placeholder username, a role mailbox, or a non-identity
 /// extraction artifact (`from`, `dns`, `http`, …).
-fn is_generic_handle(handle: &str) -> bool {
+pub(in crate::core) fn is_generic_handle(handle: &str) -> bool {
     crate::util::preflight::is_placeholder_username(handle)
         || GENERIC_HANDLES.contains(&handle)
         || NON_IDENTITY_TOKENS.contains(&handle)
