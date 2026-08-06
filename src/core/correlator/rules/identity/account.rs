@@ -919,26 +919,41 @@ pub(in crate::core::correlator) fn rule_au_077_name_derived_username_confirmed(
     ts: u64,
 ) -> Vec<Correlation> {
     let entities = context.entities();
+    // A discovery source CONFIRMS the handle only when it actually DETECTED it, not
+    // when it merely guessed from a bare HTTP status. `social_probe`/`username_search`
+    // tag a status guess `detection: status-only`; `username_search`'s aggregate
+    // summary entity instead carries `hits_verified`/`hits_status_only`, so an
+    // all-guess summary (`hits_verified == 0`) is NOT a confirmation — and because it
+    // merges by value with a `name_intel`-derived handle, counting it fired a false
+    // High "prediction confirmed" on two stacked guesses with zero verified hits.
+    // Mirror the status-only discount AU-045/AU-003/AU-055 already apply.
+    fn is_verified_discovery(ev: &crate::core::entity::Evidence) -> bool {
+        USERNAME_DISCOVERY_SOURCES.contains(&ev.source.as_str())
+            && ev.attributes.get("detection").map(String::as_str) != Some("status-only")
+            && ev
+                .attributes
+                .get("hits_verified")
+                .and_then(|v| v.parse::<u32>().ok())
+                .is_none_or(|n| n > 0)
+    }
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::Username)
         .filter(|e| {
-            // Must carry at least one derivation AND at least one discovery source.
+            // Must carry a derivation AND at least one VERIFIED discovery (a genuine
+            // detection, not a status-only guess).
             let has_derived = e
                 .evidence
                 .iter()
                 .any(|ev| USERNAME_DERIVATION_SOURCES.contains(&ev.source.as_str()));
-            let has_confirmed = e
-                .evidence
-                .iter()
-                .any(|ev| USERNAME_DISCOVERY_SOURCES.contains(&ev.source.as_str()));
+            let has_confirmed = e.evidence.iter().any(is_verified_discovery);
             has_derived && has_confirmed
         })
         .map(|e| {
             let confirmed_by: Vec<&str> = e
                 .evidence
                 .iter()
-                .filter(|ev| USERNAME_DISCOVERY_SOURCES.contains(&ev.source.as_str()))
+                .filter(|ev| is_verified_discovery(ev))
                 .map(|ev| ev.source.as_str())
                 .collect::<std::collections::BTreeSet<&str>>()
                 .into_iter()
