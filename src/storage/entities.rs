@@ -408,15 +408,10 @@ impl super::Store {
     }
 
     pub fn get_entity(&self, uid: &str) -> Result<Option<Entity>> {
-        let json: Option<String> = {
-            let conn = self.conn.lock();
-            let mut stmt = conn.prepare_cached("SELECT data_json FROM entities WHERE uid = ?1")?;
-            let mut rows = stmt.query(params![uid])?;
-            rows.next()?.map(|r| r.get(0)).transpose()?
-        };
-        json.map(|j| serde_json::from_str(&j))
-            .transpose()
-            .map_err(Into::into)
+        self.query_one_json(
+            "SELECT data_json FROM entities WHERE uid = ?1",
+            params![uid],
+        )
     }
 
     /// Full-text entity search over the synchronized FTS5 index, ranked by

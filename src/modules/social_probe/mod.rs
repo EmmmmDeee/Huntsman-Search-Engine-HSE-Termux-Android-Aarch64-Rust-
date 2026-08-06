@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -336,6 +336,11 @@ impl Module for SocialProbe {
         let mut result = ModuleResult::new();
         let mut found_count = 0u32;
         let mut checked_count = 0u32;
+        // Probes that returned no definitive answer — `fetch_with_status` code 0,
+        // i.e. curl could not connect / was blocked / had no egress — as distinct
+        // from a definitive not-found (a real HTTP status that just isn't a hit).
+        // Drives the M6 inconclusive-vs-absent verdict after the sweep.
+        let mut inconclusive_probes = 0u32;
         let mut found_platforms: Vec<&str> = Vec::new();
 
         let platforms = match target.kind {
@@ -368,6 +373,14 @@ impl Module for SocialProbe {
                 !platform.negative_patterns.is_empty(),
             )
             .await;
+
+            // Code 0 = curl gave no definitive answer (couldn't connect / blocked
+            // / no egress). It can never be a hit (`exists_codes` are real HTTP
+            // statuses), so count it as inconclusive rather than letting it fall
+            // through as a definitive not-found.
+            if code == 0 {
+                inconclusive_probes += 1;
+            }
 
             let body_blocks = !platform.negative_patterns.is_empty()
                 && platform.negative_patterns.iter().any(|p| body.contains(p));
@@ -434,6 +447,21 @@ impl Module for SocialProbe {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
 
+        // M6: a zero-hit run where at least half the probes returned no definitive
+        // answer (curl code 0 — blocked / unreachable / no egress) is
+        // *inconclusive*, not a confirmed absence. Surface it as a module error so
+        // a network-blocked sweep is never read as "this handle is on no social
+        // platform" — the same disambiguation `username_search` and
+        // `streaming_probe` make. `should_echo_target` already blocks the worse
+        // symptom (echoing the seed as corroboration), but a silent empty `Ok`
+        // still misreports the absence. A cancelled run is exempt: the operator
+        // stopped it, so the module asserts nothing about what it didn't probe.
+        if !ctx.cancel.is_cancelled()
+            && let Some(msg) = inconclusive_sweep(found_count, inconclusive_probes, checked_count)
+        {
+            return Err(Error::module(SRC, msg));
+        }
+
         // Add a summary echo of the target ONLY when at least one profile was
         // actually confirmed (see `should_echo_target`). The negative result is
         // still recorded in the dispatch log; it just must not vouch for the seed.
@@ -450,6 +478,31 @@ impl Module for SocialProbe {
 
         Ok(result)
     }
+}
+
+/// Post-sweep M6 verdict: a zero-hit run is *inconclusive* — not a confirmed
+/// absence — when at least half the attempted probes returned no definitive
+/// answer (`fetch_with_status` code `0`: curl could not connect / was blocked /
+/// had no egress). Returns the error message to surface, or `None` when the run
+/// is a genuine result (any hit, or a mostly-definitive set of not-founds).
+///
+/// Pure, so the policy is testable without the network. Delegates the "mostly
+/// blocked" threshold to [`crate::util::probe::inconclusive`] — the same
+/// predicate the `username_search` and `streaming_probe` enumerators use — so
+/// all three existence-probe modules agree on when a blocked sweep must be
+/// reported as inconclusive rather than as a confirmed absence.
+fn inconclusive_sweep(found: u32, inconclusive_probes: u32, checked: u32) -> Option<String> {
+    crate::util::probe::inconclusive(
+        found as usize,
+        inconclusive_probes as usize,
+        checked as usize,
+    )
+    .then(|| {
+        format!(
+            "inconclusive: {inconclusive_probes}/{checked} platform probes returned no \
+             definitive answer (blocked / unreachable / no egress) — not a confirmed absence"
+        )
+    })
 }
 
 /// Whether a completed probe run should echo the target back as a corroborating

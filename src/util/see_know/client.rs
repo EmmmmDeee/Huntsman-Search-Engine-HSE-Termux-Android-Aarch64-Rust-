@@ -174,20 +174,9 @@ pub fn resolve_key(ctx_key: Option<&str>) -> &str {
 /// fix this mirrors, in `see_know::extract`).
 #[must_use]
 pub fn key_fingerprint(key: &str) -> String {
-    let k = key.trim();
-    if k.is_empty() {
-        return "see-know:(no key)".to_string();
-    }
-    if k.len() <= 18 {
-        return format!("see-know:{k}");
-    }
-    let head: String = k.chars().take(13).collect();
-    let tail: String = {
-        let mut t: Vec<char> = k.chars().rev().take(6).collect();
-        t.reverse();
-        t.into_iter().collect()
-    };
-    format!("see-know:{head}\u{2026}{tail}")
+    // Shared implementation in `util::key_fingerprint`; this fixes see-know's
+    // label and truncation widths (show ≤18-byte keys whole, else 13…6).
+    crate::util::key_fingerprint::fingerprint("see-know", key, 18, 13, 6)
 }
 
 /// Body signature of a key that cannot retrieve data — so the whole scan should

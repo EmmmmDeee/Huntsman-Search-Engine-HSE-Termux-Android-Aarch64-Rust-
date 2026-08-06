@@ -76,6 +76,88 @@ pub fn parse(txt: &str) -> Option<TlsRptRecord> {
     Some(rec)
 }
 
+/// Build the OSINT entities for a domain's TLSRPT record set: a report-address
+/// `Email` per `mailto:` destination and a `Domain` lead per distinct
+/// `http(s)://` reporting endpoint host.
+///
+/// This is the ONE implementation the two DNS transports share — the DoH
+/// (`doh_resolver`) and hickory (`dns_intel`) paths both call it after doing
+/// their own transport-specific TXT unquoting, so they emit a **byte-identical**
+/// entity set from the same record (same confidence, tags, evidence, and gating)
+/// rather than each carrying a hand-maintained copy that had already drifted:
+/// the DoH copy stamped the report address at a bare `0.68` while the hickory
+/// copy used [`crate::core::confidence::ATTRIBUTED`] (`0.72`), so the same
+/// published address scored differently depending only on which transport
+/// observed it. The named rung is canonical here.
+///
+/// Gating matches the modules' documented contract: a provider-infrastructure
+/// mailbox (`sts-reports@google.com`) is dropped via
+/// [`crate::util::domains::is_infrastructure_email`] rather than clustered as the
+/// subject, and an endpoint host equal to `domain` (self-reporting) is not
+/// re-emitted. A domain has at most one valid TLSRPT record, so the first that
+/// parses wins. `src` is the calling module's name, stamped on the evidence.
+///
+/// `unquoted_txts` are the TXT record values with transport quoting already
+/// removed (DoH multi-string reassembly vs. hickory's raw strings differ, so
+/// each caller unquotes its own way). **Pure** — no network or I/O.
+#[must_use]
+pub fn report_entities(
+    unquoted_txts: &[String],
+    domain: &str,
+    scan_id: &str,
+    src: &'static str,
+) -> Vec<crate::core::entity::Entity> {
+    use crate::core::confidence;
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    let mut out = Vec::new();
+    for txt in unquoted_txts {
+        let Some(parsed) = parse(txt) else {
+            continue;
+        };
+        for addr in &parsed.emails {
+            if crate::util::domains::is_infrastructure_email(addr) {
+                continue;
+            }
+            let mut e = Entity::new(EntityKind::Email, addr, confidence::ATTRIBUTED, scan_id);
+            e.tag("dns");
+            e.tag("tlsrpt-report");
+            e.add_evidence(
+                Evidence::new(
+                    src,
+                    format!("TLSRPT (SMTP-TLS) report address for {domain}"),
+                )
+                .with_attr("record_type", "TLSRPT")
+                .with_attr("parent_domain", domain),
+            );
+            out.push(e);
+        }
+        for url in &parsed.urls {
+            if let Some(host) = crate::util::url_util::host_from_url(url)
+                && host.contains('.')
+                && host != domain
+            {
+                let mut d =
+                    Entity::new(EntityKind::Domain, &host, confidence::MEDIUM_SOLID, scan_id);
+                d.tag("dns");
+                d.tag("tlsrpt-report");
+                d.add_evidence(
+                    Evidence::new(
+                        src,
+                        format!("TLSRPT (SMTP-TLS) reporting endpoint host for {domain}"),
+                    )
+                    .with_attr("record_type", "TLSRPT")
+                    .with_attr("rua", url.as_str()),
+                );
+                out.push(d);
+            }
+        }
+        // A domain has at most one valid TLSRPT record; the first wins.
+        break;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

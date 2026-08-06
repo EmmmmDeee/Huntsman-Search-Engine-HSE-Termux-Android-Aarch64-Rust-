@@ -62,6 +62,57 @@ pub fn strip_tags_plain(html: &str) -> String {
     out
 }
 
+/// Split an HTML fragment into table rows of trimmed, tag-stripped `<td>` cell
+/// text — one inner `Vec` per `<tr>`, in document order.
+///
+/// A deliberately small, dependency-free scanner (no HTML crate) for the simple
+/// server-rendered result tables the AU-register scrapers consume: it walks
+/// `<tr>…</tr>` spans and, within each, `<td …>…</td>` spans, running each cell
+/// through [`strip_tags_plain`] and trimming. Rows are returned verbatim,
+/// including short (`< N` cell) and header rows — each caller applies its own
+/// column count and header-drop policy, since those differ per register. `<th>`
+/// header cells are intentionally not collected, so a header row yields an empty
+/// (dropped-by-the-caller) cell vector, exactly as the hand-rolled copies did.
+///
+/// One definition so the modules that each hand-rolled this identical `<tr>`/
+/// `<td>` walk (`acma_rrl`, `ahpra`) stay in agreement.
+///
+/// ```
+/// use huntsman_search_engine::util::html::table_rows;
+///
+/// let html = "<table><tr><td>Jane <b>Doe</b></td><td> 42 </td></tr></table>";
+/// assert_eq!(table_rows(html), vec![vec!["Jane Doe".to_string(), "42".to_string()]]);
+/// ```
+#[must_use]
+pub fn table_rows(html: &str) -> Vec<Vec<String>> {
+    let mut rows = Vec::new();
+    let mut remaining = html;
+    while let Some(row_start) = remaining.find("<tr") {
+        remaining = &remaining[row_start + 3..];
+        let Some(row_end) = remaining.find("</tr>") else {
+            break;
+        };
+        let row = &remaining[..row_end];
+        remaining = &remaining[row_end + 5..];
+
+        let mut cells = Vec::new();
+        let mut r = row;
+        while let Some(td_start) = r.find("<td") {
+            r = &r[td_start..];
+            let Some(td_content_start) = r.find('>') else {
+                break;
+            };
+            r = &r[td_content_start + 1..];
+            let Some(td_end) = r.find("</td>") else { break };
+            let cell = &r[..td_end];
+            cells.push(strip_tags_plain(cell).trim().to_string());
+            r = &r[td_end + 5..];
+        }
+        rows.push(cells);
+    }
+    rows
+}
+
 /// True when `html` looks like an HTML document rather than a JSON/text payload.
 ///
 /// Deliberately conservative — it requires an actual document opener at the very

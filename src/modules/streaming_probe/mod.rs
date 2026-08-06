@@ -33,13 +33,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const MAX_CONCURRENT_PROBES: usize = 16;
-const BODY_PROBE_CAP: usize = 256 * 1024;
-
-/// Browser-shaped UA — same rationale as `username_search`: Cloudflare and
-/// PerimeterX score non-browser TLS fingerprints as bots and 403 them.
-const BROWSER_UA: &str = crate::util::curl::UA_MOBILE;
-const BROWSER_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;\
-    q=0.9,image/avif,image/webp,*/*;q=0.8";
 
 use crate::core::confidence;
 use crate::core::{
@@ -49,6 +42,12 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::http::urlencode;
+// Shared existence-probe plumbing (browser headers, body cap, outcome enum,
+// per-site adapter, M6 disambiguation), single-sourced in `util::probe` and
+// shared with `username_search`.
+use crate::util::probe::{
+    BODY_PROBE_CAP, BROWSER_ACCEPT, BROWSER_UA, ProbeResult, WithSite, inconclusive,
+};
 
 const SRC: &str = "streaming_probe";
 
@@ -235,16 +234,6 @@ impl Module for StreamingProbe {
     }
 }
 
-enum ProbeResult {
-    Found {
-        url: String,
-        confidence: f64,
-        verified: bool,
-    },
-    NotFound,
-    Error,
-}
-
 /// A confirmed profile hit, carrying the confidence its detection method earns.
 struct Hit {
     site_name: &'static str,
@@ -400,33 +389,6 @@ fn build_entities(username: &str, scan_id: &str, hits: &[Hit], tally: &ProbeTall
     module_result.push(summary);
     module_result
 }
-
-/// True when a zero-hit run is inconclusive (most probes were blocked) rather
-/// than a confirmed absence. Mirrors `username_search::inconclusive` — same M6
-/// disambiguation policy, independently testable.
-fn inconclusive(found: usize, errored: usize, total: usize) -> bool {
-    found == 0 && total > 0 && errored * 2 >= total
-}
-
-trait WithSite: Sized + std::future::Future<Output = ProbeResult> {
-    fn then_with_site(
-        self,
-        name: &'static str,
-        cat: &'static str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = (&'static str, &'static str, ProbeResult)> + Send>,
-    >
-    where
-        Self: Send + 'static,
-    {
-        Box::pin(async move {
-            let out = self.await;
-            (name, cat, out)
-        })
-    }
-}
-
-impl<F> WithSite for F where F: std::future::Future<Output = ProbeResult> + Send + 'static {}
 
 #[cfg(test)]
 mod tests {

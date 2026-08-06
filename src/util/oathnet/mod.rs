@@ -333,20 +333,9 @@ pub fn resolve_key(ctx_key: Option<&str>) -> &str {
 /// `see_know::key_fingerprint`. Pure, so it is unit-testable.
 #[must_use]
 pub fn key_fingerprint(key: &str) -> String {
-    let k = key.trim();
-    if k.is_empty() {
-        return "oathnet.org:(no key)".to_string();
-    }
-    if k.len() <= 12 {
-        return format!("oathnet.org:{k}");
-    }
-    let head: String = k.chars().take(8).collect();
-    let tail: String = {
-        let mut t: Vec<char> = k.chars().rev().take(4).collect();
-        t.reverse();
-        t.into_iter().collect()
-    };
-    format!("oathnet.org:{head}\u{2026}{tail}")
+    // Shared implementation in `util::key_fingerprint`; this fixes OathNet's
+    // label and truncation widths (show ≤12-byte keys whole, else 8…4).
+    crate::util::key_fingerprint::fingerprint("oathnet.org", key, 12, 8, 4)
 }
 
 #[derive(Deserialize)]

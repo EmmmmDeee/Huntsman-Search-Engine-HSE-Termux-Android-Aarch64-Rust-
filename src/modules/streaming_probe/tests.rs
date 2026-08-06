@@ -1,16 +1,8 @@
 use super::*;
 
-    #[test]
-    fn zero_hits_is_inconclusive_only_when_mostly_blocked() {
-        assert!(inconclusive(0, 30, 30), "all blocked → inconclusive");
-        assert!(inconclusive(0, 15, 30), "half blocked → inconclusive");
-        assert!(
-            !inconclusive(0, 5, 30),
-            "mostly definitive not-found → genuine absence"
-        );
-        assert!(!inconclusive(1, 29, 30), "any hit → never inconclusive");
-        assert!(!inconclusive(0, 0, 0), "no probes → not inconclusive");
-    }
+    // The M6 zero-hit disambiguation (`inconclusive`) and the browser-UA shape
+    // guard are single-sourced in `util::probe` and tested there; this file keeps
+    // the streaming_probe-specific coverage.
 
     #[test]
     fn accepts_only_username() {
@@ -88,13 +80,6 @@ use super::*;
                 "missing category: {expected} (have: {cats:?})"
             );
         }
-    }
-
-    #[test]
-    fn browser_ua_is_chrome_shaped() {
-        assert!(BROWSER_UA.contains("Mozilla/5.0"));
-        assert!(BROWSER_UA.contains("Chrome/"));
-        assert!(!BROWSER_UA.contains("huntsman-search-engine"));
     }
 
     #[test]

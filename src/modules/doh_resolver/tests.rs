@@ -574,6 +574,15 @@ fn tlsrpt_mailto_becomes_report_email() {
         .expect("TLSRPT rua mailto → Email");
     assert_eq!(email.value, "tlsrpt@fabrikam.example");
     assert!(email.has_tag("tlsrpt-report") && email.has_tag("dns"));
+    // Confidence parity with the dns_intel transport: the SAME published TLSRPT
+    // address must score the same regardless of which DNS transport observed it.
+    // This path used to stamp a bare `0.68`; both now share `ATTRIBUTED` via the
+    // single `util::tlsrpt::report_entities` builder.
+    assert!(
+        (email.confidence - crate::core::confidence::ATTRIBUTED).abs() < 1e-9,
+        "TLSRPT report address must carry confidence::ATTRIBUTED, got {}",
+        email.confidence
+    );
 }
 
 #[test]

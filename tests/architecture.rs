@@ -3424,7 +3424,6 @@ fn entity_confidence_uses_named_ladder_constants() {
         ("src/modules/cpan_user/mod.rs", "0.87"), // [revealed]
         ("src/modules/crates_io/mod.rs", "0.66"),
         ("src/modules/crates_io/mod.rs", "0.74"),
-        ("src/modules/doh_resolver/mod.rs", "0.68"),
         ("src/modules/epieos/mod.rs", "0.42"), // [revealed]
         ("src/modules/epieos/mod.rs", "0.42"), // [revealed]
         ("src/modules/fediverse/mod.rs", "0.68"),

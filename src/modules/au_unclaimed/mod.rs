@@ -45,7 +45,7 @@ use async_trait::async_trait;
 
 use crate::core::{
     entity::EntityKind,
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -154,17 +154,15 @@ async fn process_qld(target: &Target, ctx: &ModuleContext, out: &mut ModuleResul
     }
     let surname = derive_query(target);
 
-    let broad: CkanResp = fetch_json(&ctx.http, qld_helpers::SRC, &query_url(surname)).await?;
-    // A `success:false` (bad resource id / portal error) is a genuine
-    // application-level failure of the sole QLD source, not a "no data" result —
-    // surface it as a module error (mirrors `acnc_charities`/the ASIC modules).
-    if broad.success == Some(false) {
-        return Err(Error::module(
-            qld_helpers::SRC,
-            "CKAN datastore_search returned success=false (bad resource id or portal error)",
-        ));
-    }
-    let Some(broad_res) = broad.result else {
+    // The shared helper enforces the `success:false` check: a bad resource id /
+    // portal error (returned by CKAN with HTTP 200) is a genuine application-level
+    // failure of the sole QLD source, not a "no data" result, so it surfaces as a
+    // module error (mirrors `acnc_charities`/the ASIC modules). `None` is the
+    // honest empty answer.
+    let Some(broad_res) =
+        crate::util::ckan::validated_result(&ctx.http, qld_helpers::SRC, &query_url(surname))
+            .await?
+    else {
         return Ok(());
     };
     let total = broad_res.total.unwrap_or(broad_res.records.len() as u64);
