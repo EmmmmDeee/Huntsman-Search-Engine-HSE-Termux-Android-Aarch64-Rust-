@@ -211,8 +211,7 @@ mod tests {
         let a = handle("jdiegmann", "github_user");
         let mut b = handle("jdiegmann92", "github_user");
         b.add_evidence(Evidence::new("recall", "seen in an earlier scan"));
-        let out =
-            rule_au_123_numeric_variant_handle_persona(&RuleContext::new(&[a, b]), "s", 0);
+        let out = rule_au_123_numeric_variant_handle_persona(&RuleContext::new(&[a, b]), "s", 0);
         assert!(
             out.is_empty(),
             "a recall replay must not manufacture a phantom 2nd source: {out:?}"

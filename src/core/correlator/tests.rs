@@ -2298,7 +2298,13 @@ fn au032_excludes_infrastructure_colocations() {
     // convergence — the co-location edges between them are dropped, so no cluster
     // forms. The same chain, person-anchored, still fires (control).
     let colo = |a: &Entity, b: &Entity| {
-        Relation::new(a.uid.clone(), b.uid.clone(), RelationKind::CoLocatedWith, 0.9, "s")
+        Relation::new(
+            a.uid.clone(),
+            b.uid.clone(),
+            RelationKind::CoLocatedWith,
+            0.9,
+            "s",
+        )
     };
 
     let mut h1 = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.9, "s");
@@ -5465,7 +5471,11 @@ fn au027_excludes_infrastructure_coordinates() {
         "scan",
         0,
     );
-    assert_eq!(out2.len(), 1, "anchored coordinates still chain with the address");
+    assert_eq!(
+        out2.len(),
+        1,
+        "anchored coordinates still chain with the address"
+    );
     assert_eq!(out2[0].rule_id, "AU-027");
 }
 
@@ -9342,7 +9352,12 @@ fn au076_consolidates_permutation_flood_into_one_per_canonical_handle() {
     // the CONSOLIDATION of the permutation flood, not the gate itself.
     let mut ents = Vec::new();
     for host in ["yahoo.com", "msn.com", "gmail.com", "outlook.com"] {
-        let mut e = Entity::new(EntityKind::Email, format!("matthew.diegmann@{host}"), 0.3, "s");
+        let mut e = Entity::new(
+            EntityKind::Email,
+            format!("matthew.diegmann@{host}"),
+            0.3,
+            "s",
+        );
         e.add_evidence(Evidence::new("breach", "dump".to_string()));
         ents.push(e);
     }
@@ -9381,8 +9396,7 @@ fn au076_single_source_self_derivation_is_suppressed() {
     email.add_evidence(Evidence::new("name_intel", "derived".to_string()));
     let mut uname = Entity::new(EntityKind::Username, "cameron.tyler", 0.3, "s");
     uname.add_evidence(Evidence::new("name_intel", "derived".to_string()));
-    let r =
-        rule_au_076_email_username_localpart_bridge(&RuleContext::new(&[email, uname]), "s", 0);
+    let r = rule_au_076_email_username_localpart_bridge(&RuleContext::new(&[email, uname]), "s", 0);
     assert!(
         r.is_empty(),
         "AU-076 must not fire on a single-source (name_intel) self-derivation: {r:?}"
