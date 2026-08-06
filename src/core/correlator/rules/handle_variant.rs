@@ -87,8 +87,15 @@ pub(in crate::core::correlator) fn rule_au_123_numeric_variant_handle_persona(
         }
         let g = groups.entry(stem).or_default();
         g.canon_handles.insert(canon);
-        for ev in &e.evidence {
-            g.sources.insert(ev.source.clone());
+        // Count only INDEPENDENT sources: corroborating_sources() drops the
+        // non-corroborating replay/enrichment passes (recall, cross_scan_history,
+        // name_intel, geo_normalize, …). Counting raw ev.source let a single
+        // genuine observation replayed by `recall` manufacture a phantom 2nd
+        // source, so the >= 2-source gate below — which explicitly means
+        // "independently corroborated, not a permutation flood" — fired a persona
+        // link on what was really one source. Mirrors identity/cluster.rs.
+        for src in e.corroborating_sources() {
+            g.sources.insert(src.to_string());
         }
         g.raw_variants.insert(e.value.trim().to_string());
         g.uids.insert(e.uid.clone());
@@ -192,6 +199,24 @@ mod tests {
             0,
         );
         assert!(out.is_empty(), "single source is not corroboration");
+    }
+
+    #[test]
+    fn au123_recall_replay_does_not_manufacture_source_diversity() {
+        // Both variants come from ONE genuine source (github_user); a `recall`
+        // replay of that same observation must NOT count as a second independent
+        // source. corroborating_sources() drops `recall`, so the >= 2-source gate
+        // stays closed — the phantom-corroboration false positive the filter
+        // prevents. Under the old raw-ev.source count this fired.
+        let a = handle("jdiegmann", "github_user");
+        let mut b = handle("jdiegmann92", "github_user");
+        b.add_evidence(Evidence::new("recall", "seen in an earlier scan"));
+        let out =
+            rule_au_123_numeric_variant_handle_persona(&RuleContext::new(&[a, b]), "s", 0);
+        assert!(
+            out.is_empty(),
+            "a recall replay must not manufacture a phantom 2nd source: {out:?}"
+        );
     }
 
     #[test]
