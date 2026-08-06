@@ -5748,6 +5748,25 @@ fn au087_excludes_freemail_and_isp_webmail() {
         super::rules::rule_au_087_shared_org_email_domain(&RuleContext::new(&isp), "s", 0)
             .is_empty()
     );
+    // Regression: consumer webmail OUTSIDE the `is_noncentral_domain` damping list
+    // must be excluded too. `gmail.com`/`bigpond.com` above happen to sit in
+    // `MEGA_DOMAINS`, so `is_noncentral_domain` alone caught them — but the ~40
+    // other freemail domains (Yahoo/Hotmail country variants, Chinese providers,
+    // legacy Yahoo brands) do not, and previously slipped through to fire a false
+    // employer/institution affiliation between strangers. The canonical
+    // `is_freemail` guard now closes that gap. Every domain below is in FREEMAIL
+    // yet absent from `MEGA_DOMAINS`/`INFRA_DOMAINS`.
+    for freemail in ["qq.com", "163.com", "rocketmail.com", "yahoo.co.uk"] {
+        let pair = vec![
+            org_email_ent(&format!("john.smith@{freemail}")),
+            org_email_ent(&format!("jane.doe@{freemail}")),
+        ];
+        assert!(
+            super::rules::rule_au_087_shared_org_email_domain(&RuleContext::new(&pair), "s", 0)
+                .is_empty(),
+            "{freemail} is consumer webmail, not an organisational affiliation surface"
+        );
+    }
 }
 
 #[test]
