@@ -66,6 +66,7 @@ RUSTDOCFLAGS="$RUSTDOC_LINTS" \
 # single `--all`.
 run "test"     cargo test --all --lib --bins --tests --locked
 run "doctests" cargo test --doc --locked
+run "doc coverage" scripts/doc_coverage.sh
 
 # ── ci.yml: MSRV ─────────────────────────────────────────────────────────────
 if [ "$QUICK" = 1 ]; then

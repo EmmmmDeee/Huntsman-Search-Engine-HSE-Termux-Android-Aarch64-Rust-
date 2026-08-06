@@ -53,6 +53,14 @@ jobs:
         # `private_intra_doc_links`).
         run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::bare_urls -D rustdoc::invalid_html_tags" cargo doc --no-deps --document-private-items --locked
 
+      - name: Doc coverage (ratchet, may fall but not rise)
+        # `missing_docs` cannot just be switched on — 1095 externally-public items
+        # were undocumented when this landed, and the clippy step above runs with
+        # `-D warnings`, so a crate-level `#![warn(missing_docs)]` would turn all
+        # of them into build errors at once. This holds the ceiling instead and
+        # lets it be lowered as items get documented.
+        run: scripts/doc_coverage.sh
+
       - name: Test
         run: cargo test --all --locked
 

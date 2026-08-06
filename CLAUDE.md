@@ -68,6 +68,7 @@ What it runs, and where each comes from:
 | `cargo clippy --all-targets --locked -- -D warnings` | `ci.yml` |
 | `cargo doc --no-deps --document-private-items` with `RUSTDOCFLAGS` denying broken intra-doc links, bare URLs, invalid HTML | `ci.yml` |
 | `cargo test --all --locked` + doctests | `ci.yml` |
+| `scripts/doc_coverage.sh` — undocumented externally-public items may fall, never rise | `ci.yml` |
 | `cargo +<MSRV> check --all-targets --locked` | `ci.yml` (MSRV job) |
 | `cargo build`/`test --no-run` for `aarch64-linux-android` | `ci.yml` (Termux target job) |
 | `bash -n install.sh`, ShellCheck | `ci.yml` |
