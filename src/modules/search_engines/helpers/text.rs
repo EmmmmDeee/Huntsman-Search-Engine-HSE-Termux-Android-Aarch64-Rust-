@@ -560,6 +560,23 @@ pub(in crate::modules::search_engines) fn extract_key_phrase(snippet: &str, quer
     }
 }
 
+/// The query-matching phrase to DISPLAY for a web result: the informative clause
+/// from the `snippet` when one overlaps the query, otherwise a query-overlapping
+/// fragment of the `title`. Empty when neither shares a query term — there is then
+/// nothing worth quoting. Used by the `hse query` renderer to show WHY a result
+/// matched, since the raw snippet is not printed on that path.
+pub(in crate::modules::search_engines) fn display_key_phrase(
+    title: &str,
+    snippet: &str,
+    query: &str,
+) -> String {
+    let from_snippet = extract_key_phrase(snippet, query);
+    if !from_snippet.is_empty() {
+        return from_snippet;
+    }
+    extract_key_phrase(title, query)
+}
+
 /// Semantic similarity between two strings using character bigram
 /// overlap (Dice coefficient). Returns 0.0–1.0.
 ///

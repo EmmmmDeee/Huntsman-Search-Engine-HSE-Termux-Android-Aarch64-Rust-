@@ -28,6 +28,9 @@ struct Row<'a> {
     url: &'a str,
     title: &'a str,
     snippet: &'a str,
+    /// The query-matching phrase to print in quotes under the result (web search
+    /// only; empty for the `--dark` path, which prints full snippets instead).
+    key_phrase: &'a str,
     /// Cross-engine corroboration count. `None` for sources where the notion
     /// does not apply (Ahmia returns one index, not N independent engines) —
     /// which also suppresses the `[N×]` badge and the JSON `engines` key.
@@ -121,6 +124,7 @@ fn web_report<'a>(
                 url: &r.url,
                 title: &r.title,
                 snippet: &r.snippet,
+                key_phrase: &r.key_phrase,
                 engines: Some(r.engine_count),
             })
             .collect(),
@@ -152,6 +156,7 @@ fn dark_report<'a>(q: &'a str, hits: &'a [crate::util::ahmia::AhmiaResult]) -> R
                 url: &h.onion_url,
                 title: &h.title,
                 snippet: &h.snippet,
+                key_phrase: "",
                 engines: None,
             })
             .collect(),
@@ -171,6 +176,9 @@ fn render(rep: &Report<'_>, json: bool) -> Result<()> {
                     "url": r.url,
                     "snippet": r.snippet,
                 });
+                if !r.key_phrase.is_empty() {
+                    o["key_phrase"] = serde_json::json!(r.key_phrase);
+                }
                 if let Some(n) = r.engines {
                     o["engines"] = serde_json::json!(n);
                 }
@@ -212,6 +220,11 @@ fn render(rep: &Report<'_>, json: bool) -> Result<()> {
             None => println!("{:>3}. {}", i + 1, truncate(title, TITLE_WIDTH)),
         }
         println!("       {}", r.url);
+        if !r.key_phrase.trim().is_empty() {
+            // The query-matching phrase, quoted, so the reader sees WHY this result
+            // matched without printing the whole snippet.
+            println!("       “{}”", truncate(r.key_phrase.trim(), TITLE_WIDTH));
+        }
         if rep.show_snippets && !r.snippet.trim().is_empty() {
             println!("       {}", truncate(r.snippet.trim(), TITLE_WIDTH));
         }
