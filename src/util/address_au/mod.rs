@@ -494,19 +494,28 @@ pub fn au_phone_line_type(value: &str) -> Option<(AuLineType, &'static str)> {
         digits.as_str()
     }
     .trim_start_matches('0');
-    if nat.starts_with("1800") {
+    // The `1800`/`1300`/`190x` service numbers are EXACTLY 10 national digits
+    // (the `13xxxx` short form is the sole 6-digit exception). A LONGER number
+    // that merely begins with these digits is not an AU service line — most
+    // importantly an 11-digit NANP number whose `1` country code + area code
+    // collides: `+1 800…` (US toll-free) reads as `1800…`, `+1 900…`/`+1 90x…`
+    // (US premium / area codes 900-909) read as `190…`. Without the exact-length
+    // gate those were misclassified as AU freephone/premium, so a shared US line
+    // was wrongly vetoed as an AU "business desk" and its real association
+    // dropped (AU-050). Enforcing the length rejects them (→ `None`, non-AU).
+    if nat.len() == 10 && nat.starts_with("1800") {
         return Some((
             AuLineType::Freephone,
             "freephone (1800) — an inbound business/service line",
         ));
     }
-    if nat.starts_with("1300") || (nat.len() == 6 && nat.starts_with("13")) {
+    if (nat.len() == 10 && nat.starts_with("1300")) || (nat.len() == 6 && nat.starts_with("13")) {
         return Some((
             AuLineType::LocalRate,
             "local-rate (13/1300) — a business/service line",
         ));
     }
-    if nat.starts_with("190") {
+    if nat.len() == 10 && nat.starts_with("190") {
         return Some((
             AuLineType::Premium,
             "premium-rate (190x) — a charged service line",

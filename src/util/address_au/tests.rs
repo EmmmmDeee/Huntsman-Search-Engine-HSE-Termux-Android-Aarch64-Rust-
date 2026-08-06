@@ -339,6 +339,31 @@ use super::*;
     }
 
     #[test]
+    fn au_phone_line_type_rejects_nanp_numbers_that_collide_with_service_prefixes() {
+        // Regression: an 11-digit NANP number (`1` country code + area code) must
+        // not be read as a 10-digit AU service line. `+1 800…` (US toll-free) and
+        // `+1 900…`/`+1 909…` (US premium / area codes 900-909) share the leading
+        // digits of AU `1800`/`190x` but are one digit too long. Misclassifying
+        // them made AU-050 veto a shared US line as an AU "business desk" and drop
+        // the real association (false negative). Both the `+`/spaced form and the
+        // bare digit key AU-050 actually passes must resolve to `None`.
+        assert!(au_phone_line_type("+1 800 555 1234").is_none()); // US toll-free ≠ AU 1800
+        assert!(au_phone_line_type("18005551234").is_none());
+        assert!(au_phone_line_type("+1 909 555 0142").is_none()); // US 909 ≠ AU 190x
+        assert!(au_phone_line_type("19095550142").is_none());
+        assert!(au_phone_line_type("+1 900 555 1234").is_none()); // US premium ≠ AU 190x
+        // The genuine AU service forms (exactly 10 national digits) still classify.
+        assert_eq!(
+            au_phone_line_type("1800123456").expect("au freephone").0,
+            AuLineType::Freephone
+        );
+        assert_eq!(
+            au_phone_line_type("1902123456").expect("au premium").0,
+            AuLineType::Premium
+        );
+    }
+
+    #[test]
     fn au_line_type_predicates_split_personal_from_business() {
         assert!(!AuLineType::Mobile.is_business_service());
         assert!(AuLineType::Freephone.is_business_service());

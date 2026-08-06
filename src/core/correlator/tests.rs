@@ -5698,6 +5698,28 @@ fn au050_excludes_shared_business_and_service_lines() {
 }
 
 #[test]
+fn au050_links_nanp_number_colliding_with_au_service_prefix() {
+    // Regression (phone line-type false negative): a shared US number whose digits
+    // collide with an AU service prefix must still link two people. `+1 909 555
+    // 0142` (San Bernardino) normalises to the key `19095550142`, which the
+    // line-type classifier used to read as AU premium `190x` and veto as a
+    // "business/service line" — silently dropping the real association. It is 11
+    // digits (NANP `1` + area code), not a 10-digit AU service number, so it is a
+    // personal line and AU-050 must fire.
+    let ents = vec![
+        person_with_phone("Jordan Meyers", "+1 909 555 0142"),
+        person_with_phone("Casey Lin", "1 (909) 555-0142"),
+    ];
+    let hits = super::rules::rule_au_050_shared_phone_association(&RuleContext::new(&ents), "s", 0);
+    assert_eq!(
+        hits.len(),
+        1,
+        "a shared NANP line colliding with AU 190x must still link: {hits:?}"
+    );
+    assert_eq!(hits[0].rule_id, "AU-050");
+}
+
+#[test]
 fn au051_shared_surname_at_residence_is_kin() {
     let ents = vec![
         person_at("Jordan Meyers", "123 Main St, Springfield"),
