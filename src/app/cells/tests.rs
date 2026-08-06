@@ -1,8 +1,37 @@
 //! Unit tests for `hse cells` CSV parsing and country-code helpers.
 
 use super::{
-    mcc_for_country, mcc_header_line, opencellid_download_url, opencellid_filename, parse_csv_line,
+    import_from_file, import_from_file_off_runtime, mcc_for_country, mcc_header_line,
+    opencellid_download_url, opencellid_filename, parse_csv_line,
 };
+
+// ── spawn_blocking boundary ─────────────────────────────────────────────────
+
+/// The off-runtime wrapper must be behaviourally transparent: the same input
+/// that fails synchronously must fail identically through `spawn_blocking`.
+/// Guards the boundary added so a web-triggered OpenCelliD import (up to
+/// `MAX_DECOMPRESSED_BYTES`, 16 GiB) can no longer stall a tokio worker — the
+/// runtime is only 2 workers wide on Termux, and `POST /api/v1/cells/import`
+/// reaches this path.
+#[tokio::test]
+async fn off_runtime_import_propagates_the_same_error_as_the_blocking_call() {
+    let missing = "/nonexistent/hse-cells-does-not-exist.csv";
+
+    let sync_err = import_from_file(missing, None).expect_err("missing file must error");
+    let async_err = import_from_file_off_runtime(missing.to_string(), None)
+        .await
+        .expect_err("missing file must error through spawn_blocking too");
+
+    assert_eq!(
+        sync_err.to_string(),
+        async_err.to_string(),
+        "the spawn_blocking wrapper must not alter the error it forwards"
+    );
+    assert!(
+        async_err.to_string().contains("File not found"),
+        "expected the not-found message, got: {async_err}"
+    );
+}
 
 // ── parse_csv_line ──────────────────────────────────────────────────────────
 

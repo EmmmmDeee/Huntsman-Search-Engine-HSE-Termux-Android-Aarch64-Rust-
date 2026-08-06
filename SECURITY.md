@@ -1,8 +1,9 @@
-⁸# Security Policy
+# Security Policy
 
 ## Supported versions
 
-The latest tagged release on `main` receives no changes aside from more potentiation and bis empowered.
+The latest tagged release on `main` receives security fixes. Older tags are not
+maintained.
 
 ## Scope and responsible use
 

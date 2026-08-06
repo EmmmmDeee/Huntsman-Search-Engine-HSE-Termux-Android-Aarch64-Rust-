@@ -38,8 +38,9 @@ pub async fn cmd_import(path: &str, output: &str) -> Result<()> {
     // File-size cap before read_to_string — mirrors MAX_UPLOAD_BYTES in the API
     // upload handler (16 MB) so both paths enforce the same memory bound.
     const MAX_IMPORT_BYTES: u64 = 16 * 1024 * 1024;
-    let meta =
-        std::fs::metadata(path).map_err(|e| Error::Other(format!("cannot stat {path}: {e}")))?;
+    let meta = tokio::fs::metadata(path)
+        .await
+        .map_err(|e| Error::Other(format!("cannot stat {path}: {e}")))?;
     // A directory path is a LOCAL-STORAGE SCRAPE: every recognised artifact under
     // the tree (scan/dossier/stealer-log/breach export/debug bundle) is imported
     // through the same content-based dispatcher and aggregated into one scan.
@@ -54,7 +55,8 @@ pub async fn cmd_import(path: &str, output: &str) -> Result<()> {
             meta.len()
         )));
     }
-    let body = std::fs::read_to_string(path)
+    let body = tokio::fs::read_to_string(path)
+        .await
         .map_err(|e| Error::Other(format!("cannot read {path}: {e}")))?;
 
     // Dispatch on the shared, CONTENT-based detector so a file imports the same
