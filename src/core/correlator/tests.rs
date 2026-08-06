@@ -9203,17 +9203,20 @@ fn au076_consolidates_permutation_flood_into_one_per_canonical_handle() {
     // canonicalise to the SAME handle "matthewdiegmann". A naive per-pair emission
     // would fire len(emails)×len(usernames) High findings; consolidation must emit
     // exactly ONE, listing every form, with no value lost.
+    // Each form carries a genuine, independent corroborating source — the emails
+    // from a breach dump, the usernames from a live platform probe — so the bridge
+    // clears AU-076's >= 2-distinct-source independence gate. This test exercises
+    // the CONSOLIDATION of the permutation flood, not the gate itself.
     let mut ents = Vec::new();
     for host in ["yahoo.com", "msn.com", "gmail.com", "outlook.com"] {
-        ents.push(Entity::new(
-            EntityKind::Email,
-            format!("matthew.diegmann@{host}"),
-            0.3,
-            "s",
-        ));
+        let mut e = Entity::new(EntityKind::Email, format!("matthew.diegmann@{host}"), 0.3, "s");
+        e.add_evidence(Evidence::new("breach", "dump".to_string()));
+        ents.push(e);
     }
     for u in ["matthew.diegmann", "matthewdiegmann", "matthew_diegmann"] {
-        ents.push(Entity::new(EntityKind::Username, u, 0.3, "s"));
+        let mut e = Entity::new(EntityKind::Username, u, 0.3, "s");
+        e.add_evidence(Evidence::new("github_user", "profile".to_string()));
+        ents.push(e);
     }
     let r = rule_au_076_email_username_localpart_bridge(&RuleContext::new(&ents), "s", 0);
     assert_eq!(
@@ -9230,6 +9233,27 @@ fn au076_consolidates_permutation_flood_into_one_per_canonical_handle() {
     assert!(r[0].description.contains("3 username form"));
     // All 7 contributing entities are referenced for pivoting.
     assert_eq!(r[0].entity_uids.len(), 7);
+}
+
+#[test]
+fn au076_single_source_self_derivation_is_suppressed() {
+    use super::rules::rule_au_076_email_username_localpart_bridge;
+    // The false positive AU-076's independence gate closes: an email and a
+    // username that canonicalise to the same handle but carry FEWER than two
+    // distinct corroborating sources. Here both are attested only by a single
+    // `name_intel` self-derivation (a non-corroborating pass), so the handles
+    // match by construction, not by independent observation — exactly the
+    // single-source name-seed flood that must NOT emit a High identity bridge.
+    let mut email = Entity::new(EntityKind::Email, "cameron.tyler@acme.com", 0.3, "s");
+    email.add_evidence(Evidence::new("name_intel", "derived".to_string()));
+    let mut uname = Entity::new(EntityKind::Username, "cameron.tyler", 0.3, "s");
+    uname.add_evidence(Evidence::new("name_intel", "derived".to_string()));
+    let r =
+        rule_au_076_email_username_localpart_bridge(&RuleContext::new(&[email, uname]), "s", 0);
+    assert!(
+        r.is_empty(),
+        "AU-076 must not fire on a single-source (name_intel) self-derivation: {r:?}"
+    );
 }
 
 #[test]

@@ -835,6 +835,27 @@ pub(in crate::core::correlator) fn rule_au_076_email_username_localpart_bridge(
     let mut out: Vec<Correlation> = Vec::new();
     for (canon, emails) in &emails_by_canon {
         let usernames = &usernames_by_canon[canon];
+
+        // Source-independence gate (mirrors sibling AU-034). The High "same
+        // identity" claim requires the bridged email and username to be attested
+        // by >= 2 DISTINCT corroborating sources. `corroborating_sources()`
+        // excludes the self-enrichment / replay passes (name_intel, geo_normalize,
+        // recall, cross_scan …), so an email + username both MINTED from one seed
+        // — a single name_intel derivation shares `canonical_handle` by
+        // construction — cannot manufacture two "distinct sources" and
+        // self-correlate into a phantom High identity bridge on a single-source
+        // scan. A genuine cross-source match (a breach email + a platform-confirmed
+        // username) still clears the gate.
+        const MIN_DISTINCT_SOURCES: usize = 2;
+        let sources: HashSet<&str> = emails
+            .iter()
+            .chain(usernames.iter())
+            .flat_map(|e| e.corroborating_sources())
+            .collect();
+        if sources.len() < MIN_DISTINCT_SOURCES {
+            continue;
+        }
+
         let email_vals: BTreeSet<&str> = emails.iter().map(|e| e.value.as_str()).collect();
         let uname_vals: BTreeSet<&str> = usernames.iter().map(|e| e.value.as_str()).collect();
 
