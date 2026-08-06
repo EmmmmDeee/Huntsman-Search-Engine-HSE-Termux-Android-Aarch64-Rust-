@@ -8729,6 +8729,28 @@ fn au111_fires_on_cloudflare_fronted_domain_with_spf_ip() {
 }
 
 #[test]
+fn au111_fires_for_cloudfront_and_incapsula_using_waf_detect_names() {
+    // Regression: the fronting-provider list must use the EXACT strings
+    // `waf_detect` emits (`AWS CloudFront`, `Imperva/Incapsula`). An earlier list
+    // had `CloudFront`/`Incapsula`, so `has_tag("waf:CloudFront")` never matched
+    // the real `waf:AWS CloudFront` tag and AU-111 silently never fired for those
+    // two global CDNs — the SPF-origin-leak pivot was lost. `cdn_fronted_domain`
+    // fabricates the tag exactly as `waf_detect` does (`waf:{provider}`), so this
+    // exercises the real tag string.
+    for provider in ["AWS CloudFront", "Imperva/Incapsula"] {
+        let dom = cdn_fronted_domain("example.com", provider);
+        let ip = spf_ip("203.0.113.9", "example.com");
+        let r = rule_au_111_cdn_origin_candidate(&RuleContext::new(&[dom, ip]), "s", 0);
+        assert_eq!(
+            r.len(),
+            1,
+            "AU-111 must fire for a {provider}-fronted domain with an SPF IP"
+        );
+        assert_eq!(r[0].rule_id, "AU-111");
+    }
+}
+
+#[test]
 fn au111_does_not_fire_without_cdn_fingerprint() {
     // A domain with no `waf-detected` tag at all — no CDN evidence, no fire
     // even though an SPF IP exists for it.

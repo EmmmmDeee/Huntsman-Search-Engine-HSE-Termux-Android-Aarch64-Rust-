@@ -606,13 +606,19 @@ pub(in crate::core::correlator) fn rule_au_097_au_isp_network(
 /// presence as "the DNS record isn't the origin" would be an unsupported
 /// generalisation — precision over recall, matching this codebase's stance
 /// that a false unmasking claim is worse than a missed one.
+// These MUST be the EXACT provider strings `waf_detect` emits — it tags
+// `waf:{provider}` and AU-111 looks up `has_tag("waf:{p}")`, so any spelling
+// that differs from the module's own name silently never matches. `AWS
+// CloudFront` and `Imperva/Incapsula` are `waf_detect`'s names; an earlier
+// `CloudFront`/`Incapsula` here never fired for those two global CDNs, dropping
+// the SPF-origin-leak pivot for every CloudFront- or Incapsula-fronted domain.
 const DNS_FRONTING_CDN_PROVIDERS: &[&str] = &[
     "Cloudflare",
     "Akamai",
     "Fastly",
-    "CloudFront",
+    "AWS CloudFront",
     "Sucuri",
-    "Incapsula",
+    "Imperva/Incapsula",
     "StackPath",
     "KeyCDN",
 ];
