@@ -28,6 +28,36 @@ impl Event {
             kind,
         }
     }
+
+    /// One structured JSON-object line for the scan event log — the single
+    /// machine- and human-readable rendering shared by the downloaded
+    /// `events.log`, `hse export --format events`, the `hse live -v` stream, the
+    /// browser Scan-Log view, and the operator debug bundle. Deliberately free
+    /// of box-drawing, tree, and status glyphs: every event is `{"time":…,
+    /// "level":…,"kind":…, …fields}` with the leading three keys in that fixed
+    /// order, then the variant's own concise fields. `level` is one of
+    /// `info`/`warn`/`error`. Pure and byte-stable (UTC time-of-day, no clock
+    /// read), so a rendered log diffs cleanly.
+    #[must_use]
+    pub fn to_log_line(&self) -> String {
+        // Built by hand (not a serde `Map`, which would sort keys alphabetically
+        // without the `preserve_order` feature) so `time`/`level`/`kind` lead in
+        // that order. Each value goes through `serde_json::Value`'s `Display`,
+        // which emits correctly-escaped JSON, so arbitrary module/error/reason
+        // text can never break the line.
+        use serde_json::Value;
+        let mut parts: Vec<String> = Vec::with_capacity(6);
+        parts.push(format!(
+            "\"time\":{}",
+            Value::from(crate::util::timefmt::hms_utc(self.ts))
+        ));
+        parts.push(format!("\"level\":\"{}\"", self.kind.log_level()));
+        parts.push(format!("\"kind\":\"{}\"", self.kind.event_type_str()));
+        for (key, val) in self.kind.log_fields() {
+            parts.push(format!("\"{key}\":{val}"));
+        }
+        format!("{{{}}}", parts.join(","))
+    }
 }
 
 /// Event variants. JSON tag = `type`, snake_case — matches the future SPA's
@@ -172,6 +202,145 @@ impl EventKind {
             Self::LiveTick { .. } => "live_tick",
             Self::LiveStop { .. } => "live_stop",
             Self::ScanComplete { .. } => "scan_complete",
+        }
+    }
+
+    /// Severity band for the structured log line's `level` field — one of
+    /// `info`, `warn`, `error`. Only a genuine failure is `error` (a module that
+    /// errored, or a scan that failed); an operator abort is `warn`; everything
+    /// else — including normal skips, prunes, and expansion stops — is `info`.
+    /// Pure.
+    #[must_use]
+    pub fn log_level(&self) -> &'static str {
+        match self {
+            Self::ModuleError { .. } => "error",
+            Self::ScanComplete { status, .. } => match status {
+                ScanStatus::Failed => "error",
+                ScanStatus::Aborted => "warn",
+                _ => "info",
+            },
+            _ => "info",
+        }
+    }
+
+    /// The variant's own concise fields for the structured log line, in a fixed
+    /// order, as `(key, json_value)` pairs. Deliberately flat and small: nested
+    /// records ([`EntityFound`](Self::EntityFound)'s `Entity`,
+    /// [`CorrelationFound`](Self::CorrelationFound)'s `Correlation`) are reduced
+    /// to the few fields an operator reads, not serialised whole. `entity_kind`
+    /// is used instead of `kind` for entity fields so it never collides with the
+    /// line's top-level `kind`. Pure.
+    #[must_use]
+    fn log_fields(&self) -> Vec<(&'static str, serde_json::Value)> {
+        use serde_json::json;
+        match self {
+            Self::ScanStart {
+                target_kind,
+                target_value,
+            } => vec![
+                ("target_kind", json!(target_kind)),
+                ("target_value", json!(target_value)),
+            ],
+            Self::ModuleStart { module } => vec![("module", json!(module))],
+            Self::ModuleDone { module, found } => {
+                vec![("module", json!(module)), ("found", json!(found))]
+            }
+            Self::ModuleError { module, error } => {
+                vec![("module", json!(module)), ("error", json!(error))]
+            }
+            Self::ModuleSkipped { module, reason } => {
+                vec![("module", json!(module)), ("reason", json!(reason))]
+            }
+            Self::EntityFound { entity } => vec![
+                ("entity_kind", json!(entity.kind.to_string())),
+                ("value", json!(entity.value)),
+                // Two decimals, matching the confidence precision shown
+                // everywhere else, without trailing float noise.
+                (
+                    "confidence",
+                    json!((entity.confidence * 100.0).round() / 100.0),
+                ),
+                (
+                    "candidate",
+                    json!(entity.has_tag(crate::core::tags::CANDIDATE)),
+                ),
+            ],
+            Self::ExpansionTick {
+                depth,
+                queued,
+                visited,
+            } => vec![
+                ("depth", json!(depth)),
+                ("queued", json!(queued)),
+                ("visited", json!(visited)),
+            ],
+            Self::ExpansionStop { reason } => vec![("reason", json!(reason))],
+            Self::EntityExcluded {
+                kind,
+                value,
+                reason,
+            } => vec![
+                ("entity_kind", json!(kind)),
+                ("value", json!(value)),
+                ("reason", json!(reason)),
+            ],
+            Self::BreachSweep {
+                anchors,
+                probes,
+                dropped,
+            } => vec![
+                ("anchors", json!(anchors)),
+                ("probes", json!(probes)),
+                ("dropped", json!(dropped)),
+            ],
+            Self::ConsensusAudit {
+                verdict,
+                examined,
+                corroborated,
+                flags,
+            } => vec![
+                ("verdict", json!(verdict)),
+                ("examined", json!(examined)),
+                ("corroborated", json!(corroborated)),
+                ("flags", json!(flags)),
+            ],
+            Self::CorrelationFound { correlation } => {
+                let rule = if correlation.rule_name.is_empty() {
+                    &correlation.rule_id
+                } else {
+                    &correlation.rule_name
+                };
+                vec![
+                    ("rule_id", json!(correlation.rule_id)),
+                    ("rule", json!(rule)),
+                    ("severity", json!(correlation.severity.as_canonical())),
+                    ("description", json!(correlation.description)),
+                ]
+            }
+            Self::CorrelationsDone { count } => vec![("count", json!(count))],
+            Self::LiveStart {
+                live_id,
+                target_kind,
+                target_value,
+                interval_secs,
+            } => vec![
+                ("live_id", json!(live_id)),
+                ("target_kind", json!(target_kind)),
+                ("target_value", json!(target_value)),
+                ("interval_secs", json!(interval_secs)),
+            ],
+            Self::LiveTick {
+                iteration, scan_id, ..
+            } => vec![("iteration", json!(iteration)), ("scan_id", json!(scan_id))],
+            Self::LiveStop { reason, .. } => vec![("reason", json!(reason))],
+            Self::ScanComplete {
+                entity_count,
+                status,
+                ..
+            } => vec![
+                ("status", json!(status.as_str())),
+                ("entities", json!(entity_count)),
+            ],
         }
     }
 

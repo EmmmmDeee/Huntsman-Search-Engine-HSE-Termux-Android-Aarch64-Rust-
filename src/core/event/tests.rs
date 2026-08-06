@@ -182,6 +182,107 @@ use crate::core::scan::ScanStatus;
         assert!(!aborted.log_summary().1.contains('✔'));
     }
 
+    // ── Structured JSON-lines log (to_log_line / log_level) ─────────────
+
+    #[test]
+    fn to_log_line_is_parseable_json_leading_with_time_level_kind() {
+        use crate::core::entity::{Entity, EntityKind};
+
+        let mut cand = Entity::new(EntityKind::Password, "hunter2", 0.256, "s");
+        cand.tag(crate::core::tags::CANDIDATE);
+        let ev = Event::new("scan-1", EventKind::EntityFound { entity: cand });
+        let line = ev.to_log_line();
+
+        // No box/tree/status glyphs anywhere in the structured line.
+        for glyph in ['●', '▶', '✔', '✗', '⊘', '─', '↺', '⚡'] {
+            assert!(!line.contains(glyph), "line must be glyph-free: {line}");
+        }
+
+        let v: serde_json::Value =
+            serde_json::from_str(&line).expect("to_log_line must emit valid JSON");
+        assert!(v["time"].is_string());
+        assert_eq!(v["level"], "info");
+        assert_eq!(v["kind"], "entity_found");
+        assert_eq!(v["entity_kind"], "password");
+        assert_eq!(v["value"], "hunter2");
+        // Confidence rounded to two decimals, no float tail.
+        assert_eq!(v["confidence"], 0.26);
+        assert_eq!(v["candidate"], true);
+
+        // The three lead keys appear in a fixed order at the front of the object.
+        let head = &line[..line.find("\"kind\"").unwrap()];
+        assert!(head.find("\"time\"").unwrap() < head.find("\"level\"").unwrap());
+    }
+
+    #[test]
+    fn log_level_is_error_for_failure_warn_for_abort_info_otherwise() {
+        let module_err = EventKind::ModuleError {
+            module: "m".into(),
+            error: "boom".into(),
+        };
+        let failed = EventKind::ScanComplete {
+            scan_id: "s".into(),
+            entity_count: 0,
+            status: ScanStatus::Failed,
+        };
+        let aborted = EventKind::ScanComplete {
+            scan_id: "s".into(),
+            entity_count: 3,
+            status: ScanStatus::Aborted,
+        };
+        let complete = EventKind::ScanComplete {
+            scan_id: "s".into(),
+            entity_count: 3,
+            status: ScanStatus::Complete,
+        };
+        let skipped = EventKind::ModuleSkipped {
+            module: "m".into(),
+            reason: "no key".into(),
+        };
+        assert_eq!(module_err.log_level(), "error");
+        assert_eq!(failed.log_level(), "error");
+        assert_eq!(aborted.log_level(), "warn");
+        assert_eq!(complete.log_level(), "info");
+        // A skip is normal operation, not a warning.
+        assert_eq!(skipped.log_level(), "info");
+    }
+
+    #[test]
+    fn entity_excluded_log_line_renames_kind_to_avoid_top_level_collision() {
+        // The variant's own `kind` field must not clobber the line's top-level
+        // `kind` (the event type); it is emitted as `entity_kind`.
+        let ev = Event::new(
+            "s",
+            EventKind::EntityExcluded {
+                kind: "username".into(),
+                value: "stranger".into(),
+                reason: "identity_mismatch".into(),
+            },
+        );
+        let v: serde_json::Value = serde_json::from_str(&ev.to_log_line()).expect("valid JSON");
+        assert_eq!(v["kind"], "entity_excluded");
+        assert_eq!(v["entity_kind"], "username");
+        assert_eq!(v["reason"], "identity_mismatch");
+    }
+
+    #[test]
+    fn to_log_line_escapes_arbitrary_text_safely() {
+        // Module/error text is untrusted; a quote or newline in it must not break
+        // the one-object-per-line contract.
+        let ev = Event::new(
+            "s",
+            EventKind::ModuleError {
+                module: "m".into(),
+                error: "bad \"json\" \n break".into(),
+            },
+        );
+        let line = ev.to_log_line();
+        assert_eq!(line.lines().count(), 1, "must stay a single physical line");
+        let v: serde_json::Value = serde_json::from_str(&line).expect("valid JSON despite quotes");
+        assert_eq!(v["error"], "bad \"json\" \n break");
+        assert_eq!(v["level"], "error");
+    }
+
     // ── Wire-contract drift guard (event_type_str ⇄ serde `type`) ───────
 
     #[test]
