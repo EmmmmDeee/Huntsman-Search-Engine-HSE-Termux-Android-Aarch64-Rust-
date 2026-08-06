@@ -247,6 +247,12 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         crate::modules::reconnaissance_coverage(sources.iter().copied())
     };
 
+    // Intelligence-led collection plan: fuse the ATT&CK Reconnaissance coverage
+    // gaps with the entities already held and every module's declared techniques
+    // into ranked next-collection actions — the actionable companion to the
+    // passive coverage readout above.
+    let collection_plan = crate::core::planner::plan(&entities, &crate::modules::registry());
+
     if cmd.output == "json" {
         // Full self-optimization payload — scan + entities + correlations
         // + diagnostics (module ranking, confidence calibration, geo
@@ -268,6 +274,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
                 "relations": relations,
                 "diagnostics": diag,
                 "attack_reconnaissance": attack_cov,
+                "collection_plan": collection_plan,
             }))?
         );
     } else if cmd.output == "dossier" {
@@ -305,6 +312,14 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         } else {
             println!();
         }
+        // Intelligence-led collection plan — the ranked next collection actions
+        // that close the standing ATT&CK Reconnaissance gaps from entities
+        // already held. Empty findings still yield a plan from the seed.
+        print!(
+            "{}",
+            crate::core::planner::render_briefing(&collection_plan, 8)
+        );
+        println!();
         println!(
             "{:<16} {:>6} {:>6}  {:<10} {:<26} VALUE",
             "KIND", "CONF", "C_EFF", "CLASS", "SOURCES"

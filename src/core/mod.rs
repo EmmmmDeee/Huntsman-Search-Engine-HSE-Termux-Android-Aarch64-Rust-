@@ -18,6 +18,7 @@ pub mod event;
 pub mod gexf;
 pub mod live;
 pub mod module;
+pub mod planner;
 pub mod port;
 pub mod profiles;
 pub mod relation;
