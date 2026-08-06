@@ -5359,6 +5359,9 @@ fn au027_chains_only_the_dominant_coherent_location() {
     let coord = |v: &str| {
         let mut e = Entity::new(EntityKind::Coordinates, v, 0.75, "scan");
         e.tag("geocoded");
+        // Anchoring source (reverse-geocoded from the address) so the coordinate
+        // is person-anchored, not infrastructure geo.
+        e.add_evidence(Evidence::new("geocode", "reverse-geocoded"));
         e
     };
     let mut brisbane_addr = Entity::new(EntityKind::Address, "Brisbane, QLD", 0.80, "scan");
@@ -5414,6 +5417,56 @@ fn au027_never_anchors_on_the_radar_sentinel() {
         out.is_empty(),
         "the radar sentinel must never anchor an AU-027 chain: {out:?}"
     );
+}
+
+#[test]
+fn au027_excludes_infrastructure_coordinates() {
+    use super::rules::rule_au_027_address_coordinates_chain;
+    // The geo-tag gate is an OR the ADDRESS satisfies alone, so datacentre
+    // coordinates could ride in and anchor the chain, fusing the host's location
+    // with the subject's real address. Hosting/IP-geo coordinates must be
+    // excluded; person-anchored coordinates at real spots still chain (control).
+    let mut addr = Entity::new(EntityKind::Address, "Brisbane, QLD", 0.80, "scan");
+    addr.tag("geoint");
+
+    let hosting = |v: &str| {
+        let mut e = Entity::new(EntityKind::Coordinates, v, 0.80, "scan");
+        e.tag("geocoded");
+        e.tag(crate::core::tags::HOSTING);
+        e
+    };
+    let out = rule_au_027_address_coordinates_chain(
+        &RuleContext::new(&[
+            addr.clone(),
+            hosting("-33.8688,151.2093"),
+            hosting("-33.8690,151.2100"),
+        ]),
+        "scan",
+        0,
+    );
+    assert!(
+        out.is_empty(),
+        "hosting datacentre coordinates must not anchor an AU-027 chain: {out:?}"
+    );
+
+    // Control: person-anchored (geocoded) coordinates DO chain with the address.
+    let anchored = |v: &str| {
+        let mut e = Entity::new(EntityKind::Coordinates, v, 0.80, "scan");
+        e.tag("geocoded");
+        e.add_evidence(Evidence::new("geocode", "reverse-geocoded"));
+        e
+    };
+    let out2 = rule_au_027_address_coordinates_chain(
+        &RuleContext::new(&[
+            addr,
+            anchored("-27.4698,153.0251"),
+            anchored("-27.4690,153.0235"),
+        ]),
+        "scan",
+        0,
+    );
+    assert_eq!(out2.len(), 1, "anchored coordinates still chain with the address");
+    assert_eq!(out2[0].rule_id, "AU-027");
 }
 
 #[test]
