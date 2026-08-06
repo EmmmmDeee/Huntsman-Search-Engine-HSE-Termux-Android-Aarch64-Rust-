@@ -8,8 +8,8 @@
     "non-defects. See CLAUDE.md and docs/OPERATIONAL_CONSTITUTION.md.",
     "cycle 9 sweep (wf_e136c553): 5 dims x adversarial verify. REFUTED as not-a-defect (do not re-open): AbortOnDrop doc claim (engine/mod.rs:158 — the doc is actually true); enrich_geospatial catch_unwind is not over-guarding worth removing; diagnostics ModuleLedger HashMap->BTreeMap (failure scenario unachievable); /scans/{id}/stealer-rows 'unbounded' (deliberate, documented, tested design); scan-log DOM O(n) (already capped at LOG_MAX_ROWS=1200, committed design). DEFERRED confirmed findings for a future cycle (recorded, not lost): F2 latest_completed_scan skips Aborted scans (storage/mod.rs:513 — `hse export/diff latest` jumps past an aborted scan); F3 live/radar session cancel handle shared with per-iteration wall-time watchdog (core/live/mod.rs:433); F4 scans.js dashboard has no `aborted` bucket + computes an unrendered `failed` count; F18 SPA discards /entities pagination envelope so Browse understates a truncated large scan (index.js:44); F20 dossier upload reads whole file to a JS string with no client-side size check (new_scan.js:445); F22 Scan-Log SSE never resolves the pill to 'complete' when the tailed scan finishes (log.js:89). These are the top of cycle-10's pool; F2 pairs naturally with cycle-9 slot 1 (both terminal-state correctness)."
   ],
-  "cycle_count": 27,
-  "last_verified_commit": "2158d222d",
+  "cycle_count": 28,
+  "last_verified_commit": "c8070060f",
   "verified_against": {
     "note": "This crate declares NO [features]; `--all-features` is a no-op here (main's #379 correction, preserved across the merge). The authoritative gate is scripts/gate.sh, which spans several workflow files and includes the rustdoc-lint and MSRV passes that reconstructing from ci.yml alone drops.",
     "toolchain": "1.97.1 (rust-toolchain.toml)",
@@ -191,7 +191,7 @@
       "loc": "src/core/correlator/rules/assoc.rs:334",
       "severity": "High",
       "source": "wave4 assoc/gap auditor (cycle 24)",
-      "status": "OPEN — agent-reported, pending independent code-trace + fix",
+      "status": "PARTIALLY CLOSED cycle 28 (commit c8070060f) — false-NEGATIVE half fixed (NANP over-length numbers no longer misread as AU service lines; exact-length gate in au_phone_line_type). False-POSITIVE half split to OD-14.",
       "summary": "Shared-phone associate veto calls au_phone_line_type on the +-stripped normalise_phone key, so its internal contains('+') country-code strip never fires. FALSE POS: '+61 1800 xxx xxx' AU freephone in intl form -> key '611800…' -> classifier returns None -> is_business_service veto skipped -> fabricated High associate cluster on a shared business desk. FALSE NEG: '+1 90x xxx xxxx' NANP numbers -> key '190x…' collides with AU premium 190x/freephone 1800 -> genuine shared-line associations dropped for NANP area codes 901-909. Comment at 332-333 ('Non-AU numbers stay grouped') is false.",
       "fix_direction": "Gate the business-service veto on confirmed-AU membership (to_e164_au/validate_phone_e164) before classifying; normalise +61-form to national number first so a NANP '1…' key can never match 1800/190x."
     },
@@ -244,6 +244,16 @@
       "status": "OPEN — agent-reported, pending independent code-trace + fix",
       "summary": "Operator table includes common English words as brand tokens ('belong'; review 'dodo'/'tangerine'). au_network_word_in whole-word-matches 'belong' appearing in a RIPE descr/org prose field -> false ('Belong', Consumer) AU-ISP attribution -> AU-097 Medium false residency claim. The word-boundary check cannot prevent it because the token IS a whole word.",
       "fix_direction": "Drop common-English-word tokens (belong; review dodo/tangerine) from the operator table, or require ambiguous tokens to co-occur with an ASN/ISP context marker. Independent of OD-11 (the token table is wrong on its own)."
+    },
+    {
+      "id": "OD-14",
+      "rule": "AU-050",
+      "loc": "src/core/correlator/rules/assoc.rs:344 + normalise_phone/entity_phones/Group",
+      "severity": "High (rarer than OD-8's neg half)",
+      "source": "cycle 28 split from OD-8",
+      "status": "OPEN — deferred, needs AU-050 grouping refactor",
+      "summary": "AU-050 business-service veto calls au_phone_line_type on the +-stripped normalise_phone digits key. An AU freephone/premium in +61 INTERNATIONAL form (+61 1800 xxx xxx -> key 611800xxxxxx) is NOT recognised by au_phone_line_type (it strips '61' only when the value still contains '+', which the key lost) -> classifier returns None -> veto skipped -> AU-050 fires a false High associate cluster on a shared 1800/190x business desk. Rarer than the false-negative (1800 numbers are seldom stored in +61 form) but real in messy breach data.",
+      "fix_direction": "Classify the ORIGINAL +-bearing phone value for the veto, not the digits key: thread a representative original phone string through entity_phones -> Group -> the veto (or canonicalise +61/0061 to AU national form in a shared normaliser). Also make au_phone_line_type return None for a '+' followed by a non-61 country code (a foreign E.164 number is definitionally non-AU), generalising the existing '+1 555…'->None doctest. Verify against both callers (AU-050, geo::jurisdiction:304) + doctest."
     }
   ],
   "cycle_2_slots": [
@@ -754,5 +764,15 @@
       "summary": "AU-097 AU-ISP/network attribution reads an AU network operator off an IpAddress/Asn's isp/org/as fields and asserts person-level residency (consumer ISP -> Medium) or institutional affiliation (AARNet -> High), iterating EVERY IpAddress|Asn with no check it is the subject's own access connection and no hosting/datacentre exclusion. A resolved SERVER (mail host, CDN edge, the box a linked page resolves to) on an AU operator -> fired AU-097, fabricating a network-layer geo signal from pure infra; the text even claimed 'not hosting infrastructure' for un-vetted IPs. Fix: exclude entities tagged tags::HOSTING/PLATFORM_INFRA (applied by abuseipdb usage=datacenter, ip_geo, engine enrich) from the filter; dropped the 'not hosting infrastructure' overclaim. Bare consumer/AARNet IP w/o hosting tag still fires. Regression au097_skips_hosting_and_platform_infra_entities (Telstra IP tagged hosting + AARNet ASN tagged platform-infra both silent). Note: residual = untagged server IPs still slip through (full fix = distinguish subject's access IP from resolved IPs, a larger change); this removes the clearest FPs. scripts/gate.sh --quick GREEN."
     }
   ],
-  "cycle_27_provenance": "Cycle 27 closes OD-11. tags::HOSTING='hosting' / PLATFORM_INFRA='platform-infra' (tags.rs:26,33) verified to be applied by abuseipdb (datacenter usage), ip_geo, engine/enrich.rs to exactly the resolved-server IPs AU-097 mis-attributed. Fix is the infrastructure-must-not-seed-identity discipline applied to the network-attribution rule. Residual documented: an untagged server IP still fires (the audit's deeper 'is this the subject's access connection?' question needs discovery-provenance, out of scope for a surgical fix). Remaining wave4 backlog: OD-8 AU-050 phone line-type (High), OD-12 AU-111 CDN tag drift (Medium), OD-13 AU_NETWORK_OPERATORS 'belong' common-word token (Medium; also feeds AU-097 — its FP now excluded only when the IP is also hosting-tagged, so OD-13 remains independently worth fixing)."
+  "cycle_27_provenance": "Cycle 27 closes OD-11. tags::HOSTING='hosting' / PLATFORM_INFRA='platform-infra' (tags.rs:26,33) verified to be applied by abuseipdb (datacenter usage), ip_geo, engine/enrich.rs to exactly the resolved-server IPs AU-097 mis-attributed. Fix is the infrastructure-must-not-seed-identity discipline applied to the network-attribution rule. Residual documented: an untagged server IP still fires (the audit's deeper 'is this the subject's access connection?' question needs discovery-provenance, out of scope for a surgical fix). Remaining wave4 backlog: OD-8 AU-050 phone line-type (High), OD-12 AU-111 CDN tag drift (Medium), OD-13 AU_NETWORK_OPERATORS 'belong' common-word token (Medium; also feeds AU-097 — its FP now excluded only when the IP is also hosting-tagged, so OD-13 remains independently worth fixing).",
+  "cycle_28_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "c8070060f",
+      "finding": "OD-8 / wave4 assoc auditor DEFECT 1 (AU-050) — false-negative half",
+      "summary": "au_phone_line_type read an 11-digit NANP number as a 10-digit AU service line when its '1' country code + area code matched a service prefix: +1 800.. (US toll-free) -> '1800..' Freephone; +1 900/90x (US premium / area codes 900-909) -> '190..' Premium. AU-050 then vetoed the shared line as a business desk and DROPPED the real association (false negative). Root cause: the classifier had no length gate, so any over-length number beginning with a service prefix matched. Fix: AU 1800/1300/190x are EXACTLY 10 national digits (13xxxx the sole 6-digit form) -> enforce nat.len()==10 on those three arms; an over-length number falls through to None (non-AU) -> personal-line grouping, not the veto. Fixes the whole NANP-collision class (800/900/909/etc.), not one area code; also corrects the other caller geo::jurisdiction. All existing AU classifications unchanged. Regressions: au_phone_line_type_rejects_nanp_numbers_that_collide_with_service_prefixes + au050_links_nanp_number_colliding_with_au_service_prefix. NOTE the agent's proposed fix referenced to_e164_au/validate_phone_e164 which DO NOT EXIST (only au_phone_region + au_phone_line_type). scripts/gate.sh --quick GREEN (foreground run)."
+    }
+  ],
+  "cycle_28_provenance": "Cycle 28 closes the false-NEGATIVE half of OD-8 (the more common/clearer bug). The classifier fix is canonical (exact ACMA national-number lengths) and lives in the shared helper so both callers benefit. The sibling false-POSITIVE (an AU 1800/190x stored in +61 international form reaching AU-050 as a +-stripped key that au_phone_line_type won't recognise because it needs the '+' to strip '61') is SPLIT to OD-14 (deferred): it needs AU-050 to classify the original +-bearing phone value, not the normalise_phone digits key — an associates-grouping change (thread an original value through entity_phones->Group->veto) plus rejecting non-61 '+' country codes in au_phone_line_type. Deferred deliberately: larger blast radius on a widely-used grouping path, warrants its own careful cycle rather than being rushed. Remaining wave4 backlog: OD-14 (AU-050 false-pos, +61 intl form), OD-12 AU-111 CDN tag drift (Medium, clean), OD-13 AU_NETWORK_OPERATORS 'belong' (Medium, clean)."
 }
