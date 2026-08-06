@@ -5501,6 +5501,36 @@ fn au049_fires_on_two_people_one_residence() {
 }
 
 #[test]
+fn au049_unit_address_and_street_number_are_not_one_household() {
+    // Regression (address unit separator): `1/2 Oak Street` (unit 1 of number 2)
+    // and `12 Oak Street` (number 12) are DIFFERENT dwellings. Deleting `/` in
+    // normalisation collapsed them onto one key and fired AU-049 — a fabricated
+    // household between strangers. They must not group.
+    let strangers = vec![
+        person_at("Jordan Meyers", "1/2 Oak Street, Sydney NSW 2000"),
+        person_at("Dana Lin", "12 Oak Street, Sydney NSW 2000"),
+    ];
+    assert!(
+        super::rules::rule_au_049_shared_address_association(&RuleContext::new(&strangers), "s", 0)
+            .is_empty(),
+        "a unit address and a street number are not one household"
+    );
+    // Control: two people genuinely at the SAME unit still form one household —
+    // the folded unit form remains a valid, groupable residence key.
+    let cohabitants = vec![
+        person_at("Jordan Meyers", "1/2 Oak Street, Sydney NSW 2000"),
+        person_at("Dana Meyers", "1/2 oak street sydney nsw 2000"),
+    ];
+    let hits = super::rules::rule_au_049_shared_address_association(
+        &RuleContext::new(&cohabitants),
+        "s",
+        0,
+    );
+    assert_eq!(hits.len(), 1, "same unit is one household");
+    assert_eq!(hits[0].rule_id, "AU-049");
+}
+
+#[test]
 fn au049_single_person_and_region_only_do_not_fire() {
     let one = vec![person_at("Jordan Meyers", "123 Main St, Springfield, IL")];
     assert!(
