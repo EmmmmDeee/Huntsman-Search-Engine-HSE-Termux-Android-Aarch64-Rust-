@@ -10,8 +10,6 @@
 //! does; auto-launching network reconnaissance against every entity found in an
 //! arbitrary document would be both non-deterministic and a footgun.
 
-mod converter;
-
 use crate::util::document_parse::{DocumentFormat, DocumentResult};
 use crate::util::entity_extractor::EntityExtractor;
 use serde_json::json;
@@ -281,7 +279,7 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
     }
 
     // The file the entities came from — recorded on each entity's evidence chain
-    // (via the `hse` converter) so a persisted or exported entity is attributable
+    // (via `app::convert`) so a persisted or exported entity is attributable
     // back to its source document. Needed by `--auto-scan` below and the output
     // formatter, so it is computed once here.
     let document_source = args
@@ -326,12 +324,12 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
 ///
 /// Converts each [`ExtractedEntity`](crate::util::entity_extractor::ExtractedEntity)
 /// to a core [`Entity`](crate::core::entity::Entity) (attributed to
-/// `document_source`) under a fresh, collision-free `ingest-<uid>` scan id, then
-/// delegates to
-/// the shared [`crate::app::persist`] use case that `hse import` also runs —
-/// offline geospatial enrichment, deterministic relation derivation, and
-/// correlation. Store construction lives in that application-layer use case, not
-/// here, so the CLI never opens the store directly (`tests/architecture.rs`).
+/// `document_source` via the shared [`crate::app::convert`]) under a fresh,
+/// collision-free `ingest-<uid>` scan id, then delegates to the shared
+/// [`crate::app::persist`] use case that `hse import` also runs — offline
+/// geospatial enrichment, deterministic relation derivation, and correlation.
+/// Store construction lives in that application-layer use case, not here, so
+/// the CLI never opens the store directly (`tests/architecture.rs`).
 ///
 /// Returns the new scan id and its `(entities, relations, correlations)` counts.
 /// Entirely offline and deterministic: no module dispatch, no network.
@@ -348,9 +346,17 @@ async fn run_auto_scan(
         "ingest-{}",
         crate::util::uid::scan_id("document", document_source)
     );
+    let evidence_source = format!("ingest:{document_source}");
     let converted: Vec<crate::core::entity::Entity> = entities
         .iter()
-        .map(|e| converter::extracted_to_hse_entity(e, &sid, document_source))
+        .map(|e| {
+            crate::app::convert::extracted_to_hse_entity(
+                e,
+                &sid,
+                &evidence_source,
+                "document-ingestion",
+            )
+        })
         .collect();
     let label = crate::app::persist::strongest_identity_label(
         &converted,
@@ -383,9 +389,17 @@ fn format_output(
         // `storage::Store::upsert_entities_batch` consumes, so the output can be
         // fed straight into a scan rather than re-parsed from the flat formats.
         "hse" | "entities" => {
+            let evidence_source = format!("ingest:{document_source}");
             let converted: Vec<_> = entities
                 .iter()
-                .map(|e| converter::extracted_to_hse_entity(e, PENDING_SCAN_ID, document_source))
+                .map(|e| {
+                    crate::app::convert::extracted_to_hse_entity(
+                        e,
+                        PENDING_SCAN_ID,
+                        &evidence_source,
+                        "document-ingestion",
+                    )
+                })
                 .collect();
             Ok(serde_json::to_string_pretty(&converted)?)
         }

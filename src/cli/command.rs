@@ -481,6 +481,29 @@ pub enum Command {
         #[arg(long, value_name = "DIR")]
         image_variant_output_dir: Option<String>,
     },
+    /// Extract OSINT entities (email, phone, IP, domain, username, name, ...)
+    /// mentioned in a free-text investigative prompt — the kind of question
+    /// you'd type to an AI research assistant, e.g. "find what's linked to
+    /// alice@example.com". Uses HSE's own deterministic, offline pattern
+    /// extractor (the same one `hse ingest` runs on document text); no text is
+    /// ever sent to an external LLM.
+    Investigate {
+        /// The investigative prompt. Omit to read from stdin, so a long prompt
+        /// doesn't need shell quoting.
+        #[arg(allow_hyphen_values = true)]
+        text: Option<String>,
+        /// Also persist the extracted entities as a completed, correlated scan
+        /// (offline — no module dispatch, no network), so they show in `hse
+        /// list` and every view/export.
+        #[arg(long)]
+        auto_scan: bool,
+        /// Minimum confidence threshold (0.0-1.0, default 0.30).
+        #[arg(long, default_value = "0.30", value_parser = confidence_floor)]
+        min_confidence: f64,
+        /// Emit machine-readable JSON instead of a human-readable table.
+        #[arg(long)]
+        json: bool,
+    },
     /// Start the HTTP server + SPA (browse to http://127.0.0.1:8080 from Chrome).
     Serve {
         /// Bind address. Localhost-only by default — change at your own risk.
