@@ -138,7 +138,7 @@ pub(crate) const DOB_KEYS: &[&str] = &[
 /// (the dominant breach format, including ISO date-times like
 /// `1980-11-08T00:00:00`); otherwise return the trimmed value verbatim (a
 /// non-ISO form like `08/11/1980` is left as-is rather than guess DD-vs-MM).
-fn normalise_dob(raw: &str) -> Option<String> {
+pub(crate) fn normalise_dob(raw: &str) -> Option<String> {
     let s = raw.trim();
     let b = s.as_bytes();
     if s.len() >= 10

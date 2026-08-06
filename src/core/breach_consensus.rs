@@ -25,7 +25,7 @@
 //! The audit is therefore adversarial toward the scan's own output: every flag
 //! it raises is a reason to trust a finding *less*.
 
-use crate::core::correlator::{DOB_KEYS, is_breach_source};
+use crate::core::correlator::{DOB_KEYS, is_breach_source, normalise_dob};
 use crate::core::entity::{CONSENSUS_SOURCE, Classification, Entity, Evidence};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -360,11 +360,27 @@ fn conflicting_attributes(entity: &Entity) -> Vec<AuditFlag> {
             continue;
         }
 
+        // Date-of-birth values are compared through the canonical `normalise_dob`
+        // (the same one AU-073 groups by), so the SAME date in two breach
+        // spellings — `1980-11-08` vs the dominant ISO date-time `1980-11-08T00:00:00`
+        // — reads as agreement, not a hard contradiction that would wrongly fail
+        // the audit and block a genuinely corroborated finding from correlation.
+        // Government-ID keys have no canonical normaliser, so they keep the
+        // case-insensitive raw compare.
+        let is_dob = DOB_KEYS.contains(&key);
+        let differs = |a: &str, b: &str| -> bool {
+            if is_dob {
+                normalise_dob(a) != normalise_dob(b)
+            } else {
+                !a.eq_ignore_ascii_case(b)
+            }
+        };
+
         // One flag per key: the first pair, in sorted-source order, that differs.
         let entries: Vec<(&&str, &&str)> = by_source.iter().collect();
         'outer: for (i, (left_source, left)) in entries.iter().enumerate() {
             for (right_source, right) in entries.iter().skip(i + 1) {
-                if !left.eq_ignore_ascii_case(right) {
+                if differs(left, right) {
                     flags.push(AuditFlag::ConflictingAttributes {
                         attribute: key.to_string(),
                         left_source: (*left_source).to_string(),
@@ -546,6 +562,27 @@ mod tests {
         );
         assert_eq!(report.verdict, AuditVerdict::FailsAudit);
         assert!(!report.verdict.can_use_for_correlation());
+    }
+
+    #[test]
+    fn same_dob_in_two_formats_is_not_a_contradiction() {
+        // Regression: the dominant ISO date-time breach spelling and the plain
+        // date are the SAME birth date. Comparing raw strings once flagged this as
+        // a hard contradiction (FailsAudit), impeaching a genuinely corroborated
+        // finding and blocking it from correlation; `normalise_dob` (the same
+        // canonical form AU-073 groups by) collapses both to `1980-11-08`.
+        let mut e = entity(0.8);
+        e.add_evidence(breach_ev("hibp", "dob", "1980-11-08"));
+        e.add_evidence(breach_ev("dehashed", "dob", "1980-11-08T00:00:00"));
+        let mut ents = vec![e];
+
+        let report = run_consensus_pass(&mut ents, "scan-1");
+
+        assert!(
+            !report.flags().any(AuditFlag::is_hard_conflict),
+            "same date in two breach spellings must not be a contradiction"
+        );
+        assert!(report.verdict.can_use_for_correlation());
     }
 
     #[test]
