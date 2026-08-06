@@ -38,34 +38,58 @@ use super::*;
         );
     }
 
-    #[test]
-    fn fresh_compromise_gets_higher_confidence() {
-        let recent = Stealer {
+    /// A `Stealer` with only `date_compromised` set — the sole field the
+    /// freshness scorer reads.
+    fn dated(date_compromised: &str) -> Stealer {
+        Stealer {
             computer_name: None,
             operating_system: None,
-            date_compromised: Some("2026-05-01T00:00:00Z".into()),
-            date_uploaded: None,
-            stealer_family: Some("Lumma".into()),
-            ip: None,
-            malware_path: None,
-            credentials: vec![],
-        };
-        assert!((compute_confidence(&[recent]) - FRESH_CONFIDENCE).abs() < 1e-9);
-    }
-
-    #[test]
-    fn old_compromise_gets_base_confidence() {
-        let old = Stealer {
-            computer_name: None,
-            operating_system: None,
-            date_compromised: Some("2020-01-01T00:00:00Z".into()),
+            date_compromised: Some(date_compromised.into()),
             date_uploaded: None,
             stealer_family: None,
             ip: None,
             malware_path: None,
             credentials: vec![],
-        };
-        assert!((compute_confidence(&[old]) - BASE_CONFIDENCE).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn fresh_compromise_gets_higher_confidence() {
+        // Time is injected, not read from the wall clock: a compromise 30 days
+        // before `now` is inside the 90-day window and scores FRESH. Because
+        // `now` is fixed relative to the fixture, this can never rot.
+        let recent = dated("2026-05-01T00:00:00Z");
+        let now = parse_iso_epoch("2026-05-31T00:00:00Z").unwrap();
+        assert!((compute_confidence_at(&[recent], now) - FRESH_CONFIDENCE).abs() < 1e-9);
+    }
+
+    #[test]
+    fn old_compromise_gets_base_confidence() {
+        // 2.5 years before `now` — far outside the window → BASE.
+        let old = dated("2020-01-01T00:00:00Z");
+        let now = parse_iso_epoch("2022-08-01T00:00:00Z").unwrap();
+        assert!((compute_confidence_at(&[old], now) - BASE_CONFIDENCE).abs() < 1e-9);
+    }
+
+    #[test]
+    fn freshness_boundary_is_the_90_day_window() {
+        // Regression proof for the injected-time boundary: with the compromise
+        // fixed, a `now` 89 days later is still inside the 90-day window (FRESH),
+        // and 91 days later is outside it (BASE). Deterministic — cannot rot.
+        let comp_ts = parse_iso_epoch("2026-05-01T00:00:00Z").unwrap();
+        let day = 86_400u64;
+        assert!(
+            (compute_confidence_at(&[dated("2026-05-01T00:00:00Z")], comp_ts + 89 * day)
+                - FRESH_CONFIDENCE)
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (compute_confidence_at(&[dated("2026-05-01T00:00:00Z")], comp_ts + 91 * day)
+                - BASE_CONFIDENCE)
+                .abs()
+                < 1e-9
+        );
     }
 
     #[test]

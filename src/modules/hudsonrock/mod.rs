@@ -235,7 +235,14 @@ impl Module for HudsonRock {
 }
 
 fn compute_confidence(stealers: &[Stealer]) -> f64 {
-    let now_secs = crate::core::entity::unix_now();
+    compute_confidence_at(stealers, crate::core::entity::unix_now())
+}
+
+/// Freshness-scored confidence *as of* `now_secs`. Time is injected rather than
+/// read from the wall clock so the freshness boundary is pure, deterministic,
+/// and testable — a fixed date fixture can never rot as real time advances past
+/// it (the root cause of the earlier wall-clock-dependent test failure).
+fn compute_confidence_at(stealers: &[Stealer], now_secs: u64) -> f64 {
     let cutoff = now_secs.saturating_sub(FRESHNESS_WINDOW_DAYS * 86400);
 
     let has_recent = stealers.iter().any(|s| {
