@@ -84,6 +84,12 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
         .unwrap_or(crate::modules::search_engines::health::DEFAULT_REFRESH_SECS);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(health_secs));
+        // Skip missed ticks rather than firing them back-to-back: a slow sweep
+        // (or a stalled runtime) must not queue a burst of catch-up sweeps that
+        // then hammer every search engine in quick succession — one sweep per
+        // interval, drop the backlog. (Same rationale as the housekeeping and
+        // auto-update ticks below.)
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             // First tick fires immediately → a sweep at startup, then every interval.
             tick.tick().await;
@@ -162,6 +168,12 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
             // Stagger first check by 2 min.
             tokio::time::sleep(std::time::Duration::from_secs(120)).await;
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            // Skip missed ticks rather than bursting: applying an update can take
+            // a while (git fetch + rebuild + restart), so a check that overruns
+            // the interval must not immediately trigger another — one check per
+            // interval, drop the backlog. (Same rationale as the health and
+            // housekeeping ticks above.)
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tick.tick().await;
                 if let Ok(mut info) = update_info.lock() {
