@@ -207,13 +207,11 @@ export async function renderLog(host, scan){
   }
 }
 /* ── "By type" breakdown ──
-   The Rust event-log renderer (`render_event_log`, cli/export/renderers.rs)
-   prints a per-event-kind histogram above the timeline, and the debug bundle's
-   SCAN SEQUENCE reuses it — so both on-disk renderings answer "how many
-   entities / skips / errors was that?" at a glance. The browser log showed only
-   the timeline, leaving the operator to count 764 rows by eye. Same data, same
-   summary, tallied client-side from the rows already in hand (no extra
-   round-trip), and kept live as SSE rows stream in. */
+   Both on-disk (render_event_log) and streaming (SSE) events carry the same
+   kind (event type), so the browser can tally them client-side — same breakdown
+   on-disk and on-screen. The timeline alone left the operator to count 764
+   rows by eye; the breakdown answers "how many entities / errors was that?"
+   at a glance, kept live as rows stream in, at zero extra round-trip cost. */
 const typeCounts = new Map();
 export function bumpTypeCount(type){
   if (!type) return;
@@ -321,53 +319,59 @@ export function appendLog(ev, ts){
    distrust the number beside it. */
 const plural = n => (Number(n) === 1 ? '' : 's');
 
+/** Map a structured JSON event (from the event log or SSE stream) to an
+ * on-screen log line object: {typ, lv, msg}. The Rust event carries:
+ * — time/level/kind (top-level) + per-variant concise fields (JSON structure)
+ * — no glyphs, no decorative characters (clean, machine-readable)
+ * This function extracts the fields and builds a human-readable msg, using
+ * `typ` (category: module/entity/expand/corr/live), `lv` (level color:
+ * info/ok/warn/err/skip/corr), and `msg` (the formatted summary).
+ */
 export function mapEvent(ev){
   const t = ev.type;
-  if (t==='module_start')   return {typ:'module', lv:'info',  msg:`▶ ${esc(ev.module)}`};
-  if (t==='module_done')    return {typ:'module', lv:'ok',    msg:`✓ ${esc(ev.module)} <span class="text-muted">(${ev.found} found)</span>`};
-  if (t==='module_error')   return {typ:'module', lv:'err',   msg:`✗ ${esc(ev.module)} <span class="text-muted">${esc(ev.error)}</span>`};
-  if (t==='module_skipped') return {typ:'module', lv:'skip',  msg:`◌ ${esc(ev.module)} <span class="text-muted">${esc(ev.reason)}</span>`};
+  if (t==='module_start')   return {typ:'module', lv:'info',  msg:`${esc(ev.module)}: running`};
+  if (t==='module_done')    return {typ:'module', lv:'ok',    msg:`${esc(ev.module)}: done <span class="text-muted">(${ev.found} found)</span>`};
+  if (t==='module_error')   return {typ:'module', lv:'err',   msg:`${esc(ev.module)}: error <span class="text-muted">${esc(ev.error)}</span>`};
+  if (t==='module_skipped') return {typ:'module', lv:'skip',  msg:`${esc(ev.module)}: skipped <span class="text-muted">${esc(ev.reason)}</span>`};
   // Confidence and the candidate marker are part of the line, not decoration:
-  // the Rust twin (`EventKind::log_summary`, core/event/mod.rs) renders
-  // "+ {kind}  {value}  ·{conf}{  (candidate)}", and the downloaded events.log
-  // / debug-bundle sequence therefore carry both. Dropping them here made the
-  // on-screen log disagree with the on-disk one for every single entity row —
-  // a 0.30 speculative username read identically to a 0.95 observed AP.
+  // the Rust twin renders them in the JSON fields (confidence as a rounded
+  // number, candidate as a boolean), and the downloaded events.log
+  // / debug-bundle sequence therefore carry both. We extract them from the
+  // structured event and show them here so on-screen and on-disk logs agree.
   if (t==='entity_found'){
-    const e = ev.entity || {};
-    const conf = typeof e.confidence === 'number' ? e.confidence.toFixed(2) : null;
-    const cand = (e.tags||[]).includes('candidate') ? ' <span class="text-muted">(candidate)</span>' : '';
+    const conf = typeof ev.confidence === 'number' ? ev.confidence.toFixed(2) : null;
+    const cand = ev.candidate ? ' <span class="text-muted">(candidate)</span>' : '';
     return {typ:'entity', lv:'found',
-      msg:`${kindPill(e.kind)} ${esc(e.value)}${conf!=null?` <span class="text-muted">·${esc(conf)}</span>`:''}${cand}`};
+      msg:`${kindPill(ev.entity_kind)} ${esc(ev.value)}${conf!=null?` <span class="text-muted">·${esc(conf)}</span>`:''}${cand}`};
   }
-  if (t==='scan_start')     return {typ:'scan',   lv:'info',  msg:`scan started · ${esc(ev.target_kind)}=${esc(ev.target_value)}`};
-  // Mirrors the three-way branch in the Rust twin (`EventKind::log_summary`,
-  // core/event/mod.rs): a cancelled or failed scan emits this same terminal
-  // event, so it must not read as a green success. `ev.status` is absent on
-  // event rows persisted before the field existed — those were all genuine
-  // completions, so default to 'complete'.
+  if (t==='scan_start')     return {typ:'scan',   lv:'info',  msg:`scan started: ${esc(ev.target_kind)}=${esc(ev.target_value)}`};
+  // Mirrors the three-way branch in the Rust twin (core/event/mod.rs): a
+  // cancelled or failed scan emits this same terminal event, so it must not
+  // read as a green success. `ev.status` is absent on event rows persisted
+  // before the field existed — those were all genuine completions, so default
+  // to 'complete'.
   if (t==='scan_complete'){
     const st = ev.status || 'complete';
-    if (st==='aborted') return {typ:'scan', lv:'warn', msg:`scan aborted — stopped early · ${ev.entity_count} entities`};
+    if (st==='aborted') return {typ:'scan', lv:'warn', msg:`scan aborted — stopped early, ${ev.entities} entities`};
     if (st==='failed')  return {typ:'scan', lv:'err',  msg:`scan failed`};
-    return {typ:'scan', lv:'ok', msg:`scan complete · ${ev.entity_count} entities`};
+    return {typ:'scan', lv:'ok', msg:`scan complete, ${ev.entities} entities`};
   }
-  if (t==='expansion_tick') return {typ:'expand', lv:'info',  msg:`depth ${ev.depth} · queued ${ev.queued} · visited ${ev.visited}`};
-  if (t==='expansion_stop') return {typ:'expand', lv:'warn',  msg:`expansion stopped · ${esc(ev.reason)}`};
-  if (t==='entity_excluded') return {typ:'expand', lv:'skip', msg:`⊘ not expanded · ${kindPill(ev.kind)} ${esc(ev.value)} <span class="text-muted">${esc(ev.reason)}</span>`};
+  if (t==='expansion_tick') return {typ:'expand', lv:'info',  msg:`expansion: depth ${ev.depth}, queued ${ev.queued}, visited ${ev.visited}`};
+  if (t==='expansion_stop') return {typ:'expand', lv:'warn',  msg:`expansion stopped: ${esc(ev.reason)}`};
+  if (t==='entity_excluded') return {typ:'expand', lv:'skip', msg:`not expanded: ${kindPill(ev.entity_kind)} ${esc(ev.value)} <span class="text-muted">${esc(ev.reason)}</span>`};
   // Final bulk breach sweep. `dropped` is part of the line, not a tooltip: a
   // capped plan and a complete one must not read the same.
-  if (t==='breach_sweep')   return {typ:'expand', lv:'info',  msg:`⇉ breach sweep · ${ev.probes} probe${plural(ev.probes)} from ${ev.anchors} anchor${plural(ev.anchors)}${ev.dropped?` <span class="text-muted">(${ev.dropped} over cap)</span>`:''}`};
+  if (t==='breach_sweep')   return {typ:'expand', lv:'info',  msg:`breach sweep: ${ev.probes} probe${plural(ev.probes)} from ${ev.anchors} anchor${plural(ev.anchors)}${ev.dropped?` <span class="text-muted">(${ev.dropped} over cap)</span>`:''}`};
   // Autonomous audit of the breach corpus. A non-passing verdict means two
   // corpora contradict each other, so it renders at warn level.
-  if (t==='consensus_audit') return {typ:'corr', lv:(ev.verdict==='PASS'||ev.verdict==='PASS_WITH_WARNINGS')?'ok':'warn', msg:`⚖ breach audit · ${esc(ev.verdict)} · ${ev.corroborated}/${ev.examined} corroborated <span class="text-muted">${ev.flags} flag${plural(ev.flags)}</span>`};
-  if (t==='correlation_found') return {typ:'corr', lv:'corr', msg:`${esc(ev.correlation?.rule_name||ev.correlation?.rule_id||'?')}`};
-  if (t==='correlations_done') return {typ:'corr', lv:'info', msg:`correlations done · ${ev.count}`};
+  if (t==='consensus_audit') return {typ:'corr', lv:(ev.verdict==='PASS'||ev.verdict==='PASS_WITH_WARNINGS')?'ok':'warn', msg:`breach audit: ${esc(ev.verdict)}, ${ev.corroborated}/${ev.examined} corroborated <span class="text-muted">${ev.flags} flag${plural(ev.flags)}</span>`};
+  if (t==='correlation_found') return {typ:'corr', lv:'corr', msg:`${esc(ev.rule||ev.rule_id||'?')}`};
+  if (t==='correlations_done') return {typ:'corr', lv:'info', msg:`correlations: ${ev.count} evaluated`};
   // Live-session lifecycle (streamed into the Live-activity panel). Without
   // these the panel rendered each as raw JSON via the fallback below.
-  if (t==='live_start')     return {typ:'live',   lv:'info',  msg:`▶ live session started · ${esc(ev.target_kind)}=${esc(ev.target_value)} <span class="text-muted">every ${esc(ev.interval_secs)}s</span>`};
-  if (t==='live_tick')      return {typ:'live',   lv:'info',  msg:`↻ iteration ${esc(ev.iteration)}`};
-  if (t==='live_stop')      return {typ:'live',   lv:'warn',  msg:`■ live session stopped <span class="text-muted">${esc(ev.reason)}</span>`};
+  if (t==='live_start')     return {typ:'live',   lv:'info',  msg:`live session started: ${esc(ev.target_kind)}=${esc(ev.target_value)} <span class="text-muted">every ${esc(ev.interval_secs)}s</span>`};
+  if (t==='live_tick')      return {typ:'live',   lv:'info',  msg:`sweep #${esc(ev.iteration)}`};
+  if (t==='live_stop')      return {typ:'live',   lv:'warn',  msg:`live session stopped: <span class="text-muted">${esc(ev.reason)}</span>`};
   return {typ: esc(t||'?'), lv:'info', msg: esc(JSON.stringify(ev).slice(0,220))};
 }
 export function openSse(scanId, onEv, onState){
