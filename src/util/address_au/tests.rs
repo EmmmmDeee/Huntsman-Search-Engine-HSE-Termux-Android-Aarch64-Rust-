@@ -467,6 +467,35 @@ use super::*;
     }
 
     #[test]
+    fn au_network_operator_split_gates_common_word_brands_to_structured_fields() {
+        use super::au_network_operator_split;
+        // A common-word brand token in free-text `descr` prose must NOT attribute
+        // the ISP: "…used to belong to X" is the verb, not Belong the operator.
+        assert_eq!(
+            au_network_operator_split("", "address space that used to belong to acme"),
+            None,
+            "`belong` in descr prose is the verb, not the Belong ISP"
+        );
+        // But the genuine operator named in a STRUCTURED field is still recognised.
+        assert_eq!(
+            au_network_operator_split("Belong Internet Pty Ltd", ""),
+            Some(("Belong", AuNetworkKind::Consumer)),
+            "`Belong` in a structured isp/org field is the operator"
+        );
+        // An UNAMBIGUOUS operator is trusted even in descr prose (no collision).
+        assert_eq!(
+            au_network_operator_split("", "Reassigned to Telstra Limited"),
+            Some(("Telstra", AuNetworkKind::Consumer)),
+            "an unambiguous brand is trusted in descr too"
+        );
+        // Structured tier wins over descr.
+        assert_eq!(
+            au_network_operator_split("Optus", "belong to someone"),
+            Some(("Optus", AuNetworkKind::Consumer))
+        );
+    }
+
+    #[test]
     fn is_standalone_postcode_at_accepts_only_bounded_in_range_codes() {
         // Does ANY scan position of `s` satisfy the predicate? Mirrors how the
         // au_property / au_electoral parsers call it.

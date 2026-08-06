@@ -493,7 +493,11 @@ use crate::util::address_au::AuNetworkKind;
 pub(in crate::core::correlator) fn au_network_of(
     e: &Entity,
 ) -> Option<(&'static str, AuNetworkKind)> {
-    const KEYS: &[&str] = &[
+    // Structured operator-name fields — trusted for every brand token. `descr`
+    // is deliberately NOT here: it is RIPE/APNIC free-text prose, handled as the
+    // lower-trust tier below so a common-word brand (belong/dodo/tangerine) can't
+    // be fabricated from it (see `au_network_operator_split`).
+    const STRUCTURED_KEYS: &[&str] = &[
         "isp",
         "org",
         "as",
@@ -501,23 +505,29 @@ pub(in crate::core::correlator) fn au_network_of(
         "as_name",
         "asname",
         "as_org",
-        "descr",
         "network",
         "org_name",
         "isp_name",
         "carrier",
         "connection_org",
     ];
-    let mut hay = e.value.clone();
+    let mut structured = e.value.clone();
+    let mut descr = String::new();
     for ev in &e.evidence {
         for (k, v) in &ev.attributes {
-            if KEYS.iter().any(|key| k.eq_ignore_ascii_case(key)) {
-                hay.push(' ');
-                hay.push_str(v);
+            if k.eq_ignore_ascii_case("descr") {
+                descr.push(' ');
+                descr.push_str(v);
+            } else if STRUCTURED_KEYS
+                .iter()
+                .any(|key| k.eq_ignore_ascii_case(key))
+            {
+                structured.push(' ');
+                structured.push_str(v);
             }
         }
     }
-    crate::util::address_au::au_network_operator(&hay)
+    crate::util::address_au::au_network_operator_split(&structured, &descr)
 }
 
 /// AU-097 — Australian ISP / network attribution.

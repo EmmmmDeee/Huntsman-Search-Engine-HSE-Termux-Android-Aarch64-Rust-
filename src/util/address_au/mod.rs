@@ -776,31 +776,44 @@ pub enum AuNetworkKind {
 /// Australian network operator brand tokens (lowercase) → canonical name + class.
 /// Only distinctive, unambiguously-Australian operator names are listed, so a
 /// token in an `isp`/`org`/`as` value is a reliable AU signal, not a coincidence.
-const AU_NETWORK_OPERATORS: &[(&str, &str, AuNetworkKind)] = &[
-    ("telstra", "Telstra", AuNetworkKind::Consumer),
-    ("optus", "Optus", AuNetworkKind::Consumer),
-    ("tpg", "TPG", AuNetworkKind::Consumer),
-    ("iinet", "iiNet", AuNetworkKind::Consumer),
-    ("internode", "Internode", AuNetworkKind::Consumer),
+// 4th field `ambiguous`: the lowercase brand token is ALSO an ordinary English
+// word, so it is trusted only in a structured operator-name field (isp/org/as/…),
+// never in free-text `descr` prose — see [`au_network_operator_split`]. Without
+// this, a RIPE `descr` like "address space that used to belong to X" whole-word-
+// matched `belong` and fabricated a "Belong ISP" residency attribution (AU-097).
+const AU_NETWORK_OPERATORS: &[(&str, &str, AuNetworkKind, bool)] = &[
+    ("telstra", "Telstra", AuNetworkKind::Consumer, false),
+    ("optus", "Optus", AuNetworkKind::Consumer, false),
+    ("tpg", "TPG", AuNetworkKind::Consumer, false),
+    ("iinet", "iiNet", AuNetworkKind::Consumer, false),
+    ("internode", "Internode", AuNetworkKind::Consumer, false),
     (
         "aussie broadband",
         "Aussie Broadband",
         AuNetworkKind::Consumer,
+        false,
     ),
-    ("aussiebb", "Aussie Broadband", AuNetworkKind::Consumer),
-    ("vocus", "Vocus", AuNetworkKind::Consumer),
-    ("dodo", "Dodo", AuNetworkKind::Consumer),
-    ("iprimus", "iPrimus", AuNetworkKind::Consumer),
-    ("belong", "Belong", AuNetworkKind::Consumer),
-    ("superloop", "Superloop", AuNetworkKind::Consumer),
-    ("launtel", "Launtel", AuNetworkKind::Consumer),
-    ("exetel", "Exetel", AuNetworkKind::Consumer),
-    ("myrepublic", "MyRepublic", AuNetworkKind::Consumer),
-    ("spintel", "SpinTel", AuNetworkKind::Consumer),
-    ("aapt", "AAPT", AuNetworkKind::Consumer),
-    ("amaysim", "amaysim", AuNetworkKind::Consumer),
-    ("tangerine", "Tangerine", AuNetworkKind::Consumer),
-    ("aarnet", "AARNet", AuNetworkKind::Academic),
+    (
+        "aussiebb",
+        "Aussie Broadband",
+        AuNetworkKind::Consumer,
+        false,
+    ),
+    ("vocus", "Vocus", AuNetworkKind::Consumer, false),
+    // `dodo` (a bird) and `tangerine` (a fruit/colour) and `belong` (a verb) are
+    // real AU ISPs whose tokens collide with ordinary prose — ambiguous.
+    ("dodo", "Dodo", AuNetworkKind::Consumer, true),
+    ("iprimus", "iPrimus", AuNetworkKind::Consumer, false),
+    ("belong", "Belong", AuNetworkKind::Consumer, true),
+    ("superloop", "Superloop", AuNetworkKind::Consumer, false),
+    ("launtel", "Launtel", AuNetworkKind::Consumer, false),
+    ("exetel", "Exetel", AuNetworkKind::Consumer, false),
+    ("myrepublic", "MyRepublic", AuNetworkKind::Consumer, false),
+    ("spintel", "SpinTel", AuNetworkKind::Consumer, false),
+    ("aapt", "AAPT", AuNetworkKind::Consumer, false),
+    ("amaysim", "amaysim", AuNetworkKind::Consumer, false),
+    ("tangerine", "Tangerine", AuNetworkKind::Consumer, true),
+    ("aarnet", "AARNet", AuNetworkKind::Academic, false),
 ];
 
 /// True if `token` occurs in `hay` (already lowercased) as a whole word — bounded
@@ -839,11 +852,39 @@ fn au_network_word_in(hay: &str, token: &str) -> bool {
 /// ```
 #[must_use]
 pub fn au_network_operator(haystack: &str) -> Option<(&'static str, AuNetworkKind)> {
+    au_network_operator_in(haystack, true)
+}
+
+/// Match an AU network operator across two trust tiers. `structured` — the
+/// operator-name fields (`isp`/`org`/`as`/…) and the entity value — is trusted
+/// for every brand token. `descr` — RIPE/APNIC free-text prose — is trusted only
+/// for the UNAMBIGUOUS tokens: a common-word brand (`belong`/`dodo`/`tangerine`,
+/// real ISPs whose tokens are also ordinary words) matched in prose is almost
+/// always the word, not the operator ("…used to belong to X"). Structured wins;
+/// `descr` is the fallback. This is what [`crate::core`]'s `au_network_of` calls,
+/// splitting an entity's attributes into the two tiers. Pure; no I/O.
+#[must_use]
+pub fn au_network_operator_split(
+    structured: &str,
+    descr: &str,
+) -> Option<(&'static str, AuNetworkKind)> {
+    au_network_operator_in(structured, true).or_else(|| au_network_operator_in(descr, false))
+}
+
+/// Shared matcher: whole-word, case-insensitive scan of `haystack` for an AU
+/// operator brand. When `allow_ambiguous` is false, the common-word brand tokens
+/// (the `AU_NETWORK_OPERATORS` entries flagged ambiguous) are skipped, so they
+/// cannot match ordinary prose.
+fn au_network_operator_in(
+    haystack: &str,
+    allow_ambiguous: bool,
+) -> Option<(&'static str, AuNetworkKind)> {
     let hay = haystack.to_ascii_lowercase();
     AU_NETWORK_OPERATORS
         .iter()
-        .find(|(tok, _, _)| au_network_word_in(&hay, tok))
-        .map(|(_, canon, kind)| (*canon, *kind))
+        .filter(|(_, _, _, ambiguous)| allow_ambiguous || !*ambiguous)
+        .find(|(tok, _, _, _)| au_network_word_in(&hay, tok))
+        .map(|(_, canon, kind, _)| (*canon, *kind))
 }
 
 /// True when the four bytes `bytes[i..i + 4]` form a **standalone** Australian

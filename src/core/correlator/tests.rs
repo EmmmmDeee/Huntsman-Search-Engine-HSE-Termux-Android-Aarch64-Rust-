@@ -6182,6 +6182,33 @@ fn au097_ignores_foreign_and_non_network_entities() {
 }
 
 #[test]
+fn au097_does_not_attribute_belong_isp_from_descr_prose() {
+    // Regression (OD-13): `belong` is a real AU ISP AND a common verb. A RIPE
+    // `descr` naming the verb ("…used to belong to LegacyCorp") must NOT fabricate
+    // a Belong residency attribution; only a structured isp/org field naming the
+    // operator should.
+    let mut prose = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.8, "s");
+    prose.add_evidence(Evidence::new("ripestat", "asn").with_attr(
+        "descr",
+        "address space that used to belong to LegacyCorp Pty Ltd",
+    ));
+    assert!(
+        super::rules::rule_au_097_au_isp_network(&RuleContext::new(&[prose]), "s", 0).is_empty(),
+        "`belong` as a verb in descr prose must not attribute the Belong ISP"
+    );
+    // A genuine Belong customer IP (structured isp field) still fires.
+    let mut genuine = Entity::new(EntityKind::IpAddress, "1.2.3.5", 0.8, "s");
+    genuine.add_evidence(Evidence::new("ip_geo", "geo").with_attr("isp", "Belong"));
+    let r = super::rules::rule_au_097_au_isp_network(&RuleContext::new(&[genuine]), "s", 0);
+    assert_eq!(
+        r.len(),
+        1,
+        "a structured Belong isp field is a real attribution"
+    );
+    assert_eq!(r[0].rule_id, "AU-097");
+}
+
+#[test]
 fn au097_short_token_needs_word_boundary() {
     // "tpg" must not match inside a longer word (no false AU attribution).
     let mut ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.8, "s");
