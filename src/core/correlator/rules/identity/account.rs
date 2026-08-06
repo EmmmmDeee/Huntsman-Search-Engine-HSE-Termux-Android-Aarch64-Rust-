@@ -1462,6 +1462,24 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
         Some(tokens.join(" "))
     }
 
+    // The name's tokens in ORIGINAL order (unsorted). Two records that group on the
+    // same sorted canonical but differ here matched only by REORDERING.
+    fn ordered_tokens(s: &str) -> Vec<String> {
+        s.split(|c: char| c.is_whitespace() || c == ',' || c == '-' || c == '.')
+            .filter(|t| !t.is_empty())
+            .map(str::to_lowercase)
+            .filter(|t| t.len() >= 2)
+            .collect()
+    }
+    // A "bare transposition": the two names share a token multiset (they already
+    // grouped on the sorted canonical) but differ in order, and NEITHER declared
+    // surname-first with a comma. "Cameron Tyler" and "Tyler Cameron" are then two
+    // plausibly-DIFFERENT people, so the match is a Medium lead, not a High merge —
+    // whereas "Bamford, Haigen" (comma) vs "Haigen Bamford" is a confident match.
+    fn is_bare_transposition(a: &str, b: &str) -> bool {
+        ordered_tokens(a) != ordered_tokens(b) && !a.contains(',') && !b.contains(',')
+    }
+
     let persons: Vec<(String, &Entity)> = entities
         .iter()
         .filter(|e| e.kind == EntityKind::Person)
@@ -1598,11 +1616,22 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
                 .0
                 .split(' ')
                 .any(crate::util::surnames::is_common);
+            // A bare token transposition ("Cameron Tyler" vs "Tyler Cameron", no
+            // comma to declare surname-first) may be two DIFFERENT people, so it is
+            // a lead to VERIFY, not a confident merge — even for a distinctive name.
+            // An exact-order or comma-confirmed match stays High.
             let (severity, tail) = if common {
                 (
                     Severity::Medium,
                     "a COMMON name many unrelated people share — a lead to VERIFY, \
                      not a confirmed merge",
+                )
+            } else if is_bare_transposition(&e1.value, &e2.value) {
+                (
+                    Severity::Medium,
+                    "matched only by reordering the name tokens, with no 'Last, First' \
+                     comma to confirm the order — a possible transposition of two \
+                     different people; a lead to VERIFY, not a confirmed merge",
                 )
             } else {
                 (

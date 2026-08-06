@@ -9741,11 +9741,12 @@ fn au081_common_name_is_a_medium_lead_not_a_high_assert() {
         r[0].description
     );
 
-    // Control: a DISTINCTIVE full name (no common token) stays a High
-    // identity bridge — the discount must not blunt genuine matches.
+    // Control: a DISTINCTIVE full name (no common token) whose two records agree on
+    // order — here via an explicit "Last, First" comma — stays a High identity
+    // bridge; the common-surname discount must not blunt genuine matches.
     let mut breach_d = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
     breach_d.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
-    let mut social_d = Entity::new(EntityKind::Person, "Bamford Haigen", 0.75, "s");
+    let mut social_d = Entity::new(EntityKind::Person, "Bamford, Haigen", 0.75, "s");
     social_d.add_evidence(Evidence::new("proxycurl", "LinkedIn profile".to_string()));
     let rd =
         rule_au_081_canonical_person_name_match(&RuleContext::new(&[breach_d, social_d]), "s", 0);
@@ -9759,6 +9760,49 @@ fn au081_common_name_is_a_medium_lead_not_a_high_assert() {
         rd[0].description.contains("same individual"),
         "a distinctive-name match keeps the confident 'same individual' wording: {}",
         rd[0].description
+    );
+}
+
+#[test]
+fn au081_bare_transposition_is_a_medium_lead_not_a_high_merge() {
+    use super::rules::rule_au_081_canonical_person_name_match;
+    // "Haigen Bamford" and "Bamford Haigen" (distinctive tokens, neither a common
+    // surname) are two plausibly-DIFFERENT people. Matched only by reordering, with
+    // no "Last, First" comma to confirm which token is the surname, this is a Medium
+    // lead — NOT the High identity merge the sorted-canonical grouping alone asserts.
+    let mut breach = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
+    breach.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
+    let mut social = Entity::new(EntityKind::Person, "Bamford Haigen", 0.75, "s");
+    social.add_evidence(Evidence::new("proxycurl", "LinkedIn profile".to_string()));
+    let r = rule_au_081_canonical_person_name_match(&RuleContext::new(&[breach, social]), "s", 0);
+    assert!(
+        !r.is_empty(),
+        "AU-081 still surfaces the transposition as a lead"
+    );
+    assert_eq!(
+        r[0].severity,
+        super::Severity::Medium,
+        "a bare (comma-less) transposition of a distinctive name is a Medium lead"
+    );
+    assert!(
+        r[0].description.contains("VERIFY"),
+        "a transposition match must be phrased as a lead to verify: {}",
+        r[0].description
+    );
+
+    // Control: the same two tokens, but one record declares surname-first with a
+    // comma — the order is confirmed, so the distinctive-name match is High.
+    let mut breach_c = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
+    breach_c.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
+    let mut social_c = Entity::new(EntityKind::Person, "Bamford, Haigen", 0.75, "s");
+    social_c.add_evidence(Evidence::new("proxycurl", "LinkedIn profile".to_string()));
+    let rc =
+        rule_au_081_canonical_person_name_match(&RuleContext::new(&[breach_c, social_c]), "s", 0);
+    assert_eq!(rc.len(), 1);
+    assert_eq!(
+        rc[0].severity,
+        super::Severity::High,
+        "a comma-confirmed 'Last, First' order makes the distinctive-name match High"
     );
 }
 
@@ -9800,7 +9844,9 @@ fn au081_still_fires_when_a_genuine_second_source_is_also_name_enriched() {
     let mut e1 = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
     e1.add_evidence(Evidence::new("github_user", "GitHub profile".to_string()));
     e1.add_evidence(Evidence::new("name_intel", "Derived from name".to_string()));
-    let mut e2 = Entity::new(EntityKind::Person, "Bamford Haigen", 0.75, "s");
+    // "Last, First" comma form so the match is order-confirmed (High), isolating
+    // this test to the independence gate rather than the transposition discount.
+    let mut e2 = Entity::new(EntityKind::Person, "Bamford, Haigen", 0.75, "s");
     e2.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
     let r = rule_au_081_canonical_person_name_match(&RuleContext::new(&[e1, e2]), "s", 0);
     assert!(
