@@ -20,7 +20,7 @@
 //! general search is no more aggressive on a Termux link than a normal scan.
 
 use super::engines::{ENGINES, EngineSpec, reliable_engines};
-use super::helpers::{canonicalize_url, dedup_results, url_engine_counts};
+use super::helpers::{canonicalize_url, dedup_results, display_key_phrase, url_engine_counts};
 use super::{
     SearchResult, engine_enabled, order_engines_for_primary, proven_engine_names, record_empty,
     record_hit, run_engine_batch, session_dead,
@@ -42,6 +42,10 @@ pub(crate) struct WebResult {
     /// Number of DISTINCT engines that returned this (canonical) URL — the
     /// primary cross-engine corroboration signal used to rank results.
     pub engine_count: u32,
+    /// The query-matching phrase worth quoting for this result — mined from the
+    /// snippet (else the title) by [`display_key_phrase`]. Empty when nothing in
+    /// the row overlaps the query. The `hse query` renderer prints it in quotes.
+    pub key_phrase: String,
 }
 
 /// Run `query` as a plain web search across every enabled, live engine and
@@ -142,6 +146,7 @@ fn rank_results(per_engine: Vec<Vec<SearchResult>>) -> Vec<WebResult> {
             let key = canonicalize_url(&r.url);
             let engine_count = counts.get(&key).copied().unwrap_or(1);
             let pos = best_pos.get(&key).copied().unwrap_or(usize::MAX);
+            let key_phrase = display_key_phrase(&r.title, &r.snippet, &r.query);
             (
                 engine_count,
                 pos,
@@ -151,6 +156,7 @@ fn rank_results(per_engine: Vec<Vec<SearchResult>>) -> Vec<WebResult> {
                     title: r.title,
                     snippet: r.snippet,
                     engine_count,
+                    key_phrase,
                 },
             )
         })
@@ -194,6 +200,63 @@ mod tests {
         assert_eq!(ranked[0].engine_count, 2);
         assert_eq!(ranked[1].url, "https://ex.com/b");
         assert_eq!(ranked[1].engine_count, 1);
+    }
+
+    #[test]
+    fn web_result_carries_the_query_matching_key_phrase() {
+        // The snippet's query-overlapping clause becomes the displayed key phrase.
+        let row = SearchResult {
+            url: "https://ex.com/a".to_string(),
+            title: "Kylo Ren — Wikipedia".to_string(),
+            snippet: "Unrelated lead-in. Kylo Ren is a fictional character in Star Wars."
+                .to_string(),
+            engine: "duckduckgo",
+            query: "kylo ren".to_string(),
+        };
+        let ranked = rank_results(vec![vec![row]]);
+        assert_eq!(ranked.len(), 1);
+        assert!(
+            ranked[0]
+                .key_phrase
+                .contains("Kylo Ren is a fictional character"),
+            "key_phrase should be the snippet's query-matching clause, got: {:?}",
+            ranked[0].key_phrase
+        );
+    }
+
+    #[test]
+    fn web_result_key_phrase_falls_back_to_title_then_empty() {
+        // No snippet → fall back to the title's matching fragment.
+        let title_only = SearchResult {
+            url: "https://ex.com/b".to_string(),
+            title: "Kylo Ren character profile".to_string(),
+            snippet: String::new(),
+            engine: "duckduckgo",
+            query: "kylo ren".to_string(),
+        };
+        // Nothing overlaps the query anywhere → empty (nothing to quote).
+        let no_match = SearchResult {
+            url: "https://ex.com/c".to_string(),
+            title: "Homepage".to_string(),
+            snippet: "Totally unrelated content about gardening.".to_string(),
+            engine: "duckduckgo",
+            query: "kylo ren".to_string(),
+        };
+        let ranked = rank_results(vec![vec![title_only, no_match]]);
+        let by_url = |u: &str| ranked.iter().find(|r| r.url == u).unwrap();
+        assert!(
+            by_url("https://ex.com/b")
+                .key_phrase
+                .to_lowercase()
+                .contains("kylo ren"),
+            "title fallback should quote the title's matching fragment: {:?}",
+            by_url("https://ex.com/b").key_phrase
+        );
+        assert_eq!(
+            by_url("https://ex.com/c").key_phrase,
+            "",
+            "no query overlap anywhere → nothing to quote"
+        );
     }
 
     #[test]
