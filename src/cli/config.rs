@@ -75,3 +75,40 @@ pub fn cmd_config(key: Option<String>, value: Option<String>) -> Result<()> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{mark, parse_on_off};
+
+    #[test]
+    fn parses_every_truthy_alias_case_insensitively() {
+        for v in [
+            "on", "ON", "true", "True", "1", "yes", "YES", "enable", "enabled",
+        ] {
+            assert_eq!(parse_on_off(v), Some(true), "{v:?} should parse as on");
+        }
+    }
+
+    #[test]
+    fn parses_every_falsey_alias_case_insensitively() {
+        for v in [
+            "off", "OFF", "false", "0", "no", "NO", "disable", "disabled",
+        ] {
+            assert_eq!(parse_on_off(v), Some(false), "{v:?} should parse as off");
+        }
+    }
+
+    #[test]
+    fn rejects_unrecognised_values() {
+        for v in ["", "maybe", "2", "onn", "of", "toggle"] {
+            assert_eq!(parse_on_off(v), None, "{v:?} must not parse");
+        }
+    }
+
+    #[test]
+    fn mark_reflects_state() {
+        assert!(mark(true).contains("on"));
+        assert!(mark(false).contains("off"));
+        assert_ne!(mark(true), mark(false));
+    }
+}

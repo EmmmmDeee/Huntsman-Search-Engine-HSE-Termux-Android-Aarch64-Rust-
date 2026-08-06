@@ -13,8 +13,9 @@ use std::sync::Arc;
 
 use crate::core::error::Result;
 use crate::core::{
+    event::EventBus,
     module::ModuleContext,
-    scan::{Scan, ScanOptions, Target},
+    scan::{Scan, ScanOptions, Target, TargetKind},
 };
 use crate::util::{http::build_client, keys, uid::scan_id};
 
@@ -69,15 +70,7 @@ pub(super) async fn cmd_radar(
         };
         let sweep_scan =
             Scan::new(sweep_sid.clone(), sweep_target.clone()).with_options(sweep_opts);
-        let sweep_keys = keys::load();
-        let sweep_ctx = ModuleContext {
-            scan_id: sweep_sid.clone(),
-            bus: bus.clone(),
-            http: build_client(),
-            keys: sweep_keys,
-            cancel: crate::core::cancel::CancelHandle::new(),
-            proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
-        };
+        let sweep_ctx = radar_context(sweep_sid.clone(), &bus);
 
         let sweep_result = engine.run(sweep_scan, sweep_target, sweep_ctx).await?;
         let sweep_entities = store.entities_for_scan(&sweep_sid)?;
@@ -116,23 +109,10 @@ pub(super) async fn cmd_radar(
             for (tk, value) in &new_targets {
                 let pivot_sid = scan_id(tk.canonical_str(), value);
                 let pivot_target = Target::new(*tk, value.clone());
-                // Exclude oathnet_pro from radar pivots on infra/sensor entities
-                // (IPs, domains, coords, MACs, ASNs). Sensor-discovered entities
-                // rarely yield OathNet breach results and the quota is better
-                // spent on identity-type entities discovered through other paths.
-                let is_infra = matches!(
-                    tk,
-                    crate::core::scan::TargetKind::IpAddress
-                        | crate::core::scan::TargetKind::Domain
-                        | crate::core::scan::TargetKind::Coordinates
-                        | crate::core::scan::TargetKind::MacAddress
-                        | crate::core::scan::TargetKind::Asn
-                );
-                let mut exclude = Vec::new();
-                if is_infra {
-                    exclude.push("oathnet_pro".to_string());
-                    exclude.push("see_know".to_string());
-                }
+                // Sensor-discovered infrastructure entities rarely yield breach/
+                // identity results, so preserve the paid OathNet + SeeKnow quota
+                // for identity-type entities discovered through other paths.
+                let exclude = pivot_excludes(*tk);
                 let pivot_opts = ScanOptions {
                     depth,
                     free_only,
@@ -143,15 +123,7 @@ pub(super) async fn cmd_radar(
                 };
                 let pivot_scan =
                     Scan::new(pivot_sid.clone(), pivot_target.clone()).with_options(pivot_opts);
-                let pivot_keys = keys::load();
-                let pivot_ctx = ModuleContext {
-                    scan_id: pivot_sid.clone(),
-                    bus: bus.clone(),
-                    http: build_client(),
-                    keys: pivot_keys,
-                    cancel: crate::core::cancel::CancelHandle::new(),
-                    proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
-                };
+                let pivot_ctx = radar_context(pivot_sid.clone(), &bus);
 
                 let result = engine.run(pivot_scan, pivot_target, pivot_ctx).await?;
                 let pivot_entities = store.entities_for_scan(&pivot_sid)?;
@@ -207,4 +179,78 @@ pub(super) async fn cmd_radar(
         seen_entities.len()
     );
     Ok(())
+}
+
+/// Build a fresh [`ModuleContext`] for one radar scan (sweep or pivot). Every
+/// radar scan shares the same event bus but takes its own scan id, a freshly
+/// loaded key set, a new HTTP client, an independent cancel handle, and a fresh
+/// proxy pool — single-sourced here so the sweep and pivot paths cannot drift.
+fn radar_context(scan_id: String, bus: &EventBus) -> ModuleContext {
+    ModuleContext {
+        scan_id,
+        bus: bus.clone(),
+        http: build_client(),
+        keys: keys::load(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+        proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
+    }
+}
+
+/// Modules to exclude when pivoting on a radar-discovered entity of kind `tk`.
+///
+/// Sensor sweeps surface infrastructure entities (IP / domain / coordinates /
+/// MAC / ASN); those rarely yield breach or identity results, so the paid
+/// OathNet + SeeKnow quota is preserved for identity-type entities discovered
+/// through other paths. Identity and other kinds exclude nothing.
+fn pivot_excludes(tk: TargetKind) -> Vec<String> {
+    let is_infra = matches!(
+        tk,
+        TargetKind::IpAddress
+            | TargetKind::Domain
+            | TargetKind::Coordinates
+            | TargetKind::MacAddress
+            | TargetKind::Asn
+    );
+    if is_infra {
+        vec!["oathnet_pro".to_string(), "see_know".to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn infra_pivots_preserve_paid_quota() {
+        for tk in [
+            TargetKind::IpAddress,
+            TargetKind::Domain,
+            TargetKind::Coordinates,
+            TargetKind::MacAddress,
+            TargetKind::Asn,
+        ] {
+            assert_eq!(
+                pivot_excludes(tk),
+                vec!["oathnet_pro".to_string(), "see_know".to_string()],
+                "infra kind {tk:?} must exclude the paid breach/identity modules"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_pivots_exclude_nothing() {
+        for tk in [
+            TargetKind::Email,
+            TargetKind::Username,
+            TargetKind::Phone,
+            TargetKind::FullName,
+        ] {
+            assert!(
+                pivot_excludes(tk).is_empty(),
+                "identity kind {tk:?} must run the full pipeline"
+            );
+        }
+    }
 }
