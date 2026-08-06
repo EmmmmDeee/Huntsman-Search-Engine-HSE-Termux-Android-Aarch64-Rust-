@@ -112,6 +112,13 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(300)).await;
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(tidy_secs));
+            // Skip missed ticks rather than firing them back-to-back: if a pass
+            // (or a stalled runtime) overruns the interval, `Burst` — tokio's
+            // default — would run several housekeeping passes with no gap to
+            // "catch up", exactly the wrong behaviour for expensive filesystem +
+            // SQLite work. `Skip` keeps the original cadence and drops the
+            // backlog.
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tick.tick().await;
                 match tokio::task::spawn_blocking(|| crate::app::tidy::run(false)).await {
@@ -124,6 +131,13 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
                         "housekeeping pass complete"
                     ),
                     Ok(Err(e)) => tracing::warn!(error = %e, "housekeeping pass failed"),
+                    // A `JoinError` is a panic OR a cancellation (the runtime
+                    // shutting down aborts this task). Only the former is a fault
+                    // worth a warning; reporting a normal-shutdown cancel as a
+                    // "panic" is a false alarm in the logs.
+                    Err(e) if e.is_cancelled() => {
+                        tracing::debug!("housekeeping task cancelled (runtime shutting down)");
+                    }
                     Err(e) => tracing::warn!(error = %e, "housekeeping task panicked"),
                 }
             }

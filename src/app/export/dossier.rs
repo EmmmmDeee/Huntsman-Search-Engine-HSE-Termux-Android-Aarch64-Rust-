@@ -19,9 +19,23 @@ pub(super) fn join_or_dash<'a>(it: impl Iterator<Item = &'a String>) -> String {
     }
 }
 
-/// Default directory for auto-saved full dossiers: `$HOME/.huntsman/dossiers`.
+/// Subdirectory name for auto-saved full dossiers under `~/.huntsman`. Single
+/// source so the creating ([`dossier_dir`]) and pure ([`dossier_dir_path`])
+/// accessors can never disagree on the location.
+const DOSSIER_SUBDIR: &str = "dossiers";
+
+/// Default directory for auto-saved full dossiers (`$HOME/.huntsman/dossiers`),
+/// created `0700` on access. Use this for any path that will be written.
 pub(crate) fn dossier_dir() -> std::path::PathBuf {
-    crate::util::paths::subdir("dossiers")
+    crate::util::paths::subdir(DOSSIER_SUBDIR)
+}
+
+/// The dossier directory path **without** creating it — for a read-only /
+/// measurement caller (`hse tidy --dry-run`) whose contract is that nothing on
+/// disk changes. [`dossier_dir`] would create and re-tighten the tree as a side
+/// effect, so a dry run must use this instead.
+pub(crate) fn dossier_dir_path() -> std::path::PathBuf {
+    crate::util::paths::subdir_path(DOSSIER_SUBDIR)
 }
 
 /// Render and persist the full dossier for `sid` to
