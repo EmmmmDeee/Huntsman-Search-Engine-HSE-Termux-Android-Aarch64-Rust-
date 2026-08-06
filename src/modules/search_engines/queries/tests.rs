@@ -26,6 +26,45 @@ use super::*;
     }
 
     #[test]
+    fn base_handle_recovery_strips_trailing_digits() {
+        // A numbered handle must yield the bare base handle — the highest-yield
+        // cross-platform pivot, and the inverse of the digit-append variants.
+        let v = generate_username_variants("jsmith88");
+        assert!(
+            v.contains(&"jsmith".to_string()),
+            "base handle `jsmith` must be recovered from `jsmith88`: {v:?}"
+        );
+        // A dangling separator before the digits is stripped too.
+        let v = generate_username_variants("agent_007");
+        assert!(
+            v.contains(&"agent".to_string()),
+            "separator before the digit run must be stripped: {v:?}"
+        );
+    }
+
+    #[test]
+    fn base_handle_recovery_rejects_too_short_stubs_and_pure_numbers() {
+        // `x99` → base `x` is a 1-char stub — too weak to search, must be dropped.
+        let v = generate_username_variants("x99");
+        assert!(!v.contains(&"x".to_string()), "1-char stub must be rejected: {v:?}");
+        // A pure-numeric seed has no alphabetic base to recover.
+        let v = generate_username_variants("007");
+        assert!(v.iter().all(|s| !s.is_empty()), "no empty base emitted: {v:?}");
+    }
+
+    #[test]
+    fn non_digit_terminated_handle_yields_no_base_recovery() {
+        // A handle that does not end in a digit has no numbered suffix to strip;
+        // the digit-append + truncation variants still apply, but no bare-base
+        // recovery fires (nothing to recover).
+        let v = generate_username_variants("jsmith");
+        // Adds digits and truncation, but `jsmith` itself is never a "recovered
+        // base" of itself (guarded by `base_handle != lower`).
+        assert!(v.contains(&"jsmith1".to_string()));
+        assert!(v.iter().all(|s| s != "jsmith"), "seed must not appear as its own variant: {v:?}");
+    }
+
+    #[test]
     fn multibyte_handle_truncates_by_char_without_panicking() {
         // Regression: a handle ending in a multi-byte codepoint must not panic
         // on the truncation slice, and must drop a whole char.

@@ -691,8 +691,10 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
 
 /// Generate common username variants from a base handle. OSINT best
 /// practice: people reuse patterns like underscore/dot swaps, trailing
-/// digits, first-initial+lastname. This dramatically increases cross-
-/// platform discovery.
+/// digits added OR stripped (base-handle recovery), and truncations. This
+/// dramatically increases cross-platform discovery — a numbered handle on one
+/// platform (`jsmith88`) and the bare handle on another (`jsmith`) are the same
+/// person, and this yields both directions.
 pub(super) fn generate_username_variants(base: &str) -> Vec<String> {
     let lower = base.to_lowercase();
     let mut variants = Vec::with_capacity(8);
@@ -717,6 +719,25 @@ pub(super) fn generate_username_variants(base: &str) -> Vec<String> {
     if !lower.ends_with(|c: char| c.is_ascii_digit()) && lower.len() >= 4 {
         variants.push(format!("{lower}1"));
         variants.push(format!("{lower}2"));
+    }
+
+    // Base-handle recovery — the inverse of the block above, and previously
+    // missing entirely. Strip a trailing run of digits (and any separator left
+    // dangling before them) to recover the un-numbered base handle:
+    // `jsmith88` → `jsmith`, `agent_007` → `agent`. People routinely register the
+    // bare handle on one platform and a numbered variant on another, so the base
+    // is one of the highest-yield cross-platform username pivots — yet the seed
+    // `jsmith88` previously yielded only the truncation `jsmith8`, never the
+    // identity `jsmith`. Only emitted when the seed actually ends in a digit and
+    // the recovered base is a real, distinct, ≥3-char handle, so a numeric stub
+    // like `x99` → `x` is rejected rather than searched.
+    if lower.ends_with(|c: char| c.is_ascii_digit()) {
+        let base_handle = lower
+            .trim_end_matches(|c: char| c.is_ascii_digit())
+            .trim_end_matches(['_', '-', '.']);
+        if base_handle.len() >= 3 && base_handle != lower {
+            variants.push(base_handle.to_string());
+        }
     }
 
     // Truncation: jdespal → jdespa (off-by-one typos / platform limits). Drop
