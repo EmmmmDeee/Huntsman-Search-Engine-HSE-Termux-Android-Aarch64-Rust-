@@ -24,11 +24,13 @@
 //!     transitive. A component that one secret spans end-to-end is exactly an
 //!     AU-047 finding and is left to AU-047.
 //!
-//! Severity: **Critical** when any binding secret is unique by construction (a
-//! salted hash, session token, wallet address, or API key — no coincidence
-//! possible); **High** when the whole chain is bound only by reused plaintext
-//! passwords (individually strong, but a shared password carries a residual
-//! coincidence risk, mirroring AU-047's plaintext tier).
+//! Severity: **Critical** only when **every** binding secret is unique by
+//! construction (a salted hash, session token, wallet address, or API key — no
+//! coincidence possible). A single reused **plaintext** password edge anywhere in
+//! the chain caps the whole component at **High**: a shared plaintext carries a
+//! residual coincidence risk (two strangers can pick the same password), and a
+//! transitive blast-radius claim is only as certain as its weakest link (mirrors
+//! AU-047's plaintext tier).
 
 use super::*;
 
@@ -157,7 +159,8 @@ pub(in crate::core::correlator) fn rule_au_121_credential_reuse_blast_radius(
             secret_uids: BTreeSet::new(),
             raw: BTreeSet::new(),
             max_single_span: 0,
-            critical: false,
+            // Weakest-link: start Critical, cleared by any reused-plaintext edge.
+            critical: true,
         });
         for h in &g.handles {
             comp.handles.insert(h.clone());
@@ -167,9 +170,13 @@ pub(in crate::core::correlator) fn rule_au_121_credential_reuse_blast_radius(
         }
         comp.secret_uids.insert(g.uid.to_owned());
         comp.max_single_span = comp.max_single_span.max(g.handles.len());
-        // Any construction-unique secret makes the whole chain certain.
-        if !matches!(g.kind, Secret::PlaintextPassword) {
-            comp.critical = true;
+        // Weakest-link severity: a transitive blast-radius claim is only as
+        // certain as its least-unique binding secret. A single reused-plaintext
+        // edge (which two strangers could coincidentally share) caps the whole
+        // component at High; Critical requires EVERY secret to be construction-
+        // unique (salted hash / token / wallet / API key).
+        if matches!(g.kind, Secret::PlaintextPassword) {
+            comp.critical = false;
         }
     }
 
@@ -396,5 +403,30 @@ mod tests {
         let out = rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a, b]), "s", 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn au114_mixed_hash_and_plaintext_chain_is_high_not_critical() {
+        // Weakest-link: a component bound by a salted hash (alice–bob) AND a reused
+        // plaintext password (bob–carol) is only as certain as its plaintext edge,
+        // which two strangers could coincidentally share → High, not Critical.
+        // Under the old OR rule the hash alone forced the whole chain to Critical.
+        let a = secret_with(
+            EntityKind::Password,
+            HASH_A,
+            &[("username", "alice"), ("username", "bob")],
+        );
+        let b = secret_with(
+            EntityKind::Password,
+            "c0rrect-h0rse-b4ttery-st4ple-9",
+            &[("username", "bob"), ("username", "carol")],
+        );
+        let out = rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a, b]), "s", 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].severity,
+            Severity::High,
+            "a reused-plaintext edge caps the whole chain at High (weakest-link)"
+        );
     }
 }
