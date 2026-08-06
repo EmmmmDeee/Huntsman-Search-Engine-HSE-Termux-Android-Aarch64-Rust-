@@ -754,10 +754,11 @@ fn footprint_states(entities: &[Entity]) -> BTreeMap<&'static str, BTreeSet<Stri
     for e in entities {
         if let Some(state) = super::geo::coord_state(e) {
             states.entry(state).or_default().insert(e.uid.clone());
-        } else if e.kind == EntityKind::Address
-            && e.confidence >= 0.50
-            && let Some(state) = crate::util::address_au::state_code(&e.value)
-        {
+        } else if let Some(state) = super::geo::address_state(e) {
+            // `address_state` applies the SAME infrastructure guard as
+            // `coord_state` above — a registrant/hosting address must not vote
+            // the subject's footprint (it once let a domain's registrar
+            // manufacture a false jurisdiction conflict).
             states.entry(state).or_default().insert(e.uid.clone());
         }
     }
@@ -1072,10 +1073,10 @@ pub(in crate::core::correlator) fn rule_au_098_residency_consensus(
     for e in entities {
         if let Some(state) = super::geo::coord_state(e) {
             coord.entry(state).or_default().insert(e.uid.clone());
-        } else if e.kind == EntityKind::Address
-            && e.confidence >= 0.50
-            && let Some(state) = crate::util::address_au::state_code(&e.value)
-        {
+        } else if let Some(state) = super::geo::address_state(e) {
+            // Same infrastructure guard as the coordinate class — a
+            // registrant/hosting address is not a subject residency signal, so
+            // it must not manufacture a false residency-consensus class.
             addr.entry(state).or_default().insert(e.uid.clone());
         } else if e.kind == EntityKind::Phone
             && let Some((_, _, states)) = crate::util::address_au::au_phone_region(&e.value)
@@ -1231,7 +1232,13 @@ pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
             EntityKind::Email => "email",
             EntityKind::Phone => "phone",
             EntityKind::Username => "username",
-            EntityKind::Address if e.confidence >= 0.50 => "physical address",
+            // Exclude an infrastructure address (registrant/hosting) — it is not
+            // the subject's physical address, so it must not inflate the
+            // identity-resolution breadth `n` toward the Medium/High thresholds.
+            // Same guard AU-092/AU-098's address class applies via `address_state`.
+            EntityKind::Address if e.confidence >= 0.50 && !is_infrastructure_geo(e) => {
+                "physical address"
+            }
             EntityKind::AbnAcn => "business identifier",
             _ => continue,
         };
