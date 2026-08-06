@@ -19,11 +19,19 @@ pub(in crate::core::correlator) fn rule_au_004_malicious_infrastructure(
         })
         // A GreyNoise RIOT/benign verdict vetoes a `malicious` tag picked up on
         // the same (shared-edge) IP from a weaker source. Require at least two
-        // independent corroborating sources — a single-source `malicious` tag is
+        // independent THREAT sources to agree — a single-source `malicious` tag is
         // insufficient evidence for CRITICAL severity (shared infra like CDN/ESP
         // nodes routinely appear in one blocklist without being subject-owned).
+        // Counts `threat_source_count`, NOT `Entity::source_count`: the latter
+        // counts every corroborating source, so a lone blocklist hit plus routine
+        // geolocation enrichment (`ip_geo`/`ipinfo`, which are not in
+        // `ENRICHMENT_ONLY_SOURCES` and so DO count toward `source_count`) cleared
+        // the bar and fired CRITICAL — geolocation is not a second opinion on
+        // maliciousness.
         .filter(|e| {
-            e.has_tag(crate::core::tags::MALICIOUS) && !is_benign_infra(e) && e.source_count() >= 2
+            e.has_tag(crate::core::tags::MALICIOUS)
+                && !is_benign_infra(e)
+                && threat_source_count(e) >= 2
         })
         .map(|e| Correlation {
             rule_id: "AU-004".into(),
@@ -243,7 +251,6 @@ pub(in crate::core::correlator) fn rule_au_015_threat_intel_hit(
     ts: u64,
 ) -> Vec<Correlation> {
     let entities = context.entities();
-    const TI_SOURCES: &[&str] = &["ip_reputation", "threatfox"];
 
     entities
         .iter()
@@ -251,11 +258,13 @@ pub(in crate::core::correlator) fn rule_au_015_threat_intel_hit(
         // shared-edge false positive — exonerate it.
         .filter(|e| e.has_tag(crate::core::tags::THREAT_INTEL) && !is_benign_infra(e))
         .map(|e| {
+            // Attribution names only the threat sources actually on the entity —
+            // the same canonical set AU-004 counts, so the two rules can't drift.
             let sources: std::collections::BTreeSet<&str> = e
                 .evidence
                 .iter()
                 .map(|ev| ev.source.as_str())
-                .filter(|s| TI_SOURCES.contains(s))
+                .filter(|s| THREAT_INTEL_SOURCES.contains(s))
                 .collect();
             let attribution = if sources.is_empty() {
                 "a curated threat-intel feed".to_string()

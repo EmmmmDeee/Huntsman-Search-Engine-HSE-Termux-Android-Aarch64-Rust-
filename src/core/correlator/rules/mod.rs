@@ -45,6 +45,41 @@ fn is_benign_infra(e: &Entity) -> bool {
     BENIGN_INFRA_TAGS.iter().any(|t| e.has_tag(t))
 }
 
+/// Evidence-source names of the modules that can assert a *threat verdict* — the
+/// ones that call `entity.tag(tags::MALICIOUS)` (`abuseipdb`, `chain_intel`,
+/// `greynoise`, `onyphe`, `threatfox`, `urlhaus`, `virustotal`) plus the
+/// `ip_reputation` aggregate feed. A correlation that ESCALATES on independent
+/// agreement — AU-004's CRITICAL "≥2 sources agree it's malicious" — must count
+/// only these, and AU-015 names only these as the finding's attribution. A
+/// geolocation/enrichment record (`ip_geo`, `ipinfo`, …) riding along on the same
+/// entity is not a second opinion on maliciousness, so it must not corroborate a
+/// threat verdict. Keep in sync with the `entity.tag(MALICIOUS)` call sites.
+const THREAT_INTEL_SOURCES: &[&str] = &[
+    "abuseipdb",
+    "chain_intel",
+    "greynoise",
+    "ip_reputation",
+    "onyphe",
+    "threatfox",
+    "urlhaus",
+    "virustotal",
+];
+
+/// Count of DISTINCT threat-intel sources on `e` — the sources that could have
+/// asserted its bad verdict (see [`THREAT_INTEL_SOURCES`]). This is the honest
+/// corroboration measure for a *threat* escalation, unlike [`Entity::source_count`]
+/// which counts every corroborating source (geolocation/DNS enrichment included)
+/// and so treats a lone blocklist hit plus routine enrichment as two agreeing
+/// opinions on maliciousness.
+fn threat_source_count(e: &Entity) -> usize {
+    e.evidence
+        .iter()
+        .map(|ev| ev.source.as_str())
+        .filter(|s| THREAT_INTEL_SOURCES.contains(s))
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
 /// True if `text` mentions `ip` as a whole address, not as a substring of a
 /// longer one. A bare `contains` is wrong: `"11.2.3.45".contains("1.2.3.4")`
 /// is `true`, so an unrelated IP in an evidence summary would falsely chain. We

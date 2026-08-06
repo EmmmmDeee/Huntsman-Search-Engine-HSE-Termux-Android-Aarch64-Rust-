@@ -911,6 +911,32 @@ fn au004_no_fire_without_tag() {
     assert!(rule_au_004_malicious_infrastructure(&RuleContext::new(&[e]), "s", 0).is_empty());
 }
 
+#[test]
+fn au004_no_fire_on_single_threat_source_plus_enrichment() {
+    // Regression: the ≥2 bar must count THREAT sources, not every corroborating
+    // source. `ip_geo` is geolocation enrichment — it is NOT in
+    // ENRICHMENT_ONLY_SOURCES, so it counts toward `Entity::source_count`, yet it
+    // asserts nothing about maliciousness. One blocklist hit (`ip_reputation`)
+    // plus a routine `ip_geo` record previously reached source_count == 2 and
+    // fired a CRITICAL "malicious" finding on a shared-edge IP. Only one threat
+    // source actually flagged it, so AU-004 must stay silent (AU-015 still
+    // reports the single-source hit at its own severity).
+    let mut e = tagged(
+        EntityKind::IpAddress,
+        "45.79.10.20",
+        &[crate::core::tags::MALICIOUS],
+    );
+    e.add_evidence(Evidence::new(
+        "ip_reputation",
+        "flagged malicious".to_string(),
+    ));
+    e.add_evidence(Evidence::new("ip_geo", "Sydney, AU".to_string()));
+    assert!(
+        rule_au_004_malicious_infrastructure(&RuleContext::new(&[e]), "s", 0).is_empty(),
+        "one threat source + geolocation enrichment is not two agreeing threat verdicts"
+    );
+}
+
 // ── AU-005 ──────────────────────────────────────────────────────────
 
 #[test]
