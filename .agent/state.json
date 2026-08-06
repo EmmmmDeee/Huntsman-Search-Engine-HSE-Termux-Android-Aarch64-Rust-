@@ -8,8 +8,8 @@
     "non-defects. See CLAUDE.md and docs/OPERATIONAL_CONSTITUTION.md.",
     "cycle 9 sweep (wf_e136c553): 5 dims x adversarial verify. REFUTED as not-a-defect (do not re-open): AbortOnDrop doc claim (engine/mod.rs:158 — the doc is actually true); enrich_geospatial catch_unwind is not over-guarding worth removing; diagnostics ModuleLedger HashMap->BTreeMap (failure scenario unachievable); /scans/{id}/stealer-rows 'unbounded' (deliberate, documented, tested design); scan-log DOM O(n) (already capped at LOG_MAX_ROWS=1200, committed design). DEFERRED confirmed findings for a future cycle (recorded, not lost): F2 latest_completed_scan skips Aborted scans (storage/mod.rs:513 — `hse export/diff latest` jumps past an aborted scan); F3 live/radar session cancel handle shared with per-iteration wall-time watchdog (core/live/mod.rs:433); F4 scans.js dashboard has no `aborted` bucket + computes an unrendered `failed` count; F18 SPA discards /entities pagination envelope so Browse understates a truncated large scan (index.js:44); F20 dossier upload reads whole file to a JS string with no client-side size check (new_scan.js:445); F22 Scan-Log SSE never resolves the pill to 'complete' when the tailed scan finishes (log.js:89). These are the top of cycle-10's pool; F2 pairs naturally with cycle-9 slot 1 (both terminal-state correctness)."
   ],
-  "cycle_count": 30,
-  "last_verified_commit": "5a12b7f8c",
+  "cycle_count": 31,
+  "last_verified_commit": "0f33bf491",
   "verified_against": {
     "note": "This crate declares NO [features]; `--all-features` is a no-op here (main's #379 correction, preserved across the merge). The authoritative gate is scripts/gate.sh, which spans several workflow files and includes the rustdoc-lint and MSRV passes that reconstructing from ci.yml alone drops.",
     "toolchain": "1.97.1 (rust-toolchain.toml)",
@@ -251,7 +251,7 @@
       "loc": "src/core/correlator/rules/assoc.rs:344 + normalise_phone/entity_phones/Group",
       "severity": "High (rarer than OD-8's neg half)",
       "source": "cycle 28 split from OD-8",
-      "status": "OPEN — deferred, needs AU-050 grouping refactor",
+      "status": "CLOSED cycle 31 (commit 0f33bf491) — AU-050 veto also classifies the '61'-stripped key, catching +61-international-form business lines; personal +61 lines still group; regression added; gate green.",
       "summary": "AU-050 business-service veto calls au_phone_line_type on the +-stripped normalise_phone digits key. An AU freephone/premium in +61 INTERNATIONAL form (+61 1800 xxx xxx -> key 611800xxxxxx) is NOT recognised by au_phone_line_type (it strips '61' only when the value still contains '+', which the key lost) -> classifier returns None -> veto skipped -> AU-050 fires a false High associate cluster on a shared 1800/190x business desk. Rarer than the false-negative (1800 numbers are seldom stored in +61 form) but real in messy breach data.",
       "fix_direction": "Classify the ORIGINAL +-bearing phone value for the veto, not the digits key: thread a representative original phone string through entity_phones -> Group -> the veto (or canonicalise +61/0061 to AU national form in a shared normaliser). Also make au_phone_line_type return None for a '+' followed by a non-61 country code (a foreign E.164 number is definitionally non-AU), generalising the existing '+1 555…'->None doctest. Verify against both callers (AU-050, geo::jurisdiction:304) + doctest."
     },
@@ -264,6 +264,16 @@
       "status": "CANDIDATE — observed in doctor output, NOT yet verified against the code",
       "summary": "`hse doctor` prints SeekNow `api base: https://see-know.ru/api/v1` but the budget WARN one line below reads 'SeekNow (see-know.eu) lookups disabled…' (target huntsman_search_engine::util::see_know::budget line ~203). The .eu vs .ru mismatch looks like a stale domain literal in the WARN string — misleads an operator about which service failed.",
       "fix_direction": "Grep util/see_know for 'see-know.eu' / 'see-know.ru'; if .eu is a stale literal in the WARN message, correct it to the canonical see-know.ru (matching the api base + docs/SEEKNOW_SETUP.md). Verify it isn't an intentional dual-domain alias first (separate observation from inference)."
+    },
+    {
+      "id": "OD-16",
+      "rule": "au_phone_line_type -> AU-098/geo::jurisdiction",
+      "loc": "src/util/address_au/mod.rs:~487 (au_phone_line_type)",
+      "severity": "Low (Correctness edge, low frequency)",
+      "source": "cycle 31 — identified during OD-14 analysis",
+      "status": "OPEN — clean small fix, queued",
+      "summary": "au_phone_line_type, given a value with a '+' whose country code is NOT 61/0061, falls through to classify by the leading national digit instead of returning None: '+44 1800 123 456' -> nat '441800123456' -> first char '4' -> AU Mobile. Its caller geo/jurisdiction.rs:304 passes e.value (with '+'), so a foreign phone can mis-signal AU jurisdiction. (AU-050 is unaffected — it passes +-stripped keys, plus=false.) The existing doctest already asserts '+1 555 123 4567' -> None, but only because 155x matches no prefix and '1' isn't a valid first digit; other country codes with a valid-looking first digit slip through.",
+      "fix_direction": "In au_phone_line_type, when `plus` is true and neither the '0061' nor the (plus-gated) '61' country code was stripped, return None (a '+' explicitly marks the country code; not 61 => not AU). Verify the +61/0061 paths + both callers (assoc.rs:344 passes stripped keys so unaffected; geo/jurisdiction.rs:304) + the doctest + cycle-28 NANP tests still pass."
     }
   ],
   "cycle_2_slots": [
@@ -804,5 +814,15 @@
       "summary": "au_network_of flattened an IP/ASN's operator fields (incl. RIPE free-text descr) into one haystack and whole-word-matched AU_NETWORK_OPERATORS. 'belong'/'dodo'/'tangerine' are real AU ISPs whose tokens are also ordinary words; a descr like 'address space that used to belong to X' matched 'belong' -> fabricated a Belong residency attribution (AU-097 Medium). Word-boundary guard can't help (token IS a whole word). Fix (context-gating, NOT deletion which would trade FP->FN): 4th table field ambiguous=true on those 3; new au_network_operator_split(structured, descr) trusts every brand in structured (isp/org/as/...) but only UNAMBIGUOUS brands in descr; au_network_of now splits attrs into the two tiers (descr removed from STRUCTURED_KEYS). Genuine Belong in a structured isp/org field still attributes; unambiguous Telstra still matches in descr; single-arg au_network_operator (doctest API) unchanged. Regressions: au_network_operator_split_gates_common_word_brands_to_structured_fields (unit) + au097_does_not_attribute_belong_isp_from_descr_prose (e2e). scripts/gate.sh --quick GREEN."
     }
   ],
-  "cycle_30_provenance": "Cycle 30 closes OD-13 with the CORRECT context-gating fix (not the lazy token deletion the audit's phrasing suggested, which trades a false-positive for a false-negative on genuine Belong/Dodo/Tangerine attributions). This exhausts the wave4 correctness backlog EXCEPT OD-14 (deliberately deferred). NEW candidate observed from a live `hse doctor` run the user pasted: OD-15 (Observability, low) — doctor prints SeekNow api base https://see-know.ru but util::see_know::budget:203 WARN says 'see-know.eu'; a domain-string mismatch, NOT yet verified against the code (could be an intentional alias). Remaining: OD-14 (AU-050 +61-intl-form false-pos, High-rarer, deferred, needs AU-050 grouping refactor), OD-15 (see-know.eu/.ru, low, verify first)."
+  "cycle_30_provenance": "Cycle 30 closes OD-13 with the CORRECT context-gating fix (not the lazy token deletion the audit's phrasing suggested, which trades a false-positive for a false-negative on genuine Belong/Dodo/Tangerine attributions). This exhausts the wave4 correctness backlog EXCEPT OD-14 (deliberately deferred). NEW candidate observed from a live `hse doctor` run the user pasted: OD-15 (Observability, low) — doctor prints SeekNow api base https://see-know.ru but util::see_know::budget:203 WARN says 'see-know.eu'; a domain-string mismatch, NOT yet verified against the code (could be an intentional alias). Remaining: OD-14 (AU-050 +61-intl-form false-pos, High-rarer, deferred, needs AU-050 grouping refactor), OD-15 (see-know.eu/.ru, low, verify first).",
+  "cycle_31_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "commit": "0f33bf491",
+      "finding": "OD-14 / AU-050 false-positive half (split from OD-8, cycle 28)",
+      "summary": "AU-050 business-service veto classifies the digits-only group key, but normalise_phone drops the '+', so au_phone_line_type (which strips '61' only when the value still has '+') can't see a domestic 1800/1300/190x under a +61 country code. '+61 1800 123 456' -> key '611800123456' -> classifier None -> veto skipped -> false High associate cluster on a shared business desk. Fix (veto-side, NOT the risky AU-050 grouping refactor): a domestic AU national number never begins '61', so ALSO classify phone.strip_prefix(\"61\") — a leading 61 that reveals a business/service line is a +61-prefixed AU one. Personal +61 mobiles/landlines classify non-business -> still group (no association lost); non-AU keys don't begin 61 or don't form a service number after strip -> unaffected (cycle-28 NANP regression preserved). Regression au050_vetoes_au_business_line_in_plus61_international_form. scripts/gate.sh --quick GREEN."
+    }
+  ],
+  "cycle_31_provenance": "Cycle 31 closes OD-14 with a minimal low-risk veto-side compensation instead of the deferred AU-050 grouping refactor — complete fix for the false-positive class, no hot-path blast radius. This EXHAUSTS the wave4 correctness backlog: all 7 audit findings (AU-087 + OD-8..OD-13) plus the OD-14 split are now closed across cycles 24-31. Remaining items are NON-correctness / lower priority: OD-15 (Observability, low — see-know.eu vs .ru WARN-string mismatch observed in hse doctor, still UNVERIFIED against code) and new OD-16 (Correctness edge, low freq — identified during OD-14 analysis: au_phone_line_type classifies a foreign '+NN' number by first digit when NN!=61, e.g. '+44 1800…' -> AU Mobile, mis-signalling AU jurisdiction via geo/jurisdiction.rs:304; fix = return None for a '+' with a non-61/0061 country code, generalising the existing '+1 555…'->None doctest; AU-050 unaffected since it passes +-stripped keys)."
 }
