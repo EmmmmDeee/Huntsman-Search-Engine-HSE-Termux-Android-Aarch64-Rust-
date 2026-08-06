@@ -294,7 +294,10 @@ fn render_event(kind: &crate::core::event::EventKind) -> String {
                 plural(*entity_count)
             ),
             crate::core::scan::ScanStatus::Failed => "scan failed".to_string(),
-            _ => format!("scan complete — {entity_count} entit{}", plural(*entity_count)),
+            _ => format!(
+                "scan complete — {entity_count} entit{}",
+                plural(*entity_count)
+            ),
         },
         E::LiveStop { reason, .. } => format!("live stop — {reason}"),
     }
