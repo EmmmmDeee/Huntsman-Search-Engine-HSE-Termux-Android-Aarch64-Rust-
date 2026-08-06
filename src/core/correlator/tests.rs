@@ -9375,6 +9375,10 @@ fn au079_bio_cross_mention_fires_on_at_mention_in_bio() {
     let r = rule_au_079_bio_cross_mention(&RuleContext::new(&[gh, reddit]), "s", 0);
     assert!(!r.is_empty(), "AU-079 must fire on @-mention in bio");
     assert_eq!(r[0].rule_id, "AU-079");
+    // A free-text bio @-mention is a Medium lead — the mentioned handle may be a
+    // third party the subject merely names, not a self-attribution — unlike the
+    // structured-attribute path (twitter/instagram/…), which fires High.
+    assert_eq!(r[0].severity, super::Severity::Medium);
     // Must NOT fire linking entity to itself (no self-loop)
     let no_self: Vec<_> = r
         .iter()

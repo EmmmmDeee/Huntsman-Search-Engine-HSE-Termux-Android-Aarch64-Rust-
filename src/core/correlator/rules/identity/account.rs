@@ -1212,11 +1212,17 @@ pub(in crate::core::correlator) fn rule_au_079_bio_cross_mention(
                         out.push(Correlation {
                             rule_id: "AU-079".into(),
                             rule_name: "Profile attribute cross-mention identity bridge".into(),
-                            severity: Severity::High,
+                            // A structured platform field (twitter/instagram/…) is the
+                            // subject's own declared link → High above. A free-text bio
+                            // @-mention is NOT self-attribution: the subject may simply be
+                            // naming a third party ("follow @someone"). It is a lead to
+                            // VERIFY, not a confirmed identity bridge, so it fires Medium.
+                            severity: Severity::Medium,
                             description: format!(
-                                "Username '{}' profile bio (@-mention) names '{}' — explicit \
-                                 cross-platform self-reference written by the subject in their \
-                                 '{attr}' field (free, offline identity bridge)",
+                                "Username '{}' profile bio names '{}' via an @-mention in their \
+                                 '{attr}' field — a possible cross-platform reference (the subject \
+                                 themselves OR a third party they mention); verify before treating \
+                                 as the same identity (free, offline lead)",
                                 entity.value, mentioned_e.value,
                             ),
                             entity_uids: uids,
