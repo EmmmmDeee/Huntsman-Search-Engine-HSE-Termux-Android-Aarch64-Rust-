@@ -16,15 +16,23 @@ Usage, mid-conflict:
 
     git show :2:.agent/state.json > /tmp/ours.json     # this branch
     git show :3:.agent/state.json > /tmp/theirs.json   # origin/main
-    python3 .agent/merge_state.py /tmp/ours.json /tmp/theirs.json
+    python3 .agent/merge_state.py /tmp/ours.json /tmp/theirs.json [BRANCH]
     git add .agent/state.json
+
+BRANCH defaults to the branch this helper shipped on; pass it explicitly when
+a different session reuses the resolver so the provenance keys match its work.
 """
 
 import collections
 import json
 import sys
 
-BRANCH = "claude/huntsman-price-analysis-ewy20t"
+# The branch this helper originally shipped on; used as the default when the
+# caller does not name one. Overridable as the optional third CLI argument so a
+# different concurrent session can reuse the resolver without editing the file.
+DEFAULT_BRANCH = "claude/huntsman-price-analysis-ewy20t"
+
+USAGE = "usage: python3 .agent/merge_state.py OURS.json THEIRS.json [BRANCH]"
 
 CONCURRENCY_NOTE = [
     "",
@@ -37,15 +45,17 @@ CONCURRENCY_NOTE = [
     "The resolution is scripted: .agent/merge_state.py.",
 ]
 
-CORROBORATION = (
-    "Reached independently by the session on " + BRANCH + ", which measured the "
-    "inline tests those 8 modules already carried: bluesky_user 15, "
-    "codeberg_user 9, devto 7, gitlab_user 8, lobsters 8, mastodon_user 8, "
-    "stackoverflow_user 11, url_extract 5 — 71 tests, not zero. Two detectors, "
-    "same artefact, same conclusion. Note the layout count is three, not two: "
-    'include!("tests.rs") 191 files, `mod tests;` 107, tests inline in mod.rs '
-    "~129 — and every_src_file_is_wired_into_the_module_tree accepts all of them."
-)
+def corroboration(branch):
+    """The shared-rejection annotation, tagged with the resolving branch."""
+    return (
+        "Reached independently by the session on " + branch + ", which measured "
+        "the inline tests those 8 modules already carried: bluesky_user 15, "
+        "codeberg_user 9, devto 7, gitlab_user 8, lobsters 8, mastodon_user 8, "
+        "stackoverflow_user 11, url_extract 5 — 71 tests, not zero. Two detectors, "
+        "same artefact, same conclusion. Note the layout count is three, not two: "
+        'include!("tests.rs") 191 files, `mod tests;` 107, tests inline in mod.rs '
+        "~129 — and every_src_file_is_wired_into_the_module_tree accepts all of them."
+    )
 
 
 def load(path):
@@ -53,7 +63,7 @@ def load(path):
         return json.load(f, object_pairs_hook=collections.OrderedDict)
 
 
-def merge(ours, theirs):
+def merge(ours, theirs, branch=DEFAULT_BRANCH):
     """main's copy (`theirs`) is the base; re-apply this branch's additions."""
     out = theirs
 
@@ -77,12 +87,12 @@ def merge(ours, theirs):
     # Annotate the shared rejection both sessions reached independently.
     for c in out.get("rejected_candidates", []):
         if c["candidate"].startswith("Add test coverage to the 8"):
-            c["corroboration"] = CORROBORATION
+            c["corroboration"] = corroboration(branch)
 
     # This branch's rejections and defects, keyed so re-running is idempotent.
     seen = {c["candidate"] for c in out.get("rejected_candidates", [])}
     for c in ours.get("rejected_candidates", []):
-        if c.get("source_branch") == BRANCH and c["candidate"] not in seen:
+        if c.get("source_branch") == branch and c["candidate"] not in seen:
             out["rejected_candidates"].append(c)
 
     ids = {d["id"] for d in out.get("open_defects", [])}
@@ -94,8 +104,11 @@ def merge(ours, theirs):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) < 3:
+        sys.exit(USAGE)
     ours_path, theirs_path = sys.argv[1], sys.argv[2]
-    merged = merge(load(ours_path), load(theirs_path))
+    branch = sys.argv[3] if len(sys.argv) > 3 else DEFAULT_BRANCH
+    merged = merge(load(ours_path), load(theirs_path), branch)
     with open(".agent/state.json", "w", encoding="utf-8") as f:
         json.dump(merged, f, indent=2, ensure_ascii=False)
         f.write("\n")
