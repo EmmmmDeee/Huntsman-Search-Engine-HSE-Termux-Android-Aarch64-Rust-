@@ -835,6 +835,27 @@ pub(in crate::core::correlator) fn rule_au_076_email_username_localpart_bridge(
     let mut out: Vec<Correlation> = Vec::new();
     for (canon, emails) in &emails_by_canon {
         let usernames = &usernames_by_canon[canon];
+
+        // Source-independence gate (mirrors sibling AU-034). The High "same
+        // identity" claim requires the bridged email and username to be attested
+        // by >= 2 DISTINCT corroborating sources. `corroborating_sources()`
+        // excludes the self-enrichment / replay passes (name_intel, geo_normalize,
+        // recall, cross_scan …), so an email + username both MINTED from one seed
+        // — a single name_intel derivation shares `canonical_handle` by
+        // construction — cannot manufacture two "distinct sources" and
+        // self-correlate into a phantom High identity bridge on a single-source
+        // scan. A genuine cross-source match (a breach email + a platform-confirmed
+        // username) still clears the gate.
+        const MIN_DISTINCT_SOURCES: usize = 2;
+        let sources: HashSet<&str> = emails
+            .iter()
+            .chain(usernames.iter())
+            .flat_map(|e| e.corroborating_sources())
+            .collect();
+        if sources.len() < MIN_DISTINCT_SOURCES {
+            continue;
+        }
+
         let email_vals: BTreeSet<&str> = emails.iter().map(|e| e.value.as_str()).collect();
         let uname_vals: BTreeSet<&str> = usernames.iter().map(|e| e.value.as_str()).collect();
 
@@ -1191,11 +1212,17 @@ pub(in crate::core::correlator) fn rule_au_079_bio_cross_mention(
                         out.push(Correlation {
                             rule_id: "AU-079".into(),
                             rule_name: "Profile attribute cross-mention identity bridge".into(),
-                            severity: Severity::High,
+                            // A structured platform field (twitter/instagram/…) is the
+                            // subject's own declared link → High above. A free-text bio
+                            // @-mention is NOT self-attribution: the subject may simply be
+                            // naming a third party ("follow @someone"). It is a lead to
+                            // VERIFY, not a confirmed identity bridge, so it fires Medium.
+                            severity: Severity::Medium,
                             description: format!(
-                                "Username '{}' profile bio (@-mention) names '{}' — explicit \
-                                 cross-platform self-reference written by the subject in their \
-                                 '{attr}' field (free, offline identity bridge)",
+                                "Username '{}' profile bio names '{}' via an @-mention in their \
+                                 '{attr}' field — a possible cross-platform reference (the subject \
+                                 themselves OR a third party they mention); verify before treating \
+                                 as the same identity (free, offline lead)",
                                 entity.value, mentioned_e.value,
                             ),
                             entity_uids: uids,
@@ -1435,6 +1462,24 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
         Some(tokens.join(" "))
     }
 
+    // The name's tokens in ORIGINAL order (unsorted). Two records that group on the
+    // same sorted canonical but differ here matched only by REORDERING.
+    fn ordered_tokens(s: &str) -> Vec<String> {
+        s.split(|c: char| c.is_whitespace() || c == ',' || c == '-' || c == '.')
+            .filter(|t| !t.is_empty())
+            .map(str::to_lowercase)
+            .filter(|t| t.len() >= 2)
+            .collect()
+    }
+    // A "bare transposition": the two names share a token multiset (they already
+    // grouped on the sorted canonical) but differ in order, and NEITHER declared
+    // surname-first with a comma. "Cameron Tyler" and "Tyler Cameron" are then two
+    // plausibly-DIFFERENT people, so the match is a Medium lead, not a High merge —
+    // whereas "Bamford, Haigen" (comma) vs "Haigen Bamford" is a confident match.
+    fn is_bare_transposition(a: &str, b: &str) -> bool {
+        ordered_tokens(a) != ordered_tokens(b) && !a.contains(',') && !b.contains(',')
+    }
+
     let persons: Vec<(String, &Entity)> = entities
         .iter()
         .filter(|e| e.kind == EntityKind::Person)
@@ -1571,11 +1616,22 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
                 .0
                 .split(' ')
                 .any(crate::util::surnames::is_common);
+            // A bare token transposition ("Cameron Tyler" vs "Tyler Cameron", no
+            // comma to declare surname-first) may be two DIFFERENT people, so it is
+            // a lead to VERIFY, not a confident merge — even for a distinctive name.
+            // An exact-order or comma-confirmed match stays High.
             let (severity, tail) = if common {
                 (
                     Severity::Medium,
                     "a COMMON name many unrelated people share — a lead to VERIFY, \
                      not a confirmed merge",
+                )
+            } else if is_bare_transposition(&e1.value, &e2.value) {
+                (
+                    Severity::Medium,
+                    "matched only by reordering the name tokens, with no 'Last, First' \
+                     comma to confirm the order — a possible transposition of two \
+                     different people; a lead to VERIFY, not a confirmed merge",
                 )
             } else {
                 (

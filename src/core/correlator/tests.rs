@@ -1353,11 +1353,48 @@ fn au013_no_fire_on_one_lan_entity() {
 
 #[test]
 fn au014_fires_on_two_geo_sources() {
-    let mut e = Entity::new(EntityKind::Coordinates, "0,0", 0.9, "s");
+    // A real coordinate — not the "0,0" radar sentinel, which is infrastructure
+    // geo — anchored by two ANCHORING sources (wigle + device GPS).
+    let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
     e.add_evidence(Evidence::new("wigle", "test"));
     e.add_evidence(Evidence::new("device_sensors", "test"));
     let r = rule_au_014_geo_cluster(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
+}
+
+#[test]
+fn au014_excludes_infrastructure_coordinates() {
+    // A datacentre/hosting centroid — even corroborated by two geo sources — is
+    // NOT a personal geo lead (parity with AU-017). A HOSTING-tagged coordinate,
+    // and a bare coordinate whose sources are non-anchoring (ip_geo/ipinfo), are
+    // both infrastructure_geo and must be filtered; the same point, person-
+    // anchored, still fires.
+    let mut hosting = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    hosting.tag(crate::core::tags::HOSTING);
+    hosting.add_evidence(Evidence::new("ip_geo", "geolocated"));
+    hosting.add_evidence(Evidence::new("ipinfo", "geolocated"));
+    assert!(
+        rule_au_014_geo_cluster(&RuleContext::new(&[hosting]), "s", 0).is_empty(),
+        "a hosting-tagged coordinate must not fire AU-014"
+    );
+
+    let mut bare = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    bare.add_evidence(Evidence::new("ip_geo", "geolocated"));
+    bare.add_evidence(Evidence::new("ipinfo", "geolocated"));
+    assert!(
+        rule_au_014_geo_cluster(&RuleContext::new(&[bare]), "s", 0).is_empty(),
+        "a bare IP-geo coordinate (no anchoring source) must not fire AU-014"
+    );
+
+    // Control: the same point, anchored by real person-fixing sources, fires.
+    let mut anchored = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    anchored.add_evidence(Evidence::new("exif_geo", "photo GPS"));
+    anchored.add_evidence(Evidence::new("device_sensors", "gps"));
+    assert_eq!(
+        rule_au_014_geo_cluster(&RuleContext::new(&[anchored]), "s", 0).len(),
+        1,
+        "an anchored two-source coordinate still fires AU-014"
+    );
 }
 
 #[test]
@@ -2220,9 +2257,15 @@ fn au031_benign_infra_verdict_vetoes_adjacency() {
 #[test]
 fn au032_fires_on_three_node_colocation_cluster() {
     use crate::core::relation::{Relation, RelationKind};
-    let c1 = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.9, "s");
-    let c2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
-    let c3 = Entity::new(EntityKind::Coordinates, "-27.471000,153.021000", 0.7, "s");
+    // Anchored to a real person-fixing source (device GPS) so the coordinates are
+    // NOT infrastructure geo; otherwise the co-location edges are (correctly)
+    // dropped. See au032_excludes_infrastructure_colocations.
+    let mut c1 = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.9, "s");
+    c1.add_evidence(Evidence::new("device_sensors", "gps"));
+    let mut c2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
+    c2.add_evidence(Evidence::new("device_sensors", "gps"));
+    let mut c3 = Entity::new(EntityKind::Coordinates, "-27.471000,153.021000", 0.7, "s");
+    c3.add_evidence(Evidence::new("device_sensors", "gps"));
     // Chain c1–c2–c3 → one connected component of 3.
     let rels = vec![
         Relation::new(
@@ -2246,6 +2289,49 @@ fn au032_fires_on_three_node_colocation_cluster() {
     assert_eq!(r[0].severity, Severity::Medium);
     assert_eq!(r[0].entity_uids.len(), 3);
     assert!(r[0].description.contains("3 coordinates"));
+}
+
+#[test]
+fn au032_excludes_infrastructure_colocations() {
+    use crate::core::relation::{Relation, RelationKind};
+    // Three co-located datacentre coordinates are infrastructure, not a personal
+    // convergence — the co-location edges between them are dropped, so no cluster
+    // forms. The same chain, person-anchored, still fires (control).
+    let colo = |a: &Entity, b: &Entity| {
+        Relation::new(
+            a.uid.clone(),
+            b.uid.clone(),
+            RelationKind::CoLocatedWith,
+            0.9,
+            "s",
+        )
+    };
+
+    let mut h1 = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.9, "s");
+    h1.tag(crate::core::tags::HOSTING);
+    let mut h2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
+    h2.tag(crate::core::tags::HOSTING);
+    let mut h3 = Entity::new(EntityKind::Coordinates, "-27.471000,153.021000", 0.7, "s");
+    h3.tag(crate::core::tags::HOSTING);
+    let rels = vec![colo(&h1, &h2), colo(&h2, &h3)];
+    assert!(
+        rule_au_032_colocation_cluster(&RuleContext::new(&[h1, h2, h3]), &rels, "s", 0).is_empty(),
+        "co-located datacentres must not form a convergence cluster"
+    );
+
+    // Control: the same chain, person-anchored, fires.
+    let mut a1 = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.9, "s");
+    a1.add_evidence(Evidence::new("device_sensors", "gps"));
+    let mut a2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
+    a2.add_evidence(Evidence::new("device_sensors", "gps"));
+    let mut a3 = Entity::new(EntityKind::Coordinates, "-27.471000,153.021000", 0.7, "s");
+    a3.add_evidence(Evidence::new("device_sensors", "gps"));
+    let rels2 = vec![colo(&a1, &a2), colo(&a2, &a3)];
+    assert_eq!(
+        rule_au_032_colocation_cluster(&RuleContext::new(&[a1, a2, a3]), &rels2, "s", 0).len(),
+        1,
+        "person-anchored co-located coordinates still cluster"
+    );
 }
 
 #[test]
@@ -5279,6 +5365,9 @@ fn au027_chains_only_the_dominant_coherent_location() {
     let coord = |v: &str| {
         let mut e = Entity::new(EntityKind::Coordinates, v, 0.75, "scan");
         e.tag("geocoded");
+        // Anchoring source (reverse-geocoded from the address) so the coordinate
+        // is person-anchored, not infrastructure geo.
+        e.add_evidence(Evidence::new("geocode", "reverse-geocoded"));
         e
     };
     let mut brisbane_addr = Entity::new(EntityKind::Address, "Brisbane, QLD", 0.80, "scan");
@@ -5334,6 +5423,60 @@ fn au027_never_anchors_on_the_radar_sentinel() {
         out.is_empty(),
         "the radar sentinel must never anchor an AU-027 chain: {out:?}"
     );
+}
+
+#[test]
+fn au027_excludes_infrastructure_coordinates() {
+    use super::rules::rule_au_027_address_coordinates_chain;
+    // The geo-tag gate is an OR the ADDRESS satisfies alone, so datacentre
+    // coordinates could ride in and anchor the chain, fusing the host's location
+    // with the subject's real address. Hosting/IP-geo coordinates must be
+    // excluded; person-anchored coordinates at real spots still chain (control).
+    let mut addr = Entity::new(EntityKind::Address, "Brisbane, QLD", 0.80, "scan");
+    addr.tag("geoint");
+
+    let hosting = |v: &str| {
+        let mut e = Entity::new(EntityKind::Coordinates, v, 0.80, "scan");
+        e.tag("geocoded");
+        e.tag(crate::core::tags::HOSTING);
+        e
+    };
+    let out = rule_au_027_address_coordinates_chain(
+        &RuleContext::new(&[
+            addr.clone(),
+            hosting("-33.8688,151.2093"),
+            hosting("-33.8690,151.2100"),
+        ]),
+        "scan",
+        0,
+    );
+    assert!(
+        out.is_empty(),
+        "hosting datacentre coordinates must not anchor an AU-027 chain: {out:?}"
+    );
+
+    // Control: person-anchored (geocoded) coordinates DO chain with the address.
+    let anchored = |v: &str| {
+        let mut e = Entity::new(EntityKind::Coordinates, v, 0.80, "scan");
+        e.tag("geocoded");
+        e.add_evidence(Evidence::new("geocode", "reverse-geocoded"));
+        e
+    };
+    let out2 = rule_au_027_address_coordinates_chain(
+        &RuleContext::new(&[
+            addr,
+            anchored("-27.4698,153.0251"),
+            anchored("-27.4690,153.0235"),
+        ]),
+        "scan",
+        0,
+    );
+    assert_eq!(
+        out2.len(),
+        1,
+        "anchored coordinates still chain with the address"
+    );
+    assert_eq!(out2[0].rule_id, "AU-027");
 }
 
 #[test]
@@ -9203,17 +9346,25 @@ fn au076_consolidates_permutation_flood_into_one_per_canonical_handle() {
     // canonicalise to the SAME handle "matthewdiegmann". A naive per-pair emission
     // would fire len(emails)×len(usernames) High findings; consolidation must emit
     // exactly ONE, listing every form, with no value lost.
+    // Each form carries a genuine, independent corroborating source — the emails
+    // from a breach dump, the usernames from a live platform probe — so the bridge
+    // clears AU-076's >= 2-distinct-source independence gate. This test exercises
+    // the CONSOLIDATION of the permutation flood, not the gate itself.
     let mut ents = Vec::new();
     for host in ["yahoo.com", "msn.com", "gmail.com", "outlook.com"] {
-        ents.push(Entity::new(
+        let mut e = Entity::new(
             EntityKind::Email,
             format!("matthew.diegmann@{host}"),
             0.3,
             "s",
-        ));
+        );
+        e.add_evidence(Evidence::new("breach", "dump".to_string()));
+        ents.push(e);
     }
     for u in ["matthew.diegmann", "matthewdiegmann", "matthew_diegmann"] {
-        ents.push(Entity::new(EntityKind::Username, u, 0.3, "s"));
+        let mut e = Entity::new(EntityKind::Username, u, 0.3, "s");
+        e.add_evidence(Evidence::new("github_user", "profile".to_string()));
+        ents.push(e);
     }
     let r = rule_au_076_email_username_localpart_bridge(&RuleContext::new(&ents), "s", 0);
     assert_eq!(
@@ -9230,6 +9381,26 @@ fn au076_consolidates_permutation_flood_into_one_per_canonical_handle() {
     assert!(r[0].description.contains("3 username form"));
     // All 7 contributing entities are referenced for pivoting.
     assert_eq!(r[0].entity_uids.len(), 7);
+}
+
+#[test]
+fn au076_single_source_self_derivation_is_suppressed() {
+    use super::rules::rule_au_076_email_username_localpart_bridge;
+    // The false positive AU-076's independence gate closes: an email and a
+    // username that canonicalise to the same handle but carry FEWER than two
+    // distinct corroborating sources. Here both are attested only by a single
+    // `name_intel` self-derivation (a non-corroborating pass), so the handles
+    // match by construction, not by independent observation — exactly the
+    // single-source name-seed flood that must NOT emit a High identity bridge.
+    let mut email = Entity::new(EntityKind::Email, "cameron.tyler@acme.com", 0.3, "s");
+    email.add_evidence(Evidence::new("name_intel", "derived".to_string()));
+    let mut uname = Entity::new(EntityKind::Username, "cameron.tyler", 0.3, "s");
+    uname.add_evidence(Evidence::new("name_intel", "derived".to_string()));
+    let r = rule_au_076_email_username_localpart_bridge(&RuleContext::new(&[email, uname]), "s", 0);
+    assert!(
+        r.is_empty(),
+        "AU-076 must not fire on a single-source (name_intel) self-derivation: {r:?}"
+    );
 }
 
 #[test]
@@ -9351,6 +9522,10 @@ fn au079_bio_cross_mention_fires_on_at_mention_in_bio() {
     let r = rule_au_079_bio_cross_mention(&RuleContext::new(&[gh, reddit]), "s", 0);
     assert!(!r.is_empty(), "AU-079 must fire on @-mention in bio");
     assert_eq!(r[0].rule_id, "AU-079");
+    // A free-text bio @-mention is a Medium lead — the mentioned handle may be a
+    // third party the subject merely names, not a self-attribution — unlike the
+    // structured-attribute path (twitter/instagram/…), which fires High.
+    assert_eq!(r[0].severity, super::Severity::Medium);
     // Must NOT fire linking entity to itself (no self-loop)
     let no_self: Vec<_> = r
         .iter()
@@ -9566,11 +9741,12 @@ fn au081_common_name_is_a_medium_lead_not_a_high_assert() {
         r[0].description
     );
 
-    // Control: a DISTINCTIVE full name (no common token) stays a High
-    // identity bridge — the discount must not blunt genuine matches.
+    // Control: a DISTINCTIVE full name (no common token) whose two records agree on
+    // order — here via an explicit "Last, First" comma — stays a High identity
+    // bridge; the common-surname discount must not blunt genuine matches.
     let mut breach_d = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
     breach_d.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
-    let mut social_d = Entity::new(EntityKind::Person, "Bamford Haigen", 0.75, "s");
+    let mut social_d = Entity::new(EntityKind::Person, "Bamford, Haigen", 0.75, "s");
     social_d.add_evidence(Evidence::new("proxycurl", "LinkedIn profile".to_string()));
     let rd =
         rule_au_081_canonical_person_name_match(&RuleContext::new(&[breach_d, social_d]), "s", 0);
@@ -9584,6 +9760,49 @@ fn au081_common_name_is_a_medium_lead_not_a_high_assert() {
         rd[0].description.contains("same individual"),
         "a distinctive-name match keeps the confident 'same individual' wording: {}",
         rd[0].description
+    );
+}
+
+#[test]
+fn au081_bare_transposition_is_a_medium_lead_not_a_high_merge() {
+    use super::rules::rule_au_081_canonical_person_name_match;
+    // "Haigen Bamford" and "Bamford Haigen" (distinctive tokens, neither a common
+    // surname) are two plausibly-DIFFERENT people. Matched only by reordering, with
+    // no "Last, First" comma to confirm which token is the surname, this is a Medium
+    // lead — NOT the High identity merge the sorted-canonical grouping alone asserts.
+    let mut breach = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
+    breach.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
+    let mut social = Entity::new(EntityKind::Person, "Bamford Haigen", 0.75, "s");
+    social.add_evidence(Evidence::new("proxycurl", "LinkedIn profile".to_string()));
+    let r = rule_au_081_canonical_person_name_match(&RuleContext::new(&[breach, social]), "s", 0);
+    assert!(
+        !r.is_empty(),
+        "AU-081 still surfaces the transposition as a lead"
+    );
+    assert_eq!(
+        r[0].severity,
+        super::Severity::Medium,
+        "a bare (comma-less) transposition of a distinctive name is a Medium lead"
+    );
+    assert!(
+        r[0].description.contains("VERIFY"),
+        "a transposition match must be phrased as a lead to verify: {}",
+        r[0].description
+    );
+
+    // Control: the same two tokens, but one record declares surname-first with a
+    // comma — the order is confirmed, so the distinctive-name match is High.
+    let mut breach_c = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
+    breach_c.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
+    let mut social_c = Entity::new(EntityKind::Person, "Bamford, Haigen", 0.75, "s");
+    social_c.add_evidence(Evidence::new("proxycurl", "LinkedIn profile".to_string()));
+    let rc =
+        rule_au_081_canonical_person_name_match(&RuleContext::new(&[breach_c, social_c]), "s", 0);
+    assert_eq!(rc.len(), 1);
+    assert_eq!(
+        rc[0].severity,
+        super::Severity::High,
+        "a comma-confirmed 'Last, First' order makes the distinctive-name match High"
     );
 }
 
@@ -9625,7 +9844,9 @@ fn au081_still_fires_when_a_genuine_second_source_is_also_name_enriched() {
     let mut e1 = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
     e1.add_evidence(Evidence::new("github_user", "GitHub profile".to_string()));
     e1.add_evidence(Evidence::new("name_intel", "Derived from name".to_string()));
-    let mut e2 = Entity::new(EntityKind::Person, "Bamford Haigen", 0.75, "s");
+    // "Last, First" comma form so the match is order-confirmed (High), isolating
+    // this test to the independence gate rather than the transposition discount.
+    let mut e2 = Entity::new(EntityKind::Person, "Bamford, Haigen", 0.75, "s");
     e2.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
     let r = rule_au_081_canonical_person_name_match(&RuleContext::new(&[e1, e2]), "s", 0);
     assert!(
