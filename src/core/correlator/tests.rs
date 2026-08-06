@@ -9432,6 +9432,81 @@ fn au077_name_derived_username_confirmed_fires_on_predict_plus_confirm() {
 }
 
 #[test]
+fn au077_does_not_fire_on_a_status_only_username_search_summary() {
+    use super::rules::rule_au_077_name_derived_username_confirmed;
+    // The false positive: name_intel DERIVES a handle, then username_search re-emits
+    // a summary Username for it whose hits were ALL status-only guesses
+    // (hits_verified == 0). The two merge by value — two stacked guesses with zero
+    // verified confirmation must NOT fire a High "confirmed" identity bridge.
+    let mut u = Entity::new(EntityKind::Username, "jsmith", 0.8, "s");
+    u.add_evidence(Evidence::new(
+        "name_intel",
+        "Derived from John Smith".to_string(),
+    ));
+    u.add_evidence(
+        Evidence::new(
+            "username_search",
+            "@jsmith found on 3 platform(s)".to_string(),
+        )
+        .with_attr("hits_verified", "0")
+        .with_attr("hits_status_only", "3"),
+    );
+    let r = rule_au_077_name_derived_username_confirmed(&RuleContext::new(&[u]), "s", 0);
+    assert!(
+        r.is_empty(),
+        "AU-077 must not confirm on an all-status-only username_search summary: {r:?}"
+    );
+}
+
+#[test]
+fn au077_fires_when_username_search_has_a_verified_hit() {
+    use super::rules::rule_au_077_name_derived_username_confirmed;
+    // The genuine case the guard must still allow: at least one platform VERIFIED
+    // the derived handle (hits_verified >= 1) — a real prediction-confirmed bridge.
+    let mut u = Entity::new(EntityKind::Username, "jsmith", 0.8, "s");
+    u.add_evidence(Evidence::new(
+        "name_intel",
+        "Derived from John Smith".to_string(),
+    ));
+    u.add_evidence(
+        Evidence::new(
+            "username_search",
+            "@jsmith found on 2 platform(s)".to_string(),
+        )
+        .with_attr("hits_verified", "2")
+        .with_attr("hits_status_only", "1"),
+    );
+    let r = rule_au_077_name_derived_username_confirmed(&RuleContext::new(&[u]), "s", 0);
+    assert_eq!(
+        r.len(),
+        1,
+        "a verified username_search hit is a genuine confirmation"
+    );
+    assert_eq!(r[0].severity, super::Severity::High);
+}
+
+#[test]
+fn au077_does_not_fire_on_a_status_only_per_record_discovery() {
+    use super::rules::rule_au_077_name_derived_username_confirmed;
+    // Per-record variant: a discovery module (social_probe) that tags its hit
+    // `detection: status-only` is a bare-status guess, not a confirmation.
+    let mut u = Entity::new(EntityKind::Username, "jsmith", 0.8, "s");
+    u.add_evidence(Evidence::new(
+        "name_intel",
+        "Derived from John Smith".to_string(),
+    ));
+    u.add_evidence(
+        Evidence::new("social_probe", "status 200 for jsmith".to_string())
+            .with_attr("detection", "status-only"),
+    );
+    let r = rule_au_077_name_derived_username_confirmed(&RuleContext::new(&[u]), "s", 0);
+    assert!(
+        r.is_empty(),
+        "a status-only per-record discovery must not confirm AU-077: {r:?}"
+    );
+}
+
+#[test]
 fn au086_name_derived_email_confirmed_fires_on_predict_plus_confirm() {
     use super::rules::rule_au_086_name_derived_email_confirmed;
     // An email name_intel permuted from the subject AND confirmed by a breach
