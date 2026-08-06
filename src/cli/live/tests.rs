@@ -171,6 +171,65 @@ use super::*;
     }
 
     #[test]
+    fn render_event_is_free_of_decorative_glyphs() {
+        // The live view must be clean structured text — no box-drawing, tree, or
+        // status glyphs. Cover a representative spread of event kinds.
+        use crate::core::correlator::{Correlation, Severity};
+        let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.9, "s");
+        e.tag("breach");
+        e.add_evidence(Evidence::new("hibp", "Adobe breach").with_attr("year", "2013"));
+        let samples = [
+            EventKind::LiveStart {
+                live_id: "l".into(),
+                target_kind: "email".into(),
+                target_value: "a@b.com".into(),
+                interval_secs: 30,
+            },
+            EventKind::LiveTick {
+                live_id: "l".into(),
+                iteration: 1,
+                scan_id: "s".into(),
+            },
+            EventKind::ModuleStart { module: "m".into() },
+            EventKind::ModuleError {
+                module: "m".into(),
+                error: "boom".into(),
+            },
+            EventKind::ExpansionStop {
+                reason: "budget".into(),
+            },
+            EventKind::EntityExcluded {
+                kind: "username".into(),
+                value: "stranger".into(),
+                reason: "mismatch".into(),
+            },
+            EventKind::CorrelationFound {
+                correlation: Correlation::new(
+                    "AU-1",
+                    "Rule",
+                    Severity::High,
+                    "desc".into(),
+                    vec![],
+                    "s",
+                    0,
+                ),
+            },
+            EventKind::EntityFound { entity: e },
+        ];
+        for kind in &samples {
+            let out = render_event(kind);
+            for glyph in [
+                '◆', '━', '▸', '·', '✓', '✗', '↻', '◼', '⊘', '⇉', '⚖', '⚑', '▪', '│', '├', '─',
+            ] {
+                assert!(
+                    !out.contains(glyph),
+                    "render_event({kind:?}) must be glyph-free, found {glyph:?} in: {out}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn render_event_scan_complete_reflects_terminal_status() {
         use crate::core::scan::ScanStatus;
         let ev = |status| EventKind::ScanComplete {
