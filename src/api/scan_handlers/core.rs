@@ -910,8 +910,8 @@ pub async fn radar_live(State(s): State<Arc<AppState>>) -> impl IntoResponse {
 /// reconstructing "what was around me" after the fact doesn't need to
 /// remember a session id — only that a radar sweep ran at some point. This
 /// is the sole purpose-built historical-review surface for the live radar
-/// feature (`docs/PROBLEM_TREE.md`/`docs/SOLUTION_TREE.md`: personal-safety
-/// / situational-awareness review under limited information).
+/// feature: personal-safety / situational-awareness review under limited
+/// information.
 pub async fn radar_history(
     State(s): State<Arc<AppState>>,
     Query(params): Query<std::collections::HashMap<String, String>>,

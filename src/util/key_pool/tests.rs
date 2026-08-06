@@ -769,3 +769,36 @@ fn key_tier_as_str_matches_snake_case_serde_wire_form() {
         assert_eq!(wire, serde_json::Value::String(want.to_string()));
     }
 }
+
+#[test]
+fn snapshot_and_export_order_services_deterministically() {
+    // Services added out of alphabetical order must come back sorted, so
+    // `hse keys list` prints a stable block order and `export_json` is
+    // byte-reproducible. Before `PoolData::services` was a `BTreeMap` this
+    // order was `HashMap`-random per process.
+    let pool = KeyPool::new();
+    for svc in ["shodan", "abuseipdb", "virustotal", "censys", "hibp"] {
+        pool.add(svc, KeyEntry::new(format!("{svc}-key")));
+    }
+
+    let snap = pool.snapshot();
+    let order: Vec<&str> = snap.services.keys().map(String::as_str).collect();
+    assert_eq!(
+        order,
+        ["abuseipdb", "censys", "hibp", "shodan", "virustotal"],
+        "snapshot must expose services in sorted order"
+    );
+
+    // The exported JSON's top-level keys are in the same sorted order, and two
+    // exports of the same contents are byte-identical.
+    let json = pool.export_json(None).expect("should succeed");
+    let a = json.find("abuseipdb").expect("abuseipdb present");
+    let s = json.find("shodan").expect("shodan present");
+    let v = json.find("virustotal").expect("virustotal present");
+    assert!(a < s && s < v, "export_json key order must be sorted");
+    assert_eq!(
+        json,
+        pool.export_json(None).expect("should succeed"),
+        "two exports of one pool must be byte-identical"
+    );
+}

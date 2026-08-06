@@ -74,7 +74,7 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
             // WAL high-water mark: a never-checkpointed `-wal` can grow without
             // bound under a long-lived process. Report it so the operator can
             // see (and a TRUNCATE checkpoint at the next scan boundary resets it).
-            if let Ok(meta) = std::fs::metadata(format!("{db_path}-wal")) {
+            if let Ok(meta) = tokio::fs::metadata(format!("{db_path}-wal")).await {
                 let kib = meta.len() / 1024;
                 println!("  WAL size:   {kib} KiB");
                 if meta.len() > 64 * 1024 * 1024 {
@@ -507,7 +507,7 @@ fn seeknow_unreachable_guidance(detail: &str) -> String {
 /// The loaded `HUNTSMAN_*` key names, sorted for stable, run-to-run-identical
 /// output — `loaded` is a `HashMap`, so an unsorted iteration would print a
 /// different order on every invocation against the identical environment
-/// (`docs/CONVENTIONS.md` §5: "no HashMap-iteration-order leaks into output"),
+/// (the standing "no HashMap-iteration-order leaks into output" rule),
 /// exactly the class of bug `rank_unset_keys` just below already guards
 /// against for the unset-keys listing.
 ///

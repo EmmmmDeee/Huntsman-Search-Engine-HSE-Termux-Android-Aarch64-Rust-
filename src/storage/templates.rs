@@ -86,7 +86,9 @@ mod tests {
     #[test]
     fn a_route_proven_in_one_scan_is_credited_in_a_later_scan() {
         use crate::core::entity::{Entity, EntityKind};
-        use crate::core::relation::{Relation, RelationKind, connection_templates};
+        use crate::core::relation::{
+            IDENTITY_LINK_MIN_CONF, Relation, RelationKind, connection_templates,
+        };
 
         let store = Store::open(":memory:").expect("in-memory store");
         let mk = |k: EntityKind, v: &str| Entity::new(k, v, 0.8, "s");
@@ -103,7 +105,7 @@ mod tests {
             edge(&e, &d, RelationKind::BelongsToDomain),
             edge(&d, &p, RelationKind::RegisteredBy),
         ];
-        let templates = connection_templates(&ents, &rels, 4);
+        let templates = connection_templates(&ents, &rels, 4, IDENTITY_LINK_MIN_CONF);
         assert!(!templates.is_empty(), "the route generalises to a template");
 
         // Scan 1: every route is new — nothing is credited, everything recorded.

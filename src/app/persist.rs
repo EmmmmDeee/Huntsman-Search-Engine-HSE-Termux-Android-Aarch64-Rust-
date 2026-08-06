@@ -82,9 +82,18 @@ pub(crate) async fn persist_entities_as_scan(
         }
     }
 
+    // Run the full correlator under the canonical panic guard
+    // (`guarded_correlation_pass`) — the single sanctioned way any caller invokes
+    // the finalise-time rule engine. A rule panicking on adversarial batch data
+    // (a crafted imported dossier, or entities extracted from an arbitrary
+    // document via `ingest --auto-scan`) must degrade to "no correlations", not
+    // unwind the whole persist after the entities were already stored and shown
+    // to the operator.
     let mut correlations = 0usize;
-    let correlator = crate::core::correlator::Correlator::new(Arc::clone(&store));
-    if let Ok(hits) = correlator.run(sid) {
+    let guard_store = Arc::clone(&store);
+    if let Some(hits) = crate::core::engine::guarded_correlation_pass(sid, move || {
+        crate::core::correlator::Correlator::new(guard_store).run(sid)
+    }) {
         for c in &hits {
             if store.upsert_correlation(c).is_ok() {
                 correlations += 1;

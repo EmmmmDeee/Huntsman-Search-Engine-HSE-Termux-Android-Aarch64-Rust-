@@ -244,6 +244,18 @@ fn core_does_not_import_util_directly() {
                 // the spawned task.
                 && !line.contains("util::regional::with_regional")
                 && !line.contains("util::regional::regional_enabled")
+                // Pure, offline, dependency-free UTC time-of-day formatter
+                // (`HH:MM:SS` via Howard Hinnant civil-from-days — no date crate,
+                // no I/O, no state; total and deterministic) — the same leaf
+                // category as `util::geohash`/`util::geometry`. `core::event`'s
+                // `Event::to_log_line` is the single canonical definition of the
+                // structured JSON log line shared by every surface (events.log,
+                // the debug bundle, `hse live`, the web Scan-Log), so it stamps
+                // each event's `time` field through this one formatter rather than
+                // re-deriving the time-of-day maths in `core` (which would
+                // duplicate a `util` responsibility). Scoped to the single
+                // function actually used so the guard stays precise.
+                && !line.contains("util::timefmt::hms_utc")
                 // Persistent capability toggles (universal toggleability): the
                 // engine's module gate reads `module.<name>` on/off.
                 && !line.contains("util::settings::get_bool")
@@ -1894,7 +1906,7 @@ fn correlation_rule_ids_match_their_function_number() {
 /// semantically unrelated findings overwrite/merge into one, corrupting
 /// whichever fires second. This exact collision shipped once — a missed
 /// renumbering from a 2026-06-25 `origin/main` merge that unioned two
-/// independently-numbered rule sets (see `docs/SOLUTION_TREE.md`) — and was
+/// independently-numbered rule sets — and was
 /// only caught by a dedicated audit, not by the test suite. This closes that
 /// gap permanently: a number is collected with EVERY distinct
 /// `rule_au_<NNN>_<name>` function that declares it, and fails if any number
@@ -2081,7 +2093,7 @@ fn readme_module_overview_count_matches_registry() {
 /// The README's "Deterministic correlator: N rules (E entity + R graph-aware
 /// relation)" line is hand-maintained prose and had already drifted once
 /// (stated 108 while the registry held 109, immediately after a rule was
-/// added and only `docs/ARCHITECTURE_AUDIT.md` was reconciled). Tie it to
+/// added and the README was left behind). Tie it to
 /// [`huntsman_search_engine::core::correlator::rule_counts`] so it can't
 /// silently rot again — the same no-silent-drift guard as
 /// `readme_module_overview_count_matches_registry`.
@@ -2097,7 +2109,7 @@ fn readme_correlator_rule_count_matches_registry() {
     assert!(
         readme.contains(&needle),
         "README must cite the live correlator rule split ({needle:?}); update \
-         README.md (and docs/ARCHITECTURE_AUDIT.md) after adding/removing a rule"
+         README.md after adding/removing a rule"
     );
 }
 
@@ -2109,7 +2121,8 @@ fn readme_correlator_rule_count_matches_registry() {
 /// into a mechanical CI check — adding e.g. `candle`, `onnxruntime`, an LLM SDK,
 /// `tokenizers`, or `qdrant-client` fails here. External OSINT *data* APIs
 /// (registries, breach corpora, geocoders) are data sources, not AI services,
-/// and are deliberately unaffected. See `docs/RUNTIME_INDEPENDENCE.md`.
+/// and are deliberately unaffected. This guard is the authoritative statement of
+/// the rule; the crate root cites it rather than restating it.
 #[test]
 fn runtime_carries_no_ai_ml_inference_dependency() {
     let lock = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"))
@@ -2178,7 +2191,7 @@ fn runtime_carries_no_ai_ml_inference_dependency() {
         "RUNTIME_INDEPENDENCE violation — AI/ML/inference crate(s) entered the \
          dependency tree: {offenders:?}. HSE's runtime must stay deterministic \
          Rust with no AI / LLM / vector / embedding dependency (AI is a \
-         development-time accelerator only). See docs/RUNTIME_INDEPENDENCE.md."
+         development-time accelerator only)."
     );
 }
 
@@ -3814,5 +3827,195 @@ fn every_src_file_is_wired_into_the_module_tree() {
         "orphan src file(s): present on disk but not `mod`-linked or `include!`d, \
          so cargo never compiles them — 100% file relevance is broken:\n  {}",
         orphans.join("\n  ")
+    );
+}
+
+/// Every `docs/*.md` path cited from Rust source must actually exist.
+///
+/// A comment pointing at a document that was never written — or was renamed and
+/// left behind — is a fabricated source: it presents a claim as having external
+/// backing that cannot be read. Worse, an assertion message telling a maintainer
+/// to "update `docs/<name>.md`" sends them after a file that isn't there. (That
+/// placeholder is deliberately not a resolvable path — this guard scans its own
+/// source too, and caught the literal example the first time it ran.) Both had
+/// accumulated here: 24 citations across 9 non-existent documents, including one
+/// failure message instructing the reader to reconcile a missing audit doc.
+///
+/// The repository's own doctrine is that the running software is the source of
+/// truth for reference material (`hse --help`, `hse modules`), and that
+/// invariants are enforced by the guards in this file rather than by prose. This
+/// test makes that mechanical: cite a document, and it has to exist.
+///
+/// Scoped to `.rs` files deliberately. `docs/IMPLEMENTATION_BLUEPRINT.md` lists
+/// documents it plans to create (`— **NEW**`), which is a legitimate forward
+/// reference in a planning document, not a broken citation.
+#[test]
+fn every_docs_path_cited_from_rust_source_exists() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    // EVERY Rust source tree in the repository, not just the crate's own two:
+    // `benches/` and `build.rs` are compiled by `cargo check --all-targets`, and
+    // the fuzz targets are a separate crate that is still this repository's
+    // code. Scanning only `src`/`tests` would let a citation rot in any of them
+    // while the guard reported all-clear.
+    for dir in ["src", "tests", "benches", "fuzz/fuzz_targets"] {
+        let path = root.join(dir);
+        if path.is_dir() {
+            collect_rs_files(&path, &mut files);
+        }
+    }
+    let build_rs = root.join("build.rs");
+    if build_rs.is_file() {
+        files.push(build_rs);
+    }
+    assert!(
+        files.len() > 100,
+        "expected to scan the whole Rust source tree; found only {} file(s) — \
+         the walk is broken, and a guard that scans nothing passes vacuously",
+        files.len()
+    );
+
+    let mut dangling: Vec<String> = Vec::new();
+    for file in &files {
+        // A file that cannot be read is a failure, not a skip. Silently
+        // continuing here would let an unreadable source hide its citations and
+        // still report a pass.
+        let text = fs::read_to_string(file)
+            .unwrap_or_else(|e| panic!("cannot read {} for citation scan: {e}", file.display()));
+        for (lineno, line) in text.lines().enumerate() {
+            let mut rest = line;
+            while let Some(at) = rest.find("docs/") {
+                // A `docs/…` sitting inside an http(s) URL belongs to someone
+                // else's repository (e.g. npm's `REGISTRY-API.md`) and must not
+                // be resolved against this checkout. Quotes, backticks and
+                // brackets are token boundaries too — a URL written
+                // `` `https://…/docs/X.md` `` or `"https://…/docs/X.md"` would
+                // otherwise be misread as a local citation and fail the build.
+                let preceding = &rest[..at];
+                let in_url = preceding
+                    .rsplit(|c: char| {
+                        c.is_whitespace() || matches!(c, '(' | '<' | '`' | '"' | '\'' | '[')
+                    })
+                    .next()
+                    .is_some_and(|tok| tok.starts_with("http"));
+
+                let tail = &rest[at..];
+                let end = tail
+                    .find(|c: char| {
+                        !(c.is_ascii_alphanumeric() || c == '/' || c == '.' || c == '_' || c == '-')
+                    })
+                    .unwrap_or(tail.len());
+                let cited = &tail[..end];
+
+                if !in_url && cited.ends_with(".md") && !root.join(cited).exists() {
+                    dangling.push(format!(
+                        "{}:{} cites {cited}",
+                        file.strip_prefix(root).unwrap_or(file).display(),
+                        lineno + 1,
+                    ));
+                }
+                rest = &tail[end.max(1)..];
+            }
+        }
+    }
+
+    assert!(
+        dangling.is_empty(),
+        "Rust source cites {} document(s) that do not exist — a citation with no \
+         readable source. Point at the real enforcement site (a guard in \
+         tests/architecture.rs, `hse --help`, `hse modules`) or drop the \
+         reference; do NOT author a document to satisfy the citation:\n  {}",
+        dangling.len(),
+        dangling.join("\n  ")
+    );
+}
+
+/// Every `f64` clap argument must declare a `value_parser`.
+///
+/// `f64::from_str` accepts `nan` and `inf`, and clap's stock `f64` parser takes
+/// them verbatim. A NaN threshold makes every `>=`/`<` comparison against it
+/// false, so a filter built on one silently inverts or disables itself — the
+/// silent-under-reporting failure this crate treats as its cardinal sin. An
+/// out-of-range finite value (`--min-confidence 5.0`) is just as bad in the
+/// other direction: it is accepted, unsatisfiable, and reported as success.
+///
+/// This shipped once already. `hse ingest --min-confidence nan` exited 0 having
+/// emitted an empty deliverable, and the fix added a `value_parser` to that ONE
+/// flag while seven others kept clap's stock parser — `scan`/`live`
+/// `--min-confidence`, `--min-expand-confidence` and `--min-marginal-yield`, and
+/// `keys prune --min-success-rate`. Fixing one instance of a class and leaving
+/// its siblings is what this guard exists to prevent.
+///
+/// The library layer coerces non-finite values defensively
+/// (`ScanOptions::effective_*`), but silently: the operator's flag is discarded
+/// with no message. Validation belongs at the argument boundary, where it can
+/// still be a usage error before any work is done.
+#[test]
+fn every_f64_cli_argument_declares_a_value_parser() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    collect_rs_files(&root.join("src/cli"), &mut files);
+    assert!(
+        !files.is_empty(),
+        "no CLI sources found — the walk is broken and this guard would pass vacuously"
+    );
+
+    let mut unguarded: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+    for file in &files {
+        let text = fs::read_to_string(file)
+            .unwrap_or_else(|e| panic!("cannot read {} for f64-arg scan: {e}", file.display()));
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let t = line.trim();
+            // A clap field declaration: `name: f64,` or `name: Option<f64>,`.
+            if !(t.ends_with(": f64,") || t.ends_with(": Option<f64>,")) {
+                continue;
+            }
+            // Walk back over the doc comments to the nearest `#[arg(...)]`. A
+            // field with no `#[arg]` at all is a plain struct field, not a CLI
+            // argument, and is none of this guard's business.
+            let mut attr: Option<String> = None;
+            for back in (0..i).rev() {
+                let p = lines[back].trim();
+                if p.starts_with("#[arg(") {
+                    // The attribute may wrap across lines; join until the field.
+                    attr = Some(lines[back..i].join(" "));
+                    break;
+                }
+                if !(p.starts_with("///")
+                    || p.starts_with("//")
+                    || p.starts_with('#')
+                    || p.is_empty())
+                {
+                    break;
+                }
+            }
+            let Some(attr) = attr else { continue };
+            checked += 1;
+            if !attr.contains("value_parser") {
+                unguarded.push(format!(
+                    "{}:{} {}",
+                    file.strip_prefix(root).unwrap_or(file).display(),
+                    i + 1,
+                    t
+                ));
+            }
+        }
+    }
+
+    assert!(
+        checked >= 8,
+        "expected to find the known f64 CLI arguments; found only {checked} — the \
+         scan is broken and this guard would pass vacuously"
+    );
+    assert!(
+        unguarded.is_empty(),
+        "{} f64 CLI argument(s) use clap's stock parser, which accepts `nan` and \
+         `inf` and enforces no range. Add `value_parser = confidence_floor` (a \
+         0.0-1.0 probability) or `value_parser = non_negative_rate` (a \
+         non-negative rate):\n  {}",
+        unguarded.len(),
+        unguarded.join("\n  ")
     );
 }

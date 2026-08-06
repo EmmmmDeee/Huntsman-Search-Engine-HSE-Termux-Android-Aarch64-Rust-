@@ -21,10 +21,27 @@ pub(super) async fn cmd_selftest(json: bool) -> crate::core::error::Result<()> {
             serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into())
         );
     } else {
-        // Table → stderr so stdout stays clean for piping the `--json` form.
-        eprintln!("HSE v{} — self-test\n", crate::VERSION);
-        eprint!("{}", report.render());
-        eprintln!();
+        // The table is this command's PRIMARY OUTPUT, so it goes to stdout.
+        //
+        // It used to go to stderr "so stdout stays clean for piping the `--json`
+        // form", but the two branches are mutually exclusive — the table is
+        // never printed in `--json` mode, so it could never have contaminated
+        // that JSON. The cost was real: `hse selftest > report.txt` produced an
+        // EMPTY file, and `hse selftest | grep` matched nothing, on a command
+        // whose own help calls it "kept for scripting".
+        //
+        // It also silently truncated the aggregate command. `hse diagnostics`
+        // prints its other sections to stdout and invokes this one, so
+        // `hse diagnostics > report.txt` captured the self-test section's header
+        // and none of its check lines — a report that looks complete and is not.
+        //
+        // The `scan -o json` discipline (human progress → stderr, document →
+        // stdout) is deliberate and stays as it is: there, both are emitted in
+        // the SAME run and the split is what makes `| jq` work. That is not this
+        // case.
+        println!("HSE v{} — self-test\n", crate::VERSION);
+        print!("{}", report.render());
+        println!();
     }
     report_to_result(&report)
 }

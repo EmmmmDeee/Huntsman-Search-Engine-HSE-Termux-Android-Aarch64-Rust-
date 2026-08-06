@@ -414,10 +414,11 @@ fn render_raw_response_body(raw: &serde_json::Value) -> String {
     crate::util::http::redact_credentials(&pretty)
 }
 
-/// Render the complete scan event sequence as a **human-readable timeline**: a
-/// header (event count + UTC date and time-span), a per-type breakdown, then one
-/// aligned line per event — `HH:MM:SS  <category>  <glyph> <summary>` in order,
-/// formatted via [`EventKind::log_summary`](crate::core::event::EventKind::log_summary).
+/// Render the complete scan event sequence as **structured JSON lines** — one
+/// JSON object per event, in order, via
+/// [`Event::to_log_line`](crate::core::event::Event::to_log_line): `{"time":…,
+/// "level":…,"kind":…, …fields}` with no box-drawing, tree, or status glyphs, so
+/// the log is both machine-parseable (one object per line) and clean to read.
 /// Pure (no storage I/O) so callers fetch `events` once via
 /// [`StoragePort::events_for_scan`](crate::core::port::StoragePort::events_for_scan)
 /// and pass the slice in — shared by [`render_debug_bundle`]'s §3 and the
@@ -428,42 +429,11 @@ fn render_raw_response_body(raw: &serde_json::Value) -> String {
 /// lives in the debug bundle's dossier section, and the machine-readable events
 /// remain available verbatim from `GET /api/v1/scans/{id}/events.history`.
 pub(crate) fn render_event_log(events: &[crate::core::event::Event]) -> String {
-    use crate::util::timefmt::{hms_utc, ymd_utc};
-    use std::collections::BTreeMap;
     use std::fmt::Write as _;
 
-    let mut histo: BTreeMap<&'static str, usize> = BTreeMap::new();
-    for ev in events {
-        *histo.entry(ev.kind.event_type_str()).or_default() += 1;
-    }
-
     let mut s = String::new();
-    let _ = writeln!(s, "── SCAN SEQUENCE · {} events ──", events.len());
-    if let (Some(first), Some(last)) = (events.first(), events.last()) {
-        let date = ymd_utc(first.ts as i64).unwrap_or_else(|| "—".into());
-        let _ = writeln!(
-            s,
-            "  {date} · {} → {} UTC",
-            hms_utc(first.ts),
-            hms_utc(last.ts)
-        );
-    }
-
-    let _ = writeln!(s, "\n  By type:");
-    for (typ, n) in &histo {
-        let _ = writeln!(s, "    {typ:<20}{n:>5}");
-    }
-
-    let _ = writeln!(s, "\n  Timeline (UTC):");
-    if events.is_empty() {
-        let _ = writeln!(
-            s,
-            "    (no events recorded — event persistence disabled, or an import not a live scan)"
-        );
-    }
     for ev in events {
-        let (category, body) = ev.kind.log_summary();
-        let _ = writeln!(s, "    {}  {category:<7} {body}", hms_utc(ev.ts));
+        let _ = writeln!(s, "{}", ev.to_log_line());
     }
     s
 }
@@ -494,22 +464,8 @@ pub(crate) fn render_debug_bundle(
     use std::fmt::Write as _;
 
     let mut s = String::new();
-    let _ = writeln!(
-        s,
-        "╔═══════════════════════════════════════════════════════╗"
-    );
-    let _ = writeln!(
-        s,
-        "║  HUNTSMAN DEBUG BUNDLE — complete scan snapshot         ║"
-    );
-    let _ = writeln!(
-        s,
-        "║  Self-contained: results, sequence, and every flaw.    ║"
-    );
-    let _ = writeln!(
-        s,
-        "╚═══════════════════════════════════════════════════════╝"
-    );
+    let _ = writeln!(s, "=== HUNTSMAN DEBUG BUNDLE — complete scan snapshot ===");
+    let _ = writeln!(s, "Self-contained: results, sequence, and every flaw.");
     // DETERMINISM: the bundle body deliberately carries NO wall-clock generation
     // timestamp. For an immutable (completed) scan, two exports must be
     // byte-identical so the artifact can be `diff`ed across runs/tools/time —
@@ -615,9 +571,15 @@ pub(crate) fn render_debug_bundle(
         }
     }
 
-    // ── 3. Complete scan sequence (every event) ──
+    // 3. Complete scan sequence (every event), as structured JSON lines.
     let events = store.events_for_scan(sid)?;
-    s.push('\n');
+    let _ = writeln!(s, "\n== SCAN SEQUENCE ({} events) ==", events.len());
+    if events.is_empty() {
+        let _ = writeln!(
+            s,
+            "  (no events recorded — event persistence disabled, or an import not a live scan)"
+        );
+    }
     s.push_str(&render_event_log(&events));
 
     // ── 4. Scored self-audit (every weakness + recommendation) ──
@@ -1048,20 +1010,9 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "╔═══════════════════════════════════════════════════════╗"
+        "=== HUNTSMAN SYSTEM DEBUG BUNDLE — full engine self-diag ==="
     );
-    let _ = writeln!(
-        s,
-        "║  HUNTSMAN SYSTEM DEBUG BUNDLE — full engine self-diag   ║"
-    );
-    let _ = writeln!(
-        s,
-        "║  One file: what's wrong, the proof, and every module.  ║"
-    );
-    let _ = writeln!(
-        s,
-        "╚═══════════════════════════════════════════════════════╝"
-    );
+    let _ = writeln!(s, "One file: what's wrong, the proof, and every module.");
 
     // Live snapshots — cheap synchronous process-global reads.
     let module_health = crate::core::engine::module_health_report();

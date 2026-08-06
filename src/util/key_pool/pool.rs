@@ -1,6 +1,6 @@
 //! `PoolData` and `KeyPool` — the in-memory pool structure and all mutation methods.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,14 @@ pub(super) use crate::util::service_defs::rate_limit_reset;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PoolData {
-    pub services: HashMap<String, Vec<KeyEntry>>,
+    /// Keys grouped by service name. A `BTreeMap` (not `HashMap`) so iteration
+    /// is in sorted service order: `hse keys list` prints its service blocks
+    /// deterministically, and `export_json` emits stable, byte-reproducible
+    /// top-level key order for two pools with the same contents — a `HashMap`
+    /// left both at process-random order. The round-robin `KeyPool::indices`
+    /// stays a `HashMap`: it is internal selection state, never iterated for
+    /// output.
+    pub services: BTreeMap<String, Vec<KeyEntry>>,
 }
 
 /// Per-status key counts for one service — the breakdown surfaced inside a

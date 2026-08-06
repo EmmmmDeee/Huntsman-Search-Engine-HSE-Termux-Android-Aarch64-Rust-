@@ -238,7 +238,21 @@ pub async fn cells_clear(
         return bad_request("set confirm: true to clear the cell tower database");
     }
     match clear_cells_db() {
-        Ok(()) => Json(json!({ "cleared": true })).into_response(),
+        // The byte figures are reported, not just `cleared: true`: a `DELETE`
+        // does not shrink a SQLite file, so before the vacuum this endpoint
+        // could answer "cleared" having returned nothing to the filesystem.
+        // `vacuum_error` is `null` on success and carries the reason when the
+        // rows went but the file could not be shrunk — a real outcome on a
+        // storage-constrained device, and one the caller must be able to see.
+        Ok(report) => Json(json!({
+            "cleared": true,
+            "rows_deleted": report.rows_deleted,
+            "bytes_before": report.bytes_before,
+            "bytes_after": report.bytes_after,
+            "bytes_reclaimed": report.bytes_reclaimed(),
+            "vacuum_error": report.vacuum_error,
+        }))
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),

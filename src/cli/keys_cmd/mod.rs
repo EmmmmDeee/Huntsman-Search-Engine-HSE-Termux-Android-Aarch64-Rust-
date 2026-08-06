@@ -162,7 +162,7 @@ pub enum KeysAction {
     /// pool and persist the result.
     Prune {
         /// Drop a judged key when its success rate is below this (0.0–1.0).
-        #[arg(long, default_value_t = 0.5)]
+        #[arg(long, default_value_t = 0.5, value_parser = crate::cli::command::confidence_floor)]
         min_success_rate: f64,
         /// Minimum recorded uses before a key is eligible to be judged.
         #[arg(long, default_value_t = 10)]

@@ -51,6 +51,26 @@ pub(super) fn coord_state(e: &Entity) -> Option<&'static str> {
         .and_then(|(lat, lon)| crate::util::geo::au_state_for_coords(lat, lon))
 }
 
+/// The AU state a confident, subject-anchoring `Address` names, or `None`. The
+/// address-class analogue of [`coord_state`], and the single canonical extractor
+/// the breach-locality rules share so the address class applies EXACTLY the same
+/// admissibility gate the coordinate class does.
+///
+/// Rejects a low-confidence address and — crucially — an INFRASTRUCTURE address
+/// ([`is_infrastructure_geo`]: a WHOIS `registrant` filing/privacy address or a
+/// `hosting`/CDN location). Without this guard a domain's registrar or web host
+/// (e.g. a registrant `"VIC, Australia"` behind the subject's personal domain)
+/// votes the *subject's* jurisdiction, manufacturing a false AU-092 "breach
+/// locality conflicts with footprint" anomaly or a false AU-098 residency
+/// consensus — the exact failure the coordinate path already prevents, and that
+/// the sibling rules AU-056/AU-085 guard against. Pure.
+pub(super) fn address_state(e: &Entity) -> Option<&'static str> {
+    if e.kind != EntityKind::Address || e.confidence < 0.50 || is_infrastructure_geo(e) {
+        return None;
+    }
+    crate::util::address_au::state_code(&e.value)
+}
+
 /// AU-099 — reverse-geocode the subject's coordinate fix to a human AU locality.
 ///
 /// `coord_state` (and AU-056/098) resolve a coordinate to its *state*; a bare
@@ -307,6 +327,49 @@ mod tests {
         e.tag("au-state:QLD");
         e.add_evidence(Evidence::new("exif_geo", "photo GPS"));
         assert_eq!(coord_state(&e), Some("QLD"));
+    }
+
+    #[test]
+    fn address_state_excludes_infrastructure_addresses() {
+        use crate::core::entity::Evidence;
+        // A confident subject address resolves to its state.
+        let mut home = Entity::new(
+            EntityKind::Address,
+            "10 Queen St, Brisbane QLD 4000",
+            confidence::MEDIUM,
+            "s",
+        );
+        home.add_evidence(Evidence::new("au_property", "property record"));
+        assert_eq!(address_state(&home), Some("QLD"));
+
+        // Regression: a WHOIS REGISTRANT address (the domain owner's filing/privacy
+        // address) at exactly the 0.50 gate must NOT vote the subject's
+        // jurisdiction — without this guard it manufactured a false AU-092
+        // "breach locality conflicts with footprint" anomaly and a false AU-098
+        // two-class residency consensus.
+        let mut registrant = Entity::new(
+            EntityKind::Address,
+            "VIC, Australia",
+            confidence::MEDIUM,
+            "s",
+        );
+        registrant.tag(crate::core::tags::REGISTRANT);
+        registrant.add_evidence(Evidence::new("whois", "registrant address"));
+        assert_eq!(address_state(&registrant), None);
+
+        // A HOSTING/CDN location is likewise excluded.
+        let mut hosting = Entity::new(
+            EntityKind::Address,
+            "NSW, Australia",
+            confidence::MEDIUM,
+            "s",
+        );
+        hosting.tag(crate::core::tags::HOSTING);
+        assert_eq!(address_state(&hosting), None);
+
+        // Below the 0.50 confidence floor → excluded, same as coord_state.
+        let weak = Entity::new(EntityKind::Address, "Perth WA 6000", 0.40, "s");
+        assert_eq!(address_state(&weak), None);
     }
 
     #[test]

@@ -47,7 +47,7 @@ pub(in crate::core::correlator) fn rule_au_060_transitive_identity_closure(
     // hop. `identity_paths` already computes the minimum edge confidence along each
     // path (`IdentityPath::min_confidence`, the same field AU-067 floors on), so the
     // check is a single comparison — no per-edge lookup, no drift from the primitive.
-    const MIN_CONF: f64 = 0.50;
+    const MIN_CONF: f64 = crate::core::relation::IDENTITY_LINK_MIN_CONF;
 
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
 

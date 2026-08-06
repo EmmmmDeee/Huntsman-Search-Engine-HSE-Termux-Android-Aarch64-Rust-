@@ -23,7 +23,7 @@ export async function renderScans(v){
     <div class="row">
       <div class="col-sm-3"><div class="stat-card"><div class="lab">Total</div><div class="val">${stats.total}</div></div></div>
       <div class="col-sm-3"><div class="stat-card"><div class="lab">Running</div><div class="val" style="color:${stats.running?'#31708f':'#888'}">${stats.running}</div></div></div>
-      <div class="col-sm-3"><div class="stat-card"><div class="lab">Complete</div><div class="val" style="color:${stats.complete?'#3c763d':'#888'}">${stats.complete}</div></div></div>
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Complete</div><div class="val" style="color:${stats.complete?'#3c763d':'#888'}">${stats.complete}</div>${(stats.aborted||stats.failed)?`<div class="text-muted" style="font-size:10px">${stats.aborted?`${stats.aborted} aborted`:''}${stats.aborted&&stats.failed?' · ':''}${stats.failed?`${stats.failed} failed`:''}</div>`:''}</div></div>
       <div class="col-sm-3"><div class="stat-card"><div class="lab">Entities found</div><div class="val">${stats.entities}</div></div></div>
     </div>
 
@@ -95,14 +95,18 @@ export function apiBudgetsPanel(s){
   </div>`;
 }
 export function scanStats(scans){
-  let running=0,complete=0,failed=0,entities=0;
+  let running=0,complete=0,aborted=0,failed=0,entities=0;
   for(const s of scans){
     if (s.status==='running'||s.status==='pending') running++;
     else if (s.status==='complete') complete++;
+    // `aborted` is a distinct terminal state (operator-stopped, data kept) —
+    // without its own bucket it matched no branch and vanished from the tallies
+    // while still inflating `total`. `failed` was counted but never rendered.
+    else if (s.status==='aborted') aborted++;
     else if (s.status==='failed') failed++;
     entities += s.entity_count||0;
   }
-  return {total:scans.length,running,complete,failed,entities};
+  return {total:scans.length,running,complete,aborted,failed,entities};
 }
 export function renderScansTable(scans){
   if (!scans.length){

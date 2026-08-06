@@ -39,7 +39,7 @@ pub(in crate::core::correlator) fn rule_au_071_robust_identity_cluster(
     const MIN_MEMBERS: usize = 3;
     // The same Probable floor AU-067/AU-070 resolve under, so the cluster set and
     // the broker set are computed over the identical binding-link graph.
-    const MIN_CONF: f64 = 0.50;
+    const MIN_CONF: f64 = crate::core::relation::IDENTITY_LINK_MIN_CONF;
 
     let clusters = resolve_identity_clusters(entities, relations, MAX_HOPS, MIN_CONF);
     if clusters.is_empty() {

@@ -19,9 +19,9 @@
 
 use super::{EntityKind, ExtractedEntity};
 use crate::util::str_util::char_window;
-use lazy_static::lazy_static;
 use regex::Regex;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::sync::LazyLock;
 
 // Canonical locators from `core::classifier`. Re-exported under the legacy names
 // so existing call sites keep compiling after the duplicate regex definitions
@@ -31,27 +31,28 @@ pub use crate::core::classifier::EMAIL_RE as EMAIL_PATTERN;
 pub use crate::core::classifier::IPV4_RE as IPV4_PATTERN;
 pub use crate::core::classifier::URL_RE as URL_PATTERN;
 
-lazy_static! {
-    // Social handle: @ + alphanumeric (Twitter, Instagram style)
-    pub static ref SOCIAL_HANDLE: Regex = Regex::new(r"@[a-zA-Z0-9_]{1,30}").expect("valid social regex");
+// Social handle: @ + alphanumeric (Twitter, Instagram style)
+pub static SOCIAL_HANDLE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"@[a-zA-Z0-9_]{1,30}").expect("valid social regex"));
 
-    // IPv6 CANDIDATE: any run of hex digits and colons. Deliberately loose — it
-    // only has to *find* candidates; `extract_by_patterns` then validates each one
-    // through `Ipv6Addr::from_str` and a boundary check, so the regex never has to
-    // judge whether a run is a real address. (Single char class, no alternation →
-    // linear time, no ReDoS.)
-    pub static ref IPV6_CANDIDATE: Regex = Regex::new(r"[0-9A-Fa-f:]+").expect("valid ipv6 candidate regex");
+// IPv6 CANDIDATE: any run of hex digits and colons. Deliberately loose — it
+// only has to *find* candidates; `extract_by_patterns` then validates each one
+// through `Ipv6Addr::from_str` and a boundary check, so the regex never has to
+// judge whether a run is a real address. (Single char class, no alternation →
+// linear time, no ReDoS.)
+pub static IPV6_CANDIDATE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[0-9A-Fa-f:]+").expect("valid ipv6 candidate regex"));
 
-    // One MAXIMAL run of hex digits, bounded by word boundaries so a hex run
-    // embedded in a longer alphanumeric token is not carved out of it. The
-    // extractor classifies each run by its EXACT length (32/40/64/128) in
-    // `extract_by_patterns`, rather than running one length-specific regex per
-    // hash type. The old code ran independent {40} and {64} passes over the same
-    // text, so every 64-char SHA-256 additionally surfaced a bogus 40-char
-    // "SHA-1" — its own prefix — that dedup (keyed on `(kind, value)`) never
-    // caught because the two values differ.
-    pub static ref HEX_TOKEN: Regex = Regex::new(r"\b[0-9a-fA-F]+\b").expect("valid hex regex");
-}
+// One MAXIMAL run of hex digits, bounded by word boundaries so a hex run
+// embedded in a longer alphanumeric token is not carved out of it. The
+// extractor classifies each run by its EXACT length (32/40/64/128) in
+// `extract_by_patterns`, rather than running one length-specific regex per
+// hash type. The old code ran independent {40} and {64} passes over the same
+// text, so every 64-char SHA-256 additionally surfaced a bogus 40-char
+// "SHA-1" — its own prefix — that dedup (keyed on `(kind, value)`) never
+// caught because the two values differ.
+pub static HEX_TOKEN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b[0-9a-fA-F]+\b").expect("valid hex regex"));
 
 /// Extract entities from text using pattern matching.
 pub fn extract_by_patterns(text: &str) -> Vec<ExtractedEntity> {

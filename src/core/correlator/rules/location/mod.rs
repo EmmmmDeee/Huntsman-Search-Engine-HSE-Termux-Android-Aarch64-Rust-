@@ -134,7 +134,7 @@ pub(crate) fn is_anchoring_geo_source(source: &str) -> bool {
 /// the `Coordinates` rules (AU-052/053/059) and the `Address` rollup rules
 /// (AU-018/026/030) so neither lets a registrant/hosting/IP-geo location vote
 /// the subject's physical position.
-pub(in crate::core::correlator) fn is_infrastructure_geo(e: &Entity) -> bool {
+pub(in crate::core) fn is_infrastructure_geo(e: &Entity) -> bool {
     // `hse radar` seeds its sweep with a sentinel Coordinates target (0,0) because
     // signal_radar/device_sensors/wifi_intel/etc. gate on target *kind*, not value.
     // That sentinel is minted as a `seed, subject` entity — the same tags a real

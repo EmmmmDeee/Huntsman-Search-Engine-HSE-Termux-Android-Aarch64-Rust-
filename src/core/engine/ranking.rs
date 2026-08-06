@@ -20,8 +20,8 @@
 use super::*;
 
 /// One retained identifier ranked by its realised cross-investigation leverage —
-/// the output of [`rank_enrichment_leverage`]. The enrichment-priority asset
-/// `docs/data_retention_design.md` (§3–4.1) names: an identifier observed across
+/// the output of [`rank_enrichment_leverage`]. The enrichment-priority rule is:
+/// an identifier observed across
 /// many distinct investigations is the one that most empowers the rest, because
 /// each recurrence is a join that connects two otherwise-separate dossiers.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -74,7 +74,7 @@ pub fn enrich_offline_geo(entities: &mut Vec<Entity>, scan_id: &str) {
 
 /// Rank the high-leverage identifiers in `entities` by how many distinct
 /// investigations each one bridges — the "which of my retained data most empowers
-/// the rest" query (`docs/data_retention_design.md` §4.1), and the read-only
+/// the rest" query, and the read-only
 /// counterpart to [`history::link_cross_scan_history`], which writes the same
 /// bridge as evidence.
 ///
@@ -184,14 +184,28 @@ pub fn is_autonomous_seed_candidate(e: &Entity) -> bool {
                 && !crate::util::wifi::is_generic_ssid(&e.value)
         }
         // A precise fix reverse-geocodes into an address, POIs and property
-        // records. A COARSE centroid (postcode/suburb/country) or a HOSTING
-        // fix (a datacentre — it locates a server, never a person) does not.
+        // records. A COARSE centroid (postcode/suburb/country) does not, and
+        // neither does an INFRASTRUCTURE fix — a hosting/CDN datacentre, an
+        // `infra:` map feature (a scraped camera/tower), a WHOIS registrant
+        // location, or the radar `0,0` sentinel. The canonical
+        // `is_infrastructure_geo` bundles all of those (the hand-rolled subset
+        // here previously checked only HOSTING, so a sentinel/`infra:`/registrant
+        // coordinate seeded a scan on null island or a surveillance camera).
         EntityKind::Coordinates => {
             e.confidence >= 0.50
+                && !crate::core::correlator::is_infrastructure_geo(e)
                 && !e.has_tag(crate::core::tags::COARSE)
-                && !e.has_tag(crate::core::tags::HOSTING)
                 && !e.has_tag("postcode-only")
                 && !e.has_tag("candidate-suburb")
+        }
+        // An Address seeds a scan only when it is the SUBJECT's — a registrant /
+        // hosting address is infrastructure, not a person, so it is excluded by
+        // the same canonical guard (the delegated cross-scan predicate is a
+        // dual-purpose bridging key that intentionally admits a shared registrar
+        // address, which is wrong for subject-seed selection).
+        EntityKind::Address => {
+            !crate::core::correlator::is_infrastructure_geo(e)
+                && history::is_cross_scan_candidate(e)
         }
         // Every identity kind keeps the history gate's exact rule.
         _ => history::is_cross_scan_candidate(e),

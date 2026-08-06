@@ -214,35 +214,35 @@ fn render_event(kind: &crate::core::event::EventKind) -> String {
             target_value,
             interval_secs,
             ..
-        } => format!("◆ live start — {target_kind} {target_value} (every {interval_secs}s)"),
-        E::LiveTick { iteration, .. } => format!("\n━━━ sweep #{iteration} ━━━"),
+        } => format!("live start   {target_kind}={target_value}  every {interval_secs}s"),
+        E::LiveTick { iteration, .. } => format!("\n--- sweep #{iteration} ---"),
         E::ScanStart {
             target_kind,
             target_value,
-        } => format!("▸ scan start — {target_kind} {target_value}"),
-        E::ModuleStart { module } => format!("  · {module} …"),
+        } => format!("scan start   {target_kind}={target_value}"),
+        E::ModuleStart { module } => format!("  module {module}: running"),
         E::ModuleDone { module, found } => {
             if *found > 0 {
-                format!("  ✓ {module} — {found} entit{}", plural(*found))
+                format!("  module {module}: done, {found} entit{}", plural(*found))
             } else {
                 String::new()
             }
         }
-        E::ModuleError { module, error } => format!("  ✗ {module} — error: {error}"),
-        E::ModuleSkipped { module, reason } => format!("  – {module} — skipped: {reason}"),
+        E::ModuleError { module, error } => format!("  module {module}: error: {error}"),
+        E::ModuleSkipped { module, reason } => format!("  module {module}: skipped: {reason}"),
         E::EntityFound { entity } => render_entity(entity),
         E::ExpansionTick {
             depth,
             queued,
             visited,
-        } => format!("  ↻ expansion depth={depth} queued={queued} visited={visited}"),
-        E::ExpansionStop { reason } => format!("  ◼ expansion stopped: {reason}"),
+        } => format!("  expansion depth={depth} queued={queued} visited={visited}"),
+        E::ExpansionStop { reason } => format!("  expansion stopped: {reason}"),
         E::EntityExcluded {
             kind,
             value,
             reason,
         } => {
-            format!("  ⊘ not expanded [{kind}] {value} — {reason}")
+            format!("  not expanded [{kind}] {value}: {reason}")
         }
         E::BreachSweep {
             anchors,
@@ -255,7 +255,7 @@ fn render_event(kind: &crate::core::event::EventKind) -> String {
                 String::new()
             };
             format!(
-                "  ⇉ breach sweep — {probes} probe{} from {anchors} anchor{}{over}",
+                "  breach sweep: {probes} probe{} from {anchors} anchor{}{over}",
                 plural2(*probes),
                 plural2(*anchors)
             )
@@ -266,27 +266,40 @@ fn render_event(kind: &crate::core::event::EventKind) -> String {
             corroborated,
             flags,
         } => format!(
-            "  ⚖ breach audit — {verdict}: {corroborated}/{examined} corroborated, {flags} flag{}",
+            "  breach audit: {verdict}, {corroborated}/{examined} corroborated, {flags} flag{}",
             plural2(*flags)
         ),
         E::CorrelationFound { correlation } => format!(
-            "  ⚑ correlation [{}] {} — {}",
+            "  correlation [{}] {}: {}",
             correlation.severity, correlation.rule_name, correlation.description
         ),
         E::CorrelationsDone { count } => {
             if *count > 0 {
-                format!("  ⚑ {count} correlation{} evaluated", plural2(*count))
+                format!("  {count} correlation{} evaluated", plural2(*count))
             } else {
                 String::new()
             }
         }
-        E::ScanComplete { entity_count, .. } => {
-            format!(
-                "▪ scan complete — {entity_count} entit{}",
+        E::ScanComplete {
+            entity_count,
+            status,
+            ..
+        } => match status {
+            // Mirror `EventKind::log_summary` (core/event/mod.rs): a cancelled or
+            // failed iteration still emits `ScanComplete`, so this
+            // fully-unredacted live view must state what actually happened
+            // instead of printing the success line for every terminal state.
+            crate::core::scan::ScanStatus::Aborted => format!(
+                "scan aborted — stopped early — {entity_count} entit{}",
                 plural(*entity_count)
-            )
-        }
-        E::LiveStop { reason, .. } => format!("◆ live stop — {reason}"),
+            ),
+            crate::core::scan::ScanStatus::Failed => "scan failed".to_string(),
+            _ => format!(
+                "scan complete — {entity_count} entit{}",
+                plural(*entity_count)
+            ),
+        },
+        E::LiveStop { reason, .. } => format!("live stop — {reason}"),
     }
 }
 
@@ -299,18 +312,18 @@ fn render_entity(e: &crate::core::entity::Entity) -> String {
     let mut s = String::new();
     let _ = write!(
         s,
-        "  + {} [{}]  conf={:.2}  corr={}",
+        "  entity {} [{}]  conf={:.2}  corr={}",
         e.value, e.kind, e.confidence, e.corroboration
     );
     if !e.tags.is_empty() {
         let _ = write!(s, "\n      tags: {}", e.tags.join(", "));
     }
     for ev in &e.evidence {
-        let _ = write!(s, "\n      ├─ {} — {}", ev.source, ev.summary);
+        let _ = write!(s, "\n      evidence {}: {}", ev.source, ev.summary);
         // Every non-empty attribute, verbatim — no length cap, no masking.
         for (k, v) in &ev.attributes {
             if !v.is_empty() {
-                let _ = write!(s, "\n      │  {k}: {v}");
+                let _ = write!(s, "\n        {k}: {v}");
             }
         }
     }

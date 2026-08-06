@@ -106,7 +106,25 @@ async fn run_batch(base: ScanCmd, path: &str) -> crate::core::error::Result<()> 
     Ok(())
 }
 
+/// The output formats `hse scan` accepts, validated up front. The tail dispatch
+/// only special-cases `json`/`dossier` and treats every other value as `table`,
+/// so without this an unknown format is silently downgraded — `cmd_query`
+/// already guards its own format the same way.
+fn validate_scan_output_format(output: &str) -> crate::core::error::Result<()> {
+    match output {
+        "table" | "json" | "dossier" => Ok(()),
+        other => Err(crate::core::error::Error::Other(format!(
+            "unknown --output format {other:?} (expected `table`, `json`, or `dossier`)"
+        ))),
+    }
+}
+
 pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
+    // Validate the output format up front — BEFORE running the scan or entering
+    // batch mode — so a typo like `--output josn` fails fast with a clear
+    // message instead of paying for the full scan and then silently rendering
+    // the human table (which breaks `hse scan … --output json | jq`).
+    validate_scan_output_format(&cmd.output)?;
     // Batch mode short-circuit: `--input-file` runs the whole pipeline once per
     // file seed, reusing this same function (value is overwritten per seed).
     if let Some(path) = cmd.input_file.clone() {
@@ -612,6 +630,23 @@ mod tests {
     use crate::core::confidence;
     use crate::core::entity::{Entity, EntityKind, Evidence};
     use std::cell::Cell;
+
+    #[test]
+    fn scan_output_format_is_validated_up_front() {
+        for ok in ["table", "json", "dossier"] {
+            assert!(
+                validate_scan_output_format(ok).is_ok(),
+                "{ok} must be accepted"
+            );
+        }
+        // A typo must be rejected with a message that names the bad value and the
+        // valid set — not silently downgraded to the table view.
+        let err = validate_scan_output_format("josn")
+            .expect_err("a typo must be rejected")
+            .to_string();
+        assert!(err.contains("josn"), "error names the bad value: {err}");
+        assert!(err.contains("json"), "error lists the valid formats: {err}");
+    }
 
     #[test]
     fn parse_seed_list_skips_blanks_comments_and_dedups() {

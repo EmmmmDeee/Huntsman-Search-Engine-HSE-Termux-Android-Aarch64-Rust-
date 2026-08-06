@@ -113,7 +113,7 @@ fn entity_observed_by_two_scans_appears_in_both() {
 }
 
 #[test]
-fn latest_completed_scan_is_deterministic_on_same_second_ties() {
+fn latest_finished_scan_is_deterministic_on_same_second_ties() {
     // `started_at` is 1-second resolution; two scans completing in the same second
     // must resolve `latest` deterministically (PROBLEM_TREE T2.9). Without the
     // `, id DESC` tie-break SQLite picks arbitrarily, so `hse export/diff/audit
@@ -131,7 +131,7 @@ fn latest_completed_scan_is_deterministic_on_same_second_ties() {
     mk("scan-zzz");
     // id DESC tie-break ⇒ the lexicographically larger id wins on every call.
     let winner = store
-        .latest_completed_scan()
+        .latest_finished_scan()
         .expect("should succeed")
         .expect("should succeed")
         .id;
@@ -142,7 +142,7 @@ fn latest_completed_scan_is_deterministic_on_same_second_ties() {
     for _ in 0..5 {
         assert_eq!(
             store
-                .latest_completed_scan()
+                .latest_finished_scan()
                 .expect("should succeed")
                 .expect("should succeed")
                 .id,
@@ -154,14 +154,14 @@ fn latest_completed_scan_is_deterministic_on_same_second_ties() {
 }
 
 #[test]
-fn latest_completed_scan_errors_loudly_on_a_corrupt_row_instead_of_reporting_none() {
-    // `latest_completed_scan` backs `resolve_scan_id`'s `latest` selector
+fn latest_finished_scan_errors_loudly_on_a_corrupt_row_instead_of_reporting_none() {
+    // `latest_finished_scan` backs `resolve_scan_id`'s `latest` selector
     // (`hse export/diff/audit latest`, the SPA's "open latest scan"). If the
     // one row matching `status = 'complete'` has a corrupted/schema-drifted
     // `data_json`, the function must propagate that as an `Err` — exactly
     // like the sibling `get_scan` already does via `?` — never silently
     // report `Ok(None)`, which `resolve_scan_id` turns into the misleading
-    // "no completed scans in store" when a complete scan actually exists.
+    // "no finished scans in store" when a complete scan actually exists.
     let path = tmp_db();
     let store = Store::open(&path).expect("should succeed");
     {
@@ -177,11 +177,57 @@ fn latest_completed_scan_errors_loudly_on_a_corrupt_row_instead_of_reporting_non
         )
         .expect("should succeed");
     }
-    let result = store.latest_completed_scan();
+    let result = store.latest_finished_scan();
     assert!(
         result.is_err(),
         "a corrupted complete-scan row must surface as an error, not Ok(None) \
-         (which resolve_scan_id would misreport as 'no completed scans'); got: {result:?}"
+         (which resolve_scan_id would misreport as 'no finished scans'); got: {result:?}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn latest_finished_scan_resolves_to_a_newer_aborted_scan_over_an_older_complete_one() {
+    // Regression: `latest_finished_scan` filtered `status = 'complete'`, so a
+    // scan the operator stopped early (or that hit its wall-time budget) was
+    // skipped even though its entities/correlations are final — `hse
+    // export/diff/audit latest` silently resolved to an OLDER complete scan (or
+    // errored) instead of the newest scan with data. An aborted scan is a
+    // terminal-with-data state, so `latest` must select it.
+    use crate::core::scan::ScanStatus;
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    let mk = |id: &str, status: ScanStatus, started_at: u64| {
+        let mut s = Scan::new(id, Target::new(TargetKind::Email, "x@y.com"));
+        s.status = status;
+        s.started_at = started_at;
+        s.finished_at = Some(started_at + 1);
+        store.upsert_scan(&s).expect("should succeed");
+    };
+    mk("scan-old-complete", ScanStatus::Complete, 1_000);
+    mk("scan-new-aborted", ScanStatus::Aborted, 2_000);
+
+    let latest = store
+        .latest_finished_scan()
+        .expect("query succeeds")
+        .expect("a finished scan exists");
+    assert_eq!(
+        latest.id, "scan-new-aborted",
+        "latest must resolve to the newest terminal-with-data scan, aborted included"
+    );
+    assert_eq!(latest.status, ScanStatus::Aborted);
+
+    // A newest FAILED scan, by contrast, has no usable data (entity_count 0) and
+    // must NOT shadow the older complete one.
+    mk("scan-newest-failed", ScanStatus::Failed, 3_000);
+    assert_eq!(
+        store
+            .latest_finished_scan()
+            .expect("query succeeds")
+            .expect("a finished scan exists")
+            .id,
+        "scan-new-aborted",
+        "a failed scan carries no data, so latest skips it for the aborted one"
     );
     let _ = std::fs::remove_file(&path);
 }
