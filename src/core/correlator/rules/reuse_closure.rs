@@ -67,12 +67,23 @@ pub(in crate::core::correlator) fn rule_au_121_credential_reuse_blast_radius(
             let kind = Secret::classify(e)?;
             let mut raw: Vec<String> = Vec::new();
             let mut handles: Vec<String> = Vec::new();
+            // A handle is only a safe union-find pivot if it is a DISTINCTIVE
+            // identity: not a generic role handle (admin/info/support/…) and not an
+            // all-numeric id (10001), either of which two unrelated people can
+            // independently carry. Pivoting on one fuses strangers into a single
+            // reuse component — a false shared-secret blast radius. Mirrors the
+            // persona_key guard in core::relation::builders (minus its len>=4 arm,
+            // which is not needed to reject these and would drop legitimate short
+            // handles).
+            let is_pivotable = |h: &str| {
+                !h.is_empty() && !h.bytes().all(|b| b.is_ascii_digit()) && !is_generic_handle(h)
+            };
             for ev in &e.evidence {
                 if let Some(email) = ev.attributes.get("email") {
                     let email = email.trim().to_lowercase();
                     if email.contains('@') {
                         let handle = canonical_handle(email.split('@').next().unwrap_or(&email));
-                        if !handle.is_empty() && !handles.contains(&handle) {
+                        if is_pivotable(&handle) && !handles.contains(&handle) {
                             handles.push(handle);
                             raw.push(email);
                         }
@@ -82,7 +93,7 @@ pub(in crate::core::correlator) fn rule_au_121_credential_reuse_blast_radius(
                     let username = username.trim().to_lowercase();
                     if !username.is_empty() {
                         let handle = canonical_handle(&username);
-                        if !handle.is_empty() && !handles.contains(&handle) {
+                        if is_pivotable(&handle) && !handles.contains(&handle) {
                             handles.push(handle);
                             raw.push(username);
                         }
@@ -284,6 +295,48 @@ mod tests {
             out[0].severity,
             Severity::Critical,
             "a salted-hash chain is construction-unique → Critical"
+        );
+    }
+
+    #[test]
+    fn au121_generic_or_numeric_bridge_does_not_fuse_strangers() {
+        // A generic role handle ("admin") or an all-numeric id ("10001") is not a
+        // distinctive identity — two unrelated people each carry it — so it must
+        // not become a union-find pivot. Otherwise secret A {alice, admin} and
+        // secret B {bob, admin} fuse alice+bob into one false blast radius. After
+        // the pivot filter, each secret keeps only its one real handle and drops
+        // below the >= 2-handle edge threshold, so nothing fires.
+        let a = secret_with(
+            EntityKind::Password,
+            HASH_A,
+            &[("username", "alice"), ("username", "admin")],
+        );
+        let b = secret_with(
+            EntityKind::Password,
+            HASH_B,
+            &[("username", "bob"), ("username", "admin")],
+        );
+        let out = rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a, b]), "s", 0);
+        assert!(
+            out.is_empty(),
+            "a generic 'admin' bridge must not fuse alice and bob: {out:?}"
+        );
+
+        // Same for an all-numeric id.
+        let c = secret_with(
+            EntityKind::Password,
+            HASH_A,
+            &[("username", "alice"), ("username", "10001")],
+        );
+        let d = secret_with(
+            EntityKind::Password,
+            HASH_B,
+            &[("username", "bob"), ("username", "10001")],
+        );
+        let out2 = rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[c, d]), "s", 0);
+        assert!(
+            out2.is_empty(),
+            "an all-numeric '10001' bridge must not fuse alice and bob: {out2:?}"
         );
     }
 

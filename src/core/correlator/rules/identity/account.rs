@@ -835,6 +835,27 @@ pub(in crate::core::correlator) fn rule_au_076_email_username_localpart_bridge(
     let mut out: Vec<Correlation> = Vec::new();
     for (canon, emails) in &emails_by_canon {
         let usernames = &usernames_by_canon[canon];
+
+        // Source-independence gate (mirrors sibling AU-034). The High "same
+        // identity" claim requires the bridged email and username to be attested
+        // by >= 2 DISTINCT corroborating sources. `corroborating_sources()`
+        // excludes the self-enrichment / replay passes (name_intel, geo_normalize,
+        // recall, cross_scan …), so an email + username both MINTED from one seed
+        // — a single name_intel derivation shares `canonical_handle` by
+        // construction — cannot manufacture two "distinct sources" and
+        // self-correlate into a phantom High identity bridge on a single-source
+        // scan. A genuine cross-source match (a breach email + a platform-confirmed
+        // username) still clears the gate.
+        const MIN_DISTINCT_SOURCES: usize = 2;
+        let sources: HashSet<&str> = emails
+            .iter()
+            .chain(usernames.iter())
+            .flat_map(|e| e.corroborating_sources())
+            .collect();
+        if sources.len() < MIN_DISTINCT_SOURCES {
+            continue;
+        }
+
         let email_vals: BTreeSet<&str> = emails.iter().map(|e| e.value.as_str()).collect();
         let uname_vals: BTreeSet<&str> = usernames.iter().map(|e| e.value.as_str()).collect();
 
@@ -1191,11 +1212,17 @@ pub(in crate::core::correlator) fn rule_au_079_bio_cross_mention(
                         out.push(Correlation {
                             rule_id: "AU-079".into(),
                             rule_name: "Profile attribute cross-mention identity bridge".into(),
-                            severity: Severity::High,
+                            // A structured platform field (twitter/instagram/…) is the
+                            // subject's own declared link → High above. A free-text bio
+                            // @-mention is NOT self-attribution: the subject may simply be
+                            // naming a third party ("follow @someone"). It is a lead to
+                            // VERIFY, not a confirmed identity bridge, so it fires Medium.
+                            severity: Severity::Medium,
                             description: format!(
-                                "Username '{}' profile bio (@-mention) names '{}' — explicit \
-                                 cross-platform self-reference written by the subject in their \
-                                 '{attr}' field (free, offline identity bridge)",
+                                "Username '{}' profile bio names '{}' via an @-mention in their \
+                                 '{attr}' field — a possible cross-platform reference (the subject \
+                                 themselves OR a third party they mention); verify before treating \
+                                 as the same identity (free, offline lead)",
                                 entity.value, mentioned_e.value,
                             ),
                             entity_uids: uids,

@@ -136,8 +136,16 @@ pub fn subject_fixes(entities: &[Entity]) -> Vec<SubjectFix> {
                 None
             }
             EntityKind::Coordinates
-                if e.confidence >= SUBJECT_FIX_MIN || e.has_tag("exact-name-match") =>
+                if (e.confidence >= SUBJECT_FIX_MIN || e.has_tag("exact-name-match"))
+                    && !crate::core::correlator::is_infrastructure_geo(e) =>
             {
+                // Infrastructure geo (a datacentre/hosting/CDN point, or any bare
+                // IP/WHOIS coordinate with no anchoring source) must NOT anchor the
+                // subject: a 0.60 ip_geo/hosting fix would otherwise widen the
+                // subject's "confirmed area" to the host's metro, so a same-surname
+                // candidate near the DATACENTRE reads as kin. Genuine person fixes
+                // (signal_radar/device_sensors/exif_geo/geocode/…) are anchoring and
+                // pass. Mirrors the correlator geo rules (AU-017/030/052/…).
                 crate::util::geohash::parse_coords(&e.value)
             }
             EntityKind::Address if e.has_tag("exact-name-match") => {
