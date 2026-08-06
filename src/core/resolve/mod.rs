@@ -364,22 +364,32 @@ fn canonical_handle(value: &str) -> Option<String> {
     canonical_tokens(value)
 }
 
-/// Canonical form of a person's name: [`canonical_tokens`] **plus** an
-/// order-insensitive sort of the resulting tokens, so the FULL name-token
-/// multiset — not its order — is the identity key.
+/// Canonical form of a person's name: [`canonical_tokens`] applied in NATURAL
+/// token order, after folding the comma surname-first form to natural order.
 ///
-/// This makes `"Jane Citizen"` and `"Citizen, Jane"` (both → `"citizen jane"`)
-/// one identity, while keeping the rule strict: it groups only when the *entire*
-/// token multiset matches. A merely shared surname (`"Jane Citizen"` vs
-/// `"John Citizen"` → `"citizen jane"` vs `"citizen john"`) does **not** match,
-/// so this never fuses two different people on a partial-name overlap — that
-/// weaker shared-surname signal is handled elsewhere (e.g.
-/// [`crate::core::geo_family`]).
+/// A single comma marks the surname-first form (`"Citizen, Jane"`,
+/// `"Citizen, Jane Q"`): the pre-comma surname is moved to the end so it folds to
+/// the same key as the natural-order `"Jane Citizen"` / `"Jane Q Citizen"`. A
+/// value with NO comma keeps its token order.
+///
+/// This makes `"Jane Citizen"` and `"Citizen, Jane"` (both → `"jane citizen"`)
+/// one identity. A merely shared surname (`"Jane Citizen"` vs `"John Citizen"`)
+/// still does **not** match. Crucially, two DISTINCT people whose names are token
+/// permutations of each other (`"Cameron Tyler"` vs `"Tyler Cameron"`, no comma)
+/// also do **not** match: the previous implementation sorted the whole token
+/// multiset, collapsing that pair to one key and fusing two different people via
+/// an undamped `SameAs` merge. The comma is the only reliable surname-first
+/// signal; without it, two orderings are two different names, and a false merge
+/// is worse than a missed one (the weaker shared-surname signal is handled
+/// elsewhere, e.g. [`crate::core::geo_family`]).
 fn canonical_name(value: &str) -> Option<String> {
-    let canon = canonical_tokens(value)?;
-    let mut tokens: Vec<&str> = canon.split(' ').collect();
-    tokens.sort_unstable();
-    Some(tokens.join(" "))
+    let reordered = match value.split_once(',') {
+        Some((surname, given)) if !surname.trim().is_empty() && !given.trim().is_empty() => {
+            format!("{} {}", given.trim(), surname.trim())
+        }
+        _ => value.to_string(),
+    };
+    canonical_tokens(&reordered)
 }
 
 #[cfg(test)]

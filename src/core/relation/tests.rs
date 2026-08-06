@@ -1083,6 +1083,28 @@ fn handles_alias_shared_persona_across_platforms() {
 }
 
 #[test]
+fn role_mailboxes_do_not_alias_across_organisations() {
+    // Regression: role / shared mailboxes (`info`, `support`, …) share a local
+    // part across unrelated orgs but are NOT one persona. `persona_key` rejects
+    // them via the canonical `is_generic_handle`, so `derive_handles` draws no
+    // `AliasOf` edge that would fuse two organisations into one identity cluster.
+    let a = ent(EntityKind::Email, "info@redcross.org.au", 0.7);
+    let b = ent(EntityKind::Email, "info@some-corp.com", 0.7);
+    let c = ent(EntityKind::Email, "support@alpha.com", 0.7);
+    let d = ent(EntityKind::Email, "support@beta.com", 0.7);
+    assert!(
+        derive_handles(&[a, b, c, d], "s").is_empty(),
+        "generic role mailboxes must not alias across unrelated organisations"
+    );
+
+    // A genuine shared handle still aliases — the guard is specific to the
+    // generic-token taxonomy, not a blanket suppression.
+    let g1 = ent(EntityKind::Email, "jsmith@gmail.com", 0.7);
+    let g2 = ent(EntityKind::Email, "jsmith@outlook.com", 0.6);
+    assert_eq!(derive_handles(&[g1, g2], "s").len(), 1);
+}
+
+#[test]
 fn identity_ownership_evidence_then_fingerprint() {
     use crate::core::entity::Evidence;
     // Subject Person (seed-anchor tagged) + an evidence-named mailbox + a

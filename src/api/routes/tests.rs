@@ -443,9 +443,10 @@ use super::*;
         // per frame — on the same device that was running the scan producing
         // those nodes.
         //
-        // It is now a deterministic concentric layout computed once in
-        // O(nodes), drawn against the DOM directly. These asserts pin that the
-        // dependency does not creep back and that no per-frame loop returns.
+        // It is now a deterministic flow chart (one row per expansion
+        // generation) computed once in O(nodes), drawn against the DOM
+        // directly. These asserts pin that the dependency does not creep back
+        // and that no per-frame loop returns.
         let graph = app_file("js/scan_info/graph.js");
         assert!(
             !graph.contains("d3."),
@@ -456,20 +457,20 @@ use super::*;
             assert!(
                 !graph.contains(banned),
                 "graph.js must not run a per-frame simulation loop ({banned}) — \
-                 layout is computed once, then the graph is static until the \
+                 layout is computed once, then the chart is static until the \
                  operator interacts with it"
             );
         }
-        // Endpoints still resolve to shared node objects: the draw loop and the
-        // drag handler both read positions off one object per node.
+        // Endpoints still resolve to shared node objects: the draw loop reads
+        // every position off one object per node rather than re-looking up ids.
         let build = graph
             .split_once("function buildGraph(")
             .map(|(_, b)| b)
             .expect("buildGraph() present in graph.js");
         assert!(
             build.contains("nodesById.get(l.source)") && build.contains("nodesById.get(l.target)"),
-            "link source/target must resolve to node objects via nodesById so \
-             dragging a node can move its incident edges without a re-lookup"
+            "link source/target must resolve to node objects via nodesById \
+             once, rather than re-looking up ids in the draw loop"
         );
         // The vendored asset itself must be gone from the served set.
         assert!(
@@ -777,6 +778,77 @@ use super::*;
     }
 
     #[test]
+    fn embedded_spa_graph_is_a_flowchart_not_a_node_graph() {
+        // The maintainer's explicit direction: remove the node-link graph
+        // (concentric rings of circles, free-form drag) and replace it with a
+        // basic 2D flow chart — rows of boxes by expansion generation, with
+        // arrows showing which entity's discovery led to which. Pin the shape
+        // so a future change can't quietly drift back to a graph-visualisation
+        // idiom.
+        let graph = app_file("js/scan_info/graph.js");
+        assert!(
+            graph.contains("function layoutFlowchart("),
+            "graph.js must lay entities out by expansion generation (row),              not a concentric/ring layout"
+        );
+        assert!(
+            !graph.contains("function layoutConcentric("),
+            "the ring layout this replaced must not still be present"
+        );
+        // Rows come from the entity's own `generation` field (how many pivots
+        // from the seed it was first found at) — the literal structure of a
+        // scan, not an arbitrary rank-derived ring.
+        assert!(
+            graph.contains("gen: e.generation ?? 0"),
+            "each node's row must be derived from the entity's own generation"
+        );
+        // Node dragging must be fully gone: a flow chart's box positions ARE
+        // the structure (row = generation, rank = significance), so letting
+        // an operator drag one out of place would misrepresent it. This also
+        // means no per-node pointerdown listener and no drag state remain.
+        for gone in ["dragNode", "moveNode", "cursor: 'grab'", "n.el.addEventListener('pointerdown'"] {
+            assert!(
+                !graph.contains(gone),
+                "graph.js must not retain node-drag machinery ({gone}) — a                  flow chart's layout is structural, not rearrangeable"
+            );
+        }
+        // "Re-layout" is gone: it re-ran the same deterministic function over
+        // unchanged input, so it was already a no-op click before this
+        // rewrite (the ring layout it used to trigger was equally pure
+        // arithmetic over an already-sorted list, with no randomness to
+        // reshuffle) and remains one now. A control with no observable effect
+        // must not ship.
+        // Checked as the concrete DOM id / wiring, not the bare word
+        // "Re-layout" — that also appears in this file's own explanatory
+        // comment above, which legitimately names the removed feature.
+        assert!(
+            !graph.contains("id=\"g-relayout\"") && !graph.contains("$('#g-relayout')"),
+            "the Re-layout control (button + click handler) must be removed \
+             — it has never had an observable effect on a deterministic layout"
+        );
+        // The seed-anchor fallback edge must be CONDITIONAL — only for nodes
+        // with no other relation/correlation edge — not unconditional for
+        // every entity as the prior graph drew it (redundant on top of the
+        // relation/correlation edges the same node already had).
+        let build = graph
+            .split_once("export function buildGraph()")
+            .map(|(_, b)| b)
+            .expect("buildGraph() present in graph.js");
+        assert!(
+            build.contains("if (touched.has(e.uid)) continue;"),
+            "the seed fallback edge must be skipped for entities that already              have a more specific relation/correlation edge: {build}"
+        );
+        // `derived_from` — the literal expansion-lineage relation — must be
+        // the chart's directional arrow (the other typed relations stay
+        // undirected lines, matching their more associative semantics).
+        assert!(
+            graph.contains("lineage: r.kind === 'derived_from'")
+                && graph.contains("marker-end")
+                && graph.contains("'flow-arrow'"),
+            "derived_from relations must render as directional arrows — the              flow chart's primary lineage signal"
+        );
+    }
+
+    #[test]
     fn embedded_spa_graph_keeps_the_operators_viewport_across_rebuilds() {
         // While a scan runs, scan-info re-renders every 8s, and that re-runs
         // renderGraph -> buildGraph. The pan/zoom state used to be declared
@@ -823,18 +895,20 @@ use super::*;
 
     #[test]
     fn embedded_spa_pauses_every_background_poller() {
-        // Three views poll on a timer, and each tick is a real cost on the one
+        // Six views poll on a timer, and each tick is a real cost on the one
         // platform this ships to: scan-info re-pulls the scan plus its FULL
         // entity, correlation and relation sets every 8s and rebuilds the view
         // (on the Graph tab, the whole layout); the Live monitor re-pulls the
         // session list every 8s; the Engines page triggers a multi-engine
-        // server-side liveness sweep every 30s. A no-root Termux device runs
-        // `hse serve` and the browser SIDE BY SIDE, so a tab left in the
-        // background was making the phone do all of that, for nothing,
-        // for as long as the scan lasted.
+        // server-side liveness sweep every 30s; Settings polls a self-update's
+        // phase and a cell-DB import's phase every 2.5s each, plus the
+        // post-update restart overlay's health probe, also every 2.5s. A
+        // no-root Termux device runs `hse serve` and the browser SIDE BY SIDE,
+        // so a tab left in the background was making the phone do all of
+        // that, for nothing, for as long as the job/scan lasted.
         //
         // Each poller must consult the shared `pageHidden` helper. Single
-        // source so the three can't drift, and so the reasoning lives once.
+        // source so none of the six can drift, and so the reasoning lives once.
         let timers = app_file("js/timers.js");
         assert!(
             timers.contains("export function pageHidden()") && timers.contains("document.hidden"),
@@ -844,6 +918,7 @@ use super::*;
             ("js/scan_info/index.js", "scan-info auto-refresh"),
             ("js/views/live.js", "Live monitor session poll"),
             ("js/views/engines.js", "Engines liveness sweep"),
+            ("js/views/opts.js", "Settings update/cells/restart pollers"),
         ] {
             let src = app_file(file);
             assert!(
@@ -857,6 +932,23 @@ use super::*;
                  rather than re-implementing the visibility check"
             );
         }
+        // opts.js carries THREE independent setInterval pollers (update
+        // status, cell-DB import status, restart-overlay health probe) — every
+        // one of them, not just one, must gate on pageHidden.
+        let opts = app_file("js/views/opts.js");
+        let poller_count = opts.matches("setInterval(").count();
+        let guard_count = opts.matches("if (pageHidden()) return;").count();
+        assert_eq!(
+            poller_count, 3,
+            "opts.js poller count changed — update this guard alongside it \
+             instead of letting a new poller go unaudited: {poller_count} \
+             setInterval site(s) found"
+        );
+        assert_eq!(
+            guard_count, poller_count,
+            "every setInterval in opts.js must open with the pageHidden \
+             guard — found {guard_count} guard(s) for {poller_count} poller(s)"
+        );
         // The scan-info refresh must RE-ARM while hidden rather than tear its
         // schedule down: dropping the timer would leave the view frozen after
         // the operator switched away and back, with nothing to restart it (the

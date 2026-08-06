@@ -85,10 +85,18 @@ fn scan_incompleteness_warning(status: crate::core::scan::ScanStatus, raw: &str)
 /// Resolve `latest` or validate an explicit scan id for read-oriented use cases.
 pub fn resolve_scan_id(store: &Store, raw: &str) -> Result<String> {
     if raw == "latest" {
-        return store
-            .latest_completed_scan()?
-            .map(|scan| scan.id)
-            .ok_or_else(|| Error::Other("no completed scans in store".into()));
+        let scan = store
+            .latest_finished_scan()?
+            .ok_or_else(|| Error::Other("no finished scans in store".into()))?;
+        // `latest` can now resolve to an aborted scan (its data is final —
+        // see `latest_finished_scan`). Surface the same "stopped early, entities
+        // are final" caveat the explicit-id path below prints, so resolving
+        // `latest` never silently hands back partial-looking data without the
+        // note. `Complete` yields no warning.
+        if let Some(warning) = scan_incompleteness_warning(scan.status, "latest") {
+            eprintln!("{warning}");
+        }
+        return Ok(scan.id);
     }
 
     match store.get_scan(raw)? {

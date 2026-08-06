@@ -91,6 +91,45 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
         }
     });
 
+    // Autonomous housekeeping: keep the on-device `~/.huntsman` footprint
+    // bounded and arranged without operator intervention — trim the
+    // regenerable dossier cache, apply the canonical event-log / raw-archive
+    // retention bounds, truncate the WAL, and re-assert the 0700 layout (see
+    // `app::tidy`). This is what keeps a long-lived Termux install tidy: the
+    // per-scan prune only runs when a scan COMPLETES, so a server left running
+    // for weeks without finishing one would otherwise never reclaim anything.
+    // Interval is configurable via `HUNTSMAN_TIDY_INTERVAL_SECS` (default 24 h;
+    // min 1 h). First pass is staggered 5 min so startup stays responsive and
+    // it never contends with the engine-health sweep. `spawn_blocking` — the
+    // pass does blocking filesystem + SQLite work. Detached and best-effort:
+    // it never blocks serving and a failure is logged, not fatal.
+    {
+        let tidy_secs = std::env::var("HUNTSMAN_TIDY_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&n| n >= 3600) // min 1 h
+            .unwrap_or(86_400); // default 24 h
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(tidy_secs));
+            loop {
+                tick.tick().await;
+                match tokio::task::spawn_blocking(|| crate::app::tidy::run(false)).await {
+                    Ok(Ok(report)) => tracing::info!(
+                        dossiers_removed = report.dossiers_removed,
+                        bytes_reclaimed = report.dossier_bytes_reclaimed,
+                        events_pruned = report.events_pruned,
+                        archive_pruned = report.archive_pruned,
+                        wal_truncated = report.wal_truncated,
+                        "housekeeping pass complete"
+                    ),
+                    Ok(Err(e)) => tracing::warn!(error = %e, "housekeeping pass failed"),
+                    Err(e) => tracing::warn!(error = %e, "housekeeping task panicked"),
+                }
+            }
+        });
+    }
+
     // Autonomous self-update: check for upstream commits on a schedule and apply
     // them automatically when feature.auto_update is ON (the default). The first
     // check is intentionally deferred 2 min so the server is fully up and the

@@ -176,3 +176,74 @@ fn geo_country_code_reads_geoinfo_country_code() {
     // Absent → None.
     assert_eq!(geo_country_code(&serde_json::json!({"geoinfo": {}})), None);
 }
+
+// ── zoomeye_dork: validate-and-reject, not escape ──
+//
+// ZoomEye's `field:value` dork has no quoting mechanism the way FOFA's
+// `field="value"` filter does, so a value that would need escaping is
+// rejected outright rather than passed through unsafe. Seed targets can't
+// carry the rejected shapes (Target::validate parses IpAddress via
+// std::net::IpAddr and restricts Domain to alnum/./-/_), but a PIVOT target
+// built during expansion is dispatched without that gate — these tests
+// construct that exact "value Target::validate would already reject" shape
+// directly, proving zoomeye_dork is safe independent of any caller's
+// validation, the same reasoning fofa_filter's tests document.
+
+#[test]
+fn zoomeye_dork_builds_ip_and_hostname_selectors() {
+    assert_eq!(
+        zoomeye_dork(&Target::new(TargetKind::IpAddress, "8.8.8.8")).as_deref(),
+        Some("ip:8.8.8.8")
+    );
+    assert_eq!(
+        zoomeye_dork(&Target::new(TargetKind::Domain, "example.com")).as_deref(),
+        Some("hostname:example.com")
+    );
+}
+
+#[test]
+fn zoomeye_dork_canonicalises_ipv6_through_a_real_parser() {
+    // The IP arm uses the PARSED address, not the raw string — a real parser
+    // rather than a character-class check, so an unusual-but-valid
+    // representation is canonicalised before it reaches the dork.
+    let dork = zoomeye_dork(&Target::new(TargetKind::IpAddress, "::1")).expect("valid IPv6");
+    assert_eq!(dork, "ip:::1");
+    // A shape std::net::IpAddr rejects must reject the whole target, not
+    // silently pass the raw text through.
+    assert_eq!(
+        zoomeye_dork(&Target::new(TargetKind::IpAddress, "not-an-ip")),
+        None
+    );
+}
+
+#[test]
+fn zoomeye_dork_rejects_a_value_that_would_inject_extra_dork_tokens() {
+    // No quoting exists in ZoomEye's grammar to escape into, so whitespace
+    // (which would read as a second, attacker-controlled dork term once
+    // decoded server-side) must reject the target rather than build a dork
+    // an attacker partly controls.
+    assert_eq!(
+        zoomeye_dork(&Target::new(
+            TargetKind::Domain,
+            "example.com hostname:evil.com"
+        )),
+        None,
+        "a space-separated second dork term must be rejected, not embedded"
+    );
+    // A second field selector via `:` is the same class of injection.
+    assert_eq!(
+        zoomeye_dork(&Target::new(
+            TargetKind::Domain,
+            "example.com\"; ip:0.0.0.0"
+        )),
+        None
+    );
+}
+
+#[test]
+fn zoomeye_dork_rejects_unsupported_target_kinds() {
+    assert_eq!(
+        zoomeye_dork(&Target::new(TargetKind::Email, "a@b.com")),
+        None
+    );
+}

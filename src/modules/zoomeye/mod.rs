@@ -54,6 +54,56 @@ struct ZoomResp {
     matches: Vec<Value>,
 }
 
+/// Build the ZoomEye selector dork for a target — `ip:{ip}` or
+/// `hostname:{domain}` — or `None` when the target can't address one.
+///
+/// # Why this validates rather than escapes
+///
+/// The whole dork is URL-encoded for transport (`urlencode(&dork)` at the
+/// call site), but that only protects the HTTP query string — ZoomEye's own
+/// server decodes it back to plain text before its dork parser ever sees it.
+/// Unlike [`crate::modules::fofa::fofa_filter`]'s `field="value"` shape,
+/// ZoomEye's `field:value` dork has no quoting to escape a value into: a
+/// value containing whitespace or a second `:` would simply read as
+/// additional dork tokens once decoded server-side (ZoomEye's own docs
+/// describe space-separated `field:value` terms), the same class of
+/// query-injection FOFA's quoted filter was fixed against, just with no
+/// escape sequence available for this grammar.
+///
+/// So this validates instead of escaping — reachable via the same
+/// unvalidated-pivot-target path documented on `fofa_filter` (a Domain/IP
+/// entity minted straight from a provider's own response, e.g. this
+/// module's own `geoinfo`/hostname fields, then pivoted into a `Target`
+/// without going through [`Target::validate`](crate::core::scan::Target::validate)):
+///
+/// - `IpAddress` is parsed through [`std::net::IpAddr`] and the **parsed,
+///   reformatted** address is used — not the raw string — so even a
+///   technically-parseable-but-unusual representation is canonicalized
+///   before it reaches the dork. A real parser rather than a character-class
+///   check, consistent with how the standalone IPv4/IPv6 extractors validate.
+/// - `Domain` is checked against the exact ASCII alphanumeric/`.`/`-`/`_`
+///   class [`Target::validate`] already enforces for a *seed* Domain — a
+///   pivot value failing that same class is exactly the malformed/malicious
+///   case to reject, not the ordinary case to accept.
+#[must_use]
+fn zoomeye_dork(target: &Target) -> Option<String> {
+    match target.kind {
+        TargetKind::IpAddress => {
+            let addr: std::net::IpAddr = target.value.trim().parse().ok()?;
+            Some(format!("ip:{addr}"))
+        }
+        TargetKind::Domain => {
+            let domain = target.value.trim();
+            let valid = !domain.is_empty()
+                && domain
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_');
+            valid.then(|| format!("hostname:{domain}"))
+        }
+        _ => None,
+    }
+}
+
 pub struct ZoomEye;
 
 #[async_trait]
@@ -113,15 +163,8 @@ impl Module for ZoomEye {
         };
 
         let value = target.value.trim();
-        if value.is_empty() {
+        let Some(dork) = zoomeye_dork(target) else {
             return Ok(ModuleResult::new());
-        }
-        // The selector dork: an IP is queried verbatim; a domain is queried by
-        // hostname so ZoomEye returns the hosts it has indexed for that name.
-        let dork = match target.kind {
-            TargetKind::IpAddress => format!("ip:{value}"),
-            TargetKind::Domain => format!("hostname:{value}"),
-            _ => return Ok(ModuleResult::new()),
         };
         let url = format!(
             "https://api.zoomeye.org/host/search?query={}&page=1",

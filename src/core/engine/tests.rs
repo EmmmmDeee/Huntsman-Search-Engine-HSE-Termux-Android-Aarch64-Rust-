@@ -618,18 +618,18 @@ fn finalise_correlation_pass_survives_a_panicking_rule() {
     // scan harvested. The guard degrades a caught panic to `None` (no finalise
     // correlations), exactly as the live incremental pass does, so the scan still
     // finalises.
-    let panicked = guarded_finalise_correlation("s", || panic!("kaboom in a correlation rule"));
+    let panicked = guarded_correlation_pass("s", || panic!("kaboom in a correlation rule"));
     assert!(
         panicked.is_none(),
         "a panicking finalise pass must be caught and degrade to no firings, not unwind"
     );
 
     // A returned error is likewise swallowed to `None` (unchanged behaviour).
-    let errored = guarded_finalise_correlation("s", || Err(Error::module("correlator", "boom")));
+    let errored = guarded_correlation_pass("s", || Err(Error::module("correlator", "boom")));
     assert!(errored.is_none(), "a returned error yields no firings");
 
     // The happy path passes the firings straight through for emission.
-    let ok = guarded_finalise_correlation("s", || {
+    let ok = guarded_correlation_pass("s", || {
         Ok(vec![Correlation::new(
             "AU-000",
             "test correlation",
@@ -3988,7 +3988,7 @@ async fn the_audit_does_not_inflate_the_confidence_it_grades() {
 #[test]
 fn autonomous_sweep_seeds_specific_geo_pivots_and_refuses_generic_ones() {
     use super::{is_autonomous_seed_candidate, kind_pivot_value, rank_autonomous_targets};
-    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::entity::{Entity, EntityKind, Evidence};
     use crate::core::scan::TargetKind;
     use std::collections::HashSet;
 
@@ -3999,7 +3999,11 @@ fn autonomous_sweep_seeds_specific_geo_pivots_and_refuses_generic_ones() {
     // A person-chosen name — the exact false-positive class the whole-token
     // matcher in `util::wifi` exists to protect.
     let ssid = Entity::new(EntityKind::Ssid, "Freeman-Family", 0.55, "s");
-    let fix = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.90, "s");
+    // A genuine person-anchored fix carries an anchoring geo source (here an
+    // EXIF GPS tag); without one `is_infrastructure_geo` treats a bare lat/lon as
+    // an IP/WHOIS-derived infrastructure location, correctly NOT seedable.
+    let mut fix = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.90, "s");
+    fix.add_evidence(Evidence::new("exif_geo", "photo GPS"));
 
     // ── Refused: each geolocates nobody ─────────────────────────────────────
     // 0xaa: U/L bit set — a randomised privacy address that rotates ~15 min.
@@ -4024,6 +4028,19 @@ fn autonomous_sweep_seeds_specific_geo_pivots_and_refuses_generic_ones() {
     let ipv4_multicast = Entity::new(EntityKind::MacAddress, "01:00:5E:00:00:FB", 0.90, "s");
     let ipv6_multicast = Entity::new(EntityKind::MacAddress, "33:33:00:00:00:01", 0.90, "s");
     let broadcast = Entity::new(EntityKind::MacAddress, "FF:FF:FF:FF:FF:FF", 0.90, "s");
+    // The radar sweep's `0,0` sentinel: minted seed/subject each sweep, but it
+    // locates nobody — `is_infrastructure_geo`'s sentinel check rejects it, so it
+    // can never seed an autonomous scan on null island.
+    let mut sentinel_fix = Entity::new(EntityKind::Coordinates, "0.000000,0.000000", 0.90, "s");
+    sentinel_fix.tag("seed");
+    sentinel_fix.tag("subject");
+    // An `infra:` map feature — a CCTV camera / cell tower scraped near a fix.
+    let mut infra_poi = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.55, "s");
+    infra_poi.tag("infra:surveillance");
+    // A WHOIS registrant / privacy-service address: the domain owner's filing
+    // location, not the subject's — the AU-092 class, now also excluded here.
+    let mut registrant_addr = Entity::new(EntityKind::Address, "VIC, Australia", 0.50, "s");
+    registrant_addr.tag(crate::core::tags::REGISTRANT);
 
     let admitted = [&email, &bssid, &ssid, &fix];
     let refused = [
@@ -4037,6 +4054,9 @@ fn autonomous_sweep_seeds_specific_geo_pivots_and_refuses_generic_ones() {
         &ipv4_multicast,
         &ipv6_multicast,
         &broadcast,
+        &sentinel_fix,
+        &infra_poi,
+        &registrant_addr,
     ];
 
     // 1) The predicate itself, named per entity so a regression is diagnosable.

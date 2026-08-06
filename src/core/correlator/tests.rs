@@ -911,6 +911,32 @@ fn au004_no_fire_without_tag() {
     assert!(rule_au_004_malicious_infrastructure(&RuleContext::new(&[e]), "s", 0).is_empty());
 }
 
+#[test]
+fn au004_no_fire_on_single_threat_source_plus_enrichment() {
+    // Regression: the ≥2 bar must count THREAT sources, not every corroborating
+    // source. `ip_geo` is geolocation enrichment — it is NOT in
+    // ENRICHMENT_ONLY_SOURCES, so it counts toward `Entity::source_count`, yet it
+    // asserts nothing about maliciousness. One blocklist hit (`ip_reputation`)
+    // plus a routine `ip_geo` record previously reached source_count == 2 and
+    // fired a CRITICAL "malicious" finding on a shared-edge IP. Only one threat
+    // source actually flagged it, so AU-004 must stay silent (AU-015 still
+    // reports the single-source hit at its own severity).
+    let mut e = tagged(
+        EntityKind::IpAddress,
+        "45.79.10.20",
+        &[crate::core::tags::MALICIOUS],
+    );
+    e.add_evidence(Evidence::new(
+        "ip_reputation",
+        "flagged malicious".to_string(),
+    ));
+    e.add_evidence(Evidence::new("ip_geo", "Sydney, AU".to_string()));
+    assert!(
+        rule_au_004_malicious_infrastructure(&RuleContext::new(&[e]), "s", 0).is_empty(),
+        "one threat source + geolocation enrichment is not two agreeing threat verdicts"
+    );
+}
+
 // ── AU-005 ──────────────────────────────────────────────────────────
 
 #[test]
@@ -5475,6 +5501,36 @@ fn au049_fires_on_two_people_one_residence() {
 }
 
 #[test]
+fn au049_unit_address_and_street_number_are_not_one_household() {
+    // Regression (address unit separator): `1/2 Oak Street` (unit 1 of number 2)
+    // and `12 Oak Street` (number 12) are DIFFERENT dwellings. Deleting `/` in
+    // normalisation collapsed them onto one key and fired AU-049 — a fabricated
+    // household between strangers. They must not group.
+    let strangers = vec![
+        person_at("Jordan Meyers", "1/2 Oak Street, Sydney NSW 2000"),
+        person_at("Dana Lin", "12 Oak Street, Sydney NSW 2000"),
+    ];
+    assert!(
+        super::rules::rule_au_049_shared_address_association(&RuleContext::new(&strangers), "s", 0)
+            .is_empty(),
+        "a unit address and a street number are not one household"
+    );
+    // Control: two people genuinely at the SAME unit still form one household —
+    // the folded unit form remains a valid, groupable residence key.
+    let cohabitants = vec![
+        person_at("Jordan Meyers", "1/2 Oak Street, Sydney NSW 2000"),
+        person_at("Dana Meyers", "1/2 oak street sydney nsw 2000"),
+    ];
+    let hits = super::rules::rule_au_049_shared_address_association(
+        &RuleContext::new(&cohabitants),
+        "s",
+        0,
+    );
+    assert_eq!(hits.len(), 1, "same unit is one household");
+    assert_eq!(hits[0].rule_id, "AU-049");
+}
+
+#[test]
 fn au049_single_person_and_region_only_do_not_fire() {
     let one = vec![person_at("Jordan Meyers", "123 Main St, Springfield, IL")];
     assert!(
@@ -5642,6 +5698,57 @@ fn au050_excludes_shared_business_and_service_lines() {
 }
 
 #[test]
+fn au050_vetoes_au_business_line_in_plus61_international_form() {
+    // Regression (OD-14): an AU freephone/local-rate line stored in +61
+    // international form reaches the veto as a `+`-stripped digits key
+    // ("+61 1800 123 456" → key "611800123456") that au_phone_line_type can't see
+    // as domestic 1800. It must still be vetoed as a shared business desk, not fire
+    // a false associate cluster.
+    for service in ["+61 1800 123 456", "+61 1300 975 707"] {
+        let ents = vec![
+            person_with_phone("Jordan Meyers", service),
+            person_with_phone("Casey Lin", service),
+        ];
+        assert!(
+            super::rules::rule_au_050_shared_phone_association(&RuleContext::new(&ents), "s", 0)
+                .is_empty(),
+            "a +61-international-form AU business line must not link unrelated people: {service}"
+        );
+    }
+    // A personal AU mobile in +61 form is not a business line and still links.
+    let mobile = vec![
+        person_with_phone("Jordan Meyers", "+61 412 345 678"),
+        person_with_phone("Casey Lin", "61 412 345 678"),
+    ];
+    let hits =
+        super::rules::rule_au_050_shared_phone_association(&RuleContext::new(&mobile), "s", 0);
+    assert_eq!(hits.len(), 1, "a shared +61 mobile still links: {hits:?}");
+    assert_eq!(hits[0].rule_id, "AU-050");
+}
+
+#[test]
+fn au050_links_nanp_number_colliding_with_au_service_prefix() {
+    // Regression (phone line-type false negative): a shared US number whose digits
+    // collide with an AU service prefix must still link two people. `+1 909 555
+    // 0142` (San Bernardino) normalises to the key `19095550142`, which the
+    // line-type classifier used to read as AU premium `190x` and veto as a
+    // "business/service line" — silently dropping the real association. It is 11
+    // digits (NANP `1` + area code), not a 10-digit AU service number, so it is a
+    // personal line and AU-050 must fire.
+    let ents = vec![
+        person_with_phone("Jordan Meyers", "+1 909 555 0142"),
+        person_with_phone("Casey Lin", "1 (909) 555-0142"),
+    ];
+    let hits = super::rules::rule_au_050_shared_phone_association(&RuleContext::new(&ents), "s", 0);
+    assert_eq!(
+        hits.len(),
+        1,
+        "a shared NANP line colliding with AU 190x must still link: {hits:?}"
+    );
+    assert_eq!(hits[0].rule_id, "AU-050");
+}
+
+#[test]
 fn au051_shared_surname_at_residence_is_kin() {
     let ents = vec![
         person_at("Jordan Meyers", "123 Main St, Springfield"),
@@ -5748,6 +5855,25 @@ fn au087_excludes_freemail_and_isp_webmail() {
         super::rules::rule_au_087_shared_org_email_domain(&RuleContext::new(&isp), "s", 0)
             .is_empty()
     );
+    // Regression: consumer webmail OUTSIDE the `is_noncentral_domain` damping list
+    // must be excluded too. `gmail.com`/`bigpond.com` above happen to sit in
+    // `MEGA_DOMAINS`, so `is_noncentral_domain` alone caught them — but the ~40
+    // other freemail domains (Yahoo/Hotmail country variants, Chinese providers,
+    // legacy Yahoo brands) do not, and previously slipped through to fire a false
+    // employer/institution affiliation between strangers. The canonical
+    // `is_freemail` guard now closes that gap. Every domain below is in FREEMAIL
+    // yet absent from `MEGA_DOMAINS`/`INFRA_DOMAINS`.
+    for freemail in ["qq.com", "163.com", "rocketmail.com", "yahoo.co.uk"] {
+        let pair = vec![
+            org_email_ent(&format!("john.smith@{freemail}")),
+            org_email_ent(&format!("jane.doe@{freemail}")),
+        ];
+        assert!(
+            super::rules::rule_au_087_shared_org_email_domain(&RuleContext::new(&pair), "s", 0)
+                .is_empty(),
+            "{freemail} is consumer webmail, not an organisational affiliation surface"
+        );
+    }
 }
 
 #[test]
@@ -6085,11 +6211,66 @@ fn au097_ignores_foreign_and_non_network_entities() {
 }
 
 #[test]
+fn au097_does_not_attribute_belong_isp_from_descr_prose() {
+    // Regression (OD-13): `belong` is a real AU ISP AND a common verb. A RIPE
+    // `descr` naming the verb ("…used to belong to LegacyCorp") must NOT fabricate
+    // a Belong residency attribution; only a structured isp/org field naming the
+    // operator should.
+    let mut prose = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.8, "s");
+    prose.add_evidence(Evidence::new("ripestat", "asn").with_attr(
+        "descr",
+        "address space that used to belong to LegacyCorp Pty Ltd",
+    ));
+    assert!(
+        super::rules::rule_au_097_au_isp_network(&RuleContext::new(&[prose]), "s", 0).is_empty(),
+        "`belong` as a verb in descr prose must not attribute the Belong ISP"
+    );
+    // A genuine Belong customer IP (structured isp field) still fires.
+    let mut genuine = Entity::new(EntityKind::IpAddress, "1.2.3.5", 0.8, "s");
+    genuine.add_evidence(Evidence::new("ip_geo", "geo").with_attr("isp", "Belong"));
+    let r = super::rules::rule_au_097_au_isp_network(&RuleContext::new(&[genuine]), "s", 0);
+    assert_eq!(
+        r.len(),
+        1,
+        "a structured Belong isp field is a real attribution"
+    );
+    assert_eq!(r[0].rule_id, "AU-097");
+}
+
+#[test]
 fn au097_short_token_needs_word_boundary() {
     // "tpg" must not match inside a longer word (no false AU attribution).
     let mut ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.8, "s");
     ip.add_evidence(Evidence::new("ripestat", "asn").with_attr("descr", "ACMETPGENETICS LIMITED"));
     assert!(super::rules::rule_au_097_au_isp_network(&RuleContext::new(&[ip]), "s", 0).is_empty());
+}
+
+#[test]
+fn au097_skips_hosting_and_platform_infra_entities() {
+    // Regression: a hosting/datacentre IP that resolves to an AU network operator
+    // is a SERVER (mail host, CDN edge, the box a linked page resolves to), not
+    // the subject's access connection — attributing AU residency/affiliation to it
+    // fabricates a network-layer signal from pure infrastructure. Same Telstra IP
+    // as the Medium-residency test, but tagged `hosting` → must stay silent.
+    let mut host = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.8, "s");
+    host.add_evidence(
+        Evidence::new("ip_geo", "geo")
+            .with_attr("isp", "Telstra")
+            .with_attr("as", "AS1221 Telstra"),
+    );
+    host.tag(crate::core::tags::HOSTING);
+    assert!(
+        super::rules::rule_au_097_au_isp_network(&RuleContext::new(&[host]), "s", 0).is_empty(),
+        "a hosting-tagged server IP is not the subject's AU access connection"
+    );
+    // A platform-infra-tagged ASN (e.g. an AARNet-hosted cloud range) is likewise
+    // not the subject's institutional affiliation.
+    let mut asn = Entity::new(EntityKind::Asn, "AS7575 AARNet", 0.8, "s");
+    asn.tag(crate::core::tags::PLATFORM_INFRA);
+    assert!(
+        super::rules::rule_au_097_au_isp_network(&RuleContext::new(&[asn]), "s", 0).is_empty(),
+        "a platform-infra-tagged ASN is not the subject's institutional affiliation"
+    );
 }
 
 #[test]
@@ -7924,6 +8105,41 @@ fn au030_fires_for_three_source_geo_cluster() {
 }
 
 #[test]
+fn au030_escalates_to_high_for_four_source_geo_convergence() {
+    // Four distinct person-anchoring corroborating source NAMES across two
+    // coordinate entities → sources.len() == 4 → High. (The ladder counts
+    // distinct corroborating source names, not source families or entity
+    // count.) Each entity carries an anchoring geo source so neither is dropped
+    // as infrastructure geo.
+    let mut c1 = Entity::new(EntityKind::Coordinates, "51.5,0.1", 0.7, "s");
+    c1.add_evidence(Evidence::new("geocode", "x"));
+    c1.add_evidence(Evidence::new("wigle", "x"));
+    let mut c2 = Entity::new(EntityKind::Coordinates, "51.6,0.2", 0.7, "s");
+    c2.add_evidence(Evidence::new("exif_geo", "x"));
+    c2.add_evidence(Evidence::new("photon", "x"));
+    let r = rule_au_030_geo_convergence_score(&RuleContext::new(&[c1, c2]), "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-030");
+    assert_eq!(r[0].severity, Severity::High);
+}
+
+#[test]
+fn au030_escalates_to_critical_for_five_source_geo_convergence() {
+    // Five distinct corroborating source names → sources.len() == 5 → Critical.
+    let mut c1 = Entity::new(EntityKind::Coordinates, "51.5,0.1", 0.7, "s");
+    c1.add_evidence(Evidence::new("geocode", "x"));
+    c1.add_evidence(Evidence::new("wigle", "x"));
+    c1.add_evidence(Evidence::new("mylnikov", "x"));
+    let mut c2 = Entity::new(EntityKind::Coordinates, "51.6,0.2", 0.7, "s");
+    c2.add_evidence(Evidence::new("exif_geo", "x"));
+    c2.add_evidence(Evidence::new("photon", "x"));
+    let r = rule_au_030_geo_convergence_score(&RuleContext::new(&[c1, c2]), "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-030");
+    assert_eq!(r[0].severity, Severity::Critical);
+}
+
+#[test]
 fn au062_multipath_corroboration_fires_on_orthogonal_routes() {
     use crate::core::relation::{Relation, RelationKind};
     let mk_rel = |from: &Entity, to: &Entity, kind: RelationKind| {
@@ -8566,6 +8782,28 @@ fn au111_fires_on_cloudflare_fronted_domain_with_spf_ip() {
         vec![dom.uid.clone(), ip.uid.clone()],
         "the fronted domain and the origin-candidate IP are both cited"
     );
+}
+
+#[test]
+fn au111_fires_for_cloudfront_and_incapsula_using_waf_detect_names() {
+    // Regression: the fronting-provider list must use the EXACT strings
+    // `waf_detect` emits (`AWS CloudFront`, `Imperva/Incapsula`). An earlier list
+    // had `CloudFront`/`Incapsula`, so `has_tag("waf:CloudFront")` never matched
+    // the real `waf:AWS CloudFront` tag and AU-111 silently never fired for those
+    // two global CDNs — the SPF-origin-leak pivot was lost. `cdn_fronted_domain`
+    // fabricates the tag exactly as `waf_detect` does (`waf:{provider}`), so this
+    // exercises the real tag string.
+    for provider in ["AWS CloudFront", "Imperva/Incapsula"] {
+        let dom = cdn_fronted_domain("example.com", provider);
+        let ip = spf_ip("203.0.113.9", "example.com");
+        let r = rule_au_111_cdn_origin_candidate(&RuleContext::new(&[dom, ip]), "s", 0);
+        assert_eq!(
+            r.len(),
+            1,
+            "AU-111 must fire for a {provider}-fronted domain with an SPF IP"
+        );
+        assert_eq!(r[0].rule_id, "AU-111");
+    }
 }
 
 #[test]

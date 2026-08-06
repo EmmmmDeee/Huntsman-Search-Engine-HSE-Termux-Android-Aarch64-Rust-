@@ -40,7 +40,15 @@ pub enum Status {
 
 impl Status {
     /// ASCII marker (no non-ASCII glyphs — Termux terminal-safe).
-    fn marker(self) -> &'static str {
+    /// The rendered status marker: `[ok]`, `[warn]`, `[FAIL]`.
+    ///
+    /// Public so consumers — including the integration tests that assert which
+    /// STREAM the report lands on — read these strings from here instead of
+    /// copying them. A hand-written copy in `tests/cli_seed_validation.rs`
+    /// carried `[fail]` in lowercase, which could never match the rendered
+    /// `[FAIL]` and silently weakened the assertion it appeared in.
+    #[must_use]
+    pub fn marker(self) -> &'static str {
         match self {
             Status::Pass => "[ok]",
             Status::Warn => "[warn]",

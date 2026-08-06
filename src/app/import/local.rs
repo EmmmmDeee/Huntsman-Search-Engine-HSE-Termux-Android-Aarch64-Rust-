@@ -136,7 +136,7 @@ pub(super) async fn import_local_dir_entities(
     let mut all: Vec<Entity> = Vec::new();
     let mut imported = 0usize;
     for path in files {
-        let Ok(body) = std::fs::read_to_string(&path) else {
+        let Ok(body) = tokio::fs::read_to_string(&path).await else {
             continue; // binary / non-UTF-8 — skip
         };
         if let Ok((ents, _label)) = entities_from_upload(&body, sid).await

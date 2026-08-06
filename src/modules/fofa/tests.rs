@@ -126,6 +126,50 @@ fn build_entities_emits_ip_domain_from_results() {
 }
 
 #[test]
+fn produces_lists_exactly_the_kinds_build_entities_emits() {
+    // Contract guard: `produces()` must advertise exactly the entity kinds the
+    // module can actually mint. `Organisation` was declared here but never
+    // emitted — `FofaResult` carries no organisation field — which misled scan
+    // planning and the `hse modules` reference into thinking the module can yield
+    // a kind it structurally cannot.
+    let declared = Fofa.produces();
+    assert_eq!(
+        declared.len(),
+        2,
+        "fofa should advertise exactly IpAddress + Domain: {declared:?}"
+    );
+    assert!(declared.contains(&EntityKind::IpAddress));
+    assert!(declared.contains(&EntityKind::Domain));
+    assert!(
+        !declared.contains(&EntityKind::Organisation),
+        "Organisation is never emitted by this module and must not be advertised"
+    );
+
+    // Bidirectional: every kind a fully-populated result actually emits must be
+    // covered by produces(), so the two can never drift apart again.
+    let resp = FofaResp {
+        error: false,
+        errmsg: None,
+        results: vec![FofaResult {
+            host: "1.2.3.4:443".to_string(),
+            ip: "1.2.3.4".to_string(),
+            port: 443,
+            protocol: "https".to_string(),
+            title: "Example".to_string(),
+            domain: "example.com".to_string(),
+            os: "Linux".to_string(),
+        }],
+    };
+    for e in &build_entities(&resp, "s").entities {
+        assert!(
+            declared.contains(&e.kind),
+            "build_entities emitted {:?}, which produces() {declared:?} does not list",
+            e.kind
+        );
+    }
+}
+
+#[test]
 fn build_entities_skips_empty_results() {
     let resp = FofaResp {
         error: false,

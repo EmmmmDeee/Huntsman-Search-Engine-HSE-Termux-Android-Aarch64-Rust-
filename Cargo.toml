@@ -142,9 +142,21 @@ flate2             = "1"
 # Document ingestion: CSV, PDF, image parsing (Phase 1.x)
 csv                = "1"
 # Pure-Rust image processing for OCR preprocessing (resize, denoise).
-image              = "0.25"
-# Entity extraction: lazy regex initialization for pattern matching.
-lazy_static        = "1.4"
+# Image decode/analysis (document_parse). Default features are narrowed to drop
+# the AVIF encoder (`ravif` → `rav1e`, hand-written asm) and OpenEXR (`exr`) from
+# the DEFAULT build — i.e. the on-device build install.sh runs and the CI Release
+# binary. Neither is used: AVIF *decode* is not enabled (no `dav1d` in the
+# graph), the code never *encodes* AVIF, and EXR is never read, yet `rav1e`'s asm
+# is one of the heaviest things the aarch64 build compiles and contradicts the
+# pure-Rust goal. Every real decode/encode format an operator might ingest is
+# kept explicitly, so no capability is lost. (These crates remain in Cargo.lock
+# as `image`'s optional deps and are still reachable under `--all-features`, so
+# the cargo-deny exceptions that mention them stay as-is; this change lightens
+# the built artifact, not the lock's audit surface.)
+image              = { version = "0.25", default-features = false, features = [
+    "rayon", "bmp", "dds", "ff", "gif", "hdr", "ico", "jpeg", "png", "pnm",
+    "qoi", "tga", "tiff", "webp",
+] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

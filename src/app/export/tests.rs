@@ -338,11 +338,11 @@ fn debug_bundle_includes_dossier_sequence_and_audit() {
     assert!(out.contains("HUNTSMAN FULL DOSSIER")); // §1 embeds render_full
     assert!(out.contains("── EXPOSURE INDEX")); // §1 headline mirrors live dossier
     assert!(out.contains("── CORRELATIONS")); // §2
-    assert!(out.contains("── SCAN SEQUENCE · 2 events")); // §3 header
-    assert!(out.contains("module_start")); // per-type breakdown
-    assert!(out.contains("▶ hibp")); // module_start rendered in the human timeline
-    assert!(out.contains("⊘ not expanded · username stranger")); // exclusion event rendered readably, with its reason
-    assert!(out.contains("identity_mismatch")); // …and its reason is preserved on that line
+    assert!(out.contains("SCAN SEQUENCE")); // §3 header (plain ASCII, no box glyphs)
+    assert!(out.contains("\"kind\":\"module_start\"")); // events as structured JSON lines
+    assert!(out.contains("\"module\":\"hibp\"")); // module_start rendered in the sequence
+    assert!(out.contains("\"kind\":\"entity_excluded\"")); // exclusion event present
+    assert!(out.contains("\"reason\":\"identity_mismatch\"")); // …with its reason preserved
     assert!(out.contains("── SELF-AUDIT")); // §4
     assert!(out.contains("score      :"));
     assert!(out.contains("exclusions : identity_mismatch×1")); // ledger folded in
@@ -404,28 +404,62 @@ fn event_log_renders_a_readable_aligned_timeline() {
             EventKind::ScanComplete {
                 scan_id: "s".into(),
                 entity_count: 2,
+                status: crate::core::scan::ScanStatus::Complete,
             },
         ),
     ];
     let out = crate::app::export::render_event_log(&evs);
 
-    // Structure: header with count, a by-type breakdown, and a UTC timeline.
-    assert!(out.contains("── SCAN SEQUENCE · 8 events ──"));
-    assert!(out.contains("By type:"));
-    assert!(out.contains("Timeline (UTC):"));
-    // Each event kind renders as a readable, glyph-led line (spacing-agnostic).
-    assert!(out.contains("● scan started · username=alameddine"));
-    assert!(out.contains("▶ dehashed"));
-    assert!(out.contains("✓ dehashed  (0 found)"));
-    assert!(out.contains("◌ psbdmp  capability-quarantined"));
-    assert!(out.contains("+ email  a@b.com  ·0.90"));
-    assert!(out.contains("(candidate)")); // candidate entity flagged
-    assert!(out.contains("⊘ not expanded · username stranger  identity_mismatch"));
-    assert!(out.contains("✔ scan complete · 2 entities"));
-    // Category columns present for grouping.
-    for cat in ["scan", "module", "entity", "expand"] {
-        assert!(out.contains(cat), "category column `{cat}` must appear");
+    // Structured JSON lines: one parseable JSON object per event, in order, with
+    // no decorative header, histogram, box-drawing, or status glyphs.
+    assert!(
+        !out.contains('●')
+            && !out.contains('▶')
+            && !out.contains('✔')
+            && !out.contains('⊘')
+            && !out.contains('─'),
+        "the structured log must carry no status/box glyphs, got:\n{out}"
+    );
+    let lines: Vec<serde_json::Value> = out
+        .lines()
+        .map(|l| {
+            serde_json::from_str(l).unwrap_or_else(|e| panic!("line is not JSON: {l:?} — {e}"))
+        })
+        .collect();
+    assert_eq!(lines.len(), 8, "one JSON object per event");
+
+    // Every object leads with time/level/kind.
+    for (v, ev) in lines.iter().zip(&evs) {
+        assert!(v["time"].is_string());
+        assert_eq!(v["level"], "info");
+        assert_eq!(v["kind"], ev.kind.event_type_str());
     }
+
+    // scan_start carries the target.
+    assert_eq!(lines[0]["kind"], "scan_start");
+    assert_eq!(lines[0]["target_kind"], "username");
+    assert_eq!(lines[0]["target_value"], "alameddine");
+    // module_start / module_done / module_skipped keep their concise fields.
+    assert_eq!(lines[1]["module"], "dehashed");
+    assert_eq!(lines[2]["found"], 0);
+    assert_eq!(lines[3]["reason"], "capability-quarantined");
+    // entity_found reduces the Entity to a handful of fields; the candidate flag
+    // is a boolean, not prose.
+    assert_eq!(lines[4]["entity_kind"], "email");
+    assert_eq!(lines[4]["value"], "a@b.com");
+    assert_eq!(lines[4]["confidence"], 0.9);
+    assert_eq!(lines[4]["candidate"], false);
+    assert_eq!(lines[5]["candidate"], true);
+    // entity_excluded renames its `kind` to `entity_kind` so it never collides
+    // with the line's top-level `kind`, and preserves the reason.
+    assert_eq!(lines[6]["kind"], "entity_excluded");
+    assert_eq!(lines[6]["entity_kind"], "username");
+    assert_eq!(lines[6]["value"], "stranger");
+    assert_eq!(lines[6]["reason"], "identity_mismatch");
+    // scan_complete reports status + entity count as data.
+    assert_eq!(lines[7]["kind"], "scan_complete");
+    assert_eq!(lines[7]["status"], "complete");
+    assert_eq!(lines[7]["entities"], 2);
 
     println!("\n===== render_event_log sample =====\n{out}=====");
 }

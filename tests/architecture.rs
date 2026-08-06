@@ -244,6 +244,18 @@ fn core_does_not_import_util_directly() {
                 // the spawned task.
                 && !line.contains("util::regional::with_regional")
                 && !line.contains("util::regional::regional_enabled")
+                // Pure, offline, dependency-free UTC time-of-day formatter
+                // (`HH:MM:SS` via Howard Hinnant civil-from-days — no date crate,
+                // no I/O, no state; total and deterministic) — the same leaf
+                // category as `util::geohash`/`util::geometry`. `core::event`'s
+                // `Event::to_log_line` is the single canonical definition of the
+                // structured JSON log line shared by every surface (events.log,
+                // the debug bundle, `hse live`, the web Scan-Log), so it stamps
+                // each event's `time` field through this one formatter rather than
+                // re-deriving the time-of-day maths in `core` (which would
+                // duplicate a `util` responsibility). Scoped to the single
+                // function actually used so the guard stays precise.
+                && !line.contains("util::timefmt::hms_utc")
                 // Persistent capability toggles (universal toggleability): the
                 // engine's module gate reads `module.<name>` on/off.
                 && !line.contains("util::settings::get_bool")
