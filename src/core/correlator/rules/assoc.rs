@@ -341,9 +341,21 @@ pub(in crate::core::correlator) fn rule_au_050_shared_phone_association(
         // subject" link. Only a personal line (a mobile or a geographic fixed line)
         // ties specific people together. Non-AU numbers stay grouped (the AU
         // classifier returns `None`), unchanged from before.
-        if crate::util::address_au::au_phone_line_type(&phone)
-            .is_some_and(|(t, _)| t.is_business_service())
-        {
+        //
+        // `phone` is the digits-only key (`normalise_phone` drops the `+`), so
+        // `au_phone_line_type` can't strip a `+61` country code to reach the
+        // domestic service number underneath — an AU freephone stored in
+        // international form ("+61 1800…" → key "611800…") would otherwise slip the
+        // veto and fabricate an associate cluster on a shared business desk. A
+        // domestic AU national number never begins "61", so the "61"-stripped form
+        // is classified too: a leading "61" that reveals a business/service line is
+        // a `+61`-prefixed AU one. Personal `+61` mobiles/landlines classify as
+        // non-business, so they still group — no real association is lost.
+        let is_business = |key: &str| {
+            crate::util::address_au::au_phone_line_type(key)
+                .is_some_and(|(t, _)| t.is_business_service())
+        };
+        if is_business(&phone) || phone.strip_prefix("61").is_some_and(is_business) {
             continue;
         }
         let mut names: Vec<&str> = g.persons.keys().map(String::as_str).collect();

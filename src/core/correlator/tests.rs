@@ -5698,6 +5698,35 @@ fn au050_excludes_shared_business_and_service_lines() {
 }
 
 #[test]
+fn au050_vetoes_au_business_line_in_plus61_international_form() {
+    // Regression (OD-14): an AU freephone/local-rate line stored in +61
+    // international form reaches the veto as a `+`-stripped digits key
+    // ("+61 1800 123 456" → key "611800123456") that au_phone_line_type can't see
+    // as domestic 1800. It must still be vetoed as a shared business desk, not fire
+    // a false associate cluster.
+    for service in ["+61 1800 123 456", "+61 1300 975 707"] {
+        let ents = vec![
+            person_with_phone("Jordan Meyers", service),
+            person_with_phone("Casey Lin", service),
+        ];
+        assert!(
+            super::rules::rule_au_050_shared_phone_association(&RuleContext::new(&ents), "s", 0)
+                .is_empty(),
+            "a +61-international-form AU business line must not link unrelated people: {service}"
+        );
+    }
+    // A personal AU mobile in +61 form is not a business line and still links.
+    let mobile = vec![
+        person_with_phone("Jordan Meyers", "+61 412 345 678"),
+        person_with_phone("Casey Lin", "61 412 345 678"),
+    ];
+    let hits =
+        super::rules::rule_au_050_shared_phone_association(&RuleContext::new(&mobile), "s", 0);
+    assert_eq!(hits.len(), 1, "a shared +61 mobile still links: {hits:?}");
+    assert_eq!(hits[0].rule_id, "AU-050");
+}
+
+#[test]
 fn au050_links_nanp_number_colliding_with_au_service_prefix() {
     // Regression (phone line-type false negative): a shared US number whose digits
     // collide with an AU service prefix must still link two people. `+1 909 555
