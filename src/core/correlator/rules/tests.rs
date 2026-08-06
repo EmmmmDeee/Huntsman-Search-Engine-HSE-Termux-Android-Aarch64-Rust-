@@ -113,6 +113,17 @@ use crate::core::entity::Evidence;
         assert_eq!(source_family("name_intel"), "identity_registry");
         assert_eq!(source_family("shodan"), "infra");
         assert_eq!(source_family("dns_intel"), "infra");
+        // Real geo *modules* are infrastructure geo — unchanged.
+        assert_eq!(source_family("ip_geo"), "infra");
+        assert_eq!(source_family("geocode"), "infra");
+        // Regression: the engine-derived corroboration PASS `geo_corroboration`
+        // must be the unscored `"other"` family, NOT `"infra"` — its `"geo"`
+        // substring once hijacked it there, manufacturing a phantom orthogonal
+        // family that inflated AU-062 multipath. Its promotion-source siblings
+        // classify the same way.
+        assert_eq!(source_family("geo_corroboration"), "other");
+        assert_eq!(source_family("multipath_corroboration"), "other");
+        assert_eq!(source_family("cross_scan_corroboration"), "other");
         assert_eq!(source_family("some_unknown_module"), "other");
     }
 

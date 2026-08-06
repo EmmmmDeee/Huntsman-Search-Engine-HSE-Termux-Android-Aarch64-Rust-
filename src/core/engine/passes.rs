@@ -112,7 +112,7 @@ pub(super) fn promote_geo_corroborated_family(entities: &mut [Entity]) -> usize 
         let km = distance_to_subject(e, &subject).unwrap_or_default();
         e.tag("geo-corroborated");
         e.add_evidence(Evidence::new(
-            "geo_corroboration",
+            crate::core::entity::GEO_CORROBORATION_SOURCE,
             format!(
                 "Shared-surname relative ~{km:.0} km from the subject's confirmed location — \
                  geo and surname independently corroborate the relationship"
@@ -187,7 +187,7 @@ pub(super) fn promote_breach_candidate_geo_corroborated(entities: &mut [Entity])
         e.tag("breach-corroborated");
         e.confidence = e.confidence.max(0.50);
         e.add_evidence(Evidence::new(
-            "geo_corroboration",
+            crate::core::entity::GEO_CORROBORATION_SOURCE,
             format!(
                 "Same-name breach record ~{km:.0} km from the subject's confirmed location \
                  (within {BREACH_GEO_KM:.0} km) — same name AND same locality confirm this is the \

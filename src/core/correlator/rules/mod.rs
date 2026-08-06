@@ -351,6 +351,16 @@ fn source_families(e: &Entity) -> BTreeSet<&'static str> {
 /// over the module names actually in the registry, most-specific first.
 pub(in crate::core) fn source_family(source: &str) -> &'static str {
     let s = source.to_ascii_lowercase();
+    // Engine-derived corroboration signals (multipath / cross-scan / geo
+    // agreement) are NOT independent observations: they must land in the unscored
+    // `"other"` family so a ride-along cannot manufacture a phantom orthogonal
+    // source family. Exact match, checked BEFORE the substring needles below, so
+    // real geo *modules* (`ip_geo`, `geocode`, `exif_geo`, …) still classify as
+    // `"infra"` — only the `geo_corroboration` PASS was being hijacked there by
+    // the `"geo"` needle, inflating AU-062 multipath / AU-063 gap / AU-082.
+    if crate::core::entity::is_engine_corroboration_source(&s) {
+        return "other";
+    }
     let has = |needles: &[&str]| needles.iter().any(|n| s.contains(n));
     if has(&[
         "hibp",
