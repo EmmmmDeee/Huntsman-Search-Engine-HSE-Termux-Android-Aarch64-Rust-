@@ -4,7 +4,7 @@
 //! Surfaces every `ScanOptions` field as a flag so each scan is fully
 //! customisable before launch. `serve` boots the HTTP server + SPA;
 //! `live` re-runs the same scan on a fixed interval. `update` upgrades
-//! the binary in place via `install.sh`. See `docs/USAGE.md` for the
+//! the binary in place via `install.sh`. See `hse --help` for the
 //! full reference.
 
 pub(crate) mod config;

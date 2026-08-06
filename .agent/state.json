@@ -10,7 +10,13 @@
   ],
   "cycle_count": 14,
   "last_verified_commit": "32f4545ad",
-  "verified_against": "cargo test --all --locked: 14 binaries + doctests, 0 failed (cycle 10 head d4f59952a). clippy --all-targets -D warnings + fmt clean per slot. aarch64-android + MSRV are CI authority; CI run-creation stalled on this branch since #2142/306370a56 so cycles 9-10 are locally gate-green but CI-unvalidated.",
+  "verified_against": {
+    "note": "This crate declares NO [features]; `--all-features` is a no-op here (main's #379 correction, preserved across the merge). The authoritative gate is scripts/gate.sh, which spans several workflow files and includes the rustdoc-lint and MSRV passes that reconstructing from ci.yml alone drops.",
+    "toolchain": "1.97.1 (rust-toolchain.toml)",
+    "msrv": "1.88 \u2014 NOT locally verifiable (no MSRV toolchain installed on this host); CI's MSRV job is the authority",
+    "cross_build": "aarch64-linux-android \u2014 NOT locally verifiable (no Android NDK on this host); CI's aarch64-android job is the authority",
+    "local_result": "cycles 9-14 verified locally: cargo test (lib + api + smoke + integration) 0 failed; clippy --all-targets --locked -- -D warnings clean; fmt clean per slot. GitHub Actions run-creation has been stalled for this branch, so these cycles are locally gate-green but CI-unvalidated until Actions recovers."
+  },
   "completed_slots": [
     {
       "cycle": 0,
@@ -83,6 +89,21 @@
       "id": "OB-12",
       "observation": "VERIFIED NEGATIVE, so a future cycle does not re-check: neither builtwith nor proxycurl hand-roll URL encoding -- both correctly reuse crate::util::http::urlencode (builtwith/mod.rs:158, proxycurl/url.rs). Also checked and ruled out as a candidate: cargo clippy::must_use_candidate (pedantic, not in clippy::all, not promoted in Cargo.toml's curated list) flags 284 sites crate-wide -- deliberately NOT adopted wholesale here, consistent with the repo's own stated philosophy in Cargo.toml ('Curated high-signal modernizations... deliberately NOT enforced' for stylistic/high-churn lints). A wholesale pedantic-group adoption is not a well-scoped single-cycle slot; if pursued, it should be curated few-at-a-time like the existing promoted lints, not bulk-enabled.",
       "action": "closed / recorded as deliberate non-adoption"
+    },
+    {
+      "id": "OB-13",
+      "summary": "CORRECTION to an earlier claim of mine: this container is NOT network-blocked. `hse engines` reaches every engine \u2014 bing and startpage return results (9 and 10), while 11 are soft-blocked or serve an anti-bot interstitial and 4 are down. A live `hse scan -v iana.org --depth 0` yields 500-600 entities, not the 1 I previously reported; that 1-entity result came from `--passive-only`, which I wrongly attributed to a network restriction. PR #376's body states the out-of-range-floor harm was unverifiable 'because sandbox network restrictions leave a scan with only its seed entity' \u2014 that stated reason is wrong, though hedging the claim was correct.",
+      "action": "none \u2014 recorded so a later cycle does not repeat the false constraint or re-derive the correction"
+    },
+    {
+      "id": "OB-14",
+      "summary": "Following the correction in OB-13, the min_confidence harm hypothesised in #376 IS now verified empirically, which #376 could only infer: on the same seed at depth 0, --min-confidence 0.99 collapses the result set to 1 entity while 0.30 yields 543, and the command still exits 0. An unreachable floor does produce a silently near-empty deliverable, exactly as the boundary validation added in #376 assumes.",
+      "action": "none \u2014 closes the 'Not claimed as done' caveat in PR #376's body"
+    },
+    {
+      "id": "OB-15",
+      "summary": "A live scan is NOT a valid instrument for measuring entity-count differences here. Three runs at an IDENTICAL floor (0.30, same seed, depth 0) returned 543, 582 and 561 entities \u2014 a 39-entity spread driven by which search engines and modules happen to succeed. An apparent non-monotonicity (0.0 yielding 462 vs 0.30 yielding 543) is within that order of magnitude and is NOT evidence of a filter bug; the filter is monotonic by construction over a fixed entity set. Any future claim about relative entity counts needs a deterministic fixture, not a live scan.",
+      "action": "none \u2014 recorded so a later cycle does not mistake live variance for a correctness defect"
     }
   ],
   "rejected_candidates": [
@@ -157,6 +178,12 @@
       "id": "OD-6",
       "summary": "util::atomic_file::create_dir_private previously returned Ok(()) for a pre-existing directory it could not chmod to 0700, because DirBuilder::recursive(true) succeeds on an existing dir and the repairing set_permissions was discarded. Its own doc claimed a 0700 guarantee it did not deliver, and key_vault.db / key_pool.json live beneath that directory.",
       "status": "CLOSED cycle 2 slot 1 \u2014 the achieved mode is now verified and a failure is disclosed at warn!, with the Ok contract deliberately unchanged so the infallible path accessors still return a usable PathBuf."
+    },
+    {
+      "id": "ingest-csv-lacks-formula-injection-guard",
+      "category": "HARDENING / security",
+      "detail": "#365's csv::Writer fix made `hse ingest -F csv` structurally valid RFC 4180, but it does not apply the anti-formula-injection guard that api::scan_export::csv_escape applies on the scan-export path. Ingest's input is an UNTRUSTED document, so a value beginning =/+/-/@/CR/TAB is written verbatim and executes when the operator opens the export in Excel or LibreOffice. The scan-export path is guarded; the ingest path is not.",
+      "status": "recorded on main via #379; carried across the merge into this branch \u2014 a candidate for a future cycle if not already fixed on main"
     }
   ],
   "cycle_2_slots": [

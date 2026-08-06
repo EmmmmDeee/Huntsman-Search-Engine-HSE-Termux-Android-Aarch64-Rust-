@@ -9722,7 +9722,7 @@ fn bench_correlate_entities_matches_the_internal_pass_and_is_deterministic() {
         "bench_correlate_entities must be a pure delegation to correlate_entities, \
          not an independently-drifting copy"
     );
-    // Determinism-by-construction (docs/CONVENTIONS.md §5): running the pass
+    // Determinism-by-construction: running the pass
     // twice over the same input must yield identical rule decisions — the
     // property the criterion bench and the perf module's
     // `pass_is_subquadratic` guard both implicitly rely on when comparing
