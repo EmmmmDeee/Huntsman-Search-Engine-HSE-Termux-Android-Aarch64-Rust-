@@ -296,6 +296,7 @@ async fn run_command(command: Command) -> Result<()> {
             .await
         }
         Command::Cells { action } => crate::app::cells::cmd_cells(action).await,
+        Command::Tidy { dry_run, json } => crate::app::tidy::cmd_tidy(dry_run, json),
     }
 }
 

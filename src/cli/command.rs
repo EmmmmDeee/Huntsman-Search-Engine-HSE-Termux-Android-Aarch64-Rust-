@@ -463,7 +463,9 @@ pub enum Command {
         /// Minimum confidence threshold (0.0-1.0, default 0.30).
         #[arg(long, default_value = "0.30", value_parser = confidence_floor)]
         min_confidence: f64,
-        /// Auto-scan extracted entities (NOT IMPLEMENTED — warns and runs no scan).
+        /// Also persist the extracted entities as a completed, correlated scan
+        /// (offline — no module dispatch, no network), so they show in `hse
+        /// list` and every view/export. The output is still written as usual.
         #[arg(long)]
         auto_scan: bool,
         /// Output file (default: stdout).
@@ -729,6 +731,29 @@ pub enum Command {
         action: crate::app::cells::CellsAction,
     },
 
+    /// Housekeeping: keep the on-device `~/.huntsman` footprint bounded and
+    /// arranged.
+    ///
+    /// Trims the rendered-dossier cache to its newest 500 files (each is a
+    /// regenerable render of a stored scan — `hse export --format full`
+    /// recreates any of them, so nothing unrecoverable is removed), applies the
+    /// canonical event-log / raw-archive retention bounds as a safety net for an
+    /// install that runs `serve` for weeks without completing a scan, truncates
+    /// the SQLite WAL, and re-asserts the data directory's `0700` layout.
+    ///
+    /// The scan database, key pool, key vault and harvested credentials are
+    /// never touched. Runs automatically on the `serve` maintenance tick; this
+    /// command is the on-demand form.
+    #[command(visible_alias = "clean")]
+    Tidy {
+        /// Report what would be reclaimed without changing anything on disk.
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit the machine-readable JSON report instead of the text summary.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Upgrade hse in place: `git pull` + rebuild + atomic binary swap.
     ///
     /// Finds the source directory (from `HUNTSMAN_INSTALL_DIR` written by
@@ -764,6 +789,30 @@ mod tests {
     #[test]
     fn cli_definition_is_internally_consistent() {
         Cli::command().debug_assert();
+    }
+
+    /// `hse tidy`'s help text quotes the dossier-cache cap as a literal, because
+    /// clap renders doc comments verbatim to the operator and a rustdoc
+    /// intra-doc link would leak as raw `[`crate::…`]` markup in `--help`. A
+    /// literal can drift from the constant it describes, so assert the two
+    /// agree: change `DOSSIER_MAX_FILES` and this fails until the help text is
+    /// updated with it.
+    #[test]
+    fn tidy_help_quotes_the_real_dossier_cap() {
+        let cap = crate::app::tidy::DOSSIER_MAX_FILES;
+        let tidy = Cli::command()
+            .get_subcommands()
+            .find(|c| c.get_name() == "tidy")
+            .expect("tidy subcommand is registered")
+            .clone();
+        let help = tidy
+            .get_long_about()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(
+            help.contains(&format!("newest {cap} files")),
+            "tidy --help must quote DOSSIER_MAX_FILES ({cap}); help was: {help}"
+        );
     }
 
     #[test]
