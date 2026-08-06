@@ -6168,6 +6168,34 @@ fn au097_short_token_needs_word_boundary() {
 }
 
 #[test]
+fn au097_skips_hosting_and_platform_infra_entities() {
+    // Regression: a hosting/datacentre IP that resolves to an AU network operator
+    // is a SERVER (mail host, CDN edge, the box a linked page resolves to), not
+    // the subject's access connection — attributing AU residency/affiliation to it
+    // fabricates a network-layer signal from pure infrastructure. Same Telstra IP
+    // as the Medium-residency test, but tagged `hosting` → must stay silent.
+    let mut host = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.8, "s");
+    host.add_evidence(
+        Evidence::new("ip_geo", "geo")
+            .with_attr("isp", "Telstra")
+            .with_attr("as", "AS1221 Telstra"),
+    );
+    host.tag(crate::core::tags::HOSTING);
+    assert!(
+        super::rules::rule_au_097_au_isp_network(&RuleContext::new(&[host]), "s", 0).is_empty(),
+        "a hosting-tagged server IP is not the subject's AU access connection"
+    );
+    // A platform-infra-tagged ASN (e.g. an AARNet-hosted cloud range) is likewise
+    // not the subject's institutional affiliation.
+    let mut asn = Entity::new(EntityKind::Asn, "AS7575 AARNet", 0.8, "s");
+    asn.tag(crate::core::tags::PLATFORM_INFRA);
+    assert!(
+        super::rules::rule_au_097_au_isp_network(&RuleContext::new(&[asn]), "s", 0).is_empty(),
+        "a platform-infra-tagged ASN is not the subject's institutional affiliation"
+    );
+}
+
+#[test]
 fn au096_ignores_non_osint_keys() {
     // A plain infra key (no osint-practitioner tag) must not trigger AU-096.
     let mut aws = Entity::new(EntityKind::ApiKey, "AKIAxxxx", 0.8, "s");

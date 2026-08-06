@@ -544,6 +544,15 @@ pub(in crate::core::correlator) fn rule_au_097_au_isp_network(
     for e in entities
         .iter()
         .filter(|e| matches!(e.kind, EntityKind::IpAddress | EntityKind::Asn))
+        // A hosting/datacentre/platform-infra IP is a resolved SERVER (a mail
+        // host, a CDN edge, the box a linked page resolves to), not the subject's
+        // own access connection — so its AU network operator says nothing about
+        // where the *person* connects from. Attributing residency/affiliation to
+        // it would fabricate a network-layer geo signal from pure infrastructure,
+        // against the "infrastructure must not seed identity pivots" discipline.
+        .filter(|e| {
+            !e.has_tag(crate::core::tags::HOSTING) && !e.has_tag(crate::core::tags::PLATFORM_INFRA)
+        })
     {
         if let Some((name, kind)) = au_network_of(e) {
             found
@@ -570,8 +579,8 @@ pub(in crate::core::correlator) fn rule_au_097_au_isp_network(
                     Severity::Medium,
                     format!(
                         "Subject's IP/ASN belongs to {name}, an Australian consumer ISP — a \
-                         network-layer AU residency/connection signal (a person on a domestic \
-                         network, not foreign or hosting infrastructure)"
+                         network-layer AU residency/connection signal (a domestic consumer \
+                         network; hosting/datacentre-tagged ranges are excluded)"
                     ),
                 ),
             };
