@@ -3,14 +3,16 @@
 //! FOFA is a specialized search engine for discovering internet-connected
 //! infrastructure, with deep indexes of open ports, banners, technologies,
 //! and TLS certificates. This module queries the FOFA API for Domain/IpAddress
-//! targets and surfaces host facts (ports, technologies, organizations).
+//! targets and surfaces host facts (ports, technologies, service banners).
 //!
 //! Endpoint: `POST https://fofa.info/api/v1/search`
 //! Query format: base64-encoded filter expression (e.g., `host="example.com"`)
 //! Auth: `key` query parameter
 //!
-//! Output: hosting domains/IPs, open ports, observed technologies, registrant
-//! organizations — providing lateral-movement and infrastructure-mapping signals.
+//! Output: `IpAddress` and `Domain` entities for the hosting infrastructure;
+//! open ports, observed technologies, service titles, and OS are attached as
+//! evidence attributes on the IP entity rather than emitted as their own
+//! entities — providing lateral-movement and infrastructure-mapping signals.
 
 #[cfg(test)]
 mod tests;
@@ -147,11 +149,15 @@ impl Module for Fofa {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[
-            EntityKind::IpAddress,
-            EntityKind::Domain,
-            EntityKind::Organisation,
-        ];
+        // Exactly the kinds `build_entities` can mint. `Organisation` was listed
+        // here but never emitted: FOFA's response as this module models it
+        // (`FofaResult`) carries no organisation field, and inventing one would
+        // require a live-schema field name this environment cannot verify — so
+        // the honest contract is IP + Domain only. A phantom `produces()` entry
+        // misleads scan planning and the `hse modules` reference into thinking
+        // the module can yield an entity kind it structurally cannot. Pinned by
+        // `produces_lists_exactly_the_kinds_build_entities_emits`.
+        const KINDS: &[EntityKind] = &[EntityKind::IpAddress, EntityKind::Domain];
         KINDS
     }
 
@@ -204,7 +210,8 @@ impl Module for Fofa {
 }
 
 /// Map a decoded FOFA response to entities. **Pure** (no network/IO).
-/// Emits IP, Domain, and Organisation entities from each result.
+/// Emits `IpAddress` and `Domain` entities from each result (ports/technologies/
+/// OS ride as evidence on the IP, not as their own entities).
 fn build_entities(body: &FofaResp, scan_id: &str) -> ModuleResult {
     let mut result = ModuleResult::new();
 

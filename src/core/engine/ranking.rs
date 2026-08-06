@@ -184,14 +184,28 @@ pub fn is_autonomous_seed_candidate(e: &Entity) -> bool {
                 && !crate::util::wifi::is_generic_ssid(&e.value)
         }
         // A precise fix reverse-geocodes into an address, POIs and property
-        // records. A COARSE centroid (postcode/suburb/country) or a HOSTING
-        // fix (a datacentre — it locates a server, never a person) does not.
+        // records. A COARSE centroid (postcode/suburb/country) does not, and
+        // neither does an INFRASTRUCTURE fix — a hosting/CDN datacentre, an
+        // `infra:` map feature (a scraped camera/tower), a WHOIS registrant
+        // location, or the radar `0,0` sentinel. The canonical
+        // `is_infrastructure_geo` bundles all of those (the hand-rolled subset
+        // here previously checked only HOSTING, so a sentinel/`infra:`/registrant
+        // coordinate seeded a scan on null island or a surveillance camera).
         EntityKind::Coordinates => {
             e.confidence >= 0.50
+                && !crate::core::correlator::is_infrastructure_geo(e)
                 && !e.has_tag(crate::core::tags::COARSE)
-                && !e.has_tag(crate::core::tags::HOSTING)
                 && !e.has_tag("postcode-only")
                 && !e.has_tag("candidate-suburb")
+        }
+        // An Address seeds a scan only when it is the SUBJECT's — a registrant /
+        // hosting address is infrastructure, not a person, so it is excluded by
+        // the same canonical guard (the delegated cross-scan predicate is a
+        // dual-purpose bridging key that intentionally admits a shared registrar
+        // address, which is wrong for subject-seed selection).
+        EntityKind::Address => {
+            !crate::core::correlator::is_infrastructure_geo(e)
+                && history::is_cross_scan_candidate(e)
         }
         // Every identity kind keeps the history gate's exact rule.
         _ => history::is_cross_scan_candidate(e),

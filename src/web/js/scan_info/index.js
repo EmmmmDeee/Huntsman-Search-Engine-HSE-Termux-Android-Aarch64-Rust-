@@ -44,6 +44,11 @@ export async function renderScanInfo(v){
   S.entities     = entsR.status ==='fulfilled' ? (entsR.value.entities||[])      : [];
   S.correlations = corrsR.status==='fulfilled' ? (corrsR.value.correlations||[]) : [];
   S.relations    = relsR.status ==='fulfilled' ? (relsR.value.relations||[])     : [];
+  // The /entities endpoint paginates (default limit 1000). Capture the query's
+  // true match total from the envelope so Browse can disclose when the loaded
+  // slice is only part of the scan, instead of silently reporting the fetched
+  // count as if it were the whole set.
+  S.entitiesTotal = entsR.status==='fulfilled' ? (entsR.value.total ?? S.entities.length) : 0;
   // `EntityKind::Other(s)` serializes as the object {"other":"…"} (externally
   // tagged), unlike every unit variant which is a plain string. Left as-is it
   // renders as "[object Object]" and, because it's used as a Map key, splits

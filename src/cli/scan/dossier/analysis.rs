@@ -16,18 +16,13 @@ use crate::core::{
     correlator::Correlation,
     entity::Entity,
     relation::{
-        Adjacency, ConnectionBroker, IdentityClusterResult, IdentityPath, Relation,
-        connection_brokers, identity_paths, identity_uids, provenance_chain,
-        resolve_identity_clusters, sorted_confined_adjacency, strongest_path_in,
+        Adjacency, ConnectionBroker, IDENTITY_LINK_MIN_CONF, IdentityClusterResult, IdentityPath,
+        Relation, connection_brokers, disjoint_pathways_in, identity_paths, identity_uids,
+        provenance_chain, resolve_identity_clusters, sorted_confined_adjacency, strongest_path_in,
     },
 };
 
 use super::{Labeller, truncation_note};
-
-/// The same weakest-link floor AU-067 and AU-070 fire under (Probable tier): a
-/// link below it is too weak to *bind* two identities, so one tenuous edge
-/// cannot fuse dozens of unrelated namesakes into "one person" here either.
-const MIN_CONF: f64 = 0.50;
 
 /// The subset of `relations` whose BOTH endpoints are present in `entities` —
 /// the same confinement [`sorted_confined_adjacency`] applies for the graph
@@ -73,11 +68,11 @@ impl<'a> Linkage<'a> {
         // Only ≥3-member resolutions and ≥3-identity brokers are worth a
         // section: a 2-member cluster is a single link already rendered under
         // CONNECTIONS, and a 2-identity bridge is a single fragile pair.
-        let clusters = resolve_identity_clusters(entities, relations, 4, MIN_CONF)
+        let clusters = resolve_identity_clusters(entities, relations, 4, IDENTITY_LINK_MIN_CONF)
             .into_iter()
             .filter(|c| c.members.len() >= 3)
             .collect();
-        let brokers = connection_brokers(&adj, &ids, MIN_CONF)
+        let brokers = connection_brokers(&adj, &ids, IDENTITY_LINK_MIN_CONF)
             .into_iter()
             .filter(|b| b.brokered.len() >= 3)
             .collect();
@@ -228,12 +223,13 @@ impl<'a> Linkage<'a> {
             // Corroboration multiplicity: how many edge-disjoint routes confirm
             // this link (AU-062's signal). >1 means the connection survives any
             // single pathway going dark — the orthogonal-route robustness.
-            let routes = crate::core::relation::disjoint_pathways_in(
+            let routes = disjoint_pathways_in(
                 &self.adj,
                 &c.from_uid,
                 &c.to_uid,
                 5,
                 4,
+                IDENTITY_LINK_MIN_CONF,
             )
             .len();
             let corroboration = if routes >= 2 {

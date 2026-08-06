@@ -145,6 +145,12 @@ pub const MULTIPATH_CORROBORATION_SOURCE: &str = "multipath_corroboration";
 /// not an independent observation.
 pub const CROSS_SCAN_CORROBORATION_SOURCE: &str = "cross_scan_corroboration";
 
+/// Evidence source name emitted by the geo-corroboration promotion passes
+/// (`promote_geo_corroborated_family` / `promote_breach_candidate_geo_corroborated`
+/// in `crate::core::engine::passes`). Engine-derived agreement signal, not an
+/// independent observation.
+pub const GEO_CORROBORATION_SOURCE: &str = "geo_corroboration";
+
 /// True if `source` is an engine **promotion pass** rather than an independent
 /// observation. Promotion passes amplify entities that are already grounded by
 /// real sources; they must never GROUND an entity by themselves.
@@ -156,6 +162,24 @@ pub const CROSS_SCAN_CORROBORATION_SOURCE: &str = "cross_scan_corroboration";
 #[inline]
 pub fn is_promotion_source(source: &str) -> bool {
     source == MULTIPATH_CORROBORATION_SOURCE || source == CROSS_SCAN_CORROBORATION_SOURCE
+}
+
+/// True if `source` is an engine-derived corroboration signal — multipath,
+/// cross-scan, or geo agreement — rather than an independent observation. Such a
+/// signal must classify as the unscored `"other"`
+/// [`source_family`](crate::core::correlator::source_family): it records that
+/// existing sources agree, so counting it as its own family would manufacture a
+/// phantom orthogonal source family. (`geo_corroboration`'s name contains the
+/// `"geo"` substring the family classifier keys `"infra"` on, so without an
+/// exact-match guard it was hijacked to `"infra"` and inflated AU-062 multipath /
+/// AU-063 gap / AU-082 alerts.) Broader than [`is_promotion_source`]:
+/// `geo_corroboration` still counts as a real source for corroboration DEPTH, but
+/// must never add family BREADTH.
+#[inline]
+pub fn is_engine_corroboration_source(source: &str) -> bool {
+    source == MULTIPATH_CORROBORATION_SOURCE
+        || source == CROSS_SCAN_CORROBORATION_SOURCE
+        || source == GEO_CORROBORATION_SOURCE
 }
 
 /// True if `source` must NOT count toward cross-source corroboration — a

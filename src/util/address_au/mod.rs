@@ -486,27 +486,44 @@ pub fn au_phone_line_type(value: &str) -> Option<(AuLineType, &'static str)> {
     // country code — a plain `61…` foreign number is left intact (→ `None`).
     let plus = value.contains('+');
     let digits = crate::util::str_util::ascii_digits(value);
-    let nat = if let Some(rest) = digits.strip_prefix("0061") {
+    // Resolve the national significant number, honouring an explicit country code.
+    // `0061` is stripped whether or not a `+` was present (an unambiguous
+    // international access prefix). A `+` marks the country code explicitly, so if
+    // it is present but NOT `61`/`0061` the number is foreign, not AU — return
+    // early rather than mis-reading its national digits (`+44 1800…` → `441800…` →
+    // leading `4` → AU Mobile, `+81 3…` → leading `8` → AU fixed line).
+    let nsn = if let Some(rest) = digits.strip_prefix("0061") {
         rest
-    } else if plus && let Some(rest) = digits.strip_prefix("61") {
-        rest
+    } else if plus {
+        // Strip `61` for AU; any other country code is foreign, never AU, so bail
+        // (`?` → `None`) rather than mis-reading its national digits.
+        digits.strip_prefix("61")?
     } else {
         digits.as_str()
-    }
-    .trim_start_matches('0');
-    if nat.starts_with("1800") {
+    };
+    let nat = nsn.trim_start_matches('0');
+    // The `1800`/`1300`/`190x` service numbers are EXACTLY 10 national digits
+    // (the `13xxxx` short form is the sole 6-digit exception). A LONGER number
+    // that merely begins with these digits is not an AU service line — most
+    // importantly an 11-digit NANP number whose `1` country code + area code
+    // collides: `+1 800…` (US toll-free) reads as `1800…`, `+1 900…`/`+1 90x…`
+    // (US premium / area codes 900-909) read as `190…`. Without the exact-length
+    // gate those were misclassified as AU freephone/premium, so a shared US line
+    // was wrongly vetoed as an AU "business desk" and its real association
+    // dropped (AU-050). Enforcing the length rejects them (→ `None`, non-AU).
+    if nat.len() == 10 && nat.starts_with("1800") {
         return Some((
             AuLineType::Freephone,
             "freephone (1800) — an inbound business/service line",
         ));
     }
-    if nat.starts_with("1300") || (nat.len() == 6 && nat.starts_with("13")) {
+    if (nat.len() == 10 && nat.starts_with("1300")) || (nat.len() == 6 && nat.starts_with("13")) {
         return Some((
             AuLineType::LocalRate,
             "local-rate (13/1300) — a business/service line",
         ));
     }
-    if nat.starts_with("190") {
+    if nat.len() == 10 && nat.starts_with("190") {
         return Some((
             AuLineType::Premium,
             "premium-rate (190x) — a charged service line",
@@ -767,31 +784,44 @@ pub enum AuNetworkKind {
 /// Australian network operator brand tokens (lowercase) → canonical name + class.
 /// Only distinctive, unambiguously-Australian operator names are listed, so a
 /// token in an `isp`/`org`/`as` value is a reliable AU signal, not a coincidence.
-const AU_NETWORK_OPERATORS: &[(&str, &str, AuNetworkKind)] = &[
-    ("telstra", "Telstra", AuNetworkKind::Consumer),
-    ("optus", "Optus", AuNetworkKind::Consumer),
-    ("tpg", "TPG", AuNetworkKind::Consumer),
-    ("iinet", "iiNet", AuNetworkKind::Consumer),
-    ("internode", "Internode", AuNetworkKind::Consumer),
+// 4th field `ambiguous`: the lowercase brand token is ALSO an ordinary English
+// word, so it is trusted only in a structured operator-name field (isp/org/as/…),
+// never in free-text `descr` prose — see [`au_network_operator_split`]. Without
+// this, a RIPE `descr` like "address space that used to belong to X" whole-word-
+// matched `belong` and fabricated a "Belong ISP" residency attribution (AU-097).
+const AU_NETWORK_OPERATORS: &[(&str, &str, AuNetworkKind, bool)] = &[
+    ("telstra", "Telstra", AuNetworkKind::Consumer, false),
+    ("optus", "Optus", AuNetworkKind::Consumer, false),
+    ("tpg", "TPG", AuNetworkKind::Consumer, false),
+    ("iinet", "iiNet", AuNetworkKind::Consumer, false),
+    ("internode", "Internode", AuNetworkKind::Consumer, false),
     (
         "aussie broadband",
         "Aussie Broadband",
         AuNetworkKind::Consumer,
+        false,
     ),
-    ("aussiebb", "Aussie Broadband", AuNetworkKind::Consumer),
-    ("vocus", "Vocus", AuNetworkKind::Consumer),
-    ("dodo", "Dodo", AuNetworkKind::Consumer),
-    ("iprimus", "iPrimus", AuNetworkKind::Consumer),
-    ("belong", "Belong", AuNetworkKind::Consumer),
-    ("superloop", "Superloop", AuNetworkKind::Consumer),
-    ("launtel", "Launtel", AuNetworkKind::Consumer),
-    ("exetel", "Exetel", AuNetworkKind::Consumer),
-    ("myrepublic", "MyRepublic", AuNetworkKind::Consumer),
-    ("spintel", "SpinTel", AuNetworkKind::Consumer),
-    ("aapt", "AAPT", AuNetworkKind::Consumer),
-    ("amaysim", "amaysim", AuNetworkKind::Consumer),
-    ("tangerine", "Tangerine", AuNetworkKind::Consumer),
-    ("aarnet", "AARNet", AuNetworkKind::Academic),
+    (
+        "aussiebb",
+        "Aussie Broadband",
+        AuNetworkKind::Consumer,
+        false,
+    ),
+    ("vocus", "Vocus", AuNetworkKind::Consumer, false),
+    // `dodo` (a bird) and `tangerine` (a fruit/colour) and `belong` (a verb) are
+    // real AU ISPs whose tokens collide with ordinary prose — ambiguous.
+    ("dodo", "Dodo", AuNetworkKind::Consumer, true),
+    ("iprimus", "iPrimus", AuNetworkKind::Consumer, false),
+    ("belong", "Belong", AuNetworkKind::Consumer, true),
+    ("superloop", "Superloop", AuNetworkKind::Consumer, false),
+    ("launtel", "Launtel", AuNetworkKind::Consumer, false),
+    ("exetel", "Exetel", AuNetworkKind::Consumer, false),
+    ("myrepublic", "MyRepublic", AuNetworkKind::Consumer, false),
+    ("spintel", "SpinTel", AuNetworkKind::Consumer, false),
+    ("aapt", "AAPT", AuNetworkKind::Consumer, false),
+    ("amaysim", "amaysim", AuNetworkKind::Consumer, false),
+    ("tangerine", "Tangerine", AuNetworkKind::Consumer, true),
+    ("aarnet", "AARNet", AuNetworkKind::Academic, false),
 ];
 
 /// True if `token` occurs in `hay` (already lowercased) as a whole word — bounded
@@ -830,11 +860,75 @@ fn au_network_word_in(hay: &str, token: &str) -> bool {
 /// ```
 #[must_use]
 pub fn au_network_operator(haystack: &str) -> Option<(&'static str, AuNetworkKind)> {
+    au_network_operator_in(haystack, true)
+}
+
+/// Match an AU network operator across two trust tiers. `structured` — the
+/// operator-name fields (`isp`/`org`/`as`/…) and the entity value — is trusted
+/// for every brand token. `descr` — RIPE/APNIC free-text prose — is trusted only
+/// for the UNAMBIGUOUS tokens: a common-word brand (`belong`/`dodo`/`tangerine`,
+/// real ISPs whose tokens are also ordinary words) matched in prose is almost
+/// always the word, not the operator ("…used to belong to X"). Structured wins;
+/// `descr` is the fallback. This is what [`crate::core`]'s `au_network_of` calls,
+/// splitting an entity's attributes into the two tiers. Pure; no I/O.
+#[must_use]
+pub fn au_network_operator_split(
+    structured: &str,
+    descr: &str,
+) -> Option<(&'static str, AuNetworkKind)> {
+    au_network_operator_in(structured, true).or_else(|| au_network_operator_in(descr, false))
+}
+
+/// Shared matcher: whole-word, case-insensitive scan of `haystack` for an AU
+/// operator brand. When `allow_ambiguous` is false, the common-word brand tokens
+/// (the `AU_NETWORK_OPERATORS` entries flagged ambiguous) are skipped, so they
+/// cannot match ordinary prose.
+fn au_network_operator_in(
+    haystack: &str,
+    allow_ambiguous: bool,
+) -> Option<(&'static str, AuNetworkKind)> {
     let hay = haystack.to_ascii_lowercase();
     AU_NETWORK_OPERATORS
         .iter()
-        .find(|(tok, _, _)| au_network_word_in(&hay, tok))
-        .map(|(_, canon, kind)| (*canon, *kind))
+        .filter(|(_, _, _, ambiguous)| allow_ambiguous || !*ambiguous)
+        .find(|(tok, _, _, _)| au_network_word_in(&hay, tok))
+        .map(|(_, canon, kind, _)| (*canon, *kind))
+}
+
+/// True when the four bytes `bytes[i..i + 4]` form a **standalone** Australian
+/// postcode: four ASCII digits parsing to `2000..=9999` that are not part of a
+/// longer digit run on either side — so `20267` is rejected rather than read as
+/// `2026`, and `12026` is not read as `2026` either.
+///
+/// This is the single canonical postcode-boundary predicate shared by the AU
+/// free-text parsers (`modules::au_property::extract_postcode` and
+/// `modules::au_electoral`'s suburb-hint scan). It replaces two hand-rolled
+/// copies that had **diverged**: one enforced the digit-run boundary guards and
+/// the other did not, so the second anchored a suburb hint on a spurious 4-digit
+/// prefix of a 5-digit number. Collapsing them here makes that divergence
+/// impossible to reintroduce. Pure, total, allocation-free.
+///
+/// Callers scan `for i in 0..bytes.len().saturating_sub(3)`, where `i + 3` is
+/// always in bounds; the explicit `i + 3 < bytes.len()` guard keeps the
+/// predicate total (panic-free) for any `(bytes, i)`.
+#[must_use]
+pub fn is_standalone_postcode_at(bytes: &[u8], i: usize) -> bool {
+    i + 3 < bytes.len()
+        && bytes[i].is_ascii_digit()
+        && bytes[i + 1].is_ascii_digit()
+        && bytes[i + 2].is_ascii_digit()
+        && bytes[i + 3].is_ascii_digit()
+        // Not part of a longer digit run — a 5+ digit number is never a postcode.
+        && !bytes.get(i + 4).is_some_and(u8::is_ascii_digit)
+        && (i == 0 || !bytes[i - 1].is_ascii_digit())
+        && {
+            // Four ASCII digits always fit a u32; range-gate to the AU span.
+            let pc = u32::from(bytes[i] - b'0') * 1000
+                + u32::from(bytes[i + 1] - b'0') * 100
+                + u32::from(bytes[i + 2] - b'0') * 10
+                + u32::from(bytes[i + 3] - b'0');
+            (2000..=9999).contains(&pc)
+        }
 }
 
 #[cfg(test)]

@@ -12,18 +12,28 @@
 
 use super::*;
 
-/// Normalise a free-form postal address for grouping: lowercase, fold commas to
-/// spaces, drop the punctuation that varies between records (`#`, `.`, `-`), and
-/// collapse runs of whitespace. Two records that name the same residence with
-/// inconsistent formatting (`"123 Main St, Apt 4"` vs `"123 main st apt 4"`)
-/// must collapse to one key, or the household never forms.
+/// Normalise a free-form postal address for grouping: lowercase; fold commas,
+/// whitespace, and the separators `#`, `-`, `/`, `\` to a single space; drop
+/// abbreviation dots (`.`); and collapse runs of whitespace. Two records that
+/// name the same residence with inconsistent formatting (`"123 Main St, Apt 4"`
+/// vs `"123 main st apt 4"`) must collapse to one key, or the household never
+/// forms.
+///
+/// The unit / range separators MUST fold to a space, not vanish: deleting `/`
+/// collapsed `"1/2 Oak St"` (unit 1 of number 2) onto `"12 Oak St"` (number 12),
+/// fusing two distinct dwellings — and their occupants — into one false
+/// household (AU-049), and into a false kin finding (AU-051) on a shared surname.
+/// Folding also makes a hyphenated street name match its spaced spelling
+/// (`"Main-St"` ⇒ `"main st"` = `"Main St"`). `.` is dropped rather than spaced so
+/// intra-token abbreviations still collapse (`"N.S.W"` ⇒ `"nsw"`, matching
+/// `"NSW"`); folding it to a space would split them and lose that match.
 fn normalise_address(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut last_space = true; // trims leading space
     for c in raw.chars() {
-        let c = if c == ',' || c.is_whitespace() {
+        let c = if c == ',' || c.is_whitespace() || matches!(c, '#' | '-' | '/' | '\\') {
             ' '
-        } else if matches!(c, '#' | '.' | '-' | '/' | '\\') {
+        } else if c == '.' {
             continue;
         } else {
             c.to_ascii_lowercase()
@@ -331,9 +341,21 @@ pub(in crate::core::correlator) fn rule_au_050_shared_phone_association(
         // subject" link. Only a personal line (a mobile or a geographic fixed line)
         // ties specific people together. Non-AU numbers stay grouped (the AU
         // classifier returns `None`), unchanged from before.
-        if crate::util::address_au::au_phone_line_type(&phone)
-            .is_some_and(|(t, _)| t.is_business_service())
-        {
+        //
+        // `phone` is the digits-only key (`normalise_phone` drops the `+`), so
+        // `au_phone_line_type` can't strip a `+61` country code to reach the
+        // domestic service number underneath — an AU freephone stored in
+        // international form ("+61 1800…" → key "611800…") would otherwise slip the
+        // veto and fabricate an associate cluster on a shared business desk. A
+        // domestic AU national number never begins "61", so the "61"-stripped form
+        // is classified too: a leading "61" that reveals a business/service line is
+        // a `+61`-prefixed AU one. Personal `+61` mobiles/landlines classify as
+        // non-business, so they still group — no real association is lost.
+        let is_business = |key: &str| {
+            crate::util::address_au::au_phone_line_type(key)
+                .is_some_and(|(t, _)| t.is_business_service())
+        };
+        if is_business(&phone) || phone.strip_prefix("61").is_some_and(is_business) {
             continue;
         }
         let mut names: Vec<&str> = g.persons.keys().map(String::as_str).collect();
@@ -481,13 +503,38 @@ mod tests {
     }
 
     #[test]
-    fn normalise_address_drops_format_punctuation_and_trims() {
-        // `#`, `.`, `-`, `/`, `\` are removed (joining adjacent tokens, so
-        // `Main-St` ⇒ `mainst`); commas/whitespace runs collapse; ends trimmed.
+    fn normalise_address_folds_separators_and_trims() {
+        // `#`, `-`, `/`, `\` fold to a space (so `Main-St` ⇒ `main st`, matching
+        // the spaced spelling); the abbreviation dot `.` is dropped (so `St.` ⇒
+        // `st`); commas/whitespace runs collapse; ends trimmed.
         assert_eq!(
             normalise_address("  Apt #4, 123 Main-St.  "),
-            "apt 4 123 mainst"
+            "apt 4 123 main st"
         );
+    }
+
+    #[test]
+    fn normalise_address_keeps_unit_and_range_separators_distinct() {
+        // Regression: `/` and `-` are UNIT / RANGE separators, not noise. Deleting
+        // them collapsed distinct dwellings onto one key and fused their occupants
+        // into a false household (AU-049) — and, on a shared surname, false kin
+        // (AU-051). Folding to a space keeps them apart.
+        assert_ne!(
+            normalise_address("1/2 Oak Street, Sydney NSW"),
+            normalise_address("12 Oak Street, Sydney NSW"),
+        );
+        assert_ne!(
+            normalise_address("1-3 Oak Street, Sydney NSW"),
+            normalise_address("13 Oak Street, Sydney NSW"),
+        );
+        // The unit form is still a specific residence — kept as a distinct key,
+        // not dropped from grouping.
+        assert!(is_residence_address(&normalise_address(
+            "1/2 Oak Street, Sydney NSW"
+        )));
+        // `.` still drops so an intra-token abbreviation matches its unpunctuated
+        // spelling: `N.S.W` and `NSW` must remain one key.
+        assert_eq!(normalise_address("N.S.W"), normalise_address("NSW"));
     }
 
     // ── normalise_phone ───────────────────────────────────────────────────────
