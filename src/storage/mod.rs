@@ -497,7 +497,7 @@ impl Store {
     ///
     /// `aborted` is included deliberately: an operator-cancelled scan keeps the
     /// entities and correlations produced before the stop, "persisted as for a
-    /// `Complete` scan" (see [`ScanStatus::Aborted`]), and
+    /// `Complete` scan" (see [`ScanStatus::Aborted`](crate::core::scan::ScanStatus::Aborted)), and
     /// [`scan_incompleteness_warning`](crate::app::runtime) already reports its
     /// data as final. Excluding it made `latest` silently skip a perfectly good
     /// aborted scan — the exact scenario a wall-time budget or an operator
