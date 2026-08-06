@@ -171,3 +171,102 @@ fn opencellid_download_url_embeds_the_token_and_filename() {
     assert!(url.contains("sourceFilter=ocid"));
     assert!(url.contains("type=full"));
 }
+
+// ── clear: the file must actually shrink ────────────────────────────────────
+//
+// Driven against a dedicated database rather than `cell_db_path()`: under
+// `cfg(test)` that path is ONE per-process temp location shared by every test,
+// so using it here would race any sibling touching the cell DB — and this
+// property needs a file it exclusively owns and has grown to a known size.
+
+/// Build a cell DB at `path` carrying `n` tower rows, and return its size.
+fn seeded_cell_db(path: &std::path::Path, n: i64) -> (rusqlite::Connection, u64) {
+    let conn = rusqlite::Connection::open(path).expect("open temp cell db");
+    crate::util::cell_db::init_schema(&conn).expect("schema");
+    let batch: Vec<crate::util::cell_db::CellRow> = (0..n)
+        .map(|i| crate::util::cell_db::CellRow {
+            radio: "LTE".to_string(),
+            mcc: 505,
+            mnc: 1,
+            lac: 54321,
+            cid: i,
+            lon: 153.021,
+            lat: -27.471,
+            range_m: 500,
+            samples: 10,
+            avg_signal: -80,
+        })
+        .collect();
+    crate::util::cell_db::insert_batch(&conn, &batch).expect("insert");
+    // Checkpoint so the pages are in the main file, not only the WAL, before
+    // the size is read — otherwise `bytes_before` understates the real DB.
+    let _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)", []);
+    let size = std::fs::metadata(path).map_or(0, |m| m.len());
+    (conn, size)
+}
+
+#[test]
+fn clear_returns_the_freed_pages_to_the_filesystem() {
+    // Regression: `clear_in` used to be DELETE-only. SQLite moves deleted pages
+    // to an internal freelist and keeps the file at its old size, so clearing a
+    // multi-GB OpenCellID import reclaimed NOTHING — the opposite of the reason
+    // an operator runs it on a storage-constrained phone.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cell_towers.db");
+    let (conn, before) = seeded_cell_db(&path, 4_000);
+    assert!(before > 0, "seeded DB must exist on disk");
+
+    let report = super::clear_in(&conn, &path).expect("clear must succeed");
+
+    assert_eq!(report.rows_deleted, 4_000, "every tower row is removed");
+    assert_eq!(
+        report.vacuum_error, None,
+        "the vacuum must succeed on a normal filesystem"
+    );
+    assert!(
+        report.bytes_after < report.bytes_before,
+        "the file must physically shrink: {} -> {}",
+        report.bytes_before,
+        report.bytes_after
+    );
+    assert!(
+        report.bytes_reclaimed() > 0,
+        "reclaimed byte count must be non-zero"
+    );
+    // The reported figures must match the filesystem, not just each other.
+    let on_disk = std::fs::metadata(&path).map_or(0, |m| m.len());
+    assert_eq!(
+        report.bytes_after, on_disk,
+        "bytes_after must be what the filesystem actually shows"
+    );
+}
+
+#[test]
+fn clear_of_an_already_empty_db_is_a_no_op_that_still_succeeds() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cell_towers.db");
+    let (conn, _) = seeded_cell_db(&path, 0);
+
+    let report = super::clear_in(&conn, &path).expect("clearing an empty DB must succeed");
+
+    assert_eq!(report.rows_deleted, 0);
+    assert_eq!(report.vacuum_error, None);
+    assert_eq!(
+        report.bytes_reclaimed(),
+        report.bytes_before.saturating_sub(report.bytes_after),
+        "reclaimed is a saturating difference and never underflows"
+    );
+}
+
+#[test]
+fn bytes_reclaimed_saturates_when_the_file_grew() {
+    // A concurrent writer growing the file between the two stats must not
+    // underflow the subtraction into a near-u64::MAX "reclaimed" figure.
+    let report = super::ClearReport {
+        rows_deleted: 0,
+        bytes_before: 1_000,
+        bytes_after: 4_096,
+        vacuum_error: None,
+    };
+    assert_eq!(report.bytes_reclaimed(), 0);
+}

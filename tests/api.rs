@@ -2491,9 +2491,13 @@ async fn spa_served_with_required_ui_structure() {
         // palette legitimately moves — it exists to catch shipping a *light*
         // default, not to freeze one shade.
         "#0a0d11",
-        "/static/d3.min.js", // interactive node graph (D3)
-        "tablesorter",       // sortable data tables
-        "#/dash",            // tabbed navigation (client-side hash routes)
+        // SPA module entry point. This slot used to pin `/static/d3.min.js`,
+        // the vendored force-graph engine; the graph is now a dependency-free
+        // concentric SVG layout in `js/scan_info/graph.js`, so the thing worth
+        // pinning is that the module graph still has a root to load.
+        "/static/js/main.js",
+        "tablesorter", // sortable data tables
+        "#/dash",      // tabbed navigation (client-side hash routes)
         "#/scans",
         "#/newscan",
         "EventSource", // live event log (SSE)
@@ -3508,14 +3512,23 @@ async fn scan_events_log_404_unknown_and_text_attachment_for_known() {
         cd.contains("filename=\"hse-events-") && cd.ends_with(".log\""),
         "events.log filename must be hse-events-<id>.log, got {cd:?}"
     );
-    // Body must be render_event_log's output, not e.g. an empty/error body —
-    // guards against Content-Type/filename drifting correctly while the body
-    // itself silently stops matching the shared renderer.
+    // Body must be render_event_log's output: structured JSON lines, one object
+    // per event, with no box/tree/status glyphs. Guards against the body
+    // silently drifting from the shared renderer to an error page or the old
+    // glyph timeline.
     let body = body_text(resp).await;
     assert!(
-        body.contains("SCAN SEQUENCE"),
-        "events.log body must contain the scan-sequence header, got {body:?}"
+        !body.contains('─') && !body.contains('▶') && !body.contains('✔'),
+        "events.log must be glyph-free structured JSON, got {body:?}"
     );
+    for line in body.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("events.log line is not JSON: {line:?} — {e}"));
+        assert!(
+            v.get("time").is_some() && v.get("level").is_some() && v.get("kind").is_some(),
+            "each events.log line must lead with time/level/kind, got {line:?}"
+        );
+    }
 
     let resp = app
         .oneshot(get("/api/v1/scans/__nope__/events.log"))

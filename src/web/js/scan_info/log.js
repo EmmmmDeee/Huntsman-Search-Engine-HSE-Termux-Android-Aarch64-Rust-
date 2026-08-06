@@ -28,8 +28,10 @@ import { API } from '/static/js/api.js';
 export async function renderLog(host, scan){
   const running = scan.status==='running' || scan.status==='pending';
   // Fresh tally per view — otherwise opening a second scan's log would add its
-  // events to the previous scan's breakdown.
+  // events to the previous scan's breakdown. The eviction counter resets with
+  // it, for the same reason: it describes THIS view's box.
   typeCounts.clear();
+  logRowsDropped = 0;
   host.innerHTML = `
     <div class="panel panel-default">
       <div class="panel-heading">
@@ -55,6 +57,7 @@ export async function renderLog(host, scan){
   $('#log-clear').addEventListener('click', ()=>{
     $('#log-box').innerHTML='';
     typeCounts.clear();
+    logRowsDropped = 0;
     renderTypeCounts();
   });
   // "Save shown" — serialise exactly the rendered rows to a .log file. This is
@@ -66,7 +69,14 @@ export async function renderLog(host, scan){
     header: (n) =>
       `# HSE scan event log (as shown in the browser)\n` +
       `# scan ${scan.id}\n` +
-      `# ${n} event(s)` + (running ? ' — live capture, may be partial\n' : '\n') + `\n`,
+      `# ${n} event(s)` + (running ? ' — live capture, may be partial\n' : '\n') +
+      // The box is row-capped, so "as shown" can be a suffix of the scan. Say
+      // so in the artifact itself — a saved log that silently omits its start
+      // is worse than no log, and the complete one is a click away.
+      (logRowsDropped
+        ? `# NOTE: the oldest ${logRowsDropped} row(s) were dropped from view (display cap ${LOG_MAX_ROWS});\n` +
+          `#       this file starts mid-scan. Use the Download button for the complete log.\n`
+        : '') + `\n`,
     filename: `hse-events-shown-${scan.id.slice(0, 12)}.log`,
   }));
 
@@ -79,11 +89,34 @@ export async function renderLog(host, scan){
   if (running){
     status.className = 'label label-info';
     status.innerHTML = '<i class="glyphicon glyphicon-record"></i>&nbsp;live';
+    // When the tailed scan finishes DURING the stream, its terminal
+    // `scan_complete` event arrives here. The one-shot `!running` block further
+    // down only runs for a scan already finished at render time, so without
+    // this the pill would sit 'live'/'reconnecting…' forever. Reflect the true
+    // terminal state (carried on the event since the ScanComplete status fix)
+    // and close the stream — `scan_complete` is the last event, so closing
+    // after it drops nothing.
+    const onTerminal = ev => {
+      const st = $('#log-status'); if (!st) return;
+      const term = ev.status || 'complete';
+      st.className = term === 'failed' ? 'label label-danger'
+                   : term === 'aborted' ? 'label label-warning'
+                   : 'label label-default';
+      st.textContent = term === 'failed' ? 'failed'
+                     : term === 'aborted' ? 'aborted'
+                     : 'complete';
+      closeSse();
+    };
     openSse(scan.id, ev=>{
       if (bufferingMode) buffered.push(ev);
       else appendLog(ev);
+      if (ev && ev.type === 'scan_complete') onTerminal(ev);
     }, (state, es)=>{
       const st = $('#log-status'); if (!st) return;
+      // Once the scan has finished we close the stream and set a terminal pill;
+      // ignore the reconnect/close state flaps that closing itself triggers so
+      // they can't overwrite it (closeSse nulls S.sse).
+      if (!S.sse) return;
       if (state === 'open'){
         st.className = 'label label-info';
         st.innerHTML = '<i class="glyphicon glyphicon-record"></i>&nbsp;live';
@@ -174,13 +207,11 @@ export async function renderLog(host, scan){
   }
 }
 /* ── "By type" breakdown ──
-   The Rust event-log renderer (`render_event_log`, cli/export/renderers.rs)
-   prints a per-event-kind histogram above the timeline, and the debug bundle's
-   SCAN SEQUENCE reuses it — so both on-disk renderings answer "how many
-   entities / skips / errors was that?" at a glance. The browser log showed only
-   the timeline, leaving the operator to count 764 rows by eye. Same data, same
-   summary, tallied client-side from the rows already in hand (no extra
-   round-trip), and kept live as SSE rows stream in. */
+   Both on-disk (render_event_log) and streaming (SSE) events carry the same
+   kind (event type), so the browser can tally them client-side — same breakdown
+   on-disk and on-screen. The timeline alone left the operator to count 764
+   rows by eye; the breakdown answers "how many entities / errors was that?"
+   at a glance, kept live as rows stream in, at zero extra round-trip cost. */
 const typeCounts = new Map();
 export function bumpTypeCount(type){
   if (!type) return;
@@ -195,8 +226,67 @@ export function renderTypeCounts(){
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([t, n]) => `<span style="display:inline-block;margin-right:12px"><code>${esc(t)}</code> <b>${n}</b></span>`);
   const total = Array.from(typeCounts.values()).reduce((a, b) => a + b, 0);
-  host.innerHTML = `<b>By type</b> <span style="margin-right:12px">(${total} event${total===1?'':'s'})</span>${parts.join('')}`;
+  // These totals count EVENTS, not rows on screen — `bumpTypeCount` runs
+  // before any eviction — so they stay true for the whole scan even once the
+  // box is capped. When rows have been dropped, say so here rather than let
+  // the operator infer the timeline is complete from a complete breakdown.
+  const dropped = logRowsDropped
+    ? ` <span class="text-muted" title="The rendered timeline is capped at ${LOG_MAX_ROWS} rows to keep the page responsive on a phone. These per-type totals still cover every event; use Download for the complete log.">· oldest ${logRowsDropped} row${logRowsDropped===1?'':'s'} dropped from view (Download has all)</span>`
+    : '';
+  host.innerHTML = `<b>By type</b> <span style="margin-right:12px">(${total} event${total===1?'':'s'})</span>${parts.join('')}${dropped}`;
   host.style.display = '';
+}
+
+/* Coalesce the per-row DOM work that does not have to happen per row.
+   `appendLog` runs once per event, and a real scan emits hundreds (a captured
+   run: 598 events, 371 of them entity_found). Re-sorting the type histogram and
+   rewriting its `innerHTML` on every one of those, then reading
+   `box.scrollHeight` — which forces a synchronous layout — turned each event
+   into a full re-render plus a forced reflow. On a memory- and CPU-constrained
+   Termux/Android browser that is the difference between a scan that streams and
+   a tab that dies.
+
+   Both operations are idempotent and only the LAST one is observable, so they
+   are deferred to one animation frame. The end state is byte-identical: every
+   event is still counted (`bumpTypeCount` stays synchronous, above), the
+   breakdown still shows every event, and the box still ends scrolled to the
+   newest row. */
+/* Hard bound on how many rows the log box holds at once.
+
+   Every event previously became a permanent DOM node: three spans inside a
+   div, kept for the life of the view, with nothing ever removed. Captured
+   runs already reach 598 events (371 of them entity_found) and this file's
+   own "By type" note records a 764-row log; DEFAULT_SCAN_DEPTH went 3→5 in
+   #315, so a deep scan's event count is several times that. On a no-root
+   Termux/Android browser — the only platform this ships to — an unbounded,
+   monotonically growing node list under a live SSE stream is the classic way
+   to lose the tab.
+
+   1200 sits deliberately above every run observed so far, so a normal scan
+   evicts nothing at all and looks exactly as it did; only the pathological
+   tail is bounded. Eviction is from the top (oldest first), which is the
+   right end to lose: the newest rows are the ones an operator is watching.
+
+   Nothing is silently lost. The "By type" breakdown counts events, not rows
+   (`bumpTypeCount` runs before any eviction), so it keeps reporting the true
+   totals for the whole scan; the drop is disclosed there and in the "Save
+   shown" header; and the complete persisted log is always one click away on
+   the Download button, which streams it from the server. */
+const LOG_MAX_ROWS = 1200;
+let logRowsDropped = 0;
+
+let logFlushScheduled = false;
+function scheduleLogFlush(){
+  if (logFlushScheduled) return;
+  logFlushScheduled = true;
+  const flush = ()=>{
+    logFlushScheduled = false;
+    renderTypeCounts();
+    const b = $('#log-box');
+    if (b) b.scrollTop = b.scrollHeight;
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(flush);
+  else setTimeout(flush, 0);
 }
 
 export function appendLog(ev, ts){
@@ -204,7 +294,6 @@ export function appendLog(ev, ts){
   // Count every rendered row exactly once — history rows and live SSE rows both
   // land here — so the breakdown always describes precisely what is on screen.
   bumpTypeCount(ev && ev.type);
-  renderTypeCounts();
   const m = mapEvent(ev);
   const row = document.createElement('div');
   row.className = `log-row lv-${m.lv}`;
@@ -213,7 +302,16 @@ export function appendLog(ev, ts){
   const t = ts ? (new Date(ts*1000)).toTimeString().slice(0,8) : fmtClock();
   row.innerHTML = `<span class="ts">${esc(t)}</span><span class="typ">${esc(m.typ)}</span><span class="msg">${m.msg}</span>`;
   box.appendChild(row);
-  box.scrollTop = box.scrollHeight;
+  // Evict oldest-first the moment we exceed the cap. Synchronous rather than
+  // deferred to the flush below: the history render appends its whole result
+  // set in one synchronous loop, so a deferred trim would still let the full
+  // unbounded list exist for a frame — and it is the peak, not the steady
+  // state, that takes the tab down.
+  while (box.childElementCount > LOG_MAX_ROWS && box.firstElementChild){
+    box.removeChild(box.firstElementChild);
+    logRowsDropped++;
+  }
+  scheduleLogFlush();
 }
 /* `''` or `'s'` for a counted noun — the browser-side twin of the Rust
    renderers' `plural()`. A live scan routinely reports exactly one of
@@ -221,43 +319,59 @@ export function appendLog(ev, ts){
    distrust the number beside it. */
 const plural = n => (Number(n) === 1 ? '' : 's');
 
+/** Map a structured JSON event (from the event log or SSE stream) to an
+ * on-screen log line object: {typ, lv, msg}. The Rust event carries:
+ * — time/level/kind (top-level) + per-variant concise fields (JSON structure)
+ * — no glyphs, no decorative characters (clean, machine-readable)
+ * This function extracts the fields and builds a human-readable msg, using
+ * `typ` (category: module/entity/expand/corr/live), `lv` (level color:
+ * info/ok/warn/err/skip/corr), and `msg` (the formatted summary).
+ */
 export function mapEvent(ev){
   const t = ev.type;
-  if (t==='module_start')   return {typ:'module', lv:'info',  msg:`▶ ${esc(ev.module)}`};
-  if (t==='module_done')    return {typ:'module', lv:'ok',    msg:`✓ ${esc(ev.module)} <span class="text-muted">(${ev.found} found)</span>`};
-  if (t==='module_error')   return {typ:'module', lv:'err',   msg:`✗ ${esc(ev.module)} <span class="text-muted">${esc(ev.error)}</span>`};
-  if (t==='module_skipped') return {typ:'module', lv:'skip',  msg:`◌ ${esc(ev.module)} <span class="text-muted">${esc(ev.reason)}</span>`};
+  if (t==='module_start')   return {typ:'module', lv:'info',  msg:`${esc(ev.module)}: running`};
+  if (t==='module_done')    return {typ:'module', lv:'ok',    msg:`${esc(ev.module)}: done <span class="text-muted">(${ev.found} found)</span>`};
+  if (t==='module_error')   return {typ:'module', lv:'err',   msg:`${esc(ev.module)}: error <span class="text-muted">${esc(ev.error)}</span>`};
+  if (t==='module_skipped') return {typ:'module', lv:'skip',  msg:`${esc(ev.module)}: skipped <span class="text-muted">${esc(ev.reason)}</span>`};
   // Confidence and the candidate marker are part of the line, not decoration:
-  // the Rust twin (`EventKind::log_summary`, core/event/mod.rs) renders
-  // "+ {kind}  {value}  ·{conf}{  (candidate)}", and the downloaded events.log
-  // / debug-bundle sequence therefore carry both. Dropping them here made the
-  // on-screen log disagree with the on-disk one for every single entity row —
-  // a 0.30 speculative username read identically to a 0.95 observed AP.
+  // the Rust twin renders them in the JSON fields (confidence as a rounded
+  // number, candidate as a boolean), and the downloaded events.log
+  // / debug-bundle sequence therefore carry both. We extract them from the
+  // structured event and show them here so on-screen and on-disk logs agree.
   if (t==='entity_found'){
-    const e = ev.entity || {};
-    const conf = typeof e.confidence === 'number' ? e.confidence.toFixed(2) : null;
-    const cand = (e.tags||[]).includes('candidate') ? ' <span class="text-muted">(candidate)</span>' : '';
+    const conf = typeof ev.confidence === 'number' ? ev.confidence.toFixed(2) : null;
+    const cand = ev.candidate ? ' <span class="text-muted">(candidate)</span>' : '';
     return {typ:'entity', lv:'found',
-      msg:`${kindPill(e.kind)} ${esc(e.value)}${conf!=null?` <span class="text-muted">·${esc(conf)}</span>`:''}${cand}`};
+      msg:`${kindPill(ev.entity_kind)} ${esc(ev.value)}${conf!=null?` <span class="text-muted">·${esc(conf)}</span>`:''}${cand}`};
   }
-  if (t==='scan_start')     return {typ:'scan',   lv:'info',  msg:`scan started · ${esc(ev.target_kind)}=${esc(ev.target_value)}`};
-  if (t==='scan_complete')  return {typ:'scan',   lv:'ok',    msg:`scan complete · ${ev.entity_count} entities`};
-  if (t==='expansion_tick') return {typ:'expand', lv:'info',  msg:`depth ${ev.depth} · queued ${ev.queued} · visited ${ev.visited}`};
-  if (t==='expansion_stop') return {typ:'expand', lv:'warn',  msg:`expansion stopped · ${esc(ev.reason)}`};
-  if (t==='entity_excluded') return {typ:'expand', lv:'skip', msg:`⊘ not expanded · ${kindPill(ev.kind)} ${esc(ev.value)} <span class="text-muted">${esc(ev.reason)}</span>`};
+  if (t==='scan_start')     return {typ:'scan',   lv:'info',  msg:`scan started: ${esc(ev.target_kind)}=${esc(ev.target_value)}`};
+  // Mirrors the three-way branch in the Rust twin (core/event/mod.rs): a
+  // cancelled or failed scan emits this same terminal event, so it must not
+  // read as a green success. `ev.status` is absent on event rows persisted
+  // before the field existed — those were all genuine completions, so default
+  // to 'complete'.
+  if (t==='scan_complete'){
+    const st = ev.status || 'complete';
+    if (st==='aborted') return {typ:'scan', lv:'warn', msg:`scan aborted — stopped early, ${ev.entities} entities`};
+    if (st==='failed')  return {typ:'scan', lv:'err',  msg:`scan failed`};
+    return {typ:'scan', lv:'ok', msg:`scan complete, ${ev.entities} entities`};
+  }
+  if (t==='expansion_tick') return {typ:'expand', lv:'info',  msg:`expansion: depth ${ev.depth}, queued ${ev.queued}, visited ${ev.visited}`};
+  if (t==='expansion_stop') return {typ:'expand', lv:'warn',  msg:`expansion stopped: ${esc(ev.reason)}`};
+  if (t==='entity_excluded') return {typ:'expand', lv:'skip', msg:`not expanded: ${kindPill(ev.entity_kind)} ${esc(ev.value)} <span class="text-muted">${esc(ev.reason)}</span>`};
   // Final bulk breach sweep. `dropped` is part of the line, not a tooltip: a
   // capped plan and a complete one must not read the same.
-  if (t==='breach_sweep')   return {typ:'expand', lv:'info',  msg:`⇉ breach sweep · ${ev.probes} probe${plural(ev.probes)} from ${ev.anchors} anchor${plural(ev.anchors)}${ev.dropped?` <span class="text-muted">(${ev.dropped} over cap)</span>`:''}`};
+  if (t==='breach_sweep')   return {typ:'expand', lv:'info',  msg:`breach sweep: ${ev.probes} probe${plural(ev.probes)} from ${ev.anchors} anchor${plural(ev.anchors)}${ev.dropped?` <span class="text-muted">(${ev.dropped} over cap)</span>`:''}`};
   // Autonomous audit of the breach corpus. A non-passing verdict means two
   // corpora contradict each other, so it renders at warn level.
-  if (t==='consensus_audit') return {typ:'corr', lv:(ev.verdict==='PASS'||ev.verdict==='PASS_WITH_WARNINGS')?'ok':'warn', msg:`⚖ breach audit · ${esc(ev.verdict)} · ${ev.corroborated}/${ev.examined} corroborated <span class="text-muted">${ev.flags} flag${plural(ev.flags)}</span>`};
-  if (t==='correlation_found') return {typ:'corr', lv:'corr', msg:`${esc(ev.correlation?.rule_name||ev.correlation?.rule_id||'?')}`};
-  if (t==='correlations_done') return {typ:'corr', lv:'info', msg:`correlations done · ${ev.count}`};
+  if (t==='consensus_audit') return {typ:'corr', lv:(ev.verdict==='PASS'||ev.verdict==='PASS_WITH_WARNINGS')?'ok':'warn', msg:`breach audit: ${esc(ev.verdict)}, ${ev.corroborated}/${ev.examined} corroborated <span class="text-muted">${ev.flags} flag${plural(ev.flags)}</span>`};
+  if (t==='correlation_found') return {typ:'corr', lv:'corr', msg:`${esc(ev.rule||ev.rule_id||'?')}`};
+  if (t==='correlations_done') return {typ:'corr', lv:'info', msg:`correlations: ${ev.count} evaluated`};
   // Live-session lifecycle (streamed into the Live-activity panel). Without
   // these the panel rendered each as raw JSON via the fallback below.
-  if (t==='live_start')     return {typ:'live',   lv:'info',  msg:`▶ live session started · ${esc(ev.target_kind)}=${esc(ev.target_value)} <span class="text-muted">every ${esc(ev.interval_secs)}s</span>`};
-  if (t==='live_tick')      return {typ:'live',   lv:'info',  msg:`↻ iteration ${esc(ev.iteration)}`};
-  if (t==='live_stop')      return {typ:'live',   lv:'warn',  msg:`■ live session stopped <span class="text-muted">${esc(ev.reason)}</span>`};
+  if (t==='live_start')     return {typ:'live',   lv:'info',  msg:`live session started: ${esc(ev.target_kind)}=${esc(ev.target_value)} <span class="text-muted">every ${esc(ev.interval_secs)}s</span>`};
+  if (t==='live_tick')      return {typ:'live',   lv:'info',  msg:`sweep #${esc(ev.iteration)}`};
+  if (t==='live_stop')      return {typ:'live',   lv:'warn',  msg:`live session stopped: <span class="text-muted">${esc(ev.reason)}</span>`};
   return {typ: esc(t||'?'), lv:'info', msg: esc(JSON.stringify(ev).slice(0,220))};
 }
 export function openSse(scanId, onEv, onState){

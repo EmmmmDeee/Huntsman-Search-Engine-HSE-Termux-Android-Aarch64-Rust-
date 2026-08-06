@@ -333,8 +333,48 @@ fn bench_target_kind_detect_checks(c: &mut Criterion) {
     group.finish();
 }
 
+/// `extract_by_patterns` is the document-ingest parse path: every `hse ingest`
+/// file — a crawled page, a breach dump, an OCR'd image — flows through it, and
+/// it runs eight regex passes plus an `Ipv4Addr`/`Ipv6Addr`-validated candidate
+/// scan over the whole text. That makes it the ingest-side analogue of the
+/// scanners above, and the one place where a document's size translates most
+/// directly into on-device CPU time.
+///
+/// Two shapes, because they stress different halves: a dense document where
+/// most passes hit and emit, and prose of the same size where every pass runs
+/// to completion and emits nothing (the common case, and the one where wasted
+/// work is pure loss).
+fn bench_entity_extract(c: &mut Criterion) {
+    use huntsman_search_engine::util::entity_extractor::patterns::extract_by_patterns;
+
+    // ~12 KB carrying every kind the extractor emits, with multibyte text
+    // adjacent to matches so the context windows do real char-boundary work.
+    let dense = "contact a.user+tag@example.com or visit https://sub.example.co.uk/path?q=1 \
+                 hosts 192.0.2.44 and 2001:db8::8a2e:370:7334 \
+                 md5 5d41402abc4b2a76b9719d911017c592 \
+                 sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 \
+                 follow @some_handle — café résumé naïve 日本語 "
+        .repeat(40);
+    // Same order of magnitude, no extractable entities: the miss path.
+    let prose = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod \
+                 tempor incididunt ut labore et dolore magna aliqua — café résumé naïve. "
+        .repeat(90);
+
+    let mut group = c.benchmark_group("entity_extract");
+    group.throughput(criterion::Throughput::Bytes(dense.len() as u64));
+    group.bench_function("dense_all_kinds", |b| {
+        b.iter(|| extract_by_patterns(black_box(&dense)));
+    });
+    group.throughput(criterion::Throughput::Bytes(prose.len() as u64));
+    group.bench_function("prose_no_matches", |b| {
+        b.iter(|| extract_by_patterns(black_box(&prose)));
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_entity_extract,
     bench_find_ascii_ci,
     bench_fold_ascii_lower,
     bench_slugify,

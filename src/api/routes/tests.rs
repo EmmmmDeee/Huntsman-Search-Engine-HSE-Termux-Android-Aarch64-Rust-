@@ -434,47 +434,58 @@ use super::*;
     }
 
     #[test]
-    fn embedded_spa_resolves_graph_link_endpoints_to_node_objects() {
-        // buildD3Graph() builds links keyed by entity UID *strings*
-        // (source:seedId, target:e.uid, ...). The vendored d3.min.js is D3 v3,
-        // whose force.start() only auto-resolves *numeric* link.source/target
-        // (treating them as indices into .nodes()); string keys pass through
-        // untouched, and its internal neighbor-seeding pass then does
-        // `e[u.source.index].push(...)` — `.index` on a bare string is
-        // undefined, `e[undefined]` is undefined, and `.push` throws. This was
-        // reproduced directly against src/web/vendor/d3.min.js in a Node vm
-        // sandbox: force.start() threw `TypeError: Cannot read properties of
-        // undefined (reading 'push')` on the very first scan with >=1 entity
-        // (every scan has an unconditional seed->entity link). The fix
-        // resolves source/target to real node object references via a
-        // nodesById map before `.links()` is called — this guard pins that
-        // resolution step so it cannot silently regress.
-        let graph_fn = app_file("js/scan_info/graph.js")
-            .split_once("function buildD3Graph(")
-            .map(|(_, b)| b)
-            .expect("buildD3Graph() present in graph.js");
+    fn embedded_spa_graph_ships_no_vendored_engine_and_runs_no_simulation() {
+        // The graph was drawn by a vendored D3 v3 force layout. Two things made
+        // that the wrong trade for this crate's target (Termux/Android aarch64,
+        // no root, RAM shared with the OS): the 151 KB payload rode along in a
+        // single-binary artefact, and the force simulation ticked continuously
+        // over hundreds of nodes — mutating every `<line>` and `<g>` transform
+        // per frame — on the same device that was running the scan producing
+        // those nodes.
+        //
+        // It is now a deterministic flow chart (one row per expansion
+        // generation) computed once in O(nodes), drawn against the DOM
+        // directly. These asserts pin that the dependency does not creep back
+        // and that no per-frame loop returns.
+        let graph = app_file("js/scan_info/graph.js");
         assert!(
-            graph_fn.contains("nodesById"),
-            "buildD3Graph must build a nodesById map to resolve string-keyed \
-             link endpoints to node object references before calling \
-             d3.layout.force().links(...), or D3 v3 throws on any scan with \
-             at least one entity"
+            !graph.contains("d3."),
+            "graph.js must not call into D3 — the graph is drawn directly \
+             against the DOM so no rendering engine ships in the binary"
         );
-        let links_call_idx = graph_fn
-            .find(".links(")
-            .expect("buildD3Graph calls .links(...)");
+        for banned in ["force(", "on('tick'", "requestAnimationFrame("] {
+            assert!(
+                !graph.contains(banned),
+                "graph.js must not run a per-frame simulation loop ({banned}) — \
+                 layout is computed once, then the chart is static until the \
+                 operator interacts with it"
+            );
+        }
+        // Endpoints still resolve to shared node objects: the draw loop reads
+        // every position off one object per node rather than re-looking up ids.
+        let build = graph
+            .split_once("function buildGraph(")
+            .map(|(_, b)| b)
+            .expect("buildGraph() present in graph.js");
         assert!(
-            graph_fn[..links_call_idx].contains("nodesById.get(l.source)")
-                && graph_fn[..links_call_idx].contains("nodesById.get(l.target)"),
-            "link source/target must be resolved via nodesById.get(...) before \
-             the .links(...) call, matching the tick handler's existing \
-             d.source.x/d.target.x object-reference assumption"
+            build.contains("nodesById.get(l.source)") && build.contains("nodesById.get(l.target)"),
+            "link source/target must resolve to node objects via nodesById \
+             once, rather than re-looking up ids in the draw loop"
+        );
+        // The vendored asset itself must be gone from the served set.
+        assert!(
+            !SPA_HTML.contains("d3.min.js"),
+            "spa.html must not load a vendored d3.min.js"
+        );
+        assert!(
+            !VENDOR_FILES.iter().any(|(n, _, _)| n.contains("d3")),
+            "d3 must not be embedded in VENDOR_FILES"
         );
     }
 
     #[test]
     fn embedded_spa_graph_is_bounded_and_never_builds_correlation_cliques() {
-        // buildD3Graph historically drew a *clique* per correlation cluster:
+        // buildGraph historically drew a *clique* per correlation cluster:
         //   for (let i=0;i<uids.length;i++) for (let j=i+1;j<uids.length;j++)
         //     links.push({source:uids[i], target:uids[j], corr:true});
         // That is O(k²) in the cluster size. Real scans routinely produce
@@ -501,17 +512,17 @@ use super::*;
              as a bounded star (CORR_MAX_SPOKES) instead"
         );
         let build = graph
-            .split_once("function buildD3Graph(")
+            .split_once("function buildGraph(")
             .map(|(_, b)| b)
-            .expect("buildD3Graph() present in graph.js");
+            .expect("buildGraph() present in graph.js");
         assert!(
             build.contains(".slice(0, GRAPH_MAX_NODES)"),
-            "buildD3Graph must cap rendered entity nodes via \
+            "buildGraph must cap rendered entity nodes via \
              .slice(0, GRAPH_MAX_NODES)"
         );
         assert!(
             build.contains("CORR_MAX_SPOKES") && build.contains("GRAPH_MAX_LINKS"),
-            "buildD3Graph must bound correlation fan-out (CORR_MAX_SPOKES) and \
+            "buildGraph must bound correlation fan-out (CORR_MAX_SPOKES) and \
              the total edge count (GRAPH_MAX_LINKS)"
         );
         // The summary notice element that tells the operator the view is capped
@@ -525,20 +536,27 @@ use super::*;
 
     #[test]
     fn embedded_spa_deep_links_resolve_to_a_visible_section() {
-        // The Location "no leads yet" hint and the status correlation-count
-        // callout link to `#/scaninfo?...&tab=network` / `&tab=corr`. Post
-        // streamline, Correlations is its own tab (the &tab=corr link resolves
-        // straight to it) and the network section lives on the Summary (the
-        // &tab=network link folds onto Summary and scrolls to #sum-network).
-        // Guard both the anchor text and the dispatch so a link can never go
-        // inert again.
+        // The Location "no leads yet" hint links to `#/scaninfo?...&tab=network`,
+        // and the Summary's correlation-count callout navigates to `&tab=corr`.
+        // Post streamline, Correlations is its own tab (the tab=corr jump
+        // resolves straight to it) and the network section lives on the
+        // Summary (the &tab=network link folds onto Summary and scrolls to
+        // #sum-network). Guard both the anchor/nav and the dispatch so a link
+        // can never go inert again.
         assert!(
             app_file("js/scan_info/leads.js").contains("tab=network\">Network</a>"),
             "expected deep-link anchor text `tab=network\">Network</a>` in leads.js"
         );
+        // report.js navigates programmatically (`nav(...)`) rather than
+        // rendering an `<a>` — the Summary's correlation-count callout is a
+        // clickable stat card, not inline prose, so it wires a click handler
+        // instead of an anchor. status.js used to carry the equivalent
+        // `<a ...&tab=corr">Correlations</a>` prose link, but it had zero
+        // importers (dead since the tab streamline) and was removed; this is
+        // the live mechanism that actually reaches the Correlations tab today.
         assert!(
-            app_file("js/scan_info/status.js").contains("tab=corr\">Correlations</a>"),
-            "expected deep-link anchor text `tab=corr\">Correlations</a>` in status.js"
+            app_file("js/scan_info/report.js").contains("&tab=corr`"),
+            "expected a tab=corr navigation in report.js's live correlation callout"
         );
         let dispatch = app_file("js/scan_info/index.js")
             .split_once("const body = $('#scan-body');")
@@ -725,6 +743,295 @@ use super::*;
             "SPA ENRICHMENT_SOURCES has a different member count than the \
              backend's exclusion list ({expected:?}) — check for a stale or \
              extra entry: {js}"
+        );
+    }
+
+    #[test]
+    fn embedded_spa_fetches_relations_only_for_the_graph_tab() {
+        // renderScanInfo fetched entities, correlations AND relations on every
+        // render — all 7 tabs, plus this page's own 8s live-refresh while a
+        // scan runs — but S.relations has exactly one consumer: graph.js.
+        // Every other tab paid for a full relations round-trip it never used,
+        // repeated roughly 450 times an hour by a Summary/Browse tab left open
+        // during a scan. Guard the elision so the fetch can't silently
+        // become unconditional again.
+        let index = app_file("js/scan_info/index.js");
+        assert!(
+            index.contains("const wantRelations = activeTab === 'graph';"),
+            "renderScanInfo must gate the relations fetch on the active tab"
+        );
+        assert!(
+            index.contains("wantRelations ? API.relations(id) : Promise.resolve({ relations: [] })"),
+            "the relations fetch must be skipped (not fetched-and-discarded) \
+             on every tab but graph — Promise.resolve avoids the network \
+             round-trip entirely"
+        );
+        // entities/correlations remain UNCONDITIONAL: browse, correlations,
+        // graph and the header stat cards all read them regardless of tab.
+        assert!(
+            index.contains("API.scan(id),") && index.contains("API.entities(id),") && index.contains(
+                "API.correlations(id),"
+            ),
+            "entities and correlations must stay unconditional — only \
+             relations is graph-exclusive"
+        );
+    }
+
+    #[test]
+    fn embedded_spa_graph_is_a_flowchart_not_a_node_graph() {
+        // The maintainer's explicit direction: remove the node-link graph
+        // (concentric rings of circles, free-form drag) and replace it with a
+        // basic 2D flow chart — rows of boxes by expansion generation, with
+        // arrows showing which entity's discovery led to which. Pin the shape
+        // so a future change can't quietly drift back to a graph-visualisation
+        // idiom.
+        let graph = app_file("js/scan_info/graph.js");
+        assert!(
+            graph.contains("function layoutFlowchart("),
+            "graph.js must lay entities out by expansion generation (row),              not a concentric/ring layout"
+        );
+        assert!(
+            !graph.contains("function layoutConcentric("),
+            "the ring layout this replaced must not still be present"
+        );
+        // Rows come from the entity's own `generation` field (how many pivots
+        // from the seed it was first found at) — the literal structure of a
+        // scan, not an arbitrary rank-derived ring.
+        assert!(
+            graph.contains("gen: e.generation ?? 0"),
+            "each node's row must be derived from the entity's own generation"
+        );
+        // Node dragging must be fully gone: a flow chart's box positions ARE
+        // the structure (row = generation, rank = significance), so letting
+        // an operator drag one out of place would misrepresent it. This also
+        // means no per-node pointerdown listener and no drag state remain.
+        for gone in ["dragNode", "moveNode", "cursor: 'grab'", "n.el.addEventListener('pointerdown'"] {
+            assert!(
+                !graph.contains(gone),
+                "graph.js must not retain node-drag machinery ({gone}) — a                  flow chart's layout is structural, not rearrangeable"
+            );
+        }
+        // "Re-layout" is gone: it re-ran the same deterministic function over
+        // unchanged input, so it was already a no-op click before this
+        // rewrite (the ring layout it used to trigger was equally pure
+        // arithmetic over an already-sorted list, with no randomness to
+        // reshuffle) and remains one now. A control with no observable effect
+        // must not ship.
+        // Checked as the concrete DOM id / wiring, not the bare word
+        // "Re-layout" — that also appears in this file's own explanatory
+        // comment above, which legitimately names the removed feature.
+        assert!(
+            !graph.contains("id=\"g-relayout\"") && !graph.contains("$('#g-relayout')"),
+            "the Re-layout control (button + click handler) must be removed \
+             — it has never had an observable effect on a deterministic layout"
+        );
+        // The seed-anchor fallback edge must be CONDITIONAL — only for nodes
+        // with no other relation/correlation edge — not unconditional for
+        // every entity as the prior graph drew it (redundant on top of the
+        // relation/correlation edges the same node already had).
+        let build = graph
+            .split_once("export function buildGraph()")
+            .map(|(_, b)| b)
+            .expect("buildGraph() present in graph.js");
+        assert!(
+            build.contains("if (touched.has(e.uid)) continue;"),
+            "the seed fallback edge must be skipped for entities that already              have a more specific relation/correlation edge: {build}"
+        );
+        // `derived_from` — the literal expansion-lineage relation — must be
+        // the chart's directional arrow (the other typed relations stay
+        // undirected lines, matching their more associative semantics).
+        assert!(
+            graph.contains("lineage: r.kind === 'derived_from'")
+                && graph.contains("marker-end")
+                && graph.contains("'flow-arrow'"),
+            "derived_from relations must render as directional arrows — the              flow chart's primary lineage signal"
+        );
+    }
+
+    #[test]
+    fn embedded_spa_graph_keeps_the_operators_viewport_across_rebuilds() {
+        // While a scan runs, scan-info re-renders every 8s, and that re-runs
+        // renderGraph -> buildGraph. The pan/zoom state used to be declared
+        // INSIDE buildGraph, so every rebuild snapped the canvas back to
+        // origin at scale 1 — for the whole duration of a scan the Graph tab
+        // could not usefully be panned or zoomed, which is exactly when it is
+        // most worth exploring.
+        let graph = app_file("js/scan_info/graph.js");
+        let build = graph
+            .split_once("export function buildGraph()")
+            .map(|(_, b)| b)
+            .expect("buildGraph() present in graph.js");
+        assert!(
+            !build.contains("const view = {"),
+            "the pan/zoom state must not be re-created inside buildGraph — \
+             that is what discarded the viewport on every 8s refresh"
+        );
+        let head = graph
+            .split_once("export function renderGraph(")
+            .map(|(h, _)| h)
+            .expect("renderGraph() present in graph.js");
+        assert!(
+            head.contains("const view = { x: 0, y: 0, k: 1 };") && head.contains("function resetView()"),
+            "graph.js must hold pan/zoom at module scope so a rebuild re-applies it"
+        );
+        // Retained state must still be scoped to ONE scan: opening a different
+        // scan should start centred, not inherit the previous scan's viewport.
+        let render = graph
+            .split_once("export function renderGraph(")
+            .and_then(|(_, b)| b.split_once("\n}"))
+            .map(|(b, _)| b)
+            .expect("renderGraph() body present");
+        assert!(
+            render.contains("viewScanId") && render.contains("resetView()"),
+            "renderGraph must reset the viewport when the mounted scan changes: {render}"
+        );
+        // And "Reset view" must still work — it is now the only thing that
+        // recentres, so losing it would leave a zoomed-in operator stuck.
+        assert!(
+            graph.contains("window.__graphResetZoom = ()=>{ resetView(); applyView(); }"),
+            "the Reset view control must recentre through the shared resetView"
+        );
+    }
+
+    #[test]
+    fn embedded_spa_pauses_every_background_poller() {
+        // Six views poll on a timer, and each tick is a real cost on the one
+        // platform this ships to: scan-info re-pulls the scan plus its FULL
+        // entity, correlation and relation sets every 8s and rebuilds the view
+        // (on the Graph tab, the whole layout); the Live monitor re-pulls the
+        // session list every 8s; the Engines page triggers a multi-engine
+        // server-side liveness sweep every 30s; Settings polls a self-update's
+        // phase and a cell-DB import's phase every 2.5s each, plus the
+        // post-update restart overlay's health probe, also every 2.5s. A
+        // no-root Termux device runs `hse serve` and the browser SIDE BY SIDE,
+        // so a tab left in the background was making the phone do all of
+        // that, for nothing, for as long as the job/scan lasted.
+        //
+        // Each poller must consult the shared `pageHidden` helper. Single
+        // source so none of the six can drift, and so the reasoning lives once.
+        let timers = app_file("js/timers.js");
+        assert!(
+            timers.contains("export function pageHidden()") && timers.contains("document.hidden"),
+            "timers.js must export the shared page-visibility predicate"
+        );
+        for (file, view) in [
+            ("js/scan_info/index.js", "scan-info auto-refresh"),
+            ("js/views/live.js", "Live monitor session poll"),
+            ("js/views/engines.js", "Engines liveness sweep"),
+            ("js/views/opts.js", "Settings update/cells/restart pollers"),
+        ] {
+            let src = app_file(file);
+            assert!(
+                src.contains("pageHidden"),
+                "the {view} ({file}) must skip its poll while the page is \
+                 hidden — a backgrounded tab kept doing the work every tick"
+            );
+            assert!(
+                src.contains("from '/static/js/timers.js'") && src.contains("pageHidden }"),
+                "{file} must import pageHidden from the shared timers module \
+                 rather than re-implementing the visibility check"
+            );
+        }
+        // opts.js carries THREE independent setInterval pollers (update
+        // status, cell-DB import status, restart-overlay health probe) — every
+        // one of them, not just one, must gate on pageHidden.
+        let opts = app_file("js/views/opts.js");
+        let poller_count = opts.matches("setInterval(").count();
+        let guard_count = opts.matches("if (pageHidden()) return;").count();
+        assert_eq!(
+            poller_count, 3,
+            "opts.js poller count changed — update this guard alongside it \
+             instead of letting a new poller go unaudited: {poller_count} \
+             setInterval site(s) found"
+        );
+        assert_eq!(
+            guard_count, poller_count,
+            "every setInterval in opts.js must open with the pageHidden \
+             guard — found {guard_count} guard(s) for {poller_count} poller(s)"
+        );
+        // The scan-info refresh must RE-ARM while hidden rather than tear its
+        // schedule down: dropping the timer would leave the view frozen after
+        // the operator switched away and back, with nothing to restart it (the
+        // alternative — a visibilitychange listener — would be registered on
+        // every one of the many renders this path performs, and leak).
+        let idx = app_file("js/scan_info/index.js");
+        let tick = idx
+            .split_once("function scanRefreshTick()")
+            .and_then(|(_, b)| b.split_once("\n}"))
+            .map(|(b, _)| b)
+            .expect("scanRefreshTick() present in scan_info/index.js");
+        assert!(
+            tick.contains("pageHidden()") && tick.contains("setTimeout(scanRefreshTick"),
+            "the hidden branch must re-arm the tick, so the refresh resumes \
+             within one interval of the tab becoming visible again: {tick}"
+        );
+        assert!(
+            !idx.contains("addEventListener('visibilitychange'"),
+            "no per-render visibilitychange listener — scan-info re-renders \
+             every 8s and would accumulate one listener per render"
+        );
+    }
+
+    #[test]
+    fn embedded_spa_bounds_the_event_log_dom_and_discloses_the_drop() {
+        // The scan log appended one permanent DOM node per event and removed
+        // nothing. Captured runs already reach 598 events, this file's sibling
+        // note records a 764-row log, and DEFAULT_SCAN_DEPTH went 3 -> 5 — so a
+        // deep scan's log grows several times further, under a live SSE stream,
+        // on a no-root Termux/Android browser. Unbounded growth there is how the
+        // tab dies mid-scan. Guard both halves of the fix: the bound exists, and
+        // it is disclosed rather than silently truncating.
+        let log_js = app_file("js/scan_info/log.js");
+        assert!(
+            log_js.contains("const LOG_MAX_ROWS"),
+            "log.js must define a rendered-row ceiling — without it the event \
+             log grows without bound for the life of the view"
+        );
+        assert!(
+            log_js.contains("box.childElementCount > LOG_MAX_ROWS")
+                && log_js.contains("box.removeChild(box.firstElementChild)"),
+            "log.js must actually evict oldest-first once over the cap; \
+             defining the constant without enforcing it is worse than neither"
+        );
+        // Eviction must be synchronous with the append. Deferring it to the
+        // rAF flush would still let the whole unbounded list exist for a frame
+        // during the synchronous history render — and the peak is what OOMs.
+        let append = log_js
+            .split_once("export function appendLog(")
+            .and_then(|(_, b)| b.split_once("\n}"))
+            .map(|(b, _)| b)
+            .expect("appendLog() present in log.js");
+        assert!(
+            append.contains("LOG_MAX_ROWS"),
+            "the cap must be enforced inside appendLog, not deferred to the \
+             coalesced flush: {append}"
+        );
+        // Silent truncation is the failure mode this must not have. The
+        // per-type breakdown counts events (not rows), so it stays complete;
+        // the dropped rows are disclosed on screen and in the saved file.
+        assert!(
+            log_js.contains("logRowsDropped"),
+            "log.js must track how many rows it evicted so the drop can be \
+             disclosed"
+        );
+        assert!(
+            log_js.contains("dropped from view (Download has all)"),
+            "the on-screen breakdown must disclose evicted rows and point at \
+             the complete server-side log"
+        );
+        assert!(
+            log_js.contains("this file starts mid-scan"),
+            "the 'Save shown' header must warn when the saved capture begins \
+             mid-scan because of the display cap"
+        );
+        // bumpTypeCount must run before any eviction, or the breakdown would
+        // undercount and the totals would become as lossy as the rows.
+        let bump = append.find("bumpTypeCount").expect("appendLog counts types");
+        let evict = append.find("LOG_MAX_ROWS").expect("appendLog enforces cap");
+        assert!(
+            bump < evict,
+            "events must be tallied before rows are evicted, so the 'By type' \
+             totals keep describing the whole scan"
         );
     }
 

@@ -440,6 +440,17 @@ export async function uploadDossier(){
   const st  = $('#import-status');
   const f = inp && inp.files && inp.files[0];
   if (!f){ st.textContent = 'Choose a file first.'; return; }
+  // Guard before reading: `f.text()` pulls the ENTIRE file into a JS string, so
+  // a huge accidental upload spikes memory on a Termux phone — and the server's
+  // 16 MB DefaultBodyLimit (MAX_UPLOAD_BYTES) would reject it afterward anyway.
+  // Reject it up front with a clear message instead.
+  const MAX_UPLOAD_BYTES = 16 * 1024 * 1024;
+  if (f.size > MAX_UPLOAD_BYTES){
+    const mb = (f.size / 1048576).toFixed(1);
+    st.textContent = `File is ${mb} MB — the import limit is 16 MB.`;
+    toast(`File too large (${mb} MB); the import limit is 16 MB`, 'err');
+    return;
+  }
   st.textContent = 'Reading…';
   try {
     const text = await f.text();

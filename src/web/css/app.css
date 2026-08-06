@@ -1,9 +1,9 @@
 /* Huntsman Search Engine — from-scratch design system.
  *
  * Replaces the former Bootstrap 3 / SpiderFoot-skin stack entirely: no
- * vendored framework CSS is loaded any more (see src/api/routes/mod.rs's
- * VENDOR_FILES — only d3.min.js remains vendored, as a rendering engine,
- * not a look-and-feel dependency). This file *is* the look and feel: a
+ * vendored framework CSS is loaded any more, and since the graph view was
+ * rewritten without D3, src/api/routes/mod.rs's VENDOR_FILES is empty — the
+ * console ships no third-party front-end code. This file *is* the look and feel: a
  * dark-first "OSINT console" aesthetic — near-black elevated panels, a
  * single cyan accent, monospace for anything identifier-shaped (ids,
  * hashes, tags, counts), tight information-dense spacing.
@@ -695,7 +695,7 @@ input[type=checkbox],input[type=radio]{ accent-color:var(--accent); width:14px; 
 .kbar-pct{ position:absolute; right:4px; top:0; line-height:14px; font-size:10px; color:var(--text-muted); }
 .graph-legend{ position:absolute; top:8px; right:14px; background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--radius-sm); padding:7px 11px; font-size:11px; box-shadow:var(--shadow-sm); }
 .graph-legend .lr{ display:flex; align-items:center; gap:6px; margin-bottom:2px; color:var(--text-muted); }
-.graph-legend .sw{ width:10px; height:10px; border-radius:50%; display:inline-block; }
+.graph-legend .sw{ width:10px; height:10px; border-radius:3px; display:inline-block; }
 .graph-ctl{ position:absolute; bottom:10px; left:14px; }
 .graph-hint{ position:absolute; bottom:14px; right:14px; font-size:11px; background:var(--bg-elevated); color:var(--text-dim); padding:3px 9px; border-radius:var(--radius-sm); }
 .graph-cap{ position:absolute; top:8px; left:14px; max-width:52%; font-size:11px; background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--radius-sm); padding:5px 10px; box-shadow:var(--shadow-sm); line-height:1.35; }

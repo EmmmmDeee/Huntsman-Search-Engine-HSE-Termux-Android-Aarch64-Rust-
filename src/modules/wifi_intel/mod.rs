@@ -65,7 +65,7 @@ impl Module for WifiIntel {
         // CAN still egress for geolocation. This is intentional (it lives in
         // engine::LOCAL_PASSIVE_MODULES as a seed-round sensor); a strict
         // no-egress guarantee would require gating the WiGLE step on a
-        // passive flag. Documented in docs/MODULES.md.
+        // passive flag. Surfaced by `hse modules`.
         true
     }
 

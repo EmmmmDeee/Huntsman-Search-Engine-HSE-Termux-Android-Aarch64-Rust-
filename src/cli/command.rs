@@ -9,6 +9,56 @@ use clap::{Parser, Subcommand};
 
 use super::keys_cmd::KeysAction;
 
+/// Parse a `--min-confidence` argument, rejecting anything that is not a usable
+/// threshold.
+///
+/// `f64::from_str` accepts `nan` and `inf`, and clap's default `f64` parser
+/// takes them verbatim. A NaN floor makes the extractor's
+/// `confidence >= min_confidence` filter false for every entity, so the command
+/// used to exit 0 having silently discarded its entire result set — the failure
+/// mode this crate treats as its cardinal sin. Rejecting at the argument
+/// boundary turns that into a clap usage error, before any work is done, and
+/// finally enforces the `(0.0-1.0)` range the flag's own help text has always
+/// advertised.
+pub(crate) fn confidence_floor(s: &str) -> Result<f64, String> {
+    let v: f64 = s
+        .parse()
+        .map_err(|_| format!("`{s}` is not a number (expected 0.0-1.0)"))?;
+    if !v.is_finite() {
+        return Err(format!("`{s}` is not a finite number (expected 0.0-1.0)"));
+    }
+    if !(0.0..=1.0).contains(&v) {
+        return Err(format!("`{s}` is outside the range 0.0-1.0"));
+    }
+    Ok(v)
+}
+
+/// Parser for a floor that is a **rate**, not a probability: finite and
+/// non-negative, with no upper bound.
+///
+/// `--min-marginal-yield` is "entities discovered per dispatched target"
+/// (default 0.75), so a value above 1.0 is meaningful — a demanding operator can
+/// legitimately require 2 entities per target before continuing to recurse.
+/// Clamping it to `0.0..=1.0` like a confidence would reject valid input, which
+/// is why this is a separate parser rather than a reuse of
+/// [`confidence_floor`]. Non-finite and negative are still rejected: a negative
+/// yield floor is unsatisfiable in the wrong direction (every round "passes"),
+/// and NaN inverts the comparison exactly as it does for a confidence.
+pub(crate) fn non_negative_rate(s: &str) -> Result<f64, String> {
+    let v: f64 = s
+        .parse()
+        .map_err(|_| format!("`{s}` is not a number (expected 0.0 or greater)"))?;
+    if !v.is_finite() {
+        return Err(format!(
+            "`{s}` is not a finite number (expected 0.0 or greater)"
+        ));
+    }
+    if v < 0.0 {
+        return Err(format!("`{s}` is negative (expected 0.0 or greater)"));
+    }
+    Ok(v)
+}
+
 #[derive(Parser)]
 #[command(
     name = "hse",
@@ -63,7 +113,7 @@ pub enum Command {
         #[arg(short, long, default_value_t = 250)]
         throttle: u64,
         /// Drop entities whose base confidence is below this.
-        #[arg(long)]
+        #[arg(long, value_parser = confidence_floor)]
         min_confidence: Option<f64>,
         /// Skip key-gated and paid modules.
         #[arg(long)]
@@ -113,7 +163,7 @@ pub enum Command {
         /// applies its own strict floors, so recall is wide while the resolved
         /// findings stay precise. Raise it (e.g. 0.50 Probable, 0.75 Verified-only),
         /// or pass `--gate-speculative`, for a tighter, faster sweep.
-        #[arg(long, default_value_t = crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE)]
+        #[arg(long, default_value_t = crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE, value_parser = confidence_floor)]
         min_expand_confidence: f64,
         /// Hard cap on total entities; stops expansion when reached. Omitted ⇒ the
         /// product default (2500) — a generous Termux on-device safety bound for the
@@ -166,7 +216,7 @@ pub enum Command {
         no_regional: bool,
         /// When `--max-roi` is set, override the default marginal-yield
         /// floor (0.75). Lower = recurse further before giving up.
-        #[arg(long)]
+        #[arg(long, value_parser = non_negative_rate)]
         min_marginal_yield: Option<f64>,
         /// Expansion ordering strategy: `geo_converge` (default; legacy),
         /// `breadth_first`, `depth_first`, `richest_first`. Changes how
@@ -411,7 +461,7 @@ pub enum Command {
         #[arg(short = 'F', long, default_value = "jsonl")]
         output_format: String,
         /// Minimum confidence threshold (0.0-1.0, default 0.30).
-        #[arg(long, default_value = "0.30")]
+        #[arg(long, default_value = "0.30", value_parser = confidence_floor)]
         min_confidence: f64,
         /// Auto-scan extracted entities (NOT IMPLEMENTED — warns and runs no scan).
         #[arg(long)]
@@ -488,10 +538,10 @@ pub enum Command {
         #[arg(long, default_value_t = 0)]
         throttle: u64,
         /// Same as `scan --min-confidence`.
-        #[arg(long)]
+        #[arg(long, value_parser = confidence_floor)]
         min_confidence: Option<f64>,
         /// Same as `scan --min-expand-confidence`.
-        #[arg(long, default_value_t = crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE)]
+        #[arg(long, default_value_t = crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE, value_parser = confidence_floor)]
         min_expand_confidence: f64,
         /// Same as `scan --max-entities` — applies per iteration. Omitted ⇒ the
         /// product default (2500), matching `hse scan` and the API's live/scan
@@ -518,7 +568,7 @@ pub enum Command {
         #[arg(long = "no-regional", action = clap::ArgAction::SetTrue)]
         no_regional: bool,
         /// Same as `scan --min-marginal-yield`.
-        #[arg(long)]
+        #[arg(long, value_parser = non_negative_rate)]
         min_marginal_yield: Option<f64>,
         /// Same as `scan --expansion-strategy`.
         #[arg(long, default_value = "geo_converge")]
@@ -714,5 +764,78 @@ mod tests {
     #[test]
     fn cli_definition_is_internally_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn confidence_floor_accepts_the_documented_range_inclusive() {
+        for s in ["0.0", "0.30", "0.5", "1.0"] {
+            assert!(
+                confidence_floor(s).is_ok(),
+                "{s} is inside the advertised 0.0-1.0 range"
+            );
+        }
+    }
+
+    #[test]
+    fn confidence_floor_rejects_non_finite_values() {
+        // Regression: `f64::from_str` accepts these, and clap's stock f64
+        // parser passed them straight through. A NaN floor made the extractor's
+        // `confidence >= floor` filter false for EVERY entity, so
+        // `hse ingest --min-confidence nan` exited 0 having emitted nothing at
+        // all — silent total data loss, no error, no warning.
+        for s in ["nan", "NaN", "inf", "-inf", "infinity"] {
+            let err = confidence_floor(s).expect_err("{s} must be rejected");
+            assert!(
+                err.contains("finite"),
+                "the message must name the reason, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn confidence_floor_rejects_values_outside_zero_to_one() {
+        for s in ["1.0001", "5.0", "-0.5", "1e9"] {
+            let err = confidence_floor(s).expect_err("{s} must be rejected");
+            assert!(
+                err.contains("0.0-1.0"),
+                "the message must name the range, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_negative_rate_accepts_values_above_one() {
+        // The distinguishing property vs `confidence_floor`: `--min-marginal-yield`
+        // is entities-per-target, so "require 2 entities per dispatched target"
+        // is a legitimate demand, not out-of-range input.
+        for s in ["0.0", "0.75", "1.0", "2.0", "1000.0"] {
+            assert!(
+                non_negative_rate(s).is_ok(),
+                "{s} is a valid marginal-yield floor"
+            );
+        }
+    }
+
+    #[test]
+    fn non_negative_rate_rejects_non_finite_and_negative() {
+        for s in ["nan", "NaN", "inf", "-inf"] {
+            assert!(
+                non_negative_rate(s).is_err(),
+                "{s} must be rejected: NaN inverts the comparison and inf is unsatisfiable"
+            );
+        }
+        for s in ["-0.1", "-1.0", "-1000.0"] {
+            assert!(
+                non_negative_rate(s).is_err(),
+                "{s} must be rejected: a negative yield floor passes every round"
+            );
+        }
+        assert!(non_negative_rate("banana").is_err());
+    }
+
+    #[test]
+    fn confidence_floor_rejects_non_numeric_input() {
+        let err = confidence_floor("high").expect_err("non-numeric must be rejected");
+        assert!(err.contains("not a number"), "got: {err}");
     }
 }

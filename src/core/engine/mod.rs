@@ -1013,6 +1013,7 @@ impl ScanEngine {
                     EventKind::ScanComplete {
                         scan_id: scan.id.clone(),
                         entity_count: 0,
+                        status: scan.status,
                     },
                 );
                 return Ok(scan);
@@ -1056,6 +1057,9 @@ impl ScanEngine {
                 EventKind::ScanComplete {
                     scan_id: scan.id.clone(),
                     entity_count,
+                    // `Complete` or `Aborted` per the branch above — carried on
+                    // the event so the log renders the true terminal state.
+                    status: scan.status,
                 },
             );
 
@@ -2539,14 +2543,14 @@ fn derive_and_persist_relations(
 /// `CorrelationFound` only for correlations not already streamed live during
 /// ingestion (deduped via `emitted_corr`); `CorrelationsDone`'s count is the
 /// authoritative total. Guarded against a rule panicking on adversarial
-/// persisted data — see [`guarded_finalise_correlation`]'s own doc comment.
+/// persisted data — see [`guarded_correlation_pass`]'s own doc comment.
 fn run_finalise_correlation_and_emit(
     store: &Arc<dyn StoragePort>,
     emitter: &EventEmitter,
     scan_id: &str,
     emitted_corr: &mut HashSet<String>,
 ) {
-    if let Some(firings) = guarded_finalise_correlation(scan_id, || {
+    if let Some(firings) = guarded_correlation_pass(scan_id, || {
         crate::core::correlator::Correlator::new(Arc::clone(store)).run(scan_id)
     }) {
         for c in &firings {
@@ -2596,7 +2600,12 @@ fn learn_cross_scan_pathway_templates(
                 .into_iter()
                 .map(|l| (l.a_uid, l.b_uid))
                 .collect();
-        for ct in crate::core::relation::connection_templates(&ents, &rels, 4) {
+        for ct in crate::core::relation::connection_templates(
+            &ents,
+            &rels,
+            4,
+            crate::core::relation::IDENTITY_LINK_MIN_CONF,
+        ) {
             let prior = store.pathway_template_count(&ct.template).unwrap_or(0);
             if prior >= 1 {
                 let mut uids: std::collections::BTreeSet<String> =
@@ -2738,22 +2747,23 @@ fn run_finalise_housekeeping(store: &dyn StoragePort, scan_id: &str) {
     }
 }
 
-/// Run the authoritative finalise-time correlation pass under a panic guard.
+/// Run a `Correlator::run` pass under a panic guard — the single canonical way
+/// any caller invokes the full finalise-time rule engine.
 ///
-/// Returns `Some(firings)` on success (the caller emits `CorrelationFound` +
-/// `CorrelationsDone`), or `None` when the pass returned an error OR **panicked**
-/// — in which case the caller skips emission but `finalise_scan` still proceeds
-/// to `ScanComplete` and the key-pool restoration that follow.
+/// Returns `Some(firings)` on success, or `None` when the pass returned an error
+/// OR **panicked** — the caller degrades to "no correlations" and carries on.
 ///
 /// The live incremental pass already wraps `correlate_entities` in `catch_unwind`
-/// (`correlate_incremental`), but the finalise pass ran `Correlator::run`
-/// unguarded: a rule panicking on adversarial persisted data (a slice-index bug
-/// over a crafted entity) would unwind the entire finalise block, losing the
-/// terminal `ScanComplete` event AND the API-key pool the scan harvested. This
-/// closes that asymmetry — a caught panic degrades to "no finalise correlations,"
-/// exactly as the live pass does. Pure control-flow wrapper; unit-tested with a
-/// deliberately panicking closure.
-fn guarded_finalise_correlation(
+/// (`correlate_incremental`), but the full-engine `Correlator::run` used to be
+/// called unguarded by BOTH the scan finalise path and the dossier-import path.
+/// A rule panicking on adversarial persisted data (e.g. a slice-index bug over a
+/// crafted entity) would unwind the whole caller: on finalise, losing the
+/// terminal `ScanComplete` event and the harvested API-key pool; on import,
+/// aborting the import after the entities were already shown. Routing every
+/// caller through this one guard closes that asymmetry — a caught panic degrades
+/// uniformly to "no correlations," exactly as the live pass does. Pure
+/// control-flow wrapper; unit-tested with a deliberately panicking closure.
+pub(crate) fn guarded_correlation_pass(
     scan_id: &str,
     run: impl FnOnce() -> crate::core::error::Result<Vec<crate::core::correlator::Correlation>>,
 ) -> Option<Vec<crate::core::correlator::Correlation>> {
@@ -2766,7 +2776,7 @@ fn guarded_finalise_correlation(
         Err(_) => {
             warn!(
                 scan_id,
-                "finalise correlation pass panicked — scan still completes, finalise correlations skipped"
+                "correlation pass panicked — caller still completes, correlations skipped"
             );
             None
         }

@@ -9,7 +9,7 @@ import { renderLog } from '/static/js/scan_info/log.js';
 import { renderSummary } from '/static/js/scan_info/report.js';
 import { renderStealer } from '/static/js/scan_info/stealer.js';
 import { S } from '/static/js/state.js';
-import { clearScanTimer } from '/static/js/timers.js';
+import { clearScanTimer, pageHidden } from '/static/js/timers.js';
 import { render } from '/static/js/main.js';
 
 /* ═══════════ Page: SCANINFO (#/scaninfo?id=X[&tab=Y]) ═══════════ */
@@ -21,8 +21,22 @@ export async function renderScanInfo(v){
   const activeTab = (!tab || tab === 'report' || tab === 'network') ? 'summary' : tab;
   // Only the scan itself is required; correlations/relations can 500 on a
   // legacy scan, so one failing sub-resource must not blank the whole page.
+  //
+  // relations is fetched ONLY for the Graph tab — it is the sole consumer
+  // (browse/correlations/report/insights/stealer/log all read S.entities
+  // and/or S.correlations, never S.relations). Every other tab paid for a
+  // full relations round-trip it never used, on EVERY render — including
+  // this page's own 8s live-refresh while a scan runs (scanRefreshTick,
+  // below), so a Summary or Browse tab left open during a scan repeated
+  // that wasted fetch roughly 450 times an hour. Skipped rather than fetched
+  // and discarded: `Promise.resolve` needs no network round-trip at all, so
+  // this is a real elision, not a relabelled one.
+  const wantRelations = activeTab === 'graph';
   const [scanR, entsR, corrsR, relsR] = await Promise.allSettled([
-    API.scan(id), API.entities(id), API.correlations(id), API.relations(id)
+    API.scan(id),
+    API.entities(id),
+    API.correlations(id),
+    wantRelations ? API.relations(id) : Promise.resolve({ relations: [] }),
   ]);
   if (scanR.status !== 'fulfilled') throw scanR.reason;
   const scan = scanR.value;
@@ -30,6 +44,11 @@ export async function renderScanInfo(v){
   S.entities     = entsR.status ==='fulfilled' ? (entsR.value.entities||[])      : [];
   S.correlations = corrsR.status==='fulfilled' ? (corrsR.value.correlations||[]) : [];
   S.relations    = relsR.status ==='fulfilled' ? (relsR.value.relations||[])     : [];
+  // The /entities endpoint paginates (default limit 1000). Capture the query's
+  // true match total from the envelope so Browse can disclose when the loaded
+  // slice is only part of the scan, instead of silently reporting the fetched
+  // count as if it were the whole set.
+  S.entitiesTotal = entsR.status==='fulfilled' ? (entsR.value.total ?? S.entities.length) : 0;
   // `EntityKind::Other(s)` serializes as the object {"other":"…"} (externally
   // tagged), unlike every unit variant which is a plain string. Left as-is it
   // renders as "[object Object]" and, because it's used as a Map key, splits
@@ -142,8 +161,38 @@ export async function renderScanInfo(v){
   // tear down. Re-render re-arms the timer; it stops once status != running.
   clearScanTimer();
   if ((scan.status === 'running' || scan.status === 'pending') && activeTab !== 'log'){
-    S.scanTimer = setTimeout(()=>{ if (S.route.name === 'scaninfo') render(); }, 8000);
+    S.scanTimer = setTimeout(scanRefreshTick, SCAN_REFRESH_MS);
   }
+}
+
+const SCAN_REFRESH_MS = 8000;
+
+/* One tick of the running-scan auto-refresh.
+ *
+ * The refresh is not cheap: `renderScanInfo` re-pulls the scan, its FULL entity
+ * set, every correlation and every relation (four requests), then rebuilds the
+ * whole view — which on the Graph tab means laying the graph out again from
+ * scratch. That is affordable while someone is watching it and pointless when
+ * nobody is: a scan-info tab left open in the background on a phone kept doing
+ * all of it every 8 seconds for the entire length of the scan, competing for
+ * memory with the `hse serve` process running on the same device.
+ *
+ * So skip the work — but keep the schedule — whenever the page is hidden. The
+ * tick still fires and re-arms (a bare timer wakeup costs nothing, and mobile
+ * browsers throttle background timers further on their own), so returning to
+ * the tab picks the refresh back up within one interval with no listener to
+ * register, and therefore none to leak across the many renders this function
+ * schedules. Nothing is lost: the next visible tick re-pulls current state, and
+ * every count it shows is derived, never accumulated.
+ *
+ * See `pageHidden` for why the schedule is kept rather than torn down. */
+function scanRefreshTick(){
+  if (S.route.name !== 'scaninfo') return;
+  if (pageHidden()){
+    S.scanTimer = setTimeout(scanRefreshTick, SCAN_REFRESH_MS);
+    return;
+  }
+  render();
 }
 export function subTab(name, label, count, active){
   return `<li class="${active===name?'active':''}"><a href="#" data-sub="${attr(name)}">

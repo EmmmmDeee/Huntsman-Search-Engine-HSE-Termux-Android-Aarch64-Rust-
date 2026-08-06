@@ -420,17 +420,116 @@ fn import_reader<R: std::io::Read>(
 
 // ── clear ────────────────────────────────────────────────────────────────────
 
-/// Truncate the `cells`/`cell_imports` tables. Shared by `hse cells clear`
-/// (after its own interactive confirmation) and `POST /api/v1/cells/clear`
-/// (which requires an explicit `{"confirm": true}` body instead — there is
-/// no stdin to prompt over HTTP).
-pub(crate) fn clear_cells_db() -> Result<()> {
+/// What a clear actually reclaimed, so the operator is told the truth rather
+/// than a bare "cleared".
+///
+/// On the primary target — Termux on Android, no root, frequently short of
+/// storage — the whole reason to run `hse cells clear` is to get the space back
+/// from a multi-gigabyte OpenCellID import. Reporting only success hid whether
+/// that happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClearReport {
+    /// Rows removed from `cells` (the tower table; `cell_imports` is a small
+    /// ledger and its count is not separately interesting).
+    pub rows_deleted: usize,
+    /// Size of `cell_towers.db` before the clear, in bytes.
+    pub bytes_before: u64,
+    /// Size after. Equal to `bytes_before` when the vacuum could not run.
+    pub bytes_after: u64,
+    /// `None` when the vacuum succeeded. `Some(reason)` when it did not — the
+    /// rows are still gone, but the file kept its size.
+    pub vacuum_error: Option<String>,
+}
+
+impl ClearReport {
+    /// Bytes actually returned to the filesystem. Saturating: a concurrent
+    /// writer growing the file must not underflow this into a huge number.
+    pub fn bytes_reclaimed(&self) -> u64 {
+        self.bytes_before.saturating_sub(self.bytes_after)
+    }
+}
+
+/// Truncate the `cells`/`cell_imports` tables and return the freed pages to the
+/// filesystem. Shared by `hse cells clear` (after its own interactive
+/// confirmation) and `POST /api/v1/cells/clear` (which requires an explicit
+/// `{"confirm": true}` body instead — there is no stdin to prompt over HTTP).
+///
+/// `DELETE` alone does not shrink a SQLite database: the freed pages go on the
+/// internal freelist and the file keeps its size on disk. A cleared multi-GB
+/// OpenCellID import therefore reclaimed **nothing**, which is the opposite of
+/// what an operator runs this command for on a storage-constrained phone. The
+/// `VACUUM` rewrites the database without the freelist, so the space actually
+/// comes back.
+///
+/// The vacuum is **not** allowed to fail the operation. It needs scratch space
+/// roughly the size of the database, so on the very device most likely to need
+/// it, it is also the most likely to hit `SQLITE_FULL`. By then the rows are
+/// already gone and the clear has succeeded; failing here would report a
+/// successful deletion as an error and invite the operator to run it again. The
+/// failure is instead carried in [`ClearReport::vacuum_error`] and surfaced by
+/// both callers, so it is reported rather than swallowed.
+pub(crate) fn clear_cells_db() -> Result<ClearReport> {
+    let path = cell_db::cell_db_path();
     let conn = cell_db::open_rw().map_err(|e| Error::Other(e.to_string()))?;
-    conn.execute("DELETE FROM cells", [])
+    clear_in(&conn, &path)
+}
+
+/// The clear itself, against an explicit connection and file.
+///
+/// Split from [`clear_cells_db`] so the reclaim behaviour can be tested against
+/// a dedicated database. Under `cfg(test)` `cell_db_path()` resolves to one
+/// per-process temp location shared by every test, so a test driving the global
+/// path would race any sibling touching the cell DB — and the property under
+/// test here (the file physically shrinks) needs a database it exclusively owns
+/// and has grown to a known size.
+fn clear_in(conn: &rusqlite::Connection, path: &std::path::Path) -> Result<ClearReport> {
+    // The database occupies its main file PLUS the write-ahead log, and a
+    // freshly-vacuumed DB can hold most of its bytes in the WAL. Counting only
+    // the main file would let this report space as reclaimed while the WAL
+    // still held it.
+    let size_of = |p: &std::path::Path| -> u64 {
+        let main = std::fs::metadata(p).map_or(0, |m| m.len());
+        let wal = std::fs::metadata(p.with_extension("db-wal")).map_or(0, |m| m.len());
+        main + wal
+    };
+    let bytes_before = size_of(path);
+
+    let rows_deleted = conn
+        .execute("DELETE FROM cells", [])
         .map_err(|e| Error::Other(e.to_string()))?;
     conn.execute("DELETE FROM cell_imports", [])
         .map_err(|e| Error::Other(e.to_string()))?;
-    Ok(())
+
+    // VACUUM cannot run inside a transaction; `execute` on this plain
+    // connection is not in one.
+    //
+    // The checkpoint is not optional. `cell_db::init_schema` opens this
+    // database in WAL mode, and under WAL a VACUUM rebuilds the database into
+    // the write-ahead log — the main file is NOT truncated until the WAL is
+    // checkpointed back into it. Vacuuming alone therefore reclaimed exactly
+    // zero bytes on disk, which is the original defect wearing a different hat.
+    // `TRUNCATE` folds the WAL in and then truncates it to zero length, so both
+    // files end up at their true post-clear size.
+    let vacuum_error = conn
+        .execute("VACUUM", [])
+        .err()
+        .map(|e| e.to_string())
+        .or_else(|| {
+            conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")
+                .err()
+                .map(|e| format!("vacuum succeeded but the WAL checkpoint failed: {e}"))
+        });
+
+    // Re-stat after the vacuum and checkpoint, not before, so the number
+    // reported is what the filesystem actually shows.
+    let bytes_after = size_of(path);
+
+    Ok(ClearReport {
+        rows_deleted,
+        bytes_before,
+        bytes_after,
+        vacuum_error,
+    })
 }
 
 fn cmd_clear(yes: bool) -> Result<()> {
@@ -446,9 +545,48 @@ fn cmd_clear(yes: bool) -> Result<()> {
         }
     }
 
-    clear_cells_db()?;
-    println!("Cell tower database cleared.");
+    let report = clear_cells_db()?;
+    println!(
+        "Cell tower database cleared: {} tower rows removed.",
+        report.rows_deleted
+    );
+    match &report.vacuum_error {
+        None => println!(
+            "Reclaimed {} ({} → {}).",
+            human_bytes(report.bytes_reclaimed()),
+            human_bytes(report.bytes_before),
+            human_bytes(report.bytes_after),
+        ),
+        // Named explicitly rather than silently leaving the file at its old
+        // size: on a phone that is the difference between "I got my storage
+        // back" and "I did not, and I do not know why".
+        Some(reason) => println!(
+            "Rows are gone, but the {} file could not be shrunk: {reason}\n\
+             Free some space and re-run `hse cells clear` to reclaim it.",
+            human_bytes(report.bytes_after),
+        ),
+    }
     Ok(())
+}
+
+/// Render a byte count for an operator: `1.4 GB`, `812.0 MB`, `0 B`.
+///
+/// Local to this module and deliberately small — the cells CLI is the only
+/// place that needs it, and the crate has no other byte-formatting helper to
+/// reuse or extend.
+fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    if n < 1024 {
+        return format!("{n} B");
+    }
+    #[allow(clippy::cast_precision_loss)] // display only; precision is irrelevant here
+    let mut v = n as f64;
+    let mut unit = 0;
+    while v >= 1024.0 && unit + 1 < UNITS.len() {
+        v /= 1024.0;
+        unit += 1;
+    }
+    format!("{v:.1} {}", UNITS[unit])
 }
 
 // ── CSV parsing ───────────────────────────────────────────────────────────────

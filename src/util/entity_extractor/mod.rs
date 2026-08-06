@@ -146,6 +146,15 @@ pub enum ExtractionError {
     PatternError(String),
     #[error("Invalid entity: {0}")]
     ValidationError(String),
+    /// The confidence floor handed to [`extractor::EntityExtractor::new`] was
+    /// not a usable threshold.
+    ///
+    /// A typed variant rather than a `ValidationError(String)` because callers
+    /// must be able to tell "your threshold is unusable" (a caller/CLI mistake,
+    /// fixable by the operator) from "this extracted entity is malformed" (a
+    /// property of the document) without matching on prose.
+    #[error("confidence floor must be a finite value between 0.0 and 1.0, got {0}")]
+    InvalidConfidenceFloor(f64),
 }
 
 pub type ExtractionResult<T> = Result<T, ExtractionError>;
@@ -234,5 +243,50 @@ mod tests {
     fn entity_kind_to_string() {
         assert_eq!(EntityKind::Email.to_str(), "email");
         assert_eq!(EntityKind::Person.to_str(), "person");
+    }
+
+    #[test]
+    fn to_str_from_round_trips_for_every_kind() {
+        // `to_str` and `From<&str>` are the two halves of the on-the-wire
+        // taxonomy: JSONL/CSV/`hse` output emit `to_str`, and `--kind` plus
+        // re-ingest parse back through `from`. They are hand-maintained as two
+        // separate `match`es, so renaming a label on one side silently breaks
+        // the other — the non-obvious one is `SocialHandle`, which emits
+        // "social" and must map back from "social", not "socialhandle". Pin the
+        // round-trip for every concrete variant so any drift fails a test rather
+        // than corrupting a serialized entity.
+        use EntityKind::{
+            Domain, Email, Hash, Identifier, IpRange, Ipv4, Ipv6, Organization, Person, Phone,
+            Port, SocialHandle, Url, Username,
+        };
+        let kinds = [
+            Email,
+            Phone,
+            Ipv4,
+            Ipv6,
+            Domain,
+            Username,
+            Hash,
+            Person,
+            Organization,
+            Url,
+            SocialHandle,
+            IpRange,
+            Port,
+            Identifier,
+        ];
+        for k in kinds {
+            assert_eq!(
+                EntityKind::from(k.to_str()),
+                k,
+                "to_str/from round-trip drifted for {k:?} (to_str = {:?})",
+                k.to_str()
+            );
+        }
+
+        // `Unknown` round-trips too, as long as its payload is not itself a
+        // known label (an unmodelled kind in a document must survive intact).
+        let unknown = EntityKind::Unknown("custom-kind".to_string());
+        assert_eq!(EntityKind::from(unknown.to_str()), unknown);
     }
 }

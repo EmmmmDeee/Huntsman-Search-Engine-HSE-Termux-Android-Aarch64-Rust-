@@ -146,12 +146,11 @@
   <div id="view"></div>
 </main>
 
-<!-- D3 (force-directed graph engine) is the one remaining vendored script —
-     loaded at the bottom for faster first paint. Everything else the app
-     needs (nav/sheet/modal behaviour, sortable tables, toasts/dialogs) is our
-     own vanilla JS in js/ui.js, imported by main.js below. -->
-<script src="/static/d3.min.js"></script>
-
+<!-- No vendored scripts. The last one, D3 v3 (151 KB, the force-directed graph
+     engine), was dropped when the graph view was rewritten as a deterministic
+     concentric SVG layout in js/scan_info/graph.js — see that file's header.
+     Everything the app needs (nav/sheet/modal behaviour, sortable tables,
+     toasts/dialogs, the graph) is our own vanilla JS, imported by main.js. -->
 <script type="module" src="/static/js/main.js"></script>
 </body>
 </html>

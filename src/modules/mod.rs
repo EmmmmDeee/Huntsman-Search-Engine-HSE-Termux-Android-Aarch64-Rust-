@@ -28,6 +28,7 @@ pub mod beacondb;
 pub mod bgpview;
 pub mod bitbucket_user;
 pub mod bluesky_user;
+pub mod builtwith;
 // Shared "maximum raw data" breach/stealer extractor — a `pub(crate)` HELPER
 // (no `Module` impl), consumed by see_know / oathnet_pro / dehashed via
 // `crate::modules::breach_rich::extract_rich_detail`, not a registered module.
@@ -78,6 +79,7 @@ pub mod epieos;
 pub mod exa_search;
 pub mod exif_geo;
 pub mod fediverse;
+pub mod fofa;
 pub mod fullcontact;
 pub mod gaming_profile;
 pub mod geo_domain_classifier;
@@ -150,6 +152,7 @@ pub mod wikidata_geo;
 // not a registered `Module`, so it is `pub(crate)` (the registry guard only
 // inspects `pub mod` declarations).
 pub(crate) mod profile_kit;
+pub mod proxycurl;
 pub mod psbdmp;
 pub mod pwned_passwords;
 pub mod pypi_user;
@@ -363,9 +366,12 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(criminal_ip::CriminalIp),
             Arc::new(onyphe::Onyphe),
             Arc::new(zoomeye::ZoomEye),
+            Arc::new(fofa::Fofa),
+            Arc::new(builtwith::BuiltWith),
             Arc::new(ipqs::IpQs),
             Arc::new(contact_enrich::ContactEnrich),
             Arc::new(hunter_io::HunterIo),
+            Arc::new(proxycurl::Proxycurl),
             Arc::new(disposable_check::DisposableCheck),
             Arc::new(discord_snowflake::DiscordSnowflake),
             Arc::new(wigle::Wigle),

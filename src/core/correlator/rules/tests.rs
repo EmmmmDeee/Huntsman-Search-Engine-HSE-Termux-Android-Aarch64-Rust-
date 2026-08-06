@@ -32,6 +32,23 @@ use crate::core::entity::Evidence;
     }
 
     #[test]
+    fn text_mentions_ip_does_not_panic_on_a_non_ascii_needle() {
+        // Regression: a non-ASCII `ip` whose match failed the boundary check
+        // advanced the byte cursor by +1 into the middle of a multi-byte char,
+        // and the next `text[from..]` slice panicked. `"aé1"` / `"é"` is the
+        // minimal reproduction — `é` (2 bytes) is found at offset 1, the
+        // following digit `1` fails the after-boundary test, `from` becomes 2
+        // (the é continuation byte), and slicing there is not on a char
+        // boundary. A non-ASCII string is never a valid address, so the answer
+        // is simply `false` — and, crucially, no panic.
+        assert!(!text_mentions_ip("aé1", "é"));
+        assert!(!text_mentions_ip("café at 1.2.3.4", "café"));
+        assert!(!text_mentions_ip("2001:db8::café", "café"));
+        // ASCII matching is unchanged by the guard.
+        assert!(text_mentions_ip("café near 1.2.3.4 today", "1.2.3.4"));
+    }
+
+    #[test]
     fn source_family_covers_every_registered_coarse_geo_provider() {
         // The sibling providers of the already-listed ipinfo/ipquery/wigle —
         // these fell through to "other" and were excluded from cross-family
@@ -96,6 +113,17 @@ use crate::core::entity::Evidence;
         assert_eq!(source_family("name_intel"), "identity_registry");
         assert_eq!(source_family("shodan"), "infra");
         assert_eq!(source_family("dns_intel"), "infra");
+        // Real geo *modules* are infrastructure geo — unchanged.
+        assert_eq!(source_family("ip_geo"), "infra");
+        assert_eq!(source_family("geocode"), "infra");
+        // Regression: the engine-derived corroboration PASS `geo_corroboration`
+        // must be the unscored `"other"` family, NOT `"infra"` — its `"geo"`
+        // substring once hijacked it there, manufacturing a phantom orthogonal
+        // family that inflated AU-062 multipath. Its promotion-source siblings
+        // classify the same way.
+        assert_eq!(source_family("geo_corroboration"), "other");
+        assert_eq!(source_family("multipath_corroboration"), "other");
+        assert_eq!(source_family("cross_scan_corroboration"), "other");
         assert_eq!(source_family("some_unknown_module"), "other");
     }
 

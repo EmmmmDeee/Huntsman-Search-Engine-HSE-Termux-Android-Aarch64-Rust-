@@ -356,18 +356,37 @@ fn format_output(
         )
         .to_string()),
 
+        // Emit through the same `csv` crate that `csv_parse` reads with, so the
+        // output round-trips. The previous hand-rolled writer replaced only `,`
+        // with `\,` and left `"`, `\n`, and `\r` untouched — which HSE's own
+        // `csv::Reader` parses as extra fields (and a newline in a value splits
+        // the row), so `hse ingest -f csv` produced CSV that `hse` could not
+        // re-ingest. `csv::Writer` RFC-4180-quotes only the fields that need it,
+        // so plain values (emails, IPs) are unchanged.
+        // `csv::Writer` makes the output structurally valid, but it does not —
+        // and should not — know about spreadsheet formula injection. Ingest's
+        // input is an UNTRUSTED document, so a value beginning `=`/`+`/`-`/`@`/
+        // CR/TAB executes as a formula the moment the operator opens the export
+        // in Excel or LibreOffice. The scan-export path has always defanged
+        // that; this one did not, so each field goes through the shared
+        // [`formula_guard`] first. Only the guard is shared, not the whole of
+        // `csv_escape`: that also RFC-4180-quotes, which would double-quote
+        // everything `csv::Writer` is about to quote itself.
         "csv" => {
-            let mut csv = String::from("kind,value,confidence,source_pattern\n");
+            use crate::api::scan_export::formula_guard;
+            let mut wtr = csv::Writer::from_writer(Vec::new());
+            wtr.write_record(["kind", "value", "confidence", "source_pattern"])?;
             for e in entities {
-                csv.push_str(&format!(
-                    "{},{},{},{}\n",
-                    e.kind.to_str(),
-                    e.value.replace(',', "\\,"),
-                    e.confidence,
-                    e.source_pattern
-                ));
+                let confidence = e.confidence.to_string();
+                wtr.write_record([
+                    formula_guard(e.kind.to_str()).as_ref(),
+                    formula_guard(&e.value).as_ref(),
+                    formula_guard(&confidence).as_ref(),
+                    formula_guard(&e.source_pattern).as_ref(),
+                ])?;
             }
-            Ok(csv)
+            let bytes = wtr.into_inner().map_err(csv::IntoInnerError::into_error)?;
+            Ok(String::from_utf8(bytes)?)
         }
 
         "table" => {
@@ -419,6 +438,109 @@ mod tests {
         assert!(output.contains("email"));
     }
 
+    /// Build a one-entity sample carrying `value`, for the CSV escaping tests.
+    fn sample_valued(value: &str) -> Vec<crate::util::entity_extractor::ExtractedEntity> {
+        vec![crate::util::entity_extractor::ExtractedEntity {
+            kind: EntityKind::Url,
+            value: value.to_string(),
+            confidence: 0.8,
+            context: None,
+            source_pattern: "url_http".to_string(),
+            boost_reason: None,
+        }]
+    }
+
+    /// Split one CSV record the way a conforming RFC-4180 reader does: fields
+    /// separated by commas, except inside a `"`-quoted field, where `""` is a
+    /// literal quote. Deliberately a local reader rather than the crate's own
+    /// importer, so this pins the *interchange* contract (what any spreadsheet
+    /// or `csv` library sees) and not merely round-tripping through HSE.
+    fn rfc4180_fields(record: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut cur = String::new();
+        let mut in_quotes = false;
+        let mut chars = record.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '"' if in_quotes && chars.peek() == Some(&'"') => {
+                    chars.next();
+                    cur.push('"');
+                }
+                '"' => in_quotes = !in_quotes,
+                ',' if !in_quotes => out.push(std::mem::take(&mut cur)),
+                _ => cur.push(c),
+            }
+        }
+        out.push(cur);
+        out
+    }
+
+    #[test]
+    fn format_csv_keeps_a_comma_bearing_value_in_one_field() {
+        // Regression: the emitter used `value.replace(',', "\\,")`, which is not
+        // RFC 4180 — a conforming reader saw `https://example.com/path\` +
+        // `with\` + `commas` as three fields, so this row carried 6 columns
+        // against a 4-column header and every later column shifted.
+        let out = format_output(
+            &sample_valued("https://example.com/path,with,commas"),
+            "csv",
+            "notes.txt",
+        )
+        .expect("csv formatting must succeed");
+
+        let mut lines = out.lines();
+        let header = rfc4180_fields(lines.next().expect("header row"));
+        let row = rfc4180_fields(lines.next().expect("data row"));
+
+        assert_eq!(header.len(), 4, "header is kind,value,confidence,pattern");
+        assert_eq!(
+            row.len(),
+            header.len(),
+            "a comma inside a value must not create extra columns: {row:?}"
+        );
+        assert_eq!(row[1], "https://example.com/path,with,commas");
+        assert!(
+            !out.contains("\\,"),
+            "backslash-escaping is not CSV and must not reappear"
+        );
+    }
+
+    #[test]
+    fn format_csv_survives_quotes_and_newlines_in_a_value() {
+        let out = format_output(
+            &sample_valued("say \"hi\"\nsecond line"),
+            "csv",
+            "notes.txt",
+        )
+        .expect("csv formatting must succeed");
+        // The embedded LF is inside a quoted field, so the record spans two
+        // physical lines; parse the whole body after the header as one record.
+        let body = out
+            .split_once('\n')
+            .expect("header then body")
+            .1
+            .trim_end_matches('\n');
+        let row = rfc4180_fields(body);
+        assert_eq!(row.len(), 4, "quotes/newlines must stay inside one field");
+        assert_eq!(row[1], "say \"hi\"\nsecond line");
+    }
+
+    #[test]
+    fn format_csv_defangs_a_spreadsheet_formula_from_an_ingested_document() {
+        // Ingest's input is an untrusted document, so a value beginning `=`
+        // would execute on open in Excel/LibreOffice. The shared escaper's
+        // apostrophe guard must apply here exactly as it does on the API
+        // export path — the old local rule skipped it entirely.
+        let out = format_output(&sample_valued("=cmd|'/c calc'!A1"), "csv", "notes.txt")
+            .expect("csv formatting must succeed");
+        let row = rfc4180_fields(out.lines().nth(1).expect("data row"));
+        assert!(
+            row[1].starts_with('\''),
+            "a leading `=` must be neutralised with the apostrophe guard: {:?}",
+            row[1]
+        );
+    }
+
     #[test]
     fn format_hse_emits_scannable_entities() {
         let output = format_output(&sample(), "hse", "notes.txt").expect("should succeed");
@@ -440,6 +562,57 @@ mod tests {
                 .any(|e| e.source.contains("notes.txt")),
             "evidence must name the source document"
         );
+    }
+
+    #[test]
+    fn format_csv_round_trips_through_the_csv_reader() {
+        // The old hand-rolled writer escaped only `,` as `\,` and left `"` and
+        // `\n` untouched, so HSE's own `csv::Reader` re-parsed the row into the
+        // wrong number of fields (and a newline split it into two rows). A value
+        // carrying all three delimiter hazards must survive extract -> csv ->
+        // re-read byte-for-byte.
+        let mut ents = sample();
+        ents[0].value = "a,b\"c\nd".to_string();
+        let csv = format_output(&ents, "csv", "notes.txt").expect("csv format should succeed");
+
+        let mut reader = csv::ReaderBuilder::new().from_reader(csv.as_bytes());
+        let headers = reader.headers().expect("must have a header row").clone();
+        assert_eq!(
+            headers.iter().collect::<Vec<_>>(),
+            ["kind", "value", "confidence", "source_pattern"]
+        );
+        let records: Vec<_> = reader
+            .records()
+            .collect::<Result<_, _>>()
+            .expect("every row must parse as exactly one record");
+        assert_eq!(records.len(), 1, "one entity must yield exactly one row");
+        assert_eq!(&records[0][0], "email");
+        assert_eq!(
+            &records[0][1], "a,b\"c\nd",
+            "value must survive the CSV round-trip unchanged"
+        );
+        assert_eq!(&records[0][3], "email_rfc5322");
+    }
+
+    #[test]
+    fn format_json_emits_a_parseable_array_carrying_boost_reason() {
+        // "json" (distinct from the newline-delimited "jsonl") was the only
+        // output format with no test. Unlike jsonl it also carries
+        // `boost_reason`; assert the whole is one parseable array and that the
+        // boost reason survives.
+        let mut ents = sample();
+        ents[0].boost_reason = Some("RFC 5322 compliant".to_string());
+        let output = format_output(&ents, "json", "notes.txt").expect("json format should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output).expect("json output must parse as JSON");
+        let arr = parsed.as_array().expect("json output must be a JSON array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["kind"], "email");
+        assert_eq!(arr[0]["value"], "test@example.com");
+        assert_eq!(arr[0]["confidence"], 0.85);
+        assert_eq!(arr[0]["source_pattern"], "email_rfc5322");
+        assert_eq!(arr[0]["boost_reason"], "RFC 5322 compliant");
     }
 
     #[test]
