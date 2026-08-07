@@ -14,7 +14,7 @@ use huntsman_search_engine::core::{
     scan::{Scan, Target, TargetKind},
 };
 
-use common::{test_app, test_app_with_state, test_app_with_store};
+use common::{test_app, test_app_exposed, test_app_with_state, test_app_with_store};
 
 /// Parse a response body into a `serde_json::Value`.
 async fn body_json(resp: axum::response::Response) -> Value {
@@ -4045,4 +4045,119 @@ async fn scan_snake_svg_renders_and_hides_candidate_nodes_by_default() {
             .unwrap();
         assert_eq!(bad.status(), 400, "{q} must be rejected");
     }
+}
+
+// ── non-loopback bind: the bearer-token gate ────────────────────────────────
+//
+// `test_app` builds the loopback router, where the gate is deliberately absent.
+// These use `test_app_exposed`, which builds the SAME route table the way a
+// `--bind 0.0.0.0:8080` server does, and prove the gate covers the real surface
+// rather than a toy route: scan data, scan dispatch, the radar sweep that
+// activates the device's own sensors, the SPA, and the static bundle.
+
+const EXPOSED_TOKEN: &str = "test-token-0123456789abcdef";
+
+/// A GET carrying a valid bearer token.
+fn get_authed(uri: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .header("authorization", format!("Bearer {EXPOSED_TOKEN}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn exposed_bind_rejects_every_unauthenticated_surface() {
+    let app = test_app_exposed("auth_reject", EXPOSED_TOKEN);
+
+    // Read paths (the subject's PII), control paths (quota burn + the device's
+    // own WiFi/Bluetooth/cell/GPS sweep), and the console itself.
+    for uri in [
+        "/api/v1/scans",
+        "/api/v1/stats",
+        "/api/v1/search?q=a",
+        "/api/v1/settings/keys",
+        "/api/v1/radar/history",
+        "/",
+        "/static/app.css",
+    ] {
+        let resp = app.clone().oneshot(get(uri)).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            401,
+            "{uri} must demand a token on a non-loopback bind"
+        );
+    }
+}
+
+#[tokio::test]
+async fn exposed_bind_rejects_an_unauthenticated_mutation() {
+    let app = test_app_exposed("auth_reject_post", EXPOSED_TOKEN);
+    // The CSRF header alone must NOT be enough — it is a cross-site control,
+    // and any non-browser client can set it. This is the regression that would
+    // re-open LAN scan dispatch / radar triggering.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/radar")
+        .header("x-hse-csrf", "1")
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        401,
+        "X-HSE-CSRF must not substitute for authentication"
+    );
+}
+
+#[tokio::test]
+async fn exposed_bind_admits_a_valid_token() {
+    let app = test_app_exposed("auth_accept", EXPOSED_TOKEN);
+    let resp = app
+        .clone()
+        .oneshot(get_authed("/api/v1/scans"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "a valid bearer token must be admitted");
+
+    // And the SPA itself, so the console is reachable once authenticated.
+    let spa = app.oneshot(get_authed("/")).await.unwrap();
+    assert_eq!(spa.status(), 200);
+}
+
+#[tokio::test]
+async fn exposed_bind_bootstraps_a_browser_then_drops_the_token_from_the_url() {
+    let app = test_app_exposed("auth_bootstrap", EXPOSED_TOKEN);
+    let resp = app
+        .oneshot(get(&format!("/?t={EXPOSED_TOKEN}")))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 303, "first navigation must redirect");
+    let loc = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .expect("redirect must carry Location");
+    assert_eq!(loc, "/", "the token must not survive in the URL");
+    let cookie = resp
+        .headers()
+        .get("set-cookie")
+        .and_then(|v| v.to_str().ok())
+        .expect("bootstrap must pin a session cookie");
+    assert!(cookie.contains("HttpOnly") && cookie.contains("SameSite=Strict"));
+}
+
+#[tokio::test]
+async fn loopback_bind_is_unchanged_by_the_auth_work() {
+    // The default on-device path must behave exactly as it did before: no
+    // token, no 401, no redirect.
+    let app = test_app("auth_loopback_unchanged");
+    let resp = app.oneshot(get("/api/v1/scans")).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "the loopback default must not require a token"
+    );
 }
