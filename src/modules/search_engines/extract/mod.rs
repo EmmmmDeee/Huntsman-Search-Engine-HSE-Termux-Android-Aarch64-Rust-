@@ -363,16 +363,17 @@ pub(super) fn extract_family_names(
         return Vec::new();
     }
     let parts: Vec<&str> = target.value.split_whitespace().collect();
-    let lastname = match target.kind {
+    let (lastname, email_domain) = match target.kind {
         // `parts.len() >= 2` guarantees `last()` is Some; match it anyway so
         // the module carries no `unwrap()` that a future refactor could turn
         // into a mid-scan panic.
         TargetKind::FullName if parts.len() >= 2 => match parts.last() {
-            Some(last) => last.to_lowercase(),
+            Some(last) => (last.to_lowercase(), None),
             None => return Vec::new(),
         },
         TargetKind::Email => {
             let local = target.value.split('@').next().unwrap_or("");
+            let email_domain_str = target.value.rsplit_once('@').map(|(_, d)| d.to_lowercase());
             if local.len() >= 5 {
                 // Drop the first CHARACTER (a likely first-initial), not the
                 // first byte: a raw `local[1..]` panics on an internationalised
@@ -382,12 +383,15 @@ pub(super) fn extract_family_names(
                 // bare surname (`smith`) — otherwise the retained `.`/`_` made
                 // `lastname` (".smith") never equal the alnum-trimmed words it is
                 // compared against, so family extraction silently never fired.
-                local
-                    .chars()
-                    .skip(1)
-                    .collect::<String>()
-                    .trim_start_matches(|c: char| !c.is_alphanumeric())
-                    .to_lowercase()
+                (
+                    local
+                        .chars()
+                        .skip(1)
+                        .collect::<String>()
+                        .trim_start_matches(|c: char| !c.is_alphanumeric())
+                        .to_lowercase(),
+                    email_domain_str,
+                )
             } else {
                 return Vec::new();
             }
@@ -421,6 +425,24 @@ pub(super) fn extract_family_names(
         let raw = format!("{} {}", r.title, r.snippet);
         let text = strip_tags(&raw, raw.len());
         let lower = text.to_lowercase();
+
+        // Domain filter for email seeds: only extract family names from pages
+        // on the email's domain or pages that mention the email. This prevents
+        // attributing employees of other companies as family members just
+        // because they share a surname. E.g., "alice@example.com" should not
+        // extract "John Smith" from an acme.com page just because the email's
+        // local part ends in "smith" (Issue #5).
+        if let Some(ref email_dom) = email_domain {
+            let result_host = extract_host(&r.url).to_lowercase();
+            let result_domain = extract_registrable(&result_host);
+            let email_matches_domain = result_domain == *email_dom
+                || crate::util::domains::is_proper_subdomain_of(&result_host, email_dom);
+            let email_appears_in_result = lower.contains(&target.value.to_lowercase());
+
+            if !email_matches_domain && !email_appears_in_result {
+                continue;
+            }
+        }
         let words: Vec<&str> = lower.split_whitespace().collect();
         for window in words.windows(2) {
             let first = window[0].trim_matches(|c: char| !c.is_alphanumeric());
