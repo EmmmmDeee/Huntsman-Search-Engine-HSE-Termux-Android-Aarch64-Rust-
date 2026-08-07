@@ -719,6 +719,12 @@ impl Module for SearchEngines {
                 fetch_deadline,
             )
             .await;
+        } else if !ctx.cancel.is_cancelled() && remaining_ms <= 15_000 {
+            tracing::debug!(
+                elapsed_ms,
+                remaining_ms,
+                "recycler pass skipped: insufficient time remaining (need 15s, have {remaining_ms}ms)"
+            );
         }
 
         Ok(module_result)
