@@ -193,6 +193,32 @@ pub(crate) fn reset_session_liveness(scan_id: &str) {
     map.retain(|(sid, _), _| sid != scan_id);
 }
 
+/// Clear liveness state for all currently-disabled engines (Issue #8).
+/// When an engine is toggled off, its liveness entries (silenced state, proven-live
+/// credits) persist in SESSION_EMPTY_COUNTS, wasting memory and potentially
+/// confusing logic if the engine is re-enabled. This function removes stale entries
+/// for engines that are currently disabled, keeping the liveness map clean.
+///
+/// Call this periodically or when engine toggles change (e.g. after `hse config
+/// engine.<name> off` or via the settings UI). Safe to call concurrently — uses
+/// the same lock as record_hit/record_empty, serialized naturally.
+pub(crate) fn cleanup_disabled_engine_liveness() {
+    let mut map = SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let disabled_count = map
+        .iter()
+        .filter(|((_sid, name), _)| !engine_enabled(name))
+        .count();
+    if disabled_count > 0 {
+        map.retain(|(_, name), _| engine_enabled(name));
+        tracing::debug!(
+            disabled_engines = disabled_count,
+            "cleaned up liveness state for disabled engines"
+        );
+    }
+}
+
 /// Cap on the second-order (pivot / recycle) engine fan-out. The pivot grid is
 /// `pivots × engines`, so this bounds the request multiplier; the per-request
 /// deadline self-clamp remains the hard wall-time guarantee — this just keeps the
@@ -515,6 +541,13 @@ impl Module for SearchEngines {
         if queries.is_empty() {
             return Ok(ModuleResult::new());
         }
+
+        // Clean up liveness state for disabled engines (Issue #8). When an engine
+        // is toggled off via config/settings, its liveness entries (consecutive_empty,
+        // ever_hit) persist in SESSION_EMPTY_COUNTS, wasting memory and potentially
+        // interfering with future scans if the engine is re-enabled. Call this at
+        // the start of every scan to keep the map clean.
+        cleanup_disabled_engine_liveness();
 
         let process_start = std::time::Instant::now();
         // Match the engine's actual deadline so the budget checks below fire
