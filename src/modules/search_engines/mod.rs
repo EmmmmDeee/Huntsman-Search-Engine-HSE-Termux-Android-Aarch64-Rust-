@@ -1,9 +1,9 @@
-//! Multi-engine search scraping — 17 search engines, zero API keys.
+//! Multi-engine search scraping — 16 search engines, zero API keys.
 //!
 //! Queries Yahoo, Bing, AOL, DuckDuckGo, Google, Brave, Mojeek,
-//! Startpage, Yandex, Ecosia, Qwant, Dogpile, Swisscows, You,
-//! Presearch, MetaGer, and SearX with OSINT dork queries and
-//! extracts entities from result URLs and snippets.
+//! Startpage, Yandex, Ecosia, Qwant, Dogpile, Swisscows, Presearch,
+//! MetaGer, and SearX with OSINT dork queries and extracts entities from
+//! result URLs and snippets. (You.com removed: always Cloudflare-blocked.)
 //!
 //! Engine selection rationale:
 //!   - Yahoo/AOL: Bing-powered, most reliable from datacenter IPs,
@@ -440,7 +440,7 @@ impl Module for SearchEngines {
     }
 
     fn description(&self) -> &'static str {
-        "Multi-engine dork recon — sweeps OSINT queries across 17 search engines"
+        "Multi-engine dork recon — sweeps OSINT queries across 16 search engines"
     }
 
     fn priority(&self) -> u8 {

@@ -742,8 +742,8 @@ fn resolve_href_decodes_yandex_clck() {
 }
 
 #[test]
-fn engine_count_is_seventeen() {
-    assert_eq!(ENGINES.len(), 17);
+fn engine_count_is_sixteen() {
+    assert_eq!(ENGINES.len(), 16);
 }
 
 #[test]
@@ -772,7 +772,6 @@ fn new_engines_present() {
         "qwant",
         "dogpile",
         "swisscows",
-        "you",
         "presearch",
         "metager",
         "searx",
