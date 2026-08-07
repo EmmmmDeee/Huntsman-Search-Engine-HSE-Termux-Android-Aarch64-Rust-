@@ -200,11 +200,7 @@ async fn fetch_json_inner<T: DeserializeOwned>(
                     format!("HTTP {status}: {}", error_snippet(resp).await),
                 ));
             }
-            let text = read_json_text(resp, module).await?;
-            scan_for_api_keys(&text);
-            let data = serde_json::from_str::<T>(&text)
-                .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
-            Ok(Some(data))
+            Ok(Some(decode_scanned_json(resp, module).await?))
         }
         Err(transport) => {
             // reqwest transport failure → one curl fallback attempt. curl
@@ -370,6 +366,20 @@ pub async fn keyed_ok_or_404(
     Ok(Some(resp))
 }
 
+/// Read a success response body as text, scan it for leaked API keys, then
+/// decode it as `T`. The read → scan → decode triple every JSON fetch helper
+/// performs after a 2xx — single-sourced so the key-harvesting side-effect and
+/// the credential-redacted decode error can never drift between call sites.
+async fn decode_scanned_json<T: DeserializeOwned>(
+    resp: reqwest::Response,
+    module: &str,
+) -> Result<T> {
+    let text = read_json_text(resp, module).await?;
+    scan_for_api_keys(&text);
+    serde_json::from_str::<T>(&text)
+        .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))
+}
+
 /// Keyed GET: fetch JSON from a URL that requires an API key header.
 /// Handles 401/403/429 uniformly via report_key_exhausted, maps 404
 /// to Ok(None). Consolidates the error handling pattern duplicated
@@ -390,22 +400,10 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
         .await
         .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
 
-    let status = resp.status();
-    if status.as_u16() == 404 {
+    // 404 → miss; 401/403/429 burn the key; other non-2xx → error — the exact
+    // policy in `keyed_ok_or_404`, single-sourced rather than re-inlined here.
+    let Some(resp) = keyed_ok_or_404(module, key, ctx, resp).await? else {
         return Ok(None);
-    }
-    if !status.is_success() {
-        if matches!(status.as_u16(), 401 | 403 | 429) {
-            ctx.report_key_exhausted(module, key, status.as_u16());
-        }
-        return Err(Error::module(
-            module,
-            format!("HTTP {status}: {}", error_snippet(resp).await),
-        ));
-    }
-    let text = read_json_text(resp, module).await?;
-    scan_for_api_keys(&text);
-    let data = serde_json::from_str::<T>(&text)
-        .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))?;
-    Ok(Some(data))
+    };
+    Ok(Some(decode_scanned_json(resp, module).await?))
 }
