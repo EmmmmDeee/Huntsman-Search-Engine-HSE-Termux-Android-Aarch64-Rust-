@@ -336,3 +336,37 @@ use super::*;
         );
         assert!(photo.radius_km < 0.1, "EXIF GPS is ~20 m, got {} km", photo.radius_km);
     }
+
+    #[test]
+    fn distinct_geo_sources_counts_only_the_sources_that_located_the_entity() {
+        // One camera's GPS fix, on an entity a breach corpus also happens to
+        // corroborate. `hibp` corroborates the ENTITY but never located it, so
+        // the geo multi-source gate must see ONE source, not two.
+        //
+        // Before the anchoring filter this returned 2, and AU-052/AU-053's
+        // `>= 2` gate then reported a High "tight fix on a residence/base" off
+        // a single device's own track — exactly what that gate's doc says it
+        // exists to prevent.
+        let mut e = au_coord("-33.8688,151.2093", 0.80, "exif_geo", "NSW");
+        e.add_evidence(Evidence::new("hibp", "breach record"));
+
+        assert_eq!(
+            e.corroborating_sources().len(),
+            2,
+            "both sources corroborate the entity — this is what the unfiltered \
+             count used to see"
+        );
+
+        let parsed = vec![(&e, (-33.8688_f64, 151.2093_f64))];
+        assert_eq!(
+            distinct_geo_sources(&parsed),
+            1,
+            "only `exif_geo` is an anchoring geo source; `hibp` located nothing"
+        );
+
+        // And the anchoring source alone still counts, so the filter cannot
+        // zero out a legitimate entity.
+        let only_geo = au_coord("-33.8688,151.2093", 0.80, "exif_geo", "NSW");
+        let parsed_one = vec![(&only_geo, (-33.8688_f64, 151.2093_f64))];
+        assert_eq!(distinct_geo_sources(&parsed_one), 1);
+    }
