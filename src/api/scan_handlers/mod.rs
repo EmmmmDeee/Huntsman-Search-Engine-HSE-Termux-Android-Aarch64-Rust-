@@ -10,7 +10,7 @@
 //! - [`diagnostics`] — Diagnostic scorecards: audit, metrics, duplicates,
 //!   pivots, gaps, benchmark.
 
-use super::handlers::{internal_error, not_found, validated_target};
+use super::handlers::{not_found, offload_store, validated_target};
 use crate::api::AppState;
 use crate::core::entity::scan_id;
 use crate::core::scan::{Scan, ScanRequest, Target};
@@ -71,31 +71,6 @@ pub(super) fn build_scan_from_request(req: ScanRequest) -> Result<(Scan, Target)
     }
     let scan = Scan::new(sid, target.clone()).with_options(opts.clamp_depth());
     Ok((scan, target))
-}
-
-/// Run a blocking `Store` operation off the async reactor and normalise the
-/// outcome for a handler — THE off-reactor primitive for this module.
-///
-/// Every `Store` method takes the global SQLite connection mutex, so calling one
-/// inline on an async handler pins the ~2-worker reactor thread for the whole
-/// query — a cascade `delete_scan`, a batch of writes, or a large
-/// `entities_for_scan` read then stalls every unrelated request sharing that
-/// thread. This runs the closure on the blocking pool; on success it yields the
-/// value, and on a store error or a task-join failure it yields a ready `500` for
-/// the caller to `return`. Every read loader below ([`scan_missing`],
-/// [`scan_entities_only`], [`entities_and_relations`], [`scan_with_graph`]) and
-/// every write handler is a thin wrapper over it, so the off-reactor hop and the
-/// error mapping live in exactly one place.
-pub(super) async fn offload_store<T, F>(f: F) -> Result<T, axum::response::Response>
-where
-    F: FnOnce() -> crate::core::error::Result<T> + Send + 'static,
-    T: Send + 'static,
-{
-    match tokio::task::spawn_blocking(f).await {
-        Ok(Ok(v)) => Ok(v),
-        Ok(Err(e)) => Err(internal_error(&e)),
-        Err(e) => Err(internal_error(&format!("db task failed: {e}"))),
-    }
 }
 
 /// `Some(404)` when no scan with `id` exists (or `Some(500)` on a store error),
