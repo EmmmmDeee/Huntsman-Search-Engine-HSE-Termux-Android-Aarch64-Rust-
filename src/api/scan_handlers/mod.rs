@@ -178,67 +178,91 @@ pub(super) async fn scan_with_graph(
     .await
 }
 
-/// True if the request opts into quarantined `candidate` entities via
-/// `?include_candidates=1|true|yes|on`. Default is to hide them.
+/// Unified entity-view gating: consolidates wants_candidates, wants_infra,
+/// apply_candidate_gate, and confine_graph_to_visible into one queryable type.
+/// Single point of enforcement for entity visibility across all handlers.
+#[derive(Debug, Clone)]
+pub(crate) struct EntityViewGate {
+    pub include_candidates: bool,
+    pub include_infra: bool,
+}
+
+impl EntityViewGate {
+    /// Parse query parameters into view gates.
+    pub(crate) fn from_params(params: &std::collections::HashMap<String, String>) -> Self {
+        Self {
+            include_candidates: params
+                .get("include_candidates")
+                .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on")),
+            include_infra: params
+                .get("include_infra")
+                .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on")),
+        }
+    }
+
+    /// Apply gates to entity set in place: drop quarantined candidates unless
+    /// include_candidates opted in. THE single enforcement point for the candidate
+    /// quarantine on every entity-serving read endpoint (`/entities`, `/diamond`,
+    /// `/attack`, the filtered `/entities` view, `/identities`, …) — so handlers
+    /// cannot forget it and re-leak low-confidence PII by default.
+    pub(crate) fn apply_to_entity_set(&self, entities: &mut Vec<crate::core::entity::Entity>) {
+        if !self.include_candidates {
+            entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+        }
+    }
+
+    /// Apply gates to entity/relation graph: hide quarantined candidates AND drop
+    /// every relation with a now-hidden endpoint, so graph views leak a candidate
+    /// neither as a node value nor as a dangling edge.
+    pub(crate) fn apply_to_graph(
+        &self,
+        mut entities: Vec<crate::core::entity::Entity>,
+        relations: Vec<crate::core::relation::Relation>,
+    ) -> (
+        Vec<crate::core::entity::Entity>,
+        Vec<crate::core::relation::Relation>,
+    ) {
+        if self.include_candidates {
+            return (entities, relations);
+        }
+        self.apply_to_entity_set(&mut entities);
+        let visible: std::collections::HashSet<&str> =
+            entities.iter().map(|e| e.uid.as_str()).collect();
+        let relations = relations
+            .into_iter()
+            .filter(|r| {
+                visible.contains(r.from_uid.as_str()) && visible.contains(r.to_uid.as_str())
+            })
+            .collect();
+        (entities, relations)
+    }
+}
+
+// Backward-compat aliases for migration path (removed after all handlers updated).
 pub(crate) fn wants_candidates(params: &std::collections::HashMap<String, String>) -> bool {
-    params
-        .get("include_candidates")
-        .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+    EntityViewGate::from_params(params).include_candidates
 }
 
-/// True when the query string contains `?include_infra=1|true|yes|on`.
-/// Default is to suppress `platform-infra`-tagged entities (cloud buckets,
-/// CDN IPs, analytics IDs sourced from third-party pages) so the report
-/// shows only subject-owned entities.
 pub(crate) fn wants_infra(params: &std::collections::HashMap<String, String>) -> bool {
-    params
-        .get("include_infra")
-        .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+    EntityViewGate::from_params(params).include_infra
 }
 
-/// Drop quarantined `candidate` entities in place unless the request opted in
-/// via `?include_candidates=1`. THE single enforcement point for the candidate
-/// quarantine on every entity-serving read endpoint (`/entities`, `/diamond`,
-/// `/attack`, the filtered `/entities` view, `/identities`, …) — so a new
-/// handler physically cannot forget it and re-leak low-confidence, non-subject
-/// PII by default. Mirrors the download-side quarantine (`report.json`, CSV,
-/// `graph.gexf`).
 pub(crate) fn apply_candidate_gate(
     entities: &mut Vec<crate::core::entity::Entity>,
     params: &std::collections::HashMap<String, String>,
 ) {
-    if !wants_candidates(params) {
-        entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
-    }
+    EntityViewGate::from_params(params).apply_to_entity_set(entities);
 }
 
-/// Graph analogue of [`apply_candidate_gate`]: hide quarantined `candidate`
-/// entities AND drop every relation with a now-hidden endpoint, so a
-/// graph / network / relations view leaks a candidate neither as a node value
-/// nor as a dangling edge whose `from_uid`/`to_uid` re-exposes the quarantined
-/// entity's UID (the class of leak the CLI/GEXF dangling-edge fix already closed
-/// on the export side). Returns the visible entities paired with the relations
-/// confined to them; when the caller opts into candidates the pair is returned
-/// untouched.
 pub(crate) fn confine_graph_to_visible(
-    mut entities: Vec<crate::core::entity::Entity>,
+    entities: Vec<crate::core::entity::Entity>,
     relations: Vec<crate::core::relation::Relation>,
     params: &std::collections::HashMap<String, String>,
 ) -> (
     Vec<crate::core::entity::Entity>,
     Vec<crate::core::relation::Relation>,
 ) {
-    if wants_candidates(params) {
-        return (entities, relations);
-    }
-    apply_candidate_gate(&mut entities, params);
-    let visible: std::collections::HashSet<&str> =
-        entities.iter().map(|e| e.uid.as_str()).collect();
-    let relations = relations
-        .into_iter()
-        .filter(|r| visible.contains(r.from_uid.as_str()) && visible.contains(r.to_uid.as_str()))
-        .collect();
-    (entities, relations)
+    EntityViewGate::from_params(params).apply_to_graph(entities, relations)
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────

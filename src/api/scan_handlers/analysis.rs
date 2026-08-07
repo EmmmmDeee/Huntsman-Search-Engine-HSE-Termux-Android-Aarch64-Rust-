@@ -43,7 +43,8 @@ pub async fn scan_entities(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    super::apply_candidate_gate(&mut entities, &params);
+    let gate = super::EntityViewGate::from_params(&params);
+    gate.apply_to_entity_set(&mut entities);
     let total = entities.len();
 
     // Paginate: slice the result set to [offset, offset+limit).
@@ -91,7 +92,8 @@ pub async fn scan_exposure(
         Ok(pair) => pair,
         Err(resp) => return resp,
     };
-    super::apply_candidate_gate(&mut entities, &params);
+    let gate = super::EntityViewGate::from_params(&params);
+    gate.apply_to_entity_set(&mut entities);
     let idx = crate::core::exposure::assess(&entities, &correlations);
     // `summary_line` is the exact headline the CLI prints, carried over so the
     // web console can render the identical wording instead of reassembling it
@@ -415,7 +417,8 @@ pub async fn scan_relations(
     };
     // Hide candidate endpoints (as node values AND as dangling edges) unless
     // opted in — the Relations view must not route around the entity quarantine.
-    let (ents, rels) = super::confine_graph_to_visible(ents, rels, &params);
+    let gate = super::EntityViewGate::from_params(&params);
+    let (ents, rels) = gate.apply_to_graph(ents, rels);
     let by_uid: std::collections::HashMap<String, (String, String)> = ents
         .into_iter()
         .map(|e| (e.uid, (e.value, e.kind.to_string())))
