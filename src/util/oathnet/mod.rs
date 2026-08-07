@@ -46,17 +46,17 @@ static CLIENT: CurlClient = CurlClient::new("oathnet", AuthScheme::XApiKey, 12, 
 /// Per-scan + per-session quota budget for OathNet API calls.
 ///
 /// Initialized lazily with per-scan limit from `quota_config` (env var
-/// `HSE_OATHNET_PER_SCAN_LIMIT`, default 4) and daily limit from `quota_config`
-/// (env var `HSE_OATHNET_DAILY_LIMIT`, default 10000). The per-session ceiling
-/// is fixed at 30 to prevent radar/live sessions from burning the daily allowance.
-/// Runtime overrides are still possible via `HUNTSMAN_OATHNET_SCAN_CAP` env var
-/// or `set_scan_cap_override()` method.
+/// `HSE_OATHNET_PER_SCAN_LIMIT`, default 4). The per-session ceiling is fixed
+/// at 30 to prevent radar/live sessions from burning the daily allowance.
+/// The provider's daily limit (from `HSE_OATHNET_DAILY_LIMIT` in quota_config)
+/// is tracked separately via `real_quota()`. Runtime overrides are still possible
+/// via `HUNTSMAN_OATHNET_SCAN_CAP` env var or `set_scan_cap_override()` method.
 static BUDGET: LazyLock<QuotaBudget> = LazyLock::new(|| {
     let config = quota_config::oathnet_quota();
     QuotaBudget::new(
         "oathnet",
         config.per_scan_limit,
-        config.daily_limit,
+        30,
         "HUNTSMAN_OATHNET_SCAN_CAP",
         "HUNTSMAN_OATHNET_SESSION_CAP",
     )
