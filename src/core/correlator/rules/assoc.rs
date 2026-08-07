@@ -74,17 +74,14 @@ fn entity_residences(e: &Entity) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for ev in &e.evidence {
-        if let Some(raw) = ev.attributes.get("address") {
-            // A value may carry several distinct observations accumulated as
-            // "a; b" (the `with_attr` / `merge_evidence_attrs` convention, also
-            // split by `breach_pii::scan_evidence`), so judge each candidate
-            // residence on its own — a multi-value string normalised whole would
-            // garble into one non-matching key.
-            for part in raw.split("; ") {
-                let key = normalise_address(part.trim());
-                if is_residence_address(&key) && seen.insert(key.clone()) {
-                    out.push(key);
-                }
+        // `attr_values` is the canonical inverse of the `with_attr` /
+        // `merge_evidence_attrs` "a; b" accumulation: judge each candidate
+        // residence on its own, since a multi-value string normalised whole
+        // would garble into one non-matching key.
+        for part in ev.attr_values("address") {
+            let key = normalise_address(part);
+            if is_residence_address(&key) && seen.insert(key.clone()) {
+                out.push(key);
             }
         }
     }
@@ -117,13 +114,9 @@ fn entity_phones(e: &Entity) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for ev in &e.evidence {
-        let Some(raw) = ev.attributes.get("phone") else {
-            continue;
-        };
-        // Split the multi-value "a; b" accumulation convention so two distinct
-        // numbers aren't concatenated into one bogus digit-run key (the same
-        // handling `breach_pii::scan_evidence` already applies).
-        for part in raw.split("; ") {
+        // `attr_values` splits the multi-value "a; b" accumulation, so two
+        // distinct numbers aren't concatenated into one bogus digit-run key.
+        for part in ev.attr_values("phone") {
             if let Some(key) = normalise_phone(part)
                 && seen.insert(key.clone())
             {
