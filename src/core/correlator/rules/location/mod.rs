@@ -1203,7 +1203,14 @@ pub(crate) fn au_location_corroboration(entities: &[Entity]) -> Option<LocationC
     for e in entities.iter().filter(|e| {
         e.kind != EntityKind::Coordinates && !e.has_tag(crate::core::tags::PLATFORM_INFRA)
     }) {
-        let Some(pc) = crate::core::geo_family::au_postcode(e) else {
+        // `_person_grain`, matching the headline-estimate rung above. The
+        // `PLATFORM_INFRA` tag filter does NOT catch an IP geolocation: `ipquery`
+        // tags its composed city-grain Address `ipquery` / `country:AU`, never
+        // an infra tag. Without this the SAME ipquery response was counted
+        // TWICE toward corroboration — once here as an IP-derived "postcode"
+        // signature, and again below via `person_login_ip_coords` — so one
+        // provider's single answer read as two agreeing methods.
+        let Some(pc) = crate::core::geo_family::au_postcode_person_grain(e) else {
             continue;
         };
         let Some((lat, lon)) = crate::util::city_coords::city_coords(&pc) else {
