@@ -5196,6 +5196,64 @@ fn au047_links_on_password_entity_and_credits_unique_sources() {
 }
 
 #[test]
+fn au047_fires_on_two_accounts_combined_through_the_production_merge_path() {
+    // The sibling test below hand-builds its fixture with two `add_evidence`
+    // calls, which merely PUSH — so it holds two evidence records sharing one
+    // `(source, summary)`. Production never reaches that shape: two rows of one
+    // corpus mint two same-UID Password entities that `dispatch` folds with
+    // `Entity::merge`, and `absorb` deduplicates evidence by `(source, summary)`,
+    // collapsing them into ONE record whose colliding `username` values are
+    // concatenated by `merge_evidence_attrs` into `"ghost_91; nightcrawler"`.
+    //
+    // AU-047 then reads that attribute WHOLE, so the two accounts fold to a
+    // single canonical handle and the >=2-distinct-handle firing gate can never
+    // be met — the Critical reused-secret link is dropped silently.
+    let mk = |user: &str| {
+        let mut e = Entity::new(
+            EntityKind::Password,
+            "$2b$12$usernamekeyedreuse00",
+            0.6,
+            "scan",
+        );
+        e.tag("password-hash");
+        e.add_evidence(Evidence::new("oathnet", "Breach on ForumX").with_attr("username", user));
+        e
+    };
+    let mut secret = mk("ghost_91");
+    secret.merge(mk("nightcrawler"));
+
+    // Pin the mechanism, so a future change to `absorb` retargets this test
+    // rather than silently making it vacuous.
+    assert_eq!(
+        secret.evidence.len(),
+        1,
+        "absorb collapses same-(source, summary) records"
+    );
+    assert_eq!(
+        secret.evidence[0].attributes.get("username").unwrap(),
+        "ghost_91; nightcrawler",
+        "colliding attribute values accumulate in the `a; b` form"
+    );
+
+    let u1 = Entity::new(EntityKind::Username, "ghost_91", 0.6, "scan");
+    let u2 = Entity::new(EntityKind::Username, "nightcrawler", 0.6, "scan");
+    let hits = super::rules::rule_au_047_reused_secret_identity(
+        &RuleContext::new(&[secret.clone(), u1.clone(), u2.clone()]),
+        "scan",
+        0,
+    );
+    assert_eq!(
+        hits.len(),
+        1,
+        "a unique hash shared by two accounts in ONE corpus must still link them"
+    );
+    assert!(
+        hits[0].entity_uids.contains(&u1.uid) && hits[0].entity_uids.contains(&u2.uid),
+        "both identities must be linked into the controller cluster"
+    );
+}
+
+#[test]
 fn au047_links_username_keyed_accounts_and_resists_single_record_self_link() {
     // Potentiation: a breach footprint keyed by USERNAME (username + hash, no
     // email — a very common dump shape) must link its accounts on a shared unique

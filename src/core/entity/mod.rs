@@ -466,6 +466,39 @@ impl Evidence {
         self
     }
 
+    /// The individual values behind `key` — the **inverse of
+    /// [`with_attr`](Self::with_attr)'s accumulation**, and the only correct way
+    /// to read an attribute that can hold more than one.
+    ///
+    /// Both [`with_attr`](Self::with_attr) and `merge_evidence_attrs` join
+    /// colliding values with `"; "`, so a key that looks single-valued at the
+    /// call site can hold `"alice; bob_work"` by the time a rule reads it — two
+    /// breach rows from ONE corpus mint two same-UID entities, and `absorb`
+    /// deduplicates their evidence by `(source, summary)` into a single record.
+    /// A consumer that reads `attributes.get(key)` whole then sees ONE opaque
+    /// string: identity rules counting distinct accounts silently count 1 where
+    /// there are 2, and their firing gate can never be met.
+    ///
+    /// Yields trimmed, non-empty parts; absent keys yield nothing.
+    ///
+    /// ```
+    /// use huntsman_search_engine::core::entity::Evidence;
+    ///
+    /// let ev = Evidence::new("oathnet", "Breach on ForumX")
+    ///     .with_attr("username", "alice")
+    ///     .with_attr("username", "bob_work");
+    /// assert_eq!(ev.attr_values("username").collect::<Vec<_>>(), ["alice", "bob_work"]);
+    /// assert_eq!(ev.attr_values("absent").count(), 0);
+    /// ```
+    pub fn attr_values<'a>(&'a self, key: &str) -> impl Iterator<Item = &'a str> + 'a {
+        self.attributes
+            .get(key)
+            .into_iter()
+            .flat_map(|v| v.split("; "))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
     /// Set the verification status for this evidence (used to mark account ownership verification).
     pub fn with_verification(mut self, v: VerificationMethod) -> Self {
         self.verification = Some(v);
