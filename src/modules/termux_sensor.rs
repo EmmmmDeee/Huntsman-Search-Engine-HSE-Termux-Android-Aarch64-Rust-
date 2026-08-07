@@ -130,12 +130,21 @@ impl Sensor {
 
     /// Run the tool under its own timeout, returning stdout on a clean exit.
     ///
-    /// The `None` arm keeps [`crate::util::termux::termux_cmd`]'s contract: tool
-    /// absent, timed out, or exited non-zero — nothing observed, and nothing
-    /// this module can attest to. Most callers want [`read_and_parse`], which
-    /// applies that contract for them.
+    /// The `None` arm collapses tool-absent, timed-out and non-zero-exit into
+    /// one value. Prefer [`Self::read_outcome`] where the difference matters —
+    /// it is the difference between "nothing is nearby" and "nothing looked".
     pub(crate) async fn read(self) -> Option<Vec<u8>> {
-        crate::util::termux::termux_cmd(self.tool(), &[], self.timeout_ms()).await
+        self.read_outcome().await.stdout()
+    }
+
+    /// Run the tool, preserving WHY it produced no data.
+    ///
+    /// The non-lossy read. A `Sensor` speaks for a radio on a phone that may not
+    /// have Termux:API installed, may have had its Android permission refused,
+    /// or may not carry the hardware at all; each of those is a capability gap,
+    /// not an observation of an empty world.
+    pub(crate) async fn read_outcome(self) -> crate::util::termux::TermuxOutcome {
+        crate::util::termux::termux_exec(self.tool(), &[], self.timeout_ms()).await
     }
 }
 
@@ -158,8 +167,28 @@ pub(crate) async fn read_and_parse<F>(
 where
     F: FnOnce(&[u8]) -> crate::core::error::Result<crate::core::module::ModuleResult>,
 {
-    match sensor.read().await {
+    let outcome = sensor.read_outcome().await;
+    if let Some(reason) = outcome.failure_reason() {
+        // The tool did not run, so the empty result below is NOT an observation
+        // that nothing is nearby — it is the absence of a look. Both orders are
+        // explicit that a sensor failure must never be presented as a zero
+        // finding, and previously every one of these arms returned the same
+        // silent empty `Ok` as a genuine empty read. The result stays empty (a
+        // missing optional sensor must not fail a scan on a device that simply
+        // has no Termux:API), but it is now attributable: the operator sees
+        // WHICH tool and WHY, rather than an unexplained gap in the report.
+        tracing::warn!(
+            sensor = sensor.tool(),
+            reason,
+            "termux sensor did not run — this is a capability gap, not an empty observation"
+        );
+        return Ok(crate::core::module::ModuleResult::new());
+    }
+    match outcome.stdout() {
         Some(stdout) => parse(&stdout),
+        // Unreachable: `failure_reason()` is `None` only for `Ok`, whose stdout
+        // is always `Some` — including a legitimately EMPTY payload, which is a
+        // real observation of nothing and is handed to `parse` above.
         None => Ok(crate::core::module::ModuleResult::new()),
     }
 }

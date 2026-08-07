@@ -284,11 +284,91 @@ fn record_responsive(cmd: &str, args: &[&str], read: bool) {
 /// invocation that timed out is backed off along [`TIMEOUT_BACKOFF`]'s ladder.
 /// Either way the cost of a dead sensor is paid rarely rather than once per
 /// scan — without a transient stall being mistaken for a missing tool.
-pub async fn termux_cmd(cmd: &str, args: &[&str], timeout_ms: u64) -> Option<Vec<u8>> {
+/// Why a Termux:API invocation produced no data — or that it produced data.
+///
+/// The distinction this type exists to preserve is the difference between
+///
+///   * "the sensor ran and there is genuinely nothing nearby", and
+///   * "the sensor never ran".
+///
+/// Both used to leave [`termux_exec`]'s predecessor as a bare `None`, so every
+/// consumer rendered them identically: zero devices found. On the platform HSE
+/// actually targets that is a false observation, not a missing one — Termux:API
+/// may not be installed, the Android permission may have been refused, the
+/// device may not have the radio, or the call may simply have timed out. The
+/// engine has always known which of those happened (each arm below was already
+/// logged at `debug!`) and then discarded it at the return.
+///
+/// Callers that only need bytes can still use [`TermuxOutcome::stdout`]; callers
+/// that report to an operator should match, so a sensor failure is never
+/// presented as an empty result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TermuxOutcome {
+    /// The command ran and exited 0. The payload is its stdout, and it may be
+    /// legitimately EMPTY — that is a valid observation of nothing, and is the
+    /// one case a caller may report as "nothing found".
+    Ok(Vec<u8>),
+    /// The binary could not be spawned: Termux:API is not installed, or the
+    /// helper is not on `$PATH`. A capability gap, not an observation.
+    Unavailable,
+    /// Not attempted: a previous call marked this tool absent, or it is inside
+    /// the timeout backoff window. Carries the same reason string already used
+    /// in the skip log.
+    Skipped(&'static str),
+    /// Exceeded `timeout_ms`. On Android this is usually a permission dialog
+    /// nobody answered, or a radio that never returned.
+    TimedOut,
+    /// Ran to completion but exited non-zero — most often a refused Android
+    /// permission, which Termux:API reports through the exit code.
+    Failed(Option<i32>),
+}
+
+impl TermuxOutcome {
+    /// The stdout bytes of a successful run, or `None` for every failure class.
+    ///
+    /// The lossy accessor, kept deliberately: plenty of call sites genuinely
+    /// only want the bytes. It is the *default* that must not be lossy.
+    #[must_use]
+    pub fn stdout(self) -> Option<Vec<u8>> {
+        match self {
+            Self::Ok(bytes) => Some(bytes),
+            _ => None,
+        }
+    }
+
+    /// True when the tool did not run, so "no data" says nothing about the world.
+    ///
+    /// The predicate a caller needs before rendering an empty result: if this is
+    /// true, the correct report is "sensor unavailable", never "zero found".
+    #[must_use]
+    pub fn is_capability_failure(&self) -> bool {
+        !matches!(self, Self::Ok(_))
+    }
+
+    /// Short, operator-facing reason for a failure. `None` on success.
+    #[must_use]
+    pub fn failure_reason(&self) -> Option<&'static str> {
+        match self {
+            Self::Ok(_) => None,
+            Self::Unavailable => Some("Termux:API command not installed or not on PATH"),
+            Self::Skipped(r) => Some(r),
+            Self::TimedOut => {
+                Some("timed out (permission prompt unanswered, or radio did not return)")
+            }
+            Self::Failed(_) => Some("command exited non-zero (often a refused Android permission)"),
+        }
+    }
+}
+
+/// Run a Termux:API helper, preserving WHY it produced no data.
+///
+/// The canonical entry point. [`termux_cmd`] is the lossy shim over it, kept so
+/// existing callers are unchanged while they migrate.
+pub async fn termux_exec(cmd: &str, args: &[&str], timeout_ms: u64) -> TermuxOutcome {
     let now = Instant::now();
     if let Some(reason) = check_skip(cmd, args, now) {
-        tracing::debug!(cmd, reason, "termux_cmd: skipped");
-        return None;
+        tracing::debug!(cmd, reason, "termux_exec: skipped");
+        return TermuxOutcome::Skipped(reason);
     }
     let fut = Command::new(cmd).args(args).kill_on_drop(true).output();
     match timeout(Duration::from_millis(timeout_ms), fut).await {
@@ -297,27 +377,39 @@ pub async fn termux_cmd(cmd: &str, args: &[&str], timeout_ms: u64) -> Option<Vec
             tracing::debug!(
                 cmd,
                 backoff_secs = backoff.as_secs(),
-                "termux_cmd: timed out after {timeout_ms}ms"
+                "termux_exec: timed out after {timeout_ms}ms"
             );
-            None
+            TermuxOutcome::TimedOut
         }
         Ok(Err(e)) => {
-            tracing::debug!(cmd, error = %e, "termux_cmd: spawn/io failed");
+            tracing::debug!(cmd, error = %e, "termux_exec: spawn/io failed");
             record_absent(cmd, Instant::now());
-            None
+            TermuxOutcome::Unavailable
         }
         Ok(Ok(output)) if !output.status.success() => {
             // A non-zero exit is a real, prompt run (tool present, just no
             // data / a handled error) — responsive, so do NOT penalise it.
-            tracing::debug!(cmd, code = ?output.status.code(), "termux_cmd: non-zero exit");
+            tracing::debug!(cmd, code = ?output.status.code(), "termux_exec: non-zero exit");
             record_responsive(cmd, args, false);
-            None
+            TermuxOutcome::Failed(output.status.code())
         }
         Ok(Ok(output)) => {
             record_responsive(cmd, args, true);
-            Some(output.stdout)
+            TermuxOutcome::Ok(output.stdout)
         }
     }
+}
+
+/// Lossy wrapper over [`termux_exec`] — `Some(stdout)` on success, `None` for
+/// every failure class.
+///
+/// Behaviourally identical to the original implementation, including the
+/// availability bookkeeping (`record_absent` / `record_timeout` /
+/// `record_responsive`), which now happens inside `termux_exec`. Prefer
+/// `termux_exec` in new code: a caller that reports to an operator cannot tell
+/// "nothing nearby" from "no sensor" through this signature.
+pub async fn termux_cmd(cmd: &str, args: &[&str], timeout_ms: u64) -> Option<Vec<u8>> {
+    termux_exec(cmd, args, timeout_ms).await.stdout()
 }
 
 /// Test-only accessor: was `cmd` cached as unavailable by a real `termux_cmd`

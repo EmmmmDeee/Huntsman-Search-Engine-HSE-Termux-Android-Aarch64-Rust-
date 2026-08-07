@@ -249,3 +249,56 @@ use super::*;
             "never asked for is idle, not blind — the two are different claims"
         );
     }
+
+// ── TermuxOutcome: the sensor-failure vs empty-observation distinction ───────
+
+#[test]
+fn empty_stdout_is_a_real_observation_not_a_capability_failure() {
+    // The whole point of the type. A tool that ran and printed nothing HAS
+    // observed the world — "no networks in range" is a finding. It must not be
+    // lumped in with the tool never running.
+    let ran_empty = TermuxOutcome::Ok(Vec::new());
+    assert!(!ran_empty.is_capability_failure());
+    assert_eq!(ran_empty.failure_reason(), None);
+    assert_eq!(ran_empty.clone().stdout(), Some(Vec::new()));
+}
+
+#[test]
+fn every_failure_class_is_distinguishable_and_explains_itself() {
+    // Previously all four of these were a bare `None`, so a consumer rendered
+    // them identically to the empty-but-real observation above.
+    let failures = [
+        TermuxOutcome::Unavailable,
+        TermuxOutcome::Skipped("tool absent (would not spawn)"),
+        TermuxOutcome::TimedOut,
+        TermuxOutcome::Failed(Some(1)),
+    ];
+    for f in &failures {
+        assert!(f.is_capability_failure(), "{f:?} must be a capability failure");
+        assert!(
+            f.failure_reason().is_some_and(|r| !r.is_empty()),
+            "{f:?} must explain itself to an operator"
+        );
+        assert_eq!(f.clone().stdout(), None);
+    }
+    // And they are not collapsed into each other.
+    assert_ne!(TermuxOutcome::Unavailable, TermuxOutcome::TimedOut);
+    assert_ne!(TermuxOutcome::Failed(Some(1)), TermuxOutcome::Failed(None));
+}
+
+#[tokio::test]
+async fn termux_cmd_shim_still_returns_none_for_an_absent_tool() {
+    // The compat contract: `termux_cmd` is unchanged for existing callers, and
+    // `termux_exec` explains the same run.
+    let cmd = "hse-definitely-not-a-real-termux-tool";
+    clear_unavailable_for_test(cmd);
+    assert_eq!(termux_cmd(cmd, &[], 500).await, None);
+
+    clear_unavailable_for_test(cmd);
+    let outcome = termux_exec(cmd, &[], 500).await;
+    assert!(outcome.is_capability_failure());
+    assert!(
+        matches!(outcome, TermuxOutcome::Unavailable | TermuxOutcome::Skipped(_)),
+        "a missing binary is Unavailable (or Skipped once cached), got {outcome:?}"
+    );
+}
