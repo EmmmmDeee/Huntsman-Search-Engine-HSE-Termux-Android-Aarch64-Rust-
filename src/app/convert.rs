@@ -1,10 +1,18 @@
-//! Convert extracted entities → HSE core::entity::Entity for auto-scan pipeline.
+//! Convert entity-extractor output → HSE `core::entity::Entity`, ready to
+//! persist as a scan.
+//!
+//! Two commands turn free text into structured entities via
+//! `util::entity_extractor` — `hse ingest` (document text) and `hse
+//! investigate` (a natural-language prompt) — and both need the identical
+//! kind-mapping and evidence-chain construction to feed `app::persist`. Single
+//! source here so the two can never map an extractor kind to a different core
+//! kind, or drop an evidence field, from each other.
 
 use crate::core::entity::{Entity, EntityKind as CoreEntityKind, Evidence};
 use crate::util::entity_extractor::{EntityKind as ExtractorEntityKind, ExtractedEntity};
 
-/// Map extractor EntityKind to core EntityKind.
-pub fn map_entity_kind(kind: &ExtractorEntityKind) -> CoreEntityKind {
+/// Map extractor `EntityKind` to core `EntityKind`.
+pub(crate) fn map_entity_kind(kind: &ExtractorEntityKind) -> CoreEntityKind {
     match kind {
         ExtractorEntityKind::Email => CoreEntityKind::Email,
         ExtractorEntityKind::Phone => CoreEntityKind::Phone,
@@ -23,23 +31,24 @@ pub fn map_entity_kind(kind: &ExtractorEntityKind) -> CoreEntityKind {
     }
 }
 
-/// Convert an extracted entity to an HSE Entity ready for the scan pipeline.
+/// Convert an extracted entity to an HSE `Entity` ready for the scan pipeline.
 ///
-/// # Parameters
-/// - `extracted`: The entity from the ingest pipeline
-/// - `scan_id`: The scan ID to associate this entity with
-/// - `document_source`: Name of the document/file (e.g., "license.png", "scan.pdf")
-///
-/// # Returns
-/// An HSE Entity with:
-/// - Kind mapped to HSE's taxonomy
-/// - Base confidence from extraction
-/// - Evidence chain including source pattern, context, and extraction metadata
-/// - Tags marking the entity as document-ingested
-pub fn extracted_to_hse_entity(
+/// `evidence_source` is the free-form provenance label recorded verbatim as
+/// this entity's [`Evidence::source`] and named in its description — e.g.
+/// `"ingest:notes.txt"` or `"investigate:who owns example.com"`. Every caller
+/// composes its own so the recorded provenance is always truthful about which
+/// command actually produced the entity — this function never guesses or
+/// defaults it (evidence is EVIDENCE; mislabelling where an entity came from
+/// is the fabrication this crate treats as its cardinal sin). `origin_tag` is
+/// the tag applied for downstream filtering/audit (e.g.
+/// `"document-ingestion"`, `"investigate-query"`): both mark the entity as
+/// text-extracted rather than module-fetched, but distinguish which pathway
+/// did the extracting.
+pub(crate) fn extracted_to_hse_entity(
     extracted: &ExtractedEntity,
     scan_id: impl Into<String>,
-    document_source: &str,
+    evidence_source: &str,
+    origin_tag: &str,
 ) -> Entity {
     let scan_id = scan_id.into();
     let core_kind = map_entity_kind(&extracted.kind);
@@ -49,10 +58,10 @@ pub fn extracted_to_hse_entity(
 
     // Build evidence with full extraction metadata
     let mut evidence = Evidence::new(
-        format!("ingest:{document_source}"),
+        evidence_source.to_string(),
         format!(
-            "Entity extracted from {} via pattern: {}",
-            document_source, extracted.source_pattern
+            "Entity extracted from {evidence_source} via pattern: {}",
+            extracted.source_pattern
         ),
     );
 
@@ -74,12 +83,10 @@ pub fn extracted_to_hse_entity(
 
     entity.add_evidence(evidence);
 
-    // Tag as document-ingested for filtering/audit
-    entity.tag("document-ingestion");
-    entity.tag(format!(
-        "ingest:confidence-{:.0}",
-        extracted.confidence * 100.0
-    ));
+    // Tag with the caller's origin (filtering/audit) plus an origin-agnostic
+    // confidence bucket.
+    entity.tag(origin_tag);
+    entity.tag(format!("confidence-{:.0}", extracted.confidence * 100.0));
 
     entity
 }
@@ -103,7 +110,7 @@ mod tests {
 
     #[test]
     fn map_entity_kind_pins_every_extractor_variant() {
-        // The ingest→core contract: each extractor kind maps to a fixed core
+        // The extraction→core contract: each extractor kind maps to a fixed core
         // kind. Only Email/Ipv4 were covered before, leaving the non-obvious
         // mappings (SocialHandle→Username, Identifier→DeviceId, Port/Hash→Other)
         // and the Ipv6 arm free to drift silently. Pin all fifteen so a remap is
@@ -141,8 +148,8 @@ mod tests {
 
     #[test]
     fn ipv6_entity_converts_to_core_ipaddress() {
-        // Guards the extractor's newly-added Ipv6 kind end-to-end: a document
-        // IPv6 must reach the scan pipeline as an IpAddress with its canonical
+        // Guards the extractor's Ipv6 kind end-to-end: an IPv6 in the source
+        // text must reach the scan pipeline as an IpAddress with its canonical
         // value preserved.
         let extracted = ExtractedEntity {
             kind: EntityKind::Ipv6,
@@ -152,7 +159,8 @@ mod tests {
             source_pattern: "ipv6_rfc4291".to_string(),
             boost_reason: Some("Valid IPv6 address (std-parsed)".to_string()),
         };
-        let entity = extracted_to_hse_entity(&extracted, "scan-1", "doc.txt");
+        let entity =
+            extracted_to_hse_entity(&extracted, "scan-1", "ingest:doc.txt", "document-ingestion");
         assert_eq!(entity.kind, CoreEntityKind::IpAddress);
         assert_eq!(entity.value, "2001:db8::1");
     }
@@ -168,7 +176,12 @@ mod tests {
             boost_reason: Some("RFC 5322 compliant format".to_string()),
         };
 
-        let entity = extracted_to_hse_entity(&extracted, "scan-123", "test.txt");
+        let entity = extracted_to_hse_entity(
+            &extracted,
+            "scan-123",
+            "ingest:test.txt",
+            "document-ingestion",
+        );
 
         assert_eq!(entity.kind, CoreEntityKind::Email);
         assert_eq!(entity.value, "test@example.com");
@@ -183,6 +196,37 @@ mod tests {
         assert_eq!(
             first_evidence.attributes.get("source_pattern"),
             Some(&"email_rfc5322".to_string())
+        );
+    }
+
+    #[test]
+    fn origin_tag_and_evidence_source_are_caller_controlled() {
+        // The whole point of parameterising origin_tag/evidence_source: two
+        // different callers (ingest, investigate) must be able to record
+        // truthful, DIFFERENT provenance for entities that otherwise go
+        // through an identical conversion. Prove both are threaded through
+        // unmodified rather than defaulted or hardcoded.
+        let extracted = ExtractedEntity {
+            kind: EntityKind::Domain,
+            value: "example.com".to_string(),
+            confidence: 0.7,
+            context: None,
+            source_pattern: "domain_generic".to_string(),
+            boost_reason: None,
+        };
+        let entity = extracted_to_hse_entity(
+            &extracted,
+            "scan-x",
+            "investigate:who owns example.com",
+            "investigate-query",
+        );
+        assert!(entity.tags.contains(&"investigate-query".to_string()));
+        assert!(!entity.tags.contains(&"document-ingestion".to_string()));
+        assert!(
+            entity
+                .evidence
+                .iter()
+                .any(|e| e.source == "investigate:who owns example.com")
         );
     }
 }

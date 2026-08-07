@@ -1,5 +1,6 @@
 //! CLI entry point: scan / serve / live / modules / keys / config /
-//! diagnostics / update / export / import / ingest / diff / audit / radar.
+//! diagnostics / update / export / import / ingest / investigate / diff /
+//! audit / radar.
 //!
 //! Surfaces every `ScanOptions` field as a flag so each scan is fully
 //! customisable before launch. `serve` boots the HTTP server + SPA;
@@ -11,6 +12,7 @@ pub(crate) mod config;
 mod diagnostics;
 mod engines;
 mod ingest;
+mod investigate;
 mod keys_cmd;
 mod live;
 mod live_frame;
@@ -196,6 +198,12 @@ async fn run_command(command: Command) -> Result<()> {
                 .await
                 .map_err(|e| Error::Other(e.to_string()))
         }
+        Command::Investigate {
+            text,
+            auto_scan,
+            min_confidence,
+            json,
+        } => investigate::cmd_investigate(text, auto_scan, min_confidence, json).await,
         Command::Serve { bind, no_key_write } => serve::cmd_serve(bind, !no_key_write).await,
         Command::Live {
             kind,
