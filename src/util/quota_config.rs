@@ -59,9 +59,7 @@ pub struct SeeKnowQuotaConfig {
 
 impl Default for SeeKnowQuotaConfig {
     fn default() -> Self {
-        Self {
-            per_scan_limit: 8,
-        }
+        Self { per_scan_limit: 8 }
     }
 }
 
@@ -90,9 +88,7 @@ pub struct WigleQuotaConfig {
 
 impl Default for WigleQuotaConfig {
     fn default() -> Self {
-        Self {
-            per_scan_limit: 50,
-        }
+        Self { per_scan_limit: 50 }
     }
 }
 

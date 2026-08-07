@@ -3,8 +3,8 @@
 //! without violating the "no inter-module imports" invariant.
 
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{LazyLock, Mutex};
 
 use serde::Deserialize;
 use serde_json::Value;
