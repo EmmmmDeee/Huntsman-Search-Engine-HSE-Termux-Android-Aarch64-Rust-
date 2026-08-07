@@ -2402,7 +2402,10 @@ fn session_dead_threshold_fires_after_n_consecutive_empties() {
     for i in 0..SESSION_DEAD_THRESHOLD {
         record_empty(SCAN_ID, FAKE);
         if i + 1 < SESSION_DEAD_THRESHOLD {
-            assert!(!is_session_dead(SCAN_ID, FAKE), "dead before threshold at i={i}");
+            assert!(
+                !is_session_dead(SCAN_ID, FAKE),
+                "dead before threshold at i={i}"
+            );
         }
     }
     assert!(
@@ -2412,7 +2415,10 @@ fn session_dead_threshold_fires_after_n_consecutive_empties() {
 
     // record_hit resets the streak — engine is live again.
     record_hit(SCAN_ID, FAKE);
-    assert!(!is_session_dead(SCAN_ID, FAKE), "hit must un-dead the engine");
+    assert!(
+        !is_session_dead(SCAN_ID, FAKE),
+        "hit must un-dead the engine"
+    );
 }
 
 #[test]
@@ -2479,10 +2485,16 @@ fn reset_session_liveness_clears_silenced_and_proven_state_across_scans() {
     for _ in 0..SESSION_DEAD_THRESHOLD {
         record_empty(SCAN_ID_A, FAKE);
     }
-    assert!(is_session_dead(SCAN_ID_A, FAKE), "setup: engine must be silenced in scan A");
+    assert!(
+        is_session_dead(SCAN_ID_A, FAKE),
+        "setup: engine must be silenced in scan A"
+    );
 
     // Scan B starts before A's state is reset: should NOT see A's silencing
-    assert!(!is_session_dead(SCAN_ID_B, FAKE), "scan B should have independent liveness state");
+    assert!(
+        !is_session_dead(SCAN_ID_B, FAKE),
+        "scan B should have independent liveness state"
+    );
 
     // Populate scan B with its own liveness state
     record_hit(SCAN_ID_B, FAKE);
