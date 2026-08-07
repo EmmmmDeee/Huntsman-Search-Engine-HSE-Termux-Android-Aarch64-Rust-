@@ -242,19 +242,8 @@ fn record_evidence(item: &Value, key_fp: &str) -> Evidence {
 
 /// Apply the breach tags (`breach`, `dehashed`, plus any `extra_tags`) and a
 /// cloned evidence record to `e`, then push it onto `result`.
-fn push_breach_entity(
-    result: &mut ModuleResult,
-    mut e: Entity,
-    ev: &Evidence,
-    extra_tags: &[&str],
-) {
-    e.tag(tags::BREACH);
-    e.tag("dehashed");
-    for t in extra_tags {
-        e.tag(*t);
-    }
-    e.add_evidence(ev.clone());
-    result.push(e);
+fn push_breach_entity(result: &mut ModuleResult, e: Entity, ev: &Evidence, extra_tags: &[&str]) {
+    result.push_with_tags(e, ev, &[tags::BREACH, "dehashed"], extra_tags);
 }
 
 /// Turn every DeHashed record into first-class, pivotable entities — identity
