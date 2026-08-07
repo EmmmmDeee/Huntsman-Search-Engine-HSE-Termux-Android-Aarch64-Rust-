@@ -1003,7 +1003,15 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
         .iter()
         .filter(|e| e.kind != EntityKind::Coordinates)
         .filter_map(|e| {
-            let pcode = crate::core::geo_family::au_postcode(e)?;
+            // `_person_grain`, not `au_postcode`: an IP-geo provider stamps a
+            // `postcode` attribute from the IP block's `zip`, and `ipquery`
+            // folds it onto a city-grain `Address` it composes — which this
+            // rung's `!= Coordinates` filter does NOT exclude. Accepting it
+            // reported an IP geolocation as an 8 km suburb-grain residence at
+            // full confidence, walking around rung 5's deliberate ≤ 0.50 cap on
+            // exactly that class. Such an entity now falls through to rung 5,
+            // which is where a login-IP location belongs.
+            let pcode = crate::core::geo_family::au_postcode_person_grain(e)?;
             let (lat, lon) = crate::util::city_coords::city_coords(&pcode)?;
             let rank = if e.has_tag("exact-name-match") { 1 } else { 0 };
             Some((rank, e.c_effective(), e, lat, lon))
