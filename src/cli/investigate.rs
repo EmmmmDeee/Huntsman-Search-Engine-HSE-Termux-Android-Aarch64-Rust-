@@ -31,6 +31,36 @@ use super::truncate;
 /// evidence chain or the printed summary line.
 const LABEL_MAX_CHARS: usize = 80;
 
+/// Upper bound on a stdin-supplied investigation prompt. A natural-language
+/// prompt is orders of magnitude smaller than this; the cap only trips on
+/// clearly-not-a-prompt input (an accidental `hse investigate < huge.log`, or a
+/// hostile unbounded pipe). Mirrors the whois client's 64 KiB response-read cap
+/// — the same "a source must not be able to stream unbounded bytes into an
+/// in-memory buffer" invariant.
+const MAX_PROMPT_BYTES: usize = 64 * 1024;
+
+/// Read an investigation prompt from `reader`, bounded to [`MAX_PROMPT_BYTES`].
+///
+/// The read is capped so an accidental or hostile large stream cannot grow the
+/// buffer without limit (OOM). One byte past the cap is read so an over-cap
+/// stream is *detected and rejected with a clear error* — pointing the operator
+/// at `hse ingest` for documents — rather than being silently truncated to the
+/// first 64 KiB, which would quietly analyse only part of the input.
+fn read_prompt_bounded<R: Read>(reader: R) -> Result<String> {
+    let mut buf = String::new();
+    reader
+        .take(MAX_PROMPT_BYTES as u64 + 1)
+        .read_to_string(&mut buf)?;
+    if buf.len() > MAX_PROMPT_BYTES {
+        return Err(Error::InvalidTarget(format!(
+            "investigate prompt from stdin exceeds {MAX_PROMPT_BYTES} bytes — \
+             pass a focused prompt, not a file; pipe documents through \
+             `hse ingest` instead"
+        )));
+    }
+    Ok(buf)
+}
+
 pub(super) async fn cmd_investigate(
     text: Option<String>,
     auto_scan: bool,
@@ -39,13 +69,9 @@ pub(super) async fn cmd_investigate(
 ) -> Result<()> {
     let text = match text {
         Some(t) => t,
-        None => {
-            // No positional TEXT → read from stdin, so a longer prompt (or a
-            // script piping one in) doesn't need shell quoting.
-            let mut buf = String::new();
-            std::io::stdin().read_to_string(&mut buf)?;
-            buf
-        }
+        // No positional TEXT → read from stdin, so a longer prompt (or a script
+        // piping one in) doesn't need shell quoting.
+        None => read_prompt_bounded(std::io::stdin())?,
     };
     let text = text.trim();
     if text.is_empty() {
@@ -208,6 +234,29 @@ mod tests {
 
     fn sample_text() -> &'static str {
         "Find everything linked to alice@example.com and the domain example.com"
+    }
+
+    #[test]
+    fn stdin_prompt_read_is_bounded() {
+        // Under the cap: returned verbatim (any `Read`, so a byte slice stands
+        // in for stdin).
+        assert_eq!(
+            read_prompt_bounded(&b"find alice@example.com"[..]).unwrap(),
+            "find alice@example.com"
+        );
+        // Exactly at the cap: still accepted in full.
+        let exact = vec![b'b'; MAX_PROMPT_BYTES];
+        assert_eq!(
+            read_prompt_bounded(&exact[..]).unwrap().len(),
+            MAX_PROMPT_BYTES
+        );
+        // One byte over the cap: rejected with a clear error rather than an
+        // unbounded read — this is the regression the review flagged.
+        let over = vec![b'a'; MAX_PROMPT_BYTES + 1];
+        assert!(matches!(
+            read_prompt_bounded(&over[..]),
+            Err(Error::InvalidTarget(_))
+        ));
     }
 
     #[test]
