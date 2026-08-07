@@ -230,13 +230,34 @@ fn person_login_ip_coords(entities: &[Entity]) -> Vec<(&Entity, (f64, f64))> {
         .collect()
 }
 
-/// Number of distinct corroborating sources across a set of admissible
+/// Number of distinct **anchoring** geo sources across a set of admissible
 /// coordinates. The multi-source gate (≥2) ensures a single device's own GPS
 /// track can't assert a footprint; AU-052 also reports the count.
+///
+/// The [`is_anchoring_geo_source`] filter is what makes that gate mean what it
+/// says. `corroborating_sources()` returns EVERY source on the entity, not just
+/// the ones that located it, so without the filter a lone EXIF track plus any
+/// unrelated non-geo source that happened to touch the same Coordinates entity
+/// counted as "2 geo sources" — and AU-052/AU-053 then reported a High "tight
+/// fix on a residence/base" off what is really one camera. Its siblings over
+/// this identical `parsed` shape already filter: `geo_source_classes`
+/// (:619-621) and `best_precision_radius_m` (:580-583), whose doc names the
+/// allowlist as "the same allowlist `is_infrastructure_geo` gates the fusion
+/// candidate set on". This was the one that did not.
+///
+/// Narrowing only — it cannot silence the rule. Both callers pass
+/// [`person_anchored_coords`], which already drops `is_infrastructure_geo`
+/// entities on that same allowlist, so every entity reaching here carries at
+/// least one anchoring source; the filter removes only the extra sources that
+/// never located anything.
 fn distinct_geo_sources(parsed: &[(&Entity, (f64, f64))]) -> usize {
     let mut sources: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (e, _) in parsed {
-        sources.extend(e.corroborating_sources());
+        sources.extend(
+            e.corroborating_sources()
+                .into_iter()
+                .filter(|s| is_anchoring_geo_source(s)),
+        );
     }
     sources.len()
 }
