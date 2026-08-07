@@ -715,6 +715,43 @@ fn au001_does_not_count_generic_search_as_a_breach_source() {
 }
 
 #[test]
+fn au001_does_not_count_a_clean_emailrep_lookup_as_breach_corroboration() {
+    // `modules::emailrep::build_email_entity` stamps its evidence record on EVERY
+    // successful lookup — the `data_breach` / `credential_leaked` flags only add
+    // attributes, they do not gate the record. So a CLEAN reputation report
+    // alongside ONE real breach must stay one breach source, exactly as
+    // `search_engines` does. Counting the bare `emailrep` name fired a false
+    // Critical on routine enrichment.
+    let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "scan-test");
+    e.add_evidence(Evidence::new("hibp", "breach hit"));
+    e.add_evidence(
+        Evidence::new("emailrep", "EmailRep report for x@y.com")
+            .with_attr("reputation", "high")
+            .with_attr("domain_exists", "true"),
+    );
+    assert!(
+        rule_au_001_multi_breach(&RuleContext::new(&[e]), "s1", 0).is_empty(),
+        "a clean EmailRep report is enrichment, not breach corroboration"
+    );
+}
+
+#[test]
+fn au001_counts_an_emailrep_breach_assertion() {
+    // The genuine signal survives: when EmailRep actually asserts a breach it is
+    // independent corroboration and the Critical is correct.
+    for attr in ["data_breach", "credential_leaked"] {
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "scan-test");
+        e.add_evidence(Evidence::new("hibp", "breach hit"));
+        e.add_evidence(
+            Evidence::new("emailrep", "EmailRep report for x@y.com").with_attr(attr, "true"),
+        );
+        let r = rule_au_001_multi_breach(&RuleContext::new(&[e]), "s1", 0);
+        assert_eq!(r.len(), 1, "{attr}=true is real corroboration");
+        assert_eq!(r[0].severity, Severity::Critical);
+    }
+}
+
+#[test]
 fn au001_does_not_raise_critical_on_a_role_mailbox() {
     // Live person-scan false positive: `abuse@godaddy.com` (a registrar desk) is in
     // HIBP + XposedOrNot as a matter of course — that is NOT the subject's breach

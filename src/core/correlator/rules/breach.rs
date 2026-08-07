@@ -607,6 +607,23 @@ pub(in crate::core::correlator) fn rule_au_106_shared_device_identity(
     out
 }
 
+/// True when this entity carries an EmailRep record that actually asserts a
+/// breach, rather than merely a successful reputation lookup.
+///
+/// `modules::emailrep::build_email_entity` attaches its evidence unconditionally
+/// and expresses the breach verdict as the `data_breach` / `credential_leaked`
+/// attributes (mirrored as [`crate::core::tags::BREACH`]). Reading those
+/// attributes is what separates "EmailRep says this address appears in a breach"
+/// from "EmailRep answered", and only the former is corroboration.
+fn emailrep_asserts_breach(e: &Entity) -> bool {
+    e.evidence.iter().any(|ev| {
+        ev.source == "emailrep"
+            && ["data_breach", "credential_leaked"]
+                .iter()
+                .any(|k| ev.attributes.get(*k).is_some_and(|v| v == "true"))
+    })
+}
+
 pub(in crate::core::correlator) fn rule_au_001_multi_breach(
     context: &RuleContext,
     scan_id: &str,
@@ -620,7 +637,16 @@ pub(in crate::core::correlator) fn rule_au_001_multi_breach(
         "dehashed",
         "hibp",
         "oathnet_pro",
-        "emailrep",
+        // NOTE: `emailrep` is deliberately NOT listed — it is handled by
+        // [`emailrep_asserts_breach`] below. It is a REPUTATION API, not a breach
+        // corpus (`source_family("emailrep")` is `email_intel`, not `breach`), and
+        // `modules::emailrep::build_email_entity` stamps its evidence record on
+        // EVERY successful lookup: the `data_breach` / `credential_leaked` flags
+        // only add attributes and tags, they do not gate whether the record
+        // exists. Listing the bare name therefore counted a CLEAN reputation
+        // lookup as breach corroboration, so one real breach + routine EmailRep
+        // enrichment fired a false Critical — the same "counts any corroborating
+        // source, not the source asserting the verdict" defect AU-004 carried.
         // NOTE: the generic `search_engines` source is deliberately NOT listed.
         // A web-search hit is not breach corroboration, and counting it would let
         // one real breach + one search result fire a false Critical. (An earlier
@@ -639,7 +665,14 @@ pub(in crate::core::correlator) fn rule_au_001_multi_breach(
         if crate::core::validation::is_role_mailbox(&e.value) {
             continue;
         }
-        let sources = tagged_matching_sources(e, BREACH_SOURCES);
+        let mut sources = tagged_matching_sources(e, BREACH_SOURCES);
+        // EmailRep counts only when it actually ASSERTS a breach, never for a
+        // clean reputation report. This keeps the genuine signal (an EmailRep
+        // `data_breach` / `credential_leaked` hit really is independent breach
+        // corroboration) while refusing the enrichment-as-corroboration inflation.
+        if emailrep_asserts_breach(e) {
+            sources.insert("emailrep");
+        }
         if sources.len() >= 2 {
             let mut names: Vec<&str> = sources.into_iter().collect();
             names.sort_unstable();
