@@ -6171,6 +6171,59 @@ fn au088_single_register_is_high_confirmation() {
 }
 
 #[test]
+fn au088_ignores_registers_that_named_a_company_not_the_subject() {
+    // The registers are ORG-scoped modules: abn_lookup emits Organisation/AbnAcn,
+    // acnc_charities accepts Organisation only ("a person is not a row here"),
+    // austlii attaches evidence to bare Url judgment entities. A name scan that
+    // merely discovered a company and dispatched the registry modules at it used
+    // to collect two authorities and emit CRITICAL "Subject corroborated by 2
+    // authoritative Australian public register(s)" — about a person neither
+    // register had ever named.
+    let mut org = Entity::new(
+        EntityKind::Organisation,
+        "Rotary Club Of Brisbane Inc",
+        0.7,
+        "s",
+    );
+    org.add_evidence(Evidence::new("acnc_charities", "charity row"));
+    let mut abn = Entity::new(EntityKind::AbnAcn, "53004085616", 0.8, "s");
+    abn.add_evidence(Evidence::new("abn_lookup", "ABR row"));
+    let mut url = Entity::new(
+        EntityKind::Url,
+        "https://austlii.edu.au/cases/123",
+        0.6,
+        "s",
+    );
+    url.add_evidence(Evidence::new("austlii", "judgment"));
+
+    let out = rule_au_088_authoritative_register_confirmation(
+        &RuleContext::new(&[org, abn, url]),
+        "s",
+        0,
+    );
+    assert!(
+        out.is_empty(),
+        "register hits on a company / ABN / court URL are not the subject's \
+         government-grounded identity: {out:?}"
+    );
+}
+
+#[test]
+fn au088_still_fires_on_a_person_level_register_hit() {
+    // The narrowing must not silence the rule: abn_lookup also emits Address,
+    // and a register naming the subject as a Person still counts.
+    let mut person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
+    person.add_evidence(Evidence::new("ahpra", "practitioner record"));
+    let mut addr = Entity::new(EntityKind::Address, "12 Oak St, QLD 4169", 0.7, "s");
+    addr.add_evidence(Evidence::new("abn_lookup", "ABR business address"));
+
+    let out =
+        rule_au_088_authoritative_register_confirmation(&RuleContext::new(&[person, addr]), "s", 0);
+    assert_eq!(out.len(), 1, "person-level register hits must still fire");
+    assert_eq!(out[0].severity, Severity::Critical);
+}
+
+#[test]
 fn au088_two_distinct_registers_is_critical() {
     // Two DIFFERENT authorities agreeing is the strongest identity signal → Critical.
     let p = ent_from_source(EntityKind::Person, "Jane Citizen", "ahpra");

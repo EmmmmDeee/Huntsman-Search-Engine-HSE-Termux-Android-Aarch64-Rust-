@@ -1729,6 +1729,33 @@ pub(in crate::core::correlator) fn rule_au_088_authoritative_register_confirmati
     let mut authorities: BTreeSet<&'static str> = BTreeSet::new();
     let mut uids: BTreeSet<String> = BTreeSet::new();
     for e in entities {
+        // A register hit on a COMPANY, an ABN/ACN, or a court-judgment URL is
+        // not "the subject corroborated by an authoritative register". The
+        // registers in AU_REGISTERS are org-scoped modules: `abn_lookup` accepts
+        // Organisation/AbnAcn/FullName and emits Organisation/AbnAcn/Address,
+        // `acnc_charities` accepts Organisation only — its own doc says "a
+        // person is not a row here" — and `austlii` attaches its evidence to
+        // bare `Url` judgment entities. So a name scan that merely DISCOVERED a
+        // company (say a club from a scraped bio) and dispatched the registry
+        // modules at it collected two authorities and emitted CRITICAL "Subject
+        // corroborated by 2 authoritative Australian public register(s) —
+        // government-grounded identity", when neither register returned a single
+        // record about the subject. This is the engine's strongest affirmative
+        // identity claim, so asserting it off an unrelated company is the worst
+        // false positive it can make.
+        //
+        // Excluding these three kinds is a strict narrowing that keeps every
+        // person-level hit: `abn_lookup` also emits `Address`, and a register
+        // that names the subject as a Person/Email/Address still counts. The
+        // rule's own doc claims the authorities "returned data on the subject";
+        // this is the part of that claim the code can enforce without a
+        // subject-linkage tag, which 5 of the 7 register modules do not stamp.
+        if matches!(
+            e.kind,
+            EntityKind::Organisation | EntityKind::AbnAcn | EntityKind::Url
+        ) {
+            continue;
+        }
         for ev in &e.evidence {
             if let Some(authority) = au_register_authority(ev.source.as_str()) {
                 authorities.insert(authority);
