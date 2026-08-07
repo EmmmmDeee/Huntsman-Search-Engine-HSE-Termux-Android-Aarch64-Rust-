@@ -700,6 +700,78 @@ fn store_api_credential_ignores_unrecognised_services_and_empty_or_placeholder_p
 }
 
 #[test]
+fn store_api_credential_flags_osint_provider_login_as_practitioner() {
+    // A leaked *login* (not an API key) to an OSINT provider is a first-class
+    // practitioner signal: the record's URL host attributes it to Dehashed, so the
+    // Credential must carry the same `osint-practitioner` + `osint-category` tags
+    // the ApiKey path stamps — that is what feeds the AU-096 correlation for the
+    // ~100 providers reachable only through the domain table.
+    let item = serde_json::json!({
+        "url": "https://app.dehashed.com/login",
+        "username": "operator@example.com",
+        "password": "s3kritDehashedPassw0rd",
+    });
+    let (mut seen, mut result) = empty_state();
+    store_api_credential(&item, "oathnet_pro", "test-scan", &mut seen, &mut result);
+    assert_eq!(result.entities.len(), 1, "got {:?}", result.entities);
+    let cred = &result.entities[0];
+    assert_eq!(cred.kind, EntityKind::Credential);
+    assert!(cred.has_tag("service:dehashed"), "tags: {:?}", cred.tags);
+    assert!(
+        cred.has_tag("osint-practitioner"),
+        "a leaked OSINT-provider login flags its holder a practitioner: {:?}",
+        cred.tags
+    );
+    assert!(
+        cred.has_tag("osint-category:breach-leak"),
+        "tags: {:?}",
+        cred.tags
+    );
+}
+
+#[test]
+fn store_api_credential_does_not_flag_non_osint_service_login() {
+    // A leaked login to generic infra (GitLab) is still a credential finding, but
+    // NOT an OSINT-practitioner signal — the pivot must fire only for recon/breach/
+    // threat-intel providers, exactly mirroring `osint_category` returning `None`.
+    let item = serde_json::json!({
+        "url": "https://gitlab.com/users/sign_in",
+        "username": "dev@example.com",
+        "password": "gitlabPassw0rd123",
+    });
+    let (mut seen, mut result) = empty_state();
+    store_api_credential(&item, "oathnet_pro", "test-scan", &mut seen, &mut result);
+    assert_eq!(result.entities.len(), 1, "got {:?}", result.entities);
+    let cred = &result.entities[0];
+    assert!(cred.has_tag("service:gitlab"), "tags: {:?}", cred.tags);
+    assert!(
+        !cred.has_tag("osint-practitioner"),
+        "generic infra login must not be flagged OSINT: {:?}",
+        cred.tags
+    );
+}
+
+#[test]
+fn osint_keys_providers_are_all_classified() {
+    // Invariant (defect-class elimination): every provider in the dedicated
+    // context-attributed OSINT-key table IS, by definition, an OSINT provider, so
+    // each must resolve to a category in `osint_providers`. Without this, adding a
+    // provider to `OSINT_PROVIDERS` while forgetting to classify it would silently
+    // break the practitioner pivot for that provider — the key would be banked but
+    // never flagged `osint-practitioner`. Lock it here so the omission fails the
+    // build instead of shipping a silent miss.
+    for p in osint_keys::OSINT_PROVIDERS {
+        assert!(
+            crate::util::osint_providers::osint_category(p.service).is_some(),
+            "OSINT_PROVIDERS service `{}` is not classified in \
+             osint_providers::OSINT_SERVICES — the practitioner pivot would silently \
+             miss it",
+            p.service
+        );
+    }
+}
+
+#[test]
 fn prefixless_osint_key_in_password_field_attributed_by_record_url() {
     // A stealer record for an OSINT provider: a prefix-less Shodan key (32 alnum)
     // saved as the password, with the provider's own URL on the record. Without

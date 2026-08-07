@@ -6306,10 +6306,58 @@ fn au096_flags_osint_practitioner_with_tradecraft() {
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-096");
     assert_eq!(r[0].severity, super::Severity::High);
-    assert!(r[0].description.contains("2 OSINT/recon-provider API key"));
+    assert!(
+        r[0].description
+            .contains("2 OSINT/recon-provider credential")
+    );
     assert!(r[0].description.contains("shodan") && r[0].description.contains("dehashed"));
     assert!(
         r[0].description.contains("attack-surface") && r[0].description.contains("breach-leak")
+    );
+}
+
+#[cfg(test)]
+fn osint_cred_ent(value: &str, service: &str, category: &str) -> Entity {
+    // The leaked-login path (`store_api_credential`) mints a Credential — not an
+    // ApiKey — but carries the same OSINT-practitioner pivot tags.
+    let mut e = Entity::new(EntityKind::Credential, value, 0.65, "s");
+    e.tag("stealer-credential");
+    e.tag(format!("service:{service}"));
+    e.tag("osint-practitioner");
+    e.tag(format!("osint-category:{category}"));
+    e
+}
+
+#[test]
+fn au096_counts_leaked_provider_logins_not_just_api_keys() {
+    // A harvested Shodan API key and a leaked Maltego account login are equal
+    // practitioner evidence: AU-096 must fold both provider-access kinds into one
+    // attribution, spanning both tradecraft categories.
+    let shodan = osint_key_ent(
+        "shodankey32xxxxxxxxxxxxxxxxxxxxxx",
+        "shodan",
+        "attack-surface",
+    );
+    let maltego = osint_cred_ent("maltego-account-pw", "maltego", "social-link-analysis");
+    let r =
+        super::rules::rule_au_096_osint_practitioner(&RuleContext::new(&[shodan, maltego]), "s", 0);
+    assert_eq!(r.len(), 1, "one practitioner finding folding both kinds");
+    assert_eq!(r[0].rule_id, "AU-096");
+    assert!(
+        r[0].description
+            .contains("2 OSINT/recon-provider credential")
+    );
+    assert!(r[0].description.contains("shodan") && r[0].description.contains("maltego"));
+    assert!(
+        r[0].description.contains("attack-surface")
+            && r[0].description.contains("social-link-analysis"),
+        "both tradecraft categories surface: {}",
+        r[0].description
+    );
+    assert_eq!(
+        r[0].entity_uids.len(),
+        2,
+        "both artifacts cited as evidence"
     );
 }
 

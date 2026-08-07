@@ -269,12 +269,30 @@ pub fn store_api_credential(
     entity.tag("stealer-credential");
     entity.tag(format!("service:{service}"));
     entity.tag(src.replace('_', "-"));
+    // OSINT-practitioner pivot — identical classification to the ApiKey path
+    // (`emit_key_with`), via the same `osint_providers::osint_category` source of
+    // truth. A leaked *login* to a recon/breach/threat-intel provider is as strong
+    // an operator signal as holding its API key: the record's own URL host already
+    // attributed this credential to the exact provider (`identify_service_from_url`
+    // over the ~100-provider domain table), so a victim caught authenticating to
+    // dehashed.com / maltego.com / shodan.io is flagged an OSINT practitioner and
+    // fed to the correlator (AU-096) rather than filed as an anonymous credential.
+    // Classification only — the credential is never used to authenticate.
+    let osint_category = crate::util::osint_providers::osint_category(service);
+    if let Some(category) = osint_category {
+        entity.tag("osint-practitioner");
+        entity.tag(format!("osint-category:{}", category.slug()));
+    }
     entity.add_evidence(
         Evidence::new(
             src,
             format!("Possible {service} credential from a breach/stealer record"),
         )
         .with_attr("service", service)
+        .with_attr(
+            "osint_category",
+            osint_category.map_or("none", |c| c.slug()),
+        )
         .with_attr(
             "username",
             crate::util::str_util::truncate_safe(&username, 60),
