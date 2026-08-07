@@ -31,9 +31,15 @@ pub use crate::core::classifier::EMAIL_RE as EMAIL_PATTERN;
 pub use crate::core::classifier::IPV4_RE as IPV4_PATTERN;
 pub use crate::core::classifier::URL_RE as URL_PATTERN;
 
-// Social handle: @ + alphanumeric (Twitter, Instagram style)
-pub static SOCIAL_HANDLE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"@[a-zA-Z0-9_]{1,30}").expect("valid social regex"));
+// Social handle: `@` + alphanumeric (Twitter, Instagram style). The `@` must
+// be at a left boundary — start of text or a character that cannot be part of
+// an email local part — so the `@domain` of an address (`jeremy@example.com`)
+// is NOT mistaken for a mention. The Rust `regex` crate has no lookbehind, so
+// the boundary is a leading alternation and the handle itself is capture 1;
+// the call site reads group 1, not a `@`-stripped whole match.
+pub static SOCIAL_HANDLE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|[^A-Za-z0-9._%+\-])@([A-Za-z0-9_]{1,30})").expect("valid social regex")
+});
 
 // IPv6 CANDIDATE: any run of hex digits and colons. Deliberately loose — it
 // only has to *find* candidates; `extract_by_patterns` then validates each one
@@ -192,13 +198,15 @@ pub fn extract_by_patterns(text: &str) -> Vec<ExtractedEntity> {
         });
     }
 
-    // Social handle extraction
-    for cap in SOCIAL_HANDLE.find_iter(text) {
+    // Social handle extraction. Group 1 is the handle (without the `@`); the
+    // leading boundary that suppresses email `@domain` matches is outside it.
+    for cap in SOCIAL_HANDLE.captures_iter(text) {
+        let handle = cap.get(1).expect("group 1 present on every match");
         entities.push(ExtractedEntity {
             kind: EntityKind::SocialHandle,
-            value: cap.as_str()[1..].to_string(), // Remove @ prefix
-            confidence: 0.60,                     // Speculative (could be mention, not identity)
-            context: extract_context(text, cap.start()),
+            value: handle.as_str().to_string(),
+            confidence: 0.60, // Speculative (could be mention, not identity)
+            context: extract_context(text, handle.start()),
             source_pattern: "social_handle_twitter".to_string(),
             boost_reason: None,
         });
@@ -253,6 +261,43 @@ mod tests {
             entities
                 .iter()
                 .any(|e| e.kind == EntityKind::Email && e.value == "john.doe@example.com")
+        );
+    }
+
+    #[test]
+    fn email_domain_is_not_minted_as_a_social_handle() {
+        // The `@` of an email address is not a Twitter/Instagram mention. The
+        // SOCIAL_HANDLE regex had no left boundary, so `jeremy@example.com`
+        // matched `@example` inside the address and emitted a bogus
+        // `SocialHandle("example")` — a false-positive identity pivot on every
+        // email the extractor sees.
+        let text = "reach jeremy.stewart@example.com or dana@acme.io";
+        let handles: Vec<String> = extract_by_patterns(text)
+            .into_iter()
+            .filter(|e| e.kind == EntityKind::SocialHandle)
+            .map(|e| e.value)
+            .collect();
+        assert!(
+            handles.is_empty(),
+            "an email's @domain must not become a social handle, got: {handles:?}"
+        );
+    }
+
+    #[test]
+    fn a_real_mention_is_still_extracted_as_a_social_handle() {
+        // A genuine mention — `@` at a word boundary, not preceded by email
+        // local-part characters — must still be extracted (regression guard),
+        // including one at the very start of the text.
+        let text = "@jack ping and follow @openai_dev for updates";
+        let handles: Vec<String> = extract_by_patterns(text)
+            .into_iter()
+            .filter(|e| e.kind == EntityKind::SocialHandle)
+            .map(|e| e.value)
+            .collect();
+        assert!(handles.contains(&"jack".to_string()), "got: {handles:?}");
+        assert!(
+            handles.contains(&"openai_dev".to_string()),
+            "got: {handles:?}"
         );
     }
 
