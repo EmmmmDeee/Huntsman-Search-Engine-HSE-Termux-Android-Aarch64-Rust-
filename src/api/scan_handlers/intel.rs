@@ -7,7 +7,7 @@ use axum::{
 use serde_json::json;
 use std::sync::Arc;
 
-use super::super::handlers::{internal_error, not_found, ok_list};
+use super::super::handlers::{not_found, ok_list};
 use crate::api::AppState;
 
 /// `GET /api/v1/scans/{id}/leads` — proactive next-best-action recommendations
@@ -163,8 +163,8 @@ pub async fn scan_path(
         Vec<crate::core::path::ConnectionPath>,
         serde_json::Map<String, serde_json::Value>,
     );
-    let computed =
-        tokio::task::spawn_blocking(move || -> Result<PathResult, crate::core::error::Error> {
+    let (paths, nodes) =
+        match super::offload_store(move || -> Result<PathResult, crate::core::error::Error> {
             let paths = if cross {
                 crate::core::path::connect_cross_scan(store.as_ref(), &from, &to, max_paths)
             } else {
@@ -194,12 +194,11 @@ pub async fn scan_path(
             }
             Ok((paths, nodes))
         })
-        .await;
-    let (paths, nodes) = match computed {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
-    };
+        .await
+        {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        };
     let connected = !paths.is_empty();
     (
         StatusCode::OK,

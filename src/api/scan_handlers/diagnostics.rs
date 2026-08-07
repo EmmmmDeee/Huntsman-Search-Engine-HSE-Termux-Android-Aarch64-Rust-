@@ -7,7 +7,7 @@ use axum::{
 use serde_json::json;
 use std::sync::Arc;
 
-use super::super::handlers::{internal_error, not_found, ok_list};
+use super::super::handlers::{not_found, ok_list};
 use crate::api::AppState;
 use crate::core::scan::Target;
 
@@ -25,17 +25,16 @@ pub async fn scan_audit(
     // can anchor the engine-health signal to WHEN this scan actually ran,
     // not to whatever the live liveness cache says right now (see
     // `engine_health_signals`). Same off-reactor batching as before.
-    let loaded = tokio::task::spawn_blocking(move || {
+    let (scan, entities, events) = match super::offload_store(move || {
         let scan = store.get_scan(&id2)?;
         let entities = store.entities_for_scan(&id2)?;
         let events = store.events_for_scan(&id2).unwrap_or_default();
-        Ok::<_, crate::core::error::Error>((scan, entities, events))
+        Ok((scan, entities, events))
     })
-    .await;
-    let (scan, entities, events) = match loaded {
-        Ok(Ok(triple)) => triple,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    .await
+    {
+        Ok(triple) => triple,
+        Err(resp) => return resp,
     };
     let normalised: Vec<crate::audit::AuditEntity> = entities
         .iter()

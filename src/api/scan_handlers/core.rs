@@ -13,26 +13,6 @@ use crate::api::AppState;
 use crate::core::entity::scan_id;
 use crate::core::scan::{Scan, ScanRequest, Target, TargetKind};
 
-/// Run a blocking `Store` operation off the async reactor and normalise the
-/// outcome for a handler. Every `Store` method takes the global SQLite
-/// connection mutex, so calling one inline on an async handler pins the worker
-/// thread for the whole query — a cascade `delete_scan` or a batch of writes
-/// then stalls every unrelated request sharing that thread. This is the
-/// write-path analogue of the `spawn_blocking` every *read* handler in this
-/// module already uses: on success it yields the value; on a store error or a
-/// task-join failure it yields a ready `500` for the caller to `return`.
-async fn offload_store<T, F>(f: F) -> std::result::Result<T, axum::response::Response>
-where
-    F: FnOnce() -> crate::core::error::Result<T> + Send + 'static,
-    T: Send + 'static,
-{
-    match tokio::task::spawn_blocking(f).await {
-        Ok(Ok(v)) => Ok(v),
-        Ok(Err(e)) => Err(internal_error(&e)),
-        Err(e) => Err(internal_error(&format!("db task failed: {e}"))),
-    }
-}
-
 pub async fn scan_create(
     State(s): State<Arc<AppState>>,
     Json(req): Json<ScanRequest>,
@@ -44,7 +24,7 @@ pub async fn scan_create(
 
     let store = Arc::clone(&s.store);
     let scan_db = scan.clone();
-    if let Err(resp) = offload_store(move || store.upsert_scan(&scan_db)).await {
+    if let Err(resp) = super::offload_store(move || store.upsert_scan(&scan_db)).await {
         return resp;
     }
 
@@ -127,7 +107,7 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     // no relations it yields the same order — so this is fully backward-compatible.
     // All store work on the blocking pool so the async workers stay free.
     let store = Arc::clone(&s.store);
-    let selected = tokio::task::spawn_blocking(
+    let from_base = match super::offload_store(
         move || -> crate::core::error::Result<Option<crate::core::engine::ClusteredTarget>> {
             let scans = store.list_scans(AUTONOMOUS_POOL_MAX_SCANS)?;
             let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
@@ -164,12 +144,10 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
             Ok(ranked.into_iter().next())
         },
     )
-    .await;
-
-    let from_base = match selected {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&crate::core::error::Error::Other(e.to_string())),
+    .await
+    {
+        Ok(s) => s,
+        Err(resp) => return resp,
     };
 
     // The identity-aware ranker yields a clustered target; flatten to its
@@ -205,7 +183,7 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         .with_options(crate::core::scan::default_scan_options());
     let store = Arc::clone(&s.store);
     let scan_db = scan.clone();
-    if let Err(resp) = offload_store(move || store.upsert_scan(&scan_db)).await {
+    if let Err(resp) = super::offload_store(move || store.upsert_scan(&scan_db)).await {
         return resp;
     }
     spawn_scan(&s, scan, target);
@@ -259,7 +237,7 @@ pub async fn scan_auto_plan(
         .unwrap_or(crate::core::engine::DEFAULT_SWEEP_DIVERSITY);
 
     let store = Arc::clone(&s.store);
-    let planned = tokio::task::spawn_blocking(
+    let plan = match super::offload_store(
         move || -> crate::core::error::Result<crate::core::engine::AutonomousPlan> {
             let scans = store.list_scans(AUTONOMOUS_POOL_MAX_SCANS)?;
             let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
@@ -284,12 +262,10 @@ pub async fn scan_auto_plan(
             ))
         },
     )
-    .await;
-
-    let plan = match planned {
-        Ok(Ok(p)) => p,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&crate::core::error::Error::Other(e.to_string())),
+    .await
+    {
+        Ok(p) => p,
+        Err(resp) => return resp,
     };
 
     (
@@ -337,7 +313,7 @@ pub async fn scan_auto_sweep(
         .unwrap_or(crate::core::engine::DEFAULT_SWEEP_DIVERSITY);
 
     let store = Arc::clone(&s.store);
-    let planned = tokio::task::spawn_blocking(
+    let plan = match super::offload_store(
         move || -> crate::core::error::Result<crate::core::engine::AutonomousPlan> {
             let scans = store.list_scans(AUTONOMOUS_POOL_MAX_SCANS)?;
             let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
@@ -362,12 +338,10 @@ pub async fn scan_auto_sweep(
             ))
         },
     )
-    .await;
-
-    let plan = match planned {
-        Ok(Ok(p)) => p,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&crate::core::error::Error::Other(e.to_string())),
+    .await
+    {
+        Ok(p) => p,
+        Err(resp) => return resp,
     };
 
     if plan.queue.is_empty() {
@@ -402,6 +376,9 @@ pub async fn scan_auto_sweep(
             .with_options(crate::core::scan::default_scan_options());
         let store = Arc::clone(&s.store);
         let scan_db = scan.clone();
+        // Deliberately NOT `offload_store`: a persist failure here records a
+        // per-target error and lets the sweep continue, whereas `offload_store`
+        // would abort the whole request with a 500 on the first bad target.
         match tokio::task::spawn_blocking(move || store.upsert_scan(&scan_db)).await {
             Ok(Ok(_)) => {}
             Ok(Err(e)) => {
@@ -471,18 +448,22 @@ pub async fn scan_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     // connection mutex — two concurrent inline calls could block both ~2 workers
     // and starve SSE keep-alives / `/health`. Matches the sibling handlers.
     let store = std::sync::Arc::clone(&s.store);
-    match tokio::task::spawn_blocking(move || store.list_scans(200)).await {
-        Ok(Ok(scans)) => ok_list("scans", scans),
-        Ok(Err(e)) => internal_error(&e),
-        Err(e) => internal_error(&format!("query task failed: {e}")),
-    }
+    let scans = match super::offload_store(move || store.list_scans(200)).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    ok_list("scans", scans)
 }
 
 pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> impl IntoResponse {
     // Off-reactor: synchronous SQLite read under the global connection mutex.
     let store = std::sync::Arc::clone(&s.store);
-    match tokio::task::spawn_blocking(move || store.get_scan(&id)).await {
-        Ok(Ok(Some(scan))) => (
+    let scan = match super::offload_store(move || store.get_scan(&id)).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    match scan {
+        Some(scan) => (
             StatusCode::OK,
             Json(serde_json::to_value(&scan).unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "failed to serialize scan to JSON value");
@@ -490,9 +471,7 @@ pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
             })),
         )
             .into_response(),
-        Ok(Ok(None)) => not_found(),
-        Ok(Err(e)) => internal_error(&e),
-        Err(e) => internal_error(&format!("query task failed: {e}")),
+        None => not_found(),
     }
 }
 
@@ -529,7 +508,7 @@ pub async fn scan_delete(
     // reactor so a large-scan delete can't stall unrelated requests.
     let store = Arc::clone(&s.store);
     let id_db = id.clone();
-    match offload_store(move || store.delete_scan(&id_db)).await {
+    match super::offload_store(move || store.delete_scan(&id_db)).await {
         Ok(true) => {
             info!(scan_id = %id, "scan deleted");
             (StatusCode::OK, Json(json!({ "deleted": id }))).into_response()
@@ -545,7 +524,7 @@ pub async fn scan_rerun(
 ) -> impl IntoResponse {
     let store = Arc::clone(&s.store);
     let id_db = id.clone();
-    let original = match offload_store(move || store.get_scan(&id_db)).await {
+    let original = match super::offload_store(move || store.get_scan(&id_db)).await {
         Ok(Some(scan)) => scan,
         Ok(None) => return not_found(),
         Err(resp) => return resp,
@@ -556,7 +535,7 @@ pub async fn scan_rerun(
 
     let store = Arc::clone(&s.store);
     let scan_db = new_scan.clone();
-    if let Err(resp) = offload_store(move || store.upsert_scan(&scan_db)).await {
+    if let Err(resp) = super::offload_store(move || store.upsert_scan(&scan_db)).await {
         return resp;
     }
 
@@ -665,7 +644,7 @@ pub async fn scan_import(
     // caller must be able to tell that apart from a genuinely relation-free
     // dossier, both of which otherwise report `relation_count: 0`.
     let (relation_count, correlation_count, enriched) =
-        match tokio::task::spawn_blocking(move || -> crate::core::error::Result<_> {
+        match super::offload_store(move || -> crate::core::error::Result<_> {
             store.upsert_scan(&scan)?;
             store.upsert_entities_batch(&entities)?;
             // Best-effort: a stealer-row persistence hiccup must not fail an
@@ -704,9 +683,8 @@ pub async fn scan_import(
         })
         .await
         {
-            Ok(Ok(counts)) => counts,
-            Ok(Err(e)) => return internal_error(&e),
-            Err(e) => return internal_error(&format!("import task failed: {e}")),
+            Ok(counts) => counts,
+            Err(resp) => return resp,
         };
 
     info!(scan_id = %sid, format, entities = entity_count, "file imported via web");
@@ -752,6 +730,9 @@ pub async fn scan_batch(
         };
         let store = Arc::clone(&s.store);
         let scan_db = scan.clone();
+        // Deliberately NOT `offload_store`: a persist failure here records a
+        // per-request error and lets the batch continue, whereas `offload_store`
+        // would abort the whole batch with a 500 on the first bad entry.
         match tokio::task::spawn_blocking(move || store.upsert_scan(&scan_db)).await {
             Ok(Ok(_)) => {}
             Ok(Err(e)) => {
@@ -843,7 +824,7 @@ pub async fn radar_sweep(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
     let store = Arc::clone(&s.store);
     let scan_db = scan.clone();
-    if let Err(resp) = offload_store(move || store.upsert_scan(&scan_db)).await {
+    if let Err(resp) = super::offload_store(move || store.upsert_scan(&scan_db)).await {
         return resp;
     }
     spawn_scan(&s, scan, target);
@@ -922,7 +903,7 @@ pub async fn radar_history(
         .unwrap_or(100)
         .clamp(1, 1000);
     let store = Arc::clone(&s.store);
-    match offload_store(move || store.radar_history(limit)).await {
+    match super::offload_store(move || store.radar_history(limit)).await {
         Ok(scans) => ok_list("sweeps", scans),
         Err(resp) => resp,
     }
@@ -959,7 +940,7 @@ pub async fn radar_recurring(
     // `/health`, so this follows the off-reactor discipline every sibling here
     // already uses.
     let store = Arc::clone(&s.store);
-    match tokio::task::spawn_blocking(move || -> crate::core::error::Result<_> {
+    let devices = match super::offload_store(move || -> crate::core::error::Result<_> {
         let scans = store.radar_history(limit)?;
         let mut sweeps: Vec<Sweep> = Vec::with_capacity(scans.len());
         for scan in &scans {
@@ -986,10 +967,10 @@ pub async fn radar_recurring(
     })
     .await
     {
-        Ok(Ok(devices)) => ok_list("devices", devices),
-        Ok(Err(e)) => internal_error(&e),
-        Err(e) => internal_error(&format!("query task failed: {e}")),
-    }
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    ok_list("devices", devices)
 }
 
 /// `GET /api/v1/plan?value=<seed>` — forward-only scan-plan PREVIEW.
@@ -1097,9 +1078,9 @@ pub async fn scan_events_history(
     // SQLite (matches the sibling entity/report handlers' spawn_blocking).
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
-    match tokio::task::spawn_blocking(move || store.events_for_scan(&id2)).await {
-        Ok(Ok(events)) => ok_list("events", events),
-        Ok(Err(e)) => internal_error(&e),
-        Err(e) => internal_error(&format!("query task failed: {e}")),
-    }
+    let events = match super::offload_store(move || store.events_for_scan(&id2)).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    ok_list("events", events)
 }
