@@ -198,6 +198,7 @@ impl AuditReport {
                 "engines_blocked": self.log.engines_blocked,
                 "engine_parser_defects": self.log.engine_parser_defects,
                 "module_errors": self.log.module_errors,
+                "module_timeouts": self.log.module_timeouts,
                 "http_failures": self.log.http_failures,
                 "log_lines_parsed": self.log.lines_parsed,
             },

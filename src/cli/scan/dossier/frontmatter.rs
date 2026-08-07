@@ -40,7 +40,12 @@ pub(super) fn print(
     println!("╚══════════════════════════════════════════════════════════════╝");
     println!();
     println!("  Target:    {kind} = {value}");
-    println!("  Scan ID:   {}", &scan.id[..16]);
+    // Clamp before slicing — the same guarded-truncation idiom the other
+    // id-shortening sites use (`gexf::short_uid`, `scan_export`), so a `Scan`
+    // built with a shorter-than-16-char id (as the test suite does) truncates
+    // gracefully instead of panicking on `&s[..16]`. Production ids are 64 hex
+    // chars, so this is byte-for-byte identical output on the live path.
+    println!("  Scan ID:   {}", &scan.id[..scan.id.len().min(16)]);
     println!("  Status:    {}", scan.status.as_str());
     println!(
         "{}",

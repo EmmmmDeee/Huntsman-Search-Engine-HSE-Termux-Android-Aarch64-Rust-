@@ -243,7 +243,9 @@ fn missed_pii_when_email_but_no_person() {
 #[test]
 fn to_json_is_stable_and_complete() {
     let ents = vec![ent("email", "dns@cloudflare.com", 1.0, 1, &[])];
-    let j = audit(&ents, LogSignals::default()).to_json();
+    let mut log = LogSignals::default();
+    log.module_timeouts.insert("slow_mod".into(), 3);
+    let j = audit(&ents, log).to_json();
     assert!(j["score"].as_u64().is_some());
     assert!(
         j["grade"]
@@ -259,6 +261,10 @@ fn to_json_is_stable_and_complete() {
             .any(|f| { f["category"] == "role-mailbox-as-pii" })
     );
     assert!(j["source_health"]["engines_down"].is_array());
+    // The per-module timeout tally is surfaced beside its sibling module_errors,
+    // not silently dropped — it is the constrained-Termux signal an operator
+    // reads from `hse audit --json` and the web audit endpoint alike.
+    assert_eq!(j["source_health"]["module_timeouts"]["slow_mod"], 3);
 }
 
 #[test]
