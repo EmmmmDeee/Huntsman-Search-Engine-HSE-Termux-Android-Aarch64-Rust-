@@ -105,6 +105,15 @@ pub trait StoragePort: Send + Sync {
     }
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>>;
 
+    /// Clear all events for a scan at the start of that scan so event logs don't
+    /// accumulate stale events from abandoned previous runs with the same target
+    /// in long-lived processes (`hse serve`). Default no-op for test doubles;
+    /// the SQLite `Store` deletes from the `events` table. Non-fatal: a failure
+    /// is logged as a warning but doesn't abort the scan.
+    fn delete_events_for_scan(&self, _scan_id: &str) -> Result<()> {
+        Ok(())
+    }
+
     /// Recent `ModuleDone`/`ModuleError` outcome events across ALL scans,
     /// newest-first, bounded to `limit` — the substrate for
     /// `util::scraper_health`'s per-source health signal (`hse doctor`'s

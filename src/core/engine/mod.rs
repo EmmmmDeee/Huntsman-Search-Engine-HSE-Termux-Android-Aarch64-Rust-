@@ -653,6 +653,14 @@ impl ScanEngine {
         scan.status = ScanStatus::Running;
         self.store.upsert_scan(&scan)?;
 
+        // Clear any stale events from previous scan attempts with this scan_id
+        // (possible in hse serve when the same target runs twice). Per-scan event
+        // isolation must start from a clean slate — subsequent modules emit fresh
+        // events that belong only to this scan, not to a prior abandoned run.
+        if let Err(e) = self.store.delete_events_for_scan(&scan.id) {
+            tracing::warn!(scan_id = %scan.id, error = %e, "failed to clear stale events at scan start");
+        }
+
         // Reset every module's per-scan state — rate budgets + the foreign-API-key
         // sink — so long-lived processes (`hse serve` / `hse live`) get a fresh
         // budget per scan, and this scan reports only the keys IT retrieves.

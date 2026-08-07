@@ -862,6 +862,18 @@ impl Store {
         Ok(events.len())
     }
 
+    /// Clear all events for a scan_id — used at scan initialization to ensure a
+    /// clean slate in long-lived processes like `hse serve` where the same target
+    /// may run multiple times. Per-scan event isolation must start from fresh,
+    /// not from leftover abandoned events. Non-fatal: if this fails, logging warns
+    /// and the scan proceeds (events will just accumulate, but won't cause an
+    /// actual scan failure).
+    pub fn delete_events_for_scan(&self, scan_id: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM events WHERE scan_id = ?1", params![scan_id])?;
+        Ok(())
+    }
+
     pub fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {
         let raw: Vec<String> = {
             let conn = self.conn.lock();
@@ -1010,6 +1022,10 @@ impl crate::core::port::StoragePort for Store {
 
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {
         Store::events_for_scan(self, scan_id)
+    }
+
+    fn delete_events_for_scan(&self, scan_id: &str) -> Result<()> {
+        Store::delete_events_for_scan(self, scan_id)
     }
 
     fn recent_module_outcome_events(&self, limit: usize) -> Result<Vec<Event>> {
