@@ -2,15 +2,10 @@
 //! search result — the guard that stops PII / geo being mined from a page that
 //! does not actually mention the subject.
 //!
-//! The existing name-based gate (`build_entities`) requires a multi-part name's
-//! surname to appear in a result before trusting its snippet. But a PHONE seed
-//! is a single token, so it fell through to the permissive branch and mined
-//! EVERY result — and when the number itself is not indexed anywhere, the search
-//! engines return generic country pages whose place-names get geocoded as if
-//! they were the subject's location. A live `+61…` scan reproduced exactly this:
-//! a `weather.com` "Ghan, NT, 0872" result — which never contained the number —
-//! was geocoded into a confident Northern Territory location. This module gives a
-//! phone seed the precise-identifier anchor it needs.
+//! Asymmetry fix (Issue #4): Phones require the actual number to appear
+//! (precise identifier); emails now require domain validation to prevent
+//! attribution of unrelated company emails. A page "Alice works at ACME" with
+//! email `bob@acme.com` should not extract that email as belonging to Alice.
 
 /// True if `hay` (a result's title + snippet + URL) plausibly mentions the phone
 /// number `seed_phone`, in ANY format. Both sides are reduced to their digit
@@ -81,6 +76,98 @@ mod tests {
         assert!(!result_mentions_phone(
             "code 12345 and 12345 again",
             "12345"
+        ));
+    }
+}
+
+/// True if an email extracted from a result plausibly belongs to the target.
+///
+/// For an EMAIL seed, requires the email domain to match the seed domain
+/// (exact match or subdomain). For other seeds, requires the email domain
+/// to match an expected context for the target type — a DOMAIN seed should
+/// see emails on that domain, not unrelated company emails.
+///
+/// This prevents extraction of arbitrary company emails from pages that
+/// merely mention the subject by name ("Alice works at ACME" → extract
+/// `bob@acme.com` as Alice's email). The email domain is a precise identifier
+/// that must align with the target, not just surname presence.
+pub(in crate::modules::search_engines) fn email_plausibly_belongs_to_seed(
+    email: &str,
+    seed_kind: &super::super::TargetKind,
+    seed_value: &str,
+) -> bool {
+    let email_domain = match email.rsplit_once('@') {
+        Some((_, d)) => d.to_lowercase(),
+        None => return false,
+    };
+
+    match seed_kind {
+        super::super::TargetKind::Email => {
+            let seed_domain = match seed_value.rsplit_once('@') {
+                Some((_, d)) => d.to_lowercase(),
+                None => return false,
+            };
+            email_domain == seed_domain
+                || crate::util::domains::is_proper_subdomain_of(&email_domain, &seed_domain)
+        }
+        super::super::TargetKind::Domain => {
+            let seed_domain = seed_value.to_lowercase();
+            email_domain == seed_domain
+                || crate::util::domains::is_proper_subdomain_of(&email_domain, &seed_domain)
+        }
+        super::super::TargetKind::Username => false,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod email_tests {
+    use super::*;
+
+    #[test]
+    fn email_seed_requires_domain_match() {
+        assert!(email_plausibly_belongs_to_seed(
+            "alice@example.com",
+            &super::super::TargetKind::Email,
+            "alice@example.com"
+        ));
+        assert!(email_plausibly_belongs_to_seed(
+            "alice@mail.example.com",
+            &super::super::TargetKind::Email,
+            "alice@example.com"
+        ));
+        assert!(!email_plausibly_belongs_to_seed(
+            "bob@acme.com",
+            &super::super::TargetKind::Email,
+            "alice@example.com"
+        ));
+    }
+
+    #[test]
+    fn domain_seed_requires_domain_match() {
+        assert!(email_plausibly_belongs_to_seed(
+            "contact@example.com",
+            &super::super::TargetKind::Domain,
+            "example.com"
+        ));
+        assert!(email_plausibly_belongs_to_seed(
+            "info@mail.example.com",
+            &super::super::TargetKind::Domain,
+            "example.com"
+        ));
+        assert!(!email_plausibly_belongs_to_seed(
+            "bob@acme.com",
+            &super::super::TargetKind::Domain,
+            "example.com"
+        ));
+    }
+
+    #[test]
+    fn username_seed_never_validates_email() {
+        assert!(!email_plausibly_belongs_to_seed(
+            "alice@example.com",
+            &super::super::TargetKind::Username,
+            "alice_name"
         ));
     }
 }
