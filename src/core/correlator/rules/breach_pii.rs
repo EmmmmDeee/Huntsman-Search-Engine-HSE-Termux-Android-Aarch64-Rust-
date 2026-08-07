@@ -1389,30 +1389,64 @@ pub(in crate::core::correlator) fn rule_au_104_bank_account_exposure(
     let entities = context.entities();
     // institution -> (distinct sources, uids).
     let mut by_bank: BTreeMap<&'static str, SourcesAndUids> = BTreeMap::new();
-    for (raw, source, uid) in scan_evidence(entities, BSB_KEYS) {
-        // A BSB/account exposure counts only from a genuine breach/stealer
-        // source (see `is_breach_source`).
-        if !is_breach_source(source) {
-            continue;
-        }
-        if let Some(bank) = crate::util::bsb::bsb_institution(&raw) {
-            let entry = by_bank.entry(bank).or_default();
-            entry.0.insert(source.to_string());
-            entry.1.insert(uid.to_string());
+    // Banks whose OWN BSB-bearing evidence record also carried an account
+    // number. Walked record-by-record rather than through `scan_evidence`
+    // because the escalation turns on CO-OCCURRENCE, and `scan_evidence`
+    // flattens away the record a hit came from.
+    //
+    // This used to be one graph-wide boolean —
+    // `!scan_evidence(entities, BANK_ACCOUNT_KEYS).is_empty()` — with neither
+    // the `is_breach_source` gate the BSB walk above applies nor any scoping,
+    // so ANY `account_number`-shaped attribute anywhere in the scan escalated
+    // EVERY bank bucket to "a full, directly-abusable bank-account credential".
+    // That is reachable: `see_know`'s `record_evidence` preserves every field of
+    // a raw source record as an attribute, so an ISP/telco corpus record's own
+    // `account_number` — a telco account, on a different Evidence from the BSB —
+    // asserted a bank credential that does not exist. The rule's own comment
+    // already said "co-occurring with the BSB"; only the code disagreed.
+    let mut account_banks: BTreeSet<&'static str> = BTreeSet::new();
+    for e in entities {
+        for ev in &e.evidence {
+            // A BSB/account exposure counts only from a genuine breach/stealer
+            // source (see `is_breach_source`).
+            if !is_breach_source(&ev.source) {
+                continue;
+            }
+            let matches_any =
+                |k: &str, keys: &[&str]| keys.iter().any(|c| k.eq_ignore_ascii_case(c));
+            let record_has_account = ev
+                .attributes
+                .iter()
+                .any(|(k, _)| matches_any(k, BANK_ACCOUNT_KEYS));
+            for (k, v) in &ev.attributes {
+                if !matches_any(k, BSB_KEYS) {
+                    continue;
+                }
+                // Accumulated multi-values (`"a; b"`) split, as `scan_evidence` does.
+                for raw in v.split("; ").map(str::trim).filter(|p| !p.is_empty()) {
+                    if let Some(bank) = crate::util::bsb::bsb_institution(raw) {
+                        let entry = by_bank.entry(bank).or_default();
+                        entry.0.insert(ev.source.clone());
+                        entry.1.insert(e.uid.clone());
+                        if record_has_account {
+                            account_banks.insert(bank);
+                        }
+                    }
+                }
+            }
         }
     }
     if by_bank.is_empty() {
         return Vec::new();
     }
 
-    // A bank account number co-occurring with the BSB is the difference between
-    // "we know their bank" and "we hold their account credential".
-    let has_account = !scan_evidence(entities, BANK_ACCOUNT_KEYS).is_empty();
-
     by_bank
         .into_iter()
         .map(|(bank, (sources, uids))| {
             let n = sources.len();
+            // Per BANK, not per scan: two institutions in one scan where only
+            // one record carried an account number must not both escalate.
+            let has_account = account_banks.contains(bank);
             let (severity, exposure) = if has_account {
                 (
                     Severity::High,

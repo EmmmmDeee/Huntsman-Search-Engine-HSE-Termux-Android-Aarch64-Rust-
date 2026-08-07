@@ -4080,6 +4080,49 @@ fn au104_resolves_bsb_to_institution_medium() {
 }
 
 #[test]
+fn au104_does_not_escalate_on_an_account_number_from_another_record() {
+    // The reachable false positive: `see_know`'s record_evidence preserves EVERY
+    // field of a raw source record as an attribute, so an ISP/telco corpus
+    // record's own `account_number` — a TELCO account, on a different Evidence
+    // from the BSB — used to flip a BSB-only finding to High "a full,
+    // directly-abusable bank-account credential". No bank account number exists
+    // here, so this must stay Medium / "BSB only".
+    let mut person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
+    person.add_evidence(Evidence::new("see_know", "bank record").with_attr("bsb", "062-000"));
+    person.add_evidence(
+        Evidence::new("see_know", "telco record").with_attr("account_number", "998877"),
+    );
+    let r = super::rules::rule_au_104_bank_account_exposure(&RuleContext::new(&[person]), "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(
+        r[0].severity,
+        super::Severity::Medium,
+        "an account number on a DIFFERENT record is not a co-occurring bank credential"
+    );
+    assert!(r[0].description.contains("BSB only"));
+}
+
+#[test]
+fn au104_ignores_an_account_number_from_a_non_breach_source() {
+    // The BSB walk gates on `is_breach_source`; the escalation now inherits that
+    // gate instead of counting any attribute in the graph.
+    let mut person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
+    person.add_evidence(Evidence::new("see_know", "bank record").with_attr("bsb", "062-000"));
+    person.add_evidence(
+        Evidence::new("abn_lookup", "registry")
+            .with_attr("bsb", "062-000")
+            .with_attr("account_number", "123456789"),
+    );
+    let r = super::rules::rule_au_104_bank_account_exposure(&RuleContext::new(&[person]), "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(
+        r[0].severity,
+        super::Severity::Medium,
+        "a non-breach enricher must not supply the account-number escalation"
+    );
+}
+
+#[test]
 fn au104_escalates_to_high_when_account_number_co_occurs() {
     // BSB + account number = a full, directly-abusable account credential → High.
     let mut person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
