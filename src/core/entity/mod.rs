@@ -993,17 +993,31 @@ impl Entity {
         if self.uid != other.uid {
             return;
         }
-        // Canonical display value: pick the lexicographically smaller raw_value
-        // so the stored spelling is independent of merge order. Two modules can
-        // emit the same value with different original casing/spacing
-        // ("Foo@Bar.com" vs "foo@bar.com" — both normalise to one UID); under the
-        // default concurrent dispatch, results merge in completion order, so
-        // keeping `self`'s would leak that order into the persisted dossier
-        // (Determinism Requirement). `min` is commutative, so any merge order —
-        // and any pairing — yields the same raw_value. `other` is consumed by
-        // `absorb`, so swap the smaller spelling out rather than cloning it.
+        // Canonical PROVENANCE spelling: the lexicographically smaller raw_value,
+        // so the as-supplied string a source sent is independent of merge order.
+        // Two modules can emit the same value with different original
+        // casing/spacing ("Foo@Bar.com" vs "foo@bar.com" — both normalise to one
+        // UID); under the default concurrent dispatch, results merge in
+        // completion order, so keeping `self`'s would leak that order into the
+        // persisted dossier (Determinism Requirement). `min` is commutative, so
+        // any merge order — and any pairing — yields the same raw_value. `other`
+        // is consumed by `absorb`, so swap the smaller spelling out rather than
+        // cloning it.
         if other.raw_value < self.raw_value {
             std::mem::swap(&mut self.raw_value, &mut other.raw_value);
+        }
+        // Canonical DISPLAY value, under the same Determinism Requirement.
+        // `identity_fold` makes `uid` insensitive to case and whitespace runs for
+        // Person/Organisation while `normalise` leaves `value` alone, so those two
+        // kinds are the only ones where same-UID observations can disagree on
+        // `value` — and until this swap existed, which spelling survived was
+        // decided by module completion order. That leaked into the exported
+        // dossier AND into the `value` column every `q=` filter matches on, so one
+        // scan run could find the subject by name and the next could not. Every
+        // other kind folds inside `normalise`, so same UID implies an identical
+        // `value` and this is a no-op for them.
+        if prefers_display(&other.value, &self.value) {
+            std::mem::swap(&mut self.value, &mut other.value);
         }
         self.absorb(other);
     }
@@ -1011,6 +1025,11 @@ impl Entity {
     /// Fold another entity's corroborating **signal** into this one — confidence
     /// (max), corroboration (sum), recency (max), deduplicated evidence and tags
     /// — without touching identity (`uid`/`value`/`raw_value`).
+    ///
+    /// Note the division of labour: [`merge`](Self::merge) canonicalises the two
+    /// spelling fields (`raw_value`, `value`) BEFORE delegating here, so this
+    /// function can treat all three identity fields as settled and fold only
+    /// signal.
     ///
     /// This is the identity-preserving core of [`merge`](Self::merge), exposed
     /// for the rare case of intentionally combining two entities with DIFFERENT
@@ -1284,6 +1303,41 @@ fn identity_fold<'a>(kind: &EntityKind, normalised: &'a str) -> std::borrow::Cow
         }
         _ => std::borrow::Cow::Borrowed(normalised),
     }
+}
+
+/// Rank a display spelling for canonical selection — **lower is preferred**.
+///
+/// [`identity_fold`] deliberately lets `Person`/`Organisation` share a UID across
+/// case and whitespace variants, while [`normalise`] keeps each source's own
+/// spelling in `value`. Those are therefore the only kinds where two same-UID
+/// observations can hold different `value` strings, and when they merge one
+/// spelling has to win — chosen by a rule that depends only on the SET of
+/// spellings, never on arrival order.
+///
+/// Ranking rather than a bare lexicographic `min`, because `min` would pick
+/// `"ACME  CORP"` over `"Acme Corp"` (ASCII upper sorts before lower) and keep
+/// the doubled space — precisely the dossier-quality loss `identity_fold` exists
+/// to avoid ("nobody wants a dossier headed `jeremy stewart`").
+///
+/// Uncased scripts (CJK, Arabic) have neither upper nor lower, so they land in
+/// the middle rank together and are separated by the lexicographic tiebreak —
+/// still deterministic.
+fn display_rank(value: &str) -> u8 {
+    let collapsed = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mixed_case = value.chars().any(char::is_lowercase) && value.chars().any(char::is_uppercase);
+    match (collapsed == value, mixed_case) {
+        (true, true) => 0,  // clean spacing, mixed case — "Jeremy Stewart"
+        (true, false) => 1, // clean spacing, but SHOUTED or all-lower
+        (false, _) => 2,    // internal whitespace runs — "Jeremy  Stewart"
+    }
+}
+
+/// True when `candidate` is the better canonical display spelling of two
+/// same-UID observations. A strict total order over `(rank, bytes)`, so it is
+/// commutative and associative: any merge order, and any pairing, selects the
+/// same winner.
+fn prefers_display(candidate: &str, current: &str) -> bool {
+    (display_rank(candidate), candidate) < (display_rank(current), current)
 }
 
 /// Derive a deterministic SHA-256 UID from kind + normalised value.

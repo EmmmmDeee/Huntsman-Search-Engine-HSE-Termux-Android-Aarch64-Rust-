@@ -1763,6 +1763,58 @@ fn upsert_entity_merge_result_is_insertion_order_independent() {
     );
 }
 
+/// The persisted DISPLAY value of a Person must not depend on which same-uid
+/// spelling reached storage first — and the `value` COLUMN must track it.
+///
+/// `identity_fold` makes `uid` insensitive to case/whitespace runs for
+/// `Person`/`Organisation` only, so those are the only kinds where two same-uid
+/// entities can carry different `value` strings. The sibling test above uses
+/// `EntityKind::Email`, whose `normalise` lowercases, so it is structurally
+/// blind to this: it can never produce a value difference to persist.
+///
+/// Two failures compound here. `Entity::merge` left `value` order-dependent, and
+/// the ON CONFLICT `UPDATE` never wrote the `value` column at all — so the
+/// indexed/filterable column kept the first-seen spelling permanently. The
+/// operator-visible symptom is the `q=` filter: searching the scan's own seed
+/// name found the subject or found nothing, decided purely by module completion
+/// order.
+#[test]
+fn persisted_person_value_and_filter_do_not_depend_on_insertion_order() {
+    let persisted = |first: &str, second: &str| -> (String, usize) {
+        let path = tmp_db();
+        let store = Store::open(&path).expect("should succeed");
+        insert_scan(&store, "order-scan");
+        let a = Entity::new(EntityKind::Person, first, 0.5, "order-scan");
+        let b = Entity::new(EntityKind::Person, second, 0.9, "order-scan");
+        assert_eq!(a.uid, b.uid, "precondition: one person, one node");
+        store.upsert_entity(&a).expect("should succeed");
+        store.upsert_entity(&b).expect("should succeed");
+        let got = store
+            .get_entity(&a.uid)
+            .expect("should succeed")
+            .expect("should succeed");
+        // The filter an operator actually types: the scan's own seed spelling.
+        let hits = store
+            .entities_filtered("order-scan", Some("person"), None, Some("Jeremy Stewart"))
+            .expect("should succeed");
+        let _ = std::fs::remove_file(&path);
+        (got.value, hits.len())
+    };
+
+    let forward = persisted("Jeremy  Stewart", "Jeremy Stewart");
+    let reversed = persisted("Jeremy Stewart", "Jeremy  Stewart");
+
+    assert_eq!(
+        forward.0, reversed.0,
+        "persisted display value must not depend on upsert order"
+    );
+    assert_eq!(
+        (forward.1, reversed.1),
+        (1, 1),
+        "the seed-name filter must find the subject in either order"
+    );
+}
+
 // ── upsert_entities_batch ──────────────────────────────────────────────
 
 #[test]
