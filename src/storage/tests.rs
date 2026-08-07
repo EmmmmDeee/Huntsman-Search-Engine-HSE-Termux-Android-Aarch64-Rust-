@@ -2369,3 +2369,36 @@ fn list_scans_drops_a_corrupt_row_end_to_end_without_erroring() {
     assert_eq!(scans[0].id, "scan-good");
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn open_has_a_nonzero_busy_timeout() {
+    // SQLite's OWN default busy timeout is zero: a writer that finds the
+    // database locked fails instantly with SQLITE_BUSY instead of waiting.
+    // `hse serve` runs several writers (engine batch writer, background tidy,
+    // and checkpoint_truncate's `wal_checkpoint(TRUNCATE)`, which is documented
+    // to return SQLITE_BUSY under concurrent access), and phone flash makes a
+    // contended write window longer than desktop does — so a zero timeout would
+    // lose races HSE cannot afford to lose.
+    //
+    // It is non-zero only because rusqlite's `Connection::open` applies a 5 s
+    // default of its own; HSE never sets the pragma. That is a DEPENDENCY
+    // behaviour, invisible in this repo's source and free to change on a
+    // version bump, and nothing else here would notice — writes would simply
+    // start failing under load with no code change to blame. This pins it.
+    //
+    // Measured, not assumed: with the value read back at the time of writing,
+    // an unset pragma reports 5000.
+    let path = tmp_db();
+    let store = Store::open(&path).expect("open should succeed");
+    let ms: i64 = store
+        .conn
+        .lock()
+        .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+        .expect("busy_timeout must be readable");
+    assert!(
+        ms > 0,
+        "busy_timeout must be non-zero — at zero, a contended write fails \
+         immediately instead of waiting (got {ms}). If a rusqlite upgrade \
+         dropped its default, set the pragma explicitly in Store::open."
+    );
+}
