@@ -73,22 +73,42 @@ pub(super) fn build_scan_from_request(req: ScanRequest) -> Result<(Scan, Target)
     Ok((scan, target))
 }
 
+/// Run a blocking `Store` operation off the async reactor and normalise the
+/// outcome for a handler — THE off-reactor primitive for this module.
+///
+/// Every `Store` method takes the global SQLite connection mutex, so calling one
+/// inline on an async handler pins the ~2-worker reactor thread for the whole
+/// query — a cascade `delete_scan`, a batch of writes, or a large
+/// `entities_for_scan` read then stalls every unrelated request sharing that
+/// thread. This runs the closure on the blocking pool; on success it yields the
+/// value, and on a store error or a task-join failure it yields a ready `500` for
+/// the caller to `return`. Every read loader below ([`scan_missing`],
+/// [`scan_entities_only`], [`entities_and_relations`], [`scan_with_graph`]) and
+/// every write handler is a thin wrapper over it, so the off-reactor hop and the
+/// error mapping live in exactly one place.
+pub(super) async fn offload_store<T, F>(f: F) -> Result<T, axum::response::Response>
+where
+    F: FnOnce() -> crate::core::error::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(internal_error(&e)),
+        Err(e) => Err(internal_error(&format!("db task failed: {e}"))),
+    }
+}
+
 /// `Some(404)` when no scan with `id` exists (or `Some(500)` on a store error),
 /// else `None`. Sub-resource handlers call this first so an unknown scan yields
-/// 404 rather than a misleading empty 200.
-///
-/// The `get_scan` probe is synchronous SQLite under the global connection mutex,
-/// so it runs on the blocking pool — not inline on the ~2-worker async reactor
-/// where it would block a worker before each sub-resource handler's own
-/// `spawn_blocking` read.
+/// 404 rather than a misleading empty 200. Runs its `get_scan` probe off the
+/// reactor via [`offload_store`].
 pub(crate) async fn scan_missing(s: &AppState, id: &str) -> Option<axum::response::Response> {
     let store = std::sync::Arc::clone(&s.store);
     let id = id.to_string();
-    match tokio::task::spawn_blocking(move || store.get_scan(&id)).await {
-        Ok(Ok(Some(_))) => None,
-        Ok(Ok(None)) => Some(not_found()),
-        Ok(Err(e)) => Some(internal_error(&e)),
-        Err(e) => Some(internal_error(&format!("query task failed: {e}"))),
+    match offload_store(move || store.get_scan(&id)).await {
+        Ok(Some(_)) => None,
+        Ok(None) => Some(not_found()),
+        Err(resp) => Some(resp),
     }
 }
 
@@ -117,18 +137,13 @@ pub(super) async fn entities_and_relations(
 > {
     let store = std::sync::Arc::clone(&s.store);
     let id = id.to_string();
-    match tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
+    offload_store(move || {
+        Ok((
             store.entities_for_scan(&id)?,
             store.relations_for_scan(&id)?,
         ))
     })
     .await
-    {
-        Ok(Ok(pair)) => Ok(pair),
-        Ok(Err(e)) => Err(internal_error(&e)),
-        Err(e) => Err(internal_error(&format!("query task failed: {e}"))),
-    }
 }
 
 /// Load a scan's entities off the async reactor — the single-set analogue of
@@ -147,11 +162,7 @@ pub(super) async fn scan_entities_only(
 ) -> Result<Vec<crate::core::entity::Entity>, axum::response::Response> {
     let store = std::sync::Arc::clone(&s.store);
     let id = id.to_string();
-    match tokio::task::spawn_blocking(move || store.entities_for_scan(&id)).await {
-        Ok(Ok(entities)) => Ok(entities),
-        Ok(Err(e)) => Err(internal_error(&e)),
-        Err(e) => Err(internal_error(&format!("query task failed: {e}"))),
-    }
+    offload_store(move || store.entities_for_scan(&id)).await
 }
 
 /// Load a scan RECORD together with its entities and relations, off the async
@@ -179,9 +190,9 @@ pub(super) async fn scan_with_graph(
 > {
     let store = std::sync::Arc::clone(&s.store);
     let id = id.to_string();
-    match tokio::task::spawn_blocking(move || {
+    offload_store(move || {
         let Some(scan) = store.get_scan(&id)? else {
-            return Ok::<_, crate::core::error::Error>(None);
+            return Ok(None);
         };
         Ok(Some((
             scan,
@@ -190,11 +201,6 @@ pub(super) async fn scan_with_graph(
         )))
     })
     .await
-    {
-        Ok(Ok(v)) => Ok(v),
-        Ok(Err(e)) => Err(internal_error(&e)),
-        Err(e) => Err(internal_error(&format!("query task failed: {e}"))),
-    }
 }
 
 /// True if the request opts into quarantined `candidate` entities via
