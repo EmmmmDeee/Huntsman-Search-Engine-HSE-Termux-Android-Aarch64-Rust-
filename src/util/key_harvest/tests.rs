@@ -82,6 +82,62 @@ fn detects_twilio_api_sid_distinct_from_account_sid() {
     assert_eq!(svc, "twilio");
 }
 
+#[test]
+fn twilio_sid_requires_a_hex_body_not_just_the_prefix() {
+    // A real Twilio SID is `AC`/`SK` + 32 HEX chars — the `SK` entry's own
+    // comment says so. The flat prefix+min_len table cannot enforce the hex
+    // body, so any high-entropy base64 token of the right length starting with
+    // those two bytes was misreported as a leaked Twilio credential — a
+    // false-positive exposure with HIGH_PLUSPLUS confidence, exactly the noise
+    // an operator's revoke-first ordering must not carry.
+    //
+    // These bodies contain non-hex letters (K, Z, Q, X, …) so they are NOT valid
+    // SIDs, yet each is 36 chars (>= min_len 34) and passes the entropy gate.
+    for candidate in [
+        "ACg7KZ2pQvXwTmBnRsLxjHqdFyCzeWkVpQ8r",
+        "SKg7KZ2pQvXwTmBnRsLxjHqdFyCzeWkVpQ8r",
+    ] {
+        assert!(
+            !matches!(
+                identify_api_key(candidate),
+                Some(("twilio" | "twilio_api_sid", _))
+            ),
+            "a non-hex body must not be classified as a Twilio SID: {candidate:?} -> {:?}",
+            identify_api_key(candidate)
+        );
+    }
+    // Real hex-bodied SIDs must still classify (regression guard).
+    assert_eq!(
+        identify_api_key("ACabcdef1234567890abcdef1234567890ab").map(|(s, _)| s),
+        Some("twilio")
+    );
+    assert_eq!(
+        identify_api_key("SKabcdef1234567890abcdef1234567890ab").map(|(s, _)| s),
+        Some("twilio_api_sid")
+    );
+}
+
+#[test]
+fn discord_token_requires_the_dotted_segment_structure() {
+    // A Discord bot token is `base64url(id).base64url(ts).base64url(hmac)` —
+    // three dot-separated segments. The `MT`/`ODk` entries match on two/three
+    // bytes plus min_len alone, so a dot-less base64 blob starting with those
+    // very common base64 bytes was misreported as a leaked Discord bot token.
+    for candidate in [
+        "MTg7KZ2pQvXwTmBnRsLxjHqdFyCzeWkVpQ8rT4uY6iO2aS5dG1hJ3kL",
+        "ODkg7KZ2pQvXwTmBnRsLxjHqdFyCzeWkVpQ8rT4uY6iO2aS5dG1hJ3",
+    ] {
+        assert!(
+            !matches!(identify_api_key(candidate), Some(("discord_bot", _))),
+            "a dot-less blob must not be classified as a Discord token: {candidate:?} -> {:?}",
+            identify_api_key(candidate)
+        );
+    }
+    // A real three-segment token must still classify (regression guard).
+    let real = "MTIzNDU2Nzg5MDEyMzQ1Njc4.GhIjKl.mNoPqRsTuVwXyZ0123456789abcdefgh";
+    assert_eq!(identify_api_key(real).map(|(s, _)| s), Some("discord_bot"));
+}
+
 // ── False-positive gate ───────────────────────────────────────
 
 #[test]
@@ -193,12 +249,32 @@ const SUFFIX: &str = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6A1b2C3
 fn synthesise_for(prefix: &str, min_len: usize) -> String {
     let needed = min_len.saturating_sub(prefix.len());
     // Pad from SUFFIX, repeating if needed (alphanumeric → entropy stays high).
-    let mut suffix = String::with_capacity(needed);
-    while suffix.len() < needed {
-        let take = (needed - suffix.len()).min(SUFFIX.len());
-        suffix.push_str(&SUFFIX[..take]);
+    let pad = |n: usize| -> String {
+        let mut s = String::with_capacity(n);
+        while s.len() < n {
+            let take = (n - s.len()).min(SUFFIX.len());
+            s.push_str(&SUFFIX[..take]);
+        }
+        s
+    };
+    // A handful of short prefixes carry a mandatory body shape (see
+    // `patterns::body_shape_ok`); a synthetic sample must respect it or the
+    // classifier — correctly — refuses to round-trip it.
+    match prefix {
+        // Twilio SIDs: `AC`/`SK` + hex body.
+        "AC" | "SK" => {
+            const HEX: &str = "0123456789abcdef0123456789abcdef0123456789abcdef";
+            let body = &HEX[..needed.min(HEX.len()).max(1)];
+            format!("{prefix}{body}")
+        }
+        // Discord tokens: three non-empty base64url segments. Split the padding
+        // across the segments so the total still clears min_len.
+        "MT" | "ODk" => {
+            let seg = pad((needed / 3).max(4));
+            format!("{prefix}{seg}.{seg}.{seg}")
+        }
+        _ => format!("{prefix}{}", pad(needed)),
     }
-    format!("{prefix}{suffix}")
 }
 
 #[test]
