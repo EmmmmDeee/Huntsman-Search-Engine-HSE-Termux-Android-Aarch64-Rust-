@@ -61,7 +61,31 @@ pub(in crate::core::correlator) fn rule_au_116_infrastructure_pivot_closure(
     for e in entities {
         if matches!(e.kind, EntityKind::Domain | EntityKind::IpAddress) {
             node_ix.insert(e.uid.as_str(), nodes.len());
-            benign_ip.push(e.kind == EntityKind::IpAddress && is_benign_infra(e));
+            // `is_benign_infra` is a TAG lookup (greynoise-only), so it marks an
+            // IP benign ONLY if greynoise actually ran and tagged it. The union
+            // below promises to "never traverse a benign-CDN IP", but an
+            // untagged Cloudflare/Akamai edge — the common case when greynoise
+            // is unconfigured, quarantined, or simply wasn't dispatched — passed
+            // straight through and fused every domain resolving to that shared
+            // anycast address into one "ownership" cluster.
+            //
+            // `is_cdn_edge_ip` is the canonical VALUE-based predicate the sibling
+            // infra rules already use; adding it closes the gap without
+            // depending on another module having run first. Strictly narrowing:
+            // marking more IPs benign can only SKIP unions, never create one, so
+            // it cannot manufacture a link — only withhold one that should never
+            // have been drawn.
+            //
+            // Deliberately NOT extended to `is_non_routable_ip`. An RFC1918 /
+            // loopback / documentation address is also a poor ownership link,
+            // but that is a separate behaviour change from the CDN promise this
+            // union actually makes, and the existing chain test uses 203.0.113.x
+            // placeholders — so including it would have meant rewriting a
+            // fixture to justify a widening nobody asked for.
+            benign_ip.push(
+                e.kind == EntityKind::IpAddress
+                    && (is_benign_infra(e) || crate::core::validation::is_cdn_edge_ip(&e.value)),
+            );
             nodes.push(e);
         }
     }
@@ -246,6 +270,37 @@ mod tests {
             )
             .is_empty(),
             "a single shared host is AU-110's job, not a transitive chain"
+        );
+    }
+
+    #[test]
+    fn au116_does_not_traverse_an_untagged_cdn_edge() {
+        // The gap the tagged sibling below could not catch. `is_benign_infra` is
+        // a TAG lookup, so it only marks an IP benign when greynoise actually ran
+        // and tagged it. When greynoise is unconfigured, quarantined, or simply
+        // not dispatched — the common case; a live device scan showed greynoise
+        // among 17 quarantined modules — the SAME Cloudflare edge arrives
+        // untagged and used to fuse every domain resolving to it into one
+        // "ownership" cluster.
+        //
+        // 104.16.0.1 is Cloudflare's 104.16.0.0/13 anycast range, which
+        // `validation::is_cdn_edge_ip` recognises from the value alone.
+        let a = dom("a.com");
+        let b = dom("b.com");
+        let c = dom("c.com");
+        let cdn = ip("104.16.0.1"); // NOT tagged — that is the point
+        let ip2 = ip("203.0.113.2");
+        let rels = [
+            edge(&a, &cdn, RelationKind::ResolvesTo),
+            edge(&b, &cdn, RelationKind::ResolvesTo),
+            edge(&c, &cdn, RelationKind::ResolvesTo),
+            edge(&c, &ip2, RelationKind::ResolvesTo),
+        ];
+        let ents = [a, b, c, cdn, ip2];
+        assert!(
+            rule_au_116_infrastructure_pivot_closure(&RuleContext::new(&ents), &rels, "s", 0)
+                .is_empty(),
+            "an untagged CDN anycast edge must not fuse unrelated domains"
         );
     }
 
