@@ -663,9 +663,9 @@ pub async fn system_debug_bundle(
     // Render off the reactor too: it reads the log ring + spawns `curl` (via the
     // environment fingerprint) — both blocking — and builds a potentially large
     // string, so on the ~2-worker reactor it would otherwise stall peers.
-    let body = match offload_store(move || Ok::<_, crate::core::error::Error>(
-        crate::app::export::render_system_debug_bundle(&inputs),
-    ))
+    let body = match offload_store(move || {
+        Ok::<_, crate::core::error::Error>(crate::app::export::render_system_debug_bundle(&inputs))
+    })
     .await
     {
         Ok(b) => b,
