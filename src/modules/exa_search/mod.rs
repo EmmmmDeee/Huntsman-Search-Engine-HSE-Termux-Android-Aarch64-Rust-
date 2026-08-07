@@ -24,6 +24,8 @@ use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;
 
+use crate::util::extract::EMAIL_RE;
+
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -290,10 +292,8 @@ fn mine_snippet(text: &str, scan_id: &str, source_url: &str, result: &mut Module
     }
 }
 
-static EMAIL_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
-        .expect("constant email regex")
-});
+// Email matching uses the canonical `util::extract::EMAIL_RE` (imported below) —
+// the former local literal was character-for-character equivalent.
 static PHONE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(r"\+?\d[\d\s\-().]{6,18}\d").expect("constant phone regex")
 });

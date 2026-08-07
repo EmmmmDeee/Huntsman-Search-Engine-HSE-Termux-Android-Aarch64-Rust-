@@ -47,16 +47,12 @@ struct HnUser {
     submitted: Option<Vec<i64>>,
 }
 
-/// Email + http(s) URL extractors for the free-text `about` bio. Compiled once
-/// (codebase convention) — the bio is small but the module runs per scan.
-fn bio_patterns() -> &'static (Regex, Regex) {
-    static RES: OnceLock<(Regex, Regex)> = OnceLock::new();
-    RES.get_or_init(|| {
-        (
-            Regex::new(r"[\w.+-]+@[\w-]+\.[\w.-]+").expect("constant bio email regex"),
-            Regex::new(r#"https?://[^\s"'<>)]+"#).expect("constant bio url regex"),
-        )
-    })
+/// Email extractor for the free-text `about` bio. Compiled once (codebase
+/// convention). This bio matcher intentionally keeps its looser `\w`-based
+/// grammar; URL extraction uses the canonical `util::extract::URL_RE`.
+fn bio_email_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"[\w.+-]+@[\w-]+\.[\w.-]+").expect("constant bio email regex"))
 }
 
 #[async_trait]
@@ -147,8 +143,7 @@ impl Module for HackerNews {
         // a high-value, operator-published link from the handle to a real
         // identifier — exactly the cross-reference the correlator wants.
         if let Some(about) = user.about.as_deref() {
-            let (email_re, url_re) = bio_patterns();
-            if let Some(m) = email_re.find(about) {
+            if let Some(m) = bio_email_re().find(about) {
                 let email = m.as_str().to_lowercase();
                 let mut e = Entity::new(EntityKind::Email, &email, 0.78, &ctx.scan_id);
                 e.tag("hacker-news");
@@ -159,7 +154,7 @@ impl Module for HackerNews {
                 );
                 result.push(e);
             }
-            if let Some(m) = url_re.find(about) {
+            if let Some(m) = crate::util::extract::URL_RE.find(about) {
                 let link = m.as_str().trim_end_matches(['.', ',', ')']);
                 let mut url_e = Entity::new(EntityKind::Url, link, 0.72, &ctx.scan_id);
                 url_e.tag("hacker-news");

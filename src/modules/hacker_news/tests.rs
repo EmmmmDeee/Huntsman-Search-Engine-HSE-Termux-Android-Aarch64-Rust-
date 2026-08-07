@@ -33,13 +33,12 @@ use super::*;
 
     #[test]
     fn bio_extracts_email_and_url() {
-        let (email_re, url_re) = bio_patterns();
         let about = "Contact: Paul@Example.com — site https://paulgraham.com/bio.html.";
         assert_eq!(
-            email_re.find(about).unwrap().as_str().to_lowercase(),
+            bio_email_re().find(about).unwrap().as_str().to_lowercase(),
             "paul@example.com"
         );
-        let link = url_re
+        let link = crate::util::extract::URL_RE
             .find(about)
             .unwrap()
             .as_str()

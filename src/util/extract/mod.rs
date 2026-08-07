@@ -41,6 +41,14 @@ pub fn emails(text: &str) -> Vec<String> {
     out
 }
 
+/// Canonical free-text `http(s)` URL matcher: a scheme followed by a run of
+/// non-space, non-quote, non-angle-bracket, non-`)` characters — scanner-grade,
+/// capturing the URL as it appears in a bio/snippet. Callers trim trailing
+/// punctuation as needed. Compiled once per process; single source of truth for
+/// the identical `https?://…` literal `hacker_news`/`reddit_user` each carried.
+pub static URL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"https?://[^\s"'<>)]+"#).expect("constant url regex"));
+
 /// Every plausibly-international phone number in `text`, normalised to `+<digits>`,
 /// de-duplicated with first-occurrence order preserved.
 ///
