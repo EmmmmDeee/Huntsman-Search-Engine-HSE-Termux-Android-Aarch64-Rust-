@@ -151,6 +151,12 @@ pub fn extract_by_patterns(text: &str) -> Vec<ExtractedEntity> {
 
     // Domain extraction
     for cap in DOMAIN_PATTERN.find_iter(text) {
+        // Reject matches followed by `@`, which indicates the match is an email
+        // local-part (e.g., `jeremy.stewart` in `jeremy.stewart@example.com`),
+        // not a standalone domain.
+        if cap.end() < text.len() && text.as_bytes()[cap.end()] == b'@' {
+            continue;
+        }
         entities.push(ExtractedEntity {
             kind: EntityKind::Domain,
             value: cap.as_str().to_lowercase(),
@@ -522,6 +528,27 @@ mod multibyte_tests {
             hit.iter()
                 .any(|e| e.kind == EntityKind::Email && e.value == "john@example.com"),
             "the email must still be extracted: {hit:?}"
+        );
+    }
+
+    #[test]
+    fn email_local_part_not_minted_as_domain() {
+        // DOMAIN_PATTERN has no left-boundary constraint, so `jeremy.stewart`
+        // in `jeremy.stewart@example.com` matches as a domain-like token
+        // (label.label structure matches `\b\w+\.\w+\b`). This emits a
+        // false-positive `Domain("jeremy.stewart")` every time the extractor
+        // sees an email whose local part contains a dot.
+        let text = "reach jeremy.stewart@example.com or alice.johnson@acme.io";
+        let domains: Vec<String> = extract_by_patterns(text)
+            .into_iter()
+            .filter(|e| e.kind == EntityKind::Domain)
+            .map(|e| e.value)
+            .collect();
+        assert!(
+            !domains
+                .iter()
+                .any(|d| d == "jeremy.stewart" || d == "alice.johnson"),
+            "email local-parts with dots must not be extracted as domains, got: {domains:?}"
         );
     }
 }
