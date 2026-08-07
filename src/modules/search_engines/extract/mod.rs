@@ -89,6 +89,10 @@ pub(super) async fn recycle_entities(
     let mut recycled_results: Vec<SearchResult> = if ctx.cancel.is_cancelled() {
         Vec::new()
     } else {
+        // Limit recycler query count to reasonable bounds:
+        // - 12 queries × ~8 reliable engines = ~96 concurrent requests max
+        // - On Termux, this balances discovery breadth with resource constraints
+        // - Capped lower than primary pass to avoid double spending on low-RAM devices
         let jobs: Vec<_> = recycle_queries
             .iter()
             .take(12)
@@ -137,12 +141,20 @@ pub(super) async fn recycle_entities(
     recycled_results.sort_by(|a, b| a.engine.cmp(b.engine).then_with(|| a.url.cmp(&b.url)));
 
     let recycled_results = dedup_results(recycled_results);
-    let mut seen_addrs: HashSet<String> = HashSet::new();
-    let mut seen_emails: HashSet<String> = HashSet::new();
-    let mut seen_phones: HashSet<String> = HashSet::new();
+
+    // Pre-allocate dedup sets with capacity hints based on typical entity discovery
+    // patterns. On Termux with limited RAM, explicit capacity prevents growth spikes
+    // when processing many high-yield results. Estimate: 5-10% of primary entities
+    // are typically rediscovered in recycled results; this is conservative for most scans.
+    let primary_entity_count = result.entities.len().max(10);
+    let recycle_capacity = (primary_entity_count / 8).max(16);
+
+    let mut seen_addrs: HashSet<String> = HashSet::with_capacity(recycle_capacity);
+    let mut seen_emails: HashSet<String> = HashSet::with_capacity(recycle_capacity);
+    let mut seen_phones: HashSet<String> = HashSet::with_capacity(recycle_capacity / 2);
     // Coordinates already present (or discovered here), keyed to 4 decimal
     // places so the same point from two snippets isn't double-emitted.
-    let mut seen_coords: HashSet<String> = HashSet::new();
+    let mut seen_coords: HashSet<String> = HashSet::with_capacity(recycle_capacity / 4);
 
     // Collect existing entity values to avoid duplicates
     for e in &result.entities {
