@@ -111,16 +111,19 @@ const SESSION_DEAD_THRESHOLD: u8 = 3;
 const SESSION_DEAD_THRESHOLD_PROVEN: u8 = 10;
 
 /// Per-engine session liveness: consecutive empties and whether the engine has
-/// EVER returned a result this run. Shared across all `process()` calls within
-/// one binary execution; a fresh `hse` invocation starts empty.
+/// EVER returned a result this run. Scoped per scan under `hse serve` / `hse live`
+/// to prevent concurrent scans from poisoning each other's liveness state.
 #[derive(Default, Clone, Copy)]
 struct EngineLiveness {
     consecutive_empty: u8,
     ever_hit: bool,
 }
 
+/// Keyed by (scan_id, engine_name) to namespace liveness per scan in concurrent
+/// environments. A fresh `hse` invocation (single-scan mode) uses a constant
+/// dummy scan_id; `hse serve` allocates a unique one per incoming scan.
 static SESSION_EMPTY_COUNTS: std::sync::LazyLock<
-    Mutex<std::collections::HashMap<&'static str, EngineLiveness>>,
+    Mutex<std::collections::HashMap<(String, &'static str), EngineLiveness>>,
 > = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 /// The applicable dead-threshold for a liveness record: a proven-live engine
@@ -135,11 +138,11 @@ fn dead_threshold(live: EngineLiveness) -> u8 {
 
 /// True when `name` has missed enough consecutive seeds to be silenced — using
 /// the tolerant threshold once the engine has proven it can produce results.
-fn is_session_dead(name: &str) -> bool {
+fn is_session_dead(scan_id: &str, name: &str) -> bool {
     let live = SESSION_EMPTY_COUNTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(name)
+        .get(&(scan_id.to_string(), name))
         .copied()
         .unwrap_or_default();
     live.consecutive_empty >= dead_threshold(live)
@@ -147,11 +150,11 @@ fn is_session_dead(name: &str) -> bool {
 
 /// Increment the empty streak for `name`; log once when it crosses its
 /// (proven-aware) threshold so operators know why it was silenced.
-fn record_empty(name: &'static str) {
+fn record_empty(scan_id: &str, name: &'static str) {
     let mut map = SESSION_EMPTY_COUNTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let live = map.entry(name).or_default();
+    let live = map.entry((scan_id.to_string(), name)).or_default();
     live.consecutive_empty = live.consecutive_empty.saturating_add(1);
     let threshold = dead_threshold(*live);
     if live.consecutive_empty == threshold {
@@ -167,31 +170,27 @@ fn record_empty(name: &'static str) {
 
 /// Reset the empty streak for `name` when it actually returns results, and mark
 /// it "proven live" so future streaks are judged against the tolerant threshold.
-fn record_hit(name: &'static str) {
+fn record_hit(scan_id: &str, name: &'static str) {
     let mut map = SESSION_EMPTY_COUNTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let live = map.entry(name).or_default();
+    let live = map.entry((scan_id.to_string(), name)).or_default();
     live.consecutive_empty = 0;
     live.ever_hit = true;
 }
 
-/// Clear all per-engine session liveness state. Called once per scan (see
-/// the built-in module runtime's `reset_per_scan` implementation) for the same reason
-/// `oathnet_pro`/`see_know`/`wigle` reset their own per-scan state there: under
-/// a long-lived `hse serve`/`hse live` process, [`SESSION_EMPTY_COUNTS`] is
-/// process-global and previously outlived the scan that built it — an engine
-/// silenced by a block streak against one target stayed silenced (and any
-/// engine "proven live" stayed exempt from the aggressive threshold) for every
-/// later scan in the same process, even against a completely different
-/// target where that engine might work fine. A fresh scan must start with a
-/// clean slate, exactly like the paid-API response caches this same hook
-/// already clears.
-pub(crate) fn reset_session_liveness() {
-    SESSION_EMPTY_COUNTS
+/// Clear per-engine liveness state for `scan_id`. Called once per scan (see
+/// the built-in module runtime's `reset_per_scan` implementation) to ensure
+/// each scan starts with a clean slate under `hse serve` / `hse live` without
+/// scanning-by-scanning buildup of silenced engines and "proven live" credits.
+/// The scan-id namespace (added to [`SESSION_EMPTY_COUNTS`] keys) makes this
+/// surgical — only this scan's state is cleared, allowing concurrent scans to
+/// maintain independent liveness records.
+pub(crate) fn reset_session_liveness(scan_id: &str) {
+    let mut map = SESSION_EMPTY_COUNTS
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    map.retain(|(sid, _), _| sid != scan_id);
 }
 
 /// Cap on the second-order (pivot / recycle) engine fan-out. The pivot grid is
@@ -216,21 +215,22 @@ const PIVOT_ENGINE_CAP: usize = 8;
 /// Private to the module: the sibling `extract` recycler and this module's pivot
 /// pass reach it via `super::`, so it never needs `pub(super)` (which would
 /// over-expose it past the module-private `EngineSpec` return type).
-fn proven_live_engines() -> Vec<&'static EngineSpec> {
-    pivot_engine_set(&proven_engine_names())
+fn proven_live_engines(scan_id: &str) -> Vec<&'static EngineSpec> {
+    pivot_engine_set(&proven_engine_names(scan_id))
 }
 
-/// Snapshot (one lock) of the engines that have returned ≥1 result this session
+/// Snapshot (one lock) of the engines that have returned ≥1 result this scan
 /// — the `proven` input to [`order_engines_for_primary`] and
-/// [`pivot_engine_set`]. Shared by the OSINT primary pass, the pivot pass, and
-/// the `websearch` general-search path so all three read liveness identically.
-fn proven_engine_names() -> std::collections::BTreeSet<&'static str> {
+/// [`pivot_engine_set`]. Filters by scan_id to ensure concurrent scans maintain
+/// independent proven sets. The OSINT primary pass, the pivot pass, and the
+/// `websearch` general-search path all read liveness identically for a given scan.
+fn proven_engine_names(scan_id: &str) -> std::collections::BTreeSet<&'static str> {
     SESSION_EMPTY_COUNTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
-        .filter(|(_, live)| live.ever_hit)
-        .map(|(name, _)| *name)
+        .filter(|((sid, _), live)| sid == scan_id && live.ever_hit)
+        .map(|((_, name), _)| *name)
         .collect()
 }
 
@@ -573,14 +573,14 @@ impl Module for SearchEngines {
             // fill the bounded concurrency slots first — under a tight deadline
             // their results survive, while unproven/blocked engines no longer
             // occupy the early slots purely by declaration order.
-            let proven = proven_engine_names();
+            let proven = proven_engine_names(&ctx.scan_id);
             let reliable: std::collections::BTreeSet<&'static str> =
                 reliable_engines().iter().map(|e| e.name).collect();
             let live: Vec<&'static EngineSpec> = ENGINES
                 .iter()
                 .filter(|e| {
                     engine_enabled(e.name)
-                        && !is_session_dead(e.name)
+                        && !is_session_dead(&ctx.scan_id, e.name)
                         && !(qi > 0 && dead_engines.contains(e.name))
                 })
                 .collect();
@@ -600,7 +600,7 @@ impl Module for SearchEngines {
                         // non-empty (empty → None via fetch_and_parse). Reset
                         // the session-dead streak for this engine on qi == 0.
                         if qi == 0 {
-                            record_hit(name);
+                            record_hit(&ctx.scan_id, name);
                         }
                         all_results.append(&mut results);
                     }
@@ -608,7 +608,7 @@ impl Module for SearchEngines {
                     // skip it on subsequent queries to save the budget.
                     None if qi == 0 => {
                         dead_engines.insert(name);
-                        record_empty(name);
+                        record_empty(&ctx.scan_id, name);
                     }
                     None => {}
                 }
@@ -653,7 +653,7 @@ impl Module for SearchEngines {
                 // reliable core PLUS every engine proven live this scan, so the
                 // cross-platform pivot runs through all the engines that actually
                 // produced results, not just the static three.
-                let pivot_engines = proven_live_engines();
+                let pivot_engines = proven_live_engines(&ctx.scan_id);
                 let jobs: Vec<_> = pivots
                     .iter()
                     .take(10)
@@ -746,10 +746,18 @@ fn regional_enabled() -> bool {
     crate::util::regional::regional_enabled()
 }
 
-/// True when `name` has been silenced by the session-dead tracker.
-/// Exported so the `/engines/health` API can surface it per-engine.
+/// True when `name` has been silenced in ANY active scan. Used by the
+/// `/engines/health` API endpoint to report global engine health across
+/// all concurrent scans and background queries. Returns true if the engine
+/// is dead in at least one active scan (OR across scans).
 pub(crate) fn session_dead(name: &str) -> bool {
-    is_session_dead(name)
+    SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .any(|((_, engine_name), live)| {
+            *engine_name == name && live.consecutive_empty >= dead_threshold(*live)
+        })
 }
 
 /// Whether a search engine is enabled — the first per-capability toggle of the

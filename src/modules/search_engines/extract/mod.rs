@@ -21,7 +21,7 @@ pub(super) async fn recycle_entities(
     _primary_results: &[SearchResult],
     deadline: std::time::Instant,
 ) {
-    let reliable = proven_live_engines();
+    let reliable = proven_live_engines(&ctx.scan_id);
 
     // Pre-allocate based on typical entity count (most pass the confidence filter).
     let mut recycle_queries: Vec<String> = Vec::with_capacity((result.entities.len() / 2).max(4));

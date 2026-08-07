@@ -2383,34 +2383,36 @@ fn html_entity_decoding_apostrophes() {
 
 #[test]
 fn session_dead_threshold_fires_after_n_consecutive_empties() {
-    // Use a fake engine name so this test is isolated from other tests
-    // that may have touched the real engine names.
+    // Use a fake engine name and scan ID so this test is isolated from other tests.
+    const SCAN_ID: &str = "__test_session_dead_scan__";
     const FAKE: &str = "__test_session_dead__";
+
     // Reset any leftover state from prior runs of this test.
-    SESSION_EMPTY_COUNTS
+    let mut map = SESSION_EMPTY_COUNTS
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(FAKE);
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    map.retain(|(sid, _), _| sid != SCAN_ID);
+    drop(map);
 
     assert!(
-        !is_session_dead(FAKE),
+        !is_session_dead(SCAN_ID, FAKE),
         "should not be dead before threshold"
     );
     // An UNPROVEN engine (never produced a result) dies fast — google/you/etc.
     for i in 0..SESSION_DEAD_THRESHOLD {
-        record_empty(FAKE);
+        record_empty(SCAN_ID, FAKE);
         if i + 1 < SESSION_DEAD_THRESHOLD {
-            assert!(!is_session_dead(FAKE), "dead before threshold at i={i}");
+            assert!(!is_session_dead(SCAN_ID, FAKE), "dead before threshold at i={i}");
         }
     }
     assert!(
-        is_session_dead(FAKE),
+        is_session_dead(SCAN_ID, FAKE),
         "must be session-dead after threshold"
     );
 
     // record_hit resets the streak — engine is live again.
-    record_hit(FAKE);
-    assert!(!is_session_dead(FAKE), "hit must un-dead the engine");
+    record_hit(SCAN_ID, FAKE);
+    assert!(!is_session_dead(SCAN_ID, FAKE), "hit must un-dead the engine");
 }
 
 #[test]
@@ -2419,76 +2421,93 @@ fn proven_engine_tolerates_long_block_streaks() {
     // 3-block streaks that intermittently-blocked engines (bing ~48% block,
     // ecosia ~78%) routinely hit BETWEEN real results. The old flat threshold of
     // 3 permanently silenced them mid-scan and discarded their later results.
+    const SCAN_ID: &str = "__test_proven_engine_scan__";
     const FAKE: &str = "__test_proven_engine__";
-    SESSION_EMPTY_COUNTS
+
+    // Reset any leftover state from prior runs of this test.
+    let mut map = SESSION_EMPTY_COUNTS
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(FAKE);
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    map.retain(|(sid, _), _| sid != SCAN_ID);
+    drop(map);
 
     // Prove it live, then feed it the streak that WOULD have killed it before.
-    record_hit(FAKE);
+    record_hit(SCAN_ID, FAKE);
     for _ in 0..SESSION_DEAD_THRESHOLD {
-        record_empty(FAKE);
+        record_empty(SCAN_ID, FAKE);
     }
     assert!(
-        !is_session_dead(FAKE),
+        !is_session_dead(SCAN_ID, FAKE),
         "a proven engine must survive an unproven-length empty streak"
     );
 
     // It still dies if the host genuinely goes down for the full tolerant run.
     for _ in SESSION_DEAD_THRESHOLD..SESSION_DEAD_THRESHOLD_PROVEN {
-        record_empty(FAKE);
+        record_empty(SCAN_ID, FAKE);
     }
     assert!(
-        is_session_dead(FAKE),
+        is_session_dead(SCAN_ID, FAKE),
         "a proven engine still dies after the tolerant threshold"
     );
 
     // A fresh hit revives it AND resets the streak.
-    record_hit(FAKE);
+    record_hit(SCAN_ID, FAKE);
     assert!(
-        !is_session_dead(FAKE),
+        !is_session_dead(SCAN_ID, FAKE),
         "a later hit revives a silenced engine"
     );
 }
 
 #[test]
 fn reset_session_liveness_clears_silenced_and_proven_state_across_scans() {
-    // Regression: SESSION_EMPTY_COUNTS is process-global (shared across every
-    // scan in one `hse serve`/`hse live` process), so a fresh scan against a
-    // DIFFERENT target must not inherit a prior scan's block-streak silencing
-    // or "proven live" exemptions. Before `reset_session_liveness` was wired
-    // into the built-in module runtime's `reset_per_scan`, an engine
-    // silenced (or proven) in scan A stayed that way for every later scan in
-    // the same process, even though a fresh scan has no basis to assume the
-    // same engine will behave the same way against a new target.
+    // Regression: SESSION_EMPTY_COUNTS is now scoped per scan (via scan_id keys)
+    // to prevent concurrent scans from poisoning each other's liveness state.
+    // A fresh scan must start with a clean slate for its namespaced state,
+    // exactly like the paid-API response caches.
+    const SCAN_ID_A: &str = "__test_scan_a__";
+    const SCAN_ID_B: &str = "__test_scan_b__";
     const FAKE: &str = "__test_reset_session_liveness__";
-    SESSION_EMPTY_COUNTS
+
+    // Clear any prior test state
+    let mut map = SESSION_EMPTY_COUNTS
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(FAKE);
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    map.retain(|(sid, _), _| sid != SCAN_ID_A && sid != SCAN_ID_B);
+    drop(map);
 
-    // Silence it via the unproven threshold (as scan A's block streak would).
+    // Scan A: Silence an engine via the unproven threshold
     for _ in 0..SESSION_DEAD_THRESHOLD {
-        record_empty(FAKE);
+        record_empty(SCAN_ID_A, FAKE);
     }
-    assert!(is_session_dead(FAKE), "setup: engine must be silenced");
+    assert!(is_session_dead(SCAN_ID_A, FAKE), "setup: engine must be silenced in scan A");
 
-    reset_session_liveness();
+    // Scan B starts before A's state is reset: should NOT see A's silencing
+    assert!(!is_session_dead(SCAN_ID_B, FAKE), "scan B should have independent liveness state");
+
+    // Populate scan B with its own liveness state
+    record_hit(SCAN_ID_B, FAKE);
+
+    // Reset scan A's state
+    reset_session_liveness(SCAN_ID_A);
 
     assert!(
-        !is_session_dead(FAKE),
-        "a per-scan reset must clear a prior scan's silencing"
+        !is_session_dead(SCAN_ID_A, FAKE),
+        "reset must clear scan A's silencing"
     );
+    // Scan B's state should be unaffected by scan A's reset
     assert!(
-        SESSION_EMPTY_COUNTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_empty(),
-        "reset must clear the ENTIRE map, not just the one test engine \
-         (a real scan boundary has no way to enumerate every engine name \
-         some earlier scan may have touched)"
+        !is_session_dead(SCAN_ID_B, FAKE),
+        "scan B's state is unaffected by scan A's reset (scan B is proven live)"
     );
+
+    // Verify only scan A's entries are cleared, scan B's remain
+    let map = SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let has_scan_a = map.keys().any(|(sid, _)| sid == SCAN_ID_A);
+    let has_scan_b = map.keys().any(|(sid, _)| sid == SCAN_ID_B);
+    assert!(!has_scan_a, "reset must clear all entries for scan A");
+    assert!(has_scan_b, "reset must NOT clear entries for scan B");
 }
 
 #[test]

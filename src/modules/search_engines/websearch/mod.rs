@@ -61,13 +61,20 @@ pub(crate) async fn web_search(query: &str, deadline: Instant) -> Vec<WebResult>
         return Vec::new();
     }
 
+    // Web search operates standalone without a scan context, so we use a constant
+    // scan_id for liveness tracking. This means general `hse query` commands share
+    // engine liveness state with each other and with the main scan if running under
+    // `hse serve`, which is correct — a blocked/proven engine for one query is
+    // blocked/proven for any query in the same process.
+    const WEBSEARCH_SCAN_ID: &str = "__websearch__";
+
     // Order the live engines exactly as the OSINT primary pass does: proven-live
     // and reliable-core engines fill the bounded concurrency slots first. In raw
     // `ENGINES` declaration order the reliable engines sit late, never make the
     // first batch, and are the first cut when the deadline fires — the very
     // pathology `order_engines_for_primary` exists to prevent.
     let reliable: BTreeSet<&'static str> = reliable_engines().iter().map(|e| e.name).collect();
-    let proven = proven_engine_names();
+    let proven = proven_engine_names(WEBSEARCH_SCAN_ID);
     let live: Vec<&'static EngineSpec> = ENGINES
         .iter()
         .filter(|e| engine_enabled(e.name) && !session_dead(e.name))
@@ -98,10 +105,10 @@ pub(crate) async fn web_search(query: &str, deadline: Instant) -> Vec<WebResult>
     for (name, res) in batch {
         match res {
             Some(results) => {
-                record_hit(name);
+                record_hit(WEBSEARCH_SCAN_ID, name);
                 per_engine.push(results);
             }
-            None => record_empty(name),
+            None => record_empty(WEBSEARCH_SCAN_ID, name),
         }
     }
 
