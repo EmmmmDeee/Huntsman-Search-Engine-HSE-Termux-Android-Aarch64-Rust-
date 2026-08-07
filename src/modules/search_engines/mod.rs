@@ -710,9 +710,6 @@ impl Module for SearchEngines {
                     .flatten()
                     .flatten()
                     .collect();
-                // Determinism: racy completion order → sort the merged batch.
-                pivot_results
-                    .sort_by(|a, b| a.engine.cmp(b.engine).then_with(|| a.url.cmp(&b.url)));
                 all_results.append(&mut pivot_results);
             }
         }

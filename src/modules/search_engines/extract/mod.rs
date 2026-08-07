@@ -86,7 +86,7 @@ pub(super) async fn recycle_entities(
     // Track per-engine results separately so we can update liveness when an
     // "silenced" engine actually returns results during recycling — the engine
     // recovers and should be credited as "proven live" for future queries.
-    let mut recycled_results: Vec<SearchResult> = if ctx.cancel.is_cancelled() {
+    let recycled_results: Vec<SearchResult> = if ctx.cancel.is_cancelled() {
         Vec::new()
     } else {
         // Limit recycler query count to reasonable bounds:
@@ -137,8 +137,6 @@ pub(super) async fn recycle_entities(
     if recycled_results.is_empty() {
         return;
     }
-    // Determinism: racy completion order → sort before the dedup/merge.
-    recycled_results.sort_by(|a, b| a.engine.cmp(b.engine).then_with(|| a.url.cmp(&b.url)));
 
     let recycled_results = dedup_results(recycled_results);
 
