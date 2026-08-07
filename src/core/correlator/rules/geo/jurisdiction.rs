@@ -42,6 +42,20 @@ pub(in crate::core::correlator) fn rule_au_056_jurisdiction_cross_check(
             // "Sydney NSW" manufactured a false AU-056 agreement (or conflict)
             // against the subject's real interstate address.
             && !is_infrastructure_geo(e)
+            // The AU state ABBREVIATIONS are not unique to Australia:
+            // `address_au::state_abbrev_tokens` whole-token-matches `WA` and
+            // `NT`, which are Washington (USA) and the Northwest Territories
+            // (Canada). Nothing in this file gated on country, so
+            // "Seattle, WA 98101, USA" voted Western Australia — a foreign
+            // address manufacturing an AU jurisdiction, or a false conflict
+            // against the subject's real state. `util::city_coords` already
+            // applies this exact guard before its own AU postcode lookup
+            // (mod.rs:41); the jurisdiction rules did not.
+            //
+            // Strict narrowing: it excludes only addresses carrying a POSITIVE
+            // foreign-country marker, so a bare AU address ("12 Oak St,
+            // Brisbane QLD") still votes exactly as before.
+            && !crate::util::city_coords::mentions_non_au_country(&e.value.to_lowercase())
             && let Some(state) = crate::util::address_au::state_code(&e.value)
         {
             addr_states.entry(state).or_default().push(e.uid.clone());
@@ -182,6 +196,20 @@ pub(in crate::core::correlator) fn rule_au_085_phone_region_jurisdiction(
             // datacentre address is not the subject's jurisdiction, so it must not
             // corroborate (or contradict) the phone region.
             && !is_infrastructure_geo(e)
+            // The AU state ABBREVIATIONS are not unique to Australia:
+            // `address_au::state_abbrev_tokens` whole-token-matches `WA` and
+            // `NT`, which are Washington (USA) and the Northwest Territories
+            // (Canada). Nothing in this file gated on country, so
+            // "Seattle, WA 98101, USA" voted Western Australia — a foreign
+            // address manufacturing an AU jurisdiction, or a false conflict
+            // against the subject's real state. `util::city_coords` already
+            // applies this exact guard before its own AU postcode lookup
+            // (mod.rs:41); the jurisdiction rules did not.
+            //
+            // Strict narrowing: it excludes only addresses carrying a POSITIVE
+            // foreign-country marker, so a bare AU address ("12 Oak St,
+            // Brisbane QLD") still votes exactly as before.
+            && !crate::util::city_coords::mentions_non_au_country(&e.value.to_lowercase())
             && let Some(state) = crate::util::address_au::state_code(&e.value)
         {
             loc_states.entry(state).or_default().push(e.uid.clone());

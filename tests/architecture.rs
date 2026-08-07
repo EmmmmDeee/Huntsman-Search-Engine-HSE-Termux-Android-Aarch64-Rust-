@@ -281,6 +281,17 @@ fn core_does_not_import_util_directly() {
                 // jurisdiction an Address asserts, to cross-check it against the
                 // `au-state:` tag a Coordinates entity carries.
                 && !line.contains("util::address_au::state_code")
+                // Pure string predicate, no state/IO — the same leaf class as
+                // `state_code` above, and the necessary companion to it. The AU
+                // state abbreviations are NOT unique to Australia (`WA` is
+                // Washington, `NT` the Northwest Territories), so a `core` rule
+                // that reads a `state_code` hit as evidence of AUSTRALIAN
+                // jurisdiction must first exclude an explicitly foreign address.
+                // `util::city_coords` already applies this exact guard before
+                // its own AU postcode lookup; allow-listing it keeps ONE
+                // definition of "does this text name a non-AU country" rather
+                // than letting the correlator grow a second copy.
+                && !line.contains("util::city_coords::mentions_non_au_country")
                 // Pure, dependency-free AU fixed-line area-code → geographic
                 // region/state resolver (no I/O), same leaf category as
                 // `state_code`. AU-085 uses it to derive the jurisdiction a

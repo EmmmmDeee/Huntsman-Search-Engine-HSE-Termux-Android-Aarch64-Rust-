@@ -6918,6 +6918,60 @@ fn severity_as_canonical_matches_serde() {
 }
 
 #[test]
+fn au_056_ignores_a_us_address_whose_state_token_collides_with_an_au_state() {
+    use super::rules::rule_au_056_jurisdiction_cross_check;
+
+    // The AU state ABBREVIATIONS are not unique to Australia: `WA` is also
+    // Washington (USA). With no country gate, a Seattle address voted Western
+    // Australia and manufactured a false CONFLICT against the subject's real
+    // Queensland coordinate — a foreign address asserting AU jurisdiction.
+    let ents = vec![
+        mk_tagged(
+            EntityKind::Coordinates,
+            "-27.4766,153.0166",
+            "geocode",
+            &["geoint", "au-relevant", "au-state:QLD"],
+        ),
+        mk_tagged(
+            EntityKind::Address,
+            "701 Pike Street, Seattle, WA 98101, USA",
+            "see_know",
+            &[],
+        ),
+    ];
+    let out = rule_au_056_jurisdiction_cross_check(&RuleContext::new(&ents), "scan", 0);
+    assert!(
+        out.is_empty(),
+        "a US address must not vote an AU jurisdiction: {out:?}"
+    );
+}
+
+#[test]
+fn au_056_still_accepts_a_bare_au_address_with_no_country_token() {
+    use super::rules::rule_au_056_jurisdiction_cross_check;
+
+    // The guard excludes only a POSITIVE foreign marker, so an ordinary AU
+    // address naming no country at all still corroborates exactly as before.
+    let ents = vec![
+        mk_tagged(
+            EntityKind::Coordinates,
+            "-27.4766,153.0166",
+            "geocode",
+            &["geoint", "au-relevant", "au-state:QLD"],
+        ),
+        mk_tagged(
+            EntityKind::Address,
+            "12 Mary Street, Brisbane City QLD 4000",
+            "see_know",
+            &[],
+        ),
+    ];
+    let out = rule_au_056_jurisdiction_cross_check(&RuleContext::new(&ents), "scan", 0);
+    assert_eq!(out.len(), 1, "a bare AU address must still vote");
+    assert!(out[0].description.contains("QLD"));
+}
+
+#[test]
 fn au_056_corroborates_when_coord_and_address_agree_on_state() {
     use super::rules::rule_au_056_jurisdiction_cross_check;
 

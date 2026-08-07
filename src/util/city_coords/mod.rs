@@ -119,7 +119,14 @@ fn match_tabulated_city(lower: &str) -> Option<(f64, f64)> {
 /// phrases; the short ISO-style codes are matched as whole alphanumeric tokens so
 /// they cannot fire inside an ordinary word. Australia and its state names are
 /// never listed, so a genuine AU address is never gated. Pure; no I/O.
-fn mentions_non_au_country(lower: &str) -> bool {
+/// True when `lower` (already lowercased) names a country other than Australia.
+///
+/// `pub(crate)` so the correlator's AU-jurisdiction rules can apply the same
+/// guard this module already applies to postcode lookup — the AU state
+/// abbreviations are not unique to Australia (`WA` is Washington, `NT` is the
+/// Northwest Territories), so any consumer of `address_au::state_code` that
+/// treats a hit as evidence of AUSTRALIAN jurisdiction needs it.
+pub(crate) fn mentions_non_au_country(lower: &str) -> bool {
     const PHRASES: &[&str] = &[
         "united states",
         "united kingdom",
