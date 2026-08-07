@@ -209,9 +209,24 @@ pub(super) const SEEKNOW_SUPERSEDED_KEY_4: &str =
 pub(super) const SEEKNOW_SUPERSEDED_KEY_5: &str =
     "seek-b4a9cd56f7e95bc6ea30b17925f482514a07a52e7ab0961a";
 
+// NOTE — `shodan` is the one registered module with an operator key that is NOT
+// embedded here. It reads `HUNTSMAN_SHODAN_KEY` through `ctx.key_opt`
+// (`modules/shodan/mod.rs:30,159`), so adding a `SHODAN_DEFAULT_KEY` constant
+// and one `HARDCODED` row below is all that would put its paid path on the same
+// zero-config footing as the rest. That value is deliberately not committed
+// here: adding a new plaintext credential to public source is a disclosure
+// decision for the repository owner to make directly, not a side effect of a
+// refactor. Set it in `$HOME/.huntsman.env` to enable the module today.
+
 /// API keys embedded in the build so a fresh install works zero-config.
 /// `ensure_hardcoded_keys` writes any that are absent from the env file.
 /// Values come from the single-source-of-truth constants above.
+///
+/// These values ship inside the public binary and the public source tree, so
+/// they are **not secret from anyone who has HSE** — which is why
+/// [`is_embedded_default`] lets diagnostics print them in full. An
+/// operator-supplied key (anything not byte-equal to one of these) is a real
+/// secret belonging to whoever installed this copy, and stays redacted.
 pub(super) const HARDCODED: &[(&str, &str)] = &[
     ("HUNTSMAN_OATHNET_KEY", OATHNET_DEFAULT_KEY),
     ("HUNTSMAN_HIBP_KEY", HIBP_DEFAULT_KEY),
@@ -219,6 +234,23 @@ pub(super) const HARDCODED: &[(&str, &str)] = &[
     ("HUNTSMAN_WIGLE_TOKEN", WIGLE_DEFAULT_TOKEN),
     ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_DEFAULT_KEY),
 ];
+
+/// True when `value` is exactly the key this build embeds for `env`.
+///
+/// The disclosure boundary for diagnostics. An embedded default is compiled into
+/// every copy of HSE and published in the source tree, so showing it reveals
+/// nothing a reader of the repository does not already have, and showing it is
+/// useful — the operator can confirm at a glance which credential a zero-config
+/// install is actually using. Anything else in the env file was put there by
+/// whoever runs this install; that is their secret, it is not ours to print, and
+/// it must stay masked in `hse doctor`, the downloadable debug bundle, the API
+/// and the UI.
+#[must_use]
+pub fn is_embedded_default(env: &str, value: &str) -> bool {
+    HARDCODED
+        .iter()
+        .any(|(k, v)| *k == env && *v == value && !value.is_empty())
+}
 
 /// Embedded defaults that have been ROTATED. If the env file still carries an
 /// old embedded value (written by a previous build's `ensure_hardcoded_keys`),

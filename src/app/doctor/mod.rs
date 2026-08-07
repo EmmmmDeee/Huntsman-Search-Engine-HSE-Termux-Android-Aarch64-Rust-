@@ -161,11 +161,33 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
         print_live_capability_report().await;
     }
 
-    let loaded = keys::load();
+    // `populate_and_load`, not `load`: the embedded zero-config defaults are
+    // materialised into the env file by `ensure_hardcoded_keys`, which only the
+    // populate path runs. `doctor` used plain `load()`, so on a FRESH install —
+    // before any scan or `serve` had ever run — it reported "HUNTSMAN_* keys
+    // loaded: 0" and listed every zero-config provider as unset, on a build that
+    // ships working credentials for them. That is the first command an operator
+    // runs, and it told them the opposite of the truth. Populating here also
+    // makes the defaults permanent from first contact rather than from first
+    // scan; it writes exactly what a scan would have written moments later.
+    let loaded = keys::populate_and_load().await;
     let huntsman_keys = sorted_huntsman_keys(&loaded);
     println!("\nHUNTSMAN_* keys loaded: {}", huntsman_keys.len());
+    // Show the embedded zero-config defaults in full, and only those. Such a
+    // value is compiled into every copy of HSE and published in the source tree,
+    // so printing it discloses nothing a reader of the repository does not
+    // already hold — and it lets the operator confirm at a glance which
+    // credential a zero-config install is actually running on. Any OTHER value
+    // was put in the env file by whoever runs this install: that is their
+    // secret, not ours to print, and it stays masked here and in the
+    // downloadable debug bundle.
     for k in &huntsman_keys {
-        println!("  - {k}");
+        match loaded.get(*k) {
+            Some(v) if keys::is_embedded_default(k, v) => {
+                println!("  - {k} = {v}   [embedded zero-config default]");
+            }
+            _ => println!("  - {k}   [operator-supplied — value withheld]"),
+        }
     }
     if huntsman_keys.is_empty() {
         println!("  (none set; all free modules still work)");
