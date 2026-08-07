@@ -626,21 +626,10 @@ pub(super) fn extract_entities(
 /// endpoint-specific `extra_tags`) and a cloned evidence record to `e`, then
 /// push it onto `result`. Centralises the tag+evidence+push tail that every
 /// breach-derived entity kind shares.
-fn push_breach_entity(
-    result: &mut ModuleResult,
-    mut e: Entity,
-    ev: &Evidence,
-    extra_tags: &[&str],
-) {
-    e.tag(tags::BREACH);
-    e.tag("see-know");
-    for t in extra_tags {
-        e.tag(*t);
-    }
+fn push_breach_entity(result: &mut ModuleResult, e: Entity, ev: &Evidence, extra_tags: &[&str]) {
     // (Source-sector tagging is applied universally at engine admission —
     // `core::engine::enrich::tag_breach_sector` — so it is not done per-module.)
-    e.add_evidence(ev.clone());
-    result.push(e);
+    result.push_with_tags(e, ev, &[tags::BREACH, "see-know"], extra_tags);
 }
 
 #[cfg(test)]
