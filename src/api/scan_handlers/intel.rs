@@ -19,32 +19,13 @@ pub async fn scan_leads(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    // Fold the existence probe into the SAME blocking batch as the entity /
-    // relation loads. A synchronous SQLite read under the global connection
-    // mutex must never run on the async reactor — on the ~2-worker Termux
-    // runtime it can stall a worker and starve SSE keep-alives / `/health`.
-    // Every other `/scans/{id}/...` handler already reads off-reactor (via
-    // `scan_missing` or a batched `spawn_blocking`, as `scan_audit` does); this
-    // one had reimplemented the `get_scan` probe inline. `scan.options` is
-    // needed below, so it rides along in the same batch.
-    let loaded = tokio::task::spawn_blocking(move || {
-        let Some(scan) = store.get_scan(&id2)? else {
-            return Ok::<_, crate::core::error::Error>(None);
-        };
-        Ok(Some((
-            scan,
-            store.entities_for_scan(&id2)?,
-            store.relations_for_scan(&id2)?,
-        )))
-    })
-    .await;
-    let (scan, entities, relations) = match loaded {
-        Ok(Ok(Some(triple))) => triple,
-        Ok(Ok(None)) => return not_found(),
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    // `scan.options` is needed below, so the record rides along in the same
+    // off-reactor batch as the entity/relation loads (see `scan_with_graph`,
+    // which also folds in the 404 existence probe).
+    let (scan, entities, relations) = match super::scan_with_graph(&s, &id).await {
+        Ok(Some(triple)) => triple,
+        Ok(None) => return not_found(),
+        Err(resp) => return resp,
     };
     let leads =
         crate::core::leads::recommend(&entities, &relations, scan.options.min_expand_confidence);
@@ -63,13 +44,9 @@ pub async fn scan_timeline(
     if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await;
-    let entities = match loaded {
-        Ok(Ok(e)) => e,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    let entities = match super::scan_entities_only(&s, &id).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
     let events = crate::core::timeline::reconstruct(&entities);
     // Additive: alongside the event list (unchanged `events` + `count` shape),
