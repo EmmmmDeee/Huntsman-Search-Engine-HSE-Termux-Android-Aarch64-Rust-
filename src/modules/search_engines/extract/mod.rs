@@ -82,6 +82,10 @@ pub(super) async fn recycle_entities(
     // recycler can never overrun the kill timeout, which would discard the whole
     // result, primary findings included), and the batch reaches every job within
     // the reserve budget instead of crawling them serially.
+    //
+    // Track per-engine results separately so we can update liveness when an
+    // "silenced" engine actually returns results during recycling — the engine
+    // recovers and should be credited as "proven live" for future queries.
     let mut recycled_results: Vec<SearchResult> = if ctx.cancel.is_cancelled() {
         Vec::new()
     } else {
@@ -92,7 +96,28 @@ pub(super) async fn recycle_entities(
                 reliable
                     .iter()
                     .filter(|e| engine_enabled(e.name) && !dead_engines.contains(e.name))
-                    .map(move |e| fetch_one(e, (e.build_url)(q), q.clone(), deadline))
+                    .map(move |e| {
+                        let engine_name = e.name;
+                        let scan_id = ctx.scan_id.clone();
+                        async move {
+                            let res = fetch_one(e, (e.build_url)(q), q.clone(), deadline).await;
+                            match res {
+                                Some(results) => {
+                                    // Engine returned results in recycler — update liveness even if
+                                    // it was previously silenced, so it's available for future queries.
+                                    super::record_hit(&scan_id, engine_name);
+                                    Some(results)
+                                }
+                                None => {
+                                    // Engine returned nothing on recycler query — record the empty
+                                    // so its streak continues. This doesn't break the silence, but
+                                    // contributes to the threshold if it's still being monitored.
+                                    super::record_empty(&scan_id, engine_name);
+                                    None
+                                }
+                            }
+                        }
+                    })
             })
             .collect();
         futures::stream::iter(jobs)
