@@ -39,25 +39,21 @@ pub async fn scan_entities(
         1000
     };
 
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    match tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await {
-        Ok(Ok(mut entities)) => {
-            super::apply_candidate_gate(&mut entities, &params);
-            let total = entities.len();
+    let mut entities = match super::scan_entities_only(&s, &id).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    super::apply_candidate_gate(&mut entities, &params);
+    let total = entities.len();
 
-            // Paginate: slice the result set to [offset, offset+limit).
-            let paginated = entities
-                .into_iter()
-                .skip(offset)
-                .take(limit)
-                .collect::<Vec<_>>();
+    // Paginate: slice the result set to [offset, offset+limit).
+    let paginated = entities
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .collect::<Vec<_>>();
 
-            ok_paginated_list("entities", paginated, total, offset, limit)
-        }
-        Ok(Err(e)) => internal_error(&e),
-        Err(e) => internal_error(&format!("query task failed: {e}")),
-    }
+    ok_paginated_list("entities", paginated, total, offset, limit)
 }
 
 /// `GET /api/v1/scans/{id}/exposure` — the scan's **Exposure Index**: the
@@ -125,35 +121,31 @@ pub async fn scan_diamond(
     if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    match tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await {
-        Ok(Ok(mut entities)) => {
-            super::apply_candidate_gate(&mut entities, &params);
-            let by_vertex = crate::core::diamond::partition_by_vertex(&entities);
-            let vertices: Vec<serde_json::Value> = by_vertex
-                .iter()
-                .map(|(vertex, ents)| {
-                    // Per-kind sub-breakdown within the vertex, kind-sorted for a
-                    // deterministic response (and so the debatable taxonomy calls
-                    // are inspectable against real output, not hidden in a total).
-                    let mut kind_counts: std::collections::BTreeMap<String, usize> =
-                        std::collections::BTreeMap::new();
-                    for e in ents {
-                        *kind_counts.entry(e.kind.to_string()).or_insert(0) += 1;
-                    }
-                    let kinds: Vec<serde_json::Value> = kind_counts
-                        .into_iter()
-                        .map(|(kind, count)| json!({ "kind": kind, "count": count }))
-                        .collect();
-                    json!({ "vertex": vertex.as_str(), "count": ents.len(), "kinds": kinds })
-                })
+    let mut entities = match super::scan_entities_only(&s, &id).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    super::apply_candidate_gate(&mut entities, &params);
+    let by_vertex = crate::core::diamond::partition_by_vertex(&entities);
+    let vertices: Vec<serde_json::Value> = by_vertex
+        .iter()
+        .map(|(vertex, ents)| {
+            // Per-kind sub-breakdown within the vertex, kind-sorted for a
+            // deterministic response (and so the debatable taxonomy calls
+            // are inspectable against real output, not hidden in a total).
+            let mut kind_counts: std::collections::BTreeMap<String, usize> =
+                std::collections::BTreeMap::new();
+            for e in ents {
+                *kind_counts.entry(e.kind.to_string()).or_insert(0) += 1;
+            }
+            let kinds: Vec<serde_json::Value> = kind_counts
+                .into_iter()
+                .map(|(kind, count)| json!({ "kind": kind, "count": count }))
                 .collect();
-            Json(json!({ "vertices": vertices, "total": entities.len() })).into_response()
-        }
-        Ok(Err(e)) => internal_error(&e),
-        Err(e) => internal_error(&format!("query task failed: {e}")),
-    }
+            json!({ "vertex": vertex.as_str(), "count": ents.len(), "kinds": kinds })
+        })
+        .collect();
+    Json(json!({ "vertices": vertices, "total": entities.len() })).into_response()
 }
 
 /// `GET /api/v1/scans/{id}/attack` — the scan's MITRE ATT&CK **Reconnaissance**
@@ -176,68 +168,63 @@ pub async fn scan_attack(
     if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    match tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await {
-        Ok(Ok(mut entities)) => {
-            super::apply_candidate_gate(&mut entities, &params);
-            // Count entities per exercised Reconnaissance technique from their
-            // `attack:<id>` provenance tags — one entity may span several.
-            let mut exercised: std::collections::BTreeMap<String, usize> =
-                std::collections::BTreeMap::new();
-            for e in &entities {
-                for tid in e.tags.iter().filter_map(|t| t.strip_prefix("attack:")) {
-                    *exercised.entry(tid.to_string()).or_insert(0) += 1;
-                }
-            }
-            let coverage = crate::core::attack::coverage(&exercised);
-            if params.get("format").map(String::as_str) == Some("navigator") {
-                let layer = crate::core::attack::navigator_layer(&coverage, &id);
-                // `?download=1` saves the layer as a file rather than rendering it
-                // inline — the entire point of a Navigator layer is to LOAD the
-                // `.json` into the MITRE ATT&CK Navigator, so it must be a real
-                // download. Routed through the same attachment helper as every
-                // other scan export (→ `hse-navigator-<id>.json`).
-                if params.get("download").map(String::as_str) == Some("1") {
-                    let body =
-                        serde_json::to_string_pretty(&layer).unwrap_or_else(|_| layer.to_string());
-                    return crate::api::scan_export::download_response(
-                        body,
-                        "application/json; charset=utf-8",
-                        &id,
-                        "navigator",
-                        "json",
-                    );
-                }
-                return Json(layer).into_response();
-            }
-            if params.get("breakdown").map(String::as_str) == Some("entity_type") {
-                // Breakdown by entity type: for each entity, extract its attack
-                // techniques and pair them with the entity's kind for aggregation.
-                let entity_techniques: Vec<(String, String)> = entities
-                    .iter()
-                    .flat_map(|e| {
-                        e.tags
-                            .iter()
-                            .filter_map(|t| t.strip_prefix("attack:").map(String::from))
-                            .map(move |tid| (e.kind.to_string(), tid))
-                    })
-                    .collect();
-                let by_type = crate::core::attack::coverage_by_entity_type(&entity_techniques);
-                return Json(json!({
-                    "tactic_id": coverage.tactic_id,
-                    "tactic_name": coverage.tactic_name,
-                    "coverage_fraction": coverage.coverage_fraction,
-                    "techniques": by_type,
-                    "uncovered": coverage.uncovered,
-                }))
-                .into_response();
-            }
-            Json(json!(coverage)).into_response()
+    let mut entities = match super::scan_entities_only(&s, &id).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    super::apply_candidate_gate(&mut entities, &params);
+    // Count entities per exercised Reconnaissance technique from their
+    // `attack:<id>` provenance tags — one entity may span several.
+    let mut exercised: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for e in &entities {
+        for tid in e.tags.iter().filter_map(|t| t.strip_prefix("attack:")) {
+            *exercised.entry(tid.to_string()).or_insert(0) += 1;
         }
-        Ok(Err(e)) => internal_error(&e),
-        Err(e) => internal_error(&format!("query task failed: {e}")),
     }
+    let coverage = crate::core::attack::coverage(&exercised);
+    if params.get("format").map(String::as_str) == Some("navigator") {
+        let layer = crate::core::attack::navigator_layer(&coverage, &id);
+        // `?download=1` saves the layer as a file rather than rendering it
+        // inline — the entire point of a Navigator layer is to LOAD the
+        // `.json` into the MITRE ATT&CK Navigator, so it must be a real
+        // download. Routed through the same attachment helper as every
+        // other scan export (→ `hse-navigator-<id>.json`).
+        if params.get("download").map(String::as_str) == Some("1") {
+            let body = serde_json::to_string_pretty(&layer).unwrap_or_else(|_| layer.to_string());
+            return crate::api::scan_export::download_response(
+                body,
+                "application/json; charset=utf-8",
+                &id,
+                "navigator",
+                "json",
+            );
+        }
+        return Json(layer).into_response();
+    }
+    if params.get("breakdown").map(String::as_str) == Some("entity_type") {
+        // Breakdown by entity type: for each entity, extract its attack
+        // techniques and pair them with the entity's kind for aggregation.
+        let entity_techniques: Vec<(String, String)> = entities
+            .iter()
+            .flat_map(|e| {
+                e.tags
+                    .iter()
+                    .filter_map(|t| t.strip_prefix("attack:").map(String::from))
+                    .map(move |tid| (e.kind.to_string(), tid))
+            })
+            .collect();
+        let by_type = crate::core::attack::coverage_by_entity_type(&entity_techniques);
+        return Json(json!({
+            "tactic_id": coverage.tactic_id,
+            "tactic_name": coverage.tactic_name,
+            "coverage_fraction": coverage.coverage_fraction,
+            "techniques": by_type,
+            "uncovered": coverage.uncovered,
+        }))
+        .into_response();
+    }
+    Json(json!(coverage)).into_response()
 }
 
 /// `GET /api/v1/scans/{a}/diff/{b}` — entity-level diff of scan `a` (baseline)
