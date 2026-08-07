@@ -56,6 +56,7 @@ pub mod postcode_au;
 pub mod preflight;
 pub mod probe;
 pub mod probe_confidence;
+pub mod quota_config;
 pub mod raw_archive;
 pub mod redact;
 pub mod regional;

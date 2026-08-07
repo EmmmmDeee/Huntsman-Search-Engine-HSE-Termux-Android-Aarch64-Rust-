@@ -773,3 +773,19 @@ use super::*;
         }
         assert_eq!(seen.len(), 5, "all five partial reasons must be distinct");
     }
+
+    #[test]
+    fn quota_config_provides_runtime_defaults() {
+        let config = crate::util::quota_config::oathnet_quota();
+        assert_eq!(config.per_scan_limit, 4, "default per-scan limit should be 4");
+        assert_eq!(
+            config.daily_limit, 10000,
+            "default daily limit should be 10000"
+        );
+
+        let snapshot = budget_snapshot();
+        assert!(
+            snapshot.scan_cap >= config.per_scan_limit,
+            "configured per-scan limit should influence the budget cap"
+        );
+    }
