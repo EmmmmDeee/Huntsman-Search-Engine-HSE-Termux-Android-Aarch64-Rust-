@@ -58,6 +58,29 @@ use crate::core::entity::Evidence;
         assert_eq!(source_family("mylnikov"), "infra");
     }
 
+    /// The producer/consumer reconciliation the `BREACH_SOCIAL_PLATFORMS` doc
+    /// claims. `modules::breach_rich` mints a `platform:handle` Username for each
+    /// of its handle columns; AU-108 only counts a node whose prefix is in its own
+    /// list. `core` may not name `crate::modules` in production code — this test
+    /// file is exempt from that layering scan, so the reconciliation lives here.
+    ///
+    /// It exists because the prose claim did NOT hold: `github`, `tiktok` and
+    /// `reddit` were added to the producer and the consumer was never updated, so
+    /// AU-108 silently ignored those nodes.
+    #[test]
+    fn breach_social_platforms_covers_every_breach_rich_handle_key() {
+        use super::identity::BREACH_SOCIAL_PLATFORMS;
+        for key in crate::modules::breach_rich::BREACH_SOCIAL_HANDLE_KEYS {
+            assert!(
+                BREACH_SOCIAL_PLATFORMS.contains(key),
+                "breach_rich mints `{key}:<handle>` Usernames but AU-108's \
+                 BREACH_SOCIAL_PLATFORMS does not list `{key}`, so that platform's \
+                 breach-listed accounts are silently dropped from the cross-platform \
+                 footprint"
+            );
+        }
+    }
+
     #[test]
     fn source_family_covers_every_breach_category_module() {
         // Every module that self-declares `ModuleCategory::Breach` in the

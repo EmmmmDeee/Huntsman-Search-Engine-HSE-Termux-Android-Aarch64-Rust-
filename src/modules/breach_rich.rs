@@ -258,6 +258,38 @@ fn push_breach_entity(
     result.push(e);
 }
 
+/// The breach-record columns whose handle becomes a `platform:handle` Username
+/// pivot, and the platform prefix each one is minted under (the column name and
+/// the prefix are the same string).
+///
+/// `pub(crate)` for ONE reason: the correlator's `BREACH_SOCIAL_PLATFORMS`
+/// (`core::correlator::rules::identity::account`) has to enumerate the same
+/// platforms to recognise these nodes, and `core` may not name `crate::modules`
+/// in production code — so the two lists cannot share a definition directly.
+/// Exporting the producer's list lets a `tests.rs` drift test reconcile them
+/// (test files are exempt from the layering scanner), which is what stops the
+/// consumer silently falling behind again: `github`/`tiktok`/`reddit` were added
+/// here and the consumer was not updated, so a breach-listed GitHub, TikTok or
+/// Reddit account never counted toward the cross-platform footprint.
+pub(crate) const BREACH_SOCIAL_HANDLE_KEYS: &[&str] = &[
+    "telegram",
+    "skype",
+    "facebook",
+    "instagram",
+    "twitter",
+    "linkedin",
+    "vk",
+    "snapchat",
+    // Real handle columns in both providers' breach records; without these they
+    // fell to the catch-all as opaque `Other("github")` junk nodes instead of
+    // first-class Username pivots the github_user/reddit_user/etc. modules can
+    // resolve. Runs for SeekNow (every record) and OathNet's stealer path at zero
+    // extra API cost.
+    "github",
+    "tiktok",
+    "reddit",
+];
+
 /// Push a stealer/infrastructure-CONTEXT entity: tags the provider `source` plus
 /// any `extra_tags`, but deliberately NOT `breach`. Device fingerprints (MAC,
 /// HWID, hostname, …) are infrastructure/context, not leaked PII.
@@ -439,25 +471,8 @@ pub fn extract_rich_detail(
     }
 
     // ── Extra social handles → platform-prefixed Username pivots. ──
-    for (k, plat) in [
-        ("telegram", "telegram"),
-        ("skype", "skype"),
-        ("facebook", "facebook"),
-        ("instagram", "instagram"),
-        ("twitter", "twitter"),
-        ("linkedin", "linkedin"),
-        ("vk", "vk"),
-        ("snapchat", "snapchat"),
-        // github/tiktok/reddit are real handle columns in both providers' breach
-        // records; without these they fell to the catch-all as opaque
-        // `Other("github")` junk nodes instead of first-class Username pivots the
-        // github_user/reddit_user/etc. modules can resolve. Runs for SeekNow
-        // (every record) and OathNet's stealer path at zero extra API cost.
-        ("github", "github"),
-        ("tiktok", "tiktok"),
-        ("reddit", "reddit"),
-    ] {
-        if let Some(h) = val_str(item, k)
+    for &plat in BREACH_SOCIAL_HANDLE_KEYS {
+        if let Some(h) = val_str(item, plat)
             && h.len() >= 2
             && !is_absent_marker(&h)
             && seen.insert(format!("@{plat}:{}", h.to_lowercase()))

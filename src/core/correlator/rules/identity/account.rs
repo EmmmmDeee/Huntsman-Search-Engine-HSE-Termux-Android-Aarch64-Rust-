@@ -1765,7 +1765,13 @@ pub(in crate::core::correlator) fn rule_au_088_authoritative_register_confirmati
 /// lockstep with `breach_rich`'s extra-social-handle list (`breach_rich.rs`). A
 /// breach-listed account on one of these counts toward the cross-platform
 /// footprint; any other value prefix (an epieos `google:<id>`, …) is ignored.
-const BREACH_SOCIAL_PLATFORMS: &[&str] = &[
+/// Reconciled against the producer by
+/// `rules::tests::breach_social_platforms_covers_every_breach_rich_handle_key`,
+/// which compares this list to `modules::breach_rich::BREACH_SOCIAL_HANDLE_KEYS`
+/// directly. `core` may not name `crate::modules` in production code, so that
+/// test IS the lockstep the doc above claims — the previous prose-only claim
+/// silently drifted when `github`/`tiktok`/`reddit` were added to the producer.
+pub(in crate::core::correlator) const BREACH_SOCIAL_PLATFORMS: &[&str] = &[
     "telegram",
     "skype",
     "facebook",
@@ -1774,6 +1780,13 @@ const BREACH_SOCIAL_PLATFORMS: &[&str] = &[
     "linkedin",
     "vk",
     "snapchat",
+    // Added to `breach_rich` with the extra-handle columns but missed here, so a
+    // breach-listed GitHub / TikTok / Reddit account produced a `platform:handle`
+    // Username node that AU-108 then refused to recognise — a silent false
+    // negative in the cross-platform footprint for 3 of the 11 platforms.
+    "github",
+    "tiktok",
+    "reddit",
 ];
 
 /// AU-108 — Breach-listed cross-platform handle footprint.
