@@ -67,6 +67,32 @@ use crate::core::entity::Evidence;
     /// It exists because the prose claim did NOT hold: `github`, `tiktok` and
     /// `reddit` were added to the producer and the consumer was never updated, so
     /// AU-108 silently ignored those nodes.
+    /// Every AU-001 breach source must be a name some registered module actually
+    /// emits. `breach_directory` sat in that list emitted by nothing, so it could
+    /// never match — and the rule's only positive test used it, so the test passed
+    /// while validating a name that does not occur in production.
+    ///
+    /// This checks for DEAD entries, not for completeness: membership of
+    /// BREACH_SOURCES means "this module's evidence, by existing, asserts a
+    /// breach", which is a stricter question than "is this a breach module" and
+    /// deliberately excludes `intelx` / `osintcat` / `see_know` (see the const's
+    /// own doc).
+    #[test]
+    fn breach_sources_name_only_real_modules() {
+        use super::breach::BREACH_SOURCES;
+        let registered: std::collections::HashSet<&str> = crate::modules::registry()
+            .iter()
+            .map(|m| m.name())
+            .collect();
+        for src in BREACH_SOURCES {
+            assert!(
+                registered.contains(src),
+                "AU-001's BREACH_SOURCES lists `{src}`, but no registered module \
+                 emits that source name — the entry is dead and can never match"
+            );
+        }
+    }
+
     #[test]
     fn breach_social_platforms_covers_every_breach_rich_handle_key() {
         use super::identity::BREACH_SOCIAL_PLATFORMS;

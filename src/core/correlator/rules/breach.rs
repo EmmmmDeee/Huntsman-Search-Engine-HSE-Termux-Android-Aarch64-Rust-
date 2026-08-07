@@ -607,6 +607,42 @@ pub(in crate::core::correlator) fn rule_au_106_shared_device_identity(
     out
 }
 
+/// Sources whose presence on an Email is itself a BREACH ASSERTION, for AU-001.
+///
+/// Membership is not "is this a breach-category module" — it is "does this
+/// module's evidence, by existing at all, mean the address was found in a
+/// breach". A module that also stamps evidence on a clean lookup must NOT be
+/// listed bare; `emailrep` was, and one real breach plus a routine clean
+/// reputation report fired a false Critical (see [`emailrep_asserts_breach`]).
+/// On the same rule, `intelx` stamps evidence on an unvalidated text match,
+/// `osintcat` on a platform registration, and `see_know` is a presence
+/// aggregator — all three are deliberately absent for that reason.
+///
+/// Reconciled by `rules::tests::breach_sources_name_only_real_modules`: every
+/// entry must be a registered module. `breach_directory` was listed here and
+/// emitted by nothing in the tree, so it could never match — and the rule's only
+/// positive test used it, making that test self-confirming against a name that
+/// does not occur in production.
+pub(in crate::core::correlator) const BREACH_SOURCES: &[&str] = &[
+    "hudsonrock",
+    "xposed_or_not",
+    "dehashed",
+    "hibp",
+    "oathnet_pro",
+    // Only enriches the seed when it actually matched: `if matched == 0 { return
+    // out; }` (comb_search/mod.rs:237) guards the sole evidence it stamps, whose
+    // summary is "{n} leaked credential line(s) in the COMB compilation". Its
+    // absence meant a subject present in BOTH HIBP and COMB counted as one
+    // breach source and AU-001 stayed silent, while hibp+dehashed fired Critical.
+    "comb_search",
+    // NOTE: the generic `search_engines` source is deliberately NOT listed.
+    // A web-search hit is not breach corroboration, and counting it would let
+    // one real breach + one search result fire a false Critical. (An earlier
+    // `search_engines:oathnet` entry was dead — the module emits the plain
+    // `search_engines` source — so it was removed rather than "fixed" to
+    // `search_engines`, which would introduce exactly that false positive.)
+];
+
 /// True when this entity carries an EmailRep record that actually asserts a
 /// breach, rather than merely a successful reputation lookup.
 ///
@@ -630,30 +666,6 @@ pub(in crate::core::correlator) fn rule_au_001_multi_breach(
     ts: u64,
 ) -> Vec<Correlation> {
     let entities = context.entities();
-    const BREACH_SOURCES: &[&str] = &[
-        "hudsonrock",
-        "xposed_or_not",
-        "breach_directory",
-        "dehashed",
-        "hibp",
-        "oathnet_pro",
-        // NOTE: `emailrep` is deliberately NOT listed — it is handled by
-        // [`emailrep_asserts_breach`] below. It is a REPUTATION API, not a breach
-        // corpus (`source_family("emailrep")` is `email_intel`, not `breach`), and
-        // `modules::emailrep::build_email_entity` stamps its evidence record on
-        // EVERY successful lookup: the `data_breach` / `credential_leaked` flags
-        // only add attributes and tags, they do not gate whether the record
-        // exists. Listing the bare name therefore counted a CLEAN reputation
-        // lookup as breach corroboration, so one real breach + routine EmailRep
-        // enrichment fired a false Critical — the same "counts any corroborating
-        // source, not the source asserting the verdict" defect AU-004 carried.
-        // NOTE: the generic `search_engines` source is deliberately NOT listed.
-        // A web-search hit is not breach corroboration, and counting it would let
-        // one real breach + one search result fire a false Critical. (An earlier
-        // `search_engines:oathnet` entry was dead — the module emits the plain
-        // `search_engines` source — so it was removed rather than "fixed" to
-        // `search_engines`, which would introduce exactly that false positive.)
-    ];
     let mut out = Vec::new();
     for e in entities_of_kind(entities, EntityKind::Email) {
         // A role / provider mailbox (abuse@, noreply@, dns@, …) appears in breach

@@ -680,7 +680,11 @@ fn username_summary(value: &str, count: u64, platforms: &str) -> Entity {
 
 #[test]
 fn au001_fires_at_two_breach_sources() {
-    let e = email("x@y.com", &["hudsonrock", "breach_directory"]);
+    // Both names must be sources a module ACTUALLY emits. This test previously
+    // used `breach_directory`, which occurs nowhere in the tree except the
+    // BREACH_SOURCES const it was validating — a self-confirming pair that would
+    // have passed even if the rule matched nothing real.
+    let e = email("x@y.com", &["hudsonrock", "comb_search"]);
     let r = rule_au_001_multi_breach(&RuleContext::new(&[e]), "s1", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-001");
