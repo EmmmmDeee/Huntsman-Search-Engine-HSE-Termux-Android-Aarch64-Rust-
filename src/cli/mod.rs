@@ -204,7 +204,12 @@ async fn run_command(command: Command) -> Result<()> {
             min_confidence,
             json,
         } => investigate::cmd_investigate(text, auto_scan, min_confidence, json).await,
-        Command::Serve { bind, no_key_write } => serve::cmd_serve(bind, !no_key_write).await,
+        Command::Serve {
+            bind,
+            no_key_write,
+            auth_token,
+            allow_unauthenticated,
+        } => serve::cmd_serve(bind, !no_key_write, auth_token, allow_unauthenticated).await,
         Command::Live {
             kind,
             value,

@@ -17,6 +17,11 @@ use super::*;
             "[::1]:8080",
             "127.0.0.1:1",
             "localhost:8080",
+            // Regression: this module's former private copy split at the LAST
+            // colon, leaving the host as `":"`, and called the bare v6 loopback
+            // EXPOSED — disagreeing with the `routes` copy that decides whether
+            // the auth gate is installed. Both questions now have one answer.
+            "::1",
         ] {
             assert!(is_loopback_bind(lo), "{lo} should be loopback");
         }

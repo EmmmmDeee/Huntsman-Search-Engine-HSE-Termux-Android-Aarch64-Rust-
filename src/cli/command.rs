@@ -518,6 +518,19 @@ pub enum Command {
         /// deployments.
         #[arg(long)]
         no_key_write: bool,
+        /// Bearer token required on every request when the bind is NOT
+        /// loopback. Omit and HSE mints a 256-bit one and prints it (with a
+        /// ready-to-open URL) at startup. Ignored for the loopback default
+        /// unless you pass one deliberately.
+        #[arg(long, env = "HSE_AUTH_TOKEN")]
+        auth_token: Option<String>,
+        /// Expose a non-loopback bind with NO authentication — the pre-1.41
+        /// behaviour. Anyone who can reach the address can read every scan
+        /// result, dispatch quota-burning scans, and trigger the device's own
+        /// WiFi/Bluetooth/cell/GPS radar sweep. Only for a deliberately public
+        /// deployment on a network you control.
+        #[arg(long)]
+        allow_unauthenticated: bool,
     },
     /// Manage the multi-key pool (add, list, validate, remove, status).
     Keys {

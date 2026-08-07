@@ -473,6 +473,20 @@ pub fn test_app_with_state(suffix: &str) -> (axum::Router, Arc<AppState>) {
     (router, state)
 }
 
+/// The **real** route table as a non-loopback bind builds it: every route
+/// behind the bearer-token gate. Use this to prove an exposed HSE rejects an
+/// unauthenticated LAN peer — `test_app` is loopback and deliberately ungated.
+pub fn test_app_exposed(suffix: &str, token: &str) -> axum::Router {
+    let (_, _, state) = test_app_with_store_and_state(suffix);
+    router(
+        state,
+        "0.0.0.0:8080",
+        Some(Arc::new(huntsman_search_engine::api::auth::AuthToken::new(
+            token.to_string(),
+        ))),
+    )
+}
+
 fn test_app_with_store_and_state(suffix: &str) -> (axum::Router, Arc<Store>, Arc<AppState>) {
     let path = tmp_db_for_api(suffix);
     let store = Arc::new(Store::open(&path).unwrap());
@@ -507,5 +521,11 @@ fn test_app_with_store_and_state(suffix: &str) -> (axum::Router, Arc<Store>, Arc
             huntsman_search_engine::api::CellsImportPhase::default(),
         )),
     });
-    (router(Arc::clone(&state), "127.0.0.1:8080"), store, state)
+    // Loopback bind + no token: the auth gate is not installed, so every
+    // existing API test exercises the same unauthenticated path it always has.
+    (
+        router(Arc::clone(&state), "127.0.0.1:8080", None),
+        store,
+        state,
+    )
 }

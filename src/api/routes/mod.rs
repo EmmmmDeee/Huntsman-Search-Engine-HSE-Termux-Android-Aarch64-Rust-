@@ -360,7 +360,7 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
 ];
 
 /// Build the full router. `bind` is the host:port the server will listen on;
-/// used **only** to decide the CORS policy:
+/// used to decide the CORS policy and the Host allowlist:
 ///
 /// * loopback bind (`127.0.0.1`, `::1`, `localhost`) → permissive CORS, so any
 ///   browser tab on the same device can talk to the API.
@@ -368,7 +368,18 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
 ///   allows the matching `http://<bind>` origin. Prevents arbitrary websites
 ///   from issuing cross-origin requests when the user has exposed HSE on a
 ///   non-loopback interface.
-pub fn router(state: Arc<AppState>, bind: &str) -> Router {
+///
+/// `auth` is the bearer token resolved by [`crate::api::auth::resolve`]:
+/// `Some` for a non-loopback bind (unless the operator passed
+/// `--allow-unauthenticated`), `None` for the loopback default. When present,
+/// [`crate::api::auth::enforce_auth`] runs **before every other layer**, so an
+/// unauthenticated LAN peer cannot reach a handler, the SPA, or the static
+/// bundle.
+pub fn router(
+    state: Arc<AppState>,
+    bind: &str,
+    auth: Option<Arc<crate::api::auth::AuthToken>>,
+) -> Router {
     let cors = build_cors_layer(bind);
 
     // /api/v1 — explicit, versioned API surface. Inner fallback emits a
@@ -634,9 +645,26 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         None => app,
     };
 
+    // Bearer-token gate (non-loopback binds only) — the control that stops an
+    // arbitrary LAN peer from reading the subject's scan results, dispatching
+    // quota-burning scans, or triggering the device's own radar sensor sweep.
+    // Layered OUTSIDE everything above so an unauthenticated request never
+    // reaches a handler, the SPA, or the static bundle; `host_allowlist` is
+    // `None` on exactly the binds where this is `Some`, so the two never stack.
+    // See `crate::api::auth` for why CSRF/CORS/the per-handler loopback checks
+    // do not already cover this.
+    let app = match auth {
+        Some(token) => app.layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                crate::api::auth::enforce_auth(Arc::clone(&token), req, next)
+            },
+        )),
+        None => app,
+    };
+
     // Security headers on every response (outermost, so it also covers CORS
-    // preflight, the SPA, static, the API, and the Host-guard 403). See
-    // `set_security_headers`.
+    // preflight, the SPA, static, the API, the Host-guard 403, and the auth
+    // gate's 401). See `set_security_headers`.
     app.layer(axum::middleware::map_response(set_security_headers))
 }
 
@@ -950,7 +978,7 @@ fn if_none_match_hit(if_none_match: &str, etag: &str) -> bool {
 ///
 /// Anything that doesn't parse as a loopback IP — and isn't literally
 /// `localhost` — is treated as a network-exposed interface.
-fn is_loopback_bind(bind: &str) -> bool {
+pub(crate) fn is_loopback_bind(bind: &str) -> bool {
     use std::net::{IpAddr, SocketAddr};
 
     if let Ok(sa) = bind.parse::<SocketAddr>() {
