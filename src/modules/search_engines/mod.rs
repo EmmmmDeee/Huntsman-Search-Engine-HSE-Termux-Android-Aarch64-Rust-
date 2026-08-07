@@ -619,10 +619,13 @@ impl Module for SearchEngines {
             // dedup into additional Domain/Email/URL entities are being discarded,
             // and the operator should be able to see coverage was bounded.
             if all_results.len() > MAX_ACCUMULATED_RESULTS {
+                let excess = all_results.len() - MAX_ACCUMULATED_RESULTS;
                 tracing::warn!(
                     found = all_results.len(),
                     cap = MAX_ACCUMULATED_RESULTS,
-                    "search result accumulator hit cap — later raw SERP rows this round were dropped"
+                    excess,
+                    "search result accumulator exceeded cap — {} SERP rows were discarded",
+                    excess
                 );
                 all_results.truncate(MAX_ACCUMULATED_RESULTS);
             }
