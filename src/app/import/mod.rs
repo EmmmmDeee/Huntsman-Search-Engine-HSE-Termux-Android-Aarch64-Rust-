@@ -34,10 +34,20 @@ use oathnet_report::{cmd_import_oathnet_report, looks_like_oathnet_report, parse
 use stealer::{cmd_import_stealerlogs, looks_like_stealerlogs, parse_stealerlogs};
 use txt::{cmd_import_txt, parse_oathnet_txt};
 
+/// Largest single file any offline ingest path will read into memory.
+///
+/// Mirrors `MAX_UPLOAD_BYTES` in the API upload handler so every route that
+/// buffers a whole document — the HTTP upload, `hse import`, the local-directory
+/// scrape, and `hse ingest` — enforces one memory bound. That matters most on
+/// the primary target: `read_to_string` on a multi-gigabyte file is an OOM kill
+/// on a 4 GB phone, and the operator sees the process vanish rather than an
+/// error naming the file.
+///
+/// `pub(crate)` so `cli::ingest` shares this definition instead of carrying its
+/// own — it previously carried none at all.
+pub(crate) const MAX_IMPORT_BYTES: u64 = 16 * 1024 * 1024;
+
 pub async fn cmd_import(path: &str, output: &str) -> Result<()> {
-    // File-size cap before read_to_string — mirrors MAX_UPLOAD_BYTES in the API
-    // upload handler (16 MB) so both paths enforce the same memory bound.
-    const MAX_IMPORT_BYTES: u64 = 16 * 1024 * 1024;
     let meta = tokio::fs::metadata(path)
         .await
         .map_err(|e| Error::Other(format!("cannot stat {path}: {e}")))?;

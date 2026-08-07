@@ -57,6 +57,29 @@ pub struct IngestArgs {
 
 /// Execute `hse ingest` command.
 pub async fn run(args: IngestArgs) -> DocumentResult<()> {
+    // Stat before read, exactly as `app::import::cmd_import` does, and share its
+    // constant so the two bounds cannot drift apart. Every parse arm below
+    // buffers the whole document — five `fs::read_to_string` sites plus the
+    // csv/json/pdf helpers — and this path had no bound at all, so `hse ingest`
+    // on an oversized file was an OOM kill on a phone rather than an error
+    // naming the file. The operator chose the path, but a process that vanishes
+    // teaches them nothing; this tells them which file and how big.
+    match std::fs::metadata(&args.file) {
+        Ok(meta) if meta.len() > crate::app::import::MAX_IMPORT_BYTES => {
+            return Err(
+                crate::util::document_parse::DocumentParseError::UnsupportedFormat(format!(
+                    "{} is too large to ingest ({} bytes > {} byte cap)",
+                    args.file.display(),
+                    meta.len(),
+                    crate::app::import::MAX_IMPORT_BYTES
+                )),
+            );
+        }
+        // A stat failure is left to the parse arms below, which already surface
+        // a precise per-format read error for a missing or unreadable file.
+        Ok(_) | Err(_) => {}
+    }
+
     // Detect file format
     let format = DocumentFormat::from_path(&args.file).ok_or_else(|| {
         crate::util::document_parse::DocumentParseError::UnsupportedFormat(
