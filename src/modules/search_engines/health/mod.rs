@@ -16,7 +16,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use futures::future::join_all;
 
 use super::engines::{ENGINES, EngineSpec};
-use super::fetch::{MAX_FETCH_MS, external_link_count, parse_results, try_fetch};
+use super::fetch::{external_link_count, max_fetch_ms, parse_results, try_fetch};
 use super::helpers::FetchOutcome;
 
 /// Benign, region-neutral probe query — a reserved example domain, so a probe
@@ -118,6 +118,10 @@ pub(crate) fn cached_or_empty() -> HealthSnapshot {
 fn classify(outcome: &FetchOutcome, results: usize) -> EngineStatus {
     match outcome {
         FetchOutcome::Unreachable => EngineStatus::Down,
+        // A timeout is not usable NOW, so it counts as down for the tile
+        // totals — but `diagnose` names it precisely, because "dead" and "too
+        // slow for the budget" need different actions from the operator.
+        FetchOutcome::TimedOut { .. } => EngineStatus::Down,
         FetchOutcome::Blocked => EngineStatus::Blocked,
         // Reachable: "up" only if it actually yielded parseable results; a 200
         // carrying zero results is an empty / soft-blocked page.
@@ -142,8 +146,19 @@ fn classify(outcome: &FetchOutcome, results: usize) -> EngineStatus {
 fn diagnose(outcome: &FetchOutcome, results: usize, external_links: usize) -> String {
     match outcome {
         FetchOutcome::Unreachable => {
-            "no usable response — network/TLS failure, timeout, or body < 500B".to_string()
+            "no usable response — network/TLS failure or body < 500B".to_string()
         }
+        // Named separately from `Unreachable`, and carrying the budget it
+        // overran. The old text lumped "timeout" into the network-failure
+        // string, so a device on a slow link was told 9 engines were dead when
+        // they had simply not been given long enough — measured on a real
+        // Termux device: 14/17 "down", nine of them at 8.2-8.6 s against an
+        // 8 s budget.
+        FetchOutcome::TimedOut { budget_ms } => format!(
+            "timed out after {budget_ms} ms — NOT evidence the engine is dead; \
+             the link is slower than the budget. Raise it with \
+             HUNTSMAN_SEARCH_TIMEOUT_MS (e.g. 20000) and re-probe."
+        ),
         FetchOutcome::Blocked => {
             "anti-bot/CAPTCHA interstitial — needs a residential IP or HUNTSMAN_SEARCH_PROXY"
                 .to_string()
@@ -171,7 +186,7 @@ async fn probe_one(engine: &'static EngineSpec) -> EngineHealth {
     // per-engine override (e.g. DDG at 4 s vs global 8 s).
     let probe_timeout = engine
         .max_fetch_ms
-        .map_or(MAX_FETCH_MS, |cap| cap.min(MAX_FETCH_MS));
+        .map_or(max_fetch_ms(), |cap| cap.min(max_fetch_ms()));
     let outcome = try_fetch(&url, engine.ua, post.as_deref(), probe_timeout).await;
     let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
     let (results, links) = match &outcome {

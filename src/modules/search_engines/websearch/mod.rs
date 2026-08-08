@@ -20,7 +20,7 @@
 //! general search is no more aggressive on a Termux link than a normal scan.
 
 use super::engines::{ENGINES, EngineSpec, reliable_engines};
-use super::helpers::{canonicalize_url, dedup_results, display_key_phrase, url_engine_counts};
+use super::helpers::{canonicalize_url, dedup_results, display_key_phrase};
 use super::{
     SearchResult, engine_enabled, order_engines_for_primary, proven_engine_names, record_empty,
     record_hit, run_engine_batch, session_dead,
@@ -39,26 +39,89 @@ pub(crate) struct WebResult {
     pub title: String,
     /// Snippet text near the result; may be empty.
     pub snippet: String,
-    /// Number of DISTINCT engines that returned this (canonical) URL — the
-    /// primary cross-engine corroboration signal used to rank results.
-    pub engine_count: u32,
+    /// WHICH DISTINCT engines returned this (canonical) URL, sorted and
+    /// de-duplicated. Cross-engine corroboration is the primary ranking signal,
+    /// and `engines.len()` IS that corroboration count — there is deliberately
+    /// no separate count field.
+    ///
+    /// The count alone is not citable: "2×" tells an analyst a result was
+    /// corroborated but not by whom, so a hit confirmed by two independent
+    /// indexes is indistinguishable from one confirmed by two mirrors of the
+    /// same upstream. Naming the sources is the difference between a number and
+    /// evidence. Storing the names *and* a count would be two encodings of one
+    /// fact that can only ever drift apart.
+    pub engines: Vec<&'static str>,
     /// The query-matching phrase worth quoting for this result — mined from the
     /// snippet (else the title) by [`display_key_phrase`]. Empty when nothing in
     /// the row overlaps the query. The `hse query` renderer prints it in quotes.
     pub key_phrase: String,
 }
 
+/// How much of the engine roster actually answered — the coverage behind a
+/// result set.
+///
+/// Without this, a thin result set is indistinguishable from a thin web. On the
+/// declared target that distinction is the normal case, not an edge case: a
+/// measured `hse engines` sweep from a datacenter IP reported 17 engines as
+/// **2 up, 10 blocked, 5 down**, so a query answered by two engines looks
+/// identical to a query the whole web could not answer. The operator has to be
+/// able to tell "nothing is out there" from "almost nothing was asked".
+///
+/// `hse engines` already reports exactly this per engine; the search path
+/// computed the same classification per request and dropped it into a
+/// `debug!`-level trace, returning only `Option<Vec<_>>` — so the one place it
+/// mattered was the one place it was invisible.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SearchCoverage {
+    /// Engines dispatched for this query (enabled and not session-dead).
+    pub queried: usize,
+    /// Engines that returned at least one usable result, sorted.
+    pub answered: Vec<&'static str>,
+    /// Engines that returned nothing — blocked, unreachable, or genuinely empty.
+    /// The per-request reason is logged at `debug!` under `huntsman::search`;
+    /// `hse engines` names it per engine.
+    pub silent: Vec<&'static str>,
+}
+
+impl SearchCoverage {
+    /// One line an operator can act on, or `None` when every engine answered
+    /// (nothing to caveat).
+    #[must_use]
+    pub fn caveat(&self) -> Option<String> {
+        if self.silent.is_empty() || self.queried == 0 {
+            return None;
+        }
+        Some(format!(
+            "coverage: {}/{} engines answered ({}); {} silent — blocked, \
+             unreachable, or empty ({}). Run `hse engines` for per-engine status.",
+            self.answered.len(),
+            self.queried,
+            if self.answered.is_empty() {
+                "none".to_string()
+            } else {
+                self.answered.join(", ")
+            },
+            self.silent.len(),
+            self.silent.join(", "),
+        ))
+    }
+}
+
 /// Run `query` as a plain web search across every enabled, live engine and
 /// return results ranked by cross-engine corroboration, then by the top-most
 /// position the URL reached in any engine, then by canonical URL (for a stable
-/// order). Each request self-clamps to `deadline`; an engine that is blocked,
-/// unreachable, or slower than the deadline simply contributes nothing.
+/// order). Each request self-clamps to `deadline`.
+///
+/// Also returns [`SearchCoverage`]: which engines answered and which were
+/// silent. An engine that is blocked, unreachable, or slower than the deadline
+/// contributes no RESULTS, but it must still contribute to the operator's
+/// picture of how much of the web was actually consulted.
 ///
 /// Returns an empty vec when the query is blank or no engine produced a result.
-pub(crate) async fn web_search(query: &str, deadline: Instant) -> Vec<WebResult> {
+pub(crate) async fn web_search(query: &str, deadline: Instant) -> (Vec<WebResult>, SearchCoverage) {
     let query = query.trim();
     if query.is_empty() {
-        return Vec::new();
+        return (Vec::new(), SearchCoverage::default());
     }
 
     // Order the live engines exactly as the OSINT primary pass does: proven-live
@@ -95,17 +158,27 @@ pub(crate) async fn web_search(query: &str, deadline: Instant) -> Vec<WebResult>
     // query now contributes the same up/down evidence a scan does, so a blocked
     // engine is skipped for both and a recovered one is un-silenced for both.
     let mut per_engine: Vec<Vec<SearchResult>> = Vec::new();
+    let mut coverage = SearchCoverage::default();
     for (name, res) in batch {
+        coverage.queried += 1;
         match res {
             Some(results) => {
                 record_hit(name);
+                coverage.answered.push(name);
                 per_engine.push(results);
             }
-            None => record_empty(name),
+            None => {
+                record_empty(name);
+                coverage.silent.push(name);
+            }
         }
     }
+    // `run_engine_batch` returns name-sorted, so these are already deterministic;
+    // sorting explicitly makes the rendered caveat independent of that guarantee.
+    coverage.answered.sort_unstable();
+    coverage.silent.sort_unstable();
 
-    rank_results(per_engine)
+    (rank_results(per_engine), coverage)
 }
 
 /// Deduplicate SERP rows by canonical URL and rank them: most independently
@@ -132,30 +205,48 @@ fn rank_results(per_engine: Vec<Vec<SearchResult>>) -> Vec<WebResult> {
         }
     }
 
-    // Corroboration count must be taken BEFORE dedup collapses each URL to one
-    // row — afterwards every URL would credit a single engine and always rank 1.
-    let counts = url_engine_counts(&all);
+    // WHICH engines returned each URL. Must be taken BEFORE dedup collapses each
+    // URL to one row — afterwards every URL would credit a single engine and
+    // always rank 1.
+    //
+    // This is the ONLY corroboration pass: the count is `.len()` of this set.
+    // `url_engine_counts` computes the identical set and throws the names away,
+    // so calling it here too would walk `all` twice to produce a number already
+    // in hand — and leave two encodings of one fact free to disagree. It stays
+    // for `build_entities`, which genuinely needs only the count.
+    let mut engines_by_url: HashMap<String, BTreeSet<&'static str>> = HashMap::new();
+    for r in &all {
+        engines_by_url
+            .entry(canonicalize_url(&r.url))
+            .or_default()
+            .insert(r.engine);
+    }
 
     // Canonicalize once per surviving row and carry the key through scoring and
     // sorting: it is the map key for both lookups AND the final tie-break, so
     // recomputing it per lookup (and again per comparison) would allocate the
     // same string several times over.
-    let mut scored: Vec<(u32, usize, String, WebResult)> = dedup_results(all)
+    let mut scored: Vec<(usize, usize, String, WebResult)> = dedup_results(all)
         .into_iter()
         .map(|r| {
             let key = canonicalize_url(&r.url);
-            let engine_count = counts.get(&key).copied().unwrap_or(1);
             let pos = best_pos.get(&key).copied().unwrap_or(usize::MAX);
             let key_phrase = display_key_phrase(&r.title, &r.snippet, &r.query);
+            // A row that survived dedup came FROM `all`, so its key is always
+            // present; the fallback keeps the row (credited to its own engine)
+            // rather than dropping evidence if that ever stops holding.
+            let engines: Vec<&'static str> = engines_by_url
+                .get(&key)
+                .map_or_else(|| vec![r.engine], |s| s.iter().copied().collect());
             (
-                engine_count,
+                engines.len(),
                 pos,
                 key,
                 WebResult {
                     url: r.url,
                     title: r.title,
                     snippet: r.snippet,
-                    engine_count,
+                    engines,
                     key_phrase,
                 },
             )
@@ -189,7 +280,7 @@ mod tests {
     #[test]
     fn ranks_by_cross_engine_corroboration() {
         // `/a` returned by two distinct engines, `/b` by one → `/a` ranks first
-        // and reports engine_count 2; the duplicate `/a` row is collapsed.
+        // and names both engines; the duplicate `/a` row is collapsed.
         let ranked = rank_results(vec![
             vec![sr("bing", "https://ex.com/a", "A")],
             vec![sr("yahoo", "https://ex.com/a", "A")],
@@ -197,9 +288,12 @@ mod tests {
         ]);
         assert_eq!(ranked.len(), 2, "the duplicate /a row must dedup away");
         assert_eq!(ranked[0].url, "https://ex.com/a");
-        assert_eq!(ranked[0].engine_count, 2);
+        // The NAMES, not just the count: dedup keeps bing's row and discards
+        // yahoo's, so a provenance list built from the surviving row alone would
+        // read `["bing"]` while still counting 2. Asserting the set catches that.
+        assert_eq!(ranked[0].engines, vec!["bing", "yahoo"]);
         assert_eq!(ranked[1].url, "https://ex.com/b");
-        assert_eq!(ranked[1].engine_count, 1);
+        assert_eq!(ranked[1].engines, vec!["google"]);
     }
 
     #[test]
@@ -268,7 +362,7 @@ mod tests {
             sr("bing", "https://ex.com/a", "A"),
         ]]);
         assert_eq!(ranked.len(), 1);
-        assert_eq!(ranked[0].engine_count, 1);
+        assert_eq!(ranked[0].engines, vec!["bing"]);
     }
 
     #[test]
@@ -327,7 +421,16 @@ mod tests {
         // A generic, high-frequency term: any working engine must return
         // results, so an empty parse cannot be blamed on an obscure query.
         let deadline = Instant::now() + std::time::Duration::from_secs(45);
-        let results = web_search("rust programming language", deadline).await;
+        let (results, coverage) = web_search("rust programming language", deadline).await;
+        // Coverage now says directly what this test used to infer by probing the
+        // transport a second time: how many engines actually answered.
+        println!(
+            "websearch live coverage: {}/{} answered ({:?}); silent {:?}",
+            coverage.answered.len(),
+            coverage.queried,
+            coverage.answered,
+            coverage.silent
+        );
 
         if results.is_empty() {
             // `web_search` collapses "every engine blocked" and "engines
@@ -368,26 +471,30 @@ mod tests {
 
         println!("websearch live: {} ranked result(s)", results.len());
         for r in results.iter().take(3) {
-            println!("  [{}x] {} — {}", r.engine_count, r.url, r.title);
+            println!("  [{}] {} — {}", r.engines.join("+"), r.url, r.title);
         }
 
         // Contract of the ranking stage: corroboration is non-increasing, every
         // row carries a usable absolute URL, and dedup left no duplicate.
         let mut seen = std::collections::HashSet::new();
-        let mut prev = u32::MAX;
+        let mut prev = usize::MAX;
         for r in &results {
             assert!(
                 r.url.starts_with("http"),
                 "non-absolute URL survived parsing: {}",
                 r.url
             );
-            assert!(r.engine_count >= 1, "result with zero engines: {}", r.url);
             assert!(
-                r.engine_count <= prev,
-                "results are not sorted by descending corroboration: {} after {prev}",
-                r.engine_count
+                !r.engines.is_empty(),
+                "result with no named engine: {}",
+                r.url
             );
-            prev = r.engine_count;
+            assert!(
+                r.engines.len() <= prev,
+                "results are not sorted by descending corroboration: {} after {prev}",
+                r.engines.len()
+            );
+            prev = r.engines.len();
             assert!(
                 seen.insert(canonicalize_url(&r.url)),
                 "duplicate canonical URL survived dedup: {}",

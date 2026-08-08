@@ -12,6 +12,23 @@ use memchr::{memchr, memmem};
 pub(in crate::modules::search_engines) enum FetchOutcome {
     Body(String),
     Blocked,
+    /// The request exceeded its time budget. DISTINCT from [`Self::Unreachable`]
+    /// on purpose: "this engine is dead" and "we did not wait long enough" are
+    /// different facts about the host, and an operator acts on them differently
+    /// — stop relying on the engine, versus raise the budget or retry on a
+    /// faster link. The same split `DocumentParseError` draws between
+    /// `OcrUnavailable` and `OcrTimeout`, for the same reason.
+    ///
+    /// Folding the two together is not hypothetical: on a real Termux device
+    /// over a mobile link, an `hse engines` sweep reported 14 of 17 engines
+    /// "down" — and nine of them had latencies clustered at 8.2-8.6 s against
+    /// the 8 s budget. They were timing out, not dead, and the operator was told
+    /// "network/TLS failure".
+    TimedOut {
+        /// The budget it overran, in ms — the number the operator needs in order
+        /// to raise it.
+        budget_ms: u64,
+    },
     Unreachable,
 }
 

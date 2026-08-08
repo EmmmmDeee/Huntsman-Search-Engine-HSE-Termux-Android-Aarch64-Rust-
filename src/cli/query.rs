@@ -34,7 +34,11 @@ struct Row<'a> {
     /// Cross-engine corroboration count. `None` for sources where the notion
     /// does not apply (Ahmia returns one index, not N independent engines) —
     /// which also suppresses the `[N×]` badge and the JSON `engines` key.
-    engines: Option<u32>,
+    ///
+    /// Carries the engine NAMES, not just a count: "2×" says a result was
+    /// corroborated but not by whom, so two independent indexes look identical
+    /// to two mirrors of one upstream. The badge renders as `[bing+startpage]`.
+    engines: Option<&'a [&'static str]>,
 }
 
 /// Everything the renderer needs, independent of which source produced it.
@@ -88,9 +92,9 @@ pub(super) async fn cmd_query(
         return render(&dark_report(q, &hits), json);
     }
 
-    let mut results = web_search(q, Instant::now() + Duration::from_secs(secs)).await;
+    let (mut results, coverage) = web_search(q, Instant::now() + Duration::from_secs(secs)).await;
     cap(&mut results, limit);
-    render(&web_report(q, &results), json)
+    render(&web_report(q, &results, &coverage), json)
 }
 
 /// Keep at most `limit` rows; `0` means unlimited. (`Vec::truncate` is already a
@@ -104,19 +108,34 @@ fn cap<T>(rows: &mut Vec<T>, limit: usize) {
 fn web_report<'a>(
     q: &'a str,
     results: &'a [crate::modules::search_engines::websearch::WebResult],
+    coverage: &crate::modules::search_engines::websearch::SearchCoverage,
 ) -> Report<'a> {
     Report {
         query: q,
         source: None,
-        heading: format!(
-            "Web search: {q:?} — {} result(s), ranked by cross-engine corroboration",
-            results.len()
-        ),
+        // The coverage caveat rides on EVERY web search, not just the empty
+        // one: a thin result set needs it as much as none at all, because
+        // "2 results" from 2 of 17 engines and "2 results" from 17 of 17 are
+        // completely different findings and used to print identically. It goes
+        // on `heading`/`empty` (already owned) rather than `note`, which is a
+        // borrowed literal for the `--dark` disclaimer.
+        heading: match coverage.caveat() {
+            Some(c) => format!(
+                "Web search: {q:?} — {} result(s), ranked by cross-engine corroboration\n{c}",
+                results.len()
+            ),
+            None => format!(
+                "Web search: {q:?} — {} result(s) from all {} engines, ranked by \
+                 cross-engine corroboration",
+                results.len(),
+                coverage.queried
+            ),
+        },
         note: None,
-        empty: format!(
-            "No results for {q:?} — every engine was blocked, unreachable, \
-             or returned nothing within the time budget."
-        ),
+        empty: match coverage.caveat() {
+            Some(c) => format!("No results for {q:?} — {c}"),
+            None => format!("No results for {q:?} — every engine answered, none had a match."),
+        },
         show_snippets: false,
         rows: results
             .iter()
@@ -125,7 +144,7 @@ fn web_report<'a>(
                 title: &r.title,
                 snippet: &r.snippet,
                 key_phrase: &r.key_phrase,
-                engines: Some(r.engine_count),
+                engines: Some(&r.engines),
             })
             .collect(),
     }
@@ -179,8 +198,9 @@ fn render(rep: &Report<'_>, json: bool) -> Result<()> {
                 if !r.key_phrase.is_empty() {
                     o["key_phrase"] = serde_json::json!(r.key_phrase);
                 }
-                if let Some(n) = r.engines {
-                    o["engines"] = serde_json::json!(n);
+                if let Some(names) = r.engines {
+                    o["engines"] = serde_json::json!(names);
+                    o["engine_count"] = serde_json::json!(names.len());
                 }
                 o
             })
@@ -215,9 +235,15 @@ fn render(rep: &Report<'_>, json: bool) -> Result<()> {
             r.title.trim()
         };
         match r.engines {
-            // `[N×]` = N independent engines returned this URL.
-            Some(n) => println!("{:>3}. [{n}×] {}", i + 1, truncate(title, TITLE_WIDTH)),
-            None => println!("{:>3}. {}", i + 1, truncate(title, TITLE_WIDTH)),
+            // Name the engines rather than counting them: `[bing+startpage]`
+            // is citable provenance, `[2×]` is not.
+            Some(names) if !names.is_empty() => println!(
+                "{:>3}. [{}] {}",
+                i + 1,
+                names.join("+"),
+                truncate(title, TITLE_WIDTH)
+            ),
+            _ => println!("{:>3}. {}", i + 1, truncate(title, TITLE_WIDTH)),
         }
         println!("       {}", r.url);
         if !r.key_phrase.trim().is_empty() {

@@ -70,3 +70,52 @@ use super::*;
     fn external_link_count_handles_empty_body() {
         assert_eq!(external_link_count("", "bing"), 0);
     }
+
+/// A timeout must be diagnosed as a timeout, naming the budget it overran —
+/// never as a network failure.
+///
+/// Measured on a real Termux device over a mobile link: an `hse engines` sweep
+/// reported 14 of 17 engines "down", and NINE of them had latencies clustered at
+/// 8.2-8.6 s against the (then hard-coded) 8 s budget. They were timing out, not
+/// dead, and the operator was told "network/TLS failure" and reasonably
+/// concluded the engines were unusable. "This engine is dead" and "we did not
+/// wait long enough" need different actions, so they must read differently.
+#[test]
+fn a_timeout_is_diagnosed_as_a_timeout_not_a_network_failure() {
+    let timed_out = FetchOutcome::TimedOut { budget_ms: 8_000 };
+    let d = diagnose(&timed_out, 0, 0);
+
+    assert!(d.contains("timed out"), "must name the timeout: {d}");
+    assert!(d.contains("8000"), "must name the budget it overran: {d}");
+    assert!(
+        d.contains("HUNTSMAN_SEARCH_TIMEOUT_MS"),
+        "must name the lever that fixes it: {d}"
+    );
+    assert!(
+        !d.contains("network/TLS"),
+        "a timeout must NOT be reported as a network failure: {d}"
+    );
+
+    // The genuinely-unreachable diagnosis stays distinct, and no longer claims
+    // "timeout" as one of its possible causes — that case has its own arm now.
+    let unreachable = diagnose(&FetchOutcome::Unreachable, 0, 0);
+    assert!(unreachable.contains("network/TLS"), "{unreachable}");
+    assert!(
+        !unreachable.contains("timed out"),
+        "the two causes must not read the same: {unreachable}"
+    );
+    assert_ne!(d, unreachable);
+}
+
+/// The per-request budget is configurable, clamped, and defaults sanely — the
+/// lever the timeout diagnosis tells the operator to reach for has to exist.
+#[test]
+fn the_fetch_budget_is_bounded_whatever_the_env_says() {
+    // Whatever this host's env holds, the value is always in the sane band —
+    // a typo can neither disable the bound nor make every request fail instantly.
+    let ms = crate::modules::search_engines::fetch::max_fetch_ms();
+    assert!(
+        (1_000..=120_000).contains(&ms),
+        "budget must stay in the clamped band, got {ms}"
+    );
+}

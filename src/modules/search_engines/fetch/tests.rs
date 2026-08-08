@@ -17,7 +17,7 @@ use super::*;
         // Plenty of budget → capped at the per-request ceiling.
         assert_eq!(
             fetch_timeout_ms(Instant::now() + Duration::from_secs(60)),
-            Some(MAX_FETCH_MS)
+            Some(max_fetch_ms())
         );
         // A few seconds left → clamped to (about) that, never the full ceiling.
         let t = fetch_timeout_ms(Instant::now() + Duration::from_millis(3_000))

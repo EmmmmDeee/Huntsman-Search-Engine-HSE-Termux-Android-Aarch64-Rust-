@@ -4,15 +4,38 @@ use super::helpers::*;
 use super::{EngineSpec, MAX_RESULTS_PER_ENGINE, SearchResult};
 use crate::util::key_harvest::identify_api_key;
 
-/// Per-request fetch ceiling (ms): the most any single SERP request may take.
-pub(in crate::modules::search_engines) const MAX_FETCH_MS: u64 = 8_000;
+/// Default per-request fetch ceiling (ms): the most any single SERP request may
+/// take. Override with `HUNTSMAN_SEARCH_TIMEOUT_MS`.
+const DEFAULT_MAX_FETCH_MS: u64 = 8_000;
+
+/// Per-request fetch ceiling (ms), honouring `HUNTSMAN_SEARCH_TIMEOUT_MS`.
+///
+/// This was a hard 8 s constant, which is a desktop assumption. On the declared
+/// target — a phone on a mobile link — it is routinely too short: a measured
+/// `hse engines` sweep on a real device reported 14 of 17 engines "down", nine
+/// of them with latencies of 8.2-8.6 s against that 8 s budget. Those engines
+/// were not dead; the budget was. An operator on a slow link now has a lever,
+/// and `FetchOutcome::TimedOut` tells them to reach for it.
+///
+/// Read once and cached: this is called per request, and a slow link is exactly
+/// where an env lookup per request is least welcome. Clamped to 1-120 s so a
+/// typo cannot disable the bound or make every request fail instantly.
+pub(in crate::modules::search_engines) fn max_fetch_ms() -> u64 {
+    static CACHED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("HUNTSMAN_SEARCH_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .map_or(DEFAULT_MAX_FETCH_MS, |ms| ms.clamp(1_000, 120_000))
+    })
+}
 
 /// Floor below which there's no point starting a request — a sub-1.5 s SERP fetch
 /// almost always fails, and starting one risks overrunning the module deadline.
 const MIN_FETCH_MS: u64 = 1_500;
 
 /// The curl timeout for a request issued NOW under `deadline`: the budget that
-/// remains, capped at [`MAX_FETCH_MS`]; `None` when too little remains
+/// remains, capped at [`max_fetch_ms`]; `None` when too little remains
 /// ([`MIN_FETCH_MS`]) to bother.
 ///
 /// This is what keeps an in-flight request from overrunning the engine's hard kill
@@ -24,7 +47,7 @@ fn fetch_timeout_ms(deadline: Instant) -> Option<u64> {
     let remaining = deadline
         .saturating_duration_since(Instant::now())
         .as_millis() as u64;
-    (remaining >= MIN_FETCH_MS).then(|| remaining.min(MAX_FETCH_MS))
+    (remaining >= MIN_FETCH_MS).then(|| remaining.min(max_fetch_ms()))
 }
 
 pub(super) async fn fetch_and_parse(
@@ -57,6 +80,7 @@ pub(super) async fn fetch_and_parse(
                 }
             }
             FetchOutcome::Unreachable => (None, "unreachable"),
+            FetchOutcome::TimedOut { .. } => (None, "timeout"),
             FetchOutcome::Blocked => (None, "blocked"),
         };
 
@@ -65,6 +89,7 @@ pub(super) async fn fetch_and_parse(
     // request (so the retry can never push past the deadline either).
     let (results, outcome) = if results.is_none()
         && outcome != "unreachable"
+        && outcome != "timeout"
         && engine.ua != engine.ua_alt
         && let Some(retry_ms) = fetch_timeout_ms(deadline)
     {
@@ -116,6 +141,7 @@ pub(super) async fn try_fetch(
     post_body: Option<&str>,
     timeout_ms: u64,
 ) -> FetchOutcome {
+    let started = Instant::now();
     // `fetch_with_ua`/`fetch_post_with_ua` already route through `curl_exec`,
     // which tries the validated, health-ranked `crate::util::egress` proxy pool
     // (fed by HUNTSMAN_SEARCH_PROXY, correctly parsed as the comma-separated
@@ -134,7 +160,23 @@ pub(super) async fn try_fetch(
 
     let body = match body {
         Some(b) => b,
-        None => return FetchOutcome::Unreachable,
+        // The transport reports failure as a bare `None`, so a timeout and a
+        // refused connection arrive identically. Distinguish them by the clock:
+        // a request that consumed its whole budget timed out, one that failed in
+        // a fraction of it did not. Inference, not a transport signal — but a
+        // well-grounded one, and infinitely better than calling a timeout a
+        // "network/TLS failure". The 10% margin absorbs curl's own rounding.
+        None => {
+            return if started.elapsed().as_millis() as u64
+                >= timeout_ms.saturating_sub(timeout_ms / 10)
+            {
+                FetchOutcome::TimedOut {
+                    budget_ms: timeout_ms,
+                }
+            } else {
+                FetchOutcome::Unreachable
+            };
+        }
     };
     // Detect a recognised anti-bot / block page BEFORE the short-body guard.
     // Some engines (Mojeek) answer with a small `403 … sending automated
