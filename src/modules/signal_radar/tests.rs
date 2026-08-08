@@ -266,3 +266,56 @@ fn arp_parse_empty() {
     let result = lan::parse_arp(content, "test-scan");
     assert!(result.is_empty());
 }
+
+// ── port_sweep (concurrent ip×port cross product) ──────────────────────────
+
+#[tokio::test]
+async fn port_sweep_finds_every_open_port_and_sorts_the_result() {
+    // Two REAL ephemeral listeners (open ports) plus one certainly-closed
+    // port, all against the same host — mirrors `portscan::tests`'s
+    // real-listener pattern. Proves the concurrent ip×port cross product
+    // (JoinSet + Semaphore) correctly gathers BOTH hits without dropping or
+    // corrupting either, that the closed port is excluded, and that the
+    // output is sorted rather than reflecting completion order: the input
+    // `ports` list is deliberately given in an order that does not match the
+    // sorted expectation.
+    let l1 = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should bind");
+    let l2 = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should bind");
+    let p1 = l1.local_addr().expect("should succeed").port();
+    let p2 = l2.local_addr().expect("should succeed").port();
+    // A port distinct from both listeners, almost certainly closed.
+    let closed = p1.max(p2).wrapping_add(1).max(1);
+
+    let ips = vec!["127.0.0.1".to_string()];
+    // Deliberately NOT in sorted order, so a pass here can't be explained by
+    // the sweep merely preserving input order.
+    let (hi, lo) = if p1 > p2 { (p1, p2) } else { (p2, p1) };
+    let ports = [hi, closed, lo];
+    let open = lan::port_sweep(&ips, &ports).await;
+
+    let mut expected = vec![format!("127.0.0.1:{p1}"), format!("127.0.0.1:{p2}")];
+    expected.sort_unstable();
+    assert_eq!(
+        open, expected,
+        "both listening ports found (closed port absent), sorted for determinism"
+    );
+}
+
+#[tokio::test]
+async fn port_sweep_reports_nothing_for_an_all_closed_sweep() {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should bind");
+    let listening = l.local_addr().expect("should succeed").port();
+    // Neither swept port is the listener's — both should read closed.
+    let ports = [listening.wrapping_add(1).max(1), listening.wrapping_add(2)];
+    let open = lan::port_sweep(&["127.0.0.1".to_string()], &ports).await;
+    assert!(
+        open.is_empty(),
+        "no port in the sweep list is open: {open:?}"
+    );
+}

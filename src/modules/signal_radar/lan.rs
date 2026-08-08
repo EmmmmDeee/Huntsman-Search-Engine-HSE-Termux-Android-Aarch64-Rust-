@@ -15,6 +15,11 @@ use super::SRC;
 
 const SWEEP_PORTS: &[u16] = &[22, 80, 443];
 const SWEEP_TIMEOUT_MS: u64 = 500;
+/// Bounded concurrency for the port sweep's ip×port cross product — same
+/// pattern and cap as `modules::portscan::scan_ports`'s `MAX_CONCURRENT`, so a
+/// large ARP table (a /24 subnet can carry up to 254 hosts) can't fire
+/// hundreds of simultaneous TCP connects at once.
+const SWEEP_MAX_CONCURRENT: usize = 16;
 
 /// Parse `/proc/net/arp`.
 ///
@@ -85,29 +90,50 @@ pub(super) fn parse_arp(content: &str, scan_id: &str) -> ModuleResult {
     result
 }
 
-/// TCP connect sweep of well-known ports on ARP-discovered IPs.
+/// TCP connect sweep of `ports` on `ips`.
 ///
-/// Returns a list of `"ip:port"` strings for open ports found.
-pub(super) async fn port_sweep(ips: &[String]) -> Vec<String> {
+/// Returns a list of `"ip:port"` strings for open ports found, sorted for
+/// deterministic output. Runs the ip×port cross product CONCURRENTLY, bounded
+/// by [`SWEEP_MAX_CONCURRENT`] — the same `Semaphore` + `JoinSet` pattern
+/// `modules::portscan::scan_ports` uses (whose own test binds a real
+/// ephemeral listener; `ports` is a parameter here for the same reason: an
+/// ephemeral port is injectable in tests where the production
+/// [`SWEEP_PORTS`] (22/80/443) is not). The previous fully-sequential loop
+/// could block for up to `ips.len() * ports.len() * SWEEP_TIMEOUT_MS`
+/// (several seconds on even a modest LAN with a handful of unreachable/
+/// filtered hosts) when every attempt is an independent, I/O-bound wait with
+/// nothing to serialise on.
+pub(super) async fn port_sweep(ips: &[String], ports: &[u16]) -> Vec<String> {
+    use std::sync::Arc;
     use std::time::Duration;
     use tokio::net::TcpStream;
+    use tokio::sync::Semaphore;
     use tokio::time::timeout;
 
-    let mut open = Vec::new();
-
+    let sem = Arc::new(Semaphore::new(SWEEP_MAX_CONCURRENT));
+    let mut set = tokio::task::JoinSet::new();
     for ip in ips {
-        for &port in SWEEP_PORTS {
+        for &port in ports {
             let addr = format!("{ip}:{port}");
-            let dur = Duration::from_millis(SWEEP_TIMEOUT_MS);
-            if timeout(dur, TcpStream::connect(&addr))
-                .await
-                .is_ok_and(|r| r.is_ok())
-            {
-                open.push(addr);
-            }
+            let sem = Arc::clone(&sem);
+            set.spawn(async move {
+                let _permit = sem.acquire_owned().await.ok()?;
+                let dur = Duration::from_millis(SWEEP_TIMEOUT_MS);
+                timeout(dur, TcpStream::connect(&addr))
+                    .await
+                    .is_ok_and(|r| r.is_ok())
+                    .then_some(addr)
+            });
         }
     }
 
+    let mut open = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        if let Ok(Some(addr)) = joined {
+            open.push(addr);
+        }
+    }
+    open.sort_unstable();
     open
 }
 
@@ -153,7 +179,7 @@ pub(super) async fn scan_lan(scan_id: &str) -> ModuleResult {
         return result;
     }
 
-    let open = port_sweep(&ips).await;
+    let open = port_sweep(&ips, SWEEP_PORTS).await;
 
     // Tag IP entities whose port was found open.
     for open_addr in &open {

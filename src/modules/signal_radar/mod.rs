@@ -110,15 +110,23 @@ impl Module for SignalRadar {
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let scan_id = ctx.scan_id.as_str();
 
-        // Run all sensors in parallel.
-        let (wifi_out, bt_out, gps_out, lan_out) = tokio::join!(
+        // Run all five sensors in parallel — each spawns its own independent
+        // `termux-*` subprocess against a DIFFERENT Android API (WifiManager,
+        // BluetoothAdapter, TelephonyManager, LocationManager, /proc/net/arp),
+        // so there is no shared resource to serialise on. `cell` previously
+        // ran sequentially AFTER this join, contradicting this very doc
+        // comment's "All sensors run concurrently" claim and adding its own
+        // multi-second on-device subprocess round-trip on top of the other
+        // four's worst case instead of overlapping it — real wall-clock (and
+        // battery) cost on the primary Termux/Android target for a module
+        // whose whole purpose is a fast real-time sweep.
+        let (wifi_out, bt_out, gps_out, lan_out, cell_out) = tokio::join!(
             scan_wifi(scan_id),
             bluetooth::scan_bluetooth(scan_id),
             gps::scan_gps(scan_id),
             lan::scan_lan(scan_id),
+            scan_cell(scan_id),
         );
-
-        let cell_out = scan_cell(scan_id).await;
 
         combine_sensors([wifi_out, bt_out, gps_out, Ok(lan_out), cell_out])
     }
