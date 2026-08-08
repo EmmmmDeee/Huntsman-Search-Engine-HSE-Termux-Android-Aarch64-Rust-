@@ -421,13 +421,38 @@ impl Module for RegionalProbeModule {
 }
 
 /// Clear any pre-existing keys for the chain-test service from the process-
-/// global pool so the key-chaining tests are hermetic. The global pool is a
+/// global pool so the key-chaining tests are hermetic, and hold the chain-test
+/// lock for the caller's whole test. The global pool is a
 /// `OnceLock` seeded from the persisted `~/.huntsman/key_pool.json`, which can
 /// already hold real `shodan` keys (from prior CLI use or scans); those perturb
 /// `next_key("shodan")` selection and make the hot-inject assertion flaky
 /// depending on test order / the developer's local pool. Removal is in-memory
 /// only (never writes the file), so it cannot affect real keys on disk.
-pub fn reset_chain_pool() {
+///
+/// **The returned guard is the point.** Clearing alone is not enough: the pool
+/// is process-global and cargo runs a binary's tests on parallel threads, so
+/// the two key-chaining tests were racing each other — one's reset wiped the key
+/// the other's discoverer had just stored, and its consumer then saw nothing.
+/// That is a real interleaving, not a hypothetical: it turned up as an
+/// intermittent CI failure of `key_chaining_concurrent_dispatch` while both
+/// tests passed in isolation. Returning the guard (rather than exposing a
+/// separate lock) makes the reset impossible to perform without holding it, so
+/// a future chain test cannot reintroduce the race by forgetting to lock.
+///
+/// Hold it for the test's duration — bind it (`let _chain = …`), never `let _ =`,
+/// which drops immediately and re-opens the window.
+///
+/// The lock is `tokio::sync::Mutex`, not `std::sync::Mutex`, because the guard
+/// is deliberately held across the `engine.run(..).await` it is protecting. A
+/// `std` guard there is what `clippy::await_holding_lock` forbids, and rightly:
+/// it blocks the worker thread rather than yielding, and a `!Send` guard cannot
+/// cross an await in a spawned task at all. Tokio's mutex is built for exactly
+/// this and has no poisoning to handle.
+#[must_use = "bind the guard for the whole test; dropping it early re-opens the race"]
+pub async fn reset_chain_pool() -> tokio::sync::MutexGuard<'static, ()> {
+    static CHAIN_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let guard = CHAIN_TEST_LOCK.lock().await;
+
     let pool = huntsman_search_engine::util::key_pool::global_pool();
     let existing: Vec<String> = pool
         .snapshot()
@@ -440,6 +465,7 @@ pub fn reset_chain_pool() {
     for value in existing {
         pool.remove(CHAIN_TEST_SERVICE, &value);
     }
+    guard
 }
 
 // ── API helpers (moved from tests/api.rs) ──────────────────────────────────

@@ -30,7 +30,7 @@ async fn key_chaining_sequential_dispatch() {
     // stores the key in the pool. The per-module hot-inject after
     // finalise_module_result pushes it into ctx. The consumer then sees
     // the key and emits its marker entity.
-    reset_chain_pool();
+    let _chain = reset_chain_pool().await;
     let (engine, store, sid, target, ctx) = setup(
         vec![Arc::new(KeyDiscovererModule), Arc::new(KeyConsumerModule)],
         "chain-seq",
@@ -61,7 +61,7 @@ async fn key_chaining_concurrent_dispatch() {
     // Concurrent mode (max_concurrent>0). Paid modules run in Phase 1
     // synchronously; ctx is refreshed from the pool; THEN Free + KeyGated
     // modules spawn in Phase 2 with the keys-rich ctx clone.
-    reset_chain_pool();
+    let _chain = reset_chain_pool().await;
     let (engine, store, sid, target, ctx) = setup(
         vec![Arc::new(KeyDiscovererModule), Arc::new(KeyConsumerModule)],
         "chain-conc",

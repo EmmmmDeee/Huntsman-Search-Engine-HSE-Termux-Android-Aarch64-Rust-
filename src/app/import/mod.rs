@@ -507,9 +507,20 @@ async fn persist_stealer_rows_best_effort(
 /// this web-only need). Returns empty for any non-stealer body from a cheap
 /// format check alone; re-parses the body a second time only in the stealer
 /// case, an accepted, bounded, one-time-per-upload cost.
+///
+/// The gate is [`detect_import_format`], NOT a bare `looks_like_stealerlogs`.
+/// That predicate is one of eight ORDERED alternatives, so calling it alone is a
+/// partial, order-free copy of the routing decision — exactly the drift
+/// `detect_import_format`'s own doc rules out ("the single source of truth both
+/// the CLI and the web upload dispatch on, so the two can never drift on which
+/// format a file is"). One upload goes through both this function and
+/// `entities_from_upload`, and they are persisted together; when the two
+/// disagreed, a single upload was committed through two different parsers — the
+/// entity graph recording one format while the Stealer Logs Viewer showed
+/// credential rows the graph had no entities for.
 pub(crate) fn stealer_rows_from_upload(body: &str) -> Vec<crate::core::stealer_row::StealerRow> {
     let body = body.strip_prefix('\u{feff}').unwrap_or(body);
-    if !looks_like_stealerlogs(body) {
+    if detect_import_format("", body) != ImportFormat::Stealerlogs {
         return Vec::new();
     }
     parse_stealerlogs(body, "").2
