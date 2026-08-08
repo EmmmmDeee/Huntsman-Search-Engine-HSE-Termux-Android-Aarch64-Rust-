@@ -13,7 +13,7 @@ use axum::{
 use serde_json::json;
 use std::sync::Arc;
 
-use super::handlers::{internal_error, not_found};
+use super::handlers::{not_found, offload_store};
 use super::scan_handlers::{scan_missing, wants_candidates, wants_infra};
 use crate::api::AppState;
 
@@ -31,12 +31,10 @@ pub async fn scan_entities_csv(
     }
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
-    let mut entities =
-        match tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await {
-            Ok(Ok(es)) => es,
-            Ok(Err(e)) => return internal_error(&e),
-            Err(e) => return internal_error(&format!("query task failed: {e}")),
-        };
+    let mut entities = match offload_store(move || store.entities_for_scan(&id2)).await {
+        Ok(es) => es,
+        Err(e) => return e,
+    };
     // Quarantine by default (opt in with `?include_candidates=1`) — matches the
     // `/entities` JSON endpoint and `report.json` so the downloaded CSV is the
     // subject's confirmed footprint, not a foreign breach-victim list. Without
@@ -171,7 +169,7 @@ pub async fn scan_report_json(
     // scan_entities_csv / scan_export_gexf / scan_debug_bundle in this module).
     let (id2, store) = (id.clone(), Arc::clone(&s.store));
     let (cand, infra) = (wants_candidates(&params), wants_infra(&params));
-    let built = tokio::task::spawn_blocking(move || {
+    match offload_store(move || {
         build_scan_report(store.as_ref(), &id2, cand, infra).map(|opt| {
             opt.map(|report| {
                 serde_json::to_string_pretty(&report).unwrap_or_else(|e| {
@@ -181,14 +179,13 @@ pub async fn scan_report_json(
             })
         })
     })
-    .await;
-    match built {
-        Ok(Ok(Some(body))) => {
+    .await
+    {
+        Ok(Some(body)) => {
             download_response(body, "application/json; charset=utf-8", &id, "json", "json")
         }
-        Ok(Ok(None)) => not_found(),
-        Ok(Err(e)) => internal_error(&e),
-        Err(e) => internal_error(&format!("report task failed: {e}")),
+        Ok(None) => not_found(),
+        Err(e) => e,
     }
 }
 
@@ -373,17 +370,16 @@ pub async fn scan_export_gexf(
     }
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
-    let (mut entities, relations) = match tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
+    let (mut entities, relations) = match offload_store(move || {
+        Ok((
             store.entities_for_scan(&id2)?,
             store.relations_for_scan(&id2)?,
         ))
     })
     .await
     {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+        Ok(pair) => pair,
+        Err(e) => return e,
     };
     // Quarantine candidates by default (opt in with `?include_candidates=1`) —
     // matches `scan_entities_csv`, `report.json`, and the CLI `render_gexf`, so
@@ -416,19 +412,15 @@ pub async fn scan_debug_bundle(
     // the blocking `curl` spawn off the async worker — PROBLEM_TREE T2.2).
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
-    match tokio::task::spawn_blocking(move || {
-        crate::app::export::render_debug_bundle(store.as_ref(), &id2)
-    })
-    .await
+    match offload_store(move || crate::app::export::render_debug_bundle(store.as_ref(), &id2)).await
     {
         // Operator artifact (labelled "operator only" in the UI): the debug bundle
         // deliberately KEEPS the real provider names, so it opts out of the
         // default-safe redaction via `download_response_operator`.
-        Ok(Ok(body)) => {
+        Ok(body) => {
             download_response_operator(body, "text/plain; charset=utf-8", &id, "debug", "txt")
         }
-        Ok(Err(e)) => internal_error(&e),
-        Err(e) => internal_error(&format!("debug-bundle render task failed: {e}")),
+        Err(e) => e,
     }
 }
 
@@ -449,19 +441,18 @@ pub async fn scan_events_log(
     }
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
-    match tokio::task::spawn_blocking(move || store.events_for_scan(&id2)).await {
+    match offload_store(move || store.events_for_scan(&id2)).await {
         // The event JSONL names the producing provider in module_start/done/error;
         // `download_response` redacts those proprietary source names for the
         // customer copy.
-        Ok(Ok(events)) => download_response(
+        Ok(events) => download_response(
             crate::app::export::render_event_log(&events),
             "text/plain; charset=utf-8",
             &id,
             "events",
             "log",
         ),
-        Ok(Err(e)) => internal_error(&e),
-        Err(e) => internal_error(&format!("events-log query task failed: {e}")),
+        Err(e) => e,
     }
 }
 

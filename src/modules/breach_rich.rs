@@ -244,18 +244,12 @@ static RICH_DETAIL_SKIP_SET: std::sync::LazyLock<HashSet<&'static str>> =
 /// applied universally at engine admission, so it is not done per-module.)
 fn push_breach_entity(
     result: &mut ModuleResult,
-    mut e: Entity,
+    e: Entity,
     ev: &Evidence,
     source: &str,
     extra_tags: &[&str],
 ) {
-    e.tag(tags::BREACH);
-    e.tag(source);
-    for t in extra_tags {
-        e.tag(*t);
-    }
-    e.add_evidence(ev.clone());
-    result.push(e);
+    result.push_with_tags(e, ev, &[tags::BREACH, source], extra_tags);
 }
 
 /// The breach-record columns whose handle becomes a `platform:handle` Username

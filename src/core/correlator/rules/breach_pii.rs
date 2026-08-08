@@ -66,13 +66,13 @@ fn scan_evidence<'a>(entities: &'a [Entity], keys: &[&str]) -> Vec<(String, &'a 
     let mut out = Vec::new();
     for e in entities {
         for ev in &e.evidence {
-            for (k, v) in &ev.attributes {
+            for k in ev.attributes.keys() {
                 if keys.iter().any(|key| k.eq_ignore_ascii_case(key)) {
-                    for part in v.split("; ") {
-                        let part = part.trim();
-                        if !part.is_empty() {
-                            out.push((part.to_string(), ev.source.as_str(), e.uid.as_str()));
-                        }
+                    // `attr_values` is the canonical inverse of the `with_attr` /
+                    // `merge_evidence_attrs` "a; b" accumulation, so each
+                    // underlying value is seen individually.
+                    for part in ev.attr_values(k) {
+                        out.push((part.to_string(), ev.source.as_str(), e.uid.as_str()));
                     }
                 }
             }

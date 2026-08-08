@@ -1986,21 +1986,46 @@ mod prop {
         /// `merge` is **order-independent** on the persisted signal — the property
         /// that makes concurrent dispatch deterministic. Two raw spellings that
         /// share a UID (case variants), merged in either order, yield the same
-        /// canonical `raw_value` (lexicographic min), confidence, and corroboration,
-        /// so the dossier never leaks task-completion order.
+        /// canonical `raw_value` (lexicographic min), `value`, confidence, and
+        /// corroboration, so the dossier never leaks task-completion order.
+        ///
+        /// Runs over `Person` as well as `Username`, and generates whitespace-run
+        /// variants: `Username` normalises to lowercase, so its same-UID entities
+        /// always share one `value` and the `value` limb of this property is
+        /// vacuous for it. `Person` is case- and whitespace-FOLDED at UID
+        /// derivation only, so it is the kind that can actually break the law —
+        /// while this property covered `Username` alone it was structurally blind
+        /// to the one case that failed.
         #[test]
         fn merge_is_order_independent(
             v in "[a-z]{1,8}", upper in any::<bool>(),
+            person in any::<bool>(), double_space in any::<bool>(),
             ca in 0.0f64..=1.0, cb in 0.0f64..=1.0,
             cra in 1u32..100_000, crb in 1u32..100_000,
         ) {
-            let raw_b = if upper { v.to_uppercase() } else { v.clone() };
-            let mut ab = mk(&v, ca, cra);
-            ab.merge(mk(&raw_b, cb, crb));
-            let mut ba = mk(&raw_b, cb, crb);
-            ba.merge(mk(&v, ca, cra));
+            let kind = if person { EntityKind::Person } else { EntityKind::Username };
+            let mk2 = |raw: &str, conf: f64, corr: u32| {
+                let mut e = Entity::new(kind.clone(), raw, conf, "scan");
+                e.corroboration = corr;
+                e
+            };
+            // For Person, a spacing variant still folds to one UID — the exact
+            // shape ("Jeremy  Stewart" vs "Jeremy Stewart") that used to persist
+            // whichever spelling merged first.
+            let raw_a = if person && double_space { format!("{v}  {v}") } else { v.clone() };
+            let base_b = if person && double_space { format!("{v} {v}") } else { v.clone() };
+            let raw_b = if upper { base_b.to_uppercase() } else { base_b };
+
+            let mut ab = mk2(&raw_a, ca, cra);
+            ab.merge(mk2(&raw_b, cb, crb));
+            ab.canonicalize_order();
+            let mut ba = mk2(&raw_b, cb, crb);
+            ba.merge(mk2(&raw_a, ca, cra));
+            ba.canonicalize_order();
+
             prop_assert_eq!(&ab.uid, &ba.uid);
             prop_assert_eq!(&ab.raw_value, &ba.raw_value);
+            prop_assert_eq!(&ab.value, &ba.value);
             prop_assert!((ab.confidence - ba.confidence).abs() < 1e-12);
             prop_assert_eq!(ab.corroboration, ba.corroboration);
         }
@@ -2098,6 +2123,54 @@ fn organisation_case_variants_resolve_to_one_identity() {
         a.value, "Acme Corp",
         "display is still the original spelling"
     );
+}
+
+/// `merge` must canonicalise the DISPLAY value, not just `raw_value`.
+///
+/// `identity_fold` deliberately makes `uid` insensitive to case and whitespace
+/// runs for `Person`/`Organisation` while `normalise` leaves `value` untouched —
+/// so these are the only two kinds where same-UID entities can hold *different*
+/// `value` strings. `merge` canonicalised `raw_value` (citing the Determinism
+/// Requirement) but never `value`, so the surviving display spelling was decided
+/// by module completion order: two runs of one scan produced diffing dossiers.
+///
+/// The pre-existing `merge_is_order_independent` property could not catch this —
+/// its `mk` helper builds a `Username`, whose `normalise` lowercases, so its
+/// same-UID entities always share one `value`. The property was structurally
+/// blind to the only kinds that can fail it.
+#[test]
+fn merge_canonicalises_the_display_value_not_just_raw_value() {
+    // Two real sources: a registry that shouts, and a scraper that title-cases.
+    let a = Entity::new(EntityKind::Person, "JEREMY STEWART", 0.6, "scan");
+    let b = Entity::new(EntityKind::Person, "Jeremy Stewart", 0.6, "scan");
+    assert_eq!(a.uid, b.uid, "precondition: one person, one node");
+
+    let mut ab = a.clone();
+    ab.merge(b.clone());
+    ab.canonicalize_order();
+    let mut ba = b.clone();
+    ba.merge(a.clone());
+    ba.canonicalize_order();
+
+    assert_eq!(
+        ab.raw_value, ba.raw_value,
+        "raw_value was already canonical"
+    );
+    assert_eq!(
+        ab.value, ba.value,
+        "display value must not depend on merge order"
+    );
+
+    // Organisation folds identically, and adds the whitespace-run case: the
+    // surviving spelling must not be the double-spaced one.
+    let x = Entity::new(EntityKind::Organisation, "ACME  CORP", 0.6, "scan");
+    let y = Entity::new(EntityKind::Organisation, "Acme Corp", 0.6, "scan");
+    assert_eq!(x.uid, y.uid);
+    let mut xy = x.clone();
+    xy.merge(y.clone());
+    let mut yx = y.clone();
+    yx.merge(x.clone());
+    assert_eq!(xy.value, yx.value, "org display value must be order-free");
 }
 
 /// SSIDs are case-SENSITIVE by IEEE 802.11 — folding them would merge two

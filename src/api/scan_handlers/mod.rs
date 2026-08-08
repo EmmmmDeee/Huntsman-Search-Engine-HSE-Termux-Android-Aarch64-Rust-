@@ -10,7 +10,7 @@
 //! - [`diagnostics`] — Diagnostic scorecards: audit, metrics, duplicates,
 //!   pivots, gaps, benchmark.
 
-use super::handlers::{internal_error, not_found, validated_target};
+use super::handlers::{not_found, offload_store, validated_target};
 use crate::api::AppState;
 use crate::core::entity::scan_id;
 use crate::core::scan::{Scan, ScanRequest, Target};
@@ -75,20 +75,15 @@ pub(super) fn build_scan_from_request(req: ScanRequest) -> Result<(Scan, Target)
 
 /// `Some(404)` when no scan with `id` exists (or `Some(500)` on a store error),
 /// else `None`. Sub-resource handlers call this first so an unknown scan yields
-/// 404 rather than a misleading empty 200.
-///
-/// The `get_scan` probe is synchronous SQLite under the global connection mutex,
-/// so it runs on the blocking pool — not inline on the ~2-worker async reactor
-/// where it would block a worker before each sub-resource handler's own
-/// `spawn_blocking` read.
+/// 404 rather than a misleading empty 200. Runs its `get_scan` probe off the
+/// reactor via [`offload_store`].
 pub(crate) async fn scan_missing(s: &AppState, id: &str) -> Option<axum::response::Response> {
     let store = std::sync::Arc::clone(&s.store);
     let id = id.to_string();
-    match tokio::task::spawn_blocking(move || store.get_scan(&id)).await {
-        Ok(Ok(Some(_))) => None,
-        Ok(Ok(None)) => Some(not_found()),
-        Ok(Err(e)) => Some(internal_error(&e)),
-        Err(e) => Some(internal_error(&format!("query task failed: {e}"))),
+    match offload_store(move || store.get_scan(&id)).await {
+        Ok(Some(_)) => None,
+        Ok(None) => Some(not_found()),
+        Err(resp) => Some(resp),
     }
 }
 
@@ -117,18 +112,70 @@ pub(super) async fn entities_and_relations(
 > {
     let store = std::sync::Arc::clone(&s.store);
     let id = id.to_string();
-    match tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
+    offload_store(move || {
+        Ok((
             store.entities_for_scan(&id)?,
             store.relations_for_scan(&id)?,
         ))
     })
     .await
-    {
-        Ok(Ok(pair)) => Ok(pair),
-        Ok(Err(e)) => Err(internal_error(&e)),
-        Err(e) => Err(internal_error(&format!("query task failed: {e}"))),
-    }
+}
+
+/// Load a scan's entities off the async reactor — the single-set analogue of
+/// [`entities_and_relations`], for the read handlers that synthesise from the
+/// entity set alone (`/entities`, `/diamond`, `/attack`, `/duplicates`,
+/// `/timeline`, …). Same rationale: `entities_for_scan` is synchronous SQLite
+/// under the global connection mutex, so it runs on the blocking pool rather
+/// than stalling one of the ~2 async workers, and routing every such handler
+/// through here means a new one cannot reintroduce a raw `spawn_blocking` copy
+/// or forget the off-reactor hop. Returns the entities, or the ready `Response`
+/// (500) to return on a store/join failure; the caller has already run the
+/// [`scan_missing`] 404 probe.
+pub(super) async fn scan_entities_only(
+    s: &AppState,
+    id: &str,
+) -> Result<Vec<crate::core::entity::Entity>, axum::response::Response> {
+    let store = std::sync::Arc::clone(&s.store);
+    let id = id.to_string();
+    offload_store(move || store.entities_for_scan(&id)).await
+}
+
+/// Load a scan RECORD together with its entities and relations, off the async
+/// reactor and in one hop.
+///
+/// The sibling of [`entities_and_relations`] for the handlers that also need the
+/// `Scan` record itself (`/leads` reads `scan.options`, `/benchmark` reports over
+/// it). Unlike the entity-only loaders — which pair with a prior [`scan_missing`]
+/// 404 probe — this folds the existence check into the SAME `spawn_blocking`
+/// batch: `Ok(None)` means the scan is unknown (the caller renders 404), so the
+/// handler pays for one off-reactor round-trip, not a separate `get_scan` probe
+/// followed by the load. `Err` is the ready 500 `Response` on a store/join
+/// failure.
+#[allow(clippy::type_complexity)]
+pub(super) async fn scan_with_graph(
+    s: &AppState,
+    id: &str,
+) -> Result<
+    Option<(
+        Scan,
+        Vec<crate::core::entity::Entity>,
+        Vec<crate::core::relation::Relation>,
+    )>,
+    axum::response::Response,
+> {
+    let store = std::sync::Arc::clone(&s.store);
+    let id = id.to_string();
+    offload_store(move || {
+        let Some(scan) = store.get_scan(&id)? else {
+            return Ok(None);
+        };
+        Ok(Some((
+            scan,
+            store.entities_for_scan(&id)?,
+            store.relations_for_scan(&id)?,
+        )))
+    })
+    .await
 }
 
 /// True if the request opts into quarantined `candidate` entities via

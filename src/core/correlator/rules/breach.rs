@@ -377,15 +377,15 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
         let emails: BTreeSet<String> = secret
             .evidence
             .iter()
-            .filter_map(|ev| ev.attributes.get("email"))
-            .map(|v| v.trim().to_lowercase())
+            .flat_map(|ev| ev.attr_values("email"))
+            .map(str::to_lowercase)
             .filter(|v| v.contains('@'))
             .collect();
         let usernames: BTreeSet<String> = secret
             .evidence
             .iter()
-            .filter_map(|ev| ev.attributes.get("username"))
-            .map(|v| v.trim().to_lowercase())
+            .flat_map(|ev| ev.attr_values("username"))
+            .map(str::to_lowercase)
             .filter(|v| !v.is_empty())
             .collect();
 
@@ -552,15 +552,15 @@ pub(in crate::core::correlator) fn rule_au_106_shared_device_identity(
         let emails: BTreeSet<String> = dev
             .evidence
             .iter()
-            .filter_map(|ev| ev.attributes.get("email"))
-            .map(|v| v.trim().to_lowercase())
+            .flat_map(|ev| ev.attr_values("email"))
+            .map(str::to_lowercase)
             .filter(|v| v.contains('@'))
             .collect();
         let usernames: BTreeSet<String> = dev
             .evidence
             .iter()
-            .filter_map(|ev| ev.attributes.get("username"))
-            .map(|v| v.trim().to_lowercase())
+            .flat_map(|ev| ev.attr_values("username"))
+            .map(str::to_lowercase)
             .filter(|v| !v.is_empty())
             .collect();
         // Distinct controller HANDLES (email local-part or username, separator-
