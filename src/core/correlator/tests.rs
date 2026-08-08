@@ -228,7 +228,7 @@ fn run_ranks_by_severity_times_max_child_ceff() {
     store.upsert_entity(&strong_email).expect("should succeed");
 
     let corr = Correlator::new(Arc::clone(&store));
-    let hits = corr.run(sid).expect("should succeed");
+    let hits = corr.run(sid).expect("should succeed").firings;
 
     // Both rules fired.
     let key_hit = hits
@@ -10367,22 +10367,86 @@ fn correlator_budget_stops_starting_new_rules_past_the_deadline() {
     let ents = vec![e];
 
     // No deadline → rules run normally (AU-086 fires for this predict+confirm email).
-    let full = evaluate_rules_on(&RuleContext::new(&ents), "s", 0, None);
+    let (full, ran) = evaluate_rules_on(&RuleContext::new(&ents), "s", 0, None);
     assert!(
         full.iter().any(|c| c.rule_id == "AU-086"),
         "without a budget the confirmed name-derived email must fire AU-086"
     );
+    assert_eq!(
+        ran,
+        super::RULES.len(),
+        "an unbudgeted pass runs every rule"
+    );
 
     // A deadline already in the past → no rule is started, empty result, no hang.
     let past = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    let (entity_out, entity_ran) = evaluate_rules_on(&RuleContext::new(&ents), "s", 0, past);
     assert!(
-        evaluate_rules_on(&RuleContext::new(&ents), "s", 0, past).is_empty(),
+        entity_out.is_empty(),
         "an elapsed budget must stop the entity-rule pass immediately"
     );
+    let (relation_out, relation_ran) =
+        evaluate_relation_rules_on(&RuleContext::new(&ents), &[], "s", 0, past);
     assert!(
-        evaluate_relation_rules_on(&RuleContext::new(&ents), &[], "s", 0, past).is_empty(),
+        relation_out.is_empty(),
         "an elapsed budget must stop the relation-rule pass immediately"
     );
+    // The count is the load-bearing half. An empty firing set is the SAME value a
+    // complete pass returns when nothing correlates, so without the rule count a
+    // caller cannot tell "107 rules ran and found nothing" from "0 rules ran".
+    assert_eq!(entity_ran, 0, "no entity rule was started");
+    assert_eq!(relation_ran, 0, "no relation rule was started");
+}
+
+/// The distinction the rule counts exist to draw, at the level a caller sees it.
+///
+/// A budget-truncated pass returns a strictly partial answer shaped exactly like
+/// a complete one, and that answer is persisted and reported as the scan's
+/// correlation total. `CorrelationRun` makes the shortfall inspectable instead.
+#[test]
+fn a_truncated_pass_is_distinguishable_from_one_that_found_nothing() {
+    let complete = super::CorrelationRun {
+        firings: Vec::new(),
+        rules_run: 107,
+        rules_total: 107,
+    };
+    assert!(complete.is_complete());
+    assert!(
+        complete.truncation_note().is_none(),
+        "a complete pass that found nothing has nothing to caveat"
+    );
+
+    // Same empty firing set, opposite meaning.
+    let truncated = super::CorrelationRun {
+        firings: Vec::new(),
+        rules_run: 0,
+        rules_total: 107,
+    };
+    assert!(!truncated.is_complete());
+    let note = truncated
+        .truncation_note()
+        .expect("a truncated pass must caveat itself");
+    assert!(
+        note.contains("INCOMPLETE") && note.contains("0/107"),
+        "the note must name the shortfall so the count is read as a floor: {note}"
+    );
+}
+
+/// An empty scan is COMPLETE, not truncated: every rule would have been a no-op
+/// over an empty entity set, so the early return must not look like a budget cut.
+#[test]
+fn an_empty_scan_reports_a_complete_pass() {
+    use crate::core::port::StoragePort;
+    let store = std::sync::Arc::new(crate::core::test_support::InMemoryStore::new());
+    let run = super::Correlator::new(store as std::sync::Arc<dyn StoragePort>)
+        .run("no-such-scan")
+        .expect("an empty scan correlates cleanly");
+    assert!(run.firings.is_empty());
+    assert!(
+        run.is_complete(),
+        "nothing to correlate is a complete answer, not a truncated one"
+    );
+    assert!(run.truncation_note().is_none());
 }
 
 #[test]
@@ -10688,5 +10752,120 @@ fn a_normally_quarantined_scan_does_not_trip_the_alarm() {
     assert!(
         examined * QUARANTINE_ALARM_RATIO >= ents.len(),
         "90% examined must not raise an alarm"
+    );
+}
+
+/// `Correlator::run` OWNS persistence, and a caller must not write the firings
+/// again.
+///
+/// `app::persist` and the web-import handler both re-upserted every correlation
+/// after `run` had already stored it. On the real store that second write is
+/// provably a no-op — its set-containment dedup skips a member set equal to one
+/// already present — so it bought nothing and cost a second SQLite write
+/// transaction plus a second full candidate-row scan per correlation, on a
+/// flash-backed device, for a result already known. The engine's finalise path
+/// never did it, so the callers disagreed about whose job persistence was.
+#[test]
+fn run_persists_its_firings_exactly_once() {
+    use crate::core::port::StoragePort;
+    use crate::core::test_support::InMemoryStore;
+    use std::sync::Arc;
+
+    let store = Arc::new(InMemoryStore::new());
+    let sid = "persist-once";
+    let mut e = Entity::new(EntityKind::Email, "victim@example.com", 0.9, sid);
+    e.tag("breach");
+    e.add_evidence(Evidence::new("hibp", "breached"));
+    let mut p = Entity::new(EntityKind::Password, "hunter2", 0.9, sid);
+    p.tag("breach");
+    p.add_evidence(Evidence::new("hibp", "breached"));
+    let sp: Arc<dyn StoragePort> = store.clone();
+    sp.upsert_entity(&e).expect("store entity");
+    sp.upsert_entity(&p).expect("store entity");
+
+    let run = Correlator::new(Arc::clone(&sp))
+        .run(sid)
+        .expect("correlator runs");
+    assert!(
+        !run.firings.is_empty(),
+        "fixture must fire at least one rule for this test to mean anything"
+    );
+
+    // `run` already stored them — the caller reads, it does not write.
+    let stored = sp.correlations_for_scan(sid).expect("read back");
+    assert_eq!(
+        stored.len(),
+        run.firings.len(),
+        "run() must persist every firing"
+    );
+    // The load-bearing assertion, and the reason the store counts CALLS rather
+    // than rows: both the real store and this double dedup a redundant re-write,
+    // so a second write leaves the row count identical and is invisible. Only
+    // the call count distinguishes "stored once" from "stored twice and
+    // deduped" — which is exactly how the double-write survived unnoticed.
+    assert_eq!(
+        store.correlation_writes(),
+        run.firings.len(),
+        "each firing must be written once; a caller re-upserting them doubles \
+         the SQLite write transactions for a result already stored"
+    );
+}
+
+/// The test double must dedup like the real store, or a test that counts
+/// correlations is asserting against behaviour production does not have — and a
+/// redundant double-write looks normal here instead of showing up as a
+/// duplicate row.
+#[test]
+fn the_in_memory_store_dedups_correlations_like_the_real_one() {
+    use crate::core::port::StoragePort;
+    use crate::core::test_support::InMemoryStore;
+
+    let store = InMemoryStore::new();
+    let c = |uids: Vec<String>| {
+        Correlation::new(
+            "AU-000",
+            "test",
+            Severity::Low,
+            "synthetic".to_string(),
+            uids,
+            "s",
+            0,
+        )
+    };
+
+    // An identical re-write — exactly what the removed caller loops did — must
+    // not produce a second row.
+    store
+        .upsert_correlation(&c(vec!["a".into(), "b".into()]))
+        .expect("write");
+    store
+        .upsert_correlation(&c(vec!["a".into(), "b".into()]))
+        .expect("rewrite");
+    assert_eq!(
+        store.correlations_for_scan("s").expect("read").len(),
+        1,
+        "an identical member set is a stale re-emission, not a new finding"
+    );
+
+    // A grown cluster supersedes the narrower row rather than adding to it.
+    store
+        .upsert_correlation(&c(vec!["a".into(), "b".into(), "z".into()]))
+        .expect("write superset");
+    let rows = store.correlations_for_scan("s").expect("read");
+    assert_eq!(
+        rows.len(),
+        1,
+        "a superset supersedes, it does not accumulate"
+    );
+    assert_eq!(rows[0].entity_uids.len(), 3);
+
+    // A disjoint cluster from the same rule is a genuinely separate finding.
+    store
+        .upsert_correlation(&c(vec!["q".into(), "r".into()]))
+        .expect("write disjoint");
+    assert_eq!(
+        store.correlations_for_scan("s").expect("read").len(),
+        2,
+        "disjoint member sets are distinct findings and must coexist"
     );
 }

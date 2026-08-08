@@ -635,19 +635,27 @@ fn finalise_correlation_pass_survives_a_panicking_rule() {
 
     // The happy path passes the firings straight through for emission.
     let ok = guarded_correlation_pass("s", || {
-        Ok(vec![Correlation::new(
-            "AU-000",
-            "test correlation",
-            crate::core::correlator::Severity::Low,
-            "synthetic".to_string(),
-            vec!["uid-a".into(), "uid-b".into()],
-            "s",
-            0,
-        )])
+        Ok(crate::core::correlator::CorrelationRun {
+            firings: vec![Correlation::new(
+                "AU-000",
+                "test correlation",
+                crate::core::correlator::Severity::Low,
+                "synthetic".to_string(),
+                vec!["uid-a".into(), "uid-b".into()],
+                "s",
+                0,
+            )],
+            rules_run: 7,
+            rules_total: 7,
+        })
     })
     .expect("a successful pass returns Some(firings)");
-    assert_eq!(ok.len(), 1);
-    assert_eq!(ok[0].rule_id, "AU-000");
+    assert_eq!(ok.firings.len(), 1);
+    assert_eq!(ok.firings[0].rule_id, "AU-000");
+    assert!(
+        ok.is_complete(),
+        "the guard must pass completeness through untouched, not flatten it away"
+    );
 }
 
 #[tokio::test]

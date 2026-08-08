@@ -446,7 +446,7 @@ async fn check_storage_and_correlator() -> Check {
         let fired = Correlator::new(Arc::clone(&store) as Arc<dyn StoragePort>)
             .run(scan_id)
             .map_err(|e| format!("correlator: {e}"))?;
-        Ok((read.len(), fired.len()))
+        Ok((read.len(), fired.firings.len()))
     })();
 
     let _ = std::fs::remove_file(&p);

@@ -166,6 +166,62 @@ pub fn rank_and_sort(corrs: &mut [Correlation], ceff: &std::collections::HashMap
     });
 }
 
+/// The outcome of a correlation pass: what fired, **and whether the pass was
+/// complete**.
+///
+/// The pass is bounded by [`CORRELATOR_BUDGET`] wall-clock. When that budget is
+/// exhausted the loop stops at whatever rule it reached, and the firings from
+/// the remaining rules are simply never produced — so a truncated pass returns
+/// a strictly smaller answer that is otherwise shaped exactly like a complete
+/// one. Returning a bare `Vec<Correlation>`, as this did, made those
+/// indistinguishable: the partial set was persisted as the scan's correlations
+/// and `CorrelationsDone { count }` reported it as the total.
+///
+/// The degenerate case is not hypothetical on the target platform. The deadline
+/// is checked BEFORE each rule, including the first, so a budget already spent
+/// by the preceding phases yields **zero of 107 rules run** and an empty
+/// `Ok(vec![])` — identical, to every caller and to the operator, to "the rules
+/// ran over the whole scan and nothing correlated". Those are opposite
+/// conditions demanding opposite responses, which is the same distinction this
+/// module already draws for quarantined entities ("Report what was EXAMINED,
+/// not just what fired") and did not draw for its own budget.
+#[derive(Debug, Clone, Default)]
+pub struct CorrelationRun {
+    /// The correlations that fired, ranked and sorted.
+    pub firings: Vec<Correlation>,
+    /// Rules actually evaluated across both the entity and relation passes.
+    pub rules_run: usize,
+    /// Rules that would have been evaluated had the budget allowed.
+    pub rules_total: usize,
+}
+
+impl CorrelationRun {
+    /// True when every rule was evaluated — i.e. `firings` is the whole answer
+    /// rather than a prefix of it.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.rules_run >= self.rules_total
+    }
+
+    /// One line an operator can act on when the pass was cut short, or `None`
+    /// when it was complete and there is nothing to caveat.
+    #[must_use]
+    pub fn truncation_note(&self) -> Option<String> {
+        if self.is_complete() {
+            return None;
+        }
+        Some(format!(
+            "correlation INCOMPLETE: {}/{} rules ran before the {}s budget expired — \
+             {} correlation(s) is a floor, not a total. Re-run on a narrower scan or \
+             a less loaded device.",
+            self.rules_run,
+            self.rules_total,
+            CORRELATOR_BUDGET.as_secs(),
+            self.firings.len(),
+        ))
+    }
+}
+
 impl Correlation {
     pub(crate) fn new(
         rule_id: &str,
@@ -200,10 +256,28 @@ impl Correlator {
         Self { store }
     }
 
-    pub fn run(&self, scan_id: &str) -> Result<Vec<Correlation>> {
+    /// Evaluate every rule over `scan_id`'s persisted graph, persist each
+    /// firing, and report both the firings and whether the pass completed.
+    ///
+    /// **This method owns persistence.** Every firing is upserted here, so a
+    /// caller must not upsert them again — `app::persist` did, writing each
+    /// correlation twice on the import/ingest path while the engine's finalise
+    /// path wrote once. On the real store the second write is provably a no-op
+    /// (its set-containment dedup skips a subset-or-equal member set), so it
+    /// bought nothing and cost a second SQLite write transaction plus a second
+    /// full candidate-row scan per correlation — on a flash-backed device, for
+    /// a result already known.
+    pub fn run(&self, scan_id: &str) -> Result<CorrelationRun> {
+        let rules_total = RULES.len() + RELATION_RULES.len();
         let entities = self.store.entities_for_scan(scan_id)?;
         if entities.is_empty() {
-            return Ok(Vec::new());
+            // Nothing to correlate is a COMPLETE answer, not a truncated one:
+            // every rule would have been a no-op over an empty entity set.
+            return Ok(CorrelationRun {
+                firings: Vec::new(),
+                rules_run: rules_total,
+                rules_total,
+            });
         }
         // Build the quarantine-filtered confirmed view ONCE and share it across
         // both the entity-only and the graph-aware passes. Each pass otherwise
@@ -220,16 +294,23 @@ impl Correlator {
         // the WHOLE finalise correlator phase is bounded (a huge recalled graph
         // can't hang the scan). Never reached by a normal scan.
         let deadline = Some(std::time::Instant::now() + CORRELATOR_BUDGET);
-        let mut firings = evaluate_rules_on(&context, scan_id, now, deadline);
+        let (mut firings, entity_rules_run) = evaluate_rules_on(&context, scan_id, now, deadline);
+        let mut rules_run = entity_rules_run;
 
         // Graph-aware pass: rules that need the typed relation edges (the
         // attribution graph), not just the flat entity list. Relations are
         // persisted by `finalise_scan` before the correlator runs.
         let relations = self.store.relations_for_scan(scan_id)?;
-        if !relations.is_empty() {
-            firings.extend(evaluate_relation_rules_on(
-                &context, &relations, scan_id, now, deadline,
-            ));
+        if relations.is_empty() {
+            // No edges means the relation rules have nothing to match on, so
+            // skipping them is a complete answer for this graph — NOT a budget
+            // truncation, and must not be reported as one.
+            rules_run += RELATION_RULES.len();
+        } else {
+            let (relation_firings, relation_rules_run) =
+                evaluate_relation_rules_on(&context, &relations, scan_id, now, deadline);
+            firings.extend(relation_firings);
+            rules_run += relation_rules_run;
         }
 
         // Rank each firing by severity × highest child C_eff and sort
@@ -256,6 +337,8 @@ impl Correlator {
             examined,
             quarantined,
             total = entities.len(),
+            rules_run,
+            rules_total,
             "correlator done"
         );
         // A scan whose findings are overwhelmingly quarantined has not been
@@ -275,7 +358,20 @@ impl Correlator {
                  EXAMINED, not what was found"
             );
         }
-        Ok(firings)
+        let out = CorrelationRun {
+            firings,
+            rules_run,
+            rules_total,
+        };
+        // Truncation is louder than the quarantine alarm above, and for the same
+        // reason stated there: it silently voids part of the correlation phase.
+        // It is strictly worse, because the shortfall is invisible in the RESULT
+        // as well as in the count — the persisted rows look exactly like a
+        // complete pass's.
+        if let Some(note) = out.truncation_note() {
+            tracing::warn!(scan_id, %note, "correlation pass was cut short by its budget");
+        }
+        Ok(out)
     }
 }
 
@@ -559,8 +655,10 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     let confirmed = confirmed_only(entities);
     let context = RuleContext::new(&confirmed);
     // The live incremental pass is per-round and small — no budget, full
-    // determinism (its streaming correlations must be reproducible).
-    evaluate_rules_on(&context, scan_id, now, None)
+    // determinism (its streaming correlations must be reproducible). With no
+    // deadline the rule count cannot be short, so it is discarded here rather
+    // than plumbed to a caller for whom it is a constant.
+    evaluate_rules_on(&context, scan_id, now, None).0
 }
 
 /// Wall-clock budget for the FINALISE correlator pass (entity rules + the
@@ -596,26 +694,31 @@ const QUARANTINE_ALARM_RATIO: usize = 4;
 /// cloning per pass. `deadline` (set only on the finalise pass) caps total
 /// wall-time: once reached, no further rule is started and the pass returns what
 /// it has — a complete scan with partial correlations beats one hung forever.
+/// Evaluate the entity rules, returning the firings **and how many rules
+/// actually ran**. The count is the caller's only way to know whether the
+/// firings are the whole answer or a prefix of it — see [`CorrelationRun`].
 fn evaluate_rules_on(
     context: &RuleContext,
     scan_id: &str,
     now: u64,
     deadline: Option<std::time::Instant>,
-) -> Vec<Correlation> {
+) -> (Vec<Correlation>, usize) {
     let mut out = Vec::new();
-    for (i, rule) in RULES.iter().enumerate() {
+    let mut ran = 0usize;
+    for rule in RULES {
         if deadline.is_some_and(|dl| std::time::Instant::now() >= dl) {
             warn!(
                 scan_id,
-                ran = i,
+                ran,
                 total = RULES.len(),
                 "correlator entity-rule budget exceeded — finalising with partial correlations"
             );
             break;
         }
         out.extend(rule(context, scan_id, now));
+        ran += 1;
     }
-    out
+    (out, ran)
 }
 
 /// Entities minus the `candidate`-tagged quarantine set — the view every
@@ -812,23 +915,25 @@ fn evaluate_relation_rules_on(
     scan_id: &str,
     now: u64,
     deadline: Option<std::time::Instant>,
-) -> Vec<Correlation> {
+) -> (Vec<Correlation>, usize) {
     let mut out = Vec::new();
-    for (i, rule) in RELATION_RULES.iter().enumerate() {
+    let mut ran = 0usize;
+    for rule in RELATION_RULES {
         // The graph-aware rules are the costly ones on a large recalled graph, so
         // the shared finalise deadline matters most here.
         if deadline.is_some_and(|dl| std::time::Instant::now() >= dl) {
             warn!(
                 scan_id,
-                ran = i,
+                ran,
                 total = RELATION_RULES.len(),
                 "correlator relation-rule budget exceeded — finalising with partial correlations"
             );
             break;
         }
         out.extend(rule(context, relations, scan_id, now));
+        ran += 1;
     }
-    out
+    (out, ran)
 }
 
 #[cfg(test)]

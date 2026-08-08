@@ -2553,7 +2553,7 @@ fn run_finalise_correlation_and_emit(
     if let Some(firings) = guarded_correlation_pass(scan_id, || {
         crate::core::correlator::Correlator::new(Arc::clone(store)).run(scan_id)
     }) {
-        for c in &firings {
+        for c in &firings.firings {
             if emitted_corr.insert(correlation_key(c)) {
                 emitter.emit(
                     scan_id,
@@ -2563,10 +2563,17 @@ fn run_finalise_correlation_and_emit(
                 );
             }
         }
+        // `CorrelationsDone { count }` is the operator's total. When the budget
+        // cut the pass short that count is a FLOOR, and nothing downstream could
+        // tell — so say so here rather than let a partial pass close out looking
+        // like a complete one.
+        if let Some(note) = firings.truncation_note() {
+            warn!(scan_id, %note, "finalise: correlation pass truncated");
+        }
         emitter.emit(
             scan_id,
             EventKind::CorrelationsDone {
-                count: firings.len(),
+                count: firings.firings.len(),
             },
         );
     }
@@ -2765,8 +2772,8 @@ fn run_finalise_housekeeping(store: &dyn StoragePort, scan_id: &str) {
 /// control-flow wrapper; unit-tested with a deliberately panicking closure.
 pub(crate) fn guarded_correlation_pass(
     scan_id: &str,
-    run: impl FnOnce() -> crate::core::error::Result<Vec<crate::core::correlator::Correlation>>,
-) -> Option<Vec<crate::core::correlator::Correlation>> {
+    run: impl FnOnce() -> crate::core::error::Result<crate::core::correlator::CorrelationRun>,
+) -> Option<crate::core::correlator::CorrelationRun> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
         Ok(Ok(firings)) => Some(firings),
         Ok(Err(e)) => {

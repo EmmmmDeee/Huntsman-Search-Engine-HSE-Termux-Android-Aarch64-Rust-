@@ -46,6 +46,15 @@ struct Inner {
     /// membership of a scan is this ledger, and reads must go through it.
     observations: HashMap<String, Vec<(String, u64)>>,
     correlations: Vec<Correlation>,
+    /// Every `upsert_correlation` CALL, including ones the dedup discards.
+    ///
+    /// `correlations.len()` counts surviving rows, which is deliberately blind
+    /// to a redundant re-write — the dedup absorbs it, exactly as the real
+    /// store's does. That is precisely what let a caller write every
+    /// correlation twice unnoticed, so the call count is tracked separately:
+    /// it is the only way a test can tell "stored once" from "stored twice and
+    /// deduped".
+    correlation_writes: usize,
     relations: Vec<Relation>,
     events: Vec<Event>,
 }
@@ -59,6 +68,13 @@ impl InMemoryStore {
     /// count the halting test asserts against.
     pub fn entity_count(&self) -> usize {
         self.inner.lock().entities.len()
+    }
+
+    /// How many times `upsert_correlation` was CALLED, dedup notwithstanding —
+    /// see [`Inner::correlation_writes`]. Use this, not `correlations_for_scan`,
+    /// to assert that a correlation was written once rather than twice.
+    pub fn correlation_writes(&self) -> usize {
+        self.inner.lock().correlation_writes
     }
 }
 
@@ -239,8 +255,43 @@ impl StoragePort for InMemoryStore {
             .map_or(0, Vec::len))
     }
 
+    /// Mirrors `Store::upsert_correlation`'s set-containment dedup rather than
+    /// blindly pushing.
+    ///
+    /// This used to `push` unconditionally, so the same correlation stored twice
+    /// came back twice — behaviour the real store does not have, and which any
+    /// test counting correlations was silently asserting against. It also made
+    /// the double-write on the import path invisible: a duplicate row looked
+    /// normal here.
+    ///
+    /// The real rule, per `Store::upsert_correlation`: within one `(scan_id,
+    /// rule_id)`, a new member set that is a strict SUPERSET supersedes the
+    /// stored row (a cluster only grows); a subset-or-equal set is a stale
+    /// re-emission and is skipped; disjoint sets coexist as separate rows.
     fn upsert_correlation(&self, c: &Correlation) -> Result<()> {
-        self.inner.lock().correlations.push(c.clone());
+        use std::collections::HashSet;
+        let mut inner = self.inner.lock();
+        inner.correlation_writes += 1;
+        let new_set: HashSet<&str> = c.entity_uids.iter().map(String::as_str).collect();
+        let mut superseded = Vec::new();
+        for (i, old) in inner.correlations.iter().enumerate() {
+            if old.scan_id != c.scan_id || old.rule_id != c.rule_id {
+                continue;
+            }
+            let old_set: HashSet<&str> = old.entity_uids.iter().map(String::as_str).collect();
+            if old_set.is_superset(&new_set) {
+                // Equal or already-wider member set already stored — this is a
+                // stale earlier emission (or an exact duplicate write).
+                return Ok(());
+            }
+            if new_set.is_superset(&old_set) {
+                superseded.push(i);
+            }
+        }
+        for i in superseded.into_iter().rev() {
+            inner.correlations.remove(i);
+        }
+        inner.correlations.push(c.clone());
         Ok(())
     }
 

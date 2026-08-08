@@ -6,7 +6,7 @@ use axum::{
 };
 use serde_json::json;
 use std::sync::Arc;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::super::handlers::{bad_request, internal_error, not_found, ok_list, spawn_scan};
 use crate::api::AppState;
@@ -670,13 +670,22 @@ pub async fn scan_import(
             // Run the correlator so cross-entry handle-reuse / breach clusters
             // surface exactly as they would for a live scan. Best-effort: a
             // correlator hiccup must not fail an otherwise-successful import.
-            let correlator = crate::core::correlator::Correlator::new(Arc::clone(&store));
+            // Through `guarded_correlation_pass`, like every other caller: this
+            // one ran the rule engine bare, so a rule panicking on a crafted
+            // uploaded file would unwind the request handler instead of
+            // degrading to "no correlations" — the exact asymmetry that guard
+            // exists to close, and it names itself the single sanctioned entry
+            // point. `run` persists the firings, so they are counted here, not
+            // written a second time.
+            let guard_store = Arc::clone(&store);
+            let corr_sid = sid2.clone();
             let mut correlations = 0usize;
-            if let Ok(hits) = correlator.run(&sid2) {
-                for c in &hits {
-                    if store.upsert_correlation(c).is_ok() {
-                        correlations += 1;
-                    }
+            if let Some(run) = crate::core::engine::guarded_correlation_pass(&sid2, move || {
+                crate::core::correlator::Correlator::new(guard_store).run(&corr_sid)
+            }) {
+                correlations = run.firings.len();
+                if let Some(note) = run.truncation_note() {
+                    warn!(scan_id = %sid2, %note, "web import: correlation pass truncated");
                 }
             }
             Ok((relations, correlations, true))

@@ -89,15 +89,26 @@ pub(crate) async fn persist_entities_as_scan(
     // document via `ingest --auto-scan`) must degrade to "no correlations", not
     // unwind the whole persist after the entities were already stored and shown
     // to the operator.
+    // `Correlator::run` persists every firing itself, so this counts them
+    // rather than writing them a second time. The old loop re-upserted each
+    // correlation after `run` had already stored it: on the real store that
+    // second write is provably a no-op — its set-containment dedup skips a
+    // member set equal to one already present — so it bought nothing and cost
+    // an extra SQLite write transaction plus an extra full candidate-row scan
+    // per correlation, on a flash-backed device, for a result already known.
+    // The engine's finalise path never did this, so the two callers disagreed
+    // about whose job persistence was; `run` owns it.
     let mut correlations = 0usize;
     let guard_store = Arc::clone(&store);
-    if let Some(hits) = crate::core::engine::guarded_correlation_pass(sid, move || {
+    if let Some(run) = crate::core::engine::guarded_correlation_pass(sid, move || {
         crate::core::correlator::Correlator::new(guard_store).run(sid)
     }) {
-        for c in &hits {
-            if store.upsert_correlation(c).is_ok() {
-                correlations += 1;
-            }
+        correlations = run.firings.len();
+        // A budget-truncated pass returns a strictly partial answer that is
+        // shaped exactly like a complete one. The caller reports this count to
+        // the operator, so it must not present a floor as a total.
+        if let Some(note) = run.truncation_note() {
+            eprintln!("warning: {note}");
         }
     }
 
