@@ -137,7 +137,7 @@ fn parse_arp(content: &str, scan_id: &str, result: &mut ModuleResult) {
             continue;
         }
 
-        let vendor = oui_vendor(mac);
+        let (vendor, device_class) = classify_local_mac(mac);
 
         let mut ip_entity = Entity::new(
             EntityKind::IpAddress,
@@ -165,7 +165,14 @@ fn parse_arp(content: &str, scan_id: &str, result: &mut ModuleResult) {
         );
         mac_entity.tag(crate::core::tags::LOCAL_ARP);
         if let Some(v) = vendor {
-            mac_entity.tag(format!("vendor:{}", v.to_lowercase().replace(' ', "-")));
+            // Un-slugified `vendor:{name}` — the same tag shape every other
+            // OUI-classifying producer emits (wigle, signal_radar's wifi/
+            // bluetooth sensors), so a dossier/export filtering on this tag
+            // doesn't have to special-case local_net's casing.
+            mac_entity.tag(format!("vendor:{v}"));
+        }
+        if let Some(c) = device_class {
+            mac_entity.tag(format!("device:{c}"));
         }
         let mut mac_ev = Evidence::new(SRC, format!("ARP: {ip} via {dev}"))
             .with_attr("ip", ip)
@@ -175,12 +182,49 @@ fn parse_arp(content: &str, scan_id: &str, result: &mut ModuleResult) {
         if let Some(v) = vendor {
             mac_ev = mac_ev.with_attr("vendor", v);
         }
+        if let Some(c) = device_class {
+            mac_ev = mac_ev.with_attr("device_class", c);
+        }
         mac_entity.add_evidence(mac_ev);
         result.push(mac_entity);
     }
 }
 
-fn oui_vendor(mac: &str) -> Option<&'static str> {
+/// Classify a MAC's vendor (and, where known, coarse device class) for LAN
+/// discovery. Prefers [`crate::util::oui::classify_mac`] — the shared,
+/// ~120-entry curated consumer-device table every other OUI-classifying
+/// producer (wigle, signal_radar's wifi/bluetooth sensors) already delegates
+/// to, including its randomized/locally-administered-address awareness — and
+/// falls back to a small LAN-discovery-specific table of hypervisor/
+/// container/SBC prefixes ([`infra_vendor`]) the shared table doesn't cover
+/// (a WiGLE Bluetooth/WiFi sweep never observes a VMware or Docker NIC, so
+/// it's out of that table's consumer-device scope, but a local ARP sweep
+/// routinely does). Only falls through when the shared table has no real
+/// match (`DeviceClass::Unregistered`) — a randomized/private address is
+/// still reported via the shared table, since "this is a rotating privacy
+/// MAC, not a real vendor" is itself the correct, useful classification.
+fn classify_local_mac(mac: &str) -> (Option<&'static str>, Option<&'static str>) {
+    match crate::util::oui::classify_mac(mac) {
+        Some(oui) if !matches!(oui.class, crate::util::oui::DeviceClass::Unregistered) => {
+            (Some(oui.vendor), Some(oui.class.as_str()))
+        }
+        _ => (infra_vendor(mac), None),
+    }
+}
+
+/// Supplementary OUI prefixes for LAN discovery: the complete original
+/// hand-curated table this module shipped with, preserved verbatim as a
+/// fallback under [`classify_local_mac`] rather than deleted outright. Some
+/// entries (hypervisor/container/SBC/NIC-chipset/enterprise-gear vendors)
+/// sit outside the shared `util::oui` table's WiGLE-consumer-device scope
+/// entirely and have no other source; others (a handful of Apple/Samsung/
+/// TP-Link/Netgear/Huawei prefixes) name specific 6-hex OUIs `util::oui`'s
+/// own, separately-curated set of prefixes for the SAME vendors doesn't
+/// happen to include. Checked only when `classify_mac` misses, so its far
+/// larger table — and, for the two prefixes both tables independently
+/// classify (`88:36:6C`, `28:6C:07`), its more actively-maintained answer —
+/// always wins when it has one.
+fn infra_vendor(mac: &str) -> Option<&'static str> {
     let prefix = mac.get(..8)?.to_uppercase();
     match prefix.as_str() {
         "00:50:56" | "00:0C:29" | "00:05:69" => Some("VMware"),

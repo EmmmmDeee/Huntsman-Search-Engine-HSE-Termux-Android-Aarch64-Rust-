@@ -137,19 +137,89 @@ IP address       HW type     Flags       HW address            Mask     Device
     // ── OUI vendor lookup ────────────────────────────────────────────
 
     #[test]
-    fn oui_known_vendors() {
-        assert_eq!(oui_vendor("00:50:56:aa:bb:cc"), Some("VMware"));
-        assert_eq!(oui_vendor("08:00:27:11:22:33"), Some("VirtualBox"));
-        assert_eq!(oui_vendor("52:54:00:ab:cd:ef"), Some("QEMU"));
-        assert_eq!(oui_vendor("02:42:AC:11:00:02"), Some("Docker"));
+    fn infra_vendor_known_hypervisors_and_sbcs() {
+        assert_eq!(infra_vendor("00:50:56:aa:bb:cc"), Some("VMware"));
+        assert_eq!(infra_vendor("08:00:27:11:22:33"), Some("VirtualBox"));
+        assert_eq!(infra_vendor("52:54:00:ab:cd:ef"), Some("QEMU"));
+        assert_eq!(infra_vendor("02:42:AC:11:00:02"), Some("Docker"));
+        assert_eq!(infra_vendor("DC:A6:32:11:22:33"), Some("Raspberry Pi"));
     }
 
     #[test]
-    fn oui_unknown_vendor() {
-        assert_eq!(oui_vendor("aa:bb:cc:dd:ee:ff"), None);
+    fn infra_vendor_unknown_prefix_is_none() {
+        assert_eq!(infra_vendor("aa:bb:cc:dd:ee:ff"), None);
     }
 
     #[test]
-    fn oui_short_mac_returns_none() {
-        assert_eq!(oui_vendor("aa:bb"), None);
+    fn infra_vendor_short_mac_returns_none() {
+        assert_eq!(infra_vendor("aa:bb"), None);
+    }
+
+    #[test]
+    fn classify_local_mac_prefers_the_shared_consumer_device_table() {
+        // "3C:07:54" is a real entry in util::oui's curated table (Apple,
+        // Phone) — a hypervisor/SBC prefix (Rasp Pi, VMware, …) does NOT
+        // shadow it, so the far richer shared table wins whenever it knows
+        // the prefix, not just for the infra-specific subset.
+        let (vendor, class) = classify_local_mac("3C:07:54:aa:bb:cc");
+        assert_eq!(vendor, Some("Apple"));
+        assert_eq!(class, Some("phone"));
+    }
+
+    #[test]
+    fn classify_local_mac_falls_back_to_infra_vendor() {
+        // The shared table has no VMware entry (WiGLE never sees a
+        // hypervisor NIC), so a real VM-hosted VMware address must still be
+        // classified — the whole point of local_net's own fallback table —
+        // with no device class (VM/container vendors aren't a device class).
+        let (vendor, class) = classify_local_mac("00:50:56:aa:bb:cc");
+        assert_eq!(vendor, Some("VMware"));
+        assert_eq!(class, None);
+    }
+
+    #[test]
+    fn classify_local_mac_preserves_every_legacy_prefix_the_module_shipped_with() {
+        // Regression guard: this module's original, hand-rolled OUI table
+        // (now folded into `infra_vendor`) covered TP-Link/Netgear/Huawei
+        // prefixes that are NOT in util::oui's separately-curated set for
+        // those same vendor names — a naive "shared table replaces the
+        // local one" swap would have silently dropped these three specific
+        // real-world prefixes to `None`. All must still resolve.
+        assert_eq!(classify_local_mac("00:1E:58:11:22:33").0, Some("TP-Link"));
+        assert_eq!(classify_local_mac("00:0E:8F:11:22:33").0, Some("Netgear"));
+        assert_eq!(classify_local_mac("00:90:A9:11:22:33").0, Some("Huawei"));
+    }
+
+    #[test]
+    fn classify_local_mac_prefers_util_oui_over_a_conflicting_legacy_entry() {
+        // "88:36:6C" and "28:6C:07" are present in BOTH the legacy table
+        // (as "Apple" and "Samsung" respectively) and util::oui's
+        // independently-curated table (as "Samsung TV" and "Xiaomi"
+        // respectively) — the two hand-curated tables disagree. util::oui
+        // is the actively-maintained, shared source of truth every other
+        // OUI-classifying producer in the codebase delegates to, so it must
+        // win over this module's own frozen legacy fallback.
+        assert_eq!(classify_local_mac("88:36:6C:11:22:33").0, Some("Samsung TV"));
+        assert_eq!(classify_local_mac("28:6C:07:11:22:33").0, Some("Xiaomi"));
+    }
+
+    #[test]
+    fn classify_local_mac_reports_a_randomized_address_not_a_vendor() {
+        // U/L bit set (0x02) → classify_mac reports "Randomized (private)"
+        // rather than falling through to infra_vendor or a table miss: a
+        // rotating privacy MAC genuinely isn't any real vendor's device.
+        let (vendor, class) = classify_local_mac("02:AA:BB:cc:dd:ee");
+        assert_eq!(vendor, Some("Randomized (private)"));
+        assert_eq!(class, Some("randomized"));
+    }
+
+    #[test]
+    fn classify_local_mac_unknown_everywhere_is_none() {
+        // Neither the shared consumer table nor the infra fallback knows
+        // this prefix, and it isn't randomized: 0xAC's U/L bit (0x02) is
+        // clear (0xAC & 0x02 == 0), unlike 0xAA used elsewhere in this file
+        // for the deliberately-randomized case.
+        let (vendor, class) = classify_local_mac("ac:bb:cc:dd:ee:ff");
+        assert_eq!(vendor, None);
+        assert_eq!(class, None);
     }
