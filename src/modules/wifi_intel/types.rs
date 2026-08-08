@@ -8,7 +8,13 @@ use serde::Deserialize;
 pub(super) struct Ap {
     pub(super) bssid: String,
     pub(super) ssid: Option<String>,
-    pub(super) frequency: Option<i64>,
+    /// `termux-wifi-scaninfo` emits this as `frequency_mhz` (see `WifiAPI.java`),
+    /// not `frequency`. Read under the wrong name it was `None` on every real
+    /// scan, so this module's `.with_attr("frequency_mhz", …)` recorded a
+    /// constant `0` — an attribute correctly labelled and never populated. The
+    /// alias keeps the old spelling parseable.
+    #[serde(rename = "frequency_mhz", alias = "frequency")]
+    pub(super) frequency_mhz: Option<i64>,
     pub(super) rssi: Option<i64>,
     pub(super) timestamp: Option<i64>,
 }

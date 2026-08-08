@@ -159,7 +159,7 @@ impl Module for WifiIntel {
                 Evidence::new(SOURCE, format!("Wi-Fi AP: {ssid}"))
                     .with_attr("ssid", ssid)
                     .with_attr("bssid", &ap.bssid)
-                    .with_attr("frequency_mhz", ap.frequency.unwrap_or(0).to_string())
+                    .with_attr("frequency_mhz", ap.frequency_mhz.unwrap_or(0).to_string())
                     .with_attr("rssi_dbm", ap.rssi.unwrap_or(0).to_string())
                     .with_attr("timestamp", ap.timestamp.unwrap_or(0).to_string()),
             );
@@ -336,7 +336,7 @@ fn parse_aps(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
             Evidence::new(SOURCE, format!("Wi-Fi AP: {ssid}"))
                 .with_attr("ssid", ssid)
                 .with_attr("bssid", ap.bssid)
-                .with_attr("frequency_mhz", ap.frequency.unwrap_or(0).to_string())
+                .with_attr("frequency_mhz", ap.frequency_mhz.unwrap_or(0).to_string())
                 .with_attr("rssi_dbm", ap.rssi.unwrap_or(0).to_string())
                 .with_attr("timestamp", ap.timestamp.unwrap_or(0).to_string()),
         );

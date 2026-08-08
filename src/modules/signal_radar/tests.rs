@@ -7,8 +7,8 @@ use crate::core::{confidence, entity::EntityKind};
 #[test]
 fn wifi_parse_valid_aps() {
     let json = br#"[
-        {"bssid":"AA:BB:CC:DD:EE:FF","ssid":"TestNet","rssi":-45,"frequency":2437,"channel_width":"20","timestamp":1000},
-        {"bssid":"11:22:33:44:55:66","ssid":"WeakAP","rssi":-80,"frequency":5180,"channel_width":"40","timestamp":2000}
+        {"bssid":"AA:BB:CC:DD:EE:FF","ssid":"TestNet","rssi":-45,"frequency_mhz":2437,"channel_bandwidth_mhz":"20","timestamp":1000},
+        {"bssid":"11:22:33:44:55:66","ssid":"WeakAP","rssi":-80,"frequency_mhz":5180,"channel_bandwidth_mhz":"40","timestamp":2000}
     ]"#;
     let result = wifi::parse_scan(json, "test-scan").expect("valid AP JSON parses");
     // 2 APs, each with a non-empty SSID → 2 MacAddress entities + 2 Ssid
@@ -55,10 +55,10 @@ fn wifi_parse_valid_aps() {
 #[test]
 fn wifi_skip_placeholder_bssids() {
     let json = br#"[
-        {"bssid":"00:00:00:00:00:00","ssid":"Bad1","rssi":-40,"frequency":2437},
-        {"bssid":"02:00:00:00:00:00","ssid":"Bad2","rssi":-40,"frequency":2437},
-        {"bssid":"","ssid":"Bad3","rssi":-40,"frequency":2437},
-        {"bssid":"AA:BB:CC:DD:EE:FF","ssid":"Good","rssi":-40,"frequency":2437}
+        {"bssid":"00:00:00:00:00:00","ssid":"Bad1","rssi":-40,"frequency_mhz":2437},
+        {"bssid":"02:00:00:00:00:00","ssid":"Bad2","rssi":-40,"frequency_mhz":2437},
+        {"bssid":"","ssid":"Bad3","rssi":-40,"frequency_mhz":2437},
+        {"bssid":"AA:BB:CC:DD:EE:FF","ssid":"Good","rssi":-40,"frequency_mhz":2437}
     ]"#;
     let result = wifi::parse_scan(json, "test-scan").expect("valid AP JSON parses");
     // Only the last AP survives the placeholder/empty-BSSID filter, and its
@@ -68,6 +68,63 @@ fn wifi_skip_placeholder_bssids() {
     assert_eq!(result.entities[0].kind, EntityKind::MacAddress);
     assert_eq!(result.entities[1].kind, EntityKind::Ssid);
     assert_eq!(result.entities[1].value, "Good");
+}
+
+/// Pins the field names `termux-wifi-scaninfo` ACTUALLY emits, per
+/// `WifiAPI.java`: `frequency_mhz` and `channel_bandwidth_mhz`. Read under the
+/// names this parser used to declare (`frequency`, `channel_width`) both
+/// deserialise to `None`, so no AP ever got a band tag and every AP recorded
+/// its channel width as "unknown" — on every real scan, with the fixtures
+/// agreeing with the parser and neither agreeing with the tool.
+#[test]
+fn wifi_reads_the_field_names_the_tool_actually_emits() {
+    let json = br#"[
+        {"bssid":"AA:BB:CC:DD:EE:FF","ssid":"Net","rssi":-45,
+         "frequency_mhz":5180,"channel_bandwidth_mhz":"80","timestamp":1}
+    ]"#;
+    let result = wifi::parse_scan(json, "test-scan").expect("valid AP JSON parses");
+    let ap = &result.entities[0];
+    assert!(
+        ap.has_tag("band:5GHz"),
+        "5180 MHz must yield a 5GHz band tag; tags: {:?}",
+        ap.tags
+    );
+    let width = ap.evidence[0]
+        .attributes
+        .iter()
+        .find(|(k, _)| k.as_str() == "channel_bandwidth_mhz")
+        .map(|(_, v)| v.as_str());
+    assert_eq!(width, Some("80"));
+}
+
+/// The AP's security posture is real OSINT the tool already provides and this
+/// parser discarded: "a network is here" and "an OPEN network is here" are
+/// different findings. Reported only on positive evidence — an absent
+/// `capabilities` key means the tool said nothing, not that the AP is open.
+#[test]
+fn wifi_classifies_ap_security_from_the_capability_string() {
+    let json = br#"[
+        {"bssid":"AA:BB:CC:DD:EE:01","ssid":"Open","rssi":-45,"capabilities":"[ESS]"},
+        {"bssid":"AA:BB:CC:DD:EE:02","ssid":"Legacy","rssi":-45,"capabilities":"[WPA2-PSK-CCMP][ESS]"},
+        {"bssid":"AA:BB:CC:DD:EE:03","ssid":"Modern","rssi":-45,"capabilities":"[RSN-SAE-CCMP][WPA3][ESS]"},
+        {"bssid":"AA:BB:CC:DD:EE:04","ssid":"Silent","rssi":-45}
+    ]"#;
+    let result = wifi::parse_scan(json, "test-scan").expect("valid AP JSON parses");
+    let aps: Vec<_> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::MacAddress)
+        .collect();
+    assert!(aps[0].has_tag("wifi-sec:open"));
+    assert!(aps[1].has_tag("wifi-sec:wpa2"));
+    // Transition-mode APs advertise both; the STRONGEST match must win, or a
+    // WPA3 network is reported as the weaker thing its string also mentions.
+    assert!(aps[2].has_tag("wifi-sec:wpa3"));
+    assert!(
+        !aps[3].tags.iter().any(|t| t.starts_with("wifi-sec:")),
+        "no capability string means no claim, not an open network: {:?}",
+        aps[3].tags
+    );
 }
 
 #[test]

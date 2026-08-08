@@ -46,8 +46,8 @@ fn max_timeout_is_20s() {
 #[test]
 fn parses_sample_payload() {
     let json = br#"[
-        {"bssid":"aa:bb:cc:dd:ee:ff","ssid":"MyNet","frequency":2412,"rssi":-45,"timestamp":1},
-        {"bssid":"11:22:33:44:55:66","ssid":null,"frequency":5180,"rssi":-72,"timestamp":2}
+        {"bssid":"aa:bb:cc:dd:ee:ff","ssid":"MyNet","frequency_mhz":2412,"rssi":-45,"timestamp":1},
+        {"bssid":"11:22:33:44:55:66","ssid":null,"frequency_mhz":5180,"rssi":-72,"timestamp":2}
     ]"#;
     let r = parse_aps(json, "test").expect("valid AP JSON parses");
     assert_eq!(r.entities.len(), 2);
@@ -81,9 +81,9 @@ fn blank_output_is_an_empty_ok() {
 #[test]
 fn parses_three_aps_with_all_fields() {
     let json = br#"[
-        {"bssid":"aa:bb:cc:dd:ee:ff","ssid":"HomeNet","frequency":2437,"rssi":-42,"timestamp":100},
-        {"bssid":"11:22:33:44:55:66","ssid":"Office5G","frequency":5745,"rssi":-68,"timestamp":200},
-        {"bssid":"de:ad:be:ef:ca:fe","ssid":"CafeWifi","frequency":2462,"rssi":-55,"timestamp":300}
+        {"bssid":"aa:bb:cc:dd:ee:ff","ssid":"HomeNet","frequency_mhz":2437,"rssi":-42,"timestamp":100},
+        {"bssid":"11:22:33:44:55:66","ssid":"Office5G","frequency_mhz":5745,"rssi":-68,"timestamp":200},
+        {"bssid":"de:ad:be:ef:ca:fe","ssid":"CafeWifi","frequency_mhz":2462,"rssi":-55,"timestamp":300}
     ]"#;
     let r = parse_aps(json, "scan-001").expect("valid AP JSON parses");
     assert_eq!(r.entities.len(), 3);
@@ -135,7 +135,7 @@ fn parses_three_aps_with_all_fields() {
 #[test]
 fn hidden_ssid_shows_placeholder() {
     let json =
-        br#"[{"bssid":"ff:ff:ff:ff:ff:ff","ssid":null,"frequency":2412,"rssi":-80,"timestamp":0}]"#;
+        br#"[{"bssid":"ff:ff:ff:ff:ff:ff","ssid":null,"frequency_mhz":2412,"rssi":-80,"timestamp":0}]"#;
     let r = parse_aps(json, "test").expect("valid AP JSON parses");
     assert_eq!(r.entities.len(), 1);
     let ev = &r.entities[0].evidence[0];
@@ -176,9 +176,9 @@ fn placeholder_bssids_are_never_minted_as_entities() {
     // device) and be wrongly counted as a real, followable device. A real
     // AP survives alongside them.
     let json = br#"[
-        {"bssid":"00:00:00:00:00:00","ssid":"Ghost1","frequency":2412,"rssi":-40,"timestamp":0},
-        {"bssid":"02:00:00:00:00:00","ssid":"Ghost2","frequency":2412,"rssi":-40,"timestamp":0},
-        {"bssid":"aa:bb:cc:dd:ee:ff","ssid":"RealNet","frequency":2412,"rssi":-40,"timestamp":0}
+        {"bssid":"00:00:00:00:00:00","ssid":"Ghost1","frequency_mhz":2412,"rssi":-40,"timestamp":0},
+        {"bssid":"02:00:00:00:00:00","ssid":"Ghost2","frequency_mhz":2412,"rssi":-40,"timestamp":0},
+        {"bssid":"aa:bb:cc:dd:ee:ff","ssid":"RealNet","frequency_mhz":2412,"rssi":-40,"timestamp":0}
     ]"#;
     let r = parse_aps(json, "test").expect("valid AP JSON parses");
     assert_eq!(r.entities.len(), 1, "only the real AP survives: {r:?}");
