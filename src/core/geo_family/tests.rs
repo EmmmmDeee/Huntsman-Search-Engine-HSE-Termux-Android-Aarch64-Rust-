@@ -369,15 +369,38 @@ fn person_grain_postcode_refuses_an_ip_geolocation() {
 
 #[test]
 fn person_grain_postcode_keeps_a_real_postal_record() {
-    // A breach/register postcode carries no `ip` attribute, so it is untouched —
-    // the legitimate rung-3/4 input must still work.
-    assert_eq!(
-        au_postcode_person_grain(&fam("Stephen Moreau", Some("4169"))).as_deref(),
-        Some("4169")
-    );
+    // A breach/register postcode on a NON-family-candidate entity carries no
+    // `ip` attribute and no `family-candidate` tag, so it is untouched — the
+    // legitimate rung-3/4 input must still work.
+    let mut owner = Entity::new(EntityKind::Person, "Stephen Moreau", 0.32, "s");
+    owner.add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", "4169"));
+    assert_eq!(au_postcode_person_grain(&owner).as_deref(), Some("4169"));
     // An Address naming its postcode in the VALUE, with no evidence at all.
     let addr = Entity::new(EntityKind::Address, "QLD 4518, Australia", 0.3, "s");
     assert_eq!(au_postcode_person_grain(&addr).as_deref(), Some("4518"));
+}
+
+#[test]
+fn person_grain_postcode_refuses_a_family_candidate() {
+    // `fam()` mints exactly the real au_unclaimed shape: a non-exact co-owner
+    // Person at confidence 0.32, tagged `family-candidate`, carrying a
+    // structured `postcode` attribute (qld_helpers.rs:373-414). `au_postcode`
+    // still reports it (the raw accessor is unchanged and `distance_to_subject`
+    // legitimately needs it to measure a relative's distance FROM the subject).
+    let relative = fam("Stephen Moreau", Some("4169"));
+    assert_eq!(au_postcode(&relative).as_deref(), Some("4169"));
+    // The person-grain accessor refuses it: `subject_fixes` already refuses this
+    // same source for the SUBJECT's own anchor ("a family-candidate's own
+    // address never anchors... so there is no circularity") — this closes the
+    // same gap for `au_postcode_person_grain`'s two callers
+    // (`best_au_location_estimate`'s postcode rung and
+    // `au_location_corroboration`), which do not go through `subject_fixes`.
+    // Without this, a scan with no exact-name-matched subject address could
+    // report a RELATIVE's suburb as the subject's own headline residence.
+    assert!(
+        au_postcode_person_grain(&relative).is_none(),
+        "a family-candidate's postcode must not supply the subject's own location"
+    );
 }
 
 #[test]

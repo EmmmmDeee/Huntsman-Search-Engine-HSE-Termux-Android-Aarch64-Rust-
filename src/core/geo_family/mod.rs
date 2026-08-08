@@ -114,7 +114,24 @@ pub fn au_postcode(e: &Entity) -> Option<String> {
 /// entity whose evidence is *entirely* IP-derived is refused outright; otherwise
 /// only the IP-derived records are skipped, so an entity that also carries a
 /// real postal record still yields its postcode.
+///
+/// Also refuses an entity tagged `family-candidate`. Both this function's
+/// callers (`best_au_location_estimate`'s postcode rung, and
+/// `au_location_corroboration`) use it to establish the SUBJECT's OWN
+/// location — but a `family-candidate` names a possible RELATIVE, not the
+/// subject (e.g. `au_unclaimed`'s QLD register mints a non-exact co-owner
+/// Person at confidence 0.35 carrying exactly this tag plus a structured
+/// `postcode` attribute). [`subject_fixes`] already refuses this same source
+/// for the identical reason ("a family-candidate's own address never
+/// anchors... so there is no circularity"); this closes the same gap for the
+/// `au_postcode_person_grain` path, which `subject_fixes` does not cover.
+/// Without it, a scan with no exact-name-matched address for the subject but
+/// an au_unclaimed relative hit could report that relative's suburb as the
+/// subject's own 8 km "postcode grain" headline residence.
 pub fn au_postcode_person_grain(e: &Entity) -> Option<String> {
+    if e.has_tag("family-candidate") {
+        return None;
+    }
     let ip_derived = |ev: &crate::core::entity::Evidence| ev.attributes.contains_key("ip");
     if !e.evidence.is_empty() && e.evidence.iter().all(ip_derived) {
         return None;
