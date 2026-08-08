@@ -144,10 +144,7 @@ fn emit_oathnet_entry(
     for (k, v) in entry.iter() {
         // Don't echo raw secrets into a benign attribute; they surface (or not) as
         // their own Credential entities below.
-        if !matches!(
-            k.as_str(),
-            "password" | "password hash" | "password md5" | "salt" | "ssn"
-        ) {
+        if !crate::util::redact::is_secret_attr_key(k) {
             ev = ev.with_attr(k.replace(' ', "_"), v);
         }
     }

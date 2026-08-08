@@ -46,6 +46,61 @@ const COORD_ATTR_KEYS: &[&str] = &[
     "coord",
 ];
 
+/// True for an evidence-attribute key whose VALUE is a secret, whatever entity
+/// the attribute happens to hang off.
+///
+/// This is the one canonical answer to "is this attribute sensitive?", and it
+/// exists because three import parsers had each hand-rolled their own partial
+/// list while echoing a raw breach record into evidence:
+///
+/// | producer | excluded |
+/// |---|---|
+/// | `oathnet_report` | password, password hash, password md5, salt, ssn |
+/// | `combined` | password, hash, password hash, salt |
+/// | `dossier` | **hash only** |
+///
+/// None covered `cookie`/`session`, although `dossier`'s own field list names
+/// those as credential artifacts. The consequence was measured, not theorised: a
+/// dossier entry carrying `password: Sup3rSecret!` put that plaintext on the
+/// **Email** and **Username** entities' evidence, and since neither is a
+/// [`is_credential_kind`], `redact_entities` left it untouched — a `--redact`
+/// export still contained the plaintext password and session token. A redacted
+/// artifact that still holds credentials is worse than an unredacted one,
+/// because the operator believes it is safe to hand over.
+///
+/// Matching is on a normalised key (lower-cased, spaces folded to `_`), so
+/// `"password hash"`, `"Password_Hash"` and `"password_hash"` are one key. No
+/// correlator rule reads any of these attributes (verified by grep over
+/// `src/core`), so scrubbing them costs no analysis.
+#[must_use]
+pub fn is_secret_attr_key(key: &str) -> bool {
+    let k = key.trim().to_ascii_lowercase().replace(' ', "_");
+    matches!(
+        k.as_str(),
+        "password"
+            | "passwd"
+            | "pass"
+            | "password_hash"
+            | "password_md5"
+            | "passwordhash"
+            | "hash"
+            | "salt"
+            | "ssn"
+            | "cookie"
+            | "cookies"
+            | "session"
+            | "session_token"
+            | "token"
+            | "auth_token"
+            | "access_token"
+            | "refresh_token"
+            | "api_key"
+            | "apikey"
+            | "secret"
+            | "private_key"
+    )
+}
+
 /// True for the credential-class kinds whose *value* is itself the secret:
 /// [`EntityKind::Password`], [`EntityKind::Credential`], and
 /// [`EntityKind::ApiKey`] (a harvested third-party key). These are masked
@@ -104,6 +159,39 @@ pub fn redact_entities(entities: &mut [Entity]) {
             redact_credential(e);
         } else if e.kind == EntityKind::Coordinates {
             redact_coordinates(e);
+        }
+        // EVERY entity, whatever its kind. The two arms above mask an entity
+        // whose own VALUE is sensitive, but a secret also travels as an
+        // ATTRIBUTE on an unrelated entity's evidence: the import parsers clone
+        // one evidence record — the whole raw breach row — onto every entity the
+        // row yields, so a plaintext password rides on the Email and the
+        // Username too. Neither is a credential kind, so before this the
+        // `--redact` export still carried it.
+        //
+        // This is the module doc's stated promise ("their evidence
+        // summaries/attributes scrubbed so the plaintext cannot re-leak via a
+        // raw breach record echoed into the evidence trail") applied where it
+        // actually has to hold. Doing it at the boundary rather than only in the
+        // producers is deliberate: this function is what CLAIMS the artifact is
+        // shareable, so it must not depend on every current and future producer
+        // having remembered to filter.
+        redact_secret_attrs(e);
+    }
+}
+
+/// Replace the value of any secret-bearing evidence attribute
+/// ([`is_secret_attr_key`]) with [`REDACTED`], on any entity kind.
+///
+/// The key is KEPT with a redacted value rather than removed, so the redacted
+/// export still shows that the record carried a password — preserving the
+/// analytic shape this module promises ("it just no longer says what they
+/// were") — while disclosing nothing.
+fn redact_secret_attrs(e: &mut Entity) {
+    for ev in &mut e.evidence {
+        for (key, value) in &mut ev.attributes {
+            if is_secret_attr_key(key) && value != REDACTED {
+                *value = REDACTED.to_string();
+            }
         }
     }
 }
@@ -272,5 +360,103 @@ mod tests {
         redact_entities(&mut v);
         assert_eq!(v[0].value, once[0].value);
         assert_eq!(v[0].evidence[0].summary, once[0].evidence[0].summary);
+    }
+
+    /// A secret carried as an ATTRIBUTE on a non-credential entity must not
+    /// survive redaction.
+    ///
+    /// The import parsers clone ONE evidence record — the whole raw breach row —
+    /// onto every entity that row yields, so a plaintext password rides on the
+    /// Email and the Username as well as on its own Credential entity. Neither
+    /// of those is a credential KIND, so the kind-based arms never touched them:
+    /// measured on a real `parse_dossier` entry, a `--redact` export still
+    /// contained `Sup3rSecret!` and the session token. A redacted artifact that
+    /// still holds credentials is worse than an unredacted one, because the
+    /// operator believes it is safe to hand over.
+    #[test]
+    fn a_secret_attribute_on_a_non_credential_entity_is_redacted() {
+        let mut email = Entity::new(EntityKind::Email, "alice@corp.example", 0.9, "s");
+        email.add_evidence(
+            Evidence::new(
+                "import:dossier",
+                "Breach dossier entry — alice@corp.example",
+            )
+            .with_attr("email", "alice@corp.example")
+            .with_attr("password", "Sup3rSecret!")
+            .with_attr("session", "abcdef0123456789abcdef")
+            .with_attr("Password Hash", "$2a$10$abcdef")
+            .with_attr("country", "AU"),
+        );
+        let mut ents = [email];
+        redact_entities(&mut ents);
+
+        let json = serde_json::to_string(&ents).expect("serialises");
+        for secret in ["Sup3rSecret!", "abcdef0123456789abcdef", "$2a$10$abcdef"] {
+            assert!(
+                !json.contains(secret),
+                "{secret:?} survived redaction in {json}"
+            );
+        }
+
+        let attrs = &ents[0].evidence[0].attributes;
+        // The KEYS stay, with redacted values — the export still shows a password
+        // was present, it just no longer says what it was.
+        assert_eq!(attrs.get("password").map(String::as_str), Some(REDACTED));
+        assert_eq!(attrs.get("session").map(String::as_str), Some(REDACTED));
+        // Normalisation: "Password Hash" is the same key as password_hash.
+        assert_eq!(
+            attrs.get("Password Hash").map(String::as_str),
+            Some(REDACTED)
+        );
+        // Non-secret attributes are untouched — the analytic shape is preserved.
+        assert_eq!(attrs.get("country").map(String::as_str), Some("AU"));
+        assert_eq!(
+            attrs.get("email").map(String::as_str),
+            Some("alice@corp.example")
+        );
+    }
+
+    /// The canonical key predicate is normalisation-insensitive and does not
+    /// over-reach onto ordinary analytic attributes.
+    #[test]
+    fn secret_attr_key_matches_every_spelling_and_nothing_benign() {
+        for k in [
+            "password",
+            "Password",
+            "PASSWORD",
+            "password hash",
+            "Password_Hash",
+            "password md5",
+            "hash",
+            "salt",
+            "ssn",
+            "cookie",
+            "session",
+            "token",
+            "api_key",
+            "APIKey",
+            " secret ",
+        ] {
+            assert!(is_secret_attr_key(k), "{k:?} must be treated as a secret");
+        }
+        for k in [
+            "email",
+            "username",
+            "country",
+            "date_of_birth",
+            "dob",
+            "ip",
+            "lastip",
+            "url",
+            "database_name",
+            "name",
+            "phone",
+            "address",
+            "tfn",
+            "medicare",
+            "passport",
+        ] {
+            assert!(!is_secret_attr_key(k), "{k:?} must NOT be scrubbed");
+        }
     }
 }

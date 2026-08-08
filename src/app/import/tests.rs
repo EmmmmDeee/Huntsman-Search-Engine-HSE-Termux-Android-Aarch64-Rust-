@@ -530,6 +530,68 @@ fn a_cr_only_csv_is_split_into_rows_not_collapsed() {
     );
 }
 
+/// End to end: a dossier's plaintext secrets must not survive into a `--redact`
+/// export, and must not be attached to unrelated entities in the first place.
+///
+/// This is the real reported scenario, not a unit fixture. `emit_dossier_entry`
+/// clones ONE evidence record — the whole raw entry — onto every entity the
+/// entry yields, and it used to exclude only `"hash"`, so the plaintext
+/// `password` and `session` rode on the Email and Username. Neither is a
+/// credential KIND, so `redact_entities` left them untouched and the redacted
+/// export still contained `Sup3rSecret!`.
+///
+/// Both halves are asserted: the producer no longer emits the secret as an
+/// attribute (defence at source), and redaction scrubs any that reaches it
+/// (defence at the boundary that makes the shareable-artifact promise).
+#[test]
+fn dossier_secrets_do_not_survive_into_a_redacted_export() {
+    const D: &str = "Entry #1:
+\u{2022} email: alice@corp.example
+\u{2022} username: alice
+\u{2022} password: Sup3rSecret!
+\u{2022} session: abcdef0123456789abcdef
+\u{2022} country: AU
+";
+    let (mut ents, _stats) = parse_dossier(D, "s");
+
+    // Producer: no non-credential entity carries the secret as an attribute.
+    for e in ents.iter().filter(|e| e.kind != EntityKind::Credential) {
+        for ev in &e.evidence {
+            for key in ["password", "session"] {
+                assert!(
+                    !ev.attributes.contains_key(key),
+                    "{:?} {:?} still carries a {key:?} attribute",
+                    e.kind,
+                    e.value
+                );
+            }
+        }
+        // The benign field is still there — this is a narrowing, not a purge.
+        assert!(
+            e.evidence
+                .iter()
+                .any(|ev| ev.attributes.get("country").map(String::as_str) == Some("AU")),
+            "non-secret attributes must survive on {:?}",
+            e.value
+        );
+    }
+
+    // Boundary: after redaction the plaintext appears nowhere in the artifact.
+    crate::util::redact::redact_entities(&mut ents);
+    let json = serde_json::to_string(&ents).expect("serialises");
+    for secret in ["Sup3rSecret!", "abcdef0123456789abcdef"] {
+        assert!(
+            !json.contains(secret),
+            "{secret:?} survived into the redacted export: {json}"
+        );
+    }
+    // The credential is still REPRESENTED — the export says a password existed.
+    assert!(
+        ents.iter().any(|e| e.kind == EntityKind::Credential),
+        "the Credential entity itself must still be present, just masked"
+    );
+}
+
 /// The parser must read the same dotted multi-value columns the DETECTOR
 /// accepts.
 ///

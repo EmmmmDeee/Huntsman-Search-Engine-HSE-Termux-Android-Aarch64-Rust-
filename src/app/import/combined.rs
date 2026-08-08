@@ -213,7 +213,7 @@ fn emit_combined_records(
         .with_attr("importer", "combined-search");
         for (l, v) in &rec {
             // Carry every field except raw secrets (surfaced as their own entities).
-            if !matches!(l.as_str(), "password" | "hash" | "password hash" | "salt") {
+            if !crate::util::redact::is_secret_attr_key(l) {
                 ev = ev.with_attr(l.replace(' ', "_"), v);
             }
         }

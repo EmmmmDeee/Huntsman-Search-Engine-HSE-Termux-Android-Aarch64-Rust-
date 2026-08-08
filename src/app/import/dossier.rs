@@ -249,9 +249,14 @@ fn emit_dossier_entry(
     let label = email.or(name).or(username).unwrap_or("breach entry");
     let mut ev = Evidence::new("import:dossier", format!("Breach dossier entry — {label}"));
     for (k, v) in entry.iter() {
-        // Don't echo a raw password hash into a human-readable attribute under a
-        // benign name; it's surfaced as its own Credential entity below.
-        if k != "hash" {
+        // Don't echo a secret into a human-readable attribute under a benign
+        // name; each is surfaced as its own Credential entity below. This used
+        // to exclude `"hash"` ALONE, so a dossier entry's plaintext `password`
+        // and `session` token were attached to the Email, Username and Person
+        // entities — none of them a credential kind, so `redact_entities` left
+        // them intact and a `--redact` export still carried the plaintext.
+        // `is_secret_attr_key` is the one shared list the sibling parsers use.
+        if !crate::util::redact::is_secret_attr_key(k) {
             ev = ev.with_attr(k, v);
         }
     }
