@@ -60,6 +60,7 @@ pub mod device_sensors;
 // device_sensors and signal_radar so the on-device fix logic lives once.
 // `pub(crate)` (like `breach_rich`) keeps it out of the
 // `every_declared_module_is_registered` guard.
+pub(crate) mod device_cell;
 pub(crate) mod device_fix;
 pub mod devto;
 pub mod discord_snowflake;

@@ -1,10 +1,11 @@
 use super::CellIntel;
 use super::helpers::{
-    accuracy_to_confidence, build_tower_device, json_to_str, mcc_to_centroid, parse_cells_survey,
+    accuracy_to_confidence, build_tower_device, mcc_to_centroid, parse_cells_survey,
 };
 use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
 use crate::core::{confidence, entity::EntityKind};
+use crate::modules::device_cell::json_to_str;
 
 // ---- Module trait tests ----
 
@@ -55,6 +56,24 @@ fn parses_mcc_as_string_or_number() {
     assert_eq!(r.entities.len(), 2);
     assert_eq!(r.entities[0].value, "505-01-54321-12345");
     assert_eq!(r.entities[1].value, "505-1-42-99");
+}
+
+/// This module reads the same tool as `signal_radar` and had the same defect:
+/// only `cid` was consulted, but an LTE cell reports `ci` and an NR cell `nci`
+/// (see `TelephonyAPI.java`). Every LTE and 5G tower was skipped, so on a
+/// modern handset there was never a tower to look up against OpenCelliD.
+///
+/// The fixture above spells an LTE cell with `cid` — a combination the tool
+/// never emits — which is why a green suite never showed this.
+#[test]
+fn survey_reads_the_identity_key_each_radio_actually_emits() {
+    let json = br#"[
+        {"type":"lte","registered":true,"ci":12345,"tac":54321,"mcc":"505","mnc":"01"},
+        {"type":"nr","registered":true,"nci":777,"tac":888,"mcc":"505","mnc":"01"}
+    ]"#;
+    let r = parse_cells_survey(json, "test");
+    let ids: Vec<&str> = r.entities.iter().map(|e| e.value.as_str()).collect();
+    assert_eq!(ids, vec!["505-01-54321-12345", "505-01-888-777"]);
 }
 
 #[test]

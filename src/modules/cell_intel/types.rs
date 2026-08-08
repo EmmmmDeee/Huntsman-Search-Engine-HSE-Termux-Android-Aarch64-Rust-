@@ -4,23 +4,12 @@ use std::borrow::Cow;
 
 use serde::Deserialize;
 
-use super::helpers::json_to_str;
-
-#[derive(Deserialize)]
-pub(super) struct Cell {
-    #[serde(rename = "type")]
-    pub(super) cell_type: Option<String>,
-    pub(super) registered: Option<bool>,
-    pub(super) asu: Option<i64>,
-    pub(super) dbm: Option<i64>,
-    pub(super) level: Option<i64>,
-    pub(super) cid: Option<i64>,
-    pub(super) lac: Option<i64>,
-    pub(super) tac: Option<i64>,
-    pub(super) mcc: Option<serde_json::Value>, // can be string or int across Android versions
-    pub(super) mnc: Option<serde_json::Value>,
-    pub(super) pci: Option<i64>,
-}
+/// The cell shape is single-sourced in [`crate::modules::device_cell`], shared
+/// with `signal_radar`. Both modules parse the same tool into the same
+/// `mcc-mnc-lac-cid` identity and had independently written the same wrong rule
+/// for reading it — only `cid`, which no LTE or NR cell emits.
+pub(super) use crate::modules::device_cell::Cell;
+use crate::modules::device_cell::is_numeric_segment;
 
 /// Parsed, validated identity of one cell tower. Bundling the fields that
 /// `process()` and `parse_cells_survey()` both derive from a raw [`Cell`] keeps
@@ -36,20 +25,23 @@ pub(super) struct TowerKey<'a> {
 }
 
 impl<'a> TowerKey<'a> {
-    /// Parse a [`Cell`] into a usable tower identity, or `None` when it lacks the
-    /// minimum keys (no MCC or no CID) — the survey skip condition, defined
-    /// once. `lac` falls back to `tac` (LTE reports `tac`).
+    /// Parse a [`Cell`] into a usable tower identity, or `None` when it lacks
+    /// the minimum keys (no MCC or no cell identity) — the survey skip
+    /// condition, defined once.
+    ///
+    /// Identity and area code both come from [`Cell`]'s accessors, which read
+    /// whichever key the radio actually used: `cid` on GSM/WCDMA, `ci` on LTE,
+    /// `nci` on NR, and `lac` or `tac` for the area. Reading `cid` alone — as
+    /// this did — skipped every LTE and 5G cell, so on a modern handset there
+    /// was never a tower to look up.
     pub(super) fn from_cell(cell: &'a Cell) -> Option<Self> {
-        let mcc = json_to_str(&cell.mcc);
-        if mcc.is_empty() {
+        let mcc = cell.mcc_str();
+        if !is_numeric_segment(&mcc) {
             return None;
         }
-        let cid = cell.cid.unwrap_or(0);
-        if cid == 0 {
-            return None;
-        }
-        let mnc = json_to_str(&cell.mnc);
-        let lac = cell.lac.or(cell.tac).unwrap_or(0);
+        let cid = cell.identity()?;
+        let mnc = cell.mnc_str();
+        let lac = cell.area_code();
         let ctype = cell.cell_type.as_deref().unwrap_or("unknown");
         let tower_id = format!("{mcc}-{mnc}-{lac}-{cid}");
         Some(Self {
