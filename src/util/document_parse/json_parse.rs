@@ -8,14 +8,26 @@ use std::path::Path;
 use tracing::debug;
 
 /// Parse JSON file into a flat text representation.
+///
+/// A leading UTF-8 BOM (U+FEFF) is stripped first. It is not whitespace, so
+/// `serde_json` rejects it outright — and it is the default of Excel, Notepad and
+/// a good deal of Windows tooling, so a BOM-prefixed export is an ordinary thing
+/// for an operator to have. `app::import` already strips one on every path it
+/// accepts (its own comment: "a BOM-prefixed CSV/JSON export … misroutes to the
+/// wrong parser → every entity silently dropped"); `hse ingest` did not, so the
+/// same file imported through one command and failed through the other.
 pub fn parse_json<P: AsRef<Path>>(json_path: P) -> DocumentResult<RawDocumentText> {
     let path = json_path.as_ref();
     let path_str = path.to_string_lossy().to_string();
 
     debug!("Parsing JSON: {}", path_str);
 
-    let file = File::open(path)?;
-    let value: Value = serde_json::from_reader(file)?;
+    // Read-then-parse rather than `from_reader`, so the BOM can be removed. The
+    // whole document is buffered either way (`flatten_json_to_text` needs the
+    // parsed `Value` entire), and the caller bounds the file at
+    // `MAX_IMPORT_BYTES` before reaching here.
+    let raw = std::fs::read_to_string(path)?;
+    let value: Value = serde_json::from_str(raw.strip_prefix('\u{feff}').unwrap_or(&raw))?;
 
     let text = flatten_json_to_text(&value);
     let character_count = text.len();
@@ -51,8 +63,16 @@ pub fn parse_jsonl<P: AsRef<Path>>(jsonl_path: P) -> DocumentResult<RawDocumentT
     // all can report WHY rather than just yielding nothing.
     let mut first_err: Option<serde_json::Error> = None;
 
-    for line in reader.lines() {
+    for (n, line) in reader.lines().enumerate() {
         let line = line?;
+        // Strip a leading UTF-8 BOM from the FIRST line, for the same reason
+        // `parse_json` does: it is not whitespace, so serde rejects it and an
+        // Excel/Notepad-saved export would fail its first record.
+        let line = if n == 0 {
+            line.strip_prefix('\u{feff}').unwrap_or(&line).to_string()
+        } else {
+            line
+        };
         // A blank line is structure, not data — neither parsed nor a failure.
         if line.trim().is_empty() {
             continue;
@@ -172,6 +192,38 @@ mod tests {
         let result = parse_jsonl(file.path()).expect("should succeed");
         assert!(result.text.contains("John"));
         assert!(result.text.contains("Jane"));
+    }
+
+    /// A BOM-prefixed export must import, in both JSON and JSONL.
+    ///
+    /// U+FEFF is not whitespace, so serde rejects it outright. `app::import`
+    /// strips one on every path it accepts; `hse ingest` did not, so the exact
+    /// same Excel/Notepad-saved file imported through one command and failed
+    /// through the other.
+    #[test]
+    fn a_utf8_bom_does_not_break_either_json_parser() {
+        let mut json = NamedTempFile::new().expect("should succeed");
+        write!(json, "\u{feff}").expect("should succeed");
+        writeln!(json, r#"{{"email":"bom@example.com"}}"#).expect("should succeed");
+        json.flush().expect("should succeed");
+        let got = parse_json(json.path()).expect("a BOM-prefixed JSON must parse");
+        assert!(got.text.contains("bom@example.com"));
+
+        let mut jsonl = NamedTempFile::new().expect("should succeed");
+        write!(jsonl, "\u{feff}").expect("should succeed");
+        writeln!(jsonl, r#"{{"email":"first@example.com"}}"#).expect("should succeed");
+        writeln!(jsonl, r#"{{"email":"second@example.com"}}"#).expect("should succeed");
+        jsonl.flush().expect("should succeed");
+        let got = parse_jsonl(jsonl.path()).expect("a BOM-prefixed JSONL must parse");
+        assert!(
+            got.text.contains("first@example.com"),
+            "the BOM must not cost the first record"
+        );
+        assert!(got.text.contains("second@example.com"));
+        assert_eq!(
+            got.metadata.extraction_method,
+            "jsonl_parse (2 parsed, 0 unparseable)"
+        );
     }
 
     /// A file whose lines are not JSON at all is a MALFUNCTION, not an empty

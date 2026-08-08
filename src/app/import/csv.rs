@@ -60,7 +60,22 @@ pub(super) fn parse_dehashed_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportS
         .iter()
         .map(|c| c.trim().to_ascii_lowercase())
         .collect();
-    let idx = |name: &str| cols.iter().position(|c| c == name);
+    // Accepts DeHashed's dotted multi-value column form (`email.1`, `phone.2`)
+    // as well as the bare name, matching the DETECTOR's `has()` above.
+    //
+    // The two had drifted: `looks_like_dehashed_csv` accepts `email.1`, so a
+    // table headed that way is detected as a DeHashed CSV and routed here — and
+    // then this exact-match lookup found no `email` column, so `email_i` was
+    // `None` and not a single Email entity was minted. The import reported
+    // success with the emails silently absent. The author knew about the dotted
+    // form (the `hashed_password` scan just below uses `starts_with`); it simply
+    // was not applied to the other columns. Exact match still wins when both
+    // spellings are present, so a conventional header is unaffected.
+    let idx = |name: &str| {
+        cols.iter()
+            .position(|c| c == name)
+            .or_else(|| cols.iter().position(|c| c.starts_with(&format!("{name}."))))
+    };
     let hashed_idxs: Vec<usize> = cols
         .iter()
         .enumerate()

@@ -170,7 +170,7 @@ fn emit_combined_records(
         // processed — an aggregator's echoed "Results:" section repeats each
         // module's records verbatim, so an identical identity signature is
         // the whole record being repeated, not a coincidentally-similar new one.
-        let signature: Vec<Option<String>> = [
+        let mut signature: Vec<Option<String>> = [
             "email",
             "username",
             "name",
@@ -182,11 +182,20 @@ fn emit_combined_records(
             "ip",
             "lastip",
             "url",
-            "source",
         ]
         .iter()
         .map(|k| get(k).map(str::to_string))
         .collect();
+        // The RESOLVED source, not a raw `get("source")`. The signature used to
+        // read the `"source"` LABEL while the origin is resolved above through
+        // `source → dbname → breach → leak_site`, so two records naming their
+        // origin via `dbname` — the same credential leaked from Adobe2013 and
+        // from LinkedIn2012, say — both signed as `None` there, collided, and
+        // the SECOND breach was dropped: the operator's exposure list silently
+        // lost a corpus. Using the resolved value cannot weaken the echoed-
+        // `Results:` de-duplication this guard exists for, because a verbatim
+        // repeat carries the same resolved source too.
+        signature.push(Some(source.to_string()));
         if !seen_records.insert(signature) {
             continue;
         }

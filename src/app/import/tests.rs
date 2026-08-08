@@ -530,6 +530,45 @@ fn a_cr_only_csv_is_split_into_rows_not_collapsed() {
     );
 }
 
+/// The parser must read the same dotted multi-value columns the DETECTOR
+/// accepts.
+///
+/// `looks_like_dehashed_csv` matches `email.1` (DeHashed's multi-value form), so
+/// such a table is detected and routed to `parse_dehashed_csv` — which looked
+/// columns up by EXACT name and therefore found no `email` at all, minting zero
+/// Email entities while reporting a successful import.
+#[test]
+fn dotted_multi_value_columns_are_read_not_just_detected() {
+    let csv = "id,email.1,username,name,database_name,url,password.1,address,phone.1\n\
+        1,dana@mailhost.net,dana,Dana Frost,AcmeLeak2019,https://x.example/1,Sup3rSecret!,12 Smith St,0412345678\n";
+    // The detector accepts this header …
+    assert!(
+        looks_like_dehashed_csv(csv),
+        "the dotted form is what the detector already promises to handle"
+    );
+    // … so the parser must too.
+    let (ents, _stats) = parse_dehashed_csv(csv, "s");
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "dana@mailhost.net"),
+        "a dotted `email.1` column must still mint the Email: {ents:?}"
+    );
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Credential && e.value == "Sup3rSecret!"),
+        "a dotted `password.1` column must still mint the Credential"
+    );
+
+    // A conventional header is unchanged — exact match still wins.
+    let plain = "id,email,username,name,database_name,url,password,address,phone\n\
+        1,dana@mailhost.net,dana,Dana Frost,AcmeLeak2019,https://x.example/1,Sup3rSecret!,12 Smith St,0412345678\n";
+    let (ents, _) = parse_dehashed_csv(plain, "s");
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "dana@mailhost.net")
+    );
+}
+
 /// A CSV row whose field count does not match the header must be skipped and
 /// counted — never read column-by-column as if it lined up.
 ///
@@ -821,6 +860,70 @@ Results: 2
         Source:
           2042_EXAMPLE_TECH_012024
 ";
+
+/// The same credential leaked from TWO databases must stay two records.
+///
+/// The de-duplication signature read the raw `"source"` LABEL, but a record's
+/// origin is resolved through `source → dbname → breach → leak_site`. Two
+/// records naming their origin via `dbname` therefore both signed `None` there,
+/// collided, and the SECOND was dropped — silently truncating the operator's
+/// "which breaches was this credential in" list to the first corpus.
+#[test]
+fn two_corpora_named_by_dbname_do_not_collapse_into_one_record() {
+    let body = "Module: Combined Search
+Query: x
+Results: 2
+
+  [1]
+    Results:
+      [1]
+        Email:
+          a@b.com
+        Password:
+          Hunter2pass
+        Dbname:
+          Adobe2013
+      [2]
+        Email:
+          a@b.com
+        Password:
+          Hunter2pass
+        Dbname:
+          LinkedIn2012
+";
+    let (ents, stats) = parse_combined_search(body, "s");
+    assert_eq!(
+        stats.breach_records, 2,
+        "two distinct corpora must both be recorded"
+    );
+
+    // Both corpus names must appear somewhere in the evidence — the second is
+    // what used to vanish.
+    let all_evidence: String = ents
+        .iter()
+        .flat_map(|e| e.evidence.iter())
+        .map(|ev| {
+            format!(
+                "{} {}",
+                ev.summary,
+                ev.attributes
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        all_evidence.contains("Adobe2013"),
+        "first corpus missing: {all_evidence}"
+    );
+    assert!(
+        all_evidence.contains("LinkedIn2012"),
+        "second corpus was dropped by the dedup: {all_evidence}"
+    );
+}
 
 #[test]
 fn combined_search_is_detected() {
