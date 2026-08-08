@@ -455,6 +455,227 @@ person,Jordan Avery,Jordan Avery,0.850,1.000,3,VERIFIED,1782117614,au_people|nam
 email,jordanavery@gmail.com,jordanavery@gmail.com,0.720,0.800,2,PROBABLE,1782117614,dehashed,,[dehashed] Breach record,breach\n\
 other:au-postcode,2000,2000,0.900,0.900,1,VERIFIED,1782117614,au_geo,,[au_geo] ASGS postcode,au\n";
 
+/// A CSV row whose field count does not match the header must be skipped and
+/// counted — never read column-by-column as if it lined up.
+///
+/// One unquoted comma inside a value splits that field in two and shifts every
+/// later column by one. `row.get(i)` cannot detect that; it returns the wrong
+/// field. Observed before the guard, on the row below: the `url` value was minted
+/// as a `Credential` tagged `plaintext-credential`, the real password
+/// `Sup3rSecret!` was filed under the `address` evidence key, and the source
+/// database became the person's first name. The repo's other CSV reader (the
+/// `csv` crate, via `hse ingest`) already rejects the identical input.
+#[test]
+fn a_ragged_csv_row_is_skipped_and_counted_not_misattributed() {
+    // Header: 9 columns. Data row: 10 fields — `name` contains an unquoted comma.
+    let csv = "id,email,username,name,database_name,url,password,address,phone\n\
+        1,dana@mailhost.net,dana,Frost, Isaac,AcmeLeak2019,https://portal.acme-corp.net/login,Sup3rSecret!,12 Smith St Carlton VIC 3053,0412345678\n";
+    let (ents, stats) = parse_dehashed_csv(csv, "s");
+
+    assert_eq!(stats.ragged_rows, 1, "the misaligned row must be counted");
+    // The decisive assertion: no fabricated credential.
+    for e in &ents {
+        assert_ne!(
+            e.kind,
+            EntityKind::Credential,
+            "a shifted row must not mint a credential (got {:?})",
+            e.value
+        );
+        assert!(
+            !e.value.starts_with("http"),
+            "a URL must never be imported as a credential-bearing value: {:?}",
+            e.value
+        );
+    }
+
+    // A well-formed row still imports normally — the guard rejects the broken
+    // row, not the file.
+    let good = "id,email,username,name,database_name,url,password,address,phone\n\
+        1,dana@mailhost.net,dana,Dana Frost,AcmeLeak2019,https://portal.acme-corp.net/login,Sup3rSecret!,12 Smith St,0412345678\n";
+    let (ents, stats) = parse_dehashed_csv(good, "s");
+    assert_eq!(stats.ragged_rows, 0);
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Credential && e.value == "Sup3rSecret!"),
+        "the real password must still import from a well-formed row"
+    );
+}
+
+/// `hse export --format csv` must re-import as itself — the round-trip csv.rs's
+/// module doc promises ("merge two scans, share a scan, or re-import after
+/// editing").
+///
+/// It did not. `looks_like_hse_csv` is an EXACT first-line prefix match — the
+/// strongest signal in the detection matrix — but it was checked fifth, below
+/// three whole-body substring heuristics. Every evidence summary is written into
+/// the CSV's `evidence` column, so a scan imported from a Combined Search export
+/// carries the literal text "Combined Search record (…)"; re-importing that CSV
+/// matched `looks_like_combined_search`'s bare `body.contains("Combined Search")`
+/// first and fed a CSV to the TXT parser.
+#[test]
+fn an_hse_csv_export_round_trips_even_when_its_evidence_names_another_format() {
+    for summary in [
+        "Combined Search record (Adobe2013) — a@b.com",
+        "OathNet breach record (X) — a@b.com",
+        "Stealer log abc — 1 credential(s)",
+    ] {
+        let csv = format!(
+            "kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,evidence_urls,evidence,tags\n\
+             email,a@b.com,a@b.com,0.720,0.800,2,PROBABLE,1782117614,import:x,,[import:x] {summary},breach\n"
+        );
+        assert!(
+            looks_like_hse_csv(&csv),
+            "fixture is an HSE CSV by its header"
+        );
+        assert_eq!(
+            detect_import_format("scan-export.csv", &csv),
+            ImportFormat::HseCsv,
+            "an exact header match must outrank a substring hit on {summary:?}"
+        );
+        let (ents, _) = parse_hse_csv(&csv, "s");
+        assert_eq!(ents.len(), 1, "the exported entity must come back");
+        assert_eq!(ents[0].value, "a@b.com");
+    }
+}
+
+/// One incidental `•` must not re-route a whole import to the dossier parser.
+///
+/// The bullet clause was a bare `body.contains('\u{2022}')`, the weakest possible
+/// signal for a format whose bullet is a LINE PREFIX (`• key: value`). A masked
+/// password run (`••••••`) is routine in scraped credential dumps.
+#[test]
+fn a_bare_bullet_run_does_not_hijack_an_import_to_the_dossier_parser() {
+    // An OathNet SEARCH REPORT is checked AFTER dossier, so this case is decided
+    // by the bullet predicate alone — the ordering change cannot mask it.
+    let masked = format!(
+        "{OATHNET_REPORT}\nnote:\n      \u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\n"
+    );
+    assert_eq!(
+        detect_import_format("report.txt", &masked),
+        ImportFormat::OathnetReport,
+        "a bare bullet run must not make a report look like a dossier"
+    );
+    let (with_mask, _) = parse_oathnet_report(&masked, "s");
+    let (plain, _) = parse_oathnet_report(OATHNET_REPORT, "s");
+    assert_eq!(
+        with_mask.len(),
+        plain.len(),
+        "the bullet run must not change what the report parser yields"
+    );
+    assert!(!plain.is_empty(), "the fixture yields entities at all");
+
+    // A REAL `• key: value` dossier line must still route to the dossier parser —
+    // the predicate is narrowed, not disabled.
+    assert_eq!(
+        detect_import_format("d.txt", "\u{2022} email: a@b.com\n\u{2022} username: bob\n"),
+        ImportFormat::Dossier,
+        "a genuine `• key: value` line must still be a dossier"
+    );
+
+    // Separately: a Stealerlogs export is matched by its three-marker structural
+    // fingerprint BEFORE the dossier heuristic runs at all.
+    let stealer_masked =
+        format!("{STEALER}\n    Note:\n      \u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\n");
+    assert_eq!(
+        detect_import_format("log.txt", &stealer_masked),
+        ImportFormat::Stealerlogs
+    );
+}
+
+/// An entry's own lat/lon must go through the canonical `is_valid_coords` guard,
+/// not an ad-hoc `abs() > 0.01` check.
+///
+/// The old check was wrong in both directions on untrusted breach input: it
+/// ADMITTED non-finite and out-of-range pairs (`"inf".parse::<f64>()` succeeds
+/// and `inf.abs() > 0.01` is true, minting the literal Coordinates value
+/// "inf,inf"; latitude 500 passed too), and it REJECTED real coordinates within
+/// 0.01° of the equator or prime meridian — a whole band, where the Null Island
+/// sentinel it was reaching for is one point.
+#[test]
+fn report_entry_coordinates_run_the_canonical_validity_guard() {
+    let report = |lat: &str, lon: &str| {
+        format!(
+            "============================================================\n\
+             OATHNET SEARCH REPORT\n\
+             Search Query: \"x\"\n\
+             ============================================================\n\n\
+             === DATABASE LOGS ===\n\n\
+             [Breach Logs] (1 entries)\n\n\
+             Entry 1:\n\
+             dbname: examplebreach.com\n\
+             email: coord@example.com\n\
+             latitude: {lat}\n\
+             longitude: {lon}\n"
+        )
+    };
+    let coords_of = |body: &str| -> Vec<String> {
+        let (ents, _stats) = parse_oathnet_report(body, "s");
+        ents.iter()
+            .filter(|e| e.kind == EntityKind::Coordinates)
+            .map(|e| e.value.clone())
+            .collect()
+    };
+
+    // Rejected: non-finite and out-of-range. The old check admitted all of these.
+    for (lat, lon) in [
+        ("inf", "inf"),
+        ("-inf", "10.0"),
+        ("nan", "nan"),
+        ("500.0", "9999.0"),
+        ("0.0", "0.0"), // Null Island sentinel
+    ] {
+        assert!(
+            coords_of(&report(lat, lon)).is_empty(),
+            "latitude={lat} longitude={lon} must not mint a Coordinates entity"
+        );
+    }
+
+    // Accepted: a real near-equator coordinate the old 0.01 band wrongly rejected.
+    assert_eq!(
+        coords_of(&report("0.005", "32.5")).len(),
+        1,
+        "a legitimate near-equator coordinate must import"
+    );
+    assert_eq!(coords_of(&report("-27.4698", "153.0251")).len(), 1);
+}
+
+/// A hand-edited CSV must not mint an entity whose confidence is NaN.
+///
+/// `parse::<f64>` accepts "nan"/"inf", and `Entity::new`'s `clamp(0.0, 1.0)` does
+/// NOT sanitise NaN (Rust's `f64::clamp` returns NaN for NaN). A NaN-confidence
+/// entity fails BOTH `>= t` and `< t` for every threshold, so it is invisible to
+/// every confidence gate in either direction, and it serialises to JSON as `null`.
+/// Same defect class #376 fixed for the CLI f64 flags.
+#[test]
+fn hse_csv_confidence_rejects_non_finite_values() {
+    let csv = "kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,evidence_urls,evidence,tags\n\
+        email,nan@example.com,nan@example.com,nan,1.0,1,VERIFIED,1782117614,x,,[x] e,t\n\
+        email,inf@example.com,inf@example.com,inf,1.0,1,VERIFIED,1782117614,x,,[x] e,t\n\
+        email,neg@example.com,neg@example.com,-inf,1.0,1,VERIFIED,1782117614,x,,[x] e,t\n\
+        email,ok@example.com,ok@example.com,0.720,1.0,1,VERIFIED,1782117614,x,,[x] e,t\n";
+    let (ents, _stats) = parse_hse_csv(csv, "s");
+
+    for e in &ents {
+        assert!(
+            e.confidence.is_finite(),
+            "{} imported a non-finite confidence ({})",
+            e.value,
+            e.confidence
+        );
+        // The load-bearing consequence: a NaN would answer `false` to both.
+        assert!(
+            (e.confidence >= 0.5) || (e.confidence < 0.5),
+            "{} is invisible to every confidence gate",
+            e.value
+        );
+    }
+    let ok = ents
+        .iter()
+        .find(|e| e.value == "ok@example.com")
+        .expect("the valid row still imports");
+    assert!((ok.confidence - 0.720).abs() < 0.01);
+}
+
 #[test]
 fn hse_csv_is_detected_and_distinct_from_dehashed() {
     assert!(looks_like_hse_csv(HSE_CSV));
@@ -1815,5 +2036,78 @@ mod prop {
                 prop_assert!(!e.value.is_empty(), "empty value in entity: {e:?}");
             }
         }
+    }
+}
+
+// ─── AUDIT SCRATCH TESTS (temporary) ────────────────────────────────────────
+mod audit_scratch {
+    use super::super::stealer::parse_stealerlogs;
+    use super::super::dossier::parse_dossier;
+
+    #[test]
+    fn audit_empty_password_swallows_next_key() {
+        const S: &str = "Module: Stealerlogs
+Victims:
+  [1]
+    Log Id:
+      ea0621568ccd7fee2bd78e16f637727612aca78d
+    Credentials:
+      [1]
+        Username:
+          alice@corp.com
+        Password:
+
+        Pwned At:
+          2026-05-20T21:00:00Z
+    Domains:
+      [1]
+        acme-corp.com
+";
+        let (ents, _stats, rows) = parse_stealerlogs(S, "s");
+        eprintln!("--- ROWS: {rows:#?}");
+        for e in &ents {
+            eprintln!("--- ENT {:?} = {:?} tags={:?}", e.kind, e.value, e.tags);
+        }
+    }
+
+    #[test]
+    fn audit_cred_cap_overflow_mispairs() {
+        let mut s = String::from("Module: Stealerlogs\nVictims:\n  [1]\n    Log Id:\n      ea0621568ccd7fee2bd78e16f637727612aca78d\n    Credentials:\n");
+        for i in 1..=201 {
+            s.push_str(&format!(
+                "      [{i}]\n        Username:\n          user{i}@corp.com\n        Password:\n          Passw0rd{i}\n"
+            ));
+        }
+        // 202nd record: username only, no password line (truncated/blank record).
+        s.push_str("      [202]\n        Username:\n          victim202@corp.com\n");
+        let (_ents, stats, rows) = parse_stealerlogs(&s, "s");
+        eprintln!("--- creds stat = {}", stats.credentials);
+        eprintln!("--- rows len = {}", rows.len());
+        eprintln!("--- LAST ROW: {:#?}", rows.last());
+        // how many rows carry user200?
+        let has200 = rows.iter().any(|r| r.login.as_deref() == Some("user200@corp.com"));
+        eprintln!("--- user200 present: {has200}");
+    }
+
+    #[test]
+    fn audit_dossier_password_echoed_into_email_evidence() {
+        const D: &str = "Entry #1:
+• email: alice@corp.example
+• username: alice
+• password: Sup3rSecret!
+• session: abcdef0123456789abcdef
+• tfn: 123456782
+";
+        let (mut ents, _stats) = parse_dossier(D, "s");
+        crate::util::redact::redact_entities(&mut ents);
+        for e in &ents {
+            eprintln!("--- ENT {:?} = {:?}", e.kind, e.value);
+            for ev in &e.evidence {
+                eprintln!("      ev[{}] {:?} attrs={:?}", ev.source, ev.summary, ev.attributes);
+            }
+        }
+        let json = serde_json::to_string(&ents).unwrap();
+        eprintln!("--- LEAKS PASSWORD AFTER REDACT: {}", json.contains("Sup3rSecret!"));
+        eprintln!("--- LEAKS SESSION AFTER REDACT: {}", json.contains("abcdef0123456789abcdef"));
     }
 }

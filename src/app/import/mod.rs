@@ -156,20 +156,46 @@ pub(crate) fn detect_import_format(path: &str, body: &str) -> ImportFormat {
     if head.starts_with('{') {
         return ImportFormat::OathnetJson;
     }
+    // ── Ordered by MARKER STRENGTH, not by convenience ──────────────────────
+    //
+    // Everything above and in this block is an EXACT anchored match (a prefix, a
+    // header row, or a set of required structural markers). Everything below is a
+    // whole-body substring heuristic that can fire on an incidental occurrence.
+    // Running a weak heuristic first lets any file that merely MENTIONS another
+    // format's banner be parsed by the wrong parser, and the parsers are not
+    // interchangeable — the wrong one silently yields a different entity set.
+    //
+    // `looks_like_hse_csv` is the strongest signal in the whole matrix (an exact
+    // first-line prefix, `kind,value,raw_value,confidence,c_effective`) and it
+    // used to be checked FIFTH, below three substring heuristics. That broke the
+    // round-trip csv.rs's own module doc promises — "so a prior scan can be
+    // re-ingested — merge two scans, share a scan, or re-import after editing" —
+    // because `hse export --format csv` writes every evidence summary into the
+    // `evidence` column, and a scan imported from a Combined Search export
+    // carries the literal summary "Combined Search record (…)" (combined.rs:201).
+    // Re-importing that CSV matched `looks_like_combined_search`'s bare
+    // `body.contains("Combined Search")` first, so the export was fed to the
+    // Combined Search TXT parser: every real entity was dropped, and the CSV's own
+    // `uid` column was mined by `push_api_keys` into fabricated `ApiKey` entities
+    // that `store_key_in_pool` then wrote to the on-disk key pool.
+    if looks_like_hse_csv(body) {
+        return ImportFormat::HseCsv;
+    }
+    // Three REQUIRED co-occurring markers (`Victims:` + `Credentials:` +
+    // `Log Id:`), so this is a structural fingerprint rather than a substring
+    // hit — it belongs above the single-substring heuristics below.
+    if looks_like_stealerlogs(body) {
+        return ImportFormat::Stealerlogs;
+    }
+    // ── Substring / banner heuristics ───────────────────────────────────────
     if looks_like_combined_search(body) {
         return ImportFormat::CombinedSearch;
     }
     if looks_like_dossier(body) {
         return ImportFormat::Dossier;
     }
-    if looks_like_stealerlogs(body) {
-        return ImportFormat::Stealerlogs;
-    }
     if looks_like_oathnet_report(body) {
         return ImportFormat::OathnetReport;
-    }
-    if looks_like_hse_csv(body) {
-        return ImportFormat::HseCsv;
     }
     if path.ends_with(".csv") || looks_like_dehashed_csv(body) {
         return ImportFormat::DehashedCsv;
@@ -206,11 +232,39 @@ fn render_import_entities(entities: &[crate::core::entity::Entity], output: &str
 /// rather than an OathNet stealer-log TXT? Any one strong marker is enough.
 pub(crate) fn looks_like_dossier(body: &str) -> bool {
     body.contains("Entry #")
-        || body.contains('\u{2022}') // the `•` bullet that prefixes entry fields
+        || has_bullet_field_line(body)
         || ((body.contains("USERNAMES:")
             || body.contains("EMAILS:")
             || body.contains("PASSWORDS:"))
             && body.contains("->"))
+}
+
+/// True when some line is an actual `• key: value` dossier field — the shape
+/// [`parse_dossier`] parses (it strips a leading `•` at dossier.rs:97), rather
+/// than merely a body containing a `•` somewhere.
+///
+/// The bullet clause used to be a bare `body.contains('\u{2022}')`, which is the
+/// weakest possible signal for a format whose bullet is a LINE PREFIX. One
+/// incidental `•` anywhere in a multi-megabyte file re-routed the whole import to
+/// the dossier parser — and masked-password renderings (`••••••`) are routine in
+/// scraped credential dumps, so a Stealerlogs export carrying one parsed as a
+/// dossier and silently lost most of its entities (the victim `DeviceId` pivot
+/// and the per-victim credentials among them). Requiring the `key: value` shape
+/// after the bullet rejects a run of bare bullets while still matching every real
+/// dossier field line.
+fn has_bullet_field_line(body: &str) -> bool {
+    body.lines().any(|l| {
+        let t = l.trim_start();
+        t.starts_with('\u{2022}')
+            && t.trim_start_matches('\u{2022}')
+                .trim()
+                .split_once(':')
+                .is_some_and(|(k, v)| {
+                    let k = k.trim();
+                    // A field key is a short label, never prose or a bullet run.
+                    !k.is_empty() && k.len() <= 40 && !v.trim().is_empty()
+                })
+    })
 }
 
 /// Detect an uploaded file's format from its CONTENT and parse it into finalised
@@ -283,6 +337,14 @@ struct ImportStats {
     persons: usize,
     organisations: usize,
     credentials: usize,
+    /// CSV rows skipped because their field count did not match the header.
+    ///
+    /// Counted rather than silently dropped: a mismatched row means the fields no
+    /// longer line up with the columns, so every value read from it would be
+    /// attributed to the WRONG column — and this pipeline mints credentials, so a
+    /// mis-aligned row invents them. The operator has to be told the import was
+    /// partial, or "N entities imported" reads as the whole file.
+    ragged_rows: usize,
     date_range: String,
 }
 
@@ -845,6 +907,16 @@ fn print_import_stats(stats: &ImportStats, entity_count: usize, output: &str) {
     );
     if stats.credentials > 0 {
         row!("  Creds:     {} password hashes", stats.credentials);
+    }
+    if stats.ragged_rows > 0 {
+        // Never silent: a skipped row is data the operator supplied and did not
+        // get back, and the alternative (reading it anyway) mis-attributes every
+        // field past the break.
+        row!(
+            "  SKIPPED:   {} CSV row(s) whose field count did not match the header \
+             — their values would have landed in the wrong columns",
+            stats.ragged_rows
+        );
     }
     row!(
         "  Network:   {} IPs, {} domains, {} subdomains, {} URLs, {} admin paths",

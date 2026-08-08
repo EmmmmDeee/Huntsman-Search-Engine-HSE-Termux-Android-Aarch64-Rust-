@@ -72,6 +72,26 @@ pub(super) fn parse_dehashed_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportS
     let (url_i, db_i) = (idx("url"), idx("database_name"));
 
     for row in data {
+        // A row whose field count differs from the header is MISALIGNED, not
+        // merely short: one unquoted comma inside a value splits that field in
+        // two and shifts every column after it by one. Reading it anyway is the
+        // worst outcome this parser can produce, because the shifted columns are
+        // credentials — an observed run put the `url` value into the `password`
+        // column, minting `https://portal.example/login` as a `Credential` tagged
+        // `plaintext-credential`, while the real password landed under the
+        // `address` evidence key and the source database became the person's
+        // first name. `row.get(i)` cannot detect this: it happily returns the
+        // wrong field.
+        //
+        // The repo's OTHER CSV reader already refuses the same input — `hse
+        // ingest` goes through the `csv` crate, which errors with "found record
+        // with N fields, but the previous record has M fields" and exits 1. This
+        // brings the hand-rolled reader up to that standard; the count is
+        // reported to the operator by `print_import_stats` rather than dropped.
+        if row.len() != cols.len() {
+            stats.ragged_rows += 1;
+            continue;
+        }
         let get = |i: Option<usize>| -> Option<&str> {
             i.and_then(|i| row.get(i))
                 .map(|s| s.trim())
@@ -352,6 +372,15 @@ pub(super) fn parse_hse_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportStats)
     let (conf_i, ev_i, tags_i) = (col("confidence"), col("evidence"), col("tags"));
 
     for row in data {
+        // Same arity guard as `parse_dehashed_csv` above, for the same reason: a
+        // shifted row here would re-import an entity under the wrong `kind`, with
+        // another column's text as its `value` and a third column's as its
+        // `confidence`. Sharing the rule keeps HSE's own round-trip as strict as
+        // the breach-table path.
+        if row.len() != header.len() {
+            stats.ragged_rows += 1;
+            continue;
+        }
         let get = |i: Option<usize>| i.and_then(|i| row.get(i)).map(String::as_str);
         let (Some(kind_s), Some(value)) = (get(k_i), get(v_i)) else {
             continue;
@@ -365,8 +394,24 @@ pub(super) fn parse_hse_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportStats)
         if value.is_empty() {
             continue;
         }
+        // `parse::<f64>` accepts "nan", "inf" and "-inf", and `Entity::new`'s
+        // `clamp(0.0, 1.0)` does NOT sanitise NaN — Rust's `f64::clamp` returns
+        // NaN for a NaN input — so a hand-edited CSV could mint an entity whose
+        // confidence is NaN. That entity then fails BOTH `>= t` and `< t` for
+        // every threshold (all NaN comparisons are false), making it invisible to
+        // every confidence gate in either direction, and it serialises to JSON as
+        // `null`, so an export/re-import round-trip does not preserve it.
+        // Requiring a finite value drops it to the same default an absent or
+        // unparseable column gets. (`clamp` still handles the merely
+        // out-of-range, so only finiteness is checked here — the same split
+        // `entity_extractor`'s own `min_confidence` floor uses.)
+        //
+        // #376 fixed exactly this class for seven CLI f64 flags, and its commit
+        // message states the rule this site was left out of: "Fixing one instance
+        // of a defect class and leaving its siblings is the actual defect."
         let conf = get(conf_i)
             .and_then(|c| c.trim().parse::<f64>().ok())
+            .filter(|c| c.is_finite())
             .unwrap_or(0.55);
 
         let mut e = Entity::new(kind.clone(), value, conf, sid);

@@ -55,6 +55,69 @@ pub struct IngestArgs {
     pub image_variant_output_dir: Option<PathBuf>,
 }
 
+/// The [`RawDocumentText`](crate::util::document_parse::RawDocumentText) to carry
+/// forward when OCR could not read an image, and the operator-facing report of
+/// WHY — the honest answer to a failed read.
+///
+/// Two properties are load-bearing, and both were previously wrong.
+///
+/// **The text is EMPTY.** The old fallback substituted the literal string
+/// `"OCR unavailable for {path}"`, which is then handed to
+/// [`EntityExtractor::extract_from_text`](crate::util::entity_extractor::EntityExtractor::extract_from_text)
+/// like any real document body — so the FILE PATH was mined for entities and the
+/// results attributed to the image's contents. Measured against the real
+/// extractor, `hse ingest /sdcard/Download/target_john.smith@gmail.com.jpg` with
+/// tesseract absent minted an `Email` at 0.85 and a `Domain` at 0.75 out of the
+/// operator's own filename, and `--auto-scan` then persisted them as a completed
+/// scan. Fabricated intelligence from a read that never happened is the single
+/// worst outcome available to this pipeline; empty text mints nothing.
+///
+/// **The cause survives.** `ocr_image` is careful to distinguish
+/// [`OcrUnavailable`](crate::util::document_parse::DocumentParseError::OcrUnavailable)
+/// / [`OcrTimeout`](crate::util::document_parse::DocumentParseError::OcrTimeout) /
+/// [`OcrFailed`](crate::util::document_parse::DocumentParseError::OcrFailed) /
+/// `IoError`, with four tests pinning that split and a doc comment explaining that
+/// an operator acts on them differently ("install a package, versus feed a smaller
+/// image or raise the bound"). The old `unwrap_or_else(|_| …)` discarded the error
+/// unread, collapsing all four into one indistinguishable fabricated success —
+/// making that entire taxonomy dead code (it had no other consumer in the tree).
+/// The `Display` impl already carries the distinction, so reporting `e` verbatim
+/// restores it.
+///
+/// The report goes to **stderr**, unconditionally. Every `hse ingest` output
+/// format except `table` is machine-readable and is written to stdout, so stdout
+/// is the data channel and a warning on it would corrupt a `| jq` pipeline. (This
+/// is deliberately stricter than `app::import`'s `note`, which may use stdout
+/// because its table mode is the human one.)
+fn ocr_unavailable_text(
+    path: &std::path::Path,
+    format: DocumentFormat,
+    e: &crate::util::document_parse::DocumentParseError,
+) -> crate::util::document_parse::RawDocumentText {
+    // `warn!` for a structured-log consumer, and stderr for the human — the
+    // ingest may well run with tracing filtered out, and a silently degraded
+    // result is the failure mode this whole function exists to prevent.
+    tracing::warn!(file = %path.display(), error = %e, "OCR produced no text");
+    eprintln!(
+        "warning: no text was read from {} — {e}. Any entities below come from \
+         other sources, NOT from this image's contents.",
+        path.display()
+    );
+    crate::util::document_parse::RawDocumentText {
+        text: String::new(),
+        source_format: format,
+        confidence: 0.0,
+        metadata: crate::util::document_parse::DocumentMetadata {
+            source_file: Some(path.to_string_lossy().to_string()),
+            character_count: 0,
+            // Names the failure rather than the generic "ocr_fallback", so a
+            // persisted or exported entity's provenance shows the read failed.
+            extraction_method: "ocr_unavailable".to_string(),
+            ..Default::default()
+        },
+    }
+}
+
 /// Execute `hse ingest` command.
 pub async fn run(args: IngestArgs) -> DocumentResult<()> {
     // Stat before read, exactly as `app::import::cmd_import` does, and share its
@@ -92,21 +155,23 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
     // Parse document
     let raw_text = match format {
         DocumentFormat::Image => {
-            crate::util::document_parse::ocr::ocr_image(&args.file, 60)
-                .await
-                .unwrap_or_else(|_| {
-                    // Fallback if OCR unavailable
-                    crate::util::document_parse::RawDocumentText {
-                        text: format!("OCR unavailable for {}", args.file.display()),
-                        source_format: format,
-                        confidence: 0.0,
-                        metadata: crate::util::document_parse::DocumentMetadata {
-                            source_file: Some(args.file.to_string_lossy().to_string()),
-                            extraction_method: "ocr_fallback".to_string(),
-                            ..Default::default()
-                        },
-                    }
-                })
+            match crate::util::document_parse::ocr::ocr_image(&args.file, 60).await {
+                Ok(text) => text,
+                // OCR did not run, or ran and failed. This is NOT an empty image:
+                // it is an absence of OBSERVATION, and the two must not be
+                // reported the same way (the same principle
+                // `util::termux::Activity::took_no_readings` exists to enforce
+                // for the sensor bridge).
+                //
+                // The image arm continues rather than propagating with `?` like
+                // every sibling arm, because `--extract-geolocation` and
+                // `--generate-reverse-search-variants` operate on the image file
+                // directly, below, and are still useful with no OCR text at all —
+                // on the primary target tesseract is usually ABSENT, so hard
+                // failing would make those two flags unusable on the platform HSE
+                // is built for.
+                Err(e) => ocr_unavailable_text(&args.file, format, &e),
+            }
         }
         DocumentFormat::Pdf => crate::util::document_parse::pdf_parse::parse_pdf(&args.file)?,
         DocumentFormat::Csv => {
@@ -778,5 +843,77 @@ mod tests {
             !output.contains(&"🎯".repeat(21)),
             "value must be cut at 20 characters, not more"
         );
+    }
+
+    /// A failed OCR read must mint NOTHING, and must not launder the file path
+    /// into the entity set.
+    ///
+    /// The old fallback substituted `"OCR unavailable for {path}"` as the
+    /// document body, which then went to the real entity extractor like any
+    /// other text — so an operator whose filename happened to contain an
+    /// address got that address back as an `Email` "found in the image".
+    /// This asserts the two halves that stop it: the carried text is empty,
+    /// and running the REAL extractor over it yields zero entities even when
+    /// the path is maximally entity-shaped.
+    #[test]
+    fn a_failed_ocr_read_mints_no_entities_from_the_file_path() {
+        let path = std::path::PathBuf::from("/sdcard/Download/target_john.smith@gmail.com.jpg");
+        let raw = ocr_unavailable_text(
+            &path,
+            DocumentFormat::Image,
+            &crate::util::document_parse::DocumentParseError::OcrUnavailable,
+        );
+
+        assert!(
+            raw.text.is_empty(),
+            "a read that did not happen must carry no text, got {:?}",
+            raw.text
+        );
+        assert_eq!(raw.metadata.character_count, 0);
+        assert_eq!(
+            raw.metadata.extraction_method, "ocr_unavailable",
+            "provenance must name the failure, not a generic fallback"
+        );
+
+        // The decisive half: the real extractor, over the real carried text.
+        // Against the OLD fabricated string this same assertion fails with 2
+        // entities — Email "target_john.smith@gmail.com.jpg" (0.85) and Domain
+        // "gmail.com.jpg" (0.75), both invented from the filename.
+        let extractor =
+            crate::util::entity_extractor::EntityExtractor::new(0.0).expect("extractor builds");
+        let got = extractor.extract_from_text(&raw.text);
+        assert!(
+            got.is_empty(),
+            "a failed OCR read must not mint entities from the path; got {got:?}"
+        );
+    }
+
+    /// Each OCR failure cause must stay distinguishable in what the operator is
+    /// told. `ocr_image` separates "not installed" from "timed out" from "ran and
+    /// refused" precisely so the operator knows whether to install a package or
+    /// feed a smaller image; the ingest arm used to discard the error unread.
+    #[test]
+    fn each_ocr_failure_cause_reaches_the_operator_distinctly() {
+        use crate::util::document_parse::DocumentParseError as E;
+        let path = std::path::PathBuf::from("/tmp/x.png");
+        let msg = |e: &E| {
+            // The reported line is built from the error's Display, so pinning
+            // Display here pins what the operator reads.
+            let _ = ocr_unavailable_text(&path, DocumentFormat::Image, e);
+            e.to_string()
+        };
+
+        let missing = msg(&E::OcrUnavailable);
+        let timeout = msg(&E::OcrTimeout { secs: 60 });
+        let refused = msg(&E::OcrFailed { code: Some(2) });
+
+        assert!(missing.contains("tesseract missing"), "{missing}");
+        assert!(timeout.contains("timed out"), "{timeout}");
+        assert!(refused.contains("exited with 2"), "{refused}");
+        assert_ne!(
+            missing, timeout,
+            "an absent binary and a hang are different facts about the host"
+        );
+        assert_ne!(timeout, refused);
     }
 }

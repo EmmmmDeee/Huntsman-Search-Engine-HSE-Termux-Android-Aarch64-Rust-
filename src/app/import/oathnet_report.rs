@@ -257,11 +257,20 @@ fn emit_oathnet_entry(
     }
     // Entry-level coordinates (the breach row's own lat/lon, not the OSINT
     // enrichment) — a direct geolocation of the subject.
+    // `is_valid_coords` is the canonical guard every other Coordinates-minting
+    // path in the tree runs (cell_local, cell_intel, opencellid, censys, netlas,
+    // mylnikov, overpass, …). This site hand-rolled `abs() > 0.01`, which is
+    // wrong in both directions on untrusted breach input: it ADMITS a non-finite
+    // or out-of-range pair (`"inf".parse::<f64>()` succeeds and `inf.abs() > 0.01`
+    // is true, minting the Coordinates value "inf,inf"; latitude 500 passes just
+    // as easily), and it REJECTS legitimate coordinates within 0.01° of the
+    // equator or the prime meridian — a band, where the Null Island sentinel it
+    // was reaching for is a single point. The canonical guard covers the sentinel
+    // exactly (`!(lat == 0.0 && lon == 0.0)`) and adds the finite/range checks.
     if let (Some(la), Some(lo)) = (
         get("latitude").and_then(|s| s.parse::<f64>().ok()),
         get("longitude").and_then(|s| s.parse::<f64>().ok()),
-    ) && la.abs() > 0.01
-        && lo.abs() > 0.01
+    ) && crate::util::geo::is_valid_coords(la, lo)
     {
         let coords = format!("{la:.4},{lo:.4}");
         if seen.insert(format!("co:{coords}")) {

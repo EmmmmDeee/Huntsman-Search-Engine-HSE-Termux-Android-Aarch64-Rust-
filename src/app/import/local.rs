@@ -15,9 +15,14 @@ const MAX_DIR_DEPTH: usize = 8;
 /// Maximum number of candidate files a single scrape will import — a backstop so
 /// pointing at a huge tree can't exhaust memory.
 const MAX_FILES: usize = 2000;
-/// Per-file size cap, mirroring the single-file import limit (`MAX_IMPORT_BYTES`)
-/// so both paths enforce the same bound.
-const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
+/// Per-file size cap: the single-file import limit itself, not a copy of it.
+///
+/// This was a second `16 * 1024 * 1024` literal whose doc comment asserted it
+/// "mirrors `MAX_IMPORT_BYTES` so both paths enforce the same bound" — a claim
+/// nothing checked. `MAX_IMPORT_BYTES` is `pub(crate)` precisely so callers share
+/// it (`cli::ingest` already does), and it is in scope here through `use super::*`,
+/// so the two can now only move together.
+const MAX_FILE_BYTES: u64 = MAX_IMPORT_BYTES;
 
 /// True for files that never carry importable OSINT text — build artifacts,
 /// media, archives and binary stores — so a scrape skips them without reading.
