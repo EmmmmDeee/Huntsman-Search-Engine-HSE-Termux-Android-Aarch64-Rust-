@@ -13,14 +13,33 @@
 use std::collections::HashMap;
 
 use super::*;
-use crate::core::relation::{identity_uids, sorted_confined_adjacency, strongest_path_in};
+use crate::core::relation::{
+    IDENTITY_PAIR_PROBE_CAP, identity_uids, sorted_confined_adjacency, strongest_path_in,
+};
 
 /// AU-069 — High-integrity connection.
+///
+/// [`IDENTITY_PAIR_PROBE_CAP`] bounds the pair COUNT so the `O(identities²)`
+/// sweep can't dominate finalise — the identical bound AU-062's and AU-063's
+/// pair sweeps use, applied here via [`high_integrity_connection_capped`].
 pub(in crate::core::correlator) fn rule_au_069_high_integrity_connection(
     context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
+) -> Vec<Correlation> {
+    high_integrity_connection_capped(context, relations, scan_id, now, IDENTITY_PAIR_PROBE_CAP)
+}
+
+/// [`rule_au_069_high_integrity_connection`] with an explicit pair-probe
+/// ceiling — the public entry pins it to [`IDENTITY_PAIR_PROBE_CAP`]; the
+/// parameter exists so the cap is unit-testable without a 6 000-entity fixture.
+fn high_integrity_connection_capped(
+    context: &RuleContext,
+    relations: &[Relation],
+    scan_id: &str,
+    now: u64,
+    max_pair_probes: usize,
 ) -> Vec<Correlation> {
     let entities = context.entities();
     const MAX_HOPS: usize = 5;
@@ -36,8 +55,16 @@ pub(in crate::core::correlator) fn rule_au_069_high_integrity_connection(
     let adj = sorted_confined_adjacency(entities, relations);
 
     let mut out = Vec::new();
-    for (i, &a) in ids.iter().enumerate() {
+    let mut probes = 0usize;
+    'outer: for (i, &a) in ids.iter().enumerate() {
         for &b in &ids[i + 1..] {
+            if probes >= max_pair_probes {
+                // Deterministic bound reached — stop before the O(n²) sweep can
+                // run away on a permutation-heavy name scan. `ids` is sorted, so
+                // the examined pairs are a stable prefix.
+                break 'outer;
+            }
+            probes += 1;
             let Some(path) = strongest_path_in(&adj, a, b, MAX_HOPS) else {
                 continue;
             };
@@ -180,6 +207,54 @@ mod tests {
         assert!(
             rule_au_069_high_integrity_connection(&RuleContext::new(&[a, b]), &rels, "s", 0)
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn au069_findings_are_pair_probe_capped_deterministically() {
+        // Two independent components, each an identity pair joined by a 2-hop
+        // end-to-end-strong route → two AU-069 findings. The O(n²) pair sweep
+        // must honour the cap, and the bound must be a deterministic prefix of
+        // sorted `identity_uids` — the same guarantee AU-062's and AU-063's pair
+        // sweeps make.
+        let component = |n: usize| {
+            let a = mk(EntityKind::Email, &format!("a{n}@x.com"));
+            let mid = mk(EntityKind::Person, &format!("Alice{n}"));
+            let b = mk(EntityKind::Username, &format!("alice{n}"));
+            let rels = vec![edge(&a, &mid, 0.9), edge(&mid, &b, 0.9)];
+            (vec![a, mid, b], rels)
+        };
+        let (mut ents, mut rels) = component(1);
+        let (e2, r2) = component(2);
+        ents.extend(e2);
+        rels.extend(r2);
+
+        let context = RuleContext::new(&ents);
+        let full = high_integrity_connection_capped(&context, &rels, "s", 0, usize::MAX);
+        assert_eq!(
+            full.len(),
+            2,
+            "two independent components → two high-integrity findings"
+        );
+        assert_eq!(
+            rule_au_069_high_integrity_connection(&context, &rels, "s", 0).len(),
+            full.len(),
+            "the public entry runs at the production cap; this fixture is under it"
+        );
+        // The cap bounds the pair sweep: 0 probes → nothing; 1 probe → ≤1 finding.
+        assert!(
+            high_integrity_connection_capped(&RuleContext::new(&ents), &rels, "s", 0, 0).is_empty()
+        );
+        assert!(
+            high_integrity_connection_capped(&RuleContext::new(&ents), &rels, "s", 0, 1).len() <= 1
+        );
+        // Deterministic across runs.
+        let x = high_integrity_connection_capped(&RuleContext::new(&ents), &rels, "s", 0, 3);
+        let y = high_integrity_connection_capped(&RuleContext::new(&ents), &rels, "s", 0, 3);
+        assert_eq!(
+            x.iter().map(|c| c.entity_uids.clone()).collect::<Vec<_>>(),
+            y.iter().map(|c| c.entity_uids.clone()).collect::<Vec<_>>(),
+            "the capped prefix is deterministic across runs"
         );
     }
 }
