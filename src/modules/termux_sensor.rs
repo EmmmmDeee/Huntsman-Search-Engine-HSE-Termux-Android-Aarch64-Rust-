@@ -14,6 +14,7 @@
 //! |---|---|---|
 //! | `None` | tool absent, timed out, or exited non-zero | empty `Ok` — nothing observed, nothing to attest |
 //! | `Some(blank)` | tool answered with nothing | empty `Ok` — an honest "nothing to report" |
+//! | `Some(API_ERROR)` | tool ran, declined to answer, and said why | empty `Ok` — plus the tool's own reason, which is usually actionable |
 //! | `Some(garbage)` | tool answered with something broken | `Err` — a real malfunction |
 //!
 //! Blank output MUST stay an empty `Ok`. A Termux:API stub that exits 0 and
@@ -196,7 +197,22 @@ where
         return Ok(crate::core::module::ModuleResult::new());
     }
     match outcome.stdout() {
-        Some(stdout) => parse(&stdout),
+        Some(stdout) => {
+            // Applied here, once, ahead of every per-sensor parser: the
+            // `API_ERROR` convention is the tool's, not any one sensor's, and
+            // each parser that re-derived it would re-derive it differently.
+            if let Some(reason) = api_error(&stdout) {
+                tracing::warn!(
+                    sensor = sensor.tool(),
+                    reason = %reason,
+                    "termux sensor declined to answer — this is the tool's own \
+                     explanation and is usually actionable, not a malfunction \
+                     and not an observation that nothing is there"
+                );
+                return Ok(crate::core::module::ModuleResult::new());
+            }
+            parse(&stdout)
+        }
         // Unreachable: `failure_reason()` is `None` only for `Ok`, whose stdout
         // is always `Some` — including a legitimately EMPTY payload, which is a
         // real observation of nothing and is handed to `parse` above.
@@ -211,6 +227,41 @@ where
 #[must_use]
 pub(crate) fn is_blank(stdout: &[u8]) -> bool {
     stdout.iter().all(u8::is_ascii_whitespace)
+}
+
+/// The message from a Termux:API `{"API_ERROR": "..."}` response, if that is
+/// what the tool returned.
+///
+/// Termux:API's convention for "I ran, and I am declining to answer, and here
+/// is why" is a single-key JSON OBJECT. `WifiAPI` and `LocationAPI` emit it at
+/// six sites between them, and the messages are the actionable kind:
+///
+///   * `"Location needs to be enabled on the device"` — Android refuses Wi-Fi
+///     scan results to any app when location services are off. This is not an
+///     edge case; it is the single most common reason a Wi-Fi sweep on a real
+///     handset comes back with nothing.
+///   * `"Failed getting scan results"`, `"Failed to get location"`,
+///     `"No current connection"`.
+///
+/// Every consumer parses an ARRAY (`Vec<Ap>`) or a fix object with required
+/// fields, so before this existed each of those responses failed
+/// deserialisation and became [`unparseable`] — a hard `Err` counted in
+/// `modules_errored` that feeds the circuit breaker. The operator was shown
+/// "unparseable tool output" for a device that only needed Location switched
+/// on, and the tool's own plain-English explanation was discarded on the way.
+///
+/// Returns `None` for anything else, including a legitimate JSON object that
+/// merely happens to be an object — the key must be exactly `API_ERROR`.
+#[must_use]
+pub(crate) fn api_error(stdout: &[u8]) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct ApiError {
+        #[serde(rename = "API_ERROR")]
+        api_error: String,
+    }
+    serde_json::from_slice::<ApiError>(stdout)
+        .ok()
+        .map(|e| e.api_error)
 }
 
 /// Build the canonical error for a sensor tool that answered with output which
@@ -318,6 +369,48 @@ mod tests {
         for s in Sensor::ALL {
             let msg = unparseable_for("m", s, &e).to_string();
             assert!(msg.contains(s.label()), "{s:?}: label missing from {msg}");
+        }
+    }
+
+    /// The Termux:API decline convention, and the reason it needs handling:
+    /// every one of these responses used to fail deserialisation and surface as
+    /// a hard `unparseable` error that feeds the circuit breaker, while the
+    /// tool's own actionable explanation was thrown away.
+    #[test]
+    fn api_error_is_recognised_and_its_reason_preserved() {
+        assert_eq!(
+            api_error(br#"{"API_ERROR":"Location needs to be enabled on the device"}"#),
+            Some("Location needs to be enabled on the device".to_string()),
+            "the tool's explanation is the actionable part and must survive"
+        );
+        for raw in [
+            &br#"{"API_ERROR":"Failed getting scan results"}"#[..],
+            br#"{"API_ERROR":"Failed to get location"}"#,
+            br#"{"API_ERROR":"No current connection"}"#,
+        ] {
+            assert!(api_error(raw).is_some(), "unrecognised: {raw:?}");
+        }
+    }
+
+    /// The load-bearing half: real payloads must NOT be mistaken for a decline,
+    /// or a working sensor would report nothing. In particular a normal scan is
+    /// a JSON array, and an unrelated object is still not an API_ERROR.
+    #[test]
+    fn api_error_does_not_swallow_a_real_answer() {
+        for raw in [
+            &br#"[{"bssid":"aa:bb:cc:dd:ee:ff"}]"#[..],
+            br#"[]"#,
+            br#"{"latitude":1.0,"longitude":2.0}"#,
+            br#"{"message":"scanning"}"#,
+            b"not json",
+            b"",
+        ] {
+            assert_eq!(
+                api_error(raw),
+                None,
+                "must not be treated as a decline: {}",
+                String::from_utf8_lossy(raw)
+            );
         }
     }
 

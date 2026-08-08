@@ -178,6 +178,22 @@ pub(crate) fn parse_fix(stdout: &[u8], scan_id: &str, src: &'static str) -> Resu
     if termux_sensor::is_blank(stdout) {
         return Ok(ModuleResult::new());
     }
+    // `termux-location` answers `{"API_ERROR": "Failed to get location"}` (and
+    // two provider-specific variants) when it cannot produce a fix. That is a
+    // real, explained answer — "no fix available" — and every ladder stage
+    // legitimately hits it on a device indoors or with location off. Parsed as
+    // a `Fix` it fails on the required `latitude` and became a hard `Err`,
+    // which the ladder then reported as a malfunction. This module does not
+    // route through `read_and_parse` (it drives its own staged ladder), so the
+    // shared predicate is applied here.
+    if let Some(reason) = termux_sensor::api_error(stdout) {
+        tracing::debug!(
+            module = src,
+            reason = %reason,
+            "termux-location produced no fix — the tool's own explanation"
+        );
+        return Ok(ModuleResult::new());
+    }
     let fix: Fix = serde_json::from_slice(stdout)
         .map_err(|e| termux_sensor::unparseable(src, "location", &e))?;
 
@@ -236,6 +252,29 @@ pub(crate) fn parse_fix(stdout: &[u8], scan_id: &str, src: &'static str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `termux-location` reports "I could not get a fix" as
+    /// `{"API_ERROR": "..."}`, which every ladder stage legitimately hits on a
+    /// device indoors or with location services off. Parsed as a `Fix` it fails
+    /// on the required `latitude`, so it used to surface as a hard `Err` — a
+    /// malfunction report for a phone that simply had no signal.
+    #[test]
+    fn a_location_decline_is_no_fix_not_a_malfunction() {
+        let result = parse_fix(
+            br#"{"API_ERROR":"Failed to get location"}"#,
+            "test-scan",
+            "test",
+        )
+        .expect("a tool-reported decline is an answer, not a malfunction");
+        assert!(result.is_empty());
+    }
+
+    /// The counterweight: genuinely broken output must still be an error, or the
+    /// fix above could have been made by swallowing every parse failure.
+    #[test]
+    fn genuinely_broken_location_output_is_still_an_error() {
+        assert!(parse_fix(b"{not json at all", "test-scan", "test").is_err());
+    }
 
     // ── is_valid_fix ──────────────────────────────────────────────────────────
 
