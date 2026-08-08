@@ -4,14 +4,17 @@
 //! already classifies.
 //!
 //! Distinct from [`super::circuit`] (this same directory): `circuit` is a
-//! retry-avoidance breaker that *clears all history on success* and times its
-//! cooldowns with monotonic [`std::time::Instant`] — exactly wrong for a
-//! durable health signal, since the whole point here is remembering *when* a
-//! source last worked, not just whether it's safe to retry right now. This
-//! module answers a different, durable question — "when did this source last
-//! actually succeed, and how many times in a row has it failed since" — using
-//! wall-clock epoch seconds so `hse doctor` can report it meaningfully across
-//! the whole process's uptime.
+//! retry-avoidance breaker that *clears all history on success* and exists
+//! only to answer "is it safe to retry this module right now" — a transient,
+//! self-erasing question, unlike the durable one this module answers ("when
+//! did this source last actually succeed, and how many times in a row has it
+//! failed since"). `circuit`'s own cooldowns are wall-clock
+//! [`std::time::SystemTime`] too (see its module doc's *suspend* note — a
+//! monotonic `Instant` freezes across an Android doze and over-benches a
+//! provider), so the two modules don't differ on clock choice; they differ on
+//! what they retain and for how long. This module uses wall-clock epoch
+//! seconds so `hse doctor` can report it meaningfully across the whole
+//! process's uptime.
 //!
 //! Process-global, mirroring `circuit`: a scraper's health is a property of
 //! the source, not of any one scan.
