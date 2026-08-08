@@ -27,7 +27,7 @@ use crate::core::{
 use crate::modules::termux_sensor;
 use crate::util::geo::is_valid_coords;
 
-// ── WiGLE credentials ──────────────────────────────────────────────────
+// ── WiGLE credentials ───────────────────────────────
 
 // Env names + embedded fallbacks are resolved by the single-sourced
 // `crate::util::keys::wigle_credentials` (shared with the `wigle` module).
@@ -38,7 +38,7 @@ const MAX_BSSIDS: usize = 5;
 /// Evidence source tag used throughout this module.
 pub(super) const SOURCE: &str = "wifi_intel";
 
-// ── Module implementation ──────────────────────────────────────────────
+// ── Module implementation ──────────────────────────────
 
 pub struct WifiIntel;
 
@@ -105,7 +105,7 @@ impl Module for WifiIntel {
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let (user, token) = crate::util::keys::wigle_credentials(ctx);
 
-        // ── Single termux-wifi-scaninfo call ────────────────────────────
+        // ── Single termux-wifi-scaninfo call ─────────────────
         let Some(stdout) = termux_sensor::Sensor::WifiScan.read().await else {
             return Ok(ModuleResult::new());
         };
@@ -123,6 +123,17 @@ impl Module for WifiIntel {
             termux_sensor::unparseable_for(SOURCE, termux_sensor::Sensor::WifiScan, &e)
         })?;
 
+        // Drop placeholder/sentinel BSSIDs (empty, or the all-zero row Termux's
+        // Wi-Fi scan emits for an unresolved AP entry) before either phase below
+        // sees them. `crate::util::oui::is_locally_administered` reads
+        // `00:00:00:00:00:00`'s U/L bit as clear — a real, "trackable" hardware
+        // address — so an unfiltered placeholder here would mint a MacAddress
+        // entity that AU-122 (trackable RF device) wrongly counts as a real,
+        // followable device. `signal_radar::wifi::parse_scan` filters this same
+        // Termux tool's output for the identical reason; this module reads the
+        // same tool but previously had no equivalent guard at all.
+        aps.retain(|ap| !crate::util::oui::is_placeholder_bssid(&ap.bssid));
+
         if aps.is_empty() {
             return Ok(ModuleResult::new());
         }
@@ -134,7 +145,7 @@ impl Module for WifiIntel {
 
         let mut result = ModuleResult::with_capacity(aps.len());
 
-        // ── Phase 1: MacAddress entities for ALL APs ────────────────────
+        // ── Phase 1: MacAddress entities for ALL APs ────────────
         result.extend(aps.iter().map(|ap| {
             let ssid = ap.ssid.as_deref().unwrap_or("<hidden>");
             let mut e = Entity::new(
@@ -291,13 +302,14 @@ impl Module for WifiIntel {
     }
 }
 
-// ── Standalone AP parser ───────────────────────────────────────────────
+// ── Standalone AP parser ───────────────────────────
 //
 // A test-only shadow of the AP-parsing half of `process()`, which cannot be
 // unit-tested directly because it needs a live `termux-wifi-scaninfo` and a
-// `ModuleContext`. It must therefore keep the SAME blank/unparseable contract
-// as `process()`: a shadow that silently diverges would let its tests report
-// coverage of behaviour the production path no longer has.
+// `ModuleContext`. It must therefore keep the SAME blank/unparseable/
+// placeholder-BSSID contract as `process()`: a shadow that silently diverges
+// would let its tests report coverage of behaviour the production path no
+// longer has.
 
 #[cfg(test)]
 fn parse_aps(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
@@ -309,6 +321,9 @@ fn parse_aps(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
 
     let mut result = ModuleResult::with_capacity(aps.len());
     for ap in aps {
+        if crate::util::oui::is_placeholder_bssid(&ap.bssid) {
+            continue;
+        }
         let ssid = ap.ssid.as_deref().unwrap_or("<hidden>");
         let mut e = Entity::new(
             EntityKind::MacAddress,

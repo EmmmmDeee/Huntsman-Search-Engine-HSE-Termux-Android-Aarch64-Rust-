@@ -21,8 +21,6 @@ pub(super) struct Ap {
     pub(super) timestamp: Option<i64>,
 }
 
-const SKIP_BSSIDS: &[&str] = &["00:00:00:00:00:00", "02:00:00:00:00:00"];
-
 /// Classify an 802.11 channel centre frequency (MHz) into its band tag.
 pub(super) fn wifi_band(freq_mhz: Option<i64>) -> Option<&'static str> {
     match freq_mhz? {
@@ -54,7 +52,7 @@ pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
     let mut result = ModuleResult::with_capacity(aps.len());
 
     for ap in aps {
-        if ap.bssid.is_empty() || SKIP_BSSIDS.contains(&ap.bssid.as_str()) {
+        if crate::util::oui::is_placeholder_bssid(&ap.bssid) {
             continue;
         }
 

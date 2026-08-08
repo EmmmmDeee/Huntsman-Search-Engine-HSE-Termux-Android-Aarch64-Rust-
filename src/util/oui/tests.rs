@@ -225,3 +225,20 @@ fn is_multicast_reads_the_ig_bit_independently_of_the_ul_bit() {
     assert_eq!(is_multicast("zz"), None);
     assert_eq!(is_multicast(""), None);
 }
+
+#[test]
+fn is_placeholder_bssid_catches_the_sentinels_the_ul_bit_test_would_miss() {
+    // The load-bearing case: 00:00:00:00:00:00's U/L bit is CLEAR, so
+    // is_locally_administered reads it as a real, "trackable" hardware
+    // address — exactly the false positive this predicate exists to catch
+    // before a placeholder BSSID reaches a caller like AU-122.
+    assert_eq!(is_locally_administered("00:00:00:00:00:00"), Some(false));
+    assert!(is_placeholder_bssid("00:00:00:00:00:00"));
+    assert!(is_placeholder_bssid("02:00:00:00:00:00"));
+    assert!(is_placeholder_bssid(""));
+
+    // A real hardware BSSID, and a genuine (non-sentinel) randomized address,
+    // must both survive the filter.
+    assert!(!is_placeholder_bssid("3c:5a:b4:11:22:33"));
+    assert!(!is_placeholder_bssid("aa:bb:cc:dd:ee:ff"));
+}

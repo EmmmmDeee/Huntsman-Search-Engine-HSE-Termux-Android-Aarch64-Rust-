@@ -121,6 +121,26 @@ pub fn is_multicast(mac: &str) -> Option<bool> {
     Some(first & 0x01 != 0)
 }
 
+/// True for a placeholder/sentinel BSSID that names no real device: the
+/// empty string, the all-zero address Android/Termux Wi-Fi scan output uses
+/// for an unresolved or incomplete AP row, or `02:00:00:00:00:00` (the
+/// canonical example/placeholder randomized address some scan tools emit
+/// verbatim rather than a genuine rotated MAC).
+///
+/// This is NOT the same question [`is_locally_administered`] answers:
+/// `00:00:00:00:00:00`'s U/L bit is clear, so it reads as a real,
+/// universally-administered — i.e. "trackable" — address to that test, even
+/// though it is a sentinel with no device behind it at all. A producer
+/// parsing raw AP/beacon-scan output must filter placeholders with THIS
+/// predicate before minting a `MacAddress` entity; an unfiltered
+/// `00:00:00:00:00:00` reaching AU-122 (trackable RF device) would be wrongly
+/// counted as a real, followable hardware device precisely because it passes
+/// the U/L-bit test.
+#[must_use]
+pub fn is_placeholder_bssid(mac: &str) -> bool {
+    mac.is_empty() || matches!(mac, "00:00:00:00:00:00" | "02:00:00:00:00:00")
+}
+
 /// Look up the OUI for a MAC address and return vendor + device
 /// class. Accepts any common MAC formatting (`AA:BB:CC:DD:EE:FF`,
 /// `aa-bb-cc-dd-ee-ff`, `aabbccddeeff`). Returns `None` only if the

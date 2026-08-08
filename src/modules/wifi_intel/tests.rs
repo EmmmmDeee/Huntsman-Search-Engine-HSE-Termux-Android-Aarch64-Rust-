@@ -1,7 +1,7 @@
 use super::*;
 use crate::core::scan::TargetKind;
 
-// ── Module trait tests ──────────────────────────────────────────────
+// ── Module trait tests ─────────────────────────
 
 #[test]
 fn is_passive() {
@@ -41,7 +41,7 @@ fn max_timeout_is_20s() {
     assert_eq!(WifiIntel.max_timeout_ms(), 20_000);
 }
 
-// ── AP parsing ─────────────────────────────────────
+// ── AP parsing ─────────────────────────
 
 #[test]
 fn parses_sample_payload() {
@@ -166,7 +166,26 @@ fn empty_json_array_no_ops() {
     assert_eq!(r.entities.len(), 0);
 }
 
-// ── WiGLE DetailResp deserialization (from bssid_locate) ────────────
+#[test]
+fn placeholder_bssids_are_never_minted_as_entities() {
+    // 00:00:00:00:00:00 (Termux's all-zero row for an unresolved AP) and
+    // 02:00:00:00:00:00 (the canonical randomized-placeholder example) must
+    // not become MacAddress entities: is_locally_administered reads the
+    // all-zero address's clear U/L bit as a real, "trackable" hardware MAC,
+    // so an unfiltered placeholder here would reach AU-122 (trackable RF
+    // device) and be wrongly counted as a real, followable device. A real
+    // AP survives alongside them.
+    let json = br#"[
+        {"bssid":"00:00:00:00:00:00","ssid":"Ghost1","frequency":2412,"rssi":-40,"timestamp":0},
+        {"bssid":"02:00:00:00:00:00","ssid":"Ghost2","frequency":2412,"rssi":-40,"timestamp":0},
+        {"bssid":"aa:bb:cc:dd:ee:ff","ssid":"RealNet","frequency":2412,"rssi":-40,"timestamp":0}
+    ]"#;
+    let r = parse_aps(json, "test").expect("valid AP JSON parses");
+    assert_eq!(r.entities.len(), 1, "only the real AP survives: {r:?}");
+    assert_eq!(r.entities[0].value, "aa:bb:cc:dd:ee:ff");
+}
+
+// ── WiGLE DetailResp deserialization (from bssid_locate) ──────────
 
 #[test]
 fn detail_resp_deserializes() {
