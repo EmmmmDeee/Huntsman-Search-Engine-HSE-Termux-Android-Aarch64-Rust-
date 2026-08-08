@@ -51,9 +51,7 @@ pub(super) fn parse_conn(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
     let ssid = info.ssid.as_deref().unwrap_or("<hidden>");
 
     if let Some(ref bssid) = info.bssid
-        && !bssid.is_empty()
-        && bssid != "00:00:00:00:00:00"
-        && bssid != "02:00:00:00:00:00"
+        && !crate::util::oui::is_placeholder_bssid(bssid)
     {
         let mut e = Entity::new(
             EntityKind::MacAddress,
