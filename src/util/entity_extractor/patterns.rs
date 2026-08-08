@@ -157,9 +157,21 @@ pub fn extract_by_patterns(text: &str) -> Vec<ExtractedEntity> {
         if cap.end() < text.len() && text.as_bytes()[cap.end()] == b'@' {
             continue;
         }
+        let value = cap.as_str().to_lowercase();
+        // `DOMAIN_PATTERN` is purely structural — `label(.label)+.alpha{2,}` —
+        // so without this every dotted token became a Domain entity. Measured
+        // against this extractor, seven of nine sample inputs were false
+        // positives: `john.smith`, `mr.smith`, `version.number`, `report.pdf`,
+        // `image.png`, `script.js`, `config.yaml`. A `firstname.lastname` is the
+        // single most common username shape in a breach dump, and each of these
+        // became a first-class entity that later scans would try to resolve and
+        // enrich as a host. The last label must be a delegated TLD.
+        if !crate::util::domains::has_known_tld(&value) {
+            continue;
+        }
         entities.push(ExtractedEntity {
             kind: EntityKind::Domain,
-            value: cap.as_str().to_lowercase(),
+            value,
             confidence: 0.75,
             context: extract_context(text, cap.start()),
             source_pattern: "domain_rfc1035".to_string(),
@@ -638,6 +650,58 @@ mod proptests {
                 .collect();
             prop_assert_eq!(emitted.len(), 1, "expected exactly one IPv6 from {:?}", text);
             prop_assert_eq!(&emitted[0].value, &addr.to_string());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tld_gate_tests {
+    use super::*;
+
+    /// The measured defect: `DOMAIN_PATTERN` is purely structural, so every
+    /// dotted token became a `Domain` entity. Against this extractor, seven of
+    /// nine sample inputs were false positives — a person's name, a name with a
+    /// title, ordinary prose, and four filenames — each becoming a first-class
+    /// entity that later scans would try to resolve and enrich as a host.
+    ///
+    /// `firstname.lastname` is the single most common username shape in a breach
+    /// dump, which is what makes this more than cosmetic.
+    #[test]
+    fn names_and_filenames_are_not_domains() {
+        let text = "john.smith mr.smith version.number report.pdf image.png script.js config.yaml";
+        let found: Vec<String> = extract_by_patterns(text)
+            .into_iter()
+            .filter(|e| e.kind == EntityKind::Domain)
+            .map(|e| e.value)
+            .collect();
+        assert!(
+            found.is_empty(),
+            "none of these has a delegated TLD, so none is a domain: {found:?}"
+        );
+    }
+
+    /// The load-bearing other half: a filter that rejected everything would pass
+    /// the test above. Real domains — including newer gTLDs a hand-maintained
+    /// "common TLDs" list would miss — must still be extracted.
+    #[test]
+    fn real_domains_are_still_extracted() {
+        let text = "example.com bbc.co.uk shop.xyz myproject.app tooling.dev";
+        let found: Vec<String> = extract_by_patterns(text)
+            .into_iter()
+            .filter(|e| e.kind == EntityKind::Domain)
+            .map(|e| e.value)
+            .collect();
+        for expected in [
+            "example.com",
+            "bbc.co.uk",
+            "shop.xyz",
+            "myproject.app",
+            "tooling.dev",
+        ] {
+            assert!(
+                found.iter().any(|v| v == expected),
+                "{expected} must still be extracted, got {found:?}"
+            );
         }
     }
 }

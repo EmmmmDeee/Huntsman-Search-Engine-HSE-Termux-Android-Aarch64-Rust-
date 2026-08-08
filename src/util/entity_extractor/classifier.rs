@@ -93,12 +93,13 @@ impl EntityClassifier {
                 }
             }
             EntityKind::Domain => {
-                // Boost if TLD is known (not exhaustive, just common ones)
-                let common_tlds = [
-                    "com", "org", "net", "gov", "edu", "io", "au", "uk", "de", "fr",
-                ];
+                // Boosted against the full IANA delegated set, not a hand-rolled
+                // ten-entry list that named itself "not exhaustive". That list
+                // ranked `shop.xyz`, `myproject.app` and every ccTLD outside its
+                // ten below `example.com` purely because nobody had typed them
+                // in — a confidence difference with no evidentiary basis.
                 if let Some(tld) = entity.value.split('.').next_back()
-                    && common_tlds.contains(&tld)
+                    && crate::util::domains::is_known_tld(tld)
                 {
                     entity.confidence = (base_confidence + 0.05).min(1.0);
                     entity.boost_reason = Some(format!("Known TLD: {tld}"));

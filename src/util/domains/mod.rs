@@ -4,6 +4,9 @@
 //! freemail provider only touches one file. Modules call `is_freemail`
 //! / `is_social_platform` rather than maintaining their own copies.
 
+pub mod tld;
+pub use tld::{has_known_tld, is_known_tld};
+
 const FREEMAIL: &[&str] = &[
     // Global providers
     "gmail.com",
@@ -271,9 +274,13 @@ pub fn looks_like_domain(s: &str) -> bool {
     let labels: Vec<&str> = s.trim_end_matches('.').split('.').collect();
     labels.len() >= 2
         && labels.iter().all(|l| !l.is_empty())
-        && labels
-            .last()
-            .is_some_and(|tld| tld.len() >= 2 && tld.chars().any(|c| c.is_ascii_alphabetic()))
+        // The last label must be an IANA-delegated TLD. This check used to be
+        // `tld.len() >= 2 && any alphabetic`, which is structural, not factual —
+        // the doctest above claims `1.2.3` is rejected for having "no real TLD"
+        // but it was actually rejected for having no alphabetic character, and
+        // `john.smith` or `report.pdf` sailed through. Now the stated reason and
+        // the implemented reason are the same one.
+        && labels.last().is_some_and(|tld| tld::is_known_tld(tld))
 }
 
 /// True if `host` is `domain` itself or a subdomain of it — the host-label-safe
