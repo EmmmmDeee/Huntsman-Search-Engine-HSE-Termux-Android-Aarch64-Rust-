@@ -128,26 +128,138 @@ fn bluetooth_parse_valid_devices() {
         {"address":"AA:BB:CC:DD:EE:02","name":"Speaker","type":"le","bondState":"none"}
     ]"#;
     let result = bluetooth::parse_bt_json(json, "test-scan").expect("valid BT JSON parses");
-    assert_eq!(result.len(), 2);
 
-    let d1 = &result.entities[0];
-    assert_eq!(d1.kind, EntityKind::MacAddress);
+    let macs: Vec<_> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::MacAddress)
+        .collect();
+    assert_eq!(macs.len(), 2);
+
+    let d1 = macs[0];
     assert_eq!(d1.value, "aa:bb:cc:dd:ee:01");
     assert!((d1.confidence - confidence::HIGH_PLUSPLUS).abs() < 0.01);
     assert!(d1.has_tag("bluetooth"));
     assert!(d1.has_tag("bt-classic"));
     assert!(d1.has_tag("bond:bonded"));
+
+    // The friendly name is emitted alongside the address, exactly as the Wi-Fi
+    // sensor emits an SSID beside its BSSID. A Bluetooth broadcast name is an
+    // independently searchable identifier and routinely carries a person's name.
+    let names: Vec<&str> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Ssid)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        names.contains(&"headphones") || names.contains(&"Headphones"),
+        "the device name must be emitted as its own entity, got {names:?}"
+    );
 }
 
+/// The placeholder guard must delegate to `is_placeholder_bssid`, not re-derive
+/// a partial copy of it.
+///
+/// `02:00:00:00:00:00` is the load-bearing case and is why this test exists:
+/// it is `BluetoothAdapter.DEFAULT_MAC_ADDRESS`, the constant AOSP returns from
+/// `getAddress()` to any app without the signature-level `LOCAL_MAC_ADDRESS`
+/// permission — which Termux can never hold. It is therefore the single most
+/// likely bogus address to arrive on THIS sensor, and the hand-rolled guard
+/// that used to live here (`is_empty() || == "00:00:00:00:00:00"`) was the one
+/// copy that missed it.
 #[test]
 fn bluetooth_skip_placeholder_address() {
     let json = br#"[
-        {"address":"00:00:00:00:00:00","name":"Bad"},
-        {"address":"","name":"Empty"},
-        {"address":"AA:BB:CC:DD:EE:FF","name":"Good"}
+        {"address":"00:00:00:00:00:00"},
+        {"address":"02:00:00:00:00:00"},
+        {"address":""},
+        {"address":"AA:BB:CC:DD:EE:FF"}
     ]"#;
     let result = bluetooth::parse_bt_json(json, "test-scan").expect("valid BT JSON parses");
-    assert_eq!(result.len(), 1);
+    let macs: Vec<&str> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::MacAddress)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert_eq!(
+        macs,
+        vec!["aa:bb:cc:dd:ee:ff"],
+        "every placeholder sentinel must be dropped, including Android's \
+         anonymised 02:00:00:00:00:00"
+    );
+}
+
+/// A value that is not a complete address must never be minted as a
+/// `MacAddress`. `classify_mac` reads only a hex PREFIX, so without a
+/// full-address gate a friendly name whose first six hex-ish characters spell
+/// one — "Facade" — becomes a confidently vendor-attributed hardware entity.
+#[test]
+fn bluetooth_never_mints_a_mac_from_a_non_address() {
+    let json = br#"[
+        {"address":"Facade","name":"Facade"},
+        {"address":"not-a-mac","name":"Junk"}
+    ]"#;
+    let result = bluetooth::parse_bt_json(json, "test-scan").expect("valid BT JSON parses");
+    assert!(
+        result
+            .entities
+            .iter()
+            .all(|e| e.kind != EntityKind::MacAddress),
+        "a non-address must not become a MacAddress: {:?}",
+        result
+            .entities
+            .iter()
+            .map(|e| (&e.value, &e.kind))
+            .collect::<Vec<_>>()
+    );
+    // The name is still a real observation and is kept.
+    assert!(
+        result.entities.iter().any(|e| e.kind == EntityKind::Ssid),
+        "the observed name must survive even without an address"
+    );
+}
+
+/// The shipping third-party tool answers its first invocation with a JSON
+/// OBJECT acknowledging the scan, not an array. That is a working tool
+/// behaving as designed — an empty `Ok`, never the `unparseable` hard error
+/// that counts in `modules_errored` and feeds the circuit breaker.
+#[test]
+fn bluetooth_scan_acknowledgement_is_not_a_malfunction() {
+    let json = br#"{"message":"scanning bluetooth devices, please type termux-bluetooth-scaninfo again to stop the scanning and print the results"}"#;
+    let result = bluetooth::parse_bt_json(json, "test-scan")
+        .expect("a scan acknowledgement is a successful, device-free answer");
+    assert!(result.entities.is_empty());
+}
+
+/// The same tool's result form reports a device NAME with no address at all.
+/// It must yield the name (the only identifier it ever produces) and must not
+/// invent an address for it.
+#[test]
+fn bluetooth_name_only_form_yields_a_name_and_no_address() {
+    let json = br#"{"device":"Matthew's iPhone"}"#;
+    let result = bluetooth::parse_bt_json(json, "test-scan").expect("the name-only form parses");
+    assert_eq!(result.entities.len(), 1);
+    let e = &result.entities[0];
+    assert_eq!(e.kind, EntityKind::Ssid);
+    assert!(e.has_tag("bluetooth"));
+    assert!(
+        e.value.to_lowercase().contains("iphone"),
+        "the broadcast name must be preserved, got {:?}",
+        e.value
+    );
+}
+
+/// Genuinely broken output is still a hard error — the contract this module
+/// shares with every other Termux sensor. Without this, the fixes above could
+/// have been made by simply swallowing all parse failures.
+#[test]
+fn bluetooth_unparseable_output_is_still_an_error() {
+    assert!(
+        bluetooth::parse_bt_json(b"this is not json at all", "test-scan").is_err(),
+        "a real malfunction must not be reported as an empty observation"
+    );
 }
 
 // ── cell parser ────────────────────────────────────────────────────────────

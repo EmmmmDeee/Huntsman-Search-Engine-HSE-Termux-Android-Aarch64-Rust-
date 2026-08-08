@@ -141,6 +141,25 @@ pub fn is_placeholder_bssid(mac: &str) -> bool {
     mac.is_empty() || matches!(mac, "00:00:00:00:00:00" | "02:00:00:00:00:00")
 }
 
+/// True when `mac` is a COMPLETE, well-formed 48-bit address: exactly 12 hex
+/// digits once `:`, `-` and `.` separators are stripped. Mirrors the rule
+/// `Target::validate` applies to [`TargetKind::MacAddress`](crate::core::scan::TargetKind),
+/// so a value that would be rejected as a target is never minted as a
+/// `MacAddress` entity either.
+///
+/// [`classify_mac`] is NOT a substitute for this check, and using it as one is a
+/// live trap: it consumes only the FIRST 6 hex digits it can find and ignores
+/// everything after, so it happily classifies a string that is not an address at
+/// all. A Bluetooth device advertising the friendly name `"Facade"` yields the
+/// hex run `facade` and comes back as a confidently-attributed vendor. Any
+/// producer turning free-form scan output into a `MacAddress` must gate on THIS
+/// predicate first; `classify_mac` then only ever sees a real address.
+#[must_use]
+pub fn is_mac_address(mac: &str) -> bool {
+    let hex = mac.replace([':', '-', '.'], "");
+    hex.len() == 12 && hex.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Look up the OUI for a MAC address and return vendor + device
 /// class. Accepts any common MAC formatting (`AA:BB:CC:DD:EE:FF`,
 /// `aa-bb-cc-dd-ee-ff`, `aabbccddeeff`). Returns `None` only if the

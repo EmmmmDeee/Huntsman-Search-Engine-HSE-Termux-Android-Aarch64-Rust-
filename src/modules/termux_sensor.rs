@@ -72,6 +72,17 @@ pub(crate) enum Sensor {
     /// Serving + neighbour cell towers.
     CellInfo,
     /// BLE/BT beacon scan.
+    ///
+    /// Unlike its three siblings, this tool is **not part of the official
+    /// Termux:API** — `termux/termux-api-package` installs 62 `termux-*`
+    /// scripts and none of them is a Bluetooth command. It ships only in a
+    /// third-party fork, and the upstream PRs that would add one are still
+    /// open. The variant is kept because the fork is real and installable, and
+    /// because an absent tool is already handled correctly (an attributable
+    /// capability gap, not an empty observation) — but a Bluetooth sweep
+    /// returning nothing on a stock device is the expected case, not a fault.
+    /// See `crate::modules::signal_radar::bluetooth` for the full evidence and
+    /// the wire shapes that fork actually emits.
     BluetoothScan,
 }
 

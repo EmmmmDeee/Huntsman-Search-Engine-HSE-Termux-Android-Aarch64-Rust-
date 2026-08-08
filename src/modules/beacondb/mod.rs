@@ -36,9 +36,18 @@
 //!
 //! ## Corpora
 //!
-//! A `MacAddress` target is not necessarily a Wi-Fi BSSID — `signal_radar` also
-//! emits Bluetooth addresses from `termux-bluetooth-scaninfo` — so both the
-//! Wi-Fi and Bluetooth corpora are probed (see [`Corpus`]).
+//! A `MacAddress` target is not necessarily a Wi-Fi BSSID, so both the Wi-Fi
+//! and Bluetooth corpora are probed (see [`Corpus`]).
+//!
+//! The justification stated here was previously "`signal_radar` also emits
+//! Bluetooth addresses from `termux-bluetooth-scaninfo`". That premise does not
+//! hold on the target platform: the official Termux:API ships no Bluetooth
+//! command (see `crate::modules::signal_radar::bluetooth`), and the one
+//! third-party tool that provides it reports device NAMES with no address at
+//! all. The Bluetooth corpus is still probed — a `MacAddress` reaching this
+//! module can be a Bluetooth address from a WiGLE sweep or an imported
+//! dataset, and a miss costs one request — but it is no longer justified by a
+//! local sensor that cannot supply one.
 //!
 //! Verification boundary, stated because it is not closable from a build host:
 //! `bluetoothBeacons` is a documented field of the Ichnaea/MLS API beaconDB

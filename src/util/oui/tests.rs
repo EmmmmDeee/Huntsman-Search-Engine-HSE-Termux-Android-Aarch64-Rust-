@@ -242,3 +242,35 @@ fn is_placeholder_bssid_catches_the_sentinels_the_ul_bit_test_would_miss() {
     assert!(!is_placeholder_bssid("3c:5a:b4:11:22:33"));
     assert!(!is_placeholder_bssid("aa:bb:cc:dd:ee:ff"));
 }
+
+/// The gap `classify_mac` cannot close, and why a separate predicate exists.
+///
+/// `classify_mac` consumes only the first 6 hex digits it finds, so free-form
+/// text that happens to open with a hex-ish run classifies as a vendor. A
+/// Bluetooth device advertising the friendly name "Facade" is the concrete
+/// case: the letters spell a valid 24-bit prefix, and without a full-address
+/// gate the name is minted as a `MacAddress` and confidently attributed.
+#[test]
+fn is_mac_address_rejects_what_classify_mac_would_happily_classify() {
+    assert!(
+        classify_mac("Facade").is_some(),
+        "precondition: classify_mac reads a hex prefix and does not validate"
+    );
+    assert!(
+        !is_mac_address("Facade"),
+        "a 6-character name is not a 48-bit address"
+    );
+
+    // Every separator form the canonical target validator accepts.
+    assert!(is_mac_address("aa:bb:cc:dd:ee:ff"));
+    assert!(is_mac_address("AA-BB-CC-DD-EE-FF"));
+    assert!(is_mac_address("aabb.ccdd.eeff"));
+    assert!(is_mac_address("aabbccddeeff"));
+
+    // Wrong length either way, and non-hex, are all rejected.
+    assert!(!is_mac_address("aa:bb:cc:dd:ee"));
+    assert!(!is_mac_address("aa:bb:cc:dd:ee:ff:00"));
+    assert!(!is_mac_address("gg:bb:cc:dd:ee:ff"));
+    assert!(!is_mac_address("not-a-mac"));
+    assert!(!is_mac_address(""));
+}

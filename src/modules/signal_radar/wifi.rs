@@ -66,7 +66,7 @@ pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
             e.tag(band);
         }
 
-        let mut ev = Evidence::new(SRC, format!("Wi-Fi AP scan: {ssid}"))
+        let ev = Evidence::new(SRC, format!("Wi-Fi AP scan: {ssid}"))
             .with_attr("ssid", ssid)
             .with_attr("bssid", &ap.bssid)
             .with_attr("rssi_dbm", ap.rssi.unwrap_or(0).to_string())
@@ -77,21 +77,11 @@ pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
             )
             .with_attr("timestamp", ap.timestamp.unwrap_or(0).to_string());
 
-        // OUI classification (parity with the WiGLE + Bluetooth paths): attribute
-        // the AP's vendor/device class from a real hardware BSSID, or flag a
-        // locally-administered BSSID as `randomized`. A randomized BSSID is a
-        // privacy/rotating address, not a fixed access point — the exact
-        // distinction AU-122 surfaces so it is never treated as a trackable pin.
-        if let Some(oui) = crate::util::oui::classify_mac(&ap.bssid) {
-            e.tag(format!("vendor:{}", oui.vendor));
-            e.tag(format!("device:{}", oui.class.as_str()));
-            let trackable = crate::util::oui::is_locally_administered(&ap.bssid) == Some(false);
-            e.tag(if trackable { "trackable" } else { "randomized" });
-            ev = ev
-                .with_attr("vendor", oui.vendor)
-                .with_attr("device_class", oui.class.as_str())
-                .with_attr("trackable", trackable.to_string());
-        }
+        // OUI classification, shared with the Bluetooth sensor via
+        // [`super::tag_oui`] rather than copied into both: attribute the AP's
+        // vendor/device class from a real hardware BSSID, or flag a
+        // locally-administered BSSID as `randomized`.
+        let ev = super::tag_oui(&mut e, ev, &ap.bssid);
 
         e.add_evidence(ev);
 

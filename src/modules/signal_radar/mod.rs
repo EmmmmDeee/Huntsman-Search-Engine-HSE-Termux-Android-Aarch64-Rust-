@@ -2,13 +2,26 @@
 //! cell tower survey, GPS fix, and LAN ARP discovery in a single parallel pass.
 //!
 //! All sensors run concurrently via `tokio::join!`.  Off-device (no Termux
-//! binaries) every termux-backed sub-sensor no-ops cleanly.  The LAN ARP
-//! sensor reads `/proc/net/arp`, which an unprivileged app cannot read on the
-//! primary target: on non-root Termux (Android 14 / SDK 34) the read returns
-//! EACCES, so LAN ARP discovery and the port sweep that depends on it are
-//! inert on-device and active only where that file is readable (desktop
-//! Linux, or a rooted device).  The denial degrades to a clean empty result,
-//! never an error — see `lan::scan_lan`.
+//! binaries) every termux-backed sub-sensor no-ops cleanly.
+//!
+//! Two of the five are inert on the primary target, for reasons outside this
+//! module's control. Both are documented at their source rather than left to be
+//! rediscovered from an empty result:
+//!
+//!   * **LAN ARP** reads `/proc/net/arp`, which an unprivileged app cannot read
+//!     on the primary target: on non-root Termux (Android 14 / SDK 34) the read
+//!     returns EACCES, so LAN ARP discovery and the port sweep that depends on
+//!     it are active only where that file is readable (desktop Linux, or a
+//!     rooted device).  The denial degrades to a clean empty result, never an
+//!     error — see `lan::scan_lan`.
+//!   * **Bluetooth** has no tool to call: the official Termux:API ships no
+//!     Bluetooth command at all, and the only implementation is a third-party
+//!     fork emitting device names without addresses — see
+//!     [`bluetooth`] for the verified evidence.
+//!
+//! So on a stock non-root Termux device this module is effectively a Wi-Fi,
+//! cell and GPS radar. That is stated plainly because the alternative is an
+//! operator reading three silent sensors as "nothing in range".
 //!
 //! MITRE ATT&CK Reconnaissance (TA0043):
 //!   T1590.005 — IP Addresses (LAN ARP)
@@ -31,7 +44,7 @@ mod tests;
 use async_trait::async_trait;
 
 use crate::core::{
-    entity::EntityKind,
+    entity::{EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
@@ -49,6 +62,39 @@ pub(super) use crate::modules::termux_sensor::{Sensor, is_blank};
 /// name a tool this module actually reads.
 pub(super) fn unparseable(sensor: Sensor, e: &serde_json::Error) -> Error {
     crate::modules::termux_sensor::unparseable_for(SRC, sensor, e)
+}
+
+/// Attribute `mac`'s vendor and device class onto `e`, and record the same on
+/// `ev`, returning the extended evidence.
+///
+/// Both RF sensors in this module observe hardware addresses and both must say
+/// the same thing about them, so this is written once. It was previously
+/// copy-pasted verbatim into `wifi::parse_scan` and `bluetooth::parse_bt_json`
+/// — the shape of duplication that drifts, and two more near-copies in
+/// `wigle` have ALREADY drifted (they emit `vendor:`/`device:` but never the
+/// `trackable`/`randomized` partition, so a WiGLE-sourced randomised address is
+/// not marked as one).
+///
+/// The `trackable`/`randomized` split is the load-bearing part. A
+/// locally-administered address is a rotating privacy identifier, not a
+/// followable device, and AU-122 partitions on exactly this: plotting one as a
+/// persistent pin invents a device that does not exist.
+///
+/// Callers must have already established that `mac` IS an address
+/// ([`crate::util::oui::is_mac_address`]) and not a placeholder
+/// ([`crate::util::oui::is_placeholder_bssid`]) — [`crate::util::oui::classify_mac`]
+/// reads a hex PREFIX and cannot make that judgement itself.
+pub(super) fn tag_oui(e: &mut crate::core::entity::Entity, ev: Evidence, mac: &str) -> Evidence {
+    let Some(oui) = crate::util::oui::classify_mac(mac) else {
+        return ev;
+    };
+    e.tag(format!("vendor:{}", oui.vendor));
+    e.tag(format!("device:{}", oui.class.as_str()));
+    let trackable = crate::util::oui::is_locally_administered(mac) == Some(false);
+    e.tag(if trackable { "trackable" } else { "randomized" });
+    ev.with_attr("vendor", oui.vendor)
+        .with_attr("device_class", oui.class.as_str())
+        .with_attr("trackable", trackable.to_string())
 }
 
 pub struct SignalRadar;
