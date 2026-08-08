@@ -44,7 +44,6 @@ pub(in crate::core::correlator) fn rule_au_014_geo_cluster(
     ts: u64,
 ) -> Vec<Correlation> {
     let entities = context.entities();
-    const GEO_TAGS: &[&str] = &["geoint", "wifi-observed"];
     entities_of_kind(entities, EntityKind::Coordinates)
         .into_iter()
         // Mirror AU-017: a coordinate must clear a confidence floor AND not be
@@ -54,12 +53,22 @@ pub(in crate::core::correlator) fn rule_au_014_geo_cluster(
         // confirmed personal geo lead.
         .filter(|e| e.confidence >= 0.50 && !is_infrastructure_geo(e))
         .filter_map(|e| {
-            let hits: Vec<&str> = GEO_TAGS.iter().copied().filter(|t| e.has_tag(t)).collect();
             // Corroborating sources only: the deterministic `geo_normalize`
             // enrichment pass is not an independent geo observation, so a lone
             // postcode-centroid it touched must not look like a "cluster".
+            //
+            // A `geoint`/`wifi-observed` TAG count was formerly accepted as an
+            // independent alternative gate here, and the reported count took
+            // whichever of the two was larger. That double-counted: a single
+            // WiGLE observation tags its Coordinates entity BOTH `wifi-observed`
+            // and `geoint` from one `wigle` evidence record
+            // (`modules::wigle::named_ap_entities`), so a lone WiGLE source
+            // alone cleared the tag gate and the finding claimed "confirmed by
+            // 2 geo source(s)" for a coordinate one source produced. A tag is
+            // not a source; only `corroborating_sources` counts independent
+            // corroboration.
             let sources = e.corroborating_sources();
-            if hits.len() >= 2 || sources.len() >= 2 {
+            if sources.len() >= 2 {
                 Some(Correlation {
                     rule_id: "AU-014".into(),
                     rule_name: "Geolocation cluster".into(),
@@ -67,7 +76,7 @@ pub(in crate::core::correlator) fn rule_au_014_geo_cluster(
                     description: format!(
                         "Coordinates '{}' confirmed by {} geo source(s)",
                         e.value,
-                        sources.len().max(hits.len())
+                        sources.len()
                     ),
                     entity_uids: vec![e.uid.clone()],
                     scan_id: scan_id.into(),

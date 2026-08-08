@@ -1439,6 +1439,28 @@ fn au014_excludes_infrastructure_coordinates() {
 }
 
 #[test]
+fn au014_silent_on_a_single_source_tagged_geoint_and_wifi_observed() {
+    // The exact shape `modules::wigle::named_ap_entities` produces: ONE
+    // evidence record from ONE source ("wigle"), but the entity carries BOTH
+    // the `geoint` and `wifi-observed` tags (wigle tags an AP's observed
+    // position with both in the same call). Before the fix, AU-014 treated
+    // "carries >=2 of {geoint, wifi-observed}" as an independent alternative
+    // to ">=2 corroborating sources", so this single-source WiGLE coordinate
+    // wrongly cleared the gate and the description claimed "confirmed by 2
+    // geo source(s)" for a coordinate exactly one source produced.
+    let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    e.tag("wigle");
+    e.tag("wifi-observed");
+    e.tag("geoint");
+    e.add_evidence(Evidence::new("wigle", "WiGLE-observed position of WiFi AP"));
+    assert!(
+        rule_au_014_geo_cluster(&RuleContext::new(&[e]), "s", 0).is_empty(),
+        "a single wigle-sourced coordinate must not report a multi-source geo cluster \
+         merely because one module tagged it twice"
+    );
+}
+
+#[test]
 fn geo_normalize_alone_does_not_over_fire_corroboration_rules() {
     // Regression: a coarse qld_unclaimed geo set, each entity touched only
     // by the deterministic `geo_normalize` enrichment pass, must NOT light
