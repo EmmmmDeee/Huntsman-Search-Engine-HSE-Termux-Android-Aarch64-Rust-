@@ -5041,6 +5041,77 @@ fn au046_resolves_only_the_alias_own_account_identifiers() {
 }
 
 #[test]
+fn au046_does_not_fuse_a_different_confirmed_aliases_email() {
+    // The concrete false positive an adversarial audit confirmed: TWO
+    // different confirmed aliases both have a `github_user` account, so they
+    // collide on the bare source NAME even though the accounts are unrelated.
+    // Before this fix, `carol`'s own-account email shared the source name
+    // "github_user" with `alice` (and vice versa), so AU-046 fused carol's
+    // email into alice's resolution and alice's into carol's — exactly what
+    // the rule's own docstring claims cannot happen ("another alias's
+    // identifiers... can't be fused in"). Both handles are >= 4 chars (the
+    // `is_anchorable_handle` floor) — "carol", not "bob", so the fixture
+    // isn't accidentally gated out before it can exercise the fix.
+    let alias = |handle: &str| {
+        let mut u = Entity::new(EntityKind::Username, handle, 0.6, "scan");
+        for s in ["github_user", "reddit_user"] {
+            u.add_evidence(Evidence::new(s, "confirmed account"));
+        }
+        u
+    };
+    let alice = alias("alice");
+    let carol = alias("carol");
+    // The exact evidence-summary shape `modules::github_user` produces for a
+    // published profile email: "Email published on GitHub profile @{login}".
+    let email_for = |login: &str, addr: &str| {
+        let mut e = Entity::new(EntityKind::Email, addr, 0.7, "scan");
+        e.add_evidence(Evidence::new(
+            "github_user",
+            format!("Email published on GitHub profile @{login}"),
+        ));
+        e
+    };
+    let alice_email = email_for("alice", "alice@real.example");
+    let carol_email = email_for("carol", "carol@real.example");
+
+    let hits = super::rules::rule_au_046_cross_platform_identity_resolution(
+        &RuleContext::new(&[
+            alice.clone(),
+            carol.clone(),
+            alice_email.clone(),
+            carol_email.clone(),
+        ]),
+        "scan",
+        0,
+    );
+    assert_eq!(hits.len(), 2, "each alias resolves independently");
+    let for_alias = |handle: &str| {
+        hits.iter()
+            .find(|c| c.description.contains(&format!("'{handle}'")))
+            .unwrap_or_else(|| panic!("no AU-046 finding for alias '{handle}'"))
+    };
+    let alice_hit = for_alias("alice");
+    assert!(
+        alice_hit.entity_uids.contains(&alice_email.uid),
+        "alice resolves to her own published email"
+    );
+    assert!(
+        !alice_hit.entity_uids.contains(&carol_email.uid),
+        "carol's email, published on HER github profile, must not fuse into alice's identity \
+         merely because both accounts are on github_user"
+    );
+    let carol_hit = for_alias("carol");
+    assert!(
+        carol_hit.entity_uids.contains(&carol_email.uid),
+        "carol resolves to her own published email"
+    );
+    assert!(
+        !carol_hit.entity_uids.contains(&alice_email.uid),
+        "alice's email must not fuse into carol's identity"
+    );
+}
+
+#[test]
 fn au047_links_identities_by_a_reused_unique_secret_only() {
     // The account-linking rule, and its precision gate. A salted hash carried against
     // two emails links them (same controller); an UNSALTED digest must NOT —

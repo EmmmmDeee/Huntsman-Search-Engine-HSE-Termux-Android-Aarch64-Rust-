@@ -170,9 +170,24 @@ pub(in crate::core::correlator) fn rule_au_045_multi_service_identity(
 /// account(s) published** — an identifier is resolved to a given alias only when
 /// it shares ≥1 concrete corroborating source with that alias (the same platform
 /// module that confirmed the handle also surfaced the identifier). This scopes
-/// each resolution to the alias's own accounts, so a co-author's email, another
-/// alias's identifiers, or an unrelated breach-dump stranger can't be fused in;
-/// role mailboxes are excluded as well.
+/// each resolution to the alias's own accounts, so a co-author's email or an
+/// unrelated breach-dump stranger can't be fused in; role mailboxes are
+/// excluded as well.
+///
+/// The shared-source test alone is coarser than it looks: it keys on the bare
+/// module NAME, so two DIFFERENT confirmed aliases both surfaced by the same
+/// platform module (e.g. two people who each have a `github_user` account)
+/// collide on that name even though the accounts are unrelated. As a targeted
+/// backstop, a candidate is additionally dropped when the *specific* evidence
+/// record that made a source shared positively names — in its own summary
+/// text — a DIFFERENT confirmed alias and not this one (the pattern every
+/// `github_user`/`keybase` record follows: `"… from GitHub profile
+/// @{login}"`, `"Name from Keybase profile {kb_username}"`). This is a
+/// same-scan, textual check, not a full identity-corpus disambiguation: a
+/// producer module whose summary never names a handle at all is unaffected
+/// either way, and a genuine coincidence (two unrelated people who happen to
+/// share a platform module and whose evidence never names either handle)
+/// is not caught by this backstop.
 pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolution(
     context: &RuleContext,
     scan_id: &str,
@@ -245,7 +260,44 @@ pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolutio
             let alias_srcs: HashSet<&str> = alias.corroborating_sources();
             let mut resolved_uids: Vec<String> = platform_identifiers
                 .iter()
-                .filter(|(_, srcs)| !alias_srcs.is_disjoint(srcs))
+                .filter(|(e, srcs)| {
+                    let shared: HashSet<&str> =
+                        alias_srcs.intersection(srcs).copied().collect();
+                    if shared.is_empty() {
+                        return false;
+                    }
+                    // Strict narrowing on top of the shared-source-name gate
+                    // above: two DIFFERENT confirmed aliases surfaced by the
+                    // SAME platform module (e.g. both have a `github_user`
+                    // account) collide on the bare source name even though
+                    // the accounts are unrelated — the concrete false
+                    // positive two independent skeptics confirmed. The
+                    // producer modules (github_user, keybase, …) consistently
+                    // name the handle they derived a record from in that
+                    // record's own summary text ("… from GitHub profile
+                    // @{login}", "Name from Keybase profile {kb_username}").
+                    // When the SPECIFIC evidence record that makes a source
+                    // shared positively names a DIFFERENT confirmed alias and
+                    // not this one, the identifier is that other alias's, not
+                    // this one — drop it. Modules whose summaries don't name a
+                    // handle at all (most of them) never match either side, so
+                    // this can only REMOVE a match the source-name gate above
+                    // allowed; it never adds one.
+                    !e.evidence.iter().any(|ev| {
+                        shared.contains(ev.source.as_str())
+                            && !crate::util::str_util::whole_word_token_match(
+                                &ev.summary,
+                                &alias.value,
+                            )
+                            && aliases.iter().any(|(other, _)| {
+                                other.uid != alias.uid
+                                    && crate::util::str_util::whole_word_token_match(
+                                        &ev.summary,
+                                        &other.value,
+                                    )
+                            })
+                    })
+                })
                 .map(|(e, _)| e.uid.clone())
                 .collect();
             if resolved_uids.is_empty() {

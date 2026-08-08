@@ -349,6 +349,15 @@ fn core_does_not_import_util_directly() {
                 // the target auto-detector to strip separators from a candidate
                 // phone/registry number. No state, no I/O, no upward deps.
                 && !line.contains("util::str_util::ascii_digits")
+                // Pure, dependency-free whole-word/case-insensitive token
+                // matcher (no state, no I/O), same leaf category as
+                // `ascii_digits`. AU-046 uses it to test whether a platform
+                // module's evidence summary ("… from GitHub profile @{login}")
+                // positively names a specific confirmed alias, so an
+                // identifier surfaced by the same module for a DIFFERENT
+                // alias (bare source-name collision) isn't fused into this
+                // one's identity.
+                && !line.contains("util::str_util::whole_word_token_match")
                 // Pure, dependency-free offline city→coordinate lookup table
                 // (no I/O, no network). The engine's address_to_coords_pass uses
                 // it to convert Address entities into Coordinates for geo correlation.
