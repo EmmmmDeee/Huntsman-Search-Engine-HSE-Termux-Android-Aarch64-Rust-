@@ -1029,6 +1029,52 @@ fn evidence_new_sets_fields_and_empty_attributes() {
 
 // ── Evidence::with_attr ─────────────────────────────────────────────────
 
+/// One attribute key's accumulated value must stay bounded, and the bound must
+/// be visible in the cell rather than trailing off silently.
+///
+/// `with_attr` de-duplicates by re-scanning the whole accumulated value, so an
+/// unbounded accumulator makes N same-key inserts O(N²) AND grows one cell
+/// without limit. The import parsers fold an untrusted document's `key: value`
+/// lines straight into one evidence record, so a file repeating a key is enough
+/// to trigger it — measured before the bound at exactly 4× per doubling
+/// (42 KiB → 130 ms, 336 KiB → 7.38 s), which extrapolates to hours of pinned
+/// CPU on a phone for a file the 16 MiB import cap accepts.
+///
+/// 20_000 inserts finishes instantly bounded; unbounded it takes long enough to
+/// blow a test timeout, so this doubles as the cost guard.
+#[test]
+fn evidence_with_attr_accumulation_is_bounded_and_says_so() {
+    let mut ev = Evidence::new("src", "sum");
+    for i in 0..20_000 {
+        ev = ev.with_attr("note", format!("value-{i:08}"));
+    }
+    let got = ev.attributes.get("note").expect("the key accumulated");
+
+    assert!(
+        got.len() < 16 * 1024,
+        "one attribute grew to {} bytes — the accumulation is unbounded",
+        got.len()
+    );
+    assert!(
+        got.ends_with("…(truncated)"),
+        "a truncated cell must say so, not just stop: {:?}",
+        &got[got.len().saturating_sub(40)..]
+    );
+    // The values that DID fit are intact and in first-seen order.
+    assert!(got.starts_with("value-00000000; value-00000001"));
+
+    // A normal multi-value accumulation is untouched by the bound.
+    let ev = Evidence::new("src", "sum")
+        .with_attr("country", "AU")
+        .with_attr("country", "NZ")
+        .with_attr("country", "AU");
+    assert_eq!(
+        ev.attributes.get("country").expect("should succeed"),
+        "AU; NZ",
+        "de-duplicated accumulation must still work exactly as before"
+    );
+}
+
 #[test]
 fn evidence_with_attr_chaining() {
     let ev = Evidence::new("src", "sum")

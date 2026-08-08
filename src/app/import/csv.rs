@@ -260,10 +260,30 @@ fn parse_csv(body: &str) -> Vec<Vec<String>> {
             }
         } else {
             match c {
-                '"' => in_quotes = true,
+                // RFC 4180: a double quote is only special at the START of a
+                // field. This arm used to fire on a quote ANYWHERE in an
+                // unquoted field, which silently swallowed the entire rest of
+                // the file: one stray `"` — an inch mark in an address, a
+                // password containing a quote, a name rendered `O"Brien` by a
+                // lossy exporter — flipped the reader into quoted mode, so every
+                // following comma and newline became field data until the next
+                // quote (often EOF). The import then reported a smaller row
+                // count with no error, and the operator had no way to see that
+                // records had been eaten. A quote inside an unquoted field is a
+                // literal character (what the `csv` crate does too), so it now
+                // falls through to the `_` arm below.
+                '"' if field.is_empty() => in_quotes = true,
                 ',' => row.push(std::mem::take(&mut field)),
-                '\r' => {}
-                '\n' => {
+                // A lone CR is a classic-Mac line ending and terminates a row,
+                // exactly as LF does. Discarding it (the old behaviour) folded a
+                // whole CR-only file into ONE row, so the header consumed every
+                // record and the import yielded zero entities while still
+                // exiting 0. On CRLF the LF is consumed here so it cannot open a
+                // spurious empty row.
+                '\r' | '\n' => {
+                    if c == '\r' && chars.peek() == Some(&'\n') {
+                        chars.next();
+                    }
                     row.push(std::mem::take(&mut field));
                     rows.push(std::mem::take(&mut row));
                 }

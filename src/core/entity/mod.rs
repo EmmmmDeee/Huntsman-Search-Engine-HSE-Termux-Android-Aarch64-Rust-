@@ -449,12 +449,41 @@ impl Evidence {
     /// re-asserting an identical value is idempotent and the merged cell never
     /// bloats with repeats. The first-seen value stays first and single-set
     /// callers — the overwhelming majority — are byte-for-byte unchanged.
+    /// The accumulation is **bounded**: past `MAX_ATTR_VALUE_BYTES` a
+    /// `"; …(truncated)"` marker is appended once and further values for that key
+    /// are dropped. Two reasons, both load-bearing on the declared target.
+    ///
+    /// *Cost.* The de-duplication above re-scans the whole accumulated value on
+    /// every same-key insert, so N inserts under one key are `O(N²)` and the cell
+    /// grows without limit. The import parsers fold an untrusted document's
+    /// `key: value` lines straight into one record, and a file that repeats a key
+    /// is trivially constructed — measured on a debug build, 42 KiB of one
+    /// repeated key took 130 ms, 336 KiB took 7.38 s, i.e. exactly 4× per
+    /// doubling, extrapolating to hours of pinned CPU for a file the 16 MiB
+    /// import cap accepts as in-bounds. On a phone that is the battery and the
+    /// OOM killer, from an input the operator was told was fine.
+    ///
+    /// *Honesty.* The bound is generous enough that no genuine record reaches it
+    /// (evidence cells are rendered truncated at a few hundred bytes anyway), and
+    /// when it IS reached the marker says so rather than trailing off silently —
+    /// the full-fidelity policy above is about not dropping a value the operator
+    /// could act on, not about unbounded accumulation from hostile input.
     pub fn with_attr(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        /// Largest accumulated value one attribute key may hold.
+        const MAX_ATTR_VALUE_BYTES: usize = 8 * 1024;
+        /// Appended exactly once when the bound is hit, so a truncated cell is
+        /// visibly truncated instead of just ending.
+        const TRUNCATED: &str = "; …(truncated)";
+
         let key = key.into();
         let value = value.into();
         match self.attributes.get_mut(&key) {
             Some(existing) => {
-                if !existing.split("; ").any(|seen| seen == value) {
+                if existing.len() >= MAX_ATTR_VALUE_BYTES {
+                    if !existing.ends_with(TRUNCATED) {
+                        existing.push_str(TRUNCATED);
+                    }
+                } else if !existing.split("; ").any(|seen| seen == value) {
                     existing.push_str("; ");
                     existing.push_str(&value);
                 }

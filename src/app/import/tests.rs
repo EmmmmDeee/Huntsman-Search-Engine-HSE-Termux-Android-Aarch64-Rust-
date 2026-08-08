@@ -455,6 +455,81 @@ person,Jordan Avery,Jordan Avery,0.850,1.000,3,VERIFIED,1782117614,au_people|nam
 email,jordanavery@gmail.com,jordanavery@gmail.com,0.720,0.800,2,PROBABLE,1782117614,dehashed,,[dehashed] Breach record,breach\n\
 other:au-postcode,2000,2000,0.900,0.900,1,VERIFIED,1782117614,au_geo,,[au_geo] ASGS postcode,au\n";
 
+/// A stray double quote inside an UNQUOTED field must not swallow the rest of
+/// the file.
+///
+/// RFC 4180 makes a quote special only at the START of a field. The reader used
+/// to flip into quoted mode on a quote anywhere, so one `"` — an inch mark in an
+/// address, a password containing a quote, a lossy exporter writing `O"Brien` —
+/// turned every following comma and newline into field data until the next quote
+/// (usually EOF). Every later record was silently eaten and the import still
+/// exited 0.
+#[test]
+fn a_stray_quote_in_an_unquoted_field_does_not_swallow_later_rows() {
+    let csv = "id,email,username,name,database_name,url,password,address,phone\n\
+        1,a@x.com,alice,Alice O\"Brien,Leak2019,https://x.example/1,pw1,12 Smith St,0400000001\n\
+        2,b@x.com,bob,Bob Jones,Leak2019,https://x.example/2,pw2,13 Smith St,0400000002\n\
+        3,c@x.com,carol,Carol Ray,Leak2019,https://x.example/3,pw3,14 Smith St,0400000003\n";
+    let (ents, stats) = parse_dehashed_csv(csv, "s");
+
+    // All three records survive: the quote is data, not a mode switch.
+    assert_eq!(
+        stats.breach_records, 3,
+        "a stray quote must not eat the following records"
+    );
+    for who in ["a@x.com", "b@x.com", "c@x.com"] {
+        assert!(
+            ents.iter()
+                .any(|e| e.kind == EntityKind::Email && e.value == who),
+            "{who} was swallowed by the stray quote"
+        );
+    }
+    // The quote is preserved verbatim in the value it belongs to.
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Person && e.value.contains('"')),
+        "the literal quote must survive inside the name"
+    );
+
+    // A properly quoted field (quote AT field start) still works — the narrowing
+    // did not break RFC-4180 quoting.
+    let quoted = "id,email,username,name,database_name,url,password,address,phone\n\
+        1,a@x.com,alice,\"Jones, Alice\",Leak2019,https://x.example/1,pw1,\"12 Smith St, Carlton\",0400000001\n";
+    let (ents, _) = parse_dehashed_csv(quoted, "s");
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Person && e.value == "Jones, Alice"),
+        "a genuinely quoted field containing a comma must still parse as one field"
+    );
+}
+
+/// A CR-only (classic-Mac) CSV must not collapse into a single row.
+///
+/// The reader discarded `\r` outright, so a CR-terminated file became ONE row —
+/// consumed entirely as the header — and the import produced zero entities while
+/// still exiting 0: a silent total loss.
+#[test]
+fn a_cr_only_csv_is_split_into_rows_not_collapsed() {
+    let cr = "id,email,username,name,database_name,url,password,address,phone\r\
+        1,a@x.com,alice,Alice Ray,Leak2019,https://x.example/1,pw1,12 Smith St,0400000001\r\
+        2,b@x.com,bob,Bob Jones,Leak2019,https://x.example/2,pw2,13 Smith St,0400000002\r";
+    let (ents, stats) = parse_dehashed_csv(cr, "s");
+    assert_eq!(stats.breach_records, 2, "CR must terminate a row");
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "a@x.com")
+    );
+
+    // CRLF still yields the same rows — the LF is consumed, not turned into an
+    // extra empty row.
+    let crlf = cr.replace('\r', "\r\n");
+    let (_, stats_crlf) = parse_dehashed_csv(&crlf, "s");
+    assert_eq!(
+        stats_crlf.breach_records, stats.breach_records,
+        "CRLF and CR must agree on the row count"
+    );
+}
+
 /// A CSV row whose field count does not match the header must be skipped and
 /// counted — never read column-by-column as if it lined up.
 ///
