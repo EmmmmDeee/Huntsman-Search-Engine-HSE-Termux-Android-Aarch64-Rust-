@@ -264,18 +264,22 @@ fn bluetooth_unparseable_output_is_still_an_error() {
 
 // ── cell parser ────────────────────────────────────────────────────────────
 
+/// Fixtures use the key each radio ACTUALLY emits, taken from `termux-api`'s
+/// `TelephonyAPI.java`: GSM/WCDMA write `cid`, LTE writes `ci`, NR writes
+/// `nci`. The previous LTE fixture used `cid`, a combination the tool never
+/// produces, so the parser's inability to read a real LTE cell was invisible.
 #[test]
 fn cell_parse_valid_towers() {
     let json = br#"[
-        {"type":"LTE","registered":true,"dbm":-80,"cid":12345,"lac":null,"tac":678,"mcc":"505","mnc":"01"},
-        {"type":"GSM","registered":false,"dbm":-95,"cid":999,"lac":100,"tac":null,"mcc":505,"mnc":3}
+        {"type":"lte","registered":true,"dbm":-80,"ci":12345,"tac":678,"mcc":505,"mnc":1},
+        {"type":"gsm","registered":false,"dbm":-95,"cid":999,"lac":100,"mcc":505,"mnc":3}
     ]"#;
     let result = cell::parse_cells(json, "test-scan").expect("valid cell JSON parses");
     assert_eq!(result.len(), 2);
 
     let t1 = &result.entities[0];
     assert_eq!(t1.kind, EntityKind::DeviceId);
-    assert_eq!(t1.value, "505-01-678-12345");
+    assert_eq!(t1.value, "505-1-678-12345");
     assert!((t1.confidence - confidence::VERY_HIGH).abs() < 0.01);
     assert!(t1.has_tag(crate::core::tags::CELL_TOWER));
     assert!(t1.has_tag("lte"));
@@ -284,6 +288,76 @@ fn cell_parse_valid_towers() {
     let t2 = &result.entities[1];
     assert_eq!(t2.value, "505-3-100-999");
     assert!(t2.has_tag("gsm"));
+}
+
+/// The defect this file's header documents: on a modern handset every cell is
+/// LTE or NR, and both name their identity something other than `cid`. Reading
+/// only `cid` meant the sensor reported "no towers" on the exact devices this
+/// project targets.
+#[test]
+fn cell_reads_the_identity_key_each_radio_actually_emits() {
+    let json = br#"[
+        {"type":"lte","registered":true,"dbm":-80,"ci":111,"tac":22,"mcc":505,"mnc":1},
+        {"type":"nr","registered":true,"dbm":-70,"nci":333,"tac":44,"mcc":"505","mnc":"01"}
+    ]"#;
+    let result = cell::parse_cells(json, "test-scan").expect("valid cell JSON parses");
+    let ids: Vec<&str> = result.entities.iter().map(|e| e.value.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["505-1-22-111", "505-01-44-333"],
+        "LTE `ci` and NR `nci` must both be read as the cell identity"
+    );
+    assert!(result.entities[1].has_tag("nr"));
+}
+
+/// `dbm` is written UNCONDITIONALLY for LTE/NR/CDMA, so `Integer.MAX_VALUE`
+/// ("unavailable") arrives as a real number. Recording it verbatim publishes a
+/// signal strength of +2147483647 dBm; `unwrap_or(0)` on an absent reading
+/// published an implausibly strong 0 dBm. Neither is an observation.
+#[test]
+fn cell_never_records_a_fabricated_signal_strength() {
+    let json = br#"[
+        {"type":"lte","ci":111,"tac":22,"mcc":505,"mnc":1,"dbm":2147483647},
+        {"type":"gsm","cid":222,"lac":33,"mcc":505,"mnc":2}
+    ]"#;
+    let result = cell::parse_cells(json, "test-scan").expect("valid cell JSON parses");
+    assert_eq!(result.len(), 2, "both towers are still reported");
+    for e in &result.entities {
+        let dbm = e.evidence.iter().find_map(|ev| {
+            ev.attributes
+                .iter()
+                .find(|(k, _)| k.as_str() == "dbm")
+                .map(|(_, v)| v.clone())
+        });
+        assert_eq!(
+            dbm, None,
+            "an unavailable reading must be absent, not fabricated: {:?}",
+            e.value
+        );
+    }
+}
+
+/// Every segment of a `mcc-mnc-lac-cid` DeviceId must be non-empty and numeric
+/// or `Target::validate` rejects it — an identifier that cannot be re-targeted
+/// is not a usable pivot. `mnc` goes through `writeIfKnown`, so it is simply
+/// absent when unknown, which used to yield `"505--678-12345"`.
+#[test]
+fn cell_never_emits_a_device_id_that_could_not_be_re_targeted() {
+    let json = br#"[
+        {"type":"lte","ci":12345,"tac":678,"mcc":505},
+        {"type":"lte","ci":54321,"tac":678,"mcc":505,"mnc":"01"}
+    ]"#;
+    let result = cell::parse_cells(json, "test-scan").expect("valid cell JSON parses");
+    let ids: Vec<&str> = result.entities.iter().map(|e| e.value.as_str()).collect();
+    assert_eq!(ids, vec!["505-01-678-54321"]);
+    for id in &ids {
+        assert!(
+            crate::core::scan::Target::new(crate::core::scan::TargetKind::DeviceId, *id)
+                .validate()
+                .is_ok(),
+            "emitted DeviceId {id:?} must be a valid target"
+        );
+    }
 }
 
 #[test]
