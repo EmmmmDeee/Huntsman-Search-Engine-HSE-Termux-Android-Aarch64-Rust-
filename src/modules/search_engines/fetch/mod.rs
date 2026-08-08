@@ -374,6 +374,15 @@ pub(super) fn add_result(
     if host.is_empty() || is_engine_domain(&host) {
         return;
     }
+    // The engine's own OFF-domain chrome — its social profile, its sister
+    // product — which the host denylist above structurally cannot catch. See
+    // `is_engine_self_chrome`: measured live, Startpage returned its own
+    // StartMail link and its own Twitter profile as the only two "results" for
+    // a `site:linkedin.com` query, and both were reported to the operator as
+    // findings ranked by cross-engine corroboration.
+    if is_engine_self_chrome(url, engine) {
+        return;
+    }
     if is_tracking_url(url) {
         return;
     }

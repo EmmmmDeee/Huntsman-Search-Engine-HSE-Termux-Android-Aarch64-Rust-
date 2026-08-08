@@ -111,6 +111,62 @@ pub(in crate::modules::search_engines) fn is_engine_domain(host: &str) -> bool {
         .any(|d| crate::util::domains::is_or_subdomain_of(host, d))
 }
 
+/// True when `url` is the SERVING engine's own off-domain chrome — its social
+/// profile, its sister product, its help site — rather than a search result.
+///
+/// [`is_engine_domain`] is a static host denylist, and a denylist structurally
+/// cannot cover this: an engine's chrome links out to hosts it does not own.
+/// Observed live on this build, for the query
+/// `site:linkedin.com "security engineer" brisbane`, Startpage's SERP yielded
+/// exactly two "results", and BOTH were its own chrome:
+///
+/// * `https://www.startmail.com/en/startpage/…` — StartMail, Startpage's sister
+///   product. A different registrable domain, so the denylist misses it.
+/// * `https://twitter.com/startpage` — Startpage's own Twitter. `twitter.com`
+///   can never go on the denylist; real results live there.
+///
+/// Neither has anything to do with the query, and the operator was shown them as
+/// findings, ranked "by cross-engine corroboration".
+///
+/// The test is derived from the engine BEING PARSED rather than from a list, so
+/// it cannot drift as engines add products: reject a URL that carries the
+/// engine's own brand token as a whole PATH SEGMENT. Whole-segment (not
+/// substring) matching is what keeps `example.com/brave-new-world` a legitimate
+/// result for Brave, and the ≥4-character floor keeps a short, common engine
+/// name (`you`) from rejecting ordinary paths. Host matches are already handled
+/// by [`is_engine_domain`]; this is purely the off-domain case.
+pub(in crate::modules::search_engines) fn is_engine_self_chrome(url: &str, engine: &str) -> bool {
+    let brand = engine.trim().to_ascii_lowercase();
+    // Too short to be distinctive as a path segment ("you", "aol"): matching it
+    // would reject ordinary result URLs.
+    if brand.len() < 4 {
+        return false;
+    }
+    let after_scheme = url.split_once("//").map_or(url, |(_, rest)| rest);
+    let (host, path) = after_scheme
+        .split_once('/')
+        .map_or((after_scheme, ""), |(h, p)| (h, p));
+
+    // The brand as a whole HOST LABEL, on any TLD. `is_engine_domain` is pinned
+    // to specific registrable domains, so Brave's own `status.brave.app` sailed
+    // through it purely because the list holds `brave.com` and this is `.app` —
+    // it appeared as an organic result in a captured SERP. Label-exact matching
+    // keeps a genuine third-party host like `bravesearch-review.com` (one label,
+    // not equal to `brave`) a valid result.
+    if host
+        .split('.')
+        .any(|label| label.eq_ignore_ascii_case(&brand))
+    {
+        return true;
+    }
+
+    // The brand as a whole PATH SEGMENT on someone else's host: the engine's
+    // social profile (`twitter.com/startpage`), its sister product
+    // (`startmail.com/en/startpage/`), its bug bounty (`hackerone.com/brave`).
+    path.split(['/', '?', '#', '&', '='])
+        .any(|seg| seg.trim().eq_ignore_ascii_case(&brand))
+}
+
 /// Domains that are generic infrastructure / unrelated to any target.
 /// These appear in search result pages from engine chrome, ads, or
 /// generic navigation links, never as OSINT-relevant findings.

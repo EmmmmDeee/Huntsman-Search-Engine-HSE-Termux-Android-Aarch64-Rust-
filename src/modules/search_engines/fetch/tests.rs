@@ -269,9 +269,18 @@ use super::*;
             "expected a YouTube hit, got: {urls:?}"
         );
         // Every extracted URL is a genuine organic result, never the engine's
-        // own account/CDN/branding chrome — `is_engine_domain` must still be
-        // doing its job against this real page's footer links.
+        // own account/CDN/branding chrome.
+        //
+        // This assertion used to name `brave.com` and `cdn.search.brave`
+        // literally — a partial denylist, the same shape as the production
+        // `is_engine_domain` check, and it missed the same two links the code
+        // did. It now runs the real predicate, so the test cannot bless chrome
+        // the code fails to filter.
         for u in &urls {
+            assert!(
+                !is_engine_self_chrome(u, "brave"),
+                "engine chrome link leaked into results: {u}"
+            );
             assert!(
                 !u.contains("brave.com") && !u.contains("cdn.search.brave"),
                 "engine chrome link leaked into results: {u}"
@@ -280,10 +289,21 @@ use super::*;
         // Deterministic count: pins the exact yield so a change that silently
         // drops (or duplicates) even one real result is caught, not just a
         // change that empties the page entirely.
+        //
+        // 24, not the 26 this pinned before. The two removed are BOTH Brave's
+        // own chrome, which the old host-only denylist could not see:
+        //   * `https://hackerone.com/brave`  — Brave's bug-bounty page, linked
+        //     from the SERP footer. Someone else's host, so no denylist entry
+        //     could ever catch it.
+        //   * `https://status.brave.app/`    — Brave's status page. Missed only
+        //     because the denylist holds `brave.com` and this is `.app`.
+        // Neither is a plausible organic hit for "Kylo4kylo"; the fixture's old
+        // expectation was counting them as results. All 24 survivors are
+        // genuinely about Kylo.
         assert_eq!(
             results.len(),
-            26,
-            "expected exactly 26 organic results from this fixture, got {}: {urls:?}",
+            24,
+            "expected exactly 24 organic results from this fixture, got {}: {urls:?}",
             results.len()
         );
 

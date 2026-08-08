@@ -412,6 +412,57 @@ fn is_engine_domain_recognises_subdomains() {
     assert!(is_engine_domain("imgs.search.brave.com"));
 }
 
+/// An engine's OFF-DOMAIN chrome must not be emitted as a search result.
+///
+/// Every URL below was observed live on this build, presented to the operator as
+/// a finding. `is_engine_domain` is a host denylist and structurally cannot catch
+/// them: the first two are on hosts the engine does not own, the third is the
+/// engine's own host on a TLD the list does not carry.
+#[test]
+fn engine_self_chrome_catches_what_the_host_denylist_cannot() {
+    // Startpage's SERP, for a `site:linkedin.com "security engineer" brisbane`
+    // query, returned exactly these two "results" — its sister product and its
+    // own Twitter. Nothing to do with the query.
+    assert!(is_engine_self_chrome(
+        "https://www.startmail.com/en/startpage/?pk_campaign=startpage",
+        "startpage"
+    ));
+    assert!(is_engine_self_chrome(
+        "https://twitter.com/startpage",
+        "startpage"
+    ));
+    // From the captured Brave SERP: its bug bounty (someone else's host) and its
+    // status page (`brave.app`, while the denylist holds `brave.com`).
+    assert!(is_engine_self_chrome(
+        "https://hackerone.com/brave",
+        "brave"
+    ));
+    assert!(is_engine_self_chrome("https://status.brave.app/", "brave"));
+
+    // Genuine results from those same pages must survive — this is a narrowing,
+    // and a careless substring match would eat all of these.
+    for (url, engine) in [
+        ("https://example.com/brave-new-world", "brave"),
+        ("https://bravesearch-review.com/article", "brave"),
+        ("https://en.wikipedia.org/wiki/Kylo_Ren", "brave"),
+        ("https://www.linkedin.com/in/someone", "startpage"),
+        ("https://startpagerecipes.com/dinner", "startpage"),
+    ] {
+        assert!(
+            !is_engine_self_chrome(url, engine),
+            "{url} is a real result for {engine} and must not be filtered"
+        );
+    }
+
+    // A short, common engine name must not reject ordinary paths: "you" as a
+    // path segment is everywhere, so the ≥4-char floor disables the rule there.
+    assert!(!is_engine_self_chrome("https://example.com/you", "you"));
+    assert!(!is_engine_self_chrome(
+        "https://example.com/aol/page",
+        "aol"
+    ));
+}
+
 #[test]
 fn is_engine_domain_rejects_unrelated() {
     assert!(!is_engine_domain("example.com"));
