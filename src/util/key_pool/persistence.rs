@@ -19,7 +19,35 @@ pub fn load_pool() -> KeyPool {
 pub(super) fn load_pool_from(path: &std::path::Path) -> KeyPool {
     match std::fs::read_to_string(path) {
         Ok(content) => match serde_json::from_str::<PoolData>(&content) {
-            Ok(data) => KeyPool::from_data(data),
+            Ok(data) => {
+                let before: usize = data.services.values().map(Vec::len).sum();
+                let pool = KeyPool::from_data(data);
+                // `from_data` drops legacy non-poolable bloat (generic_hex &c.) that
+                // predates the pool's insert gate. Rewrite the file NOW when that
+                // happened, so the purge is permanent: without this, a device whose
+                // persisted pool holds the measured 527 303 generic_hex entries
+                // re-reads and re-parses that multi-MB JSON on EVERY load — every
+                // read-only `hse keys` call and every localhost UI poll — because a
+                // read path never triggers `save_pool`. The clean write makes the
+                // one-time load cost one-time. Best-effort: a read-only `$HOME`
+                // (realistic on Termux) must not fail the load, so a write failure
+                // is warned, not propagated — the in-memory pool is already correct.
+                if pool.total_keys() < before {
+                    match serde_json::to_string_pretty(&pool.snapshot()) {
+                        Ok(json) => {
+                            if let Err(e) = crate::util::atomic_file::write(path, json.as_bytes()) {
+                                tracing::warn!(
+                                    error = %e, path = %path.display(),
+                                    "key pool purged in memory but the cleaned file could not be \
+                                     rewritten; the bloat will be re-parsed until the next save"
+                                );
+                            }
+                        }
+                        Err(e) => tracing::warn!(error = %e, "could not re-serialise purged pool"),
+                    }
+                }
+                pool
+            }
             Err(e) => {
                 tracing::warn!(
                     "key pool at {} is corrupted ({e}); backing up and starting fresh",

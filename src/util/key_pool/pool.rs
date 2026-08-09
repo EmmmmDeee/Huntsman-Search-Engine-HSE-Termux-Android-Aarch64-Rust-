@@ -10,6 +10,24 @@ use super::types::{KeyEntry, KeyStatus, KeyTier};
 /// Per-service rate-limit reset window. Imported from service_defs via the parent module.
 pub(super) use crate::util::service_defs::rate_limit_reset;
 
+/// Drop every service the key-cascade cannot reuse
+/// ([`is_poolable_service`](crate::util::service_defs::is_poolable_service)), and
+/// any service left with no entries. Returns the number of KEY ENTRIES removed.
+///
+/// Poolability is a per-SERVICE property, so this filters whole service buckets
+/// rather than individual keys. It is the load-path counterpart to the per-insert
+/// check in [`KeyPool::add`] — both consult the same
+/// [`crate::util::service_defs::is_poolable_service`] predicate, so the pool
+/// admits exactly one set of services whether an entry arrives via a runtime
+/// insert or a deserialized file.
+fn retain_poolable_services(services: &mut BTreeMap<String, Vec<KeyEntry>>) -> usize {
+    let before: usize = services.values().map(Vec::len).sum();
+    services.retain(|service, entries| {
+        crate::util::service_defs::is_poolable_service(service) && !entries.is_empty()
+    });
+    before - services.values().map(Vec::len).sum::<usize>()
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PoolData {
     /// Keys grouped by service name. A `BTreeMap` (not `HashMap`) so iteration
@@ -95,7 +113,35 @@ impl KeyPool {
         }
     }
 
-    pub fn from_data(data: PoolData) -> Self {
+    pub fn from_data(mut data: PoolData) -> Self {
+        // Enforce the poolable-service gate on the LOAD path, not only on `add`.
+        //
+        // `add` (below) is documented as the single chokepoint that keeps
+        // non-reusable services — the `generic_hex` catch-all, `crypto_*` wallet
+        // tags, `jwt_token`, `url_param_key`, `<svc>_login` pseudo-services — out
+        // of the rotation pool. But it only guards RUNTIME inserts. Every load
+        // reaches the in-memory pool through THIS constructor, which trusted the
+        // deserialized file verbatim, so the gate had a hole exactly the size of
+        // the persisted pool: a file written by an older build (from before that
+        // gate existed — "a live name-scan otherwise pooled 12 499 generic_hex
+        // blobs") carried its non-poolable entries forward on every load and
+        // re-serialised + fsync'd them on every save. A measured on-device pool
+        // held 527 303 `generic_hex` entries this way — multi-MB of JSON parsed
+        // and rewritten on flash storage, for keys the cascade can never use, and
+        // surfaced to the operator as if they were harvested credentials.
+        //
+        // Filtering here makes the one gate hold on EVERY path into the pool; the
+        // next `save_pool` writes the cleaned file, so the bloat is purged once
+        // and cannot re-accumulate.
+        let dropped = retain_poolable_services(&mut data.services);
+        if dropped > 0 {
+            tracing::info!(
+                dropped,
+                retained = data.services.values().map(Vec::len).sum::<usize>(),
+                "key pool: purged non-poolable entries on load (legacy harvest bloat; \
+                 the poolable-service gate now holds on load as well as insert)"
+            );
+        }
         Self {
             data: Mutex::new(data),
             indices: Mutex::new(HashMap::new()),
@@ -110,7 +156,8 @@ impl KeyPool {
         // this single chokepoint, so NO ingest path — harvest in search_engines/
         // web_crawler/key_harvest, import, or validate — can bloat it. A live
         // name-scan otherwise pooled 12 499 `generic_hex` blobs (6 MB) because
-        // only one of the harvest paths was gated.
+        // only one of the harvest paths was gated. The LOAD path enforces the
+        // same predicate in `from_data` via [`retain_poolable_services`].
         if !crate::util::service_defs::is_poolable_service(service) {
             return false;
         }

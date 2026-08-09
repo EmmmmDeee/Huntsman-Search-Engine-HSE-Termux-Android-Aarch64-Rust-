@@ -420,6 +420,90 @@ fn selecting_a_recovered_key_flips_it_back_to_active() {
 }
 
 #[test]
+fn from_data_enforces_the_poolable_gate_on_load() {
+    // A pool persisted by an older build carries non-poolable services the
+    // current `add` gate would reject. Loading it must apply the same gate, or
+    // (as measured on a real device) 527 303 legacy `generic_hex` entries ride
+    // in through `from_data` and are re-persisted on every save.
+    let mut data = super::pool::PoolData::default();
+    data.services
+        .insert("shodan".into(), vec![KeyEntry::new("real-shodan-key")]);
+    data.services.insert(
+        "generic_hex".into(),
+        vec![
+            KeyEntry::new("deadbeefdeadbeefdeadbeefdeadbeef"),
+            KeyEntry::new("cafebabecafebabecafebabecafebabe"),
+        ],
+    );
+    data.services
+        .insert("jwt_token".into(), vec![KeyEntry::new("eyJhbGciOiJIUzI1")]);
+    data.services
+        .insert("crypto_btc".into(), vec![KeyEntry::new("1A1zP1eP5QGefi2D")]);
+
+    let pool = KeyPool::from_data(data);
+    assert_eq!(
+        pool.service_count("shodan"),
+        1,
+        "a real poolable provider must survive load"
+    );
+    assert_eq!(
+        pool.service_count("generic_hex"),
+        0,
+        "generic_hex must be purged on load, not just rejected on insert"
+    );
+    assert_eq!(pool.service_count("jwt_token"), 0);
+    assert_eq!(pool.service_count("crypto_btc"), 0);
+    assert_eq!(
+        pool.total_keys(),
+        1,
+        "only the poolable provider key remains"
+    );
+}
+
+#[test]
+fn load_pool_from_purges_legacy_non_poolable_bloat_end_to_end() {
+    // The full load path: a persisted JSON file carrying legacy generic_hex
+    // bloat must deserialize to a pool holding only poolable services. This is
+    // the exact shape of the on-device file that surfaced 527 303 generic_hex
+    // entries in the Key Harvest UI.
+    use super::persistence::load_pool_from;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("key_pool.json");
+    let json = r#"{
+        "services": {
+            "shodan": [{"value":"real-key","status":"untested"}],
+            "generic_hex": [
+                {"value":"5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8","status":"untested"},
+                {"value":"ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb","status":"untested"}
+            ]
+        }
+    }"#;
+    std::fs::write(&path, json).expect("write fixture");
+
+    let pool = load_pool_from(&path);
+    assert_eq!(
+        pool.total_keys(),
+        1,
+        "the two SHA-256 hashes catalogued as generic_hex must be dropped on load"
+    );
+    assert_eq!(pool.service_count("shodan"), 1);
+    assert_eq!(pool.service_count("generic_hex"), 0);
+
+    // The purge must be written back, or the bloat is re-parsed on every load.
+    let on_disk: super::pool::PoolData =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("reread")).expect("parse");
+    let disk_entries: usize = on_disk.services.values().map(Vec::len).sum();
+    assert_eq!(
+        disk_entries,
+        1,
+        "load must rewrite the cleaned pool so the purge is permanent, got {:?}",
+        on_disk.services.keys().collect::<Vec<_>>()
+    );
+    assert!(!on_disk.services.contains_key("generic_hex"));
+}
+
+#[test]
 fn add_rejects_non_poolable_services() {
     // The pool only holds reusable provider keys; the harvest catch-alls
     // (generic_hex, crypto_*, jwt_token, <svc>_login) must never enter it,
