@@ -78,36 +78,70 @@ pub struct SubjectNetwork {
     pub edge_count: usize,
 }
 
-/// Analyst-priority group order — people first (the point of a person scan),
-/// infrastructure last (the haystack).
-const GROUP_ORDER: &[&str] = &[
-    "people",
-    "identifiers",
-    "aliases",
-    "locations",
-    "infrastructure",
+/// `(key, label)` for every group the synthesis can produce, in analyst-priority
+/// emission order — people first (the point of a person scan), infrastructure
+/// last (the haystack).
+///
+/// ONE table, so a group's display name cannot drift from the key
+/// [`group_for`] assigns it. (It previously could: `group_for` returned a label
+/// its only caller discarded, and a separate key→label function with a catch-all
+/// arm produced the one that shipped. A group added to the first and missed by
+/// the second silently rendered under "Infrastructure & lineage".)
+const GROUPS: &[(&str, &str)] = &[
+    ("people", "People — family & associates"),
+    ("identifiers", "Identifiers — accounts & contacts"),
+    ("aliases", "Aliases — the same persona"),
+    (
+        "affiliations",
+        "Affiliations — organisations, offices & control",
+    ),
+    ("locations", "Locations"),
+    ("infrastructure", "Infrastructure & lineage"),
 ];
 
-/// Map a relation kind to its `(group key, group label)`. Exhaustive, so a new
-/// `RelationKind` must be triaged here rather than silently vanishing from the
-/// synthesis.
-fn group_for(kind: RelationKind) -> (&'static str, &'static str) {
+/// Map a relation kind to its group key (labelled by [`GROUPS`]). Exhaustive, so
+/// a new `RelationKind` must be triaged here rather than silently vanishing from
+/// the synthesis.
+fn group_for(kind: RelationKind) -> &'static str {
     match kind {
-        RelationKind::AssociatedWith => ("people", "People — family & associates"),
-        RelationKind::IdentifiedBy | RelationKind::SharesSecretWith => {
-            ("identifiers", "Identifiers — accounts & contacts")
-        }
-        RelationKind::AliasOf | RelationKind::SameAs => ("aliases", "Aliases — the same persona"),
-        RelationKind::LocatedAt | RelationKind::CoLocatedWith => ("locations", "Locations"),
+        RelationKind::AssociatedWith => "people",
+        RelationKind::IdentifiedBy | RelationKind::SharesSecretWith => "identifiers",
+        RelationKind::AliasOf | RelationKind::SameAs | RelationKind::SameIdentity => "aliases",
+        RelationKind::LocatedAt | RelationKind::CoLocatedWith => "locations",
         RelationKind::SubdomainOf
         | RelationKind::BelongsToDomain
         | RelationKind::HostedOn
         | RelationKind::ResolvesTo
         | RelationKind::RegisteredBy
         | RelationKind::DerivedFrom
-        | RelationKind::SameOperator => ("infrastructure", "Infrastructure & lineage"),
-        RelationKind::SameIdentity => ("aliases", "Aliases — the same persona"),
+        | RelationKind::SameOperator => "infrastructure",
+        RelationKind::OfficerOf
+        | RelationKind::EmployedBy
+        | RelationKind::MemberOf
+        | RelationKind::ControlledBy
+        | RelationKind::OperatedBy => "affiliations",
     }
+}
+
+/// Evidence attribute keys carrying the ROLE an affiliation edge represents,
+/// most-specific first — a registry's officer position, a profile's job title, a
+/// listed degree. Read off the ORGANISATION at the far end of the edge, which is
+/// where the grounding modules attach them (`opencorporates`' `officer_position`,
+/// `proxycurl`'s `title` and `degree`).
+const AFFILIATION_ROLE_ATTRS: &[&str] = &["officer_position", "title", "degree"];
+
+/// The first [`AFFILIATION_ROLE_ATTRS`] value on `org`, lowercased and trimmed —
+/// the concrete role behind an affiliation edge, so the operator reads
+/// "secretary" or "chief financial officer" rather than the generic edge name.
+/// `None` when the source recorded no role, leaving the caller its generic label.
+fn affiliation_role(org: &Entity) -> Option<String> {
+    AFFILIATION_ROLE_ATTRS.iter().find_map(|key| {
+        org.evidence
+            .iter()
+            .flat_map(|ev| &ev.attributes)
+            .find(|(k, v)| k.eq_ignore_ascii_case(key) && !v.trim().is_empty())
+            .map(|(_, v)| v.trim().to_lowercase())
+    })
 }
 
 /// A short, human edge label, refined by the far-end entity where the relation
@@ -136,6 +170,18 @@ fn label_for(kind: RelationKind, other: &Entity) -> String {
         RelationKind::SameOperator => "same operator".to_string(),
         RelationKind::SameIdentity => "profile".to_string(),
         RelationKind::SharesSecretWith => "shared secret".to_string(),
+        // The affiliation edges name the concrete role where the source recorded
+        // one — "director" beats "officer of", and it is the difference an
+        // analyst is actually reading the group for.
+        RelationKind::OfficerOf => affiliation_role(other).unwrap_or_else(|| "officer".to_string()),
+        RelationKind::EmployedBy => {
+            affiliation_role(other).unwrap_or_else(|| "employer".to_string())
+        }
+        RelationKind::MemberOf => {
+            affiliation_role(other).unwrap_or_else(|| "member of".to_string())
+        }
+        RelationKind::ControlledBy => "controlled by".to_string(),
+        RelationKind::OperatedBy => "operated by".to_string(),
     }
 }
 
@@ -163,7 +209,7 @@ fn pick_subject(entities: &[Entity]) -> Option<&Entity> {
 /// Synthesise the subject network from a scan's persisted entities and relations.
 ///
 /// Pure and deterministic: the same snapshot always yields the same network
-/// (groups in [`GROUP_ORDER`], items ranked by edge then node confidence then
+/// (groups in [`GROUPS`] order, items ranked by edge then node confidence then
 /// value, capped at [`GROUP_CAP`]). Robust to dangling edges (an endpoint UID not
 /// present in `entities` is skipped, never panics).
 #[must_use]
@@ -202,7 +248,7 @@ pub fn synthesize(entities: &[Entity], relations: &[Relation]) -> SubjectNetwork
                 continue; // dangling endpoint — skip, don't panic
             };
             direct.insert(other_uid);
-            let (key, _) = group_for(kind);
+            let key = group_for(kind);
             let slot = best.entry((key, other_uid)).or_insert_with(|| Connection {
                 uid: other.uid.clone(),
                 value: other.value.clone(),
@@ -230,7 +276,7 @@ pub fn synthesize(entities: &[Entity], relations: &[Relation]) -> SubjectNetwork
 
     // Emit groups in analyst order; rank + cap each.
     let mut groups = Vec::new();
-    for &key in GROUP_ORDER {
+    for &(key, label) in GROUPS {
         let Some(mut items) = buckets.remove(key) else {
             continue;
         };
@@ -248,7 +294,6 @@ pub fn synthesize(entities: &[Entity], relations: &[Relation]) -> SubjectNetwork
         });
         let total = items.len();
         items.truncate(GROUP_CAP);
-        let label = group_for_key(key);
         groups.push(ConnectionGroup {
             key,
             label,
@@ -269,18 +314,6 @@ pub fn synthesize(entities: &[Entity], relations: &[Relation]) -> SubjectNetwork
         reachable_count: reachable_count(subject.uid.as_str(), &adj),
         edge_count: relations.len(),
         groups,
-    }
-}
-
-/// The group label for a key (the one place [`GROUP_ORDER`] keys are turned back
-/// into labels, so the two can't drift).
-fn group_for_key(key: &str) -> &'static str {
-    match key {
-        "people" => "People — family & associates",
-        "identifiers" => "Identifiers — accounts & contacts",
-        "aliases" => "Aliases — the same persona",
-        "locations" => "Locations",
-        _ => "Infrastructure & lineage",
     }
 }
 

@@ -133,18 +133,18 @@ fn build_reputation_entity(
         entity.tag("elevated-risk");
     }
     // Boolean signal tags — raised only on an explicit `true`.
-    [
-        (body.proxy, "proxy"),
-        (body.vpn, "vpn"),
-        (body.tor, "tor"),
-        (body.is_crawler, "crawler"),
-        (body.disposable, "disposable"),
-        (body.leaked, "leaked"),
-        (body.recent_abuse, "recent-abuse"),
-    ]
-    .into_iter()
-    .filter(|(flag, _)| *flag == Some(true))
-    .for_each(|(_, tag)| entity.tag(tag));
+    crate::util::geo::tag_flags(
+        &mut entity,
+        &[
+            (body.proxy, "proxy"),
+            (body.vpn, "vpn"),
+            (body.tor, "tor"),
+            (body.is_crawler, "crawler"),
+            (body.disposable, "disposable"),
+            (body.leaked, "leaked"),
+            (body.recent_abuse, "recent-abuse"),
+        ],
+    );
     if let Some(c) = body.country_code.as_deref() {
         entity.tag(format!("country:{}", c.to_uppercase()));
     }

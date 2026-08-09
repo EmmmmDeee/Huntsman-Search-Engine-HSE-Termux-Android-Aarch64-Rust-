@@ -13,7 +13,7 @@
 //! primitive, so it stays consistent with the transitive-closure rule and the
 //! dossier's CONNECTIONS view (one finder, no drift).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 use super::*;
 use crate::core::relation::{
@@ -75,7 +75,7 @@ fn multipath_corroborated_links_capped(
     const MAX_PATHS: usize = 4;
 
     let entities = context.entities();
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let by_uid = context.by_uid();
     let identity_uids = identity_uids(entities);
     // Build the traversal graph ONCE and reuse it for every pair (vs rebuilding +
     // re-sorting it per `disjoint_pathways` call).
@@ -151,8 +151,7 @@ pub(in crate::core::correlator) fn rule_au_062_multipath_corroboration(
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
-    let entities = context.entities();
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let by_uid = context.by_uid();
 
     let mut out = Vec::new();
     for link in multipath_corroborated_links(context, relations) {

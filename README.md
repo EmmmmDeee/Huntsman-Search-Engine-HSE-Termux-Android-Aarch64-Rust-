@@ -306,7 +306,8 @@ design and every dependency underneath it are HSE's own:
   controls + use-case presets
 - **Scan Results** — tabbed: Status, Browse (sortable entity table with
   inline expand), D3 Force Graph (entity relationship visualization, incl.
-  typed relation edges — subdomain/lineage/co-location — dashed, kind on hover),
+  typed relation edges — infrastructure/identity/affiliation — dashed, kind on
+  hover),
   Correlations (severity-tagged), Event Log (real-time SSE), Info
 - **Settings** — API key management with validation
 - **Dark mode** by default, light mode opt-out toggle
@@ -424,6 +425,19 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 - `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
 - 4,300+ tests (unit + API integration + architecture boundary enforcement)
 - Deterministic correlator: 121 rules (107 entity + 14 graph-aware relation), no LLM/fuzzy matching
+- Typed relation graph — 20 edge kinds across five families, every one derived by
+  pure, reproducible math (no LLM, no free inference) from normalised entity
+  values and recorded evidence:
+  - **infrastructure** — `subdomain_of`, `belongs_to_domain`, `hosted_on`,
+    `resolves_to`, `registered_by`, `same_operator`
+  - **identity** — `identified_by`, `alias_of`, `same_as`, `same_identity`,
+    `shares_secret_with`
+  - **place & people** — `located_at`, `co_located_with`, `associated_with`
+  - **affiliation** — `officer_of` (a companies register's filed directorship),
+    `employed_by`, `member_of`, `controlled_by` (the corporate hierarchy, oriented
+    child → controller), `operated_by` (who runs a wallet or a published business
+    contact point)
+  - **lineage** — `derived_from`
 - 121 correlator rules (AU-001 through AU-123, with some IDs reserved for engine-emitted cross-scan findings such as AU-065/AU-066), incl. graph-aware edge, transitive, multi-pathway corroboration, gap-analysis, jurisdiction cross-check (coordinate / address / phone-region), prediction-confirmed identity bridges (name-derived username AU-077 / email AU-086), sanctions/debarment/PEP screening (AU-114), personal-WiFi geolocation (AU-115), pathway-template, resolved-identity-cluster, anonymous-SIM, high-integrity-connection (max-bottleneck route), connection-broker (identity articulation-point), robustly-corroborated-identity-cluster (no-single-point-of-failure k-redundant cluster), transitive-infrastructure-closure (AU-116 — a multi-server hosting footprint chained across IPs no single-hop rule sees), paired-hardware-constellation (AU-117 — the operator's own bonded Bluetooth kit as a self-carried tracking fingerprint), look-alike-domain-impersonation (AU-118 — homoglyph/typo phishing domains flagged across every discovered domain, dnstwist at the correlation layer), dating-platform-exposure (AU-119 — a subject's confirmed dating-app profiles surfaced as a location-bearing personal-exposure surface), monetized-creator-exposure (AU-120 — confirmed subscription-creator/webcam/adult profiles as an identity-linked payment/KYC surface), transitive credential-reuse blast-radius (AU-121 — the reuse-chain closure no single secret spans), trackable-RF-device (AU-122 — persistent hardware MACs separated from randomized privacy addresses in a radar/WiGLE sweep), and numeric-variant-handle-persona (AU-123 — links base-handle-plus-number username variants like `jdiegmann`/`jdiegmann92` across ≥2 sources into one persona, the digit-suffix reuse the exact-match handle rules never join) rules — deterministic, no LLM/fuzzy matching
 - 2 tokio worker threads (tuned for Termux low-power devices)
 - Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)

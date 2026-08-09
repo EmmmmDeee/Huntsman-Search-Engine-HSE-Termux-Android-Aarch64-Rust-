@@ -107,14 +107,14 @@ fn build_entities(data: &IpApiResp, ip: &str, scan_id: &str) -> Vec<Entity> {
         {
             e.tag(format!("au-state:{state}"));
         }
-        [
-            (data.proxy, "proxy"),
-            (data.hosting, "hosting"),
-            (data.mobile, "mobile"),
-        ]
-        .into_iter()
-        .filter(|(flag, _)| *flag == Some(true))
-        .for_each(|(_, tag)| e.tag(tag));
+        crate::util::geo::tag_flags(
+            &mut e,
+            &[
+                (data.proxy, "proxy"),
+                (data.hosting, "hosting"),
+                (data.mobile, "mobile"),
+            ],
+        );
         let ev = [
             (
                 "country_code",
