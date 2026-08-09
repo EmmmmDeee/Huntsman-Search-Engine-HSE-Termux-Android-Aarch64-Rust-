@@ -188,6 +188,7 @@ pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
     // ── Tiers + kind histogram ──────────────────────────────────────────────
     let mut by_kind_map: BTreeMap<String, usize> = BTreeMap::new();
     let (mut verified, mut probable, mut candidate) = (0usize, 0usize, 0usize);
+    let mut candidate_examples: Vec<String> = Vec::new();
     for e in entities {
         *by_kind_map.entry(e.kind.clone()).or_default() += 1;
         if e.c_effective >= 0.75 {
@@ -196,6 +197,9 @@ pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
             probable += 1;
         } else {
             candidate += 1;
+            if candidate_examples.len() < MAX_EXAMPLES {
+                candidate_examples.push(format!("{} ({})", e.value, e.kind));
+            }
         }
     }
     let mut by_kind: Vec<(String, usize)> = by_kind_map.into_iter().collect();
@@ -406,6 +410,45 @@ pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
                     .into(),
             });
         }
+    }
+
+    // ── 6b. Speculative-dominant result (high candidate-tier share) ───────────
+    // The audit grades the operator's ACTIONABLE result, and reports
+    // `noise_ratio` — the sub-0.40 candidate-tier fraction — as a headline
+    // ("noise ratio: 89% candidate-tier"). But that ratio drove no finding, so a
+    // scan whose output was overwhelmingly speculative name-permutations and
+    // search pivots printed "✓ no weaknesses detected" and 100/100 "clean"
+    // directly beneath its own "89% candidate-tier" line — the audit contradicting
+    // itself. (Measured on a real name-seed CSV export: 4 verified · 4 probable ·
+    // 65 candidate, graded A/100 with no findings.)
+    //
+    // Surface it whenever the candidate tier dominates. Severity is calibrated to
+    // the ACTIONABLE core so the same "don't perversely score a thorough search as
+    // noise" principle the quarantine exclusion above follows still holds: a scan
+    // with a substantial verified/probable core that ALSO expands broadly is
+    // surfaced without penalty (Info), while a result that is mostly speculation
+    // with only a thin confirmed core is a real quality weakness (Low).
+    if entity_total >= 10 && noise_ratio >= 0.75 {
+        let actionable = verified + probable;
+        let severity = if actionable < 10 {
+            Severity::Low
+        } else {
+            Severity::Info
+        };
+        findings.push(Finding {
+            severity,
+            category: "speculative-dominant",
+            message: format!(
+                "{:.0}% of graded entities are sub-0.40 candidate-tier speculation; the \
+                 actionable core is {actionable} ({verified} verified + {probable} probable)",
+                noise_ratio * 100.0
+            ),
+            examples: examples(candidate_examples),
+            recommendation: "Confirm or drop candidates: enrich confirmed seeds to promote \
+                permutations (name→person, handle→profile, email→breach) to verified, and \
+                rank the actionable core ahead of speculation."
+                .into(),
+        });
     }
 
     // ── 7. Source health (from logs) ─────────────────────────────────────────

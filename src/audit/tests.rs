@@ -13,6 +13,119 @@ fn ent(kind: &str, value: &str, c: f64, corr: u32, tags: &[&str]) -> AuditEntity
 }
 
 #[test]
+fn a_speculative_dominant_result_is_flagged_not_scored_clean() {
+    // The exact contradiction measured on a real name-seed CSV export: a result
+    // that is overwhelmingly sub-0.40 candidate-tier speculation printed
+    // "✓ no weaknesses detected" and 100/100 next to its own "89% candidate-tier"
+    // headline. A thin actionable core buried in speculation is a real weakness.
+    // High `corr` on every entity so the single-source `weak-corroboration`
+    // finding cannot fire and confound the assertion.
+    let mut ents = vec![
+        ent("person", "Kyle Diegmann", 0.90, 5, &[]),
+        ent("email", "kdiegmann@gmail.com", 0.92, 5, &[]),
+        ent("person", "Erik Diegmann", 0.60, 4, &[]),
+        ent("address", "QLD 4552, Australia", 0.55, 4, &[]),
+    ];
+    for i in 0..30 {
+        ents.push(ent(
+            "username",
+            &format!("kyle{i}"),
+            0.20,
+            5,
+            &["name-derived"],
+        ));
+    }
+    let r = audit(&ents, LogSignals::default());
+    let spec = r
+        .findings
+        .iter()
+        .find(|f| f.category == "speculative-dominant")
+        .expect("a mostly-candidate result must be flagged, not scored clean");
+    assert_eq!(
+        spec.severity,
+        Severity::Low,
+        "a thin actionable core (< 10) is a genuine quality weakness"
+    );
+    assert!(
+        r.score < 100,
+        "the false 100/100 'clean' verdict must be gone, got {}",
+        r.score
+    );
+    assert!(
+        spec.message
+            .contains("actionable core is 4 (2 verified + 2 probable)"),
+        "the finding must name the actionable core, got: {}",
+        spec.message
+    );
+    assert!(
+        !spec.examples.is_empty(),
+        "concrete candidate examples help the operator"
+    );
+}
+
+#[test]
+fn broad_expansion_with_a_strong_core_is_surfaced_without_penalty() {
+    // A scan with a substantial verified core that ALSO expands broadly must not
+    // be perversely scored as noise for its expansion — the same principle the
+    // quarantine exclusion follows. It is still SURFACED (Info), so the report
+    // never prints a false "no weaknesses detected" beside a high candidate ratio.
+    let mut ents = Vec::new();
+    for i in 0..15 {
+        ents.push(ent("email", &format!("real{i}@example.com"), 0.90, 5, &[]));
+    }
+    for i in 0..60 {
+        ents.push(ent(
+            "username",
+            &format!("perm{i}"),
+            0.20,
+            5,
+            &["name-derived"],
+        ));
+    }
+    let r = audit(&ents, LogSignals::default());
+    let spec = r
+        .findings
+        .iter()
+        .find(|f| f.category == "speculative-dominant")
+        .expect("a high candidate ratio must still be surfaced");
+    assert_eq!(
+        spec.severity,
+        Severity::Info,
+        "a strong actionable core (>= 10) must be surfaced without penalty"
+    );
+    assert_eq!(
+        spec.severity.penalty(),
+        0,
+        "Info carries no penalty, so breadth alone does not lower the score"
+    );
+}
+
+#[test]
+fn a_healthy_tier_mix_has_no_speculative_finding() {
+    // A minority candidate tier is a normal, healthy result — no finding.
+    let mut ents = Vec::new();
+    for i in 0..8 {
+        ents.push(ent("email", &format!("real{i}@example.com"), 0.90, 5, &[]));
+    }
+    for i in 0..4 {
+        ents.push(ent(
+            "username",
+            &format!("perm{i}"),
+            0.20,
+            5,
+            &["name-derived"],
+        ));
+    }
+    let r = audit(&ents, LogSignals::default());
+    assert!(
+        r.findings
+            .iter()
+            .all(|f| f.category != "speculative-dominant"),
+        "a 33% candidate tier is a healthy mix, not speculative-dominant"
+    );
+}
+
+#[test]
 fn quarantined_breach_co_occurrence_is_excluded_from_the_grade() {
     use crate::core::tags;
     // The breach modules deliberately quarantine records that don't match the
