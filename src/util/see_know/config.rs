@@ -32,39 +32,15 @@ pub fn get_results_dir() -> PathBuf {
     results
 }
 
-/// Get cache directory
-pub fn get_cache_dir() -> PathBuf {
-    let cache = get_termux_storage_dir().join(".hse").join("cache");
-    let _ = std::fs::create_dir_all(&cache);
-    cache
-}
-
-/// Value scoring weights (configurable)
+/// Value scoring weights — the single source of truth consumed by
+/// [`crate::modules::see_know::query_optimizer`]'s `ValueScorer`.
+/// Editing a weight here changes the composite scoring; they are expected to
+/// sum to 1.0 (asserted by the scorer's tests).
 pub const VALUE_ENTITY_DIVERSITY_WEIGHT: f32 = 0.25;
 pub const VALUE_HIT_RATE_WEIGHT: f32 = 0.30;
 pub const VALUE_PIVOT_POTENTIAL_WEIGHT: f32 = 0.25;
 pub const VALUE_FRESHNESS_WEIGHT: f32 = 0.10;
 pub const VALUE_COVERAGE_WEIGHT: f32 = 0.10;
-
-/// ROI thresholds per cascade depth
-pub const ROI_DEPTH_1_THRESHOLD: f32 = 10.0;
-pub const ROI_DEPTH_2_THRESHOLD: f32 = 25.0;
-pub const ROI_DEPTH_3_THRESHOLD: f32 = 50.0;
-pub const ROI_DEPTH_4_PLUS_THRESHOLD: f32 = 100.0;
-
-/// Budget allocation per cascade depth
-pub const BUDGET_DEPTH_1_RATIO: f32 = 0.60;
-pub const BUDGET_DEPTH_2_RATIO: f32 = 0.30;
-pub const BUDGET_DEPTH_3_RATIO: f32 = 0.10;
-
-/// Cache TTL in seconds (24 hours)
-pub const CACHE_TTL_SECS: u64 = 86400;
-
-/// Query timeout in seconds
-pub const QUERY_TIMEOUT_SECS: u64 = 78;
-
-/// Maximum concurrent queries
-pub const MAX_CONCURRENT_QUERIES: usize = 10;
 
 /// Endpoint credit costs
 pub const ENDPOINT_COSTS: &[(&str, f32)] = &[

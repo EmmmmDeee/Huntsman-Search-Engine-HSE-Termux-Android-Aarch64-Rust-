@@ -328,6 +328,23 @@ pub(super) fn classify_status(body: &str, status: u16) -> Result<Value> {
             "seek_now: HTTP {status} transient upstream failure"
         )));
     }
+    // A CDN/gateway 429 "Too Many Requests" is commonly served as an HTML or
+    // plain-text interstitial, NOT the API's JSON `{"error":"rate_limit"}`
+    // envelope. Such a body hits `parse_response`'s non-JSON branch and becomes
+    // an empty `Ok(Value::Null)` — a silent miss with NO backoff, the exact
+    // "throttled call silently abandoned" failure `Error::RateLimited` exists to
+    // prevent (symmetric with the 5xx divert above). Divert ONLY a non-JSON,
+    // non-auth 429: a JSON 429 keeps its precise `parse_response`/`classify_terminal`
+    // classification (`rate_limit`→retry, `quota_exceeded`/`invalid_api_key`→latch),
+    // and a plaintext auth rejection still latches the key via `parse_response`.
+    if status == 429 {
+        let trimmed = body.trim_start();
+        if !trimmed.starts_with('{') && !trimmed.starts_with('[') && !is_auth_error(body) {
+            return Err(Error::RateLimited(
+                "seek_now: HTTP 429 rate limited (non-JSON body)".into(),
+            ));
+        }
+    }
     parse_response(body)
 }
 

@@ -35,6 +35,7 @@ use std::borrow::Cow;
 /// legitimate place in a seed value (see the module docs for why each is
 /// stripped). Kept as a single predicate so [`strip_invisible`] can test it
 /// without allocating.
+#[inline]
 fn is_invisible_format(c: char) -> bool {
     matches!(
         c,
@@ -56,6 +57,7 @@ fn is_invisible_format(c: char) -> bool {
 ///
 /// Returns [`Cow::Borrowed`] unchanged when nothing is stripped — the hot path
 /// for the overwhelmingly-common clean input, so a clean seed never allocates.
+#[must_use]
 pub fn strip_invisible(s: &str) -> Cow<'_, str> {
     if s.chars().any(is_invisible_format) {
         Cow::Owned(s.chars().filter(|c| !is_invisible_format(*c)).collect())
@@ -70,6 +72,7 @@ pub fn strip_invisible(s: &str) -> Cow<'_, str> {
 /// Covers Cyrillic and Greek letters that share a glyph with ASCII Latin, plus
 /// the full-width ASCII block (U+FF01..=U+FF5E) which maps mechanically to its
 /// ASCII equivalent. Intentionally curated — not full TR39.
+#[inline]
 fn skeleton_char(c: char) -> char {
     // Full-width ASCII variants (U+FF01 '！' .. U+FF5E '～') are a fixed +0xFEE0
     // offset from their ASCII counterpart; fold them back mechanically.
@@ -129,11 +132,22 @@ fn skeleton_char(c: char) -> char {
 /// Intentionally a curated subset of the well-known Latin-lookalikes (Cyrillic,
 /// Greek, full-width ASCII, and a handful of cross-block letter/digit
 /// lookalikes), NOT the full Unicode TR39 confusables data.
+///
+/// Lowercasing is fused into the fold (`flat_map(char::to_lowercase)`) so the
+/// skeleton is built in a single allocation rather than collecting a `String`
+/// and then re-allocating it via `str::to_lowercase`. This preserves per-char
+/// lowercase *expansion* (e.g. `İ` → `i̇`), but not `str::to_lowercase`'s one
+/// context-sensitive special case — a word-final Greek capital sigma folds to
+/// `σ` rather than `ς`. That divergence is immaterial here: the skeleton is only
+/// ever compared against another `skeleton()` output or shown to the operator as
+/// the rejected value's ASCII form (see `Target::validate_verbose`), never
+/// against an externally-lowercased string.
+#[must_use]
 pub fn skeleton(s: &str) -> String {
     s.chars()
         .map(skeleton_char)
-        .collect::<String>()
-        .to_lowercase()
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 /// True when `value` mixes genuine ASCII Latin letters with ASCII-lookalike
@@ -145,6 +159,7 @@ pub fn skeleton(s: &str) -> String {
 /// at least one genuine ASCII Latin letter. A purely non-Latin string (e.g. a
 /// legitimate all-Cyrillic value, which has no ASCII letters) is NOT flagged —
 /// only the deceptive mix is.
+#[must_use]
 pub fn is_confusable_mixed_script(value: &str) -> bool {
     let mut has_ascii_latin = false;
     let mut has_confusable_foreign = false;
@@ -186,18 +201,20 @@ pub fn is_confusable_mixed_script(value: &str) -> bool {
 pub fn looks_like_gibberish_name(value: &str) -> bool {
     // A char that interrupts a consonant run: an ASCII vowel (incl. `y`) or any
     // non-ASCII letter (an accented vowel/consonant we don't want to misjudge).
+    #[inline]
     fn breaks_run(c: char) -> bool {
         !c.is_ascii() || matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u' | 'y')
     }
+    // Single pass per token: the letter count, the "any vowel-like break" flag,
+    // and the longest ASCII-consonant run are all folded in as the alphabetic
+    // characters stream past, so no intermediate `Vec<char>` is allocated.
     value.split_whitespace().any(|token| {
-        let letters: Vec<char> = token.chars().filter(|c| c.is_alphabetic()).collect();
-        if letters.len() < 6 {
-            return false;
-        }
+        let mut letters = 0usize;
         let mut run = 0usize;
         let mut max_run = 0usize;
         let mut any_break = false;
-        for &c in &letters {
+        for c in token.chars().filter(|c| c.is_alphabetic()) {
+            letters += 1;
             if breaks_run(c) {
                 any_break = true;
                 run = 0;
@@ -206,7 +223,40 @@ pub fn looks_like_gibberish_name(value: &str) -> bool {
                 max_run = max_run.max(run);
             }
         }
-        // No vowel-like char anywhere (all ASCII consonants), or a 6+ run.
-        !any_break || max_run >= 6
+        // Alphabetic core ≥ 6 letters AND either no vowel-like char anywhere
+        // (all ASCII consonants) or a 6+ consecutive-consonant run.
+        letters >= 6 && (!any_break || max_run >= 6)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skeleton_preserves_confusable_mapping() {
+        assert_eq!(skeleton("pаypal.com"), "paypal.com");
+        assert_eq!(skeleton("ＦＯＯ"), "foo");
+    }
+
+    #[test]
+    fn mixed_script_detection_stays_conservative() {
+        assert!(is_confusable_mixed_script("pаypal.com"));
+        assert!(!is_confusable_mixed_script("paypal.com"));
+        assert!(!is_confusable_mixed_script("пример"));
+    }
+
+    #[test]
+    fn gibberish_detection_needs_six_letter_signal() {
+        assert!(looks_like_gibberish_name("GvkJCJRWHWD"));
+        assert!(looks_like_gibberish_name("ZonJZRJHHWD Smith"));
+        assert!(!looks_like_gibberish_name("Vrkljan"));
+        assert!(!looks_like_gibberish_name("Nguyễn"));
+    }
+
+    #[test]
+    fn clean_invisible_strip_stays_borrowed() {
+        assert!(matches!(strip_invisible("alice"), Cow::Borrowed("alice")));
+        assert_eq!(strip_invisible("al\u{200B}ice"), "alice");
+    }
 }

@@ -86,6 +86,32 @@ fn classify_status_diverts_5xx_and_no_response_to_transient_retry() {
         classify_status(r#"{"total":0}"#, 404).is_ok(),
         "a 4xx JSON body keeps parse_response's classification"
     );
+    // A 429 served as a CDN/gateway HTML interstitial (NOT the API's JSON
+    // rate_limit envelope) must be retryable-transient, not the empty miss it
+    // used to become in parse_response's non-JSON branch.
+    assert!(
+        matches!(
+            classify_status("<html>429 Too Many Requests</html>", 429),
+            Err(Error::RateLimited(_))
+        ),
+        "a non-JSON 429 must divert to RateLimited, not a silent empty miss"
+    );
+    // A JSON 429 keeps its precise parse_response/classify_terminal path: an
+    // explicit `rate_limit` envelope is still RateLimited (retry) — reached via
+    // parse_response, not the non-JSON divert (no global latch mutated here).
+    assert!(
+        matches!(
+            classify_status(r#"{"error":"rate_limit"}"#, 429),
+            Err(Error::RateLimited(_))
+        ),
+        "a JSON rate_limit 429 stays RateLimited via parse_response"
+    );
+    // A 429 whose JSON body carries no terminal marker is a normal miss — NOT
+    // blanket-diverted just because the status is 429.
+    assert!(
+        classify_status(r#"{"total":0}"#, 429).is_ok(),
+        "a JSON 429 with no terminal marker keeps parse_response's classification"
+    );
 }
 
 #[test]

@@ -10,8 +10,6 @@
 //! does; auto-launching network reconnaissance against every entity found in an
 //! arbitrary document would be both non-deterministic and a footgun.
 
-mod converter;
-
 use crate::util::document_parse::{DocumentFormat, DocumentResult};
 use crate::util::entity_extractor::EntityExtractor;
 use serde_json::json;
@@ -281,7 +279,7 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
     }
 
     // The file the entities came from — recorded on each entity's evidence chain
-    // (via the `hse` converter) so a persisted or exported entity is attributable
+    // (via `app::convert`) so a persisted or exported entity is attributable
     // back to its source document. Needed by `--auto-scan` below and the output
     // formatter, so it is computed once here.
     let document_source = args
@@ -326,11 +324,12 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
 ///
 /// Converts each [`ExtractedEntity`](crate::util::entity_extractor::ExtractedEntity)
 /// to a core [`Entity`](crate::core::entity::Entity) (attributed to
-/// `document_source`) under a fresh `ingest-<unix>` scan id, then delegates to
-/// the shared [`crate::app::persist`] use case that `hse import` also runs —
-/// offline geospatial enrichment, deterministic relation derivation, and
-/// correlation. Store construction lives in that application-layer use case, not
-/// here, so the CLI never opens the store directly (`tests/architecture.rs`).
+/// `document_source` via the shared [`crate::app::convert`]) under a fresh,
+/// collision-free `ingest-<uid>` scan id, then delegates to the shared
+/// [`crate::app::persist`] use case that `hse import` also runs — offline
+/// geospatial enrichment, deterministic relation derivation, and correlation.
+/// Store construction lives in that application-layer use case, not here, so
+/// the CLI never opens the store directly (`tests/architecture.rs`).
 ///
 /// Returns the new scan id and its `(entities, relations, correlations)` counts.
 /// Entirely offline and deterministic: no module dispatch, no network.
@@ -338,10 +337,26 @@ async fn run_auto_scan(
     entities: &[crate::util::entity_extractor::ExtractedEntity],
     document_source: &str,
 ) -> crate::core::error::Result<(String, usize, usize, usize)> {
-    let sid = format!("ingest-{}", crate::core::entity::unix_now());
+    // A unique id per call: `unix_now()` has one-second resolution, so two
+    // `hse ingest --auto-scan` runs in the same second would collide and the
+    // second would overwrite the first's scan row + entities. `uid::scan_id`
+    // mixes a monotonic counter into the hash so every call is distinct; the
+    // `ingest-` prefix keeps the scan attributable to this path.
+    let sid = format!(
+        "ingest-{}",
+        crate::util::uid::scan_id("document", document_source)
+    );
+    let evidence_source = format!("ingest:{document_source}");
     let converted: Vec<crate::core::entity::Entity> = entities
         .iter()
-        .map(|e| converter::extracted_to_hse_entity(e, &sid, document_source))
+        .map(|e| {
+            crate::app::convert::extracted_to_hse_entity(
+                e,
+                &sid,
+                &evidence_source,
+                "document-ingestion",
+            )
+        })
         .collect();
     let label = crate::app::persist::strongest_identity_label(
         &converted,
@@ -374,9 +389,17 @@ fn format_output(
         // `storage::Store::upsert_entities_batch` consumes, so the output can be
         // fed straight into a scan rather than re-parsed from the flat formats.
         "hse" | "entities" => {
+            let evidence_source = format!("ingest:{document_source}");
             let converted: Vec<_> = entities
                 .iter()
-                .map(|e| converter::extracted_to_hse_entity(e, PENDING_SCAN_ID, document_source))
+                .map(|e| {
+                    crate::app::convert::extracted_to_hse_entity(
+                        e,
+                        PENDING_SCAN_ID,
+                        &evidence_source,
+                        "document-ingestion",
+                    )
+                })
                 .collect();
             Ok(serde_json::to_string_pretty(&converted)?)
         }
@@ -494,7 +517,7 @@ mod tests {
     async fn auto_scan_converts_and_persists_the_extracted_batch() {
         // --auto-scan is wired end to end: the extracted batch is converted to
         // core entities and persisted (via app::persist) as a fresh
-        // `ingest-<unix>` scan — `run_auto_scan` only returns Ok if that
+        // `ingest-<uid>` scan — `run_auto_scan` only returns Ok if that
         // persistence succeeded. Before this wiring the flag merely warned and
         // this function did not exist. Under cfg(test) the store is rooted in a
         // temp dir, so this touches no real ~/.huntsman.
@@ -508,6 +531,27 @@ mod tests {
         assert_eq!(
             n, 1,
             "the one extracted entity must be converted and counted"
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_scan_ids_are_unique_across_calls_in_the_same_second() {
+        // Regression: the id was `ingest-{unix_now()}` (one-second resolution),
+        // so two back-to-back runs collided and the second overwrote the first's
+        // scan row + entities. The unique `uid::scan_id` generator (monotonic
+        // counter mixed into the hash) must give every call a distinct id while
+        // keeping the `ingest-` attribution prefix. Both calls here run well
+        // within the same wall-clock second.
+        let (sid_a, _, _, _) = run_auto_scan(&sample(), "notes.txt")
+            .await
+            .expect("first auto-scan persists");
+        let (sid_b, _, _, _) = run_auto_scan(&sample(), "notes.txt")
+            .await
+            .expect("second auto-scan persists");
+        assert!(sid_a.starts_with("ingest-") && sid_b.starts_with("ingest-"));
+        assert_ne!(
+            sid_a, sid_b,
+            "two ingests must not collide on one scan id (would overwrite data)"
         );
     }
 

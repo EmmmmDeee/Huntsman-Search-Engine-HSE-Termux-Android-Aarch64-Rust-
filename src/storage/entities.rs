@@ -163,9 +163,17 @@ impl super::Store {
             // vs. reversed) persists byte-identically either way.
             merged.canonicalize_order();
             let merged_json = serde_json::to_string(&merged)?;
+            // `value` MUST be in the SET list. `Entity::merge` canonicalises the
+            // display spelling, and for Person/Organisation — the kinds whose UID
+            // is case/whitespace-folded — that spelling can genuinely change on
+            // merge. Omitting the column pinned it to whichever same-uid spelling
+            // was inserted FIRST, so the indexed column disagreed with the
+            // `data_json` beside it and the `q=` filter (which matches this
+            // column) found the subject or missed it depending on module
+            // completion order.
             tx.prepare_cached(
                 "UPDATE entities SET scan_id = ?1, confidence = ?2, corroboration = ?3,
-                 observed_at = ?4, data_json = ?5 WHERE uid = ?6",
+                 observed_at = ?4, data_json = ?5, value = ?6 WHERE uid = ?7",
             )?
             .execute(params![
                 merged.scan_id,
@@ -173,13 +181,16 @@ impl super::Store {
                 merged.corroboration as i64,
                 merged.observed_at as i64,
                 merged_json,
+                merged.value,
                 merged.uid,
             ])?;
             // Keep the FTS index synchronized. For a contentless-external FTS5
             // table the app must emit an explicit delete (old text, keyed by
             // rowid) then re-insert the new text. Only the value column is
-            // indexed, so skip the churn when the value is unchanged (the
-            // common merge case — same uid implies same normalised value).
+            // indexed, so skip the churn when the value is unchanged — the common
+            // case, since for every kind except Person/Organisation a shared UID
+            // implies an identical normalised value. For those two it can differ,
+            // which is exactly when this branch has to run.
             if old_value != merged.value {
                 // `prepare_cached` so a batch of value-changing merges reuses
                 // the compiled statements instead of recompiling the same SQL

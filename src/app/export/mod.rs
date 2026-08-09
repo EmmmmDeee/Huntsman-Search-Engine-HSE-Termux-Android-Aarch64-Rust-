@@ -15,7 +15,7 @@ mod renderers;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use dossier::{dossier_dir, write_full_dossier};
+pub(crate) use dossier::{dossier_dir, dossier_dir_path, write_full_dossier};
 pub(crate) use renderers::{
     KeyPoolSummary, SystemDebugInputs, render_debug_bundle, render_event_log, render_full,
     render_system_debug_bundle,

@@ -44,6 +44,63 @@ fn matches_across_the_union_of_provider_field_spellings() {
 }
 
 #[test]
+fn short_name_part_does_not_collapse_into_substring_matching() {
+    // A two-word full name whose surname is under the significance threshold
+    // ("Ng", "Li", "Wu", "Oh" — extremely common East Asian surnames) must NOT
+    // degrade to single-term substring matching. It previously did: the
+    // `require_all_terms` guard counted terms AFTER the `len >= 3` filter, so
+    // "Sarah Ng" kept only {sarah} and any stranger sharing the given name was
+    // accepted as the subject — the exact false positive the multi-term rule
+    // exists to prevent, and one that lands hardest on non-Anglo names.
+    let tm = TargetMatch::new("Sarah Ng");
+    assert!(tm.matches(&json!({ "full_name": "Sarah Ng" })));
+    assert!(
+        !tm.matches(&json!({ "full_name": "Sarah Johnson" })),
+        "a stranger sharing only the given name must not be the subject"
+    );
+
+    // The substring hazard is worse than a shared whole name: a short term can
+    // land INSIDE an unrelated word. "Ali Ng" -> {ali}, and "Natalie" contains
+    // "ali", so an unrelated person was minted as the target at full confidence.
+    let tm = TargetMatch::new("Ali Ng");
+    assert!(tm.matches(&json!({ "full_name": "Ali Ng" })));
+    assert!(
+        !tm.matches(&json!({ "full_name": "Natalie Brown" })),
+        "a substring hit inside an unrelated name must not be the subject"
+    );
+}
+
+#[test]
+fn all_short_name_parts_still_match_their_own_row() {
+    // Both parts under the old significance floor left ZERO terms, so the row
+    // could only ever match by exact string equality — a name-only row for the
+    // subject was quarantined as a stranger. Counting unfiltered tokens fixes
+    // the false negative in the same stroke as the false positive.
+    let tm = TargetMatch::new("Li Wu");
+    assert!(tm.matches(&json!({ "full_name": "Li Wu" })));
+    assert!(tm.matches(&json!({ "name": "LI WU" })));
+    // ...without letting either short part match inside a longer word:
+    // "william" contains "li", "wu" — substring matching would accept this.
+    assert!(
+        !tm.matches(&json!({ "full_name": "William Wunsch" })),
+        "short parts must match as whole words, not inside longer names"
+    );
+}
+
+#[test]
+fn handle_target_matches_bare_token_not_raw_punctuation() {
+    // A single-token target keeps substring matching against the BARE token, so
+    // a leading `@` on the seeded handle does not have to reappear in the record.
+    let tm = TargetMatch::new("@alikareem");
+    assert!(tm.matches(&json!({ "username": "alikareem2024" })));
+    // A token below the significance floor never matches partially — a bare
+    // "jo" must not select every "John".
+    let short = TargetMatch::new("jo");
+    assert!(!short.matches(&json!({ "username": "john_smith" })));
+    assert!(short.matches(&json!({ "username": "jo" })), "exact still holds");
+}
+
+#[test]
 fn non_matching_record_is_not_the_subject() {
     let tm = TargetMatch::new("Ali Kareem");
     // A stranger from a broad page — no field carries both terms.

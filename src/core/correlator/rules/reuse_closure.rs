@@ -80,9 +80,14 @@ pub(in crate::core::correlator) fn rule_au_121_credential_reuse_blast_radius(
             let is_pivotable = |h: &str| {
                 !h.is_empty() && !h.bytes().all(|b| b.is_ascii_digit()) && !is_generic_handle(h)
             };
+            // `attr_values` per key, not `attributes.get`: two rows of one breach
+            // corpus fold into a single evidence record whose colliding accounts
+            // accumulate as `"alice; bob_work"`, so reading the value whole
+            // collapses two pivots into one and starves the closure of the very
+            // edges it exists to walk.
             for ev in &e.evidence {
-                if let Some(email) = ev.attributes.get("email") {
-                    let email = email.trim().to_lowercase();
+                for email in ev.attr_values("email") {
+                    let email = email.to_lowercase();
                     if email.contains('@') {
                         let handle = canonical_handle(email.split('@').next().unwrap_or(&email));
                         if is_pivotable(&handle) && !handles.contains(&handle) {
@@ -91,8 +96,8 @@ pub(in crate::core::correlator) fn rule_au_121_credential_reuse_blast_radius(
                         }
                     }
                 }
-                if let Some(username) = ev.attributes.get("username") {
-                    let username = username.trim().to_lowercase();
+                for username in ev.attr_values("username") {
+                    let username = username.to_lowercase();
                     if !username.is_empty() {
                         let handle = canonical_handle(&username);
                         if is_pivotable(&handle) && !handles.contains(&handle) {

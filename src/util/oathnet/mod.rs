@@ -224,6 +224,28 @@ fn real_quota_from_envelope(env: &Envelope) -> Option<RealQuota> {
     })
 }
 
+/// True when a parsed envelope's real quota meter shows a spent daily
+/// allowance — a metered (non-unlimited) account whose `left_today` has
+/// reached zero.
+///
+/// Read from the TYPED `_meta.lookups` block ([`real_quota_from_envelope`]),
+/// never a raw-body substring. The former `body.contains("\"left_today\":0")`
+/// guard ran BEFORE the body was parsed and the page accumulated, so the day's
+/// final SUCCESSFUL page — which carries its data AND `left_today:0` in the
+/// same body, because `used_today` counts the current call
+/// (`docs/OATHNET_API_GUIDE.txt`: `used_today:13 + left_today:487 =
+/// daily_limit:500`) — had its paid records silently dropped. It also
+/// false-latched on an unlimited account that happened to report
+/// `left_today:0`. Driving the latch off the typed meter fixes both: the
+/// `is_unlimited` guard excludes unlimited accounts, and the caller acts on
+/// this only AFTER accumulating a successful page — mirroring the sibling
+/// [`crate::util::see_know`] `credits_exhausted` discipline (exhaustion latches
+/// to stop LATER queries, but the data of the call that spent the last credit
+/// is still returned).
+fn envelope_quota_exhausted(env: &Envelope) -> bool {
+    real_quota_from_envelope(env).is_some_and(|q| !q.is_unlimited && q.left_today == 0)
+}
+
 /// Record a freshly-observed [`RealQuota`], overwriting whatever was
 /// captured before — the newest response is always the most accurate.
 fn record_real_quota(q: RealQuota) {
@@ -566,7 +588,7 @@ pub async fn search(
         // latch exhaustion if backoff attempts run out, so a persistent 429
         // still degrades exactly as before rather than retrying forever.
         let mut attempt = 0u32;
-        let sd: SearchData = loop {
+        let (sd, quota_exhausted): (SearchData, bool) = loop {
             let (body, http_status) = CLIENT.get_with_status(&url, key).await?;
             // Retain the paid response verbatim BEFORE parsing/extraction — operator
             // policy: purchased data is kept in absolute completeness until manually
@@ -582,24 +604,6 @@ pub async fn search(
                 _ => trimmed.to_owned(),
             };
             crate::util::raw_archive::record("oathnet", &endpoint_label, value, &body);
-            // Detect actual quota exhaustion. Earlier check used `body.contains("quota")`
-            // which false-positives on legitimate metadata fields like `session_quota`
-            // and `recommended_quota`. Match only true exhaustion signals.
-            // Detect quota exhaustion from STRUCTURALLY-SCOPED signals only. The former
-            // bare-phrase checks ("limit exceeded"/"Daily quota exceeded"/"quota exceeded")
-            // substring-matched the whole body, so a breach record whose free-text field
-            // contained one of those phrases both discarded the entire page AND latched the
-            // daily-quota kill for the rest of the scan. The `"left_today":0` JSON key/value
-            // is specific enough not to collide with payload text, and a genuine 429 is
-            // handled from the parsed envelope below.
-            if body.contains("\"left_today\":0")
-                || body.contains("\"is_unlimited\":false,\"left_today\":0")
-            {
-                mark_quota_exhausted();
-                // The provider's paid daily quota ran out part-way through, so
-                // whatever pages we already have is all we will get today.
-                return Ok(cache_put(ck, all_items, Completeness::QuotaExhausted));
-            }
             let env: Envelope =
                 serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
             // Record real quota state regardless of success/failure — a
@@ -609,6 +613,16 @@ pub async fn search(
             if let Some(q) = real_quota_from_envelope(&env) {
                 record_real_quota(q);
             }
+            // Detect true daily-quota exhaustion from the TYPED `_meta.lookups`
+            // meter — NOT a raw-body substring. The former
+            // `body.contains("\"left_today\":0")` check ran BEFORE the page was
+            // parsed and accumulated, silently discarding the day's final
+            // SUCCESSFUL page (which carries its data AND `left_today:0` in the
+            // same body). Compute the latch here but ACT on it only after the
+            // page is accumulated (the success path, below the retry loop) or
+            // when the body is a genuine non-success exhaustion (403, below).
+            // See [`envelope_quota_exhausted`].
+            let quota_exhausted = envelope_quota_exhausted(&env);
             if !env.success {
                 let code = effective_error_status(
                     env.errors.as_ref().and_then(|e| e.status_code),
@@ -693,6 +707,16 @@ pub async fn search(
                         format!("HTTP {code} after {attempt} retries"),
                     ));
                 }
+                // A genuine non-success exhaustion body (HTTP 403 "You have
+                // reached your daily lookup limit") that carries the real
+                // `left_today:0` meter: latch and return whatever earlier pages
+                // accumulated — exactly what the old raw-body check did for this
+                // case, now driven off the typed meter so it cannot fire on a
+                // successful page's payload text.
+                if quota_exhausted {
+                    mark_quota_exhausted();
+                    return Ok(cache_put(ck, all_items, Completeness::QuotaExhausted));
+                }
                 return Err(Error::module("oathnet", "API returned success=false"));
             }
             let data = match env.data {
@@ -704,14 +728,27 @@ pub async fn search(
                     return Ok(cache_put(ck, all_items, Completeness::Complete));
                 }
             };
-            break serde_json::from_value(data)
-                .map_err(|e| Error::module("oathnet", e.to_string()))?;
+            break (
+                serde_json::from_value(data)
+                    .map_err(|e| Error::module("oathnet", e.to_string()))?,
+                quota_exhausted,
+            );
         };
 
         // Enrich each page against its OWN `dbname_info` block before
         // accumulating — different pages of the same paginated query can
         // legitimately carry different sets of breach databases.
         all_items.extend(enrich_with_breach_dates(sd.items, &sd.dbname_info));
+
+        // This page SUCCEEDED and spent the account's last daily credit
+        // (`left_today:0` on a metered account). KEEP the page — it is paid data
+        // the old raw-body pre-parse check discarded — but latch exhaustion so
+        // LATER queries in this scan are refused at the door, and stop paging.
+        if quota_exhausted {
+            mark_quota_exhausted();
+            completeness = Completeness::QuotaExhausted;
+            break;
+        }
 
         let has_more = sd.meta.as_ref().is_some_and(|m| m.has_more);
         // Prefer the live-confirmed real location (`data.next_cursor`,

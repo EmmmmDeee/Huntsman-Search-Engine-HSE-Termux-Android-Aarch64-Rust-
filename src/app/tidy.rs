@@ -81,7 +81,15 @@ pub fn run(dry_run: bool) -> Result<TidyReport> {
         report.dirs_arranged = arrange_layout();
     }
 
-    let dossier_dir = crate::app::export::dossier_dir();
+    // A dry run must not mutate the on-disk layout, so resolve the dossier path
+    // through the PURE accessor — `dossier_dir()` calls `subdir()`, which creates
+    // and re-tightens `~/.huntsman/dossiers` (and the base dir) as a side effect.
+    // A real pass wants that creation; a measurement must not touch disk at all.
+    let dossier_dir = if dry_run {
+        crate::app::export::dossier_dir_path()
+    } else {
+        crate::app::export::dossier_dir()
+    };
     let (removed, bytes) = prune_dossiers_in(&dossier_dir, DOSSIER_MAX_FILES, dry_run)?;
     report.dossiers_removed = removed;
     report.dossier_bytes_reclaimed = bytes;
@@ -187,12 +195,27 @@ fn arrange_layout() -> Vec<String> {
 /// path as a deterministic tie-break so two files sharing an mtime always trim
 /// in the same order. A missing/unreadable directory, or one already at or
 /// under `max`, is a clean no-op. Under `dry_run` the files are measured but
-/// left in place.
+/// left in place (the counts are then what a real pass WOULD reclaim); in a real
+/// pass only files whose unlink actually succeeds are counted, so a failed
+/// removal (permission, race) never inflates the reported figures.
 ///
 /// Directory-parameterised (rather than reading [`crate::app::export::dossier_dir`]
 /// directly) so it is unit-testable against an isolated temp directory without
 /// racing the process-shared test `$HOME`.
 fn prune_dossiers_in(dir: &Path, max: usize, dry_run: bool) -> Result<(usize, u64)> {
+    prune_dossiers_with(dir, max, dry_run, |p| std::fs::remove_file(p))
+}
+
+/// The body of [`prune_dossiers_in`], with the unlink operation injected so the
+/// failed-removal accounting is deterministically testable — this host runs as
+/// root, where DAC permission bits do not stop `unlink`, so a real filesystem
+/// permission could not be used to exercise the failure branch.
+fn prune_dossiers_with(
+    dir: &Path,
+    max: usize,
+    dry_run: bool,
+    mut remove: impl FnMut(&Path) -> std::io::Result<()>,
+) -> Result<(usize, u64)> {
     let Ok(read_dir) = std::fs::read_dir(dir) else {
         return Ok((0, 0));
     };
@@ -221,10 +244,16 @@ fn prune_dossiers_in(dir: &Path, max: usize, dry_run: bool) -> Result<(usize, u6
     let mut removed = 0usize;
     let mut bytes = 0u64;
     for (path, _, size) in files.into_iter().skip(max) {
-        bytes += size;
-        removed += 1;
-        if !dry_run {
-            let _ = std::fs::remove_file(&path);
+        if dry_run {
+            // Measurement: report what a real pass WOULD reclaim.
+            removed += 1;
+            bytes += size;
+        } else if remove(&path).is_ok() {
+            // Only count what was ACTUALLY removed — a failed unlink (permission,
+            // race, file already gone) must not inflate the reclaimed figures the
+            // housekeeping report presents to the operator.
+            removed += 1;
+            bytes += size;
         }
     }
     Ok((removed, bytes))
@@ -302,6 +331,48 @@ mod tests {
         assert!(bytes > 0);
         // Nothing actually deleted.
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 8);
+    }
+
+    #[test]
+    fn a_failed_unlink_is_not_counted_as_reclaimed() {
+        // Regression: the real-run branch counted a file as removed BEFORE (and
+        // regardless of) the unlink result, so a permission error / race would
+        // make the housekeeping report over-claim reclaimed files and bytes. The
+        // injected remover forces one unlink to fail deterministically — this
+        // host runs as root, where real permission bits don't stop `unlink`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = seed_dossiers(dir.path(), 5); // oldest-first
+        // cap 2 → the 3 oldest (paths[0..=2]) are selected for removal.
+        let doomed = paths[0].clone(); // in the removal set; make its unlink fail
+        let size1 = std::fs::metadata(&paths[1]).expect("stat").len();
+        let size2 = std::fs::metadata(&paths[2]).expect("stat").len();
+
+        let (removed, bytes) = prune_dossiers_with(dir.path(), 2, false, |p| {
+            if p == doomed {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "denied (test)",
+                ))
+            } else {
+                std::fs::remove_file(p)
+            }
+        })
+        .expect("prune must not error on an unremovable file");
+
+        assert_eq!(removed, 2, "3 selected, 1 unlink failed → only 2 counted");
+        assert_eq!(
+            bytes,
+            size1 + size2,
+            "bytes must exclude the file whose unlink failed"
+        );
+        assert!(
+            doomed.exists(),
+            "the file whose unlink failed is still present"
+        );
+        assert!(
+            !paths[1].exists() && !paths[2].exists(),
+            "the two that could be removed are gone"
+        );
     }
 
     #[test]

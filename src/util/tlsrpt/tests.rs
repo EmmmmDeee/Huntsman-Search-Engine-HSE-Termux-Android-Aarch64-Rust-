@@ -131,3 +131,26 @@ fn report_entities_takes_the_first_parseable_record_and_ignores_the_rest() {
         .collect();
     assert_eq!(emails, vec!["first@ex.com"]);
 }
+
+#[test]
+fn report_entities_emits_one_domain_per_distinct_endpoint_host() {
+    use crate::core::entity::EntityKind;
+
+    // A rua list pointing several report URLs at the SAME collector host (two
+    // paths here) must yield ONE Domain lead, matching the documented "distinct
+    // host" contract — a repeated host must not mint duplicate Domain entities.
+    let out = report_entities(
+        &["v=TLSRPTv1; rua=https://tlsrpt.example.net/a,https://tlsrpt.example.net/b,https://other.example.org/r"
+            .to_string()],
+        "fabrikam.example",
+        "scan",
+        "unit_test",
+    );
+    let mut domains: Vec<&str> = out
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain)
+        .map(|e| e.value.as_str())
+        .collect();
+    domains.sort_unstable();
+    assert_eq!(domains, vec!["other.example.org", "tlsrpt.example.net"]);
+}
