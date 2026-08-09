@@ -42,14 +42,7 @@ use std::path::PathBuf;
 /// invisible to callers and to this module's own path-shape tests below.
 #[must_use]
 pub fn huntsman_dir() -> PathBuf {
-    let dir = if cfg!(test) {
-        std::env::temp_dir()
-            .join("huntsman-test-home")
-            .join(".huntsman")
-    } else {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        PathBuf::from(home).join(".huntsman")
-    };
+    let dir = huntsman_dir_path();
     // 0700 owner-only; best-effort so a read path still resolves on failure.
     // `create_dir_private` also RE-TIGHTENS a pre-existing dir (an older install's
     // `~/.huntsman` made 0755 by a plain `create_dir_all`), so the key pool /
@@ -58,6 +51,28 @@ pub fn huntsman_dir() -> PathBuf {
     // pre-consolidation `vault_path` used to run on every call.
     let _ = crate::util::atomic_file::create_dir_private(&dir);
     dir
+}
+
+/// The `$HOME/.huntsman` base path **without** creating or re-tightening it —
+/// the pure path computation only, with none of [`huntsman_dir`]'s directory
+/// side effects.
+///
+/// For a read-only / measurement caller that must not mutate the on-disk layout
+/// (e.g. `hse tidy --dry-run`, whose contract is that nothing on disk changes).
+/// Every path that will be *written* must go through [`huntsman_dir`] /
+/// [`data_file`] / [`subdir`] instead, so the base dir is created and re-tightened
+/// `0700` before anything lands under it. Shares [`huntsman_dir`]'s `cfg(test)`
+/// redirection so the two never disagree on where the base is.
+#[must_use]
+pub fn huntsman_dir_path() -> PathBuf {
+    if cfg!(test) {
+        std::env::temp_dir()
+            .join("huntsman-test-home")
+            .join(".huntsman")
+    } else {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        PathBuf::from(home).join(".huntsman")
+    }
 }
 
 /// `$HOME/.huntsman/<name>` — a file directly under the base data directory,
@@ -88,9 +103,41 @@ pub fn subdir(sub: &str) -> PathBuf {
     dir
 }
 
+/// `$HOME/.huntsman/<sub>` **without** creating it — the pure path only, the
+/// non-creating counterpart to [`subdir`]. For a read-only / measurement caller
+/// (e.g. `hse tidy --dry-run`) that must not mutate the on-disk layout: [`subdir`]
+/// would create and re-tighten both the child and the base directory as a side
+/// effect, which a dry run must not do. Every write path must use [`subdir`].
+#[must_use]
+pub fn subdir_path(sub: &str) -> PathBuf {
+    huntsman_dir_path().join(sub)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subdir_path_is_pure_while_subdir_creates() {
+        // The dry-run contract depends on `subdir_path` computing the path with
+        // NO filesystem side effect, unlike `subdir` which creates 0700. Use a
+        // unique child name so this is independent of any other test's state in
+        // the process-shared cfg(test) home.
+        let unique = format!("measure-only-{}", std::process::id());
+        let pure = subdir_path(&unique);
+        assert!(
+            !pure.exists(),
+            "subdir_path must not create the directory: {pure:?}"
+        );
+        assert_eq!(pure, huntsman_dir_path().join(&unique));
+
+        // The creating counterpart does make it exist.
+        let created = subdir(&unique);
+        assert_eq!(created, pure, "both must resolve to the same path");
+        assert!(created.exists(), "subdir must create the directory");
+        // Clean up so the assertion holds on a re-run in the shared test home.
+        let _ = std::fs::remove_dir(&created);
+    }
 
     #[test]
     fn data_file_is_under_the_base_dir() {

@@ -132,10 +132,16 @@ pub fn report_entities(
             );
             out.push(e);
         }
+        // One `Domain` lead per DISTINCT endpoint host: a `rua=` list may point
+        // several report URLs at the same host (e.g. two paths on one collector),
+        // and emitting the host once keeps the doc's "distinct host" contract and
+        // avoids duplicate Domain entities skewing any pre-persist aggregation.
+        let mut seen_hosts = std::collections::BTreeSet::new();
         for url in &parsed.urls {
             if let Some(host) = crate::util::url_util::host_from_url(url)
                 && host.contains('.')
                 && host != domain
+                && seen_hosts.insert(host.clone())
             {
                 let mut d =
                     Entity::new(EntityKind::Domain, &host, confidence::MEDIUM_SOLID, scan_id);

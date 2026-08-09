@@ -10,6 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::types::EndpointRegistry;
+use crate::util::see_know::config;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ValueScore {
@@ -160,13 +161,23 @@ impl ValueScorer {
         let freshness = self.score_freshness(cache_age);
         let coverage = self.score_coverage(endpoint, target_type);
 
-        // Weighted composite calculation
+        // Weighted composite calculation. The weights are the canonical
+        // `config::VALUE_*_WEIGHT` constants — the single source of truth the
+        // module doc advertises as "configurable" — not re-hardcoded literals,
+        // so editing a weight in `config.rs` actually changes the scoring
+        // (previously the constants were inert and these literals were a silent
+        // divergence trap). Byte-identical to the prior literals (0.25/0.30/
+        // 0.25/0.10/0.10 in the same order), so scoring is unchanged today.
         let weights = [
-            ("diversity", diversity, 0.25),
-            ("hit_rate", hit_rate, 0.30),
-            ("pivot", pivot, 0.25),
-            ("freshness", freshness, 0.10),
-            ("coverage", coverage, 0.10),
+            (
+                "diversity",
+                diversity,
+                config::VALUE_ENTITY_DIVERSITY_WEIGHT,
+            ),
+            ("hit_rate", hit_rate, config::VALUE_HIT_RATE_WEIGHT),
+            ("pivot", pivot, config::VALUE_PIVOT_POTENTIAL_WEIGHT),
+            ("freshness", freshness, config::VALUE_FRESHNESS_WEIGHT),
+            ("coverage", coverage, config::VALUE_COVERAGE_WEIGHT),
         ];
 
         let composite = weights
@@ -277,6 +288,35 @@ mod tests {
         // Should be high value (search is primary, email is good specificity)
         assert!(score.composite > 60.0);
         assert!(score.is_high_value());
+    }
+
+    #[test]
+    fn composite_weights_are_the_canonical_config_constants_summing_to_one() {
+        // The scorer consumes `config::VALUE_*_WEIGHT` directly (single source of
+        // truth), so the weights must be a true convex combination. If a future
+        // edit to `config.rs` breaks the normalisation, this fails loudly rather
+        // than silently rescaling every composite score.
+        let sum = config::VALUE_ENTITY_DIVERSITY_WEIGHT
+            + config::VALUE_HIT_RATE_WEIGHT
+            + config::VALUE_PIVOT_POTENTIAL_WEIGHT
+            + config::VALUE_FRESHNESS_WEIGHT
+            + config::VALUE_COVERAGE_WEIGHT;
+        assert!(
+            (sum - 1.0).abs() < 1e-6,
+            "value weights must sum to 1.0, got {sum}"
+        );
+
+        // Pin the exact composite for a known input so the config→scorer wiring
+        // stays byte-identical to the prior hardcoded literals:
+        // diversity 100·0.25 + hit_rate 60·0.30 + pivot 65·0.25 + freshness
+        // 100·0.10 + coverage 100·0.10 = 79.25.
+        let scorer = ValueScorer::new();
+        let score = scorer.calculate_composite_value("/search", "email", None, 0.8);
+        assert!(
+            (score.composite - 79.25).abs() < 1e-4,
+            "composite must be 79.25, got {}",
+            score.composite
+        );
     }
 
     #[test]

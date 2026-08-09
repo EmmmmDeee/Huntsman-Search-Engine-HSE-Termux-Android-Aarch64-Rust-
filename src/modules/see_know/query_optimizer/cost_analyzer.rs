@@ -31,7 +31,10 @@ impl CostAnalyzer {
         config::get_endpoint_cost(endpoint)
     }
 
-    /// Calculate latency cost (time-adjusted, 0-5 points)
+    /// Calculate latency cost: 1/3/5/8 base points by latency band (`<5s`,
+    /// `<15s`, `<45s`, else), scaled by a 1×–2× time-stress factor when the
+    /// remaining time budget is tight — so the result ranges 0 up to 16, not
+    /// the 0–5 an earlier comment claimed.
     pub fn calculate_latency_cost(
         &self,
         latency_ms: u32,
@@ -224,9 +227,15 @@ mod tests {
             1000,      // Plenty of budget
         );
 
-        // (1 + 3*0.15 + 1*0.8) * 1.0 = 1.65
-        assert!(cost.effective_cost > 1.0);
-        assert!(cost.effective_cost < 2.5);
+        // credit 1 + latency(3.0)*0.15 + cascade(1.0)*0.8 = 2.25, × cache 1.0 ×
+        // budget 1.0 = 2.25. (5s latency lands in the `<15s ⇒ 3.0` band, since
+        // `5.0 < 5.0` is false.) Pinned exactly so a formula/coefficient change
+        // fails loudly instead of drifting inside a wide band.
+        assert!(
+            (cost.effective_cost - 2.25).abs() < 1e-4,
+            "effective cost must be 2.25, got {}",
+            cost.effective_cost
+        );
     }
 
     #[test]

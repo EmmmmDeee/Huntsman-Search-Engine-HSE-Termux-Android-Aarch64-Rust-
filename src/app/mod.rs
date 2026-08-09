@@ -7,6 +7,7 @@
 pub mod audit;
 pub mod benchmark;
 pub mod cells;
+pub mod convert;
 pub mod diff;
 pub mod doctor;
 pub mod export;

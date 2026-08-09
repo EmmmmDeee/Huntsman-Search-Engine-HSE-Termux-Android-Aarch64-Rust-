@@ -16,17 +16,11 @@ use crate::core::confidence;
 /// login/domain/credential context is not leaked PII per se.
 pub(super) fn push_stealer_entity(
     result: &mut ModuleResult,
-    mut e: Entity,
+    e: Entity,
     ev: &Evidence,
     extra_tags: &[&str],
 ) {
-    e.tag("oathnet-pro");
-    e.tag("stealer");
-    for t in extra_tags {
-        e.tag(*t);
-    }
-    e.add_evidence(ev.clone());
-    result.push(e);
+    result.push_with_tags(e, ev, &["oathnet-pro", "stealer"], extra_tags);
 }
 
 /// Expand one OathNet stealer-log record into its actionable leads.

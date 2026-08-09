@@ -821,15 +821,15 @@ pub fn derive_reused_secret_link(entities: &[Entity], scan_id: &str) -> Vec<Rela
         let emails: BTreeSet<String> = secret
             .evidence
             .iter()
-            .filter_map(|ev| ev.attributes.get("email"))
-            .map(|v| v.trim().to_lowercase())
+            .flat_map(|ev| ev.attr_values("email"))
+            .map(str::to_lowercase)
             .filter(|v| v.contains('@'))
             .collect();
         let usernames: BTreeSet<String> = secret
             .evidence
             .iter()
-            .filter_map(|ev| ev.attributes.get("username"))
-            .map(|v| v.trim().to_lowercase())
+            .flat_map(|ev| ev.attr_values("username"))
+            .map(str::to_lowercase)
             .filter(|v| !v.is_empty())
             .collect();
         // Fold to distinct CONTROLLER HANDLES — the same admission gate AU-047

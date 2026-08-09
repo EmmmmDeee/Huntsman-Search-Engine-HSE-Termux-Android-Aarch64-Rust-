@@ -263,6 +263,59 @@ async fn oathnet_json_stealer_victim_emits_every_distinct_field_uncapped() {
 }
 
 #[tokio::test]
+async fn oathnet_json_ip_admission_recovers_ipv6_and_rejects_bogus() {
+    use crate::core::entity::EntityKind;
+    // The IP fields (breach `ip`, victim `device_ips`) are admitted iff they
+    // parse as a real `IpAddr`. The old `contains('.')` guard silently dropped
+    // every IPv6 address (no dots) and admitted out-of-range dotted-quads like
+    // `999.999.999.999`. Both regressions are pinned here.
+    // Public addresses are used deliberately: the shared `deduplicate_by_uid`
+    // finalizer drops documentation/reserved ranges (2001:db8::/32, 203.0.113.x)
+    // via `is_bogus_ip`, so a doc IP would be filtered downstream and mask the
+    // parse-gate behaviour under test here.
+    let body = serde_json::json!({
+        "searchResults": {
+            "MULTI_SERVICE_RESULTS": {
+                "breach": { "data": { "results": [
+                    { "ip": "2606:4700:4700::1111", "dbname": "ExampleBreach" },
+                    { "ip": "999.999.999.999", "dbname": "ExampleBreach" },
+                ] } }
+            }
+        },
+        "stealerData": {
+            "victims": [{
+                "device_ips": ["2001:4860:4860::8888", "256.300.1.1", "8.8.8.8"],
+            }]
+        }
+    })
+    .to_string();
+    let (ents, _label) = entities_from_upload(&body, "s")
+        .await
+        .expect("should succeed");
+    let ips: std::collections::HashSet<&str> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        ips.contains("2606:4700:4700::1111"),
+        "a breach IPv6 address must now be recovered, not dropped by contains('.')"
+    );
+    assert!(
+        ips.contains("2001:4860:4860::8888"),
+        "a victim device IPv6 address must now be recovered"
+    );
+    assert!(
+        ips.contains("8.8.8.8"),
+        "a valid public IPv4 must still be admitted"
+    );
+    assert!(
+        !ips.contains("999.999.999.999") && !ips.contains("256.300.1.1"),
+        "out-of-range dotted-quads must be rejected by the IpAddr parse gate"
+    );
+}
+
+#[tokio::test]
 async fn import_extracts_wifi_bssid_as_geolocation_seed() {
     use crate::core::entity::EntityKind;
     // A stealer-log-shaped body carrying the victim's router BSSID.
@@ -1417,6 +1470,26 @@ fn parse_oathnet_html_skips_bogus_ips_and_dedups() {
             .count(),
         1,
         "a repeated domain must be de-duplicated"
+    );
+}
+
+#[test]
+fn parse_oathnet_html_rejects_out_of_range_octets_keeps_valid() {
+    use crate::core::entity::EntityKind;
+    // The dotted-quad regex matches any `d{1,3}.d{1,3}.d{1,3}.d{1,3}` shape, so
+    // `999.999.999.999` and `256.1.2.3` are syntactically captured but are not
+    // valid IPv4 addresses. The `parse::<IpAddr>()` gate must reject them while
+    // still admitting a real public address.
+    let es = parse_oathnet_html("999.999.999.999 256.1.2.3 203.0.113.7", "sid");
+    let ips: Vec<&str> = es
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert_eq!(
+        ips,
+        vec!["203.0.113.7"],
+        "only the parseable public IP must survive; out-of-range octets are bogus"
     );
 }
 

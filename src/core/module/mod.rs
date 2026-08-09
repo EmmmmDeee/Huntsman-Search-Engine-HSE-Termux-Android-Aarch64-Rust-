@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    entity::{Entity, EntityKind},
+    entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     event::EventBus,
     scan::{Target, TargetKind},
@@ -408,6 +408,25 @@ impl ModuleResult {
     /// Append one discovered entity.
     pub fn push(&mut self, entity: Entity) {
         self.entities.push(entity);
+    }
+
+    /// Tag `e` with each of `fixed` (its provenance tags) then `extra` (per-record
+    /// tags), attach `ev`, and append it.
+    ///
+    /// The one shape behind the breach/stealer record emitters that each module
+    /// had copied verbatim — `dehashed`/`breach_rich`/`see_know`'s
+    /// `push_breach_entity` and `oathnet_pro`'s `push_stealer_entity`: stamp a
+    /// couple of fixed provenance tags plus any per-record extras, clone in the
+    /// shared evidence, and push. Each module keeps a thin wrapper that fixes its
+    /// own provenance tags and calls this, so the tag-then-evidence-then-push
+    /// shape lives in exactly one place. `fixed` is tagged before `extra`, so a
+    /// caller's tag order is preserved.
+    pub fn push_with_tags(&mut self, mut e: Entity, ev: &Evidence, fixed: &[&str], extra: &[&str]) {
+        for t in fixed.iter().chain(extra) {
+            e.tag(*t);
+        }
+        e.add_evidence(ev.clone());
+        self.push(e);
     }
 
     /// Append every entity from an iterator.
