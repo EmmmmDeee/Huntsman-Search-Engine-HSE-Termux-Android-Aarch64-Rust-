@@ -373,6 +373,11 @@ fn core_does_not_import_util_directly() {
                 // same-site subdomains and exclude privacy-proxy registrants.
                 && !line.contains("util::domains::is_proxy_registrant")
                 && !line.contains("util::domains::registrable_domain")
+                // Pure, dependency-free whole-label suffix predicate (no I/O),
+                // same leaf category. `core::data_broker::broker_for_host` uses
+                // it to match a host to its data-broker site (the canonical home
+                // of the `host == d || subdomain-of d` idiom).
+                && !line.contains("util::domains::is_or_subdomain_of")
                 // Pure, dependency-free freemail-domain membership test (a small
                 // embedded list; no I/O), same leaf category as the other
                 // `util::domains` predicates. AU-100 uses it to exclude personal
