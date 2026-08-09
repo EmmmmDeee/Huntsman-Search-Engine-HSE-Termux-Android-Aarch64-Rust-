@@ -484,6 +484,59 @@ use super::*;
     }
 
     #[test]
+    fn envelope_quota_exhausted_latches_on_a_successful_last_of_day_page() {
+        // The day's final SUCCESSFUL breach page carries its data AND
+        // `left_today:0` in the same body (used_today counts the current call:
+        // 500 + 0 == daily_limit 500). The typed meter must classify THIS as
+        // exhausted so the caller latches — but the caller keeps the page (the
+        // regression the raw-body pre-parse check caused: it returned before the
+        // page was accumulated, dropping the paid records).
+        let raw = json!({
+            "success": true,
+            "data": {"items": [{"email": "a@b.com", "dbname": "X"}]},
+            "_meta": {"lookups": {"used_today": 500, "left_today": 0, "daily_limit": 500, "is_unlimited": false}}
+        });
+        let env: Envelope = serde_json::from_value(raw).expect("must deserialise");
+        assert!(
+            envelope_quota_exhausted(&env),
+            "a metered account at left_today:0 is exhausted regardless of success"
+        );
+    }
+
+    #[test]
+    fn envelope_quota_exhausted_is_false_with_credits_remaining() {
+        let raw = json!({
+            "success": true,
+            "data": {"items": []},
+            "_meta": {"lookups": {"used_today": 3, "left_today": 497, "daily_limit": 500, "is_unlimited": false}}
+        });
+        let env: Envelope = serde_json::from_value(raw).expect("must deserialise");
+        assert!(!envelope_quota_exhausted(&env));
+    }
+
+    #[test]
+    fn envelope_quota_exhausted_never_latches_an_unlimited_account() {
+        // An unlimited account can report left_today:0 without being exhausted;
+        // the old raw `"left_today":0` substring would have false-latched here.
+        let raw = json!({
+            "success": true,
+            "data": {"items": []},
+            "_meta": {"lookups": {"used_today": 0, "left_today": 0, "daily_limit": 0, "is_unlimited": true}}
+        });
+        let env: Envelope = serde_json::from_value(raw).expect("must deserialise");
+        assert!(!envelope_quota_exhausted(&env));
+    }
+
+    #[test]
+    fn envelope_quota_exhausted_is_false_without_a_meter() {
+        let raw = json!({"success": false, "message": "You have reached your daily lookup limit"});
+        let env: Envelope = serde_json::from_value(raw).expect("must deserialise");
+        // No typed meter present → the caller falls through to its generic
+        // non-success handling, exactly as before this predicate existed.
+        assert!(!envelope_quota_exhausted(&env));
+    }
+
+    #[test]
     fn real_quota_updates_in_place_and_is_readable_via_the_public_getter() {
         let q1 = RealQuota {
             used_today: 3,
