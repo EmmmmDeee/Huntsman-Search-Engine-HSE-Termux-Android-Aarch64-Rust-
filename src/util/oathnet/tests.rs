@@ -815,6 +815,7 @@ use super::*;
             Completeness::QuotaExhausted,
             Completeness::RateLimited,
             Completeness::CursorMissing,
+            Completeness::ServerError,
             Completeness::PageVanished,
         ];
         let mut seen = std::collections::HashSet::new();
@@ -824,5 +825,9 @@ use super::*;
             assert!(!r.is_empty());
             assert!(seen.insert(r), "{c:?} reuses another variant's reason: {r}");
         }
-        assert_eq!(seen.len(), 5, "all five partial reasons must be distinct");
+        assert_eq!(
+            seen.len(),
+            partial.len(),
+            "every partial reason must be distinct"
+        );
     }

@@ -279,8 +279,14 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
         if is_auth_error(body) {
             mark_key_invalid(body);
         } else if !trimmed.is_empty() {
+            // Redact BEFORE truncating: slicing first could cut a credential in
+            // half and emit the surviving prefix verbatim. This is the same
+            // discipline `util::http::error_snippet` applies to every body it
+            // embeds — see_know's two body previews were the only ones that
+            // bypassed it.
+            let redacted = crate::util::http::redact_credentials(body);
             tracing::debug!(
-                preview = %body.chars().take(60).collect::<String>(),
+                preview = %redacted.chars().take(60).collect::<String>(),
                 "see_know: non-JSON response body treated as no results"
             );
         }
@@ -305,9 +311,15 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
         // `endpoints.rs` can distinguish "back off and retry" from a normal
         // empty result — see `Terminal::RateLimited`'s doc comment for why
         // this must NOT latch `mark_quota_exhausted()`.
+        // Redacted before truncation for the same reason as the preview above:
+        // `Error::RateLimited`'s Display reaches operator-facing sinks, so a
+        // credential echoed in a provider error body must never ride along.
         Some(Terminal::RateLimited) => Err(Error::RateLimited(format!(
             "seek_now: {}",
-            body.chars().take(120).collect::<String>()
+            crate::util::http::redact_credentials(body)
+                .chars()
+                .take(120)
+                .collect::<String>()
         ))),
         None => Ok(value),
     }
@@ -322,6 +334,24 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
 /// [`Value::Null`]) and silently lost. A 2xx-empty result and a 4xx JSON body
 /// (including the `invalid_api_key`/`plan_required` auth latch) keep their exact
 /// [`parse_response`] classification — only the transient class is diverted.
+/// True when a TRANSPORT-layer error string names a terminal auth failure, so
+/// the multi-domain fallback stops instead of re-asking every alternate domain
+/// with the same rejected key.
+///
+/// One named predicate rather than the identical condition inlined at each of
+/// the three fallback loops (POST / GET / raw-GET), which is both a drift risk
+/// and — as a bare expression — untestable.
+///
+/// Deliberately narrow: this is the curl-transport path, where an HTTP 401
+/// normally arrives as `Ok((body, 401))` and is classified by `parse_response`.
+/// It stays as a guard for the case where a proxy or DoH layer surfaces the
+/// rejection as an error string instead.
+pub(super) fn transport_err_is_terminal_auth(err_str: &str) -> bool {
+    err_str.contains("401")
+        || err_str.contains("Unauthorized")
+        || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
+}
+
 pub(super) fn classify_status(body: &str, status: u16) -> Result<Value> {
     if status == 0 || (500..600).contains(&status) {
         return Err(Error::RateLimited(format!(
@@ -388,12 +418,8 @@ pub(super) async fn post_json_with_fallback(
                 Err(e) => return Err(e),
             },
             Err(e) => {
-                let err_str = e.to_string();
                 // Auth errors are terminal — no point trying other domains.
-                if err_str.contains("401")
-                    || err_str.contains("Unauthorized")
-                    || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
-                {
+                if transport_err_is_terminal_auth(&e.to_string()) {
                     return Err(e);
                 }
                 // For other errors (connection, DNS, timeout), try the next domain.
@@ -456,12 +482,8 @@ pub(super) async fn get_json_with_fallback(
                 Err(e) => return Err(e),
             },
             Err(e) => {
-                let err_str = e.to_string();
                 // Auth errors are terminal — no point trying other domains.
-                if err_str.contains("401")
-                    || err_str.contains("Unauthorized")
-                    || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
-                {
+                if transport_err_is_terminal_auth(&e.to_string()) {
                     return Err(e);
                 }
                 // For other errors (connection, DNS, timeout), try the next domain.
@@ -501,12 +523,8 @@ pub(super) async fn get_raw_with_fallback(endpoint_path: &str, key: &str) -> Res
         match CLIENT_FAST.get(&url, key).await {
             Ok(body) => return Ok(body),
             Err(e) => {
-                let err_str = e.to_string();
                 // Auth errors are terminal — no point trying other domains.
-                if err_str.contains("401")
-                    || err_str.contains("Unauthorized")
-                    || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
-                {
+                if transport_err_is_terminal_auth(&e.to_string()) {
                     return Err(e);
                 }
                 // For other errors (connection, DNS, timeout), try the next domain.
