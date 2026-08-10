@@ -88,6 +88,12 @@ pub enum Completeness {
     RateLimited,
     /// The provider reported `has_more` but supplied no cursor to continue.
     CursorMissing,
+    /// A page *after* the first failed with a persistent server error (5xx, or
+    /// no HTTP response at all) once retries were exhausted. Earlier pages are
+    /// real, paid-for records; the rest is unknown. A FIRST-page server error
+    /// keeps returning `Err` — there is nothing to preserve, and a provider
+    /// that is wholly unreachable is a failure, not a short answer.
+    ServerError,
     /// A page *after* the first returned 404. Earlier pages are real; the rest
     /// is unknown. A first-page 404 is a genuine empty result, not this.
     PageVanished,
@@ -109,6 +115,9 @@ impl Completeness {
             Self::QuotaExhausted => Some("provider daily quota exhausted"),
             Self::RateLimited => Some("rate-limited, retries exhausted"),
             Self::CursorMissing => Some("provider reported more pages but gave no cursor"),
+            Self::ServerError => {
+                Some("a page after the first failed with a persistent server error")
+            }
             Self::PageVanished => Some("a page after the first returned 404"),
         }
     }
@@ -702,6 +711,25 @@ pub async fn search(
                         attempt += 1;
                         continue;
                     }
+                    // Retries are spent. If earlier pages of THIS query already
+                    // came back, they are real, paid-for records: return them
+                    // marked truncated rather than throwing them away with an
+                    // `Err`. That is not "silently absorbing" the 5xx — the
+                    // `ServerError` completeness (and its `reason()`) states it
+                    // outright, and it brings this path in line with the 404
+                    // (`PageVanished`) and 429 (`RateLimited`) branches, which
+                    // already preserve accumulated pages. A FIRST-page failure
+                    // still errors: nothing was paid for, nothing is lost, and a
+                    // wholly unreachable provider must surface as a failure.
+                    if !all_items.is_empty() {
+                        tracing::debug!(
+                            path,
+                            status = code,
+                            fetched = all_items.len(),
+                            "oathnet server error mid-pagination — returning earlier pages as partial"
+                        );
+                        return Ok(cache_put(ck, all_items, Completeness::ServerError));
+                    }
                     return Err(Error::module(
                         "oathnet",
                         format!("HTTP {code} after {attempt} retries"),
@@ -717,7 +745,14 @@ pub async fn search(
                     mark_quota_exhausted();
                     return Ok(cache_put(ck, all_items, Completeness::QuotaExhausted));
                 }
-                return Err(Error::module("oathnet", "API returned success=false"));
+                // Carry the resolved status: a bare "success=false" gave the
+                // operator nothing to act on, when the difference between 401
+                // (bad key), 403 (plan too low) and anything else is exactly
+                // what decides their next step.
+                return Err(Error::module(
+                    "oathnet",
+                    format!("HTTP {code}: API returned success=false"),
+                ));
             }
             let data = match env.data {
                 Some(d) => d,
