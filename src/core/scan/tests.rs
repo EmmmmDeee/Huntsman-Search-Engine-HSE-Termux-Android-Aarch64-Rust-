@@ -349,6 +349,17 @@ fn is_mega_domain_matches_roots_subdomains_and_www() {
         "PINTEREST.COM",
         "api.twitter.com",
         "github.com",
+        // Profile-hosting platforms. A scan may legitimately discover a profile
+        // URL on one of these, but the platform's own estate (its domain, CDN
+        // and subdomains) must never be attributed to the subject.
+        "onlyfans.com",
+        "cdn.onlyfans.com",
+        "fansly.com",
+        "media.fansly.com",
+        "patreon.com",
+        "soundcloud.com",
+        "steamcommunity.com",
+        "vimeo.com",
         // People-search aggregators — the stranger co-occurrence noise this list
         // exists to dampen.
         "fastpeoplesearch.com",

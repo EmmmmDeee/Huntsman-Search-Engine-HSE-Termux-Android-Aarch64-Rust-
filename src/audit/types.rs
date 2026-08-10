@@ -130,8 +130,12 @@ pub struct AuditReport {
     pub by_kind: Vec<(String, usize)>,
     /// (verified ≥0.75, probable ≥0.40, candidate <0.40) by c_effective.
     pub tiers: (usize, usize, usize),
-    /// Share of *actionable* entities in the candidate (low-confidence) tier,
-    /// 0.0–1.0 — excludes deliberately-quarantined breach co-occurrence.
+    /// Share of *actionable* entities that are either low-confidence candidates
+    /// or provider/CDN infrastructure, 0.0–1.0. High-confidence infrastructure
+    /// counts as noise too — it maps a provider's estate, not the subject — so
+    /// this can never read 0% while the report also raises
+    /// `infrastructure-pollution`. Deliberately-quarantined breach
+    /// co-occurrence stays excluded from both numerator and denominator.
     pub noise_ratio: f64,
     /// Breach co-occurrence rows the breach modules deliberately quarantined
     /// (excluded from the scan view, the correlator/grade, and the default

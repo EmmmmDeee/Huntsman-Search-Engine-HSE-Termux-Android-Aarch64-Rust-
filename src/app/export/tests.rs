@@ -8,6 +8,71 @@ use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
 use crate::storage::Store;
 
 #[test]
+fn exports_never_brand_a_non_complete_scan_as_complete() {
+    // An export of an aborted / failed / still-running scan holds only what was
+    // found before the stop. Labelling it "complete" tells the operator that a
+    // missing finding is a real negative, when it may simply be work that never
+    // ran — the one claim an evidentiary artifact must never make falsely.
+    // Both the dossier and the debug bundle must agree, since they are the two
+    // artifacts an operator hands on as the record of a scan.
+    for (status, id, dossier_tag, bundle_tag) in [
+        (
+            ScanStatus::Aborted,
+            "scan-st-aborted",
+            "partial, aborted, unredacted",
+            "partial aborted scan snapshot",
+        ),
+        (
+            ScanStatus::Failed,
+            "scan-st-failed",
+            "partial, failed, unredacted",
+            "partial failed scan snapshot",
+        ),
+        (
+            ScanStatus::Running,
+            "scan-st-running",
+            "partial, live, unredacted",
+            "partial live scan snapshot",
+        ),
+        (
+            ScanStatus::Complete,
+            "scan-st-complete",
+            "complete, unredacted",
+            "complete scan snapshot",
+        ),
+    ] {
+        let dir = tempfile::tempdir().expect("should succeed");
+        let db = dir.path().join(format!("{id}.db"));
+        let store = Store::open(db.to_str().expect("should succeed")).expect("should succeed");
+        let target = Target::new(TargetKind::FullName, "Jordan Avery");
+        let mut scan = Scan::new(id, target);
+        scan.status = status;
+        store.upsert_scan(&scan).expect("should succeed");
+
+        let dossier = render_full(&store, id).expect("should succeed");
+        assert!(
+            dossier.contains(&format!("HUNTSMAN FULL DOSSIER — {dossier_tag}")),
+            "{status:?} dossier must be labelled {dossier_tag:?}"
+        );
+        let bundle = render_debug_bundle(&store, id).expect("should succeed");
+        assert!(
+            bundle.contains(&format!("=== HUNTSMAN DEBUG BUNDLE — {bundle_tag} ===")),
+            "{status:?} bundle must be labelled {bundle_tag:?}"
+        );
+        if status != ScanStatus::Complete {
+            assert!(
+                !dossier.contains("HUNTSMAN FULL DOSSIER — complete, unredacted"),
+                "{status:?} dossier must not also claim completeness"
+            );
+            assert!(
+                !bundle.contains("=== HUNTSMAN DEBUG BUNDLE — complete scan snapshot ==="),
+                "{status:?} bundle must not also claim completeness"
+            );
+        }
+    }
+}
+
+#[test]
 fn render_full_dumps_every_field_and_provenance() {
     use crate::core::entity::{Entity, EntityKind, Evidence};
     let dir = tempfile::tempdir().expect("should succeed");
