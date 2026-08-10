@@ -243,6 +243,16 @@ pub(crate) fn intelx_selector(kind: TargetKind) -> Option<&'static str> {
 /// floor rather than a total — the count, the bucket and media breakdowns, and
 /// `latest_record`/`breach_date`, which can only be the extremes of what was
 /// actually read.
+///
+/// The emitted tag and attribute deliberately reuse the repo-wide
+/// `coverage: partial` vocabulary rather than an intelx-specific one, so one
+/// filter catches short answers from every paid module. The reason SET is local
+/// on purpose: [`crate::util::oathnet::Completeness`] models a cursor-paginated
+/// client (`CursorMissing`, `PageVanished`, `BudgetExhausted`, a daily quota
+/// counter) and IntelX has none of those — it has a fixed-attempt poll loop.
+/// Sharing the vocabulary is single-sourcing; sharing an enum whose variants
+/// cannot occur here would only make the type lie about what this module can
+/// observe.
 pub(crate) fn poll_partial_reason(
     finished: bool,
     cancelled: bool,
@@ -545,7 +555,12 @@ impl Module for IntelX {
             entity.tag("intelx-text-match");
         }
         if partial.is_some() {
-            entity.tag("intelx-partial");
+            // The repo-wide vocabulary for a short answer, shared with
+            // oathnet_pro's `mark_partial_coverage` — NOT an intelx-specific
+            // tag, so a consumer filtering partial coverage catches every paid
+            // module at once. The producing module stays identifiable from the
+            // `intelx` tag already applied above.
+            entity.tag("coverage:partial");
         }
 
         // Source breakdown comes from BUCKETS (the "where"), preferring the
@@ -631,8 +646,11 @@ impl Module for IntelX {
         .with_attr("records", all_records.len().to_string())
         .with_attr("search_id", search_id);
         if let Some(reason) = partial {
+            // `coverage: partial` is the established attribute spelling
+            // (dns_intel, oathnet_pro); `partial_reason` adds the intelx-specific
+            // detail without forking the vocabulary for the shared concept.
             ev = ev
-                .with_attr("record_set", "partial")
+                .with_attr("coverage", "partial")
                 .with_attr("partial_reason", reason);
         }
         if lost_batches > 0 {
