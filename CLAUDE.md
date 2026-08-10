@@ -29,11 +29,20 @@ rather than noise, and don't close an investigation while material uncertainty
 is still reducible. Where the two overlap, the constitution's Order of
 Precedence wins — persistence never outranks truthfulness.
 
-For security work, this repository is defensive-only: asset discovery, exposure
-assessment, threat modelling, detection, and remediation. Do not add or
-recommend capability whose primary use is unauthorized access, exploitation,
-persistence, credential theft, or evasion. See
-[`SECURITY.md`](SECURITY.md).
+Scope for security work is set by [`SECURITY.md`](SECURITY.md) and
+[`docs/PROJECT_CHARTER.md`](docs/PROJECT_CHARTER.md), and pinned as INV-5 in
+[`docs/AUTONOMY_CHARTER.md`](docs/AUTONOMY_CHARTER.md): OSINT/GEOINT and
+security work in **both offensive and defensive** forms, against publicly
+accessible sources, on targets the operator is authorized to investigate. Build
+the capability the mandate calls for — powerful is not a reason to decline.
+
+The boundary is the one those documents draw themselves, and it is categorical:
+add no capability whose primary use is accessing non-public data or systems
+without authorization, or harassment, stalking, or illegal surveillance, or any
+other unlawful activity. Operator responsibility for lawful use is real but does
+not move a prohibited capability into scope — those limits are properties of the
+code, not of the operator. `tests/autonomy_charter.rs` pins both the scope and
+these limits, so neither can be lost by a quiet edit.
 
 ## Project
 

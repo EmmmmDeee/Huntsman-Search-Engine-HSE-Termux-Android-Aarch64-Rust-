@@ -62,7 +62,15 @@ fn charter_keeps_its_non_negotiable_themes() {
         ("never fabricate", "evidence-integrity clause (INV-1)"),
         ("never regress", "never-regress ratchet (INV-2)"),
         ("never merge red", "no-red-merge rule (INV-4)"),
-        ("defensive", "defensive-only scope (INV-5)"),
+        (
+            "defensive",
+            "offensive-and-defensive authorized scope (INV-5)",
+        ),
+        // The boundary INV-5 draws around that scope. SECURITY.md and the
+        // project charter both state these categorically; pinning them here
+        // means widening the scope cannot quietly take the limits with it.
+        ("unauthorized", "unauthorized-access prohibition (INV-5)"),
+        ("harassment", "harassment/stalking prohibition (INV-5)"),
         ("mitre att&ck", "ATT&CK defensive-integration scope"),
         ("ledger", "append-only shipped/rejected unit ledger"),
     ] {
@@ -70,6 +78,63 @@ fn charter_keeps_its_non_negotiable_themes() {
             lower.contains(needle),
             "charter lost its {why}: missing phrase {needle:?}"
         );
+    }
+}
+
+/// INV-5 delegates the scope boundary to `SECURITY.md` and
+/// `docs/PROJECT_CHARTER.md`. A delegated guardrail is only load-bearing if the
+/// document it delegates to cannot quietly drop it, so both files get the same
+/// ratchet the charter has: they must exist, be substantial, and still state the
+/// categorical prohibitions INV-5 cites. Widening the authorized scope to cover
+/// offensive as well as defensive work is exactly why these are pinned — the
+/// limits must not travel with the widening.
+#[test]
+fn scope_documents_keep_their_categorical_prohibitions() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (rel, needles) in [
+        (
+            "SECURITY.md",
+            [
+                "strictly prohibited",
+                "harassment",
+                "stalking",
+                "not authorized to access",
+                "cybercrime",
+            ],
+        ),
+        (
+            "docs/PROJECT_CHARTER.md",
+            [
+                "categorically prohibited",
+                "harassment",
+                "stalking",
+                "not authorized to access",
+                "cybercrime",
+            ],
+        ),
+    ] {
+        let path = root.join(rel);
+        assert!(
+            path.exists(),
+            "{rel} must exist — INV-5 delegates the scope boundary to it"
+        );
+        let lower = fs::read_to_string(&path)
+            .expect("scope document must be readable UTF-8")
+            .to_lowercase();
+        assert!(
+            lower.len() > 1_000,
+            "{rel} is suspiciously short ({} bytes) — a truncated scope \
+             document is a lost boundary",
+            lower.len()
+        );
+        for needle in needles {
+            assert!(
+                lower.contains(needle),
+                "{rel} dropped the phrase {needle:?} — INV-5 cites this file \
+                 for the prohibition it names, so losing it here silently \
+                 widens the scope the charter claims to bound"
+            );
+        }
     }
 }
 

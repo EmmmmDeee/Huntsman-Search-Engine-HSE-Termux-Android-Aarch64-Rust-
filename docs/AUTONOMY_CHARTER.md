@@ -19,7 +19,10 @@ It sits under, and never overrides, the binding specs it inherits from:
 - [`PERSISTENT_INTELLIGENCE.md`](PERSISTENT_INTELLIGENCE.md) — carry validated
   findings forward; treat every failure/contradiction as diagnostic; don't close
   an investigation while material uncertainty is still reducible.
-- [`../SECURITY.md`](../SECURITY.md) — defensive-only posture.
+- [`../SECURITY.md`](../SECURITY.md) — authorized-use scope (offensive and
+  defensive), and the categorically prohibited actions that bound it.
+- [`PROJECT_CHARTER.md`](PROJECT_CHARTER.md) — project mandate, authorized use
+  cases, and the operator-responsibility model those prohibitions sit in.
 
 A guard test (`tests/autonomy_charter.rs`) fails CI if any invariant marker or
 cycle stage below is removed, so no guardrail can be lost by a quiet edit.
@@ -40,10 +43,19 @@ cycle stage below is removed, so no guardrail can be lost by a quiet edit.
   tripped architecture invariant is a design decision to raise, not to silence.
 - **INV-4 — Never commit red, and never merge red**, and never expand a unit's
   scope mid-commit. One unit = one PR = one squash-merge, on CI-green only.
-- **INV-5 — Defensive-only.** Add no capability whose primary use is
-  unauthorized access, exploitation, persistence, credential theft, or evasion.
-  MITRE ATT&CK is integrated for detection/mapping/threat-modeling only (see
-  below); never build the offensive techniques themselves.
+- **INV-5 — Authorized use only; lawful-target boundary.** Scope is set by
+  [`../SECURITY.md`](../SECURITY.md) and
+  [`PROJECT_CHARTER.md`](PROJECT_CHARTER.md): OSINT/GEOINT and security work
+  across **both offensive and defensive** forms is in scope, against publicly
+  accessible sources, on targets the operator is authorized to investigate. The
+  boundary is the one those documents draw themselves — add no capability whose
+  primary use is **accessing non-public data or systems without authorization**,
+  or **harassment, stalking, or illegal surveillance**, or any other unlawful
+  activity (`SECURITY.md` § Strictly Prohibited Actions, charter § 7.0). MITRE
+  ATT&CK is integrated as a **taxonomy for classifying exposures** and for
+  detection/mapping/threat-modeling (see below and charter § 3.0). Operator
+  responsibility for lawful use does not transfer a prohibited capability into
+  scope: the prohibitions above are properties of the code, not of the operator.
 - **INV-6 — Secrets and personal data stay out.** API keys live only in an
   untracked `~/.huntsman.env`; they never enter git, source, tests, commits,
   PRs, or chat. Location/medical/contact data is never committed.
@@ -66,8 +78,11 @@ ATT&CK is treated as **threat-informed defense**, end to end:
    remediation.
 4. **Emit** ATT&CK-tagged findings so downstream defenders can pivot.
 
-If a "gap" can only be closed by building attacker capability, it is
-out-of-scope by **INV-5**: log it in the ledger as rejected and move on.
+If a "gap" can only be closed by building capability whose primary use is
+unauthorized access to non-public systems, or harassment/stalking/illegal
+surveillance, it is out-of-scope by **INV-5**: log it in the ledger as rejected
+and move on. Gaps closable by detection, mapping, exposure assessment or
+threat-modeling are in scope and are the point of this workstream.
 
 ---
 
