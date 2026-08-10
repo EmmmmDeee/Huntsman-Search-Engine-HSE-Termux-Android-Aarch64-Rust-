@@ -939,37 +939,43 @@ pub(in crate::core::correlator) fn rule_au_095_exposed_key_portfolio(
     )]
 }
 
-/// AU-096 — OSINT practitioner (holds recon/breach/threat-intel API keys).
-///
-/// A harvested key for an OSINT provider — Shodan, Dehashed, IntelX, Maltego,
-/// Hunter, … — is more than a credential: by possession its owner *runs OSINT*.
-/// The harvester tags such keys `osint-practitioner` + `osint-category:<slug>`
-/// (classified by `util::osint_providers`). This rule reads those tags
-/// and surfaces the attribution: the subject is an OSINT operator, with the
-/// provider list and the tradecraft categories (breach-hunting vs attack-surface
-/// mapping vs people-search …) that the key portfolio reveals.
-///
-/// This is the pivot the operator asked for — the key's *provider* is the
-/// intelligence, not the secret it contains; the key is never used to
-/// authenticate. Severity High (a strong, specific attribution): a single OSINT
-/// key is a lead, several across categories is a profile. One finding per scan.
-pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
-    context: &RuleContext,
+/// Subject-ownership grounding for a harvested OSINT key (item 25). A key's mere
+/// presence in a scan is NOT possession: the universal harvester surfaces keys
+/// found in crawled pages, wayback snapshots, search results and public source
+/// code — none of which the subject owns or controls. A key is attributable to
+/// the subject only when it was observed in the subject's OWN compromised
+/// credential data — a breach or stealer-log record — which is exactly the
+/// possession standard AU-037 (leaked passwords/credentials) and AU-009
+/// (stealer-log) already apply. The harvester stamps the harvesting module as the
+/// evidence source (`HarvestCtx.src`), so grounding is: at least one evidence
+/// entry whose source is a breach/stealer source.
+fn osint_key_is_subject_grounded(e: &Entity) -> bool {
+    e.evidence
+        .iter()
+        .any(|ev| super::breach_pii::is_breach_source(&ev.source))
+}
+
+/// Build one AU-096 finding over `keys` — the shared shape for the grounded
+/// (subject-possession) and ungrounded (unassigned-lead) partitions. `None` for
+/// an empty partition. `rule_id` is passed in (not a literal here) so the
+/// AU-096 emission marker lives in `rule_au_096_osint_practitioner`, keeping the
+/// `correlation_rule_ids_match_their_function_number` architecture ratchet able
+/// to attribute it.
+fn au_096_finding(
+    keys: &[&Entity],
+    grounded: bool,
+    rule_id: &str,
     scan_id: &str,
     ts: u64,
-) -> Vec<Correlation> {
-    let entities = context.entities();
+) -> Option<Correlation> {
     use std::collections::{BTreeMap, BTreeSet};
-
+    if keys.is_empty() {
+        return None;
+    }
     let mut providers: BTreeSet<&str> = BTreeSet::new();
     // category slug → distinct providers in it, for a tradecraft breakdown.
     let mut by_category: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    let mut uids: Vec<String> = Vec::new();
-
-    for e in entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::ApiKey && e.has_tag("osint-practitioner"))
-    {
+    for e in keys {
         let provider = e
             .tags
             .iter()
@@ -982,13 +988,7 @@ pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
             .unwrap_or("uncategorised");
         providers.insert(provider);
         by_category.entry(category).or_default().insert(provider);
-        uids.push(e.uid.clone());
     }
-
-    if providers.is_empty() {
-        return Vec::new();
-    }
-
     let tradecraft = by_category
         .iter()
         .map(|(cat, provs)| {
@@ -999,22 +999,83 @@ pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
         })
         .collect::<Vec<_>>()
         .join("; ");
+    let uids: Vec<String> = keys.iter().map(|e| e.uid.clone()).collect();
+    Some(if grounded {
+        Correlation::new(
+            rule_id,
+            "OSINT practitioner (recon-tool API keys)",
+            Severity::High,
+            format!(
+                "Subject holds {} OSINT/recon-provider API key(s) across {} provider(s), observed \
+                 in the subject's own breach/stealer data — by possession an OSINT practitioner. \
+                 Tradecraft: {tradecraft}. The provider is the pivot (tooling, intent); keys are \
+                 catalogued, not used.",
+                uids.len(),
+                providers.len()
+            ),
+            uids,
+            scan_id,
+            ts,
+        )
+    } else {
+        Correlation::new(
+            rule_id,
+            "OSINT recon-tool key (unassigned lead)",
+            Severity::Medium,
+            format!(
+                "{} OSINT/recon-provider API key(s) across {} provider(s) observed in scan data \
+                 but NOT attributed to the subject — seen only in public/exposure contexts (web \
+                 crawl, archive, search, public code), which is not proof of possession. A \
+                 tradecraft lead pending ownership grounding, not a subject attribution. \
+                 Tradecraft: {tradecraft}.",
+                uids.len(),
+                providers.len()
+            ),
+            uids,
+            scan_id,
+            ts,
+        )
+    })
+}
 
-    vec![Correlation::new(
-        "AU-096",
-        "OSINT practitioner (recon-tool API keys)",
-        Severity::High,
-        format!(
-            "Subject holds {} OSINT/recon-provider API key(s) across {} provider(s) — by \
-             possession an OSINT practitioner. Tradecraft: {tradecraft}. The provider is the \
-             pivot (tooling, intent); keys are catalogued, not used.",
-            uids.len(),
-            providers.len()
-        ),
-        uids,
-        scan_id,
-        ts,
-    )]
+/// AU-096 — OSINT practitioner (holds recon/breach/threat-intel API keys).
+///
+/// A harvested key for an OSINT provider — Shodan, Dehashed, IntelX, Maltego,
+/// Hunter, … — can be more than a credential: by *possession* its owner runs
+/// OSINT. The harvester tags such keys `osint-practitioner` + `osint-category:
+/// <slug>` (classified by `util::osint_providers`). This rule reads those tags
+/// and surfaces the attribution: the subject is an OSINT operator, with the
+/// provider list and the tradecraft categories (breach-hunting vs attack-surface
+/// mapping vs people-search …) that the key portfolio reveals.
+///
+/// The possession claim is grounded, not assumed (item 25): a key's mere
+/// appearance in a scan — harvested from a crawled page, an archive snapshot, a
+/// search result or public source code — is exposure, not ownership. Only keys
+/// observed in the subject's OWN breach/stealer data ([`osint_key_is_subject_grounded`])
+/// support the "subject holds / by possession an OSINT practitioner" attribution
+/// (**High**); keys seen only in public/exposure contexts are surfaced as a
+/// separate **unassigned tradecraft lead** (**Medium**) that makes no ownership
+/// claim. The key is never used to authenticate in either case.
+pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
+    context: &RuleContext,
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let entities = context.entities();
+    // Partition osint-practitioner keys by subject-ownership grounding: those seen
+    // in the subject's own breach/stealer data (possession) vs those seen only in
+    // public/exposure contexts (a lead, not an attribution).
+    let (grounded, ungrounded): (Vec<&Entity>, Vec<&Entity>) = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::ApiKey && e.has_tag("osint-practitioner"))
+        .partition(|&e| osint_key_is_subject_grounded(e));
+
+    // The AU-096 rule-id literal is emitted here (not in the helper) so the
+    // rule-id-to-function architecture ratchet attributes it to this function.
+    let mut out = Vec::new();
+    out.extend(au_096_finding(&grounded, true, "AU-096", scan_id, ts));
+    out.extend(au_096_finding(&ungrounded, false, "AU-096", scan_id, ts));
+    out
 }
 
 /// AU-037 — Plaintext credential exposure.

@@ -381,8 +381,10 @@ const RULES: &[RuleFn] = &[
     // order, complementing AU-021's flat per-key findings. Catalogue-only.
     rule_au_095_exposed_key_portfolio,
     // AU-096: a harvested key for an OSINT provider (Shodan/Dehashed/IntelX/…)
-    // identifies its holder as an OSINT practitioner — provider + tradecraft
-    // categories as the pivot. Reads the osint-practitioner/osint-category tags.
+    // whose holder is grounded to the subject (seen in the subject's own
+    // breach/stealer data) identifies them as an OSINT practitioner by possession;
+    // keys seen only in public/exposure contexts are an unassigned tradecraft lead
+    // (item 25). Reads the osint-practitioner/osint-category tags + evidence source.
     rule_au_096_osint_practitioner,
     rule_au_022_organisation_with_breach,
     rule_au_023_cross_platform_identity,

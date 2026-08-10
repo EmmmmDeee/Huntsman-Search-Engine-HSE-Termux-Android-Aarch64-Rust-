@@ -6469,23 +6469,33 @@ fn au095_no_keys_no_finding() {
 }
 
 #[cfg(test)]
-fn osint_key_ent(value: &str, service: &str, category: &str) -> Entity {
+fn osint_key_ent(value: &str, service: &str, category: &str, source: &str) -> Entity {
     let mut e = Entity::new(EntityKind::ApiKey, value, 0.80, "s");
     e.tag("api-key");
     e.tag(format!("service:{service}"));
     e.tag("osint-practitioner");
     e.tag(format!("osint-category:{category}"));
+    // The harvesting module is the evidence source (`HarvestCtx.src`). A
+    // breach/stealer source grounds the key to the subject's own compromised data
+    // (possession); a public/web source (web_crawler, wayback, …) does not.
+    e.add_evidence(Evidence::new(
+        source,
+        format!("API key ({service}) harvested"),
+    ));
     e
 }
 
 #[test]
-fn au096_flags_osint_practitioner_with_tradecraft() {
+fn au096_grounded_keys_attribute_possession_to_the_subject() {
+    // Item 25: keys observed in the subject's OWN breach/stealer data ground the
+    // "subject holds / by possession an OSINT practitioner" attribution (High).
     let shodan = osint_key_ent(
         "shodankey32xxxxxxxxxxxxxxxxxxxxxx",
         "shodan",
         "attack-surface",
+        "oathnet_pro", // breach source → grounded
     );
-    let dehashed = osint_key_ent("dehashedkey", "dehashed", "breach-leak");
+    let dehashed = osint_key_ent("dehashedkey", "dehashed", "breach-leak", "see_know");
     let r = super::rules::rule_au_096_osint_practitioner(
         &RuleContext::new(&[shodan, dehashed]),
         "s",
@@ -6494,11 +6504,79 @@ fn au096_flags_osint_practitioner_with_tradecraft() {
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-096");
     assert_eq!(r[0].severity, super::Severity::High);
+    assert!(r[0].description.contains("Subject holds"));
+    assert!(r[0].description.contains("breach/stealer data"));
     assert!(r[0].description.contains("2 OSINT/recon-provider API key"));
     assert!(r[0].description.contains("shodan") && r[0].description.contains("dehashed"));
     assert!(
         r[0].description.contains("attack-surface") && r[0].description.contains("breach-leak")
     );
+}
+
+#[test]
+fn au096_ungrounded_keys_are_an_unassigned_lead_not_a_subject_attribution() {
+    // Item 25: a recon-provider key harvested from a public/exposure context (a
+    // crawled page, a search result, public code) is NOT proof the SUBJECT holds
+    // it. It must be surfaced as an unassigned tradecraft lead (Medium), never as
+    // a "subject holds / by possession" attribution.
+    let shodan = osint_key_ent(
+        "shodankey32xxxxxxxxxxxxxxxxxxxxxx",
+        "shodan",
+        "attack-surface",
+        "web_crawler", // public/web source → NOT grounded
+    );
+    let hunter = osint_key_ent(
+        "hunterkeyxxxxxxx",
+        "hunter",
+        "people-search",
+        "search_engines",
+    );
+    let r =
+        super::rules::rule_au_096_osint_practitioner(&RuleContext::new(&[shodan, hunter]), "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-096");
+    assert_eq!(
+        r[0].severity,
+        super::Severity::Medium,
+        "no possession → lead only"
+    );
+    assert!(
+        !r[0].description.contains("Subject holds"),
+        "an ungrounded key must not claim the subject holds it: {}",
+        r[0].description
+    );
+    assert!(r[0].description.contains("NOT attributed to the subject"));
+    assert!(r[0].description.contains("2 OSINT/recon-provider API key"));
+    assert!(r[0].description.contains("shodan") && r[0].description.contains("hunter"));
+}
+
+#[test]
+fn au096_grounded_and_ungrounded_keys_split_into_two_findings() {
+    // A mixed scan: one key from the subject's breach data (possession) and one
+    // from a crawled page (exposure) yield a grounded High attribution AND a
+    // separate Medium unassigned lead — the ungrounded key never inflates the
+    // possession claim.
+    let owned = osint_key_ent("intelxkeyxxxxxxx", "intelx", "breach-leak", "oathnet_pro");
+    let seen = osint_key_ent(
+        "shodankey32xxxxxxxxxxxxxxxxxxxxxx",
+        "shodan",
+        "attack-surface",
+        "wayback",
+    );
+    let r = super::rules::rule_au_096_osint_practitioner(&RuleContext::new(&[owned, seen]), "s", 0);
+    assert_eq!(r.len(), 2);
+    let high = r
+        .iter()
+        .find(|c| c.severity == super::Severity::High)
+        .expect("grounded finding");
+    let med = r
+        .iter()
+        .find(|c| c.severity == super::Severity::Medium)
+        .expect("lead finding");
+    assert!(high.description.contains("Subject holds") && high.description.contains("intelx"));
+    assert!(high.description.contains("1 OSINT/recon-provider API key"));
+    assert!(med.description.contains("NOT attributed") && med.description.contains("shodan"));
+    assert!(med.description.contains("1 OSINT/recon-provider API key"));
 }
 
 #[test]
