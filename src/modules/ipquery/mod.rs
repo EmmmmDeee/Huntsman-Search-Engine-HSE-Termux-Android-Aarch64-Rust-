@@ -261,10 +261,16 @@ fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
             if !tz.is_empty() {
                 ev = ev.with_attr("timezone", tz);
             }
-            // Residential postcode — a finer geo grain than city/state, folded
-            // onto both the Coordinates and the Address (both carry geo_ev()).
+            // IP-geolocation postcode — a network-derived locator of the IP, NOT
+            // the subject's residence. Stamped under the network-derived `postal`
+            // key (as ip_whois_geo/ipinfo do) so it is excluded from the
+            // residential POSTCODE_KEYS the AU-091/AU-093 residential-locality
+            // rules read, rather than the canonical `postcode` key that would let
+            // an IP's postcode masquerade as the subject's home postcode (item
+            // 24). Folded onto both the Coordinates and the Address (both carry
+            // geo_ev()); the coarse IP location still flows via the coordinates.
             if !zip.is_empty() {
-                ev = ev.with_attr("postcode", zip);
+                ev = ev.with_attr("postal", zip);
             }
             ev
         };

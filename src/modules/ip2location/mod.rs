@@ -175,7 +175,14 @@ fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<E
             ("city", (!city.is_empty()).then_some(city)),
             ("region", (!region.is_empty()).then_some(region)),
             ("country", (!country.is_empty()).then_some(country)),
-            ("postcode", (!zip.is_empty()).then_some(zip)),
+            // An IP-geolocation postcode locates the IP's network, NOT the
+            // subject's residence, so it is stamped under the network-derived
+            // `postal` key — excluded from the residential POSTCODE_KEYS the
+            // AU-091/AU-093 residential-locality rules read — rather than the
+            // canonical `postcode` key that would let it masquerade as the
+            // subject's home postcode (item 24). The coarse IP location still
+            // flows through this Coordinates entity's confidence-capped fix.
+            ("postal", (!zip.is_empty()).then_some(zip)),
             ("country_iso", (!cc.is_empty()).then_some(cc)),
             ("timezone", (!tz.is_empty()).then_some(tz)),
         ]
@@ -194,9 +201,14 @@ fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<E
     }
 
     if !skip_geo && !city.is_empty() && !country.is_empty() {
-        let addr = if !region.is_empty() && !zip.is_empty() {
-            format!("{city}, {region} {zip}, {country}")
-        } else if !region.is_empty() {
+        // An IP-geolocation address is a COARSE network locator, not the subject's
+        // residence, so its postcode must NOT be embedded in the Address value:
+        // `au_postcode` reads an Address value's trailing 4-digit run, which would
+        // let the IP's postcode occupy the residential "breach/register postcode"
+        // location rung (item 24). The postcode is retained as the network-derived
+        // `postal` attribute on the Coordinates above; the Address keeps
+        // suburb/state grain. (ipquery already composes its address this way.)
+        let addr = if !region.is_empty() {
             format!("{city}, {region}, {country}")
         } else {
             format!("{city}, {country}")

@@ -4556,6 +4556,62 @@ fn best_location_uses_a_breach_postcode_when_nothing_finer() {
 }
 
 #[test]
+fn best_location_ip_derived_postcode_never_occupies_the_residential_rung() {
+    use super::best_au_location_estimate;
+    // Item 24 acceptance: an IP-geolocation module (ip2location/ipquery, `infra`
+    // family) classifies its postcode as network-derived (`postal` attribute, not
+    // `postcode`) and does not embed it in the Address value, so the residential
+    // "breach/register postcode" rung never fires on an IP's postcode. This mimics
+    // the fixed IP-geo Address output: a `postal` attribute and a value with no
+    // 4-digit postcode.
+    let mut ip_addr = Entity::new(
+        EntityKind::Address,
+        "Gatton, Queensland, Australia",
+        0.62,
+        "s",
+    );
+    ip_addr.tag("ip2location");
+    ip_addr.add_evidence(
+        Evidence::new("ip2location", "IP geolocation")
+            .with_attr("ip", "101.169.42.148")
+            .with_attr("postal", "4343"),
+    );
+    assert!(
+        best_au_location_estimate(&[ip_addr]).is_none(),
+        "an IP-derived postcode must not produce a residential postcode fix"
+    );
+
+    // Demonstrates the vector the producer fix closes: `au_postcode` reads ANY
+    // Address value's trailing 4-digit run, regardless of the entity's origin or
+    // tags. Had ip2location kept the postcode in its Address value (its pre-fix
+    // shape, "…, Queensland 4343, Australia"), the IP's postcode WOULD have reached
+    // the residential rung — which is why the fix is at the producer (drop the
+    // postcode from the IP address value), not a tag check here.
+    let mut ip_addr_prefix = Entity::new(
+        EntityKind::Address,
+        "Gatton, Queensland 4343, Australia",
+        0.62,
+        "s",
+    );
+    ip_addr_prefix.tag("ip2location");
+    let est_prefix =
+        best_au_location_estimate(&[ip_addr_prefix]).expect("value-embedded postcode resolves");
+    assert_eq!(
+        est_prefix.basis, "breach/register postcode",
+        "the pre-fix IP address value would wrongly reach the residential rung"
+    );
+
+    // Contrast — a genuine register/breach postcode remains residential-eligible
+    // (rung 4), proving it is the ORIGIN, not the postcode value, that gates the
+    // residential rung.
+    let mut breach = Entity::new(EntityKind::Person, "Jo Citizen", 0.6, "s");
+    breach.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("postcode", "4000"));
+    let est = best_au_location_estimate(&[breach]).expect("a genuine breach postcode resolves");
+    assert_eq!(est.basis, "breach/register postcode");
+    assert_eq!(est.state, Some("QLD"));
+}
+
+#[test]
 fn best_location_prefers_a_coordinate_over_an_address() {
     use super::best_au_location_estimate;
     // A Brisbane coordinate AND a Perth name-matched address: the finer coordinate
