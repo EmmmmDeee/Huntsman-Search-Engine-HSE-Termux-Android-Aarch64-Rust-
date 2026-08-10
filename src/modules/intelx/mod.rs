@@ -226,6 +226,54 @@ pub(crate) fn intelx_selector(kind: TargetKind) -> Option<&'static str> {
     })
 }
 
+/// Why the polled record set is only a PARTIAL view of the search, or `None`
+/// when polling reached a terminal status and the set is whole. **Single source
+/// of truth** for the completeness decision, so the summary text, the evidence
+/// attributes and the entity tag cannot disagree — the discipline
+/// `partial_export_reason` already applies to dossiers.
+///
+/// This matters here because the search is PAID for before polling begins, and
+/// any stop short of a terminal status is followed by `…/terminate`, which
+/// discards whatever the search had not yet handed over. Reporting that
+/// truncated set as a bare "N record(s)" asserts that IntelX holds N records
+/// for the term, when the honest answer is "at least N, and the remainder is
+/// now unrecoverable".
+///
+/// When this returns `Some`, EVERY figure derived from the record set is a
+/// floor rather than a total — the count, the bucket and media breakdowns, and
+/// `latest_record`/`breach_date`, which can only be the extremes of what was
+/// actually read.
+pub(crate) fn poll_partial_reason(
+    finished: bool,
+    cancelled: bool,
+    lost_batches: u32,
+) -> Option<&'static str> {
+    if cancelled {
+        Some("cancelled")
+    } else if !finished {
+        Some("poll-ceiling")
+    } else if lost_batches > 0 {
+        Some("undecodable-batch")
+    } else {
+        None
+    }
+}
+
+/// The poll failures behind a truncation, rendered for an operator, or an empty
+/// string when there were none. Shared by the truncated-and-empty error and the
+/// evidence attributes so the two cannot tell different stories about the same
+/// poll loop.
+pub(crate) fn truncation_detail(failed_polls: u32, lost_batches: u32) -> String {
+    match (failed_polls, lost_batches) {
+        (0, 0) => String::new(),
+        (f, 0) => format!(" [{f} poll(s) returned no readable body]"),
+        (0, l) => format!(" [{l} batch(es) undecodable]"),
+        (f, l) => {
+            format!(" [{f} poll(s) returned no readable body, {l} batch(es) undecodable]")
+        }
+    }
+}
+
 #[async_trait]
 impl Module for IntelX {
     fn name(&self) -> &'static str {
@@ -377,10 +425,19 @@ impl Module for IntelX {
         );
         let mut all_records: Vec<Record> = Vec::with_capacity(MAX_RESULTS as usize);
         let mut finished = false;
+        let mut cancelled = false;
+        let mut lost_batches = 0u32;
+        // Polls that never yielded a readable body (transport failure or an
+        // error status). Kept apart from `lost_batches` because it points at a
+        // different cause: these reached the ceiling because the link or the
+        // key was failing, not because the search was slow, and an operator
+        // told only "poll-ceiling" would tune POLL_ATTEMPTS instead.
+        let mut failed_polls = 0u32;
         let mut poll_retries = 0u32;
         for _ in 0..POLL_ATTEMPTS {
             // Honor scan cancellation for faster abort latency (issue #23).
             if ctx.cancel.is_cancelled() {
+                cancelled = true;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
@@ -393,7 +450,10 @@ impl Module for IntelX {
                 .await
             {
                 Ok(r) => r,
-                Err(_) => continue,
+                Err(_) => {
+                    failed_polls += 1;
+                    continue;
+                }
             };
             if !resp.status().is_success() {
                 let code = resp.status().as_u16();
@@ -405,11 +465,20 @@ impl Module for IntelX {
                 if code != 429 || poll_retries >= 2 {
                     crate::util::http::note_keyed_error(code, SRC, &key, ctx);
                 }
+                failed_polls += 1;
                 continue;
             }
             let r: ResultResp = match crate::util::http::json_scanned(resp, SRC).await {
                 Ok(x) => x,
-                Err(_) => continue,
+                // A 200 whose body would not decode: IntelX served a result
+                // batch and this module could not read it. Whether the result
+                // cursor re-serves that batch on a later poll is not something
+                // we can observe from here, so the final set stops being
+                // provably whole. Counted rather than swallowed.
+                Err(_) => {
+                    lost_batches += 1;
+                    continue;
+                }
             };
             all_records.extend(r.records);
             // Terminal states only: 2 = finished, 3 = none available.
@@ -433,7 +502,28 @@ impl Module for IntelX {
                 .await;
         }
 
+        let partial = poll_partial_reason(finished, cancelled, lost_batches);
+
         if all_records.is_empty() {
+            // A truncated poll that collected nothing is NOT a clean no-hit.
+            // "IntelX holds nothing for this term" and "we stopped before the
+            // search produced anything" are different facts, and the second one
+            // still cost a paid search. Returning `Ok(empty)` here would make a
+            // total outage indistinguishable from a clean negative — the very
+            // thing `ModuleResult::or_hard_failure` exists to prevent. Surface
+            // it as a module error instead, so it reaches the operator as a
+            // ModuleError event and counts toward the circuit breaker. (Either
+            // way nothing is cached: `archive_if_eligible` already skips empty
+            // results, so this changes reporting, not the paid-lookup economics.)
+            if let Some(reason) = partial {
+                return Err(Error::module(
+                    SRC,
+                    format!(
+                        "search truncated ({reason}) before any record was read{}",
+                        truncation_detail(failed_polls, lost_batches)
+                    ),
+                ));
+            }
             return Ok(ModuleResult::new());
         }
 
@@ -453,6 +543,9 @@ impl Module for IntelX {
         entity.tag(tags::EXTERNAL);
         if is_text_search {
             entity.tag("intelx-text-match");
+        }
+        if partial.is_some() {
+            entity.tag("intelx-partial");
         }
 
         // Source breakdown comes from BUCKETS (the "where"), preferring the
@@ -520,15 +613,34 @@ impl Module for IntelX {
         } else {
             ""
         };
+        // A truncated set reads as "N+" and names why, so the count can never be
+        // mistaken for the total IntelX holds (see `poll_partial_reason`).
         let mut ev = Evidence::new(
             SRC,
-            format!(
-                "IntelX: {} record(s) for {value}{match_kind}",
-                all_records.len()
-            ),
+            match partial {
+                None => format!(
+                    "IntelX: {} record(s) for {value}{match_kind}",
+                    all_records.len()
+                ),
+                Some(reason) => format!(
+                    "IntelX: {}+ record(s) for {value}{match_kind} (partial: {reason})",
+                    all_records.len()
+                ),
+            },
         )
         .with_attr("records", all_records.len().to_string())
         .with_attr("search_id", search_id);
+        if let Some(reason) = partial {
+            ev = ev
+                .with_attr("record_set", "partial")
+                .with_attr("partial_reason", reason);
+        }
+        if lost_batches > 0 {
+            ev = ev.with_attr("undecodable_batches", lost_batches.to_string());
+        }
+        if failed_polls > 0 {
+            ev = ev.with_attr("failed_polls", failed_polls.to_string());
+        }
         if !top.is_empty() {
             ev = ev.with_attr("top_buckets", top);
         }

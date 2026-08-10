@@ -234,3 +234,76 @@ fn record_tolerates_missing_and_human_bucket() {
     assert!(r.records[0].bucket.is_none());
     assert!(r.records[0].date.is_none());
 }
+
+#[test]
+fn only_a_clean_terminal_poll_counts_as_a_complete_record_set() {
+    // The search is PAID for before polling starts, and every non-terminal stop
+    // is followed by `…/terminate`, which destroys whatever the search had not
+    // yet handed over. So exactly ONE of the eight
+    // (finished × cancelled × lost-batch) states may claim a whole set; in any
+    // other state a truncated count would be read as the total IntelX holds for
+    // the term, and the discarded remainder is unrecoverable.
+    for finished in [false, true] {
+        for cancelled in [false, true] {
+            for lost in [0u32, 1, 7] {
+                assert_eq!(
+                    poll_partial_reason(finished, cancelled, lost).is_none(),
+                    finished && !cancelled && lost == 0,
+                    "finished={finished} cancelled={cancelled} lost_batches={lost}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn partial_reasons_name_the_specific_truncation() {
+    assert_eq!(poll_partial_reason(true, false, 0), None);
+    assert_eq!(poll_partial_reason(false, false, 0), Some("poll-ceiling"));
+    assert_eq!(poll_partial_reason(true, true, 0), Some("cancelled"));
+    // A 200 IntelX served that would not decode: the set has a hole in it even
+    // though a later poll did reach a terminal status.
+    assert_eq!(
+        poll_partial_reason(true, false, 2),
+        Some("undecodable-batch")
+    );
+}
+
+#[test]
+fn truncation_reasons_have_a_stable_precedence() {
+    // Cancellation is the operator's own action and the most useful headline;
+    // the ceiling and a lost batch are incidental to it.
+    assert_eq!(poll_partial_reason(false, true, 3), Some("cancelled"));
+    // A ceiling stop outranks a lost batch: it bounds the whole set, whereas a
+    // lost batch is a hole inside one that otherwise ran to a terminal status.
+    assert_eq!(poll_partial_reason(false, false, 3), Some("poll-ceiling"));
+}
+
+#[test]
+fn truncation_detail_separates_a_dead_link_from_a_slow_search() {
+    // A ceiling stop caused by three failed polls and one caused by a search
+    // that was merely slow both report `poll-ceiling`, so the detail string is
+    // what stops an operator tuning POLL_ATTEMPTS at a network or key problem.
+    assert_eq!(truncation_detail(0, 0), "");
+    assert_eq!(
+        truncation_detail(3, 0),
+        " [3 poll(s) returned no readable body]"
+    );
+    assert_eq!(truncation_detail(0, 2), " [2 batch(es) undecodable]");
+    assert_eq!(
+        truncation_detail(1, 2),
+        " [1 poll(s) returned no readable body, 2 batch(es) undecodable]"
+    );
+}
+
+#[test]
+fn poll_window_is_the_ceiling_that_partial_reason_reports() {
+    // 3 × 1.5s = 4.5s of polling, inside the module's 15s search+poll budget.
+    // That window is how long a slow-but-non-empty IntelX search has to reach a
+    // terminal status before it is truncated and reported as `poll-ceiling`;
+    // raising POLL_ATTEMPTS spends budget to buy fewer partials. Pinned so a
+    // change to either constant is a deliberate call on that trade.
+    assert_eq!(POLL_ATTEMPTS, 3);
+    assert_eq!(POLL_INTERVAL_MS, 1_500);
+    assert!(u64::from(POLL_ATTEMPTS) * POLL_INTERVAL_MS < 15_000);
+}
