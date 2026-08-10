@@ -75,36 +75,34 @@ use super::*;
     }
 
     #[test]
-    fn build_surfaces_the_postcode_on_both_geo_entities() {
-        // The `zipcode` field (previously decoded nowhere) is a finer geo grain
-        // than city/state and must surface as a `postcode` attribute on both the
-        // Coordinates and the Address (both fold in the shared geo_ev()).
+    fn build_surfaces_the_ip_postcode_as_network_derived_postal_on_both_geo_entities() {
+        // The `zipcode` field is a finer geo grain than city/state and surfaces on
+        // both the Coordinates and the Address (both fold in the shared geo_ev()).
+        // It is an IP-geolocation postcode — a network-derived locator, NOT the
+        // subject's residence — so it is stamped under the network-derived `postal`
+        // key, deliberately EXCLUDED from the residential POSTCODE_KEYS that
+        // AU-091/AU-093 read, so an IP's postcode can never occupy the residential
+        // rung (item 24). The canonical `postcode` key must be absent.
         let d = resp(
             r#"{"location":{"country":"Australia","country_code":"AU","city":"Gatton","state":"Queensland","zipcode":"4343","latitude":-27.55,"longitude":152.27},"risk":{"is_datacenter":false}}"#,
         );
         let es = build_geo_isp_entities("203.0.113.9", &d, "t");
-        let coords = es
-            .iter()
-            .find(|e| e.kind == EntityKind::Coordinates)
-            .expect("coords");
-        assert_eq!(
-            coords.evidence[0]
-                .attributes
-                .get("postcode")
-                .map(String::as_str),
-            Some("4343")
-        );
-        let addr = es
-            .iter()
-            .find(|e| e.kind == EntityKind::Address)
-            .expect("address");
-        assert_eq!(
-            addr.evidence[0]
-                .attributes
-                .get("postcode")
-                .map(String::as_str),
-            Some("4343")
-        );
+        for kind in [EntityKind::Coordinates, EntityKind::Address] {
+            let e = es
+                .iter()
+                .find(|e| e.kind == kind)
+                .unwrap_or_else(|| panic!("missing {kind:?}"));
+            assert_eq!(
+                e.evidence[0].attributes.get("postal").map(String::as_str),
+                Some("4343"),
+                "{kind:?}: IP postcode must surface under the network-derived `postal` key"
+            );
+            assert_eq!(
+                e.evidence[0].attributes.get("postcode"),
+                None,
+                "{kind:?}: an IP postcode must never occupy the residential `postcode` key"
+            );
+        }
     }
 
     #[test]
