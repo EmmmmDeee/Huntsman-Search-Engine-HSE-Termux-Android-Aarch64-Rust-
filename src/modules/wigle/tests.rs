@@ -1142,8 +1142,69 @@ fn offline_ctx() -> crate::core::module::ModuleContext {
         scan_id: "budget-test".to_string(),
         bus: tokio::sync::broadcast::channel(16).0,
         http,
-        keys: std::collections::HashMap::new(),
+        // WiGLE credentials are REQUIRED — nothing is embedded in the build — so
+        // the budget tests below must supply a pair or `process` would return
+        // `MissingKey` before reaching the accounting they exist to check. The
+        // values are never sent anywhere: `http` resolves api.wigle.net to a
+        // closed loopback port.
+        keys: std::collections::HashMap::from([
+            ("HUNTSMAN_WIGLE_USER".to_string(), "AIDtest".to_string()),
+            ("HUNTSMAN_WIGLE_TOKEN".to_string(), "token-test".to_string()),
+        ]),
         cancel: crate::core::cancel::CancelHandle::new(),
+    }
+}
+
+/// With no credential embedded in the build, an unconfigured WiGLE account is a
+/// clean "needs key" skip — not a request, and not a charge against the
+/// operator's daily allowance.
+///
+/// Both halves of the HTTP-Basic pair are required, so a half-configured account
+/// must skip too rather than issue a request that can only 401.
+#[tokio::test]
+async fn an_unconfigured_wigle_account_skips_without_spending() {
+    use crate::core::error::Error;
+
+    let ctx_with = |pairs: &[(&str, &str)]| crate::core::module::ModuleContext {
+        scan_id: "keygate-test".to_string(),
+        bus: tokio::sync::broadcast::channel(16).0,
+        http: reqwest::Client::new(),
+        keys: pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+
+    let _g = BUDGET_LOCK.lock().await;
+    for keys in [
+        &[][..],
+        &[("HUNTSMAN_WIGLE_USER", "AIDtest")][..],
+        &[("HUNTSMAN_WIGLE_TOKEN", "token-test")][..],
+        // A blank half is unconfigured, not a credential.
+        &[
+            ("HUNTSMAN_WIGLE_USER", "AIDtest"),
+            ("HUNTSMAN_WIGLE_TOKEN", ""),
+        ][..],
+    ] {
+        SSID_BUDGET.reset_scan();
+        let before = SSID_BUDGET.scan_remaining();
+        let err = Wigle
+            .process(
+                &Target::new(TargetKind::Ssid, "alice-home"),
+                &ctx_with(keys),
+            )
+            .await
+            .expect_err("an unconfigured WiGLE account must not silently proceed");
+        assert!(
+            matches!(err, Error::MissingKey(_)),
+            "expected MissingKey for {keys:?}, got: {err:?}"
+        );
+        assert_eq!(
+            SSID_BUDGET.scan_remaining(),
+            before,
+            "a dispatch that never issues a request must cost no quota"
+        );
     }
 }
 

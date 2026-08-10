@@ -10,9 +10,6 @@ use crate::util::response_cache::ResponseCache;
 use super::budget::{mark_key_invalid, mark_quota_exhausted};
 use super::enterprise_config::ENTERPRISE;
 
-// Embedded fallback: the single-source-of-truth default lives in `util::keys`.
-const HARDCODED_KEY: &str = crate::util::keys::SEEKNOW_DEFAULT_KEY;
-
 /// Per-process response cache backed by the shared
 /// [`ResponseCache`] primitive (cap [`ENTERPRISE`]`.cache_size` — sized to
 /// comfortably hold every distinct endpoint × query a single scan
@@ -150,14 +147,6 @@ pub(super) fn base_urls_for(primary: String) -> Vec<String> {
         }
     }
     urls
-}
-
-/// The SeekNow API key to use for a request: the per-scan context key `ctx_key`
-/// when the operator supplied one, otherwise the built-in default
-/// ([`crate::util::keys::resolve_or_default`]). Mirrors `oathnet::resolve_key`.
-#[must_use]
-pub fn resolve_key(ctx_key: Option<&str>) -> &str {
-    crate::util::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
 }
 
 /// A stable, human-identifiable fingerprint of the SeekNow API key used for a
@@ -543,7 +532,3 @@ pub(super) async fn get_raw_with_fallback(endpoint_path: &str, key: &str) -> Res
     // Exhausted all domains; return the last error.
     Err(last_error.unwrap_or_else(|| Error::module("see_know", "all domains exhausted")))
 }
-
-/// Expose the hardcoded default key so tests can assert on it.
-#[cfg(test)]
-pub(super) const HARDCODED_KEY_FOR_TESTS: &str = HARDCODED_KEY;

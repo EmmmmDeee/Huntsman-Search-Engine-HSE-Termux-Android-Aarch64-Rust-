@@ -145,6 +145,7 @@ async fn run_command(command: Command) -> Result<()> {
             .await
         }
         Command::Modules { category, json } => modules::cmd_modules(category, json),
+        Command::BuildSha { json } => cmd_build_sha(json),
         Command::Engines { json } => engines::cmd_engines(json).await,
         Command::Query {
             query,
@@ -409,6 +410,40 @@ pub(super) fn color_severity(severity: &str, color: bool) -> String {
         "high" => format!("\x1b[31m{severity}\x1b[0m"),
         "medium" => format!("\x1b[33m{severity}\x1b[0m"),
         _ => format!("\x1b[2m{severity}\x1b[0m"),
+    }
+}
+
+/// `hse build-sha` — print the commit this binary was built from.
+///
+/// Bare mode prints the 40-char SHA and nothing else, so a shell can capture it
+/// with `$(hse build-sha)`. The exit code carries the verdict: **0** means "this
+/// binary provably IS commit X", non-zero means the build cannot prove which
+/// revision it is (dirty tree, or no `.git` and no `HSE_BUILD_SHA`). Callers must
+/// treat a non-zero exit as a mismatch — a build that cannot identify itself is
+/// exactly the case that let a stale binary pass for a current one.
+fn cmd_build_sha(json: bool) -> Result<()> {
+    let verifiable = crate::build_sha_is_verifiable();
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "sha": crate::BUILD_SHA,
+                "dirty": crate::BUILD_DIRTY,
+                "version": crate::VERSION,
+                "verifiable": verifiable,
+            })
+        );
+    } else {
+        println!("{}", crate::BUILD_SHA);
+    }
+    if verifiable {
+        Ok(())
+    } else {
+        Err(crate::core::error::Error::Other(format!(
+            "build carries no verifiable revision (sha={}, dirty={})",
+            crate::BUILD_SHA,
+            crate::BUILD_DIRTY
+        )))
     }
 }
 

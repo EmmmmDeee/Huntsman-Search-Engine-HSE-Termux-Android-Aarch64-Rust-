@@ -313,7 +313,17 @@ fn budget_block(snap: crate::util::budget::BudgetSnapshot) -> Value {
 }
 
 pub async fn version() -> Json<Value> {
-    Json(json!({ "version": crate::VERSION }))
+    // `version` alone cannot distinguish two builds from different `main`
+    // commits between version bumps, which is how a stale install passed for a
+    // current one. `commit`/`dirty` name the exact revision; `verifiable` says
+    // whether that name can be trusted (a dirty build is not its SHA).
+    Json(json!({
+        "version": crate::VERSION,
+        "commit": crate::BUILD_SHA,
+        "dirty": crate::BUILD_DIRTY,
+        "verifiable": crate::build_sha_is_verifiable(),
+        "build_id": crate::build_id(),
+    }))
 }
 
 /// Search-engine liveness panel data. Serves the latest cached sweep (populated

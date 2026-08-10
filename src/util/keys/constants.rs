@@ -158,117 +158,179 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
 /// it at someone. An explicit `--value` always overrides it.
 pub const DEFAULT_SEED_ENV: &str = "HUNTSMAN_DEFAULT_SEED";
 
-// ─── Embedded default keys — SINGLE SOURCE OF TRUTH ──────────────────────────
+// ─── Embedded default keys — DELIBERATELY NONE ───────────────────────────────
 //
-// Every key baked into the build lives here as exactly one constant. Modules
-// that need a zero-config fallback (`hibp`, `wigle`/`wifi_intel`, `see_know`,
-// `oathnet_pro`) reference these instead of re-declaring the literal, so a key
-// can never drift between copies. To ROTATE a key: change the constant here and
-// move its previous value into `SEEKNOW_SUPERSEDED_KEY` (or the relevant
-// superseded slot) so old env files upgrade in place. "Only the latest" is thus
-// enforced structurally — there is one place to edit.
+// This build ships with NO provider credentials. Earlier revisions embedded live
+// OathNet / HIBP / WiGLE / SeekNow credentials here so a fresh install worked
+// zero-config. That is not viable in a public repository: anything compiled into
+// a published binary — and committed to a public tree — is disclosed to everyone
+// who can read either. Those values are considered COMPROMISED, have been removed
+// from source, and must be revoked and reissued at each provider.
+//
+// Keyed modules now require the operator to supply their own key via the
+// environment or `~/.huntsman.env`, and report an actionable "key required"
+// notice (with the provider's signup URL, see [`signup_hint`]) when one is
+// absent. There is no fallback path that silently authenticates as someone else.
 
-/// OathNet Pro upstream key.
-pub const OATHNET_DEFAULT_KEY: &str =
-    "1f8097bdbf7dc68619857861adbc4343ddb490a1d72ae890551409e4b47116f2";
-/// Have I Been Pwned key.
-pub const HIBP_DEFAULT_KEY: &str = "42587552dce6424a87312941c8a2c3c5";
-/// WiGLE API name (HTTP Basic user).
-pub const WIGLE_DEFAULT_USER: &str = "AID4493a33e2df9d07ab9666a27c8aead17";
-/// WiGLE API token (HTTP Basic password).
-pub const WIGLE_DEFAULT_TOKEN: &str = "1aedb7ad0171ff3d6be5a844cca5d977";
-/// SeekNow key — the current embedded default, supplied directly by the
-/// operator (2026-07-14). Not live-verified from this build environment:
-/// this sandbox's outbound proxy blocks `see-know.eu`/`see-know.icu`
-/// outright, so a live `POST /search`/`GET /credits` probe could not be run
-/// here. The prior default (below, now superseded) was confirmed DEAD
-/// against `.icu`; verify this new key with `hse doctor`'s "SeekNow
-/// account" section (or the next live scan's `see_know` module status) on
-/// the operator's own device, which has no such proxy restriction.
-pub const SEEKNOW_DEFAULT_KEY: &str = "seek-0b493c7c9dc117aef21e8866760466481122a47029561ab0";
-/// SeekNow key that has been ROTATED OUT — kept only so a stale env file written
-/// by a previous build upgrades to [`SEEKNOW_DEFAULT_KEY`]. Never used as a live
-/// default. Was the prior embedded default; confirmed DEAD against
-/// `see-know.icu` (2026-07-13) — `.eu` status was never re-verified before
-/// being superseded.
-pub const SEEKNOW_SUPERSEDED_KEY: &str = "seek-fd18f1db9afdce325c90b8d0d27e8ebc02af489c95d0a9eb";
-/// Earlier retired SeekNow key — also upgraded in place to the current default.
-/// Was the prior embedded default (Enterprise plan, 5,000 daily credits,
-/// live-verified HTTP 200 at the time it was set).
-pub(super) const SEEKNOW_SUPERSEDED_KEY_2: &str =
-    "seek-62650f9a36e446fc3b1c1bcdf32a825048e608160e0fd0a4";
-/// Earlier retired SeekNow key — also upgraded in place to the current default.
-/// Verified DEAD (HTTP 401 invalid_api_key) at the time it was retired.
-pub(super) const SEEKNOW_SUPERSEDED_KEY_3: &str =
-    "seek-f419aa7ab831864149892e5145f6bc65dbb336e6ca94b4bc";
-/// Earlier retired SeekNow key — also upgraded in place to the current default.
-pub(super) const SEEKNOW_SUPERSEDED_KEY_4: &str =
-    "seek-4b33b63d408dd7149765da4e76384ce91fd9f6df518f9a25";
-/// Prior embedded default (free-tier `seek-b4a9…`), rotated out in favour of the
-/// enterprise key above.
-pub(super) const SEEKNOW_SUPERSEDED_KEY_5: &str =
-    "seek-b4a9cd56f7e95bc6ea30b17925f482514a07a52e7ab0961a";
-
-/// API keys embedded in the build so a fresh install works zero-config.
-/// `ensure_hardcoded_keys` writes any that are absent from the env file.
-/// Values come from the single-source-of-truth constants above.
-pub(super) const HARDCODED: &[(&str, &str)] = &[
-    ("HUNTSMAN_OATHNET_KEY", OATHNET_DEFAULT_KEY),
-    ("HUNTSMAN_HIBP_KEY", HIBP_DEFAULT_KEY),
-    ("HUNTSMAN_WIGLE_USER", WIGLE_DEFAULT_USER),
-    ("HUNTSMAN_WIGLE_TOKEN", WIGLE_DEFAULT_TOKEN),
-    ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_DEFAULT_KEY),
+/// SHA-256 digests (lowercase hex) of the credential values that shipped as
+/// embedded defaults in previous builds, paired with the env var each occupied.
+///
+/// Stored as digests, not values: the point of this list is to RECOGNISE a
+/// compromised credential still sitting in an operator's `~/.huntsman.env` —
+/// written there by a previous build's key-provisioning step — so it can be
+/// purged on upgrade. A digest identifies the value without redisclosing it, so
+/// the remediation itself does not re-commit the secret. Each source value has
+/// ≥128 bits of entropy, so publishing its digest does not expose it.
+///
+/// This list only ever grows: an entry must survive for as long as any install
+/// might still carry that value. Never add a credential the operator chose —
+/// only values this project itself shipped.
+pub(super) const COMPROMISED_EMBEDDED_DIGESTS: &[(&str, &str)] = &[
+    (
+        "HUNTSMAN_OATHNET_KEY",
+        "a2003bc8452ab3a70522bba2d02bb6ab974d19a392b415964f1f8f6911d5d177",
+    ),
+    (
+        "HUNTSMAN_HIBP_KEY",
+        "339ba734d77919ed6ab3118bd740e7f9a319bc7a8923d377dacd7cf68afefcfb",
+    ),
+    (
+        "HUNTSMAN_WIGLE_USER",
+        "35cc89cf9aa6b6350e1f65893eaffce1a3e885b66ff9aa6fa61153ac87b3cef0",
+    ),
+    (
+        "HUNTSMAN_WIGLE_TOKEN",
+        "9b9b7a9eb784e9cc7a6e725795233713e9e3571335d860e527e2ba37e2f4a424",
+    ),
+    (
+        "HUNTSMAN_SEEKNOW_KEY",
+        "c55fde64d83c6990a6277a7215eb5805a945e45b8dafedbbff0136bdff265fac",
+    ),
+    (
+        "HUNTSMAN_SEEKNOW_KEY",
+        "e6f4ce25ae9e719b86cb5a209a64080245c9bca273b43cdf8603d7365a25b6b2",
+    ),
+    (
+        "HUNTSMAN_SEEKNOW_KEY",
+        "5a9c6485a690b95e4604666678ffdf0edfa0d380b6e3a1fa3a2f51c4fab7696b",
+    ),
+    (
+        "HUNTSMAN_SEEKNOW_KEY",
+        "3a5f5e829481607833d4f4cfbea995486ac879d1064737d5b24c7c668bac4b78",
+    ),
+    (
+        "HUNTSMAN_SEEKNOW_KEY",
+        "ed445fc4cb4f8bbcf874b1d6be1a2146bb4b652d23d38db2a42a8b794c60ec68",
+    ),
+    (
+        "HUNTSMAN_SEEKNOW_KEY",
+        "2b2fc2d5c3b4262ef29788c1298d50dca103b82108d4d1a4998b2ee637c771c7",
+    ),
+    // Never an embedded default — this one was published as a copy-pasteable
+    // "Example ~/.huntsman.env" in docs/SEEKNOW_SETUP.md, so any operator who
+    // followed that guide literally has it in their env file today. Same
+    // exposure, same remedy.
+    (
+        "HUNTSMAN_SEEKNOW_KEY",
+        "751b3d29dd00f20e244941eab563ee002ca41de8b5bb616571c5325a165c02aa",
+    ),
 ];
 
-/// Embedded defaults that have been ROTATED. If the env file still carries an
-/// old embedded value (written by a previous build's `ensure_hardcoded_keys`),
-/// upgrade it in place to the current default so a rebuild picks up the new key
-/// without the operator re-entering it. Scoped to EXACT prior embedded values —
-/// a user's own custom key never matches one of these, so an intentional
-/// override is never clobbered.
-pub(super) const SUPERSEDED: &[(&str, &str)] = &[
-    ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY),
-    ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY_2),
-    ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY_3),
-    ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY_4),
-    ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY_5),
-];
-
-/// Resolve an API key: the context-supplied key when present and non-empty,
-/// otherwise the embedded `default`. The single definition of the "an explicit
-/// non-empty key wins, else fall back to the embedded default" policy shared by
-/// every zero-config keyed module (hibp, oathnet, see_know), so the rule can't
-/// drift between them.
+/// Lowercase-hex SHA-256 of `value`. Used to match an env-file value against
+/// [`COMPROMISED_EMBEDDED_DIGESTS`] without holding the plaintext to compare to.
 #[must_use]
-pub fn resolve_or_default<'a>(ctx_key: Option<&'a str>, default: &'a str) -> &'a str {
-    match ctx_key {
-        Some(k) if !k.is_empty() => k,
-        _ => default,
-    }
+pub(super) fn digest(value: &str) -> String {
+    use sha2::Digest as _;
+    let mut h = sha2::Sha256::new();
+    h.update(value.as_bytes());
+    hex::encode(h.finalize())
+}
+
+/// Whether `value` sitting in `env_var` digests to one of `digests`.
+///
+/// The list is a parameter so the purge policy can be tested positively against
+/// a synthetic list: the real [`COMPROMISED_EMBEDDED_DIGESTS`] can only be
+/// matched by holding the very plaintext this change exists to delete, so a test
+/// asserting "a known-compromised value IS purged" would have to re-commit one.
+pub(super) fn is_compromised_against(digests: &[(&str, &str)], env_var: &str, value: &str) -> bool {
+    let d = digest(value);
+    digests.iter().any(|(k, want)| *k == env_var && *want == d)
+}
+
+/// Whether `value` sitting in `env_var` is a credential this project previously
+/// shipped as an embedded default, and which is therefore compromised.
+///
+/// Scoped to the exact (variable, value) pairs HSE itself wrote, so a key the
+/// operator chose is never mistaken for one of ours — the digest of an operator
+/// key will not appear in the list.
+#[must_use]
+pub fn is_compromised_embedded(env_var: &str, value: &str) -> bool {
+    is_compromised_against(COMPROMISED_EMBEDDED_DIGESTS, env_var, value)
+}
+
+/// Bracketing of the `insert_<service>_key_here` placeholders that
+/// `src/cli/env_template.txt` ships for every documented key.
+const PLACEHOLDER_PREFIX: &str = "insert_";
+const PLACEHOLDER_SUFFIX: &str = "_here";
+
+/// Whether an env-file value is an unedited template placeholder
+/// (`insert_..._here`) rather than a real credential.
+///
+/// Single-sourced here because two subsystems must agree on it: `hse provision`
+/// (which must not preserve a placeholder as if it were a user value) and key
+/// resolution (which must treat one as unconfigured). They disagreed before —
+/// only provision knew the rule — which was harmless while an embedded default
+/// existed to fall back on. With nothing embedded, a divergence would mean a
+/// module sending the literal string `insert_haveibeenpwned_key_here` as its
+/// credential and reporting the resulting 401 as a rejected key, instead of
+/// telling the operator they never filled the slot in.
+#[must_use]
+pub fn is_template_placeholder(value: &str) -> bool {
+    let v = value.trim();
+    v.starts_with(PLACEHOLDER_PREFIX) && v.ends_with(PLACEHOLDER_SUFFIX)
+}
+
+/// Resolve an API key from the module context: `Some` when the operator supplied
+/// a real key, `None` when the slot is absent, blank, or still holding the
+/// template placeholder.
+///
+/// The single definition of the key-resolution policy shared by every keyed
+/// module (hibp, oathnet, see_know, wigle), so the rule cannot drift between
+/// them. There is deliberately no `default` parameter any more: a keyed module
+/// with no configured key must report "key required" rather than fall back to a
+/// credential belonging to whoever built the binary.
+#[must_use]
+pub fn resolve_key(ctx_key: Option<&str>) -> Option<&str> {
+    ctx_key.filter(|k| !k.trim().is_empty() && !is_template_placeholder(k))
 }
 
 /// Resolve the WiGLE HTTP-Basic credentials (API name + token) from the module
-/// context, each falling back to the embedded default via [`resolve_or_default`].
-/// Single-sources the WiGLE credential env-var names and defaults that the
-/// `wigle` and `wifi_intel` modules both need — they authenticate against the
-/// same WiGLE API, so this resolution previously lived in two places.
+/// context. `None` unless BOTH are configured — WiGLE authenticates with the
+/// pair, so a half-configured account cannot make a request and must surface as
+/// "key required" rather than as a 401 at the provider.
+///
+/// Single-sources the WiGLE credential env-var names that the `wigle` and
+/// `wifi_intel` modules both need — they authenticate against the same WiGLE
+/// API, so this resolution previously lived in two places.
 #[must_use]
-pub fn wigle_credentials(ctx: &crate::core::module::ModuleContext) -> (&str, &str) {
-    let user = resolve_or_default(ctx.key_opt("HUNTSMAN_WIGLE_USER"), WIGLE_DEFAULT_USER);
-    let token = resolve_or_default(ctx.key_opt("HUNTSMAN_WIGLE_TOKEN"), WIGLE_DEFAULT_TOKEN);
-    (user, token)
+pub fn wigle_credentials(ctx: &crate::core::module::ModuleContext) -> Option<(&str, &str)> {
+    let user = resolve_key(ctx.key_opt("HUNTSMAN_WIGLE_USER"))?;
+    let token = resolve_key(ctx.key_opt("HUNTSMAN_WIGLE_TOKEN"))?;
+    Some((user, token))
 }
 
-/// Every API-key/token value HSE uses to authenticate its OWN queries: the
-/// embedded defaults, every superseded default (so a rotated-out auth key is
-/// never reported as a finding), and every live credential-bearing `HUNTSMAN_*`
-/// value in the process environment (suffixes `_KEY` / `_TOKEN` / `_USER` /
-/// `_SECRET` / `_ID` / `_GUID` — the last three cover the Censys ID+secret pair
-/// and the ABR GUID, which are auth credentials too). Used by `util::found_keys` to
-/// EXCLUDE our own credentials when identifying keys leaked in endpoint data —
-/// the operator already has these; only third-party keys in the data are
-/// findings. Values are returned verbatim (lower-cased copies are added too, so
-/// a case-shifted echo of our own key still matches).
+/// Every API-key/token value HSE uses to authenticate its OWN queries: every
+/// live credential-bearing `HUNTSMAN_*` value in the process environment
+/// (suffixes `_KEY` / `_TOKEN` / `_USER` / `_SECRET` / `_ID` / `_GUID` — the last
+/// three cover the Censys ID+secret pair and the ABR GUID, which are auth
+/// credentials too). Used by `util::found_keys` to EXCLUDE our own credentials
+/// when identifying keys leaked in endpoint data — the operator already has
+/// these; only third-party keys in the data are findings. Values are returned
+/// verbatim (lower-cased copies are added too, so a case-shifted echo of our own
+/// key still matches).
+///
+/// The process environment is now the ONLY source: with no embedded defaults
+/// left, every key HSE authenticates with is one the operator configured.
 #[must_use]
 pub fn own_api_keys() -> std::collections::HashSet<String> {
     let mut set = std::collections::HashSet::new();
@@ -285,13 +347,7 @@ pub fn own_api_keys() -> std::collections::HashSet<String> {
             }
         }
     };
-    for (_, v) in HARDCODED {
-        add(v);
-    }
-    for (_, v) in SUPERSEDED {
-        add(v);
-    }
-    // Live overrides: any HUNTSMAN_* secret the operator configured (env or
+    // Live keys: any HUNTSMAN_* secret the operator configured (env or
     // ~/.huntsman.env, which `populate_and_load` has already exported).
     for (k, v) in std::env::vars() {
         // Credential-bearing suffixes. `_SECRET`/`_ID`/`_GUID` are NOT optional:

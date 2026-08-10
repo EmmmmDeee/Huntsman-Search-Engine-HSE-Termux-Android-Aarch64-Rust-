@@ -35,13 +35,15 @@ jobs:
     name: cargo fuzz (cert_der + ingest_text, nightly)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install nightly Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: nightly
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
         with:
           workspaces: "fuzz"
 
@@ -49,7 +51,7 @@ jobs:
       # action-pinning-drift rationale as ci.yml/audit.yml's direct
       # `cargo install` calls.
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
 
       # Seeds a scratch corpus dir from the project's existing real-certificate
       # fixture (`src/modules/cert_intel/testdata/`) — single-sourced test

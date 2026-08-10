@@ -31,7 +31,7 @@ use serde::Deserialize;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -49,8 +49,9 @@ use fetch::{fetch_detail, fetch_wigle, fetch_wigle_ssid, fetch_wigle_typed};
 /// call sites being rewritten) so this module reads unchanged.
 pub(super) use crate::util::wifi::is_generic_ssid;
 
-// WiGLE credentials (env names + embedded fallbacks) are resolved by the
-// single-sourced `crate::util::keys::wigle_credentials`.
+// WiGLE credentials (env names) are resolved by the single-sourced
+// `crate::util::keys::wigle_credentials`, which yields `None` unless the
+// operator configured BOTH halves of the pair — nothing is embedded.
 
 #[derive(Deserialize)]
 struct Resp {
@@ -260,7 +261,11 @@ impl Module for Wigle {
         // by the operator's daily allowance. Each sub-budget is
         // independent and env-tunable.
 
-        let (user, token) = crate::util::keys::wigle_credentials(ctx);
+        // WiGLE authenticates with an API-name/token PAIR and this build embeds
+        // no credential, so a missing half is a clean "needs key" skip rather
+        // than a 401 charged against the operator's daily allowance.
+        let (user, token) = crate::util::keys::wigle_credentials(ctx)
+            .ok_or_else(|| Error::MissingKey("HUNTSMAN_WIGLE_TOKEN".into()))?;
 
         // Each sub-search charges at the point a request is actually issued —
         // SSID past its skip filters, BSSID per observation kind probed — so a

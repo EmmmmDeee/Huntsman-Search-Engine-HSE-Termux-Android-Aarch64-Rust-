@@ -5,9 +5,9 @@ use super::budget::{
     scan_budget_remaining, set_scan_cap_override, should_probe_quota,
 };
 use super::client::{
-    CLIENT, CLIENT_FAST, HARDCODED_KEY_FOR_TESTS, base_urls_for, cache_get, cache_key, cache_put,
-    classify_status, is_auth_error, key_fingerprint, parse_response, resolve_key,
-    transport_err_is_terminal_auth, typed_cache_key,
+    CLIENT, CLIENT_FAST, base_urls_for, cache_get, cache_key, cache_put, classify_status,
+    is_auth_error, key_fingerprint, parse_response, transport_err_is_terminal_auth,
+    typed_cache_key,
 };
 use super::endpoints::{
     CreditsOutcome, CreditsProbe, SEARCH_LIMIT, build_search_body, classify_credits_probe,
@@ -48,9 +48,15 @@ fn client_timeout_budget_exceeds_name_search_server_cap() {
     assert!(CLIENT_FAST.outer_timeout_ms() > CLIENT_FAST.curl_timeout_secs() * 1000);
 }
 
+/// No SeekNow credential is embedded any more: the shared key policy treats an
+/// absent or blank slot as unconfigured, so the module reports a clean "needs
+/// key" skip rather than querying with someone else's key.
 #[test]
-fn resolve_key_uses_provided_when_non_empty() {
-    assert_eq!(resolve_key(Some("my-key")), "my-key");
+fn key_is_required_with_no_embedded_fallback() {
+    use crate::util::keys::resolve_key;
+    assert_eq!(resolve_key(Some("my-key")), Some("my-key"));
+    assert_eq!(resolve_key(None), None);
+    assert_eq!(resolve_key(Some("")), None);
 }
 
 #[test]
@@ -202,16 +208,6 @@ fn seeknow_client_uses_x_api_key_per_spec() {
 }
 
 #[test]
-fn resolve_key_falls_back_to_hardcoded_when_none() {
-    assert_eq!(resolve_key(None), HARDCODED_KEY_FOR_TESTS);
-}
-
-#[test]
-fn resolve_key_falls_back_when_empty() {
-    assert_eq!(resolve_key(Some("")), HARDCODED_KEY_FOR_TESTS);
-}
-
-#[test]
 fn auth_error_envelope_is_detected() {
     // The literal body see-know.eu returns for a rejected key (curl exits 0
     // on a 401, so this is what reaches us). Detecting it is what turns
@@ -230,12 +226,6 @@ fn auth_error_envelope_is_detected() {
     // A normal (empty or populated) result is NOT an auth error.
     assert!(!is_auth_error(r#"{"data":{"items":[]}}"#));
     assert!(!is_auth_error(r#"{"results":[{"email":"a@b.com"}]}"#));
-}
-
-#[test]
-fn hardcoded_key_has_correct_prefix() {
-    assert!(HARDCODED_KEY_FOR_TESTS.starts_with("seek-"));
-    assert!(HARDCODED_KEY_FOR_TESTS.len() >= 50);
 }
 
 #[test]

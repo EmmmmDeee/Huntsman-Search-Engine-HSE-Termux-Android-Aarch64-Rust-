@@ -151,7 +151,7 @@ impl Module for OathnetPro {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = oathnet::resolve_key(ctx.key_opt(oathnet::KEY_ENV));
+        let key = ctx.key(oathnet::KEY_ENV)?;
         // Origin fingerprint of the exact key in use — stamped on every entity so
         // each finding declares which API key (and provider) returned it.
         let key_fp = oathnet::key_fingerprint(key);

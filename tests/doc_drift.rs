@@ -253,8 +253,13 @@ fn ci_msrv_job_pins_the_version_cargo_toml_declares() {
             "the env var that actually selects the compiler (highest rustup precedence)",
         ),
         (
-            format!("uses: dtolnay/rust-toolchain@{msrv}"),
-            "the action ref that installs the toolchain",
+            // The toolchain selector moved out of the action REF and into an
+            // explicit input when third-party actions were pinned to commit
+            // SHAs: `dtolnay/rust-toolchain@1.88` named a mutable branch, so the
+            // version and the pin could not both live in the ref. The action is
+            // now pinned by SHA and told which toolchain to install here.
+            format!("toolchain: {msrv}"),
+            "the `toolchain:` input that installs the compiler",
         ),
     ];
 
@@ -306,8 +311,12 @@ fn ci_msrv_job_pins_the_version_cargo_toml_declares() {
         if line.trim_start().starts_with('#') {
             continue;
         }
+        // The action is pinned by commit SHA now, so `dtolnay/rust-toolchain@…`
+        // no longer names a version — the `toolchain:` input does. Watching the
+        // ref would flag the pin itself; watching the input catches the drift
+        // the guard is actually for.
         let is_toolchain_ref = line.contains("RUSTUP_TOOLCHAIN")
-            || line.contains("dtolnay/rust-toolchain@")
+            || line.trim_start().starts_with("toolchain:")
             || line.contains("name: MSRV");
         assert!(
             !is_toolchain_ref || line.contains(&msrv),

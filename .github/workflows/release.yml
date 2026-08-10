@@ -9,11 +9,20 @@ name: Release (prebuilt Termux aarch64 binary)
 #
 # It fires three ways:
 #   • push a version tag `v*`            → publish to that tag
-#   • push to main                       → publish v<Cargo.toml version> ONCE
-#                                          (skipped if that tag already exists,
-#                                          so it cuts a release exactly on a
-#                                          version bump, not on every push)
+#   • push to main                       → publish v<Cargo.toml version> if that
+#                                          tag does not exist yet (a version
+#                                          bump cuts the STABLE release), else
+#                                          publish this commit as pre-release
+#                                          `main-<sha7>` so merged work is
+#                                          installable immediately instead of
+#                                          shipping to nobody until the next bump
 #   • manual workflow_dispatch(tag)      → (re)build + publish to that tag
+#
+# Two channels, one artifact. GitHub's "latest release" ignores pre-releases, so
+# `install.sh`'s default path still serves the last version tag; a per-commit tag
+# is what makes "install exactly this main commit" resolvable without a source
+# build. Every published binary carries its source commit (build.rs → `hse
+# build-sha`), an SBOM, a provenance record, and a Sigstore attestation.
 #
 # The build reuses ci.yml's verified NDK recipe (the only way to cross-compile
 # ring's aarch64 asm + bundled-SQLite C for Android). Target API 24 = Termux's
@@ -37,8 +46,12 @@ on:
         description: "Release tag to create/attach the binary to (e.g. v1.13.0)"
         required: true
 
+# Least privilege by default. Only the publishing job widens this — `resolve`
+# reads Cargo.toml and compares refs, and had no business holding a write scope
+# it never used. Write, id-token and attestations are granted at the job level
+# below, where they are actually needed.
 permissions:
-  contents: write # create the tag + create/upload to the GitHub Release
+  contents: read
 
 # Serialise ALL release runs (one group for the whole workflow, NOT per-ref) so
 # they can't race to build + create + upload the same release. A version-bump
@@ -64,8 +77,9 @@ jobs:
     outputs:
       tag: ${{ steps.t.outputs.tag }}
       publish: ${{ steps.t.outputs.publish }}
+      prerelease: ${{ steps.t.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - id: t
         env:
           # Pull user-controlled inputs through env vars so they are never
@@ -81,6 +95,7 @@ jobs:
         run: |
           set -euo pipefail
           publish=true
+          prerelease=false
           case "$GH_EVENT_NAME" in
             workflow_dispatch)
               tag="$GH_INPUT_TAG"
@@ -94,32 +109,42 @@ jobs:
                 ver="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n1)"
                 tag="v${ver}"
                 if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
-                  publish=false
-                  # "Already released" is NOT automatically "nothing to ship".
-                  # This is the only delivery channel: install.sh and the
-                  # in-app updater both fetch the LATEST RELEASE, so any commit
-                  # on main past that tag is merged work that reaches no user.
-                  # Skipping silently reported that state as success — main sat
-                  # 11 commits past v1.39.0 for a whole session of merges before
-                  # anyone noticed the installer was still serving 1.39.0.
-                  # So: say how far behind the release is, loudly.
+                  # "Already released" is NOT "nothing to ship". install.sh and
+                  # the in-app updater are the only delivery channel, so every
+                  # commit merged past the current version tag used to reach no
+                  # user at all — main once sat 11 commits past v1.39.0 while the
+                  # installer still served 1.39.0, and the workflow reported that
+                  # as success. Warning about it was not a fix: the work still
+                  # shipped nowhere.
+                  #
+                  # So publish it, to a per-commit PRE-RELEASE instead of the
+                  # version tag. That gives every green main commit an immutable,
+                  # installable artifact keyed to its exact SHA, which is what
+                  # `install.sh` asks for when it resolves origin/main and then
+                  # demands a prebuilt built from that commit.
+                  #
+                  # Pre-release, deliberately: GitHub's "latest release" ignores
+                  # pre-releases, so the stable channel still points at the last
+                  # version tag and a version bump remains the act that cuts a
+                  # release. This adds a main channel; it does not redefine the
+                  # stable one.
                   ahead="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${tag}...${GITHUB_SHA}" \
                             --jq '.ahead_by' 2>/dev/null || echo unknown)"
-                  if [[ "$ahead" == "unknown" ]]; then
-                    echo "Tag ${tag} already exists — nothing to publish."
-                    echo "Could not determine how far main is ahead of ${tag}." >> "$GITHUB_STEP_SUMMARY"
-                  elif [[ "$ahead" -gt 0 ]]; then
-                    echo "::warning title=Unreleased work on main::main is ${ahead} commit(s) past ${tag}. Those changes ship to nobody until Cargo.toml's version is bumped — the installer and auto-updater only ever fetch the latest release."
-                    {
-                      echo "### ⚠ ${ahead} commit(s) on main are unreleased"
-                      echo
-                      echo "\`main\` is **${ahead} commit(s)** past \`${tag}\`, and \`Cargo.toml\` still says \`${ver}\`."
-                      echo "Users installing via \`install.sh\` or auto-update receive **${tag}**, without those changes."
-                      echo
-                      echo "Bump \`version\` in \`Cargo.toml\` (and \`Cargo.lock\`) to cut a release containing them."
-                    } >> "$GITHUB_STEP_SUMMARY"
-                  else
+                  if [[ "$ahead" == "0" ]]; then
+                    publish=false
                     echo "Tag ${tag} already exists and main is level with it — nothing to publish."
+                  else
+                    prerelease=true
+                    tag="main-${GITHUB_SHA:0:7}"
+                    {
+                      echo "### Publishing a main-channel build"
+                      echo
+                      echo "\`main\` is **${ahead} commit(s)** past \`v${ver}\`, and \`Cargo.toml\` still says \`${ver}\`."
+                      echo "Publishing this commit as pre-release \`${tag}\` so it is installable now."
+                      echo
+                      echo "The **stable** channel still serves \`v${ver}\`; bump \`version\` in"
+                      echo "\`Cargo.toml\` (and \`Cargo.lock\`) to promote this work to a release."
+                    } >> "$GITHUB_STEP_SUMMARY"
                   fi
                 fi
               fi
@@ -140,15 +165,21 @@ jobs:
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "publish=${publish}" >> "$GITHUB_OUTPUT"
-          echo "Resolved tag=${tag} publish=${publish}"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag=${tag} publish=${publish} prerelease=${prerelease}"
 
   termux-binary:
     name: Build + publish aarch64 Termux binary
     needs: resolve
     if: needs.resolve.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    # Scoped here rather than workflow-wide: this is the only job that writes.
+    permissions:
+      contents: write     # create the tag + create/upload to the GitHub Release
+      id-token: write     # OIDC token for Sigstore-backed provenance signing
+      attestations: write # record the provenance attestation against this repo
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # Tag push → check out the tag. main push / manual dispatch → check out
           # the launching commit (github.sha); the resolved tag may not exist yet
@@ -164,17 +195,26 @@ jobs:
       # `stable` toolchain first and leaves this job's declared version
       # implicit rather than matching ci.yml's explicit pin.
       - name: Install Rust + aarch64 Android target
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
+          toolchain: 1.97.1
           targets: aarch64-linux-android
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
 
       - name: Setup Android NDK aarch64 cross-compile env
         uses: ./.github/actions/setup-ndk-aarch64
 
       - name: Build release binary (aarch64-linux-android)
+        # HSE_BUILD_SHA stamps the exact source commit into the binary (build.rs
+        # → `hse build-sha`). The checkout above is a real git repo so build.rs
+        # could resolve it itself, but passing it explicitly means the published
+        # artifact's embedded revision is the one THIS workflow resolved — the
+        # value install.sh will compare against — rather than whatever the
+        # checkout happens to leave in HEAD.
+        env:
+          HSE_BUILD_SHA: ${{ github.sha }}
         run: cargo build --release --locked --bin hse --target aarch64-linux-android
 
       - name: Strip release binary
@@ -192,8 +232,64 @@ jobs:
           ls -l dist
           file dist/hse-aarch64-linux-android || true
 
+      # ── Provenance: what this artifact IS, in machine-readable form ─────────
+      # A binary that can only be traced by its filename and a self-reported
+      # version string cannot be tied back to the source that produced it. These
+      # steps record the dependency graph (SBOM) and the build inputs (commit,
+      # lockfile hash, toolchain, target, NDK) so an installed binary can be
+      # traced deterministically to a commit and a locked dependency set.
+      - name: Install cargo-cyclonedx (pinned)
+        run: cargo install cargo-cyclonedx --version 0.5.9 --locked
+
+      - name: Generate SBOM (CycloneDX)
+        run: |
+          set -euo pipefail
+          cargo cyclonedx --format json --spec-version 1.5 --target aarch64-linux-android
+          # cargo-cyclonedx writes next to the manifest; collect whatever it named.
+          find . -maxdepth 2 -name '*.cdx.json' -newer Cargo.toml -print -exec cp {} dist/hse-aarch64-linux-android.cdx.json \;
+          test -s dist/hse-aarch64-linux-android.cdx.json
+
+      - name: Record build provenance
+        env:
+          NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+          # Through env, never interpolated into the shell — the tag is
+          # user-influenceable via workflow_dispatch.
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cat > dist/hse-aarch64-linux-android.provenance.json <<EOF
+          {
+            "artifact": "hse-aarch64-linux-android",
+            "artifact_sha256": "$(sha256sum dist/hse-aarch64-linux-android | cut -d' ' -f1)",
+            "source_commit": "${GITHUB_SHA}",
+            "source_repository": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}",
+            "release_tag": "${RELEASE_TAG}",
+            "cargo_lock_sha256": "$(sha256sum Cargo.lock | cut -d' ' -f1)",
+            "rust_version": "$(rustc --version)",
+            "cargo_version": "$(cargo --version)",
+            "target": "aarch64-linux-android",
+            "android_api_level": "24",
+            "ndk": "$(basename "${NDK_HOME:-unknown}")",
+            "workflow_run": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          cat dist/hse-aarch64-linux-android.provenance.json
+
+      # ── Authenticity ───────────────────────────────────────────────────────
+      # The `.sha256` sidecar is an INTEGRITY control, not an authenticity one:
+      # it travels the same channel as the binary, so anyone who can replace one
+      # can replace the other. This attestation is repository-bound and signed
+      # via Sigstore with the workflow's OIDC identity, so a substituted binary
+      # cannot be made to verify — `gh attestation verify` ties the artifact to
+      # this repository, this workflow, and this exact commit.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: dist/hse-aarch64-linux-android
+
       - name: Publish to the GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2 (v2.6.2)
         with:
           tag_name: ${{ needs.resolve.outputs.tag }}
           # Without this, action-gh-release creates a not-yet-existing tag
@@ -205,11 +301,19 @@ jobs:
           # closing that gap for both workflow_dispatch against a non-default
           # branch/older tag and the rarer main-push race against a later commit.
           target_commitish: ${{ github.sha }}
+          # A per-commit main build is a PRE-RELEASE: GitHub's "latest release"
+          # skips those, so `install.sh`'s default stable channel keeps pointing
+          # at the last version tag while this commit is still installable by tag.
+          prerelease: ${{ needs.resolve.outputs.prerelease == 'true' }}
           files: |
             dist/hse-aarch64-linux-android
             dist/hse-aarch64-linux-android.sha256
+            dist/hse-aarch64-linux-android.cdx.json
+            dist/hse-aarch64-linux-android.provenance.json
           body: |
             Prebuilt **aarch64 Termux** binary (no Rust toolchain needed).
+
+            Built from commit `${{ github.sha }}`.
 
             ```bash
             curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ needs.resolve.outputs.tag }}/hse-aarch64-linux-android -o "$PREFIX/bin/hse"
@@ -218,5 +322,21 @@ jobs:
             ```
 
             Pure rustls + bundled-SQLite — no OpenSSL, no extra `pkg` deps.
-            Verify integrity with the accompanying `.sha256`.
+
+            **Verifying this binary**
+
+            ```bash
+            # Authenticity — binds the artifact to this repo, workflow and commit:
+            gh attestation verify hse-aarch64-linux-android --repo ${{ github.repository }}
+
+            # Integrity only (detects corruption, NOT substitution — the sidecar
+            # travels the same channel as the binary):
+            sha256sum -c hse-aarch64-linux-android.sha256
+
+            # What it is and what it was built from:
+            hse build-sha        # prints the embedded source commit
+            ```
+
+            `*.cdx.json` is the CycloneDX SBOM; `*.provenance.json` records the
+            source commit, `Cargo.lock` hash, toolchain, target and NDK.
           fail_on_unmatched_files: true

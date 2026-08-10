@@ -20,19 +20,15 @@ use super::*;
         BUDGET_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// No OathNet credential is embedded any more: the shared key policy treats
+    /// an absent or blank slot as unconfigured, so `oathnet_pro` reports a clean
+    /// "needs key" skip rather than querying with someone else's key.
     #[test]
-    fn resolve_key_uses_provided_when_non_empty() {
-        assert_eq!(resolve_key(Some("my-key")), "my-key");
-    }
-
-    #[test]
-    fn resolve_key_falls_back_to_hardcoded_when_none() {
-        assert_eq!(resolve_key(None), HARDCODED_KEY);
-    }
-
-    #[test]
-    fn resolve_key_falls_back_to_hardcoded_when_empty() {
-        assert_eq!(resolve_key(Some("")), HARDCODED_KEY);
+    fn key_is_required_with_no_embedded_fallback() {
+        use crate::util::keys::resolve_key;
+        assert_eq!(resolve_key(Some("my-key")), Some("my-key"));
+        assert_eq!(resolve_key(None), None);
+        assert_eq!(resolve_key(Some("")), None);
     }
 
     #[test]

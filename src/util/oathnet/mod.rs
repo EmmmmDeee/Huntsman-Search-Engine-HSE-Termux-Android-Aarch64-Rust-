@@ -15,9 +15,6 @@ use crate::util::budget::QuotaBudget;
 use crate::util::curl_client::{AuthScheme, CurlClient};
 use crate::util::response_cache::ResponseCache;
 
-// Embedded fallback: single source of truth lives in `util::keys`.
-const HARDCODED_KEY: &str = crate::util::keys::OATHNET_DEFAULT_KEY;
-
 /// Retry pacing for a transient OathNet HTTP 429 (distinct from true daily
 /// quota exhaustion — see the inline notes in [`search`]). Mirrors
 /// `see_know`'s `RATE_LIMIT_BACKOFF`: 3 attempts (initial call + 2 retries),
@@ -348,14 +345,6 @@ fn base_url() -> String {
     // redirected to a look-alike or internal address. See
     // [`crate::util::endpoint_override`].
     crate::util::endpoint_override::resolve("HUNTSMAN_OATHNET_BASE", "https://oathnet.org/api")
-}
-
-/// The OathNet API key to use for a request: the per-scan context key `ctx_key`
-/// when the operator supplied one, otherwise the built-in default
-/// ([`crate::util::keys::resolve_or_default`]). Mirrors `see_know::resolve_key`.
-#[must_use]
-pub fn resolve_key(ctx_key: Option<&str>) -> &str {
-    crate::util::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
 }
 
 /// Provider-prefixed, identifiable fingerprint of the OathNet API key used for a

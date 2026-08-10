@@ -27,6 +27,13 @@
 #                     installer auto-scans Downloads / shared storage for one.
 #   HSE_DOWNLOADS     Extra dir to add to the prebuilt scan (before the defaults)
 #   HSE_PREFER_BUILD  Set to 1 to skip the prebuilt scan and always build
+#   HSE_REQUIRE_SHA   Install this exact commit (40-hex). A prebuilt is used only
+#                     if it proves it was built from it; otherwise that revision
+#                     is built from source. Set automatically by `hse update`.
+#   HSE_ALLOW_SHA_MISMATCH
+#                     Set to 1 to accept a prebuilt whose commit cannot be
+#                     proven. Off by default: installing an unidentifiable
+#                     binary is the failure this check exists to prevent.
 #
 # Log file:
 #   $HOME/.cache/hse-install.log  (everything captured for post-mortem)
@@ -284,6 +291,88 @@ PREBUILT=0
 BUILT=""
 STAGED=""
 
+# ─── Authoritative target revision ───────────────────────────────────────────
+# Resolve the exact commit $HSE_REF names, BEFORE any prebuilt is considered.
+#
+# Why this has to happen first: "install the latest main" used to mean "install
+# whatever prebuilt is lying around, then sanity-check its VERSION". But
+# Cargo.toml's version only changes on a deliberate bump, and release.yml
+# publishes nothing when the current version's tag already exists — so every
+# commit merged between two bumps builds a binary reporting the SAME version as
+# the last release. A cached or latest-release prebuilt could therefore be many
+# commits behind the requested ref and still pass every check, and both a clean
+# install and `hse update` would report success while leaving the device stale.
+#
+# The commit SHA is the only identifier that distinguishes those builds, so it
+# is what a prebuilt is accepted against. `hse build-sha` reports the revision a
+# candidate binary was compiled from (see build.rs / src/lib.rs BUILD_SHA).
+#
+#   HSE_REQUIRE_SHA=<40-hex>   Demand this exact commit (set by `hse update`,
+#                              which already knows the upstream SHA it wants).
+#   HSE_ALLOW_SHA_MISMATCH=1   Escape hatch: accept a prebuilt whose revision
+#                              cannot be proven. Off by default — that is the
+#                              bug this exists to prevent.
+TARGET_SHA="${HSE_REQUIRE_SHA:-}"
+
+resolve_target_sha() {
+    [[ -n "$TARGET_SHA" ]] && { hint "Target revision pinned by caller: ${TARGET_SHA:0:7}"; return 0; }
+    command -v git >/dev/null 2>&1 || { log_warn "git unavailable — cannot resolve the target revision"; return 1; }
+
+    local ref="$HSE_REF" out
+    # `git ls-remote` resolves a branch, a tag (peeled via ^{}), or echoes back a
+    # raw SHA. Try the ref as given; a 40-hex HSE_REF needs no lookup at all.
+    if [[ "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+        TARGET_SHA="$(printf '%s' "$ref" | tr 'A-F' 'a-f')"
+        return 0
+    fi
+    # A pinned release tag means "that release", not "latest main" — resolve the
+    # tag so the prebuilt for it is accepted rather than rejected against main.
+    [[ -n "${HSE_PREBUILT_TAG:-}" && "${HSE_PREBUILT_TAG}" != "latest" ]] && ref="${HSE_PREBUILT_TAG}"
+
+    # Prefer the peeled (^{}) line for annotated tags: that is the commit the
+    # binary is built from; the bare line would be the tag object's own SHA.
+    out="$(git ls-remote "$HSE_REPO_URL" "refs/heads/$ref" "refs/tags/$ref" "refs/tags/$ref^{}" 2>>"$LOG_FILE" || true)"
+    TARGET_SHA="$(printf '%s\n' "$out" | awk '/\^\{\}$/{print $1; found=1; exit} {last=$1} END{if(!found) print last}')"
+    if [[ ! "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+        TARGET_SHA=""
+        log_warn "could not resolve $HSE_REF at $HSE_REPO_URL — will build from source"
+        return 1
+    fi
+    ok "Target revision: ${TARGET_SHA:0:7} ($HSE_REF)"
+}
+
+# Does binary $1 prove it was built from $TARGET_SHA?
+#
+# `hse build-sha` exits non-zero when the build carries no verifiable revision
+# (dirty tree, or built with neither .git nor HSE_BUILD_SHA), so "cannot prove
+# it" and "proves the wrong commit" are both rejections. An older binary that
+# predates the subcommand exits non-zero too, which is the correct answer: it
+# cannot demonstrate which commit it is.
+_prebuilt_sha_matches() {
+    local bin="$1" got
+    if [[ -z "$TARGET_SHA" ]]; then
+        if [[ "${HSE_ALLOW_SHA_MISMATCH:-0}" == "1" ]]; then
+            log_warn "target revision unknown — accepting prebuilt unverified (HSE_ALLOW_SHA_MISMATCH=1)"
+            return 0
+        fi
+        return 1
+    fi
+    got="$("$bin" build-sha 2>>"$LOG_FILE")" || got=""
+    got="$(printf '%s' "$got" | tr -d '[:space:]' | tr 'A-F' 'a-f')"
+    if [[ "$got" == "$TARGET_SHA" ]]; then
+        ok "Revision verified: ${got:0:7}"
+        return 0
+    fi
+    local shown="an unprovable revision"
+    [[ -n "$got" ]] && shown="${got:0:7}"
+    if [[ "${HSE_ALLOW_SHA_MISMATCH:-0}" == "1" ]]; then
+        log_warn "prebuilt is $shown, wanted ${TARGET_SHA:0:7} — accepting anyway (HSE_ALLOW_SHA_MISMATCH=1)"
+        return 0
+    fi
+    log_warn "prebuilt is $shown, wanted ${TARGET_SHA:0:7} — rejecting"
+    return 1
+}
+
 _prebuilt_dirs() {
     [[ -n "${HSE_PREBUILT:-}" ]] && printf '%s\n' "$(dirname -- "$HSE_PREBUILT")"
     printf '%s\n' \
@@ -329,14 +418,24 @@ _validate_prebuilt() {
     mkdir -p "$HOME/.cache"
     cp -f "$cand" "$staged" 2>/dev/null || { log_warn "skip $base (copy into \$HOME failed)"; return 1; }
     chmod 0755 "$staged" 2>/dev/null || true
-    if ver=$("$staged" --version 2>/dev/null) && [[ "$ver" == hse\ * ]]; then
-        ok "Prebuilt validated: $cand ($ver)"
-        STAGED="$staged"
-        return 0
+    if ! ver=$("$staged" --version 2>/dev/null) || [[ "$ver" != hse\ * ]]; then
+        log_warn "skip $base (won't run --version — wrong arch or corrupt)"
+        rm -f "$staged" 2>/dev/null || true
+        return 1
     fi
-    log_warn "skip $base (won't run --version — wrong arch or corrupt)"
-    rm -f "$staged" 2>/dev/null || true
-    return 1
+    # Runs, and is the right architecture — but is it the revision we were asked
+    # to install? The version string cannot answer that (see resolve_target_sha),
+    # so the binary's embedded commit is what decides. A binary that is merely
+    # "an hse that runs" is exactly what used to get installed in place of the
+    # commit the operator asked for.
+    if ! _prebuilt_sha_matches "$staged"; then
+        log_warn "skip $base (built from a different commit than $HSE_REF)"
+        rm -f "$staged" 2>/dev/null || true
+        return 1
+    fi
+    ok "Prebuilt validated: $cand ($ver)"
+    STAGED="$staged"
+    return 0
 }
 
 maybe_use_prebuilt() {
@@ -365,7 +464,7 @@ maybe_use_prebuilt() {
 }
 
 # Fetch the published aarch64 Termux binary from GitHub Releases (the artifact
-# built + signed by .github/workflows/release.yml). This is the robust fallback
+# built and attested by .github/workflows/release.yml). This is the robust fallback
 # when the local Rust toolchain cannot build — e.g. a broken Termux `rust`
 # package that ships no static std — and a hands-off fast path in general. The
 # asset is an Android/bionic ELF, so this is gated to aarch64 Termux; the
@@ -380,10 +479,38 @@ maybe_download_prebuilt() {
     case "$ARCH" in aarch64 | arm64) : ;; *) return 1 ;; esac
     command -v curl >/dev/null 2>&1 || return 1
 
-    local base asset url_bin url_sha tmp tag sha_dl_ok
+    local base asset tag candidates
     base="${HSE_REPO_URL%.git}"
     asset="hse-aarch64-linux-android"
     tag="${HSE_PREBUILT_TAG:-latest}"
+
+    # Which releases could hold the revision we want, best first.
+    #
+    # release.yml publishes every main commit past the current version tag as
+    # pre-release `main-<sha7>`, and GitHub's `releases/latest` deliberately
+    # skips pre-releases. So when main is ahead of the last version tag, the
+    # exact artifact lives under the per-commit tag and `latest` is stale; when
+    # main IS the last version tag, only `latest` exists. Trying both, in that
+    # order, covers each case — and `_prebuilt_sha_matches` is what decides,
+    # so a wrong guess costs a download, never a wrong install.
+    candidates=("$tag")
+    if [[ "$tag" == "latest" && -n "$TARGET_SHA" ]]; then
+        candidates=("main-${TARGET_SHA:0:7}" "latest")
+    fi
+
+    for tag in "${candidates[@]}"; do
+        if _try_download_release "$base" "$asset" "$tag"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Download + validate one release's binary. Returns 0 only when the artifact
+# both verifies and proves it is $TARGET_SHA.
+_try_download_release() {
+    local base="$1" asset="$2" tag="$3"
+    local url_bin url_sha tmp sha_dl_ok
     if [[ "$tag" == "latest" ]]; then
         url_bin="$base/releases/latest/download/$asset"
         url_sha="$base/releases/latest/download/$asset.sha256"
@@ -398,7 +525,7 @@ maybe_download_prebuilt() {
     printf "  Downloading %s…" "$asset"
     if ! curl -fsSL -m 180 -o "$tmp/$asset" "$url_bin" >> "$LOG_FILE" 2>&1; then
         printf " unavailable\n"
-        hint "No published release binary yet (or network blocked) — building from source"
+        hint "No such release asset (or network blocked) — trying the next candidate"
         return 1
     fi
     printf " done\n"
@@ -427,12 +554,21 @@ maybe_download_prebuilt() {
         ok "Using downloaded prebuilt — skipping toolchain + source build"
         return 0
     fi
-    log_warn "Downloaded binary failed validation — building from source instead"
+    log_warn "Downloaded binary failed validation (wrong revision, or corrupt)"
     return 1
 }
 
+# Resolve what "$HSE_REF" actually points at before any prebuilt is weighed —
+# every acceptance below is decided against this commit. A failure here leaves
+# TARGET_SHA empty, which makes every prebuilt unverifiable and sends us to the
+# source build: the safe direction, since a source build fetches $HSE_REF
+# directly and therefore lands on the right revision by construction.
+step "Resolving target revision ($HSE_REF)"
+resolve_target_sha || true
+
 # Prebuilt resolution order: local Downloads scan → GitHub Releases download →
-# (both miss) fall through to the from-source build below.
+# (both miss, or none matched the target revision) fall through to the
+# from-source build below.
 maybe_use_prebuilt || maybe_download_prebuilt || true
 
 # Establish CARGO_TARGET_DIR now so the final summary block (below the fi) can
@@ -635,11 +771,37 @@ else
         || die "could not configure origin remote"
     ACTION="Cloned fresh"
 fi
-git -C "$HSE_INSTALL_DIR" fetch --depth 1 origin "$HSE_REF" \
-    || { clone_help; die "git fetch failed"; }
+# Fetch the EXACT commit resolved earlier when we have one, not the branch name.
+# `main` can advance between `resolve_target_sha` and here, and the whole point
+# of this install is to land on a named revision — fetching the branch again
+# would silently build something other than the commit whose prebuilt we just
+# rejected (and, for `hse update`, something other than the commit it reported
+# it was installing). GitHub serves a full-SHA fetch directly; fall back to the
+# ref if the server refuses one.
+FETCH_TARGET="$HSE_REF"
+[[ -n "$TARGET_SHA" ]] && FETCH_TARGET="$TARGET_SHA"
+if ! git -C "$HSE_INSTALL_DIR" fetch --depth 1 origin "$FETCH_TARGET" 2>>"$LOG_FILE"; then
+    if [[ "$FETCH_TARGET" != "$HSE_REF" ]]; then
+        log_warn "server refused a by-SHA fetch — falling back to $HSE_REF"
+        git -C "$HSE_INSTALL_DIR" fetch --depth 1 origin "$HSE_REF" \
+            || { clone_help; die "git fetch failed"; }
+    else
+        clone_help; die "git fetch failed"
+    fi
+fi
 git -C "$HSE_INSTALL_DIR" checkout -B "$HSE_REF" FETCH_HEAD \
     || die "git checkout failed"
-ok "$ACTION"
+
+# What we actually got. If TARGET_SHA was unresolvable earlier (no network at
+# that moment, say) this is the first point at which the revision is known, so
+# adopt it — the post-install check below then verifies the built binary against
+# the source it was really built from rather than skipping verification.
+SOURCE_SHA="$(git -C "$HSE_INSTALL_DIR" rev-parse HEAD 2>/dev/null || true)"
+if [[ -n "$TARGET_SHA" && -n "$SOURCE_SHA" && "$SOURCE_SHA" != "$TARGET_SHA" ]]; then
+    die "checked out ${SOURCE_SHA:0:7} but asked for ${TARGET_SHA:0:7} — refusing to build the wrong revision"
+fi
+[[ -z "$TARGET_SHA" && -n "$SOURCE_SHA" ]] && TARGET_SHA="$SOURCE_SHA"
+ok "$ACTION${SOURCE_SHA:+ @ ${SOURCE_SHA:0:7}}"
 
 cd "$HSE_INSTALL_DIR"
 
@@ -794,8 +956,45 @@ fi
 TMP_BIN="$HSE_BIN_DIR/.hse.new.$$"
 install -m 0755 "$BUILT" "$TMP_BIN" \
     || die "could not stage the new binary in $HSE_BIN_DIR (writable?)"
+
+# Keep the outgoing binary until the incoming one has proved itself. Without
+# this, a failed verification would leave the user with a binary that is neither
+# the old one nor the one they asked for.
+ROLLBACK_BIN=""
+if [[ -f "$HSE_BIN_DIR/hse" ]]; then
+    ROLLBACK_BIN="$HSE_BIN_DIR/.hse.prev.$$"
+    cp -p "$HSE_BIN_DIR/hse" "$ROLLBACK_BIN" 2>/dev/null || ROLLBACK_BIN=""
+fi
+
 mv -f "$TMP_BIN" "$HSE_BIN_DIR/hse" \
-    || { rm -f "$TMP_BIN"; die "could not move the new binary onto $HSE_BIN_DIR/hse"; }
+    || { rm -f "$TMP_BIN" "$ROLLBACK_BIN"; die "could not move the new binary onto $HSE_BIN_DIR/hse"; }
+
+# ─── Post-install verification ───────────────────────────────────────────────
+# The installed binary must REPORT the revision this run set out to install.
+# Everything upstream is a precaution; this is the proof. It closes the case the
+# whole SHA-pinning exists for: an install that "succeeded" while leaving an
+# older binary in place, indistinguishable because both report the same version.
+#
+# A verification failure restores the previous binary rather than leaving a
+# wrong-but-newer-looking one installed — `hse update` must never move a device
+# backwards or sideways and call it an upgrade.
+if [[ -n "$TARGET_SHA" ]]; then
+    INSTALLED_SHA="$("$HSE_BIN_DIR/hse" build-sha 2>>"$LOG_FILE")" || INSTALLED_SHA=""
+    INSTALLED_SHA="$(printf '%s' "$INSTALLED_SHA" | tr -d '[:space:]' | tr 'A-F' 'a-f')"
+    if [[ "$INSTALLED_SHA" != "$TARGET_SHA" ]]; then
+        if [[ -n "$ROLLBACK_BIN" ]]; then
+            mv -f "$ROLLBACK_BIN" "$HSE_BIN_DIR/hse" 2>/dev/null \
+                && log_warn "restored the previous binary"
+        fi
+        rm -f "$ROLLBACK_BIN" 2>/dev/null || true
+        die "installed binary reports $([[ -n "$INSTALLED_SHA" ]] && printf '%s' "${INSTALLED_SHA:0:7}" || printf 'no verifiable revision'), expected ${TARGET_SHA:0:7} — install NOT completed"
+    fi
+    ok "Verified installed revision: ${TARGET_SHA:0:7}"
+elif [[ "${HSE_ALLOW_SHA_MISMATCH:-0}" != "1" ]]; then
+    log_warn "no target revision was resolved — the installed build's provenance is unverified"
+fi
+rm -f "$ROLLBACK_BIN" 2>/dev/null || true
+
 ok "Installed ($([[ "$PREBUILT" == "1" ]] && echo 'from prebuilt' || echo "built [$PROFILE]"))"
 
 # Self-bootstrapping prebuilt cache: copy a freshly-BUILT binary back to

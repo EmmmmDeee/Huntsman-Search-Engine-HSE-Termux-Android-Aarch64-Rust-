@@ -22,7 +22,9 @@ Phase 4.3 will conduct a comprehensive security audit of the See-Know module cov
 - [ ] Keys never logged in debug/info output
 - [ ] Keys not exposed in error messages
 - [ ] Key rotation procedure documented
-- [ ] Embedded defaults rotated out correctly
+- [ ] No provider credential is embedded in the build (asserted by
+      `tests/architecture.rs::no_provider_credential_is_embedded_in_source`
+      and by the `secret-scan` workflow); keyed modules report "needs key"
 
 ### 2. Cache Security
 - [ ] Cache keys properly isolated per scan

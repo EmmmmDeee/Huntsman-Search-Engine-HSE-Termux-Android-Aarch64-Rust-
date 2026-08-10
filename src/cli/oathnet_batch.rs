@@ -172,7 +172,10 @@ fn print_plan(plan: &[BatchQuery], kind: &str, value: &str, json: bool) {
 /// Dispatch the plan against OathNet, bounded by the shared per-session budget.
 async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result<()> {
     let loaded = crate::util::keys::load();
-    let key = oathnet::resolve_key(loaded.get(oathnet::KEY_ENV).map(String::as_str));
+    // No embedded default: refuse the batch rather than firing every planned
+    // query with an empty key and burning the run on uniform 401s.
+    let key = crate::util::keys::resolve_key(loaded.get(oathnet::KEY_ENV).map(String::as_str))
+        .ok_or_else(|| crate::core::error::Error::MissingKey(oathnet::KEY_ENV.to_string()))?;
 
     // Deliberate batch: start from a fresh per-scan counter and lift the tight
     // per-scan cap so the run is bounded by the per-session ceiling, not the

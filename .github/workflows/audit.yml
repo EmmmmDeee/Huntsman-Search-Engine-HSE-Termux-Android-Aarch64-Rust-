@@ -1,16 +1,32 @@
 name: Security audit
 
-# Advisory-only supply-chain check (FTA finding E2.5): reports RUSTSEC
-# vulnerabilities in the locked dependency graph. Deliberately a SEPARATE
-# workflow from ci.yml and NOT wired as a required check — a freshly published
-# advisory in a transitive dependency must not block an unrelated feature PR.
-# It surfaces here on the weekly schedule, on any dependency change, and on
-# manual dispatch instead.
+# Supply-chain check (FTA finding E2.5): reports RUSTSEC vulnerabilities and
+# licence/ban violations in the locked dependency graph.
+#
+# Deliberately a SEPARATE workflow from ci.yml, and PATH-FILTERED rather than
+# advisory: a freshly published advisory in a transitive dependency must not
+# block an unrelated feature PR. The path filter is what buys that — a PR that
+# does not touch the dependency graph never triggers this workflow at all — so
+# it can run on `pull_request` and still not gate unrelated work.
+#
+# It runs on a PR that CHANGES dependencies (so a new dependency is reviewed
+# before it merges, not after), on the same paths on push, on the weekly
+# schedule for the whole graph regardless of what changed, and on dispatch.
+#
+# Running on PRs is only meaningful because the tools below are version-pinned:
+# an unpinned `cargo install` would make this gate's verdict depend on whatever
+# was published that morning.
 
 on:
   schedule:
     - cron: '0 6 * * 1'   # Mondays 06:00 UTC
   workflow_dispatch:
+  pull_request:
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - 'deny.toml'
+      - '.github/workflows/audit.yml'
   push:
     paths:
       - '**/Cargo.toml'
@@ -32,19 +48,21 @@ jobs:
     name: cargo audit (RustSec advisories)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.97.1
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
 
       # Install cargo-audit directly rather than via a third-party action —
       # mirrors ci.yml's choice to call shellcheck directly after a
       # master-pinned action drift broke an unrelated job (see ci.yml).
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        run: cargo install cargo-audit --version 0.22.2 --locked
 
       # Exits non-zero on any RUSTSEC vulnerability in the locked graph.
       # Unmaintained / yanked crates print as warnings without failing the run.
@@ -56,7 +74,7 @@ jobs:
       # Config + rationale live in deny.toml. Installed directly for the same
       # action-pinning-drift reason cargo-audit is (see comment above).
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+        run: cargo install cargo-deny --version 0.20.2 --locked
 
       - name: Check supply-chain policy
         run: cargo deny check
@@ -66,7 +84,7 @@ jobs:
       # `exif`, md-5 → `md5`) are not mis-flagged; the locked graph is clean
       # under this flag, so a regression here means a genuinely unused crate.
       - name: Install cargo-machete
-        run: cargo install cargo-machete --locked
+        run: cargo install cargo-machete --version 0.9.2 --locked
 
       - name: Check for unused dependencies
         run: cargo machete --with-metadata

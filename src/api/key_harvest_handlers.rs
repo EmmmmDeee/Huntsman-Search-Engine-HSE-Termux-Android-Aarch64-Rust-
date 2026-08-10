@@ -159,24 +159,39 @@ async fn accounts_block() -> Value {
     let loaded = keys::load();
 
     // ── SeekNow: /credits ──
-    let seeknow_key = crate::util::see_know::resolve_key(
+    let seeknow_key = crate::util::keys::resolve_key(
         loaded
             .get(crate::util::see_know::KEY_ENV)
             .map(String::as_str),
     );
-    let seeknow = match crate::util::see_know::query_credits(seeknow_key).await {
-        Some((remaining, limit)) => json!({
-            "reachable": true,
-            "invalid": false,
-            "credits_remaining": remaining,
-            "credits_limit": limit,
-        }),
+    // `configured: false` is a distinct state from an unreachable or rejected
+    // key: this build embeds no credential, so an empty slot means the operator
+    // has not supplied one — not that the provider is down. Collapsing the two
+    // would show "unreachable" for a machine that is merely unconfigured.
+    let seeknow = match seeknow_key {
         None => json!({
-            "reachable": false,
-            "invalid": crate::util::see_know::is_key_invalid(),
+            "configured": false,
+            "reachable": null,
+            "invalid": false,
             "credits_remaining": null,
             "credits_limit": null,
         }),
+        Some(key) => match crate::util::see_know::query_credits(key).await {
+            Some((remaining, limit)) => json!({
+                "configured": true,
+                "reachable": true,
+                "invalid": false,
+                "credits_remaining": remaining,
+                "credits_limit": limit,
+            }),
+            None => json!({
+                "configured": true,
+                "reachable": false,
+                "invalid": crate::util::see_know::is_key_invalid(),
+                "credits_remaining": null,
+                "credits_limit": null,
+            }),
+        },
     };
 
     // ── OathNet: process-local budget/quota, plus the real provider quota
@@ -201,28 +216,37 @@ async fn accounts_block() -> Value {
     });
 
     // ── WiGLE: /profile/user ──
-    let wigle_user = loaded
-        .get("HUNTSMAN_WIGLE_USER")
-        .map_or(keys::WIGLE_DEFAULT_USER, String::as_str)
-        .to_string();
-    let wigle_token = loaded
-        .get("HUNTSMAN_WIGLE_TOKEN")
-        .map_or(keys::WIGLE_DEFAULT_TOKEN, String::as_str)
-        .to_string();
-    let http = crate::util::http::build_client();
-    let wigle_status =
-        crate::modules::wigle::refresh_account_status(&http, &wigle_user, &wigle_token).await;
+    // Both halves of the HTTP-Basic pair are required and nothing is embedded,
+    // so an unconfigured account reports `configured: false` rather than being
+    // probed with blanks and coming back as an unverified/unreachable account.
+    let wigle_creds = keys::resolve_key(loaded.get("HUNTSMAN_WIGLE_USER").map(String::as_str)).zip(
+        keys::resolve_key(loaded.get("HUNTSMAN_WIGLE_TOKEN").map(String::as_str)),
+    );
+    let wigle = match wigle_creds {
+        None => json!({
+            "configured": false,
+            "verified": null,
+            "user": null,
+            "last_polled_ts": null,
+        }),
+        Some((user, token)) => {
+            let http = crate::util::http::build_client();
+            let status = crate::modules::wigle::refresh_account_status(&http, user, token).await;
+            json!({
+                "configured": true,
+                "verified": status.verified,
+                "user": status.user,
+                // When the `/profile/user` probe last ran (unix seconds), so the
+                // card can show the check's freshness; `null` if never polled.
+                "last_polled_ts": status.last_polled_ts,
+            })
+        }
+    };
 
     json!({
         "seeknow": seeknow,
         "oathnet": oathnet,
-        "wigle": {
-            "verified": wigle_status.verified,
-            "user": wigle_status.user,
-            // When the `/profile/user` probe last ran (unix seconds), so the
-            // card can show the check's freshness; `null` if never polled.
-            "last_polled_ts": wigle_status.last_polled_ts,
-        },
+        "wigle": wigle,
     })
 }
 
@@ -300,8 +324,19 @@ mod tests {
         // shape is always complete regardless of reachability, mirroring
         // `hse doctor`'s "unreachable is a reported state, not a panic" contract.
         let a = accounts_block().await;
-        assert!(a["seeknow"]["reachable"].is_boolean());
+        // `configured` is the outer state: with no credential embedded in the
+        // build, an unconfigured provider is neither reachable nor unreachable —
+        // nothing was probed. `reachable` is therefore boolean only once a key
+        // exists, and null otherwise. Collapsing the two would report an
+        // unconfigured account as an unreachable provider.
+        assert!(a["seeknow"]["configured"].is_boolean());
+        assert_eq!(
+            a["seeknow"]["reachable"].is_boolean(),
+            a["seeknow"]["configured"] == serde_json::json!(true),
+            "reachable must be reported exactly when a key was configured"
+        );
         assert!(a["seeknow"]["invalid"].is_boolean());
+        assert!(a["wigle"]["configured"].is_boolean());
         assert!(a["oathnet"]["quota_exhausted"].is_boolean());
         assert!(a["oathnet"].get("scan_cap").is_some());
         // Other tests may have populated the process-global observation already,

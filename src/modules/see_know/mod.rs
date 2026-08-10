@@ -244,7 +244,7 @@ impl Module for SeekNow {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = see_know::resolve_key(ctx.key_opt(see_know::KEY_ENV));
+        let key = ctx.key(see_know::KEY_ENV)?;
         // Stable origin fingerprint of the exact key in use — stamped onto every
         // entity this module produces so each finding declares which API key
         // (and provider) returned it. Computed once per scan.

@@ -6,8 +6,8 @@
 //! `Address` entities) into one module that calls the Termux API **once**,
 //! halving the radio scan overhead on-device.
 //!
-//! Auth: HTTP Basic — `HUNTSMAN_WIGLE_USER` / `HUNTSMAN_WIGLE_TOKEN` with
-//! hardcoded fallback, same as the `wigle` module.
+//! Auth: HTTP Basic — `HUNTSMAN_WIGLE_USER` / `HUNTSMAN_WIGLE_TOKEN`, both
+//! required, same as the `wigle` module. No credential is embedded in the build.
 
 mod types;
 mod wigle;
@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -29,8 +29,9 @@ use crate::util::geo::is_valid_coords;
 
 // ── WiGLE credentials ──────────────────────────────────────────────────
 
-// Env names + embedded fallbacks are resolved by the single-sourced
-// `crate::util::keys::wigle_credentials` (shared with the `wigle` module).
+// Env names are resolved by the single-sourced
+// `crate::util::keys::wigle_credentials` (shared with the `wigle` module),
+// which yields `None` unless the operator configured BOTH halves of the pair.
 
 /// How many of the strongest APs to query WiGLE for.
 const MAX_BSSIDS: usize = 5;
@@ -103,7 +104,10 @@ impl Module for WifiIntel {
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let (user, token) = crate::util::keys::wigle_credentials(ctx);
+        // See `wigle`: the API-name/token pair is required, and no credential is
+        // embedded in the build.
+        let (user, token) = crate::util::keys::wigle_credentials(ctx)
+            .ok_or_else(|| Error::MissingKey("HUNTSMAN_WIGLE_TOKEN".into()))?;
 
         // ── Single termux-wifi-scaninfo call ────────────────────────────
         let Some(stdout) = termux_sensor::Sensor::WifiScan.read().await else {

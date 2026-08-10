@@ -10,7 +10,9 @@
 //! throttles internally with 6.5s inter-request delay to stay within
 //! budget across all queries per process() call.
 //!
-//! Key: hardcoded for testing, overridden by HUNTSMAN_HIBP_KEY env var.
+//! Key: required, from HUNTSMAN_HIBP_KEY. HIBP has no free tier and this build
+//! embeds no credential, so an unconfigured module reports a "needs key" skip
+//! carrying the subscription URL rather than authenticating as someone else.
 
 #[cfg(test)]
 mod tests;
@@ -33,13 +35,7 @@ use crate::util::http::{error_snippet, urlencode};
 
 const SRC: &str = "hibp";
 const KEY_ENV: &str = "HUNTSMAN_HIBP_KEY";
-// Embedded fallback: single source of truth lives in `util::keys`.
-const HARDCODED_KEY: &str = crate::util::keys::HIBP_DEFAULT_KEY;
 const BASE_URL: &str = "https://haveibeenpwned.com/api/v3";
-
-pub(super) fn resolve_key(ctx_key: Option<&str>) -> &str {
-    crate::util::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
-}
 
 // ── API response types ──────────────────────────────────────────────
 
@@ -327,7 +323,7 @@ impl Module for Hibp {
         // cascade in `api_get` advances it to the next usable pooled key when one
         // is exhausted, so a later request in the same process() starts from the
         // last key that worked instead of re-probing a burned one.
-        let mut key = resolve_key(ctx.key_opt(KEY_ENV)).to_string();
+        let mut key = ctx.key(KEY_ENV)?.to_string();
         // Keys already burned this call — seeded so the cascade never re-hands one.
         let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut result = ModuleResult::new();

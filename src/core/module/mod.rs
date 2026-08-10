@@ -334,8 +334,14 @@ pub struct ModuleContext {
 impl ModuleContext {
     /// Fetch a required key by env-var name. Returns `Error::MissingKey` if
     /// absent — the engine logs this and moves on without aborting the scan.
+    ///
+    /// A present-but-blank value counts as absent: an env file carrying
+    /// `HUNTSMAN_FOO=` is an unconfigured slot, not a credential. Routing that
+    /// through [`crate::util::keys::resolve_key`] keeps the "what counts as a
+    /// configured key" rule in one place, shared with the modules that resolve
+    /// credentials themselves (WiGLE's user/token pair).
     pub fn key(&self, name: &str) -> Result<&str> {
-        self.key_opt(name)
+        crate::util::keys::resolve_key(self.key_opt(name))
             .ok_or_else(|| Error::MissingKey(name.into()))
     }
 

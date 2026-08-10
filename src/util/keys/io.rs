@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::error::{Error, Result};
 
-use super::constants::{DEFAULT_SEED_ENV, HARDCODED, SUPERSEDED};
+use super::constants::{COMPROMISED_EMBEDDED_DIGESTS, DEFAULT_SEED_ENV, is_compromised_against};
 
 /// Resolve the keys env-file path.
 ///
@@ -165,10 +165,10 @@ pub(super) fn register_configured_keys(
     }
 }
 
-/// Proactively populate API keys before a scan starts:
+/// Proactively prepare API keys before a scan starts:
 ///
-/// 1. Ensure hardcoded keys (OathNet, HIBP, WiGLE) are in the env file
-///    so they persist across sessions.
+/// 1. Purge any credential a previous build embedded into the env file — those
+///    values shipped in a public repository and are compromised.
 /// 2. Run the OathNet stealer credential harvest to fill the key pool
 ///    with discovered API keys from stealer logs.
 /// 3. Return the merged key map (env file + pool).
@@ -176,7 +176,7 @@ pub(super) fn register_configured_keys(
 /// Call this once at scan start. The harvest is async and runs against
 /// the OathNet stealer API (~30 service domain queries).
 pub async fn populate_and_load() -> HashMap<String, String> {
-    ensure_hardcoded_keys();
+    purge_compromised_embedded_keys();
     // Pre-scan OathNet harvest disabled — costs 38 API calls before any
     // scan begins. The oathnet_pro module extracts credentials from
     // breach/stealer results during the seed query instead, getting the
@@ -184,46 +184,62 @@ pub async fn populate_and_load() -> HashMap<String, String> {
     load()
 }
 
-/// Compute the `{env_var: value}` writes needed to bring `existing` (the
-/// current env-file contents) up to date with the embedded defaults: fill any
-/// absent slot, and rotate any slot still holding a superseded embedded value.
-/// Pure so the fill-vs-rotate-vs-preserve policy is unit-testable. A slot the
-/// user has set to a custom (non-superseded) value is left untouched.
-pub fn hardcoded_key_writes(existing: &HashMap<String, String>) -> BTreeMap<String, String> {
-    let mut updates: BTreeMap<String, String> = BTreeMap::new();
-    // Rotate superseded embedded values to the current default.
-    for (env_var, old_value) in SUPERSEDED {
-        if existing.get(*env_var).map(String::as_str) == Some(*old_value)
-            && let Some((_, new_value)) = HARDCODED.iter().find(|(k, _)| k == env_var)
-        {
-            updates.insert((*env_var).to_string(), (*new_value).to_string());
-        }
-    }
-    // Fill empty slots (never overwrites a value already present).
-    for (env_var, value) in HARDCODED {
-        if !existing.contains_key(*env_var) {
-            updates.insert((*env_var).to_string(), (*value).to_string());
-        }
-    }
-    updates
+/// Names of env-file entries that must be REMOVED because they still hold a
+/// credential a previous build embedded (and which is therefore compromised —
+/// the value was published in a public repository and in every released binary).
+///
+/// Pure so the purge-vs-preserve policy is unit-testable. Deliberately
+/// conservative: an entry is removed only when its value digests to one of the
+/// exact credentials this project shipped. A key the operator supplied — even
+/// for the same service — never matches, so an intentional override survives the
+/// upgrade untouched. Deleting rather than rotating is the point: there is no
+/// replacement embedded value to rotate to, and leaving the compromised one in
+/// place would keep authenticating as the person who built the binary.
+pub fn compromised_key_purges(existing: &HashMap<String, String>) -> Vec<String> {
+    purges_against(COMPROMISED_EMBEDDED_DIGESTS, existing)
 }
 
-/// Ensure the embedded API keys are present and current in the env file:
-/// fill absent slots and rotate any superseded embedded value in place. Uses
-/// the atomic, comment-preserving [`write_keys`] path (so a rotation replaces
-/// the old line rather than appending a duplicate). Never overwrites a user's
-/// custom key — see [`hardcoded_key_writes`].
-fn ensure_hardcoded_keys() {
+/// [`compromised_key_purges`] against an arbitrary digest list, so the policy can
+/// be tested positively without a test needing to hold a real compromised value.
+pub(super) fn purges_against(
+    digests: &[(&str, &str)],
+    existing: &HashMap<String, String>,
+) -> Vec<String> {
+    let mut purge: Vec<String> = existing
+        .iter()
+        .filter(|(env_var, value)| is_compromised_against(digests, env_var, value))
+        .map(|(env_var, _)| env_var.clone())
+        .collect();
+    // Deterministic order so the log line (and its test) is stable.
+    purge.sort();
+    purge
+}
+
+/// Remove any compromised embedded credential still present in the env file.
+/// Uses the atomic, comment-preserving [`write_keys`] path. Never touches a key
+/// the operator chose — see [`compromised_key_purges`].
+///
+/// This runs on every scan start, so an operator who upgrades from a build that
+/// embedded credentials has them stripped on first use without any manual step.
+fn purge_compromised_embedded_keys() {
     let path = env_path();
     let existing = load_from_file_only(Path::new(&path));
-    let updates = hardcoded_key_writes(&existing);
-    if updates.is_empty() {
+    let purge = compromised_key_purges(&existing);
+    if purge.is_empty() {
         return;
     }
-    let n = updates.len();
-    match write_keys(&updates, &[]) {
-        Ok(()) => tracing::info!("ensured {n} embedded key(s) current in {path}"),
-        Err(e) => tracing::warn!("cannot write embedded keys to {path}: {e}"),
+    let names = purge.join(", ");
+    match write_keys(&BTreeMap::new(), &purge) {
+        Ok(()) => tracing::warn!(
+            "removed {} compromised embedded credential(s) from {path}: {names}. \
+             These shipped in a public build and are revoked — configure your own \
+             key for each affected service (see `hse doctor`).",
+            purge.len()
+        ),
+        Err(e) => tracing::error!(
+            "cannot remove compromised embedded credential(s) ({names}) from {path}: {e}. \
+             Delete these lines manually — they are publicly known."
+        ),
     }
 }
 

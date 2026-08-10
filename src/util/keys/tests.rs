@@ -1,29 +1,75 @@
-use super::io::{hardcoded_key_writes, pick_default_seed};
+use super::io::{pick_default_seed, purges_against};
 use super::*;
 use std::collections::BTreeMap;
 use tempfile::tempdir;
 
 #[test]
-fn resolve_or_default_policy() {
-    assert_eq!(resolve_or_default(Some("real-key"), "default"), "real-key");
-    assert_eq!(resolve_or_default(None, "default"), "default");
-    // A present-but-empty value falls back to the default rather than being
-    // used verbatim — the bug the wigle/wifi_intel modules had before
-    // they were routed through this function.
-    assert_eq!(resolve_or_default(Some(""), "default"), "default");
+fn resolve_key_policy() {
+    assert_eq!(resolve_key(Some("real-key")), Some("real-key"));
+    assert_eq!(resolve_key(None), None);
+    // A present-but-empty (or whitespace-only) value is an unconfigured slot,
+    // not a credential: `HUNTSMAN_FOO=` in an env file must read as absent so
+    // the module reports "needs key" instead of authenticating with "".
+    assert_eq!(resolve_key(Some("")), None);
+    assert_eq!(resolve_key(Some("   ")), None);
+    // An unedited template placeholder is an unconfigured slot too. Without
+    // this, `hse provision` followed by no edits would have every keyed module
+    // send `insert_<service>_key_here` upstream and report the 401 as a
+    // rejected key rather than as a slot the operator never filled in.
+    assert_eq!(resolve_key(Some("insert_haveibeenpwned_key_here")), None);
+    assert!(is_template_placeholder("insert_oathnet_pro_key_here"));
+    assert!(!is_template_placeholder("seek-a-real-looking-key"));
+}
+
+/// Every documented key slot in the shipped template must read as unconfigured
+/// until an operator edits it. This walks the real template, so a future entry
+/// written in a shape the placeholder rule does not recognise fails here.
+#[test]
+fn every_template_slot_reads_as_unconfigured() {
+    let template = include_str!("../../cli/env_template.txt");
+    let mut checked = 0usize;
+    for line in template.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || !line.starts_with("HUNTSMAN_") {
+            continue;
+        }
+        let Some((name, raw)) = line.split_once('=') else {
+            continue;
+        };
+        let value = raw.trim().trim_matches('"');
+        assert_eq!(
+            resolve_key(Some(value)),
+            None,
+            "{name}: the shipped template must not look like a configured key"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 20,
+        "expected to check the whole template, saw {checked}"
+    );
 }
 
 #[test]
-fn own_api_keys_includes_embedded_and_splits_csv_rotation_lists() {
-    let own = own_api_keys();
-    assert!(
-        own.contains(SEEKNOW_DEFAULT_KEY),
-        "embedded SeekNow key missing"
-    );
-    assert!(
-        own.contains(OATHNET_DEFAULT_KEY),
-        "embedded OathNet key missing"
-    );
+fn no_credential_is_embedded_in_the_build() {
+    // The whole point of the secret removal: with nothing baked in, the set of
+    // keys HSE authenticates with is exactly what the operator configured. A
+    // future change that re-adds an embedded default fails here.
+    for (env_var, hash) in super::constants::COMPROMISED_EMBEDDED_DIGESTS {
+        assert_eq!(
+            hash.len(),
+            64,
+            "{env_var}: entry must be a hex SHA-256 digest, never a plaintext key"
+        );
+        assert!(
+            hash.chars().all(|c| c.is_ascii_hexdigit()),
+            "{env_var}: entry must be a hex SHA-256 digest, never a plaintext key"
+        );
+    }
+}
+
+#[test]
+fn own_api_keys_splits_csv_rotation_lists() {
     // The CSV-splitting `add` closure must register EACH key of a
     // comma-separated rotation list individually.
     let mut set = std::collections::HashSet::new();
@@ -321,39 +367,66 @@ fn read_error_other_than_not_found_surfaces() {
     );
 }
 
+/// The purge policy, exercised against a SYNTHETIC digest list.
+///
+/// The production list can only be matched by holding the very plaintext this
+/// change exists to delete, so testing it positively would mean re-committing a
+/// compromised credential. Injecting the list keeps the policy under test while
+/// the real secrets stay gone — see `constants::is_compromised_against`.
 #[test]
-fn hardcoded_key_writes_fills_rotates_and_preserves() {
+fn compromised_values_are_purged_and_operator_keys_preserved() {
     use std::collections::HashMap;
-    const NEW: &str = SEEKNOW_DEFAULT_KEY;
-    const OLD: &str = SEEKNOW_SUPERSEDED_KEY;
+    const SHIPPED: &str = "seek-a-value-this-project-once-embedded";
+    let digests: &[(&str, &str)] = &[("HUNTSMAN_SEEKNOW_KEY", &super::constants::digest(SHIPPED))];
 
-    let w = hardcoded_key_writes(&HashMap::new());
-    assert_eq!(w.get("HUNTSMAN_SEEKNOW_KEY").map(String::as_str), Some(NEW));
-    assert!(w.contains_key("HUNTSMAN_OATHNET_KEY"));
-
+    // A slot still holding a value this project shipped is removed outright.
+    // There is no replacement to rotate to — the credential is public.
     let stale: HashMap<String, String> =
-        [("HUNTSMAN_SEEKNOW_KEY".to_string(), OLD.to_string())].into();
+        [("HUNTSMAN_SEEKNOW_KEY".to_string(), SHIPPED.to_string())].into();
     assert_eq!(
-        hardcoded_key_writes(&stale)
-            .get("HUNTSMAN_SEEKNOW_KEY")
-            .map(String::as_str),
-        Some(NEW),
-        "a superseded embedded key must rotate to the current default"
+        purges_against(digests, &stale),
+        vec!["HUNTSMAN_SEEKNOW_KEY".to_string()],
+        "a compromised embedded value must be purged"
     );
 
+    // The operator's own key for the SAME service must survive untouched.
     let custom: HashMap<String, String> = [(
         "HUNTSMAN_SEEKNOW_KEY".to_string(),
         "seek-my-own-personal-key".to_string(),
     )]
     .into();
     assert!(
-        !hardcoded_key_writes(&custom).contains_key("HUNTSMAN_SEEKNOW_KEY"),
-        "a custom user key must be preserved, not rotated"
+        purges_against(digests, &custom).is_empty(),
+        "an operator-supplied key must never be purged"
     );
 
-    let current: HashMap<String, String> =
-        [("HUNTSMAN_SEEKNOW_KEY".to_string(), NEW.to_string())].into();
-    assert!(!hardcoded_key_writes(&current).contains_key("HUNTSMAN_SEEKNOW_KEY"));
+    // The pairing is (variable, value): the same compromised value parked in a
+    // DIFFERENT variable is not one of ours and is left alone.
+    let wrong_var: HashMap<String, String> =
+        [("HUNTSMAN_HIBP_KEY".to_string(), SHIPPED.to_string())].into();
+    assert!(
+        purges_against(digests, &wrong_var).is_empty(),
+        "purging is scoped to the exact (variable, value) pair that shipped"
+    );
+
+    assert!(purges_against(digests, &HashMap::new()).is_empty());
+}
+
+#[test]
+fn production_purge_list_does_not_match_an_operator_key() {
+    use std::collections::HashMap;
+    let mine: HashMap<String, String> = [
+        ("HUNTSMAN_SEEKNOW_KEY".to_string(), "seek-mine".to_string()),
+        ("HUNTSMAN_HIBP_KEY".to_string(), "hibp-mine".to_string()),
+        ("HUNTSMAN_OATHNET_KEY".to_string(), "oath-mine".to_string()),
+        ("HUNTSMAN_WIGLE_USER".to_string(), "AIDmine".to_string()),
+        ("HUNTSMAN_WIGLE_TOKEN".to_string(), "tok-mine".to_string()),
+    ]
+    .into();
+    assert!(
+        compromised_key_purges(&mine).is_empty(),
+        "the real purge list must not touch operator-configured keys"
+    );
 }
 
 #[test]

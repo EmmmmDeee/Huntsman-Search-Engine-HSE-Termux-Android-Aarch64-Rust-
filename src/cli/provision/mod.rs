@@ -41,9 +41,6 @@ use crate::util::{http::build_client, keys, uid::scan_id};
 /// deleting the shadow copy, so there is exactly one file to edit.
 const ENV_TEMPLATE: &str = include_str!("../env_template.txt");
 
-const PLACEHOLDER_PREFIX: &str = "insert_";
-const PLACEHOLDER_SUFFIX: &str = "_here";
-
 /// Parse a single env-file line of the form `KEY="value"` (with optional
 /// trailing whitespace / inline comment). Returns `Some((key, value))`
 /// when the line is shaped right, `None` for blank / comment / malformed
@@ -86,9 +83,12 @@ fn parse_kv(line: &str) -> Option<(String, String)> {
     Some((key.to_string(), value))
 }
 
-fn is_placeholder(value: &str) -> bool {
-    value.starts_with(PLACEHOLDER_PREFIX) && value.ends_with(PLACEHOLDER_SUFFIX)
-}
+/// Whether an env-file value is still the unedited template placeholder.
+///
+/// Delegates to `util::keys`, which is also what key resolution consults — the
+/// two must agree, or `hse provision` would call a slot unconfigured while a
+/// module happily sent the placeholder upstream as a credential.
+use crate::util::keys::is_template_placeholder as is_placeholder;
 
 /// Merge `existing` env-file contents into `template`, preserving every
 /// real (non-placeholder) value from `existing` and appending any

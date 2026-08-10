@@ -102,8 +102,9 @@ ensure_rust() {
 
 configure_env() {
   # The API-key file modules read at runtime (chmod 0600; never committed).
-  # HSE ships with embedded keys, so an empty file is fine to start; run
-  # `hse provision` (or `cargo run -- provision`) to write the full template.
+  # HSE embeds NO provider credentials, so an empty file starts fine but every
+  # keyed module reports "needs key" until you fill one in; run `hse provision`
+  # (or `cargo run -- provision`) to write the full template, then edit it.
   local envf="$HOME/.huntsman.env"
   if [ -f "$envf" ]; then
     log "$envf already present — leaving it untouched"

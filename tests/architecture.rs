@@ -422,6 +422,28 @@ fn core_does_not_import_util_directly() {
                 // needs lives on `BatchQuery::target_kind` rather than being
                 // reached for as `util::oathnet::FIELD_*`.
                 && !line.contains("util::oathnet_batch")
+                // Pure, IO-free key-resolution POLICY: `resolve_key` is a
+                // deterministic `Option<&str> -> Option<&str>` deciding what
+                // counts as a configured credential (absent / blank / an
+                // unedited `insert_..._here` template placeholder all read as
+                // unconfigured). No state, no I/O, no network — the same leaf
+                // category as `util::union_find`.
+                //
+                // `ModuleContext::key` must apply exactly this rule, because it
+                // is the gate every keyed module goes through since the embedded
+                // provider credentials were removed: a slot that fails it yields
+                // `Error::MissingKey` and a clean "needs key" skip instead of a
+                // request authenticated with "" or a placeholder string.
+                // Duplicating the rule in `core` is what would actually be
+                // dangerous — the two copies could disagree about what
+                // "configured" means.
+                //
+                // Deliberately scoped to the pure resolver: the STATEFUL half of
+                // `util::keys` (env-file `load`/`write_keys`, the compromised-key
+                // purge, the key pool) stays out of `core`, exactly as
+                // `util::oathnet_batch` is allowed while the `util::oathnet`
+                // client is not.
+                && !line.contains("util::keys::resolve_key")
         })
         .collect();
 
@@ -1296,43 +1318,103 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
-/// Every embedded default key must have a SINGLE source of truth in
-/// `util::keys` — modules reference the `*_DEFAULT_KEY` constants rather than
-/// re-declaring the literal. A re-hardcoded copy elsewhere could silently drift
-/// from the canonical value (the "which key is actually current?" bug). This
-/// asserts each embedded literal appears only in `src/util/keys.rs`.
+/// No provider credential may be embedded in the source tree.
+///
+/// This repository is public and every released binary is downloadable, so a
+/// credential compiled into the build is a credential disclosed to everyone.
+/// Earlier revisions shipped live OathNet / HIBP / WiGLE / SeekNow keys as
+/// "zero-config defaults"; they were removed, revoked, and replaced by a
+/// required-key contract (`ModuleContext::key` → `Error::MissingKey` → a "needs
+/// key" skip). This test is what stops one being added back.
+///
+/// It is a coarse, deliberately conservative net — CI's dedicated secret scanner
+/// (`.github/workflows/secret-scan.yml`) is the thorough one — but it runs in
+/// the normal `cargo test` gate, so a re-embedded key fails locally and in every
+/// PR rather than only in a scheduled job.
 #[test]
-fn embedded_default_keys_have_a_single_source_of_truth() {
-    use huntsman_search_engine::util::keys;
+fn no_provider_credential_is_embedded_in_source() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let values = [
-        keys::OATHNET_DEFAULT_KEY,
-        keys::HIBP_DEFAULT_KEY,
-        keys::WIGLE_DEFAULT_USER,
-        keys::WIGLE_DEFAULT_TOKEN,
-        keys::SEEKNOW_DEFAULT_KEY,
-        keys::SEEKNOW_SUPERSEDED_KEY,
-    ];
-
     let mut files = Vec::new();
     collect_rs_files(&root.join("src"), &mut files);
 
+    let hexish = |s: &str, n: usize| {
+        s.len() >= n && s.chars().all(|c| c.is_ascii_hexdigit()) && s.chars().any(char::is_numeric)
+    };
+    // The two provider formats this project actually leaked and could plausibly
+    // paste back: SeekNow (`seek-` + 48 hex) and a WiGLE API name (`AID` + 32
+    // hex). A generic "long hex run" rule is deliberately NOT used here — this
+    // codebase is full of legitimate MD5/SHA/UUID fixtures — the `secret-scan`
+    // workflow's entropy rules cover the general case.
+    let looks_like_provider_key = |lit: &str| -> bool {
+        lit.strip_prefix("seek-").is_some_and(|r| hexish(r, 32))
+            || lit.strip_prefix("AID").is_some_and(|r| hexish(r, 24))
+    };
+
+    // A credential-named constant bound to a long literal is the exact shape the
+    // removed defaults had (`const HIBP_DEFAULT_KEY: &str = "…"`). Env-var NAMES
+    // and URLs share those constant names legitimately, so both are excluded.
+    let credential_const = |line: &str| -> bool {
+        let Some((decl, rest)) = line.split_once(": &str =") else {
+            return false;
+        };
+        let decl = decl.trim();
+        if !(decl.starts_with("const ")
+            || decl.starts_with("pub const ")
+            || decl.contains("static "))
+        {
+            return false;
+        }
+        let name = decl.rsplit(' ').next().unwrap_or_default();
+        if !["_KEY", "_TOKEN", "_SECRET", "_USER", "_GUID", "_ID"]
+            .iter()
+            .any(|s| name.ends_with(s))
+        {
+            return false;
+        }
+        let Some(value) = rest.split('"').nth(1) else {
+            return false;
+        };
+        value.len() >= 16
+            && !value.starts_with("HUNTSMAN_")
+            && !value.starts_with("http")
+            && !value.contains(' ')
+    };
+
     let mut offenders = Vec::new();
     for path in files {
-        // The single source of truth — the literals legitimately live here
-        // (flat file or directory module's constants submodule).
-        if path.ends_with("util/keys.rs") || path.ends_with("util/keys/constants.rs") {
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        // Test fixtures legitimately carry synthetic keys in each provider's real
+        // shape — that is how HSE's credential-DETECTION engine is tested.
+        if rel.contains("tests.rs") || rel.contains("/tests/") || rel.contains("testdata") {
             continue;
         }
         let content = fs::read_to_string(&path).unwrap();
-        if values.iter().any(|v| content.contains(v)) {
-            offenders.push(path.display().to_string());
+        for (n, line) in content.lines().enumerate() {
+            if credential_const(line) {
+                offenders.push(format!("{rel}:{} (credential-named const)", n + 1));
+            }
+        }
+        // `util::keys::constants` holds SHA-256 digests of the retired
+        // credentials so upgrades can purge them; digests are one-way, and
+        // `util::keys::tests::no_credential_is_embedded_in_the_build` asserts
+        // every entry there is a 64-char hex digest and never a plaintext key.
+        if rel.ends_with("util/keys/constants.rs") {
+            continue;
+        }
+        for lit in content.split('"').skip(1).step_by(2) {
+            if looks_like_provider_key(lit) {
+                offenders.push(format!("{rel} (provider-key literal)"));
+            }
         }
     }
     assert!(
         offenders.is_empty(),
-        "embedded key literals must live only in util::keys.rs (reference the \
-         *_DEFAULT_KEY constants, don't re-hardcode them): {offenders:?}"
+        "credential-shaped literal(s) in source — this build must ship NO provider \
+         credentials; require the operator's own key via `ctx.key(...)` instead: {offenders:?}"
     );
 }
 

@@ -20,7 +20,7 @@ jobs:
     name: Check & test (Linux x86_64, stable)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Pinned to the SAME literal version as rust-toolchain.toml (not
       # `@stable`) so this job's clippy/rustfmt can never drift from a
@@ -28,12 +28,13 @@ jobs:
       # that twice broke this branch's CI in one session before this pin
       # existed. Keep both in lockstep when bumping.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
+          toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -69,13 +70,15 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: "1.88"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install pinned MSRV toolchain
-        uses: dtolnay/rust-toolchain@1.88
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.88
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
 
       - name: Check (MSRV)
         run: cargo check --all-targets --locked
@@ -84,17 +87,18 @@ jobs:
     name: Build (aarch64-linux-android, Termux target)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Pinned to the same literal version as rust-toolchain.toml — see the
       # `check` job's comment above for why `@stable` alone isn't used here.
       - name: Install Rust toolchain + aarch64 Android target
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
+          toolchain: 1.97.1
           targets: aarch64-linux-android
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
 
       # A dependency in the TLS stack (ring) compiles C in its build script,
       # so even `cargo check` for this target needs the Android NDK's
@@ -127,7 +131,7 @@ jobs:
     name: install.sh syntax (bash + shellcheck)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: bash -n install.sh
       # shellcheck ships preinstalled on ubuntu-latest — call it directly
       # rather than via a third-party action so a master-pinned drift
