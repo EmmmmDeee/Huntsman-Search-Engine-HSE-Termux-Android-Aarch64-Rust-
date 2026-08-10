@@ -607,6 +607,29 @@ pub(in crate::core::correlator) fn rule_au_106_shared_device_identity(
     out
 }
 
+/// EmailRep reports breach exposure through two explicit booleans —
+/// `data_breach` and `credential_leaked` — which `emailrep`'s `build_email_entity`
+/// surfaces as evidence attributes (`"true"`) and, only then, tags the entity
+/// `breach`. This returns true when an `emailrep` evidence entry carries either
+/// flag set to `"true"`.
+///
+/// It is the item-23 gate for AU-001. Unlike every other module in
+/// `BREACH_SOURCES` — which emits evidence *only* on an actual breach hit —
+/// EmailRep is a reputation lookup that stamps an `emailrep` evidence source on
+/// EVERY address it checks, breach or not. Without this gate a CLEAN EmailRep
+/// reputation report counts as a breach-corroboration vote, so one real breach
+/// source plus a clean EmailRep lookup fires a false Critical multi-breach
+/// finding. Requiring explicit breach-positive evidence removes that false vote
+/// while leaving a genuinely breach-positive EmailRep result as full
+/// corroboration.
+fn emailrep_is_breach_positive(entity: &Entity) -> bool {
+    entity.evidence.iter().any(|ev| {
+        ev.source == "emailrep"
+            && (ev.attributes.get("data_breach").map(String::as_str) == Some("true")
+                || ev.attributes.get("credential_leaked").map(String::as_str) == Some("true"))
+    })
+}
+
 pub(in crate::core::correlator) fn rule_au_001_multi_breach(
     context: &RuleContext,
     scan_id: &str,
@@ -639,7 +662,15 @@ pub(in crate::core::correlator) fn rule_au_001_multi_breach(
         if crate::core::validation::is_role_mailbox(&e.value) {
             continue;
         }
-        let sources = tagged_matching_sources(e, BREACH_SOURCES);
+        let mut sources = tagged_matching_sources(e, BREACH_SOURCES);
+        // EmailRep stamps an `emailrep` evidence source on every address it checks,
+        // so its bare presence is not breach corroboration. Drop it unless its
+        // evidence is explicitly breach-positive (item 23); every other source in
+        // BREACH_SOURCES emits evidence only on a real breach hit, so this never
+        // affects them.
+        if !emailrep_is_breach_positive(e) {
+            sources.remove(&"emailrep");
+        }
         if sources.len() >= 2 {
             let mut names: Vec<&str> = sources.into_iter().collect();
             names.sort_unstable();

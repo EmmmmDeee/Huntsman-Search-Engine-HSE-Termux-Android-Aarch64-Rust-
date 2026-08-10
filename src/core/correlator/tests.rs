@@ -749,6 +749,46 @@ fn au001_does_not_count_generic_search_as_a_breach_source() {
 }
 
 #[test]
+fn au001_clean_emailrep_is_not_a_breach_vote() {
+    // Item 23: EmailRep is a reputation lookup that stamps an `emailrep` evidence
+    // source on EVERY address it checks, breach or not. One real breach source
+    // (hibp) plus a CLEAN EmailRep lookup is a single breach source and must NOT
+    // fire the Critical multi-breach corroboration.
+    let clean = email("x@y.com", &["hibp", "emailrep"]);
+    assert!(
+        rule_au_001_multi_breach(&RuleContext::new(&[clean]), "s1", 0).is_empty(),
+        "a clean EmailRep report must not cast a second breach vote"
+    );
+
+    // Breach-POSITIVE EmailRep (data_breach=true) is genuine corroboration → fires.
+    let mut breached = Entity::new(EntityKind::Email, "x@y.com", 0.9, "scan-test");
+    breached.add_evidence(Evidence::new("hibp", "test"));
+    breached.add_evidence(Evidence::new("emailrep", "breach").with_attr("data_breach", "true"));
+    assert_eq!(
+        rule_au_001_multi_breach(&RuleContext::new(&[breached]), "s1", 0).len(),
+        1,
+        "breach-positive EmailRep is legitimate corroboration"
+    );
+
+    // `credential_leaked=true` is equally breach-positive.
+    let mut leaked = Entity::new(EntityKind::Email, "x@y.com", 0.9, "scan-test");
+    leaked.add_evidence(Evidence::new("hibp", "test"));
+    leaked.add_evidence(Evidence::new("emailrep", "leak").with_attr("credential_leaked", "true"));
+    assert_eq!(
+        rule_au_001_multi_breach(&RuleContext::new(&[leaked]), "s1", 0).len(),
+        1
+    );
+
+    // Two clean EmailRep-adjacent sources with only ONE real breach source stays
+    // quiet even when EmailRep is present: emailrep(clean) + hibp = 1 breach vote.
+    let single = email("x@y.com", &["emailrep"]);
+    assert!(
+        rule_au_001_multi_breach(&RuleContext::new(&[single]), "s1", 0).is_empty(),
+        "a lone clean EmailRep is not a breach source at all"
+    );
+}
+
+#[test]
 fn au001_does_not_raise_critical_on_a_role_mailbox() {
     // Live person-scan false positive: `abuse@godaddy.com` (a registrar desk) is in
     // HIBP + XposedOrNot as a matter of course — that is NOT the subject's breach
