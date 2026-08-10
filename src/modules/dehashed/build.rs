@@ -146,22 +146,40 @@ pub(super) fn build_breach_entity(
     value: &str,
     selector: &str,
     entries: &[Value],
-    total: u64,
+    total: Option<u64>,
     balance: Option<&str>,
     scan_id: &str,
 ) -> Option<Entity> {
     // `name` is DeHashed's only selector that can return strangers; every other
     // selector matches `value` exactly, so its `total` needs no per-row proof.
     let is_exact = selector != "name";
-    let (hits, rows): (u64, Vec<&Value>) = if is_exact {
-        (total, entries.iter().collect())
+    // `count_is_floor` is set when `hits` is a LOWER BOUND, not an exact count —
+    // the honest rendering of a total the provider did not state (item 21). It
+    // arises only for an exact selector where DeHashed omitted `total` AND the
+    // page came back full (`entries.len() >= PAGE_SIZE`), so more records may sit
+    // on pages this single-page query never fetched. An omitted total on a SHORT
+    // page is not a floor: a page below the limit means we saw every row, so the
+    // observed count is itself complete.
+    let (hits, rows, count_is_floor): (u64, Vec<&Value>, bool) = if is_exact {
+        match total {
+            // Provider's authoritative count — exact, even when it exceeds the
+            // page we returned (that surplus is real records on later pages).
+            Some(t) => (t, entries.iter().collect(), false),
+            // Provider omitted the total: report only what we observed, flagged
+            // as a floor when a full page means there could be more.
+            None => {
+                let observed = entries.len() as u64;
+                let floor = observed >= u64::from(super::PAGE_SIZE);
+                (observed, entries.iter().collect(), floor)
+            }
+        }
     } else {
         let matcher = TargetMatch::new(value);
         let matching: Vec<&Value> = entries
             .iter()
             .filter(|item| matcher.matches(&flatten_record(item)))
             .collect();
-        (matching.len() as u64, matching)
+        (matching.len() as u64, matching, false)
     };
     // Gate: never mint the confidence::EXPERT breach headline off a subject-less response.
     if hits == 0 {
@@ -180,13 +198,33 @@ pub(super) fn build_breach_entity(
         MAX_DATABASES,
     );
 
+    // A floor renders as "N+" and carries the repo-wide `coverage=partial`
+    // vocabulary (shared with IntelX/oathnet_pro), so the count can never be
+    // mistaken for an exact total. `total_source` names where the number came
+    // from: the provider's own count, or our observation of the returned rows.
+    let count_display = if count_is_floor {
+        format!("{hits}+")
+    } else {
+        hits.to_string()
+    };
+    let total_source = if is_exact && total.is_some() {
+        "provider"
+    } else {
+        "observed"
+    };
     let mut ev = Evidence::new(
         SRC,
-        format!("DeHashed: {hits} breach record(s) for {selector}={value}"),
+        format!("DeHashed: {count_display} breach record(s) for {selector}={value}"),
     )
     .with_attr("hits", hits.to_string())
     .with_attr("returned", entries.len().to_string())
+    .with_attr("total_source", total_source)
     .with_attr("selector", selector);
+    if count_is_floor {
+        ev = ev
+            .with_attr("coverage", "partial")
+            .with_attr("count_is_floor", "true");
+    }
     if !top.is_empty() {
         ev = ev.with_attr("top_databases", top);
     }

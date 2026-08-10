@@ -135,7 +135,7 @@ fn aggregates_hits_top_databases_and_balance_from_v2_arrays() {
         "a@b.com",
         "email",
         &entries,
-        900,
+        Some(900),
         Some("498"),
         "s",
     )
@@ -157,13 +157,86 @@ fn aggregates_hits_top_databases_and_balance_from_v2_arrays() {
 fn count_only_response_omits_optional_aggregates() {
     // `domain` is identity-exact, so a count-only response (server total, no rows)
     // is a genuine signal for that exact value and still emits the headline.
-    let e = build_breach_entity(EntityKind::Domain, "x.com", "domain", &[], 42, None, "s")
-        .expect("exact `domain` selector with a positive count emits a headline");
+    let e = build_breach_entity(
+        EntityKind::Domain,
+        "x.com",
+        "domain",
+        &[],
+        Some(42),
+        None,
+        "s",
+    )
+    .expect("exact `domain` selector with a positive count emits a headline");
     assert!(e.has_tag(tags::BREACH));
     assert_eq!(attr(&e, "hits"), Some("42"));
     assert_eq!(attr(&e, "returned"), Some("0"));
+    // A provider-supplied total is exact, not a floor.
+    assert_eq!(attr(&e, "total_source"), Some("provider"));
+    assert_eq!(attr(&e, "coverage"), None);
     assert_eq!(attr(&e, "top_databases"), None);
     assert_eq!(attr(&e, "credit_balance"), None);
+}
+
+#[test]
+fn omitted_total_on_a_full_page_is_a_floor_not_an_exact_count() {
+    // Item 21: when DeHashed omits `total`, HSE must not pass `entries.len()` off
+    // as an exact count. A FULL page (>= PAGE_SIZE) means later pages this
+    // single-page query never fetched could hold more, so the count is a floor.
+    let entries: Vec<_> = (0..super::PAGE_SIZE)
+        .map(|_| entry(json!("Collection#1")))
+        .collect();
+    let e = build_breach_entity(
+        EntityKind::Email,
+        "a@b.com",
+        "email",
+        &entries,
+        None,
+        None,
+        "s",
+    )
+    .expect("a full page with matches emits a headline");
+    let n = super::PAGE_SIZE.to_string();
+    assert_eq!(attr(&e, "hits"), Some(n.as_str()));
+    // The summary and coverage say "at least N", never an exact N.
+    assert!(
+        e.evidence[0].summary.contains(&format!("{n}+")),
+        "floor must render as N+, got: {}",
+        e.evidence[0].summary
+    );
+    assert_eq!(attr(&e, "coverage"), Some("partial"));
+    assert_eq!(attr(&e, "count_is_floor"), Some("true"));
+    assert_eq!(attr(&e, "total_source"), Some("observed"));
+}
+
+#[test]
+fn omitted_total_on_a_short_page_is_complete_not_a_floor() {
+    // The other half of item 21: an omitted total on a SHORT page is NOT a floor
+    // — a page below the request limit means every matching row was returned, so
+    // the observed count is itself the complete, exact answer.
+    let entries = [entry(json!("Collection#1")), entry(json!("LinkedIn"))];
+    let e = build_breach_entity(
+        EntityKind::Email,
+        "a@b.com",
+        "email",
+        &entries,
+        None,
+        None,
+        "s",
+    )
+    .expect("a short page with matches emits a headline");
+    assert_eq!(attr(&e, "hits"), Some("2"));
+    assert!(
+        !e.evidence[0].summary.contains('+'),
+        "a complete short page must not render as a floor: {}",
+        e.evidence[0].summary
+    );
+    assert_eq!(
+        attr(&e, "coverage"),
+        None,
+        "short page is complete, not partial"
+    );
+    assert_eq!(attr(&e, "count_is_floor"), None);
+    assert_eq!(attr(&e, "total_source"), Some("observed"));
 }
 
 #[test]
@@ -184,7 +257,7 @@ fn name_headline_is_gated_on_a_real_subject_match() {
             "Jane Doe",
             "name",
             &strangers,
-            500,
+            Some(500),
             None,
             "s",
         )
@@ -193,7 +266,16 @@ fn name_headline_is_gated_on_a_real_subject_match() {
     );
     // Count-only name response (no rows to verify) is unattributable → None.
     assert!(
-        build_breach_entity(EntityKind::Person, "Jane Doe", "name", &[], 500, None, "s").is_none(),
+        build_breach_entity(
+            EntityKind::Person,
+            "Jane Doe",
+            "name",
+            &[],
+            Some(500),
+            None,
+            "s"
+        )
+        .is_none(),
         "a bare `name:` count with no rows must not mint a headline"
     );
 
@@ -209,7 +291,7 @@ fn name_headline_is_gated_on_a_real_subject_match() {
         "Jane Doe",
         "name",
         &mixed,
-        500,
+        Some(500),
         None,
         "s",
     )
