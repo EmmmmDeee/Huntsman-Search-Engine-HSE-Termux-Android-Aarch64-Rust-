@@ -149,6 +149,21 @@ pub enum KeysAction {
         #[arg(long)]
         dry_run: bool,
     },
+    /// List DISCOVERED keys — third-party credentials HSE observed in scan data
+    /// and quarantined from authentication. Shows each key's non-secret id,
+    /// service, and discovery provenance so an operator can decide what to
+    /// `promote`. These never authenticate until promoted.
+    Discovered,
+    /// Promote a discovered key to an operator credential, making it
+    /// auth-eligible. This is the deliberate operator action item 02 requires
+    /// before HSE will ever authenticate with a captured third-party key.
+    /// Identify the key by the non-secret id shown in `keys discovered` / `list`.
+    Promote {
+        /// Service name (e.g. shodan, dehashed).
+        service: String,
+        /// Non-secret key id (from `keys discovered` or `keys list`).
+        id: String,
+    },
     /// Operator health roll-up per service: total/usable key counts, the
     /// per-status census, and mean/worst health scores. Read-only.
     Health,
@@ -247,11 +262,17 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
                     // imported test tokens).
                     let masked = mask_key(&e.value);
                     let notes = e.notes.as_deref().unwrap_or("");
+                    // Surface the auth-eligibility axis alongside health: a
+                    // `discovered` key reads as quarantined (id shown so it can be
+                    // promoted) even when its status is Active/Untested.
+                    let origin = e.origin().as_str();
                     println!(
-                        "  {}: {} [{}] env={} uses={} {}",
+                        "  {}: {} [{}] origin={} id={} env={} uses={} {}",
                         i + 1,
                         masked,
                         e.status.as_str(),
+                        origin,
+                        key_pool::key_id(&e.value),
                         e.environment(),
                         e.use_count,
                         notes
@@ -385,6 +406,42 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
                 println!("Old key not found in '{service}' pool — nothing rotated.");
             }
         }
+
+        KeysAction::Discovered => {
+            let discovered = pool.discovered_keys();
+            if discovered.is_empty() {
+                println!(
+                    "No discovered credentials quarantined. Keys HSE harvests during a \
+                     scan appear here as evidence until you `hse keys promote` them."
+                );
+                return Ok(());
+            }
+            println!(
+                "Discovered credentials — evidence only, NOT used to authenticate. \
+                 Promote one with `hse keys promote <service> <id>`.\n"
+            );
+            for (service, id, by, scan) in &discovered {
+                let by = by.as_deref().unwrap_or("unknown");
+                let scan = scan.as_deref().map_or("-", |s| &s[..8.min(s.len())]);
+                println!("  [{service}] {id}  discovered_by={by} scan={scan}");
+            }
+        }
+
+        KeysAction::Promote { service, id } => match pool.promote_by_id(&service, &id) {
+            Ok(true) => {
+                key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save: {e}")))?;
+                println!(
+                    "Promoted key {id} in '{service}' to an operator credential — \
+                     it is now eligible to authenticate."
+                );
+            }
+            Ok(false) => {
+                return Err(Error::Other(format!(
+                    "no key with id {id} in '{service}' pool (see `hse keys discovered`)"
+                )));
+            }
+            Err(msg) => return Err(Error::Other(msg)),
+        },
 
         KeysAction::Status => {
             let snap = pool.snapshot();

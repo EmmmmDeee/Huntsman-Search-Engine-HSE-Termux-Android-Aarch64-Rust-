@@ -208,6 +208,60 @@ impl KeyPool {
         }
     }
 
+    /// Promote the discovered key in `service` whose [`super::key_id`] matches
+    /// `id` to an operator credential, making it auth-eligible. Records
+    /// `promoted_at` and clears any discovery quarantine by setting the origin
+    /// explicitly to [`super::types::KeyOrigin::Operator`]. This is the ONLY way
+    /// a discovered credential enters an authentication cascade — item 02's
+    /// "explicit operator promotion action".
+    ///
+    /// Returns `Ok(true)` on promotion, `Ok(false)` if no key with that id
+    /// exists, and `Err(reason)` if the key is found but is already an operator
+    /// credential (so the caller can report "nothing to promote" distinctly from
+    /// "not found"). Idempotence is a non-goal: promoting an already-operator key
+    /// would silently rewrite its provenance, so it is refused.
+    pub fn promote_by_id(&self, service: &str, id: &str) -> Result<bool, String> {
+        use super::types::KeyOrigin;
+        let mut data = self.data.lock();
+        let Some(entries) = data.services.get_mut(&service.to_lowercase()) else {
+            return Ok(false);
+        };
+        let Some(entry) = entries.iter_mut().find(|e| super::key_id(&e.value) == id) else {
+            return Ok(false);
+        };
+        if entry.is_auth_eligible() {
+            return Err(format!(
+                "key {id} in '{service}' is already an operator credential — nothing to promote"
+            ));
+        }
+        entry.origin = Some(KeyOrigin::Operator);
+        entry.promoted_at = Some(crate::core::entity::unix_now());
+        Ok(true)
+    }
+
+    /// Snapshot of the discovered (quarantined, not-yet-promoted) keys, grouped
+    /// by service, as `(service, key_id, discovered_by, discovered_in_scan)`
+    /// tuples — never the plaintext value. Feeds `hse keys discovered` so an
+    /// operator can review captured credentials and decide what to promote.
+    #[must_use]
+    pub fn discovered_keys(&self) -> Vec<(String, String, Option<String>, Option<String>)> {
+        let data = self.data.lock();
+        let mut out = Vec::new();
+        for (service, entries) in &data.services {
+            for e in entries {
+                if !e.is_auth_eligible() {
+                    out.push((
+                        service.clone(),
+                        super::key_id(&e.value),
+                        e.discovered_by.clone(),
+                        e.discovered_in_scan.clone(),
+                    ));
+                }
+            }
+        }
+        out
+    }
+
     /// Rotate a key: revoke `old` and add `new` in one step, carrying the old
     /// key's environment and notes so provenance survives the swap and the new
     /// key lands in the same context. Returns true if `old` was found.
@@ -279,7 +333,14 @@ impl KeyPool {
         for offset in 0..len {
             let i = (*idx + offset) % len;
             let entry = &entries[i];
-            if !entry.is_usable() || exclude.contains(&entry.value) {
+            // Authentication chokepoint. A key is served for auth only when it is
+            // BOTH live (`is_usable`) AND operator-owned (`is_auth_eligible`). The
+            // second conjunct is what keeps a DISCOVERED credential — a third
+            // party's secret HSE merely observed in scan data — out of every
+            // provider cascade: `hot_inject_keys` and `merge_pool_into_env` both
+            // reach auth through this method, so gating here covers them all. A
+            // discovered key becomes eligible only via `promote_by_id`.
+            if !entry.is_usable() || !entry.is_auth_eligible() || exclude.contains(&entry.value) {
                 continue;
             }
             let rank = entry.selection_rank(now);

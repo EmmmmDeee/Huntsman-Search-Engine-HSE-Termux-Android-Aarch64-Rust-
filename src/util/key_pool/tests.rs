@@ -30,6 +30,129 @@ fn export_import_roundtrips_and_is_idempotent() {
 }
 
 #[test]
+fn discovered_credential_is_never_served_for_authentication() {
+    // Item 02 acceptance: a synthetically discovered valid provider key causes
+    // zero authenticated outbound requests. `next_key` is the sole auth
+    // selection point, so a discovered key must be invisible to it.
+    let pool = KeyPool::new();
+    pool.add(
+        "shodan",
+        KeyEntry::discovered("harvested-secret", "key_harvest", "scan-xyz", None),
+    );
+    assert_eq!(
+        pool.next_key("shodan"),
+        None,
+        "a discovered credential must never be handed out for auth"
+    );
+    // Evidence retention is independent of auth eligibility: the key is still in
+    // the pool, catalogued, and listed as quarantined.
+    assert_eq!(
+        pool.total_keys(),
+        1,
+        "the discovered key is retained as evidence"
+    );
+    assert_eq!(
+        pool.discovered_keys().len(),
+        1,
+        "and is surfaced to the operator as quarantined"
+    );
+}
+
+#[test]
+fn operator_credential_is_served_but_discovered_sibling_is_not() {
+    // Auth separation holds even when both live under the same service: the
+    // operator's own key is served, the discovered one is skipped — not merely
+    // "no key at all".
+    let pool = KeyPool::new();
+    pool.add("shodan", KeyEntry::new("operator-key")); // origin resolves to Operator
+    pool.add(
+        "shodan",
+        KeyEntry::discovered("discovered-key", "key_harvest", "scan-1", None),
+    );
+    // Every selection returns the operator key; the discovered one never appears.
+    for _ in 0..8 {
+        assert_eq!(pool.next_key("shodan").as_deref(), Some("operator-key"));
+    }
+}
+
+#[test]
+fn promotion_is_required_before_a_discovered_key_authenticates() {
+    let pool = KeyPool::new();
+    pool.add(
+        "shodan",
+        KeyEntry::discovered("promote-me", "key_harvest", "scan-2", None),
+    );
+    let id = key_id("promote-me");
+    assert_eq!(
+        pool.next_key("shodan"),
+        None,
+        "quarantined before promotion"
+    );
+
+    assert_eq!(
+        pool.promote_by_id("shodan", &id),
+        Ok(true),
+        "explicit operator promotion succeeds"
+    );
+    assert_eq!(
+        pool.next_key("shodan").as_deref(),
+        Some("promote-me"),
+        "and only then is it auth-eligible"
+    );
+    // Provenance of the promotion is recorded.
+    let snap = pool.snapshot();
+    let entry = snap.services["shodan"]
+        .iter()
+        .find(|e| e.value == "promote-me")
+        .expect("key present");
+    assert_eq!(entry.origin(), KeyOrigin::Operator);
+    assert!(entry.promoted_at.is_some(), "promotion timestamp recorded");
+}
+
+#[test]
+fn promote_distinguishes_not_found_from_already_operator() {
+    let pool = KeyPool::new();
+    pool.add("shodan", KeyEntry::new("op-key"));
+    // Not found → Ok(false), never an error.
+    assert_eq!(pool.promote_by_id("shodan", "deadbeef0000"), Ok(false));
+    assert_eq!(pool.promote_by_id("nosuch", "deadbeef0000"), Ok(false));
+    // Already an operator credential → Err (nothing to promote), so the CLI can
+    // report it distinctly rather than silently rewriting provenance.
+    let id = key_id("op-key");
+    assert!(pool.promote_by_id("shodan", &id).is_err());
+}
+
+#[test]
+fn a_legacy_auto_pooled_key_is_quarantined_on_load() {
+    // Migration/quarantine: a pool written before `origin` existed can hold keys
+    // a prior build auto-pooled from scan data. Those carry discovery provenance
+    // (`discovered_by`) but no explicit origin, and MUST be treated as discovered
+    // so upgrading never leaves a captured third-party secret auth-eligible.
+    let legacy = r#"{
+        "services": {
+            "shodan": [
+                {"value":"legacy-harvested","status":"active","discovered_by":"key_harvest"}
+            ]
+        }
+    }"#;
+    let data: PoolData = serde_json::from_str(legacy).expect("legacy pool parses");
+    let pool = KeyPool::from_data(data);
+    assert_eq!(
+        pool.next_key("shodan"),
+        None,
+        "a legacy auto-pooled key with discovery provenance is quarantined, not served"
+    );
+    // A legacy operator key (no discovery provenance, no origin) stays usable.
+    let legacy_op = r#"{"services":{"intelx":[{"value":"legacy-op","status":"active"}]}}"#;
+    let op_pool = KeyPool::from_data(serde_json::from_str(legacy_op).expect("parses"));
+    assert_eq!(
+        op_pool.next_key("intelx").as_deref(),
+        Some("legacy-op"),
+        "a legacy operator key is unaffected by the migration rule"
+    );
+}
+
+#[test]
 fn export_filters_by_environment() {
     let pool = KeyPool::new();
     let mut p = KeyEntry::new("prod-key");

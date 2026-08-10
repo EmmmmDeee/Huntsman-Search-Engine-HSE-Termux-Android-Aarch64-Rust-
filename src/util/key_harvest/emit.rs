@@ -165,19 +165,31 @@ pub(super) fn emit_key_with(
         return;
     }
 
-    // Pool ONLY a recognised keyed provider's key — one the cascade can reuse.
+    // Pool ONLY a recognised keyed provider's key — one that COULD be reused.
     // The `generic_hex` catch-all (and `jwt_token`, `crypto_*`, foreign logins)
-    // is surfaced as the ApiKey entity above but is never injected by
-    // `hot_inject_keys`, so pooling it just grew key_pool.json without bound
-    // (a live run accumulated 8668 `generic_hex` blobs → a 4 MB pool).
+    // is surfaced as the ApiKey entity above but is never poolable, so pooling it
+    // just grew key_pool.json without bound (a live run accumulated 8668
+    // `generic_hex` blobs → a 4 MB pool).
     if !crate::util::service_defs::is_poolable_service(service) {
         return;
     }
 
+    // Pool the key as a DISCOVERED credential: evidence retained and catalogued,
+    // but NOT auth-eligible. It is a third party's captured secret, so HSE must
+    // not authenticate against a real provider with it on its own initiative —
+    // `next_key` skips it until an operator runs `hse keys promote`. This is the
+    // one place scan-time harvest enters the pool; stamping origin=Discovered
+    // here (via `KeyEntry::discovered`) is what enforces item 02's separation,
+    // and the provenance fields let the operator judge a promotion.
     let pool = crate::util::key_pool::global_pool();
-    let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+    let mut entry = crate::util::key_pool::KeyEntry::discovered(
+        key_val,
+        src,
+        scan_id,
+        Some(source.to_string()),
+    );
     entry.notes = Some(format!(
-        "Auto-discovered {service} key from {source} ({} tier)",
+        "Auto-discovered {service} key from {source} ({} tier) — evidence only, promote to use",
         roi.label()
     ));
     pool.add(service, entry);

@@ -14,7 +14,7 @@ pub use persistence::{
     load_pool, persist_off_thread, pool_path, save_pool, save_pool_best_effort, write_secret_file,
 };
 pub use pool::{KeyPool, PoolData, ServiceHealth, StatusBreakdown};
-pub use types::{KeyEntry, KeyStatus, KeyTier, key_id};
+pub use types::{KeyEntry, KeyOrigin, KeyStatus, KeyTier, key_id};
 pub use validation::{add_and_validate, merge_pool_into_env, validate_key};
 
 // Re-export service_defs items so existing call-sites that reach through

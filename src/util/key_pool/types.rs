@@ -13,6 +13,43 @@ pub fn key_id(value: &str) -> String {
     hex::encode(&digest[..6])
 }
 
+/// Provenance class of a pooled key — the axis that decides whether HSE may
+/// authenticate with it, kept strictly separate from [`KeyStatus`] (which only
+/// tracks a key's live health). This is the type-level enforcement of the
+/// discovered-vs-operator credential separation:
+///
+/// * [`KeyOrigin::Operator`] — a credential the operator deliberately supplied
+///   (`hse keys add`, `set-key`, `import-json`, a `rotate`) or explicitly
+///   promoted. Only these enter a provider authentication cascade.
+/// * [`KeyOrigin::Discovered`] — a third party's credential HSE observed inside
+///   scan data (harvested from a page/breach/stealer record, or bulk-imported
+///   from a dump). It is retained as **evidence** and remains fully catalogued,
+///   but is quarantined from authentication until an operator promotes it: HSE
+///   must never authenticate against a real third-party service with someone
+///   else's captured secret on its own initiative.
+///
+/// The field is `Option<KeyOrigin>` on [`KeyEntry`] with a `None` default so a
+/// pool written before this type existed still loads; [`KeyEntry::origin`]
+/// resolves that absence conservatively (see there), which is what quarantines
+/// credentials a prior build had already auto-pooled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyOrigin {
+    /// Operator-supplied or operator-promoted — eligible to authenticate.
+    Operator,
+    /// Observed in scan data — evidence only, never authenticates until promoted.
+    Discovered,
+}
+
+impl KeyOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Operator => "operator",
+            Self::Discovered => "discovered",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyStatus {
@@ -96,6 +133,20 @@ pub struct KeyEntry {
     /// now-revoked key). `None` for a key added directly.
     #[serde(default)]
     pub rotated_at: Option<u64>,
+    /// Provenance class deciding authentication eligibility. `None` in a pool
+    /// written before this field existed; [`Self::origin`] resolves the absence
+    /// (a legacy entry carrying discovery provenance is treated as
+    /// [`KeyOrigin::Discovered`] and thereby quarantined, everything else as
+    /// [`KeyOrigin::Operator`]). Never read directly for an auth decision — go
+    /// through [`Self::origin`] / [`Self::is_auth_eligible`] so the migration
+    /// rule is applied in exactly one place.
+    #[serde(default)]
+    pub origin: Option<KeyOrigin>,
+    /// Unix seconds when an operator promoted this key from `Discovered` to
+    /// `Operator`, making it auth-eligible. `None` unless it was promoted — the
+    /// provenance record item 02 requires for a deliberate promotion.
+    #[serde(default)]
+    pub promoted_at: Option<u64>,
 }
 
 impl KeyEntry {
@@ -116,13 +167,67 @@ impl KeyEntry {
             source_entity: None,
             environment: None,
             rotated_at: None,
+            origin: None,
+            promoted_at: None,
         }
+    }
+
+    /// Construct a **discovered** credential (evidence only, not auth-eligible)
+    /// with its acquisition provenance stamped. Used by the harvest path so a
+    /// key HSE merely observed can never slip into an authentication cascade
+    /// without an explicit [`super::KeyPool::promote_by_id`]. `source` is the
+    /// discovering subsystem (e.g. `"key_harvest"`), `scan_id` the scan it was
+    /// seen in, `entity` the evidentiary entity it came from.
+    #[must_use]
+    pub fn discovered(
+        value: impl Into<String>,
+        source: impl Into<String>,
+        scan_id: impl Into<String>,
+        entity: Option<String>,
+    ) -> Self {
+        let mut e = Self::new(value);
+        e.origin = Some(KeyOrigin::Discovered);
+        e.discovered_at = Some(crate::core::entity::unix_now());
+        e.discovered_by = Some(source.into());
+        e.discovered_in_scan = Some(scan_id.into());
+        e.source_entity = entity;
+        e
     }
 
     /// This key's environment label, defaulting to `"default"` when unset.
     #[must_use]
     pub fn environment(&self) -> &str {
         self.environment.as_deref().unwrap_or("default")
+    }
+
+    /// Resolved provenance class — the **single** place the `Option<KeyOrigin>`
+    /// field is interpreted, so the migration rule for a pool written before the
+    /// field existed lives in exactly one spot:
+    ///
+    /// 1. An explicit [`KeyOrigin`] always wins.
+    /// 2. Otherwise a key carrying discovery provenance (`discovered_by` set) is
+    ///    [`KeyOrigin::Discovered`] — this is what **quarantines** credentials a
+    ///    prior build auto-pooled from scan data (harvest and TSV-dump imports
+    ///    both stamp `discovered_by`), so upgrading cannot leave a captured
+    ///    third-party secret silently auth-eligible.
+    /// 3. Otherwise (`hse keys add`/`set-key`/`rotate`/`import-json`, none of
+    ///    which set discovery provenance) it is an operator credential.
+    #[must_use]
+    pub fn origin(&self) -> KeyOrigin {
+        match self.origin {
+            Some(o) => o,
+            None if self.discovered_by.is_some() => KeyOrigin::Discovered,
+            None => KeyOrigin::Operator,
+        }
+    }
+
+    /// Whether HSE may authenticate with this key. Only operator-supplied or
+    /// operator-promoted credentials qualify; a discovered credential is evidence
+    /// until explicitly promoted. This is ANDed with [`Self::is_usable`] at the
+    /// pool's selection chokepoint, so no auth path can serve a discovered key.
+    #[must_use]
+    pub fn is_auth_eligible(&self) -> bool {
+        matches!(self.origin(), KeyOrigin::Operator)
     }
 
     pub fn is_usable(&self) -> bool {
