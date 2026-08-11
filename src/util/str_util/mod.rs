@@ -564,7 +564,9 @@ pub fn shares_whole_word_token(haystack: &str, needle: &str) -> bool {
         .collect();
     needle
         .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| t.len() >= MIN_SHARED_TOKEN)
+        // Chars, not bytes: a single non-ASCII initial is 2+ bytes and would
+        // otherwise pass the floor meant to exclude bare initials.
+        .filter(|t| t.chars().count() >= MIN_SHARED_TOKEN)
         .any(|tok| words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
 }
 

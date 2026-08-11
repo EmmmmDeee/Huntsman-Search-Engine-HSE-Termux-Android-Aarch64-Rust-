@@ -1,7 +1,8 @@
 
 use super::{
     ascii_digits, char_window, find_ascii_ci, fold_ascii_lower, is_handle, mask_secret, nonempty,
-    parse_asn, rfind_word_ascii_ci, slugify, truncate_safe, whole_word_token_match,
+    parse_asn, rfind_word_ascii_ci, shares_whole_word_token, slugify, truncate_safe,
+    whole_word_token_match,
 };
 
     #[test]
@@ -379,4 +380,15 @@ mod prop {
         }
 
     }
+}
+
+#[test]
+fn shares_whole_word_token_non_ascii_initial_is_not_a_name_token() {
+    // Regression: the MIN_SHARED_TOKEN floor was applied to str::len() (bytes),
+    // so a single non-ASCII initial (2+ bytes) licensed a match in violation of
+    // the "a bare initial is not a name token" contract.
+    assert!(!shares_whole_word_token("Ø Smith", "Ø Jones"));
+    assert!(!shares_whole_word_token("Élise Martin", "É Dubois"));
+    // A real two-char non-ASCII name token still matches.
+    assert!(shares_whole_word_token("Ng Åse", "Åse Berg"));
 }
