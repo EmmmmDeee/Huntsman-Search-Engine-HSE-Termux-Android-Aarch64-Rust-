@@ -231,9 +231,10 @@ use super::*;
         assert!(service_for_env("HUNTSMAN_NOT_A_KEY").is_none());
     }
 
-    /// The three modules whose SRC != ServiceDef.name must each resolve to a
-    /// registered pool service via their own KEY_ENV, or every key burn is a
-    /// silent no-op. Also asserts every service is resolvable by its own name.
+    /// Every keyed module whose SRC differs from its pool `ServiceDef.name` must
+    /// resolve to a registered pool service via its own KEY_ENV, or every key
+    /// burn is a silent no-op. The table below is the authoritative assertion
+    /// set. Also asserts every service is resolvable by its own name.
     #[test]
     fn keyed_module_pool_services_are_registered() {
         for (env, svc) in [

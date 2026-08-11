@@ -327,24 +327,44 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
 /// the subject's own site. Emitting those as `personal-site` made a shared asset
 /// host read downstream as an account the subject CONTROLS (AU-055, Critical).
 /// Matched as a registrable suffix so every regional/CDN subdomain
-/// (`community.akamai.`, `community.cloudflare.`, `cdn.akamai.`, `avatars.`,
-/// `steamcdn-a.`, `steamuserimages-a.`, …) is covered by one entry each.
+/// (`community.akamai.`, `community.cloudflare.`, `cdn.akamai.`, `avatars.`, …)
+/// is covered by one entry each. Steam's Akamai asset hosts are handled
+/// separately by [`is_steam_akamai_host`] — see that function for why the bare
+/// `akamaihd.net` suffix must NOT appear here.
 const STEAM_PLATFORM_HOSTS: &[&str] = &[
     "steamstatic.com",
-    "akamaihd.net",
     "steamcommunity.com",
     "steampowered.com",
     "valvesoftware.com",
 ];
 
-/// True when `host` is — or is a subdomain of — one of [`STEAM_PLATFORM_HOSTS`].
-/// ASCII-case-insensitive; `www.` is not special-cased because these hosts never
-/// carry it in the markup Valve emits.
+/// Valve's Steam-specific Akamai asset hosts all live under `akamaihd.net` with a
+/// `steam…-a` leftmost label (`steamcdn-a.akamaihd.net`,
+/// `steamuserimages-a.akamaihd.net`, `steamcommunity-a.akamaihd.net`, …).
+/// `akamaihd.net` itself is Akamai's *shared* CDN suffix, serving countless
+/// unrelated third parties, so matching the bare suffix would drop a subject's
+/// genuine personal link merely for being Akamai-hosted — over-suppression that
+/// silently loses intelligence. Gating on a `steam`-prefixed leftmost label keeps
+/// only Valve's own asset hosts (present and future `steam*-a` names) while
+/// leaving any other `*.akamaihd.net` link intact.
+fn is_steam_akamai_host(host: &str) -> bool {
+    host.ends_with(".akamaihd.net")
+        && host
+            .split('.')
+            .next()
+            .is_some_and(|label| label.starts_with("steam"))
+}
+
+/// True when `host` is one of [`STEAM_PLATFORM_HOSTS`] (or a subdomain) or a
+/// Steam Akamai asset host ([`is_steam_akamai_host`]). ASCII-case-insensitive;
+/// `www.` is not special-cased because these hosts never carry it in the markup
+/// Valve emits.
 fn is_steam_platform_host(host: &str) -> bool {
     let h = host.trim().to_ascii_lowercase();
-    STEAM_PLATFORM_HOSTS
-        .iter()
-        .any(|s| h == *s || h.ends_with(&format!(".{s}")))
+    is_steam_akamai_host(&h)
+        || STEAM_PLATFORM_HOSTS
+            .iter()
+            .any(|s| h == *s || h.ends_with(&format!(".{s}")))
 }
 
 /// Extract the text of the first `<tag>…</tag>`, unwrapping a CDATA section and
