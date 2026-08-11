@@ -91,11 +91,18 @@ pub(crate) fn extract_postcode(text: &str) -> Option<String> {
 /// token. Returns an empty string when no suburb can be identified. Pure.
 fn extract_suburb_from_line(line: &str, state: &str) -> String {
     // Walk backwards from the state code to collect the suburb name. The state
-    // token is ASCII, so an ASCII-case-insensitive search over the original
-    // `line` yields a char-boundary-safe offset — unlike `to_lowercase().find()`,
-    // whose offset can land mid-codepoint in `line` and panic on a multibyte
-    // uppercase char before the state token.
-    if let Some(pos) = crate::util::str_util::find_ascii_ci(line, state) {
+    // token must be located as a WHOLE WORD, not a substring: a plain
+    // case-insensitive substring search matches the two/three-letter code
+    // wherever its letters first appear inside an earlier word — the `WA` inside
+    // `EDWARD`, the `SA` inside `SARAH` — which either walks back from a bogus
+    // mid-name offset (yielding a garbage suburb like `"ED"`) or, when the code
+    // lands at index 0 of the first word, leaves nothing before it and silently
+    // drops a valid record. `rfind_word_ascii_ci` requires non-alphanumeric
+    // boundaries and returns the occurrence nearest the trailing postcode, while
+    // keeping the char-boundary-safe offset into the original `line` that a
+    // `to_lowercase().find()` would forfeit (its offset can land mid-codepoint on
+    // a multibyte uppercase char before the state token and panic).
+    if let Some(pos) = crate::util::str_util::rfind_word_ascii_ci(line, state) {
         // Suburb is the sequence of alpha tokens immediately before the state.
         let before = line[..pos].trim_end();
         let suburb: String = before
@@ -295,6 +302,31 @@ mod suburb_line_tests {
     #[test]
     fn returns_empty_when_nothing_precedes_state() {
         assert_eq!(extract_suburb_from_line("NSW 2000", "NSW"), "");
+    }
+
+    #[test]
+    fn state_code_inside_an_earlier_word_does_not_hijack_the_suburb() {
+        // Regression: the two-letter code `WA` occurs as a substring inside the
+        // owner token `EDWARD`. A plain substring locator anchored there and
+        // walked back to a bogus `"ED"`; the whole-word locator must find the
+        // standalone `WA` after the suburb instead. (The leading street number
+        // `12` bounds the walk-back so only the true suburb is collected.)
+        assert_eq!(
+            extract_suburb_from_line("EDWARD 12 COTTESLOE WA 6011", "WA"),
+            "COTTESLOE"
+        );
+    }
+
+    #[test]
+    fn state_code_at_index_zero_of_a_word_does_not_silently_drop_the_record() {
+        // Regression: `SA` is a substring at index 0 of `SARAH`, so a substring
+        // locator returned offset 0 → empty prefix → empty suburb → the whole
+        // record was dropped. The whole-word locator skips the embedded match and
+        // finds the real trailing `SA`, preserving the suburb.
+        assert_eq!(
+            extract_suburb_from_line("SARAH 5 GLENELG SA 5045", "SA"),
+            "GLENELG"
+        );
     }
 
     #[test]

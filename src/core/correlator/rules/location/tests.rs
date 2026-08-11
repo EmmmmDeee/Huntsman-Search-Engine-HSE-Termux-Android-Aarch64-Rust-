@@ -245,6 +245,71 @@ use super::*;
         assert_eq!(f.state, "NSW");
     }
 
+    /// Two coherent groups that tie on class-count, summed confidence, AND size
+    /// must resolve to the SAME group regardless of the input slice's order.
+    /// Before the content-based (min-UID) tie-break, `max_by` kept the *last*
+    /// maximal group, so feeding the same entities in a different order — which
+    /// the HashMap-ordered live pass does relative to the ordered finalise pass —
+    /// flipped the chosen city and produced a different AU-059 fix for one set.
+    #[test]
+    fn dominant_group_choice_is_order_independent_on_a_full_tie() {
+        let sydney = || {
+            vec![
+                au_coord("-33.8688,151.2093", 0.80, "abn_lookup", "NSW"),
+                au_coord("-33.8700,151.2100", 0.70, "exif_geo", "NSW"),
+            ]
+        };
+        let melbourne = || {
+            vec![
+                au_coord("-37.8136,144.9631", 0.80, "abn_lookup", "VIC"),
+                au_coord("-37.8140,144.9640", 0.70, "exif_geo", "VIC"),
+            ]
+        };
+        // Both groups: 2 classes, summed confidence 1.50, size 2 — a full tie.
+        let mut forward = sydney();
+        forward.extend(melbourne());
+        let mut reversed = melbourne();
+        reversed.extend(sydney());
+
+        let a = au059_synergy_fix(&forward).expect("a tied group must still fuse");
+        let b = au059_synergy_fix(&reversed).expect("a tied group must still fuse");
+        assert_eq!(
+            (a.lat.to_bits(), a.lon.to_bits(), a.state),
+            (b.lat.to_bits(), b.lon.to_bits(), b.state),
+            "the chosen group must not depend on input order"
+        );
+    }
+
+    /// Adding evidence must never ERASE a finding. A lone coordinate that carries
+    /// several distinct anchoring classes forms a 1-point group with a high
+    /// class-count; ranking class-count first once let it outrank a genuine
+    /// 2-point cluster, after which the ≥2-point fusion gate discarded it and the
+    /// whole synergy fix vanished. The valid Sydney cluster must still fire.
+    #[test]
+    fn a_high_class_singleton_does_not_suppress_a_valid_cluster() {
+        // A single Perth coordinate merged from three distinct anchoring classes
+        // (DeviceGps + WifiSensor + PhotoGps) — class-count 3, but only 1 point.
+        let mut lone_perth = au_coord("-31.9523,115.8613", 0.95, "device_sensors", "WA");
+        lone_perth.add_evidence(Evidence::new("wifi_intel", "geo sighting"));
+        lone_perth.add_evidence(Evidence::new("exif_geo", "geo sighting"));
+
+        let ents = vec![
+            lone_perth,
+            // A genuine 2-point, 2-class Sydney cluster that fires on its own.
+            au_coord("-33.8688,151.2093", 0.80, "abn_lookup", "NSW"),
+            au_coord("-33.8700,151.2100", 0.70, "exif_geo", "NSW"),
+        ];
+        let f = au059_synergy_fix(&ents)
+            .expect("the 2-point Sydney cluster must fire despite the high-class singleton");
+        assert_eq!(f.state, "NSW", "the fused fix must be the Sydney cluster");
+        assert!(
+            (f.lat - -33.87).abs() < 0.5 && (f.lon - 151.21).abs() < 0.5,
+            "expected the Sydney cluster, got {},{}",
+            f.lat,
+            f.lon
+        );
+    }
+
     /// A live handset GNSS fix is the most precise person-location signal the
     /// product has. The person-anchor gate is an allowlist, and omitting
     /// `signal_radar`/`device_sensors` made `is_infrastructure_geo` classify a
