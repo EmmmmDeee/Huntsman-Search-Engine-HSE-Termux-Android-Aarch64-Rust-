@@ -63,6 +63,23 @@ fn signup_hint_covers_common_free_providers() {
     }
 }
 
+/// Transparency invariant: EVERY key surfaced in the Settings/`hse doctor` grid
+/// must tell the operator where to obtain it, so an unconfigured module is never
+/// a dead end. A new `KNOWN_KEYS` entry without a `signup_hint` fails here rather
+/// than shipping a hint-less row.
+#[test]
+fn signup_hint_is_defined_for_every_known_key() {
+    let missing: Vec<&str> = KNOWN_KEYS
+        .iter()
+        .copied()
+        .filter(|k| signup_hint(k).is_none())
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these KNOWN_KEYS have no signup_hint (add one to keep the grid self-documenting): {missing:?}"
+    );
+}
+
 fn map_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
     pairs
         .iter()
