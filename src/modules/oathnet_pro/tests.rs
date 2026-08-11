@@ -1429,3 +1429,55 @@ use crate::core::confidence;
             "an email must not also be minted as a Password"
         );
     }
+
+    #[test]
+    fn stealer_row_mints_a_first_class_password_entity() {
+        use serde_json::json;
+        // The paid stealer corpus must contribute its plaintext secret as a
+        // Password node, or AU-047/105/121 can never fire from it (the breach
+        // path already does this — the stealer path silently didn't).
+        let item = json!({
+            "url": "https://portal.example.org/login",
+            "username": "subject",
+            "password": "Tr0ub4dor&3",
+            "email": ["subject@example.org"],
+        });
+        let mut seen = HashSet::new();
+        let mut r = ModuleResult::new();
+        extract_stealer_entities(&item, "s", "fp", &mut seen, &mut r);
+        let pw: Vec<_> = r
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Password)
+            .collect();
+        assert_eq!(pw.len(), 1, "exactly one Password from the stealer row");
+        assert_eq!(pw[0].value, "Tr0ub4dor&3");
+        assert!(pw[0].has_tag("plaintext-password"));
+    }
+
+    #[test]
+    fn stealer_password_sentinel_and_email_are_not_minted_as_secrets() {
+        use serde_json::json;
+        // A paywall sentinel is not a secret; an email in the password slot is a
+        // lead recovered as an Email, never a Password (which would forge links).
+        let sentinel = json!({"url": "https://x/login", "password": "UPGRADE_TO_SEE_FULL_DATA"});
+        let mut seen = HashSet::new();
+        let mut r = ModuleResult::new();
+        extract_stealer_entities(&sentinel, "s", "fp", &mut seen, &mut r);
+        assert!(!r.entities.iter().any(|e| e.kind == EntityKind::Password));
+
+        let email_slot = json!({"url": "https://x/login", "password": "leaked@example.org"});
+        let mut seen = HashSet::new();
+        let mut r = ModuleResult::new();
+        extract_stealer_entities(&email_slot, "s", "fp", &mut seen, &mut r);
+        assert!(
+            r.entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Email && e.has_tag("recovered-from-password")),
+            "an email in the password slot is recovered as an Email"
+        );
+        assert!(
+            !r.entities.iter().any(|e| e.kind == EntityKind::Password),
+            "…never as a Password"
+        );
+    }

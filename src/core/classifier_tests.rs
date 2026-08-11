@@ -154,3 +154,38 @@ fn the_system_can_find_itself_in_its_own_text() {
         "found its own repo URL"
     );
 }
+
+#[test]
+fn extract_trims_trailing_prose_punctuation_from_urls() {
+    let out = extract(
+        "Contact us at https://example.org/a, or see https://example.org/b. Mirror: https://example.org/c; end.",
+    );
+    let urls: Vec<&str> = out
+        .iter()
+        .filter(|c| c.kind == EntityKind::Url)
+        .map(|c| c.value.as_str())
+        .collect();
+    assert_eq!(
+        urls,
+        vec![
+            "https://example.org/a",
+            "https://example.org/b",
+            "https://example.org/c"
+        ]
+    );
+    assert!(
+        urls.iter()
+            .all(|u| !u.ends_with([',', '.', ';', ':', '!', '?', ')'])),
+        "no trailing prose punctuation: {urls:?}"
+    );
+}
+
+#[test]
+fn trim_url_punctuation_is_idempotent_and_keeps_the_scheme() {
+    for suffix in ["", ".", ",", ";", ":", "!", "?", ").", ",,,"] {
+        let s = format!("https://example.org/path{suffix}");
+        let once = trim_url_punctuation(&s);
+        assert_eq!(trim_url_punctuation(once), once, "idempotent for {s:?}");
+        assert!(once.starts_with("https://"), "scheme kept for {s:?}");
+    }
+}

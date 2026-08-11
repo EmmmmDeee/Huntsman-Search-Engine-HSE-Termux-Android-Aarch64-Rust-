@@ -41,6 +41,18 @@ use super::*;
     }
 
     #[test]
+    fn csv_handles_newline_inside_quoted_field() {
+        // A quoted field containing a literal newline is a single record per
+        // RFC 4180. The hand-rolled line splitter this parser replaced would
+        // have torn this into two malformed rows; the csv crate keeps it whole.
+        let csv = "kind,value,tags\nperson,\"Jane\nDoe\",\"vip|note\"\n";
+        let ents = parse_csv(csv).expect("should succeed");
+        assert_eq!(ents.len(), 1, "one record despite the embedded newline");
+        assert_eq!(ents[0].value, "Jane\nDoe");
+        assert!(ents[0].tags.contains(&"vip".to_string()));
+    }
+
+    #[test]
     fn log_text_extracts_engine_and_module_health() {
         let log = "\
 2026-06-07T08:36:03Z INFO huntsman::engine_health: search engine liveness probe engine=\"google\" status=\"blocked\" detail=\"anti-bot\" results=0\n\

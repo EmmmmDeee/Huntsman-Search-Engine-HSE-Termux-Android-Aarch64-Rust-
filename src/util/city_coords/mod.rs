@@ -92,10 +92,20 @@ fn match_tabulated_city(lower: &str) -> Option<(f64, f64)> {
         return None;
     }
     let names_foreign_place = mentions_non_au_country(lower);
+    // Converse gate: an address that unambiguously names an AUSTRALIAN locality
+    // must never resolve to a tabulated overseas HOMONYM. `liverpool`,
+    // `portland` and `wellington` are tabulated only with their overseas
+    // coordinates, so without this "Liverpool, NSW 2170" resolved to Liverpool,
+    // England (17,000 km off) instead of falling through to the AU-postcode
+    // branch that already gives the right answer.
+    let names_au_place = !names_foreign_place && names_au_locality(lower);
 
     let mut best: Option<(usize, f64, f64)> = None;
     for &(city, lat, lon) in CITIES {
         if names_foreign_place && crate::util::geo::is_in_australia(lat, lon) {
+            continue;
+        }
+        if names_au_place && !crate::util::geo::is_in_australia(lat, lon) {
             continue;
         }
         if !phrase_in_tokens(&tokens, city) {
@@ -242,6 +252,27 @@ fn mentions_non_au_country(lower: &str) -> bool {
         "manitoba",
     ];
     address_tokens(lower).iter().any(|tok| TOKENS.contains(tok))
+}
+
+/// True when `lower` (an already-lowercased address) explicitly asserts an
+/// AUSTRALIAN locality — it names the country, or it carries an assigned 4-digit
+/// AU postcode as its trailing digit run ([`au_postcode_in`], which already
+/// rejects a US ZIP and a ZIP+4 add-on).
+///
+/// The converse of [`mentions_non_au_country`], and load-bearing for the same
+/// reason: the tabulated city list holds AU/foreign homonyms (`liverpool`,
+/// `portland`, `wellington` are tabulated ONLY with their overseas coordinates),
+/// so without it `"Liverpool, NSW 2170"` resolved to Liverpool, England — the
+/// wrong hemisphere, at PROBABLE confidence, from an address that names both the
+/// state and the postcode.
+///
+/// A state abbreviation alone is deliberately NOT sufficient: `WA` is Western
+/// Australia and Washington State alike, so `"Seattle, WA 98101"` must keep
+/// resolving to Seattle. Requiring the country word or an AU postcode (a US
+/// address ends in a 5-digit ZIP, leaving no 4-digit trailing run) makes the
+/// signal unambiguous. Pure; no I/O.
+fn names_au_locality(lower: &str) -> bool {
+    lower.contains("australia") || au_postcode_in(lower).is_some()
 }
 
 /// Resolve a bare 4-digit AU postcode to an approximate `(lat, lon)`.

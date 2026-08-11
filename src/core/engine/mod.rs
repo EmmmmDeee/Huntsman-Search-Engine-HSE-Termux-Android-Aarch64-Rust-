@@ -965,7 +965,7 @@ impl ScanEngine {
         entity_map: HashMap<String, Entity>,
         ctx: &ModuleContext,
         stats: ModuleStats,
-        lineage_relations: Vec<Relation>,
+        mut lineage_relations: Vec<Relation>,
         mut emitted_corr: HashSet<String>,
     ) -> Result<Scan> {
         let store = Arc::clone(&self.store);
@@ -981,7 +981,39 @@ impl ScanEngine {
             // rolled-back transaction) — see each phase helper's own doc comment.
             let mut entities =
                 merge_found_keys_and_flatten(module_runtime.as_ref(), &scan.id, entity_map);
-            apply_finalise_enrichment_passes(store.as_ref(), &scan.id, &mut entities);
+            let folded = apply_finalise_enrichment_passes(store.as_ref(), &scan.id, &mut entities);
+            if !folded.is_empty() {
+                // The address-locality fold removed each victim from the in-memory
+                // `entities` Vec, but the mid-scan checkpoint already made it a
+                // durable observation of this scan — so `entities_for_scan` (and
+                // the authoritative finalise correlator that reads it) would still
+                // see BOTH spellings. Detach the victim's observation for THIS
+                // scan (the entities row is retained for any other scan), and
+                // re-point any lineage edge that named a victim at its survivor
+                // BEFORE the edges are persisted, so folding never orphans a
+                // `DerivedFrom` edge. `Relation::new` re-derives the deterministic
+                // id from the new endpoints; a self-edge (both ends folded into
+                // one survivor) is dropped.
+                let map: HashMap<&str, &str> = folded
+                    .iter()
+                    .map(|(v, s)| (v.as_str(), s.as_str()))
+                    .collect();
+                lineage_relations = lineage_relations
+                    .iter()
+                    .map(|r| {
+                        let from = *map.get(r.from_uid.as_str()).unwrap_or(&r.from_uid.as_str());
+                        let to = *map.get(r.to_uid.as_str()).unwrap_or(&r.to_uid.as_str());
+                        (from.to_string(), to.to_string(), r.kind, r.confidence)
+                    })
+                    .filter(|(from, to, _, _)| from != to)
+                    .map(|(from, to, kind, conf)| Relation::new(from, to, kind, conf, &scan.id))
+                    .collect();
+                let victims: Vec<String> = folded.into_iter().map(|(v, _)| v).collect();
+                if let Err(e) = store.detach_scan_observations(&scan.id, &victims) {
+                    warn!(scan_id = %scan.id, error = %e,
+                          "failed to detach folded address observations — the scan may report duplicates");
+                }
+            }
             let total = entities.len();
             let (persisted, first_err) =
                 persist_entities_with_fallback(store.as_ref(), &scan.id, &entities);
@@ -2440,8 +2472,8 @@ fn apply_finalise_enrichment_passes(
     store: &dyn StoragePort,
     scan_id: &str,
     entities: &mut Vec<Entity>,
-) {
-    consolidate_address_localities(entities);
+) -> Vec<(String, String)> {
+    let folded = consolidate_address_localities(entities);
     promote_geo_corroborated_family(entities);
     promote_breach_candidate_geo_corroborated(entities);
     flag_geo_discordant_namesakes(entities);
@@ -2454,6 +2486,7 @@ fn apply_finalise_enrichment_passes(
     for e in entities.iter_mut() {
         e.canonicalize_order();
     }
+    folded
 }
 
 /// Phase 3: persist the scan's entities in a single transaction (collapsing N

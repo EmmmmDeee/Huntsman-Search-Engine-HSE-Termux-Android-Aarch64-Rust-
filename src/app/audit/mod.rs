@@ -98,11 +98,24 @@ fn csv_scan_id_conflict_note(csv_path: &str) -> String {
 /// the old (`…,sources,tags`) and new (`…,sources,evidence_urls,evidence,tags`)
 /// layouts alike. Unknown/missing columns degrade gracefully.
 fn parse_csv(text: &str) -> Result<Vec<AuditEntity>> {
-    let mut lines = text.lines();
-    let header = lines
-        .next()
-        .ok_or_else(|| Error::Other("empty CSV".into()))?;
-    let cols: Vec<String> = split_csv(header).iter().map(|s| s.to_lowercase()).collect();
+    // RFC-4180 record reader: HSE's own `entities_to_csv` quotes any field
+    // containing a newline (see `api::scan_export::csv_escape`), so a
+    // line-by-line split tore a single record with multi-line evidence into a
+    // truncated row plus fabricated garbage rows. `csv::ReaderBuilder` treats a
+    // newline inside a quoted field as data, so one logical record is one row —
+    // matching what the exporter wrote. The repo already depends on `csv` and
+    // uses it identically in `cli::ingest`. `flexible(true)` tolerates the
+    // old/new column counts, as the hand-rolled parser did.
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .flexible(true)
+        .from_reader(text.as_bytes());
+    let cols: Vec<String> = rdr
+        .headers()
+        .map_err(|e| Error::Other(format!("CSV header: {e}")))?
+        .iter()
+        .map(str::to_lowercase)
+        .collect();
     let idx = |name: &str| cols.iter().position(|c| c == name);
     let (ci_kind, ci_val) = (
         idx("kind").ok_or_else(|| Error::Other("CSV missing 'kind' column".into()))?,
@@ -117,22 +130,16 @@ fn parse_csv(text: &str) -> Result<Vec<AuditEntity>> {
     );
 
     let mut out = Vec::new();
-    for line in lines {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let f = split_csv(line);
-        let get = |i: Option<usize>| i.and_then(|i| f.get(i)).map_or("", String::as_str);
-        let kind = f.get(ci_kind).cloned().unwrap_or_default();
-        let value = f.get(ci_val).cloned().unwrap_or_default();
+    for rec in rdr.records() {
+        let rec = rec.map_err(|e| Error::Other(format!("CSV record: {e}")))?;
+        let get = |i: Option<usize>| i.and_then(|i| rec.get(i)).unwrap_or("");
+        let kind = rec.get(ci_kind).unwrap_or("").to_string();
+        let value = rec.get(ci_val).unwrap_or("").to_string();
         if kind.is_empty() {
             continue;
         }
         let conf = get(ci_conf).parse().unwrap_or(0.0);
-        let ceff = ci_ceff
-            .and_then(|i| f.get(i))
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(conf);
+        let ceff = get(ci_ceff).parse().unwrap_or(conf);
         out.push(AuditEntity {
             kind,
             value,
@@ -143,28 +150,6 @@ fn parse_csv(text: &str) -> Result<Vec<AuditEntity>> {
         });
     }
     Ok(out)
-}
-
-/// Minimal RFC-4180-ish field splitter: handles `"`-quoted fields containing
-/// commas and doubled `""` escapes. Sufficient for our own exports.
-fn split_csv(line: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut chars = line.chars().peekable();
-    let mut in_q = false;
-    while let Some(c) = chars.next() {
-        match c {
-            '"' if in_q && chars.peek() == Some(&'"') => {
-                cur.push('"');
-                chars.next();
-            }
-            '"' => in_q = !in_q,
-            ',' if !in_q => out.push(std::mem::take(&mut cur)),
-            _ => cur.push(c),
-        }
-    }
-    out.push(cur);
-    out
 }
 
 /// `sources` / `tags` columns are `|`-joined in our exports.

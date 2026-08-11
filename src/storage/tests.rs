@@ -1649,6 +1649,83 @@ fn fts_index_stays_synchronized_on_value_change() {
 }
 
 #[test]
+fn detach_scan_observations_removes_only_the_named_scan_link() {
+    let path = tmp_db();
+    let store = Store::open(&path).expect("open");
+    insert_scan(&store, "det-a");
+    insert_scan(&store, "det-b");
+    // One entity observed by BOTH scans (content-addressed → same uid).
+    let uid = {
+        let a = Entity::new(EntityKind::Address, "Murrumbateman, NSW", 0.6, "det-a");
+        let b = Entity::new(EntityKind::Address, "Murrumbateman, NSW", 0.6, "det-b");
+        store.upsert_entity(&a).expect("a");
+        store.upsert_entity(&b).expect("b");
+        a.uid
+    };
+    assert_eq!(
+        store
+            .detach_scan_observations("det-a", std::slice::from_ref(&uid))
+            .expect("detach"),
+        1
+    );
+    // Detached from A, still observed by B, and the entities row survives.
+    assert!(store.entities_for_scan("det-a").expect("a").is_empty());
+    assert_eq!(store.entities_for_scan("det-b").expect("b").len(), 1);
+    assert!(store.get_entity(&uid).expect("get").is_some());
+    // Empty list is a no-op.
+    assert_eq!(
+        store.detach_scan_observations("det-b", &[]).expect("noop"),
+        0
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn fts_index_is_rebuilt_when_desynchronised_on_open() {
+    // A store whose FTS index does not cover its `entities` rows (an old DB, a
+    // restored/copied file) must be repaired on open. The freshness probe used
+    // to read `count(*) FROM entities_fts`, which for an external-content table
+    // is serviced from the CONTENT table — always == ent_count — so the rebuild
+    // guard could never fire and search silently degraded to the LIKE fallback
+    // (which cannot do token-order-independent matching).
+    let path = tmp_db();
+    {
+        let store = Store::open(&path).expect("open");
+        insert_scan(&store, "fts-desync");
+        store
+            .upsert_entity(&Entity::new(
+                EntityKind::Person,
+                "Jordan Meyer",
+                0.8,
+                "fts-desync",
+            ))
+            .expect("upsert");
+        // Empty the index but KEEP the content — the exact desynchronised state.
+        let conn = store.conn.lock();
+        conn.execute_batch("INSERT INTO entities_fts(entities_fts) VALUES('delete-all');")
+            .expect("delete-all");
+        let docsize: i64 = conn
+            .query_row("SELECT count(*) FROM entities_fts_docsize", [], |r| {
+                r.get(0)
+            })
+            .expect("docsize");
+        assert_eq!(docsize, 0, "index emptied but content retained");
+    }
+    // Reopen: the guard must detect docsize < ent_count and rebuild.
+    let store = Store::open(&path).expect("reopen");
+    // Reordered tokens: LIKE '%meyer jordan%' cannot match "Jordan Meyer", so a
+    // hit here PROVES the FTS index was rebuilt (MATCH), not the LIKE fallback.
+    let hits = store.search_entities("meyer jordan", 10).expect("search");
+    assert_eq!(
+        hits.len(),
+        1,
+        "rebuilt FTS index makes the row searchable again"
+    );
+    assert_eq!(hits[0].value, "Jordan Meyer");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn fts_backfill_indexes_preexisting_rows() {
     // A DB whose entities predate the FTS index must become searchable
     // after reopen (the open() backfill path).

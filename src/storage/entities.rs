@@ -99,6 +99,32 @@ impl super::Store {
         Ok(())
     }
 
+    /// Remove `entity_uids` from `scan_id`'s `entity_observations` — the
+    /// store-side half of the finalise-time address-locality fold. One cached
+    /// statement per uid under a single transaction (the uid list is the size of
+    /// one scan's folded address groups — single digits — so a bound `IN` list
+    /// would buy nothing). The `entities` row is deliberately NOT deleted: it may
+    /// be observed by another scan, and the store is content-addressed and
+    /// shared. Returns the number of observation rows removed.
+    pub fn detach_scan_observations(&self, scan_id: &str, entity_uids: &[String]) -> Result<usize> {
+        if entity_uids.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        let mut n = 0usize;
+        {
+            let mut stmt = tx.prepare_cached(
+                "DELETE FROM entity_observations WHERE scan_id = ?1 AND entity_uid = ?2",
+            )?;
+            for uid in entity_uids {
+                n += stmt.execute(params![scan_id, uid])?;
+            }
+        }
+        tx.commit()?;
+        Ok(n)
+    }
+
     /// Persist a batch of entities under one transaction. On the happy path
     /// (every entity new or a clean merge) this collapses N per-entity
     /// commits into a single WAL fsync — a material win on low-power aarch64.

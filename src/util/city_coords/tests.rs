@@ -306,3 +306,36 @@ use super::*;
             "10 queen st, smalltown, new zealand 4310"
         ));
     }
+
+    #[test]
+    fn au_address_never_resolves_to_a_foreign_homonym() {
+        use crate::util::geo::is_in_australia;
+        // liverpool/portland/wellington are tabulated ONLY with their overseas
+        // coordinates; an AU address naming the state + postcode must resolve in
+        // Australia (via the postcode fallback), not to the foreign homonym.
+        for a in [
+            "Liverpool, NSW 2170",
+            "Portland, VIC 3305",
+            "Wellington, NSW 2820",
+        ] {
+            let p = city_coords(a).unwrap_or_else(|| panic!("{a} should resolve"));
+            assert!(is_in_australia(p.0, p.1), "{a} -> {p:?} (expected AU)");
+        }
+        assert_eq!(city_coords("Liverpool, NSW 2170"), city_coords("2170"));
+    }
+
+    #[test]
+    fn foreign_address_with_an_ambiguous_state_code_is_unchanged() {
+        use crate::util::geo::is_in_australia;
+        // WA = Washington State here, not Western Australia: no AU postcode, no
+        // "australia" — the foreign homonym must still win.
+        let p = city_coords("Seattle, WA 98101").expect("seattle resolves");
+        assert!(!is_in_australia(p.0, p.1), "Seattle must stay in the US: {p:?}");
+        assert!(city_coords("London, UK").is_some());
+    }
+
+    #[test]
+    fn tabulated_au_city_still_wins_over_the_postcode_fallback() {
+        // A genuine AU tabulated row must not be gated out by the AU-place check.
+        assert_eq!(city_coords("Newcastle, NSW 2300"), Some((-32.9283, 151.7817)));
+    }

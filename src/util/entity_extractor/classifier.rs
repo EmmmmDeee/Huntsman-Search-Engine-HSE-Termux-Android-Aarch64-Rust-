@@ -32,6 +32,7 @@ fn core_kind_to_extractor(core: &CoreEntityKind, value: &str) -> EntityKind {
         CoreEntityKind::Person => EntityKind::Person,
         CoreEntityKind::Organisation => EntityKind::Organization,
         CoreEntityKind::Cidr => EntityKind::IpRange,
+        CoreEntityKind::Coordinates => EntityKind::Coordinates,
         CoreEntityKind::Other(s) if s == "hash" => EntityKind::Hash,
         CoreEntityKind::Other(s) => EntityKind::Unknown(s.clone()),
         // Core kinds not represented in the extractor taxonomy (Credential, ApiKey,

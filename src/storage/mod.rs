@@ -307,13 +307,22 @@ impl Store {
         // Backfill the FTS index for any pre-existing rows (first run after the
         // index was introduced, or an externally-restored DB). Idempotent: the
         // 'rebuild' command repopulates from the content table deterministically.
+        // `entities_fts` is an FTS5 EXTERNAL-CONTENT table (`content='entities'`),
+        // so a bare `SELECT count(*)` from the vtab is serviced from `entities`
+        // itself — it measures the CONTENT, never the index, and the freshness
+        // guard below could never fire (`fts_count == ent_count` always). The
+        // index's own row count lives in the `_docsize` shadow table (present for
+        // the default `detail=full` this table uses). `unwrap_or(0)` is fail-safe:
+        // an unreadable shadow table forces the rebuild rather than skipping it.
         let fts_count: i64 = conn
-            .query_row("SELECT count(*) FROM entities_fts", [], |r| r.get(0))
+            .query_row("SELECT count(*) FROM entities_fts_docsize", [], |r| {
+                r.get(0)
+            })
             .unwrap_or(0);
         let ent_count: i64 = conn
             .query_row("SELECT count(*) FROM entities", [], |r| r.get(0))
             .unwrap_or(0);
-        if fts_count == 0 && ent_count > 0 {
+        if fts_count < ent_count {
             // If this fails the FTS index stays empty and search silently returns
             // nothing — the exact "search is broken with no diagnostic" failure
             // mode HSE exists to avoid. Best-effort (a missing index must not
@@ -978,6 +987,10 @@ impl crate::core::port::StoragePort for Store {
 
     fn observation_count(&self, entity_uid: &str) -> Result<usize> {
         Store::observation_count(self, entity_uid)
+    }
+
+    fn detach_scan_observations(&self, scan_id: &str, entity_uids: &[String]) -> Result<usize> {
+        Store::detach_scan_observations(self, scan_id, entity_uids)
     }
 
     fn upsert_correlation(&self, c: &Correlation) -> Result<()> {
