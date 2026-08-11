@@ -49,24 +49,34 @@ fn full_pattern() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
         Regex::new(
-            r"(?ix)
+            // Case-insensitivity is scoped to the KEYWORD alternations only —
+            // deliberately NOT a global `(?i)`. Under a global flag the `[A-Z]`
+            // anchors on <street>/<suburb> match lowercase as well, which voids
+            // the Title-Case structure gate this pattern is written to enforce
+            // and lets ordinary lowercase prose ("… 42 minutes about the close
+            // matter brisbane qld 4000") mint a fabricated address at 0.70+
+            // confidence. Street and suburb WORDS must therefore be capitalised
+            // (Title Case or ALL CAPS both satisfy `[A-Z][A-Za-z…]+`), while the
+            // level/suite prefix, the street-type suffix and the state code stay
+            // case-insensitive because those are fixed vocabulary, not names.
+            r"(?x)
             (?:                                              # optional level/suite/unit prefix
-                (?P<lvl>Level\s+\d{1,3}|Lvl\s+\d{1,3}|L\d{1,3}|
+                (?P<lvl>(?i:Level\s+\d{1,3}|Lvl\s+\d{1,3}|L\d{1,3}|
                  Suite\s+\d{1,4}[A-Za-z]?|Ste\s+\d{1,4}[A-Za-z]?|
                  Unit\s+\d{1,4}[A-Za-z]?|U\s*\d{1,4}[A-Za-z]?|
-                 Shop\s+\d{1,4}[A-Za-z]?|Office\s+\d{1,4}[A-Za-z]?)
+                 Shop\s+\d{1,4}[A-Za-z]?|Office\s+\d{1,4}[A-Za-z]?))
                 [\s,/]+
             )?
             (?:(?P<unit>\d{1,4}[A-Za-z]?)\s*/\s*)?           # optional unit/lot, must end with '/'
             (?P<num>\d{1,5}[A-Za-z]?)\s+                      # street number (required)
             (?P<street>[A-Z][A-Za-z'\.\-]+(?:\s+[A-Z][A-Za-z'\.\-]+){0,5}\s+
-              (?:Street|St|Road|Rd|Avenue|Ave|Lane|Ln|Drive|Dr|Court|Ct|
+              (?i:Street|St|Road|Rd|Avenue|Ave|Lane|Ln|Drive|Dr|Court|Ct|
                  Crescent|Cres|Place|Pl|Way|Highway|Hwy|Parade|Pde|Terrace|Tce|
                  Boulevard|Blvd|Circuit|Cct|Close|Cl|Esplanade|Esp|Square|Sq))
             ,?\s+
             (?P<suburb>[A-Z][A-Za-z'\-]+(?:\s+[A-Z][A-Za-z'\-]+){0,4})
             ,?\s+
-            (?P<state>ACT|NSW|NT|QLD|SA|TAS|VIC|WA)\s+
+            (?P<state>(?i:ACT|NSW|NT|QLD|SA|TAS|VIC|WA))\s+
             (?P<postcode>\d{4})
         ",
         )
