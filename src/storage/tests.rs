@@ -643,6 +643,45 @@ fn upsert_correlation_and_correlations_for_scan_round_trip() {
 }
 
 #[test]
+fn upsert_correlation_updates_a_capped_cluster_whose_sample_did_not_change() {
+    use crate::core::correlator::{Correlation, Severity};
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    insert_scan(&store, "capped");
+    let mk = |desc: &str, uids: Vec<&str>, ts: u64| {
+        Correlation::new(
+            "AU-037",
+            "Credential exposure",
+            Severity::Critical,
+            desc.into(),
+            uids.into_iter().map(String::from).collect(),
+            "capped",
+            ts,
+        )
+    };
+    // Rules that CAP their uid list (AU-037 sorts then truncates to 20 secrets
+    // + 5 identities) publish a SAMPLE, not the cluster. The set-containment
+    // dedup assumes "a cluster only grows", which a cap breaks: when the new
+    // members all sort above the retained sample, the sample is byte-identical
+    // between rounds while the count in the description has grown.
+    store
+        .upsert_correlation(&mk("25 plaintext passwords exposed", vec!["a", "b"], 1))
+        .expect("should succeed");
+    store
+        .upsert_correlation(&mk("30 plaintext passwords exposed", vec!["a", "b"], 2))
+        .expect("should succeed");
+    let got = store
+        .correlations_for_scan("capped")
+        .expect("should succeed");
+    assert_eq!(got.len(), 1, "same cluster must stay one row, got {got:?}");
+    assert_eq!(
+        got[0].description, "30 plaintext passwords exposed",
+        "the later, more complete count must win — reporting 25 when 30 were \
+         found under-states a critical credential-exposure finding"
+    );
+}
+
+#[test]
 fn upsert_correlation_supersedes_growing_aggregate_cluster() {
     use crate::core::correlator::{Correlation, Severity};
     let path = tmp_db();
