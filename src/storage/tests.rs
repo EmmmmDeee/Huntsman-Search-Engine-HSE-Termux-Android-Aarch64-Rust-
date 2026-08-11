@@ -1681,6 +1681,102 @@ fn detach_scan_observations_removes_only_the_named_scan_link() {
 }
 
 #[test]
+fn folded_victim_stays_detached_across_reopen() {
+    // The finalise fold detaches a folded victim's observation and (when the
+    // victim is fully absorbed) drops its row. Both must be DURABLE: the
+    // idempotent backfill in `open()` must not resurrect the detached
+    // observation from the retained `entities.scan_id` on the next process
+    // start — that silently restored the duplicate-address miscount the fold
+    // removes (acute on Termux/Android, which restarts often). Regression for
+    // the reopen-resurrection defect.
+    let path = tmp_db();
+    // Single-scan victim: observed only by this scan, then folded away.
+    let uid = {
+        let store = Store::open(&path).expect("open");
+        insert_scan(&store, "fold-scan");
+        let victim = Entity::new(EntityKind::Address, "Murrumbateman, NSW", 0.6, "fold-scan");
+        let survivor = Entity::new(
+            EntityKind::Address,
+            "Murrumbateman, NSW 2582",
+            0.7,
+            "fold-scan",
+        );
+        store.upsert_entity(&victim).expect("victim");
+        store.upsert_entity(&survivor).expect("survivor");
+        assert_eq!(
+            store
+                .detach_scan_observations("fold-scan", std::slice::from_ref(&victim.uid))
+                .expect("detach"),
+            1
+        );
+        // Immediately after the fold: only the survivor remains for the scan.
+        let after = store.entities_for_scan("fold-scan").expect("after");
+        assert_eq!(after.len(), 1, "fold leaves one address in-session");
+        assert_eq!(after[0].value, "Murrumbateman, NSW 2582");
+        victim.uid
+    }; // store dropped → connection closed
+    // Reopen (simulates a Termux/Android process restart) and re-read.
+    let store = Store::open(&path).expect("reopen");
+    let reread = store.entities_for_scan("fold-scan").expect("reread");
+    assert_eq!(
+        reread.len(),
+        1,
+        "the folded victim must NOT be resurrected by the open() backfill"
+    );
+    assert_eq!(reread[0].value, "Murrumbateman, NSW 2582");
+    assert!(
+        store.get_entity(&uid).expect("get").is_none(),
+        "the fully-absorbed victim row is gone, not lingering to be re-derived"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn multi_scan_folded_victim_is_not_resurrected_on_reopen() {
+    // A victim still observed by ANOTHER scan keeps its `entities` row, so the
+    // reopen backfill must SKIP it rather than re-derive the detached link from
+    // `entities.scan_id`. The other scan still sees it; the folded scan does not.
+    let path = tmp_db();
+    let uid = {
+        let store = Store::open(&path).expect("open");
+        insert_scan(&store, "keep-scan");
+        insert_scan(&store, "fold-scan");
+        // Same value → same content-addressed uid, observed by both scans.
+        // Insert the FOLDED scan FIRST: `Entity::merge` keeps the existing row's
+        // `scan_id`, so this pins `entities.scan_id` to the scan we then detach —
+        // the exact state where an unguarded backfill would re-derive the removed
+        // link (the pre-fix bug this test locks out), while the keep-scan
+        // observation still legitimately remains.
+        let b = Entity::new(EntityKind::Address, "Yass, NSW", 0.6, "fold-scan");
+        let a = Entity::new(EntityKind::Address, "Yass, NSW", 0.6, "keep-scan");
+        store.upsert_entity(&b).expect("b");
+        store.upsert_entity(&a).expect("a");
+        store
+            .detach_scan_observations("fold-scan", std::slice::from_ref(&b.uid))
+            .expect("detach");
+        b.uid
+    };
+    let store = Store::open(&path).expect("reopen");
+    assert_eq!(
+        store.entities_for_scan("keep-scan").expect("keep").len(),
+        1,
+        "the still-referenced scan keeps its observation across reopen"
+    );
+    assert!(
+        store
+            .entities_for_scan("fold-scan")
+            .expect("fold")
+            .is_empty(),
+        "the folded scan's detached link stays detached across reopen"
+    );
+    assert!(
+        store.get_entity(&uid).expect("get").is_some(),
+        "the row is kept — it is still referenced by another scan"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn fts_index_is_rebuilt_when_desynchronised_on_open() {
     // A store whose FTS index does not cover its `entities` rows (an old DB, a
     // restored/copied file) must be repaired on open. The freshness probe used

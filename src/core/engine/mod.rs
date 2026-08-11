@@ -994,20 +994,42 @@ impl ScanEngine {
                 // `DerivedFrom` edge. `Relation::new` re-derives the deterministic
                 // id from the new endpoints; a self-edge (both ends folded into
                 // one survivor) is dropped.
+                //
+                // Two victims folding into the SAME survivor can remap two edges
+                // onto one `(from, kind, to)` — hence one deterministic id. The
+                // persist layer's `ON CONFLICT(id) DO NOTHING` keeps whichever
+                // arrived first, so without collapsing here the stored edge's
+                // confidence would depend on discovery order. Collapse duplicates
+                // keeping the MAX confidence, then sort by id, so the persisted
+                // lineage is order-independent.
                 let map: HashMap<&str, &str> = folded
                     .iter()
                     .map(|(v, s)| (v.as_str(), s.as_str()))
                     .collect();
-                lineage_relations = lineage_relations
-                    .iter()
-                    .map(|r| {
-                        let from = *map.get(r.from_uid.as_str()).unwrap_or(&r.from_uid.as_str());
-                        let to = *map.get(r.to_uid.as_str()).unwrap_or(&r.to_uid.as_str());
-                        (from.to_string(), to.to_string(), r.kind, r.confidence)
+                let mut best: HashMap<(String, String, String), (RelationKind, f64)> =
+                    HashMap::new();
+                for r in &lineage_relations {
+                    let from = *map.get(r.from_uid.as_str()).unwrap_or(&r.from_uid.as_str());
+                    let to = *map.get(r.to_uid.as_str()).unwrap_or(&r.to_uid.as_str());
+                    if from == to {
+                        continue;
+                    }
+                    best.entry((from.to_string(), to.to_string(), r.kind.as_str().to_string()))
+                        .and_modify(|(_, c)| {
+                            if r.confidence > *c {
+                                *c = r.confidence;
+                            }
+                        })
+                        .or_insert((r.kind, r.confidence));
+                }
+                let mut collapsed: Vec<Relation> = best
+                    .into_iter()
+                    .map(|((from, to, _), (kind, conf))| {
+                        Relation::new(from, to, kind, conf, &scan.id)
                     })
-                    .filter(|(from, to, _, _)| from != to)
-                    .map(|(from, to, kind, conf)| Relation::new(from, to, kind, conf, &scan.id))
                     .collect();
+                collapsed.sort_by(|a, b| a.id.cmp(&b.id));
+                lineage_relations = collapsed;
                 let victims: Vec<String> = folded.into_iter().map(|(v, _)| v).collect();
                 if let Err(e) = store.detach_scan_observations(&scan.id, &victims) {
                     warn!(scan_id = %scan.id, error = %e,

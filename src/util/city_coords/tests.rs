@@ -325,6 +325,26 @@ use super::*;
     }
 
     #[test]
+    fn bare_nz_city_with_a_four_digit_postcode_stays_in_new_zealand() {
+        use crate::util::geo::is_in_australia;
+        // NZ postcodes are 4 digits and overlap AU numeric ranges (6011 falls in
+        // the WA range, 1010 in NSW, 8011 in VIC). A bare "City NNNN" with NO
+        // country word and NO explicit AU state token must keep its correct
+        // tabulated NZ coordinate — an in-range AU postcode ALONE is not proof of
+        // Australia. Regression: keying `names_au_locality` on the postcode alone
+        // suppressed the NZ homonym and redirected these to AU (WA/NSW/VIC).
+        for (a, want) in [
+            ("Wellington 6011", (-41.2865, 174.7762)),
+            ("Auckland 1010", (-36.8485, 174.7633)),
+            ("Christchurch 8011", (-43.5321, 172.6362)),
+        ] {
+            let p = city_coords(a).unwrap_or_else(|| panic!("{a} should resolve"));
+            assert!(!is_in_australia(p.0, p.1), "{a} -> {p:?} (must stay in NZ)");
+            assert_eq!(p, want, "{a} must resolve to its tabulated NZ coordinate");
+        }
+    }
+
+    #[test]
     fn foreign_address_with_an_ambiguous_state_code_is_unchanged() {
         use crate::util::geo::is_in_australia;
         // WA = Washington State here, not Western Australia: no AU postcode, no

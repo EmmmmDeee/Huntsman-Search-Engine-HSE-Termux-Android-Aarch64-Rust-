@@ -162,10 +162,27 @@ const SCHEMA_DDL: &str = "
             );
             ";
 
-/// Idempotent backfill of the observation junction table from `entities`.
+/// Idempotent backfill of the observation junction table from `entities`, for
+/// stores created before that table existed (every such row is missing its
+/// observation).
+///
+/// The `WHERE NOT EXISTS` guard is load-bearing, not an optimisation: it
+/// restricts the backfill to entities that have NO observation at all, so it
+/// can only ever mint an entity's FIRST (migration) observation and never
+/// re-derive one from the denormalised `entities.scan_id`. Without the guard,
+/// the finalise-time address-locality fold — which deliberately DETACHES a
+/// folded victim's `(scan_id, uid)` observation while keeping the `entities`
+/// row (see [`Store::detach_scan_observations`]) — was silently reverted on the
+/// very next `open()`: this `INSERT OR IGNORE` re-created the detached row from
+/// the victim's retained `entities.scan_id`, resurrecting the duplicate-address
+/// miscount the fold exists to remove (acute on Termux/Android, where the
+/// process restarts often). A victim that still carries an observation from
+/// another scan is now skipped here; a victim left with none is removed by the
+/// fold's own orphan cleanup, so neither can be resurrected.
 const BACKFILL_OBSERVATIONS_SQL: &str =
     "INSERT OR IGNORE INTO entity_observations(entity_uid, scan_id, observed_at)
-     SELECT uid, scan_id, observed_at FROM entities;";
+     SELECT uid, scan_id, observed_at FROM entities e
+     WHERE NOT EXISTS (SELECT 1 FROM entity_observations o WHERE o.entity_uid = e.uid);";
 
 /// Read an `i64` from an environment variable, falling back to `default` when
 /// unset or unparseable. Used for the env-tunable SQLite performance pragmas.

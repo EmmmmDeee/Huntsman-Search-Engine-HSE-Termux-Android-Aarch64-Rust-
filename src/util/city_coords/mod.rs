@@ -255,9 +255,9 @@ fn mentions_non_au_country(lower: &str) -> bool {
 }
 
 /// True when `lower` (an already-lowercased address) explicitly asserts an
-/// AUSTRALIAN locality — it names the country, or it carries an assigned 4-digit
-/// AU postcode as its trailing digit run ([`au_postcode_in`], which already
-/// rejects a US ZIP and a ZIP+4 add-on).
+/// AUSTRALIAN locality — it names the country, or it carries BOTH an assigned
+/// 4-digit AU postcode as its trailing digit run ([`au_postcode_in`]) AND an
+/// explicit AU state token/name ([`crate::util::address_au::single_state_code`]).
 ///
 /// The converse of [`mentions_non_au_country`], and load-bearing for the same
 /// reason: the tabulated city list holds AU/foreign homonyms (`liverpool`,
@@ -266,13 +266,29 @@ fn mentions_non_au_country(lower: &str) -> bool {
 /// wrong hemisphere, at PROBABLE confidence, from an address that names both the
 /// state and the postcode.
 ///
-/// A state abbreviation alone is deliberately NOT sufficient: `WA` is Western
-/// Australia and Washington State alike, so `"Seattle, WA 98101"` must keep
-/// resolving to Seattle. Requiring the country word or an AU postcode (a US
-/// address ends in a 5-digit ZIP, leaving no 4-digit trailing run) makes the
-/// signal unambiguous. Pure; no I/O.
+/// An AU postcode ALONE is deliberately NOT sufficient, because **New Zealand
+/// shares the 4-digit postcode format in overlapping numeric ranges** (NZ
+/// `6011`→AU WA range, `1010`→NSW, `8011`→VIC). Keying solely on the postcode
+/// made a bare `"Wellington 6011"` (no country word — common in raw records)
+/// suppress its correct tabulated NZ coordinate and get redirected to an
+/// Australian one: a fabricated trans-Tasman sighting. Requiring an explicit AU
+/// state *in addition to* the postcode disambiguates: `"Liverpool, NSW 2170"`
+/// still redirects to AU, while `"Wellington 6011"` keeps resolving to NZ.
+///
+/// [`single_state_code`](crate::util::address_au::single_state_code), NOT
+/// `state_code`, is the right discriminator: `state_code` falls back to the
+/// trailing postcode when no state token is present, which for `"Wellington
+/// 6011"` would resolve `6011`→WA and defeat the whole guard. `single_state_code`
+/// requires an EXPLICIT state mention and has no postcode fallback.
+///
+/// A state abbreviation is not read from a bare postcode either: `WA` is Western
+/// Australia and Washington State alike, so `"Seattle, WA 98101"` keeps resolving
+/// to Seattle — its 5-digit ZIP leaves no 4-digit trailing run, so
+/// `au_postcode_in` returns `None` and this stays false. Pure; no I/O.
 fn names_au_locality(lower: &str) -> bool {
-    lower.contains("australia") || au_postcode_in(lower).is_some()
+    lower.contains("australia")
+        || (au_postcode_in(lower).is_some()
+            && crate::util::address_au::single_state_code(lower).is_some())
 }
 
 /// Resolve a bare 4-digit AU postcode to an approximate `(lat, lon)`.
