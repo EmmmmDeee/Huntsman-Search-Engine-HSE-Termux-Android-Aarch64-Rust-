@@ -1606,6 +1606,47 @@ fn normalise_domain_is_idempotent_when_a_bom_shields_a_control_byte() {
     );
 }
 
+#[test]
+fn normalise_domain_is_idempotent_when_www_label_exposes_whitespace() {
+    // Regression: stripping a `www.` label that is immediately followed by
+    // whitespace must re-trim the leading edge, or the whitespace survives to
+    // the result but a re-normalise (no `www.` left to strip) would trim it —
+    // forking one host into two UIDs.
+    assert_eq!(normalise(&EntityKind::Domain, "www. foo.com"), "foo.com");
+    let once = normalise(&EntityKind::Domain, "www. foo.com");
+    let twice = normalise(&EntityKind::Domain, &once);
+    assert_eq!(once, twice, "normalise must be a fixed point");
+    assert_eq!(
+        once, "foo.com",
+        "whitespace exposed by www. strip is trimmed"
+    );
+}
+
+#[test]
+fn normalise_email_is_idempotent_when_a_bom_shields_whitespace() {
+    // Regression: a leading BOM/zero-width is not whitespace, so `value.trim()`
+    // stops at it and leaves whitespace behind it. Stripping the BOM exposes the
+    // whitespace at the edge — it must be re-trimmed in the SAME pass, or the
+    // result truncates at the space (cut finds `is_whitespace()`) and a second
+    // pass trims it first. This forked one address across two UIDs and truncated
+    // to empty string in the worst case.
+    let once = normalise(&EntityKind::Email, "\u{feff} alice@example.com");
+    let twice = normalise(&EntityKind::Email, &once);
+    assert_eq!(
+        once, twice,
+        "normalise must be idempotent (found '{once}' then '{twice}')"
+    );
+    assert_eq!(
+        once, "alice@example.com",
+        "whitespace exposed by BOM strip is trimmed"
+    );
+    // Extreme case: zero-width char + space. After stripping the zero-width,
+    // the re-trim removes the space, resulting in empty. This is correct —
+    // space-only (or zero-width + space) is not a valid email address.
+    let just_space = normalise(&EntityKind::Email, "\u{200b} ");
+    assert_eq!(just_space, "", "space-only input trims to empty");
+}
+
 // ── Classification::as_str round-trips ──────────────────────────────────
 
 #[test]

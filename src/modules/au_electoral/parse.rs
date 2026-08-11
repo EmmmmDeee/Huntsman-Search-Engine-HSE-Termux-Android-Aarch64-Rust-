@@ -187,7 +187,9 @@ mod suburb_hint_tests {
 
     #[test]
     fn out_of_range_postcode_yields_none() {
-        assert_eq!(extract_suburb_hint("Suburbia 1234"), None);
+        // 0100 is a truly out-of-range postcode (not assigned to any state).
+        // Previously 1234 was used, but it's a valid NSW postcode (1000-2999 range).
+        assert_eq!(extract_suburb_hint("Suburbia 0100"), None);
     }
 
     #[test]

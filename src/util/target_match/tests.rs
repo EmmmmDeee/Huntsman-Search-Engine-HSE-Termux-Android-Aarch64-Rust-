@@ -110,3 +110,19 @@ fn non_matching_record_is_not_the_subject() {
         "username": "jperry"
     })));
 }
+
+#[test]
+fn ip_target_matches_ip_fields() {
+    // Regression: DeHashed IP-target scans were incorrectly demoting all matched
+    // records to candidate tier because TargetMatch never inspected the IP fields.
+    // A target that is itself an IP address should match rows via ip_address/ip/last_ip.
+    let tm = TargetMatch::new("1.2.3.4");
+    // Should match on any of the IP field spellings.
+    assert!(tm.matches(&json!({ "ip_address": "1.2.3.4" })));
+    assert!(tm.matches(&json!({ "ip": "1.2.3.4" })));
+    assert!(tm.matches(&json!({ "last_ip": "1.2.3.4" })));
+    // Case-insensitive (though IPs are normally numeric).
+    assert!(tm.matches(&json!({ "ip_address": "1.2.3.4" })));
+    // Should not match unrelated IPs.
+    assert!(!tm.matches(&json!({ "ip_address": "5.6.7.8" })));
+}
