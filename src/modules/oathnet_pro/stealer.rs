@@ -165,7 +165,12 @@ pub(super) fn extract_stealer_entities(
                 // Domain sends `dns_intel`/`cert_intel`/`wayback` chasing a
                 // non-host — `looks_like_domain` gates both out in one place.
                 && crate::util::domains::looks_like_domain(dom)
-                && seen.insert(dom.to_lowercase())
+                // Namespace the dedup key like every other kind in this file
+                // (`@stealer-url:`, `@cred:`, `@pw:`, …). A BARE key shares one
+                // flat namespace with the breach-path's un-namespaced Username/IP
+                // keys in the same `seen` set, so a coincidentally-equal earlier
+                // value silently dropped a real Domain expansion seed.
+                && seen.insert(format!("@stealer-domain:{}", dom.to_lowercase()))
             {
                 push_stealer_entity(
                     result,

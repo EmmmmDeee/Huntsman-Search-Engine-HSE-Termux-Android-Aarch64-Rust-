@@ -253,6 +253,49 @@ fn load_from_file_handles_missing_file() {
 }
 
 #[test]
+fn load_from_file_strips_single_quotes() {
+    // A single-quoted value must come back bare, matching what dotenvy's load()
+    // returns — otherwise SUPERSEDED rotation / hardcoded-fill compares a quoted
+    // string against a bare constant and never matches, and the Settings UI shows
+    // the quotes.
+    let dir = tempdir().expect("should succeed");
+    let path = dir.path().join(".huntsman.env");
+    std::fs::write(&path, "HUNTSMAN_OATHNET_KEY='singlequoted'\n").expect("should succeed");
+    let m = load_from_file_only(&path);
+    assert_eq!(
+        m.get("HUNTSMAN_OATHNET_KEY").map(String::as_str),
+        Some("singlequoted")
+    );
+}
+
+#[test]
+fn load_from_file_recovers_keys_after_a_malformed_line() {
+    // The resilient line parser skips ONLY the offending line — this is the basis
+    // for load()'s recovery when dotenvy abandons the rest of the file at the
+    // first bad line. A garbage line between two valid keys must not drop the
+    // second.
+    let dir = tempdir().expect("should succeed");
+    let path = dir.path().join(".huntsman.env");
+    std::fs::write(
+        &path,
+        "HUNTSMAN_OATHNET_KEY=first\n\
+         this is a malformed line with no equals sign\n\
+         HUNTSMAN_HIBP_KEY=second\n",
+    )
+    .expect("should succeed");
+    let m = load_from_file_only(&path);
+    assert_eq!(
+        m.get("HUNTSMAN_OATHNET_KEY").map(String::as_str),
+        Some("first")
+    );
+    assert_eq!(
+        m.get("HUNTSMAN_HIBP_KEY").map(String::as_str),
+        Some("second"),
+        "a malformed earlier line must not drop a later key"
+    );
+}
+
+#[test]
 fn load_from_file_strips_double_quotes_from_written_values() {
     // write_keys_at stores values as KEY="value"; load_from_file_only must
     // return the bare value so SUPERSEDED rotation comparisons work correctly.
