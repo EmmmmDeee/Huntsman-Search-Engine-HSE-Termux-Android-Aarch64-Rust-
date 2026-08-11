@@ -85,6 +85,26 @@ use super::*;
     }
 
     #[test]
+    fn role_localpart_does_not_segment_match_ambiguous_personal_names() {
+        // Regression: "nic" is a ubiquitous personal-name token (Nic/Nick/Nicole),
+        // not an unambiguous infra token. It was being segment-matched, so
+        // nic.smith@acme.com.au (a genuine person) was classified infrastructure
+        // and dropped from WHOIS/RIPE/SERP emission. "nic" stays in the whole-string
+        // ROLE list (so bare `nic@registrar` is still caught) but is NOT in the
+        // segment-match list anymore.
+        assert!(!is_role_localpart("nic.smith"));
+        assert!(!is_role_localpart("nic-taylor"));
+        assert!(!is_role_localpart("nic_jones"));
+        // But a bare `nic@` IS still caught by the whole-string match.
+        assert!(is_role_localpart("nic"));
+        // So is_infrastructure_email allows real personal mailboxes through:
+        assert!(!is_infrastructure_email("nic.smith@acme.com.au"));
+        assert!(!is_infrastructure_email("nic.smith@gmail.com"));
+        // But the role mailbox is still gatekept at the domain level or by name.
+        assert!(is_infrastructure_email("nic@isoc.org"));
+    }
+
+    #[test]
     fn freemail_basics() {
         assert!(is_freemail("gmail.com"));
         assert!(is_freemail("bigpond.com"));

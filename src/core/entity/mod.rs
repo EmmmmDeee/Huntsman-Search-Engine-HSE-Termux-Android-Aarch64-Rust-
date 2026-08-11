@@ -1624,6 +1624,14 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             // below, because the noise can sit *before* the `@`, where cutting
             // would truncate the local part. See [`strip_format_noise`].
             let cleaned = strip_format_noise(value.trim());
+            // Re-trim AFTER stripping: a leading BOM/zero-width char is NOT
+            // whitespace, so the `value.trim()` above stops at it and leaves any
+            // whitespace/control byte sitting BEHIND it in place. Removing the
+            // format noise then exposes that byte at the edge; without this second
+            // trim it survives into the result, but a re-normalise (no BOM left to
+            // block `trim`) would strip it — so one address would key to two UIDs
+            // and `normalise` would not be idempotent.
+            let cleaned = cleaned.trim();
             // Cut at the first backslash / whitespace / control char: the breach
             // escape tail, stray internal whitespace, or a NUL-separated junk
             // suffix (`…@x.com\0junk`) all mark the end of the real address.
@@ -1714,6 +1722,9 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
                 }
                 host = rest;
             }
+            // Re-trim AFTER stripping: any leading whitespace the `www.` label
+            // exposed must be removed so the result is idempotent.
+            let host = host.trim_start();
             if host.len() != s.len() {
                 s = host.to_string();
             }
