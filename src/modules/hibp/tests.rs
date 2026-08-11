@@ -101,6 +101,26 @@ fn one_breach(json: &str) -> Breach {
 }
 
 #[test]
+fn total_pwn_count_saturates_instead_of_overflowing() {
+    // `pwn_count` comes straight from the API, so a total near u64::MAX must
+    // SATURATE — an unchecked `.sum()` panics in debug and wraps in release, and
+    // a wrapped total could fall below the HIGH_EXPOSURE threshold and suppress
+    // the tag on a genuinely high-exposure domain.
+    let overflowing = vec![
+        one_breach(r#"[{"Name":"A","PwnCount":18446744073709551615}]"#), // u64::MAX
+        one_breach(r#"[{"Name":"B","PwnCount":1000}]"#),
+    ];
+    assert_eq!(total_pwn_count(&overflowing), u64::MAX);
+
+    // A missing pwn_count is skipped, and normal totals are exact.
+    let normal = vec![
+        one_breach(r#"[{"Name":"A","PwnCount":152445165}]"#),
+        one_breach(r#"[{"Name":"B"}]"#),
+    ];
+    assert_eq!(total_pwn_count(&normal), 152_445_165);
+}
+
+#[test]
 fn breach_evidence_surfaces_every_field() {
     let b = one_breach(
         r#"[{

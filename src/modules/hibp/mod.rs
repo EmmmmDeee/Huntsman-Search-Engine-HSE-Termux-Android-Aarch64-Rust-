@@ -96,6 +96,19 @@ pub(super) struct Breach {
 /// stealer-log/malware) — so a breach-derived finding carries HIBP's complete
 /// characterisation, not just a name + date. **Pure** (no IO) and unit-tested
 /// directly.
+/// Saturating sum of breach `pwn_count`s. Saturating (not `.sum()`) because the
+/// values come straight from the API response: an unchecked sum panics in debug
+/// and, worse, silently WRAPS in release — a wrapped total dropping below the
+/// HIGH_EXPOSURE threshold would suppress the tag on a genuinely high-exposure
+/// domain. An implausibly large total pins to `u64::MAX` and still trips the
+/// threshold rather than under-reporting the exposure.
+fn total_pwn_count(breaches: &[Breach]) -> u64 {
+    breaches
+        .iter()
+        .filter_map(|b| b.pwn_count)
+        .fold(0u64, u64::saturating_add)
+}
+
 fn breach_evidence(breach: &Breach) -> Evidence {
     let nonempty = |o: &Option<String>| o.as_deref().filter(|s| !s.is_empty()).map(str::to_string);
 
@@ -621,7 +634,7 @@ impl Hibp {
             .iter()
             .filter(|b| b.is_verified == Some(true))
             .count();
-        let total_pwns: u64 = breaches.iter().filter_map(|b| b.pwn_count).sum();
+        let total_pwns = total_pwn_count(&breaches);
         let names: Vec<&str> = breaches.iter().map(|b| b.name.as_str()).collect();
 
         let base_conf = if verified >= 2 {

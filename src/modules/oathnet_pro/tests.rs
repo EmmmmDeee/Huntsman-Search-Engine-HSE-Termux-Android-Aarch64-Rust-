@@ -302,6 +302,30 @@ use crate::core::confidence;
     }
 
     #[test]
+    fn stealer_domain_survives_a_bare_key_collision() {
+        use serde_json::json;
+        // The shared `seen` set also carries the breach path's un-namespaced
+        // Username/IP dedup keys. A stealer `domain` whose value coincides with
+        // one of those bare strings must STILL be minted — the dedup key is now
+        // namespaced (`@stealer-domain:`), so it no longer collides. Before the
+        // fix, the bare `seen.insert(domain)` returned false and the real Domain
+        // expansion seed was silently dropped.
+        let item = json!({ "domain": ["testsite.com"] });
+        let mut seen = HashSet::new();
+        // Simulate a breach-side bare key (e.g. a Username equal to the domain).
+        seen.insert("testsite.com".to_string());
+        let mut result = ModuleResult::new();
+        extract_stealer_entities(&item, "scan", "oathnet.org:test", &mut seen, &mut result);
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == "testsite.com"),
+            "a stealer Domain must not be dropped by an un-namespaced dedup collision"
+        );
+    }
+
+    #[test]
     fn stealer_preserves_the_captured_password_verbatim() {
         use serde_json::json;
         // Full fidelity: the captured password is preserved verbatim in the
