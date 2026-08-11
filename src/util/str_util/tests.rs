@@ -392,3 +392,24 @@ fn shares_whole_word_token_non_ascii_initial_is_not_a_name_token() {
     // A real two-char non-ASCII name token still matches.
     assert!(shares_whole_word_token("Ng Åse", "Åse Berg"));
 }
+
+#[test]
+fn title_case_is_idempotent_including_expanding_uppercase() {
+    use super::title_case;
+    // Regression: upper-casing only the first scalar emitted "SSeta" for "ßeta",
+    // which re-normalised to "Sseta" — two spellings each claiming to be the
+    // canonical display form. Values do get re-normalised on re-expansion paths,
+    // so the function must be a fixed point.
+    for input in [
+        "ßeta", "ﬁona", "ERIK DIEGMANN", "  kyle   diegmann ", "ǳeta", "",
+    ] {
+        let once = title_case(input);
+        assert_eq!(title_case(&once), once, "not idempotent for {input:?}");
+    }
+    assert_eq!(title_case("ßeta"), "Sseta");
+    assert_eq!(title_case("ﬁona"), "Fiona");
+    // Ordinary behaviour is unchanged.
+    assert_eq!(title_case("ERIK DIEGMANN"), "Erik Diegmann");
+    assert_eq!(title_case("  kyle   diegmann "), "Kyle Diegmann");
+    assert_eq!(title_case(""), "");
+}

@@ -911,9 +911,11 @@ fn au_network_operator_in(
 }
 
 /// True when the four bytes `bytes[i..i + 4]` form a **standalone** Australian
-/// postcode: four ASCII digits parsing to `2000..=9999` that are not part of a
-/// longer digit run on either side — so `20267` is rejected rather than read as
-/// `2026`, and `12026` is not read as `2026` either.
+/// postcode: four ASCII digits that fall in an assigned state range per
+/// [`state_for_postcode`] — which includes the leading-zero ACT (`0200..=0299`)
+/// and NT (`0800..=0999`) ranges a bare `2000..=9999` gate would drop — and that
+/// are not part of a longer digit run on either side, so `20267` is rejected
+/// rather than read as `2026`, and `12026` is not read as `2026` either.
 ///
 /// This is the single canonical postcode-boundary predicate shared by the AU
 /// free-text parsers (`modules::au_property::extract_postcode` and
