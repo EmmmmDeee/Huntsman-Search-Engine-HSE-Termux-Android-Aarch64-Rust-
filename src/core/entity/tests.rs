@@ -1912,6 +1912,81 @@ fn absorb_dedups_identically_on_both_branches() {
     );
 }
 
+#[test]
+fn derived_entity_promotion_source_is_not_an_independent_source() {
+    // A `derived` entity whose only real source is its own generator
+    // (`email_parse`) must NOT be lifted to two-source agreement by a promotion
+    // pass. `source_count` already gated this; `corroborating_sources` did not,
+    // so ~20 correlator gates counted it as two independent sources.
+    let mut e = Entity::new(EntityKind::Username, "example-user", 0.55, "s");
+    e.tag("derived");
+    e.add_evidence(Evidence::new(
+        "email_parse",
+        "Derived from example-user@protonmail.com",
+    ));
+    e.add_evidence(Evidence::new(
+        "multipath_corroboration",
+        "Linked across 3 independent pathways",
+    ));
+    assert_eq!(e.corroborating_sources().len(), 1);
+    assert!(e.corroborating_sources().contains("email_parse"));
+    assert!(
+        !e.corroborating_sources()
+            .contains("multipath_corroboration")
+    );
+    // The SET and the COUNT must agree.
+    assert_eq!(e.corroborating_sources().len() as u32, e.source_count());
+}
+
+#[test]
+fn grounded_entity_still_counts_its_promotion_source() {
+    // A non-derived entity with one real source IS grounded, so a promotion
+    // pass legitimately adds breadth: two distinct corroborating sources.
+    let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.5, "s");
+    e.add_evidence(Evidence::new("hibp", "breach"));
+    e.add_evidence(Evidence::new("multipath_corroboration", "linked"));
+    assert_eq!(e.corroborating_sources().len(), 2);
+    assert_eq!(e.corroborating_sources().len() as u32, e.source_count());
+}
+
+#[test]
+fn corroborating_sources_len_equals_source_count_across_shapes() {
+    // The SET and the grounded COUNT agree for every combination of derived-ness
+    // and source mix — the invariant that keeps the confidence model and the
+    // rule gates from disagreeing.
+    let sources = [
+        "email_parse",
+        "hibp",
+        "crtsh",
+        "geo_normalize",
+        "recall",
+        "multipath_corroboration",
+        "cross_scan_corroboration",
+    ];
+    for mask in 0u32..(1 << sources.len()) {
+        for derived in [false, true] {
+            let mut e = Entity::new(EntityKind::Username, "x", 0.4, "s");
+            if derived {
+                e.tag("derived");
+            }
+            for (i, s) in sources.iter().enumerate() {
+                if mask & (1 << i) != 0 {
+                    e.add_evidence(Evidence::new(*s, "ev"));
+                }
+            }
+            let set = e.corroborating_sources();
+            if !set.is_empty() {
+                assert_eq!(
+                    set.len() as u32,
+                    e.source_count(),
+                    "mask={mask} derived={derived}"
+                );
+            }
+            assert!(set.is_subset(&e.evidence_sources()));
+        }
+    }
+}
+
 // ── Property tests (proptest) ──────────────────────────────────────────────
 mod prop {
     use proptest::prelude::*;

@@ -31,7 +31,7 @@ use crate::core::relation::Relation;
 /// form), with a lexicographic tie-break for determinism; only addresses sharing
 /// a [`crate::util::address_au::locality_key`] are merged, so a street address is
 /// never folded into a bare suburb.
-pub(super) fn consolidate_address_localities(entities: &mut Vec<Entity>) {
+pub(super) fn consolidate_address_localities(entities: &mut Vec<Entity>) -> Vec<(String, String)> {
     let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
     for (i, e) in entities.iter().enumerate() {
         if e.kind == EntityKind::Address {
@@ -68,8 +68,16 @@ pub(super) fn consolidate_address_localities(entities: &mut Vec<Entity>) {
         }
     }
     if folds.is_empty() {
-        return;
+        return Vec::new();
     }
+    // (victim_uid, survivor_uid) for each fold — the caller detaches the victim's
+    // per-scan observation row (the fold only removes it from THIS Vec; the
+    // checkpoint path already made it a durable observation) and re-points any
+    // lineage edge that named a victim at its survivor.
+    let folded: Vec<(String, String)> = folds
+        .iter()
+        .map(|(s, v)| (v.uid.clone(), entities[*s].uid.clone()))
+        .collect();
     for (survivor, victim) in folds {
         entities[survivor].absorb(victim);
     }
@@ -79,6 +87,7 @@ pub(super) fn consolidate_address_localities(entities: &mut Vec<Entity>) {
         idx += 1;
         keep
     });
+    folded
 }
 
 /// Promote geo-corroborated family (free, offline, per scan).

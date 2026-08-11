@@ -281,6 +281,16 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
         }
         for link in crate::util::extract::urls(&bio) {
             let link = link.as_str();
+            // Skip Valve's own asset/platform hosts — Steam injects emoticon and
+            // avatar `<img>` URLs on these CDNs into the bio, and emitting them as
+            // `personal-site` made a shared asset host read downstream as an
+            // account the subject controls (AU-055 Critical). See
+            // `STEAM_PLATFORM_HOSTS`.
+            if crate::util::url_util::host_from_url(link)
+                .is_some_and(|h| is_steam_platform_host(&h))
+            {
+                continue;
+            }
             let mut url_e = Entity::new(
                 EntityKind::Url,
                 link,
@@ -293,7 +303,7 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
             result.push(url_e);
             if let Some(host) = crate::util::url_util::host_from_url(link)
                 && host.contains('.')
-                && host != "steamcommunity.com"
+                && !is_steam_platform_host(&host)
             {
                 let mut d =
                     Entity::new(EntityKind::Domain, &host, (conf - 0.25).max(0.38), scan_id);
@@ -309,6 +319,52 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
             }
         }
     }
+}
+
+/// Valve's own platform hosts. A Steam `<summary>` is HTML that Valve fills in:
+/// every `:emoticon:` token the user typed is rendered as an `<img>` on one of
+/// these asset CDNs, so mining the bio for links surfaces Steam's chrome, not
+/// the subject's own site. Emitting those as `personal-site` made a shared asset
+/// host read downstream as an account the subject CONTROLS (AU-055, Critical).
+/// Matched as a registrable suffix so every regional/CDN subdomain
+/// (`community.akamai.`, `community.cloudflare.`, `cdn.akamai.`, `avatars.`, …)
+/// is covered by one entry each. Steam's Akamai asset hosts are handled
+/// separately by [`is_steam_akamai_host`] — see that function for why the bare
+/// `akamaihd.net` suffix must NOT appear here.
+const STEAM_PLATFORM_HOSTS: &[&str] = &[
+    "steamstatic.com",
+    "steamcommunity.com",
+    "steampowered.com",
+    "valvesoftware.com",
+];
+
+/// Valve's Steam-specific Akamai asset hosts all live under `akamaihd.net` with a
+/// `steam…-a` leftmost label (`steamcdn-a.akamaihd.net`,
+/// `steamuserimages-a.akamaihd.net`, `steamcommunity-a.akamaihd.net`, …).
+/// `akamaihd.net` itself is Akamai's *shared* CDN suffix, serving countless
+/// unrelated third parties, so matching the bare suffix would drop a subject's
+/// genuine personal link merely for being Akamai-hosted — over-suppression that
+/// silently loses intelligence. Gating on a `steam`-prefixed leftmost label keeps
+/// only Valve's own asset hosts (present and future `steam*-a` names) while
+/// leaving any other `*.akamaihd.net` link intact.
+fn is_steam_akamai_host(host: &str) -> bool {
+    host.ends_with(".akamaihd.net")
+        && host
+            .split('.')
+            .next()
+            .is_some_and(|label| label.starts_with("steam"))
+}
+
+/// True when `host` is one of [`STEAM_PLATFORM_HOSTS`] (or a subdomain) or a
+/// Steam Akamai asset host ([`is_steam_akamai_host`]). ASCII-case-insensitive;
+/// `www.` is not special-cased because these hosts never carry it in the markup
+/// Valve emits.
+fn is_steam_platform_host(host: &str) -> bool {
+    let h = host.trim().to_ascii_lowercase();
+    is_steam_akamai_host(&h)
+        || STEAM_PLATFORM_HOSTS
+            .iter()
+            .any(|s| h == *s || h.ends_with(&format!(".{s}")))
 }
 
 /// Extract the text of the first `<tag>…</tag>`, unwrapping a CDATA section and

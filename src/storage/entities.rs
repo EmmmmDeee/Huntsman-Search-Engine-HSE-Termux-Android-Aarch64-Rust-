@@ -99,6 +99,77 @@ impl super::Store {
         Ok(())
     }
 
+    /// Remove `entity_uids` from `scan_id`'s `entity_observations` — the
+    /// store-side half of the finalise-time address-locality fold. One cached
+    /// statement per uid under a single transaction (the uid list is the size of
+    /// one scan's folded address groups — single digits — so a bound `IN` list
+    /// would buy nothing). Returns the number of observation rows removed.
+    ///
+    /// A folded victim's `entities` row is kept when it is still observed by
+    /// ANOTHER scan (the store is content-addressed and shared). A victim left
+    /// with NO remaining observation, however, is fully absorbed into its
+    /// survivor and must be removed here: otherwise the idempotent backfill in
+    /// [`Store::open`](super::Store::open) would re-derive its `(uid, scan_id)`
+    /// observation from the retained row and silently resurrect the folded
+    /// duplicate on the next process restart. The orphan cleanup mirrors
+    /// [`Store::delete_scan`](super::Store::delete_scan) — an explicit FTS
+    /// `'delete'` before the row, so the contentless-external index stays
+    /// synchronised — but scoped to just the detached uids.
+    pub fn detach_scan_observations(&self, scan_id: &str, entity_uids: &[String]) -> Result<usize> {
+        if entity_uids.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        let mut n = 0usize;
+        {
+            let mut stmt = tx.prepare_cached(
+                "DELETE FROM entity_observations WHERE scan_id = ?1 AND entity_uid = ?2",
+            )?;
+            for uid in entity_uids {
+                n += stmt.execute(params![scan_id, uid])?;
+            }
+        }
+        // Collect any detached uid that now has zero observations (a fully
+        // absorbed victim), then FTS-delete + drop its row. Two passes so the
+        // lookup statement isn't borrowed while the delete statements run.
+        let orphans: Vec<(String, i64, String, String)> = {
+            let mut find = tx.prepare_cached(
+                "SELECT rowid, value, kind FROM entities e
+                 WHERE e.uid = ?1
+                   AND NOT EXISTS (SELECT 1 FROM entity_observations o WHERE o.entity_uid = e.uid)",
+            )?;
+            let mut acc = Vec::new();
+            for uid in entity_uids {
+                let mut rows = find.query_map(params![uid], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })?;
+                if let Some(row) = rows.next() {
+                    let (rowid, value, kind) = row?;
+                    acc.push((uid.clone(), rowid, value, kind));
+                }
+            }
+            acc
+        };
+        if !orphans.is_empty() {
+            let mut del_fts = tx.prepare_cached(
+                "INSERT INTO entities_fts(entities_fts, rowid, value, kind)
+                 VALUES('delete', ?1, ?2, ?3)",
+            )?;
+            let mut del_row = tx.prepare_cached("DELETE FROM entities WHERE uid = ?1")?;
+            for (uid, rowid, value, kind) in &orphans {
+                del_fts.execute(params![rowid, value, kind])?;
+                del_row.execute(params![uid])?;
+            }
+        }
+        tx.commit()?;
+        Ok(n)
+    }
+
     /// Persist a batch of entities under one transaction. On the happy path
     /// (every entity new or a clean merge) this collapses N per-entity
     /// commits into a single WAL fsync — a material win on low-power aarch64.

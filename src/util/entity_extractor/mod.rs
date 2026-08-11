@@ -75,6 +75,9 @@ pub enum EntityKind {
     IpRange,
     Port,
     Identifier,
+    /// A WGS84 `lat,lon` fix — e.g. an EXIF GPS coordinate recovered from an
+    /// ingested image. Maps to core `EntityKind::Coordinates`.
+    Coordinates,
     Unknown(String),
 }
 
@@ -99,6 +102,7 @@ impl From<&str> for EntityKind {
             "iprange" => Self::IpRange,
             "port" => Self::Port,
             "id" | "identifier" => Self::Identifier,
+            "coordinates" | "coords" | "coordinate" => Self::Coordinates,
             other => Self::Unknown(other.to_string()),
         }
     }
@@ -121,6 +125,7 @@ impl EntityKind {
             Self::IpRange => "iprange",
             Self::Port => "port",
             Self::Identifier => "identifier",
+            Self::Coordinates => "coordinates",
             Self::Unknown(s) => s.as_str(),
         }
     }
@@ -256,8 +261,8 @@ mod tests {
         // round-trip for every concrete variant so any drift fails a test rather
         // than corrupting a serialized entity.
         use EntityKind::{
-            Domain, Email, Hash, Identifier, IpRange, Ipv4, Ipv6, Organization, Person, Phone,
-            Port, SocialHandle, Url, Username,
+            Coordinates, Domain, Email, Hash, Identifier, IpRange, Ipv4, Ipv6, Organization,
+            Person, Phone, Port, SocialHandle, Url, Username,
         };
         let kinds = [
             Email,
@@ -274,6 +279,7 @@ mod tests {
             IpRange,
             Port,
             Identifier,
+            Coordinates,
         ];
         for k in kinds {
             assert_eq!(

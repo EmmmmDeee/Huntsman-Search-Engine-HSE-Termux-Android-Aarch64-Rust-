@@ -27,6 +27,7 @@ pub(crate) fn map_entity_kind(kind: &ExtractorEntityKind) -> CoreEntityKind {
         ExtractorEntityKind::IpRange => CoreEntityKind::Cidr,
         ExtractorEntityKind::Port => CoreEntityKind::Other("port".to_string()),
         ExtractorEntityKind::Identifier => CoreEntityKind::DeviceId,
+        ExtractorEntityKind::Coordinates => CoreEntityKind::Coordinates,
         ExtractorEntityKind::Unknown(s) => CoreEntityKind::Other(s.clone()),
     }
 }
@@ -117,7 +118,7 @@ mod tests {
         // a test failure, not a surprise in the scan graph.
         use CoreEntityKind as C;
         use EntityKind as E;
-        let cases: [(E, C); 15] = [
+        let cases: [(E, C); 16] = [
             (E::Email, C::Email),
             (E::Phone, C::Phone),
             (E::Ipv4, C::IpAddress),
@@ -132,6 +133,7 @@ mod tests {
             (E::IpRange, C::Cidr),
             (E::Port, C::Other("port".to_string())),
             (E::Identifier, C::DeviceId),
+            (E::Coordinates, C::Coordinates),
             (
                 E::Unknown("custom-kind".to_string()),
                 C::Other("custom-kind".to_string()),
@@ -144,6 +146,33 @@ mod tests {
                 "mapping drifted for {ext:?}"
             );
         }
+    }
+
+    #[test]
+    fn exif_coordinates_entity_converts_to_core_coordinates() {
+        // The `hse ingest --extract-geolocation` path mints a Coordinates
+        // ExtractedEntity from an EXIF GPS fix; it must reach the scan pipeline as
+        // a core Coordinates entity whose value the geo layer can parse.
+        let extracted = ExtractedEntity {
+            kind: EntityKind::Coordinates,
+            value: "-27.476611,153.016611".to_string(),
+            confidence: 0.9,
+            context: Some("EXIF GPS (exif_gps); camera Apple iPhone".to_string()),
+            source_pattern: "exif_gps".to_string(),
+            boost_reason: None,
+        };
+        let entity = extracted_to_hse_entity(
+            &extracted,
+            "scan-1",
+            "ingest:photo.jpg",
+            "document-ingestion",
+        );
+        assert_eq!(entity.kind, CoreEntityKind::Coordinates);
+        assert_eq!(entity.value, "-27.476611,153.016611");
+        assert!(
+            crate::util::geohash::parse_coords(&entity.value).is_some(),
+            "the geo layer must be able to parse the emitted value"
+        );
     }
 
     #[test]

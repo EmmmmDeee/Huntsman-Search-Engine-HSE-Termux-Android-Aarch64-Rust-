@@ -23,6 +23,14 @@ use crate::core::{
 };
 
 const KEY_ENV: &str = "HUNTSMAN_HUNTER_KEY";
+
+/// The key pool addresses this provider as `hunter` (its `ServiceDef.name`), not
+/// as the module name — resolved from this module's own `KEY_ENV` so the two can
+/// never drift. See [`crate::util::service_defs::service_for_env`]. Falls back to
+/// `SRC` when the env var is somehow unregistered (behaviour-preserving).
+fn pool_service() -> &'static str {
+    crate::util::service_defs::service_for_env(KEY_ENV).map_or(SRC, |d| d.name)
+}
 const SRC: &str = "hunter_io";
 
 pub struct HunterIo;
@@ -199,7 +207,11 @@ impl Module for HunterIo {
             .map_err(|e| Error::module(SRC, e.without_url().to_string()))?;
         // 401/403/429 → report_key_exhausted + Err; 404 → Ok(None) (domain
         // absent from Hunter); other non-2xx → Err via http_status_error.
-        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
+        // Address the key pool by its canonical SERVICE name (`hunter`), NOT the
+        // module name — the pool stores this key under `hunter`, so burning it
+        // under `hunter_io` was a silent no-op (see `pool_service`).
+        let Some(resp) = crate::util::http::keyed_ok_or_404(pool_service(), key, ctx, resp).await?
+        else {
             return Ok(ModuleResult::new());
         };
 
@@ -214,7 +226,7 @@ impl Module for HunterIo {
                 .as_deref()
                 .or(first.id.as_deref())
                 .unwrap_or("api error");
-            ctx.report_key_exhausted(SRC, key, 200);
+            ctx.report_key_exhausted(pool_service(), key, 200);
             return Err(Error::module(SRC, format!("api 200 error: {detail}")));
         }
         let Some(data) = wrap.data else {

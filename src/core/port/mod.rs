@@ -71,6 +71,17 @@ pub trait StoragePort: Send + Sync {
     fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>>;
     fn observation_count(&self, entity_uid: &str) -> Result<usize>;
 
+    /// Detach `entity_uids` from `scan_id`'s observation set — the store-side
+    /// half of a finalise-time fold (see
+    /// [`crate::core::engine`]'s address-locality consolidation). The `entities`
+    /// ROW is never deleted: another scan may legitimately observe the same uid,
+    /// and the content-addressed store is shared. Returns the number of
+    /// observation rows removed. Default `Ok(0)` so existing implementors compile
+    /// unchanged; a store that cannot detach simply keeps the duplicate.
+    fn detach_scan_observations(&self, _scan_id: &str, _entity_uids: &[String]) -> Result<usize> {
+        Ok(0)
+    }
+
     // ── Correlations ───────────────────────────────────────────────────────
     fn upsert_correlation(&self, c: &Correlation) -> Result<()>;
     fn correlations_for_scan(&self, scan_id: &str) -> Result<Vec<Correlation>>;

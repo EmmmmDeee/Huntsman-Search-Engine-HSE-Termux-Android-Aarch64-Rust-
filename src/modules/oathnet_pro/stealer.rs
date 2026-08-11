@@ -197,6 +197,56 @@ pub(super) fn extract_stealer_entities(
         }
     }
 
+    // The captured secret as a FIRST-CLASS `Password` entity — the node the
+    // reused-secret rules (AU-047/105/121) operate on. It was previously written
+    // only into the `password` evidence attribute, and `breach_rich`'s
+    // `RICH_DETAIL_SKIP` skips that field ("already typed by the primary
+    // extractors" — true on the breach path, not here), so the paid stealer
+    // corpus produced no secret node at all. This applies the identical policy
+    // the sibling breach path already implements (`oathnet_pro::breach.rs`):
+    // sentinels dropped, an email in the password slot recovered as an Email, and
+    // a genuine secret minted with the per-account dedup key so the same secret
+    // under two accounts merges by UID into one entity carrying both accounts'
+    // evidence — exactly the ≥2-account signal AU-047 fires on. The verbatim
+    // value is preserved (no redaction), as the shared evidence attribute is.
+    if let Some(pw) = val_str(item, "password") {
+        let p = pw.trim();
+        match crate::util::extract::classify_credential_field(p) {
+            crate::util::extract::CredentialField::Sentinel => {}
+            crate::util::extract::CredentialField::Email => {
+                let lower = p.to_lowercase();
+                if seen.insert(format!("@pw-email:{lower}")) {
+                    push_stealer_entity(
+                        result,
+                        Entity::new(EntityKind::Email, p, confidence::LOW_MEDIUM, scan_id),
+                        &ev,
+                        &["recovered-from-password"],
+                    );
+                }
+            }
+            crate::util::extract::CredentialField::Secret => {
+                let len = p.chars().count();
+                let first = p.chars().next();
+                let varied = p.chars().any(|c| Some(c) != first);
+                let acct = val_str(item, "email")
+                    .or_else(|| val_str(item, "username"))
+                    .unwrap_or_default()
+                    .to_lowercase();
+                if (6..=128).contains(&len)
+                    && varied
+                    && seen.insert(format!("@pw:{}:{acct}", p.to_lowercase()))
+                {
+                    push_stealer_entity(
+                        result,
+                        Entity::new(EntityKind::Password, p, confidence::MEDIUM_HIGH, scan_id),
+                        &ev,
+                        &["plaintext-password"],
+                    );
+                }
+            }
+        }
+    }
+
     // Maximum-raw-data long tail: the defining payload of an infostealer log —
     // device fingerprints (HWID / MAC / hostname), extra social handles,
     // employer, and every remaining scalar field — surfaced as first-class,

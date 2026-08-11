@@ -355,3 +355,57 @@ fn paste_url_only_reconstructs_pastebin() {
         .expect("should succeed");
     assert!(paste_url(&r).is_none());
 }
+
+/// The breach entities the paid `/breachedaccount` response already produced must
+/// survive a best-effort `/pasteaccount` failure — the paste half now swallows
+/// its error (a `?` there previously dropped the whole finding via the engine's
+/// `Ok(Err)` arm). This anchors the accumulator-preservation contract the paste
+/// match arms rely on: a `ModuleResult` holding breach entities is returned
+/// intact when the paste half contributes nothing.
+#[test]
+fn breach_entities_survive_a_paste_half_that_yields_nothing() {
+    // Simulate the post-/breachedaccount accumulator, then the paste-failure arm
+    // (which extends with nothing).
+    let mut result = ModuleResult::new();
+    let mut email = Entity::new(
+        EntityKind::Email,
+        "victim@example.com",
+        confidence::HIGH,
+        "s",
+    );
+    email.tag(tags::BREACH);
+    email.tag("hibp");
+    email.add_evidence(breach_evidence(&one_breach(
+        r#"[{"Name":"Adobe","BreachDate":"2013-10-04","DataClasses":["Passwords"]}]"#,
+    )));
+    result.push(email);
+    let mut dom = Entity::new(
+        EntityKind::Domain,
+        "adobe.com",
+        confidence::MEDIUM_HIGH,
+        "s",
+    );
+    dom.tag(tags::BREACH);
+    dom.tag(tags::BREACH_DERIVED);
+    result.push(dom);
+
+    // Paste half failed → extends with an empty vec (the Err/Ok(None) arms).
+    result.extend(paste_entities(&[], "victim@example.com", "s"));
+
+    assert_eq!(
+        result.len(),
+        2,
+        "breach entities preserved through paste failure"
+    );
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.has_tag(tags::BREACH)),
+        "the breach Email survives"
+    );
+    assert!(
+        !result.entities.iter().any(|e| e.has_tag("paste")),
+        "no paste tag when the paste half yielded nothing"
+    );
+}

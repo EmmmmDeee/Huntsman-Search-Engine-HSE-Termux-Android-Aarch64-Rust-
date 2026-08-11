@@ -256,3 +256,101 @@ async fn steam_profile_live_resolves_a_public_vanity() {
         "expected a resolved Steam profile URL"
     );
 }
+
+/// A Steam `<summary>` carries Valve's own emoticon/avatar CDN `<img>` URLs.
+/// Those are platform chrome, never the subject's site — they must not become a
+/// `personal-site` Url or Domain (which AU-055 reads as an account the subject
+/// controls). A genuine third-party bio link is still emitted.
+#[test]
+fn bio_steam_asset_urls_are_not_personal_sites() {
+    const FIXTURE_ASSET_BIO: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<profile>
+  <steamID64>76561198178861330</steamID64>
+  <steamID><![CDATA[torvalds]]></steamID>
+  <summary><![CDATA[Hi see https://community.akamai.steamstatic.com/economy/emoticon/steambored and https://example.org/me]]></summary>
+</profile>"#;
+    let mut r = ModuleResult::new();
+    extract_profile(FIXTURE_ASSET_BIO, confidence::HIGH_PLUSPLUS_PLUS, "s", &mut r);
+    assert!(
+        !r.entities.iter().any(|e| e.value.contains("steamstatic.com")),
+        "Steam asset CDN must not be emitted as an entity"
+    );
+    assert!(
+        r.entities.iter().any(|e| e.kind == EntityKind::Url
+            && e.value == "https://example.org/me"
+            && e.has_tag("personal-site")),
+        "a genuine third-party link is still a personal-site Url"
+    );
+    assert!(
+        r.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Domain && e.value == "example.org"),
+        "the genuine third-party host is still a derived Domain"
+    );
+}
+
+#[test]
+fn is_steam_platform_host_matches_subdomains_not_lookalikes() {
+    for h in [
+        "steamstatic.com",
+        "community.akamai.steamstatic.com",
+        "community.cloudflare.steamstatic.com",
+        "avatars.steamstatic.com",
+        "steamcdn-a.akamaihd.net",
+        "steamuserimages-a.akamaihd.net",
+        "steamcommunity-a.akamaihd.net",
+        "steamcommunity.com",
+        "api.steampowered.com",
+    ] {
+        assert!(is_steam_platform_host(h), "{h} should be a Steam platform host");
+    }
+    for h in [
+        "notsteamstatic.com",
+        "steamstatic.com.evil.net",
+        "example.org",
+        "steamcommunity.com.phish.io",
+        // `akamaihd.net` is Akamai's SHARED CDN suffix: a non-Steam host on it is
+        // a legitimate third-party link and must survive, not be dropped as
+        // platform chrome. Only Valve's `steam…-a` asset hosts are suppressed.
+        "media.akamaihd.net",
+        "cdn.wetransfer.akamaihd.net",
+        "akamaihd.net",
+    ] {
+        assert!(!is_steam_platform_host(h), "{h} must NOT be a Steam platform host");
+    }
+}
+
+/// Full-fidelity guarantee for the AU-055 fix: a subject's genuine personal link
+/// that merely happens to be Akamai-hosted (`*.akamaihd.net`, Akamai's shared
+/// CDN) must still be emitted as a `personal-site` Url and a derived Domain —
+/// only Valve's own `steam…-a.akamaihd.net` asset hosts are dropped. Guards
+/// against over-suppression re-entering via the bare `akamaihd.net` suffix.
+#[test]
+fn bio_non_steam_akamai_link_is_preserved() {
+    const FIXTURE: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<profile>
+  <steamID64>76561198178861330</steamID64>
+  <steamID><![CDATA[torvalds]]></steamID>
+  <summary><![CDATA[avatar https://steamcdn-a.akamaihd.net/steamcommunity/public/images/avatars/ab/abc.jpg mirror https://downloads.example.akamaihd.net/me.zip]]></summary>
+</profile>"#;
+    let mut r = ModuleResult::new();
+    extract_profile(FIXTURE, confidence::HIGH_PLUSPLUS_PLUS, "s", &mut r);
+    assert!(
+        !r.entities
+            .iter()
+            .any(|e| e.value.contains("steamcdn-a.akamaihd.net")),
+        "Valve's own Akamai asset host is still dropped"
+    );
+    assert!(
+        r.entities.iter().any(|e| e.kind == EntityKind::Url
+            && e.value.contains("downloads.example.akamaihd.net")
+            && e.has_tag("personal-site")),
+        "a genuine third-party Akamai-hosted link survives as a personal-site Url"
+    );
+    assert!(
+        r.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Domain && e.value == "downloads.example.akamaihd.net"),
+        "the genuine third-party Akamai host is still a derived Domain"
+    );
+}

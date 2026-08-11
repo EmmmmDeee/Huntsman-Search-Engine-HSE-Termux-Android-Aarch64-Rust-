@@ -568,11 +568,29 @@ impl Hibp {
         // pure builder folds a `paste` tag + count/recency evidence onto the
         // Email and mints a Url pivot per URL-reconstructable paste.
         let paste_url = format!("{BASE_URL}/pasteaccount/{email}");
-        if let Some(pastes) = self
+        // BEST-EFFORT, as this half is documented to be: the breach entities
+        // above are already built from a paid `/breachedaccount` response. A `?`
+        // here returned Err from `process()`, and the engine's `Ok(Err(_))` arm
+        // (`engine::dispatch::finalise_module_result`) merges NO entities — so a
+        // 429/5xx on the second request silently destroyed the whole breach
+        // finding the subscription had just paid for. Mirrors `chain_intel`'s
+        // `enrich_eth` (`.await.ok()`) and `xposed_or_not`'s `fetch_analytics`.
+        // A 401/403/429 still burns the key inside `api_get` before it returns.
+        match self
             .api_get::<Vec<Paste>>(key, tried, &paste_url, ctx)
-            .await?
+            .await
         {
-            result.extend(paste_entities(&pastes, target.value.trim(), &ctx.scan_id));
+            Ok(Some(pastes)) => {
+                result.extend(paste_entities(&pastes, target.value.trim(), &ctx.scan_id));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::debug!(
+                    module = SRC,
+                    error = %e,
+                    "paste oracle unavailable — keeping the breach findings already acquired"
+                );
+            }
         }
 
         Ok(())

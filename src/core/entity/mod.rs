@@ -610,10 +610,11 @@ impl Entity {
     /// Number of DISTINCT corroborating sources backing this entity — the
     /// true cross-correlation signal that drives the C_eff boost.
     ///
-    /// This is `corroborating_sources().len()` (distinct `evidence.source`
-    /// strings, since every module emits one stable source name, minus the
-    /// deterministic self-enrichment passes in [`ENRICHMENT_ONLY_SOURCES`]),
-    /// floored at 1. When no corroborating evidence is attached (synthetic/test
+    /// This is `corroborating_sources().len()` — the same grounded set (distinct
+    /// `evidence.source` strings minus the non-corroborating passes, with the
+    /// same promotion-source grounding gate), computed here without allocating a
+    /// `HashSet` — floored at 1. When no corroborating evidence is attached
+    /// (synthetic/test
     /// entities, an entity constructed before its evidence, or one carrying only
     /// enrichment evidence) it falls back to the stored `corroboration` field so
     /// an explicitly-set strength value is still honoured.
@@ -920,11 +921,35 @@ impl Entity {
     /// correlator rules; the full [`Self::evidence_sources`] set is retained for
     /// display and attribute access.
     pub fn corroborating_sources(&self) -> std::collections::HashSet<&str> {
-        self.evidence
-            .iter()
-            .map(|ev| ev.source.as_str())
-            .filter(|&s| !is_non_corroborating_source(s))
-            .collect()
+        // GROUNDING GATE — identical to the one [`Self::source_count`] applies,
+        // so the SET and the COUNT can never disagree about whether an entity is
+        // independently corroborated. Promotion passes
+        // (`multipath_corroboration`, `cross_scan_corroboration`) re-fire every
+        // scan and must never GROUND an entity by themselves (see
+        // [`is_promotion_source`]): they join the set only once the entity
+        // already holds enough REAL sources — 1 normally, 2 when it is `derived`
+        // (its lone real source is its own generator). Before this gate lived
+        // here, ~20 correlator/engine gates keyed on this set counted a
+        // promotion pass as an independent observation while `source_count`
+        // (correctly) did not.
+        let derived = self.has_tag("derived");
+        let mut real: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut promo: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for ev in &self.evidence {
+            let s = ev.source.as_str();
+            if is_non_corroborating_source(s) {
+                continue;
+            }
+            if is_promotion_source(s) {
+                promo.insert(s);
+            } else {
+                real.insert(s);
+            }
+        }
+        if real.len() >= if derived { 2 } else { 1 } {
+            real.extend(promo);
+        }
+        real
     }
 
     /// The set of DISTINCT corroborating evidence *records* — `(source, summary)`
