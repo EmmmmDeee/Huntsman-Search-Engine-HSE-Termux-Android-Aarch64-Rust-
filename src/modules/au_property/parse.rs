@@ -119,7 +119,11 @@ fn extract_suburb_from_line(line: &str, state: &str) -> String {
             .copied()
             .collect::<Vec<_>>()
             .join(" ");
-        if !suburb.is_empty() && suburb.len() <= 30 {
+        // Chars, not bytes: this module is deliberately full-Unicode (see
+        // `name_matches`), and a byte cap silently rejects an accented suburb
+        // well inside the intended 30-character limit — dropping the whole
+        // PropertyRecord, since parse_response requires a non-empty suburb.
+        if !suburb.is_empty() && suburb.chars().count() <= 30 {
             return suburb;
         }
     }
@@ -289,6 +293,23 @@ mod suburb_line_tests {
     #[test]
     fn returns_empty_when_state_token_absent() {
         assert_eq!(extract_suburb_from_line("just some words", "NSW"), "");
+    }
+
+    #[test]
+    fn accented_suburb_within_the_char_cap_is_kept() {
+        // Regression: the 30-cap was applied to str::len() (BYTES) while the
+        // test name, and this module's doc, speak in characters. This module
+        // deliberately stays full-Unicode because AU registers carry accented
+        // owner and place names, so a suburb of 26 characters that happens to
+        // occupy 33 bytes was silently rejected — and parse_response drops the
+        // whole PropertyRecord when the suburb is empty, so a legitimate
+        // title-register hit produced no Address or Coordinates at all.
+        let suburb = "PHƯỚC THỌ ĐÔNG NAM HEIGHTS"; // 26 chars, 33 bytes
+        assert!(suburb.chars().count() <= 30 && suburb.len() > 30);
+        assert_eq!(
+            extract_suburb_from_line(&format!("12 {suburb} NSW 2000"), "NSW"),
+            suburb
+        );
     }
 
     #[test]

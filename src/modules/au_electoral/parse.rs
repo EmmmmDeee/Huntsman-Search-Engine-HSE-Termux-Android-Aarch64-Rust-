@@ -31,7 +31,10 @@ pub(crate) fn extract_division(html: &str) -> Option<(String, Option<String>)> {
             .take_while(|c| c.is_alphabetic() || *c == '-' || *c == ' ' || *c == '\'')
             .collect();
         let name = name.trim().to_string();
-        if !name.is_empty() && name.len() < 40 {
+        // Chars, not bytes — a division name is text, and the sibling
+        // `au_property` parser this allow-list is kept in step with is
+        // deliberately full-Unicode.
+        if !name.is_empty() && name.chars().count() < 40 {
             // Window starts PAST the marker (`end`, not `pos`): the hint's
             // backward walk from the postcode accepts letters and spaces, so a
             // window that included the marker let it walk back through the
@@ -52,7 +55,8 @@ pub(crate) fn extract_division(html: &str) -> Option<(String, Option<String>)> {
             .take_while(|c| c.is_alphabetic() || *c == '-' || *c == ' ' || *c == '\'')
             .collect();
         let name = name.trim().to_string();
-        if !name.is_empty() && name.len() < 40 {
+        // Chars, not bytes, as above.
+        if !name.is_empty() && name.chars().count() < 40 {
             // Past the marker, as above.
             return Some((name, extract_suburb_hint(&text[end..])));
         }
@@ -121,7 +125,9 @@ fn extract_suburb_hint(window: &str) -> Option<String> {
                 .rev()
                 .collect();
             let suburb = suburb.trim().to_string();
-            if !suburb.is_empty() && suburb.len() < 30 {
+            // Chars, not bytes: an accented suburb well inside the intended
+            // 30-character limit must not be silently discarded.
+            if !suburb.is_empty() && suburb.chars().count() < 30 {
                 return Some(suburb);
             }
         }
