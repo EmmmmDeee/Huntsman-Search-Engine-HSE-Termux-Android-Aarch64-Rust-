@@ -77,6 +77,24 @@ use super::*;
     }
 
     #[test]
+    fn state_code_prefers_the_last_abbrev_token_nearest_the_trailing_postcode() {
+        // Regression: first-match-wins let an incidental leading token beat the
+        // real address state. A state abbreviation in a company name ("NT
+        // Logistics") or the ordinary word "act" must not outrank the state
+        // token that anchors the trailing "STATE POSTCODE" run.
+        assert_eq!(
+            state_code("NT LOGISTICS PTY LTD, 100 COLLINS ST, MELBOURNE VIC 3000"),
+            Some("VIC")
+        );
+        assert_eq!(
+            state_code("Trustee act, 5 Queen St, Brisbane QLD 4000"),
+            Some("QLD")
+        );
+        // A lone abbreviation anywhere still resolves.
+        assert_eq!(state_code("somewhere in the NT"), Some("NT"));
+    }
+
+    #[test]
     fn state_code_does_not_read_a_leading_us_street_number_as_an_au_postcode() {
         // Real captured US breach-record addresses (Huntsman scan 90b936dc…). A
         // 4-digit US STREET NUMBER must not be mistaken for an AU postcode: the

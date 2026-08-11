@@ -204,7 +204,7 @@ static STATE_NAMES_MATCHER: std::sync::LazyLock<MatchSet> =
 ///
 /// Iterator over the AU state codes named as whole 2–3 letter tokens in `text`
 /// (case-insensitive), in reading order, with repeats. Shared by [`state_code`]
-/// (which takes the first) and [`single_state_code`] (which checks distinctness),
+/// (which takes the last) and [`single_state_code`] (which checks distinctness),
 /// so the whole-token abbreviation scan lives in exactly one place.
 /// `eq_ignore_ascii_case` tests membership without allocating an uppercased copy
 /// of each token.
@@ -221,8 +221,13 @@ fn state_abbrev_tokens(text: &str) -> impl Iterator<Item = &'static str> + '_ {
 /// (the `WA` in "Walesby", the `SA` in "Sandgate"). Pure; no I/O.
 #[must_use]
 pub fn state_code(text: &str) -> Option<&'static str> {
-    // 1) Whole-token abbreviation (case-insensitive) — first match wins.
-    if let Some(s) = state_abbrev_tokens(text).next() {
+    // 1) Whole-token abbreviation (case-insensitive) — the LAST match wins,
+    //    for the same reason `str_util::rfind_word_ascii_ci` prefers the last
+    //    occurrence: an AU address ends "… SUBURB STATE POSTCODE", so the
+    //    trailing state token is the address's own, while an earlier one is
+    //    coincidental — a company name ("NT Logistics Pty Ltd, … VIC 3000")
+    //    or the ordinary word "act" matched case-insensitively.
+    if let Some(s) = state_abbrev_tokens(text).last() {
         return Some(s);
     }
     // 2) Full state name as a substring (names are distinctive multi-word or
