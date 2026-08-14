@@ -166,6 +166,32 @@ impl StoragePort for InMemoryStore {
         Ok(ents)
     }
 
+    fn detach_scan_observations(&self, scan_id: &str, entity_uids: &[String]) -> Result<usize> {
+        // Mirror Store::detach_scan_observations so engine finalise-fold tests
+        // exercise the real detach (and its orphan cleanup) instead of the
+        // trait's no-op default — otherwise a fold's victim stays visible under
+        // the in-memory path and a detach regression passes untested here.
+        // Drop each named uid's `(scan_id, _)` observation; when nothing observes
+        // the uid anymore, delete its entity row too (the fully-absorbed victim).
+        let mut g = self.inner.lock();
+        let mut removed = 0usize;
+        for uid in entity_uids {
+            let now_empty = if let Some(obs) = g.observations.get_mut(uid) {
+                let before = obs.len();
+                obs.retain(|(s, _)| s != scan_id);
+                removed += before - obs.len();
+                obs.is_empty()
+            } else {
+                false
+            };
+            if now_empty {
+                g.observations.remove(uid);
+                g.entities.remove(uid);
+            }
+        }
+        Ok(removed)
+    }
+
     fn entities_filtered(
         &self,
         scan_id: &str,

@@ -401,7 +401,6 @@ pub fn is_role_localpart(local: &str) -> bool {
         "donotreply",
         "abuse",
         "dns",
-        "nic",
     ];
     detagged.split(['-', '.', '_']).any(|seg| {
         let s: String = seg.chars().filter(char::is_ascii_alphanumeric).collect();

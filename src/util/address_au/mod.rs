@@ -922,12 +922,11 @@ pub fn is_standalone_postcode_at(bytes: &[u8], i: usize) -> bool {
         && !bytes.get(i + 4).is_some_and(u8::is_ascii_digit)
         && (i == 0 || !bytes[i - 1].is_ascii_digit())
         && {
-            // Four ASCII digits always fit a u32; range-gate to the AU span.
-            let pc = u32::from(bytes[i] - b'0') * 1000
-                + u32::from(bytes[i + 1] - b'0') * 100
-                + u32::from(bytes[i + 2] - b'0') * 10
-                + u32::from(bytes[i + 3] - b'0');
-            (2000..=9999).contains(&pc)
+            // Four ASCII digits — validate against the authoritative state-postcode map
+            // to ensure consistency with state_for_postcode. This includes NT (0800-0999)
+            // and ACT (0200-0299) which were previously excluded by a bare 2000..=9999 gate.
+            let pc_str = core::str::from_utf8(&bytes[i..i + 4]).unwrap_or("");
+            state_for_postcode(pc_str).is_some()
         }
 }
 

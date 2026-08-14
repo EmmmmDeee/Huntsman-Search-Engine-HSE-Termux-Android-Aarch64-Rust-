@@ -505,6 +505,59 @@ fn au033_links_abn_to_acnc_and_gleif_registry_orgs() {
     }
 }
 
+// ── AU-048 ──────────────────────────────────────────────────────────
+fn shared_key(tag: &str, emails: &[&str]) -> Entity {
+    let mut e = Entity::new(EntityKind::Credential, "AAAAB3NzaC1shared", 0.9, "scan");
+    e.tag(tag);
+    for em in emails {
+        e.add_evidence(Evidence::new("key_harvest", "reused public key").with_attr("email", *em));
+    }
+    e
+}
+
+#[test]
+fn au048_fires_for_same_local_part_across_different_domains() {
+    // Regression: a target publishing the SAME key from john@gmail.com and
+    // john@acme.com is exactly the rotated/burner seam AU-048 exists to expose.
+    // The previous local-part-only fold collapsed both to "john" and silently
+    // dropped this Critical link (cryptographic proof of common control).
+    let entities = vec![
+        shared_key("ssh-key", &["john@gmail.com", "john@acme.com"]),
+        email("john@gmail.com", &["github_user"]),
+        email("john@acme.com", &["hunter_io"]),
+    ];
+    let r = rule_au_048_shared_public_key(&RuleContext::new(&entities), "scan-test", 0);
+    assert_eq!(r.len(), 1, "two accounts sharing one key must fire");
+    assert_eq!(r[0].rule_id, "AU-048");
+    assert_eq!(r[0].severity, Severity::Critical);
+    assert_eq!(r[0].entity_uids.len(), 3, "links the key + both emails");
+    assert!(
+        r[0].description.contains("2 accounts"),
+        "counts 2 distinct controllers: {}",
+        r[0].description
+    );
+}
+
+#[test]
+fn au048_does_not_fire_for_a_login_plus_its_own_email() {
+    // A single account whose key evidence carries BOTH its login and its email
+    // ("alice" + "alice@x.com") is ONE controller, not two — must not fire.
+    let mut key = Entity::new(EntityKind::Credential, "AAAAB3NzaC1solo", 0.9, "scan");
+    key.tag("ssh-key");
+    key.add_evidence(Evidence::new("github_user", "k").with_attr("github_login", "alice"));
+    key.add_evidence(Evidence::new("key_harvest", "k").with_attr("email", "alice@x.com"));
+    let entities = vec![
+        key,
+        email("alice@x.com", &["hunter_io"]),
+        username("alice", &["github_user"]),
+    ];
+    let r = rule_au_048_shared_public_key(&RuleContext::new(&entities), "scan-test", 0);
+    assert!(
+        r.is_empty(),
+        "a login and its own email are one account, not two"
+    );
+}
+
 // ── AU-034 ──────────────────────────────────────────────────────────
 #[test]
 fn au034_links_username_to_email_by_shared_handle() {

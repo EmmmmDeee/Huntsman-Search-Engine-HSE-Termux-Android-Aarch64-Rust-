@@ -54,8 +54,13 @@ fn consolidate_address_localities_folds_postcode_variants_codebase_wide() {
     let other = Entity::new(EntityKind::Address, "Brisbane, QLD 4000", 0.45, "s");
     let unrelated = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
 
+    let bare_uid = bare.uid.clone();
+    let survivor_uid = withpc.uid.clone();
     let mut entities = vec![bare, withpc, other, unrelated];
-    consolidate_address_localities(&mut entities);
+    let folded = consolidate_address_localities(&mut entities);
+    // The fold map names the victim (bare) → survivor (postcode-bearing), so the
+    // engine can detach the victim's observation and re-point its lineage edges.
+    assert_eq!(folded, vec![(bare_uid, survivor_uid)]);
 
     let addrs: Vec<&Entity> = entities
         .iter()

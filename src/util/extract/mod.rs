@@ -71,7 +71,7 @@ pub fn urls(text: &str) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for m in URL_RE.find_iter(text) {
-        let link = m.as_str().trim_end_matches(['.', ',', ')']);
+        let link = crate::core::classifier::trim_url_punctuation(m.as_str());
         if !link.is_empty() && seen.insert(link.to_string()) {
             out.push(link.to_string());
         }

@@ -302,6 +302,30 @@ use crate::core::confidence;
     }
 
     #[test]
+    fn stealer_domain_survives_a_bare_key_collision() {
+        use serde_json::json;
+        // The shared `seen` set also carries the breach path's un-namespaced
+        // Username/IP dedup keys. A stealer `domain` whose value coincides with
+        // one of those bare strings must STILL be minted — the dedup key is now
+        // namespaced (`@stealer-domain:`), so it no longer collides. Before the
+        // fix, the bare `seen.insert(domain)` returned false and the real Domain
+        // expansion seed was silently dropped.
+        let item = json!({ "domain": ["testsite.com"] });
+        let mut seen = HashSet::new();
+        // Simulate a breach-side bare key (e.g. a Username equal to the domain).
+        seen.insert("testsite.com".to_string());
+        let mut result = ModuleResult::new();
+        extract_stealer_entities(&item, "scan", "oathnet.org:test", &mut seen, &mut result);
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == "testsite.com"),
+            "a stealer Domain must not be dropped by an un-namespaced dedup collision"
+        );
+    }
+
+    #[test]
     fn stealer_preserves_the_captured_password_verbatim() {
         use serde_json::json;
         // Full fidelity: the captured password is preserved verbatim in the
@@ -1427,5 +1451,57 @@ use crate::core::confidence;
         assert!(
             !r.entities.iter().any(|e| e.kind == EntityKind::Password && e.value.contains('@')),
             "an email must not also be minted as a Password"
+        );
+    }
+
+    #[test]
+    fn stealer_row_mints_a_first_class_password_entity() {
+        use serde_json::json;
+        // The paid stealer corpus must contribute its plaintext secret as a
+        // Password node, or AU-047/105/121 can never fire from it (the breach
+        // path already does this — the stealer path silently didn't).
+        let item = json!({
+            "url": "https://portal.example.org/login",
+            "username": "subject",
+            "password": "Tr0ub4dor&3",
+            "email": ["subject@example.org"],
+        });
+        let mut seen = HashSet::new();
+        let mut r = ModuleResult::new();
+        extract_stealer_entities(&item, "s", "fp", &mut seen, &mut r);
+        let pw: Vec<_> = r
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Password)
+            .collect();
+        assert_eq!(pw.len(), 1, "exactly one Password from the stealer row");
+        assert_eq!(pw[0].value, "Tr0ub4dor&3");
+        assert!(pw[0].has_tag("plaintext-password"));
+    }
+
+    #[test]
+    fn stealer_password_sentinel_and_email_are_not_minted_as_secrets() {
+        use serde_json::json;
+        // A paywall sentinel is not a secret; an email in the password slot is a
+        // lead recovered as an Email, never a Password (which would forge links).
+        let sentinel = json!({"url": "https://x/login", "password": "UPGRADE_TO_SEE_FULL_DATA"});
+        let mut seen = HashSet::new();
+        let mut r = ModuleResult::new();
+        extract_stealer_entities(&sentinel, "s", "fp", &mut seen, &mut r);
+        assert!(!r.entities.iter().any(|e| e.kind == EntityKind::Password));
+
+        let email_slot = json!({"url": "https://x/login", "password": "leaked@example.org"});
+        let mut seen = HashSet::new();
+        let mut r = ModuleResult::new();
+        extract_stealer_entities(&email_slot, "s", "fp", &mut seen, &mut r);
+        assert!(
+            r.entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Email && e.has_tag("recovered-from-password")),
+            "an email in the password slot is recovered as an Email"
+        );
+        assert!(
+            !r.entities.iter().any(|e| e.kind == EntityKind::Password),
+            "…never as a Password"
         );
     }

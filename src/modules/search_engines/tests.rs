@@ -2542,3 +2542,68 @@ fn pivot_engine_set_unions_reliable_core_with_proven_and_is_deterministic() {
         "an unknown proven name resolves to just the reliable core"
     );
 }
+
+#[test]
+fn extract_path_username_strips_the_at_prefix() {
+    // @handle profile roots must yield the real handle, not None.
+    assert_eq!(
+        extract_path_username("https://www.tiktok.com/@realhandle").as_deref(),
+        Some("realhandle")
+    );
+    assert_eq!(
+        extract_path_username("https://www.youtube.com/@RealHandle").as_deref(),
+        Some("RealHandle")
+    );
+    assert_eq!(
+        extract_path_username("https://mastodon.social/@jane").as_deref(),
+        Some("jane")
+    );
+    // A bare `@` is not a handle.
+    assert!(extract_path_username("https://x.com/@").is_none());
+    // Never leaks the `@` into the value.
+    assert!(
+        extract_path_username("https://medium.com/@writer")
+            .as_deref()
+            .is_none_or(|h| !h.contains('@'))
+    );
+}
+
+#[test]
+fn is_navigation_path_rejects_platform_route_words() {
+    for w in [
+        "channel",
+        "profile",
+        "orgs",
+        "gists",
+        "collections",
+        "sponsors",
+    ] {
+        assert!(is_navigation_path(w), "{w} must be a navigation path");
+    }
+    for w in ["torvalds", "jordanmeyers", "realhandle"] {
+        assert!(!is_navigation_path(w), "{w} must remain a handle");
+    }
+}
+
+#[test]
+fn youtube_channel_url_yields_no_username_entity() {
+    let target = Target::new(TargetKind::Email, "example-user@protonmail.com");
+    let results = vec![SearchResult {
+        url: "https://www.youtube.com/channel/example-user".to_string(),
+        title: "Example - YouTube".to_string(),
+        snippet: "a youtube channel".to_string(),
+        engine: "bing",
+        query: "\"example-user@protonmail.com\"".to_string(),
+    }];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        !res.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Username && e.value == "channel"),
+        "the route word `channel` must not become a username"
+    );
+    assert!(
+        res.entities.iter().any(|e| e.kind == EntityKind::Url),
+        "the URL itself is still emitted"
+    );
+}

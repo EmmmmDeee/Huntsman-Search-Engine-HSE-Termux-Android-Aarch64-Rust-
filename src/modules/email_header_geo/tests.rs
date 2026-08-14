@@ -191,3 +191,42 @@ async fn mixed_case_domain_is_detected() {
     let r = m.process(&target, &ctx).await.expect("should succeed");
     assert!(r.entities.iter().any(|e| e.value == "Australia"));
 }
+
+#[test]
+fn au_family_domains_all_infer_australia() {
+    // Every `.au` shape — direct, net, id, asn — must earn the AU signal, not
+    // just `.com.au`. The catch-all uses the `.au`-suffix 0.52 confidence branch.
+    for d in [
+        "qantas.com.au",
+        "qantas.net.au",
+        "qantas.id.au",
+        "qantas.asn.au",
+        "qantas.au",
+    ] {
+        let g = infer_geo_from_email_domain(d).unwrap_or_else(|| panic!("{d} should infer AU"));
+        assert_eq!(g.region, "Australia", "{d}");
+        assert!(
+            (g.confidence - 0.52).abs() < 1e-9,
+            "{d} confidence {}",
+            g.confidence
+        );
+    }
+}
+
+#[test]
+fn specific_au_tld_still_matches_before_the_catch_all() {
+    assert_eq!(
+        infer_geo_from_email_domain("x.com.au")
+            .expect("com.au")
+            .region,
+        "Australia"
+    );
+    // Non-AU inference is unaffected by the new `.au` catch-all.
+    assert_eq!(
+        infer_geo_from_email_domain("x.co.uk")
+            .expect("co.uk")
+            .region,
+        "United Kingdom"
+    );
+    assert!(infer_geo_from_email_domain("x.com").is_none());
+}

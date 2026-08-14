@@ -24,6 +24,14 @@ const SRC: &str = "hlr_cnam";
 const HLR_KEY_ENV: &str = "HUNTSMAN_HLR_KEY";
 const CNAM_KEY_ENV: &str = "HUNTSMAN_OPENCNAM_KEY";
 
+/// The key pool addresses the HLR provider as `hlrlookups` (its
+/// `ServiceDef.name`), not as the module name — resolved from `HLR_KEY_ENV` so
+/// the two can never drift. Burning the key under the module name `hlr_cnam` was
+/// a silent no-op. See [`crate::util::service_defs::service_for_env`].
+fn hlr_pool_service() -> &'static str {
+    crate::util::service_defs::service_for_env(HLR_KEY_ENV).map_or(SRC, |d| d.name)
+}
+
 pub struct HlrCnam;
 
 #[derive(Deserialize, Default)]
@@ -109,7 +117,10 @@ impl Module for HlrCnam {
 
         let resp = ctx.http.get(&url).send_tagged(SRC).await?;
         // 401/403/429 → note_keyed_error + Err; 404 → clean miss; other non-2xx → Err.
-        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, hlr_key, ctx, resp).await? else {
+        // Pool is keyed by the canonical service name `hlrlookups`, not the module.
+        let Some(resp) =
+            crate::util::http::keyed_ok_or_404(hlr_pool_service(), hlr_key, ctx, resp).await?
+        else {
             return Ok(ModuleResult::new());
         };
 

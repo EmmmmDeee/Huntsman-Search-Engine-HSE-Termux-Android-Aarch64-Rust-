@@ -216,3 +216,40 @@ use super::*;
             assert!(is_poolable_service(name), "{name} must be poolable");
         }
     }
+
+    #[test]
+    fn service_for_env_resolves_the_canonical_pool_name() {
+        assert_eq!(
+            service_for_env("HUNTSMAN_HUNTER_KEY").map(|d| d.name),
+            Some("hunter")
+        );
+        assert_eq!(service_for_env("HUNTSMAN_EXA_KEY").map(|d| d.name), Some("exa"));
+        assert_eq!(
+            service_for_env("HUNTSMAN_HLR_KEY").map(|d| d.name),
+            Some("hlrlookups")
+        );
+        assert!(service_for_env("HUNTSMAN_NOT_A_KEY").is_none());
+    }
+
+    /// Every keyed module whose SRC differs from its pool `ServiceDef.name` must
+    /// resolve to a registered pool service via its own KEY_ENV, or every key
+    /// burn is a silent no-op. The table below is the authoritative assertion
+    /// set. Also asserts every service is resolvable by its own name.
+    #[test]
+    fn keyed_module_pool_services_are_registered() {
+        for (env, svc) in [
+            ("HUNTSMAN_HUNTER_KEY", "hunter"),
+            ("HUNTSMAN_EXA_KEY", "exa"),
+            ("HUNTSMAN_HLR_KEY", "hlrlookups"),
+            ("HUNTSMAN_WHOISXML_KEY", "whoisxml"),
+        ] {
+            assert_eq!(service_for_env(env).map(|d| d.name), Some(svc), "{env}");
+        }
+        for d in service_defs() {
+            assert!(
+                find_service(d.name).is_some(),
+                "{} must be resolvable by name",
+                d.name
+            );
+        }
+    }

@@ -1,8 +1,27 @@
 
 use super::{
     ascii_digits, char_window, find_ascii_ci, fold_ascii_lower, is_handle, mask_secret, nonempty,
-    parse_asn, slugify, truncate_safe, whole_word_token_match,
+    parse_asn, rfind_word_ascii_ci, slugify, truncate_safe, whole_word_token_match,
 };
+
+    #[test]
+    fn rfind_word_ascii_ci_matches_whole_words_only_and_prefers_the_last() {
+        // Embedded inside a longer word → rejected (the bug this exists to fix).
+        assert_eq!(rfind_word_ascii_ci("EDWARD SMITH", "WA"), None); // WA inside EDWARD
+        assert_eq!(rfind_word_ascii_ci("SARAH", "SA"), None); // SA at index 0 of SARAH
+        // A standalone token matches, char-boundary-safe, case-insensitively.
+        assert_eq!(rfind_word_ascii_ci("EDWARD 12 COTTESLOE WA 6011", "WA"), Some(20));
+        assert_eq!(rfind_word_ascii_ci("cottesloe wa 6011", "WA"), Some(10));
+        // The LAST standalone occurrence wins (nearest the trailing postcode).
+        assert_eq!(rfind_word_ascii_ci("WA yard WA depot", "wa"), Some(8));
+        // A multibyte word before the token is a valid boundary (no panic).
+        // `İ` (U+0130) is 2 bytes, so the 8 following ASCII letters + space put
+        // `NSW` at byte 10.
+        assert_eq!(rfind_word_ascii_ci("İstanbul NSW", "NSW"), Some(10));
+        // Degenerate inputs.
+        assert_eq!(rfind_word_ascii_ci("", "wa"), None);
+        assert_eq!(rfind_word_ascii_ci("wa", ""), None);
+    }
 
     #[test]
     fn whole_word_token_match_is_whole_word_ascii_ci_with_empty_guard() {

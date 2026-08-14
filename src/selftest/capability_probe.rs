@@ -106,7 +106,7 @@ pub fn canonical_sample(kind: TargetKind) -> Option<&'static str> {
         TargetKind::Email => "test@example.com",
         TargetKind::Username => "torvalds",
         TargetKind::Phone => "+12025550123",
-        TargetKind::FullName => "Linus Torvalds",
+        TargetKind::FullName => "Fletcher Moreau",
         TargetKind::IpAddress => "8.8.8.8",
         TargetKind::Domain => "example.com",
         TargetKind::Url => "https://example.com",

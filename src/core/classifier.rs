@@ -151,6 +151,24 @@ fn score(tk: TargetKind) -> (f64, &'static str) {
 pub static URL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)\bhttps?://[^\s<>"'`)\]}]+"#).expect("valid url regex"));
 
+/// Trailing prose punctuation to strip from a located URL. [`URL_RE`] is a
+/// deliberately permissive LOCATOR: its character class already excludes
+/// whitespace, `<`, `>`, quotes and the closing brackets, but a sentence-final
+/// `.`/`,`/`;`/`:`/`!`/`?` is inside it and would otherwise be carried into the
+/// entity value — producing a URL that does not fetch and whose identity differs
+/// from the same link written without the punctuation. This is the SINGLE
+/// definition of that trim: `util::extract::urls` and the `hacker_news` bio
+/// scanner had each hand-rolled a narrower copy (`['.', ',', ')']`), which let a
+/// trailing `;`/`:`/`!`/`?` through.
+pub const URL_TRAILING_PUNCTUATION: &[char] = &['.', ',', ';', ':', '!', '?', ')'];
+
+/// Strip [`URL_TRAILING_PUNCTUATION`] from the end of a located URL. Pure;
+/// returns a sub-slice of the input, never allocates, and is idempotent.
+#[must_use]
+pub fn trim_url_punctuation(url: &str) -> &str {
+    url.trim_end_matches(URL_TRAILING_PUNCTUATION)
+}
+
 /// An email address: `local@host.tld`.
 pub static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}\b").expect("valid email regex")
@@ -212,7 +230,13 @@ pub fn extract(text: &str) -> Vec<Classified> {
 
     // Order is fixed (most-specific locator first) so output is deterministic.
     for m in URL_RE.find_iter(text) {
-        push(classify(m.as_str()), &mut out, &mut seen);
+        // URL_RE over-matches trailing prose punctuation; strip it so the value
+        // is a fetchable URL and normalises identically to the same link written
+        // without the punctuation. See `trim_url_punctuation`.
+        let link = trim_url_punctuation(m.as_str());
+        if !link.is_empty() {
+            push(classify(link), &mut out, &mut seen);
+        }
     }
     for m in EMAIL_RE.find_iter(text) {
         push(classify(m.as_str()), &mut out, &mut seen);

@@ -162,10 +162,27 @@ const SCHEMA_DDL: &str = "
             );
             ";
 
-/// Idempotent backfill of the observation junction table from `entities`.
+/// Idempotent backfill of the observation junction table from `entities`, for
+/// stores created before that table existed (every such row is missing its
+/// observation).
+///
+/// The `WHERE NOT EXISTS` guard is load-bearing, not an optimisation: it
+/// restricts the backfill to entities that have NO observation at all, so it
+/// can only ever mint an entity's FIRST (migration) observation and never
+/// re-derive one from the denormalised `entities.scan_id`. Without the guard,
+/// the finalise-time address-locality fold — which deliberately DETACHES a
+/// folded victim's `(scan_id, uid)` observation while keeping the `entities`
+/// row (see [`Store::detach_scan_observations`]) — was silently reverted on the
+/// very next `open()`: this `INSERT OR IGNORE` re-created the detached row from
+/// the victim's retained `entities.scan_id`, resurrecting the duplicate-address
+/// miscount the fold exists to remove (acute on Termux/Android, where the
+/// process restarts often). A victim that still carries an observation from
+/// another scan is now skipped here; a victim left with none is removed by the
+/// fold's own orphan cleanup, so neither can be resurrected.
 const BACKFILL_OBSERVATIONS_SQL: &str =
     "INSERT OR IGNORE INTO entity_observations(entity_uid, scan_id, observed_at)
-     SELECT uid, scan_id, observed_at FROM entities;";
+     SELECT uid, scan_id, observed_at FROM entities e
+     WHERE NOT EXISTS (SELECT 1 FROM entity_observations o WHERE o.entity_uid = e.uid);";
 
 /// Read an `i64` from an environment variable, falling back to `default` when
 /// unset or unparseable. Used for the env-tunable SQLite performance pragmas.
@@ -307,13 +324,22 @@ impl Store {
         // Backfill the FTS index for any pre-existing rows (first run after the
         // index was introduced, or an externally-restored DB). Idempotent: the
         // 'rebuild' command repopulates from the content table deterministically.
+        // `entities_fts` is an FTS5 EXTERNAL-CONTENT table (`content='entities'`),
+        // so a bare `SELECT count(*)` from the vtab is serviced from `entities`
+        // itself — it measures the CONTENT, never the index, and the freshness
+        // guard below could never fire (`fts_count == ent_count` always). The
+        // index's own row count lives in the `_docsize` shadow table (present for
+        // the default `detail=full` this table uses). `unwrap_or(0)` is fail-safe:
+        // an unreadable shadow table forces the rebuild rather than skipping it.
         let fts_count: i64 = conn
-            .query_row("SELECT count(*) FROM entities_fts", [], |r| r.get(0))
+            .query_row("SELECT count(*) FROM entities_fts_docsize", [], |r| {
+                r.get(0)
+            })
             .unwrap_or(0);
         let ent_count: i64 = conn
             .query_row("SELECT count(*) FROM entities", [], |r| r.get(0))
             .unwrap_or(0);
-        if fts_count == 0 && ent_count > 0 {
+        if fts_count < ent_count {
             // If this fails the FTS index stays empty and search silently returns
             // nothing — the exact "search is broken with no diagnostic" failure
             // mode HSE exists to avoid. Best-effort (a missing index must not
@@ -978,6 +1004,10 @@ impl crate::core::port::StoragePort for Store {
 
     fn observation_count(&self, entity_uid: &str) -> Result<usize> {
         Store::observation_count(self, entity_uid)
+    }
+
+    fn detach_scan_observations(&self, scan_id: &str, entity_uids: &[String]) -> Result<usize> {
+        Store::detach_scan_observations(self, scan_id, entity_uids)
     }
 
     fn upsert_correlation(&self, c: &Correlation) -> Result<()> {
