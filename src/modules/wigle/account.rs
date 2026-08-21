@@ -116,10 +116,30 @@ pub fn is_unverified() -> bool {
 /// side effect of `fetch.rs`'s normal traffic, not a dedicated poll. Leaves
 /// `user` untouched (a bare 412 carries no username) and only ever narrows
 /// unknown/stale state to the ground truth WiGLE just reported.
+/// Warns on the TRANSITION into the unverified state, because until this existed the condition was
+/// invisible where it actually costs the operator. A 412 is deliberately NOT an `Err` — one
+/// unverified provider must not fail a whole scan — so `fetch.rs` converts it to an empty-but-
+/// successful `Resp`, and the module then returns no entities. The result is a scan reporting
+/// "1 run, 0 errored" and no networks: indistinguishable from "there is genuinely nothing here",
+/// for every scan, forever, with the remedy (one click on the WiGLE account page) never surfaced.
+/// The status was already recorded here for `hse doctor` / `/api/v1/stats`, but an operator running
+/// `hse scan` sees neither.
+///
+/// Logged once per process, on the `Some(false)` transition only: a single scan can issue several
+/// WiGLE sub-searches (WiFi bbox, SSID, cell, Bluetooth) that would each 412, and repeating the
+/// same advice four times per scan trains the reader to ignore it.
 pub(super) fn mark_unverified(now: u64) {
     if let Ok(mut g) = account_status_cache().lock() {
+        let newly_unverified = g.verified != Some(false);
         g.verified = Some(false);
         g.last_polled_ts = Some(now);
+        if newly_unverified {
+            tracing::warn!(
+                "WiGLE account is not email-verified — the API answers every query with HTTP 412, \
+                 so WiGLE results will be EMPTY (not an error) until it is verified. Fix: open \
+                 https://wigle.net/account and send/complete the verification email."
+            );
+        }
     }
 }
 
