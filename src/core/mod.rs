@@ -56,6 +56,7 @@ pub mod timeline;
 pub mod trust;
 pub mod validation;
 pub mod webhook;
+pub mod xml;
 
 pub use cancel::CancelHandle;
 pub use correlator::{Correlation, Correlator, Severity};
