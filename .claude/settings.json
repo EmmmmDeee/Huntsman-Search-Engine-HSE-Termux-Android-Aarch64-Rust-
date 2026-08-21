@@ -1,4 +1,18 @@
 {
+  "permissions": {
+    "allowlist": [
+      "Bash",
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Agent",
+      "Artifact",
+      "Skill",
+      "AskUserQuestion"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {
@@ -9,6 +23,47 @@
           }
         ]
       }
+    ],
+    "StopBeforePush": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pre-push-gate.sh"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/user-prompt-submit.sh"
+          }
+        ]
+      }
     ]
+  },
+  "keybindings": {
+    "ctrl+g": "run /ci",
+    "ctrl+t": "run /run",
+    "ctrl+shift+t": "run /test",
+    "ctrl+shift+l": "run /loop 5m cargo test"
+  },
+  "model": "claude-opus-4-1-20250805",
+  "reasoning_effort": "high",
+  "terminal": {
+    "word_wrap": true,
+    "scroll_buffer": 10000
+  },
+  "feedback": {
+    "verbose_errors": true,
+    "show_timings": true,
+    "progress_notifications": true
+  },
+  "cache": {
+    "enable_prompt_caching": true,
+    "max_cache_size_mb": 500
   }
 }
