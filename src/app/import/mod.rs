@@ -11,6 +11,7 @@ mod csv;
 mod dossier;
 mod html;
 mod json;
+mod kml;
 mod local;
 mod oathnet_report;
 mod stealer;
@@ -105,6 +106,7 @@ pub async fn cmd_import(path: &str, output: &str) -> Result<()> {
         ImportFormat::OathnetReport => cmd_import_oathnet_report(&body, output).await,
         ImportFormat::HseCsv => cmd_import_hse_csv(&body, output).await,
         ImportFormat::DehashedCsv => cmd_import_csv(&body, output).await,
+        ImportFormat::Kml => kml::cmd_import_kml(&body, output).await,
         ImportFormat::OathnetTxt => cmd_import_txt(&body, output).await,
     }
 }
@@ -122,6 +124,10 @@ pub(crate) enum ImportFormat {
     OathnetReport,
     HseCsv,
     DehashedCsv,
+    /// A WiGLE-style KML wardriving export — the native output of the capture
+    /// device, previously unrecognised and therefore swallowed by the TXT
+    /// catch-all, which extracted nothing from it.
+    Kml,
     /// Catch-all: an OathNet stealer-log TXT (and any unrecognised plain text).
     OathnetTxt,
 }
@@ -137,6 +143,13 @@ pub(crate) fn detect_import_format(path: &str, body: &str) -> ImportFormat {
     // than misrouted. (The cmd_import / entities_from_upload callers also strip it
     // from the body they hand the PARSER, since serde_json etc. reject a leading BOM.)
     let head = body.trim_start_matches('\u{feff}').trim_start();
+    // KML before the HTML check: a KML document opens `<?xml …`, which the HTML
+    // test below does not match, so without this it fell through every text
+    // heuristic to the TXT catch-all and yielded nothing. Detected by the OGC
+    // namespace or the root element, never by the `.kml` extension alone.
+    if kml::looks_like_kml(head) {
+        return ImportFormat::Kml;
+    }
     // HTML first (by content or the `.html` hint).
     if path.ends_with(".html") || head.starts_with("<!") || head.starts_with("<html") {
         return ImportFormat::OathnetHtml;
@@ -242,6 +255,7 @@ pub(crate) async fn entities_from_upload(
         ImportFormat::OathnetReport => (parse_oathnet_report(body, sid).0, "oathnet-report"),
         ImportFormat::HseCsv => (parse_hse_csv(body, sid).0, "hse-csv"),
         ImportFormat::DehashedCsv => (parse_dehashed_csv(body, sid).0, "dehashed-csv"),
+        ImportFormat::Kml => (kml::parse_kml(body, sid).0, "kml"),
         ImportFormat::OathnetTxt => (parse_oathnet_txt(body, sid).0, "oathnet-txt"),
     };
     deduplicate_by_uid(&mut entities);
@@ -262,6 +276,12 @@ struct ImportStats {
     usernames: usize,
     coordinates: usize,
     addresses: usize,
+    /// Wi-Fi network names and hardware BSSIDs recovered from a wardriving
+    /// export. Counted separately because a survey's yield is networks-per-run,
+    /// and rolling them into `machines` (stealer-log victim hosts) would report
+    /// a wardrive as a breach.
+    ssids: usize,
+    bssids: usize,
     holehe: usize,
     machines: usize,
     device_users: usize,
@@ -849,6 +869,15 @@ fn print_import_stats(stats: &ImportStats, entity_count: usize, output: &str) {
         stats.coordinates,
         stats.addresses
     );
+    // Only meaningful for a wardriving import; suppressed otherwise so every
+    // other format's summary keeps the shape it had.
+    if stats.ssids > 0 || stats.bssids > 0 {
+        row!(
+            "  Wireless:  {} SSIDs, {} BSSIDs",
+            stats.ssids,
+            stats.bssids
+        );
+    }
     row!(
         "  Device:    {} HWIDs, {} machine log IDs",
         stats.hwids,

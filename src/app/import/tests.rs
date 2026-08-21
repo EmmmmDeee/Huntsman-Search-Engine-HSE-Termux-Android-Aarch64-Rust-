@@ -915,8 +915,28 @@ async fn local_scrape_aggregates_recognized_files_across_the_tree() {
     )
     .expect("should succeed");
     std::fs::write(root.join("pic.png"), [0u8, 159, 146, 150]).expect("should succeed");
+    // A WiGLE KML wardriving export — the native output of the capture device,
+    // and the whole point of scraping on-device storage. It routes through the
+    // shared dispatcher like every other format, so this needs no scrape-side
+    // code; the test pins that it is not skipped or swallowed by the TXT
+    // catch-all. Single-line and separator-free, as the device writes it.
+    std::fs::write(
+        root.join("survey.kml"),
+        concat!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2">"#,
+            r#"<Placemark><name>ScrapeProbeNet</name>"#,
+            r#"<description>Network ID: 00:1B:2C:3D:4E:5FEncryption: WPA2Time: 2026-08-21T16:38:38.000-07:00Signal: -70.0Accuracy: 4.0Type: WIFI</description>"#,
+            r#"<Point><coordinates>153.0,-26.8</coordinates></Point></Placemark></kml>"#,
+        ),
+    )
+    .expect("should succeed");
 
     let (ents, scanned, imported) = import_local_dir_entities(root, "s").await;
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::MacAddress && e.value == "00:1b:2c:3d:4e:5f"),
+        "a KML wardriving export in the tree must be scraped like any other format"
+    );
     let has = |v: &str| {
         ents.iter()
             .any(|e| e.kind == EntityKind::Email && e.value == v)
@@ -933,9 +953,9 @@ async fn local_scrape_aggregates_recognized_files_across_the_tree() {
         !has("skiptarget@gmail.com"),
         "target/ must be skipped, not ingested"
     );
-    // Exactly the three non-skipped candidates are scanned (dossier.txt,
-    // scans/s.json, t.csv); pic.png and target/ are excluded.
-    assert_eq!(scanned, 3, "only non-skipped candidates are scanned");
+    // Exactly the four non-skipped candidates are scanned (dossier.txt,
+    // scans/s.json, t.csv, survey.kml); pic.png and target/ are excluded.
+    assert_eq!(scanned, 4, "only non-skipped candidates are scanned");
     assert!(imported >= 2, "recognised files contributed entities");
 }
 
@@ -1147,6 +1167,82 @@ fn dossier_captures_seeknow_contact_summary_sections() {
 
     // IP ADDRESSES: a real public IP becomes a pivotable IpAddress.
     assert!(has(EntityKind::IpAddress, "24.32.96.70"));
+}
+
+/// A SeekNow export whose per-entry fields are NOT mirrored in the CONTACT
+/// SUMMARY. Dogfooding a genuine export showed the entry contributing nothing:
+/// every surviving entity carried the `dossier-list` tag, i.e. it came from the
+/// summary, and a record naming a breach corpus still reported "0 breach".
+/// Invented identifiers throughout. The IP is a routable-looking literal rather
+/// than an RFC 5737 documentation address on purpose: `is_bogus_ip` rejects the
+/// documentation ranges, so a doc-range fixture would pass this test for the
+/// wrong reason and keep passing if `lastip` were dropped again.
+const SEEKNOW_ENTRY_ONLY: &str = "\
+================================================================================
+                          RAW DATA BY DATABASE
+================================================================================
+
+  [1] Probe \u{2022} INF0SEC Leaks — Intelligence Data
+      Entry #1:
+        \u{2022} label: PROBECORP NET 1M TEST 012020
+        \u{2022} title: ProbeCorp
+        \u{2022} username: probeuser
+        \u{2022} lastip: 24.32.96.71
+";
+
+#[test]
+fn dossier_entry_fields_survive_without_a_contact_summary() {
+    let (mut ents, stats) = parse_dossier(SEEKNOW_ENTRY_ONLY, "s");
+    deduplicate_by_uid(&mut ents);
+    let has = |k: EntityKind, v: &str| ents.iter().any(|e| e.kind == k && e.value == v);
+
+    // `lastip` is the spelling SeekNow uses; it must yield the same pivotable
+    // IpAddress that a record spelling the field `ip` would. Previously the
+    // field was not whitelisted at all, so it never reached the entry and the
+    // only IPs that survived an export were the ones the summary happened to
+    // repeat.
+    assert!(
+        has(EntityKind::IpAddress, "24.32.96.71"),
+        "a `lastip` field must emit an IpAddress"
+    );
+    assert!(has(EntityKind::Username, "probeuser"));
+
+    // The entry is a breach record and must be counted as one — this path is
+    // the whole reason the dossier format exists, yet it reported zero.
+    assert_eq!(
+        stats.breach_records, 1,
+        "a dossier entry must count as a breach record"
+    );
+
+    // The corpus name and its display title are provenance: they must reach the
+    // evidence of the entities lifted from that record, so a finding can be
+    // traced back to the breach that disclosed it.
+    let ip = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress)
+        .expect("IpAddress emitted above");
+    let attrs: Vec<(&str, &str)> = ip
+        .evidence
+        .iter()
+        .flat_map(|ev| ev.attributes.iter())
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    assert!(
+        attrs.contains(&("label", "PROBECORP NET 1M TEST 012020")),
+        "the breach corpus label must be preserved as evidence, got {attrs:?}"
+    );
+    assert!(
+        attrs.contains(&("title", "ProbeCorp")),
+        "the breach display title must be preserved as evidence, got {attrs:?}"
+    );
+
+    // The corpus label embeds a domain-shaped token (`PROBECORP NET`). Mining it
+    // into a Domain seed would mint high-confidence pivots out of a naming
+    // convention, so it is deliberately NOT done.
+    assert!(
+        !ents.iter().any(|e| e.kind == EntityKind::Domain),
+        "a corpus label must not be mined into a Domain seed"
+    );
 }
 
 #[tokio::test]
@@ -1420,14 +1516,14 @@ fn parse_oathnet_html_extracts_domains_ips_and_emails() {
     use crate::core::entity::EntityKind;
     let body = "<html><body>\
         Host: example.com and sub.dept.example.com<br>\
-        IP: 203.0.113.7<br>\
+        IP: 24.32.96.71<br>\
         Contact: Alice@Example.com\
         </body></html>";
     let es = parse_oathnet_html(body, "sid");
     let has = |k: EntityKind, v: &str| es.iter().any(|e| e.kind == k && e.value == v);
     assert!(has(EntityKind::Domain, "example.com"));
     assert!(has(EntityKind::Domain, "sub.dept.example.com"));
-    assert!(has(EntityKind::IpAddress, "203.0.113.7"));
+    assert!(has(EntityKind::IpAddress, "24.32.96.71"));
     // Emails are lower-cased.
     assert!(has(EntityKind::Email, "alice@example.com"));
     // Every imported entity carries the `import` tag.
@@ -1480,7 +1576,7 @@ fn parse_oathnet_html_rejects_out_of_range_octets_keeps_valid() {
     // `999.999.999.999` and `256.1.2.3` are syntactically captured but are not
     // valid IPv4 addresses. The `parse::<IpAddr>()` gate must reject them while
     // still admitting a real public address.
-    let es = parse_oathnet_html("999.999.999.999 256.1.2.3 203.0.113.7", "sid");
+    let es = parse_oathnet_html("999.999.999.999 256.1.2.3 24.32.96.71", "sid");
     let ips: Vec<&str> = es
         .iter()
         .filter(|e| e.kind == EntityKind::IpAddress)
@@ -1488,7 +1584,7 @@ fn parse_oathnet_html_rejects_out_of_range_octets_keeps_valid() {
         .collect();
     assert_eq!(
         ips,
-        vec!["203.0.113.7"],
+        vec!["24.32.96.71"],
         "only the parseable public IP must survive; out-of-range octets are bogus"
     );
 }
