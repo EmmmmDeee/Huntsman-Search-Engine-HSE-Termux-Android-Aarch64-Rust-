@@ -184,11 +184,13 @@ impl Module for FullContact {
     }
 }
 
-/// Minimal JSON string-escape for the request body (the seed value is trusted
-/// CLI/API input, but a quote or backslash must not break the body).
-fn escape_json(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
-}
+// The shared escaper, NOT a local `.replace()` chain. The local one covered backslash and quote
+// but left the control bytes (`\n`, `\r`, `\t`, anything < 0x20) that are illegal raw inside a JSON
+// string — the exact bug `util::see_know` hit and fixed, whose unfixed twin this was. Today's
+// inputs are normalised Email/Phone seeds so no value reaches it carrying one, but that is a
+// property of the callers, not of the escape: one definition means a future input path cannot
+// inherit the broken shape. See `crate::util::json::escape_string_interior`.
+use crate::util::json::escape_string_interior as escape_json;
 
 /// Map a person.enrich response to entities. Pure of I/O (unit-tested).
 fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
