@@ -291,28 +291,12 @@ fn write_shared_evidence_edges(xml: &mut String, entities: &[Entity], edge_id: &
     }
 }
 
-fn xml_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            // XML 1.0 §2.2 forbids the C0 control chars (except tab/LF/CR) and the
-            // noncharacters U+FFFE/U+FFFF — they are illegal even as numeric
-            // references. An entity value carrying a stray control byte (breach
-            // dumps and scraped pages do) would otherwise make the WHOLE .gexf
-            // unparseable, not just that node. Drop them at the serialization
-            // boundary. (C1 controls 0x80–0x9F are valid in XML 1.0 and kept.)
-            '\u{FFFE}' | '\u{FFFF}' => {}
-            c if (c as u32) < 0x20 && !matches!(c, '\t' | '\n' | '\r') => {}
-            c => out.push(c),
-        }
-    }
-    out
-}
+// This module's own hardened escaper, now shared. It was correct here and wrong in
+// `core::snake_graph`, which had a second copy covering only the five metacharacters — the defect
+// was that there were two. Moved to `core::xml` verbatim so both serializers call one
+// implementation and cannot drift again; the rationale for dropping XML-illegal characters rather
+// than escaping them lives there.
+use crate::core::xml::escape as xml_escape;
 
 #[cfg(test)]
 mod tests {
