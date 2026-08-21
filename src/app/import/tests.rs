@@ -915,8 +915,28 @@ async fn local_scrape_aggregates_recognized_files_across_the_tree() {
     )
     .expect("should succeed");
     std::fs::write(root.join("pic.png"), [0u8, 159, 146, 150]).expect("should succeed");
+    // A WiGLE KML wardriving export — the native output of the capture device,
+    // and the whole point of scraping on-device storage. It routes through the
+    // shared dispatcher like every other format, so this needs no scrape-side
+    // code; the test pins that it is not skipped or swallowed by the TXT
+    // catch-all. Single-line and separator-free, as the device writes it.
+    std::fs::write(
+        root.join("survey.kml"),
+        concat!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2">"#,
+            r#"<Placemark><name>ScrapeProbeNet</name>"#,
+            r#"<description>Network ID: 00:1B:2C:3D:4E:5FEncryption: WPA2Time: 2026-08-21T16:38:38.000-07:00Signal: -70.0Accuracy: 4.0Type: WIFI</description>"#,
+            r#"<Point><coordinates>153.0,-26.8</coordinates></Point></Placemark></kml>"#,
+        ),
+    )
+    .expect("should succeed");
 
     let (ents, scanned, imported) = import_local_dir_entities(root, "s").await;
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::MacAddress && e.value == "00:1b:2c:3d:4e:5f"),
+        "a KML wardriving export in the tree must be scraped like any other format"
+    );
     let has = |v: &str| {
         ents.iter()
             .any(|e| e.kind == EntityKind::Email && e.value == v)
@@ -933,9 +953,9 @@ async fn local_scrape_aggregates_recognized_files_across_the_tree() {
         !has("skiptarget@gmail.com"),
         "target/ must be skipped, not ingested"
     );
-    // Exactly the three non-skipped candidates are scanned (dossier.txt,
-    // scans/s.json, t.csv); pic.png and target/ are excluded.
-    assert_eq!(scanned, 3, "only non-skipped candidates are scanned");
+    // Exactly the four non-skipped candidates are scanned (dossier.txt,
+    // scans/s.json, t.csv, survey.kml); pic.png and target/ are excluded.
+    assert_eq!(scanned, 4, "only non-skipped candidates are scanned");
     assert!(imported >= 2, "recognised files contributed entities");
 }
 
