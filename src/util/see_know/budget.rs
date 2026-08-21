@@ -63,17 +63,23 @@ pub fn release_quota_probe() {
 /// - Floor (300): a reasonable full-matrix pass even on small plans.
 /// - Ceiling (2500): prevents runaway fan-out on unlimited/very-large plans.
 ///
-/// The operator's env/runtime override is NOT touched — if `HUNTSMAN_SEEKNOW_SCAN_CAP`
-/// is set, the probe result is used only when no explicit override was given.
+/// The operator's env/runtime override is NOT touched — if either
+/// `HUNTSMAN_SEEKNOW_SCAN_CAP` or the runtime override the engine installs from
+/// `ScanOptions::seeknow_scan_cap` (the `--seeknow-scan-cap` flag) is in force,
+/// the probe result is discarded and their number stands.
 /// The session cap is left unchanged (set high; server quota is the backstop).
 pub fn scale_scan_cap_from_daily(daily_limit: u32) {
     // Do not override if the operator already set an explicit cap via env or
     // ScanOptions — their explicit value always takes precedence.
-    if std::env::var("HUNTSMAN_SEEKNOW_SCAN_CAP")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-        .is_some_and(|v| v > 0)
-    {
+    //
+    // This asks `QuotaBudget` rather than re-reading the env var here: the
+    // runtime override installed from `ScanOptions` is invisible to an env-only
+    // check, so an env-only guard silently RAISED an operator's explicit
+    // `--seeknow-scan-cap 50` to the probed plan cap (750 on a 15k plan) —
+    // spending 15x the quota they had just withheld. Delegating also keeps the
+    // env-var name in exactly one place (the `BUDGET` constructor above), so a
+    // rename cannot leave this guard silently reading a variable nobody sets.
+    if BUDGET.operator_pinned_scan_cap() {
         return;
     }
     let cap = (daily_limit / 20).clamp(ENTERPRISE.scan_budget_floor, ENTERPRISE.scan_budget_ceil);

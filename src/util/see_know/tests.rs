@@ -2,7 +2,7 @@ use serde_json::json;
 
 use super::budget::{
     budget_increment, budget_snapshot, is_quota_exhausted, release_quota_probe, reset_budget,
-    scan_budget_remaining, set_scan_cap_override, should_probe_quota,
+    scale_scan_cap_from_daily, scan_budget_remaining, set_scan_cap_override, should_probe_quota,
 };
 use super::client::{
     CLIENT, CLIENT_FAST, HARDCODED_KEY_FOR_TESTS, base_urls_for, cache_get, cache_key, cache_put,
@@ -494,6 +494,49 @@ fn snapshot_reflects_override_cap() {
     set_scan_cap_override(99);
     let snap = budget_snapshot();
     assert_eq!(snap.scan_cap, 99);
+    reset_budget();
+}
+
+#[test]
+fn quota_probe_must_not_clobber_operator_scan_cap() {
+    let _guard = BUDGET_TEST_LOCK.lock();
+    // The engine installs the operator's explicit `--seeknow-scan-cap 50`
+    // (ScanOptions::seeknow_scan_cap) as a runtime override at scan start,
+    // BEFORE any module runs — see `core::engine::run_with_ledger_inner`.
+    reset_budget();
+    set_scan_cap_override(50);
+    assert_eq!(budget_snapshot().scan_cap, 50);
+
+    // The first seed then fires the non-billable `/credits` probe, which
+    // reports a large plan. Scaling the cap to the plan must NOT overrule the
+    // operator: they asked for 50 and the documented reason for asking
+    // (docs/SEEKNOW_SETUP.md, "Temporarily limit to 50 credits for testing")
+    // is precisely to stop a big plan from being spent.
+    scale_scan_cap_from_daily(15_000);
+
+    assert_eq!(
+        budget_snapshot().scan_cap,
+        50,
+        "the /credits probe silently raised the operator's explicit per-scan \
+         cap; `scale_scan_cap_from_daily` guards only HUNTSMAN_SEEKNOW_SCAN_CAP \
+         and ignores the runtime override the CLI flag installs"
+    );
+    reset_budget();
+}
+
+#[test]
+fn quota_probe_still_scales_when_operator_set_no_cap() {
+    let _guard = BUDGET_TEST_LOCK.lock();
+    // The complement of the guard above: with no operator override in place,
+    // the probe must still scale the cap to the plan allocation, otherwise a
+    // large plan stays pinned to the conservative floor.
+    reset_budget();
+    scale_scan_cap_from_daily(15_000);
+    assert_eq!(
+        budget_snapshot().scan_cap,
+        750,
+        "with no operator override the probe must scale to clamp(daily/20, 300, 2500)"
+    );
     reset_budget();
 }
 

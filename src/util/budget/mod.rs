@@ -138,6 +138,31 @@ impl QuotaBudget {
         self.cap_override.store(cap, Ordering::Release);
     }
 
+    /// True if the operator explicitly pinned the per-scan cap — either through
+    /// the runtime override ([`set_scan_cap_override`](Self::set_scan_cap_override),
+    /// which the engine installs from `ScanOptions` at scan start) or through
+    /// this budget's env var.
+    ///
+    /// Any caller that *derives* a cap rather than being told one — scaling to a
+    /// probed plan allocation, say — must consult this and yield. An operator who
+    /// named a number meant it, and the usual reason for naming a small one is to
+    /// stop a large plan from being spent; silently raising it spends quota they
+    /// explicitly withheld. Reading both sources here (rather than at each call
+    /// site) keeps the precedence rule and the env-var name in the single type
+    /// that owns them, so a caller cannot implement half of it.
+    ///
+    /// Mirrors [`scan_cap`](Self::scan_cap)'s own precedence exactly: an override
+    /// or env value of `0` means "unset", not "cap at zero".
+    pub fn operator_pinned_scan_cap(&self) -> bool {
+        if self.cap_override.load(Ordering::Acquire) > 0 {
+            return true;
+        }
+        std::env::var(self.env_scan_cap_var)
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .is_some_and(|v| v > 0)
+    }
+
     /// True if there is room in both per-scan and per-session budgets
     /// AND the quota-exhausted flag has not been tripped.
     pub fn remaining(&self) -> bool {
