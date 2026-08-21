@@ -100,3 +100,70 @@ use super::*;
             assert!(pin.is_empty(), "{u} needs no --resolve pin, got {pin:?}");
         }
     }
+
+    // The fallback-path mirror of reqwest's
+    // `redirect_to_private_ip_blocks_metadata_and_internal`. Before this guard, the
+    // direct curl path used `curl -L`, which re-resolved a cross-host 3xx itself and
+    // would fetch a redirect to `169.254.169.254`/`http://internal.corp/` UNVETTED —
+    // reachable via a discovered-domain fetch (e.g. `fediverse`/`nostr` webfinger)
+    // whose reqwest attempt failed and fell back to curl. `curl_redirect_refused` is
+    // the per-hop decision the Rust-side redirect loop now applies.
+    #[test]
+    fn curl_redirect_refused_blocks_metadata_internal_and_bad_schemes() {
+        // Private / reserved IP-literal hops — refused outright.
+        for u in [
+            "http://169.254.169.254/latest/meta-data/", // cloud metadata
+            "http://127.0.0.1/",                         // loopback
+            "http://10.0.0.5/",                          // RFC1918
+            "http://192.168.1.1/",                       // RFC1918
+            "https://[::1]/",                            // IPv6 loopback
+            "https://[fc00::1]/",                        // ULA
+            "https://[fe80::1]/",                        // link-local
+            "https://[::ffff:169.254.169.254]/",         // IPv4-mapped metadata
+        ] {
+            assert!(
+                curl_redirect_refused(u),
+                "{u} is a private/reserved hop and must be refused"
+            );
+        }
+
+        // Non-http(s) schemes — refused (no file://, gopher://, dict:// pivots).
+        for u in [
+            "file:///etc/passwd",
+            "gopher://127.0.0.1/",
+            "dict://internal:2628/",
+            "ftp://internal/secret",
+        ] {
+            assert!(
+                curl_redirect_refused(u),
+                "{u} is a non-http(s) scheme and must be refused"
+            );
+        }
+
+        // Unparseable (no base) — refused (fail closed). NB: `http:///nohost` is
+        // NOT here — the `url` crate collapses the slash and reads it as host
+        // `nohost`, i.e. a hostname hop, so it is (correctly) deferred to
+        // connect-time resolution by `ssrf_resolve_pin`, not refused synchronously.
+        for u in ["not a url", "", "://missing-scheme"] {
+            assert!(
+                curl_redirect_refused(u),
+                "{u:?} is unparseable and must be refused"
+            );
+        }
+
+        // Public IP-literal and hostname hops — NOT refused here. A public literal
+        // is dialled directly; a hostname is re-resolved and pinned at connect by
+        // `ssrf_resolve_pin` (which drops private addresses), so a rebinding target
+        // cannot slip through by presenting as a name.
+        for u in [
+            "http://8.8.8.8/x",
+            "https://[2606:4700:4700::1111]/x",
+            "https://example.com/next",
+            "http://sub.provider.io/callback?to=1",
+        ] {
+            assert!(
+                !curl_redirect_refused(u),
+                "{u} is a public/hostname hop and must be allowed to proceed to connect-time vetting"
+            );
+        }
+    }

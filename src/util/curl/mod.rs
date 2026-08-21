@@ -45,15 +45,58 @@ pub const UA_POOL: &[&str] = &[UA_MOBILE, UA_DESKTOP, UA_FIREFOX, UA_SAFARI];
 /// device, so the bound belongs on both curl invocations, single-sourced here.
 pub(crate) const CURL_MAX_DOWNLOAD_BYTES: &str = "33554432";
 
-// SSRF residual (documented, deliberately accepted in the fallback): `--resolve`
-// pins only the *initial* host to a vetted public IP, but `curl -L` re-resolves a
-// cross-host 3xx itself, so a redirect to an internal name/IP is not vetted here.
-// Fully closing it needs a Rust-side hop-by-hop redirect loop (`--max-redirs 0`
-// per hop, re-running `ssrf_resolve_pin` on each `Location`) — disabling
-// redirects outright would break the redirecting search engines that depend on
-// this path. Mitigated meanwhile by: reqwest (the redirect-vetted primary)
-// running first, `--proto-redir =http,https` (no `file://`/`gopher://` hops), and
-// `--max-redirs 5`.
+// SSRF redirect vetting (the direct fallback path): `--resolve` pins only the
+// *initial* host, so letting `curl -L` follow a cross-host 3xx itself would
+// re-resolve an internal name/IP UNVETTED — a redirect to `169.254.169.254` or
+// `http://internal.corp/` would be fetched. Worse, this path is reached exactly
+// when reqwest (the redirect-vetted primary) *refused* such a hop and failed the
+// request, so "reqwest runs first" was not the mitigation it appeared to be.
+//
+// Closed by driving redirects hop-by-hop in Rust instead (see the direct branch
+// of `curl_exec`): each hop runs curl with NO `-L`, reads curl's resolved
+// `%{redirect_url}`, and re-vets it — `curl_redirect_refused` rejects a
+// non-http(s) scheme or a private/reserved IP-literal target outright, and
+// `ssrf_resolve_pin` re-resolves+pins a hostname target against the same
+// private/reserved set every reqwest lookup uses. A private hop stops the chain
+// (fetch refused) rather than being followed. Bounded at
+// [`MAX_CURL_REDIRECT_HOPS`]. The proxied path keeps curl's own `-L`: there the
+// proxy resolves and isolates every hop, so an operator-internal address is not
+// reachable through it. `--proto-redir =http,https` still blocks
+// `file://`/`gopher://` hops on both paths as defence in depth.
+
+/// Maximum redirect hops the direct curl path follows before refusing — matches
+/// the `--max-redirs 5` that previously bounded curl's own `-L`, now enforced by
+/// the Rust-side hop loop that vets each hop.
+const MAX_CURL_REDIRECT_HOPS: usize = 5;
+
+/// Decide, from a redirect target URL alone, whether the direct curl path must
+/// REFUSE the hop — the fallback-path mirror of reqwest's `redirect_to_private_ip`
+/// (`ssrf.rs`). Refuses an unparseable URL, a non-http(s) scheme (no
+/// `file://`/`gopher://` pivots), a host-less URL, or a private/reserved
+/// IP-literal target (loopback, RFC1918, link-local incl. `169.254.169.254`,
+/// ULA, etc., via `to_canonical`-folding `is_private_addr`). A hostname target
+/// is NOT refused here: it is re-resolved and pinned at connect by
+/// `ssrf_resolve_pin`, which drops private addresses — so a rebinding target
+/// cannot slip through by presenting as a name.
+fn curl_redirect_refused(next_url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(next_url) else {
+        return true;
+    };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return true;
+    }
+    let Some(host) = parsed.host_str() else {
+        return true;
+    };
+    if host.is_empty() {
+        return true;
+    }
+    let bare = crate::util::preflight::unbracket_host(host);
+    if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
+        return crate::util::preflight::is_private_addr(ip);
+    }
+    false
+}
 
 /// Per-fetch hardening flags shared by both curl paths — the free-function
 /// [`curl_exec`] and `curl_client::CurlClient::exec`. Restrict the wire protocol
@@ -193,8 +236,21 @@ async fn curl_exec(
             };
             let secs = curl_max_time_arg(remaining_ms);
             let started = std::time::Instant::now();
-            let res =
-                run_curl_once(url, &secs, ua, post_data, remaining_ms, Some(&proxy), None).await;
+            // Proxied: curl follows redirects itself (`follow = true`) — the
+            // proxy resolves and isolates every hop, so an operator-internal
+            // address is not reachable through it.
+            let res = run_curl_once(
+                url,
+                &secs,
+                ua,
+                post_data,
+                remaining_ms,
+                Some(&proxy),
+                None,
+                true,
+            )
+            .await
+            .map(|o| o.body);
             #[allow(clippy::cast_possible_truncation)]
             let latency = started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
             crate::util::egress::report_proxy(&proxy, res.is_some(), latency);
@@ -210,12 +266,58 @@ async fn curl_exec(
 
     // No proxy configured: direct connection, pinned to a vetted public IP so an
     // attacker-controlled host can't be rebound onto an internal address. Refuse
-    // the fetch if the host has no resolvable public IP.
-    let secs = curl_max_time_arg(timeout_ms);
-    match ssrf_resolve_pin(url).await {
-        Some(pin) => run_curl_once(url, &secs, ua, post_data, timeout_ms, None, Some(&pin)).await,
-        None => None,
+    // the fetch if the host has no resolvable public IP. Redirects are driven
+    // hop-by-hop HERE (not by curl's `-L`) so each 3xx target is re-vetted before
+    // it is fetched — closing the fallback redirect-SSRF hole.
+    //
+    // The whole chain shares ONE deadline (decremented per hop), so a redirect
+    // loop cannot multiply the caller's `timeout_ms` by the hop count — the same
+    // deadline discipline the proxy-failover loop above uses.
+    let mut pin = ssrf_resolve_pin(url).await?;
+    let deadline = std::time::Instant::now().checked_add(Duration::from_millis(timeout_ms))?;
+    let mut current = url.to_string();
+    // The POST body rides only the FIRST request. curl's own `-L` turns a
+    // 301/302/303 into a GET (dropping the body); preserving that here keeps the
+    // hop-by-hop path behaviourally identical to the `-L` it replaces, and avoids
+    // silently re-POSTing a form to a redirect target.
+    let mut body = post_data;
+    for _hop in 0..=MAX_CURL_REDIRECT_HOPS {
+        let remaining_ms = deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .as_millis() as u64;
+        if remaining_ms == 0 {
+            return None;
+        }
+        let secs = curl_max_time_arg(remaining_ms);
+        let outcome = run_curl_once(
+            &current,
+            &secs,
+            ua,
+            body,
+            remaining_ms,
+            None,
+            Some(&pin),
+            false,
+        )
+        .await?;
+        let Some(next) = outcome.next else {
+            // Terminal response (no redirect) — this is the body to return.
+            return Some(outcome.body);
+        };
+        // A redirect: vet the resolved target before following it. A non-http(s)
+        // scheme or a private/reserved IP-literal is refused outright; a hostname
+        // is re-resolved and pinned against the private/reserved set. Either
+        // refusal stops the chain rather than fetching an internal resource.
+        if curl_redirect_refused(&next) {
+            return None;
+        }
+        pin = ssrf_resolve_pin(&next).await?;
+        current = next;
+        // Method reverts to GET on the redirect, matching curl's `-L` default.
+        body = None;
     }
+    // Exceeded the hop bound — refuse rather than follow further.
+    None
 }
 
 /// Minimum remaining budget (ms) worth attempting another proxy in the
@@ -245,6 +347,22 @@ const MAX_PROXY_FAILOVER: usize = 3;
 /// direct paths so the hardening (proto/redirect limits, `--max-filesize` cap,
 /// header set, `kill_on_drop`, the outer timeout) lives in ONE place and can't
 /// drift between them.
+/// One curl outcome: the response body, and — in hop-by-hop mode — the next-hop
+/// URL curl *would* have followed (its resolved-to-absolute `%{redirect_url}`),
+/// so the caller can vet it before re-issuing. `next` is always `None` in
+/// `follow`-mode (curl already followed) and when the response is terminal.
+struct CurlOnce {
+    body: String,
+    next: Option<String>,
+}
+
+/// `follow = true`  → curl follows redirects itself (`-L`), bounded by
+/// `--max-redirs`; used ONLY on the proxied path, where the proxy resolves and
+/// isolates every hop. `follow = false` → curl does NOT follow; it emits the
+/// resolved next-hop URL via `-w %{redirect_url}` (written to STDERR with the
+/// `%{stderr}` directive so the body on stdout stays byte-clean), and the caller
+/// (`curl_exec`'s direct branch) vets each hop and re-issues. This is what closes
+/// the redirect-SSRF hole on the unproxied fallback.
 #[allow(clippy::too_many_arguments)]
 async fn run_curl_once(
     url: &str,
@@ -254,7 +372,8 @@ async fn run_curl_once(
     timeout_ms: u64,
     proxy: Option<&str>,
     pin: Option<&[String]>,
-) -> Option<String> {
+    follow: bool,
+) -> Option<CurlOnce> {
     let mut cmd = Command::new("curl");
     cmd.args(["-s", "--max-time", secs, "-A", ua]);
     cmd.args([
@@ -272,7 +391,15 @@ async fn run_curl_once(
         cmd.args(pin);
     }
     cmd.args(FETCH_HARDENING_ARGS);
-    cmd.args(["-L", "--", url]);
+    if follow {
+        cmd.args(["-L"]);
+    } else {
+        // No `-L`: return the 3xx as-is. `%{stderr}` sends the rest of the
+        // write-out (the resolved absolute redirect target, empty when the
+        // response is terminal) to STDERR, keeping stdout the pure body.
+        cmd.args(["-w", "%{stderr}%{redirect_url}"]);
+    }
+    cmd.args(["--", url]);
     cmd.kill_on_drop(true);
 
     let output = timeout(Duration::from_millis(timeout_ms + 2000), cmd.output())
@@ -289,7 +416,14 @@ async fn run_curl_once(
     // matches `http::read_body_capped`.
     let body = String::from_utf8_lossy(&output.stdout).into_owned();
     super::http::scan_for_api_keys(&body);
-    Some(body)
+    let next = if follow {
+        None
+    } else {
+        let target = String::from_utf8_lossy(&output.stderr);
+        let target = target.trim();
+        (!target.is_empty()).then(|| target.to_string())
+    };
+    Some(CurlOnce { body, next })
 }
 
 /// Fetch a URL via curl subprocess. Returns the response body on
