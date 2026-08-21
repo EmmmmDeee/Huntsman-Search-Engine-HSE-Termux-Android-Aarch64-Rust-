@@ -726,6 +726,18 @@ fn mark_verified_clears_a_stale_unverified_latch() {
     mark_unverified(1_000);
     assert!(is_unverified(), "a 412 must latch unverified");
 
+    // Repeating the 412 must stay latched and keep advancing the timestamp. The warning this
+    // emits fires only on the transition INTO the unverified state (a single scan can issue four
+    // WiGLE sub-searches that would each 412), so re-marking must remain idempotent in state
+    // while still recording when it was last observed.
+    mark_unverified(1_500);
+    assert!(is_unverified(), "re-marking must stay latched");
+    assert_eq!(
+        account_status().last_polled_ts,
+        Some(1_500),
+        "a repeat 412 still records when it was last seen"
+    );
+
     // A later query succeeds — e.g. the operator completed WiGLE's
     // email-verify step mid-process — and must un-latch the stale flag.
     mark_verified(2_000);
