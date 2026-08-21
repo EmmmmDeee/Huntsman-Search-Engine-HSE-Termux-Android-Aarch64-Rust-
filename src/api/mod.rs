@@ -212,13 +212,23 @@ pub struct AppState {
     /// Prevents resource exhaustion from rapid `POST /scans` calls.
     pub scan_semaphore: Arc<tokio::sync::Semaphore>,
     /// Shared update status written by the background auto-update task and
-    /// read by `GET /api/v1/update/status`. Uses `std::sync::Mutex` (not
-    /// `parking_lot`) so it can be held across `.await` points in the
-    /// background task without requiring `parking_lot`'s `async`-aware lock.
+    /// read by `GET /api/v1/update/status`. Deliberately `std::sync::Mutex`,
+    /// NOT `parking_lot` — and precisely because the guard must NEVER be held
+    /// across an `.await`: every lock is taken in a synchronous scope (a plain
+    /// `fn` like `update_handlers::set_phase`, or a scoped
+    /// `if let Ok(mut info) = update_info.lock()` block) *after* any await,
+    /// mutated, and dropped. A std `MutexGuard` is `!Send`, so the compiler
+    /// REFUSES to let it span an `.await` inside these `Send` spawned tasks —
+    /// a compile-time guarantee the async runtime can't be deadlocked by a
+    /// guard held across a yield. A `parking_lot` guard IS `Send` and would let
+    /// exactly that mistake compile, so it is the more dangerous choice here,
+    /// not the "async-aware" one.
     pub update_info: Arc<std::sync::Mutex<UpdateInfo>>,
     /// Progress of an in-flight `POST /api/v1/cells/import`. Same
-    /// `std::sync::Mutex` rationale as `update_info` — held across `.await`
-    /// points in the detached download+import task.
+    /// `std::sync::Mutex` rationale as `update_info`: in the detached
+    /// download+import task the guard is acquired *after* the
+    /// `download_and_import(..).await` returns (see `cells_handlers`), held only
+    /// for the synchronous phase write, and dropped — never across the await.
     pub cells_import: Arc<std::sync::Mutex<CellsImportPhase>>,
 }
 

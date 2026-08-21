@@ -93,7 +93,12 @@ pub(super) fn summarise(feed: &Feed) -> Summary {
             s.own_profile_items += 1;
             continue;
         }
-        if sub.len() > 2 && sub[..2].eq_ignore_ascii_case("u_") {
+        // Byte-slice on `as_bytes()`, NOT `sub[..2]`: the latter is a `&str`
+        // char-boundary slice and `sub.len() > 2` is only a byte-length guard,
+        // so a name whose 2nd byte is a UTF-8 continuation (e.g. "aé") would
+        // panic mid-char. `len() > 2` already guarantees ≥3 bytes here, and the
+        // `u_` prefix is ASCII, so the byte compare is exact and panic-free.
+        if sub.len() > 2 && sub.as_bytes()[..2].eq_ignore_ascii_case(b"u_") {
             s.other_profile_items += 1;
             continue;
         }
