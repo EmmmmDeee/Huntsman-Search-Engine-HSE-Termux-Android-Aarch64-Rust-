@@ -79,6 +79,18 @@ use super::*;
             "http://[::1]/x",                    // IPv6 loopback (bracketed)
             "http://[fc00::1]/x",                // IPv6 ULA
             "http://[::ffff:169.254.169.254]/x", // IPv4-mapped metadata
+            // Encoded IP-literal evasions: the `url` crate normalises each to
+            // canonical dotted-quad BEFORE `host_str()`, so `is_private_addr`
+            // still catches them. Pinned here so a future URL-parser swap that
+            // stopped normalising would fail loudly rather than silently reopen
+            // an SSRF bypass. (Verified against the vendored `url` 2.5.8.)
+            "http://2130706433/x",               // decimal 127.0.0.1
+            "http://0x7f000001/x",               // hex 127.0.0.1
+            "http://017700000001/x",             // octal 127.0.0.1
+            "http://127.1/x",                    // short-form 127.0.0.1
+            "http://2852039166/latest/",         // decimal 169.254.169.254
+            "http://0xA9FEA9FE/latest/",         // hex 169.254.169.254
+            "http://evil.example@169.254.169.254/", // userinfo@ trick → host is the metadata IP
         ] {
             assert!(
                 ssrf_resolve_pin(u).await.is_none(),
@@ -120,6 +132,15 @@ use super::*;
             "https://[fc00::1]/",                        // ULA
             "https://[fe80::1]/",                        // link-local
             "https://[::ffff:169.254.169.254]/",         // IPv4-mapped metadata
+            // Encoded IP-literal evasions in a redirect Location — `url`
+            // normalises each to dotted-quad before the private-IP check, so a
+            // 3xx to any of these is refused just like the plain form.
+            "http://2130706433/",                        // decimal 127.0.0.1
+            "http://0x7f000001/",                        // hex 127.0.0.1
+            "http://017700000001/",                      // octal 127.0.0.1
+            "http://127.1/",                             // short-form 127.0.0.1
+            "http://0xA9FEA9FE/latest/meta-data/",       // hex 169.254.169.254
+            "http://evil.example@169.254.169.254/",      // userinfo@ trick
         ] {
             assert!(
                 curl_redirect_refused(u),
