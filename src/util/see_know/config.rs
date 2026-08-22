@@ -23,13 +23,39 @@ pub fn get_termux_storage_dir() -> PathBuf {
     PathBuf::from(".")
 }
 
-/// Get HSE results directory (creates if needed)
-pub fn get_results_dir() -> PathBuf {
-    let results = get_termux_storage_dir()
+/// Legacy See-Know results directory — the **pure path only**, never created.
+///
+/// No production code writes here any more. `data_log` used to, which put raw
+/// provider records (plaintext credentials, for a breach/stealer source) and
+/// the queried values under `~/storage/downloads` whenever Termux storage was
+/// set up — shared external storage, readable by any app holding
+/// `READ_EXTERNAL_STORAGE`. It is now rooted at the app-private
+/// `$HOME/.huntsman` tree via [`crate::util::paths::subdir`].
+///
+/// This survives solely so `data_log` can *detect* a tree an older build left
+/// behind and tell the operator about it. There is deliberately no
+/// directory-creating counterpart: the creating variant was removed with the
+/// migration, because a helper that materialises a directory on shared storage
+/// is an invitation to reintroduce the same leak.
+#[must_use]
+pub fn get_results_dir_path() -> PathBuf {
+    get_termux_storage_dir()
         .join(".hse")
-        .join("see_know_results");
-    let _ = std::fs::create_dir_all(&results);
-    results
+        .join("see_know_results")
+}
+
+/// True when [`get_termux_storage_dir`] resolves to Termux's shared-storage
+/// symlink (`~/storage/downloads`) rather than one of the private fallbacks.
+///
+/// `~/storage` points at `/storage/emulated/0`, so anything beneath it is
+/// readable by any app holding `READ_EXTERNAL_STORAGE`. Credential- or
+/// PII-bearing data must never be written there — see `data_log`, which is
+/// rooted at the app-private `$HOME/.huntsman` tree for exactly this reason.
+#[must_use]
+pub fn results_dir_is_shared_storage() -> bool {
+    std::env::var("HOME").is_ok_and(|home| {
+        get_termux_storage_dir() == PathBuf::from(home).join("storage").join("downloads")
+    })
 }
 
 /// Value scoring weights — the single source of truth consumed by
@@ -81,10 +107,22 @@ pub fn get_endpoint_cost(endpoint: &str) -> f32 {
 mod tests {
     use super::*;
 
+    /// The legacy accessor must stay a pure path: it names a location that can
+    /// be shared external storage, and merely asking for it must never bring
+    /// that directory into existence. Replaces an older test that asserted the
+    /// opposite (that calling it created the directory) — the creating variant
+    /// was removed when `data_log` moved to the app-private root.
     #[test]
-    fn test_results_directory_creation() {
-        let dir = get_results_dir();
-        assert!(dir.exists());
+    fn legacy_results_dir_path_is_pure_and_creates_nothing() {
+        let dir = get_results_dir_path();
+        let existed = dir.exists();
+        let _ = get_results_dir_path();
+        assert_eq!(
+            dir.exists(),
+            existed,
+            "get_results_dir_path must not create {}",
+            dir.display()
+        );
     }
 
     #[test]
