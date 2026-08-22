@@ -754,6 +754,45 @@ pub enum Command {
         action: crate::app::cells::CellsAction,
     },
 
+    /// Query the RF sighting database — every Wi-Fi, Bluetooth/BLE and cellular
+    /// observation a wardriving import or radar sweep recorded.
+    ///
+    /// This reads `rf_sightings`, which is kept alongside the entity graph
+    /// rather than instead of it. The graph records which devices exist; this
+    /// records every time each was heard, from where and how loudly — the
+    /// per-sighting detail the graph's flattening dissolves.
+    ///
+    /// With no flags, prints the scan's summary. `--devices` lists one row per
+    /// device, strongest first. `--track <ID>` prints one device's full sighting
+    /// history, which is the movement record.
+    Signal {
+        /// Scan to read. Defaults to the most recent import/sweep that produced
+        /// sightings, so the common case needs no id.
+        #[arg(long)]
+        scan_id: Option<String>,
+        /// One row per device, strongest signal first.
+        #[arg(long)]
+        devices: bool,
+        /// Only devices with a fixed hardware address — the ones whose
+        /// recurrence across sightings actually means something. A randomised
+        /// address rotates, so seeing it twice is not seeing one device twice.
+        #[arg(long)]
+        trackable: bool,
+        /// Network names carried by more than one radio (mesh deployments and
+        /// 2.4/5 GHz pairs), largest installation first.
+        #[arg(long)]
+        names: bool,
+        /// Every sighting of one device, oldest first.
+        #[arg(long, value_name = "NETWORK_ID")]
+        track: Option<String>,
+        /// Cap on rows printed by the list views.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Emit JSON instead of the text table.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Housekeeping: keep the on-device `~/.huntsman` footprint bounded and
     /// arranged.
     ///

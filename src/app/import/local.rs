@@ -127,30 +127,43 @@ pub(super) fn collect_importable_files(root: &std::path::Path) -> Vec<std::path:
 /// no network of its own — so it is unit-testable against a temp tree. A file
 /// that is unreadable (binary / non-UTF-8), unrecognised, or empty contributes
 /// nothing and is not counted as imported.
+/// Scrape a tree into one aggregated entity set, plus the RF sightings any
+/// wardriving capture in it carried.
+///
+/// The sightings ride alongside rather than inside the entity vector because
+/// they are a different grain: the entities are deduplicated to one node per
+/// device, while a sighting per observation is exactly what must NOT be
+/// collapsed — the repeats are the movement track.
 pub(super) async fn import_local_dir_entities(
     root: &std::path::Path,
     sid: &str,
-) -> (Vec<Entity>, usize, usize) {
+) -> (Vec<Entity>, usize, usize, Vec<crate::core::rf::RfSighting>) {
     let files = collect_importable_files(root);
     let scanned = files.len();
     let mut all: Vec<Entity> = Vec::new();
+    let mut sightings: Vec<crate::core::rf::RfSighting> = Vec::new();
     let mut imported = 0usize;
     for path in files {
         let Ok(body) = tokio::fs::read_to_string(&path).await else {
             continue; // binary / non-UTF-8 — skip
         };
-        if let Ok((ents, _label)) = entities_from_upload(&body, sid).await
+        if let Ok((ents, label)) = entities_from_upload(&body, sid).await
             && !ents.is_empty()
         {
             imported += 1;
             all.extend(ents);
+            // Keyed off the label the shared dispatcher already resolved, so
+            // this cannot disagree with which parser actually ran.
+            if label == "kml" {
+                sightings.extend(super::kml::rf_sightings(&body));
+            }
         }
     }
     // Fold entities that recur across files — the same email in a dossier and a
     // scan export — merging their evidence rather than dropping, exactly as the
     // single-file path finalises. Preserves cross-account reuse signals (AU-047).
     deduplicate_by_uid(&mut all);
-    (all, scanned, imported)
+    (all, scanned, imported, sightings)
 }
 
 /// CLI entry: scrape a local directory tree into one persisted scan, then report.
@@ -159,7 +172,7 @@ pub(super) async fn import_local_dir_entities(
 pub(super) async fn cmd_import_local_dir(root: &str, output: &str) -> Result<()> {
     note(output, format!("Scraping local storage under {root} ..."));
     let sid = format!("import-local-{}", crate::core::entity::unix_now());
-    let (entities, scanned, imported) =
+    let (entities, scanned, imported, sightings) =
         import_local_dir_entities(std::path::Path::new(root), &sid).await;
     note(
         output,
@@ -169,6 +182,7 @@ pub(super) async fn cmd_import_local_dir(root: &str, output: &str) -> Result<()>
         ),
     );
     persist_and_report(&sid, &entities, output).await;
+    super::persist_rf_sightings_best_effort(&sid, &sightings, output).await;
     render_import_entities(&entities, output);
     Ok(())
 }

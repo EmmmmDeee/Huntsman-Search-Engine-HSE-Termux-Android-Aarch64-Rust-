@@ -190,6 +190,18 @@ pub trait StoragePort: Send + Sync {
         Ok(Vec::new())
     }
 
+    // ── RF sightings (wardriving captures + radar sweeps) ───────────────────
+    /// Persist per-sighting RF observations for one scan/import. Best-effort,
+    /// called from the capture importers and the radar. Default no-op for test
+    /// doubles; the SQLite `Store` persists to `rf_sightings`.
+    fn insert_rf_sightings_batch(
+        &self,
+        _scan_id: &str,
+        _rows: &[crate::core::rf::RfSighting],
+    ) -> Result<usize> {
+        Ok(0)
+    }
+
     // ── Maintenance ─────────────────────────────────────────────────────────
     /// Bound the backing store's write-ahead footprint at a safe boundary
     /// (e.g. a completed scan). Default is a no-op for backends without a

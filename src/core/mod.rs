@@ -45,6 +45,7 @@ pub mod radar_live;
 pub mod radar_track;
 pub mod relation;
 pub mod resolve;
+pub mod rf;
 pub mod roi;
 pub mod scan;
 pub mod snake_graph;

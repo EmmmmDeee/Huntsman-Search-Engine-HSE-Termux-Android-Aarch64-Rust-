@@ -2242,6 +2242,14 @@ fn open_produces_exact_schema_and_pragmas() {
         "index|idx_obs_entity",
         "index|idx_obs_scan",
         "index|idx_relations_scan",
+        // RF sighting store (`storage::signal`): one fact table, its indexes,
+        // and three rollup VIEWS. Views rather than summary tables so a
+        // per-device aggregate cannot drift from the sightings it summarises.
+        "index|idx_rf_device",
+        "index|idx_rf_epoch",
+        "index|idx_rf_geo",
+        "index|idx_rf_oui",
+        "index|idx_rf_scan",
         "index|idx_scans_started",
         "index|idx_stealer_rows_log",
         "index|idx_stealer_rows_scan",
@@ -2264,6 +2272,7 @@ fn open_produces_exact_schema_and_pragmas() {
         "table|pathway_templates",
         "table|raw_archive",
         "table|relations",
+        "table|rf_sightings",
         "table|scans",
         "table|sqlite_sequence",
         // `PRAGMA optimize` (run at open — see `Store::open`) materialises
@@ -2274,6 +2283,9 @@ fn open_produces_exact_schema_and_pragmas() {
         "table|sqlite_stat1",
         "table|sqlite_stat4",
         "table|stealer_rows",
+        "view|rf_devices",
+        "view|rf_shared_names",
+        "view|rf_trackable",
     ];
     assert_eq!(got, expected, "schema (tables + indexes) must be identical");
 

@@ -11,10 +11,12 @@ use crate::core::{
 
 mod archive; // `impl Store`: inter-scan entity cache (`raw_archive`)
 mod entities; // `impl Store`: entity persistence + FTS query
+mod signal; // `impl Store`: per-sighting RF (WiGLE + radar) persistence
 mod stealer_rows; // `impl Store`: paired stealer-log credential row persistence
 mod templates; // `impl Store`: cross-scan pathway-template learning
 
 pub use entities::EvidenceAnomaly;
+pub use signal::{RfDeviceRow, RfSummary};
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -120,6 +122,112 @@ const SCHEMA_DDL: &str = "
             );
             CREATE INDEX IF NOT EXISTS idx_stealer_rows_scan ON stealer_rows(scan_id);
             CREATE INDEX IF NOT EXISTS idx_stealer_rows_log  ON stealer_rows(scan_id, log_id);
+
+            -- RF sightings from a wardriving capture or a local radar sweep
+            -- (`core::rf::RfSighting`). Persisted ALONGSIDE the generic entity
+            -- graph for the same reason `stealer_rows` is: `entities` flattens
+            -- an observation into independent MacAddress/Ssid/Coordinates rows
+            -- for correlation, which dissolves the *sighting* — the graph can
+            -- then say a BSSID exists and a position exists, but not that the
+            -- BSSID was heard at -53 dBm from that position at 17:18. Both
+            -- questions an RF survey is run to answer need that tuple: how a
+            -- device's signal changed as the operator moved, and which distinct
+            -- places it was heard from (the input to `core::radar_track`'s
+            -- `is the same device following me?`).
+            --
+            -- One table for both radios. A WiGLE capture and a Bluetooth sweep
+            -- observe the same physical thing — a radio emitting an address at a
+            -- place — and `source` distinguishes them; keeping them apart would
+            -- mean answering `was this device near me before?` twice.
+            --
+            -- Append-only facts. Every rollup lives in the views below rather
+            -- than a maintained summary table, so no derived row can drift from
+            -- the sightings it summarises.
+            CREATE TABLE IF NOT EXISTS rf_sightings (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id        TEXT NOT NULL,
+                network_id     TEXT NOT NULL,
+                radio          TEXT NOT NULL,
+                source         TEXT NOT NULL,
+                -- Derived once on write from the address bits, not from a
+                -- vendor table: 1 = locally-administered (a rotating privacy
+                -- address, never a followable pin, AU-122), 0 = real hardware,
+                -- NULL = not a hardware address (a cellular identifier).
+                locally_admin  INTEGER,
+                -- Stored even when no vendor is known for it, so a larger IEEE
+                -- table can be joined in later without re-reading a capture.
+                oui            TEXT,
+                device_class   TEXT,
+                name           TEXT,
+                encryption     TEXT,
+                observed_at    TEXT,
+                -- Beside the text because the text is not orderable: two
+                -- ISO-8601 stamps at different UTC offsets sort
+                -- lexicographically in the wrong order.
+                observed_epoch INTEGER,
+                signal_dbm     REAL,
+                accuracy_m     REAL,
+                latitude       REAL,
+                longitude      REAL,
+                raw_type       TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_rf_scan    ON rf_sightings(scan_id);
+            CREATE INDEX IF NOT EXISTS idx_rf_device  ON rf_sightings(scan_id, network_id);
+            CREATE INDEX IF NOT EXISTS idx_rf_epoch   ON rf_sightings(observed_epoch);
+            CREATE INDEX IF NOT EXISTS idx_rf_geo     ON rf_sightings(latitude, longitude);
+            CREATE INDEX IF NOT EXISTS idx_rf_oui     ON rf_sightings(oui);
+
+            -- One row per device per scan, rolled up from the sightings. A view,
+            -- not a table, so it cannot fall out of step with the facts.
+            -- `best_*` is the strongest sighting, which is the closest pass and
+            -- so the best single estimate of where the device is; ties break on
+            -- the lowest sighting id, making the result deterministic.
+            CREATE VIEW IF NOT EXISTS rf_devices AS
+            SELECT s.scan_id,
+                   s.network_id,
+                   MIN(s.radio)                                   AS radio,
+                   MAX(s.locally_admin)                           AS locally_admin,
+                   MIN(s.oui)                                     AS oui,
+                   MIN(s.device_class)                            AS device_class,
+                   COUNT(*)                                       AS sightings,
+                   MIN(s.observed_epoch)                          AS first_epoch,
+                   MAX(s.observed_epoch)                          AS last_epoch,
+                   MAX(s.signal_dbm)                              AS best_signal_dbm,
+                   MIN(s.signal_dbm)                              AS worst_signal_dbm,
+                   MIN(s.accuracy_m)                              AS best_accuracy_m,
+                   COUNT(DISTINCT s.name)                         AS distinct_names,
+                   (SELECT b.name FROM rf_sightings b
+                     WHERE b.scan_id = s.scan_id AND b.network_id = s.network_id
+                       AND b.name IS NOT NULL
+                     ORDER BY b.id ASC LIMIT 1)                   AS name,
+                   (SELECT b.latitude FROM rf_sightings b
+                     WHERE b.scan_id = s.scan_id AND b.network_id = s.network_id
+                       AND b.signal_dbm IS NOT NULL
+                     ORDER BY b.signal_dbm DESC, b.id ASC LIMIT 1) AS best_latitude,
+                   (SELECT b.longitude FROM rf_sightings b
+                     WHERE b.scan_id = s.scan_id AND b.network_id = s.network_id
+                       AND b.signal_dbm IS NOT NULL
+                     ORDER BY b.signal_dbm DESC, b.id ASC LIMIT 1) AS best_longitude,
+                   COUNT(DISTINCT CASE WHEN s.latitude IS NOT NULL
+                         THEN ROUND(s.latitude, 5) || ',' || ROUND(s.longitude, 5) END)
+                                                                  AS distinct_fixes
+              FROM rf_sightings s
+             GROUP BY s.scan_id, s.network_id;
+
+            -- Names carried by more than one radio: a mesh deployment or a
+            -- 2.4/5 GHz pair. The radio count is the size of the installation,
+            -- which is how a commercial site is told from a house.
+            CREATE VIEW IF NOT EXISTS rf_shared_names AS
+            SELECT scan_id, name, COUNT(DISTINCT network_id) AS radios
+              FROM rf_sightings
+             WHERE name IS NOT NULL AND name <> ''
+             GROUP BY scan_id, name
+            HAVING COUNT(DISTINCT network_id) > 1;
+
+            -- Only fixed-address devices are followable across sightings; a
+            -- randomised address seen twice is not evidence of one device.
+            CREATE VIEW IF NOT EXISTS rf_trackable AS
+            SELECT * FROM rf_devices WHERE locally_admin = 0;
 
             -- Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN). Keyed by
             -- `module:target_kind:normalised_target` so a repeat scan of the
@@ -1075,6 +1183,14 @@ impl crate::core::port::StoragePort for Store {
         scan_id: &str,
     ) -> Result<Vec<crate::core::stealer_row::StealerRow>> {
         Store::stealer_rows_for_scan(self, scan_id)
+    }
+
+    fn insert_rf_sightings_batch(
+        &self,
+        scan_id: &str,
+        rows: &[crate::core::rf::RfSighting],
+    ) -> Result<usize> {
+        Store::insert_rf_sightings_batch(self, scan_id, rows)
     }
 }
 

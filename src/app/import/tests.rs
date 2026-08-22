@@ -931,7 +931,7 @@ async fn local_scrape_aggregates_recognized_files_across_the_tree() {
     )
     .expect("should succeed");
 
-    let (ents, scanned, imported) = import_local_dir_entities(root, "s").await;
+    let (ents, scanned, imported, sightings) = import_local_dir_entities(root, "s").await;
     assert!(
         ents.iter()
             .any(|e| e.kind == EntityKind::MacAddress && e.value == "00:1b:2c:3d:4e:5f"),
@@ -957,6 +957,10 @@ async fn local_scrape_aggregates_recognized_files_across_the_tree() {
     // scans/s.json, t.csv, survey.kml); pic.png and target/ are excluded.
     assert_eq!(scanned, 4, "only non-skipped candidates are scanned");
     assert!(imported >= 2, "recognised files contributed entities");
+    // The KML in the tree also yields its per-sighting RF record, which the
+    // deduplicated entity set structurally cannot carry.
+    assert_eq!(sightings.len(), 1, "the capture's one observation is kept");
+    assert_eq!(sightings[0].network_id, "00:1b:2c:3d:4e:5f");
 }
 
 #[test]
