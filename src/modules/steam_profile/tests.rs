@@ -354,3 +354,33 @@ fn bio_non_steam_akamai_link_is_preserved() {
         "the genuine third-party Akamai host is still a derived Domain"
     );
 }
+
+#[test]
+fn tag_entities_decode_exactly_once() {
+    // Regression: the local `.replace()` chain fed each replacement the previous
+    // one's output, so an `&amp;` decoding to `&` paired with the text after it
+    // into an entity the next link decoded again. A profile field holding the
+    // literal text `&lt;` (published as `&amp;lt;`) was stored as `<`.
+    assert_eq!(
+        extract_tag("<realname>a &amp;lt;b&amp;gt; c</realname>", "realname").as_deref(),
+        Some("a &lt;b&gt; c"),
+        "each &…; is consumed exactly once; no double-decode"
+    );
+}
+
+#[test]
+fn tag_decodes_numeric_and_typography_entities() {
+    // The old chain covered five named entities only, so numeric references and
+    // the typography entities real Steam profiles carry survived raw into the
+    // stored value.
+    assert_eq!(
+        extract_tag("<location>S&#227;o Paulo</location>", "location").as_deref(),
+        Some("São Paulo"),
+        "decimal character references resolve"
+    );
+    assert_eq!(
+        extract_tag("<realname>Ren&#xE9;e</realname>", "realname").as_deref(),
+        Some("Renée"),
+        "hex character references resolve"
+    );
+}

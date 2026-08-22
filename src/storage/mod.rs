@@ -713,7 +713,37 @@ impl Store {
             while let Some(row) = rows.next()? {
                 let rowid: i64 = row.get(0)?;
                 let j: String = row.get(1)?;
-                let old_uids = serde_json::from_str::<Vec<String>>(&j).unwrap_or_default();
+                // A uid list that will not parse must take NO part in the
+                // containment decision. `unwrap_or_default()` here substituted an
+                // EMPTY set, and the empty set is a subset of every set, so the
+                // `old_set.is_subset(&new_set)` arm below matched unconditionally
+                // and the row was queued into `superseded` — then hard-DELETEd by
+                // the transaction below. One unparseable value therefore destroyed
+                // a stored finding outright, silently, and `upsert_correlation`
+                // still returned `Ok(())`. That is the very outcome the atomic
+                // transaction underneath exists to prevent, arrived at by a
+                // different route.
+                //
+                // Skip the row instead: it is neither evidence that this
+                // correlation is already represented, nor evidence that it is
+                // superseded, because its membership is unknown. Leaving a
+                // possibly-stale row costs a duplicate; deleting it loses
+                // intelligence that cannot be recovered. Logged rather than
+                // propagated, matching `deserialize_rows`' house rule that one bad
+                // row must not fail the whole operation.
+                let old_uids: Vec<String> = match serde_json::from_str(&j) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            scan_id = %c.scan_id,
+                            rule_id = %c.rule_id,
+                            rowid,
+                            error = %e,
+                            "correlations.entity_uids will not parse — row skipped for                              supersede, left intact"
+                        );
+                        continue;
+                    }
+                };
                 let old_set: HashSet<&str> = old_uids.iter().map(String::as_str).collect();
                 if new_set.is_subset(&old_set) {
                     // Subset of (or equal to) a stored correlation — already represented.

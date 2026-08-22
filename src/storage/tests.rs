@@ -2606,3 +2606,56 @@ fn list_scans_drops_a_corrupt_row_end_to_end_without_erroring() {
     assert_eq!(scans[0].id, "scan-good");
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn upsert_correlation_never_deletes_a_row_whose_uid_list_will_not_parse() {
+    use crate::core::correlator::{Correlation, Severity};
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    insert_scan(&store, "corrupt");
+    let mk = |desc: &str, uids: Vec<&str>| {
+        Correlation::new(
+            "AU-013",
+            "Local-network discovery",
+            Severity::Low,
+            desc.into(),
+            uids.into_iter().map(String::from).collect(),
+            "corrupt",
+            1,
+        )
+    };
+    store
+        .upsert_correlation(&mk("first finding", vec!["A", "B"]))
+        .expect("should succeed");
+
+    // Corrupt only the stored uid list — a truncated write, or a value written
+    // by a schema that has since drifted. `data_json` is untouched, so the
+    // finding itself is still perfectly readable; only the supersede index is
+    // unparseable.
+    {
+        let conn = store.conn.lock();
+        conn.execute(
+            "UPDATE correlations SET entity_uids = ?1 WHERE scan_id = ?2",
+            params!["{not-json", "corrupt"],
+        )
+        .expect("should succeed");
+    }
+
+    // A later, unrelated finding under the same (scan_id, rule_id) — this is
+    // what runs the supersede scan across the corrupt row.
+    store
+        .upsert_correlation(&mk("second finding", vec!["X", "Y"]))
+        .expect("should succeed");
+
+    let got = store
+        .correlations_for_scan("corrupt")
+        .expect("should succeed");
+    assert!(
+        got.iter().any(|c| c.description == "first finding"),
+        "a finding whose uid list would not parse was silently DELETED; \
+         an empty set is a subset of everything, so it was treated as superseded. \
+         surviving rows: {got:?}"
+    );
+    assert_eq!(got.len(), 2, "both findings must survive, got {got:?}");
+    let _ = std::fs::remove_file(&path);
+}

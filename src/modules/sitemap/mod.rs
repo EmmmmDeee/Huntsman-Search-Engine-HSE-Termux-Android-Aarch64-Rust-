@@ -93,15 +93,19 @@ fn extract_locs(xml: &str) -> Vec<String> {
     out
 }
 
-/// Unescape the five predefined XML entities a `<loc>` URL can legally contain
-/// (`&amp; &lt; &gt; &quot; &apos;`). **Pure**. Numeric character references are
-/// left as-is (they do not appear in well-formed sitemap URLs).
+/// Unescape the entities a `<loc>` URL can legally carry, via the crate's single
+/// shared decoder.
+///
+/// Delegates to [`crate::util::html::decode_entities`] rather than hand-rolling a
+/// `.replace()` chain. A chain applies each replacement to the *previous one's
+/// output*, so `&amp;` decoding to `&` can combine with the text after it to form
+/// an entity a later link then decodes again: `&amp;lt;` — a literal `&lt;` in the
+/// source — came out as `<`, a silently wrong URL rather than an error. The shared
+/// decoder consumes each `&…;` exactly once, so that round-trips correctly, and it
+/// also resolves the numeric character references (`&#38;`, `&#x26;`) the chain
+/// left raw in the URL. **Pure**.
 fn xml_unescape(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
+    crate::util::html::decode_entities(s)
 }
 
 /// True if the document is a sitemap INDEX (lists child sitemaps) rather than a
