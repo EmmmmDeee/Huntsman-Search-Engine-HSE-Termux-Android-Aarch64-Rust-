@@ -92,6 +92,25 @@ use super::*;
     }
 
     #[test]
+    fn paid_api_transport_never_follows_a_redirect() {
+        // Every CurlClient call (SeekNow, OathNet, …) attaches its API key via
+        // a plain custom `-H` header, not curl's special-cased `Authorization`.
+        // curl's documented default strips ONLY `Authorization` on a
+        // cross-host redirect — a custom header is resent verbatim to
+        // whatever host the LIVE SERVER's `Location` response names, at
+        // REQUEST time. `-L` would follow that automatically, leaking the
+        // operator's paid credential to an unverified host with no visibility
+        // for `endpoint_override`'s configuration-time vetting to catch (it
+        // only inspects the CONFIGURED base URL, once, before the request).
+        assert!(
+            !CLIENT_BASE_ARGS.contains(&"-L"),
+            "the credential-bearing paid-API transport must never follow a \
+             redirect — a custom auth header would be resent to whatever host \
+             a live 3xx response names"
+        );
+    }
+
+    #[test]
     fn split_status_separates_the_body_from_the_trailing_code() {
         // Normal JSON body + trailing status line.
         assert_eq!(
