@@ -968,6 +968,121 @@ fn extract_entities(
         );
     }
 
+    /// A same-name stranger's LOCATION must be quarantined exactly like their
+    /// identity. Geo runs as a separate call after `extract_entities` returns,
+    /// so it sits outside that function's demotion range and needs its own
+    /// `is_target`. Before that was threaded through, a non-matching record's
+    /// Coordinates were minted at `VERY_HIGH` (0.75) — at or above
+    /// `Classification::VERIFIED_MIN`, i.e. the TOP tier — while the same
+    /// record's email was correctly demoted to 0.25/Candidate.
+    #[test]
+    fn non_matching_record_geo_is_quarantined_not_verified() {
+        use crate::core::entity::{CANDIDATE_CONF, Classification};
+        use serde_json::json;
+
+        let stranger = json!({
+            "full_name": "Bob Smith",
+            "lat": 40.7128,
+            "lon": -74.0060,
+            "asn": "AS1",
+            "organization": "Acme Corp",
+        });
+        let (mut seen, mut result) = (HashSet::new(), ModuleResult::new());
+        extract_geo_entities(&stranger, "ip_info", "scan", false, &mut seen, &mut result);
+
+        assert!(
+            !result.entities.is_empty(),
+            "fixture should produce geo entities, else this test proves nothing"
+        );
+        for e in &result.entities {
+            assert_eq!(
+                e.classify(),
+                Classification::Candidate,
+                "{} ({}) reached the {:?} tier at {:.2} from a NON-matching record",
+                e.value,
+                e.kind,
+                e.classify(),
+                e.confidence
+            );
+            assert!(
+                e.confidence <= CANDIDATE_CONF + 1e-9,
+                "{} not demoted: {:.2}",
+                e.value,
+                e.confidence
+            );
+            assert!(e.has_tag("candidate"), "{} missing candidate tag", e.value);
+        }
+    }
+
+    /// The complement: the subject's OWN record must keep full-strength geo.
+    /// Without this, "demote everything" would pass the test above while
+    /// destroying the module's actual geolocation value.
+    #[test]
+    fn matching_record_geo_keeps_full_confidence() {
+        use serde_json::json;
+        let subject = json!({"lat": 40.7128, "lon": -74.0060});
+        let (mut seen, mut result) = (HashSet::new(), ModuleResult::new());
+        extract_geo_entities(&subject, "ip_info", "scan", true, &mut seen, &mut result);
+
+        let coords = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Coordinates)
+            .expect("coordinates entity");
+        assert!(
+            coords.confidence >= crate::core::confidence::VERY_HIGH - 1e-9,
+            "subject's own coordinates must stay at full strength, got {:.2}",
+            coords.confidence
+        );
+        assert!(!coords.has_tag("candidate"));
+    }
+
+    /// Declared relatives on a NON-matching record must be quarantined too.
+    /// `ASSOCIATE_CONF` is 0.45 — above `PROBABLE_MIN` (0.40) — so before
+    /// `extract_associates` was moved inside the demotion window, a stranger's
+    /// relatives were bound to the subject in the Probable tier.
+    #[test]
+    fn non_matching_record_associates_are_quarantined() {
+        use crate::core::entity::{CANDIDATE_CONF, Classification};
+        use serde_json::json;
+
+        let stranger = json!({
+            "full_name": "Bob Smith",
+            "relatives": ["Carol Smith", "Dave Smith"],
+        });
+        let (mut seen, mut result) = (HashSet::new(), ModuleResult::new());
+        extract_entities(
+            &stranger,
+            "Ali Kareem",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+
+        let relatives: Vec<_> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Person && e.value != "Bob Smith")
+            .collect();
+        assert!(
+            !relatives.is_empty(),
+            "fixture should yield relative Persons, else this test proves nothing"
+        );
+        for r in relatives {
+            assert_eq!(
+                r.classify(),
+                Classification::Candidate,
+                "relative {} of a NON-matching stranger reached {:?} at {:.2}",
+                r.value,
+                r.classify(),
+                r.confidence
+            );
+            assert!(r.confidence <= CANDIDATE_CONF + 1e-9);
+        }
+    }
+
     #[test]
     fn extract_geo_entities_characterization() {
         use serde_json::json;
@@ -979,6 +1094,7 @@ fn extract_entities(
                 &json!({"lat": 40.7128, "lon": -74.0060}),
                 "ip_info",
                 "s",
+                true,
                 &mut seen,
                 &mut r,
             );
@@ -996,6 +1112,7 @@ fn extract_entities(
                 &json!({"latitude": "51.5", "longitude": "-0.12"}),
                 "phone_info",
                 "s",
+                true,
                 &mut seen,
                 &mut r,
             );
@@ -1011,6 +1128,7 @@ fn extract_entities(
                 &json!({"lat": 999.0, "lon": 0.0}),
                 "ip_info",
                 "s",
+                true,
                 &mut seen,
                 &mut r,
             );
@@ -1027,6 +1145,7 @@ fn extract_entities(
                 &json!({"lat": 0.0, "lon": 0.0}),
                 "ip_info",
                 "s",
+                true,
                 &mut seen,
                 &mut r,
             );
@@ -1042,6 +1161,7 @@ fn extract_entities(
                 &json!({"location": "Sydney, NSW", "timezone": "Australia/Sydney", "asn": "AS15169", "org": "Google"}),
                 "ip_info",
                 "s",
+                true,
                 &mut seen,
                 &mut r,
             );
@@ -1069,7 +1189,7 @@ fn extract_entities(
         // ASN/org gated to the ip_info endpoint.
         {
             let (mut seen, mut r) = (HashSet::new(), ModuleResult::new());
-            extract_geo_entities(&json!({"asn": "AS1"}), "phone_info", "s", &mut seen, &mut r);
+            extract_geo_entities(&json!({"asn": "AS1"}), "phone_info", "s", true, &mut seen, &mut r);
             assert!(!r.entities.iter().any(|e| e.kind == EntityKind::Asn));
         }
         // WHOIS registrant address (>= 2 parts) on the whois endpoint.
@@ -1079,6 +1199,7 @@ fn extract_entities(
                 &json!({"registrant_city": "Reno", "registrant_state": "NV", "registrant_country": "US"}),
                 "whois",
                 "s",
+                true,
                 &mut seen,
                 &mut r,
             );

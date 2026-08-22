@@ -579,23 +579,36 @@ pub(super) fn extract_entities(
         }
     }
 
+    // Relatives / associates / household members → connected Person leads. The
+    // searched subject (`target_value`) anchors each via `related_to`, so a
+    // name search on one family member surfaces and binds to the others.
+    //
+    // Ordered BEFORE the quarantine below, so these Persons fall inside
+    // `quarantine_start..` and are demoted with the rest of a non-matching
+    // record. Previously this ran after the demotion loop, on the reasoning that
+    // the `family-candidate` tag was quarantine enough — but that tag is not
+    // `tags::CANDIDATE` and carries no confidence cap, so at `ASSOCIATE_CONF`
+    // (0.45, above PROBABLE_MIN 0.40) a same-name STRANGER's declared relatives
+    // were bound to the subject in the Probable tier. The tag documents what a
+    // Person is; only the demotion states how much to believe it.
+    extract_associates(item, target_value, scan_id, key_fp, seen, result);
+
     // Quarantine a non-matching record's identity/credential/raw-detail entities
     // to CANDIDATE strength with a `candidate` tag — the same demotion
     // oathnet_pro applies per row — so a same-name stranger from a broad search
     // survives as a low-confidence lead instead of masquerading as the subject
     // at full confidence. Applied to everything THIS record contributed above;
-    // declared relatives (next) carry their own `family-candidate` model and the
-    // subject's own rows (`is_target`) are untouched.
+    // the subject's own rows (`is_target`) are untouched.
+    //
+    // Geo entities are NOT in this range: they are emitted by a separate
+    // `extract_geo_entities` call after this function returns, and carry the
+    // same `is_target` verdict so they can demote their own range. See that
+    // function's doc comment.
     if !is_target {
         for e in &mut result.entities[quarantine_start..] {
             e.demote_to_candidate();
         }
     }
-
-    // Relatives / associates / household members → connected Person leads. The
-    // searched subject (`target_value`) anchors each via `related_to`, so a
-    // name search on one family member surfaces and binds to the others.
-    extract_associates(item, target_value, scan_id, key_fp, seen, result);
 
     // Domain is infrastructure, not a leaked credential, so it is the one kind
     // NOT tagged `breach` — keep its inline tail (and consume the last `ev`). A

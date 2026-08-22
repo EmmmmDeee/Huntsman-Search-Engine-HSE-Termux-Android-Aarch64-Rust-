@@ -414,8 +414,17 @@ impl Module for SeekNow {
                     store_api_credential(item, SRC, &ctx.scan_id, &mut seen, &mut result);
                     extract_api_keys_from_item(item, &ctx.scan_id, SRC, &mut seen, &mut result);
                     // Geo-specific extraction — pull coordinates/timezone/
-                    // location directly when the endpoint returns them.
-                    extract_geo_entities(item, endpoint, &ctx.scan_id, &mut seen, &mut result);
+                    // location directly when the endpoint returns them. Carries
+                    // the same match verdict as `extract_entities` above so a
+                    // non-matching record's location is quarantined too.
+                    extract_geo_entities(
+                        item,
+                        endpoint,
+                        &ctx.scan_id,
+                        match_ctx.matches(item),
+                        &mut seen,
+                        &mut result,
+                    );
                 }
             }
 
@@ -518,7 +527,14 @@ fn absorb_search_hits(
         // most productive call. `endpoint_label` ("search"/"search/deep") keeps
         // the endpoint-specific arms (ip_info/whois) inert while the generic
         // lat/lon, location-string, and timezone extraction fires.
-        extract_geo_entities(item, endpoint_label, scan_id, seen, result);
+        extract_geo_entities(
+            item,
+            endpoint_label,
+            scan_id,
+            match_ctx.matches(item),
+            seen,
+            result,
+        );
     }
 }
 
@@ -731,7 +747,14 @@ fn extract_pivot_entities(
             extract_entities(
                 item, seed_value, &match_ctx, scan_id, endpoint, key_fp, seen, result,
             );
-            extract_geo_entities(item, endpoint, scan_id, seen, result);
+            extract_geo_entities(
+                item,
+                endpoint,
+                scan_id,
+                match_ctx.matches(item),
+                seen,
+                result,
+            );
             store_api_credential(item, SRC, scan_id, seen, result);
             extract_api_keys_from_item(item, scan_id, SRC, seen, result);
         }
