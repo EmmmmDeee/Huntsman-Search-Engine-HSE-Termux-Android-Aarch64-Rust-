@@ -115,6 +115,88 @@ fn classify_status_diverts_5xx_and_no_response_to_transient_retry() {
     );
 }
 
+/// Before `classify_status` checked the status code, a 401/403 whose JSON body
+/// used wording other than the three exact substrings `is_auth_error` checks
+/// fell through to `parse_response`, found no recognised error/quota envelope,
+/// and returned as an ORDINARY — silently empty — success. Every test here uses
+/// a body that deliberately does NOT match `is_auth_error`, to isolate the
+/// status-code-driven behaviour from the pre-existing body-based path (already
+/// covered above).
+mod status_code_auth_classification_tests {
+    use super::*;
+
+    #[test]
+    fn http_401_latches_key_invalid_regardless_of_body_wording() {
+        let _guard = BUDGET_TEST_LOCK.lock();
+        crate::util::see_know::reset_budget();
+        assert!(!crate::util::see_know::is_key_invalid());
+
+        let result = classify_status(r#"{"error":"unauthorized"}"#, 401);
+
+        assert!(
+            result.is_ok(),
+            "401 must not error the module out — it's a known-doomed key, not a \
+             transient failure to retry"
+        );
+        assert!(
+            crate::util::see_know::is_key_invalid(),
+            "a 401 must latch is_key_invalid() even though the body doesn't \
+             contain any of is_auth_error's three known substrings — the HTTP \
+             status is definitive per SeekNow's own documented mapping"
+        );
+        crate::util::see_know::reset_budget();
+    }
+
+    #[test]
+    fn http_403_does_not_latch_key_invalid() {
+        // The documented behaviour (docs/SEEKNOW_SETUP.md) is "Plan doesn't
+        // allow endpoint — skips endpoint, continues with others": a 403 must
+        // NEVER globally disable SeekNow, or one plan-gated endpoint would
+        // wrongly silence every other, currently-working endpoint for the rest
+        // of the scan — a false-positive lockout worse than the gap being fixed.
+        let _guard = BUDGET_TEST_LOCK.lock();
+        crate::util::see_know::reset_budget();
+
+        let result = classify_status(r#"{"error":"forbidden"}"#, 403);
+
+        assert!(
+            result.is_err(),
+            "403 must surface as a typed per-endpoint failure, not a silent \
+             empty success — so fold_endpoint_result can warn instead of the \
+             plan restriction vanishing without a trace"
+        );
+        assert!(
+            !crate::util::see_know::is_key_invalid(),
+            "403 must NEVER latch the whole-key invalid flag — a per-endpoint \
+             plan restriction is not a key-wide rejection"
+        );
+        crate::util::see_know::reset_budget();
+    }
+
+    #[test]
+    fn http_403_with_plan_required_body_still_latches_key_invalid() {
+        // The one 403 case that IS key-wide: `plan_required` means the account
+        // has no paid plan at all (not just a gap in coverage for one
+        // endpoint), and `is_auth_error` already recognises this substring.
+        // The status-code short-circuit must yield to it, not shadow it.
+        let _guard = BUDGET_TEST_LOCK.lock();
+        crate::util::see_know::reset_budget();
+
+        let result = classify_status(r#"{"error":"plan_required"}"#, 403);
+
+        assert!(
+            result.is_ok(),
+            "an auth-body 403 keeps the existing Ok(Null) convention"
+        );
+        assert!(
+            crate::util::see_know::is_key_invalid(),
+            "plan_required must still latch key-invalid even though it arrived \
+             as a 403, not a 401"
+        );
+        crate::util::see_know::reset_budget();
+    }
+}
+
 #[test]
 fn reset_budget_clears_the_cross_module_response_cache() {
     // Regression: RESPONSE_CACHE dedups identical endpoint queries WITHIN one

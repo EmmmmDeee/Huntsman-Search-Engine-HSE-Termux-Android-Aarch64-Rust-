@@ -358,6 +358,42 @@ pub(super) fn classify_status(body: &str, status: u16) -> Result<Value> {
             "seek_now: HTTP {status} transient upstream failure"
         )));
     }
+    // HTTP 401 is unambiguous per both HTTP semantics and SeekNow's own
+    // documented mapping (docs/SEEKNOW_SETUP.md: "401 Unauthorized — Invalid/
+    // expired API key"): the whole key is bad, independent of how the JSON
+    // body happens to word it. Without this status-code check, a 401 body that
+    // didn't use one of the three exact substrings `is_auth_error` checks (e.g.
+    // `{"error":"unauthorized"}`) fell through to `parse_response`, which found
+    // no recognised error/quota envelope in a well-formed JSON object and
+    // returned it as an ordinary — silently EMPTY — success: the scan then
+    // burned through every remaining lookup against a key the server had
+    // already and definitively rejected, and `hse doctor`'s "key invalid"
+    // diagnostic never latched.
+    if status == 401 {
+        mark_key_invalid(body);
+        return Ok(Value::Null);
+    }
+    // HTTP 403 is documented DIFFERENTLY: "Plan doesn't allow endpoint — skips
+    // endpoint, continues with others" — a PER-ENDPOINT restriction, not a
+    // key-wide rejection. It must NEVER call `mark_key_invalid`: that disables
+    // SeekNow for the rest of the scan ACROSS EVERY ENDPOINT, so one
+    // plan-gated endpoint's 403 would wrongly silence every other,
+    // currently-working endpoint too — a false-positive lockout worse than the
+    // gap this is fixing. Surfacing it as a typed `Err` (rather than falling
+    // through to the same silent `Ok(empty)` success as the 401 case used to)
+    // is enough: `fold_endpoint_result` (every SeekNow dispatcher's shared
+    // fold) warns and skips just this one endpoint, and
+    // `ModuleResult::or_hard_failure` escalates it only if the WHOLE seed still
+    // ends up with zero entities. Excluded when the body already carries a
+    // known auth/plan marker (`plan_required` in particular is the ACCOUNT
+    // having no paid plan at all, a genuinely key-wide issue) — that case falls
+    // through to the existing, already-tested body-based latch below.
+    if status == 403 && !is_auth_error(body) {
+        return Err(Error::module(
+            "seek_now",
+            "HTTP 403 (endpoint not covered by the account's plan)",
+        ));
+    }
     // A CDN/gateway 429 "Too Many Requests" is commonly served as an HTML or
     // plain-text interstitial, NOT the API's JSON `{"error":"rate_limit"}`
     // envelope. Such a body hits `parse_response`'s non-JSON branch and becomes
