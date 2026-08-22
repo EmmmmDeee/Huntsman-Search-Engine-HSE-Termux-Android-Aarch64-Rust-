@@ -347,9 +347,29 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
 /// It stays as a guard for the case where a proxy or DoH layer surfaces the
 /// rejection as an error string instead.
 pub(super) fn transport_err_is_terminal_auth(err_str: &str) -> bool {
-    err_str.contains("401")
+    contains_401_as_a_status_code(err_str)
         || err_str.contains("Unauthorized")
         || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
+}
+
+/// True if `s` contains "401" as an isolated token, not merely as three
+/// consecutive digits inside a longer number. A curl transport-level failure
+/// (this function's only caller is the pre-response, connection/DNS/timeout
+/// path) commonly reports an elapsed duration — libcurl's own timeout message
+/// is literally "Operation timed out after {ms} milliseconds..." — so a bare
+/// `contains("401")` matched an elapsed time landing anywhere in
+/// 401/4010-4019/40100-40199/… milliseconds, wrongly classifying an ordinary
+/// timeout as a rejected key and aborting the whole multi-domain fallback
+/// instead of trying the next domain. The existing test suite already asserts
+/// `"connection timed out"` must NEVER be terminal — this closes the same gap
+/// for a differently-worded timeout that happens to embed those digits.
+fn contains_401_as_a_status_code(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    s.match_indices("401").any(|(i, _)| {
+        let before_is_digit = i > 0 && bytes[i - 1].is_ascii_digit();
+        let after_is_digit = bytes.get(i + 3).is_some_and(u8::is_ascii_digit);
+        !before_is_digit && !after_is_digit
+    })
 }
 
 pub(super) fn classify_status(body: &str, status: u16) -> Result<Value> {

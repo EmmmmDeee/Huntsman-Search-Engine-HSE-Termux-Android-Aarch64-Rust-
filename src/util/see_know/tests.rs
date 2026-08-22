@@ -682,10 +682,30 @@ fn transport_auth_errors_are_terminal_but_network_errors_are_not() {
         "connection timed out",
         "HTTP 503 from gateway",
         "invalid JSON in response",
+        // Regression: libcurl's own timeout message is literally "Operation
+        // timed out after {ms} milliseconds..." — an elapsed value landing in
+        // 401xxx/40100-40199/4010-4019/401ms all embed the digits "401" as a
+        // substring of a LONGER number, not the status code. A bare
+        // `contains("401")` wrongly classified every one of these as a
+        // rejected key and aborted the whole multi-domain fallback instead of
+        // trying the next domain — exactly the class the plain "connection
+        // timed out" case above already asserts must stay retryable.
+        "Operation timed out after 401000 milliseconds with 0 bytes received",
+        "Operation timed out after 40100 milliseconds with 0 bytes received",
+        "Operation timed out after 4010 milliseconds with 0 bytes received",
     ] {
         assert!(
             !transport_err_is_terminal_auth(retryable),
             "{retryable:?} must NOT be treated as terminal auth"
+        );
+    }
+    // The word-boundary fix must not regress genuine isolated occurrences:
+    // "401" bracketed by non-digit characters (space, punctuation, string
+    // start/end) on either side is still a real status-code mention.
+    for terminal in ["HTTP 401 returned", "status=401", "401", "(401)"] {
+        assert!(
+            transport_err_is_terminal_auth(terminal),
+            "{terminal:?} is an isolated 401 mention and must stay terminal"
         );
     }
 }
