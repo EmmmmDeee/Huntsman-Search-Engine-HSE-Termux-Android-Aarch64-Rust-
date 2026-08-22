@@ -114,6 +114,68 @@ fn extract_entities(
     );
 }
 
+/// Breach/stealer dumps routinely encode identifiers as JSON numbers rather
+/// than strings (`val_str_coerce`'s own doc comment) — SeekNow shares most
+/// field names with OathNet's V2 schema, and `oathnet_pro::breach` already
+/// coerces these same three fields. Before `val_str` was swapped for
+/// `val_str_or_coerce` at each site, a numeric `discord_id`/`steamid`/`phone`
+/// silently vanished: `val_str` is `.as_str()`-only and returns `None` for a
+/// `Value::Number`, so the entity was never emitted — for discord_id/steamid
+/// specifically, that meant `resolve_identity_pivots` never even discovered
+/// the ID to chase, silently disabling the module's own stated "unique value"
+/// (cross-platform identity resolution) for that record.
+mod numeric_identifier_coercion_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn numeric_discord_id_is_extracted() {
+        let item = json!({"discord_id": 123456789012345678u64});
+        let (mut seen, mut result) = (std::collections::HashSet::new(), ModuleResult::new());
+        extract_entities(&item, "someone", "scan", "search", "fp", &mut seen, &mut result);
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username
+                    && e.value == "discord:123456789012345678"),
+            "numeric discord_id must still be extracted; got: {:?}",
+            result.entities.iter().map(|e| &e.value).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn numeric_steamid_is_extracted() {
+        // 17 digits, matching `looks_like_steam_id`'s heuristic.
+        let item = json!({"steamid": 76561198000000000u64});
+        let (mut seen, mut result) = (std::collections::HashSet::new(), ModuleResult::new());
+        extract_entities(&item, "someone", "scan", "search", "fp", &mut seen, &mut result);
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username && e.value == "steam:76561198000000000"),
+            "numeric steamid must still be extracted; got: {:?}",
+            result.entities.iter().map(|e| &e.value).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn numeric_phone_is_extracted() {
+        let item = json!({"phone": 15551234567u64});
+        let (mut seen, mut result) = (std::collections::HashSet::new(), ModuleResult::new());
+        extract_entities(&item, "someone", "scan", "search", "fp", &mut seen, &mut result);
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Phone && e.value == "15551234567"),
+            "numeric phone must still be extracted; got: {:?}",
+            result.entities.iter().map(|e| &e.value).collect::<Vec<_>>()
+        );
+    }
+}
+
     #[test]
     fn module_timeout_exceeds_seeknow_curl_outer_budget() {
         // Regression: the engine aborts a module at max_timeout_ms. see_know's
