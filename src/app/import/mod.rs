@@ -412,6 +412,41 @@ async fn persist_and_report(sid: &str, entities: &[crate::core::entity::Entity],
     }
 }
 
+/// Persist RF sightings for `sid`, best-effort — a failure here must never
+/// affect the entities `persist_and_report` already persisted, exactly as for
+/// stealer rows. A no-op when there is nothing to store.
+pub(super) async fn persist_rf_sightings_best_effort(
+    sid: &str,
+    rows: &[crate::core::rf::RfSighting],
+    output: &str,
+) {
+    if rows.is_empty() {
+        return;
+    }
+    use crate::core::StoragePort;
+    let store: std::sync::Arc<dyn StoragePort> =
+        match crate::storage::Store::open(&crate::default_db_path()) {
+            Ok(s) => std::sync::Arc::new(s),
+            Err(e) => {
+                note(
+                    output,
+                    format!("  Warning:   could not persist RF sightings: {e}"),
+                );
+                return;
+            }
+        };
+    match store.insert_rf_sightings_batch(sid, rows) {
+        Ok(n) => note(
+            output,
+            format!("  Signal:    {n} RF sighting(s) — query with `hse signal --scan-id {sid}`"),
+        ),
+        Err(e) => note(
+            output,
+            format!("  Warning:   could not persist RF sightings: {e}"),
+        ),
+    }
+}
+
 /// Persist paired stealer-log credential rows for `sid`, best-effort — a
 /// failure here must never affect the entities `persist_and_report` already
 /// persisted. Called only by the Stealerlogs importer; a no-op when there's

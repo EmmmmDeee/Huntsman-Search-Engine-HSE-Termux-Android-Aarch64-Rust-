@@ -15,5 +15,6 @@ pub mod gap;
 pub mod import;
 pub mod persist;
 pub mod runtime;
+pub mod signal;
 pub mod tidy;
 pub mod update;

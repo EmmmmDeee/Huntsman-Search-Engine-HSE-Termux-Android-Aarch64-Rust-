@@ -213,17 +213,138 @@ fn bluetooth_observations_are_kept_not_discarded() {
     );
 }
 
+// Radio-family classification itself is now single-sourced in `core::rf` and
+// tested there (`wigle_type_splits_family_from_device_class`,
+// `the_family_is_matched_by_prefix_not_equality`); this file previously carried
+// a second copy of both the classifier and its tests. What remains here is the
+// importer's own concern: that the class the classifier returns actually
+// reaches the entity.
+
 #[test]
-fn radio_kind_matches_the_apps_real_type_spellings() {
-    // The app writes `BLEAttributes` / `BTAttributes`, not bare `BLE` / `BT`;
-    // an equality test against the short forms classified every Bluetooth
-    // record as Unknown and dropped its tags.
-    assert_eq!(radio_kind("WIFI"), RadioKind::Wifi);
-    assert_eq!(radio_kind("BLEAttributes"), RadioKind::Bluetooth);
-    assert_eq!(radio_kind("BTAttributes"), RadioKind::Bluetooth);
-    assert_eq!(radio_kind("LTE"), RadioKind::Cellular);
-    assert_eq!(radio_kind("GSM"), RadioKind::Cellular);
-    assert_eq!(radio_kind(""), RadioKind::Unknown);
+fn a_reported_device_class_reaches_the_tag_and_the_evidence() {
+    // Regression: the class was tagged from the RAW type string, leaking an
+    // unbounded vocabulary — `bt-bleattributes: uncategorized;10`, with the
+    // source's punctuation and a trailing counter — into what is meant to be a
+    // controlled one, and burying the one genuinely useful token inside it.
+    let watch = concat!(
+        r#"<kml><Placemark><name>Band</name>"#,
+        r#"<description>Network ID: 00:1A:2B:44:55:66Encryption: MiscTime: 2026-08-21T16:38:38.000-07:00Signal: -70.0Accuracy: 4.0Type: BLEAttributes: Watch;10</description>"#,
+        r#"<Point><coordinates>153.0,-26.8</coordinates></Point></Placemark></kml>"#,
+    );
+    let (ents, _) = parse_kml(watch, "s");
+    let mac = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::MacAddress)
+        .expect("BLE device emitted");
+    assert!(
+        mac.tags.iter().any(|t| t == "bt-class:watch"),
+        "the parsed class must be the tag, got {:?}",
+        mac.tags
+    );
+    assert!(
+        !mac.tags.iter().any(|t| t.contains(';') || t.contains("attributes")),
+        "the raw type string must not become a tag, got {:?}",
+        mac.tags
+    );
+    assert!(
+        mac.evidence.iter().any(|ev| ev
+            .attributes
+            .get("reported_device_class")
+            .is_some_and(|v| v == "Watch")),
+        "the source-reported class belongs in evidence, distinct from the OUI guess"
+    );
+}
+
+#[test]
+fn a_declined_class_produces_no_class_tag_at_all() {
+    // `Uncategorized` is the source refusing to classify. Tagging it would make
+    // "unclassified" look like a device type, and it was the single most common
+    // value in a real capture.
+    let unc = concat!(
+        r#"<kml><Placemark><name>x</name>"#,
+        r#"<description>Network ID: 00:1A:2B:44:55:77Time: 2026-08-21T16:38:38.000-07:00Signal: -70.0Type: BLEAttributes: Uncategorized;10</description>"#,
+        r#"<Point><coordinates>153.0,-26.8</coordinates></Point></Placemark></kml>"#,
+    );
+    let (ents, _) = parse_kml(unc, "s");
+    let mac = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::MacAddress)
+        .expect("emitted");
+    assert!(mac.tags.iter().any(|t| t == "bluetooth"));
+    assert!(
+        !mac.tags.iter().any(|t| t.starts_with("bt-class:")),
+        "a declined classification must not be tagged as one, got {:?}",
+        mac.tags
+    );
+}
+
+// ── RF sightings ────────────────────────────────────────────────────────────
+
+#[test]
+fn sightings_carry_what_the_entity_graph_cannot_hold() {
+    // The graph keeps that a BSSID and a position exist; the sighting keeps
+    // that the BSSID was heard at this level from that position at that time.
+    let s = rf_sightings(WIGLE_KML);
+    assert_eq!(s.len(), 2, "one sighting per placemark, in document order");
+    let first = &s[0];
+    assert_eq!(first.network_id, "00:1a:2b:3c:4d:5e");
+    assert_eq!(first.radio, crate::core::rf::RadioKind::Wifi);
+    assert_eq!(first.source, crate::core::rf::RfSource::WigleKml);
+    assert_eq!(first.name.as_deref(), Some("Sunset & Vine"));
+    assert_eq!(first.encryption.as_deref(), Some("WPA2"));
+    assert_eq!(first.signal_dbm, Some(-82.0));
+    assert_eq!(first.accuracy_m, Some(3.37));
+    assert!(first.has_usable_position());
+    // The timestamp is parsed to an instant, not left as unorderable text.
+    assert_eq!(
+        first.observed_epoch,
+        crate::core::rf::parse_iso8601_epoch("2026-08-21T16:38:38.000-07:00")
+    );
+    assert!(first.observed_epoch.is_some());
+}
+
+#[test]
+fn a_cellular_record_is_a_sighting_but_never_a_hardware_address() {
+    // It is a real transmitter at a real place, so dropping it loses data — but
+    // its identifier is not a MAC and must not be treated as one.
+    let gsm = concat!(
+        r#"<kml><Placemark><name>Telco</name>"#,
+        r#"<description>Network ID: 505_1_12345_678Encryption: NoneTime: 2026-08-21T16:38:38.000-07:00Signal: -95.0Accuracy: 20.0Type: GSM</description>"#,
+        r#"<Point><coordinates>153.0,-26.8</coordinates></Point></Placemark></kml>"#,
+    );
+    let s = rf_sightings(gsm);
+    assert_eq!(s.len(), 1, "the observation is kept");
+    assert_eq!(s[0].network_id, "505_1_12345_678");
+    assert_eq!(s[0].radio, crate::core::rf::RadioKind::Cellular);
+    assert_eq!(s[0].oui(), None, "a cell tuple has no OUI");
+    assert_eq!(
+        s[0].address_kind(),
+        crate::core::rf::AddressKind::NotAnAddress
+    );
+    // And it earns no MacAddress entity, as before.
+    assert!(!parse_kml(gsm, "s").0.iter().any(|e| e.kind == EntityKind::MacAddress));
+}
+
+#[test]
+fn sightings_are_not_deduplicated_the_way_entities_are() {
+    // Entities collapse repeat sightings to one node — that is correct for the
+    // graph and fatal for a survey, because the repeats ARE the movement track.
+    let twice = WIGLE_KML.replace(
+        "</Document>",
+        &WIGLE_KML[WIGLE_KML.find("<Placemark>").expect("has one")
+            ..WIGLE_KML.find("</Document>").expect("has one")],
+    );
+    let ents = parse_kml(&twice, "s").0;
+    let macs = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::MacAddress && e.value == "00:1a:2b:3c:4d:5e")
+        .count();
+    assert_eq!(macs, 1, "the graph keeps one node per device");
+    let sightings = rf_sightings(&twice)
+        .into_iter()
+        .filter(|s| s.network_id == "00:1a:2b:3c:4d:5e")
+        .count();
+    assert_eq!(sightings, 2, "the survey keeps every time it was heard");
 }
 
 #[test]
