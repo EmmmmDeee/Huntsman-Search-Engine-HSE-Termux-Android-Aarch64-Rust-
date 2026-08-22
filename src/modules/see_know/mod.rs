@@ -864,7 +864,20 @@ fn should_skip_seed(kind: TargetKind, v: &str) -> bool {
             v.len() < 4 || v.chars().all(|c| c.is_ascii_digit()) || is_placeholder_username(v)
         }
         TargetKind::Phone => v.chars().filter(char::is_ascii_digit).count() < 6,
-        TargetKind::FullName => !v.contains(' ') || v.len() < 5,
+        // Char-count, not `v.len()` (bytes): a real full name can be a single
+        // token in any script — a mononym ("Madonna") or a CJK given+family
+        // name written with no separator ("田中太郎") — so requiring a space
+        // wrongly skipped every one of them, always. This is reachable through
+        // completely ordinary automatic scanning, not just an explicit
+        // operator override: `TargetKind::from_entity_kind` maps EVERY
+        // discovered `EntityKind::Person` to a `FullName` pivot target
+        // unconditionally (`core/scan/mod.rs`), so a single-token Person
+        // entity surfaced by ANY module — SeekNow itself included — silently
+        // never got re-queried against SeekNow, the highest-priority provider,
+        // for the rest of the scan. The floor rejects only a genuinely
+        // degenerate single character in any script; two or more characters is
+        // a plausible name.
+        TargetKind::FullName => v.chars().count() < 2,
         TargetKind::IpAddress => is_private_ip(v),
         TargetKind::Domain => is_local_domain(v),
         _ => true,

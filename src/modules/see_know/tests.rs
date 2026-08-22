@@ -215,7 +215,7 @@ mod numeric_identifier_coercion_tests {
         assert!(should_skip_seed(TargetKind::Username, "abc")); // < 4
         assert!(should_skip_seed(TargetKind::Username, "12345")); // all digits
         assert!(should_skip_seed(TargetKind::Phone, "12345")); // < 6 digits
-        assert!(should_skip_seed(TargetKind::FullName, "Jordan")); // no space
+        assert!(should_skip_seed(TargetKind::FullName, "J")); // single character
         assert!(should_skip_seed(TargetKind::IpAddress, "192.168.1.1"));
         assert!(should_skip_seed(TargetKind::Coordinates, "0,0")); // unsupported kind
         // Accepted (real) seeds.
@@ -228,6 +228,37 @@ mod numeric_identifier_coercion_tests {
         assert!(!should_skip_seed(TargetKind::FullName, "Jordan Meyer"));
         assert!(!should_skip_seed(TargetKind::IpAddress, "8.8.8.8"));
         assert!(!should_skip_seed(TargetKind::Domain, "example.com"));
+    }
+
+    /// Regression: `TargetKind::from_entity_kind` (`core/scan/mod.rs`) maps
+    /// EVERY discovered `EntityKind::Person` to a `FullName` pivot target
+    /// unconditionally — this is ordinary, fully automatic BFS expansion, not
+    /// an edge case. A single-token full name is real and common (a mononym,
+    /// or a CJK given+family name written with no separator), so requiring a
+    /// space silently discarded every one of them as a re-query seed against
+    /// SeekNow — the module's own highest-priority provider — for the rest of
+    /// the scan, with no error or warning at any level.
+    #[test]
+    fn should_skip_seed_accepts_single_token_full_names() {
+        // A real mononym — public figures are commonly known by exactly one
+        // name, and the value the engine hands here is already vetted as a
+        // Person by the extraction layer; this function's job is filtering
+        // junk length, not re-litigating whether it looks like "a real name".
+        assert!(!should_skip_seed(TargetKind::FullName, "Madonna"));
+        // A CJK given+family name with no ASCII space — the dominant
+        // real-world case a `!v.contains(' ')` gate silently broke entirely,
+        // for every script that doesn't separate name components with a
+        // literal space character.
+        assert!(!should_skip_seed(TargetKind::FullName, "田中太郎"));
+        // Char-count, not byte-length: this 3-character CJK name is 9 UTF-8
+        // bytes — comfortably above the OLD byte-length floor of 5 by
+        // accident, but a naive "keep the literal threshold, just count chars
+        // instead of bytes" fix would have wrongly re-introduced a skip here,
+        // since most real CJK full names are only 2-4 characters long.
+        assert!(!should_skip_seed(TargetKind::FullName, "刘德华"));
+        // The floor still rejects a genuinely degenerate single character, in
+        // any script — not a real full name in any language.
+        assert!(should_skip_seed(TargetKind::FullName, "田"));
     }
 
     #[test]
