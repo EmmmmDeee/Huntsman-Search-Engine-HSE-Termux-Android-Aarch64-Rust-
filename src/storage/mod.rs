@@ -182,7 +182,20 @@ const SCHEMA_DDL: &str = "
             -- `best_*` is the strongest sighting, which is the closest pass and
             -- so the best single estimate of where the device is; ties break on
             -- the lowest sighting id, making the result deterministic.
-            CREATE VIEW IF NOT EXISTS rf_devices AS
+            --
+            -- DROPped and recreated rather than `CREATE VIEW IF NOT EXISTS`: a
+            -- view is pure derived logic with no data of its own, so recreating
+            -- it on every open costs nothing and is the only way a corrected
+            -- definition ever reaches a database that already exists. With
+            -- `IF NOT EXISTS` the first binary to create the view owns it
+            -- forever and every later fix silently applies to fresh installs
+            -- only — which is exactly how the `best_latitude` bug below
+            -- survived: the tests build `:memory:` stores and so always saw
+            -- the new definition.
+            DROP VIEW IF EXISTS rf_trackable;
+            DROP VIEW IF EXISTS rf_shared_names;
+            DROP VIEW IF EXISTS rf_devices;
+            CREATE VIEW rf_devices AS
             SELECT s.scan_id,
                    s.network_id,
                    MIN(s.radio)                                   AS radio,
@@ -200,14 +213,32 @@ const SCHEMA_DDL: &str = "
                      WHERE b.scan_id = s.scan_id AND b.network_id = s.network_id
                        AND b.name IS NOT NULL
                      ORDER BY b.id ASC LIMIT 1)                   AS name,
+                   -- The position of the best-evidenced sighting that HAS one.
+                   --
+                   -- Both halves of that matter. Filtering on `latitude IS NOT
+                   -- NULL` rather than on `signal_dbm IS NOT NULL` is what makes
+                   -- the answer the device's position at all: ordering by signal
+                   -- alone picks the strongest sighting and then reads whatever
+                   -- latitude it happens to carry, so a device whose loudest
+                   -- pass had no GPS fix reported no position even when a weaker
+                   -- pass located it precisely. And ranking NULL signals last
+                   -- instead of excluding them keeps a source that reports a
+                   -- position but no level (a Bluetooth sweep without RSSI, a
+                   -- capture whose `Signal` field is absent or unparseable)
+                   -- locatable — before, every such device rolled up with
+                   -- `distinct_fixes > 0` and `best_latitude` NULL, a row that
+                   -- contradicts itself, and `rf_summary.with_position`
+                   -- undercounted by exactly those devices.
                    (SELECT b.latitude FROM rf_sightings b
                      WHERE b.scan_id = s.scan_id AND b.network_id = s.network_id
-                       AND b.signal_dbm IS NOT NULL
-                     ORDER BY b.signal_dbm DESC, b.id ASC LIMIT 1) AS best_latitude,
+                       AND b.latitude IS NOT NULL
+                     ORDER BY b.signal_dbm IS NULL, b.signal_dbm DESC,
+                              b.id ASC LIMIT 1)                   AS best_latitude,
                    (SELECT b.longitude FROM rf_sightings b
                      WHERE b.scan_id = s.scan_id AND b.network_id = s.network_id
-                       AND b.signal_dbm IS NOT NULL
-                     ORDER BY b.signal_dbm DESC, b.id ASC LIMIT 1) AS best_longitude,
+                       AND b.latitude IS NOT NULL
+                     ORDER BY b.signal_dbm IS NULL, b.signal_dbm DESC,
+                              b.id ASC LIMIT 1)                   AS best_longitude,
                    COUNT(DISTINCT CASE WHEN s.latitude IS NOT NULL
                          THEN ROUND(s.latitude, 5) || ',' || ROUND(s.longitude, 5) END)
                                                                   AS distinct_fixes
@@ -217,7 +248,7 @@ const SCHEMA_DDL: &str = "
             -- Names carried by more than one radio: a mesh deployment or a
             -- 2.4/5 GHz pair. The radio count is the size of the installation,
             -- which is how a commercial site is told from a house.
-            CREATE VIEW IF NOT EXISTS rf_shared_names AS
+            CREATE VIEW rf_shared_names AS
             SELECT scan_id, name, COUNT(DISTINCT network_id) AS radios
               FROM rf_sightings
              WHERE name IS NOT NULL AND name <> ''
@@ -226,7 +257,7 @@ const SCHEMA_DDL: &str = "
 
             -- Only fixed-address devices are followable across sightings; a
             -- randomised address seen twice is not evidence of one device.
-            CREATE VIEW IF NOT EXISTS rf_trackable AS
+            CREATE VIEW rf_trackable AS
             SELECT * FROM rf_devices WHERE locally_admin = 0;
 
             -- Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN). Keyed by
