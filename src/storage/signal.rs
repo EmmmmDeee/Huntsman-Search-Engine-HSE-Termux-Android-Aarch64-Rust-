@@ -19,6 +19,19 @@ pub struct RfDeviceRow {
     /// `None` when the id is not a hardware address (a cellular identifier).
     pub locally_administered: Option<bool>,
     pub oui: Option<String>,
+    /// The registered organisation for [`oui`](Self::oui).
+    ///
+    /// Resolved on read rather than stored. The OUI is the durable fact; the
+    /// name attached to it is a lookup against a table that gets regenerated,
+    /// so a stored copy would silently go stale while the row still looked
+    /// authoritative. Resolving here means the embedded registry is always the
+    /// single answer.
+    ///
+    /// `None` for a locally-administered address even though its first three
+    /// bytes would index the table perfectly well: those bytes are randomly
+    /// generated, so naming a vendor from them fabricates an identity. This is
+    /// the same refusal [`crate::util::oui::classify_mac`] makes.
+    pub vendor: Option<&'static str>,
     pub device_class: Option<String>,
     pub name: Option<String>,
     pub sightings: i64,
@@ -130,11 +143,22 @@ impl super::Store {
               ORDER BY best_signal_dbm IS NULL, best_signal_dbm DESC, network_id ASC",
         )?;
         let mapped = stmt.query_map(params![scan_id], |r| {
+            let locally_administered = r.get::<_, Option<i64>>(2)?.map(|v| v == 1);
+            let oui: Option<String> = r.get(3)?;
+            // Only a real hardware address earns a vendor; see the field docs.
+            let vendor = match (locally_administered, oui.as_deref()) {
+                (Some(false), Some(prefix)) => {
+                    let info = crate::util::oui::lookup_prefix(prefix);
+                    (info.vendor != "Unknown").then_some(info.vendor)
+                }
+                _ => None,
+            };
             Ok(RfDeviceRow {
                 network_id: r.get(0)?,
                 radio: RadioKind::from_db_str(&r.get::<_, String>(1)?),
-                locally_administered: r.get::<_, Option<i64>>(2)?.map(|v| v == 1),
-                oui: r.get(3)?,
+                locally_administered,
+                vendor,
+                oui,
                 device_class: r.get(4)?,
                 name: r.get(5)?,
                 sightings: r.get(6)?,
