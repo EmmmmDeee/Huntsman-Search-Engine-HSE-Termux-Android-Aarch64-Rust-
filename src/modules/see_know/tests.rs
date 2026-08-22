@@ -1,6 +1,91 @@
 use super::*;
 use crate::core::entity::Entity;
 
+/// `fold_endpoint_result` is what closes the silent-outage gap in every
+/// SeekNow sub-fetch dispatcher (`dispatch_plan`, `dispatch_discord_pivots`,
+/// `dispatch_steam_pivots`, `dispatch_email_cascade_checks`): previously each
+/// called `.unwrap_or_default()` directly on the endpoint's `Result`, so an
+/// endpoint that had exhausted its retries against a 5xx/429/timeout produced
+/// an empty vec INDISTINGUISHABLE from "this endpoint legitimately had no
+/// data" — and the caller's `if !items.is_empty()` trace guard suppressed even
+/// a debug line, so the failure left no trace at any level.
+mod fold_endpoint_result_tests {
+    use super::*;
+    use crate::core::error::Error;
+
+    #[test]
+    fn ok_passes_through_unchanged() {
+        let mut first_failure = None;
+        let (label, items) =
+            fold_endpoint_result("social", Ok(vec![serde_json::json!({"a": 1})]), &mut first_failure);
+        assert_eq!(label, "social");
+        assert_eq!(items.len(), 1);
+        assert!(first_failure.is_none(), "a success must not record a failure");
+    }
+
+    #[test]
+    fn err_yields_empty_items_and_records_the_failure() {
+        let mut first_failure = None;
+        let (label, items) = fold_endpoint_result(
+            "email_check",
+            Err(Error::module("seek_now", "HTTP 503")),
+            &mut first_failure,
+        );
+        assert_eq!(label, "email_check");
+        assert!(
+            items.is_empty(),
+            "a failed sub-fetch must contribute nothing, not fabricate data"
+        );
+        assert!(
+            first_failure.is_some(),
+            "the failure must be recorded, not silently discarded like the old \
+             unwrap_or_default() did"
+        );
+    }
+
+    #[test]
+    fn only_the_first_of_several_failures_is_kept() {
+        // `ModuleResult::or_hard_failure` only needs to know THAT a hard
+        // failure occurred, not enumerate every one — `get_or_insert` is the
+        // right primitive, and this pins that a later Err never overwrites an
+        // earlier one already recorded.
+        let mut first_failure = None;
+        fold_endpoint_result(
+            "a",
+            Err(Error::module("seek_now", "first")),
+            &mut first_failure,
+        );
+        fold_endpoint_result(
+            "b",
+            Err(Error::module("seek_now", "second")),
+            &mut first_failure,
+        );
+        assert!(
+            first_failure.unwrap().to_string().contains("first"),
+            "the FIRST failure must win, not be overwritten by a later one"
+        );
+    }
+
+    #[test]
+    fn a_later_success_does_not_clear_an_earlier_failure() {
+        // Mirrors how `dispatch_plan` actually uses this: several endpoints in
+        // one plan, folded sequentially. A failure on endpoint 1 must survive
+        // endpoint 2 succeeding — `or_hard_failure` needs to see it if the
+        // WHOLE seed still ends up empty.
+        let mut first_failure = None;
+        fold_endpoint_result(
+            "a",
+            Err(Error::module("seek_now", "boom")),
+            &mut first_failure,
+        );
+        fold_endpoint_result("b", Ok(vec![serde_json::json!({})]), &mut first_failure);
+        assert!(
+            first_failure.is_some(),
+            "an earlier recorded failure must not be cleared by a later success"
+        );
+    }
+}
+
 /// Test shim. Production `extract::extract_entities` takes a prebuilt
 /// `&TargetMatch` (built once per result set on the hot path, not per record).
 /// These tests exercise it one record at a time against a raw target string, so
@@ -1413,9 +1498,10 @@ fn extract_entities(
         // no HTTP. Mirrors the discord/steam dispatchers' empty-input guard so
         // the cascade pass can never spin up work with nothing to resolve.
         crate::util::see_know::reset_budget();
-        let (results, attempted) = dispatch_email_cascade_checks("key", Vec::new()).await;
+        let (results, attempted, failure) = dispatch_email_cascade_checks("key", Vec::new()).await;
         assert!(results.is_empty());
         assert!(attempted.is_empty());
+        assert!(failure.is_none(), "no calls made, so no failure to report");
     }
 
     // ── /search/deep fallback (T-current: the largest documented,
