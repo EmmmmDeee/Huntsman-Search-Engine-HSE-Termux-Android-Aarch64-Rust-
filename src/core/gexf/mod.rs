@@ -262,12 +262,35 @@ fn write_relation_edge(xml: &mut String, r: &Relation, edge_id: &mut u64) {
 /// shared verbatim, so the true co-occurrence edge survives. Seed-derivation
 /// lineage remains carried, correctly, by the typed `DerivedFrom` relation edges.
 fn write_shared_evidence_edges(xml: &mut String, entities: &[Entity], edge_id: &mut u64) {
+    // Each entity's record set is built ONCE, up front.
+    //
+    // `corroborating_records` is not a getter: it filters the entity's evidence
+    // and collects a fresh `HashSet` on every call. The outer loop hoisted that
+    // for `src`, but the inner loop called it again for every `tgt`, so each
+    // entity's set was rebuilt n-1 times — n(n-1)/2 set allocations to draw the
+    // edges of an n-entity graph, each one re-hashing that entity's whole
+    // evidence list. `entities` here is the complete, uncapped entity list of a
+    // scan (`scan_export`'s `scan.gexf` route and `app::export` both pass it
+    // straight through, filtered only for CANDIDATE), so n grows with scan
+    // breadth and with the size of any imported dump.
+    //
+    // Precomputing makes it n allocations. The pairwise comparison itself stays
+    // O(n^2) — that is inherent to drawing an edge per co-occurring pair — but
+    // the allocation and re-hashing cost drops from quadratic to linear.
+    // `core::coref` and the `identity::account` rule already solve this exact
+    // shape the same way; this was the site that had been missed.
+    //
+    // Output is unchanged: the pair iteration order is identical, and `shared`
+    // is consumed only by `.len()` and by `labels`, which is sorted and deduped
+    // before it is written.
+    let records: Vec<std::collections::HashSet<(&str, &str)>> =
+        entities.iter().map(Entity::corroborating_records).collect();
     for (i, src) in entities.iter().enumerate() {
-        let src_records = src.corroborating_records();
-        for tgt in entities.iter().skip(i + 1) {
-            let tgt_records = tgt.corroborating_records();
+        let src_records = &records[i];
+        for (j, tgt) in entities.iter().enumerate().skip(i + 1) {
+            let tgt_records = &records[j];
             let shared: Vec<(&str, &str)> =
-                src_records.intersection(&tgt_records).copied().collect();
+                src_records.intersection(tgt_records).copied().collect();
             if shared.is_empty() {
                 continue;
             }
