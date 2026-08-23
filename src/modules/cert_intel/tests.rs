@@ -387,3 +387,80 @@ mod prop {
         }
     }
 }
+
+// ── The fail-closed policy ─────────────────────────────────────────────────
+//
+// crt.sh answers 502/503/429 often enough that swallowing the failure was
+// load-bearing: `if let Ok(entries) = fetch_json(...)` dropped the entire
+// CT-log corpus and the subject looked as though it had no certificate history.
+// The live TLS probe was worse — its `map_err` built an `Error::module` that
+// the very same `if let Ok` discarded, so the error was constructed and thrown
+// away on one expression.
+//
+// `never_answered` is pure so the policy is testable without a live crt.sh or a
+// TLS handshake, matching `see_know::seeknow_never_answered` and
+// `au_property::all_legs_unreachable`.
+
+#[test]
+fn a_total_outage_with_nothing_found_is_an_error() {
+    // Domain target: both legs attempted, both failed, no entities. The scan
+    // learned nothing about this subject's certificates and must not be told
+    // that means it has none.
+    assert!(never_answered(2, 2, false));
+    // IP target: only the TLS leg is attempted, and it failed.
+    assert!(never_answered(1, 1, false));
+}
+
+#[test]
+fn a_partial_outage_is_not_an_error() {
+    // crt.sh broke but the live probe answered. A genuine live certificate is
+    // real intelligence — discarding it to report the outage loses more than it
+    // reports.
+    assert!(!never_answered(2, 1, true));
+    // Even with nothing found, one source having answered means the emptiness
+    // is a real (if thin) observation rather than an absence of information.
+    assert!(!never_answered(2, 1, false));
+}
+
+#[test]
+fn a_truthful_empty_answer_is_not_an_error() {
+    // Both sources answered and neither had anything. That is a genuine
+    // negative about the subject and the commonest healthy outcome for a domain
+    // with no CT history and no listener on 443.
+    assert!(!never_answered(2, 0, false));
+}
+
+#[test]
+fn finding_something_is_never_an_error() {
+    // Failing here would discard entities the module actually produced.
+    assert!(!never_answered(2, 2, true));
+    assert!(!never_answered(1, 1, true));
+}
+
+#[test]
+fn attempting_nothing_is_not_a_failure() {
+    // An empty target returns before either leg runs. Nothing was asked, so
+    // nothing failed — otherwise every skipped target would report an outage.
+    assert!(!never_answered(0, 0, false));
+}
+
+// The diagnostic must never name a source that was not attempted. An IP target
+// skips the CT-log leg entirely — crt.sh is indexed by name — so an error
+// claiming the CT log failed would be a falsehood shipped inside the fix for
+// falsehoods.
+#[test]
+fn the_failure_message_names_only_the_sources_actually_attempted() {
+    let ip_target = all_sources_failed_msg(&["live TLS probe"]);
+    assert!(
+        ip_target.contains("live TLS probe"),
+        "it must say what did fail: {ip_target}"
+    );
+    assert!(
+        !ip_target.contains("CT log"),
+        "an IP target never attempts the CT leg, so the error must not claim it failed: {ip_target}"
+    );
+
+    let domain_target = all_sources_failed_msg(&["crt.sh CT log", "live TLS probe"]);
+    assert!(domain_target.contains("crt.sh CT log"));
+    assert!(domain_target.contains("live TLS probe"));
+}
