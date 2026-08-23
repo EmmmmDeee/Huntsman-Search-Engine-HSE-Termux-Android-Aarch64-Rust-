@@ -443,3 +443,24 @@ fn attempting_nothing_is_not_a_failure() {
     // nothing failed — otherwise every skipped target would report an outage.
     assert!(!never_answered(0, 0, false));
 }
+
+// The diagnostic must never name a source that was not attempted. An IP target
+// skips the CT-log leg entirely — crt.sh is indexed by name — so an error
+// claiming the CT log failed would be a falsehood shipped inside the fix for
+// falsehoods.
+#[test]
+fn the_failure_message_names_only_the_sources_actually_attempted() {
+    let ip_target = all_sources_failed_msg(&["live TLS probe"]);
+    assert!(
+        ip_target.contains("live TLS probe"),
+        "it must say what did fail: {ip_target}"
+    );
+    assert!(
+        !ip_target.contains("CT log"),
+        "an IP target never attempts the CT leg, so the error must not claim it failed: {ip_target}"
+    );
+
+    let domain_target = all_sources_failed_msg(&["crt.sh CT log", "live TLS probe"]);
+    assert!(domain_target.contains("crt.sh CT log"));
+    assert!(domain_target.contains("live TLS probe"));
+}

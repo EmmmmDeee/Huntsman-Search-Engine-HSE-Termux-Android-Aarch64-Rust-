@@ -87,8 +87,12 @@ impl Module for CertIntel {
         let mut result = ModuleResult::new();
         let mut seen_subs: HashSet<String> = HashSet::new();
         // Which certificate sources were actually asked, and how many of those
-        // came back a failure rather than an answer.
-        let mut legs_attempted = 0usize;
+        // came back a failure rather than an answer. Tracked by NAME, not just
+        // by count, so the fail-closed diagnostic can say what was really tried:
+        // an IP target never attempts the CT leg, and an error claiming the CT
+        // log failed would itself be the kind of falsehood this module is being
+        // fixed to stop reporting.
+        let mut attempted: Vec<&str> = Vec::new();
         let mut legs_failed = 0usize;
         let parent = domain.to_lowercase();
 
@@ -96,7 +100,7 @@ impl Module for CertIntel {
         // IP targets skip straight to the live TLS probe.
         if target.kind == TargetKind::Domain {
             let ct_url = format!("https://crt.sh/?q=%.{domain}&output=json");
-            legs_attempted += 1;
+            attempted.push("crt.sh CT log");
             match fetch_json::<Vec<CrtEntry>>(&ctx.http, SRC, &ct_url).await {
                 Ok(entries) => result.extend(ct_log_entities(
                     &entries,
@@ -121,68 +125,84 @@ impl Module for CertIntel {
 
         // ── 2. Live TLS certificate probe (works for both Domain and IP) ──
         let url = format!("https://{domain}/");
-        legs_attempted += 1;
+        attempted.push("live TLS probe");
         // This `map_err` used to build an `Error::module` that the `if let Ok`
         // immediately discarded — the error was constructed and thrown away on
         // the same expression. `send_tagged` yields the typed error directly,
-        // and the failure is now counted rather than dropped.
-        let probe = ctx.http.head(&url).send_tagged(SRC).await;
-        if let Ok(resp) = probe {
-            let mut entity = target.to_entity(confidence::EXPERT, &ctx.scan_id);
-            entity.tag("tls");
+        // and the failure is now counted rather than dropped. A `match` rather
+        // than `if let ... else if let`: the Result is consumed exactly once and
+        // both outcomes are visibly handled in one place.
+        match ctx.http.head(&url).send_tagged(SRC).await {
+            Ok(resp) => {
+                let mut entity = target.to_entity(confidence::EXPERT, &ctx.scan_id);
+                entity.tag("tls");
 
-            let mut ev = Evidence::new(SRC, format!("TLS certificate for {domain}"))
-                .with_attr("port", "443");
+                let mut ev = Evidence::new(SRC, format!("TLS certificate for {domain}"))
+                    .with_attr("port", "443");
 
-            let tls_info = resp.extensions().get::<reqwest::tls::TlsInfo>();
-            if let Some(info) = tls_info
-                && let Some(der) = info.peer_certificate()
-            {
-                parse_certificate(
-                    der,
-                    domain,
-                    &ctx.scan_id,
-                    &mut entity,
-                    &mut ev,
-                    &mut result,
-                    &mut seen_subs,
+                let tls_info = resp.extensions().get::<reqwest::tls::TlsInfo>();
+                if let Some(info) = tls_info
+                    && let Some(der) = info.peer_certificate()
+                {
+                    parse_certificate(
+                        der,
+                        domain,
+                        &ctx.scan_id,
+                        &mut entity,
+                        &mut ev,
+                        &mut result,
+                        &mut seen_subs,
+                    );
+                }
+
+                let status = resp.status();
+                ev = ev.with_attr("http_status", status.as_u16().to_string());
+
+                if let Some(hsts) = resp.headers().get("strict-transport-security")
+                    && let Ok(v) = hsts.to_str()
+                {
+                    ev = ev.with_attr("hsts", v);
+                    entity.tag("hsts");
+                }
+
+                entity.add_evidence(ev);
+                result.push(entity);
+            }
+            Err(e) => {
+                legs_failed += 1;
+                tracing::warn!(
+                    module = SRC,
+                    error = %e,
+                    "live TLS probe failed; recorded as a failure, not as \"no certificate\""
                 );
             }
-
-            let status = resp.status();
-            ev = ev.with_attr("http_status", status.as_u16().to_string());
-
-            if let Some(hsts) = resp.headers().get("strict-transport-security")
-                && let Ok(v) = hsts.to_str()
-            {
-                ev = ev.with_attr("hsts", v);
-                entity.tag("hsts");
-            }
-
-            entity.add_evidence(ev);
-            result.push(entity);
-        } else if let Err(e) = probe {
-            legs_failed += 1;
-            tracing::warn!(
-                module = SRC,
-                error = %e,
-                "live TLS probe failed; recorded as a failure, not as \"no certificate\""
-            );
         }
 
         // Fail closed only when NOTHING answered. A partial result is still real
         // intelligence — an IP target never attempts the CT leg at all, and a
         // domain whose crt.sh query failed but whose TLS probe succeeded has a
         // genuine live certificate to report.
-        if never_answered(legs_attempted, legs_failed, !result.is_empty()) {
-            return Err(Error::module(
-                SRC,
-                "every certificate source failed: neither the CT log nor the live TLS probe answered",
-            ));
+        if never_answered(attempted.len(), legs_failed, !result.is_empty()) {
+            return Err(Error::module(SRC, all_sources_failed_msg(&attempted)));
         }
 
         Ok(result)
     }
+}
+
+/// The fail-closed diagnostic, naming ONLY the sources actually attempted.
+///
+/// Split out so the wording is unit-testable. An earlier revision hard-coded
+/// "neither the CT log nor the live TLS probe answered", which is false for an
+/// IP target: the CT leg is never attempted there, because crt.sh is indexed by
+/// name. An error message that names a source it never tried is precisely the
+/// class of falsehood this module is being changed to stop reporting, so it
+/// would be a poor thing to ship in the fix for it.
+fn all_sources_failed_msg(attempted: &[&str]) -> String {
+    format!(
+        "every certificate source attempted for this target failed: {}",
+        attempted.join(", ")
+    )
 }
 
 /// Whether cert_intel genuinely never got an answer, as opposed to getting a
