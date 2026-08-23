@@ -215,15 +215,57 @@ pub(super) async fn dispatch_plan(
     key: &str,
     value: &str,
     plan: &[EndpointCall],
-) -> Vec<(&'static str, Vec<Value>)> {
+) -> Vec<EndpointOutcome> {
     let futures = plan.iter().copied().map(|call| {
         let value_owned = value.to_string();
         async move {
-            let items = call.invoke(key, &value_owned).await.unwrap_or_default();
-            (call.label(), items)
+            match call.invoke(key, &value_owned).await {
+                Ok(items) => EndpointOutcome {
+                    label: call.label(),
+                    items,
+                    failed: false,
+                },
+                // A terminal failure, NOT an absent record. `get_path` only
+                // yields `Err` once its retry policy is spent, so this is
+                // `Error::RateLimited` after `RATE_LIMIT_BACKOFF`, or a
+                // transport error that survived paced retries. The
+                // quota-exhausted and key-invalid cases are modelled
+                // separately as an empty `Ok`, so `Err` here means the call
+                // failed — never "SeekNow has nothing on this subject".
+                Err(e) => {
+                    tracing::warn!(
+                        endpoint = call.label(),
+                        error = %e,
+                        "see_know endpoint call failed; recorded as a failure, not as \"no records\""
+                    );
+                    EndpointOutcome {
+                        label: call.label(),
+                        items: Vec::new(),
+                        failed: true,
+                    }
+                }
+            }
         }
     });
     join_all(futures).await
+}
+
+/// What one dispatched endpoint actually did.
+///
+/// Carrying `failed` alongside the rows is the whole point: `.unwrap_or_default()`
+/// used to collapse a throttled or unreachable endpoint into the same empty
+/// vector a genuinely-empty answer produces, so an 18-endpoint fan-out could be
+/// blanked by a rate-limit burst and still be recorded as a clean, successful
+/// scan that simply found nothing. The upstream layer takes care to distinguish
+/// `RateLimited` from exhausted credits; that classification was being discarded
+/// at this one boundary.
+pub(super) struct EndpointOutcome {
+    /// The endpoint's short label, as used in evidence and tracing.
+    pub(super) label: &'static str,
+    /// The rows it returned. Empty when it failed.
+    pub(super) items: Vec<Value>,
+    /// True when the call itself failed, as opposed to answering with nothing.
+    pub(super) failed: bool,
 }
 
 /// Enum of SeekNow endpoints the module can target. Centralising them
