@@ -161,3 +161,39 @@ fn area_resp_captures_the_real_live_confirmed_bad_key_error_shape() {
     );
     assert_eq!(resp.cells.len(), 0);
 }
+
+// The live-confirmed bad-key shape: OpenCelliD answers a plain HTTP 200 whose
+// entire body is an error object, with no `cells` key at all. `CellEntry::error`
+// documents this and exists to DETECT it — but the detection only matters
+// because the module now returns a typed error on it instead of an empty
+// success. Before that, a rejected key was still indistinguishable from "no
+// towers here" as far as the scan was concerned, which is precisely what the
+// doc says the field was added to prevent.
+#[test]
+fn a_two_hundred_with_an_error_body_is_parsed_as_a_key_failure() {
+    let body = r#"{"error":"API Key not known: abc123","code":2}"#;
+    let parsed: AreaResp = serde_json::from_str(body).expect("the bad-key shape must deserialize");
+    assert_eq!(
+        parsed.error.as_deref(),
+        Some("API Key not known: abc123"),
+        "the error field is what distinguishes a rejected key from an empty area"
+    );
+    assert!(
+        parsed.cells.is_empty(),
+        "the bad-key body carries no cells key at all"
+    );
+}
+
+// The converse, so the check above cannot start firing on healthy responses: a
+// genuine empty area is a 200 with `cells: []` and NO error field. Reporting a
+// key failure here would turn every genuinely-empty bounding box into a module
+// error and burn a working key.
+#[test]
+fn a_genuinely_empty_area_is_not_mistaken_for_a_key_failure() {
+    let parsed: AreaResp = serde_json::from_str(r#"{"cells":[]}"#).expect("should deserialize");
+    assert!(
+        parsed.error.is_none(),
+        "no error field on a healthy response"
+    );
+    assert!(parsed.cells.is_empty());
+}

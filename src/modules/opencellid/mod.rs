@@ -24,7 +24,7 @@ use serde::Deserialize;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -192,28 +192,44 @@ async fn process_area(target: &Target, ctx: &ModuleContext, api_key: &str) -> Re
         .send()
         .await;
 
-    let Ok(resp) = resp else {
+    // Every one of these paths used to `return Ok(ModuleResult::new())`, which
+    // the engine records as "OpenCelliD found no towers in this bounding box" —
+    // an affirmative GEOINT negative that suppresses downstream geo-convergence.
+    // A throttled key, a WAF interstitial and a schema change all produced that
+    // same answer. The key was at least reported to the pool, so it could still
+    // rotate; the SCAN, however, was told a falsehood.
+    let resp = resp.map_err(|e| {
+        Error::module(
+            SRC,
+            format!("OpenCelliD getInArea request failed at the transport level: {e}"),
+        )
+    })?;
+    // `keyed_ok_or_404` is the house chokepoint ~10 sibling keyed modules
+    // already route through, and it draws exactly the distinction this needs:
+    // 404 is a genuine "nothing here" and stays an empty success, while
+    // 401/403/429 (and an auth-shaped 400) report the key to the pool AND
+    // return Err. Same pool attribution as the hand-rolled call it replaces —
+    // `SRC` — so key rotation behaviour is unchanged.
+    let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, api_key, ctx, resp).await? else {
         return Ok(ModuleResult::new());
     };
-    let status = resp.status();
-    if !status.is_success() {
-        // A present key that gets rejected/throttled must be reported to the
-        // pool, or a dead/throttled key silently degrades every future scan
-        // with no operator-visible signal and no chance to rotate.
-        crate::util::http::note_keyed_error(status.as_u16(), SRC, api_key, ctx);
-        return Ok(ModuleResult::new());
-    }
 
-    let data: AreaResp = match crate::util::http::json_scanned(resp, SRC).await {
-        Ok(d) => d,
-        Err(_) => return Ok(ModuleResult::new()),
-    };
-    if data.error.is_some() {
-        // See `CellEntry::error`'s doc comment — a body-level key failure
-        // OpenCelliD signals as a plain 200, so this can't be caught by the
-        // status check above.
+    // A 2xx was already confirmed, so a decode failure here is OpenCelliD
+    // changing its wire format or a captive-portal/WAF page served with 200 —
+    // provider drift, not an empty area.
+    let data: AreaResp = crate::util::http::json_scanned(resp, SRC)
+        .await
+        .map_err(|e| Error::module(SRC, e))?;
+    if let Some(err) = data.error.as_deref() {
+        // See `CellEntry::error`'s doc comment — OpenCelliD signals a body-level
+        // key failure as a plain 200, so the status check above cannot catch it.
+        // The key is reported to the pool as before; what changes is that the
+        // scan is no longer additionally told the area holds no towers.
         crate::util::http::note_keyed_error(401, SRC, api_key, ctx);
-        return Ok(ModuleResult::new());
+        return Err(Error::module(
+            SRC,
+            format!("OpenCelliD rejected the key in a 200 body: {err}"),
+        ));
     }
 
     let mut result = ModuleResult::new();
@@ -250,24 +266,28 @@ async fn process_tower(
         .send()
         .await;
 
-    let Ok(resp) = resp else {
+    // Same rationale as `process_area` above: a failure here is not "this cell
+    // is not in OpenCelliD", and a 404 — which is exactly that — still is.
+    let resp = resp.map_err(|e| {
+        Error::module(
+            SRC,
+            format!("OpenCelliD cell/get request failed at the transport level: {e}"),
+        )
+    })?;
+    let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, api_key, ctx, resp).await? else {
         return Ok(ModuleResult::new());
     };
-    let status = resp.status();
-    if !status.is_success() {
-        // Same reporting rationale as `process_area` above.
-        crate::util::http::note_keyed_error(status.as_u16(), SRC, api_key, ctx);
-        return Ok(ModuleResult::new());
-    }
 
-    let cell: CellEntry = match crate::util::http::json_scanned(resp, SRC).await {
-        Ok(d) => d,
-        Err(_) => return Ok(ModuleResult::new()),
-    };
-    if cell.error.is_some() {
+    let cell: CellEntry = crate::util::http::json_scanned(resp, SRC)
+        .await
+        .map_err(|e| Error::module(SRC, e))?;
+    if let Some(err) = cell.error.as_deref() {
         // See `CellEntry::error`'s doc comment.
         crate::util::http::note_keyed_error(401, SRC, api_key, ctx);
-        return Ok(ModuleResult::new());
+        return Err(Error::module(
+            SRC,
+            format!("OpenCelliD rejected the key in a 200 body: {err}"),
+        ));
     }
 
     let mut result = ModuleResult::new();
