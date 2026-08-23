@@ -1449,3 +1449,49 @@ fn extract_entities(
              it was dropped before the geo wiring was added to absorb_search_hits"
         );
     }
+
+// ── Fail-closed: a failed SeekNow fan-out is not "no records" ────────────────
+//
+// SeekNow is a breach/stealer source, so the difference between "we asked and
+// the subject is clean" and "our key was throttled and we never got an answer"
+// is the difference between intelligence and a false negative. `dispatch_plan`
+// used to `.unwrap_or_default()` every call, collapsing both into the same
+// empty vector. These pin the policy that replaced it.
+
+#[test]
+fn seeknow_never_answered_when_every_dispatched_call_failed_and_nothing_found() {
+    // The case that used to be silent: an 18-endpoint matrix blanked by a
+    // rate-limit burst, reported as a clean scan finding nothing.
+    assert!(seeknow_never_answered(18, 18, false));
+    assert!(seeknow_never_answered(1, 1, false));
+}
+
+#[test]
+fn seeknow_answered_is_not_a_failure_even_when_it_found_nothing() {
+    // Endpoints answered and the subject is simply clean — a genuine negative,
+    // and the single most common outcome. Must stay an `Ok`.
+    assert!(!seeknow_never_answered(18, 0, false));
+    // Partial degradation: seventeen good answers alongside one throttled
+    // endpoint is still useful intelligence, not a module failure. It is not
+    // silent either — `dispatch_plan` warns per failed call.
+    assert!(!seeknow_never_answered(18, 17, false));
+    assert!(!seeknow_never_answered(2, 1, false));
+}
+
+#[test]
+fn seeknow_failure_is_suppressed_once_anything_was_found() {
+    // Entities reached the graph, so the scan did learn something; a failure
+    // now would discard real findings. Mirrors `asic_director::request_failed`,
+    // which is also gated on `!found_any_entity`.
+    assert!(!seeknow_never_answered(18, 18, true));
+    assert!(!seeknow_never_answered(1, 1, true));
+}
+
+#[test]
+fn seeknow_dispatching_nothing_is_not_a_failure() {
+    // Cancelled mid-scan, or no quota left, so nothing was ever asked of
+    // SeekNow. Nothing was asked, so nothing failed — `dispatched == 0` must
+    // never trip the error, or every cancelled scan would report a dead key.
+    assert!(!seeknow_never_answered(0, 0, false));
+    assert!(!seeknow_never_answered(0, 0, true));
+}
