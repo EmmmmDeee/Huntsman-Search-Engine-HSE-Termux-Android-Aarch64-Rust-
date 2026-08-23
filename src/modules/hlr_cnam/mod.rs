@@ -32,6 +32,14 @@ fn hlr_pool_service() -> &'static str {
     crate::util::service_defs::service_for_env(HLR_KEY_ENV).map_or(SRC, |d| d.name)
 }
 
+/// The key-pool service name for the OpenCNAM key, resolved the same way
+/// [`hlr_pool_service`] resolves the HLR one. Stage 2 needs it so a dead or
+/// throttled OpenCNAM key is reported to the pool and rotated, exactly as
+/// Stage 1 already does for `hlrlookups`.
+fn cnam_pool_service() -> &'static str {
+    crate::util::service_defs::service_for_env(CNAM_KEY_ENV).map_or(SRC, |d| d.name)
+}
+
 pub struct HlrCnam;
 
 #[derive(Deserialize, Default)]
@@ -138,12 +146,54 @@ impl Module for HlrCnam {
                 crate::util::http::urlencode(number),
                 crate::util::http::urlencode(cnam_key),
             );
-            if let Ok(cr) = ctx.http.get(&cnam_url).send_tagged(SRC).await
-                && cr.status().is_success()
-                && let Ok(cnam) = crate::util::http::json_decode::<CnamResp>(SRC, cr).await
-                && let Some(person) = build_cnam_person(&cnam, number, &ctx.scan_id)
-            {
-                result.push(person);
+            // Same key policy Stage 1 applies eleven lines above: 401/403/429
+            // (and an auth-shaped 400) burn the key through the pool so it
+            // rotates, and 404 is a clean miss. This stage used to absorb ALL of
+            // those behind `if let Ok(cr) = ... && cr.status().is_success()`, so
+            // a dead OpenCNAM key was never reported to the pool, never rotated,
+            // and the scan recorded "this number has no CNAM subscriber name" —
+            // a substantive intelligence negative — when the truth was that the
+            // key was dead. Two stages of one function applied opposite policies
+            // to the same class of failure.
+            //
+            // The error is LOGGED rather than propagated: Stage 1 already
+            // produced verified HLR entities, and failing the module here to
+            // report an enrichment miss would discard real findings. The key
+            // still gets burned, which is the part that was actually missing.
+            match ctx.http.get(&cnam_url).send_tagged(SRC).await {
+                Ok(cr) => {
+                    match crate::util::http::keyed_ok_or_404(cnam_pool_service(), cnam_key, ctx, cr)
+                        .await
+                    {
+                        Ok(Some(cr)) => {
+                            match crate::util::http::json_decode::<CnamResp>(SRC, cr).await {
+                                Ok(cnam) => {
+                                    if let Some(person) =
+                                        build_cnam_person(&cnam, number, &ctx.scan_id)
+                                    {
+                                        result.push(person);
+                                    }
+                                }
+                                Err(e) => tracing::warn!(
+                                    error = %e,
+                                    "OpenCNAM response did not decode; not \"no subscriber name\""
+                                ),
+                            }
+                        }
+                        // 404: OpenCNAM genuinely holds no record for this
+                        // number. That IS the honest negative.
+                        Ok(None) => {}
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            "OpenCNAM lookup failed (key reported to the pool); \
+                             not \"no subscriber name\""
+                        ),
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "OpenCNAM request failed at the transport level; not \"no subscriber name\""
+                ),
             }
         }
 
