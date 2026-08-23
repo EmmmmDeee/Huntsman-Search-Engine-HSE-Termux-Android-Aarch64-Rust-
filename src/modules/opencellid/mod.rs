@@ -29,9 +29,23 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::geo::{is_valid_coords, parse_coords};
-use crate::util::http::urlencode;
+use crate::util::http::{RequestBuilderExt, urlencode};
 
 const SRC: &str = "opencellid";
+
+/// The error returned when OpenCelliD rejects the API key in a `200` body.
+///
+/// Deliberately a `const` rather than a `format!`. OpenCelliD's bad-key body
+/// echoes the key back verbatim — `{"error":"API Key not known: <key>",...}` —
+/// so interpolating the provider's own message here would write the key into
+/// every error surface: the verbose log, the SSE stream and the dossier. Making
+/// this a constant means no provider-controlled bytes can reach those surfaces
+/// through this path at all, rather than relying on a reviewer to notice.
+///
+/// The key is still reported to the pool by the `note_keyed_error` call at each
+/// site, so rotation is unaffected — only the message text is generic.
+const KEY_REJECTED_MSG: &str =
+    "OpenCelliD rejected the API key: the 200 body carried an error object instead of results";
 const KEY_ENV: &str = "HUNTSMAN_OPENCELLID_KEY";
 /// Bounding-box half-width in degrees (~556 m at mid-latitudes).
 const BBOX_DELTA: f64 = 0.005;
@@ -185,12 +199,16 @@ async fn process_area(target: &Target, ctx: &ModuleContext, api_key: &str) -> Re
         urlencode(&bbox),
     );
 
+    // `send_tagged` rather than a bare `send()`: the request URL carries the API
+    // key as its first query parameter, and `reqwest::Error`'s Display embeds
+    // that URL. `send_tagged` is the chokepoint that strips it — see
+    // `http::tests::send_tagged_strips_url_so_secrets_and_pii_dont_leak`.
     let resp = ctx
         .http
         .get(&url)
         .header("Accept", "application/json")
-        .send()
-        .await;
+        .send_tagged(SRC)
+        .await?;
 
     // Every one of these paths used to `return Ok(ModuleResult::new())`, which
     // the engine records as "OpenCelliD found no towers in this bounding box" —
@@ -198,12 +216,6 @@ async fn process_area(target: &Target, ctx: &ModuleContext, api_key: &str) -> Re
     // A throttled key, a WAF interstitial and a schema change all produced that
     // same answer. The key was at least reported to the pool, so it could still
     // rotate; the SCAN, however, was told a falsehood.
-    let resp = resp.map_err(|e| {
-        Error::module(
-            SRC,
-            format!("OpenCelliD getInArea request failed at the transport level: {e}"),
-        )
-    })?;
     // `keyed_ok_or_404` is the house chokepoint ~10 sibling keyed modules
     // already route through, and it draws exactly the distinction this needs:
     // 404 is a genuine "nothing here" and stays an empty success, while
@@ -220,16 +232,13 @@ async fn process_area(target: &Target, ctx: &ModuleContext, api_key: &str) -> Re
     let data: AreaResp = crate::util::http::json_scanned(resp, SRC)
         .await
         .map_err(|e| Error::module(SRC, e))?;
-    if let Some(err) = data.error.as_deref() {
+    if data.error.is_some() {
         // See `CellEntry::error`'s doc comment — OpenCelliD signals a body-level
         // key failure as a plain 200, so the status check above cannot catch it.
         // The key is reported to the pool as before; what changes is that the
         // scan is no longer additionally told the area holds no towers.
         crate::util::http::note_keyed_error(401, SRC, api_key, ctx);
-        return Err(Error::module(
-            SRC,
-            format!("OpenCelliD rejected the key in a 200 body: {err}"),
-        ));
+        return Err(Error::module(SRC, KEY_REJECTED_MSG));
     }
 
     let mut result = ModuleResult::new();
@@ -259,21 +268,19 @@ async fn process_tower(
         cid,
     );
 
+    // `send_tagged` rather than a bare `send()`: the request URL carries the API
+    // key as its first query parameter, and `reqwest::Error`'s Display embeds
+    // that URL. `send_tagged` is the chokepoint that strips it — see
+    // `http::tests::send_tagged_strips_url_so_secrets_and_pii_dont_leak`.
     let resp = ctx
         .http
         .get(&url)
         .header("Accept", "application/json")
-        .send()
-        .await;
+        .send_tagged(SRC)
+        .await?;
 
     // Same rationale as `process_area` above: a failure here is not "this cell
     // is not in OpenCelliD", and a 404 — which is exactly that — still is.
-    let resp = resp.map_err(|e| {
-        Error::module(
-            SRC,
-            format!("OpenCelliD cell/get request failed at the transport level: {e}"),
-        )
-    })?;
     let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, api_key, ctx, resp).await? else {
         return Ok(ModuleResult::new());
     };
@@ -281,13 +288,10 @@ async fn process_tower(
     let cell: CellEntry = crate::util::http::json_scanned(resp, SRC)
         .await
         .map_err(|e| Error::module(SRC, e))?;
-    if let Some(err) = cell.error.as_deref() {
+    if cell.error.is_some() {
         // See `CellEntry::error`'s doc comment.
         crate::util::http::note_keyed_error(401, SRC, api_key, ctx);
-        return Err(Error::module(
-            SRC,
-            format!("OpenCelliD rejected the key in a 200 body: {err}"),
-        ));
+        return Err(Error::module(SRC, KEY_REJECTED_MSG));
     }
 
     let mut result = ModuleResult::new();
