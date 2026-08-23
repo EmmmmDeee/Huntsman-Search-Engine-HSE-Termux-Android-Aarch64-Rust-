@@ -739,7 +739,7 @@ impl Store {
                             rule_id = %c.rule_id,
                             rowid,
                             error = %e,
-                            "correlations.entity_uids will not parse — row skipped for                              supersede, left intact"
+                            "correlations.entity_uids will not parse; row skipped for supersede, left intact"
                         );
                         continue;
                     }
