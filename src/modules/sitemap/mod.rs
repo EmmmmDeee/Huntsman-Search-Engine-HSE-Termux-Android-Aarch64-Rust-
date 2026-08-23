@@ -103,7 +103,14 @@ fn extract_locs(xml: &str) -> Vec<String> {
 /// source — came out as `<`, a silently wrong URL rather than an error. The shared
 /// decoder consumes each `&…;` exactly once, so that round-trips correctly, and it
 /// also resolves the numeric character references (`&#38;`, `&#x26;`) the chain
-/// left raw in the URL. **Pure**.
+/// left raw in the URL.
+///
+/// One decoder for the whole crate is the point, so this deliberately accepts a
+/// wider named set than XML's five predefined entities — `&copy;`, `&trade;` and
+/// the rest of the HTML table decode here too. A well-formed sitemap cannot
+/// contain those undeclared, so the only documents affected are already
+/// malformed, and re-introducing a narrower local decoder to reject them is
+/// exactly the drift this delegation removes. **Pure**.
 fn xml_unescape(s: &str) -> String {
     crate::util::html::decode_entities(s)
 }

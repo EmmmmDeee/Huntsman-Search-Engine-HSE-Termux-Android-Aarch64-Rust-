@@ -172,6 +172,13 @@ pub fn collapse_whitespace(s: &str) -> String {
 /// bare/unknown/malformed `&…;` is emitted verbatim. The single, shared decoder
 /// for the whole codebase — `search_engines` delegates here so a title decoded in
 /// a module matches one decoded in core/util.
+/// The longest entity body this decoder will accept, in bytes — the text between
+/// `&` and `;`. The longest thing [`decode_one_entity`] recognises is a numeric
+/// character reference (`#x1F600`), and every named entity in its table is
+/// shorter. It bounds the `;` SEARCH, not just the result, which is what keeps
+/// the pass linear; see the comment in [`decode_entities`].
+const MAX_ENTITY_BODY: usize = 10;
+
 pub fn decode_entities(s: &str) -> String {
     if memchr(b'&', s.as_bytes()).is_none() {
         return s.to_string();
@@ -181,9 +188,32 @@ pub fn decode_entities(s: &str) -> String {
     while let Some(amp) = memchr(b'&', rest.as_bytes()) {
         out.push_str(&rest[..amp]);
         let inner = &rest[amp + 1..]; // text after the '&'
+        // Look for the terminating `;` ONLY within the longest body that could
+        // possibly be accepted.
+        //
+        // Scanning the whole remainder and rejecting afterwards — which is what
+        // `memchr(b';', inner.as_bytes()) && semi <= MAX_ENTITY_BODY` did — made
+        // this QUADRATIC in the number of ampersands. On a `&` with no `;` after
+        // it, memchr walked every remaining byte, the length test then rejected
+        // the hit, and the cursor advanced a single byte to do it all again. A
+        // body of N bare ampersands cost N scans of O(N).
+        //
+        // That is reachable from untrusted input on the primary target: the
+        // sitemap module hands this the whole `<loc>` span of a document the scan
+        // target serves, and `fetch_capped` admits 5 MiB. `tokio::time::timeout`
+        // does not bound it either — this is a synchronous CPU-bound call with no
+        // await point to cancel at, so the per-module budget cannot interrupt it.
+        // Measured on the equivalent transformation: 128 KB of `&` took 3.85 s
+        // before and 1.53 ms after, with time quadrupling per doubling of input.
+        //
+        // Bounding the SEARCH instead of the RESULT is exactly equivalent: the
+        // old code accepted a hit only when the first `;` was within
+        // `MAX_ENTITY_BODY`, and a window of that size finds precisely those
+        // hits. Every `&` now costs at most a `MAX_ENTITY_BODY + 1` byte scan, so
+        // the pass is linear.
+        let window = inner.len().min(MAX_ENTITY_BODY + 1);
         // `&` and `;` are single-byte ASCII so their byte offsets are valid char boundaries.
-        if let Some(semi) = memchr(b';', inner.as_bytes())
-            && semi <= 10
+        if let Some(semi) = memchr(b';', &inner.as_bytes()[..window])
             && let Some(ch) = decode_one_entity(&inner[..semi])
         {
             out.push(ch);

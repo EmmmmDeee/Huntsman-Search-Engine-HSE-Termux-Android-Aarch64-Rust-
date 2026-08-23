@@ -368,8 +368,11 @@ fn is_steam_platform_host(host: &str) -> bool {
 }
 
 /// Extract the text of the first `<tag>…</tag>`, unwrapping a CDATA section and
-/// decoding the XML entities Steam emits outside CDATA. `None` if the tag is
-/// absent or empty.
+/// decoding the XML entities Steam emits. `None` if the tag is absent or empty.
+///
+/// Decoding runs on the CDATA-unwrapped text as well, not only on text outside
+/// CDATA: Steam wraps most profile fields in CDATA and still publishes escaped
+/// entities inside them, so decoding only the outside would leave those raw.
 ///
 /// Decoding goes through [`crate::util::html::decode_entities`], the crate's
 /// single shared decoder, rather than a local `.replace()` chain. A chain feeds

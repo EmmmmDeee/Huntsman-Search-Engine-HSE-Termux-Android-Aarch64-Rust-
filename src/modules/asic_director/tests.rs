@@ -138,7 +138,16 @@ fn clean_html_decodes_numeric_character_references() {
     assert_eq!(clean_html("<td>Ren&#xE9;e Dubois</td>"), "Renée Dubois");
 }
 
+// Timing ratios are a property of how the scheduler treated two microsecond-scale
+// samples, not a property of the code, so this does NOT belong in the gated run:
+// an adversarial audit reproduced it failing roughly one run in ten under 4x CPU
+// oversubscription, which would redden `main` for reasons unrelated to any diff.
+// `#[ignore]`d to match the house convention for the other perf baselines
+// (`core::correlator::perf`, the engine throughput test, `util::found_keys`).
+// The quadratic regression it guards is documented with real measurements in the
+// commit that removed it; run this by hand to re-confirm.
 #[test]
+#[ignore = "timing ratio; run with --ignored --nocapture"]
 fn clean_html_is_linear_in_ampersand_count() {
     // Regression: every `&` rebuilt the whole remaining document into a String to
     // run `starts_with` against it, making the scan quadratic. This asserts the
