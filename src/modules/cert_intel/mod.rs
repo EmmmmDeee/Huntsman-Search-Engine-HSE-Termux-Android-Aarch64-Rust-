@@ -21,7 +21,7 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::http::fetch_json;
+use crate::util::http::{RequestBuilderExt, fetch_json};
 
 // ── crt.sh response types ──────────────────────────────────────────
 
@@ -86,31 +86,48 @@ impl Module for CertIntel {
 
         let mut result = ModuleResult::new();
         let mut seen_subs: HashSet<String> = HashSet::new();
+        // Which certificate sources were actually asked, and how many of those
+        // came back a failure rather than an answer.
+        let mut legs_attempted = 0usize;
+        let mut legs_failed = 0usize;
         let parent = domain.to_lowercase();
 
         // CT-log search only works for domain targets (indexed by name).
         // IP targets skip straight to the live TLS probe.
         if target.kind == TargetKind::Domain {
             let ct_url = format!("https://crt.sh/?q=%.{domain}&output=json");
-            if let Ok(entries) = fetch_json::<Vec<CrtEntry>>(&ctx.http, SRC, &ct_url).await {
-                result.extend(ct_log_entities(
+            legs_attempted += 1;
+            match fetch_json::<Vec<CrtEntry>>(&ctx.http, SRC, &ct_url).await {
+                Ok(entries) => result.extend(ct_log_entities(
                     &entries,
                     &parent,
                     &ctx.scan_id,
                     &mut seen_subs,
-                ));
+                )),
+                Err(e) => {
+                    // crt.sh answers 502/503/429 often enough that swallowing it
+                    // was load-bearing: the whole CT-log corpus would vanish
+                    // from the scan and the subject would look like it had no
+                    // certificate history at all.
+                    legs_failed += 1;
+                    tracing::warn!(
+                        module = SRC,
+                        error = %e,
+                        "crt.sh CT-log search failed; recorded as a failure, not as \"no certificates\""
+                    );
+                }
             }
         } // end CT-log search (domain-only)
 
         // ── 2. Live TLS certificate probe (works for both Domain and IP) ──
         let url = format!("https://{domain}/");
-        if let Ok(resp) = ctx
-            .http
-            .head(&url)
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, format!("TLS connect: {e}")))
-        {
+        legs_attempted += 1;
+        // This `map_err` used to build an `Error::module` that the `if let Ok`
+        // immediately discarded — the error was constructed and thrown away on
+        // the same expression. `send_tagged` yields the typed error directly,
+        // and the failure is now counted rather than dropped.
+        let probe = ctx.http.head(&url).send_tagged(SRC).await;
+        if let Ok(resp) = probe {
             let mut entity = target.to_entity(confidence::EXPERT, &ctx.scan_id);
             entity.tag("tls");
 
@@ -144,10 +161,46 @@ impl Module for CertIntel {
 
             entity.add_evidence(ev);
             result.push(entity);
+        } else if let Err(e) = probe {
+            legs_failed += 1;
+            tracing::warn!(
+                module = SRC,
+                error = %e,
+                "live TLS probe failed; recorded as a failure, not as \"no certificate\""
+            );
+        }
+
+        // Fail closed only when NOTHING answered. A partial result is still real
+        // intelligence — an IP target never attempts the CT leg at all, and a
+        // domain whose crt.sh query failed but whose TLS probe succeeded has a
+        // genuine live certificate to report.
+        if never_answered(legs_attempted, legs_failed, !result.is_empty()) {
+            return Err(Error::module(
+                SRC,
+                "every certificate source failed: neither the CT log nor the live TLS probe answered",
+            ));
         }
 
         Ok(result)
     }
+}
+
+/// Whether cert_intel genuinely never got an answer, as opposed to getting a
+/// truthful empty one.
+///
+/// The same shape as `see_know::seeknow_never_answered` and
+/// `au_property::all_legs_unreachable`, and deliberately so — this is the third
+/// module in the codebase to need it. Pure, so the policy is unit-testable
+/// without a live crt.sh or a TLS handshake.
+///
+/// An error only when EVERY attempted source failed and nothing was found:
+/// * nothing attempted -> not a failure; nothing was asked.
+/// * anything found -> not a failure, even if a source did fail; discarding
+///   real certificates to report a partial outage loses intelligence.
+/// * some sources answered -> not a failure; a domain whose crt.sh query broke
+///   but whose live probe succeeded still has a genuine certificate.
+fn never_answered(attempted: usize, failed: usize, found_any: bool) -> bool {
+    attempted > 0 && failed == attempted && !found_any
 }
 
 /// Map crt.sh CT-log entries to Domain entities, discriminating confidence by the
