@@ -4068,3 +4068,75 @@ fn every_f64_cli_argument_declares_a_value_parser() {
         unguarded.join("\n  ")
     );
 }
+
+/// A non-2xx response must never be folded into a module's empty result.
+///
+/// `if !resp.status().is_success() { return Ok(empty) }` reports a 403 scraper block,
+/// a 429 throttle and a 5xx outage as the same answer as a genuine miss. For a
+/// registry lookup that empty result is not "nothing to report" — it is a negative
+/// claim about a named subject ("not a registered practitioner", "holds no licence")
+/// that an analyst will act on. `util::http::ok_or_absent` is the fail-closed form:
+/// it takes the statuses that genuinely mean absence for that endpoint and turns
+/// every other non-2xx into a typed `Err` the operator can see.
+///
+/// This guard exists because the raw pattern was independently written in eleven
+/// modules before it was caught.
+#[test]
+fn modules_do_not_collapse_a_non_2xx_into_an_empty_result() {
+    // `exif_geo` fetches an arbitrary, scraper-discovered image URL that almost
+    // certainly serves no EXIF. That resembles the speculative-probe carve-out
+    // `util::http::fetch_json_probe` documents, where a refusal and a miss really are
+    // the same negative — but unlike the probe helpers it makes no such claim in a
+    // doc comment. Left as-is pending a maintainer decision rather than changed on a
+    // guess; listed here so the exemption is visible instead of silently unscanned.
+    const EXEMPT: &[&str] = &["exif_geo"];
+
+    let mut violations = Vec::new();
+    let mut scanned = 0usize;
+    let mut stack = vec![Path::new("src/modules").to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs")
+                || path.file_name().is_some_and(|n| n == "tests.rs")
+                || EXEMPT.iter().any(|m| path.to_string_lossy().contains(m))
+            {
+                continue;
+            }
+            let raw = fs::read_to_string(&path).unwrap();
+            let scanned_src = production_source(&raw);
+            let lines: Vec<&str> = scanned_src.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                let trimmed = line.trim();
+                if !(trimmed.starts_with("if !") && trimmed.contains("status().is_success()")) {
+                    continue;
+                }
+                scanned += 1;
+                // The collapse is the `return Ok(..)` in the guarded block; a
+                // `return Err(..)` or a propagating `?` on the next lines is correct.
+                let body: String = lines[i + 1..lines.len().min(i + 3)].concat();
+                if body.contains("return Ok(") {
+                    violations.push(format!("{}:{}", path.display(), i + 1));
+                }
+            }
+        }
+    }
+
+    assert!(
+        scanned >= 20,
+        "expected to scan the known `is_success()` guards; found only {scanned} — the \
+         scan is broken and this test would pass vacuously"
+    );
+    assert!(
+        violations.is_empty(),
+        "{} module(s) fold a non-2xx response into an empty result, so a refusal is \
+         reported as a negative finding about the subject. Use \
+         `util::http::ok_or_absent(SRC, resp, &[<codes that mean absence>])`:\n  {}",
+        violations.len(),
+        violations.join("\n  ")
+    );
+}

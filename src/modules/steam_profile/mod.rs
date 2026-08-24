@@ -97,9 +97,9 @@ impl Module for SteamProfile {
             .header("User-Agent", UA_BROWSER)
             .send_tagged(SRC)
             .await?;
-        if !resp.status().is_success() {
+        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
             return Ok(result);
-        }
+        };
         let xml = read_text(SRC, resp).await?;
         // A missing/private profile returns `<error>…could not be found</error>`
         // or carries no `<steamID64>` — a clean miss, not an error.

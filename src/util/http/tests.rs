@@ -2,7 +2,7 @@ use super::client::{build_client, build_client_with_trace};
 use super::fetch::{
     JSON_BODY_CAP, fetch_json, fetch_json_or_404, fetch_json_or_absent, fetch_json_probe,
     is_keyed_error_status, key_tail, keyed_cascade, keyed_cascade_json, keyed_ok_or_404,
-    parse_retry_after_secs, retry_after_secs,
+    ok_or_absent, parse_retry_after_secs, retry_after_secs,
 };
 use super::redact::{redact_credentials, redact_literal_secrets};
 use super::ssrf::{filter_public, redirect_to_private_ip};
@@ -18,6 +18,56 @@ fn keyed_error_status_classification() {
     for code in [200, 400, 404, 418, 500, 502, 503] {
         assert!(!is_keyed_error_status(code), "{code} is not a key error");
     }
+}
+
+/// The fail-closed contract this helper exists to enforce: only a status the caller
+/// declared as absence becomes `Ok(None)`. The refusal statuses that the modules used
+/// to fold into an empty result — 403 scraper block, 429 throttle, 5xx outage — must
+/// come back as `Err`, naming the module, so a refusal can never be read as a negative
+/// claim about the subject.
+#[tokio::test]
+async fn ok_or_absent_separates_declared_absence_from_refusal() {
+    let resp = |code: u16| {
+        reqwest::Response::from(
+            http::Response::builder()
+                .status(code)
+                .body(String::new())
+                .expect("should succeed"),
+        )
+    };
+
+    assert!(
+        ok_or_absent("test_mod", resp(200), &[404])
+            .await
+            .expect("2xx is not an error")
+            .is_some(),
+        "a 2xx must be handed back for the caller to read"
+    );
+
+    assert!(
+        ok_or_absent("test_mod", resp(404), &[404])
+            .await
+            .expect("a declared absent status is not an error")
+            .is_none(),
+        "a declared absent status must be a clean miss"
+    );
+
+    // The regression this helper was added for.
+    for code in [403, 429, 500, 502, 503] {
+        let err = ok_or_absent("test_mod", resp(code), &[404])
+            .await
+            .expect_err("a refusal must not be reported as absence");
+        assert!(
+            err.to_string().contains("test_mod"),
+            "the error must name the module: {err}"
+        );
+    }
+
+    // `&[]` — the endpoint signals a miss inside a 200 body, so even 404 is a failure.
+    assert!(
+        ok_or_absent("test_mod", resp(404), &[]).await.is_err(),
+        "with no declared absent status, 404 is a failure like any other non-2xx"
+    );
 }
 
 #[tokio::test]
