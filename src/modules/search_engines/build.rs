@@ -196,11 +196,22 @@ pub(super) fn build_entities(
                 if crate::util::domains::is_infrastructure_email(&email) {
                     continue;
                 }
+
+                let email_valid_for_seed =
+                    email_plausibly_belongs_to_seed(&email, &target.kind, &target.value);
+
                 if seen_emails.insert(email.clone()) {
-                    let mut e =
-                        Entity::new(EntityKind::Email, &email, confidence::MEDIUM_PLUS, scan_id);
+                    let email_confidence = if email_valid_for_seed {
+                        confidence::MEDIUM_PLUS
+                    } else {
+                        confidence::MEDIUM_HIGH
+                    };
+                    let mut e = Entity::new(EntityKind::Email, &email, email_confidence, scan_id);
                     e.tag(tags::WEB_SCRAPED);
                     e.tag(tags::SEARCH_DISCOVERED);
+                    if !email_valid_for_seed {
+                        e.tag("email_domain_unverified");
+                    }
                     e.add_evidence(
                         Evidence::new(
                             "search_engines",
@@ -213,7 +224,8 @@ pub(super) fn build_entities(
                         )
                         .with_attr("url", &r.url)
                         .with_attr("engine", r.engine)
-                        .with_attr("query", &r.query),
+                        .with_attr("query", &r.query)
+                        .with_attr("domain_validated", email_valid_for_seed.to_string()),
                     );
                     result.push(e);
                 } else if let Some(existing) = result
@@ -221,8 +233,13 @@ pub(super) fn build_entities(
                     .iter_mut()
                     .find(|e| e.kind == EntityKind::Email && e.value == email)
                 {
-                    existing.confidence =
-                        (existing.confidence + 0.10).min(confidence::HIGH_PLUSPLUS_PLUS);
+                    if email_valid_for_seed {
+                        existing.confidence =
+                            (existing.confidence + 0.10).min(confidence::HIGH_PLUSPLUS_PLUS);
+                    } else {
+                        existing.confidence =
+                            (existing.confidence + 0.05).min(confidence::HIGH_PLUS);
+                    }
                     existing.corroboration = existing.corroboration.saturating_add(1);
                 }
             }

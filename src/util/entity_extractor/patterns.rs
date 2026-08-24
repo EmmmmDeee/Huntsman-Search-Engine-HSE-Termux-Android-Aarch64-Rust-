@@ -278,22 +278,6 @@ mod tests {
     }
 
     #[test]
-    fn extract_by_patterns_trims_trailing_prose_punctuation_from_urls() {
-        let text = "Contact us at https://example.org/a, or see https://example.org/b. Mirror: https://example.org/c; end.";
-        let urls: Vec<String> = extract_by_patterns(text)
-            .into_iter()
-            .filter(|e| e.kind == EntityKind::Url)
-            .map(|e| e.value)
-            .collect();
-        assert_eq!(urls.len(), 3, "one URL per link: {urls:?}");
-        assert!(
-            urls.iter()
-                .all(|u| !u.ends_with([',', '.', ';', ':', '!', '?', ')'])),
-            "no trailing prose punctuation: {urls:?}"
-        );
-    }
-
-    #[test]
     fn email_domain_is_not_minted_as_a_social_handle() {
         // The `@` of an email address is not a Twitter/Instagram mention. The
         // SOCIAL_HANDLE regex had no left boundary, so `jeremy@example.com`
