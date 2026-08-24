@@ -229,7 +229,8 @@ pub trait StoragePort: Send + Sync {
     /// AI daemon's poll query. `Failed`/`Pending`/`Running` scans are excluded:
     /// a failed scan's entity set is typically empty or partial and a
     /// pending/running one isn't finished yet. Default empty for test doubles;
-    /// the SQLite `Store` reads `scans LEFT JOIN scan_analysis`.
+    /// the SQLite `Store` reads `scans` with a `scan_id NOT IN (SELECT ... FROM
+    /// scan_analysis)` anti-join.
     fn scans_pending_analysis(&self, _limit: usize) -> Result<Vec<String>> {
         Ok(Vec::new())
     }

@@ -13,6 +13,17 @@ use std::time::Duration;
 /// the daemon's poll loop.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Bound on [`OllamaClient::health_check`] end to end (connect + response).
+/// `/api/tags` is a cheap local metadata lookup, not a generation call — it
+/// should never legitimately take long, so this is fixed and short rather than
+/// configurable like [`OllamaClient::generate`]'s caller-supplied timeout.
+/// Deliberately NOT a client-level `read_timeout` (unlike
+/// `crate::util::http::client_builder`'s): `generate()`'s response only
+/// arrives after the full (non-streamed) generation completes, which can
+/// legitimately take minutes, so a client-wide read timeout would break that
+/// call instead of just bounding this one.
+const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Build the client this module uses to reach Ollama.
 ///
 /// Deliberately **not** [`crate::util::http::build_client`]: that client's
@@ -99,6 +110,17 @@ impl OllamaClient {
     /// `"qwen2.5:latest"`), so the match accepts either an exact tag match or a
     /// configured name that is a prefix of a served tag up to `:`.
     pub async fn health_check(&self) -> Result<()> {
+        tokio::time::timeout(HEALTH_CHECK_TIMEOUT, self.health_check_inner())
+            .await
+            .map_err(|_| {
+                Error::module(
+                    SRC,
+                    format!("Ollama health check timed out after {HEALTH_CHECK_TIMEOUT:?}"),
+                )
+            })?
+    }
+
+    async fn health_check_inner(&self) -> Result<()> {
         let url = format!("{}/api/tags", self.base_url);
         let resp = self.http.get(&url).send().await?;
         let status = resp.status();

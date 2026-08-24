@@ -99,6 +99,14 @@ async fn main() -> ExitCode {
         }
     };
 
+    // Best-effort, not fatal: Ollama may simply not be up yet (e.g. this
+    // daemon started before its own systemd/Termux boot-services unit did),
+    // and each poll cycle already surfaces the same failure per scan. This is
+    // purely a clearer first-run diagnostic than waiting for the first cycle.
+    if let Err(e) = client.health_check().await {
+        eprintln!("hse-ai-daemon: startup health check failed ({e}); will keep retrying on each poll");
+    }
+
     let poll_interval = resolve_poll_interval();
     let gen_timeout = resolve_gen_timeout();
     println!(
