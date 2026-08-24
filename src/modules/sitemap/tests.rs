@@ -126,3 +126,30 @@ fn metadata_is_well_formed() {
     assert!(!m.accepts(&Target::new(TargetKind::Email, "a@example.com")));
     assert!(m.produces().contains(&EntityKind::Url));
 }
+
+#[test]
+fn loc_entities_decode_exactly_once() {
+    // Regression: `xml_unescape` was a `.replace()` chain that fed each
+    // replacement the previous one's output, so `&amp;` decoding to `&` paired
+    // with the following text into an entity the next link decoded again. A
+    // `<loc>` holding the literal text `&lt;` — which a sitemap publishes as
+    // `&amp;lt;` — came out as `<`: a silently wrong URL, not an error.
+    let xml = "<urlset><url><loc>https://example.com/?q=&amp;lt;tag&amp;gt;</loc></url></urlset>";
+    assert_eq!(
+        extract_locs(xml),
+        vec!["https://example.com/?q=&lt;tag&gt;".to_string()],
+        "each &…; is consumed exactly once; no double-decode"
+    );
+}
+
+#[test]
+fn loc_numeric_character_references_decode() {
+    // The old chain handled only the five named entities and left every numeric
+    // character reference raw, so the stored URL literally contained "&#38;".
+    let xml = "<urlset><url><loc>https://example.com/?a=1&#38;b=2&#x26;c=3</loc></url></urlset>";
+    assert_eq!(
+        extract_locs(xml),
+        vec!["https://example.com/?a=1&b=2&c=3".to_string()],
+        "decimal and hex character references resolve"
+    );
+}

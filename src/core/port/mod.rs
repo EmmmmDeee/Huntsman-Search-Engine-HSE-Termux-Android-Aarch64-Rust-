@@ -116,6 +116,15 @@ pub trait StoragePort: Send + Sync {
     }
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>>;
 
+    /// Clear all events for a scan at the start of that scan so event logs don't
+    /// accumulate stale events from abandoned previous runs with the same target
+    /// in long-lived processes (`hse serve`). Default no-op for test doubles;
+    /// the SQLite `Store` deletes from the `events` table. Non-fatal: a failure
+    /// is logged as a warning but doesn't abort the scan.
+    fn delete_events_for_scan(&self, _scan_id: &str) -> Result<()> {
+        Ok(())
+    }
+
     /// Recent `ModuleDone`/`ModuleError` outcome events across ALL scans,
     /// newest-first, bounded to `limit` — the substrate for
     /// `util::scraper_health`'s per-source health signal (`hse doctor`'s
@@ -187,6 +196,51 @@ pub trait StoragePort: Send + Sync {
         &self,
         _scan_id: &str,
     ) -> Result<Vec<crate::core::stealer_row::StealerRow>> {
+        Ok(Vec::new())
+    }
+
+    // ── RF sightings (wardriving captures + radar sweeps) ───────────────────
+    /// Persist per-sighting RF observations for one scan/import. Best-effort,
+    /// called from the capture importers and the radar. Default no-op for test
+    /// doubles; the SQLite `Store` persists to `rf_sightings`.
+    fn insert_rf_sightings_batch(
+        &self,
+        _scan_id: &str,
+        _rows: &[crate::core::rf::RfSighting],
+    ) -> Result<usize> {
+        Ok(0)
+    }
+
+    // ── AI-daemon scan analysis (opt-in, isolated from the deterministic core —
+    //    see `src/ai/` and the `Runtime AI-independence` invariant in `src/lib.rs`) ──
+    /// Persist (or overwrite) the AI-daemon's analysis for one scan. A write
+    /// failure here does not corrupt scan data — it only means the analysis
+    /// must be retried. Default no-op for test doubles; the SQLite `Store`
+    /// persists to `scan_analysis`.
+    fn upsert_scan_analysis(
+        &self,
+        _analysis: &crate::core::scan_analysis::ScanAnalysis,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// The persisted AI-daemon analysis for one scan, if any. Default `Ok(None)`
+    /// for test doubles.
+    fn get_scan_analysis(
+        &self,
+        _scan_id: &str,
+    ) -> Result<Option<crate::core::scan_analysis::ScanAnalysis>> {
+        Ok(None)
+    }
+
+    /// Terminal scans (`Complete`/`Aborted` — see [`crate::core::scan::ScanStatus`])
+    /// with no persisted analysis yet, oldest-first, bounded to `limit` — the
+    /// AI daemon's poll query. `Failed`/`Pending`/`Running` scans are excluded:
+    /// a failed scan's entity set is typically empty or partial and a
+    /// pending/running one isn't finished yet. Default empty for test doubles;
+    /// the SQLite `Store` reads `scans` with a `scan_id NOT IN (SELECT ... FROM
+    /// scan_analysis)` anti-join.
+    fn scans_pending_analysis(&self, _limit: usize) -> Result<Vec<String>> {
         Ok(Vec::new())
     }
 

@@ -53,9 +53,31 @@ use super::*;
 
     #[test]
     fn classify_unknown_oui_returns_unregistered() {
-        let info = classify_mac("00:11:22:33:44:55").expect("should succeed");
+        // `10:10:10` is universally administered, individual, and assigned by
+        // NEITHER the curated table NOR any IEEE registry (MA-L/MA-M/MA-S), so
+        // it is the honest "we have never heard of this" case.
+        //
+        // This test previously used `00:11:22`, which is a genuine IEEE
+        // allocation. Once the registry tier landed it correctly resolved to a
+        // real vendor, so the old fixture was asserting that real hardware is
+        // unregistered — the very gap the tier fixes.
+        let info = classify_mac("10:10:10:33:44:55").expect("should succeed");
         assert_eq!(info.vendor, "Unknown");
         assert_eq!(info.class, DeviceClass::Unregistered);
+    }
+
+    #[test]
+    fn a_registered_but_uncurated_oui_names_its_vendor_without_inventing_a_class() {
+        // The two-tier contract. `00:11:22` is a real IEEE allocation that the
+        // curated table does not list: the vendor must come back named, and the
+        // class must stay Unknown, because IEEE registers organisations and not
+        // product categories — a class here would be invention.
+        let info = classify_mac("00:11:22:33:44:55").expect("should succeed");
+        assert_ne!(
+            info.vendor, "Unknown",
+            "a registered allocation must be named, not reported as unknown"
+        );
+        assert_eq!(info.class, DeviceClass::Unknown);
     }
 
     #[test]
@@ -114,9 +136,12 @@ use super::*;
         let info = classify_mac("3C:07:54:AB:CD:EF").expect("should succeed");
         assert_eq!(info.vendor, "Apple");
         assert_eq!(info.class, DeviceClass::Phone);
-        // A universally-administered but uncurated prefix stays Unregistered
-        // (NOT Randomized) — the distinction matters: unknown-vendor vs privacy.
-        let unk = classify_mac("00:11:22:33:44:55").expect("should succeed");
+        // A universally-administered but wholly unknown prefix stays
+        // Unregistered (NOT Randomized) — the distinction matters:
+        // unknown-vendor vs privacy address. `10:10:10` is in no registry;
+        // `00:11:22` was swapped out because it IS a real allocation and now
+        // resolves through the IEEE tier.
+        let unk = classify_mac("10:10:10:33:44:55").expect("should succeed");
         assert_eq!(unk.class, DeviceClass::Unregistered);
     }
 

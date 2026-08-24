@@ -52,26 +52,39 @@ skip() { # skip <name> <reason>
     printf '\n\033[1;33m==> %s: SKIPPED (%s)\033[0m\n' "$1" "$2"
 }
 
+# `--features dep-cooldown` on every step below that takes `--all-targets`
+# (except the Termux cross-build further down, deliberately): the
+# `dep-cooldown` binary's `toml`/`time` deps are `optional = true` +
+# `required-features` specifically so a feature-less build/check/test does
+# NOT compile them (see Cargo.toml's `[[bin]] name = "dep-cooldown"` comment)
+# — without this flag, `--all-targets` would silently SKIP that binary
+# instead of erroring, dropping it out of fmt/check/clippy/test coverage on
+# every ordinary PR. An array (not a plain string) so it expands as the two
+# distinct words `--features dep-cooldown` under `set -u`/shellcheck SC2086
+# rather than relying on unquoted word-splitting.
+DEP_COOLDOWN_FEATURE=(--features dep-cooldown)
+
 # ── ci.yml: Check & test (Linux x86_64, stable) ──────────────────────────────
 run "fmt"      cargo fmt --all -- --check
-run "check"    cargo check --all-targets --locked
-run "clippy"   cargo clippy --all-targets --locked -- -D warnings
+run "check"    cargo check --all-targets --locked "${DEP_COOLDOWN_FEATURE[@]}"
+run "clippy"   cargo clippy --all-targets --locked "${DEP_COOLDOWN_FEATURE[@]}" -- -D warnings
 RUSTDOCFLAGS="$RUSTDOC_LINTS" \
-  run "rustdoc lints" cargo doc --no-deps --document-private-items --locked
+  run "rustdoc lints" cargo doc --no-deps --document-private-items --locked "${DEP_COOLDOWN_FEATURE[@]}"
 # ci.yml runs ONE `cargo test --all`, which already includes doctests. This gate
 # reports doctests as their own check (`doctests` below), so this step must
 # EXCLUDE them — `--lib --bins --tests` does exactly that. A bare `cargo test
 # --all` here ran the whole doctest suite a second time under `doctests`. Total
 # coverage is unchanged: lib+bins+integration here, doctests below == ci.yml's
 # single `--all`.
-run "test"     cargo test --all --lib --bins --tests --locked
+run "test"     cargo test --all --lib --bins --tests --locked "${DEP_COOLDOWN_FEATURE[@]}"
 run "doctests" cargo test --doc --locked
+run "doc coverage" scripts/doc_coverage.sh
 
 # ── ci.yml: MSRV ─────────────────────────────────────────────────────────────
 if [ "$QUICK" = 1 ]; then
     skip "MSRV ($MSRV)" "--quick"
 elif rustup toolchain list 2>/dev/null | grep -q "^${MSRV}"; then
-    run "MSRV ($MSRV)" cargo "+$MSRV" check --all-targets --locked
+    run "MSRV ($MSRV)" cargo "+$MSRV" check --all-targets --locked "${DEP_COOLDOWN_FEATURE[@]}"
 else
     skip "MSRV ($MSRV)" "toolchain not installed — rustup toolchain install $MSRV"
 fi
@@ -106,8 +119,11 @@ else
 fi
 
 # ── audit.yml: only fires when a manifest changed, so mirror that ────────────
-if git diff --quiet HEAD -- Cargo.toml Cargo.lock deny.toml 2>/dev/null; then
-    skip "cargo-audit / deny / machete" "no manifest change (audit.yml path filter)"
+# Must match audit.yml's `push.paths` exactly (src/bin/dep_cooldown/** included)
+# — a mismatch here means this script silently SKIPS the check locally on a
+# commit that only touches dep_cooldown's own source, while CI still runs it.
+if git diff --quiet HEAD -- Cargo.toml Cargo.lock deny.toml dep-cooldown.toml src/bin/dep_cooldown 2>/dev/null; then
+    skip "cargo-audit / deny / machete / dep-cooldown" "no manifest change (audit.yml path filter)"
 else
     for t in cargo-audit cargo-deny cargo-machete; do
         command -v "$t" >/dev/null 2>&1 || skip "$t" "not installed"
@@ -115,6 +131,11 @@ else
     command -v cargo-audit   >/dev/null 2>&1 && run "cargo audit"   cargo audit
     command -v cargo-deny    >/dev/null 2>&1 && run "cargo deny"    cargo deny check
     command -v cargo-machete >/dev/null 2>&1 && run "cargo machete" cargo machete --with-metadata
+    # Not an external tool — built from this repo's own source, so it needs no
+    # `command -v` gate, only network access to crates.io (same requirement
+    # cargo-audit/deny already have here). `--features dep-cooldown`: see this
+    # script's `DEP_COOLDOWN_FEATURE` comment above.
+    run "dep-cooldown" cargo run --locked --bin dep-cooldown "${DEP_COOLDOWN_FEATURE[@]}"
 fi
 
 # ── Report ───────────────────────────────────────────────────────────────────

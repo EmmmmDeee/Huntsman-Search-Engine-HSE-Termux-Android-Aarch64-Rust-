@@ -136,9 +136,9 @@ impl Module for IpQuery {
             .send_tagged(SRC)
             .await?;
 
-        if !resp.status().is_success() {
+        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
             return Ok(ModuleResult::new());
-        }
+        };
 
         let data: Resp = crate::util::http::json_decode(SRC, resp).await?;
 

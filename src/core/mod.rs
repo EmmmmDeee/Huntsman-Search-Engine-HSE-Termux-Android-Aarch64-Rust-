@@ -45,8 +45,10 @@ pub mod radar_live;
 pub mod radar_track;
 pub mod relation;
 pub mod resolve;
+pub mod rf;
 pub mod roi;
 pub mod scan;
+pub mod scan_analysis;
 pub mod snake_graph;
 pub mod stealer_row;
 pub mod tags;
@@ -56,6 +58,7 @@ pub mod timeline;
 pub mod trust;
 pub mod validation;
 pub mod webhook;
+pub mod xml;
 
 pub use cancel::CancelHandle;
 pub use correlator::{Correlation, Correlator, Severity};

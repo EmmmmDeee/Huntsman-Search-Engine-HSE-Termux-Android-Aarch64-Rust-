@@ -171,9 +171,9 @@ impl Module for AcmaRrl {
             .send_tagged(SRC)
             .await?;
 
-        if !resp.status().is_success() {
+        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
             return Ok(ModuleResult::new());
-        }
+        };
         let html = match crate::util::http::read_body_capped(resp, 512 * 1024).await {
             Some(s) => s,
             None => return Ok(ModuleResult::new()),

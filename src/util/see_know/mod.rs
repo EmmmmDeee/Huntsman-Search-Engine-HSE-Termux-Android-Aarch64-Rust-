@@ -73,4 +73,11 @@ pub use endpoints::{
 // existing `crate::util::see_know::val_str` call sites are unchanged.
 pub use crate::util::json::val_str;
 
+/// [`val_str`]'s number-coercing siblings — SeekNow records share most field
+/// names with OathNet's V2 schema (see `see_know::extract`'s own doc), and
+/// `oathnet_pro` already reaches for these on the identifier fields breach/
+/// stealer dumps routinely encode as JSON numbers (`discord_id`, `steamid`,
+/// phone). Re-exported for the same reason as `val_str` above.
+pub use crate::util::json::{val_str_coerce, val_str_or_coerce};
+
 pub const KEY_ENV: &str = "HUNTSMAN_SEEKNOW_KEY";

@@ -64,7 +64,27 @@ const DEFAULT_UA: &str = crate::util::curl::UA_MOBILE;
 /// only ever targets a hardcoded, trusted paid-provider API base, so that risk
 /// does not apply here — which is exactly why compression is enabled on this
 /// transport and only this transport.
-const CLIENT_BASE_ARGS: &[&str] = &["-s", "-S", "-L", "--compressed"];
+/// No `-L`: never follow an HTTP redirect. Every provider's `X-API-Key` /
+/// custom auth header is attached via a plain `-H` flag, and curl's
+/// documented default (since the CVE-2018-1000007 fix) is to strip only the
+/// special-cased `Authorization` header on a cross-host redirect — a CUSTOM
+/// header is resent verbatim to wherever `Location` points. `-L` would follow
+/// that redirect automatically, sending the operator's paid credential to
+/// whatever host the LIVE SERVER names in a 3xx response at REQUEST time —
+/// undetectable and unstoppable by [`crate::util::endpoint_override`]'s
+/// operator-override vetting, which only inspects the CONFIGURED base URL
+/// once, before the request, and has no visibility into what a live response
+/// does mid-request. This directly contradicts the trust assumption the
+/// `--compressed` decision above this constant already states outright
+/// ("only ever targets a hardcoded, trusted paid-provider API base") — a
+/// redirect to an unexpected host is exactly the point that assumption stops
+/// holding, so it must never be followed silently. Without `-L`, an
+/// unexpected 3xx is returned as-is (its own status/body, not chased), and
+/// falls through to the same classification path — and the same "treated as
+/// no results" debug log — as any other unrecognised status; the existing,
+/// separate, application-level domain-rotation logic already handles the
+/// legitimate "this provider migrated domains" case.
+const CLIENT_BASE_ARGS: &[&str] = &["-s", "-S", "--compressed"];
 
 /// curl exit code for "Could not resolve host" — the DNS-resolution failure the
 /// DoH fallback is designed to self-heal. Named so the retry condition in

@@ -97,9 +97,9 @@ impl Module for SteamProfile {
             .header("User-Agent", UA_BROWSER)
             .send_tagged(SRC)
             .await?;
-        if !resp.status().is_success() {
+        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
             return Ok(result);
-        }
+        };
         let xml = read_text(SRC, resp).await?;
         // A missing/private profile returns `<error>…could not be found</error>`
         // or carries no `<steamID64>` — a clean miss, not an error.
@@ -368,8 +368,21 @@ fn is_steam_platform_host(host: &str) -> bool {
 }
 
 /// Extract the text of the first `<tag>…</tag>`, unwrapping a CDATA section and
-/// decoding the few XML entities Steam emits outside CDATA. `None` if the tag is
-/// absent or empty.
+/// decoding the XML entities Steam emits. `None` if the tag is absent or empty.
+///
+/// Decoding runs on the CDATA-unwrapped text as well, not only on text outside
+/// CDATA: Steam wraps most profile fields in CDATA and still publishes escaped
+/// entities inside them, so decoding only the outside would leave those raw.
+///
+/// Decoding goes through [`crate::util::html::decode_entities`], the crate's
+/// single shared decoder, rather than a local `.replace()` chain. A chain feeds
+/// each replacement the *previous one's output*, so an `&amp;` that decodes to
+/// `&` can pair with the text following it into an entity a later link decodes
+/// again — a profile field holding the literal text `&lt;` (published as
+/// `&amp;lt;`) was stored as `<`. The shared decoder consumes each `&…;` exactly
+/// once, and additionally resolves `&nbsp;`, the typography entities and every
+/// numeric character reference: Steam profile fields are free text and carry all
+/// of those, which the chain passed through raw.
 fn extract_tag(xml: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
@@ -382,14 +395,7 @@ fn extract_tag(xml: &str, tag: &str) -> Option<String> {
     if inner.is_empty() {
         return None;
     }
-    Some(
-        inner
-            .replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&#39;", "'"),
-    )
+    Some(crate::util::html::decode_entities(inner))
 }
 
 #[cfg(test)]
