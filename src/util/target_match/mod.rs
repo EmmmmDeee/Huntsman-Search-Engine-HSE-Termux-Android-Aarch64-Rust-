@@ -96,7 +96,10 @@ impl TargetMatch {
         let first = tokens.next();
         let mode = match (first, tokens.next()) {
             (Some(_), Some(_)) => Mode::AllTokensWholeWord,
-            (Some(t), None) if t.len() >= MIN_SIGNIFICANT_TERM => {
+            // Chars, not bytes: a two-character CJK or Cyrillic token is 4–6
+            // bytes, and a byte comparison here silently granted it the
+            // permissive substring mode this floor exists to withhold.
+            (Some(t), None) if t.chars().count() >= MIN_SIGNIFICANT_TERM => {
                 Mode::SingleTermSubstring(t.to_string())
             }
             _ => Mode::ExactOnly,

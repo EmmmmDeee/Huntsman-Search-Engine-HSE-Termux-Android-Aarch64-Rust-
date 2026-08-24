@@ -28,6 +28,32 @@ use super::*;
     }
 
     #[test]
+    fn lowercase_prose_is_not_an_address() {
+        // Regression: the pattern's `(?i)` flag made its `[A-Z]` street/suburb
+        // anchors match lowercase too, voiding the Title-Case structure gate the
+        // pattern is written to enforce. Ordinary lowercase prose that happens to
+        // contain a number, a word doubling as a street suffix ("close", "place"),
+        // and a trailing state+postcode was minted as a fabricated AuAddress at
+        // 0.70+ confidence.
+        assert_eq!(
+            extract_first("please call me back in 42 minutes about the close matter brisbane qld 4000"),
+            None
+        );
+        assert_eq!(
+            extract_first("we had 3 long days at the place today sydney nsw 2000"),
+            None
+        );
+        // Genuine addresses still parse: Title Case, ALL CAPS, and a lowercase
+        // state code all remain acceptable — only the street/suburb WORDS must
+        // be capitalised.
+        assert!(extract_first("133 Mary Street, Brisbane City QLD 4000").is_some());
+        assert!(extract_first("133 MARY STREET, BRISBANE CITY QLD 4000").is_some());
+        assert!(extract_first("133 Mary Street, Brisbane City qld 4000").is_some());
+        assert!(extract_first("Level 11, 133 Mary Street, Brisbane City QLD 4000").is_some());
+        assert!(extract_first("LEVEL 11, 133 MARY STREET, BRISBANE CITY QLD 4000").is_some());
+    }
+
+    #[test]
     fn rejects_wrong_state_postcode() {
         // NSW with VIC postcode → invalid
         let s = "5 Test Street, Sydney NSW 3000";
@@ -74,6 +100,24 @@ use super::*;
         // Whole-word discipline: a suburb containing "wa"/"sa" must not match.
         assert_eq!(state_code("Wagga Wagga"), None);
         assert_eq!(state_code("Sandgate"), None);
+    }
+
+    #[test]
+    fn state_code_prefers_the_last_abbrev_token_nearest_the_trailing_postcode() {
+        // Regression: first-match-wins let an incidental leading token beat the
+        // real address state. A state abbreviation in a company name ("NT
+        // Logistics") or the ordinary word "act" must not outrank the state
+        // token that anchors the trailing "STATE POSTCODE" run.
+        assert_eq!(
+            state_code("NT LOGISTICS PTY LTD, 100 COLLINS ST, MELBOURNE VIC 3000"),
+            Some("VIC")
+        );
+        assert_eq!(
+            state_code("Trustee act, 5 Queen St, Brisbane QLD 4000"),
+            Some("QLD")
+        );
+        // A lone abbreviation anywhere still resolves.
+        assert_eq!(state_code("somewhere in the NT"), Some("NT"));
     }
 
     #[test]
