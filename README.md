@@ -450,6 +450,12 @@ points. See `src/ai/` for the implementation and `src/lib.rs`'s `Runtime
 AI-independence` invariant for why this layer exists as a narrow, isolated
 exception rather than a change to the deterministic core.
 
+Want better severity calibration or shape-adherence than a stock model gives
+you? [`docs/OSINT_MODEL_FINE_TUNING.md`](docs/OSINT_MODEL_FINE_TUNING.md) is a
+LoRA/QLoRA fine-tuning recipe for this exact prompt/response contract, run on
+your own GPU hardware — the finished model is just another Ollama tag, nothing
+about it touches this crate's build.
+
 ---
 
 ## Architecture
@@ -495,6 +501,7 @@ diagnostic bundle") for the complete engine state in one file.
 | [`docs/OATHNET_API_GUIDE.txt`](docs/OATHNET_API_GUIDE.txt) | OathNet API contract reference |
 | [`docs/OPERATIONAL_CONSTITUTION.md`](docs/OPERATIONAL_CONSTITUTION.md) | Reasoning, evidence, and analysis standards governing HSE work |
 | [`docs/PERSISTENT_INTELLIGENCE.md`](docs/PERSISTENT_INTELLIGENCE.md) | How understanding accumulates across reasoning cycles (constitution companion) |
+| [`docs/OSINT_MODEL_FINE_TUNING.md`](docs/OSINT_MODEL_FINE_TUNING.md) | LoRA/QLoRA fine-tuning recipe for the `hse analyze`/`hse-ai-daemon` prompt/response contract, run on your own GPU hardware |
 
 For everything else — module catalogue, CLI reference, architecture — the
 running software is the source of truth: `hse --help`, `hse modules`, the web

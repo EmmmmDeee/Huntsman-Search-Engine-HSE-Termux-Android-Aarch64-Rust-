@@ -173,6 +173,14 @@ impl OllamaClient {
             "model": self.model,
             "prompt": prompt,
             "stream": false,
+            // Ollama's stable, broadly-supported JSON-mode: constrains decoding
+            // to well-formed JSON, so a model doesn't wrap its answer in prose
+            // or a markdown code fence despite the prompt asking for bare JSON.
+            // This does NOT constrain to a specific *shape* (a full JSON-schema
+            // `format` exists in newer Ollama releases, but isn't assumed here
+            // to stay compatible with older installs) — `analysis::parse_response`
+            // still validates the shape and fails closed on a mismatch.
+            "format": "json",
         });
         let resp = self.http.post(&url).json(&body).send().await?;
         let status = resp.status();
