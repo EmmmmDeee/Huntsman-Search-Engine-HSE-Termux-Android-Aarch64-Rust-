@@ -22,14 +22,33 @@ pub const INSTALL_CMD: &str = concat!(
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/// `HUNTSMAN_INSTALL_DIR`, preferring the process environment and falling
+/// back to a direct, bad-line-resilient read of `env_file`. The two sources
+/// can disagree: `crate::util::keys::load()` (which populates the process
+/// env via `dotenvy`) abandons the rest of the env file at the first
+/// malformed line, so a variable listed after one is still visible to
+/// [`crate::util::keys::load_from_file_only`] — the same reader that backs
+/// the debug bundle's `keys_present` report — while never reaching
+/// `std::env::var`. Takes the file path explicitly so this is testable
+/// without touching the real `$HOME`.
+fn install_dir_var(env_file: &Path) -> Option<String> {
+    std::env::var("HUNTSMAN_INSTALL_DIR")
+        .ok()
+        .or_else(|| crate::util::keys::load_from_file_only(env_file).remove("HUNTSMAN_INSTALL_DIR"))
+}
+
 /// Search for the Huntsman source directory in order of priority:
 ///
 /// 1. `HUNTSMAN_INSTALL_DIR` env var — written by `install.sh` on every run.
 /// 2. Common install paths under `$HOME` (`.local/share/hse`, `hse`, `.hse`).
 /// 3. Upward traversal from the running binary (dev / in-place builds).
 pub fn find_install_dir() -> Option<PathBuf> {
-    // 1. Env var written by install.sh
-    if let Ok(d) = std::env::var("HUNTSMAN_INSTALL_DIR") {
+    // 1. Env var written by install.sh — see `install_dir_var` for why this
+    // isn't a bare `std::env::var` check. Only checking the process env here
+    // used to let self-update fail with "no local source found" even on a
+    // build whose own debug bundle reported this exact variable as present.
+    let env_file = Path::new(&crate::util::keys::env_path()).to_path_buf();
+    if let Some(d) = install_dir_var(&env_file) {
         let p = PathBuf::from(d);
         if is_hse_source(&p) {
             return Some(p);
@@ -353,6 +372,51 @@ pub fn self_restart() -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn install_dir_var_recovers_a_value_stranded_after_a_malformed_env_line() {
+        // Regression coverage for the self-update "no local source found"
+        // failure: `crate::util::keys::load()` (which feeds HUNTSMAN_* into
+        // the process env via `dotenvy`) abandons the rest of the file at
+        // the first malformed line, so HUNTSMAN_INSTALL_DIR listed after one
+        // never reaches `std::env::var` even though the file-only reader
+        // recovers it fine (proven by
+        // `load_from_file_recovers_keys_after_a_malformed_line` in
+        // `util::keys::tests`). `install_dir_var` must fall back to that
+        // same resilient read rather than reporting no install dir at all.
+        //
+        // This assumes HUNTSMAN_INSTALL_DIR is not itself set in the test
+        // process's real environment — true for this suite and CI alike.
+        assert!(
+            std::env::var("HUNTSMAN_INSTALL_DIR").is_err(),
+            "test assumption: HUNTSMAN_INSTALL_DIR must not be set in the process env"
+        );
+
+        let dir = tempfile::tempdir().expect("should succeed");
+        let env_file = dir.path().join(".huntsman.env");
+        std::fs::write(
+            &env_file,
+            "this is a malformed line with no equals sign\n\
+             HUNTSMAN_INSTALL_DIR=/opt/hse-source\n",
+        )
+        .expect("should succeed");
+
+        assert_eq!(
+            install_dir_var(&env_file),
+            Some("/opt/hse-source".to_string()),
+            "a malformed earlier line must not strand HUNTSMAN_INSTALL_DIR"
+        );
+
+        // An env file with nothing relevant, or that doesn't exist at all,
+        // yields no false positive.
+        let empty = dir.path().join("empty.env");
+        std::fs::write(&empty, "HUNTSMAN_OTHER_KEY=x\n").expect("should succeed");
+        assert_eq!(install_dir_var(&empty), None);
+        assert_eq!(
+            install_dir_var(&dir.path().join("does-not-exist.env")),
+            None
+        );
+    }
 
     #[test]
     fn should_check_now_respects_the_throttle_window() {
