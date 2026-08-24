@@ -104,7 +104,9 @@ async fn main() -> ExitCode {
     // and each poll cycle already surfaces the same failure per scan. This is
     // purely a clearer first-run diagnostic than waiting for the first cycle.
     if let Err(e) = client.health_check().await {
-        eprintln!("hse-ai-daemon: startup health check failed ({e}); will keep retrying on each poll");
+        eprintln!(
+            "hse-ai-daemon: startup health check failed ({e}); will keep retrying on each poll"
+        );
     }
 
     let poll_interval = resolve_poll_interval();

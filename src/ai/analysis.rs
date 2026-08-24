@@ -292,7 +292,10 @@ mod tests {
         let entities = vec![entity(EntityKind::Username, &long_value, 0.5, "a")];
         let prompt = build_prompt("scan1", &entities);
         assert!(!prompt.contains(&long_value), "full value must not appear");
-        assert!(prompt.contains(&"x".repeat(MAX_VALUE_CHARS)), "truncated prefix must appear");
+        assert!(
+            prompt.contains(&"x".repeat(MAX_VALUE_CHARS)),
+            "truncated prefix must appear"
+        );
     }
 
     #[test]
@@ -344,7 +347,9 @@ mod tests {
     #[tokio::test]
     async fn analyze_scan_redacts_credential_entities_before_prompting() {
         let store = InMemoryStore::new();
-        store.upsert_scan(&complete_scan("scan1")).expect("seed scan");
+        store
+            .upsert_scan(&complete_scan("scan1"))
+            .expect("seed scan");
         let mut secret = entity(EntityKind::Password, "hunter2", 0.9, "cred1");
         secret.scan_id = "scan1".to_string();
         store.upsert_entity(&secret).expect("seed entity");
@@ -391,10 +396,8 @@ mod tests {
         let store = InMemoryStore::new();
         // Deliberately do NOT seed the scan — simulates it having been deleted
         // (e.g. by `hse delete`) while the (slow) Ollama call was in flight.
-        let base_url = fake_ollama_once(
-            r#"{"response":"{\"summary\":\"ok\",\"findings\":[]}"}"#,
-        )
-        .await;
+        let base_url =
+            fake_ollama_once(r#"{"response":"{\"summary\":\"ok\",\"findings\":[]}"}"#).await;
         let client = OllamaClient::new(base_url, "qwen2.5:7b");
 
         let err = analyze_scan(&store, &client, "vanished-scan", Duration::from_secs(5))
@@ -413,11 +416,11 @@ mod tests {
     #[tokio::test]
     async fn analyze_scan_persists_and_returns_the_analysis_for_an_existing_scan() {
         let store = InMemoryStore::new();
-        store.upsert_scan(&complete_scan("scan1")).expect("seed scan");
-        let base_url = fake_ollama_once(
-            r#"{"response":"{\"summary\":\"ok\",\"findings\":[]}"}"#,
-        )
-        .await;
+        store
+            .upsert_scan(&complete_scan("scan1"))
+            .expect("seed scan");
+        let base_url =
+            fake_ollama_once(r#"{"response":"{\"summary\":\"ok\",\"findings\":[]}"}"#).await;
         let client = OllamaClient::new(base_url, "qwen2.5:7b");
 
         let analysis = analyze_scan(&store, &client, "scan1", Duration::from_secs(5))

@@ -332,7 +332,13 @@ impl StoragePort for InMemoryStore {
         let mut ids: Vec<String> = g
             .scans
             .values()
-            .filter(|s| matches!(s.status, crate::core::scan::ScanStatus::Complete | crate::core::scan::ScanStatus::Aborted))
+            .filter(|s| {
+                matches!(
+                    s.status,
+                    crate::core::scan::ScanStatus::Complete
+                        | crate::core::scan::ScanStatus::Aborted
+                )
+            })
             .filter(|s| !g.scan_analysis.contains_key(&s.id))
             .map(|s| s.id.clone())
             .collect();
