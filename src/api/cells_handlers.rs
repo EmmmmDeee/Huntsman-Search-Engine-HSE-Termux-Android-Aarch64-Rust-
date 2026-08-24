@@ -23,7 +23,7 @@ use axum::{
     response::IntoResponse,
 };
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::api::{AppState, CellsImportPhase};
 use crate::app::cells::{
@@ -32,6 +32,22 @@ use crate::app::cells::{
 use crate::util::cell_db;
 
 use super::handlers::bad_request;
+
+/// Loopback-only access guard for mutating endpoints; returns a rejection response if
+/// the peer is not a loopback address, else `None` to proceed.
+fn guard_loopback_only(peer: &SocketAddr) -> Option<axum::response::Response> {
+    if peer.ip().is_loopback() {
+        None
+    } else {
+        Some(
+            (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "cell DB import is loopback-only" })),
+            )
+                .into_response(),
+        )
+    }
+}
 
 /// Builds the `last_import` JSON block, including the same `is_stale`
 /// freshness signal `hse doctor` already prints (`cell_db::is_stale`) — until
@@ -72,15 +88,10 @@ pub async fn cells_status(State(s): State<Arc<AppState>>) -> impl IntoResponse {
 
     let path = cell_db::cell_db_path().display().to_string();
 
-    // The reads — `open_ro` plus `count_by_mcc`'s full-table GROUP BY over a
-    // world-scale tower DB — are blocking SQLite work that must not run on the
-    // ~2-worker async reactor (this is the SPA's status-poll target). Offload the
-    // whole read set to the blocking pool in one task, mirroring the offloading
-    // discipline every sibling handler already follows.
     let db = tokio::task::spawn_blocking(|| {
         let conn = cell_db::open_ro().ok()?;
         let total = cell_db::total_count(&conn).unwrap_or(0);
-        let by_mcc: Vec<serde_json::Value> = cell_db::count_by_mcc(&conn)
+        let by_mcc: Vec<Value> = cell_db::count_by_mcc(&conn)
             .unwrap_or_default()
             .into_iter()
             .take(10)
@@ -97,9 +108,8 @@ pub async fn cells_status(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     .ok()
     .flatten();
 
-    // Absent DB (or a failed blocking join) → the same "not present" shape.
-    let Some((total, by_mcc, last_import)) = db else {
-        return Json(json!({
+    let response = match db {
+        None => json!({
             "present": false,
             "total": 0,
             "path": path,
@@ -107,20 +117,19 @@ pub async fn cells_status(State(s): State<Arc<AppState>>) -> impl IntoResponse {
             "last_import": null,
             "import_phase": phase_str,
             "import_error": phase_error,
-        }))
-        .into_response();
+        }),
+        Some((total, by_mcc, last_import)) => json!({
+            "present": true,
+            "total": total,
+            "path": path,
+            "by_mcc": by_mcc,
+            "last_import": last_import,
+            "import_phase": phase_str,
+            "import_error": phase_error,
+        }),
     };
 
-    Json(json!({
-        "present": true,
-        "total": total,
-        "path": path,
-        "by_mcc": by_mcc,
-        "last_import": last_import,
-        "import_phase": phase_str,
-        "import_error": phase_error,
-    }))
-    .into_response()
+    Json(response).into_response()
 }
 
 #[derive(Deserialize)]
@@ -128,20 +137,6 @@ pub struct CellsImportRequest {
     /// Country code ("AU"), "world", or a raw MCC integer string — same
     /// acceptance as `hse cells import --country`.
     pub country: String,
-}
-
-fn reject_non_loopback(peer: &SocketAddr) -> Option<axum::response::Response> {
-    if peer.ip().is_loopback() {
-        None
-    } else {
-        Some(
-            (
-                StatusCode::FORBIDDEN,
-                Json(json!({ "error": "cell DB import is loopback-only" })),
-            )
-                .into_response(),
-        )
-    }
 }
 
 /// Atomically check no import is already running and, if so, claim it —
@@ -172,8 +167,8 @@ pub async fn cells_import(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(req): Json<CellsImportRequest>,
 ) -> impl IntoResponse {
-    if let Some(rejection) = reject_non_loopback(&peer) {
-        return rejection;
+    if let Some(rejection) = guard_loopback_only(&peer) {
+        return rejection.into_response();
     }
     let country = req.country.trim().to_string();
     if country.is_empty() {
@@ -199,12 +194,6 @@ pub async fn cells_import(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *phase = match result {
             Ok(()) => CellsImportPhase::Idle,
-            // Defense-in-depth: this error is served verbatim by the ungated
-            // `GET /cells/status` `import_error` field, so a key that reached it
-            // through any path (the download URL carries `token=<key>`) is masked
-            // before it can be read by a LAN peer under a non-loopback bind. The
-            // primary fix strips the URL at the source (see app::cells
-            // `.without_url()`); this guarantees the invariant at the sink.
             Err(e) => {
                 CellsImportPhase::Error(crate::util::http::redact_credentials(&e.to_string()))
             }
@@ -231,28 +220,25 @@ pub async fn cells_clear(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(req): Json<CellsClearRequest>,
 ) -> impl IntoResponse {
-    if let Some(rejection) = reject_non_loopback(&peer) {
-        return rejection;
+    if let Some(rejection) = guard_loopback_only(&peer) {
+        return rejection.into_response();
     }
     if !req.confirm {
         return bad_request("set confirm: true to clear the cell tower database");
     }
     match clear_cells_db() {
-        // The byte figures are reported, not just `cleared: true`: a `DELETE`
-        // does not shrink a SQLite file, so before the vacuum this endpoint
-        // could answer "cleared" having returned nothing to the filesystem.
-        // `vacuum_error` is `null` on success and carries the reason when the
-        // rows went but the file could not be shrunk — a real outcome on a
-        // storage-constrained device, and one the caller must be able to see.
-        Ok(report) => Json(json!({
-            "cleared": true,
-            "rows_deleted": report.rows_deleted,
-            "bytes_before": report.bytes_before,
-            "bytes_after": report.bytes_after,
-            "bytes_reclaimed": report.bytes_reclaimed(),
-            "vacuum_error": report.vacuum_error,
-        }))
-        .into_response(),
+        Ok(report) => (
+            StatusCode::OK,
+            Json(json!({
+                "cleared": true,
+                "rows_deleted": report.rows_deleted,
+                "bytes_before": report.bytes_before,
+                "bytes_after": report.bytes_after,
+                "bytes_reclaimed": report.bytes_reclaimed(),
+                "vacuum_error": report.vacuum_error,
+            })),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
@@ -269,11 +255,11 @@ mod tests {
     use tower::ServiceExt as _;
 
     #[test]
-    fn reject_non_loopback_allows_loopback_and_refuses_lan() {
+    fn guard_loopback_only_allows_loopback_and_refuses_lan() {
         let loopback: SocketAddr = "127.0.0.1:9999".parse().expect("should succeed");
         let lan: SocketAddr = "192.168.1.50:40000".parse().expect("should succeed");
-        assert!(reject_non_loopback(&loopback).is_none());
-        assert!(reject_non_loopback(&lan).is_some());
+        assert!(guard_loopback_only(&loopback).is_none());
+        assert!(guard_loopback_only(&lan).is_some());
     }
 
     #[test]
