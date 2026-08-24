@@ -307,7 +307,7 @@ impl crate::core::module_runtime::ModuleRuntime for BuiltinModuleRuntime {
         see_know::reset_budget();
         wigle::reset_budget();
         typosquat::reset_seen();
-        search_engines::reset_session_liveness();
+        search_engines::reset_session_liveness(scan_id);
         reset_found_keys(scan_id);
     }
 

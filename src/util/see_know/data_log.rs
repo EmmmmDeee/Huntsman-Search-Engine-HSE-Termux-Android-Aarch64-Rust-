@@ -11,9 +11,17 @@
 //!   * **Transparent** — newline-delimited JSON (`.jsonl`) the operator can
 //!     `cat`/`jq` directly; each record carries endpoint, query, type, an epoch
 //!     timestamp, item count, and the raw items verbatim.
-//!   * **No-root / Termux-first** — lives under [`super::config::get_results_dir`]
-//!     (`~/storage/downloads/.hse/see_know_results/logs`, with `$HOME` and CWD
-//!     fallbacks), all reachable without root.
+//!   * **No-root / Termux-first** — lives under [`crate::util::paths::subdir`]
+//!     (`$HOME/.huntsman/see_know_results/logs`), reachable without root.
+//!
+//!     This deliberately does NOT use `super::config::get_results_dir`, which
+//!     resolves to `~/storage/downloads/.hse/see_know_results` when Termux
+//!     storage is set up. `~/storage` is a symlink to `/storage/emulated/0`
+//!     (shared Android external storage), so that path is readable by any app
+//!     holding `READ_EXTERNAL_STORAGE`. Records carry the raw provider items
+//!     verbatim — for a breach/stealer source that means plaintext credentials
+//!     — plus the query, which reveals who was investigated. Both belong in the
+//!     app-private root, at owner-only permissions, exactly like `raw_archive`.
 //!   * **Best-effort** — logging never fails a scan: any IO error is swallowed
 //!     so a read-only or full filesystem degrades logging, not searching.
 
@@ -91,11 +99,17 @@ pub struct LogStats {
     pub endpoints: usize,
 }
 
-/// Directory holding the See-Know data logs (created on demand).
+/// Directory holding the See-Know data logs (created on demand, owner-only).
+///
+/// Rooted at the app-private `$HOME/.huntsman` tree via
+/// [`crate::util::paths::subdir`], which creates each level with
+/// `create_dir_private` (0700) and re-tightens a pre-existing one. See this
+/// module's own doc comment for why the shared-external-storage path this used
+/// to resolve to is unsafe for these records.
 #[must_use]
 pub fn log_dir() -> PathBuf {
-    let dir = super::config::get_results_dir().join("logs");
-    let _ = std::fs::create_dir_all(&dir);
+    let dir = crate::util::paths::subdir("see_know_results").join("logs");
+    let _ = crate::util::atomic_file::create_dir_private(&dir);
     dir
 }
 
@@ -140,7 +154,7 @@ fn append_record_capped(dir: &Path, record: &SearchLogRecord, max_bytes: u64) ->
     let _guard = WRITE_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if std::fs::create_dir_all(dir).is_err() {
+    if crate::util::atomic_file::create_dir_private(dir).is_err() {
         return false;
     }
     let current = dir.join(LOG_FILE);
@@ -158,7 +172,24 @@ fn append_record_capped(dir: &Path, record: &SearchLogRecord, max_bytes: u64) ->
     if current_len > 0 && current_len + line.len() as u64 > max_bytes {
         let _ = std::fs::rename(&current, dir.join(ROTATED_FILE));
     }
-    match OpenOptions::new().create(true).append(true).open(&current) {
+    // Owner-only (0600), mirroring `raw_archive::io::write_file`. `mode` applies
+    // only when this call creates the file, so a log created by an older build
+    // keeps its permissions — the rotation below eventually retires it, and the
+    // legacy-location warning in `log_search` tells the operator about the tree
+    // that build wrote. Records carry raw provider items verbatim, so for a
+    // breach/stealer source this file holds plaintext credentials.
+    #[cfg(unix)]
+    let opened = {
+        use std::os::unix::fs::OpenOptionsExt;
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(&current)
+    };
+    #[cfg(not(unix))]
+    let opened = OpenOptions::new().create(true).append(true).open(&current);
+    match opened {
         Ok(mut f) => f.write_all(line.as_bytes()).is_ok(),
         Err(_) => false,
     }
@@ -230,10 +261,50 @@ pub fn log_search(endpoint: &str, query: &str, query_type: &str, items: &[Value]
     if items.is_empty() {
         return false;
     }
+    warn_once_about_legacy_log_location();
     append_record(
         &log_dir(),
         &build_record(endpoint, query, query_type, items),
     )
+}
+
+/// Emitted at most once per process, and only when a log tree written by an
+/// older build is actually present at the shared-storage location.
+static LEGACY_LOG_WARNED: std::sync::Once = std::sync::Once::new();
+
+/// Tell the operator, once, if a previous build left a data log on shared
+/// Android external storage.
+///
+/// Those files hold raw provider items — plaintext credentials for a
+/// breach/stealer source — plus the queried values, and anything under
+/// `~/storage/downloads` is readable by any app with `READ_EXTERNAL_STORAGE`.
+/// Writing there has stopped, but the existing files stay exposed until someone
+/// removes them.
+///
+/// This deliberately neither moves nor deletes them: both are destructive to
+/// operator data, and a silent relocation of credential-bearing files is
+/// precisely the kind of unannounced side effect this warning exists to avoid.
+/// The operator is told where the files are and left to decide.
+fn warn_once_about_legacy_log_location() {
+    LEGACY_LOG_WARNED.call_once(|| {
+        // Only a path that actually escaped into shared storage is worth
+        // warning about: with Termux storage not set up, the legacy root fell
+        // back to `$HOME`, which is app-private and therefore fine.
+        if !super::config::results_dir_is_shared_storage() {
+            return;
+        }
+        let legacy = super::config::get_results_dir_path().join("logs");
+        if legacy.is_dir() {
+            tracing::warn!(
+                path = %legacy.display(),
+                "a previous build wrote SeekNow data logs to shared Android storage; \
+                 they contain raw provider records (plaintext credentials for breach \
+                 sources) and the values you searched for. New logs now go to the \
+                 app-private ~/.huntsman/see_know_results/logs at 0600. Review and \
+                 delete the old directory when you no longer need it."
+            );
+        }
+    });
 }
 
 /// Read every persisted record (oldest first). Empty vec if no log exists yet.
@@ -306,6 +377,75 @@ fn yield_counts_from(dir: &Path) -> std::collections::HashMap<String, usize> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The log holds raw provider items — plaintext credentials for a
+    /// breach/stealer source — so the file must not be group/other readable.
+    /// A bare `OpenOptions` yields 0666 & ~umask (0644 under the usual 022),
+    /// which is exactly the regression this pins.
+    #[cfg(unix)]
+    #[test]
+    fn log_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir();
+        let rec = build_record(
+            "/search",
+            "a@b.com",
+            "email",
+            &[json!({"password": "hunter2"})],
+        );
+        assert!(append_record(&dir, &rec));
+
+        let mode = std::fs::metadata(dir.join(LOG_FILE))
+            .expect("log file should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "data log holds plaintext credentials and must be owner-only, got {mode:o}"
+        );
+    }
+
+    /// The containing directory must be owner-only too — 0600 files inside a
+    /// 0755 directory still leak their names, and the names carry no secrets
+    /// here, but a traversable dir is what let the old shared-storage layout
+    /// be enumerated at all.
+    #[cfg(unix)]
+    #[test]
+    fn log_directory_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir().join("nested");
+        let rec = build_record("/search", "a@b.com", "email", &[json!({"x": 1})]);
+        assert!(append_record(&dir, &rec));
+
+        let mode = std::fs::metadata(&dir)
+            .expect("dir should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o700,
+            "log directory must be owner-only, got {mode:o}"
+        );
+    }
+
+    /// The live log location must sit inside the app-private `$HOME/.huntsman`
+    /// root, never under Termux's `~/storage` shared-storage symlink (which is
+    /// `/storage/emulated/0`, readable by any app with READ_EXTERNAL_STORAGE).
+    #[test]
+    fn log_dir_is_inside_the_private_root_not_shared_storage() {
+        let dir = log_dir();
+        assert!(
+            dir.starts_with(crate::util::paths::huntsman_dir_path()),
+            "log dir escaped the private root: {}",
+            dir.display()
+        );
+        assert!(
+            !dir.components().any(|c| c.as_os_str() == "storage"),
+            "log dir resolves into shared Android storage: {}",
+            dir.display()
+        );
+    }
 
     // Unique throwaway dir per test — no env mutation (the crate denies unsafe,
     // and std::env::set_var is unsafe), no clock/rand (unavailable in some

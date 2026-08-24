@@ -3,8 +3,8 @@
 //! without violating the "no inter-module imports" invariant.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{LazyLock, Mutex};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -13,6 +13,7 @@ use crate::core::error::{Error, Result};
 use crate::util::backoff::BackoffPolicy;
 use crate::util::budget::QuotaBudget;
 use crate::util::curl_client::{AuthScheme, CurlClient};
+use crate::util::quota_config;
 use crate::util::response_cache::ResponseCache;
 
 // Embedded fallback: single source of truth lives in `util::keys`.
@@ -44,18 +45,22 @@ static CLIENT: CurlClient = CurlClient::new("oathnet", AuthScheme::XApiKey, 12, 
 
 /// Per-scan + per-session quota budget for OathNet API calls.
 ///
-/// Default 4 queries per scan (the OathNet quota is tighter than
-/// SeekNow's) with a 30-query session ceiling that prevents
-/// radar/live sessions from burning the daily allowance. Both caps
-/// are env-tunable via `HUNTSMAN_OATHNET_SCAN_CAP` and
-/// `HUNTSMAN_OATHNET_SESSION_CAP`.
-static BUDGET: QuotaBudget = QuotaBudget::new(
-    "oathnet",
-    4,
-    30,
-    "HUNTSMAN_OATHNET_SCAN_CAP",
-    "HUNTSMAN_OATHNET_SESSION_CAP",
-);
+/// Initialized lazily with per-scan limit from `quota_config` (env var
+/// `HSE_OATHNET_PER_SCAN_LIMIT`, default 4). The per-session ceiling is fixed
+/// at 30 to prevent radar/live sessions from burning the daily allowance.
+/// The provider's daily limit (from `HSE_OATHNET_DAILY_LIMIT` in quota_config)
+/// is tracked separately via `real_quota()`. Runtime overrides are still possible
+/// via `HUNTSMAN_OATHNET_SCAN_CAP` env var or `set_scan_cap_override()` method.
+static BUDGET: LazyLock<QuotaBudget> = LazyLock::new(|| {
+    let config = quota_config::oathnet_quota();
+    QuotaBudget::new(
+        "oathnet",
+        config.per_scan_limit,
+        30,
+        "HUNTSMAN_OATHNET_SCAN_CAP",
+        "HUNTSMAN_OATHNET_SESSION_CAP",
+    )
+});
 
 /// Whether an enumeration returned the whole answer — and if not, what stopped
 /// it.
