@@ -1035,6 +1035,26 @@ fn extract_entities(
                 "Null Island rejected"
             );
         }
+        // Regression: a JSON `null` on the first-tried key name must fall
+        // through to the next key in the fallback list, not be treated as
+        // "present" and stop the search — `item.get("latitude")` returns
+        // `Some(&Value::Null)` for an explicit null, which previously made
+        // `parse_coord` give up before ever trying the `"lat"` fallback that
+        // carried the real value.
+        {
+            let (mut seen, mut r) = (HashSet::new(), ModuleResult::new());
+            extract_geo_entities(
+                &json!({"latitude": null, "lat": -33.8688, "longitude": 151.2093, "lon": null}),
+                "ip_info",
+                "s",
+                &mut seen,
+                &mut r,
+            );
+            assert!(
+                r.entities.iter().any(|e| e.kind == EntityKind::Coordinates),
+                "a null on the preferred key must not suppress the valid fallback key's value"
+            );
+        }
         // Location hint, timezone, ASN + org (ip_info only).
         {
             let (mut seen, mut r) = (HashSet::new(), ModuleResult::new());
@@ -1261,7 +1281,7 @@ fn extract_entities(
         result.push(Entity::new(EntityKind::Email, "*@example.com", 0.9, "t"));
         result.push(Entity::new(EntityKind::Username, "jmeyer", 0.9, "t"));
 
-        let emails = discover_high_confidence_emails(&result);
+        let emails = discover_high_confidence_emails(&result, "unrelated@example.com");
         assert_eq!(
             emails,
             vec!["jordan.meyer@example.com"],
@@ -1277,13 +1297,35 @@ fn extract_entities(
         result.push(Entity::new(EntityKind::Email, "Jordan.Meyer@Example.com", 0.9, "t"));
         result.push(Entity::new(EntityKind::Email, "jordan.meyer@example.com", 0.9, "t"));
 
-        let emails = discover_high_confidence_emails(&result);
+        let emails = discover_high_confidence_emails(&result, "unrelated@example.com");
         assert_eq!(
             emails.len(),
             1,
             "case-variant duplicates must collapse to a single cascade query"
         );
         assert_eq!(emails[0], "jordan.meyer@example.com");
+    }
+
+    #[test]
+    fn discover_high_confidence_emails_excludes_the_seed_itself() {
+        // Regression: the doc comment on discover_high_confidence_emails has
+        // always promised to exclude "already-queried seeds (the seed_value
+        // itself, if it's an email)", but the function never took a seed
+        // parameter to filter against — it returned the seed's own email
+        // unfiltered, so a cascade hop would re-query (via
+        // /network/email-check) an identifier already covered by the
+        // seed's initial /search dispatch, burning one of only 3 cascade
+        // slots per hop on a redundant lookup.
+        let mut result = ModuleResult::new();
+        result.push(Entity::new(EntityKind::Email, "jordan.meyer@example.com", 0.9, "t"));
+        result.push(Entity::new(EntityKind::Email, "pivot.found@example.com", 0.9, "t"));
+
+        let emails = discover_high_confidence_emails(&result, "Jordan.Meyer@Example.com");
+        assert_eq!(
+            emails,
+            vec!["pivot.found@example.com"],
+            "the seed email (case-insensitively) must not be re-offered for cascade dispatch"
+        );
     }
 
     #[tokio::test]

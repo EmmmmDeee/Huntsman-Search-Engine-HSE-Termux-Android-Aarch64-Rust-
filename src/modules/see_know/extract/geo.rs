@@ -14,7 +14,14 @@ use crate::core::confidence;
 /// Preserves the original semantics: pick the first present key, then read it as
 /// an f64 or, failing that, parse its string form.
 pub(super) fn parse_coord(item: &Value, keys: &[&str]) -> Option<f64> {
-    let v = keys.iter().find_map(|k| item.get(*k))?;
+    // `item.get(k)` returns `Some(&Value::Null)` when the key exists with a
+    // JSON `null` value — filtering those out lets a `null`-placeholder key
+    // (e.g. `{"latitude": null, "lat": -33.8688}`) fall through to the next
+    // key in the fallback list instead of stopping the search at the first
+    // present-but-null key and silently dropping a usable value.
+    let v = keys
+        .iter()
+        .find_map(|k| item.get(*k).filter(|v| !v.is_null()))?;
     v.as_f64().or_else(|| v.as_str()?.parse().ok())
 }
 
