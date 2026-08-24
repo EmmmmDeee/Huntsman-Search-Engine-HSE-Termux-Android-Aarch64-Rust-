@@ -1,0 +1,8 @@
+# Ollama Modelfile for a model fine-tuned per docs/OSINT_MODEL_FINE_TUNING.md.
+# Copy next to the quantised GGUF, adjust the FROM path, then:
+#   ollama create hse-analyze -f Modelfile.example
+FROM ./hse-analyze-q4_k_m.gguf
+
+# Lower than Ollama's default: this task wants consistent severity
+# calibration and shape adherence, not creative variety.
+PARAMETER temperature 0.3

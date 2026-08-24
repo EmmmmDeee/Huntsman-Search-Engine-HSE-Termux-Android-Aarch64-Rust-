@@ -378,6 +378,32 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// AI-daemon scan analysis: prompt a locally-run Ollama instance for a
+    /// plain-language summary and ranked findings on an already-completed
+    /// scan's discovered entities. Opt-in (`hse config feature.ai_daemon on`)
+    /// and requires Ollama to be installed, running, and reachable — never
+    /// runs as part of `hse scan`/`hse serve`/`hse live`. See `src/ai/`. Also
+    /// reads `HUNTSMAN_OLLAMA_TIMEOUT_MS` (generation timeout in
+    /// milliseconds; default 120000, floor 1000) — no `--timeout` flag exists
+    /// for it, since a single analysis call has no other caller-tunable knob
+    /// to group it with.
+    Analyze {
+        /// Stored scan id to analyse (`latest` for the most recent completed scan).
+        #[arg(long)]
+        scan_id: Option<String>,
+        /// Emit the machine-readable JSON report instead of the text summary.
+        #[arg(long)]
+        json: bool,
+        /// Ollama base URL (default `http://127.0.0.1:11434`, or
+        /// `HUNTSMAN_OLLAMA_URL`).
+        #[arg(long, env = "HUNTSMAN_OLLAMA_URL")]
+        ollama_url: Option<String>,
+        /// Ollama model tag to use (or `HUNTSMAN_OLLAMA_MODEL`); required —
+        /// there is no default model, since a default would silently invoke
+        /// whatever an operator happens to have pulled.
+        #[arg(long, env = "HUNTSMAN_OLLAMA_MODEL")]
+        model: Option<String>,
+    },
     /// Verify environment: DB path, key file, Termux detection, module counts.
     /// (Subsumed by `hse diagnostics`; kept for scripting and the API/UI.)
     #[command(hide = true)]

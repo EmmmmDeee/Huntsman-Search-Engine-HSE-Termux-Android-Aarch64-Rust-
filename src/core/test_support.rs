@@ -15,6 +15,7 @@ use crate::core::event::Event;
 use crate::core::port::StoragePort;
 use crate::core::relation::Relation;
 use crate::core::scan::Scan;
+use crate::core::scan_analysis::ScanAnalysis;
 
 /// Fully in-memory [`StoragePort`]. Pure HashMap/Vec state behind a single
 /// `parking_lot::Mutex`, so engine tests are deterministic, allocation-bounded,
@@ -48,6 +49,7 @@ struct Inner {
     correlations: Vec<Correlation>,
     relations: Vec<Relation>,
     events: Vec<Event>,
+    scan_analysis: HashMap<String, ScanAnalysis>,
 }
 
 impl InMemoryStore {
@@ -311,5 +313,37 @@ impl StoragePort for InMemoryStore {
             .filter(|e| e.scan_id == scan_id)
             .cloned()
             .collect())
+    }
+
+    fn upsert_scan_analysis(&self, analysis: &ScanAnalysis) -> Result<()> {
+        self.inner
+            .lock()
+            .scan_analysis
+            .insert(analysis.scan_id.clone(), analysis.clone());
+        Ok(())
+    }
+
+    fn get_scan_analysis(&self, scan_id: &str) -> Result<Option<ScanAnalysis>> {
+        Ok(self.inner.lock().scan_analysis.get(scan_id).cloned())
+    }
+
+    fn scans_pending_analysis(&self, limit: usize) -> Result<Vec<String>> {
+        let g = self.inner.lock();
+        let mut ids: Vec<String> = g
+            .scans
+            .values()
+            .filter(|s| {
+                matches!(
+                    s.status,
+                    crate::core::scan::ScanStatus::Complete
+                        | crate::core::scan::ScanStatus::Aborted
+                )
+            })
+            .filter(|s| !g.scan_analysis.contains_key(&s.id))
+            .map(|s| s.id.clone())
+            .collect();
+        ids.sort();
+        ids.truncate(limit);
+        Ok(ids)
     }
 }
