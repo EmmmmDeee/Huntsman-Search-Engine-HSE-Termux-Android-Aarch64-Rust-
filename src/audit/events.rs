@@ -3,10 +3,11 @@
 use super::types::LogSignals;
 
 /// Fold a stored scan's events into auditor [`LogSignals`]: every
-/// `ExpansionStop` reason and every `EntityExcluded` reason (counted), so the
-/// recursion/admission ledger is available to the audit without a debug-log
-/// upload. Shared by the web audit endpoint and the CLI debug bundle so the two
-/// can never diverge.
+/// `ExpansionStop` reason, every `EntityExcluded` reason (counted), and every
+/// `ModuleError` (counted per module into `module_errors`), so the
+/// recursion/admission ledger and per-module failure tally are available to the
+/// audit without a debug-log upload. Shared by the web audit endpoint and the
+/// CLI debug bundle so the two can never diverge.
 pub fn fold_events(sig: &mut LogSignals, events: &[crate::core::event::Event]) {
     use crate::core::event::EventKind;
     for ev in events {

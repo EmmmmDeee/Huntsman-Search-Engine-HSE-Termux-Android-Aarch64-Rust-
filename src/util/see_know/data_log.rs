@@ -26,9 +26,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Serializes concurrent appends. Multiple scan tasks (up to
-/// `config::MAX_CONCURRENT_QUERIES`) may log at once; a single line-append under
-/// this lock keeps records intact and non-interleaved.
+/// Serializes concurrent appends. Multiple scan tasks may log at once; a single
+/// line-append under this lock keeps records intact and non-interleaved.
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Basename of the active append-only data-log file inside the logs directory.

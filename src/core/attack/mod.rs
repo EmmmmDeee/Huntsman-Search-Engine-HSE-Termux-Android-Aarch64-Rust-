@@ -35,11 +35,28 @@
 
 use crate::core::entity::EntityKind;
 use crate::core::module::ModuleCategory;
+use crate::core::relation::RelationKind;
 use serde::Serialize;
 
 /// The ATT&CK release these triples were generated from. Bump alongside a
 /// regeneration of [`TACTICS`] / [`ENTERPRISE`] from the pinned STIX bundle.
 pub const ATTACK_VERSION: &str = "17.1";
+
+/// The ATT&CK **content major** version, derived from [`ATTACK_VERSION`].
+///
+/// The ATT&CK Navigator's `versions.attack` field carries the content *major*
+/// (MITRE tags a `17.1` catalogue as attack version `"17"`), so
+/// [`navigator_layer`] reads this instead of a hand-typed literal that silently
+/// drifts behind a catalogue bump. Single-sourcing it against `ATTACK_VERSION`
+/// means one edit (the `const` above) moves the whole surface, and the
+/// `navigator_layer_is_a_valid_honest_layer` guard pins the emitted value to it.
+#[must_use]
+pub fn attack_spec_major() -> &'static str {
+    match ATTACK_VERSION.split_once('.') {
+        Some((major, _)) => major,
+        None => ATTACK_VERSION,
+    }
+}
 
 /// The MITRE ATT&CK tactic HSE performs collection for — the one tactic whose
 /// *coverage* the tool honestly claims. Retained as the canonical pair the
@@ -4426,6 +4443,94 @@ pub fn techniques_for_entity_kind(kind: &EntityKind) -> &'static [&'static str] 
     }
 }
 
+/// The ATT&CK Reconnaissance technique IDs a **relation** exercises — the third
+/// and final layer of the mapping, beside [`techniques_for_category`] (what a
+/// module collects) and [`techniques_for_entity_kind`] (what a finding is).
+///
+/// A relation is a collection *result*, not merely a rendering of one: an
+/// adversary who establishes that a person is a filed director of a company has
+/// performed T1591.004 (Identify Roles) whether or not any single entity in the
+/// scan carries that tag. Without this layer a scan's coverage under-reported
+/// exactly the collection the graph layer contributes — an officership, a
+/// corporate parent, a named network operator — because the technique lived in
+/// the EDGE and the rollup only ever read entity tags.
+///
+/// Two kinds return no technique, and both are deliberate rather than an
+/// omission:
+/// * [`DerivedFrom`](RelationKind::DerivedFrom) is provenance — it records which
+///   entity's expansion surfaced another, which is bookkeeping about HSE's own
+///   traversal, not collection against the target.
+/// * [`SameAs`](RelationKind::SameAs) asserts that two entities already
+///   collected are one identity in two spellings; the collection was done by
+///   whatever produced them, and counting it again would inflate coverage with a
+///   normalisation step.
+#[must_use]
+pub fn techniques_for_relation_kind(kind: RelationKind) -> &'static [&'static str] {
+    match kind {
+        // ── Infrastructure ───────────────────────────────────────────────
+        // Domain structure and hierarchy.
+        RelationKind::SubdomainOf | RelationKind::BelongsToDomain => &["T1590.001"],
+        // A URL bound to the site that serves it.
+        RelationKind::HostedOn => &["T1594"],
+        // The DNS answer itself.
+        RelationKind::ResolvesTo => &["T1590.002"],
+        // Registrant attribution comes out of WHOIS.
+        RelationKind::RegisteredBy => &["T1596.002"],
+        // Two assets proven to share an operator — a second/third-party
+        // relationship established from domain properties.
+        RelationKind::SameOperator => &["T1591.002", "T1590.001"],
+
+        // ── Place ────────────────────────────────────────────────────────
+        RelationKind::CoLocatedWith | RelationKind::LocatedAt => &["T1591.001"],
+
+        // ── Identity ─────────────────────────────────────────────────────
+        RelationKind::IdentifiedBy => &["T1589"],
+        // A handle reused across platforms is social-media collection resolving
+        // to a person's name.
+        RelationKind::AliasOf => &["T1589.003", "T1593.001"],
+        // The authenticated identity behind a profile page.
+        RelationKind::SameIdentity => &["T1593.001"],
+        // A reused, individuating secret is credential collection.
+        RelationKind::SharesSecretWith => &["T1589.001"],
+        // Family, household and declared associates — identity information about
+        // the people around the subject.
+        RelationKind::AssociatedWith => &["T1589"],
+
+        // ── Affiliation ──────────────────────────────────────────────────
+        // A register naming an officeholder IS Identify Roles.
+        RelationKind::OfficerOf => &["T1591.004"],
+        // Employment names both the role and the employee.
+        RelationKind::EmployedBy => &["T1591.004", "T1589.003"],
+        // A membership is organisation information without being a role at the
+        // target, so it maps to the parent technique rather than to .004.
+        RelationKind::MemberOf => &["T1591"],
+        // The corporate hierarchy is the textbook Business Relationships case.
+        RelationKind::ControlledBy | RelationKind::OperatedBy => &["T1591.002"],
+
+        // ── Not collection (see the doc comment) ─────────────────────────
+        RelationKind::DerivedFrom | RelationKind::SameAs => &[],
+    }
+}
+
+/// Count the Reconnaissance techniques a scan's RELATIONS exercised, folded into
+/// an existing per-technique tally (typically the entity-tag counts) so
+/// [`coverage`] sees one combined picture.
+///
+/// The count added per technique is the number of EDGES that exercised it, which
+/// is the same "how much collection of this kind did the scan actually do"
+/// quantity the entity counts carry — a scan establishing forty officerships and
+/// one is not equally covered.
+pub fn fold_relation_techniques(
+    exercised: &mut std::collections::BTreeMap<String, usize>,
+    relations: &[crate::core::relation::Relation],
+) {
+    for r in relations {
+        for id in techniques_for_relation_kind(r.kind) {
+            *exercised.entry((*id).to_string()).or_insert(0) += 1;
+        }
+    }
+}
+
 /// One exercised technique in a [`Coverage`] rollup: the catalogued technique
 /// plus the number of scan entities collected via it.
 #[derive(Debug, Clone, Serialize)]
@@ -4499,6 +4604,105 @@ pub fn coverage(exercised: &std::collections::BTreeMap<String, usize>) -> Covera
         uncovered: gaps,
         coverage_fraction,
     }
+}
+
+/// Every [`EntityKind`] that carries an ATT&CK mapping — the entity surface of
+/// the static coverage union in [`static_reconnaissance_coverage`]. The catch-all
+/// [`EntityKind::Other`] is deliberately excluded: it has no claimed mapping
+/// ([`techniques_for_entity_kind`] returns `&[]` for it). The
+/// `static_reconnaissance_coverage_is_the_platform_envelope` guard holds an
+/// arm-less match, so a new `EntityKind` fails the build until it is triaged into
+/// this list — the union can never silently stop counting a new surface.
+const MAPPED_ENTITY_KINDS: &[EntityKind] = &[
+    EntityKind::Person,
+    EntityKind::Email,
+    EntityKind::Phone,
+    EntityKind::Username,
+    EntityKind::Credential,
+    EntityKind::ApiKey,
+    EntityKind::Password,
+    EntityKind::IpAddress,
+    EntityKind::Domain,
+    EntityKind::Url,
+    EntityKind::Asn,
+    EntityKind::Cidr,
+    EntityKind::Address,
+    EntityKind::Coordinates,
+    EntityKind::Organisation,
+    EntityKind::AbnAcn,
+    EntityKind::MacAddress,
+    EntityKind::DeviceId,
+    EntityKind::Ssid,
+    EntityKind::TrackingId,
+    EntityKind::CryptoAddress,
+];
+
+/// Every [`RelationKind`] — the graph surface of the static coverage union. All
+/// unit variants; the same arm-less-match guard keeps this list exhaustive.
+const ALL_RELATION_KINDS: &[RelationKind] = &[
+    RelationKind::SubdomainOf,
+    RelationKind::BelongsToDomain,
+    RelationKind::HostedOn,
+    RelationKind::ResolvesTo,
+    RelationKind::RegisteredBy,
+    RelationKind::CoLocatedWith,
+    RelationKind::DerivedFrom,
+    RelationKind::IdentifiedBy,
+    RelationKind::AliasOf,
+    RelationKind::LocatedAt,
+    RelationKind::AssociatedWith,
+    RelationKind::SameAs,
+    RelationKind::SameOperator,
+    RelationKind::SameIdentity,
+    RelationKind::SharesSecretWith,
+    RelationKind::EmployedBy,
+    RelationKind::OfficerOf,
+    RelationKind::MemberOf,
+    RelationKind::ControlledBy,
+    RelationKind::OperatedBy,
+];
+
+/// HSE's **structural** Reconnaissance coverage — the platform's capability
+/// envelope, not a single scan's result.
+///
+/// Where [`coverage`] rolls up one scan's runtime `exercised` counts, this unions
+/// the three *static* ATT&CK surfaces the platform maps — the module registry
+/// (each module's [`attack_techniques`](crate::core::module::Module::attack_techniques)),
+/// every mapped [`EntityKind`]'s [`techniques_for_entity_kind`], and every
+/// [`RelationKind`]'s [`techniques_for_relation_kind`] — to answer which TA0043
+/// techniques HSE can *ever* exercise, and which it structurally never reaches
+/// (e.g. the phishing family `T1598`, which a passive collector performs none of).
+/// This is the "recursive" view: coverage computed across the whole
+/// module→entity→relation chain rather than one scan's tags.
+///
+/// Each covered technique's `entity_count` here is the number of static surfaces
+/// that name it (a coarse structural-reachability weight), *not* a live entity
+/// tally — read it as "how many independent surfaces would exercise this".
+///
+/// `module_technique_ids` is **injected**, not read from the registry: `core`
+/// must not depend on `crate::modules` (the `core_does_not_import_modules`
+/// architecture guard). A caller in a layer that can see the registry — e.g.
+/// `hse selftest` — passes
+/// `registry().iter().flat_map(|m| m.attack_techniques().iter().copied())`.
+#[must_use]
+pub fn static_reconnaissance_coverage<'a>(
+    module_technique_ids: impl IntoIterator<Item = &'a str>,
+) -> Coverage {
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for id in module_technique_ids {
+        *counts.entry(id.to_string()).or_default() += 1;
+    }
+    for kind in MAPPED_ENTITY_KINDS {
+        for id in techniques_for_entity_kind(kind) {
+            *counts.entry((*id).to_string()).or_default() += 1;
+        }
+    }
+    for &kind in ALL_RELATION_KINDS {
+        for id in techniques_for_relation_kind(kind) {
+            *counts.entry((*id).to_string()).or_default() += 1;
+        }
+    }
+    coverage(&counts)
 }
 
 /// Compute Reconnaissance technique coverage broken down by entity type.
@@ -4604,7 +4808,7 @@ pub fn navigator_layer(coverage: &Coverage, scan_label: &str) -> serde_json::Val
     }
     serde_json::json!({
         "name": format!("HSE — {scan_label} (Reconnaissance coverage)"),
-        "versions": { "attack": "16", "navigator": "5.1.0", "layer": "4.5" },
+        "versions": { "attack": attack_spec_major(), "navigator": "5.1.0", "layer": "4.5" },
         "domain": "enterprise-attack",
         "description": "MITRE ATT&CK Reconnaissance (TA0043) coverage produced by \
                         Huntsman Search Engine. score = entities collected via each \

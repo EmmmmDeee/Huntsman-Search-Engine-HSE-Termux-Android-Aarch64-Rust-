@@ -63,6 +63,23 @@ fn signup_hint_covers_common_free_providers() {
     }
 }
 
+/// Transparency invariant: EVERY key surfaced in the Settings/`hse doctor` grid
+/// must tell the operator where to obtain it, so an unconfigured module is never
+/// a dead end. A new `KNOWN_KEYS` entry without a `signup_hint` fails here rather
+/// than shipping a hint-less row.
+#[test]
+fn signup_hint_is_defined_for_every_known_key() {
+    let missing: Vec<&str> = KNOWN_KEYS
+        .iter()
+        .copied()
+        .filter(|k| signup_hint(k).is_none())
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these KNOWN_KEYS have no signup_hint (add one to keep the grid self-documenting): {missing:?}"
+    );
+}
+
 fn map_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
     pairs
         .iter()
@@ -233,6 +250,49 @@ fn load_from_file_handles_missing_file() {
     let path = dir.path().join(".huntsman.env");
     let m = load_from_file_only(&path);
     assert!(m.is_empty());
+}
+
+#[test]
+fn load_from_file_strips_single_quotes() {
+    // A single-quoted value must come back bare, matching what dotenvy's load()
+    // returns — otherwise SUPERSEDED rotation / hardcoded-fill compares a quoted
+    // string against a bare constant and never matches, and the Settings UI shows
+    // the quotes.
+    let dir = tempdir().expect("should succeed");
+    let path = dir.path().join(".huntsman.env");
+    std::fs::write(&path, "HUNTSMAN_OATHNET_KEY='singlequoted'\n").expect("should succeed");
+    let m = load_from_file_only(&path);
+    assert_eq!(
+        m.get("HUNTSMAN_OATHNET_KEY").map(String::as_str),
+        Some("singlequoted")
+    );
+}
+
+#[test]
+fn load_from_file_recovers_keys_after_a_malformed_line() {
+    // The resilient line parser skips ONLY the offending line — this is the basis
+    // for load()'s recovery when dotenvy abandons the rest of the file at the
+    // first bad line. A garbage line between two valid keys must not drop the
+    // second.
+    let dir = tempdir().expect("should succeed");
+    let path = dir.path().join(".huntsman.env");
+    std::fs::write(
+        &path,
+        "HUNTSMAN_OATHNET_KEY=first\n\
+         this is a malformed line with no equals sign\n\
+         HUNTSMAN_HIBP_KEY=second\n",
+    )
+    .expect("should succeed");
+    let m = load_from_file_only(&path);
+    assert_eq!(
+        m.get("HUNTSMAN_OATHNET_KEY").map(String::as_str),
+        Some("first")
+    );
+    assert_eq!(
+        m.get("HUNTSMAN_HIBP_KEY").map(String::as_str),
+        Some("second"),
+        "a malformed earlier line must not drop a later key"
+    );
 }
 
 #[test]

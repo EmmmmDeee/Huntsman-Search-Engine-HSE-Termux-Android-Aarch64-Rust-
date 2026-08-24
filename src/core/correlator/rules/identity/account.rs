@@ -170,20 +170,44 @@ pub(in crate::core::correlator) fn rule_au_048_shared_public_key(
         if accounts.len() < 2 {
             continue;
         }
-        // Distinct CONTROLLER handles, not just distinct identifier spellings:
-        // the attrs mix identifier types (login / username / email), so a
-        // single account whose key evidence carries both its login and its
-        // email ("alice" + "alice@x.com") is two strings but ONE account —
-        // firing a Critical "controls 2 accounts" on that is a false positive.
-        // Fold each identifier to its canonical handle (email local-part,
-        // separator-insensitive, same comparison AU-034 uses) and require two
-        // to actually differ. Genuinely distinct handles sharing a key
-        // ("ghost91" + "jsmith_work", or "@alice" + "bob@x.com") still fire.
-        let handles: BTreeSet<String> = accounts
+        // Distinct CONTROLLER accounts, not just distinct identifier spellings.
+        // The attrs mix identifier types (login / username / email). A single
+        // account whose key evidence carries BOTH its login and its email
+        // ("alice" + "alice@x.com") is two strings but ONE account, so firing a
+        // Critical "controls 2 accounts" on it would be a false positive.
+        //
+        // But two GENUINELY distinct accounts that merely share an email
+        // local-part across different domains ("john@gmail.com" + "john@acme.com")
+        // are exactly the rotated/burner seam this rule exists to expose, and
+        // MUST still fire. The previous fold reduced every identifier — full
+        // emails included — to its bare local-part, so it silently collapsed
+        // those two accounts and dropped the Critical link (cryptographic proof
+        // of common control, thrown away).
+        //
+        // So: a full email keeps its `local@domain` identity; a bare login is a
+        // SEPARATE account only when its canonical handle matches NO email's
+        // local-part (otherwise it is that email's own login). Genuinely distinct
+        // handles ("ghost91" + "jsmith_work", "@alice" + "bob@x.com") still fire.
+        let mut emails: BTreeSet<&str> = BTreeSet::new();
+        let mut logins: BTreeSet<String> = BTreeSet::new();
+        for a in &accounts {
+            match a.split_once('@') {
+                Some((local, domain)) if !local.is_empty() && !domain.is_empty() => {
+                    emails.insert(a.as_str());
+                }
+                _ => {
+                    logins.insert(canonical_handle(a.trim_start_matches('@')));
+                }
+            }
+        }
+        let email_locals: BTreeSet<String> = emails
             .iter()
-            .map(|a| canonical_handle(a.split('@').next().unwrap_or(a)))
+            .filter_map(|e| e.split('@').next())
+            .map(canonical_handle)
             .collect();
-        if handles.len() < 2 {
+        let distinct_logins = logins.iter().filter(|l| !email_locals.contains(*l)).count();
+        let account_keys = emails.len() + distinct_logins;
+        if account_keys < 2 {
             continue;
         }
         let mut uids = vec![key.uid.clone()];
@@ -199,11 +223,11 @@ pub(in crate::core::correlator) fn rule_au_048_shared_public_key(
             description: format!(
                 "A reused public key proves one person controls {} accounts (same private key) \
                  — key evidence names: {}",
-                // Count DISTINCT controllers (handles), not identifier spellings: the
+                // Count DISTINCT controller accounts, not identifier spellings: the
                 // guard above already treats "alice" + "alice@x.com" as ONE account,
                 // so reporting `accounts.len()` here would over-state control (e.g.
                 // "3 accounts" for alice's login+email plus bob, who are 2 owners).
-                handles.len(),
+                account_keys,
                 join_capped(accounts.iter().map(String::as_str), 6)
             ),
             entity_uids: uids,

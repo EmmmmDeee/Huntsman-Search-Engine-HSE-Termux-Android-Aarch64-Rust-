@@ -63,14 +63,18 @@ pub async fn cmd_export(
     // coordinates, for the SHAREABLE entity exports only. It is deliberately
     // rejected for `full`/`debug` (whose contract is total unredacted
     // transparency for a local interpreter) and for `report` (its nested
-    // scan-report shape does not route through the entity redaction pass), so a
-    // caller is never lulled into thinking a still-sensitive artifact was
-    // scrubbed. `events` carries no entity values to redact.
+    // scan-report shape embeds the full `Entity` list — see
+    // `api::scan_export::build_scan_report`'s `"entities": entities` — but does
+    // not route it through the entity redaction pass, so `--redact` cannot be
+    // honoured there today), so a caller is never lulled into thinking a
+    // still-sensitive artifact was scrubbed. `events` genuinely carries no
+    // entity values to redact.
     if redact && !matches!(fmt.as_str(), "json" | "csv" | "gexf") {
         return Err(Error::Other(format!(
             "--redact applies to json, csv, gexf only (not '{fmt}'): the full/debug \
-             dossiers are unredacted by contract, and report/events carry no entity \
-             values to mask"
+             dossiers are unredacted by contract; report embeds full, unredacted entity \
+             values and does not yet support --redact; events carries no entity values \
+             to mask"
         )));
     }
     let body = match fmt.as_str() {

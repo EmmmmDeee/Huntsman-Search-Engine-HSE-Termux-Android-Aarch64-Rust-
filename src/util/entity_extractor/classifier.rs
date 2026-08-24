@@ -32,12 +32,13 @@ fn core_kind_to_extractor(core: &CoreEntityKind, value: &str) -> EntityKind {
         CoreEntityKind::Person => EntityKind::Person,
         CoreEntityKind::Organisation => EntityKind::Organization,
         CoreEntityKind::Cidr => EntityKind::IpRange,
+        CoreEntityKind::Coordinates => EntityKind::Coordinates,
         CoreEntityKind::Other(s) if s == "hash" => EntityKind::Hash,
         CoreEntityKind::Other(s) => EntityKind::Unknown(s.clone()),
         // Core kinds not represented in the extractor taxonomy (Credential, ApiKey,
-        // Password, Asn, Address, Coordinates, MacAddress, DeviceId, Ssid,
-        // TrackingId, …) map to Unknown so the extractor never invents its own
-        // type decision.
+        // Password, Asn, Address, MacAddress, DeviceId, Ssid, TrackingId, …) map to
+        // Unknown so the extractor never invents its own type decision. (Coordinates
+        // IS represented — see the explicit arm above.)
         _ => EntityKind::Unknown(UNCLASSIFIED.to_string()),
     }
 }

@@ -555,6 +555,50 @@ pub async fn logs_download(
     crate::api::scan_export::attachment_response(body, "text/plain; charset=utf-8", &filename)
 }
 
+/// `GET /api/v1/logs/tail?after=N` — the **live** counterpart to
+/// [`logs_download`]: return only the verbose-log lines committed since the
+/// caller's cursor, as JSON, so the Web UI can stream the debug log the way the
+/// Termux CLI shows it instead of forcing a whole-file download.
+///
+/// `after` is the [`crate::util::log_capture::Tail::cursor`] from the previous
+/// call (omit or `0` for a first read). The response is
+/// `{ lines: [..], cursor: N, missed: M, dropped: D }`: `cursor` is what to
+/// pass next, `missed` is lines evicted before this read could return them (a
+/// real gap the UI surfaces, never silently skips), and `dropped` is the ring's
+/// all-time eviction count for parity with the download header.
+///
+/// **Loopback-only**, identical to [`logs_download`]: the ring holds TRACE-level
+/// logs — scan targets and discovered PII — so it must never stream to a LAN
+/// peer under a non-loopback bind.
+pub async fn logs_tail(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "debug logs are loopback-only" })),
+        )
+            .into_response();
+    }
+    // A malformed/absent `after` reads as 0 (a first read) rather than erroring:
+    // the endpoint is a convenience poll, and 0 is the safe "give me the current
+    // ring" default. `dropped` is derived as cursor - retained so the UI can
+    // show the all-time eviction total without a second lock/endpoint.
+    let after = params
+        .get("after")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let tail = crate::util::log_capture::tail(after);
+    Json(json!({
+        "lines": tail.lines,
+        "cursor": tail.cursor,
+        "missed": tail.missed,
+        "dropped": tail.dropped,
+    }))
+    .into_response()
+}
+
 /// `GET /api/v1/debug/bundle` — the consolidated **system self-diagnosis
 /// bundle**: one download that encompasses the whole engine's diagnostic +
 /// validation state (an auto-computed DETECTED ISSUES verdict, the environment

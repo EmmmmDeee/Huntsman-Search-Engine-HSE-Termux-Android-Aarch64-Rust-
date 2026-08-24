@@ -57,12 +57,43 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 
+use crate::util::http::RequestBuilderExt;
 use extract::{clean_owner, device_fingerprint, looks_like_image_url};
 use parse::{
     extract_altitude, extract_gps, extract_img_direction, extract_positioning_error, read_str,
 };
 
 const SRC: &str = "exif_geo";
+
+/// What a response status means for an image fetch.
+///
+/// Pure and separated from `process` so the policy is unit-testable directly — the repo has no
+/// HTTP mocking, so a status decision left inline in the request path cannot be exercised at all.
+#[derive(Debug, PartialEq, Eq)]
+enum ImageFetch {
+    /// A body to parse.
+    Read,
+    /// The image genuinely is not there, so it has no metadata to read. A clean empty result.
+    Absent,
+    /// The host refused. NOT an answer about the image, and must never read as one.
+    Refused,
+}
+
+/// Classify an image-fetch status.
+///
+/// `206 Partial Content` is the EXPECTED success: the request sets a `Range` header, so it is
+/// admitted alongside the 2xx family rather than read as a refusal. `404`/`410` are the genuine
+/// absence. Everything else — `403` hotlink protection, `429`, `5xx` — is a refusal: reporting it
+/// as an empty result would state "this image carries no GPS coordinates, no camera serial and no
+/// owner name" when the image was never retrieved.
+fn classify_image_status(status: u16) -> ImageFetch {
+    match status {
+        206 => ImageFetch::Read,
+        s if (200..300).contains(&s) => ImageFetch::Read,
+        404 | 410 => ImageFetch::Absent,
+        _ => ImageFetch::Refused,
+    }
+}
 
 /// Cap on image fetch size (8 MiB). A high-res JPEG / HEIC normally
 /// fits well under this; large RAW files (CR3, ARW) typically
@@ -140,18 +171,24 @@ impl Module for ExifGeo {
         // parse EXIF — the metadata sits in the first few KB of a
         // JPEG. Setting the Range header makes the polite-side of
         // the trade visible to upstream servers.
-        let resp = match ctx
+        // Fail closed on a fetch that did not happen. This module answers ONE image URL, so
+        // `result` is still empty at these returns: swallowing the transport error and the non-2xx
+        // reported "this image carries no GPS coordinates, no camera serial and no owner name" — a
+        // confident negative, and a decisive one for a GEOINT pivot — when the image was never
+        // retrieved at all. The engine reads `Ok(empty)` as a clean no-data outcome, so the
+        // provider also stayed healthy and was re-asked for every subsequent image URL.
+        let resp = ctx
             .http
             .get(url)
             .header("Range", format!("bytes=0-{}", MAX_BYTES.saturating_sub(1)))
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(_) => return Ok(result),
-        };
-        if !resp.status().is_success() && resp.status().as_u16() != 206 {
-            return Ok(result);
+            .send_tagged(SRC)
+            .await?;
+        match classify_image_status(resp.status().as_u16()) {
+            ImageFetch::Read => {}
+            ImageFetch::Absent => return Ok(result),
+            ImageFetch::Refused => {
+                return Err(crate::util::http::http_status_error(SRC, resp).await);
+            }
         }
 
         // Stream the body and bail the moment the running total exceeds
@@ -167,9 +204,20 @@ impl Module for ExifGeo {
         while let Some(chunk) = stream.next().await {
             let chunk = match chunk {
                 Ok(c) => c,
-                Err(_) => return Ok(result),
+                // The connection dropped mid-body. Same reasoning as the fetch above: the image
+                // was not read, so reporting no metadata would state a negative about bytes that
+                // were never seen.
+                Err(e) => {
+                    return Err(crate::core::error::Error::module(
+                        SRC,
+                        format!("image body download failed mid-stream: {e}"),
+                    ));
+                }
             };
             if body.len() + chunk.len() > MAX_BYTES as usize {
+                // Deliberately still a clean empty, and NOT an error: the cap is our own policy,
+                // applied on purpose, so an oversized image is a decision we made rather than a
+                // failure of the source. Existing behaviour, left unchanged.
                 return Ok(result);
             }
             body.extend_from_slice(&chunk);

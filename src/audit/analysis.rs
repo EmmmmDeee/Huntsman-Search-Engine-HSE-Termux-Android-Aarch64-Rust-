@@ -186,13 +186,19 @@ pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
     let entity_total = entities.len();
 
     // ── Tiers + kind histogram ──────────────────────────────────────────────
+    // Tier boundaries by `c_effective`. Named (not re-typed as literals at each
+    // use) because the noise accounting below keys off the SAME candidate
+    // boundary to avoid double-counting — if the two ever drifted apart, an
+    // entity could be counted as noise twice.
+    const VERIFIED_MIN: f64 = 0.75;
+    const PROBABLE_MIN: f64 = 0.40;
     let mut by_kind_map: BTreeMap<String, usize> = BTreeMap::new();
     let (mut verified, mut probable, mut candidate) = (0usize, 0usize, 0usize);
     for e in entities {
         *by_kind_map.entry(e.kind.clone()).or_default() += 1;
-        if e.c_effective >= 0.75 {
+        if e.c_effective >= VERIFIED_MIN {
             verified += 1;
-        } else if e.c_effective >= 0.40 {
+        } else if e.c_effective >= PROBABLE_MIN {
             probable += 1;
         } else {
             candidate += 1;
@@ -200,11 +206,15 @@ pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
     }
     let mut by_kind: Vec<(String, usize)> = by_kind_map.into_iter().collect();
     by_kind.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    let noise_ratio = if entity_total > 0 {
-        candidate as f64 / entity_total as f64
-    } else {
-        0.0
-    };
+    // `noise_ratio` is an operator-facing QUALITY metric, not merely the share of
+    // low-confidence rows. A scan whose entities are all high-confidence CDN /
+    // provider infrastructure previously reported 0% noise while this same audit
+    // raised a Critical "infrastructure-pollution" finding about those very
+    // entities — the report contradicted itself, and the headline number said the
+    // scan was clean. Count provider infrastructure as noise too, using the same
+    // predicate that emits that finding (computed in the infrastructure-pollution
+    // pass below, which is why the ratio is finalised after it).
+    let mut semantic_noise_count = candidate;
 
     let mut findings: Vec<Finding> = Vec::new();
 
@@ -259,9 +269,21 @@ pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
             t == "cloudflare" || t == "hosting" || t == "shodan:cdn"
         }) && matches!(e.kind.as_str(), "ip_address" | "domain");
         if hit {
+            // Only the probable/verified tiers are added here: a low-confidence
+            // infrastructure entity is ALREADY inside `candidate`, and counting
+            // it again would let one entity contribute two units of noise (and
+            // push the ratio above 1.0 in an all-infrastructure scan).
+            if e.c_effective >= PROBABLE_MIN {
+                semantic_noise_count += 1;
+            }
             infra.push(format!("{}={}", e.kind, e.value));
         }
     }
+    let noise_ratio = if entity_total > 0 {
+        semantic_noise_count as f64 / entity_total as f64
+    } else {
+        0.0
+    };
     if !infra.is_empty() {
         let n = infra.len();
         findings.push(Finding {

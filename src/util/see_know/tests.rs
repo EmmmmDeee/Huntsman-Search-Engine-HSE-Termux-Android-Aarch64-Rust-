@@ -6,7 +6,8 @@ use super::budget::{
 };
 use super::client::{
     CLIENT, CLIENT_FAST, HARDCODED_KEY_FOR_TESTS, base_urls_for, cache_get, cache_key, cache_put,
-    classify_status, is_auth_error, key_fingerprint, parse_response, resolve_key, typed_cache_key,
+    classify_status, is_auth_error, key_fingerprint, parse_response, resolve_key,
+    transport_err_is_terminal_auth, typed_cache_key,
 };
 use super::endpoints::{
     CreditsOutcome, CreditsProbe, SEARCH_LIMIT, build_search_body, classify_credits_probe,
@@ -85,6 +86,32 @@ fn classify_status_diverts_5xx_and_no_response_to_transient_retry() {
     assert!(
         classify_status(r#"{"total":0}"#, 404).is_ok(),
         "a 4xx JSON body keeps parse_response's classification"
+    );
+    // A 429 served as a CDN/gateway HTML interstitial (NOT the API's JSON
+    // rate_limit envelope) must be retryable-transient, not the empty miss it
+    // used to become in parse_response's non-JSON branch.
+    assert!(
+        matches!(
+            classify_status("<html>429 Too Many Requests</html>", 429),
+            Err(Error::RateLimited(_))
+        ),
+        "a non-JSON 429 must divert to RateLimited, not a silent empty miss"
+    );
+    // A JSON 429 keeps its precise parse_response/classify_terminal path: an
+    // explicit `rate_limit` envelope is still RateLimited (retry) — reached via
+    // parse_response, not the non-JSON divert (no global latch mutated here).
+    assert!(
+        matches!(
+            classify_status(r#"{"error":"rate_limit"}"#, 429),
+            Err(Error::RateLimited(_))
+        ),
+        "a JSON rate_limit 429 stays RateLimited via parse_response"
+    );
+    // A 429 whose JSON body carries no terminal marker is a normal miss — NOT
+    // blanket-diverted just because the status is 429.
+    assert!(
+        classify_status(r#"{"total":0}"#, 429).is_ok(),
+        "a JSON 429 with no terminal marker keeps parse_response's classification"
     );
 }
 
@@ -485,6 +512,57 @@ fn reset_clears_override_too() {
         99,
         "reset_budget must clear the cap override"
     );
+}
+
+#[test]
+fn rate_limited_error_redacts_credentials_from_the_provider_body() {
+    use crate::core::error::Error;
+    // `Error::RateLimited`'s Display reaches operator-facing sinks. If the
+    // provider echoes a credential in its rate-limit body, it must not ride
+    // along — the same redaction `util::http::error_snippet` applies to every
+    // other embedded body.
+    let body = r#"{"error":"rate_limit","detail":"rejected for api_key=SUPERSECRETVALUE"}"#;
+    let err = parse_response(body).expect_err("a rate_limit body must surface as RateLimited");
+    let msg = match err {
+        Error::RateLimited(m) => m,
+        other => panic!("expected RateLimited, got {other:?}"),
+    };
+    assert!(
+        !msg.contains("SUPERSECRETVALUE"),
+        "the credential must be redacted out of the error: {msg}"
+    );
+    assert!(
+        msg.contains("seek_now:"),
+        "the error must still identify its provider: {msg}"
+    );
+}
+
+#[test]
+fn transport_auth_errors_are_terminal_but_network_errors_are_not() {
+    // Extracted from three byte-identical copies inlined in the POST / GET /
+    // raw-GET fallback loops; pinned here so the multi-domain fallback keeps
+    // stopping on a rejected key while still rotating past a transport blip.
+    for terminal in [
+        "HTTP 401 returned",
+        "Unauthorized",
+        "invalid API key supplied",
+    ] {
+        assert!(
+            transport_err_is_terminal_auth(terminal),
+            "{terminal:?} must stop the domain fallback"
+        );
+    }
+    for retryable in [
+        "curl exited 6: could not resolve host",
+        "connection timed out",
+        "HTTP 503 from gateway",
+        "invalid JSON in response",
+    ] {
+        assert!(
+            !transport_err_is_terminal_auth(retryable),
+            "{retryable:?} must NOT be treated as terminal auth"
+        );
+    }
 }
 
 #[test]

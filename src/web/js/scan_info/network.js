@@ -4,7 +4,8 @@ import { attr, esc, extLink, kindPill } from '/static/js/helpers.js';
 /* ── Network section — the subject-centric relationship synthesis (the analyst's
    "so what": who/what the seed connects to, grouped + ranked server-side). ── */
 export const NET_GROUP_ICON = {people:'glyphicon-user', identifiers:'glyphicon-envelope',
-  aliases:'glyphicon-random', locations:'glyphicon-map-marker', infrastructure:'glyphicon-cloud'};
+  aliases:'glyphicon-random', affiliations:'glyphicon-briefcase',
+  locations:'glyphicon-map-marker', infrastructure:'glyphicon-cloud'};
 export async function renderNetwork(host, id){
   host.innerHTML = '<div class="empty-state"><h3>Building the subject network…</h3></div>';
   let net;
@@ -13,8 +14,8 @@ export async function renderNetwork(host, id){
   const browseLink = `#/scaninfo?id=${attr(id)}&tab=browse`;
   if (!net || !net.subject){
     host.innerHTML = `<div class="empty-state"><h3>No subject network yet</h3>
-      <p>Connections appear once the scan derives relations — people, accounts, aliases and locations
-      bound to the subject. Run a deeper scan (<code>--depth ≥ 1</code>) or open
+      <p>Connections appear once the scan derives relations — people, accounts, aliases,
+      organisations and locations bound to the subject. Run a deeper scan (<code>--depth ≥ 1</code>) or open
       <a href="${browseLink}">Browse</a> for the raw entities.</p></div>`;
     return;
   }

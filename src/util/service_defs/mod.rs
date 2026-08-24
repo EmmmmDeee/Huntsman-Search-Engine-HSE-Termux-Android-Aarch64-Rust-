@@ -801,6 +801,21 @@ pub fn find_service(name: &str) -> Option<&'static ServiceDef> {
     SERVICE_DEFS.iter().find(|s| s.name == lower)
 }
 
+/// The canonical [`ServiceDef`] whose `env_var` is `env_var`
+/// (ASCII-case-insensitive). The counterpart to [`find_service`] for the one
+/// thing a keyed MODULE always knows about itself: the env var its key arrives
+/// in. A module's own name is NOT a reliable pool key — `hunter_io` pools under
+/// `hunter`, `exa_search` under `exa`, `hlr_cnam` under `hlrlookups` — and
+/// addressing the pool by module name makes every key burn a silent no-op
+/// ([`crate::util::key_pool`]'s `record_error`/`mark_status` skip an unknown
+/// service) and every cascade lookup return `None`.
+#[must_use]
+pub fn service_for_env(env_var: &str) -> Option<&'static ServiceDef> {
+    SERVICE_DEFS
+        .iter()
+        .find(|d| d.env_var.eq_ignore_ascii_case(env_var))
+}
+
 /// True if `service` is a recognised keyed provider whose key the engine's
 /// key-cascade can actually **reuse** — i.e. it appears in [`service_defs`], so
 /// `hot_inject_keys` (which iterates `service_defs`) will pull a pooled key for

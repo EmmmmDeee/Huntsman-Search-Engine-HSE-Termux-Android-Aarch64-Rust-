@@ -179,7 +179,7 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
 
     // Extract entities
     let extractor = EntityExtractor::new(args.min_confidence)?;
-    let entities = extractor.extract_from_text(&raw_text.text);
+    let mut entities = extractor.extract_from_text(&raw_text.text);
 
     info!("Found {} entities", entities.len());
 
@@ -196,6 +196,32 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
                             "Image geolocation: {:.6}°, {:.6}° (confidence: {:.2})",
                             coords.latitude, coords.longitude, coords.confidence
                         );
+                        // Surface the recovered GPS fix as a first-class
+                        // Coordinates entity — the highest-precision geolocation
+                        // signal a document ingest can yield. Logging it alone
+                        // silently discarded it; it now enters the emitted output
+                        // and (with --auto-scan) the persisted scan, seeding
+                        // Coordinates expansion and the geo correlators like any
+                        // other coordinate. The EXIF provenance (camera, capture
+                        // time, altitude) is carried in the context string.
+                        if crate::util::geo::is_valid_coords(coords.latitude, coords.longitude) {
+                            let value = format!("{:.6},{:.6}", coords.latitude, coords.longitude);
+                            let mut ctx = format!("EXIF GPS ({})", coords.source);
+                            if let Some(dt) = &geo_metadata.datetime {
+                                ctx.push_str(&format!("; captured {dt}"));
+                            }
+                            if let Some(cam) = &geo_metadata.camera_model {
+                                ctx.push_str(&format!("; camera {cam}"));
+                            }
+                            entities.push(crate::util::entity_extractor::ExtractedEntity {
+                                kind: crate::util::entity_extractor::EntityKind::Coordinates,
+                                value,
+                                confidence: coords.confidence,
+                                context: Some(ctx),
+                                source_pattern: "exif_gps".to_string(),
+                                boost_reason: coords.accuracy_m.map(|m| format!("EXIF GPS ±{m}m")),
+                            });
+                        }
                     }
                     if let Some(datetime) = &geo_metadata.datetime {
                         info!("Image capture datetime: {}", datetime);

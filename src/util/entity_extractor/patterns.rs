@@ -194,9 +194,16 @@ pub fn extract_by_patterns(text: &str) -> Vec<ExtractedEntity> {
 
     // URL extraction
     for cap in URL_PATTERN.find_iter(text) {
+        // The locator over-matches trailing prose punctuation (`.`, `,`, `;`,
+        // `:`, `!`, `?`); strip it via the shared `trim_url_punctuation` so a
+        // document ingest never mints an unfetchable URL value.
+        let link = crate::core::classifier::trim_url_punctuation(cap.as_str());
+        if link.is_empty() {
+            continue;
+        }
         entities.push(ExtractedEntity {
             kind: EntityKind::Url,
-            value: cap.as_str().to_string(),
+            value: link.to_string(),
             confidence: 0.80,
             context: extract_context(text, cap.start()),
             source_pattern: "url_http".to_string(),

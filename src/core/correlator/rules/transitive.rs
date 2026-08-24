@@ -19,8 +19,6 @@
 //! on the shortest path is included in the correlation's `entity_uids` so the
 //! SPA Correlations view can render the chain.
 
-use std::collections::HashMap;
-
 use super::*;
 use crate::core::relation::identity_paths;
 
@@ -49,7 +47,7 @@ pub(in crate::core::correlator) fn rule_au_060_transitive_identity_closure(
     // check is a single comparison — no per-edge lookup, no drift from the primitive.
     const MIN_CONF: f64 = crate::core::relation::IDENTITY_LINK_MIN_CONF;
 
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let by_uid = context.by_uid();
 
     let mut out = Vec::new();
     for path in identity_paths(entities, relations, MAX_HOPS) {

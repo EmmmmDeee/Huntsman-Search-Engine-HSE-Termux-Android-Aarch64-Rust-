@@ -59,6 +59,28 @@ fn core_does_not_import_storage_directly() {
     );
 }
 
+/// `core_does_not_import_ai` — half of the `Runtime AI-independence` invariant
+/// (`src/lib.rs`): `ai/` depends on `core/`, never the reverse, so the
+/// deterministic scan engine, module dispatch, correlator, and storage port can
+/// never come to depend — even transitively — on the optional, opt-in AI-daemon
+/// surface. Paired with `runtime_carries_no_ai_ml_inference_dependency` below,
+/// which guards the dependency graph itself; this guards the layering that keeps
+/// the exception (`src/ai/`) from spreading into the part of the codebase that
+/// must stay reproducible with no AI available.
+#[test]
+fn core_does_not_import_ai() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core");
+    let v = scan_for_violations(&dir, &["crate::ai", "use crate::ai"]);
+    assert!(
+        v.is_empty(),
+        "core/ must not import ai/ — the deterministic scan/correlation pipeline \
+         (BFS engine, module dispatch, correlator, storage port, exports) stays \
+         fully AI-independent and reproducible with no AI available; the optional \
+         AI-analysis daemon depends on core, never the reverse.\nViolations:\n{}",
+        v.join("\n")
+    );
+}
+
 #[test]
 fn api_does_not_import_storage_directly() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api");
@@ -373,6 +395,11 @@ fn core_does_not_import_util_directly() {
                 // same-site subdomains and exclude privacy-proxy registrants.
                 && !line.contains("util::domains::is_proxy_registrant")
                 && !line.contains("util::domains::registrable_domain")
+                // Pure, dependency-free whole-label suffix predicate (no I/O),
+                // same leaf category. `core::data_broker::broker_for_host` uses
+                // it to match a host to its data-broker site (the canonical home
+                // of the `host == d || subdomain-of d` idiom).
+                && !line.contains("util::domains::is_or_subdomain_of")
                 // Pure, dependency-free freemail-domain membership test (a small
                 // embedded list; no I/O), same leaf category as the other
                 // `util::domains` predicates. AU-100 uses it to exclude personal
@@ -493,11 +520,40 @@ fn all_modules_have_descriptions() {
 
 #[test]
 fn module_registry_count_is_stable() {
+    // Coarse scale floor, complementing the exact count pinned by
+    // `readme_module_overview_count_matches_registry`. The old `>= 75` bound sat
+    // so far below the real registry (~168) that it could not catch an accidental
+    // drop of dozens of modules — a mass-removal that also edited the README to
+    // match would slip past the exact guard, and this floor is the second barrier.
+    // Kept a floor (not an exact count) so routine single-module churn does not
+    // touch this test; only a large regression trips it.
     let modules = huntsman_search_engine::modules::registry();
     assert!(
-        modules.len() >= 75,
-        "expected >=75 modules, got {}",
+        modules.len() >= 150,
+        "expected >=150 modules, got {} — a large registry drop; if intentional, \
+         lower this floor deliberately",
         modules.len()
+    );
+}
+
+#[test]
+fn module_names_are_unique() {
+    // Module names are the primary key of the runtime: `MODULE_TECHNIQUES` keys a
+    // HashMap on `m.name()` (src/modules/mod.rs), and `find(|m| m.name() == ..)`
+    // is used pervasively for per-module lookup. Two modules sharing a name would
+    // silently collapse in the index (one entry wins, the other's techniques and
+    // dispatch attribution vanish) with no other test failing. This pins the
+    // uniqueness that the rest of the system already assumes.
+    use std::collections::BTreeMap;
+    let modules = huntsman_search_engine::modules::registry();
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for m in &modules {
+        *counts.entry(m.name()).or_default() += 1;
+    }
+    let dupes: Vec<(&&str, &usize)> = counts.iter().filter(|(_, n)| **n > 1).collect();
+    assert!(
+        dupes.is_empty(),
+        "duplicate module name(s) in the registry — names must be unique: {dupes:?}"
     );
 }
 
@@ -538,10 +594,26 @@ fn every_module_maps_to_valid_attack_reconnaissance_techniques() {
             m.name()
         );
         for id in m.attack_techniques() {
+            let tech = attack::technique(id).unwrap_or_else(|| {
+                panic!(
+                    "module `{}` claims ATT&CK technique `{id}` absent from the catalogue",
+                    m.name()
+                )
+            });
+            // The declared technique must belong to the Reconnaissance tactic
+            // (TA0043) — the one tactic HSE claims. `coverage()` and the Navigator
+            // export iterate `reconnaissance()` only, so a catalogued-but-non-recon
+            // override (e.g. an Impact or Collection technique) passes the
+            // membership check above yet is silently dropped from every coverage
+            // report. Pin the whole-registry override surface to the tactic the
+            // category defaults are already constrained to.
             assert!(
-                attack::technique(id).is_some(),
-                "module `{}` claims ATT&CK technique `{id}` absent from the catalogue",
-                m.name()
+                tech.tactics.contains(&"reconnaissance"),
+                "module `{}` claims ATT&CK technique `{id}` ({}) outside the \
+                 Reconnaissance tactic — coverage() would silently drop it; \
+                 map to a TA0043 technique or correct the override",
+                m.name(),
+                tech.tactics.join("+"),
             );
             covered.insert(*id);
         }
@@ -4016,5 +4088,77 @@ fn every_f64_cli_argument_declares_a_value_parser() {
          non-negative rate):\n  {}",
         unguarded.len(),
         unguarded.join("\n  ")
+    );
+}
+
+/// A non-2xx response must never be folded into a module's empty result.
+///
+/// `if !resp.status().is_success() { return Ok(empty) }` reports a 403 scraper block,
+/// a 429 throttle and a 5xx outage as the same answer as a genuine miss. For a
+/// registry lookup that empty result is not "nothing to report" — it is a negative
+/// claim about a named subject ("not a registered practitioner", "holds no licence")
+/// that an analyst will act on. `util::http::ok_or_absent` is the fail-closed form:
+/// it takes the statuses that genuinely mean absence for that endpoint and turns
+/// every other non-2xx into a typed `Err` the operator can see.
+///
+/// This guard exists because the raw pattern was independently written in eleven
+/// modules before it was caught.
+#[test]
+fn modules_do_not_collapse_a_non_2xx_into_an_empty_result() {
+    // `exif_geo` fetches an arbitrary, scraper-discovered image URL that almost
+    // certainly serves no EXIF. That resembles the speculative-probe carve-out
+    // `util::http::fetch_json_probe` documents, where a refusal and a miss really are
+    // the same negative — but unlike the probe helpers it makes no such claim in a
+    // doc comment. Left as-is pending a maintainer decision rather than changed on a
+    // guess; listed here so the exemption is visible instead of silently unscanned.
+    const EXEMPT: &[&str] = &["exif_geo"];
+
+    let mut violations = Vec::new();
+    let mut scanned = 0usize;
+    let mut stack = vec![Path::new("src/modules").to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs")
+                || path.file_name().is_some_and(|n| n == "tests.rs")
+                || EXEMPT.iter().any(|m| path.to_string_lossy().contains(m))
+            {
+                continue;
+            }
+            let raw = fs::read_to_string(&path).unwrap();
+            let scanned_src = production_source(&raw);
+            let lines: Vec<&str> = scanned_src.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                let trimmed = line.trim();
+                if !(trimmed.starts_with("if !") && trimmed.contains("status().is_success()")) {
+                    continue;
+                }
+                scanned += 1;
+                // The collapse is the `return Ok(..)` in the guarded block; a
+                // `return Err(..)` or a propagating `?` on the next lines is correct.
+                let body: String = lines[i + 1..lines.len().min(i + 3)].concat();
+                if body.contains("return Ok(") {
+                    violations.push(format!("{}:{}", path.display(), i + 1));
+                }
+            }
+        }
+    }
+
+    assert!(
+        scanned >= 20,
+        "expected to scan the known `is_success()` guards; found only {scanned} — the \
+         scan is broken and this test would pass vacuously"
+    );
+    assert!(
+        violations.is_empty(),
+        "{} module(s) fold a non-2xx response into an empty result, so a refusal is \
+         reported as a negative finding about the subject. Use \
+         `util::http::ok_or_absent(SRC, resp, &[<codes that mean absence>])`:\n  {}",
+        violations.len(),
+        violations.join("\n  ")
     );
 }

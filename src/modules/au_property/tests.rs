@@ -187,8 +187,10 @@ fn extract_postcode_finds_valid_au_postcode() {
     assert_eq!(extract_postcode("Sydney NSW 2000"), Some("2000".into()));
     assert_eq!(extract_postcode("Melbourne VIC 3000"), Some("3000".into()));
     assert_eq!(extract_postcode("no postcode here"), None);
-    // 1000 is not a valid AU postcode (< 2000).
-    assert_eq!(extract_postcode("invalid 1000 postcode"), None);
+    // 1000 is a valid NSW postcode (Australian National University area).
+    assert_eq!(extract_postcode("Canberra NSW 1000"), Some("1000".into()));
+    // 0100 is not a valid AU postcode (truly unassigned).
+    assert_eq!(extract_postcode("invalid 0100 postcode"), None);
     // 5-digit run must not match.
     assert_eq!(extract_postcode("12345 invalid"), None);
 }

@@ -114,12 +114,14 @@ pub const BROKERS: &[DataBroker] = &[
 pub fn broker_for_host(host: &str) -> Option<&'static DataBroker> {
     let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
     let h = h.strip_prefix("www.").unwrap_or(&h);
-    BROKERS.iter().find(|b| {
-        h == b.domain
-            || (h.len() > b.domain.len()
-                && h.as_bytes()[h.len() - b.domain.len() - 1] == b'.'
-                && h.ends_with(b.domain))
-    })
+    // Whole-label suffix match via the canonical predicate — the shared home for
+    // the `host == d || subdomain-of d` idiom (util::domains), which exists
+    // precisely because the hand-rolled form was occasionally mis-written as a
+    // bare `ends_with` (matching `notexample.com` against `example.com`). Both
+    // sides are already lowercased above, satisfying its case contract.
+    BROKERS
+        .iter()
+        .find(|b| crate::util::domains::is_or_subdomain_of(h, b.domain))
 }
 
 #[cfg(test)]

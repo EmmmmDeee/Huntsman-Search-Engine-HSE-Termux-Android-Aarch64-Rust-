@@ -143,6 +143,27 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
         "HUNTSMAN_EPIEOS_KEY" => "Epieos — https://epieos.com",
         "HUNTSMAN_SEEKNOW_KEY" => "SeekNow (see-know.eu) — https://see-know.eu",
         "HUNTSMAN_OATHNET_KEY" => "OathNet — https://oathnet.org",
+        // Grid-completeness: every `KNOWN_KEYS` entry names where to get a key so
+        // `hse doctor`, the Settings UI, and the "module skipped — needs key"
+        // notice are fully self-documenting. URLs are the single source of truth
+        // shared with `.env.example`. The `signup_hint_is_defined_for_every_known_key`
+        // test enforces that this stays exhaustive.
+        "HUNTSMAN_ABR_GUID" => {
+            "Australian Business Register — free key at https://abr.business.gov.au/Tools/WebServices"
+        }
+        "HUNTSMAN_BINARYEDGE_KEY" => "BinaryEdge — paid; https://www.binaryedge.io",
+        "HUNTSMAN_BREACHDIR_KEY" => {
+            "BreachDirectory — paid via RapidAPI at https://rapidapi.com/rohan-patra/api/breachdirectory"
+        }
+        "HUNTSMAN_BUILTWITH_KEY" => "BuiltWith — paid; https://builtwith.com",
+        "HUNTSMAN_C99_KEY" => "C99.nl — paid; https://api.c99.nl",
+        "HUNTSMAN_FOFA_KEY" => "FOFA — paid; https://fofa.info",
+        "HUNTSMAN_FULLCONTACT_KEY" => "FullContact — paid; https://www.fullcontact.com",
+        "HUNTSMAN_FULLHUNT_KEY" => "FullHunt — paid; https://fullhunt.io",
+        "HUNTSMAN_NIAMONX_KEY" => "NiamonX — paid; https://niamonx.io",
+        "HUNTSMAN_OSINTCAT_KEY" => "OSINT Cat — paid; https://osintcat.net",
+        "HUNTSMAN_PASSIVETOTAL_KEY" => "PassiveTotal / RiskIQ — paid; https://community.riskiq.com",
+        "HUNTSMAN_ZOOMEYE_KEY" => "ZoomEye — paid; https://www.zoomeye.org",
         _ => return None,
     })
 }

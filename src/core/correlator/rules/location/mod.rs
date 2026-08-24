@@ -726,16 +726,34 @@ const COHERENT_LINK_KM: f64 = 50.0;
 /// of how wide the error bar is.
 ///
 /// Groups are ranked by orthogonal-class count first — the quantity AU-059
-/// actually measures — then by summed confidence, then by size, with a
-/// first-index tie-break so the choice is deterministic.
+/// actually measures — then by summed confidence, then by size, then by the
+/// group's smallest member UID as a content-based final tie-break so the choice
+/// is deterministic regardless of the input slice's order (the live incremental
+/// pass feeds entities in HashMap-randomised order; see the AU-053 note above).
+///
+/// Only groups with **at least two** sightings are considered: the caller's
+/// fusion gate rejects any returned group of size < 2, so a singleton could
+/// never yield a fix, yet ranking class-count-first once let a high-class,
+/// high-confidence *single* point outrank a genuine 2-point group and be
+/// selected — after which the size gate discarded it and the whole synergy fix
+/// vanished. Excluding sub-2 groups up front removes that non-monotonic
+/// suppression (more evidence must never erase a finding) without changing which
+/// viable group wins, since only a size ≥ 2 group can survive downstream anyway.
 fn dominant_coherent_group(parsed: Vec<(&Entity, (f64, f64))>) -> Vec<(&Entity, (f64, f64))> {
     let points: Vec<(f64, f64)> = parsed.iter().map(|(_, ll)| *ll).collect();
     let groups = crate::util::geometry::coherent_groups(&points, COHERENT_LINK_KM);
     if groups.len() <= 1 {
         return parsed;
     }
+    // Smallest member UID of a group — an order-independent identity for the
+    // final tie-break (`max_by` keeps the element ranked Greater, so the smaller
+    // UID must compare Greater: the operands are reversed for that key alone).
+    fn min_uid<'a>(m: &[(&'a Entity, (f64, f64))]) -> Option<&'a str> {
+        m.iter().map(|(e, _)| e.uid.as_str()).min()
+    }
     groups
         .into_iter()
+        .filter(|idx| idx.len() >= 2)
         .map(|idx| {
             let members: Vec<(&Entity, (f64, f64))> = idx.iter().map(|&i| parsed[i]).collect();
             let classes = distinct_geo_classes(&members).len();
@@ -746,6 +764,7 @@ fn dominant_coherent_group(parsed: Vec<(&Entity, (f64, f64))>) -> Vec<(&Entity, 
             a.0.cmp(&b.0)
                 .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                 .then(a.2.len().cmp(&b.2.len()))
+                .then_with(|| min_uid(&b.2).cmp(&min_uid(&a.2)))
         })
         .map(|(_, _, members)| members)
         .unwrap_or_default()

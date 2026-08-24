@@ -48,7 +48,13 @@ pub(super) fn parse_oathnet_html(body: &str, sid: &str) -> Vec<crate::core::enti
 
     for cap in ip_re.captures_iter(body) {
         let ip = cap[0].to_string();
+        // Gate on a real IP parse — the regex matches any dotted-quad shape, so
+        // `999.999.999.999` would otherwise be admitted as an IpAddress (and
+        // `is_bogus_ip` keeps unparseable strings). This is the same
+        // parse::<IpAddr> invariant the combined / dossier / oathnet_report / txt
+        // importers already enforce.
         if seen.insert(format!("ip:{ip}"))
+            && ip.parse::<std::net::IpAddr>().is_ok()
             && !ip.starts_with("0.")
             && !ip.starts_with("127.")
             && !ip.starts_with("255.")

@@ -498,9 +498,25 @@ impl Module for Wayback {
                 "https://web.archive.org/cdx/search/cdx?url=*.{}&output=json&fl=original&collapse=urlkey&limit=5000",
                 urlencode(&domain)
             );
-            if let Ok(sub_rows) = fetch_json::<Vec<Row>>(&ctx.http, SRC, &sub_url).await {
-                for e in historical_subdomains(&sub_rows, &domain, &ctx.scan_id) {
-                    result.push(e);
+            match fetch_json::<Vec<Row>>(&ctx.http, SRC, &sub_url).await {
+                Ok(sub_rows) => {
+                    for e in historical_subdomains(&sub_rows, &domain, &ctx.scan_id) {
+                        result.push(e);
+                    }
+                }
+                Err(e) => {
+                    // Deliberately NOT fatal: the primary CDX pass above has
+                    // already produced real results, and discarding them to
+                    // report a secondary outage would lose more than it reports.
+                    // But it was previously not recorded at all, so the entire
+                    // archived-subdomain corpus could vanish from a scan with
+                    // nothing anywhere saying it had been asked for.
+                    tracing::warn!(
+                        module = SRC,
+                        error = %e,
+                        "wayback historical-subdomain sweep failed; the primary results stand, \
+                         but no archived subdomains were collected"
+                    );
                 }
             }
         }

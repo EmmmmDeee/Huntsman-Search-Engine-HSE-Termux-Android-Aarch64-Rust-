@@ -65,9 +65,21 @@ impl Module for CellLocal {
 
         let cells = tokio::task::spawn_blocking(move || {
             let conn = match crate::util::cell_db::open_ro() {
-                // DB not yet populated — silent no-op until `hse cells import` is run.
-                Err(_) => return Ok(vec![]),
                 Ok(c) => c,
+                // DB not yet populated — silent no-op until `hse cells import` is run.
+                // That is a real "nothing to search", and the only one: `open_ro`
+                // also returns `Err` when the file IS there but will not open (wrong
+                // permissions, a truncated import, a corrupt header), and folding
+                // that into an empty result would report "no cell towers within
+                // ~556 m of this coordinate" — indistinguishable from a loaded
+                // database with a genuine geographic miss.
+                Err(_) if !crate::util::cell_db::cell_db_path().exists() => return Ok(vec![]),
+                Err(e) => {
+                    return Err(Error::module(
+                        SRC,
+                        format!("cell tower database exists but could not be opened: {e}"),
+                    ));
+                }
             };
             crate::util::cell_db::query_bbox(
                 &conn,

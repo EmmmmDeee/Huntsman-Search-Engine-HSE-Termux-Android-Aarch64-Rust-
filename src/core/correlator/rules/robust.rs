@@ -15,7 +15,7 @@
 //! exactly "an AU-067 cluster that no AU-070 broker splits", with no drift between
 //! the three rules.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 use super::*;
 use crate::core::relation::{
@@ -50,7 +50,7 @@ pub(in crate::core::correlator) fn rule_au_071_robust_identity_cluster(
     // mutual reachability depends on it. A cluster is FRAGILE if some broker holds
     // together ≥2 of its members (removing that broker would split them), ROBUST if
     // none does.
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let by_uid = context.by_uid();
     let ids = identity_uids(entities);
     let adj = sorted_confined_adjacency(entities, relations);
     let brokers = connection_brokers(&adj, &ids, MIN_CONF);

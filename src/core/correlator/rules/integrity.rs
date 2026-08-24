@@ -10,8 +10,6 @@
 //! route you can trust at every hop. The three are complementary lenses on a
 //! discovered connection's quality.
 
-use std::collections::HashMap;
-
 use super::*;
 use crate::core::relation::{identity_uids, sorted_confined_adjacency, strongest_path_in};
 
@@ -29,7 +27,7 @@ pub(in crate::core::correlator) fn rule_au_069_high_integrity_connection(
     const STRONG: f64 = 0.70;
     const VERY_STRONG: f64 = 0.85;
 
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let by_uid = context.by_uid();
     let ids = identity_uids(entities);
     // Build the traversal graph ONCE and reuse it for every pair's widest-path
     // search (vs rebuilding + re-sorting it per `strongest_path` call).

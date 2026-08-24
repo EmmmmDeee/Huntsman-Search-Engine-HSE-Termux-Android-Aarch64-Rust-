@@ -8,6 +8,71 @@ use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
 use crate::storage::Store;
 
 #[test]
+fn exports_never_brand_a_non_complete_scan_as_complete() {
+    // An export of an aborted / failed / still-running scan holds only what was
+    // found before the stop. Labelling it "complete" tells the operator that a
+    // missing finding is a real negative, when it may simply be work that never
+    // ran — the one claim an evidentiary artifact must never make falsely.
+    // Both the dossier and the debug bundle must agree, since they are the two
+    // artifacts an operator hands on as the record of a scan.
+    for (status, id, dossier_tag, bundle_tag) in [
+        (
+            ScanStatus::Aborted,
+            "scan-st-aborted",
+            "partial, aborted, unredacted",
+            "partial aborted scan snapshot",
+        ),
+        (
+            ScanStatus::Failed,
+            "scan-st-failed",
+            "partial, failed, unredacted",
+            "partial failed scan snapshot",
+        ),
+        (
+            ScanStatus::Running,
+            "scan-st-running",
+            "partial, live, unredacted",
+            "partial live scan snapshot",
+        ),
+        (
+            ScanStatus::Complete,
+            "scan-st-complete",
+            "complete, unredacted",
+            "complete scan snapshot",
+        ),
+    ] {
+        let dir = tempfile::tempdir().expect("should succeed");
+        let db = dir.path().join(format!("{id}.db"));
+        let store = Store::open(db.to_str().expect("should succeed")).expect("should succeed");
+        let target = Target::new(TargetKind::FullName, "Jordan Avery");
+        let mut scan = Scan::new(id, target);
+        scan.status = status;
+        store.upsert_scan(&scan).expect("should succeed");
+
+        let dossier = render_full(&store, id).expect("should succeed");
+        assert!(
+            dossier.contains(&format!("HUNTSMAN FULL DOSSIER — {dossier_tag}")),
+            "{status:?} dossier must be labelled {dossier_tag:?}"
+        );
+        let bundle = render_debug_bundle(&store, id).expect("should succeed");
+        assert!(
+            bundle.contains(&format!("=== HUNTSMAN DEBUG BUNDLE — {bundle_tag} ===")),
+            "{status:?} bundle must be labelled {bundle_tag:?}"
+        );
+        if status != ScanStatus::Complete {
+            assert!(
+                !dossier.contains("HUNTSMAN FULL DOSSIER — complete, unredacted"),
+                "{status:?} dossier must not also claim completeness"
+            );
+            assert!(
+                !bundle.contains("=== HUNTSMAN DEBUG BUNDLE — complete scan snapshot ==="),
+                "{status:?} bundle must not also claim completeness"
+            );
+        }
+    }
+}
+
+#[test]
 fn render_full_dumps_every_field_and_provenance() {
     use crate::core::entity::{Entity, EntityKind, Evidence};
     let dir = tempfile::tempdir().expect("should succeed");
@@ -786,6 +851,27 @@ fn export_formats_determinism_audit() {
     assert_eq!(
         r1, r2,
         "report.json varies in a field OTHER than the documented `exported_at`"
+    );
+
+    // snake.svg — the sixth served export route (`GET .../snake.svg`), previously absent from
+    // this audit even though the comment above claims EVERY export format. It is built from the
+    // stored entities rather than rendered through a `Store`/`StoragePort` fn, so it needs its
+    // own check rather than a row in either table. Its node order comes from a `BTreeMap` and its
+    // lookup maps are read-only, so it should already be reproducible — this makes that a
+    // guarded fact instead of an unverified one, and would catch a future change that fed
+    // `HashMap`/`HashSet` iteration into the geometry or the element order.
+    let svg_entities = store.entities_for_scan("scan-au").expect("should succeed");
+    let centre_uid = svg_entities
+        .first()
+        .map(|e| e.uid.clone())
+        .expect("the audit fixture seeds entities");
+    let svg = |size: f64| {
+        crate::core::snake_graph::SnakeGraph::build(&centre_uid, &svg_entities, &[], 2).to_svg(size)
+    };
+    assert_eq!(
+        svg(400.0),
+        svg(400.0),
+        "format `snake.svg` is not byte-deterministic"
     );
 }
 

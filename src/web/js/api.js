@@ -140,6 +140,10 @@ export const API = {
   radarHistory: limit=>API._req('/api/v1/radar/history'+(limit?('?limit='+encodeURIComponent(limit)):'')),
   selftest:     ()=>API._req('/api/v1/selftest'),
   logsUrl:      ()=>'/api/v1/logs',
+  // Live tail of the verbose debug-log ring (loopback-only): pass the cursor
+  // from the previous response to get only newer lines. Backs the live
+  // Debug Log view (#/debuglog).
+  logsTail:     cursor=>API._req('/api/v1/logs/tail'+(cursor?('?after='+encodeURIComponent(cursor)):'')),
   // One-click consolidated system self-diagnosis bundle (loopback-only):
   // DETECTED ISSUES verdict + environment + self-test + module/engine/scraper
   // health + recent scans + logs + source manifest — everything needed to

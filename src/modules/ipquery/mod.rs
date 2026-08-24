@@ -136,9 +136,9 @@ impl Module for IpQuery {
             .send_tagged(SRC)
             .await?;
 
-        if !resp.status().is_success() {
+        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
             return Ok(ModuleResult::new());
-        }
+        };
 
         let data: Resp = crate::util::http::json_decode(SRC, resp).await?;
 
@@ -149,16 +149,16 @@ impl Module for IpQuery {
 
         let mut ip_entity = target.to_entity(confidence::HIGH_PLUSPLUS, &ctx.scan_id);
         ip_entity.tag("ipquery");
-        [
-            (risk.and_then(|r| r.is_vpn), tags::VPN),
-            (risk.and_then(|r| r.is_tor), tags::TOR_EXIT),
-            (risk.and_then(|r| r.is_proxy), tags::PROXY),
-            (risk.and_then(|r| r.is_mobile), "mobile"),
-            (risk.and_then(|r| r.is_datacenter), "hosting"),
-        ]
-        .into_iter()
-        .filter(|(flag, _)| *flag == Some(true))
-        .for_each(|(_, tag)| ip_entity.tag(tag));
+        crate::util::geo::tag_flags(
+            &mut ip_entity,
+            &[
+                (risk.and_then(|r| r.is_vpn), tags::VPN),
+                (risk.and_then(|r| r.is_tor), tags::TOR_EXIT),
+                (risk.and_then(|r| r.is_proxy), tags::PROXY),
+                (risk.and_then(|r| r.is_mobile), "mobile"),
+                (risk.and_then(|r| r.is_datacenter), "hosting"),
+            ],
+        );
         if risk_score >= 70 {
             ip_entity.tag("high-risk");
         }

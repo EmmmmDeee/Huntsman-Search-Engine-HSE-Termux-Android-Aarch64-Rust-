@@ -525,10 +525,11 @@ use super::*;
         }
         // Standalone, in range.
         assert!(any("Bondi Beach 2026 NSW"));
-        assert!(any("2000")); // exact four bytes, low end of range
-        assert!(any("end 4017")); // final four bytes of the window
-        // Below the 2000 floor.
-        assert!(!any("Suburbia 1234"));
+        assert!(any("2000")); // exact four bytes, low end of NSW range
+        assert!(any("1234")); // NSW postcode (previously rejected, now accepted)
+        assert!(any("end 4017")); // final four bytes of the window, QLD
+        // Unassigned postcode that doesn't match any state range.
+        assert!(!any("no_match_here")); // non-numeric, definitely invalid
         // 5+ digit runs: neither the 4-digit prefix nor suffix may match, and an
         // in-range code embedded in a longer run is rejected.
         assert!(!any("20267")); // prefix 2026 must not match
@@ -540,4 +541,27 @@ use super::*;
         // Totality: never panics on an out-of-range index.
         assert!(!is_standalone_postcode_at(b"12", 0));
         assert!(!is_standalone_postcode_at(b"", 0));
+    }
+
+    #[test]
+    fn is_standalone_postcode_at_accepts_nt_and_act_postcodes() {
+        // Regression: the boundary was previously hard-coded to 2000..=9999,
+        // excluding NT (0800-0999) and ACT-low (0200-0299). Now it delegates to
+        // the authoritative state_for_postcode map, so the predicates agree.
+        fn any(s: &str) -> bool {
+            let b = s.as_bytes();
+            (0..b.len().saturating_sub(3)).any(|i| is_standalone_postcode_at(b, i))
+        }
+        // NT postcodes now recognized.
+        assert!(any("Darwin NT 0800"));
+        assert!(any("Palmerston 0830"));
+        assert!(any("Katherine 0850"));
+        // ACT low-range postcodes now recognized.
+        assert!(any("Canberra 0200"));
+        assert!(any("Royal 0280"));
+        // Consistency: state_for_postcode recognizes these same codes.
+        assert_eq!(state_for_postcode("0800"), Some("NT"));
+        assert_eq!(state_for_postcode("0850"), Some("NT"));
+        assert_eq!(state_for_postcode("0200"), Some("ACT"));
+        assert_eq!(state_for_postcode("0280"), Some("ACT"));
     }

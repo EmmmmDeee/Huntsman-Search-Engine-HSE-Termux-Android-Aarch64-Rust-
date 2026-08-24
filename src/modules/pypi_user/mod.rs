@@ -329,9 +329,9 @@ impl Module for PypiUser {
             .send()
             .await?;
 
-        if !xml_resp.status().is_success() {
+        let Some(xml_resp) = crate::util::http::ok_or_absent(SRC, xml_resp, &[404]).await? else {
             return Ok(ModuleResult::new());
-        }
+        };
         // Bounded read: a raw `resp.text().await` buffers the WHOLE body before
         // this module ever looks at it — a hostile/compromised/MITM'd upstream
         // could stream an unbounded payload into RAM on a memory-constrained

@@ -439,6 +439,47 @@ pub fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
     }
 }
 
+/// Byte offset of the **last** whole-word ASCII-case-insensitive occurrence of
+/// `needle` in `haystack`, or `None`. "Whole word" means the match is bounded on
+/// both sides by a non-ASCII-alphanumeric byte (or a string edge), so a needle
+/// embedded inside a longer word never matches: the `WA` inside `EDWARD`, the
+/// `SA` inside `SARAH`. The offset indexes the **original** `haystack` and always
+/// lands on a `char` boundary (both the ASCII needle bytes and the single-byte
+/// boundary tests can only fall on ASCII positions).
+///
+/// This is the whole-word counterpart to [`find_ascii_ci`], which returns the
+/// first *substring* match. Use it when a short ASCII token (an AU state code, a
+/// unit abbreviation) must be located as a standalone word rather than wherever
+/// its letters first appear inside another word. The **last** occurrence is
+/// returned so an address scan anchors on the state token nearest the trailing
+/// postcode instead of a coincidental earlier one (an owner name that happens to
+/// contain the code as a whole word).
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::rfind_word_ascii_ci;
+///
+/// // Embedded-in-a-word matches are rejected; the standalone token wins.
+/// assert_eq!(rfind_word_ascii_ci("EDWARD COTTESLOE WA 6011", "WA"), Some(17));
+/// // No standalone occurrence → None (only the `SA` inside `SARAH`).
+/// assert_eq!(rfind_word_ascii_ci("SARAH SMITH", "SA"), None);
+/// // Case-insensitive, and the LAST standalone token is returned.
+/// assert_eq!(rfind_word_ascii_ci("wa depot WA", "wa"), Some(9));
+/// assert_eq!(rfind_word_ascii_ci("", "wa"), None);
+/// ```
+#[must_use]
+pub fn rfind_word_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
+    let (hb, nb) = (haystack.as_bytes(), needle.as_bytes());
+    if nb.is_empty() || hb.len() < nb.len() {
+        return None;
+    }
+    let is_word = u8::is_ascii_alphanumeric;
+    (0..=hb.len() - nb.len()).rev().find(|&i| {
+        hb[i..i + nb.len()].eq_ignore_ascii_case(nb)
+            && (i == 0 || !is_word(&hb[i - 1]))
+            && (i + nb.len() == hb.len() || !is_word(&hb[i + nb.len()]))
+    })
+}
+
 /// True when **every** alphanumeric token of `needle` appears as a WHOLE WORD
 /// in `haystack`, compared ASCII-case-insensitively. Both sides tokenise on
 /// non-alphanumeric boundaries; an empty `needle` (no tokens) matches nothing.

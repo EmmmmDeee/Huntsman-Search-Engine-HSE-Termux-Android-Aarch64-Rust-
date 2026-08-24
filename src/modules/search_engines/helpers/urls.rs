@@ -7,7 +7,13 @@ use super::*;
 pub(in crate::modules::search_engines) fn extract_path_username(url: &str) -> Option<String> {
     let parsed = url::Url::parse(url).ok()?;
     let segments: Vec<&str> = parsed.path_segments()?.filter(|s| !s.is_empty()).collect();
-    let candidate = segments.first()?;
+    // Several `SOCIAL_HOSTS` members spell their profile root as `/@handle`
+    // (tiktok, medium, mastodon.social, threads.net, modern youtube) — the very
+    // hosts documented as "first path segment is the user handle". The `@` is a
+    // route marker, not part of the handle, and leaving it in made the charset
+    // test below reject every one of those real handles.
+    let first = *segments.first()?;
+    let candidate = first.strip_prefix('@').unwrap_or(first);
     if candidate.len() >= 3
         && candidate.len() <= 40
         && candidate
@@ -366,6 +372,8 @@ pub(in crate::modules::search_engines) fn is_navigation_path(s: &str) -> bool {
         "browse",
         "business",
         "careers",
+        "channel",     // youtube.com/channel/<id>
+        "collections", // github.com/collections/<name>
         "company",
         "contact",
         "create",
@@ -380,6 +388,7 @@ pub(in crate::modules::search_engines) fn is_navigation_path(s: &str) -> bool {
         "followers",
         "following",
         "foryou",
+        "gists", // github.com/gists
         "groups",
         "help",
         "home",
@@ -394,11 +403,13 @@ pub(in crate::modules::search_engines) fn is_navigation_path(s: &str) -> bool {
         "myspace",
         "news",
         "notifications",
+        "orgs", // github.com/orgs/<org>
         "people",
         "photos",
         "popular",
         "posts",
         "privacy",
+        "profile", // bsky.app/profile/<handle>, facebook.com/profile.php
         // LinkedIn directory prefix: `linkedin.com/pub/dir/First/Last` is a
         // people-search URL, not a profile — its first path segment `pub`
         // (with `dir`) must never become a "username".
@@ -407,6 +418,7 @@ pub(in crate::modules::search_engines) fn is_navigation_path(s: &str) -> bool {
         "reels",
         "settings",
         "shorts",
+        "sponsors", // github.com/sponsors/<login>
         "status",
         "stories",
         "support",
