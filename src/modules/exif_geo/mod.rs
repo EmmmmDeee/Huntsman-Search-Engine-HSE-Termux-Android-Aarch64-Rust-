@@ -204,9 +204,20 @@ impl Module for ExifGeo {
         while let Some(chunk) = stream.next().await {
             let chunk = match chunk {
                 Ok(c) => c,
-                Err(_) => return Ok(result),
+                // The connection dropped mid-body. Same reasoning as the fetch above: the image
+                // was not read, so reporting no metadata would state a negative about bytes that
+                // were never seen.
+                Err(e) => {
+                    return Err(crate::core::error::Error::module(
+                        SRC,
+                        format!("image body download failed mid-stream: {e}"),
+                    ));
+                }
             };
             if body.len() + chunk.len() > MAX_BYTES as usize {
+                // Deliberately still a clean empty, and NOT an error: the cap is our own policy,
+                // applied on purpose, so an oversized image is a decision we made rather than a
+                // failure of the source. Existing behaviour, left unchanged.
                 return Ok(result);
             }
             body.extend_from_slice(&chunk);

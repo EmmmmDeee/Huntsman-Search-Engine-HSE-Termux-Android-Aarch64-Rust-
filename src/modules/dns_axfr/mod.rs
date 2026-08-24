@@ -78,7 +78,29 @@ impl Module for DnsAxfr {
         let resolver = crate::util::dns::shared_resolver();
         let ns_records = match resolver.ns_lookup(&domain).await {
             Ok(ns) => ns,
-            Err(_) => return Ok(result),
+            // The zone authoritatively said "no NS records" — NXDOMAIN, or NOERROR with no
+            // answers. There is genuinely nothing to attempt a transfer against, so an empty
+            // result is the true answer. `is_no_records_found()` is exactly this and nothing
+            // more: hickory maps SERVFAIL/REFUSED/FORMERR to `ResponseCode(..)`, never to
+            // `NoRecordsFound`, so a failing resolver cannot slip through dressed as a clean
+            // result (same idiom as `dns_intel::resolve`'s DNSBL sweep).
+            Err(e) if e.is_no_records_found() => return Ok(result),
+            // SERVFAIL, REFUSED, timeout, no route. Nothing was established about this domain.
+            //
+            // This module is an EXPOSURE check — an open AXFR hands an attacker the entire zone —
+            // so the direction of a wrong answer matters more here than almost anywhere else in
+            // the engine. Returning `Ok(empty)` reported "no zone-transfer exposure found" for a
+            // domain whose nameservers were never even enumerated, and the engine reads that as a
+            // clean no-data outcome: the operator sees a negative security finding produced by a
+            // resolver outage. Fail closed so the check is recorded as not performed.
+            Err(e) => {
+                return Err(crate::core::error::Error::module(
+                    SRC,
+                    format!(
+                        "NS lookup for {domain} failed, so no zone transfer was attempted: {e}"
+                    ),
+                ));
+            }
         };
 
         let ns_hosts: Vec<String> = ns_records
