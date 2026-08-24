@@ -490,5 +490,4 @@ for every scan. Do **not** use it to harass, stalk, or surveil individuals, or
 to process personal data without a lawful basis under the applicable privacy law
 (e.g. the Australian *Privacy Act 1988*, the EU GDPR, or your local equivalent).
 The software is provided for legitimate use; the maintainers disclaim
-responsibility for misuse. See [`SECURITY.md`](SECURITY.md) for vulnerability
-disclosure.
+responsibility for misuse.

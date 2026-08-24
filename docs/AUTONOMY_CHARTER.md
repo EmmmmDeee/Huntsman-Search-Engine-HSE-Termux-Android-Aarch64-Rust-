@@ -19,7 +19,6 @@ It sits under, and never overrides, the binding specs it inherits from:
 - [`PERSISTENT_INTELLIGENCE.md`](PERSISTENT_INTELLIGENCE.md) — carry validated
   findings forward; treat every failure/contradiction as diagnostic; don't close
   an investigation while material uncertainty is still reducible.
-- [`../SECURITY.md`](../SECURITY.md) — defensive-only posture.
 
 A guard test (`tests/autonomy_charter.rs`) fails CI if any invariant marker or
 cycle stage below is removed, so no guardrail can be lost by a quiet edit.

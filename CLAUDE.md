@@ -32,8 +32,7 @@ Precedence wins — persistence never outranks truthfulness.
 For security work, this repository is defensive-only: asset discovery, exposure
 assessment, threat modelling, detection, and remediation. Do not add or
 recommend capability whose primary use is unauthorized access, exploitation,
-persistence, credential theft, or evasion. See
-[`SECURITY.md`](SECURITY.md).
+persistence, credential theft, or evasion.
 
 ## Project
 
@@ -73,6 +72,7 @@ What it runs, and where each comes from:
 | `cargo build`/`test --no-run` for `aarch64-linux-android` | `ci.yml` (Termux target job) |
 | `bash -n install.sh`, ShellCheck | `ci.yml` |
 | `cargo audit`, `cargo deny check`, `cargo machete` | `audit.yml` — only when a manifest changed |
+| `dep-cooldown` (crates.io publish-date cooldown, `dep-cooldown.toml`) | `audit.yml` — only when a manifest changed |
 
 The cross-build needs the Android NDK: `libsqlite3-sys` and `ring` both have C
 build scripts, so without `aarch64-linux-android-clang` even `cargo check
