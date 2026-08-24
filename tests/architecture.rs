@@ -59,6 +59,28 @@ fn core_does_not_import_storage_directly() {
     );
 }
 
+/// `core_does_not_import_ai` — half of the `Runtime AI-independence` invariant
+/// (`src/lib.rs`): `ai/` depends on `core/`, never the reverse, so the
+/// deterministic scan engine, module dispatch, correlator, and storage port can
+/// never come to depend — even transitively — on the optional, opt-in AI-daemon
+/// surface. Paired with `runtime_carries_no_ai_ml_inference_dependency` below,
+/// which guards the dependency graph itself; this guards the layering that keeps
+/// the exception (`src/ai/`) from spreading into the part of the codebase that
+/// must stay reproducible with no AI available.
+#[test]
+fn core_does_not_import_ai() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core");
+    let v = scan_for_violations(&dir, &["crate::ai", "use crate::ai"]);
+    assert!(
+        v.is_empty(),
+        "core/ must not import ai/ — the deterministic scan/correlation pipeline \
+         (BFS engine, module dispatch, correlator, storage port, exports) stays \
+         fully AI-independent and reproducible with no AI available; the optional \
+         AI-analysis daemon depends on core, never the reverse.\nViolations:\n{}",
+        v.join("\n")
+    );
+}
+
 #[test]
 fn api_does_not_import_storage_directly() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api");

@@ -417,6 +417,41 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 
 ---
 
+## AI-Daemon Scan Analysis (opt-in)
+
+HSE's scan engine, correlator, and exports are fully deterministic and carry
+no AI/ML/LLM dependency — see [Architecture](#architecture) below. Separately,
+HSE ships an explicitly **opt-in** downstream enrichment layer that prompts a
+**locally-run [Ollama](https://ollama.com)** instance for a plain-language
+summary and ranked findings on an *already-completed* scan. It never runs as
+part of `hse scan`/`hse serve`/`hse live`, never affects a scan's entities,
+correlation scores, or exports, and does nothing at all unless both armed and
+Ollama is actually reachable — an unreachable/misconfigured Ollama is a clear
+error, never a silent no-op.
+
+```bash
+# 1. Install and start Ollama separately (not installed by HSE), then pull a model:
+ollama pull qwen2.5:7b
+
+# 2. Arm the feature (off by default):
+hse config feature.ai_daemon on
+
+# 3a. One-shot, on-demand analysis of a stored scan:
+hse analyze --scan-id latest --model qwen2.5:7b
+
+# 3b. Or run the background poller, which analyzes newly-completed scans on an
+#     interval (HUNTSMAN_AI_POLL_INTERVAL_SECS, default 60s, floor 15s):
+HUNTSMAN_OLLAMA_MODEL=qwen2.5:7b hse-ai-daemon
+```
+
+`HUNTSMAN_OLLAMA_URL` (default `http://127.0.0.1:11434`) and
+`HUNTSMAN_OLLAMA_TIMEOUT_MS` (default 120000, floor 1000) tune both entry
+points. See `src/ai/` for the implementation and `src/lib.rs`'s `Runtime
+AI-independence` invariant for why this layer exists as a narrow, isolated
+exception rather than a change to the deterministic core.
+
+---
+
 ## Architecture
 
 - `#![forbid(unsafe_code)]` — entire codebase

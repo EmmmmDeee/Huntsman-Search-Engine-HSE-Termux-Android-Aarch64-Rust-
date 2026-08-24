@@ -48,6 +48,7 @@ pub mod resolve;
 pub mod rf;
 pub mod roi;
 pub mod scan;
+pub mod scan_analysis;
 pub mod snake_graph;
 pub mod stealer_row;
 pub mod tags;

@@ -94,6 +94,18 @@ const SCHEMA_DDL: &str = "
                 data_json   TEXT NOT NULL
             );
 
+            -- Opt-in AI-daemon analysis (`src/ai/`, `hse analyze` / `hse-ai-daemon`).
+            -- One row per scan (a re-run overwrites); absence means "not yet
+            -- analysed", not "analysis failed" — a failed attempt is simply
+            -- retried at the daemon's next poll rather than latched here. See
+            -- the `Runtime AI-independence` invariant in `src/lib.rs`.
+            CREATE TABLE IF NOT EXISTS scan_analysis (
+                scan_id     TEXT PRIMARY KEY,
+                model       TEXT NOT NULL,
+                created_at  INTEGER NOT NULL,
+                data_json   TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_entities_scan ON entities(scan_id);
             CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind);
             CREATE INDEX IF NOT EXISTS idx_scans_started ON scans(started_at DESC);
@@ -103,6 +115,7 @@ const SCHEMA_DDL: &str = "
             CREATE INDEX IF NOT EXISTS idx_events_scan   ON events(scan_id, id);
             CREATE INDEX IF NOT EXISTS idx_events_type   ON events(event_type, id);
             CREATE INDEX IF NOT EXISTS idx_relations_scan ON relations(scan_id);
+            CREATE INDEX IF NOT EXISTS idx_scan_analysis_created ON scan_analysis(created_at DESC);
 
             -- Paired stealer-log credential rows (Stealer Logs Viewer,
             -- `core::stealer_row::StealerRow`). Persisted ALONGSIDE the
@@ -947,6 +960,14 @@ impl Store {
         )?;
         tx.execute("DELETE FROM events WHERE scan_id = ?1", params![scan_id])?;
         tx.execute("DELETE FROM relations WHERE scan_id = ?1", params![scan_id])?;
+        // AI-daemon analysis (`scan_analysis`) is scan-scoped like every table
+        // above; omitting it here would leave an orphaned analysis referencing a
+        // deleted scan_id on disk after `hse delete` — the exact PII-retention
+        // gap `delete_scan` exists to close.
+        tx.execute(
+            "DELETE FROM scan_analysis WHERE scan_id = ?1",
+            params![scan_id],
+        )?;
         // `stealer_rows` is scan-scoped like every table above and holds the most
         // sensitive payload in the store — stolen login/password pairs. It has no
         // other prune path, so omitting it here left a deleted scan's credentials
@@ -998,6 +1019,58 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(true)
+    }
+
+    // ── AI-daemon scan analysis (see `src/ai/`, `core::port::StoragePort`) ──
+
+    /// Persist (or overwrite) the AI-daemon's analysis for one scan.
+    pub fn upsert_scan_analysis(&self, analysis: &crate::core::scan_analysis::ScanAnalysis) -> Result<()> {
+        let json = serde_json::to_string(analysis)?;
+        let conn = self.conn.lock();
+        conn.prepare_cached(
+            "INSERT INTO scan_analysis(scan_id, model, created_at, data_json)
+             VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(scan_id) DO UPDATE SET
+               model      = excluded.model,
+               created_at = excluded.created_at,
+               data_json  = excluded.data_json",
+        )?
+        .execute(params![
+            analysis.scan_id,
+            analysis.model,
+            analysis.created_at as i64,
+            json,
+        ])?;
+        Ok(())
+    }
+
+    /// The persisted AI-daemon analysis for one scan, if any.
+    pub fn get_scan_analysis(
+        &self,
+        scan_id: &str,
+    ) -> Result<Option<crate::core::scan_analysis::ScanAnalysis>> {
+        self.query_one_json(
+            "SELECT data_json FROM scan_analysis WHERE scan_id = ?1",
+            params![scan_id],
+        )
+    }
+
+    /// Terminal (`complete`/`aborted`) scans with no persisted analysis yet,
+    /// oldest-first, bounded to `limit` — the AI daemon's poll query. A plain
+    /// `NOT IN (SELECT scan_id FROM scan_analysis)` anti-join, cheap at this
+    /// table's scale (one row per analysed scan) and avoids deserialising any
+    /// `data_json` just to get an id.
+    pub fn scans_pending_analysis(&self, limit: usize) -> Result<Vec<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT id FROM scans
+             WHERE status IN ('complete', 'aborted')
+               AND id NOT IN (SELECT scan_id FROM scan_analysis)
+             ORDER BY started_at ASC, id ASC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
+        Ok(collect_rows(rows, "scans_pending_analysis"))
     }
 
     /// Prune events older than `max_age_secs` and limit total rows to
@@ -1131,6 +1204,21 @@ impl crate::core::port::StoragePort for Store {
 
     fn delete_scan(&self, scan_id: &str) -> Result<bool> {
         Store::delete_scan(self, scan_id)
+    }
+
+    fn upsert_scan_analysis(&self, analysis: &crate::core::scan_analysis::ScanAnalysis) -> Result<()> {
+        Store::upsert_scan_analysis(self, analysis)
+    }
+
+    fn get_scan_analysis(
+        &self,
+        scan_id: &str,
+    ) -> Result<Option<crate::core::scan_analysis::ScanAnalysis>> {
+        Store::get_scan_analysis(self, scan_id)
+    }
+
+    fn scans_pending_analysis(&self, limit: usize) -> Result<Vec<String>> {
+        Store::scans_pending_analysis(self, limit)
     }
 
     fn upsert_entity(&self, entity: &Entity) -> Result<()> {

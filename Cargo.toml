@@ -13,6 +13,19 @@ default-run = "hse"
 name = "hse"
 path = "src/main.rs"
 
+# Opt-in AI-daemon background poller (`src/ai/`, `src/bin/hse_ai_daemon/`). A
+# separate binary — not an `hse` subcommand — so it can be started/stopped/
+# supervised independently of `hse serve`/`hse scan`, and so an operator who
+# never installs Ollama never runs any of this code. Deliberately UNGATED (no
+# `required-features`): it needs no dependency `hse` itself doesn't already
+# carry unconditionally (reqwest/serde_json/tokio), so gating it behind an
+# opt-in Cargo feature would only add CI/`--features` friction for zero
+# dependency-weight benefit — there is nothing extra here for a plain
+# `cargo build`/the Termux cross-build to avoid compiling.
+[[bin]]
+name = "hse-ai-daemon"
+path = "src/bin/hse_ai_daemon/main.rs"
+
 [lib]
 name = "huntsman_search_engine"
 path = "src/lib.rs"
