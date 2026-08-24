@@ -22,8 +22,8 @@
 //!   * Ahmia itself filters abuse material from its index, so this rides on an
 //!     upstream that already excludes the worst categories.
 //!
-//! See `SECURITY.md`: HSE is defensive-only. A "which markets are up right
-//! now" capability is out of scope and is not implemented here.
+//! HSE is defensive-only. A "which markets are up right now" capability is
+//! out of scope and is not implemented here.
 
 use crate::util::html::{decode_entities, strip_tags_plain};
 use crate::util::http::{UA_BROWSER, urldecode, urlencode};

@@ -31,6 +31,37 @@ path = "src/main.rs"
 name = "hse-ai-daemon"
 path = "src/bin/hse_ai_daemon/main.rs"
 
+# Supply-chain gate: fails when a crates.io dependency in Cargo.lock was
+# published more recently than a configured cooldown window (a compromised
+# publish is most likely to slip through unnoticed in its first few days).
+# Deliberately a separate binary rather than an `hse` subcommand — this is
+# dev/CI tooling over Cargo.lock, unrelated to the OSINT scan engine's
+# runtime surface. See scripts/gate.sh and .github/workflows/audit.yml for
+# how it's wired in, and src/bin/dep_cooldown/main.rs for the rationale.
+#
+# `required-features` gates this out of a plain `cargo build`/`check` with no
+# `--features dep-cooldown`: without it, this binary's `toml`/`time`
+# dependencies (below, both `optional = true`) get compiled by EVERY build of
+# this package regardless of which `[[bin]]` is selected — verified directly
+# (`cargo clean -p toml -p time -p ...transitives... && cargo build --locked
+# --lib --bin hse`, then `nm -D`/`strings` confirmed no symbols are linked
+# into the `hse` binary, but the crates were compiled) — because Cargo
+# resolves one package's full `[dependencies]` graph regardless of which
+# `[[bin]]` target you name, it does not prune per-binary within a single
+# package. That cost lands squarely on the Termux/aarch64 cross-build
+# (`ci.yml`'s `aarch64-android` job, `scripts/gate.sh`'s cross-build step —
+# both `--lib --bin hse` only, no `--features`), which this project is
+# otherwise deliberately careful to keep lean. `check`/`clippy`/`test`/`docs`/
+# MSRV still verify this binary's code — they pass `--features dep-cooldown`
+# explicitly (see ci.yml, scripts/gate.sh) — only the cross-build omits it.
+[[bin]]
+name = "dep-cooldown"
+path = "src/bin/dep_cooldown/main.rs"
+required-features = ["dep-cooldown"]
+
+[features]
+dep-cooldown = ["dep:toml", "dep:time"]
+
 [lib]
 name = "huntsman_search_engine"
 path = "src/lib.rs"
@@ -175,6 +206,20 @@ image              = { version = "0.25", default-features = false, features = [
     "rayon", "bmp", "dds", "ff", "gif", "hdr", "ico", "jpeg", "png", "pnm",
     "qoi", "tga", "tiff", "webp",
 ] }
+# `dep-cooldown` (src/bin/dep_cooldown/) parses Cargo.lock and dep-cooldown.toml.
+# `parse` + `serde`: Deserialize straight into typed structs rather than
+# hand-walking a generic `toml::Value`. `display` (needed to round-trip a
+# `toml::de::Error` span through `Display`) ships in `parse`'s own dependency
+# chain regardless, so nothing is saved by disabling it — declared anyway so
+# the enabled-feature set here states exactly what this crate uses, not what
+# happened to come along for free. `optional = true` + the `dep-cooldown`
+# feature (see `[[bin]]` above) so this and `time` are NOT compiled into the
+# Termux/aarch64 cross-build, which never enables that feature.
+toml = { version = "1.1.4", default-features = false, features = ["parse", "serde", "display"], optional = true }
+# `dep-cooldown` only needs to parse crates.io's RFC 3339 `created_at` and
+# compare it to `OffsetDateTime::now_utc()` — no formatting/macros/local-offset
+# needed, so those stay off. `optional = true` — see `toml`'s comment above.
+time = { version = "0.3.55", default-features = false, features = ["parsing", "std"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
