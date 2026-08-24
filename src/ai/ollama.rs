@@ -244,8 +244,10 @@ mod tests {
 
     #[tokio::test]
     async fn health_check_accepts_a_family_prefix_match() {
-        let (base_url, _hits) =
-            fake_server(vec![ok_json_response("{\"models\":[{\"name\":\"qwen2.5:latest\"}]}")]).await;
+        let (base_url, _hits) = fake_server(vec![ok_json_response(
+            "{\"models\":[{\"name\":\"qwen2.5:latest\"}]}",
+        )])
+        .await;
         let client = OllamaClient::new(base_url, "qwen2.5");
         client
             .health_check()
@@ -255,8 +257,10 @@ mod tests {
 
     #[tokio::test]
     async fn health_check_fails_closed_when_model_is_not_pulled() {
-        let (base_url, _hits) =
-            fake_server(vec![ok_json_response("{\"models\":[{\"name\":\"llama3\"}]}")]).await;
+        let (base_url, _hits) = fake_server(vec![ok_json_response(
+            "{\"models\":[{\"name\":\"llama3\"}]}",
+        )])
+        .await;
         let client = OllamaClient::new(base_url, "qwen2.5:7b");
         let err = client
             .health_check()
