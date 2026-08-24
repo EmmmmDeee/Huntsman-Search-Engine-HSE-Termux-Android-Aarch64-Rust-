@@ -211,10 +211,20 @@ const SCHEMA_DDL: &str = "
             -- only — which is exactly how the `best_latitude` bug below
             -- survived: the tests build `:memory:` stores and so always saw
             -- the new definition.
+            -- The CREATE below is also IF NOT EXISTS: not to freeze the
+            -- definition (the unconditional DROP above already prevents
+            -- that for a single connection's own sequential open) but so
+            -- two connections racing to open this same file concurrently
+            -- (expected under cfg(test), where every test shares one
+            -- store, and possible in production between hse and
+            -- hse-ai-daemon) can't have the loser's CREATE fail because
+            -- the winner's DROP+CREATE ran in between the loser's own
+            -- DROP and CREATE. Both sides run the same schema, so
+            -- whichever wins defines an identical view.
             DROP VIEW IF EXISTS rf_trackable;
             DROP VIEW IF EXISTS rf_shared_names;
             DROP VIEW IF EXISTS rf_devices;
-            CREATE VIEW rf_devices AS
+            CREATE VIEW IF NOT EXISTS rf_devices AS
             SELECT s.scan_id,
                    s.network_id,
                    MIN(s.radio)                                   AS radio,
@@ -267,7 +277,7 @@ const SCHEMA_DDL: &str = "
             -- Names carried by more than one radio: a mesh deployment or a
             -- 2.4/5 GHz pair. The radio count is the size of the installation,
             -- which is how a commercial site is told from a house.
-            CREATE VIEW rf_shared_names AS
+            CREATE VIEW IF NOT EXISTS rf_shared_names AS
             SELECT scan_id, name, COUNT(DISTINCT network_id) AS radios
               FROM rf_sightings
              WHERE name IS NOT NULL AND name <> ''
@@ -276,7 +286,7 @@ const SCHEMA_DDL: &str = "
 
             -- Only fixed-address devices are followable across sightings; a
             -- randomised address seen twice is not evidence of one device.
-            CREATE VIEW rf_trackable AS
+            CREATE VIEW IF NOT EXISTS rf_trackable AS
             SELECT * FROM rf_devices WHERE locally_admin = 0;
 
             -- Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN). Keyed by
