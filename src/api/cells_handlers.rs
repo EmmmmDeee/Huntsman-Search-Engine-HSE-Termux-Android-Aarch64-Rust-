@@ -31,23 +31,7 @@ use crate::app::cells::{
 };
 use crate::util::cell_db;
 
-use super::handlers::bad_request;
-
-/// Loopback-only access guard for mutating endpoints; returns a rejection response if
-/// the peer is not a loopback address, else `None` to proceed.
-fn guard_loopback_only(peer: &SocketAddr) -> Option<axum::response::Response> {
-    if peer.ip().is_loopback() {
-        None
-    } else {
-        Some(
-            (
-                StatusCode::FORBIDDEN,
-                Json(json!({ "error": "cell DB import is loopback-only" })),
-            )
-                .into_response(),
-        )
-    }
-}
+use super::handlers::{bad_request, reject_non_loopback};
 
 /// Builds the `last_import` JSON block, including the same `is_stale`
 /// freshness signal `hse doctor` already prints (`cell_db::is_stale`) — until
@@ -167,8 +151,8 @@ pub async fn cells_import(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(req): Json<CellsImportRequest>,
 ) -> impl IntoResponse {
-    if let Some(rejection) = guard_loopback_only(&peer) {
-        return rejection.into_response();
+    if let Some(rejection) = reject_non_loopback(&peer, "cell DB import is loopback-only") {
+        return rejection;
     }
     let country = req.country.trim().to_string();
     if country.is_empty() {
@@ -220,8 +204,8 @@ pub async fn cells_clear(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(req): Json<CellsClearRequest>,
 ) -> impl IntoResponse {
-    if let Some(rejection) = guard_loopback_only(&peer) {
-        return rejection.into_response();
+    if let Some(rejection) = reject_non_loopback(&peer, "cell DB import is loopback-only") {
+        return rejection;
     }
     if !req.confirm {
         return bad_request("set confirm: true to clear the cell tower database");
@@ -253,14 +237,6 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt as _;
-
-    #[test]
-    fn guard_loopback_only_allows_loopback_and_refuses_lan() {
-        let loopback: SocketAddr = "127.0.0.1:9999".parse().expect("should succeed");
-        let lan: SocketAddr = "192.168.1.50:40000".parse().expect("should succeed");
-        assert!(guard_loopback_only(&loopback).is_none());
-        assert!(guard_loopback_only(&lan).is_some());
-    }
 
     #[test]
     fn try_start_import_claims_atomically_and_refuses_a_concurrent_second_call() {
