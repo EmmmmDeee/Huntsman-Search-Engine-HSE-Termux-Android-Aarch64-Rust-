@@ -217,11 +217,23 @@ mod tests {
         (format!("http://{addr}"), hits)
     }
 
+    /// Build a raw HTTP/1.1 200 response with a correctly computed
+    /// `Content-Length` for `json_body` — hand-counting this by eye is exactly
+    /// how the earlier version of these tests broke (an off-by-N truncated the
+    /// body and turned "model not pulled" assertions into JSON-parse-error
+    /// assertions instead).
+    fn ok_json_response(json_body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{json_body}",
+            json_body.len()
+        )
+    }
+
     #[tokio::test]
     async fn health_check_accepts_an_exact_tag_match() {
-        let (base_url, _hits) = fake_server(vec![
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 45\r\n\r\n{\"models\":[{\"name\":\"qwen2.5:7b\"},{\"name\":\"x\"}]}",
-        ])
+        let (base_url, _hits) = fake_server(vec![ok_json_response(
+            "{\"models\":[{\"name\":\"qwen2.5:7b\"},{\"name\":\"x\"}]}",
+        )])
         .await;
         let client = OllamaClient::new(base_url, "qwen2.5:7b");
         client
@@ -232,10 +244,8 @@ mod tests {
 
     #[tokio::test]
     async fn health_check_accepts_a_family_prefix_match() {
-        let (base_url, _hits) = fake_server(vec![
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 31\r\n\r\n{\"models\":[{\"name\":\"qwen2.5:latest\"}]}",
-        ])
-        .await;
+        let (base_url, _hits) =
+            fake_server(vec![ok_json_response("{\"models\":[{\"name\":\"qwen2.5:latest\"}]}")]).await;
         let client = OllamaClient::new(base_url, "qwen2.5");
         client
             .health_check()
@@ -245,10 +255,8 @@ mod tests {
 
     #[tokio::test]
     async fn health_check_fails_closed_when_model_is_not_pulled() {
-        let (base_url, _hits) = fake_server(vec![
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20\r\n\r\n{\"models\":[{\"name\":\"llama3\"}]}",
-        ])
-        .await;
+        let (base_url, _hits) =
+            fake_server(vec![ok_json_response("{\"models\":[{\"name\":\"llama3\"}]}")]).await;
         let client = OllamaClient::new(base_url, "qwen2.5:7b");
         let err = client
             .health_check()
@@ -290,10 +298,8 @@ mod tests {
 
     #[tokio::test]
     async fn generate_returns_the_response_field() {
-        let body = "{\"response\":\"hello from the model\",\"done\":true}";
-        let (base_url, hits) = fake_server(vec![format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-            body.len()
+        let (base_url, hits) = fake_server(vec![ok_json_response(
+            "{\"response\":\"hello from the model\",\"done\":true}",
         )])
         .await;
         let client = OllamaClient::new(base_url, "qwen2.5:7b");
