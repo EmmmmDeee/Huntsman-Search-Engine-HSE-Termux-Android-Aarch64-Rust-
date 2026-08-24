@@ -2479,7 +2479,30 @@ fn merge_found_keys_and_flatten(
             }
         }
     }
-    entity_map.into_values().collect()
+    // Confidence-rank the flattened Vec, breaking ties on `uid` for a total order.
+    //
+    // This is load-bearing twice over. `into_values()` yields raw `HashMap` order, and this Vec is
+    // what `finalise_scan` hands to `derive_and_persist_relations` →
+    // `resolve_coreferences`, whose `.take(MAX_COREF_NODES)` documents the precondition it relies
+    // on: "`entities` arrives confidence-ranked, so `.take` keeps the strongest identities — a
+    // deterministic prefix". On this path that was simply untrue. Above the 5_000 identity-entity
+    // ceiling the truncation therefore kept a DIFFERENT SUBSET on every run — not merely a
+    // different order, so no later sort could recover it — and the derived SameAs/AliasOf/
+    // IdentifiedBy edges persisted to `relations` (and exported to GEXF/GraphML) differed between
+    // two runs over identical data. Below the ceiling the ranking half was still unhonoured.
+    //
+    // Every other caller already satisfied the precondition — the import path guards with its own
+    // 5_000 ceiling, gap-fill passes `TrackedEntityMap::snapshot()` (uid-sorted for this same
+    // reason), and `/identities` passes display-ranked output — which is what made this path the
+    // outlier rather than the rule.
+    let mut out: Vec<Entity> = entity_map.into_values().collect();
+    out.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
+    out
 }
 
 /// Phase 2: the sequential offline enrichment passes that run once, after
