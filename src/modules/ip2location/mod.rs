@@ -18,7 +18,6 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "ip2location";
 
@@ -100,18 +99,16 @@ impl Module for Ip2Location {
         let ip = target.value.trim();
 
         let url = format!("https://api.ip2location.io/?ip={ip}");
-        let resp = ctx
-            .http
-            .get(&url)
-            .timeout(std::time::Duration::from_secs(6))
-            .send_tagged(SRC)
-            .await?;
-
-        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
+        let Some(data): Option<Resp> = crate::util::http::fetch_json_or_404_with_timeout(
+            &ctx.http,
+            SRC,
+            &url,
+            std::time::Duration::from_secs(6),
+        )
+        .await?
+        else {
             return Ok(ModuleResult::new());
         };
-
-        let data: Resp = crate::util::http::json_decode(SRC, resp).await?;
 
         // The shared trust gate: an IP whose geolocation is infrastructure (a
         // CDN/anycast edge) is not the subject's location, so its
