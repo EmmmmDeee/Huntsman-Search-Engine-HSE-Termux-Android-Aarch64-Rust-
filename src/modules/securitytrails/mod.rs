@@ -185,9 +185,8 @@ impl Module for SecurityTrails {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) {
-            Some(k) => k,
-            None => return Ok(ModuleResult::new()),
+        let Some(key) = ctx.key_opt(KEY_ENV) else {
+            return Ok(ModuleResult::new());
         };
 
         match target.kind {
