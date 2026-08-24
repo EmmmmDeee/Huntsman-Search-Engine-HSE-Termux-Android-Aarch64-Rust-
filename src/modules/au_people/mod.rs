@@ -434,19 +434,39 @@ impl Module for AuPeople {
             "https://www.truepeoplesearch.com.au/results?name={}",
             crate::util::http::urlencode(full_name),
         );
-        if let Ok(resp) = ctx
+        // This is the module's ONLY network leg, so every failure here decides the
+        // module's whole answer. The chain that used to wrap it —
+        // `if let Ok(resp) = .. && resp.status().is_success() && let Some(html) = ..`
+        // — put a transport error, a 403 scraper block and an unreadable body on the
+        // same branch as a name the directory genuinely does not list, and the empty
+        // result then suppressed the Person anchor below. That reads as "this name
+        // does not appear in AU residential directories, and has no known relatives"
+        // — a negative claim about a person, produced when nothing was checked.
+        // `au_electoral`, `au_property` and `asic_director` each carry a guard for
+        // exactly this; this leg was missed.
+        let resp = ctx
             .http
             .get(&tps_url)
             .header("Accept", "text/html,application/xhtml+xml")
             .header("User-Agent", crate::util::http::UA_BROWSER)
             .send_tagged(SRC)
-            .await
-            && resp.status().is_success()
-            && let Some(html) = read_body_capped(resp, 1_000_000).await
-        {
-            result.extend(parse_tps_html(&html, full_name, &ctx.scan_id));
-            result.extend(parse_relatives(&html, full_name, &ctx.scan_id));
-        }
+            .await?;
+        // The site answers an unlisted name with 200 and an empty results table, so a
+        // 404 means the results endpoint itself moved — still not a statement about
+        // the person, but it is the one status that could be read as "nothing here".
+        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
+            return Ok(result);
+        };
+        // `None` is a mid-stream transport failure, not an oversized page: the cap is
+        // enforced by truncating and returning `Some`.
+        let Some(html) = read_body_capped(resp, 1_000_000).await else {
+            return Err(crate::core::error::Error::module(
+                SRC,
+                format!("response body for '{full_name}' could not be read"),
+            ));
+        };
+        result.extend(parse_tps_html(&html, full_name, &ctx.scan_id));
+        result.extend(parse_relatives(&html, full_name, &ctx.scan_id));
 
         // Emit a Person anchor for the name if we got any results — confirms
         // the name exists in AU residential directories.
