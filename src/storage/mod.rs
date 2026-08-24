@@ -95,10 +95,11 @@ const SCHEMA_DDL: &str = "
             );
 
             -- Opt-in AI-daemon analysis (`src/ai/`, `hse analyze` / `hse-ai-daemon`).
-            -- One row per scan (a re-run overwrites); absence means "not yet
-            -- analysed", not "analysis failed" — a failed attempt is simply
-            -- retried at the daemon's next poll rather than latched here. See
-            -- the `Runtime AI-independence` invariant in `src/lib.rs`.
+            -- One row per scan (a re-run overwrites); an absent row means not
+            -- yet analysed, never a failed analysis attempt -- a failed
+            -- attempt is simply retried at the daemon's next poll rather than
+            -- latched here. See the Runtime AI-independence invariant in
+            -- src/lib.rs.
             CREATE TABLE IF NOT EXISTS scan_analysis (
                 scan_id     TEXT PRIMARY KEY,
                 model       TEXT NOT NULL,
