@@ -908,20 +908,24 @@ pub(in crate::core::correlator) fn rule_au_095_exposed_key_portfolio(
     )]
 }
 
-/// AU-096 — OSINT practitioner (holds recon/breach/threat-intel API keys).
+/// AU-096 — OSINT practitioner (holds recon/breach/threat-intel provider access).
 ///
-/// A harvested key for an OSINT provider — Shodan, Dehashed, IntelX, Maltego,
-/// Hunter, … — is more than a credential: by possession its owner *runs OSINT*.
-/// The harvester tags such keys `osint-practitioner` + `osint-category:<slug>`
-/// (classified by `util::osint_providers`). This rule reads those tags
-/// and surfaces the attribution: the subject is an OSINT operator, with the
-/// provider list and the tradecraft categories (breach-hunting vs attack-surface
-/// mapping vs people-search …) that the key portfolio reveals.
+/// A harvested credential for an OSINT provider — Shodan, Dehashed, IntelX,
+/// Maltego, Hunter, … — is more than a leaked secret: by possession its owner
+/// *runs OSINT*. The harvester tags such artifacts `osint-practitioner` +
+/// `osint-category:<slug>` (classified by `util::osint_providers`) on **both**
+/// entity kinds that carry provider access — the [`EntityKind::ApiKey`] path
+/// (`emit_key_with`) and the leaked-login [`EntityKind::Credential`] path
+/// (`store_api_credential`). This rule reads those tags across both and surfaces
+/// the attribution: the subject is an OSINT operator, with the provider list and
+/// the tradecraft categories (breach-hunting vs attack-surface mapping vs
+/// people-search …) that the portfolio reveals. A leaked account login to a
+/// provider is as strong an operator signal as an API key for it, so both count.
 ///
-/// This is the pivot the operator asked for — the key's *provider* is the
-/// intelligence, not the secret it contains; the key is never used to
-/// authenticate. Severity High (a strong, specific attribution): a single OSINT
-/// key is a lead, several across categories is a profile. One finding per scan.
+/// This is the pivot the operator asked for — the provider is the intelligence,
+/// not the secret it contains; nothing here is used to authenticate. Severity
+/// High (a strong, specific attribution): a single OSINT artifact is a lead,
+/// several across categories is a profile. One finding per scan.
 pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
     context: &RuleContext,
     scan_id: &str,
@@ -935,10 +939,15 @@ pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
     let mut by_category: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     let mut uids: Vec<String> = Vec::new();
 
-    for e in entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::ApiKey && e.has_tag("osint-practitioner"))
-    {
+    // Both provider-access kinds carry the pivot tags: a harvested ApiKey and a
+    // leaked login Credential for the same provider are equal practitioner
+    // evidence. The `osint-practitioner` tag is only ever stamped on these two
+    // kinds, so the tag filter alone is sufficient — but the kind guard keeps the
+    // intent explicit and pins it if the tag is ever reused elsewhere.
+    for e in entities.iter().filter(|e| {
+        matches!(e.kind, EntityKind::ApiKey | EntityKind::Credential)
+            && e.has_tag("osint-practitioner")
+    }) {
         let provider = e
             .tags
             .iter()
@@ -971,12 +980,13 @@ pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
 
     vec![Correlation::new(
         "AU-096",
-        "OSINT practitioner (recon-tool API keys)",
+        "OSINT practitioner (recon-provider access)",
         Severity::High,
         format!(
-            "Subject holds {} OSINT/recon-provider API key(s) across {} provider(s) — by \
-             possession an OSINT practitioner. Tradecraft: {tradecraft}. The provider is the \
-             pivot (tooling, intent); keys are catalogued, not used.",
+            "Subject holds {} OSINT/recon-provider credential(s) (API keys and/or leaked \
+             logins) across {} provider(s) — by possession an OSINT practitioner. Tradecraft: \
+             {tradecraft}. The provider is the pivot (tooling, intent); artifacts are \
+             catalogued, not used.",
             uids.len(),
             providers.len()
         ),
