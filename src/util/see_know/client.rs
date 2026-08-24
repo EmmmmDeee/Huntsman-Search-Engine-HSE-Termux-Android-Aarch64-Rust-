@@ -347,9 +347,29 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
 /// It stays as a guard for the case where a proxy or DoH layer surfaces the
 /// rejection as an error string instead.
 pub(super) fn transport_err_is_terminal_auth(err_str: &str) -> bool {
-    err_str.contains("401")
+    contains_401_as_a_status_code(err_str)
         || err_str.contains("Unauthorized")
         || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
+}
+
+/// True if `s` contains "401" as an isolated token, not merely as three
+/// consecutive digits inside a longer number. A curl transport-level failure
+/// (this function's only caller is the pre-response, connection/DNS/timeout
+/// path) commonly reports an elapsed duration — libcurl's own timeout message
+/// is literally "Operation timed out after {ms} milliseconds..." — so a bare
+/// `contains("401")` matched an elapsed time landing anywhere in
+/// 401/4010-4019/40100-40199/… milliseconds, wrongly classifying an ordinary
+/// timeout as a rejected key and aborting the whole multi-domain fallback
+/// instead of trying the next domain. The existing test suite already asserts
+/// `"connection timed out"` must NEVER be terminal — this closes the same gap
+/// for a differently-worded timeout that happens to embed those digits.
+fn contains_401_as_a_status_code(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    s.match_indices("401").any(|(i, _)| {
+        let before_is_digit = i > 0 && bytes[i - 1].is_ascii_digit();
+        let after_is_digit = bytes.get(i + 3).is_some_and(u8::is_ascii_digit);
+        !before_is_digit && !after_is_digit
+    })
 }
 
 pub(super) fn classify_status(body: &str, status: u16) -> Result<Value> {
@@ -357,6 +377,42 @@ pub(super) fn classify_status(body: &str, status: u16) -> Result<Value> {
         return Err(Error::RateLimited(format!(
             "seek_now: HTTP {status} transient upstream failure"
         )));
+    }
+    // HTTP 401 is unambiguous per both HTTP semantics and SeekNow's own
+    // documented mapping (docs/SEEKNOW_SETUP.md: "401 Unauthorized — Invalid/
+    // expired API key"): the whole key is bad, independent of how the JSON
+    // body happens to word it. Without this status-code check, a 401 body that
+    // didn't use one of the three exact substrings `is_auth_error` checks (e.g.
+    // `{"error":"unauthorized"}`) fell through to `parse_response`, which found
+    // no recognised error/quota envelope in a well-formed JSON object and
+    // returned it as an ordinary — silently EMPTY — success: the scan then
+    // burned through every remaining lookup against a key the server had
+    // already and definitively rejected, and `hse doctor`'s "key invalid"
+    // diagnostic never latched.
+    if status == 401 {
+        mark_key_invalid(body);
+        return Ok(Value::Null);
+    }
+    // HTTP 403 is documented DIFFERENTLY: "Plan doesn't allow endpoint — skips
+    // endpoint, continues with others" — a PER-ENDPOINT restriction, not a
+    // key-wide rejection. It must NEVER call `mark_key_invalid`: that disables
+    // SeekNow for the rest of the scan ACROSS EVERY ENDPOINT, so one
+    // plan-gated endpoint's 403 would wrongly silence every other,
+    // currently-working endpoint too — a false-positive lockout worse than the
+    // gap this is fixing. Surfacing it as a typed `Err` (rather than falling
+    // through to the same silent `Ok(empty)` success as the 401 case used to)
+    // is enough: `fold_endpoint_result` (every SeekNow dispatcher's shared
+    // fold) warns and skips just this one endpoint, and
+    // `ModuleResult::or_hard_failure` escalates it only if the WHOLE seed still
+    // ends up with zero entities. Excluded when the body already carries a
+    // known auth/plan marker (`plan_required` in particular is the ACCOUNT
+    // having no paid plan at all, a genuinely key-wide issue) — that case falls
+    // through to the existing, already-tested body-based latch below.
+    if status == 403 && !is_auth_error(body) {
+        return Err(Error::module(
+            "seek_now",
+            "HTTP 403 (endpoint not covered by the account's plan)",
+        ));
     }
     // A CDN/gateway 429 "Too Many Requests" is commonly served as an HTML or
     // plain-text interstitial, NOT the API's JSON `{"error":"rate_limit"}`
