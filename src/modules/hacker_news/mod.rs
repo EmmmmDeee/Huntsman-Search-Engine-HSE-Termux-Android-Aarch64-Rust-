@@ -184,7 +184,7 @@ pub(super) fn build_entities(
         }
         let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
         for m in URL_RE.find_iter(about) {
-            let link = m.as_str().trim_end_matches(['.', ',', ')']);
+            let link = crate::core::classifier::trim_url_punctuation(m.as_str());
             if !seen_urls.insert(link.to_string()) {
                 continue;
             }

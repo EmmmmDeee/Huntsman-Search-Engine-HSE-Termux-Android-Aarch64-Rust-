@@ -15,6 +15,7 @@
 //! | GET    | `/api/v1/health/scrapers`                | `scraper_health` (v1.13+)      |
 //! | GET    | `/api/v1/selftest`                       | `selftest_run`                 |
 //! | GET    | `/api/v1/logs`                           | `logs_download`                |
+//! | GET    | `/api/v1/logs/tail`                      | `logs_tail`                    |
 //! | GET    | `/api/v1/debug/bundle`                   | `system_debug_bundle`          |
 //! | GET    | `/api/v1/keys/patterns`                  | `keys_patterns` (v1.4+)        |
 //! | GET    | `/api/v1/keys/status`                    | `keys_status` (v1.17+)         |
@@ -338,6 +339,11 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         include_bytes!("../../web/js/views/live.js"),
     ),
     (
+        "js/views/debug_log.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/debug_log.js"),
+    ),
+    (
         "js/views/new_scan.js",
         "application/javascript",
         include_bytes!("../../web/js/views/new_scan.js"),
@@ -403,6 +409,9 @@ pub fn router(
         // ── diagnostics: self-test + downloadable verbose logs ──
         .route("/selftest", get(handlers::selftest_run))
         .route("/logs", get(handlers::logs_download))
+        // Live tail of the same ring, as JSON, for the Web UI's debug-log view
+        // (loopback-only, like the download above).
+        .route("/logs/tail", get(handlers::logs_tail))
         // One-click consolidated system self-diagnosis bundle (loopback-only):
         // DETECTED ISSUES verdict + environment + self-test + module/engine/
         // scraper health + recent scans + logs + source manifest, in one file.

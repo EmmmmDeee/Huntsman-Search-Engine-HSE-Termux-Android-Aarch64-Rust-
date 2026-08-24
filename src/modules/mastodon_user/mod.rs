@@ -148,6 +148,13 @@ impl Module for MastodonUser {
         }
 
         let encoded = crate::util::http::urlencode(handle);
+        // How many instances actually answered. `fetch_json_or_404` already maps the
+        // clean miss (404 — no such account) to `Ok(None)`, so the `Err` arm below
+        // catches only real failures: a 429 (which these instances apply hard to
+        // anonymous API calls), a 5xx, a TLS error, a timeout. If every instance
+        // fails, `Ok(empty)` would report "this handle has no Mastodon presence on
+        // any major instance" when zero instances were successfully queried.
+        let mut answered = 0usize;
         for instance in INSTANCES {
             if ctx.cancel.is_cancelled() {
                 break;
@@ -155,7 +162,10 @@ impl Module for MastodonUser {
             let url = format!("https://{instance}/api/v1/accounts/lookup?acct={encoded}");
             let acct: Option<MastodonAccount> = match fetch_json_or_404(&ctx.http, SRC, &url).await
             {
-                Ok(v) => v,
+                Ok(v) => {
+                    answered += 1;
+                    v
+                }
                 Err(_) => continue,
             };
             if let Some(acct) = acct {
@@ -167,6 +177,17 @@ impl Module for MastodonUser {
                 r.entities = build_entities(acct, instance, &ctx.scan_id);
                 return Ok(r);
             }
+        }
+        // Cancellation is excluded: the caller stopped the sweep and already knows
+        // why, so an error there would be noise rather than a finding.
+        if answered == 0 && !ctx.cancel.is_cancelled() {
+            return Err(crate::core::error::Error::module(
+                SRC,
+                format!(
+                    "no Mastodon instance answered for '{handle}' ({} tried)",
+                    INSTANCES.len()
+                ),
+            ));
         }
         Ok(ModuleResult::new())
     }

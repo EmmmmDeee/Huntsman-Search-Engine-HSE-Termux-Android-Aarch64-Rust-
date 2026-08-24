@@ -250,6 +250,33 @@ fn infrastructure_pollution_is_flagged_critical() {
         "infra pollution must hurt the score, got {}",
         r.score
     );
+    // Every one of these five actionable entities is provider infrastructure,
+    // and every one is high-confidence (c_effective 1.0), so the candidate tier
+    // is empty. The headline noise figure must NOT read 0% while this very
+    // report raises a Critical infrastructure-pollution finding about the same
+    // rows — that self-contradiction told operators a pure-CDN scan was clean.
+    assert!(
+        (r.noise_ratio - 1.0).abs() < 1e-9,
+        "all five actionable entities are provider infrastructure, so noise must be 100%, got {}",
+        r.noise_ratio
+    );
+}
+
+#[test]
+fn infrastructure_noise_does_not_double_count_low_confidence_candidates() {
+    // A LOW-confidence infrastructure entity is already inside the candidate
+    // tier. Counting it again as infrastructure noise would make one entity
+    // contribute two units and could drive the ratio past 1.0.
+    let ents = vec![
+        ent("ip_address", "172.66.147.185", 0.30, 1, &["cloudflare"]),
+        ent("person", "Subject Name", 0.90, 3, &[]),
+    ];
+    let r = audit(&ents, LogSignals::default());
+    assert!(
+        (r.noise_ratio - 0.5).abs() < 1e-9,
+        "the low-confidence infrastructure entity is one noisy entity, not candidate + infra twice: {}",
+        r.noise_ratio
+    );
 }
 
 #[test]
@@ -356,7 +383,9 @@ fn missed_pii_when_email_but_no_person() {
 #[test]
 fn to_json_is_stable_and_complete() {
     let ents = vec![ent("email", "dns@cloudflare.com", 1.0, 1, &[])];
-    let j = audit(&ents, LogSignals::default()).to_json();
+    let mut log = LogSignals::default();
+    log.module_timeouts.insert("slow_mod".into(), 3);
+    let j = audit(&ents, log).to_json();
     assert!(j["score"].as_u64().is_some());
     assert!(
         j["grade"]
@@ -372,6 +401,10 @@ fn to_json_is_stable_and_complete() {
             .any(|f| { f["category"] == "role-mailbox-as-pii" })
     );
     assert!(j["source_health"]["engines_down"].is_array());
+    // The per-module timeout tally is surfaced beside its sibling module_errors,
+    // not silently dropped — it is the constrained-Termux signal an operator
+    // reads from `hse audit --json` and the web audit endpoint alike.
+    assert_eq!(j["source_health"]["module_timeouts"]["slow_mod"], 3);
 }
 
 #[test]

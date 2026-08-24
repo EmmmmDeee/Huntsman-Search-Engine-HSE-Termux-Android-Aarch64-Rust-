@@ -211,6 +211,27 @@ use super::*;
     }
 
     #[test]
+    fn tag_flags_raises_only_explicit_true_signals() {
+        use crate::core::entity::{Entity, EntityKind};
+        let mut e = Entity::new(EntityKind::IpAddress, "203.0.113.7", 0.9, "scan-x");
+        tag_flags(
+            &mut e,
+            &[
+                (Some(true), "proxy"),    // explicit true → raised
+                (Some(false), "hosting"), // reported false → skipped
+                (None, "mobile"),         // not reported → skipped
+                (Some(true), "vpn"),      // explicit true → raised
+            ],
+        );
+        assert!(e.has_tag("proxy"));
+        assert!(e.has_tag("vpn"));
+        // A false or absent signal must never accrete a tag — the property the
+        // three IP-reputation modules relied on when each hand-rolled this sweep.
+        assert!(!e.has_tag("hosting"));
+        assert!(!e.has_tag("mobile"));
+    }
+
+    #[test]
     fn plausible_provider_coord_drops_null_island_band() {
         // The band the IP/WiFi providers emit as "no fix".
         assert!(!is_plausible_provider_coord(0.0, 0.0));

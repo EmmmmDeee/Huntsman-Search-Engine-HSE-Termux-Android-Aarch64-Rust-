@@ -54,8 +54,13 @@ fn consolidate_address_localities_folds_postcode_variants_codebase_wide() {
     let other = Entity::new(EntityKind::Address, "Brisbane, QLD 4000", 0.45, "s");
     let unrelated = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
 
+    let bare_uid = bare.uid.clone();
+    let survivor_uid = withpc.uid.clone();
     let mut entities = vec![bare, withpc, other, unrelated];
-    consolidate_address_localities(&mut entities);
+    let folded = consolidate_address_localities(&mut entities);
+    // The fold map names the victim (bare) → survivor (postcode-bearing), so the
+    // engine can detach the victim's observation and re-point its lineage edges.
+    assert_eq!(folded, vec![(bare_uid, survivor_uid)]);
 
     let addrs: Vec<&Entity> = entities
         .iter()
@@ -4246,5 +4251,52 @@ async fn a_watchdog_guard_aborts_its_task_when_its_owner_unwinds() {
         !cancel.is_cancelled(),
         "an unwound scan must not leave a watchdog alive to cancel a token it \
          no longer owns — a later, unrelated scan would die for no visible reason"
+    );
+}
+
+/// `merge_found_keys_and_flatten` feeds `resolve_coreferences`, whose
+/// `.take(MAX_COREF_NODES)` documents the precondition that its input "arrives
+/// confidence-ranked". Flattening a `HashMap` with `into_values()` satisfied neither that
+/// precondition nor the determinism invariant: above the ceiling the truncation kept a
+/// different SUBSET per run, so the derived SameAs/AliasOf/IdentifiedBy edges persisted to
+/// `relations` — and exported to GEXF/GraphML — differed between two runs over identical data.
+///
+/// Asserts the ranking directly, and asserts it is insertion-order independent: the two maps
+/// hold identical entities added in opposite orders, which is what a re-run varies.
+#[test]
+fn flattened_entities_are_confidence_ranked_and_insertion_order_independent() {
+    struct NoKeys;
+    impl ModuleRuntime for NoKeys {}
+
+    let mk = |uid: &str, conf: f64| {
+        let mut e = Entity::new(EntityKind::Username, uid, conf, "scan-1");
+        e.uid = uid.to_string();
+        e
+    };
+    // Two equal confidences so the `uid` tie-break is exercised, not just the primary key.
+    let specs = [("aaa", 0.4_f64), ("bbb", 0.9), ("ccc", 0.6), ("ddd", 0.9)];
+
+    let mut forward: HashMap<String, Entity> = HashMap::new();
+    for (uid, c) in specs {
+        forward.insert(uid.to_string(), mk(uid, c));
+    }
+    let mut reverse: HashMap<String, Entity> = HashMap::new();
+    for (uid, c) in specs.iter().rev() {
+        reverse.insert(uid.to_string(), mk(uid, *c));
+    }
+
+    let a = merge_found_keys_and_flatten(&NoKeys, "scan-1", forward);
+    let b = merge_found_keys_and_flatten(&NoKeys, "scan-1", reverse);
+
+    let order: Vec<&str> = a.iter().map(|e| e.uid.as_str()).collect();
+    assert_eq!(
+        order,
+        vec!["bbb", "ddd", "ccc", "aaa"],
+        "confidence descending, ties broken on uid ascending"
+    );
+    assert_eq!(
+        order,
+        b.iter().map(|e| e.uid.as_str()).collect::<Vec<_>>(),
+        "identical entities must flatten identically regardless of insertion order"
     );
 }

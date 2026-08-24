@@ -30,6 +30,11 @@ fn relation_kind_as_str_matches_serde() {
         RelationKind::SameOperator,
         RelationKind::SameIdentity,
         RelationKind::SharesSecretWith,
+        RelationKind::EmployedBy,
+        RelationKind::OfficerOf,
+        RelationKind::MemberOf,
+        RelationKind::ControlledBy,
+        RelationKind::OperatedBy,
     ];
     for &k in EVERY {
         // Compile-time tripwire: NO `_` arm.
@@ -48,7 +53,12 @@ fn relation_kind_as_str_matches_serde() {
             | RelationKind::SameAs
             | RelationKind::SameOperator
             | RelationKind::SameIdentity
-            | RelationKind::SharesSecretWith => {}
+            | RelationKind::SharesSecretWith
+            | RelationKind::EmployedBy
+            | RelationKind::OfficerOf
+            | RelationKind::MemberOf
+            | RelationKind::ControlledBy
+            | RelationKind::OperatedBy => {}
         }
         let json = serde_json::to_string(&k).expect("should succeed");
         let tag = json.trim_matches('"');
@@ -57,7 +67,7 @@ fn relation_kind_as_str_matches_serde() {
         let back: RelationKind = serde_json::from_str(&json).expect("should succeed");
         assert_eq!(back, k, "serde round-trip: {k:?}");
     }
-    assert_eq!(EVERY.len(), 15, "one entry per RelationKind variant");
+    assert_eq!(EVERY.len(), 20, "one entry per RelationKind variant");
 }
 use crate::core::entity::{Entity, EntityKind};
 

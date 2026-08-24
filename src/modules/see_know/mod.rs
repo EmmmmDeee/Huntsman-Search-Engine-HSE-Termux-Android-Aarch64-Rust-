@@ -61,7 +61,7 @@ use serde_json::Value;
 use crate::core::{
     confidence,
     entity::{EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
     tags,
@@ -83,6 +83,43 @@ use pivots::{
 };
 
 pub(super) const SRC: &str = "see_know";
+
+/// Fold one endpoint sub-fetch's `Result` into a `(label, items)` pair.
+///
+/// Shared by every SeekNow concurrent sub-fetch dispatcher —
+/// `endpoints::dispatch_plan`, `pivots::dispatch_discord_pivots`,
+/// `pivots::dispatch_steam_pivots`, and this module's own
+/// `dispatch_email_cascade_checks` — so a typed error from one endpoint is
+/// warned about and remembered instead of silently discarded via
+/// `unwrap_or_default()`. Call AFTER the sub-fetches have run concurrently
+/// (e.g. after `join_all`), not from inside their futures: the `Option<Error>`
+/// accumulator is `&mut`, so folding must happen sequentially once results are
+/// in hand, exactly like `endpoints::dispatch_plan` already does.
+///
+/// The recorded failure feeds [`ModuleResult::or_hard_failure`], applied once
+/// in [`SeekNow::process`]: every entity any sub-fetch produced is kept
+/// regardless, but if the WHOLE seed came back empty and at least one
+/// sub-fetch genuinely failed, that failure surfaces as a real `Error` instead
+/// of a silent empty success — see that method's own doc for the full
+/// tolerance rule this exists to serve.
+pub(super) fn fold_endpoint_result(
+    label: &'static str,
+    outcome: Result<Vec<Value>>,
+    first_failure: &mut Option<Error>,
+) -> (&'static str, Vec<Value>) {
+    match outcome {
+        Ok(items) => (label, items),
+        Err(e) => {
+            tracing::warn!(
+                endpoint = label,
+                error = %e,
+                "see_know endpoint failed — contributed nothing to this seed"
+            );
+            first_failure.get_or_insert(e);
+            (label, Vec::new())
+        }
+    }
+}
 
 /// Re-export budget reset for the engine.
 pub fn reset_budget() {
@@ -376,19 +413,37 @@ impl Module for SeekNow {
         // collapses to the slowest single endpoint instead of summing
         // every call's latency. Budget gates inside util::see_know
         // turn no-quota calls into instant empty-vec returns.
+        // First hard failure seen across the endpoint matrix and the pivot
+        // hops, folded into the final return below via `or_hard_failure`: kept
+        // ONLY if the seed ends up with zero entities, so a partial outage
+        // that still yielded real evidence elsewhere is never turned into an
+        // error the operator would misread as "this seed failed entirely".
+        let mut hard_failure: Option<Error> = None;
+
+        // Dispatch tallies, hoisted so the fail-closed check below can see them
+        // even when the block never ran (cancelled, or no quota left) — in that
+        // case `dispatched` stays 0 and the check is inert, which is correct:
+        // nothing was asked of SeekNow, so nothing failed.
+        let mut dispatched = 0usize;
+        let mut failed_calls = 0usize;
         if !ctx.cancel.is_cancelled() && see_know::budget_remaining() {
             // effective_plan() dispatches the FULL matrix, including the
             // single-origin platform checks — the maximisation directive
             // means SeekNow's platform-specific profile depth is worth the
             // quota even where free coverage exists at presence-only depth.
             let plan = effective_plan(target.kind, v, &ctx.scan_id);
+            let (endpoint_results, plan_failure) = dispatch_plan(key, v, &plan).await;
+            hard_failure = hard_failure.or(plan_failure);
             let endpoint_results = dispatch_plan(key, v, &plan).await;
+            dispatched = endpoint_results.len();
+            failed_calls = endpoint_results.iter().filter(|o| o.failed).count();
 
             // Build the target matcher once for the whole result set — its
             // lowercase + term-split allocations are loop-invariant across
             // every record of every endpoint, so they must not repeat per row.
             let match_ctx = TargetMatch::new(v);
-            for (endpoint, items) in &endpoint_results {
+            for outcome in &endpoint_results {
+                let (endpoint, items) = (outcome.label, &outcome.items);
                 // Per-endpoint yield tracing: surfaces which endpoints return
                 // data for which target kinds in live logs, supporting the
                 // operator's directive to identify advantageous SeekNow usage.
@@ -414,8 +469,17 @@ impl Module for SeekNow {
                     store_api_credential(item, SRC, &ctx.scan_id, &mut seen, &mut result);
                     extract_api_keys_from_item(item, &ctx.scan_id, SRC, &mut seen, &mut result);
                     // Geo-specific extraction — pull coordinates/timezone/
-                    // location directly when the endpoint returns them.
-                    extract_geo_entities(item, endpoint, &ctx.scan_id, &mut seen, &mut result);
+                    // location directly when the endpoint returns them. Carries
+                    // the same match verdict as `extract_entities` above so a
+                    // non-matching record's location is quarantined too.
+                    extract_geo_entities(
+                        item,
+                        endpoint,
+                        &ctx.scan_id,
+                        match_ctx.matches(item),
+                        &mut seen,
+                        &mut result,
+                    );
                 }
             }
 
@@ -425,13 +489,44 @@ impl Module for SeekNow {
             // (discord → roblox → steam → …) we chase them across MULTIPLE hops
             // within budget rather than a single round. See [`resolve_identity_pivots`].
             if !ctx.cancel.is_cancelled() {
-                resolve_identity_pivots(key, &key_fp, v, &ctx.scan_id, &mut seen, &mut result)
-                    .await;
+                let pivot_failure =
+                    resolve_identity_pivots(key, &key_fp, v, &ctx.scan_id, &mut seen, &mut result)
+                        .await;
+                hard_failure = hard_failure.or(pivot_failure);
             }
         }
 
-        Ok(result)
+        // A total outage across this seed's endpoint matrix and pivot hops must
+        // never read the same as "SeekNow legitimately found nothing" — see
+        // `ModuleResult::or_hard_failure`'s own doc for the tolerance rule this
+        // applies: any real evidence gathered above is kept regardless.
+        result.or_hard_failure(hard_failure)
     }
+}
+
+/// Whether this scan's SeekNow fan-out should surface as a real
+/// [`Error::module`] rather than its ordinary empty success.
+///
+/// True precisely when every endpoint that was dispatched failed AND nothing was
+/// found. A fan-out where some endpoints answered — even if every one of them
+/// answered with nothing — is a genuine negative about the subject and must stay
+/// an `Ok`; only "SeekNow never actually answered this scan" is a failure. A plan
+/// that dispatched nothing at all (cancelled, or out of quota) is likewise not a
+/// failure, so `dispatched == 0` is false here.
+///
+/// Partial degradation is deliberately NOT an error: with an 18-endpoint matrix a
+/// single throttled endpoint alongside seventeen good answers is still useful
+/// intelligence. It is not silent either — [`dispatch_plan`] logs a warning per
+/// failed call, so a rate-limit burst is visible in the operator's log even when
+/// this returns false.
+///
+/// Mirrors [`crate::modules::asic_director`]'s `request_failed` and
+/// `au_property`'s `all_legs_unreachable` for the multi-call case. Pure and free
+/// of `ModuleContext`/network, so it is unit-testable without a live server or an
+/// API key — see `tests::seeknow_never_answered_*`.
+#[must_use]
+fn seeknow_never_answered(dispatched: usize, failed_calls: usize, found_any_entity: bool) -> bool {
+    dispatched > 0 && failed_calls == dispatched && !found_any_entity
 }
 
 /// Fold a non-empty universal-search result set (from either the fast
@@ -518,7 +613,14 @@ fn absorb_search_hits(
         // most productive call. `endpoint_label` ("search"/"search/deep") keeps
         // the endpoint-specific arms (ip_info/whois) inert while the generic
         // lat/lon, location-string, and timezone extraction fires.
-        extract_geo_entities(item, endpoint_label, scan_id, seen, result);
+        extract_geo_entities(
+            item,
+            endpoint_label,
+            scan_id,
+            match_ctx.matches(item),
+            seen,
+            result,
+        );
     }
 }
 
@@ -554,6 +656,11 @@ const MAX_PIVOT_HOPS: usize = 3;
 /// conserve budget. Free modules can enumerate a username across sites; only a
 /// breach/identity pool turns a Discord snowflake or SteamID64 into its linked
 /// accounts, and those links chain — so we chase them hard, within budget.
+///
+/// Returns the first hard failure observed across every hop's dispatches (for
+/// [`ModuleResult::or_hard_failure`] in [`SeekNow::process`]), so a Discord/
+/// Steam/cascade endpoint exhausting its retries against an outage is not
+/// silently indistinguishable from "this ID had no linked accounts".
 async fn resolve_identity_pivots(
     key: &str,
     key_fp: &str,
@@ -561,7 +668,8 @@ async fn resolve_identity_pivots(
     scan_id: &str,
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
-) {
+) -> Option<Error> {
+    let mut hard_failure = None;
     // Distinct IDs actually DISPATCHED (not merely discovered), so a chain
     // that loops back never re-resolves the same account. Namespaced by kind
     // ("d:"/"s:"/"e:") so a numeric collision across platforms or email
@@ -604,28 +712,32 @@ async fn resolve_identity_pivots(
 
         // Primary pivot dispatch: Discord (Tier 2: platform linkage) + Steam (Tier 2)
         if !discord.is_empty() {
-            let (items, attempted) = dispatch_discord_pivots(key, discord).await;
+            let (items, attempted, failed) = dispatch_discord_pivots(key, discord).await;
             for id in attempted {
                 resolved.insert(format!("d:{id}"));
             }
             pivot_results.extend(items);
+            hard_failure = hard_failure.or(failed);
         }
         if !steam.is_empty() && see_know::budget_remaining() {
-            let (items, attempted) = dispatch_steam_pivots(key, steam).await;
+            let (items, attempted, failed) = dispatch_steam_pivots(key, steam).await;
             for id in attempted {
                 resolved.insert(format!("s:{id}"));
             }
             pivot_results.extend(items);
+            hard_failure = hard_failure.or(failed);
         }
 
         // Cascade detection dispatch: re-query discovered emails via email-check
         // (Tier 1: service discovery). High ROI per credit, only on non-seed hops.
         if !cascade_emails.is_empty() && see_know::budget_remaining() {
-            let (items, attempted) = dispatch_email_cascade_checks(key, cascade_emails).await;
+            let (items, attempted, failed) =
+                dispatch_email_cascade_checks(key, cascade_emails).await;
             for email in attempted {
                 resolved.insert(format!("e:{email}"));
             }
             pivot_results.extend(items);
+            hard_failure = hard_failure.or(failed);
         }
 
         let before = result.entities.len();
@@ -634,6 +746,7 @@ async fn resolve_identity_pivots(
             break; // a hop that surfaced nothing new — stop chasing
         }
     }
+    hard_failure
 }
 
 /// Discover high-confidence emails already in the result graph — candidates for
@@ -682,10 +795,10 @@ fn discover_high_confidence_emails(result: &ModuleResult) -> Vec<String> {
 async fn dispatch_email_cascade_checks(
     key: &str,
     emails: Vec<String>,
-) -> (Vec<(&'static str, Vec<Value>)>, Vec<String>) {
+) -> (Vec<(&'static str, Vec<Value>)>, Vec<String>, Option<Error>) {
     let budget = see_know::scan_budget_remaining() as usize;
     if budget == 0 || emails.is_empty() {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), None);
     }
     let attempted = emails.into_iter().take(budget).collect::<Vec<_>>();
     let futures: Vec<_> = attempted
@@ -695,14 +808,21 @@ async fn dispatch_email_cascade_checks(
             async move {
                 // /network/email-check returns { account_exists, services: [...] }
                 // Extract the services array as new entities (linked identities).
-                let items = see_know::get_path(key, "network/email-check", &[("email", &email)])
-                    .await
-                    .unwrap_or_default();
-                ("email_check", items)
+                (
+                    "email_check",
+                    see_know::get_path(key, "network/email-check", &[("email", &email)]).await,
+                )
             }
         })
         .collect();
-    (futures::future::join_all(futures).await, attempted)
+
+    let mut first_failure = None;
+    let results = futures::future::join_all(futures)
+        .await
+        .into_iter()
+        .map(|(label, outcome)| fold_endpoint_result(label, outcome, &mut first_failure))
+        .collect();
+    (results, attempted, first_failure)
 }
 
 /// Extract entities (identity + geo + message + API-key) from one hop's
@@ -731,7 +851,14 @@ fn extract_pivot_entities(
             extract_entities(
                 item, seed_value, &match_ctx, scan_id, endpoint, key_fp, seen, result,
             );
-            extract_geo_entities(item, endpoint, scan_id, seen, result);
+            extract_geo_entities(
+                item,
+                endpoint,
+                scan_id,
+                match_ctx.matches(item),
+                seen,
+                result,
+            );
             store_api_credential(item, SRC, scan_id, seen, result);
             extract_api_keys_from_item(item, scan_id, SRC, seen, result);
         }
@@ -772,7 +899,20 @@ fn should_skip_seed(kind: TargetKind, v: &str) -> bool {
             v.len() < 4 || v.chars().all(|c| c.is_ascii_digit()) || is_placeholder_username(v)
         }
         TargetKind::Phone => v.chars().filter(char::is_ascii_digit).count() < 6,
-        TargetKind::FullName => !v.contains(' ') || v.len() < 5,
+        // Char-count, not `v.len()` (bytes): a real full name can be a single
+        // token in any script — a mononym ("Madonna") or a CJK given+family
+        // name written with no separator ("田中太郎") — so requiring a space
+        // wrongly skipped every one of them, always. This is reachable through
+        // completely ordinary automatic scanning, not just an explicit
+        // operator override: `TargetKind::from_entity_kind` maps EVERY
+        // discovered `EntityKind::Person` to a `FullName` pivot target
+        // unconditionally (`core/scan/mod.rs`), so a single-token Person
+        // entity surfaced by ANY module — SeekNow itself included — silently
+        // never got re-queried against SeekNow, the highest-priority provider,
+        // for the rest of the scan. The floor rejects only a genuinely
+        // degenerate single character in any script; two or more characters is
+        // a plausible name.
+        TargetKind::FullName => v.chars().count() < 2,
         TargetKind::IpAddress => is_private_ip(v),
         TargetKind::Domain => is_local_domain(v),
         _ => true,

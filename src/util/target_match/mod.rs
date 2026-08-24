@@ -26,6 +26,9 @@ const MATCH_FIELDS: &[&str] = &[
     "phone",
     "full_name",
     "name",
+    "ip_address",
+    "ip",
+    "last_ip",
 ];
 
 /// Shortest alphanumeric run a LONE target token may be and still license

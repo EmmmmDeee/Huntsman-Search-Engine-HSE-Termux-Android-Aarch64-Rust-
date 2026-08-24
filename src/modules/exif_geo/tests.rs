@@ -304,3 +304,48 @@ fn read_str_reads_and_trims_ascii_field() {
     // A tag absent from the fixture yields None, not an empty string.
     assert_eq!(read_str(&exif, exif::Tag::Make), None);
 }
+
+/// The status policy for an image fetch. Previously `process` swallowed BOTH the transport error
+/// and every non-2xx into `Ok(result)` — and because this module answers a single image URL,
+/// `result` was empty at that point. A 403 hotlink block, a 429, or a 5xx therefore reported "this
+/// image carries no GPS coordinates, no camera serial and no owner name": a confident negative,
+/// and a decisive one for a GEOINT pivot, about an image that was never retrieved. The engine reads
+/// `Ok(empty)` as a clean no-data outcome, so the provider also stayed healthy and was re-asked for
+/// every subsequent image URL.
+#[test]
+fn a_refusal_to_serve_an_image_is_not_an_absence_of_metadata() {
+    use super::{ImageFetch, classify_image_status};
+
+    // 206 is the expected success: the request sets a Range header.
+    assert_eq!(
+        classify_image_status(206),
+        ImageFetch::Read,
+        "206 Partial Content"
+    );
+    for ok in [200, 201, 299] {
+        assert_eq!(
+            classify_image_status(ok),
+            ImageFetch::Read,
+            "{ok} is a body to parse"
+        );
+    }
+
+    // The genuine absence — the image is gone, so it has no metadata to read.
+    for gone in [404, 410] {
+        assert_eq!(
+            classify_image_status(gone),
+            ImageFetch::Absent,
+            "{gone} is a real absence"
+        );
+    }
+
+    // Refusals. Each of these previously produced the same empty result as a successfully-parsed
+    // image with no EXIF, which is the wrong answer this test exists to prevent.
+    for refused in [401, 403, 429, 500, 502, 503] {
+        assert_eq!(
+            classify_image_status(refused),
+            ImageFetch::Refused,
+            "{refused} is the host refusing, not an answer about the image"
+        );
+    }
+}

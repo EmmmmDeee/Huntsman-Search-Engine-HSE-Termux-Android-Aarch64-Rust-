@@ -10,10 +10,12 @@
 //! months-stale import is a real "check for a refresh" signal — see
 //! [`crate::util::cell_db::is_stale`]), a live WiGLE account introspection
 //! that surfaces the email-unverified throttling warning before it starts
-//! silently truncating result sets, and a live SeekNow account probe that
+//! silently truncating result sets, a live SeekNow account probe that
 //! catches a dead/plan-lacking key before it silently zeroes out HSE's
 //! highest-priority paid source (and its proactive API-key-harvesting
-//! reach — see [`crate::util::key_harvest`]) on every scan.
+//! reach — see [`crate::util::key_harvest`]) on every scan, and — when
+//! `feature.ai_daemon` is armed — an Ollama reachability/model probe so
+//! `hse analyze`/`hse-ai-daemon` setup issues surface here first.
 
 use crate::core::error::Result;
 use crate::{
@@ -454,6 +456,42 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
             "  reachable, but the response carried no recognised credits field — the key \
              may lack a paid plan, or the API schema changed."
         ),
+    }
+
+    // ── AI-daemon (Ollama) health (network call, best-effort) ──────────────
+    // feature.ai_daemon is off by default. When armed, this is the fastest
+    // way for an operator to confirm the whole `hse analyze`/`hse-ai-daemon`
+    // setup — armed, Ollama reachable, model pulled — before running `hse
+    // analyze` for the first time, mirroring the WiGLE/SeekNow account
+    // probes above. Reuses `OllamaClient::health_check`, the exact
+    // reachability+model check `hse analyze`/`hse-ai-daemon` themselves run
+    // at startup, so this section can never disagree with what those
+    // commands see.
+    println!("\nAI-daemon (Ollama):");
+    if !crate::util::settings::ai_daemon_enabled() {
+        println!(
+            "  armed: no — feature.ai_daemon is off. Enable with `hse config feature.ai_daemon on`."
+        );
+    } else {
+        println!("  armed: yes");
+        let base_url = loaded
+            .get("HUNTSMAN_OLLAMA_URL")
+            .map_or(crate::ai::ollama::DEFAULT_BASE_URL, String::as_str)
+            .to_string();
+        println!("  base url: {base_url}");
+        match loaded.get("HUNTSMAN_OLLAMA_MODEL") {
+            None => println!(
+                "  model: none configured — set HUNTSMAN_OLLAMA_MODEL or pass --model to \
+                 `hse analyze`"
+            ),
+            Some(model) => {
+                let client = crate::ai::ollama::OllamaClient::new(base_url, model.clone());
+                match client.health_check().await {
+                    Ok(()) => println!("  model '{model}': reachable and pulled"),
+                    Err(e) => println!("  model '{model}': {e}"),
+                }
+            }
+        }
     }
 
     if critical {

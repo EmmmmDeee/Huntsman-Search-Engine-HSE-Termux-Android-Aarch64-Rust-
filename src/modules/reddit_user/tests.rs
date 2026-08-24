@@ -257,6 +257,42 @@ fn summarise_counts_the_window_and_separates_profile_spaces() {
     assert_eq!(s.latest.as_deref(), Some("2026-07-01T08:30:00+00:00"));
 }
 
+#[test]
+fn summarise_survives_a_multibyte_subreddit_name() {
+    // Regression: the `u_` profile-prefix check sliced `sub[..2]` on a `&str`
+    // guarded only by `sub.len() > 2` (a BYTE length). A subreddit value whose
+    // second byte is a UTF-8 continuation byte — e.g. "aé" (bytes 61 C3 A9),
+    // len() == 3 > 2 — makes `sub[..2]` split the `é` and panic
+    // ("byte index 2 is not a char boundary"), aborting the whole scan.
+    //
+    // The genuine Reddit API only emits [A-Za-z0-9_] names, so this needs a
+    // non-conforming response (an intercepting proxy, an untrusted mirror, a
+    // cached blob, or an API change) — but the engine must not panic on any
+    // input it is handed. `summarise` must treat a non-`u_` name as a community
+    // and return normally.
+    let feed = super::feed::Feed {
+        username: "spez".to_string(),
+        bio: None,
+        items: vec![super::feed::Item {
+            kind: ItemKind::Post,
+            subreddit: Some("aé".to_string()),
+            permalink: "https://www.reddit.com/r/a%C3%A9/comments/x/".to_string(),
+            updated: "2026-07-01T00:00:00+00:00".to_string(),
+            html: "<p>x</p>".to_string(),
+        }],
+    };
+    let s = summarise(&feed); // must not panic
+    assert_eq!(
+        s.other_profile_items, 0,
+        "a multibyte community name is not a u_ profile space"
+    );
+    assert!(
+        s.communities.contains_key("aé"),
+        "the name is tallied as a community, got {:?}",
+        s.communities.keys().collect::<Vec<_>>()
+    );
+}
+
 // ── transform::feed_to_entities ─────────────────────────────────────────────
 
 #[test]

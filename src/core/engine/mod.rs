@@ -653,6 +653,14 @@ impl ScanEngine {
         scan.status = ScanStatus::Running;
         self.store.upsert_scan(&scan)?;
 
+        // Clear any stale events from previous scan attempts with this scan_id
+        // (possible in hse serve when the same target runs twice). Per-scan event
+        // isolation must start from a clean slate — subsequent modules emit fresh
+        // events that belong only to this scan, not to a prior abandoned run.
+        if let Err(e) = self.store.delete_events_for_scan(&scan.id) {
+            tracing::warn!(scan_id = %scan.id, error = %e, "failed to clear stale events at scan start");
+        }
+
         // Reset every module's per-scan state — rate budgets + the foreign-API-key
         // sink — so long-lived processes (`hse serve` / `hse live`) get a fresh
         // budget per scan, and this scan reports only the keys IT retrieves.
@@ -965,7 +973,7 @@ impl ScanEngine {
         entity_map: HashMap<String, Entity>,
         ctx: &ModuleContext,
         stats: ModuleStats,
-        lineage_relations: Vec<Relation>,
+        mut lineage_relations: Vec<Relation>,
         mut emitted_corr: HashSet<String>,
     ) -> Result<Scan> {
         let store = Arc::clone(&self.store);
@@ -981,7 +989,61 @@ impl ScanEngine {
             // rolled-back transaction) — see each phase helper's own doc comment.
             let mut entities =
                 merge_found_keys_and_flatten(module_runtime.as_ref(), &scan.id, entity_map);
-            apply_finalise_enrichment_passes(store.as_ref(), &scan.id, &mut entities);
+            let folded = apply_finalise_enrichment_passes(store.as_ref(), &scan.id, &mut entities);
+            if !folded.is_empty() {
+                // The address-locality fold removed each victim from the in-memory
+                // `entities` Vec, but the mid-scan checkpoint already made it a
+                // durable observation of this scan — so `entities_for_scan` (and
+                // the authoritative finalise correlator that reads it) would still
+                // see BOTH spellings. Detach the victim's observation for THIS
+                // scan (the entities row is retained for any other scan), and
+                // re-point any lineage edge that named a victim at its survivor
+                // BEFORE the edges are persisted, so folding never orphans a
+                // `DerivedFrom` edge. `Relation::new` re-derives the deterministic
+                // id from the new endpoints; a self-edge (both ends folded into
+                // one survivor) is dropped.
+                //
+                // Two victims folding into the SAME survivor can remap two edges
+                // onto one `(from, kind, to)` — hence one deterministic id. The
+                // persist layer's `ON CONFLICT(id) DO NOTHING` keeps whichever
+                // arrived first, so without collapsing here the stored edge's
+                // confidence would depend on discovery order. Collapse duplicates
+                // keeping the MAX confidence, then sort by id, so the persisted
+                // lineage is order-independent.
+                let map: HashMap<&str, &str> = folded
+                    .iter()
+                    .map(|(v, s)| (v.as_str(), s.as_str()))
+                    .collect();
+                let mut best: HashMap<(String, String, String), (RelationKind, f64)> =
+                    HashMap::new();
+                for r in &lineage_relations {
+                    let from = *map.get(r.from_uid.as_str()).unwrap_or(&r.from_uid.as_str());
+                    let to = *map.get(r.to_uid.as_str()).unwrap_or(&r.to_uid.as_str());
+                    if from == to {
+                        continue;
+                    }
+                    best.entry((from.to_string(), to.to_string(), r.kind.as_str().to_string()))
+                        .and_modify(|(_, c)| {
+                            if r.confidence > *c {
+                                *c = r.confidence;
+                            }
+                        })
+                        .or_insert((r.kind, r.confidence));
+                }
+                let mut collapsed: Vec<Relation> = best
+                    .into_iter()
+                    .map(|((from, to, _), (kind, conf))| {
+                        Relation::new(from, to, kind, conf, &scan.id)
+                    })
+                    .collect();
+                collapsed.sort_by(|a, b| a.id.cmp(&b.id));
+                lineage_relations = collapsed;
+                let victims: Vec<String> = folded.into_iter().map(|(v, _)| v).collect();
+                if let Err(e) = store.detach_scan_observations(&scan.id, &victims) {
+                    warn!(scan_id = %scan.id, error = %e,
+                          "failed to detach folded address observations — the scan may report duplicates");
+                }
+            }
             let total = entities.len();
             let (persisted, first_err) =
                 persist_entities_with_fallback(store.as_ref(), &scan.id, &entities);
@@ -2425,7 +2487,30 @@ fn merge_found_keys_and_flatten(
             }
         }
     }
-    entity_map.into_values().collect()
+    // Confidence-rank the flattened Vec, breaking ties on `uid` for a total order.
+    //
+    // This is load-bearing twice over. `into_values()` yields raw `HashMap` order, and this Vec is
+    // what `finalise_scan` hands to `derive_and_persist_relations` →
+    // `resolve_coreferences`, whose `.take(MAX_COREF_NODES)` documents the precondition it relies
+    // on: "`entities` arrives confidence-ranked, so `.take` keeps the strongest identities — a
+    // deterministic prefix". On this path that was simply untrue. Above the 5_000 identity-entity
+    // ceiling the truncation therefore kept a DIFFERENT SUBSET on every run — not merely a
+    // different order, so no later sort could recover it — and the derived SameAs/AliasOf/
+    // IdentifiedBy edges persisted to `relations` (and exported to GEXF/GraphML) differed between
+    // two runs over identical data. Below the ceiling the ranking half was still unhonoured.
+    //
+    // Every other caller already satisfied the precondition — the import path guards with its own
+    // 5_000 ceiling, gap-fill passes `TrackedEntityMap::snapshot()` (uid-sorted for this same
+    // reason), and `/identities` passes display-ranked output — which is what made this path the
+    // outlier rather than the rule.
+    let mut out: Vec<Entity> = entity_map.into_values().collect();
+    out.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
+    out
 }
 
 /// Phase 2: the sequential offline enrichment passes that run once, after
@@ -2440,8 +2525,8 @@ fn apply_finalise_enrichment_passes(
     store: &dyn StoragePort,
     scan_id: &str,
     entities: &mut Vec<Entity>,
-) {
-    consolidate_address_localities(entities);
+) -> Vec<(String, String)> {
+    let folded = consolidate_address_localities(entities);
     promote_geo_corroborated_family(entities);
     promote_breach_candidate_geo_corroborated(entities);
     flag_geo_discordant_namesakes(entities);
@@ -2454,6 +2539,7 @@ fn apply_finalise_enrichment_passes(
     for e in entities.iter_mut() {
         e.canonicalize_order();
     }
+    folded
 }
 
 /// Phase 3: persist the scan's entities in a single transaction (collapsing N

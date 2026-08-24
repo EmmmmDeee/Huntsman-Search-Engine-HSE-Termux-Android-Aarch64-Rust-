@@ -15,7 +15,7 @@
 use futures::future::join_all;
 use serde_json::Value;
 
-use crate::core::error::Result;
+use crate::core::error::{Error, Result};
 use crate::core::scan::TargetKind;
 use crate::util::see_know;
 
@@ -202,7 +202,7 @@ fn plan_endpoints(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
 
 /// Dispatch every endpoint in `plan` concurrently. Returns
 /// `(endpoint_name, items)` pairs in plan order so downstream
-/// extractors stay deterministic.
+/// extractors stay deterministic, plus the first hard failure observed.
 ///
 /// Budget enforcement happens inside each endpoint helper at the
 /// `util::see_know` layer — both the response cache and the
@@ -211,19 +211,55 @@ fn plan_endpoints(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
 /// that suppressed legitimate cached calls when the scan was near
 /// (but not at) its budget. Letting the util layer enforce the
 /// budget restores that free corroboration.
+///
+/// The returned `Option<Error>` feeds [`ModuleResult::or_hard_failure`], this
+/// repo's shared rule for a module with independent concurrent sub-fetches: keep
+/// every entity any sub-fetch produced, but if the plan yielded NOTHING and a
+/// sub-fetch genuinely failed, surface that error rather than a silent empty
+/// success. This previously used `unwrap_or_default()`, which discarded the
+/// typed error entirely — so an endpoint that had exhausted its retries against
+/// a 5xx/429/timeout returned an empty vec indistinguishable from "this endpoint
+/// legitimately had no data", and the caller's `if !items.is_empty()` trace
+/// guard suppressed even a debug line. A per-endpoint warning is emitted too, so
+/// a PARTIAL outage (which `or_hard_failure` deliberately tolerates, because
+/// real evidence arrived from elsewhere) is still diagnosable.
+///
+/// [`ModuleResult::or_hard_failure`]: crate::core::module::ModuleResult::or_hard_failure
 pub(super) async fn dispatch_plan(
     key: &str,
     value: &str,
     plan: &[EndpointCall],
-) -> Vec<(&'static str, Vec<Value>)> {
+) -> (Vec<(&'static str, Vec<Value>)>, Option<Error>) {
     let futures = plan.iter().copied().map(|call| {
         let value_owned = value.to_string();
-        async move {
-            let items = call.invoke(key, &value_owned).await.unwrap_or_default();
-            (call.label(), items)
-        }
+        async move { (call.label(), call.invoke(key, &value_owned).await) }
     });
-    join_all(futures).await
+
+    let mut first_failure = None;
+    let out = join_all(futures)
+        .await
+        .into_iter()
+        .map(|(label, outcome)| super::fold_endpoint_result(label, outcome, &mut first_failure))
+        .collect();
+    (out, first_failure)
+}
+
+/// What one dispatched endpoint actually did.
+///
+/// Carrying `failed` alongside the rows is the whole point: `.unwrap_or_default()`
+/// used to collapse a throttled or unreachable endpoint into the same empty
+/// vector a genuinely-empty answer produces, so an 18-endpoint fan-out could be
+/// blanked by a rate-limit burst and still be recorded as a clean, successful
+/// scan that simply found nothing. The upstream layer takes care to distinguish
+/// `RateLimited` from exhausted credits; that classification was being discarded
+/// at this one boundary.
+pub(super) struct EndpointOutcome {
+    /// The endpoint's short label, as used in evidence and tracing.
+    pub(super) label: &'static str,
+    /// The rows it returned. Empty when it failed.
+    pub(super) items: Vec<Value>,
+    /// True when the call itself failed, as opposed to answering with nothing.
+    pub(super) failed: bool,
 }
 
 /// Enum of SeekNow endpoints the module can target. Centralising them

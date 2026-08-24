@@ -311,9 +311,16 @@ fn relation_strength(kind: RelationKind) -> f64 {
         RelationKind::SharesSecretWith => 0.85,
         RelationKind::SameOperator => 0.8,
         RelationKind::SubdomainOf | RelationKind::BelongsToDomain => 0.8,
+        // Affiliations, graded by how hard the source is. A registered office and
+        // a filed corporate-control record come from a regulator (0.85); a named
+        // operator is published by the asset's own service or site (0.75); an
+        // employment or membership is self-reported and rates with the softer
+        // person-to-person ties (0.6).
+        RelationKind::OfficerOf | RelationKind::ControlledBy => 0.85,
+        RelationKind::OperatedBy => 0.75,
         RelationKind::ResolvesTo | RelationKind::RegisteredBy => 0.75,
         RelationKind::CoLocatedWith | RelationKind::LocatedAt => 0.7,
-        RelationKind::AssociatedWith => 0.6,
+        RelationKind::AssociatedWith | RelationKind::EmployedBy | RelationKind::MemberOf => 0.6,
         RelationKind::DerivedFrom | RelationKind::HostedOn => 0.5,
     }
 }
@@ -326,13 +333,12 @@ fn truncate(s: &str, max_chars: usize) -> String {
     format!("{kept}…")
 }
 
-fn escape_xml(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
+// The shared serializer-wide escaper, NOT a local `.replace()` chain. The local one covered the
+// five metacharacters but passed XML-illegal C0 control characters straight through, so a single
+// discovered entity value carrying a stray control byte (breach dumps and scraped pages do, and
+// `entity::normalise`'s catch-all arm preserves an interior one) produced an SVG that no XML parser
+// would accept — losing the whole graph rendering, not just that node. See `core::xml`.
+use crate::core::xml::escape as escape_xml;
 
 #[cfg(test)]
 mod tests {
@@ -493,5 +499,29 @@ mod tests {
 
         assert!(svg.contains("a&lt;b&amp;c"));
         assert!(!svg.contains("a<b&c"));
+    }
+
+    #[test]
+    fn an_xml_illegal_control_character_never_reaches_the_svg() {
+        // Regression. A discovered entity value can carry a stray C0 control byte — breach dumps,
+        // scraped pages and third-party JSON all do, and `entity::normalise`'s catch-all arm
+        // preserves an INTERIOR one for kinds like Person/Address/Password. XML 1.0 §2.2 makes
+        // those illegal in a document even as a numeric reference, so the previous local
+        // `.replace()` escaper (which passed them through verbatim) produced an SVG that no XML
+        // parser would accept: one poisoned node value destroyed the ENTIRE graph rendering, not
+        // just that node. The value is still shown — only the illegal character is dropped.
+        let centre = entity(EntityKind::Other("note".into()), "Bob\u{8}Q\u{0}Smith");
+        let svg =
+            SnakeGraph::build(&centre.uid, std::slice::from_ref(&centre), &[], 2).to_svg(400.0);
+
+        assert!(
+            svg.contains("BobQSmith"),
+            "the value must still render, minus the illegal characters: {svg}"
+        );
+        assert!(
+            !svg.chars()
+                .any(|c| (c as u32) < 0x20 && !matches!(c, '\t' | '\n' | '\r')),
+            "no XML-illegal control character may survive into the SVG"
+        );
     }
 }

@@ -2,11 +2,12 @@ use serde_json::json;
 
 use super::budget::{
     budget_increment, budget_snapshot, is_quota_exhausted, release_quota_probe, reset_budget,
-    scan_budget_remaining, set_scan_cap_override, should_probe_quota,
+    scale_scan_cap_from_daily, scan_budget_remaining, set_scan_cap_override, should_probe_quota,
 };
 use super::client::{
     CLIENT, CLIENT_FAST, HARDCODED_KEY_FOR_TESTS, base_urls_for, cache_get, cache_key, cache_put,
-    classify_status, is_auth_error, key_fingerprint, parse_response, resolve_key, typed_cache_key,
+    classify_status, is_auth_error, key_fingerprint, parse_response, resolve_key,
+    transport_err_is_terminal_auth, typed_cache_key,
 };
 use super::endpoints::{
     CreditsOutcome, CreditsProbe, SEARCH_LIMIT, build_search_body, classify_credits_probe,
@@ -86,6 +87,114 @@ fn classify_status_diverts_5xx_and_no_response_to_transient_retry() {
         classify_status(r#"{"total":0}"#, 404).is_ok(),
         "a 4xx JSON body keeps parse_response's classification"
     );
+    // A 429 served as a CDN/gateway HTML interstitial (NOT the API's JSON
+    // rate_limit envelope) must be retryable-transient, not the empty miss it
+    // used to become in parse_response's non-JSON branch.
+    assert!(
+        matches!(
+            classify_status("<html>429 Too Many Requests</html>", 429),
+            Err(Error::RateLimited(_))
+        ),
+        "a non-JSON 429 must divert to RateLimited, not a silent empty miss"
+    );
+    // A JSON 429 keeps its precise parse_response/classify_terminal path: an
+    // explicit `rate_limit` envelope is still RateLimited (retry) — reached via
+    // parse_response, not the non-JSON divert (no global latch mutated here).
+    assert!(
+        matches!(
+            classify_status(r#"{"error":"rate_limit"}"#, 429),
+            Err(Error::RateLimited(_))
+        ),
+        "a JSON rate_limit 429 stays RateLimited via parse_response"
+    );
+    // A 429 whose JSON body carries no terminal marker is a normal miss — NOT
+    // blanket-diverted just because the status is 429.
+    assert!(
+        classify_status(r#"{"total":0}"#, 429).is_ok(),
+        "a JSON 429 with no terminal marker keeps parse_response's classification"
+    );
+}
+
+/// Before `classify_status` checked the status code, a 401/403 whose JSON body
+/// used wording other than the three exact substrings `is_auth_error` checks
+/// fell through to `parse_response`, found no recognised error/quota envelope,
+/// and returned as an ORDINARY — silently empty — success. Every test here uses
+/// a body that deliberately does NOT match `is_auth_error`, to isolate the
+/// status-code-driven behaviour from the pre-existing body-based path (already
+/// covered above).
+mod status_code_auth_classification_tests {
+    use super::*;
+
+    #[test]
+    fn http_401_latches_key_invalid_regardless_of_body_wording() {
+        let _guard = BUDGET_TEST_LOCK.lock();
+        crate::util::see_know::reset_budget();
+        assert!(!crate::util::see_know::is_key_invalid());
+
+        let result = classify_status(r#"{"error":"unauthorized"}"#, 401);
+
+        assert!(
+            result.is_ok(),
+            "401 must not error the module out — it's a known-doomed key, not a \
+             transient failure to retry"
+        );
+        assert!(
+            crate::util::see_know::is_key_invalid(),
+            "a 401 must latch is_key_invalid() even though the body doesn't \
+             contain any of is_auth_error's three known substrings — the HTTP \
+             status is definitive per SeekNow's own documented mapping"
+        );
+        crate::util::see_know::reset_budget();
+    }
+
+    #[test]
+    fn http_403_does_not_latch_key_invalid() {
+        // The documented behaviour (docs/SEEKNOW_SETUP.md) is "Plan doesn't
+        // allow endpoint — skips endpoint, continues with others": a 403 must
+        // NEVER globally disable SeekNow, or one plan-gated endpoint would
+        // wrongly silence every other, currently-working endpoint for the rest
+        // of the scan — a false-positive lockout worse than the gap being fixed.
+        let _guard = BUDGET_TEST_LOCK.lock();
+        crate::util::see_know::reset_budget();
+
+        let result = classify_status(r#"{"error":"forbidden"}"#, 403);
+
+        assert!(
+            result.is_err(),
+            "403 must surface as a typed per-endpoint failure, not a silent \
+             empty success — so fold_endpoint_result can warn instead of the \
+             plan restriction vanishing without a trace"
+        );
+        assert!(
+            !crate::util::see_know::is_key_invalid(),
+            "403 must NEVER latch the whole-key invalid flag — a per-endpoint \
+             plan restriction is not a key-wide rejection"
+        );
+        crate::util::see_know::reset_budget();
+    }
+
+    #[test]
+    fn http_403_with_plan_required_body_still_latches_key_invalid() {
+        // The one 403 case that IS key-wide: `plan_required` means the account
+        // has no paid plan at all (not just a gap in coverage for one
+        // endpoint), and `is_auth_error` already recognises this substring.
+        // The status-code short-circuit must yield to it, not shadow it.
+        let _guard = BUDGET_TEST_LOCK.lock();
+        crate::util::see_know::reset_budget();
+
+        let result = classify_status(r#"{"error":"plan_required"}"#, 403);
+
+        assert!(
+            result.is_ok(),
+            "an auth-body 403 keeps the existing Ok(Null) convention"
+        );
+        assert!(
+            crate::util::see_know::is_key_invalid(),
+            "plan_required must still latch key-invalid even though it arrived \
+             as a 403, not a 401"
+        );
+        crate::util::see_know::reset_budget();
+    }
 }
 
 #[test]
@@ -471,6 +580,49 @@ fn snapshot_reflects_override_cap() {
 }
 
 #[test]
+fn quota_probe_must_not_clobber_operator_scan_cap() {
+    let _guard = BUDGET_TEST_LOCK.lock();
+    // The engine installs the operator's explicit `--seeknow-scan-cap 50`
+    // (ScanOptions::seeknow_scan_cap) as a runtime override at scan start,
+    // BEFORE any module runs — see `core::engine::run_with_ledger_inner`.
+    reset_budget();
+    set_scan_cap_override(50);
+    assert_eq!(budget_snapshot().scan_cap, 50);
+
+    // The first seed then fires the non-billable `/credits` probe, which
+    // reports a large plan. Scaling the cap to the plan must NOT overrule the
+    // operator: they asked for 50 and the documented reason for asking
+    // (docs/SEEKNOW_SETUP.md, "Temporarily limit to 50 credits for testing")
+    // is precisely to stop a big plan from being spent.
+    scale_scan_cap_from_daily(15_000);
+
+    assert_eq!(
+        budget_snapshot().scan_cap,
+        50,
+        "the /credits probe silently raised the operator's explicit per-scan \
+         cap; `scale_scan_cap_from_daily` guards only HUNTSMAN_SEEKNOW_SCAN_CAP \
+         and ignores the runtime override the CLI flag installs"
+    );
+    reset_budget();
+}
+
+#[test]
+fn quota_probe_still_scales_when_operator_set_no_cap() {
+    let _guard = BUDGET_TEST_LOCK.lock();
+    // The complement of the guard above: with no operator override in place,
+    // the probe must still scale the cap to the plan allocation, otherwise a
+    // large plan stays pinned to the conservative floor.
+    reset_budget();
+    scale_scan_cap_from_daily(15_000);
+    assert_eq!(
+        budget_snapshot().scan_cap,
+        750,
+        "with no operator override the probe must scale to clamp(daily/20, 300, 2500)"
+    );
+    reset_budget();
+}
+
+#[test]
 fn reset_clears_override_too() {
     let _guard = BUDGET_TEST_LOCK.lock();
     // Regression guard: reset_scan must clear the cap override so
@@ -485,6 +637,77 @@ fn reset_clears_override_too() {
         99,
         "reset_budget must clear the cap override"
     );
+}
+
+#[test]
+fn rate_limited_error_redacts_credentials_from_the_provider_body() {
+    use crate::core::error::Error;
+    // `Error::RateLimited`'s Display reaches operator-facing sinks. If the
+    // provider echoes a credential in its rate-limit body, it must not ride
+    // along — the same redaction `util::http::error_snippet` applies to every
+    // other embedded body.
+    let body = r#"{"error":"rate_limit","detail":"rejected for api_key=SUPERSECRETVALUE"}"#;
+    let err = parse_response(body).expect_err("a rate_limit body must surface as RateLimited");
+    let msg = match err {
+        Error::RateLimited(m) => m,
+        other => panic!("expected RateLimited, got {other:?}"),
+    };
+    assert!(
+        !msg.contains("SUPERSECRETVALUE"),
+        "the credential must be redacted out of the error: {msg}"
+    );
+    assert!(
+        msg.contains("seek_now:"),
+        "the error must still identify its provider: {msg}"
+    );
+}
+
+#[test]
+fn transport_auth_errors_are_terminal_but_network_errors_are_not() {
+    // Extracted from three byte-identical copies inlined in the POST / GET /
+    // raw-GET fallback loops; pinned here so the multi-domain fallback keeps
+    // stopping on a rejected key while still rotating past a transport blip.
+    for terminal in [
+        "HTTP 401 returned",
+        "Unauthorized",
+        "invalid API key supplied",
+    ] {
+        assert!(
+            transport_err_is_terminal_auth(terminal),
+            "{terminal:?} must stop the domain fallback"
+        );
+    }
+    for retryable in [
+        "curl exited 6: could not resolve host",
+        "connection timed out",
+        "HTTP 503 from gateway",
+        "invalid JSON in response",
+        // Regression: libcurl's own timeout message is literally "Operation
+        // timed out after {ms} milliseconds..." — an elapsed value landing in
+        // 401xxx/40100-40199/4010-4019/401ms all embed the digits "401" as a
+        // substring of a LONGER number, not the status code. A bare
+        // `contains("401")` wrongly classified every one of these as a
+        // rejected key and aborted the whole multi-domain fallback instead of
+        // trying the next domain — exactly the class the plain "connection
+        // timed out" case above already asserts must stay retryable.
+        "Operation timed out after 401000 milliseconds with 0 bytes received",
+        "Operation timed out after 40100 milliseconds with 0 bytes received",
+        "Operation timed out after 4010 milliseconds with 0 bytes received",
+    ] {
+        assert!(
+            !transport_err_is_terminal_auth(retryable),
+            "{retryable:?} must NOT be treated as terminal auth"
+        );
+    }
+    // The word-boundary fix must not regress genuine isolated occurrences:
+    // "401" bracketed by non-digit characters (space, punctuation, string
+    // start/end) on either side is still a real status-code mention.
+    for terminal in ["HTTP 401 returned", "status=401", "401", "(401)"] {
+        assert!(
+            transport_err_is_terminal_auth(terminal),
+            "{terminal:?} is an isolated 401 mention and must stay terminal"
+        );
+    }
 }
 
 #[test]

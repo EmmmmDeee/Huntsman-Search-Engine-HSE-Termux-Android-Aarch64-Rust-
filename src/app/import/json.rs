@@ -57,7 +57,7 @@ pub(super) async fn parse_oathnet_json(
                 stats.emails += 1;
             }
             if let Some(ip) = item.get("ip").and_then(|v| v.as_str())
-                && ip.contains('.')
+                && ip.parse::<std::net::IpAddr>().is_ok()
                 && !ip.contains("UPGRADE")
             {
                 let mut e = Entity::new(EntityKind::IpAddress, ip, confidence::HIGH, &sid);
@@ -88,7 +88,7 @@ pub(super) async fn parse_oathnet_json(
             if let Some(ips) = victim.get("device_ips").and_then(|v| v.as_array()) {
                 for ip_val in ips {
                     if let Some(ip) = ip_val.as_str()
-                        && ip.contains('.')
+                        && ip.parse::<std::net::IpAddr>().is_ok()
                         && !ip.contains("UPGRADE")
                     {
                         let mut e =

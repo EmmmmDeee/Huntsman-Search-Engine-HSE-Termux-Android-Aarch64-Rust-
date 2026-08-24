@@ -32,6 +32,14 @@ pub(super) const CCTLD_REGIONS: &[(&str, &str)] = &[
     (".edu.au", "Australia"),
     (".gov.au", "Australia"),
     (".org.au", "Australia"),
+    (".net.au", "Australia"),
+    (".id.au", "Australia"),
+    (".asn.au", "Australia"),
+    // Catch-all for a direct `.au` registration and every other `.*.au` shape
+    // (`.csiro.au`, …). MUST stay after the specific rows above:
+    // `infer_geo_from_email_domain` returns the FIRST `ends_with` match, so the
+    // specific second-level TLDs win first and this only backstops the residue.
+    (".au", "Australia"),
     (".co.uk", "United Kingdom"),
     (".ac.uk", "United Kingdom"),
     (".gov.uk", "United Kingdom"),

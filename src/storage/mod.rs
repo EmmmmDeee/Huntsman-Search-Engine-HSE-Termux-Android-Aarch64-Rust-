@@ -11,10 +11,12 @@ use crate::core::{
 
 mod archive; // `impl Store`: inter-scan entity cache (`raw_archive`)
 mod entities; // `impl Store`: entity persistence + FTS query
+mod signal; // `impl Store`: per-sighting RF (WiGLE + radar) persistence
 mod stealer_rows; // `impl Store`: paired stealer-log credential row persistence
 mod templates; // `impl Store`: cross-scan pathway-template learning
 
 pub use entities::EvidenceAnomaly;
+pub use signal::{RfDeviceRow, RfSummary};
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -92,9 +94,28 @@ const SCHEMA_DDL: &str = "
                 data_json   TEXT NOT NULL
             );
 
+            -- Opt-in AI-daemon analysis (`src/ai/`, `hse analyze` / `hse-ai-daemon`).
+            -- One row per scan (a re-run overwrites); an absent row means not
+            -- yet analysed, never a failed analysis attempt -- a failed
+            -- attempt is simply retried at the daemon's next poll rather than
+            -- latched here. See the Runtime AI-independence invariant in
+            -- src/lib.rs.
+            CREATE TABLE IF NOT EXISTS scan_analysis (
+                scan_id     TEXT PRIMARY KEY,
+                model       TEXT NOT NULL,
+                created_at  INTEGER NOT NULL,
+                data_json   TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_entities_scan ON entities(scan_id);
             CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind);
             CREATE INDEX IF NOT EXISTS idx_scans_started ON scans(started_at DESC);
+            -- Serves scans_pending_analysis's `WHERE status IN (...) ORDER BY
+            -- started_at` (the AI-daemon poll query, run on an interval for the
+            -- process's whole lifetime) as an index range scan instead of a full
+            -- table scan of `scans`, which — unlike entities/events/relations —
+            -- is never bulk-pruned and only grows.
+            CREATE INDEX IF NOT EXISTS idx_scans_status_started ON scans(status, started_at);
             CREATE INDEX IF NOT EXISTS idx_corr_scan     ON correlations(scan_id);
             CREATE INDEX IF NOT EXISTS idx_obs_scan      ON entity_observations(scan_id);
             CREATE INDEX IF NOT EXISTS idx_obs_entity    ON entity_observations(entity_uid);
@@ -120,6 +141,143 @@ const SCHEMA_DDL: &str = "
             );
             CREATE INDEX IF NOT EXISTS idx_stealer_rows_scan ON stealer_rows(scan_id);
             CREATE INDEX IF NOT EXISTS idx_stealer_rows_log  ON stealer_rows(scan_id, log_id);
+
+            -- RF sightings from a wardriving capture or a local radar sweep
+            -- (`core::rf::RfSighting`). Persisted ALONGSIDE the generic entity
+            -- graph for the same reason `stealer_rows` is: `entities` flattens
+            -- an observation into independent MacAddress/Ssid/Coordinates rows
+            -- for correlation, which dissolves the *sighting* — the graph can
+            -- then say a BSSID exists and a position exists, but not that the
+            -- BSSID was heard at -53 dBm from that position at 17:18. Both
+            -- questions an RF survey is run to answer need that tuple: how a
+            -- device's signal changed as the operator moved, and which distinct
+            -- places it was heard from (the input to `core::radar_track`'s
+            -- `is the same device following me?`).
+            --
+            -- One table for both radios. A WiGLE capture and a Bluetooth sweep
+            -- observe the same physical thing — a radio emitting an address at a
+            -- place — and `source` distinguishes them; keeping them apart would
+            -- mean answering `was this device near me before?` twice.
+            --
+            -- Append-only facts. Every rollup lives in the views below rather
+            -- than a maintained summary table, so no derived row can drift from
+            -- the sightings it summarises.
+            CREATE TABLE IF NOT EXISTS rf_sightings (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id        TEXT NOT NULL,
+                network_id     TEXT NOT NULL,
+                radio          TEXT NOT NULL,
+                source         TEXT NOT NULL,
+                -- Derived once on write from the address bits, not from a
+                -- vendor table: 1 = locally-administered (a rotating privacy
+                -- address, never a followable pin, AU-122), 0 = real hardware,
+                -- NULL = not a hardware address (a cellular identifier).
+                locally_admin  INTEGER,
+                -- Stored even when no vendor is known for it, so a larger IEEE
+                -- table can be joined in later without re-reading a capture.
+                oui            TEXT,
+                device_class   TEXT,
+                name           TEXT,
+                encryption     TEXT,
+                observed_at    TEXT,
+                -- Beside the text because the text is not orderable: two
+                -- ISO-8601 stamps at different UTC offsets sort
+                -- lexicographically in the wrong order.
+                observed_epoch INTEGER,
+                signal_dbm     REAL,
+                accuracy_m     REAL,
+                latitude       REAL,
+                longitude      REAL,
+                raw_type       TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_rf_scan    ON rf_sightings(scan_id);
+            CREATE INDEX IF NOT EXISTS idx_rf_device  ON rf_sightings(scan_id, network_id);
+            CREATE INDEX IF NOT EXISTS idx_rf_epoch   ON rf_sightings(observed_epoch);
+            CREATE INDEX IF NOT EXISTS idx_rf_geo     ON rf_sightings(latitude, longitude);
+            CREATE INDEX IF NOT EXISTS idx_rf_oui     ON rf_sightings(oui);
+
+            -- One row per device per scan, rolled up from the sightings. A view,
+            -- not a table, so it cannot fall out of step with the facts.
+            -- `best_*` is the strongest sighting, which is the closest pass and
+            -- so the best single estimate of where the device is; ties break on
+            -- the lowest sighting id, making the result deterministic.
+            --
+            -- DROPped and recreated rather than `CREATE VIEW IF NOT EXISTS`: a
+            -- view is pure derived logic with no data of its own, so recreating
+            -- it on every open costs nothing and is the only way a corrected
+            -- definition ever reaches a database that already exists. With
+            -- `IF NOT EXISTS` the first binary to create the view owns it
+            -- forever and every later fix silently applies to fresh installs
+            -- only — which is exactly how the `best_latitude` bug below
+            -- survived: the tests build `:memory:` stores and so always saw
+            -- the new definition.
+            DROP VIEW IF EXISTS rf_trackable;
+            DROP VIEW IF EXISTS rf_shared_names;
+            DROP VIEW IF EXISTS rf_devices;
+            CREATE VIEW rf_devices AS
+            SELECT s.scan_id,
+                   s.network_id,
+                   MIN(s.radio)                                   AS radio,
+                   MAX(s.locally_admin)                           AS locally_admin,
+                   MIN(s.oui)                                     AS oui,
+                   MIN(s.device_class)                            AS device_class,
+                   COUNT(*)                                       AS sightings,
+                   MIN(s.observed_epoch)                          AS first_epoch,
+                   MAX(s.observed_epoch)                          AS last_epoch,
+                   MAX(s.signal_dbm)                              AS best_signal_dbm,
+                   MIN(s.signal_dbm)                              AS worst_signal_dbm,
+                   MIN(s.accuracy_m)                              AS best_accuracy_m,
+                   COUNT(DISTINCT s.name)                         AS distinct_names,
+                   (SELECT b.name FROM rf_sightings b
+                     WHERE b.scan_id = s.scan_id AND b.network_id = s.network_id
+                       AND b.name IS NOT NULL
+                     ORDER BY b.id ASC LIMIT 1)                   AS name,
+                   -- The position of the best-evidenced sighting that HAS one.
+                   --
+                   -- Both halves of that matter. Filtering on `latitude IS NOT
+                   -- NULL` rather than on `signal_dbm IS NOT NULL` is what makes
+                   -- the answer the device's position at all: ordering by signal
+                   -- alone picks the strongest sighting and then reads whatever
+                   -- latitude it happens to carry, so a device whose loudest
+                   -- pass had no GPS fix reported no position even when a weaker
+                   -- pass located it precisely. And ranking NULL signals last
+                   -- instead of excluding them keeps a source that reports a
+                   -- position but no level (a Bluetooth sweep without RSSI, a
+                   -- capture whose `Signal` field is absent or unparseable)
+                   -- locatable — before, every such device rolled up with
+                   -- `distinct_fixes > 0` and `best_latitude` NULL, a row that
+                   -- contradicts itself, and `rf_summary.with_position`
+                   -- undercounted by exactly those devices.
+                   (SELECT b.latitude FROM rf_sightings b
+                     WHERE b.scan_id = s.scan_id AND b.network_id = s.network_id
+                       AND b.latitude IS NOT NULL
+                     ORDER BY b.signal_dbm IS NULL, b.signal_dbm DESC,
+                              b.id ASC LIMIT 1)                   AS best_latitude,
+                   (SELECT b.longitude FROM rf_sightings b
+                     WHERE b.scan_id = s.scan_id AND b.network_id = s.network_id
+                       AND b.latitude IS NOT NULL
+                     ORDER BY b.signal_dbm IS NULL, b.signal_dbm DESC,
+                              b.id ASC LIMIT 1)                   AS best_longitude,
+                   COUNT(DISTINCT CASE WHEN s.latitude IS NOT NULL
+                         THEN ROUND(s.latitude, 5) || ',' || ROUND(s.longitude, 5) END)
+                                                                  AS distinct_fixes
+              FROM rf_sightings s
+             GROUP BY s.scan_id, s.network_id;
+
+            -- Names carried by more than one radio: a mesh deployment or a
+            -- 2.4/5 GHz pair. The radio count is the size of the installation,
+            -- which is how a commercial site is told from a house.
+            CREATE VIEW rf_shared_names AS
+            SELECT scan_id, name, COUNT(DISTINCT network_id) AS radios
+              FROM rf_sightings
+             WHERE name IS NOT NULL AND name <> ''
+             GROUP BY scan_id, name
+            HAVING COUNT(DISTINCT network_id) > 1;
+
+            -- Only fixed-address devices are followable across sightings; a
+            -- randomised address seen twice is not evidence of one device.
+            CREATE VIEW rf_trackable AS
+            SELECT * FROM rf_devices WHERE locally_admin = 0;
 
             -- Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN). Keyed by
             -- `module:target_kind:normalised_target` so a repeat scan of the
@@ -162,10 +320,27 @@ const SCHEMA_DDL: &str = "
             );
             ";
 
-/// Idempotent backfill of the observation junction table from `entities`.
+/// Idempotent backfill of the observation junction table from `entities`, for
+/// stores created before that table existed (every such row is missing its
+/// observation).
+///
+/// The `WHERE NOT EXISTS` guard is load-bearing, not an optimisation: it
+/// restricts the backfill to entities that have NO observation at all, so it
+/// can only ever mint an entity's FIRST (migration) observation and never
+/// re-derive one from the denormalised `entities.scan_id`. Without the guard,
+/// the finalise-time address-locality fold — which deliberately DETACHES a
+/// folded victim's `(scan_id, uid)` observation while keeping the `entities`
+/// row (see [`Store::detach_scan_observations`]) — was silently reverted on the
+/// very next `open()`: this `INSERT OR IGNORE` re-created the detached row from
+/// the victim's retained `entities.scan_id`, resurrecting the duplicate-address
+/// miscount the fold exists to remove (acute on Termux/Android, where the
+/// process restarts often). A victim that still carries an observation from
+/// another scan is now skipped here; a victim left with none is removed by the
+/// fold's own orphan cleanup, so neither can be resurrected.
 const BACKFILL_OBSERVATIONS_SQL: &str =
     "INSERT OR IGNORE INTO entity_observations(entity_uid, scan_id, observed_at)
-     SELECT uid, scan_id, observed_at FROM entities;";
+     SELECT uid, scan_id, observed_at FROM entities e
+     WHERE NOT EXISTS (SELECT 1 FROM entity_observations o WHERE o.entity_uid = e.uid);";
 
 /// Read an `i64` from an environment variable, falling back to `default` when
 /// unset or unparseable. Used for the env-tunable SQLite performance pragmas.
@@ -307,13 +482,22 @@ impl Store {
         // Backfill the FTS index for any pre-existing rows (first run after the
         // index was introduced, or an externally-restored DB). Idempotent: the
         // 'rebuild' command repopulates from the content table deterministically.
+        // `entities_fts` is an FTS5 EXTERNAL-CONTENT table (`content='entities'`),
+        // so a bare `SELECT count(*)` from the vtab is serviced from `entities`
+        // itself — it measures the CONTENT, never the index, and the freshness
+        // guard below could never fire (`fts_count == ent_count` always). The
+        // index's own row count lives in the `_docsize` shadow table (present for
+        // the default `detail=full` this table uses). `unwrap_or(0)` is fail-safe:
+        // an unreadable shadow table forces the rebuild rather than skipping it.
         let fts_count: i64 = conn
-            .query_row("SELECT count(*) FROM entities_fts", [], |r| r.get(0))
+            .query_row("SELECT count(*) FROM entities_fts_docsize", [], |r| {
+                r.get(0)
+            })
             .unwrap_or(0);
         let ent_count: i64 = conn
             .query_row("SELECT count(*) FROM entities", [], |r| r.get(0))
             .unwrap_or(0);
-        if fts_count == 0 && ent_count > 0 {
+        if fts_count < ent_count {
             // If this fails the FTS index stays empty and search silently returns
             // nothing — the exact "search is broken with no diagnostic" failure
             // mode HSE exists to avoid. Best-effort (a missing index must not
@@ -579,7 +763,37 @@ impl Store {
             while let Some(row) = rows.next()? {
                 let rowid: i64 = row.get(0)?;
                 let j: String = row.get(1)?;
-                let old_uids = serde_json::from_str::<Vec<String>>(&j).unwrap_or_default();
+                // A uid list that will not parse must take NO part in the
+                // containment decision. `unwrap_or_default()` here substituted an
+                // EMPTY set, and the empty set is a subset of every set, so the
+                // `old_set.is_subset(&new_set)` arm below matched unconditionally
+                // and the row was queued into `superseded` — then hard-DELETEd by
+                // the transaction below. One unparseable value therefore destroyed
+                // a stored finding outright, silently, and `upsert_correlation`
+                // still returned `Ok(())`. That is the very outcome the atomic
+                // transaction underneath exists to prevent, arrived at by a
+                // different route.
+                //
+                // Skip the row instead: it is neither evidence that this
+                // correlation is already represented, nor evidence that it is
+                // superseded, because its membership is unknown. Leaving a
+                // possibly-stale row costs a duplicate; deleting it loses
+                // intelligence that cannot be recovered. Logged rather than
+                // propagated, matching `deserialize_rows`' house rule that one bad
+                // row must not fail the whole operation.
+                let old_uids: Vec<String> = match serde_json::from_str(&j) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            scan_id = %c.scan_id,
+                            rule_id = %c.rule_id,
+                            rowid,
+                            error = %e,
+                            "correlations.entity_uids will not parse; row skipped for supersede, left intact"
+                        );
+                        continue;
+                    }
+                };
                 let old_set: HashSet<&str> = old_uids.iter().map(String::as_str).collect();
                 if new_set.is_subset(&old_set) {
                     // Subset of (or equal to) a stored correlation — already represented.
@@ -752,6 +966,14 @@ impl Store {
         )?;
         tx.execute("DELETE FROM events WHERE scan_id = ?1", params![scan_id])?;
         tx.execute("DELETE FROM relations WHERE scan_id = ?1", params![scan_id])?;
+        // AI-daemon analysis (`scan_analysis`) is scan-scoped like every table
+        // above; omitting it here would leave an orphaned analysis referencing a
+        // deleted scan_id on disk after `hse delete` — the exact PII-retention
+        // gap `delete_scan` exists to close.
+        tx.execute(
+            "DELETE FROM scan_analysis WHERE scan_id = ?1",
+            params![scan_id],
+        )?;
         // `stealer_rows` is scan-scoped like every table above and holds the most
         // sensitive payload in the store — stolen login/password pairs. It has no
         // other prune path, so omitting it here left a deleted scan's credentials
@@ -803,6 +1025,61 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(true)
+    }
+
+    // ── AI-daemon scan analysis (see `src/ai/`, `core::port::StoragePort`) ──
+
+    /// Persist (or overwrite) the AI-daemon's analysis for one scan.
+    pub fn upsert_scan_analysis(
+        &self,
+        analysis: &crate::core::scan_analysis::ScanAnalysis,
+    ) -> Result<()> {
+        let json = serde_json::to_string(analysis)?;
+        let conn = self.conn.lock();
+        conn.prepare_cached(
+            "INSERT INTO scan_analysis(scan_id, model, created_at, data_json)
+             VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(scan_id) DO UPDATE SET
+               model      = excluded.model,
+               created_at = excluded.created_at,
+               data_json  = excluded.data_json",
+        )?
+        .execute(params![
+            analysis.scan_id,
+            analysis.model,
+            analysis.created_at as i64,
+            json,
+        ])?;
+        Ok(())
+    }
+
+    /// The persisted AI-daemon analysis for one scan, if any.
+    pub fn get_scan_analysis(
+        &self,
+        scan_id: &str,
+    ) -> Result<Option<crate::core::scan_analysis::ScanAnalysis>> {
+        self.query_one_json(
+            "SELECT data_json FROM scan_analysis WHERE scan_id = ?1",
+            params![scan_id],
+        )
+    }
+
+    /// Terminal (`complete`/`aborted`) scans with no persisted analysis yet,
+    /// oldest-first, bounded to `limit` — the AI daemon's poll query. A plain
+    /// `NOT IN (SELECT scan_id FROM scan_analysis)` anti-join, cheap at this
+    /// table's scale (one row per analysed scan) and avoids deserialising any
+    /// `data_json` just to get an id.
+    pub fn scans_pending_analysis(&self, limit: usize) -> Result<Vec<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT id FROM scans
+             WHERE status IN ('complete', 'aborted')
+               AND id NOT IN (SELECT scan_id FROM scan_analysis)
+             ORDER BY started_at ASC, id ASC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
+        Ok(collect_rows(rows, "scans_pending_analysis"))
     }
 
     /// Prune events older than `max_age_secs` and limit total rows to
@@ -860,6 +1137,18 @@ impl Store {
         }
         tx.commit()?;
         Ok(events.len())
+    }
+
+    /// Clear all events for a scan_id — used at scan initialization to ensure a
+    /// clean slate in long-lived processes like `hse serve` where the same target
+    /// may run multiple times. Per-scan event isolation must start from fresh,
+    /// not from leftover abandoned events. Non-fatal: if this fails, logging warns
+    /// and the scan proceeds (events will just accumulate, but won't cause an
+    /// actual scan failure).
+    pub fn delete_events_for_scan(&self, scan_id: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM events WHERE scan_id = ?1", params![scan_id])?;
+        Ok(())
     }
 
     pub fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {
@@ -938,6 +1227,24 @@ impl crate::core::port::StoragePort for Store {
         Store::delete_scan(self, scan_id)
     }
 
+    fn upsert_scan_analysis(
+        &self,
+        analysis: &crate::core::scan_analysis::ScanAnalysis,
+    ) -> Result<()> {
+        Store::upsert_scan_analysis(self, analysis)
+    }
+
+    fn get_scan_analysis(
+        &self,
+        scan_id: &str,
+    ) -> Result<Option<crate::core::scan_analysis::ScanAnalysis>> {
+        Store::get_scan_analysis(self, scan_id)
+    }
+
+    fn scans_pending_analysis(&self, limit: usize) -> Result<Vec<String>> {
+        Store::scans_pending_analysis(self, limit)
+    }
+
     fn upsert_entity(&self, entity: &Entity) -> Result<()> {
         Store::upsert_entity(self, entity)
     }
@@ -980,6 +1287,10 @@ impl crate::core::port::StoragePort for Store {
         Store::observation_count(self, entity_uid)
     }
 
+    fn detach_scan_observations(&self, scan_id: &str, entity_uids: &[String]) -> Result<usize> {
+        Store::detach_scan_observations(self, scan_id, entity_uids)
+    }
+
     fn upsert_correlation(&self, c: &Correlation) -> Result<()> {
         Store::upsert_correlation(self, c)
     }
@@ -1010,6 +1321,10 @@ impl crate::core::port::StoragePort for Store {
 
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {
         Store::events_for_scan(self, scan_id)
+    }
+
+    fn delete_events_for_scan(&self, scan_id: &str) -> Result<()> {
+        Store::delete_events_for_scan(self, scan_id)
     }
 
     fn recent_module_outcome_events(&self, limit: usize) -> Result<Vec<Event>> {
@@ -1045,6 +1360,14 @@ impl crate::core::port::StoragePort for Store {
         scan_id: &str,
     ) -> Result<Vec<crate::core::stealer_row::StealerRow>> {
         Store::stealer_rows_for_scan(self, scan_id)
+    }
+
+    fn insert_rf_sightings_batch(
+        &self,
+        scan_id: &str,
+        rows: &[crate::core::rf::RfSighting],
+    ) -> Result<usize> {
+        Store::insert_rf_sightings_batch(self, scan_id, rows)
     }
 }
 

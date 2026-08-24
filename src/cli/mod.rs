@@ -163,6 +163,12 @@ async fn run_command(command: Command) -> Result<()> {
         } => crate::app::audit::cmd_audit(csv, scan_id, log, json).await,
         Command::Benchmark { scan_id, json } => crate::app::benchmark::cmd_benchmark(scan_id, json),
         Command::Gaps { scan_id, json } => crate::app::gap::cmd_gaps(scan_id, json),
+        Command::Analyze {
+            scan_id,
+            json,
+            ollama_url,
+            model,
+        } => crate::app::analyze::cmd_analyze(scan_id, json, ollama_url, model).await,
         Command::Doctor { live } => crate::app::doctor::cmd_doctor(live).await,
         Command::Selftest { json } => selftest::cmd_selftest(json).await,
         Command::Provision {
@@ -309,6 +315,18 @@ async fn run_command(command: Command) -> Result<()> {
             .await
         }
         Command::Cells { action } => crate::app::cells::cmd_cells(action).await,
+        Command::Signal {
+            scan_id,
+            devices,
+            trackable,
+            names,
+            track,
+            limit,
+            json,
+        } => {
+            crate::app::signal::cmd_signal(scan_id, devices, trackable, names, track, limit, json)
+                .await
+        }
         Command::Tidy { dry_run, json } => crate::app::tidy::cmd_tidy(dry_run, json),
     }
 }

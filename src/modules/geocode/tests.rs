@@ -287,3 +287,76 @@ fn fold_address_attrs_empty_address_adds_no_attrs() {
     let ev = fold_address_attrs(Evidence::new(SRC, "test"), &a);
     assert!(ev.attributes.is_empty());
 }
+
+// ── The forward leg's fail-closed boundary ─────────────────────────────────
+//
+// The forward leg used `unwrap_or_default()` on both of its decodes, so a WAF
+// interstitial, a schema change and a throttle all arrived as "this address does
+// not geocode" — a substantive negative about where the subject is. It now fails
+// closed. These tests pin the line that separates the two, because getting it
+// wrong in the other direction would turn every unplaceable address into a
+// module error.
+
+#[test]
+fn an_empty_nominatim_array_is_a_real_negative_not_a_failure() {
+    // Nominatim answers `[]` for an address it cannot place. That decodes
+    // successfully, so it stays an empty success — the common, healthy case.
+    let parsed: Vec<NominatimResult> =
+        serde_json::from_str("[]").expect("an empty array must decode");
+    assert!(parsed.is_empty());
+}
+
+#[test]
+fn a_body_that_is_not_a_nominatim_response_does_not_decode() {
+    // The other side of the boundary: a captive-portal or WAF page served with
+    // a 200. This must NOT parse, or it would collapse back into a silent empty
+    // and the module would again report a location negative it never earned.
+    let waf = "<html><head><title>Access denied</title></head><body>blocked</body></html>";
+    assert!(
+        serde_json::from_str::<Vec<NominatimResult>>(waf).is_err(),
+        "an HTML error page must not decode as a Nominatim response"
+    );
+    // A JSON object where an array is expected — a shape change rather than an
+    // outage — is likewise not an answer about the address.
+    assert!(
+        serde_json::from_str::<Vec<NominatimResult>>(r#"{"error":"Unable to geocode"}"#).is_err()
+    );
+}
+
+#[test]
+fn a_well_formed_result_still_decodes() {
+    // Guards the assertions above from passing for the wrong reason: the
+    // decoder must still accept the real shape.
+    let body = r#"[{"lat":"-33.8688","lon":"151.2093","display_name":"Sydney NSW, Australia"}]"#;
+    let parsed: Vec<NominatimResult> = serde_json::from_str(body).expect("real shape must decode");
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed[0].lat.as_deref(), Some("-33.8688"));
+}
+
+// The auditor's finding on the first revision of this change: the three tests
+// above call `serde_json::from_str` directly, so they pass identically against
+// the pre-change `unwrap_or_default()` code and exercise none of the new
+// branches. These call the real decode helper the fallback uses.
+#[test]
+fn the_fallback_decoder_returns_some_for_a_decodable_empty_answer() {
+    // Some(vec![]) — Nominatim genuinely could not place the address. This is
+    // the case that must NOT become an error.
+    let decoded = super::decode_forward_body("[]");
+    assert!(decoded.is_some(), "an empty array is a decodable answer");
+    assert!(decoded.expect("some").is_empty());
+}
+
+#[test]
+fn the_fallback_decoder_returns_none_for_a_non_answer() {
+    // None -> the caller raises a module error rather than reporting that the
+    // address does not geocode.
+    assert!(super::decode_forward_body("<html>Access denied</html>").is_none());
+    assert!(super::decode_forward_body(r#"{"error":"Unable to geocode"}"#).is_none());
+    assert!(super::decode_forward_body("").is_none());
+}
+
+#[test]
+fn the_fallback_decoder_returns_some_for_a_real_result() {
+    let body = r#"[{"lat":"-33.8688","lon":"151.2093","display_name":"Sydney NSW"}]"#;
+    assert_eq!(super::decode_forward_body(body).expect("decodes").len(), 1);
+}

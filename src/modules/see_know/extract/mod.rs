@@ -31,7 +31,7 @@ use crate::core::{
     validation::is_username_derived_name,
 };
 use crate::util::geo::is_valid_coords;
-use crate::util::see_know::val_str;
+use crate::util::see_know::{val_str, val_str_or_coerce};
 use crate::util::target_match::TargetMatch;
 
 use super::SRC;
@@ -157,7 +157,11 @@ pub(super) fn extract_entities(
             );
         }
     }
-    if let Some(phone) = val_str(item, "phone").or_else(|| val_str(item, "phone_number"))
+    // `val_str_or_coerce`, not `val_str`: breach/stealer dumps routinely
+    // encode a phone number as a JSON number (`"phone": 15551234567`) rather
+    // than a string — `val_str` (string-only) silently dropped the entity in
+    // that case. Matches `oathnet_pro::breach`'s handling of the same fields.
+    if let Some(phone) = val_str_or_coerce(item, &["phone", "phone_number"])
         && phone.len() >= 7
     {
         // Lowercase `phone` once and reuse that single copy for both the dedup
@@ -248,7 +252,12 @@ pub(super) fn extract_entities(
             &[],
         );
     }
-    if let Some(did) = val_str(item, "discord_id").or_else(|| val_str(item, "discordid"))
+    // `val_str_or_coerce`: a Discord snowflake is a large integer, and breach
+    // dumps commonly carry it as a JSON number rather than a string. `val_str`
+    // (string-only) silently dropped every such record's discord_id — with it,
+    // the identity-pivot chase (`resolve_identity_pivots`'s own stated "unique
+    // value" over the free username stack) never even discovered the ID.
+    if let Some(did) = val_str_or_coerce(item, &["discord_id", "discordid"])
         && seen.insert(format!("@discord:{did}"))
     {
         push_breach_entity(
@@ -267,9 +276,11 @@ pub(super) fn extract_entities(
     // Username with `steam:<id>` prefix so the gaming endpoint pivot
     // can find it without colliding with normal usernames. Matches
     // the discord-pivot pattern.
-    if let Some(sid) = val_str(item, "steam_id")
-        .or_else(|| val_str(item, "steamid"))
-        .or_else(|| val_str(item, "steam_id64"))
+    // `val_str_or_coerce`: a SteamID64 is a 64-bit integer, so a record that
+    // encodes it as a JSON number (rather than a string) previously vanished
+    // silently under plain `val_str` — same class of loss as discord_id above,
+    // and the same fix `oathnet_pro::breach` already applies to this field.
+    if let Some(sid) = val_str_or_coerce(item, &["steam_id", "steamid", "steam_id64"])
         && looks_like_steam_id(&sid)
         && seen.insert(format!("@steam:{sid}"))
     {
@@ -579,23 +590,36 @@ pub(super) fn extract_entities(
         }
     }
 
+    // Relatives / associates / household members → connected Person leads. The
+    // searched subject (`target_value`) anchors each via `related_to`, so a
+    // name search on one family member surfaces and binds to the others.
+    //
+    // Ordered BEFORE the quarantine below, so these Persons fall inside
+    // `quarantine_start..` and are demoted with the rest of a non-matching
+    // record. Previously this ran after the demotion loop, on the reasoning that
+    // the `family-candidate` tag was quarantine enough — but that tag is not
+    // `tags::CANDIDATE` and carries no confidence cap, so at `ASSOCIATE_CONF`
+    // (0.45, above PROBABLE_MIN 0.40) a same-name STRANGER's declared relatives
+    // were bound to the subject in the Probable tier. The tag documents what a
+    // Person is; only the demotion states how much to believe it.
+    extract_associates(item, target_value, scan_id, key_fp, seen, result);
+
     // Quarantine a non-matching record's identity/credential/raw-detail entities
     // to CANDIDATE strength with a `candidate` tag — the same demotion
     // oathnet_pro applies per row — so a same-name stranger from a broad search
     // survives as a low-confidence lead instead of masquerading as the subject
     // at full confidence. Applied to everything THIS record contributed above;
-    // declared relatives (next) carry their own `family-candidate` model and the
-    // subject's own rows (`is_target`) are untouched.
+    // the subject's own rows (`is_target`) are untouched.
+    //
+    // Geo entities are NOT in this range: they are emitted by a separate
+    // `extract_geo_entities` call after this function returns, and carry the
+    // same `is_target` verdict so they can demote their own range. See that
+    // function's doc comment.
     if !is_target {
         for e in &mut result.entities[quarantine_start..] {
             e.demote_to_candidate();
         }
     }
-
-    // Relatives / associates / household members → connected Person leads. The
-    // searched subject (`target_value`) anchors each via `related_to`, so a
-    // name search on one family member surfaces and binds to the others.
-    extract_associates(item, target_value, scan_id, key_fp, seen, result);
 
     // Domain is infrastructure, not a leaked credential, so it is the one kind
     // NOT tagged `breach` — keep its inline tail (and consume the last `ev`). A

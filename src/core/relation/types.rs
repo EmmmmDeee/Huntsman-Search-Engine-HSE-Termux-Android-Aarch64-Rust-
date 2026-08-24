@@ -25,19 +25,23 @@ pub enum RelationKind {
     CoLocatedWith,
     /// `from` was discovered by pivoting on `to` during expansion (lineage).
     DerivedFrom,
-    /// `from` (a Person) is identified by `to` (an Email / Username / Phone) — an
-    /// identifier bound to the person either by an owner/name field in the
-    /// identifier's own evidence, or by an identity-fingerprint match to the
-    /// subject. The edge that turns a pile of orphan handles into *one person's*
-    /// account footprint.
+    /// `from` (a Person **or an Organisation**) is identified by `to` (an Email /
+    /// Username / Phone, or — for an Organisation — its registry number
+    /// [`AbnAcn`](crate::core::entity::EntityKind::AbnAcn) or its
+    /// [`Domain`](crate::core::entity::EntityKind::Domain)) — an identifier bound
+    /// to its holder either by an owner/name field in the identifier's own
+    /// evidence, or by an identity-fingerprint match to the subject. The edge that
+    /// turns a pile of orphan handles into *one holder's* footprint.
     IdentifiedBy,
     /// `from` and `to` are the same online persona — an Email and a Username, or
     /// two Emails, sharing one normalised handle / local-part. The cross-platform
     /// "same username everywhere" pivot. Symmetric; emitted smaller-UID → larger.
     AliasOf,
-    /// `from` (a Person) is located at `to` (an Address or Coordinates) — bound by
-    /// an owner / resident field in the place's evidence, or because the place
-    /// exactly matched the subject's name during the scan (`exact-name-match`).
+    /// `from` (a Person **or an Organisation**) is located at `to` (an Address or
+    /// Coordinates) — bound by an owner / resident field in the place's evidence,
+    /// by a registered-office / registered-address record naming the organisation,
+    /// or because the place exactly matched the subject's name during the scan
+    /// (`exact-name-match`).
     LocatedAt,
     /// `from` and `to` are associated people — a kinship / associate *candidate*
     /// bound by a shared surname. Symmetric; emitted smaller-UID → larger. A lead
@@ -79,6 +83,58 @@ pub enum RelationKind {
     /// behind reused secrets" correlator finding. Symmetric; emitted
     /// smaller-UID → larger.
     SharesSecretWith,
+
+    // ── Affiliation: the person↔organisation layer ───────────────────────────
+    //
+    // The four kinds below are deliberately NOT one `AffiliatedWith`. An
+    // investigation treats them differently: an employment is a soft, self-
+    // reported tie; an officership is a legally-filed one that carries statutory
+    // duties; a membership is neither. Collapsing them would throw away exactly
+    // the distinction that decides which affiliation is worth pursuing, so each
+    // is its own kind and each names the class of source that can ground it.
+    /// `from` (a Person) is employed by / engaged at `to` (an Organisation) — a
+    /// SELF-REPORTED or site-published working relationship: a LinkedIn
+    /// experience entry, an AFS licensee an adviser operates under, an authorised
+    /// representative firm that appointed them. Distinct from
+    /// [`OfficerOf`](RelationKind::OfficerOf): employment is asserted by the
+    /// person or their employer, not filed with a companies registry, so it
+    /// carries no statutory role. Directed `Person → Organisation`.
+    EmployedBy,
+    /// `from` (a Person) holds a REGISTERED office at `to` (an Organisation) —
+    /// director, secretary, officeholder, or another position a companies /
+    /// charities register publishes against the entity (ASIC director search,
+    /// OpenCorporates officer records). The strongest person↔organisation tie the
+    /// engine can assert: a regulator, not the subject, is the source, and the
+    /// role carries legal control. Directed `Person → Organisation`.
+    OfficerOf,
+    /// `from` (a Person) is a member / registrant / alumnus of `to` (an
+    /// Organisation) — an affiliation that is neither employment nor an office:
+    /// a listed alma mater, a professional body's register. Directed
+    /// `Person → Organisation`.
+    MemberOf,
+    /// `from` (an Organisation) is controlled by `to` (an Organisation or Person)
+    /// — the corporate-hierarchy edge: a GLEIF Level 2 accounting-consolidation
+    /// parent, or the entity a regulator records as controlling a licence. The
+    /// organisational counterpart of [`IdentifiedBy`](RelationKind::IdentifiedBy):
+    /// where that binds an entity to what it *is called*, this binds one entity to
+    /// whoever *stands above it*, so a small subsidiary resolves to the group
+    /// behind it. Directed `child → controller`, so a chain of these edges walks
+    /// UP the ownership tree.
+    ///
+    /// Read the way the registers mean it, not more: a consolidation parent is
+    /// not a statement of any ownership percentage, and the ABSENCE of an edge is
+    /// not evidence of independence (see the coverage caveat the `gleif_lei`
+    /// module records on every such finding).
+    ControlledBy,
+    /// `from` (an asset — a CryptoAddress, or a business contact point such as a
+    /// Phone / Address / Email / Url) is operated by `to` (the Organisation, or
+    /// the Domain of the site, that runs it): a curated exchange/service label on
+    /// a wallet, a phone or postal address published on a company's own contact
+    /// pages. The attribution counterpart of
+    /// [`SameOperator`](RelationKind::SameOperator) — where that says two assets
+    /// share *an* operator without naming them, this NAMES the operator of one
+    /// asset. Directed `asset → operator`.
+    OperatedBy,
 }
 
 impl RelationKind {
@@ -103,6 +159,11 @@ impl RelationKind {
             Self::SameOperator => "same_operator",
             Self::SameIdentity => "same_identity",
             Self::SharesSecretWith => "shares_secret_with",
+            Self::EmployedBy => "employed_by",
+            Self::OfficerOf => "officer_of",
+            Self::MemberOf => "member_of",
+            Self::ControlledBy => "controlled_by",
+            Self::OperatedBy => "operated_by",
         }
     }
 }

@@ -11,11 +11,18 @@ const DEFAULT_RAW_LOG: &str = "trace,\
 
 pub(super) fn initialize() {
     // Raw logs by default (operator directive: the entire project outputs raw
-    // logs). When `RUST_LOG` is unset we default to TRACE — the rawest level —
-    // so every curl invocation, full endpoint payload, JSON-parse step, and
-    // retry/backoff decision is emitted without the operator having to opt in.
+    // logs). When `RUST_LOG` is unset the filter is set to TRACE, so nothing
+    // HSE emits is ever filtered out and the operator opts in to nothing.
     // An explicit `RUST_LOG` still wins (e.g. `RUST_LOG=warn` to quieten, or
     // `RUST_LOG=hyper=info,huntsman_search_engine=trace` to scope).
+    //
+    // What that actually yields today: the crate emits at DEBUG, INFO and WARN
+    // and at no other level — there is not one `trace!` or `error!` call site
+    // in `src/`. So the TRACE floor buys headroom rather than extra output, and
+    // severity carries no triage signal: a hard failure and a degraded-but-fine
+    // condition both arrive as WARN, and `RUST_LOG=error` yields an empty
+    // stream during a total outage. Raising genuine failures to `error!` is the
+    // fix; describing this floor as if TRACE events existed was not.
     //
     // Logs go to STDERR so stdout carries only the requested payload — without
     // this, log lines interleave into `--output json` (and live/export

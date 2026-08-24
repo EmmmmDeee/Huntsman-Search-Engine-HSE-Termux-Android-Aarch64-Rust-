@@ -240,7 +240,7 @@ impl Module for PlcDirectory {
             return Ok(ModuleResult::new());
         }
 
-        let Some(did) = resolve::resolve_did(ctx, seed).await else {
+        let Some(did) = resolve::resolve_did(ctx, seed).await? else {
             return Ok(ModuleResult::new());
         };
 

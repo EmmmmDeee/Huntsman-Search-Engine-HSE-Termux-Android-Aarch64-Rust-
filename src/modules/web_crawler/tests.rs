@@ -201,7 +201,10 @@ use super::*;
             "example.com",
             "scan-1",
             MAX_DEPTH,
-            false,
+            SeedShape {
+                is_url_target: false,
+                shared_profile_host: false,
+            },
             "https://example.com",
             &mut state,
         );
@@ -282,6 +285,137 @@ use super::*;
         }
     }
 
+    /// Populate a state with both site-ownership signal (subdomains, external
+    /// links, images, stack) and genuine subject data (email, phone), so a
+    /// single fixture can prove which half survives.
+    fn profile_crawl_state() -> CrawlState {
+        let mut state = empty_state();
+        state.pages_fetched = 1;
+        state.subdomains = set(&["cdn.instagram.com", "help.instagram.com"]);
+        state.external_domains = set(&["facebook.com", "threads.net"]);
+        state.image_urls = vec!["https://cdn.instagram.com/p/photo.jpg".to_string()];
+        state.image_urls_seen = set(&["https://cdn.instagram.com/p/photo.jpg"]);
+        state.frameworks = ["Next.js"].into_iter().collect();
+        state.emails = set(&["subject@personal-mail.com"]);
+        state.phones = set(&["+61411111111"]);
+        state
+    }
+
+    #[test]
+    fn profile_url_on_a_shared_platform_yields_no_site_ownership_claims() {
+        // Crawling instagram.com/<subject> says the ACCOUNT exists. It says
+        // nothing about who owns Instagram — yet this used to mint
+        // `instagram.com` as a VERY_HIGH_PLUS subject Domain and then attribute
+        // the platform's subdomains, CDN images, outbound links and tech stack
+        // to the person, so a person scan mapped Instagram's estate.
+        let mut state = profile_crawl_state();
+        build_entities(
+            "instagram.com",
+            "instagram.com",
+            "scan-1",
+            MAX_DEPTH,
+            SeedShape {
+                is_url_target: true,
+                shared_profile_host: true,
+            },
+            "https://instagram.com/subject",
+            &mut state,
+        );
+
+        assert!(
+            !state
+                .result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain),
+            "no Domain entity may be minted for a shared platform: {:?}",
+            state
+                .result
+                .entities
+                .iter()
+                .filter(|e| e.kind == EntityKind::Domain)
+                .map(|e| e.value.as_str())
+                .collect::<Vec<_>>()
+        );
+
+        let url_entity = state
+            .result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Url && e.value == "https://instagram.com/subject")
+            .expect("the profile URL itself is the finding and must survive");
+        assert!(
+            !url_entity.tags.iter().any(|t| t.starts_with("tech:")),
+            "the platform's stack must not be attributed to the subject: {:?}",
+            url_entity.tags
+        );
+        assert!(
+            !state
+                .result
+                .entities
+                .iter()
+                .any(|e| e.has_tag("exif-lead")),
+            "platform CDN images are not the subject's photographs"
+        );
+
+        // Subject data observed ON the profile page is exactly what the crawl is
+        // for, and must still come through.
+        assert!(
+            state
+                .result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Email && e.value == "subject@personal-mail.com"),
+            "an email on the profile page is subject data and must be kept"
+        );
+        assert!(
+            state
+                .result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Phone),
+            "a phone on the profile page is subject data and must be kept"
+        );
+    }
+
+    #[test]
+    fn explicit_domain_scan_still_maps_infrastructure() {
+        // The counterpart guard: suppression is scoped to profile URLs. Asking
+        // to scan a domain outright is a deliberate infrastructure request and
+        // must be unaffected — otherwise the fix above would silently gut
+        // legitimate domain reconnaissance.
+        let mut state = profile_crawl_state();
+        build_entities(
+            "instagram.com",
+            "instagram.com",
+            "scan-1",
+            MAX_DEPTH,
+            // An explicit Domain scan, so never a shared-profile host.
+            SeedShape {
+                is_url_target: false,
+                shared_profile_host: false,
+            },
+            "https://instagram.com",
+            &mut state,
+        );
+        assert!(
+            state
+                .result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == "instagram.com"),
+            "an explicit domain scan must still mint the domain entity"
+        );
+        assert!(
+            state
+                .result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == "cdn.instagram.com"),
+            "an explicit domain scan must still emit discovered subdomains"
+        );
+    }
+
     #[test]
     fn crawl_evidence_reports_true_image_total_and_flags_the_cap() {
         // The evidence must state how many images were actually found, not the
@@ -299,7 +433,10 @@ use super::*;
             "example.com",
             "scan-1",
             MAX_DEPTH,
-            false,
+            SeedShape {
+                is_url_target: false,
+                shared_profile_host: false,
+            },
             "https://example.com",
             &mut state,
         );
@@ -342,7 +479,10 @@ use super::*;
             "example.com",
             "scan-1",
             MAX_DEPTH,
-            false,
+            SeedShape {
+                is_url_target: false,
+                shared_profile_host: false,
+            },
             "https://example.com",
             &mut state,
         );
@@ -373,7 +513,10 @@ use super::*;
             "example.com",
             "scan-1",
             MAX_DEPTH,
-            false,
+            SeedShape {
+                is_url_target: false,
+                shared_profile_host: false,
+            },
             "https://example.com",
             &mut state,
         );

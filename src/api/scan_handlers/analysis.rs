@@ -43,7 +43,8 @@ pub async fn scan_entities(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    super::apply_candidate_gate(&mut entities, &params);
+    let gate = super::EntityViewGate::from_params(&params);
+    gate.apply_to_entity_set(&mut entities);
     let total = entities.len();
 
     // Paginate: slice the result set to [offset, offset+limit).
@@ -91,7 +92,8 @@ pub async fn scan_exposure(
         Ok(pair) => pair,
         Err(resp) => return resp,
     };
-    super::apply_candidate_gate(&mut entities, &params);
+    let gate = super::EntityViewGate::from_params(&params);
+    gate.apply_to_entity_set(&mut entities);
     let idx = crate::core::exposure::assess(&entities, &correlations);
     // `summary_line` is the exact headline the CLI prints, carried over so the
     // web console can render the identical wording instead of reassembling it
@@ -180,6 +182,20 @@ pub async fn scan_attack(
         for tid in e.tags.iter().filter_map(|t| t.strip_prefix("attack:")) {
             *exercised.entry(tid.to_string()).or_insert(0) += 1;
         }
+    }
+    // Fold in the techniques the scan's RELATIONS exercised. An officership
+    // established from a companies register IS T1591.004 (Identify Roles)
+    // whether or not any single entity carries the tag, and the technique lives
+    // in the edge — so a tag-only rollup under-reported exactly what the graph
+    // layer contributes. A store that can't return the relations degrades to
+    // the entity-only count rather than failing the whole endpoint: an
+    // incomplete coverage figure is still useful, a 500 is not.
+    let store = std::sync::Arc::clone(&s.store);
+    let id3 = id.clone();
+    if let Ok(Ok(relations)) =
+        tokio::task::spawn_blocking(move || store.relations_for_scan(&id3)).await
+    {
+        crate::core::attack::fold_relation_techniques(&mut exercised, &relations);
     }
     let coverage = crate::core::attack::coverage(&exercised);
     if params.get("format").map(String::as_str) == Some("navigator") {
@@ -415,7 +431,8 @@ pub async fn scan_relations(
     };
     // Hide candidate endpoints (as node values AND as dangling edges) unless
     // opted in — the Relations view must not route around the entity quarantine.
-    let (ents, rels) = super::confine_graph_to_visible(ents, rels, &params);
+    let gate = super::EntityViewGate::from_params(&params);
+    let (ents, rels) = gate.apply_to_graph(ents, rels);
     let by_uid: std::collections::HashMap<String, (String, String)> = ents
         .into_iter()
         .map(|e| (e.uid, (e.value, e.kind.to_string())))

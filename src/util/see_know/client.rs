@@ -279,8 +279,14 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
         if is_auth_error(body) {
             mark_key_invalid(body);
         } else if !trimmed.is_empty() {
+            // Redact BEFORE truncating: slicing first could cut a credential in
+            // half and emit the surviving prefix verbatim. This is the same
+            // discipline `util::http::error_snippet` applies to every body it
+            // embeds — see_know's two body previews were the only ones that
+            // bypassed it.
+            let redacted = crate::util::http::redact_credentials(body);
             tracing::debug!(
-                preview = %body.chars().take(60).collect::<String>(),
+                preview = %redacted.chars().take(60).collect::<String>(),
                 "see_know: non-JSON response body treated as no results"
             );
         }
@@ -305,9 +311,15 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
         // `endpoints.rs` can distinguish "back off and retry" from a normal
         // empty result — see `Terminal::RateLimited`'s doc comment for why
         // this must NOT latch `mark_quota_exhausted()`.
+        // Redacted before truncation for the same reason as the preview above:
+        // `Error::RateLimited`'s Display reaches operator-facing sinks, so a
+        // credential echoed in a provider error body must never ride along.
         Some(Terminal::RateLimited) => Err(Error::RateLimited(format!(
             "seek_now: {}",
-            body.chars().take(120).collect::<String>()
+            crate::util::http::redact_credentials(body)
+                .chars()
+                .take(120)
+                .collect::<String>()
         ))),
         None => Ok(value),
     }
@@ -322,11 +334,102 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
 /// [`Value::Null`]) and silently lost. A 2xx-empty result and a 4xx JSON body
 /// (including the `invalid_api_key`/`plan_required` auth latch) keep their exact
 /// [`parse_response`] classification — only the transient class is diverted.
+/// True when a TRANSPORT-layer error string names a terminal auth failure, so
+/// the multi-domain fallback stops instead of re-asking every alternate domain
+/// with the same rejected key.
+///
+/// One named predicate rather than the identical condition inlined at each of
+/// the three fallback loops (POST / GET / raw-GET), which is both a drift risk
+/// and — as a bare expression — untestable.
+///
+/// Deliberately narrow: this is the curl-transport path, where an HTTP 401
+/// normally arrives as `Ok((body, 401))` and is classified by `parse_response`.
+/// It stays as a guard for the case where a proxy or DoH layer surfaces the
+/// rejection as an error string instead.
+pub(super) fn transport_err_is_terminal_auth(err_str: &str) -> bool {
+    contains_401_as_a_status_code(err_str)
+        || err_str.contains("Unauthorized")
+        || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
+}
+
+/// True if `s` contains "401" as an isolated token, not merely as three
+/// consecutive digits inside a longer number. A curl transport-level failure
+/// (this function's only caller is the pre-response, connection/DNS/timeout
+/// path) commonly reports an elapsed duration — libcurl's own timeout message
+/// is literally "Operation timed out after {ms} milliseconds..." — so a bare
+/// `contains("401")` matched an elapsed time landing anywhere in
+/// 401/4010-4019/40100-40199/… milliseconds, wrongly classifying an ordinary
+/// timeout as a rejected key and aborting the whole multi-domain fallback
+/// instead of trying the next domain. The existing test suite already asserts
+/// `"connection timed out"` must NEVER be terminal — this closes the same gap
+/// for a differently-worded timeout that happens to embed those digits.
+fn contains_401_as_a_status_code(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    s.match_indices("401").any(|(i, _)| {
+        let before_is_digit = i > 0 && bytes[i - 1].is_ascii_digit();
+        let after_is_digit = bytes.get(i + 3).is_some_and(u8::is_ascii_digit);
+        !before_is_digit && !after_is_digit
+    })
+}
+
 pub(super) fn classify_status(body: &str, status: u16) -> Result<Value> {
     if status == 0 || (500..600).contains(&status) {
         return Err(Error::RateLimited(format!(
             "seek_now: HTTP {status} transient upstream failure"
         )));
+    }
+    // HTTP 401 is unambiguous per both HTTP semantics and SeekNow's own
+    // documented mapping (docs/SEEKNOW_SETUP.md: "401 Unauthorized — Invalid/
+    // expired API key"): the whole key is bad, independent of how the JSON
+    // body happens to word it. Without this status-code check, a 401 body that
+    // didn't use one of the three exact substrings `is_auth_error` checks (e.g.
+    // `{"error":"unauthorized"}`) fell through to `parse_response`, which found
+    // no recognised error/quota envelope in a well-formed JSON object and
+    // returned it as an ordinary — silently EMPTY — success: the scan then
+    // burned through every remaining lookup against a key the server had
+    // already and definitively rejected, and `hse doctor`'s "key invalid"
+    // diagnostic never latched.
+    if status == 401 {
+        mark_key_invalid(body);
+        return Ok(Value::Null);
+    }
+    // HTTP 403 is documented DIFFERENTLY: "Plan doesn't allow endpoint — skips
+    // endpoint, continues with others" — a PER-ENDPOINT restriction, not a
+    // key-wide rejection. It must NEVER call `mark_key_invalid`: that disables
+    // SeekNow for the rest of the scan ACROSS EVERY ENDPOINT, so one
+    // plan-gated endpoint's 403 would wrongly silence every other,
+    // currently-working endpoint too — a false-positive lockout worse than the
+    // gap this is fixing. Surfacing it as a typed `Err` (rather than falling
+    // through to the same silent `Ok(empty)` success as the 401 case used to)
+    // is enough: `fold_endpoint_result` (every SeekNow dispatcher's shared
+    // fold) warns and skips just this one endpoint, and
+    // `ModuleResult::or_hard_failure` escalates it only if the WHOLE seed still
+    // ends up with zero entities. Excluded when the body already carries a
+    // known auth/plan marker (`plan_required` in particular is the ACCOUNT
+    // having no paid plan at all, a genuinely key-wide issue) — that case falls
+    // through to the existing, already-tested body-based latch below.
+    if status == 403 && !is_auth_error(body) {
+        return Err(Error::module(
+            "seek_now",
+            "HTTP 403 (endpoint not covered by the account's plan)",
+        ));
+    }
+    // A CDN/gateway 429 "Too Many Requests" is commonly served as an HTML or
+    // plain-text interstitial, NOT the API's JSON `{"error":"rate_limit"}`
+    // envelope. Such a body hits `parse_response`'s non-JSON branch and becomes
+    // an empty `Ok(Value::Null)` — a silent miss with NO backoff, the exact
+    // "throttled call silently abandoned" failure `Error::RateLimited` exists to
+    // prevent (symmetric with the 5xx divert above). Divert ONLY a non-JSON,
+    // non-auth 429: a JSON 429 keeps its precise `parse_response`/`classify_terminal`
+    // classification (`rate_limit`→retry, `quota_exceeded`/`invalid_api_key`→latch),
+    // and a plaintext auth rejection still latches the key via `parse_response`.
+    if status == 429 {
+        let trimmed = body.trim_start();
+        if !trimmed.starts_with('{') && !trimmed.starts_with('[') && !is_auth_error(body) {
+            return Err(Error::RateLimited(
+                "seek_now: HTTP 429 rate limited (non-JSON body)".into(),
+            ));
+        }
     }
     parse_response(body)
 }
@@ -371,12 +474,8 @@ pub(super) async fn post_json_with_fallback(
                 Err(e) => return Err(e),
             },
             Err(e) => {
-                let err_str = e.to_string();
                 // Auth errors are terminal — no point trying other domains.
-                if err_str.contains("401")
-                    || err_str.contains("Unauthorized")
-                    || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
-                {
+                if transport_err_is_terminal_auth(&e.to_string()) {
                     return Err(e);
                 }
                 // For other errors (connection, DNS, timeout), try the next domain.
@@ -439,12 +538,8 @@ pub(super) async fn get_json_with_fallback(
                 Err(e) => return Err(e),
             },
             Err(e) => {
-                let err_str = e.to_string();
                 // Auth errors are terminal — no point trying other domains.
-                if err_str.contains("401")
-                    || err_str.contains("Unauthorized")
-                    || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
-                {
+                if transport_err_is_terminal_auth(&e.to_string()) {
                     return Err(e);
                 }
                 // For other errors (connection, DNS, timeout), try the next domain.
@@ -484,12 +579,8 @@ pub(super) async fn get_raw_with_fallback(endpoint_path: &str, key: &str) -> Res
         match CLIENT_FAST.get(&url, key).await {
             Ok(body) => return Ok(body),
             Err(e) => {
-                let err_str = e.to_string();
                 // Auth errors are terminal — no point trying other domains.
-                if err_str.contains("401")
-                    || err_str.contains("Unauthorized")
-                    || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
-                {
+                if transport_err_is_terminal_auth(&e.to_string()) {
                     return Err(e);
                 }
                 // For other errors (connection, DNS, timeout), try the next domain.

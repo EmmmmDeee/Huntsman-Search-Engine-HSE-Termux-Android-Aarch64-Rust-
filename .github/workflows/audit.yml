@@ -16,6 +16,8 @@ on:
       - '**/Cargo.toml'
       - '**/Cargo.lock'
       - 'deny.toml'
+      - 'dep-cooldown.toml'
+      - 'src/bin/dep_cooldown/**'
       - '.github/workflows/audit.yml'
 
 # Least privilege: the job only reads the checked-out tree + the public
@@ -70,3 +72,13 @@ jobs:
 
       - name: Check for unused dependencies
         run: cargo machete --with-metadata
+
+      # Freshness/cooldown gate: fails on a crates.io dependency in Cargo.lock
+      # published more recently than the cooldown window in dep-cooldown.toml
+      # (unless explicitly allow-listed there) — a compromised publish is most
+      # likely to slip through unnoticed in its first few days, so this buys
+      # real detection time on top of the known-vulnerability check above.
+      # Built from this repo's own source (src/bin/dep_cooldown/), not an
+      # external tool, so there is no separate install step.
+      - name: Check dependency cooldown
+        run: cargo run --locked --bin dep-cooldown --features dep-cooldown

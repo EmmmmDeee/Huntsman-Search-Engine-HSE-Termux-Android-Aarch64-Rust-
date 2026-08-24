@@ -36,6 +36,13 @@ use crate::util::extract::EMAIL_RE;
 
 const SRC: &str = "exa_search";
 const KEY_ENV: &str = "HUNTSMAN_EXA_KEY";
+
+/// The key pool addresses this provider as `exa` (its `ServiceDef.name`), not as
+/// the module name — resolved from this module's own `KEY_ENV` so the two can
+/// never drift. See [`crate::util::service_defs::service_for_env`].
+fn pool_service() -> &'static str {
+    crate::util::service_defs::service_for_env(KEY_ENV).map_or(SRC, |d| d.name)
+}
 const BASE_URL: &str = "https://api.exa.ai/search";
 const NUM_RESULTS: u32 = 10;
 
@@ -191,7 +198,8 @@ impl Module for ExaSearch {
         // 401/403/429 → note_keyed_error + Err; 404 → clean miss; other
         // non-2xx → Err via http_status_error. Previously a 500 (server error)
         // would incorrectly mark the key exhausted — fixed by this helper.
-        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
+        let Some(resp) = crate::util::http::keyed_ok_or_404(pool_service(), key, ctx, resp).await?
+        else {
             return Ok(ModuleResult::new());
         };
 

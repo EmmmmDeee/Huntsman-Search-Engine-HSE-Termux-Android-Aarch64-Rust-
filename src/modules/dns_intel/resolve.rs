@@ -12,6 +12,20 @@ use crate::util::dns::shared_resolver;
 use super::SRC;
 use super::helpers::{soa_rname_to_email, verification_vendor};
 
+/// Whether a lookup outcome *established* something about the zone.
+///
+/// `Ok` did. So did an `Err` that `is_no_records_found()`: hickory maps NXDOMAIN and
+/// NOERROR-with-no-answers there and routes SERVFAIL/REFUSED/FORMERR/timeout to other
+/// variants instead, so a failing resolver cannot reach this arm dressed as a clean
+/// negative. The DNSBL sweep further down this file relies on exactly that property.
+/// Every other `Err` means the resolver answered nothing at all.
+fn answered<T>(outcome: &std::result::Result<T, hickory_resolver::net::NetError>) -> bool {
+    match outcome {
+        Ok(_) => true,
+        Err(e) => e.is_no_records_found(),
+    }
+}
+
 /// A / AAAA / MX / NS / SOA / TXT / DMARC — run concurrently via `tokio::join!`.
 ///
 /// DMARC records are published at `_dmarc.{domain}` (RFC 7489 §6.6.3), never at
@@ -34,6 +48,32 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
         resolver.txt_lookup(dmarc_name.as_str()),
         resolver.txt_lookup(tlsrpt_name.as_str()),
     );
+
+    // Fail closed when the resolver established nothing at all. Each `if let Ok(..)`
+    // below discards its own lookup's error, which is right for one record type that
+    // genuinely has none — but if EVERY lookup failed for a non-NXDOMAIN reason
+    // (SERVFAIL, REFUSED, timeout, no route: a captive portal, a VPN transition, a
+    // resolver that is simply down) then `Ok(entities)` returns empty and the caller
+    // cannot distinguish that from a domain that is genuinely parked. DNS seeds most
+    // of this engine's downstream pivots, so that silent empty also truncates the
+    // whole BFS branch rather than just losing one source.
+    if ![
+        answered(&ips),
+        answered(&mxs),
+        answered(&nss),
+        answered(&soa),
+        answered(&txts),
+        answered(&dmarc_txts),
+        answered(&tlsrpt_txts),
+    ]
+    .iter()
+    .any(|a| *a)
+    {
+        return Err(crate::core::error::Error::module(
+            SRC,
+            format!("resolver established nothing for {domain}: every lookup failed"),
+        ));
+    }
 
     // A + AAAA
     if let Ok(lookup) = ips {
@@ -497,7 +537,16 @@ pub(super) async fn lookup_caa(target: &Target, ctx: &ModuleContext) -> Result<V
 
     let lookup = match resolver.lookup(domain, RecordType::CAA).await {
         Ok(l) => l,
-        Err(_) => return Ok(Vec::new()),
+        // "No CAA records" is a real answer about the zone — most domains publish
+        // none — so it stays an empty result. A resolver that established nothing
+        // must not report the same thing.
+        Err(e) if e.is_no_records_found() => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(crate::core::error::Error::module(
+                SRC,
+                format!("CAA lookup failed for {domain}: {e}"),
+            ));
+        }
     };
 
     let mut issuers: Vec<String> = Vec::new();
@@ -630,7 +679,15 @@ pub(super) async fn reverse_lookup(target: &Target, ctx: &ModuleContext) -> Resu
     let resolver = shared_resolver();
     let lookup = match resolver.reverse_lookup(ip).await {
         Ok(l) => l,
-        Err(_) => return Ok(Vec::new()),
+        // No PTR record is the normal case for most of the address space, and is a
+        // real answer. A SERVFAIL/timeout is not.
+        Err(e) if e.is_no_records_found() => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(crate::core::error::Error::module(
+                SRC,
+                format!("reverse lookup failed for {ip}: {e}"),
+            ));
+        }
     };
 
     let entities: Vec<Entity> = lookup

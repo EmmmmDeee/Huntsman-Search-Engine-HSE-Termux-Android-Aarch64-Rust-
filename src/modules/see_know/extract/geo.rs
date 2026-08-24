@@ -18,13 +18,32 @@ pub(super) fn parse_coord(item: &Value, keys: &[&str]) -> Option<f64> {
     v.as_f64().or_else(|| v.as_str()?.parse().ok())
 }
 
+/// Extract this record's geo entities.
+///
+/// `is_target` is the same match verdict [`super::extract_entities`] computes
+/// (`TargetMatch::matches(item)`) and MUST be threaded through: geo runs as a
+/// separate call, after `extract_entities` has already returned, so its pushes
+/// land outside that function's `quarantine_start..` window and its demotion
+/// loop can never reach them. Without this, a broad `/search` row belonging to a
+/// same-name stranger had its identity entities correctly demoted to Candidate
+/// (0.25) while its Coordinates entered the **Verified** tier at 0.75 — the
+/// system's highest — and its address/org/ASN sat at Probable. Location is
+/// exactly the wrong field to get that wrong on: geo entities feed the
+/// geocode/overpass/wigle/breach_timezone correlators, so a stranger's location
+/// would be treated as the subject's confirmed location and correlated onward.
 pub(in crate::modules::see_know) fn extract_geo_entities(
     item: &Value,
     endpoint: &str,
     scan_id: &str,
+    is_target: bool,
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
+    // Everything this call appends is demoted together at the end when the
+    // record does not identify the subject — the same contract
+    // `extract_entities` applies to its own range.
+    let quarantine_start = result.entities.len();
+
     // Direct coordinate fields — some endpoints (ip_info, phone_info)
     // return lat/lon pairs directly, as a JSON number or a numeric string.
     let lat = parse_coord(item, &["latitude", "lat"]);
@@ -138,6 +157,15 @@ pub(in crate::modules::see_know) fn extract_geo_entities(
                 e.add_evidence(Evidence::new(SRC, "Domain WHOIS registrant address"));
                 result.push(e);
             }
+        }
+    }
+
+    // A record that does not identify the subject contributes leads, not facts.
+    // Demoting here — rather than at each push above — keeps one exit point for
+    // the rule, so a geo field added later is covered without being remembered.
+    if !is_target {
+        for e in &mut result.entities[quarantine_start..] {
+            e.demote_to_candidate();
         }
     }
 }

@@ -378,6 +378,32 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// AI-daemon scan analysis: prompt a locally-run Ollama instance for a
+    /// plain-language summary and ranked findings on an already-completed
+    /// scan's discovered entities. Opt-in (`hse config feature.ai_daemon on`)
+    /// and requires Ollama to be installed, running, and reachable — never
+    /// runs as part of `hse scan`/`hse serve`/`hse live`. See `src/ai/`. Also
+    /// reads `HUNTSMAN_OLLAMA_TIMEOUT_MS` (generation timeout in
+    /// milliseconds; default 120000, floor 1000) — no `--timeout` flag exists
+    /// for it, since a single analysis call has no other caller-tunable knob
+    /// to group it with.
+    Analyze {
+        /// Stored scan id to analyse (`latest` for the most recent completed scan).
+        #[arg(long)]
+        scan_id: Option<String>,
+        /// Emit the machine-readable JSON report instead of the text summary.
+        #[arg(long)]
+        json: bool,
+        /// Ollama base URL (default `http://127.0.0.1:11434`, or
+        /// `HUNTSMAN_OLLAMA_URL`).
+        #[arg(long, env = "HUNTSMAN_OLLAMA_URL")]
+        ollama_url: Option<String>,
+        /// Ollama model tag to use (or `HUNTSMAN_OLLAMA_MODEL`); required —
+        /// there is no default model, since a default would silently invoke
+        /// whatever an operator happens to have pulled.
+        #[arg(long, env = "HUNTSMAN_OLLAMA_MODEL")]
+        model: Option<String>,
+    },
     /// Verify environment: DB path, key file, Termux detection, module counts.
     /// (Subsumed by `hse diagnostics`; kept for scripting and the API/UI.)
     #[command(hide = true)]
@@ -765,6 +791,45 @@ pub enum Command {
     Cells {
         #[command(subcommand)]
         action: crate::app::cells::CellsAction,
+    },
+
+    /// Query the RF sighting database — every Wi-Fi, Bluetooth/BLE and cellular
+    /// observation a wardriving import or radar sweep recorded.
+    ///
+    /// This reads `rf_sightings`, which is kept alongside the entity graph
+    /// rather than instead of it. The graph records which devices exist; this
+    /// records every time each was heard, from where and how loudly — the
+    /// per-sighting detail the graph's flattening dissolves.
+    ///
+    /// With no flags, prints the scan's summary. `--devices` lists one row per
+    /// device, strongest first. `--track <ID>` prints one device's full sighting
+    /// history, which is the movement record.
+    Signal {
+        /// Scan to read. Defaults to the most recent import/sweep that produced
+        /// sightings, so the common case needs no id.
+        #[arg(long)]
+        scan_id: Option<String>,
+        /// One row per device, strongest signal first.
+        #[arg(long)]
+        devices: bool,
+        /// Only devices with a fixed hardware address — the ones whose
+        /// recurrence across sightings actually means something. A randomised
+        /// address rotates, so seeing it twice is not seeing one device twice.
+        #[arg(long)]
+        trackable: bool,
+        /// Network names carried by more than one radio (mesh deployments and
+        /// 2.4/5 GHz pairs), largest installation first.
+        #[arg(long)]
+        names: bool,
+        /// Every sighting of one device, oldest first.
+        #[arg(long, value_name = "NETWORK_ID")]
+        track: Option<String>,
+        /// Cap on rows printed by the list views.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Emit JSON instead of the text table.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Housekeeping: keep the on-device `~/.huntsman` footprint bounded and

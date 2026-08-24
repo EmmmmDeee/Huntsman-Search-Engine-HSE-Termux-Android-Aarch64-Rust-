@@ -288,6 +288,112 @@ use super::*;
     }
 
     #[test]
+    fn static_reconnaissance_coverage_is_the_platform_envelope() {
+        use crate::core::entity::EntityKind;
+        use crate::core::relation::RelationKind;
+
+        // Union-level drift guard. The two arm-less matches force a new EntityKind
+        // or RelationKind to be triaged into MAPPED_ENTITY_KINDS / ALL_RELATION_KINDS
+        // (in mod.rs) before the build passes — so the static coverage envelope can
+        // never silently stop counting a new surface. Mirrors the per-surface
+        // guards; this one pins the *recursive union* across all three surfaces.
+        fn _entity_surface_is_exhaustive(k: &EntityKind) {
+            match k {
+                EntityKind::Person
+                | EntityKind::Email
+                | EntityKind::Phone
+                | EntityKind::Username
+                | EntityKind::Credential
+                | EntityKind::ApiKey
+                | EntityKind::Password
+                | EntityKind::IpAddress
+                | EntityKind::Domain
+                | EntityKind::Url
+                | EntityKind::Asn
+                | EntityKind::Cidr
+                | EntityKind::Address
+                | EntityKind::Coordinates
+                | EntityKind::Organisation
+                | EntityKind::AbnAcn
+                | EntityKind::MacAddress
+                | EntityKind::DeviceId
+                | EntityKind::Ssid
+                | EntityKind::TrackingId
+                | EntityKind::CryptoAddress => {}
+                // The catch-all is deliberately excluded from MAPPED_ENTITY_KINDS
+                // (no ATT&CK mapping); it still must be named here so a *new* real
+                // kind can't hide behind the wildcard.
+                EntityKind::Other(_) => {}
+            }
+        }
+        fn _relation_surface_is_exhaustive(k: RelationKind) {
+            match k {
+                RelationKind::SubdomainOf
+                | RelationKind::BelongsToDomain
+                | RelationKind::HostedOn
+                | RelationKind::ResolvesTo
+                | RelationKind::RegisteredBy
+                | RelationKind::CoLocatedWith
+                | RelationKind::DerivedFrom
+                | RelationKind::IdentifiedBy
+                | RelationKind::AliasOf
+                | RelationKind::LocatedAt
+                | RelationKind::AssociatedWith
+                | RelationKind::SameAs
+                | RelationKind::SameOperator
+                | RelationKind::SameIdentity
+                | RelationKind::SharesSecretWith
+                | RelationKind::EmployedBy
+                | RelationKind::OfficerOf
+                | RelationKind::MemberOf
+                | RelationKind::ControlledBy
+                | RelationKind::OperatedBy => {}
+            }
+        }
+
+        // A representative module surface; the entity + relation surfaces are
+        // unioned internally regardless of which module ids are passed. In
+        // production, `hse selftest` passes the whole registry.
+        let cov = static_reconnaissance_coverage(["T1595.001", "T1596.002", "T1589.001"]);
+
+        // Partition invariant: covered + honest gaps == the whole TA0043 tactic.
+        assert_eq!(cov.covered.len() + cov.uncovered.len(), reconnaissance().len());
+        assert_eq!(cov.tactic_id, TACTIC_ID);
+        // Non-empty and never total: the entity + relation surfaces (plus the
+        // synthetic module ids) exercise some of the tactic but not all of it — a
+        // passive collector performs no phishing / active-solicitation techniques.
+        // The *real-platform* fraction (whole registry unioned) is pinned by the
+        // registry-aware `platform_static_attack_envelope_is_pinned` integration
+        // guard, which core cannot express (it must not import the module registry).
+        assert!(
+            cov.coverage_fraction > 0.0 && cov.coverage_fraction < 1.0,
+            "structural coverage fraction {} is implausible",
+            cov.coverage_fraction
+        );
+
+        // The entity + relation surfaces alone cover the identity / org / infra
+        // backbone independent of the modules passed — pin a few so a regression
+        // in techniques_for_entity_kind / techniques_for_relation_kind surfaces.
+        let covered: std::collections::BTreeSet<&str> =
+            cov.covered.iter().map(|c| c.technique.id).collect();
+        for id in [
+            "T1589.002", // Email Addresses — from the Email entity surface
+            "T1590.005", // IP Addresses   — from the IpAddress entity surface
+            "T1591.004", // Identify Roles — from the OfficerOf relation surface
+        ] {
+            assert!(covered.contains(id), "static envelope must cover {id}");
+        }
+
+        // Honest structural gap: HSE performs no phishing (T1598 family), so it
+        // must remain an uncovered TA0043 technique in the capability envelope —
+        // a surface silently mapping to it would be a false capability claim.
+        assert!(
+            cov.uncovered.iter().any(|t| t.id == "T1598"),
+            "T1598 (Phishing for Information) must be an honest structural gap"
+        );
+    }
+
+    #[test]
     fn navigator_layer_is_a_valid_honest_layer() {
         let mut exercised = std::collections::BTreeMap::new();
         exercised.insert("T1596.002".to_string(), 5);
@@ -295,6 +401,15 @@ use super::*;
 
         assert_eq!(layer["domain"], "enterprise-attack");
         assert_eq!(layer["versions"]["layer"], "4.5");
+        // The emitted ATT&CK content version must track the catalogue
+        // (ATTACK_VERSION's major), not a hand-typed literal that drifts behind a
+        // catalogue bump. Derived here independently of attack_spec_major() so a
+        // bug in the derivation can't make both sides agree by construction.
+        assert_eq!(
+            layer["versions"]["attack"].as_str().expect("attack version is a string"),
+            ATTACK_VERSION.split('.').next().expect("ATTACK_VERSION has a major component"),
+            "Navigator attack version must equal the ATTACK_VERSION major"
+        );
         // Exactly one technique per catalogued id (covered + gaps = whole tactic).
         let techs = layer["techniques"].as_array().expect("should succeed");
         assert_eq!(techs.len(), reconnaissance().len());
@@ -351,6 +466,125 @@ use super::*;
                 );
             }
         }
+    }
+
+    #[test]
+    fn every_relation_kind_maps_only_to_catalogued_reconnaissance_ids() {
+        // Relation-mapping drift guard, the third of the trio beside the
+        // category and entity-kind guards. The `match` below has NO `_` arm, so
+        // a new RelationKind fails to compile until it is triaged here — the
+        // graph layer can't silently stop contributing to coverage.
+        use crate::core::relation::RelationKind;
+        const EVERY: &[RelationKind] = &[
+            RelationKind::SubdomainOf,
+            RelationKind::BelongsToDomain,
+            RelationKind::HostedOn,
+            RelationKind::ResolvesTo,
+            RelationKind::RegisteredBy,
+            RelationKind::CoLocatedWith,
+            RelationKind::DerivedFrom,
+            RelationKind::IdentifiedBy,
+            RelationKind::AliasOf,
+            RelationKind::LocatedAt,
+            RelationKind::AssociatedWith,
+            RelationKind::SameAs,
+            RelationKind::SameOperator,
+            RelationKind::SameIdentity,
+            RelationKind::SharesSecretWith,
+            RelationKind::EmployedBy,
+            RelationKind::OfficerOf,
+            RelationKind::MemberOf,
+            RelationKind::ControlledBy,
+            RelationKind::OperatedBy,
+        ];
+        for &k in EVERY {
+            match k {
+                RelationKind::SubdomainOf
+                | RelationKind::BelongsToDomain
+                | RelationKind::HostedOn
+                | RelationKind::ResolvesTo
+                | RelationKind::RegisteredBy
+                | RelationKind::CoLocatedWith
+                | RelationKind::DerivedFrom
+                | RelationKind::IdentifiedBy
+                | RelationKind::AliasOf
+                | RelationKind::LocatedAt
+                | RelationKind::AssociatedWith
+                | RelationKind::SameAs
+                | RelationKind::SameOperator
+                | RelationKind::SameIdentity
+                | RelationKind::SharesSecretWith
+                | RelationKind::EmployedBy
+                | RelationKind::OfficerOf
+                | RelationKind::MemberOf
+                | RelationKind::ControlledBy
+                | RelationKind::OperatedBy => {}
+            }
+            for id in techniques_for_relation_kind(k) {
+                let t = technique(id)
+                    .unwrap_or_else(|| panic!("{k:?} maps to unknown technique {id}"));
+                assert!(
+                    t.tactics.contains(&"reconnaissance"),
+                    "{k:?} maps to {id}, which is not a Reconnaissance technique"
+                );
+            }
+        }
+        assert_eq!(EVERY.len(), 20, "one entry per RelationKind variant");
+    }
+
+    #[test]
+    fn relation_mapping_names_the_affiliation_techniques_exactly() {
+        // The mappings that carry the most weight: an edge derived from a
+        // companies register is Identify Roles, and a corporate hierarchy is
+        // Business Relationships. Pinned so a later edit can't quietly blur them.
+        use crate::core::relation::RelationKind;
+        assert_eq!(
+            techniques_for_relation_kind(RelationKind::OfficerOf),
+            &["T1591.004"],
+            "a filed officeholder IS Identify Roles"
+        );
+        assert_eq!(
+            techniques_for_relation_kind(RelationKind::ControlledBy),
+            &["T1591.002"],
+            "the corporate hierarchy IS Business Relationships"
+        );
+        assert_eq!(technique("T1591.004").map(|t| t.name), Some("Identify Roles"));
+        assert_eq!(
+            technique("T1591.002").map(|t| t.name),
+            Some("Business Relationships")
+        );
+        // Provenance and normalisation are NOT collection against the target.
+        assert!(techniques_for_relation_kind(RelationKind::DerivedFrom).is_empty());
+        assert!(techniques_for_relation_kind(RelationKind::SameAs).is_empty());
+    }
+
+    #[test]
+    fn folding_relations_adds_edge_counts_to_the_entity_tally() {
+        use crate::core::relation::{Relation, RelationKind};
+        let mut exercised = std::collections::BTreeMap::new();
+        exercised.insert("T1591.004".to_string(), 2); // 2 entities already tagged
+        let rels = vec![
+            Relation::new("a", "b", RelationKind::OfficerOf, 0.9, "s"),
+            Relation::new("c", "d", RelationKind::OfficerOf, 0.9, "s"),
+            Relation::new("e", "f", RelationKind::ControlledBy, 0.9, "s"),
+            // Provenance contributes nothing.
+            Relation::new("g", "h", RelationKind::DerivedFrom, 0.9, "s"),
+        ];
+        fold_relation_techniques(&mut exercised, &rels);
+        assert_eq!(
+            exercised.get("T1591.004"),
+            Some(&4),
+            "edge counts add to the entity tally rather than replacing it"
+        );
+        assert_eq!(exercised.get("T1591.002"), Some(&1));
+        assert_eq!(exercised.len(), 2, "DerivedFrom introduced no technique");
+
+        // And the rollup now reports the graph layer's collection as covered.
+        let cov = coverage(&exercised);
+        assert!(
+            cov.covered.iter().any(|c| c.technique.id == "T1591.002"),
+            "Business Relationships is covered once a corporate edge exists"
+        );
     }
 
     #[test]

@@ -65,11 +65,37 @@ pub fn default_seed() -> Option<String> {
 /// launching the binary.
 pub fn load() -> HashMap<String, String> {
     let path = env_path();
-    let _ = dotenvy::from_path(&path);
+    if let Err(e) = dotenvy::from_path(&path) {
+        // A missing file is normal (fresh install, or keys exported only in the
+        // shell). Any OTHER error is a parse failure — and dotenvy ABANDONS the
+        // rest of the file at the first malformed line, so every later key would
+        // silently vanish with no diagnostic. Surface it so the operator sees WHY
+        // keys are missing (the error names the offending line).
+        let absent = matches!(
+            &e,
+            dotenvy::Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound
+        );
+        if !absent {
+            tracing::warn!(
+                env_file = %path,
+                error = %e,
+                "env file parse error — dotenvy stopped at the offending line; recovering later keys with the resilient line parser"
+            );
+        }
+    }
 
     let mut map: HashMap<String, String> = std::env::vars()
         .filter(|(k, _)| k.starts_with("HUNTSMAN_"))
         .collect();
+
+    // Resilience: a single malformed line makes dotenvy skip the REST of the
+    // file, so any key after it never reached the process env above. The
+    // line-by-line parser skips ONLY the bad line, so fold in every HUNTSMAN_ key
+    // it recovered that the env is missing. Process env still wins on conflict —
+    // `or_insert` never overwrites a value already present.
+    for (k, v) in load_from_file_only(Path::new(&path)) {
+        map.entry(k).or_insert(v);
+    }
 
     if map.is_empty()
         && let Ok(meta) = std::fs::metadata(&path)
@@ -252,14 +278,17 @@ pub fn load_from_file_only(path: &Path) -> HashMap<String, String> {
         if !key.starts_with("HUNTSMAN_") {
             continue;
         }
-        // Strip surrounding double-quotes if present so the result matches
-        // what dotenvy returns in load() — e.g. KEY="val" → "val", not
-        // "\"val\"". SUPERSEDED rotation compares against unquoted constants,
-        // and the Settings UI should show the bare value.
+        // Strip a surrounding quote pair — double OR single — so the result
+        // matches what dotenvy returns in load() (KEY="val" and KEY='val' both →
+        // val, not "val"). Without the single-quote arm a single-quoted value
+        // kept its quotes, so SUPERSEDED rotation / hardcoded-fill compared the
+        // quoted string against the bare constant and never matched, and the
+        // Settings UI showed the quotes.
         let raw = trimmed[eq + 1..].trim();
         let value = raw
             .strip_prefix('"')
             .and_then(|s| s.strip_suffix('"'))
+            .or_else(|| raw.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
             .unwrap_or(raw)
             .to_string();
         out.insert(key.to_string(), value);

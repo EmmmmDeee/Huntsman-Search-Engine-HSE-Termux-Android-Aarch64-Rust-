@@ -251,9 +251,8 @@ pub(in crate::core::correlator) fn rule_au_109_shared_registrant(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let entities = context.entities();
     // uid → entity, for endpoint lookup.
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let by_uid = context.by_uid();
 
     // registrant uid → distinct domain uids registered by it (insertion order
     // preserved for determinism; sorted before emission).
@@ -370,8 +369,7 @@ pub(in crate::core::correlator) fn rule_au_110_shared_hosting_ip(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let entities = context.entities();
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let by_uid = context.by_uid();
 
     // IP uid → distinct domain uids resolving to it (insertion order preserved).
     let mut groups: HashMap<&str, Vec<&str>> = HashMap::new();
@@ -502,7 +500,7 @@ pub(in crate::core::correlator) fn rule_au_113_direct_connect_origin_candidate(
     ts: u64,
 ) -> Vec<Correlation> {
     let entities = context.entities();
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let by_uid = context.by_uid();
 
     // Domain uid -> resolved IP entities (Domain --ResolvesTo--> IpAddress).
     let mut domain_ips: HashMap<&str, Vec<&Entity>> = HashMap::new();

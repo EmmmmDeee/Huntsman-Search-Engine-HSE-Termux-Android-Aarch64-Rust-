@@ -16,6 +16,28 @@ fn confirmed_entities(store: &Store, sid: &str) -> Result<Vec<crate::core::entit
     Ok(entities)
 }
 
+/// Why an export of a scan in this state is only a PARTIAL view, or `None`
+/// when the scan genuinely ran to completion.
+///
+/// Single source of truth for the completeness decision, so the dossier header
+/// and the debug-bundle header can never disagree about whether an artifact is
+/// whole (they phrase it differently, but they classify identically). An
+/// export of an aborted / failed / still-running scan carries only the findings
+/// produced before the stop, so branding it "complete" tells the operator the
+/// absence of a finding is a real negative when it may just be work that never
+/// happened — the one claim an evidentiary artifact must never make falsely.
+fn partial_export_reason(status: crate::core::scan::ScanStatus) -> Option<&'static str> {
+    use crate::core::scan::ScanStatus;
+    match status {
+        ScanStatus::Complete => None,
+        ScanStatus::Aborted => Some("aborted"),
+        ScanStatus::Failed => Some("failed"),
+        // A snapshot taken mid-flight is partial by construction: more findings
+        // may still land after this byte was written.
+        ScanStatus::Pending | ScanStatus::Running => Some("live"),
+    }
+}
+
 pub(super) fn render_json(store: &Store, sid: &str, redact: bool) -> Result<String> {
     let mut entities = confirmed_entities(store, sid)?;
     if redact {
@@ -117,7 +139,11 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
 
     let mut s = String::new();
     let _ = writeln!(s, "═══════════════════════════════════════════════════════");
-    let _ = writeln!(s, "HUNTSMAN FULL DOSSIER — complete, unredacted");
+    let dossier_state = match partial_export_reason(scan.status) {
+        None => "complete, unredacted".to_string(),
+        Some(reason) => format!("partial, {reason}, unredacted"),
+    };
+    let _ = writeln!(s, "HUNTSMAN FULL DOSSIER — {dossier_state}");
     let _ = writeln!(s, "═══════════════════════════════════════════════════════");
     let _ = writeln!(s, "scan id    : {}", scan.id);
     let _ = writeln!(
@@ -463,8 +489,15 @@ pub(crate) fn render_debug_bundle(
     use std::collections::BTreeMap;
     use std::fmt::Write as _;
 
+    let scan = store
+        .get_scan(sid)?
+        .ok_or_else(|| Error::Other(format!("scan {sid} not found")))?;
+    let snapshot_state = match partial_export_reason(scan.status) {
+        None => "complete scan snapshot".to_string(),
+        Some(reason) => format!("partial {reason} scan snapshot"),
+    };
     let mut s = String::new();
-    let _ = writeln!(s, "=== HUNTSMAN DEBUG BUNDLE — complete scan snapshot ===");
+    let _ = writeln!(s, "=== HUNTSMAN DEBUG BUNDLE — {snapshot_state} ===");
     let _ = writeln!(s, "Self-contained: results, sequence, and every flaw.");
     // DETERMINISM: the bundle body deliberately carries NO wall-clock generation
     // timestamp. For an immutable (completed) scan, two exports must be
