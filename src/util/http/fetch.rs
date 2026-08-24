@@ -261,6 +261,29 @@ pub async fn fetch_json_or_404<T: DeserializeOwned>(
     fetch_json_inner(client, module, url, &[404]).await
 }
 
+/// Like [`fetch_json_or_404`] but with an explicit per-request `timeout`
+/// instead of relying on the shared client's default (connect-only — see
+/// [`super::client::build_client`]'s docstring) plus the outer per-module
+/// `max_timeout_ms()` wrap. [`fetch_json_or_404`] also adds a circuit
+/// breaker and a curl fallback on transport failure; this helper composes
+/// the same [`RequestBuilderExt::send_tagged`] / [`ok_or_absent`] /
+/// [`super::url::json_decode`] building blocks callers already reach for
+/// individually, without either of those — so it's a drop-in for modules
+/// that specifically want a tighter HTTP-call timeout, not a superset of
+/// [`fetch_json_or_404`]'s other behaviour.
+pub async fn fetch_json_or_404_with_timeout<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    module: &'static str,
+    url: &str,
+    timeout: std::time::Duration,
+) -> Result<Option<T>> {
+    let resp = client.get(url).timeout(timeout).send_tagged(module).await?;
+    let Some(resp) = ok_or_absent(module, resp, &[404]).await? else {
+        return Ok(None);
+    };
+    super::url::json_decode(module, resp).await.map(Some)
+}
+
 /// Like [`fetch_json_or_404`] but treats **both** `400 Bad Request` and
 /// `404 Not Found` as the clean "no such resource" signal (`Ok(None)`).
 ///

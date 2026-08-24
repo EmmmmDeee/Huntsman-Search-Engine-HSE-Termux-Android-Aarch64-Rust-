@@ -1,6 +1,8 @@
 use serde_json::json;
 
 use super::budget::{
+    budget_increment, budget_snapshot, is_key_invalid, is_quota_exhausted, release_quota_probe,
+    reset_budget, scan_budget_remaining, set_scan_cap_override, should_probe_quota,
     budget_increment, budget_snapshot, is_quota_exhausted, release_quota_probe, reset_budget,
     scale_scan_cap_from_daily, scan_budget_remaining, set_scan_cap_override, should_probe_quota,
 };
@@ -198,6 +200,40 @@ mod status_code_auth_classification_tests {
 }
 
 #[test]
+fn classify_status_still_latches_an_auth_or_quota_rejection_delivered_under_a_5xx() {
+    // Regression: a 5xx used to divert to transient-RateLimited unconditionally,
+    // before parse_response/classify_terminal ever looked at the body — so a
+    // misconfigured upstream or WAF wrapping a genuine auth/quota rejection in
+    // a 500 never latched mark_key_invalid/mark_quota_exhausted, and the scan
+    // kept retrying the permanently-bad key against every fallback domain.
+    let _guard = BUDGET_TEST_LOCK.lock();
+    reset_budget();
+    assert!(
+        classify_status(r#"{"error":"invalid_api_key"}"#, 500)
+            .expect("a latched auth rejection is Ok(Null), not an Err retry")
+            .is_null()
+    );
+    assert!(
+        is_key_invalid(),
+        "an auth-rejection body under a 5xx must still latch KEY_INVALID"
+    );
+    reset_budget();
+    assert!(
+        classify_status(
+            r#"{"error":"credits_exhausted","credits_remaining":0}"#,
+            503
+        )
+        .expect("a latched quota exhaustion is Ok(Null), not an Err retry")
+        .is_null()
+    );
+    assert!(
+        is_quota_exhausted(),
+        "a quota-exhaustion body under a 5xx must still latch quota_exhausted"
+    );
+    reset_budget();
+}
+
+#[test]
 fn reset_budget_clears_the_cross_module_response_cache() {
     // Regression: RESPONSE_CACHE dedups identical endpoint queries WITHIN one
     // scan (its own doc comment), but reset_budget() previously only reset
@@ -274,6 +310,15 @@ fn search_body_includes_limit_and_optional_type() {
     );
     // We request the spec maximum (default would be 100).
     assert_eq!(SEARCH_LIMIT, 500);
+    // Regression: `type` must be JSON-escaped exactly like `query` — a prior
+    // version interpolated query_type raw, so a `"` in it would break the
+    // body (or, worse, let injected content redefine a later field). No
+    // production caller passes a non-literal query_type today, but this is
+    // a general-purpose builder function and the asymmetry was untested.
+    assert_eq!(
+        build_search_body("q", "un\"safe", 1),
+        r#"{"query":"q","type":"un\"safe","limit":1}"#
+    );
 }
 
 #[test]
@@ -671,6 +716,15 @@ fn transport_auth_errors_are_terminal_but_network_errors_are_not() {
         "HTTP 401 returned",
         "Unauthorized",
         "invalid API key supplied",
+        // The exact capitalised string `is_auth_error` recognises on the
+        // body-classification path (a proxy/DoH layer surfacing the
+        // rejection as an error string instead of a body). A prior version
+        // checked "invalid" against the original-case string while only
+        // lower-casing the "key" half, so this exact message never matched —
+        // undetected by the case above because it happens to start with a
+        // lowercase "invalid" already.
+        "curl: DoH resolver returned: Invalid API key",
+        "plan_required: no active subscription",
     ] {
         assert!(
             transport_err_is_terminal_auth(terminal),

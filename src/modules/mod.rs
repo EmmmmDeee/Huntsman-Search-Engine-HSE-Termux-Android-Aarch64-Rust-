@@ -322,6 +322,12 @@ impl crate::core::module_runtime::ModuleRuntime for BuiltinModuleRuntime {
     fn drain_found_keys(&self, scan_id: &str) -> Vec<crate::core::entity::Entity> {
         drain_found_key_entities(scan_id)
     }
+
+    fn cleanup_scan_budgets(&self, scan_id: &str) {
+        oathnet_pro::cleanup_scan(scan_id);
+        see_know::cleanup_scan(scan_id);
+        wigle::cleanup_scan(scan_id);
+    }
 }
 
 /// Runtime effects paired with the built-in module registry.

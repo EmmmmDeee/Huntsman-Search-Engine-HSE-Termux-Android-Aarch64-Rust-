@@ -36,6 +36,12 @@ use breach::*;
 pub fn reset_budget() {
     crate::util::oathnet::reset_budget();
 }
+
+/// Re-export the per-scan budget cleanup, same shim rationale as
+/// [`reset_budget`]. Called at scan finalisation.
+pub fn cleanup_scan(scan_id: &str) {
+    crate::util::oathnet::cleanup_scan(scan_id);
+}
 use crate::util::key_harvest::{extract_api_keys_from_item, store_api_credential};
 
 const SRC: &str = "oathnet_pro";

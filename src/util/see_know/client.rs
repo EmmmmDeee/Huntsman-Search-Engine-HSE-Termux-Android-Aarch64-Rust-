@@ -347,9 +347,19 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
 /// It stays as a guard for the case where a proxy or DoH layer surfaces the
 /// rejection as an error string instead.
 pub(super) fn transport_err_is_terminal_auth(err_str: &str) -> bool {
-    contains_401_as_a_status_code(err_str)
-        || err_str.contains("Unauthorized")
-        || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
+    // Single case-normalised pass, matching the exact substrings `is_auth_error`
+    // recognises on the body-classification path. The previous version checked
+    // `"invalid"` against the original-case string while lower-casing only the
+    // "key" half, so a proxy/DoH-surfaced message like "Invalid API key" (the
+    // capitalised form `is_auth_error` explicitly anticipates) never matched —
+    // the fallback loop kept retrying every alternate domain with the same
+    // rejected key instead of failing fast.
+    let lower = err_str.to_lowercase();
+    err_str.contains("401")
+        || lower.contains("unauthorized")
+        || lower.contains("invalid_api_key")
+        || lower.contains("invalid api key")
+        || lower.contains("plan_required")
 }
 
 /// True if `s` contains "401" as an isolated token, not merely as three
@@ -374,6 +384,29 @@ fn contains_401_as_a_status_code(s: &str) -> bool {
 
 pub(super) fn classify_status(body: &str, status: u16) -> Result<Value> {
     if status == 0 || (500..600).contains(&status) {
+        // A 5xx is usually a genuine transient gateway/CDN failure (the
+        // common case: an HTML error page, no JSON body) — but a
+        // misconfigured upstream or WAF can also wrap a genuine auth/quota
+        // rejection in a 5xx. Peek at the body with the SAME narrow
+        // top-level `error`/`message` envelope check `parse_response`'s JSON
+        // path already trusts (never a raw substring scan of the whole
+        // payload — see `classify_terminal`'s doc comment for why that
+        // matters) before defaulting to transient, so a permanently-bad key
+        // still latches instead of retrying every fallback domain for the
+        // rest of the scan.
+        if let Ok(value) = serde_json::from_str::<Value>(body) {
+            match classify_terminal(&value) {
+                Some(Terminal::Auth) => {
+                    mark_key_invalid(body);
+                    return Ok(Value::Null);
+                }
+                Some(Terminal::Quota) => {
+                    mark_quota_exhausted();
+                    return Ok(Value::Null);
+                }
+                _ => {}
+            }
+        }
         return Err(Error::RateLimited(format!(
             "seek_now: HTTP {status} transient upstream failure"
         )));

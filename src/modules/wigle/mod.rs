@@ -173,6 +173,18 @@ pub fn reset_budget() {
     SSID_BUDGET.reset_scan();
 }
 
+/// Remove `scan_id`'s tracked state from every WiGLE sub-budget. Called by
+/// the engine at scan finalisation so a long-lived `hse serve` / `hse live`
+/// process doesn't grow the per-scan maps without bound as scans come and
+/// go — mirrors [`crate::util::found_keys::drain`]'s per-scan cleanup.
+pub fn cleanup_scan(scan_id: &str) {
+    GEO_BUDGET.cleanup_scan(scan_id);
+    BSSID_BUDGET.cleanup_scan(scan_id);
+    CELL_BUDGET.cleanup_scan(scan_id);
+    BLUETOOTH_BUDGET.cleanup_scan(scan_id);
+    SSID_BUDGET.cleanup_scan(scan_id);
+}
+
 /// Aggregate snapshot of every WiGLE sub-budget — surfaced on
 /// `/api/v1/stats` alongside the SeekNow / OathNet blocks so
 /// operators can see remaining quota across all observation types

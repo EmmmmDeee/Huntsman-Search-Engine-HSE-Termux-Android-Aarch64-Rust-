@@ -298,6 +298,14 @@ pub fn reset_budget() {
     RATE_LIMITED.store(false, Ordering::Release);
 }
 
+/// Remove `scan_id`'s tracked budget state entirely. Called by the engine at
+/// scan finalisation so a long-lived `hse serve` / `hse live` process
+/// doesn't grow [`BUDGET`]'s per-scan map without bound as scans come and
+/// go — mirrors [`crate::util::found_keys::drain`]'s per-scan cleanup.
+pub fn cleanup_scan(scan_id: &str) {
+    BUDGET.cleanup_scan(scan_id);
+}
+
 /// True while the shared OathNet budget can absorb at least one more billable
 /// query (per-scan + per-session room, quota not tripped). Public so the
 /// deliberate `hse oathnet-batch --execute` runner can stop cleanly at the

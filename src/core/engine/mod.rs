@@ -557,10 +557,18 @@ impl ScanEngine {
         let regional_on = scan.options.regional_search
             || crate::util::settings::get_bool("feature.regional", false);
         crate::util::found_keys::with_scan(
-            sid,
+            sid.clone(),
             crate::util::regional::with_regional(
                 regional_on,
-                self.run_with_ledger_inner(scan, target, ctx, dispatched),
+                // Per-scan quota-budget ambient (PROBLEM_TREE T2.11 sibling —
+                // see `util::budget`'s module doc): without this, SeekNow /
+                // OathNet / WiGLE budget resets and checks would fall back to
+                // the unscoped "" bucket, shared by every concurrently-running
+                // `hse serve` scan.
+                crate::util::budget::with_scan(
+                    sid,
+                    self.run_with_ledger_inner(scan, target, ctx, dispatched),
+                ),
             ),
         )
         .await
@@ -989,6 +997,10 @@ impl ScanEngine {
             // rolled-back transaction) — see each phase helper's own doc comment.
             let mut entities =
                 merge_found_keys_and_flatten(module_runtime.as_ref(), &scan.id, entity_map);
+            // Drop this scan's per-scan quota-budget state now that it's done,
+            // so a long-lived `hse serve` / `hse live` process doesn't grow
+            // the budget-owning modules' per-scan maps without bound.
+            module_runtime.cleanup_scan_budgets(&scan.id);
             let folded = apply_finalise_enrichment_passes(store.as_ref(), &scan.id, &mut entities);
             if !folded.is_empty() {
                 // The address-locality fold removed each victim from the in-memory

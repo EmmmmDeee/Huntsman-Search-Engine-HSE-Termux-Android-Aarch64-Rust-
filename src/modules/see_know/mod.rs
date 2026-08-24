@@ -126,6 +126,12 @@ pub fn reset_budget() {
     crate::util::see_know::reset_budget();
 }
 
+/// Re-export the per-scan budget cleanup for the engine, called at scan
+/// finalisation.
+pub fn cleanup_scan(scan_id: &str) {
+    crate::util::see_know::cleanup_scan(scan_id);
+}
+
 /// Re-export the per-round budget refresh for the engine's expansion loop, so
 /// SeekNow is utilised in every iteration of a scan.
 pub fn refresh_round_budget() {
@@ -695,7 +701,7 @@ async fn resolve_identity_pivots(
         // expensive /search re-runs. Skip Hop 0 to avoid redundant re-queries of
         // the seed's initial /search results.
         let cascade_emails: Vec<String> = if hop > 0 {
-            discover_high_confidence_emails(result)
+            discover_high_confidence_emails(result, seed_value)
                 .into_iter()
                 .filter(|e| !resolved.contains(&format!("e:{e}")))
                 .take(3) // Limit cascade queries per hop — budget conservation
@@ -759,15 +765,21 @@ async fn resolve_identity_pivots(
 /// the email was discovered via breach/profile data, not just a template or
 /// placeholder. Used to feed the cascade-detection pass so re-queries pick
 /// the most likely-to-yield identifiers.
-fn discover_high_confidence_emails(result: &ModuleResult) -> Vec<String> {
+fn discover_high_confidence_emails(result: &ModuleResult, seed_value: &str) -> Vec<String> {
     use std::collections::HashSet;
+    let seed_email = seed_value.to_lowercase();
     let mut seen = HashSet::new();
     let mut emails: Vec<String> = Vec::new();
     for e in &result.entities {
         if matches!(e.kind, crate::core::entity::EntityKind::Email) {
             let email = e.value.to_lowercase();
-            // Skip wildcards and mailbox patterns
-            if email.contains('*')
+            // Skip wildcards, mailbox patterns, and the seed itself — the seed
+            // (if it's an email) was already queried via the initial /search
+            // dispatch, never through dispatch_email_cascade_checks, so
+            // `resolved` (the caller's actually-dispatched-ids set) never
+            // contains it and can't filter it out on its own.
+            if email == seed_email
+                || email.contains('*')
                 || email.starts_with("general@")
                 || email.starts_with("admin@")
                 || email.starts_with("noreply@")

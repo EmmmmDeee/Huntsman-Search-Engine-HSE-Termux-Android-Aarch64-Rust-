@@ -59,6 +59,28 @@ pub(crate) fn not_found() -> axum::response::Response {
     (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
 }
 
+/// Loopback-only access gate shared by every mutating or sensitive-metadata
+/// endpoint (key read/write, update trigger, cell DB import/clear, debug log
+/// downloads, key-pool/harvest status): only a client connecting from a
+/// loopback address may invoke them. Returns the `403` response to send for a
+/// non-loopback peer, or `None` when the call is allowed.
+///
+/// NB: this trusts the socket peer address. Behind a loopback-bound reverse
+/// proxy every forwarded client appears as loopback, so this is a
+/// localhost-architecture guard, not an authenticated-caller check — the same
+/// limitation every one of these handlers already carried individually before
+/// they shared this one gate.
+pub(crate) fn reject_non_loopback(
+    peer: &std::net::SocketAddr,
+    message: &str,
+) -> Option<axum::response::Response> {
+    if peer.ip().is_loopback() {
+        None
+    } else {
+        Some(forbidden(message))
+    }
+}
+
 /// 400 with a `{ "error": <msg> }` body — the client-error sibling of
 /// [`internal_error`] / [`not_found`]. Accepts both `&'static str` literals and
 /// owned `String`s (e.g. a `format!`-built validation message), so the ~10
@@ -543,12 +565,8 @@ pub async fn selftest_run() -> impl IntoResponse {
 pub async fn logs_download(
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
 ) -> impl IntoResponse {
-    if !peer.ip().is_loopback() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "debug logs are loopback-only" })),
-        )
-            .into_response();
+    if let Some(rejection) = reject_non_loopback(&peer, "debug logs are loopback-only") {
+        return rejection;
     }
     let body = crate::util::log_capture::dump();
     let filename = format!("hse-debug-{}.log", crate::core::entity::unix_now());
@@ -574,12 +592,8 @@ pub async fn logs_tail(
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    if !peer.ip().is_loopback() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "debug logs are loopback-only" })),
-        )
-            .into_response();
+    if let Some(rejection) = reject_non_loopback(&peer, "debug logs are loopback-only") {
+        return rejection;
     }
     // A malformed/absent `after` reads as 0 (a first read) rather than erroring:
     // the endpoint is a convenience poll, and 0 is the safe "give me the current
@@ -618,12 +632,9 @@ pub async fn system_debug_bundle(
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
     State(s): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    if !peer.ip().is_loopback() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "the system debug bundle is loopback-only" })),
-        )
-            .into_response();
+    if let Some(rejection) = reject_non_loopback(&peer, "the system debug bundle is loopback-only")
+    {
+        return rejection;
     }
     // Validation runs against a throwaway temp DB (offline, side-effect-free).
     let selftest = crate::selftest::run().await;

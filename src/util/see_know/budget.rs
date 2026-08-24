@@ -172,6 +172,14 @@ pub fn reset_budget() {
     super::client::RESPONSE_CACHE.clear();
 }
 
+/// Remove `scan_id`'s tracked budget state entirely. Called by the engine at
+/// scan finalisation so a long-lived `hse serve` / `hse live` process
+/// doesn't grow [`BUDGET`]'s per-scan map without bound as scans come and
+/// go — mirrors [`crate::util::found_keys::drain`]'s per-scan cleanup.
+pub fn cleanup_scan(scan_id: &str) {
+    BUDGET.cleanup_scan(scan_id);
+}
+
 /// Refresh SeekNow's per-round budget at each expansion-round boundary so it is
 /// utilised in EVERY iteration of a scan, not just until a wide first round
 /// drains the budget. Resets only the per-round counter — the per-session

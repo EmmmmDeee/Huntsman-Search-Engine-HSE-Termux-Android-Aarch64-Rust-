@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::AppState;
-use super::handlers::{bad_request, offload_store};
+use super::handlers::{bad_request, offload_store, reject_non_loopback};
 use crate::util::keys;
 
 /// Expose the API-key detector's prefix-match coverage. Returns the
@@ -131,12 +131,8 @@ pub async fn keys_health(
     State(s): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
 ) -> impl IntoResponse {
-    if !peer.ip().is_loopback() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "key health is loopback-only" })),
-        )
-            .into_response();
+    if let Some(rejection) = reject_non_loopback(&peer, "key health is loopback-only") {
+        return rejection;
     }
     // Off-reactor: the recent-outcome scan is a blocking SQLite read.
     let store = Arc::clone(&s.store);
@@ -177,12 +173,8 @@ pub async fn keys_health(
 /// LAN bind a non-loopback peer gets 403 rather than a map of which services
 /// hold keys and how healthy they are. Reads the process-global pool.
 pub async fn keys_status(ConnectInfo(peer): ConnectInfo<SocketAddr>) -> impl IntoResponse {
-    if !peer.ip().is_loopback() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "key pool status is loopback-only" })),
-        )
-            .into_response();
+    if let Some(rejection) = reject_non_loopback(&peer, "key pool status is loopback-only") {
+        return rejection;
     }
     let services = summarize_pool(&crate::util::key_pool::global_pool().snapshot());
     Json(json!({ "count": services.len(), "services": services })).into_response()
@@ -198,12 +190,8 @@ pub async fn settings_keys_get(
     State(s): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
 ) -> impl IntoResponse {
-    if !peer.ip().is_loopback() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "key configuration is loopback-only" })),
-        )
-            .into_response();
+    if let Some(rejection) = reject_non_loopback(&peer, "key configuration is loopback-only") {
+        return rejection;
     }
     use std::path::PathBuf;
     let path = keys::env_path();
@@ -280,12 +268,8 @@ pub async fn keys_pool_add(
         )
             .into_response();
     }
-    if !peer.ip().is_loopback() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "key writes are loopback-only" })),
-        )
-            .into_response();
+    if let Some(rejection) = reject_non_loopback(&peer, "key writes are loopback-only") {
+        return rejection;
     }
     let service = req.service.trim();
     let key = req.key.trim();
@@ -363,12 +347,8 @@ pub async fn settings_keys_put(
         )
             .into_response();
     }
-    if !peer.ip().is_loopback() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "key writes are loopback-only" })),
-        )
-            .into_response();
+    if let Some(rejection) = reject_non_loopback(&peer, "key writes are loopback-only") {
+        return rejection;
     }
     if req.updates.is_empty() && req.deletes.is_empty() {
         return bad_request("no updates or deletes");
@@ -401,12 +381,8 @@ pub async fn settings_keys_put(
 /// never serialised; an operator who wants the raw values uses `hse keys export`
 /// on the device shell.
 pub async fn keys_pool_get(ConnectInfo(peer): ConnectInfo<SocketAddr>) -> impl IntoResponse {
-    if !peer.ip().is_loopback() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "key pool is loopback-only" })),
-        )
-            .into_response();
+    if let Some(rejection) = reject_non_loopback(&peer, "key pool is loopback-only") {
+        return rejection;
     }
     let snap = crate::util::key_pool::global_pool().snapshot();
     let mut services: Vec<Value> = snap
@@ -451,12 +427,8 @@ pub async fn keys_pool_revoke(
         )
             .into_response();
     }
-    if !peer.ip().is_loopback() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "key writes are loopback-only" })),
-        )
-            .into_response();
+    if let Some(rejection) = reject_non_loopback(&peer, "key writes are loopback-only") {
+        return rejection;
     }
     if req.service.trim().is_empty() || req.id.trim().is_empty() {
         return bad_request("service and id are required");
@@ -498,12 +470,8 @@ pub async fn keys_pool_rotate(
         )
             .into_response();
     }
-    if !peer.ip().is_loopback() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "key writes are loopback-only" })),
-        )
-            .into_response();
+    if let Some(rejection) = reject_non_loopback(&peer, "key writes are loopback-only") {
+        return rejection;
     }
     if req.service.trim().is_empty() || req.id.trim().is_empty() || req.new.trim().is_empty() {
         return bad_request("service, id and new value are required");
@@ -595,12 +563,8 @@ pub async fn settings_toggles_put(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(req): Json<TogglePutRequest>,
 ) -> impl IntoResponse {
-    if !peer.ip().is_loopback() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "toggle writes are loopback-only" })),
-        )
-            .into_response();
+    if let Some(rejection) = reject_non_loopback(&peer, "toggle writes are loopback-only") {
+        return rejection;
     }
     if !toggle_key_is_known(&s, &req.key) {
         return bad_request(format!(
