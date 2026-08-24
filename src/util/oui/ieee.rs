@@ -125,8 +125,14 @@ pub(super) fn vendor_for(prefix: u32) -> Option<&'static str> {
     std::str::from_utf8(bytes).ok()
 }
 
-/// Number of assignments in the embedded registry. Used by the tests and by
-/// `hse diagnostics` to report the tier's real coverage rather than a claim.
+/// Number of assignments in the embedded registry.
+///
+/// Read by the tests, which assert the blob parses to a plausible count rather
+/// than trusting the header. NOT yet surfaced by `hse diagnostics`: an earlier
+/// version of this comment said it was, which was a claim about intent rather
+/// than about the code — nothing outside the tests calls it. The tier's real
+/// coverage is therefore still unreportable at runtime; wiring this into the
+/// diagnostics bundle is the fix, not restoring the sentence.
 #[must_use]
 pub fn registry_len() -> usize {
     layout().map_or(0, |l| l.count)
