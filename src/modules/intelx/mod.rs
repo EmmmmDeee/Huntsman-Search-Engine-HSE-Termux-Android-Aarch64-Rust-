@@ -434,6 +434,25 @@ impl Module for IntelX {
         }
 
         if all_records.is_empty() {
+            // Phase 1 already fails closed on a rejected search. Phase 2 must too:
+            // every arm of the poll loop above `continue`s past its failure, so a dead
+            // key, an exhausted quota or POLL_ATTEMPTS worth of 429s all arrive here
+            // with nothing accumulated and `finished` still false. Returning an empty
+            // result there reads as "no breach, leak, paste or darknet record exists
+            // for this subject" from a keyed breach source — the most consequential
+            // false clean this engine can produce. A terminal state (2 finished, 3
+            // none-available) IS an authoritative empty and stays one.
+            //
+            // Cancellation is excluded: the caller stopped the work and already knows
+            // why, so an error there is noise rather than a finding.
+            if !finished && !ctx.cancel.is_cancelled() {
+                return Err(Error::module(
+                    SRC,
+                    format!(
+                        "search {search_id} never reached a terminal state within {POLL_ATTEMPTS} polls"
+                    ),
+                ));
+            }
             return Ok(ModuleResult::new());
         }
 
