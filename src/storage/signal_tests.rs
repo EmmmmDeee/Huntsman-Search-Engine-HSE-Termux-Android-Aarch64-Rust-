@@ -308,3 +308,154 @@ fn device_ordering_is_deterministic_and_puts_unmeasured_last() {
         .collect();
     assert_eq!(ids, again);
 }
+
+/// A device whose LOUDEST pass had no GPS fix is still located by a weaker pass
+/// that did. Ordering the rollup by signal alone picks the strongest sighting
+/// and then reads whatever latitude it happens to carry, so this device
+/// reported no position at all — while `distinct_fixes` counted the fix, a row
+/// that contradicts itself.
+#[test]
+fn the_strongest_pass_lacking_a_fix_does_not_hide_a_weaker_located_one() {
+    let store = Store::open(":memory:").expect("in-memory store");
+    store
+        .insert_rf_sightings_batch(
+            "s1",
+            &[
+                // Loudest, but the receiver had no fix at that moment.
+                sighting("00:1a:2b:00:00:01", RadioKind::Wifi, None, -40.0, None, 1),
+                // Quieter, and located.
+                sighting(
+                    "00:1a:2b:00:00:01",
+                    RadioKind::Wifi,
+                    None,
+                    -70.0,
+                    Some((-26.81, 153.08)),
+                    2,
+                ),
+            ],
+        )
+        .expect("insert");
+
+    let d = &store.rf_devices_for_scan("s1").expect("read")[0];
+    assert_eq!(d.distinct_fixes, 1, "the capture did locate this device");
+    assert_eq!(
+        (d.best_latitude, d.best_longitude),
+        (Some(-26.81), Some(153.08)),
+        "the position must come from the best sighting that HAS one"
+    );
+    assert_eq!(
+        d.best_signal_dbm,
+        Some(-40.0),
+        "the strongest level is still the strongest level — only the POSITION \
+         is read from a located sighting"
+    );
+    assert_eq!(
+        store.rf_summary("s1").expect("summary").with_position,
+        1,
+        "a located device must count toward `with_position`"
+    );
+}
+
+/// A source that reports a position but no signal level — a Bluetooth sweep
+/// with no RSSI, a capture whose `Signal` field is absent or unparseable — is
+/// still locatable. Excluding NULL-signal sightings from the position rollup
+/// (rather than merely ranking them last) made every such device report no
+/// position, and `with_position` undercounted by exactly those devices.
+#[test]
+fn a_device_located_without_any_signal_reading_still_reports_its_position() {
+    let store = Store::open(":memory:").expect("in-memory store");
+    let mut a = sighting(
+        "00:1a:2b:00:00:02",
+        RadioKind::Ble,
+        Some("Watch"),
+        0.0,
+        Some((-26.81, 153.08)),
+        1,
+    );
+    a.signal_dbm = None;
+    let mut b = sighting(
+        "00:1a:2b:00:00:02",
+        RadioKind::Ble,
+        Some("Watch"),
+        0.0,
+        Some((-26.90, 153.20)),
+        2,
+    );
+    b.signal_dbm = None;
+    store
+        .insert_rf_sightings_batch("s1", &[a, b])
+        .expect("insert");
+
+    let d = &store.rf_devices_for_scan("s1").expect("read")[0];
+    assert_eq!(d.best_signal_dbm, None, "no level was ever reported");
+    assert_eq!(d.distinct_fixes, 2);
+    assert_eq!(
+        (d.best_latitude, d.best_longitude),
+        (Some(-26.81), Some(153.08)),
+        "with no level to rank by, the earliest located sighting wins — a \
+         deterministic answer, not no answer"
+    );
+    assert_eq!(
+        store.rf_summary("s1").expect("summary").with_position,
+        1,
+        "`Located: N with a usable fix` must count fixes the receiver had"
+    );
+}
+
+/// A view carries no data of its own, so a corrected definition must reach a
+/// database that already exists. Under `CREATE VIEW IF NOT EXISTS` the first
+/// binary to create it owned it forever and every later fix silently applied to
+/// fresh installs only — invisible to a test suite that builds `:memory:`
+/// stores. Opening over a stale definition must replace it.
+#[test]
+fn reopening_replaces_a_stale_view_definition() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("drift.db");
+    let path = path.to_str().expect("utf-8 path");
+
+    {
+        let store = Store::open(path).expect("first open");
+        store
+            .insert_rf_sightings_batch(
+                "s1",
+                &[sighting(
+                    "00:1a:2b:00:00:03",
+                    RadioKind::Wifi,
+                    None,
+                    -50.0,
+                    Some((-26.81, 153.08)),
+                    1,
+                )],
+            )
+            .expect("insert");
+    }
+
+    // Stand in for a database created by an older binary: a view of the same
+    // name whose definition answers differently.
+    {
+        let conn = rusqlite::Connection::open(path).expect("raw open");
+        conn.execute_batch(
+            "DROP VIEW rf_trackable;
+             DROP VIEW rf_devices;
+             CREATE VIEW rf_devices AS
+             SELECT scan_id, network_id, radio, locally_admin, oui, device_class,
+                    0 AS sightings, NULL AS first_epoch, NULL AS last_epoch,
+                    NULL AS best_signal_dbm, NULL AS worst_signal_dbm,
+                    NULL AS best_accuracy_m, 0 AS distinct_names, NULL AS name,
+                    NULL AS best_latitude, NULL AS best_longitude,
+                    0 AS distinct_fixes
+               FROM rf_sightings;
+             CREATE VIEW rf_trackable AS
+             SELECT * FROM rf_devices WHERE locally_admin = 0;",
+        )
+        .expect("install a stale view");
+    }
+
+    let store = Store::open(path).expect("reopen");
+    let d = &store.rf_devices_for_scan("s1").expect("read")[0];
+    assert_eq!(
+        d.sightings, 1,
+        "the reopen must have replaced the stale definition, not kept it"
+    );
+    assert_eq!((d.best_latitude, d.best_longitude), (Some(-26.81), Some(153.08)));
+}

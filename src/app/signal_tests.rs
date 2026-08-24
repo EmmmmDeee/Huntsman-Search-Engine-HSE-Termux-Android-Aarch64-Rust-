@@ -33,3 +33,17 @@ fn radio_labels_cover_every_variant() {
     assert_eq!(radio_label(RadioKind::BtClassic), "bt");
     assert_eq!(radio_label(RadioKind::Cellular), "cell");
 }
+
+#[test]
+fn truncate_clips_on_a_char_boundary_not_a_byte_index() {
+    // IEEE vendor names run far wider than the column and are not all ASCII —
+    // `Société`, `Hangzhou …`, etc. Byte-slicing one would panic mid-character.
+    assert_eq!(truncate("short", 26), "short");
+    assert_eq!(truncate("Société Générale de Télécommunications", 10), "Société G…");
+    // Exactly at the width is untouched; one over is clipped.
+    assert_eq!(truncate("abcde", 5), "abcde");
+    assert_eq!(truncate("abcdef", 5), "abcd…");
+    // Multi-byte only, to be sure the count is chars and not bytes.
+    assert_eq!(truncate("日本語テスト", 3), "日本…");
+    assert_eq!(truncate("", 4), "");
+}
