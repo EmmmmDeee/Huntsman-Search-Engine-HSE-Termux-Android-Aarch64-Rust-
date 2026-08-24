@@ -38,11 +38,17 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
+      # `--features dep-cooldown`: the `dep-cooldown` binary's `toml`/`time`
+      # deps are `optional = true` + `required-features` (Cargo.toml) so the
+      # Termux cross-build below (--lib --bin hse only) doesn't compile them.
+      # Without this flag here, `--all-targets` would silently SKIP that
+      # binary rather than error, dropping it out of check/clippy/test/docs
+      # coverage on every ordinary PR.
       - name: Check
-        run: cargo check --all-targets --locked
+        run: cargo check --all-targets --locked --features dep-cooldown
 
       - name: Clippy (warnings = errors)
-        run: cargo clippy --all-targets --locked -- -D warnings
+        run: cargo clippy --all-targets --locked --features dep-cooldown -- -D warnings
 
       - name: Docs (no broken intra-doc links, bare URLs, or stray HTML tags)
         # Guards the maintainer's primary reference against silent rot. Denies the
@@ -51,10 +57,10 @@ jobs:
         # break CI on unchanged code. `--document-private-items` because HSE's lib
         # is read internally, not as a published API (see the crate-root allow of
         # `private_intra_doc_links`).
-        run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::bare_urls -D rustdoc::invalid_html_tags" cargo doc --no-deps --document-private-items --locked
+        run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::bare_urls -D rustdoc::invalid_html_tags" cargo doc --no-deps --document-private-items --locked --features dep-cooldown
 
       - name: Test
-        run: cargo test --all --locked
+        run: cargo test --all --locked --features dep-cooldown
 
   msrv:
     name: MSRV (1.88)
@@ -78,7 +84,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Check (MSRV)
-        run: cargo check --all-targets --locked
+        run: cargo check --all-targets --locked --features dep-cooldown
 
   aarch64-android:
     name: Build (aarch64-linux-android, Termux target)
