@@ -86,7 +86,9 @@ async fn main() -> ExitCode {
         );
         return ExitCode::FAILURE;
     };
-    let base_url = args.ollama_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+    let base_url = args
+        .ollama_url
+        .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
     let client = OllamaClient::new(base_url, model);
 
     let store = match Store::open(&default_db_path()) {

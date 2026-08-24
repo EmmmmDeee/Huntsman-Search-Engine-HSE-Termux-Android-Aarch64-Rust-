@@ -89,7 +89,12 @@ struct RawFinding {
 /// (a surfaced `Err`) on anything that is not the exact expected JSON shape —
 /// a model that ignores the requested format must never be silently treated
 /// as "no findings", which would misreport a parsing failure as a clean scan.
-pub fn parse_response(scan_id: &str, model: &str, created_at: u64, raw: &str) -> Result<ScanAnalysis> {
+pub fn parse_response(
+    scan_id: &str,
+    model: &str,
+    created_at: u64,
+    raw: &str,
+) -> Result<ScanAnalysis> {
     let parsed: RawAnalysis = serde_json::from_str(raw.trim()).map_err(|e| {
         Error::module(
             "ai_daemon",
@@ -162,13 +167,23 @@ mod tests {
         let prompt = build_prompt("scan1", &entities);
         let high_pos = prompt.find("high@example.com").expect("present");
         let low_pos = prompt.find("low@example.com").expect("present");
-        assert!(high_pos < low_pos, "higher-confidence entity must come first");
+        assert!(
+            high_pos < low_pos,
+            "higher-confidence entity must come first"
+        );
     }
 
     #[test]
     fn build_prompt_truncates_to_the_entity_cap() {
         let entities: Vec<Entity> = (0..(MAX_ENTITIES_IN_PROMPT + 50))
-            .map(|i| entity(EntityKind::Username, &format!("user{i}"), 0.5, &format!("u{i}")))
+            .map(|i| {
+                entity(
+                    EntityKind::Username,
+                    &format!("user{i}"),
+                    0.5,
+                    &format!("u{i}"),
+                )
+            })
             .collect();
         let prompt = build_prompt("scan1", &entities);
         let listed = prompt.matches("- ").count();

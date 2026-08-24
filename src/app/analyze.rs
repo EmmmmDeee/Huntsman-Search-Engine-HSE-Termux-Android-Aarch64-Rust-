@@ -28,6 +28,10 @@ fn resolve_timeout_ms() -> u64 {
         .unwrap_or(DEFAULT_TIMEOUT_MS)
 }
 
+/// Resolve `scan_id` (or `latest`), analyze it via a locally-run Ollama
+/// instance, and print either the machine-readable JSON report (`json`) or a
+/// text summary. Returns `Err` if the feature is disarmed, no model is
+/// configured, or Ollama is unreachable/unresponsive — never a silent no-op.
 pub async fn cmd_analyze(
     scan_id: Option<String>,
     json: bool,
@@ -62,7 +66,8 @@ pub async fn cmd_analyze(
     let analysis = crate::ai::analysis::analyze_scan(&store, &client, &id, timeout).await?;
 
     if json {
-        let out = serde_json::to_string_pretty(&analysis).map_err(|e| Error::Other(e.to_string()))?;
+        let out =
+            serde_json::to_string_pretty(&analysis).map_err(|e| Error::Other(e.to_string()))?;
         println!("{out}");
     } else {
         println!("Scan {} — {}\n", analysis.scan_id, analysis.model);

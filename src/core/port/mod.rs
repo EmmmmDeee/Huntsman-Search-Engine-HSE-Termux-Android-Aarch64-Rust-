@@ -208,7 +208,10 @@ pub trait StoragePort: Send + Sync {
     /// failure here does not corrupt scan data — it only means the analysis
     /// must be retried. Default no-op for test doubles; the SQLite `Store`
     /// persists to `scan_analysis`.
-    fn upsert_scan_analysis(&self, _analysis: &crate::core::scan_analysis::ScanAnalysis) -> Result<()> {
+    fn upsert_scan_analysis(
+        &self,
+        _analysis: &crate::core::scan_analysis::ScanAnalysis,
+    ) -> Result<()> {
         Ok(())
     }
 

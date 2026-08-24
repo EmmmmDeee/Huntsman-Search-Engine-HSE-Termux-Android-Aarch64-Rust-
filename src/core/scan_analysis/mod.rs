@@ -36,6 +36,7 @@ pub struct AnalysisFinding {
 /// one — see [`crate::core::port::StoragePort::upsert_scan_analysis`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanAnalysis {
+    /// The [`crate::core::scan::Scan::id`] this analysis was produced for.
     pub scan_id: String,
     /// The Ollama model tag that produced this analysis (e.g. `"qwen2.5:7b"`) —
     /// kept so a stored analysis is never mistaken for the output of a

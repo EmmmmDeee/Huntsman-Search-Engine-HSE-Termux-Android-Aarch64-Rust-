@@ -1025,7 +1025,10 @@ impl Store {
     // ── AI-daemon scan analysis (see `src/ai/`, `core::port::StoragePort`) ──
 
     /// Persist (or overwrite) the AI-daemon's analysis for one scan.
-    pub fn upsert_scan_analysis(&self, analysis: &crate::core::scan_analysis::ScanAnalysis) -> Result<()> {
+    pub fn upsert_scan_analysis(
+        &self,
+        analysis: &crate::core::scan_analysis::ScanAnalysis,
+    ) -> Result<()> {
         let json = serde_json::to_string(analysis)?;
         let conn = self.conn.lock();
         conn.prepare_cached(
@@ -1207,7 +1210,10 @@ impl crate::core::port::StoragePort for Store {
         Store::delete_scan(self, scan_id)
     }
 
-    fn upsert_scan_analysis(&self, analysis: &crate::core::scan_analysis::ScanAnalysis) -> Result<()> {
+    fn upsert_scan_analysis(
+        &self,
+        analysis: &crate::core::scan_analysis::ScanAnalysis,
+    ) -> Result<()> {
         Store::upsert_scan_analysis(self, analysis)
     }
 

@@ -83,6 +83,7 @@ impl OllamaClient {
         }
     }
 
+    /// The Ollama model tag this client generates against.
     #[must_use]
     pub fn model(&self) -> &str {
         &self.model
@@ -105,7 +106,10 @@ impl OllamaClient {
         if !status.is_success() {
             return Err(Error::module(
                 SRC,
-                format!("Ollama /api/tags returned HTTP {status}: {}", truncate(&text)),
+                format!(
+                    "Ollama /api/tags returned HTTP {status}: {}",
+                    truncate(&text)
+                ),
             ));
         }
         let tags: TagsResponse = serde_json::from_str(&text)?;
@@ -157,7 +161,10 @@ impl OllamaClient {
         if !status.is_success() {
             return Err(Error::module(
                 SRC,
-                format!("Ollama /api/generate returned HTTP {status}: {}", truncate(&text)),
+                format!(
+                    "Ollama /api/generate returned HTTP {status}: {}",
+                    truncate(&text)
+                ),
             ));
         }
         let parsed: GenerateResponse = serde_json::from_str(&text)?;
@@ -179,21 +186,22 @@ fn truncate(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     /// Bind an ephemeral loopback listener and hand back its address plus a
     /// handle to the spawned task that will serve exactly one raw HTTP/1.1
     /// response per connection, in order. Mirrors the loopback-listener test
     /// pattern used throughout `src/modules/*/tests.rs` (e.g. `domainsdb::tests`).
-    async fn fake_server(responses: Vec<&'static str>) -> (String, Arc<AtomicU32>) {
+    async fn fake_server<S: Into<String>>(responses: Vec<S>) -> (String, Arc<AtomicU32>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind loopback");
         let addr = listener.local_addr().expect("local addr");
         let hits = Arc::new(AtomicU32::new(0));
         let hits_srv = Arc::clone(&hits);
+        let responses: Vec<String> = responses.into_iter().map(Into::into).collect();
         tokio::spawn(async move {
             for body in responses {
                 let Ok((mut sock, _)) = listener.accept().await else {
@@ -216,7 +224,10 @@ mod tests {
         ])
         .await;
         let client = OllamaClient::new(base_url, "qwen2.5:7b");
-        client.health_check().await.expect("model is listed exactly");
+        client
+            .health_check()
+            .await
+            .expect("model is listed exactly");
     }
 
     #[tokio::test]
@@ -280,7 +291,7 @@ mod tests {
     #[tokio::test]
     async fn generate_returns_the_response_field() {
         let body = "{\"response\":\"hello from the model\",\"done\":true}";
-        let (base_url, hits) = fake_server(vec![&format!(
+        let (base_url, hits) = fake_server(vec![format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
         )])
