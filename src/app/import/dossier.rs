@@ -121,6 +121,28 @@ pub(super) fn parse_dossier(
                 // was never accumulated into the entry, so that whole block was
                 // dead code and every dossier address was silently dropped.
                 "address",
+                // The breach corpus a record came from and its display name
+                // (`label: GITHUB COM 45M TECH 072023`, `title: TrueFire`). Pure
+                // provenance: without them every entity lifted from a
+                // multi-database export carries no record of WHICH breach
+                // disclosed it, so two findings sourced from one corpus look
+                // identical to two independent corroborations. Preserved as
+                // evidence attributes only — the corpus name is deliberately NOT
+                // mined for a domain (`GITHUB COM` → github.com), which would
+                // mint high-confidence pivot seeds out of a naming convention.
+                "label",
+                "title",
+                // Login/registration IP recorded against the breached account.
+                // `lastip` is the spelling SeekNow and several INFOSEC-leak
+                // exports use; every alias here is read by `IP_FIELDS` in
+                // `emit_dossier_entry`, so a record spelling it `lastip` yields
+                // the same pivotable IpAddress as one spelling it `ip`.
+                "lastip",
+                "last_ip",
+                "login_ip",
+                "reg_ip",
+                "registration_ip",
+                "signup_ip",
                 // Stealer-log / breach credential artifacts — first-class
                 // cross-correlation join-keys for AU-047 (reused-secret identity
                 // link). A plaintext `password` reused, or a `cookie`/`session`
@@ -355,7 +377,22 @@ fn emit_dossier_entry(
     // must match, or the same breach record yields fewer leads depending only on
     // its file format. Each is validated so malformed/placeholder values
     // ("256.256.256.256", "+0…") don't become high-confidence false seeds.
-    if let Some(ip) = get("ip")
+    // Read the IP through an alias list rather than folding every spelling onto
+    // one key at parse time: the evidence attribute then keeps the source's own
+    // wording (`lastip` tells an analyst it was a last-login IP; a rewritten
+    // `ip` does not) while this emission path stays single-branch. The list is
+    // scanned in declared order, so a record carrying both `ip` and `lastip`
+    // deterministically prefers the unqualified field.
+    const IP_FIELDS: &[&str] = &[
+        "ip",
+        "lastip",
+        "last_ip",
+        "login_ip",
+        "reg_ip",
+        "registration_ip",
+        "signup_ip",
+    ];
+    if let Some(ip) = IP_FIELDS.iter().find_map(|k| get(k))
         && ip.parse::<std::net::IpAddr>().is_ok()
         && !crate::core::validation::is_bogus_ip(ip)
         && seen.insert(format!("ip:{ip}"))
@@ -411,6 +448,12 @@ fn emit_dossier_entry(
         );
         stats.domains += 1;
     }
+    // Every other importer counts the record it just emitted (`combined`, `csv`,
+    // `json`, `oathnet_report` all do); this path never did, so `hse import`
+    // reported "Source: 0 breach" for a dossier — the one format that is by
+    // definition nothing but breach records. Reached only past the
+    // `entry.is_empty()` guard above, so section boundaries don't inflate it.
+    stats.breach_records += 1;
     entry.clear();
 }
 

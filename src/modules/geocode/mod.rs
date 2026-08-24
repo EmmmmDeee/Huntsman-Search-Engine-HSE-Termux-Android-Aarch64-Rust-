@@ -73,6 +73,18 @@ pub(super) struct NominatimAddr {
 
 pub(super) const SRC: &str = "geocode";
 
+/// Returned when Nominatim answers 2xx with a body that will not decode AND the
+/// curl fallback also fails to produce one.
+///
+/// A `const`, not a `format!`, and deliberately so — see the call site: the
+/// serde message would both trip the engine's text-matched rate-limit heuristic
+/// and quote the response body into a persisted event.
+const UNDECODABLE_MSG: &str = "Nominatim returned a success status whose body did not decode, and the curl fallback did not produce a usable answer either";
+
+/// Returned when neither transport answered at all.
+const NO_ANSWER_MSG: &str =
+    "Nominatim did not answer and the curl fallback did not produce a usable answer either";
+
 pub struct Geocode;
 
 #[async_trait]
@@ -148,17 +160,51 @@ impl Geocode {
             .send()
             .await;
 
+        // The `reverse` leg below already gets this right — `send_tagged` + `?`, an
+        // explicit status check, and a `map_err` on the decode. This leg, in the
+        // same module, used `unwrap_or_default()` on BOTH decodes and
+        // `Ok(ModuleResult::new())` when the fallback found nothing, so provider
+        // drift, a throttle and a total outage all arrived as "this address does
+        // not geocode" — a substantive negative about the subject's location.
+        //
+        // The curl fallback is deliberate and kept: Nominatim throttles the
+        // shared client hard enough that a second transport genuinely rescues
+        // the answer. What changes is only what happens when it does not.
+        //
+        // The line drawn here is decode-SUCCESS-with-zero-results (Nominatim
+        // answering `[]` for an address it cannot place — a real negative, and
+        // the common case) versus decode-FAILURE (a WAF interstitial or a schema
+        // change — not an answer at all). Same distinction as opencellid's
+        // 404-versus-401.
         let results: Vec<NominatimResult> = match resp {
-            Ok(r) if r.status().is_success() => crate::util::http::json_scanned(r, SRC)
-                .await
-                .unwrap_or_default(),
-            _ => {
-                if let Some(body) = crate::util::curl::fetch(&url, crate::MODULE_TIMEOUT_MS).await {
-                    serde_json::from_str(&body).unwrap_or_default()
-                } else {
-                    return Ok(ModuleResult::new());
+            Ok(r) if r.status().is_success() => {
+                match crate::util::http::json_scanned::<Vec<NominatimResult>>(r, SRC).await {
+                    Ok(v) => v,
+                    // A clean 2xx whose body will not parse: try the other
+                    // transport before concluding anything, then fail closed.
+                    //
+                    // The serde message is deliberately NOT interpolated, for two
+                    // separate reasons. Its Display ends "at line 1 column N", and
+                    // the engine classifies module errors by TEXT — `is_rate_limited`
+                    // splits on non-alphanumerics and matches the bare tokens `429`
+                    // and `402`, so a decode failure at column 429 would trip a
+                    // 600-second rate-limit cooldown on a schema-drift coincidence.
+                    // And serde's `invalid type` errors quote the offending VALUE,
+                    // which lands in a `ModuleError` event persisted to the events
+                    // table; `json_scanned` is also the one JSON helper that does not
+                    // run `redact_credentials`. The decode error is still visible in
+                    // the log via `json_scanned` itself.
+                    Err(_) => forward_via_curl(&url)
+                        .await
+                        .ok_or_else(|| Error::module(SRC, UNDECODABLE_MSG))?,
                 }
             }
+            // Transport error or a non-success status. Deliberately does NOT
+            // format the `reqwest::Error`: its Display embeds the request URL,
+            // which here carries the searched address.
+            _ => forward_via_curl(&url)
+                .await
+                .ok_or_else(|| Error::module(SRC, NO_ANSWER_MSG))?,
         };
 
         let mut result = ModuleResult::new();
@@ -218,6 +264,32 @@ impl Geocode {
         result.push(build_reverse_entity(lat, lon, &data, &ctx.scan_id));
         Ok(result)
     }
+}
+
+/// The fallback transport for the forward leg: fetch through `curl` and decode.
+///
+/// `Some` only on a SUCCESSFUL decode — `None` covers both "curl could not
+/// reach Nominatim" and "curl returned something that is not a Nominatim
+/// response". Collapsing those two into one `None` is deliberate: the caller
+/// treats either as "the fallback did not answer", and neither is evidence
+/// about the address itself.
+///
+/// Note that an empty result list is `Some(vec![])`, NOT `None`. Nominatim
+/// answering `[]` is a real, decodable negative about an address it cannot
+/// place, and must stay distinguishable from a transport or parse failure.
+async fn forward_via_curl(url: &str) -> Option<Vec<NominatimResult>> {
+    let body = crate::util::curl::fetch(url, crate::MODULE_TIMEOUT_MS).await?;
+    decode_forward_body(&body)
+}
+
+/// The decode half of [`forward_via_curl`], split out so the `Some`/`None`
+/// boundary is unit-testable without spawning curl.
+///
+/// This is the boundary the whole fail-closed change turns on: `Some(vec![])`
+/// for a decodable empty answer (a real negative about the address) versus
+/// `None` for a body that is not a Nominatim response at all.
+fn decode_forward_body(body: &str) -> Option<Vec<NominatimResult>> {
+    serde_json::from_str(body).ok()
 }
 
 /// Build the forward-geocode Coordinates entity, shaping confidence and tags by

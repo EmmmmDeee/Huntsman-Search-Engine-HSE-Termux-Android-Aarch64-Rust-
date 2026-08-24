@@ -7,13 +7,26 @@
 //! observations as "Apple AirPods", "Tesla Model 3", "Hikvision
 //! IP-camera", etc.
 //!
-//! The full IEEE registry is ~7 MB and includes ~36,000 prefixes,
-//! the bulk of which are enterprise network gear of no OSINT
-//! interest. HSE embeds a curated subset (~120 entries) focused on
-//! consumer devices most commonly surfaced by WiGLE Bluetooth +
-//! WiFi observations — phones, wearables, IoT, vehicles, cameras,
-//! TVs. The classifier returns both the vendor and a coarse device
-//! type so callers can tag entities at the right semantic level.
+//! The classifier answers in two tiers. A curated subset (~110
+//! entries) covers the consumer devices a survey most often meets —
+//! phones, wearables, IoT, vehicles, cameras, TVs — and carries both
+//! the vendor and a coarse device type, so callers can tag entities
+//! at the right semantic level. Behind it sits the full IEEE MA-L
+//! registry ([`ieee`], ~39,000 assignments, embedded as a packed
+//! blob), which answers the vendor question alone.
+//!
+//! The second tier is not redundancy. Measured against a real capture
+//! off the device, the curated set alone named 2 of 740 genuine
+//! hardware addresses — 0.3% — and reported every other one as
+//! `Unknown`. The curation is not wrong about what it covers; there
+//! is simply far more real hardware than a hand-picked list can name.
+//! IEEE registers organisations, not product categories, so the
+//! registry tier deliberately reports [`DeviceClass::Unknown`] rather
+//! than inventing a class.
+
+mod ieee; // the full IEEE MA-L registry, searched in place
+
+pub use ieee::registry_len;
 
 /// Coarse device categories surfaced from OUI classification.
 /// `Unknown` covers OUIs we recognise as a vendor but can't bucket
@@ -161,11 +174,36 @@ pub fn classify_mac(mac: &str) -> Option<OuiInfo> {
 
 /// Internal lookup — pulls the const tables. Public for tests; not
 /// otherwise re-exported.
+///
+/// Two tiers, curated first:
+///
+/// 1. [`OUI_TABLE`] — a hand-picked set carrying a vendor **and** a
+///    [`DeviceClass`]. Authoritative where it has an entry, because the class is
+///    a judgement about what the hardware *is* that no registry encodes.
+/// 2. The embedded IEEE MA-L registry ([`ieee`]) — ~39,000 assignments, vendor
+///    only. Reached only when tier 1 has nothing.
+///
+/// The tiering is what makes the second tier safe to add: it can widen vendor
+/// coverage without ever overriding a curated device class.
+///
+/// Measured on a real capture, tier 1 alone named 2 of 740 fixed-address devices
+/// (0.3%) and reported the rest as `Unknown` — not a wrong answer so much as an
+/// absent one, on the field that device attribution depends on. Tier 2 exists to
+/// close that gap; it returns [`DeviceClass::Unknown`], whose documented meaning
+/// is exactly "vendor recognised, device type not determined".
 pub(crate) fn lookup_prefix(prefix_6hex: &str) -> OuiInfo {
     for &(p, vendor, class) in OUI_TABLE {
         if p == prefix_6hex {
             return OuiInfo { vendor, class };
         }
+    }
+    if let Ok(prefix) = u32::from_str_radix(prefix_6hex, 16)
+        && let Some(vendor) = ieee::vendor_for(prefix)
+    {
+        return OuiInfo {
+            vendor,
+            class: DeviceClass::Unknown,
+        };
     }
     OuiInfo {
         vendor: "Unknown",

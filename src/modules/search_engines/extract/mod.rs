@@ -21,7 +21,7 @@ pub(super) async fn recycle_entities(
     _primary_results: &[SearchResult],
     deadline: std::time::Instant,
 ) {
-    let reliable = proven_live_engines();
+    let reliable = proven_live_engines(&ctx.scan_id);
 
     // Pre-allocate based on typical entity count (most pass the confidence filter).
     let mut recycle_queries: Vec<String> = Vec::with_capacity((result.entities.len() / 2).max(4));
@@ -82,9 +82,17 @@ pub(super) async fn recycle_entities(
     // recycler can never overrun the kill timeout, which would discard the whole
     // result, primary findings included), and the batch reaches every job within
     // the reserve budget instead of crawling them serially.
-    let mut recycled_results: Vec<SearchResult> = if ctx.cancel.is_cancelled() {
+    //
+    // Track per-engine results separately so we can update liveness when an
+    // "silenced" engine actually returns results during recycling — the engine
+    // recovers and should be credited as "proven live" for future queries.
+    let recycled_results: Vec<SearchResult> = if ctx.cancel.is_cancelled() {
         Vec::new()
     } else {
+        // Limit recycler query count to reasonable bounds:
+        // - 12 queries × ~8 reliable engines = ~96 concurrent requests max
+        // - On Termux, this balances discovery breadth with resource constraints
+        // - Capped lower than primary pass to avoid double spending on low-RAM devices
         let jobs: Vec<_> = recycle_queries
             .iter()
             .take(12)
@@ -92,7 +100,28 @@ pub(super) async fn recycle_entities(
                 reliable
                     .iter()
                     .filter(|e| engine_enabled(e.name) && !dead_engines.contains(e.name))
-                    .map(move |e| fetch_one(e, (e.build_url)(q), q.clone(), deadline))
+                    .map(move |e| {
+                        let engine_name = e.name;
+                        let scan_id = ctx.scan_id.clone();
+                        async move {
+                            let res = fetch_one(e, (e.build_url)(q), q.clone(), deadline).await;
+                            match res {
+                                Some(results) => {
+                                    // Engine returned results in recycler — update liveness even if
+                                    // it was previously silenced, so it's available for future queries.
+                                    super::record_hit(&scan_id, engine_name);
+                                    Some(results)
+                                }
+                                None => {
+                                    // Engine returned nothing on recycler query — record the empty
+                                    // so its streak continues. This doesn't break the silence, but
+                                    // contributes to the threshold if it's still being monitored.
+                                    super::record_empty(&scan_id, engine_name);
+                                    None
+                                }
+                            }
+                        }
+                    })
             })
             .collect();
         futures::stream::iter(jobs)
@@ -108,16 +137,22 @@ pub(super) async fn recycle_entities(
     if recycled_results.is_empty() {
         return;
     }
-    // Determinism: racy completion order → sort before the dedup/merge.
-    recycled_results.sort_by(|a, b| a.engine.cmp(b.engine).then_with(|| a.url.cmp(&b.url)));
 
     let recycled_results = dedup_results(recycled_results);
-    let mut seen_addrs: HashSet<String> = HashSet::new();
-    let mut seen_emails: HashSet<String> = HashSet::new();
-    let mut seen_phones: HashSet<String> = HashSet::new();
+
+    // Pre-allocate dedup sets with capacity hints based on typical entity discovery
+    // patterns. On Termux with limited RAM, explicit capacity prevents growth spikes
+    // when processing many high-yield results. Estimate: 5-10% of primary entities
+    // are typically rediscovered in recycled results; this is conservative for most scans.
+    let primary_entity_count = result.entities.len().max(10);
+    let recycle_capacity = (primary_entity_count / 8).max(16);
+
+    let mut seen_addrs: HashSet<String> = HashSet::with_capacity(recycle_capacity);
+    let mut seen_emails: HashSet<String> = HashSet::with_capacity(recycle_capacity);
+    let mut seen_phones: HashSet<String> = HashSet::with_capacity(recycle_capacity / 2);
     // Coordinates already present (or discovered here), keyed to 4 decimal
     // places so the same point from two snippets isn't double-emitted.
-    let mut seen_coords: HashSet<String> = HashSet::new();
+    let mut seen_coords: HashSet<String> = HashSet::with_capacity(recycle_capacity / 4);
 
     // Collect existing entity values to avoid duplicates
     for e in &result.entities {
@@ -326,16 +361,17 @@ pub(super) fn extract_family_names(
         return Vec::new();
     }
     let parts: Vec<&str> = target.value.split_whitespace().collect();
-    let lastname = match target.kind {
+    let (lastname, email_domain) = match target.kind {
         // `parts.len() >= 2` guarantees `last()` is Some; match it anyway so
         // the module carries no `unwrap()` that a future refactor could turn
         // into a mid-scan panic.
         TargetKind::FullName if parts.len() >= 2 => match parts.last() {
-            Some(last) => last.to_lowercase(),
+            Some(last) => (last.to_lowercase(), None),
             None => return Vec::new(),
         },
         TargetKind::Email => {
             let local = target.value.split('@').next().unwrap_or("");
+            let email_domain_str = target.value.rsplit_once('@').map(|(_, d)| d.to_lowercase());
             if local.len() >= 5 {
                 // Drop the first CHARACTER (a likely first-initial), not the
                 // first byte: a raw `local[1..]` panics on an internationalised
@@ -345,12 +381,15 @@ pub(super) fn extract_family_names(
                 // bare surname (`smith`) — otherwise the retained `.`/`_` made
                 // `lastname` (".smith") never equal the alnum-trimmed words it is
                 // compared against, so family extraction silently never fired.
-                local
-                    .chars()
-                    .skip(1)
-                    .collect::<String>()
-                    .trim_start_matches(|c: char| !c.is_alphanumeric())
-                    .to_lowercase()
+                (
+                    local
+                        .chars()
+                        .skip(1)
+                        .collect::<String>()
+                        .trim_start_matches(|c: char| !c.is_alphanumeric())
+                        .to_lowercase(),
+                    email_domain_str,
+                )
             } else {
                 return Vec::new();
             }
@@ -384,6 +423,24 @@ pub(super) fn extract_family_names(
         let raw = format!("{} {}", r.title, r.snippet);
         let text = strip_tags(&raw, raw.len());
         let lower = text.to_lowercase();
+
+        // Domain filter for email seeds: only extract family names from pages
+        // on the email's domain or pages that mention the email. This prevents
+        // attributing employees of other companies as family members just
+        // because they share a surname. E.g., "alice@example.com" should not
+        // extract "John Smith" from an acme.com page just because the email's
+        // local part ends in "smith" (Issue #5).
+        if let Some(ref email_dom) = email_domain {
+            let result_host = extract_host(&r.url).to_lowercase();
+            let result_domain = extract_registrable(&result_host);
+            let email_matches_domain = result_domain == *email_dom
+                || crate::util::domains::is_proper_subdomain_of(&result_host, email_dom);
+            let email_appears_in_result = lower.contains(&target.value.to_lowercase());
+
+            if !email_matches_domain && !email_appears_in_result {
+                continue;
+            }
+        }
         let words: Vec<&str> = lower.split_whitespace().collect();
         for window in words.windows(2) {
             let first = window[0].trim_matches(|c: char| !c.is_alphanumeric());

@@ -852,6 +852,27 @@ fn export_formats_determinism_audit() {
         r1, r2,
         "report.json varies in a field OTHER than the documented `exported_at`"
     );
+
+    // snake.svg — the sixth served export route (`GET .../snake.svg`), previously absent from
+    // this audit even though the comment above claims EVERY export format. It is built from the
+    // stored entities rather than rendered through a `Store`/`StoragePort` fn, so it needs its
+    // own check rather than a row in either table. Its node order comes from a `BTreeMap` and its
+    // lookup maps are read-only, so it should already be reproducible — this makes that a
+    // guarded fact instead of an unverified one, and would catch a future change that fed
+    // `HashMap`/`HashSet` iteration into the geometry or the element order.
+    let svg_entities = store.entities_for_scan("scan-au").expect("should succeed");
+    let centre_uid = svg_entities
+        .first()
+        .map(|e| e.uid.clone())
+        .expect("the audit fixture seeds entities");
+    let svg = |size: f64| {
+        crate::core::snake_graph::SnakeGraph::build(&centre_uid, &svg_entities, &[], 2).to_svg(size)
+    };
+    assert_eq!(
+        svg(400.0),
+        svg(400.0),
+        "format `snake.svg` is not byte-deterministic"
+    );
 }
 
 #[test]

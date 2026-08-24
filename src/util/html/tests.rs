@@ -293,3 +293,59 @@ mod prop {
         }
     }
 }
+
+    // Regression: the `;` search used to scan the WHOLE remainder and only then
+    // reject a hit past `MAX_ENTITY_BODY`, so a run of bare ampersands cost one
+    // full scan each — quadratic. The property tests above cap at 64-128 chars,
+    // far too short to show it, which is why it survived. This asserts the
+    // OUTPUT at a size where the old behaviour was already seconds of CPU.
+    #[test]
+    fn decode_entities_is_correct_on_an_ampersand_storm() {
+        // 64 KiB of bare `&`, the worst case: every one starts a search that
+        // finds no `;` at all.
+        let storm = "&".repeat(64 * 1024);
+        assert_eq!(
+            decode_entities(&storm),
+            storm,
+            "a bare `&` is not an entity and must survive verbatim"
+        );
+
+        // A `;` sitting far beyond any legal entity body must NOT be treated as a
+        // terminator, and must not be searched for either.
+        let far = format!("&{}re;", "x".repeat(4096));
+        assert_eq!(decode_entities(&far), far, "a distant `;` terminates nothing");
+
+        // The bound is on the BODY, so a legal entity still decodes when it sits
+        // immediately after a storm.
+        let mixed = format!("{}&amp;", "&".repeat(4096));
+        assert_eq!(decode_entities(&mixed), format!("{}&", "&".repeat(4096)));
+
+        // Exactly at and one past the accepted body length.
+        assert_eq!(decode_entities("&#x1F600;"), "\u{1F600}");
+        assert_eq!(decode_entities("&0123456789012;"), "&0123456789012;");
+    }
+
+    // Timing ratios are a property of the scheduler, not of the code, so this is
+    // `#[ignore]`d to match the house convention for perf baselines rather than
+    // reddening the gate on a loaded runner. Run it by hand to re-confirm the
+    // bound: before it was bounded, 128 KB of `&` took 3.85 s against 1.53 ms
+    // after, with time quadrupling per doubling of input.
+    #[test]
+    #[ignore = "timing ratio; run with --ignored --nocapture"]
+    fn decode_entities_is_linear_in_ampersand_count() {
+        let small = "&".repeat(16 * 1024);
+        let large = "&".repeat(128 * 1024); // 8x
+
+        let t = std::time::Instant::now();
+        let a = decode_entities(&small);
+        let small_ns = t.elapsed().as_nanos().max(1);
+        let t = std::time::Instant::now();
+        let b = decode_entities(&large);
+        let large_ns = t.elapsed().as_nanos().max(1);
+
+        assert_eq!(a, small);
+        assert_eq!(b, large);
+        let ratio = large_ns as f64 / small_ns as f64;
+        println!("8x input -> {ratio:.1}x time (quadratic would be ~64x)");
+        assert!(ratio < 24.0, "8x the input cost {ratio:.1}x the time");
+    }

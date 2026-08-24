@@ -109,10 +109,77 @@ pub fn scan_string_field(body: &str, key: &str) -> Vec<String> {
     out
 }
 
+/// Escape `s` for embedding **inside** a JSON string literal — the caller supplies the
+/// surrounding quotes, so this returns the interior only.
+///
+/// Delegates to `serde_json` rather than hand-rolling the escape, because hand-rolling it is a
+/// mistake this crate has already made and paid for. A `replace('\\', …).replace('"', …)` chain
+/// covers backslash and quote but leaves the control bytes (`\n`, `\r`, `\t`, anything `< 0x20`)
+/// that are ILLEGAL raw inside a JSON string — so a value carrying a newline or tab produced an
+/// invalid request body. `util::see_know` hit exactly that and fixed its copy; `modules::fullcontact`
+/// carried the unfixed twin. One definition now, so a third caller cannot inherit the broken shape
+/// and the two cannot drift apart again.
+///
+/// `Value::String(_).to_string()` yields `"…"`; the wrapping ASCII quotes are stripped to honour
+/// the interior-only contract. Those quotes are always exactly one byte each, so the slice is
+/// char-boundary safe for any input. Pure and total.
+pub fn escape_string_interior(s: &str) -> String {
+    let quoted = serde_json::Value::String(s.to_owned()).to_string();
+    quoted[1..quoted.len() - 1].to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn escape_string_interior_escapes_quote_and_backslash() {
+        assert_eq!(escape_string_interior(r#"a"b"#), r#"a\"b"#);
+        assert_eq!(escape_string_interior(r"a\b"), r"a\\b");
+        assert_eq!(escape_string_interior("plain"), "plain");
+        assert_eq!(escape_string_interior(""), "");
+    }
+
+    #[test]
+    fn escape_string_interior_escapes_the_control_bytes_a_replace_chain_misses() {
+        // The regression the hand-rolled twin carried: `\n`/`\r`/`\t` and other `< 0x20` bytes are
+        // ILLEGAL raw inside a JSON string, so a `.replace('\\',…).replace('"',…)` chain emitted a
+        // body no parser would accept. Each must come out as a valid escape.
+        assert_eq!(escape_string_interior("a\nb"), r"a\nb");
+        assert_eq!(escape_string_interior("a\rb"), r"a\rb");
+        assert_eq!(escape_string_interior("a\tb"), r"a\tb");
+        // Note the contrast with XML (`core::xml`), where an illegal control character is
+        // DROPPED because it cannot be represented at all: JSON *can* represent every control
+        // byte, as a `\u00XX` escape, so the correct handling here is to escape rather than
+        // discard — the value survives intact and the body stays parseable.
+        assert_eq!(escape_string_interior("a\u{1}b"), r"a\u0001b");
+        assert_eq!(escape_string_interior("\u{0}"), r"\u0000");
+    }
+
+    #[test]
+    fn escaped_interior_always_builds_parseable_json() {
+        // The property that actually matters: whatever the value, wrapping the result in quotes
+        // must yield a body `serde_json` can parse back to the original string. A hand-rolled
+        // escape fails this for any control byte.
+        for raw in [
+            "plain",
+            "quote\" and \\ backslash",
+            "newline\nand\ttab",
+            "\u{0}\u{1f}",
+            "unicode: Ana Cañas — 東京",
+            "\"}{\"injected\":\"x",
+        ] {
+            let body = format!(r#"{{"q":"{}"}}"#, escape_string_interior(raw));
+            let parsed: serde_json::Value = serde_json::from_str(&body)
+                .unwrap_or_else(|e| panic!("{raw:?} produced unparseable JSON: {e} -- {body}"));
+            assert_eq!(
+                parsed["q"].as_str(),
+                Some(raw),
+                "value must round-trip unchanged"
+            );
+        }
+    }
 
     #[test]
     fn val_str_returns_value_for_present_key() {

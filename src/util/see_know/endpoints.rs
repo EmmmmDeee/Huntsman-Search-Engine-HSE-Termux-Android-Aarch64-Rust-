@@ -575,14 +575,8 @@ pub(super) fn parse_credits_body(body: &str) -> CreditsOutcome {
     }
 }
 
-/// Escape `s` for embedding inside a JSON string literal — the two body-builder
-/// call sites add the surrounding quotes, so this returns the interior only.
-/// Delegates to `serde_json` so backslash, quote AND the control bytes (`\n`,
-/// `\r`, `\t`, other `< 0x20`) that are illegal raw in a JSON string are all
-/// escaped; the hand-rolled version escaped only `\` and `"`, so a query
-/// carrying a newline/tab produced invalid JSON. `to_string()` on a JSON string
-/// `Value` yields `"…"`; strip the wrapping ASCII quotes to keep the contract.
-pub(super) fn escape_json(s: &str) -> String {
-    let quoted = serde_json::Value::String(s.to_owned()).to_string();
-    quoted[1..quoted.len() - 1].to_owned()
-}
+// This module's own fix, now shared. It was correct here and hand-rolled (backslash + quote only,
+// dropping the illegal control bytes) in `modules::fullcontact` — the defect was that there were
+// two. Moved verbatim to `crate::util::json::escape_string_interior` so both body builders call one
+// implementation and cannot drift again; the rationale lives there.
+pub(super) use crate::util::json::escape_string_interior as escape_json;

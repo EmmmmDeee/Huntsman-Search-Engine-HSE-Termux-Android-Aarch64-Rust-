@@ -4,6 +4,7 @@
 //! owns construction of concrete infrastructure and application lifecycle
 //! services; presentation layers must not construct the engine or store.
 
+pub mod analyze;
 pub mod audit;
 pub mod benchmark;
 pub mod cells;
@@ -15,5 +16,6 @@ pub mod gap;
 pub mod import;
 pub mod persist;
 pub mod runtime;
+pub mod signal;
 pub mod tidy;
 pub mod update;

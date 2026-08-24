@@ -193,12 +193,15 @@ fn extract_github_location(html: &str) -> Option<String> {
     let start = after.find('>')? + 1;
     let end = after[start..].find('<')? + start;
     let text = &after[start..end];
-    let decoded = text
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&#39;", "'")
-        .replace("&quot;", "\"");
+    // The crate's single shared decoder, not a local `.replace()` chain. A chain
+    // feeds each replacement the *previous one's output*, so an `&amp;` decoding
+    // to `&` can pair with the text after it into an entity a later link decodes
+    // again: a profile location containing the literal `&lt;` (served as
+    // `&amp;lt;`) was recorded as `<`. `decode_entities` consumes each `&…;`
+    // exactly once, and also resolves `&nbsp;` and the numeric character
+    // references a GitHub location routinely carries (`S&#227;o Paulo`), which
+    // the chain left raw in the stored value.
+    let decoded = crate::util::html::decode_entities(text);
     let trimmed = decoded.trim().to_string();
     if trimmed.is_empty() {
         None

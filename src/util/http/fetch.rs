@@ -629,6 +629,47 @@ pub async fn http_status_error(module: &str, resp: reqwest::Response) -> Error {
     Error::module(module, format!("HTTP {status}: {snippet}"))
 }
 
+/// Classify a **keyless** response by status: a code in `absent` -> `Ok(None)` (the
+/// endpoint's clean "no such subject" signal, which the caller maps to an empty
+/// result); any other non-2xx -> `Err` via [`http_status_error`]; `2xx` ->
+/// `Ok(Some(resp))` for the caller to read.
+///
+/// This is the non-JSON counterpart of [`fetch_json_or_404`] — for the scrapers and
+/// XML endpoints that must read the body themselves — and the keyless counterpart of
+/// [`keyed_ok_or_404`]. It exists because the modules that hand-rolled this step wrote
+/// `if !resp.status().is_success() { return Ok(empty) }`, which folds a 403 scraper
+/// block, a 429 throttle and a 5xx outage into the same answer as a genuine miss. That
+/// is exactly the collapse the fail-closed invariant forbids: for a registry lookup the
+/// empty result is not "nothing to report", it is a *negative claim about a named
+/// subject* — "not a registered practitioner", "holds no licence" — which an analyst
+/// will act on. Failing closed makes the operator see the refusal instead.
+///
+/// Pass the codes that genuinely mean absence *for that endpoint* and nothing more.
+/// `&[]` is correct for an endpoint that signals a miss in the body of a `200` (an
+/// empty results table, an `<error>` element) — there, every non-2xx is a failure.
+///
+/// Pairs with `let-else`:
+///
+/// ```ignore
+/// let Some(resp) = http::ok_or_absent(SRC, resp, &[404]).await? else {
+///     return Ok(ModuleResult::new());
+/// };
+/// ```
+pub async fn ok_or_absent(
+    module: &str,
+    resp: reqwest::Response,
+    absent: &[u16],
+) -> Result<Option<reqwest::Response>> {
+    let status = resp.status();
+    if absent.contains(&status.as_u16()) {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        return Err(http_status_error(module, resp).await);
+    }
+    Ok(Some(resp))
+}
+
 /// Classify a keyed-API response by status — the full post-send operation that
 /// the keyed modules repeat. `404` -> `Ok(None)` (a clean "not in this dataset"
 /// miss the caller maps to empty findings); any other non-2xx ->

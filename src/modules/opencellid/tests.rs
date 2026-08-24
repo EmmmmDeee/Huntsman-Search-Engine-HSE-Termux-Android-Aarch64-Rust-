@@ -1,4 +1,4 @@
-use super::{AreaResp, OpenCellId, accuracy_to_confidence};
+use super::{AreaResp, KEY_REJECTED_MSG, OpenCellId, accuracy_to_confidence};
 use crate::core::{
     confidence,
     module::{Module, ModuleCost},
@@ -160,4 +160,84 @@ fn area_resp_captures_the_real_live_confirmed_bad_key_error_shape() {
         Some("API Key not known: garbage00000invalid")
     );
     assert_eq!(resp.cells.len(), 0);
+}
+
+// The live-confirmed bad-key shape: OpenCelliD answers a plain HTTP 200 whose
+// entire body is an error object, with no `cells` key at all. `CellEntry::error`
+// documents this and exists to DETECT it — but the detection only matters
+// because the module now returns a typed error on it instead of an empty
+// success. Before that, a rejected key was still indistinguishable from "no
+// towers here" as far as the scan was concerned, which is precisely what the
+// doc says the field was added to prevent.
+#[test]
+fn a_two_hundred_with_an_error_body_is_parsed_as_a_key_failure() {
+    let body = r#"{"error":"API Key not known: abc123","code":2}"#;
+    let parsed: AreaResp = serde_json::from_str(body).expect("the bad-key shape must deserialize");
+    assert_eq!(
+        parsed.error.as_deref(),
+        Some("API Key not known: abc123"),
+        "the error field is what distinguishes a rejected key from an empty area"
+    );
+    assert!(
+        parsed.cells.is_empty(),
+        "the bad-key body carries no cells key at all"
+    );
+}
+
+// The converse, so the check above cannot start firing on healthy responses: a
+// genuine empty area is a 200 with `cells: []` and NO error field. Reporting a
+// key failure here would turn every genuinely-empty bounding box into a module
+// error and burn a working key.
+#[test]
+fn a_genuinely_empty_area_is_not_mistaken_for_a_key_failure() {
+    let parsed: AreaResp = serde_json::from_str(r#"{"cells":[]}"#).expect("should deserialize");
+    assert!(
+        parsed.error.is_none(),
+        "no error field on a healthy response"
+    );
+    assert!(parsed.cells.is_empty());
+}
+
+// ── The key must never reach an error surface ───────────────────────────────
+//
+// OpenCelliD echoes the rejected key back inside its own error message. An
+// earlier revision of this module interpolated that message into the returned
+// error, which would have written the key into the verbose log, the SSE stream
+// and the dossier — a credential leak introduced by the very change that made
+// these paths return an error instead of an empty success.
+//
+// The guard is structural: `KEY_REJECTED_MSG` is a `const`, so no
+// provider-controlled bytes can pass through it. This test pins the hazard it
+// exists to prevent, so the constant cannot quietly become a `format!` again.
+#[test]
+fn the_key_rejection_error_never_echoes_the_providers_message() {
+    // The documented bad-key shape, with a recognisable stand-in for the key.
+    let body = r#"{"error":"API Key not known: SUPERSECRETKEY123","code":2}"#;
+    let parsed: AreaResp = serde_json::from_str(body).expect("bad-key shape must deserialize");
+    let provider_msg = parsed
+        .error
+        .as_deref()
+        .expect("error field must be present");
+
+    // First establish that the hazard is real: the provider genuinely hands
+    // back the key. If OpenCelliD ever stops doing this, the assertion below
+    // still holds and this one documents why the constant exists.
+    assert!(
+        provider_msg.contains("SUPERSECRETKEY123"),
+        "the provider echoes the key back — that is the hazard: {provider_msg}"
+    );
+
+    // What the module actually surfaces carries none of it.
+    assert!(
+        !KEY_REJECTED_MSG.contains("SUPERSECRETKEY123"),
+        "the returned error must not carry the key"
+    );
+    assert!(
+        !KEY_REJECTED_MSG.contains(provider_msg),
+        "the returned error must not echo the provider's message verbatim"
+    );
+    assert!(
+        KEY_REJECTED_MSG.contains("rejected the API key"),
+        "it must still say what went wrong, so the operator can act on it"
+    );
 }

@@ -333,10 +333,16 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     let hash = gravatar_hash(&normalised);
     let url = format!("https://www.gravatar.com/{hash}.json");
 
-    // Intentionally manual rather than using `util::http::fetch_json_or_404`:
-    // Gravatar's placeholder profiles return 200 + non-JSON body, and
-    // the helper would surface that as a `module_error`. The
-    // silent-treat-as-empty behaviour below is the documented contract.
+    // Manual rather than `util::http::fetch_json_or_404` so the 404 arm can be spelled out:
+    // Gravatar answers a plain 404 (`"User not found"`) for an address with no public profile,
+    // which is the common case and a real absence, not a failure.
+    //
+    // This previously carried a second rationale — that Gravatar's "placeholder profiles return
+    // 200 + non-JSON body" — used to justify swallowing a JSON decode failure. Probing the live
+    // endpoint could not reproduce it: every response observed was `application/json`, either a
+    // 200 profile document or a 404 `"User not found"`. Note `www.gravatar.com` answers 302 to a
+    // localized host; our client follows redirects (see `util::http::ssrf::client_builder`), so
+    // the final response is what reaches the decode below.
     let resp = ctx.http.get(&url).send_tagged(SRC).await?;
 
     let status = resp.status();
@@ -348,11 +354,14 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         return Err(crate::util::http::http_status_error("contact_enrich", resp).await);
     }
 
-    let data: ProfileResp = match crate::util::http::json_scanned(resp, SRC).await {
-        Ok(d) => d,
-        // Placeholder profile -> no findings (not a module error).
-        Err(_) => return Ok(ModuleResult::new()),
-    };
+    // Fail closed on a body that does not decode. A 2xx from a JSON API that is not JSON is
+    // anomalous — schema drift, a truncated body, an interstitial — not an absence of profile
+    // data, and the absence case already returned above on the 404. This was the ONLY one of the
+    // ~20 `json_scanned` call sites in `src/modules/` that swallowed the decode error into an
+    // empty result; every other propagates it.
+    let data: ProfileResp = crate::util::http::json_scanned(resp, SRC)
+        .await
+        .map_err(|e| crate::core::error::Error::module(SRC, e))?;
 
     let Some(entry) = data.entry.into_iter().next() else {
         return Ok(ModuleResult::new());
