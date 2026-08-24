@@ -7,26 +7,10 @@
 //! AI-independence` invariant in `src/lib.rs` for the full rationale.
 
 use crate::ai::ollama::{DEFAULT_BASE_URL, OllamaClient};
+use crate::ai::{DEFAULT_GENERATION_TIMEOUT_MS, MIN_GENERATION_TIMEOUT_MS, resolve_env_u64};
 use crate::core::error::{Error, Result};
 use crate::{default_db_path, storage::Store};
 use std::time::Duration;
-
-/// Floor for `HUNTSMAN_OLLAMA_TIMEOUT_MS` — below this, a slow-but-healthy
-/// local model would be indistinguishable from a hung one.
-const MIN_TIMEOUT_MS: u64 = 1_000;
-
-/// Local generation is slow relative to a network API call and varies hugely
-/// by model/hardware; two minutes is a generous default an operator can
-/// override per their own model/device.
-const DEFAULT_TIMEOUT_MS: u64 = 120_000;
-
-fn resolve_timeout_ms() -> u64 {
-    std::env::var("HUNTSMAN_OLLAMA_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|&n| n >= MIN_TIMEOUT_MS)
-        .unwrap_or(DEFAULT_TIMEOUT_MS)
-}
 
 /// Resolve `scan_id` (or `latest`), analyze it via a locally-run Ollama
 /// instance, and print either the machine-readable JSON report (`json`) or a
@@ -62,7 +46,11 @@ pub async fn cmd_analyze(
     let client = OllamaClient::new(base_url, model);
     client.health_check().await?;
 
-    let timeout = Duration::from_millis(resolve_timeout_ms());
+    let timeout = Duration::from_millis(resolve_env_u64(
+        "HUNTSMAN_OLLAMA_TIMEOUT_MS",
+        MIN_GENERATION_TIMEOUT_MS,
+        DEFAULT_GENERATION_TIMEOUT_MS,
+    ));
     let analysis = crate::ai::analysis::analyze_scan(&store, &client, &id, timeout).await?;
 
     if json {

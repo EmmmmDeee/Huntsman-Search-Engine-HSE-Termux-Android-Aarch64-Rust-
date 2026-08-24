@@ -34,15 +34,6 @@ pub const MAX_FINDINGS: usize = 5;
 /// long scraped value cannot dominate the entity list.
 const MAX_VALUE_CHARS: usize = 200;
 
-/// Truncate `s` to at most [`MAX_VALUE_CHARS`] on a `char` boundary (never a
-/// byte index — entity values are arbitrary scraped UTF-8).
-fn truncate_value(s: &str) -> std::borrow::Cow<'_, str> {
-    match s.char_indices().nth(MAX_VALUE_CHARS) {
-        Some((idx, _)) => std::borrow::Cow::Owned(format!("{}…", &s[..idx])),
-        None => std::borrow::Cow::Borrowed(s),
-    }
-}
-
 /// Build the prompt sent to Ollama for `scan_id`'s discovered entities.
 ///
 /// `entities` MUST already be redacted (see [`analyze_scan`], which calls
@@ -60,22 +51,25 @@ fn truncate_value(s: &str) -> std::borrow::Cow<'_, str> {
 /// `core/` and its determinism guarantees (see `src/lib.rs`).
 #[must_use]
 pub fn build_prompt(scan_id: &str, entities: &[Entity]) -> String {
-    let mut ranked: Vec<&Entity> = entities.iter().collect();
-    ranked.sort_by(|a, b| {
-        b.c_effective()
-            .partial_cmp(&a.c_effective())
+    // Decorate-sort-undecorate: `c_effective()` walks the entity's evidence
+    // chain (O(k) in its corroboration count), so it's computed once per
+    // entity here rather than repeatedly inside the sort comparator, which
+    // would otherwise re-derive it O(log n) times per entity across the sort.
+    let mut ranked: Vec<(f64, &Entity)> = entities.iter().map(|e| (e.c_effective(), e)).collect();
+    ranked.sort_by(|(a, ea), (b, eb)| {
+        b.partial_cmp(a)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.uid.cmp(&b.uid))
+            .then_with(|| ea.uid.cmp(&eb.uid))
     });
     ranked.truncate(MAX_ENTITIES_IN_PROMPT);
 
     let mut lines = String::new();
-    for e in &ranked {
+    for (c_effective, e) in &ranked {
         lines.push_str(&format!(
             "- {} = {} (confidence {:.2})\n",
             e.kind,
-            truncate_value(&e.value),
-            e.c_effective()
+            crate::ai::truncate_chars(&e.value, MAX_VALUE_CHARS),
+            c_effective
         ));
     }
 

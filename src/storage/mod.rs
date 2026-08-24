@@ -110,13 +110,18 @@ const SCHEMA_DDL: &str = "
             CREATE INDEX IF NOT EXISTS idx_entities_scan ON entities(scan_id);
             CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind);
             CREATE INDEX IF NOT EXISTS idx_scans_started ON scans(started_at DESC);
+            -- Serves scans_pending_analysis's `WHERE status IN (...) ORDER BY
+            -- started_at` (the AI-daemon poll query, run on an interval for the
+            -- process's whole lifetime) as an index range scan instead of a full
+            -- table scan of `scans`, which — unlike entities/events/relations —
+            -- is never bulk-pruned and only grows.
+            CREATE INDEX IF NOT EXISTS idx_scans_status_started ON scans(status, started_at);
             CREATE INDEX IF NOT EXISTS idx_corr_scan     ON correlations(scan_id);
             CREATE INDEX IF NOT EXISTS idx_obs_scan      ON entity_observations(scan_id);
             CREATE INDEX IF NOT EXISTS idx_obs_entity    ON entity_observations(entity_uid);
             CREATE INDEX IF NOT EXISTS idx_events_scan   ON events(scan_id, id);
             CREATE INDEX IF NOT EXISTS idx_events_type   ON events(event_type, id);
             CREATE INDEX IF NOT EXISTS idx_relations_scan ON relations(scan_id);
-            CREATE INDEX IF NOT EXISTS idx_scan_analysis_created ON scan_analysis(created_at DESC);
 
             -- Paired stealer-log credential rows (Stealer Logs Viewer,
             -- `core::stealer_row::StealerRow`). Persisted ALONGSIDE the

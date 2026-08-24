@@ -18,18 +18,15 @@
 use clap::Parser;
 use huntsman_search_engine::ai::analysis::analyze_scan;
 use huntsman_search_engine::ai::ollama::{DEFAULT_BASE_URL, OllamaClient};
+use huntsman_search_engine::ai::{
+    DEFAULT_GENERATION_TIMEOUT_MS, DEFAULT_POLL_INTERVAL_SECS, MIN_GENERATION_TIMEOUT_MS,
+    MIN_POLL_INTERVAL_SECS, resolve_env_u64,
+};
 use huntsman_search_engine::storage::Store;
 use huntsman_search_engine::{default_db_path, util::settings};
 use std::process::ExitCode;
 use std::time::Duration;
 
-/// Floor for `HUNTSMAN_AI_POLL_INTERVAL_SECS` — below this, a busy loop of
-/// mostly-empty `scans_pending_analysis` queries is not meaningfully more
-/// responsive, just noisier.
-const MIN_POLL_SECS: u64 = 15;
-const DEFAULT_POLL_SECS: u64 = 60;
-const MIN_GEN_TIMEOUT_MS: u64 = 1_000;
-const DEFAULT_GEN_TIMEOUT_MS: u64 = 120_000;
 /// Scans analyzed per poll cycle. Bounded so one cycle can't run unboundedly
 /// long after a backlog builds up (e.g. the daemon was off for a while) —
 /// the remainder is simply picked up on the next tick.
@@ -49,24 +46,6 @@ struct Args {
     /// pulled.
     #[arg(long, env = "HUNTSMAN_OLLAMA_MODEL")]
     model: Option<String>,
-}
-
-fn resolve_poll_interval() -> Duration {
-    let secs = std::env::var("HUNTSMAN_AI_POLL_INTERVAL_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|&n| n >= MIN_POLL_SECS)
-        .unwrap_or(DEFAULT_POLL_SECS);
-    Duration::from_secs(secs)
-}
-
-fn resolve_gen_timeout() -> Duration {
-    let ms = std::env::var("HUNTSMAN_OLLAMA_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|&n| n >= MIN_GEN_TIMEOUT_MS)
-        .unwrap_or(DEFAULT_GEN_TIMEOUT_MS);
-    Duration::from_millis(ms)
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -109,8 +88,16 @@ async fn main() -> ExitCode {
         );
     }
 
-    let poll_interval = resolve_poll_interval();
-    let gen_timeout = resolve_gen_timeout();
+    let poll_interval = Duration::from_secs(resolve_env_u64(
+        "HUNTSMAN_AI_POLL_INTERVAL_SECS",
+        MIN_POLL_INTERVAL_SECS,
+        DEFAULT_POLL_INTERVAL_SECS,
+    ));
+    let gen_timeout = Duration::from_millis(resolve_env_u64(
+        "HUNTSMAN_OLLAMA_TIMEOUT_MS",
+        MIN_GENERATION_TIMEOUT_MS,
+        DEFAULT_GENERATION_TIMEOUT_MS,
+    ));
     println!(
         "hse-ai-daemon: polling every {poll_interval:?} for unanalyzed scans (model {})",
         client.model()

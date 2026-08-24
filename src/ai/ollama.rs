@@ -52,10 +52,16 @@ pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:11434";
 /// matching how every OSINT module names itself in a surfaced error.
 const SRC: &str = "ai_daemon";
 
-/// A response body larger than this is refused rather than buffered — mirrors
-/// the size discipline `crate::util::http` already applies to every other
-/// network call site (see `JSON_BODY_CAP`), scaled down: a scan-analysis
-/// response is a short summary + a handful of findings, not a bulk export.
+/// A response this large or larger is rejected with a clear error. Note this
+/// does NOT bound peak memory the way a streaming cap would: `read_text`
+/// (`crate::util::http`) already buffers the full body, up to its own 32 MiB
+/// `JSON_BODY_CAP`, before this check ever runs — Ollama is a trusted local
+/// service, not an untrusted OSINT target, so that isn't the threat model
+/// here. This is a much narrower, deliberately small ceiling for the same
+/// reason `crate::util::http` bounds JSON bodies at all: a scan-analysis
+/// response is a short summary + a handful of findings, not a bulk export, so
+/// anything past this size means something is wrong and a caller should get a
+/// clear "too large" error rather than a confusing downstream JSON-parse one.
 const MAX_RESPONSE_BYTES: usize = 1_000_000;
 
 /// A thin, stateless client bound to one Ollama endpoint and model.
@@ -130,7 +136,7 @@ impl OllamaClient {
                 SRC,
                 format!(
                     "Ollama /api/tags returned HTTP {status}: {}",
-                    truncate(&text)
+                    crate::ai::truncate_chars(&text, ERROR_SNIPPET_CHARS)
                 ),
             ));
         }
@@ -185,7 +191,7 @@ impl OllamaClient {
                 SRC,
                 format!(
                     "Ollama /api/generate returned HTTP {status}: {}",
-                    truncate(&text)
+                    crate::ai::truncate_chars(&text, ERROR_SNIPPET_CHARS)
                 ),
             ));
         }
@@ -194,16 +200,11 @@ impl OllamaClient {
     }
 }
 
-/// A response/error body is arbitrary upstream text — truncate on a `char`
-/// boundary (never a byte index) before it reaches a log line or a surfaced
-/// `Error`, mirroring `crate::util::http`'s own `key_tail` discipline.
-fn truncate(s: &str) -> String {
-    const MAX_CHARS: usize = 300;
-    match s.char_indices().nth(MAX_CHARS) {
-        Some((idx, _)) => format!("{}…", &s[..idx]),
-        None => s.to_string(),
-    }
-}
+/// A response/error body is arbitrary upstream text — max chars kept when
+/// truncating one for a log line or a surfaced `Error` (via
+/// [`crate::ai::truncate_chars`]), mirroring `crate::util::http`'s own
+/// `key_tail` discipline.
+const ERROR_SNIPPET_CHARS: usize = 300;
 
 #[cfg(test)]
 mod tests {
@@ -347,18 +348,7 @@ mod tests {
             .expect_err("an unparsable body must be Err, never treated as an empty success");
     }
 
-    #[test]
-    fn truncate_is_char_boundary_safe_on_multibyte_text() {
-        // 400 repeated multi-byte characters — truncating at a raw byte index
-        // near the 300-char cut would land mid-codepoint and panic.
-        let s = "é".repeat(400);
-        let t = truncate(&s);
-        assert!(t.ends_with('…'));
-        assert!(t.chars().count() <= 301);
-    }
-
-    #[test]
-    fn truncate_leaves_a_short_string_untouched() {
-        assert_eq!(truncate("short"), "short");
-    }
+    // Char-boundary-safety of the truncation itself is covered once, at its
+    // shared definition (`crate::ai::truncate_chars`'s own tests) — no need
+    // to re-test that primitive here.
 }
