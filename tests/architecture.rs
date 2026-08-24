@@ -266,6 +266,18 @@ fn core_does_not_import_util_directly() {
                 // the spawned task.
                 && !line.contains("util::regional::with_regional")
                 && !line.contains("util::regional::regional_enabled")
+                // Pure task-local ambient (no I/O): the per-scan quota-budget
+                // scope, the same shape/justification as `found_keys::with_scan`
+                // / `regional::with_regional` above. The engine wraps each scan +
+                // each spawned dispatch task in this so `QuotaBudget`'s scan-
+                // scoped state (see_know / oathnet_pro / wigle's shared per-scan
+                // caps, cap overrides, and exhausted latches) is isolated per
+                // `scan_id` instead of a single process-wide counter that any
+                // concurrent `hse serve` scan starting could silently reset for
+                // every sibling scan (the same PROBLEM_TREE T2.11 class of bug).
+                // `cleanup_scan_budgets` still goes through the `ModuleRuntime`
+                // hook; only the pure scope-setter is here.
+                && !line.contains("util::budget::with_scan")
                 // Pure, offline, dependency-free UTC time-of-day formatter
                 // (`HH:MM:SS` via Howard Hinnant civil-from-days — no date crate,
                 // no I/O, no state; total and deterministic) — the same leaf
