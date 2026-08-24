@@ -35,7 +35,11 @@ const SCANS_PER_CYCLE: usize = 5;
 #[derive(Parser)]
 #[command(
     name = "hse-ai-daemon",
-    about = "Background AI-daemon scan analysis for Huntsman Search Engine (opt-in; requires a running Ollama instance)"
+    about = "Background AI-daemon scan analysis for Huntsman Search Engine (opt-in; requires a running Ollama instance)",
+    long_about = "Background AI-daemon scan analysis for Huntsman Search Engine (opt-in; requires \
+        a running Ollama instance). Also reads HUNTSMAN_AI_POLL_INTERVAL_SECS (seconds between \
+        poll cycles; default 60, floor 15) and HUNTSMAN_OLLAMA_TIMEOUT_MS (per-scan generation \
+        timeout in milliseconds; default 120000, floor 1000) — neither has a --flag equivalent."
 )]
 struct Args {
     /// Ollama base URL (default `http://127.0.0.1:11434`).

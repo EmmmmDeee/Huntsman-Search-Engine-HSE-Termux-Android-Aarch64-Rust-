@@ -450,11 +450,40 @@ points. See `src/ai/` for the implementation and `src/lib.rs`'s `Runtime
 AI-independence` invariant for why this layer exists as a narrow, isolated
 exception rather than a change to the deterministic core.
 
+Skipping step 2 or omitting a model produces a clear startup error
+(`feature.ai_daemon is off` / `no Ollama model configured`), never a silent
+no-op — and `hse doctor` reports both preconditions (armed? model reachable
+and pulled?) in one place before you run either entry point for the first
+time.
+
 Want better severity calibration or shape-adherence than a stock model gives
 you? [`docs/OSINT_MODEL_FINE_TUNING.md`](docs/OSINT_MODEL_FINE_TUNING.md) is a
 LoRA/QLoRA fine-tuning recipe for this exact prompt/response contract, run on
 your own GPU hardware — the finished model is just another Ollama tag, nothing
 about it touches this crate's build.
+
+### Running `hse-ai-daemon` persistently (Termux)
+
+`hse-ai-daemon` is a long-lived foreground process — it does not daemonize or
+background itself. To keep it running across a Termux session
+restart/reboot, use `termux-services` (`pkg install termux-services`) rather
+than a systemd unit (Termux has no systemd):
+
+```bash
+mkdir -p $PREFIX/var/service/hse-ai-daemon
+cat > $PREFIX/var/service/hse-ai-daemon/run <<'EOF'
+#!/data/data/com.termux/files/usr/bin/sh
+export HUNTSMAN_OLLAMA_MODEL=qwen2.5:7b
+exec hse-ai-daemon
+EOF
+chmod +x $PREFIX/var/service/hse-ai-daemon/run
+sv-enable hse-ai-daemon
+```
+
+`sv-enable` starts it now and on every future Termux boot-services start;
+`sv down hse-ai-daemon` / `sv up hse-ai-daemon` stop/restart it, and its
+`current/logs` (or `sv status`) shows the same stdout/stderr lines you'd see
+running it in the foreground.
 
 ---
 

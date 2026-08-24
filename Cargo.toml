@@ -22,6 +22,11 @@ path = "src/main.rs"
 # opt-in Cargo feature would only add CI/`--features` friction for zero
 # dependency-weight benefit — there is nothing extra here for a plain
 # `cargo build`/the Termux cross-build to avoid compiling.
+#
+# Before running: arm `hse config feature.ai_daemon on` and set
+# HUNTSMAN_OLLAMA_MODEL (or pass --model) to a model already pulled via
+# `ollama pull <tag>` — see README's "AI-Daemon Scan Analysis" section, or
+# run `hse doctor` to check both preconditions in one place.
 [[bin]]
 name = "hse-ai-daemon"
 path = "src/bin/hse_ai_daemon/main.rs"

@@ -382,7 +382,11 @@ pub enum Command {
     /// plain-language summary and ranked findings on an already-completed
     /// scan's discovered entities. Opt-in (`hse config feature.ai_daemon on`)
     /// and requires Ollama to be installed, running, and reachable — never
-    /// runs as part of `hse scan`/`hse serve`/`hse live`. See `src/ai/`.
+    /// runs as part of `hse scan`/`hse serve`/`hse live`. See `src/ai/`. Also
+    /// reads `HUNTSMAN_OLLAMA_TIMEOUT_MS` (generation timeout in
+    /// milliseconds; default 120000, floor 1000) — no `--timeout` flag exists
+    /// for it, since a single analysis call has no other caller-tunable knob
+    /// to group it with.
     Analyze {
         /// Stored scan id to analyse (`latest` for the most recent completed scan).
         #[arg(long)]

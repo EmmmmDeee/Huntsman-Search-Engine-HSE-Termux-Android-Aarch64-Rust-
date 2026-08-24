@@ -106,6 +106,26 @@ impl OllamaClient {
         &self.model
     }
 
+    /// Build a clear, attributable error for a failed `send()` — the crate-wide
+    /// `From<reqwest::Error> for Error` (`src/core/error/mod.rs`) calls
+    /// `.without_url()`, which strips both the URL and reqwest's underlying
+    /// cause text (it lives on `.source()`, not the top-level `Display`), so a
+    /// connect-refused/DNS-failure/timeout would otherwise surface as a
+    /// content-free `"http: error sending request"`. That redaction protects
+    /// API keys embedded in *other* modules' query strings; it buys nothing
+    /// here, since `base_url` is operator-configured
+    /// (`--ollama-url`/`HUNTSMAN_OLLAMA_URL`) and never attacker-influenced —
+    /// see `build_ollama_client`'s doc comment.
+    fn unreachable_err(&self, e: &reqwest::Error) -> Error {
+        Error::module(
+            SRC,
+            format!(
+                "could not reach Ollama at {}: {e}; is Ollama running? check --ollama-url / HUNTSMAN_OLLAMA_URL",
+                self.base_url
+            ),
+        )
+    }
+
     /// `GET /api/tags` — the cheapest possible reachability probe, and it also
     /// confirms `model` has actually been pulled, so a typo'd model name fails
     /// here with a clear, attributable message instead of surfacing as an
@@ -128,7 +148,12 @@ impl OllamaClient {
 
     async fn health_check_inner(&self) -> Result<()> {
         let url = format!("{}/api/tags", self.base_url);
-        let resp = self.http.get(&url).send().await?;
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| self.unreachable_err(&e))?;
         let status = resp.status();
         let text = read_text(SRC, resp).await?;
         if !status.is_success() {
@@ -182,7 +207,13 @@ impl OllamaClient {
             // still validates the shape and fails closed on a mismatch.
             "format": "json",
         });
-        let resp = self.http.post(&url).json(&body).send().await?;
+        let resp = self
+            .http
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| self.unreachable_err(&e))?;
         let status = resp.status();
         let text = read_text(SRC, resp).await?;
         if text.len() > MAX_RESPONSE_BYTES {
@@ -311,10 +342,15 @@ mod tests {
         let addr = listener.local_addr().expect("local addr");
         drop(listener);
         let client = OllamaClient::new(format!("http://{addr}"), "qwen2.5:7b");
-        client
+        let err = client
             .health_check()
             .await
             .expect_err("connection refused must surface as Err, never panic or a fake Ok");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&addr.to_string()) && msg.contains("HUNTSMAN_OLLAMA_URL"),
+            "error must name the unreachable base_url and point at the fix, got: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -341,6 +377,25 @@ mod tests {
         let text = client.generate("summarise this").await.expect("generate");
         assert_eq!(text, "hello from the model");
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn generate_reports_base_url_when_ollama_is_unreachable() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        drop(listener);
+        let client = OllamaClient::new(format!("http://{addr}"), "qwen2.5:7b");
+        let err = client
+            .generate("x")
+            .await
+            .expect_err("connection refused must surface as Err");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&addr.to_string()) && msg.contains("HUNTSMAN_OLLAMA_URL"),
+            "error must name the unreachable base_url and point at the fix, got: {msg}"
+        );
     }
 
     #[tokio::test]
