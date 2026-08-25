@@ -62,7 +62,7 @@ pub async fn credits_web() -> Result<(u32, Option<u32>)> {
 
 /// Shutdown web client (cleanup Playwright browser).
 pub async fn shutdown_web() {
-    if let Some(mut client) = WEB_CLIENT.lock().await.take() {
+    if let Some(client) = WEB_CLIENT.lock().await.take() {
         tracing::info!("Shutting down SeekNow web client");
         // In a real impl with Playwright, would call client.shutdown().
         drop(client);

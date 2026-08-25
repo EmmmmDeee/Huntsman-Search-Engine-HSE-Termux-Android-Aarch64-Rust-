@@ -30,7 +30,7 @@ pub struct AdvancedWebClient {
     session: Arc<Mutex<SessionState>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct SessionState {
     /// Authentication token/cookie (if obtained).
     auth_token: Option<String>,
@@ -40,21 +40,11 @@ struct SessionState {
     expires_at: Option<std::time::SystemTime>,
 }
 
-impl Default for SessionState {
-    fn default() -> Self {
-        SessionState {
-            auth_token: None,
-            auth_time: None,
-            expires_at: None,
-        }
-    }
-}
-
 impl AdvancedWebClient {
     /// Create a new advanced web client with optional cookie file for session persistence.
     pub fn new(email: String, password: Option<String>, base_url: String) -> Self {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let cookie_file = PathBuf::from(format!("{}/.huntsman/seeknow_session.txt", home));
+        let cookie_file = PathBuf::from(format!("{home}/.huntsman/seeknow_session.txt"));
 
         AdvancedWebClient {
             email,
@@ -74,7 +64,7 @@ impl AdvancedWebClient {
         std::fs::read_to_string(&self.cookie_file).ok()
             .and_then(|content| {
                 let lines: Vec<&str> = content.lines().collect();
-                lines.last().map(|s| s.to_string())
+                lines.last().map(ToString::to_string)
             })
     }
 
@@ -99,13 +89,9 @@ impl AdvancedWebClient {
         let session = self.session.lock().await;
 
         // Check in-memory cached session validity.
-        if let Some(_token) = &session.auth_token {
-            if let Some(expires) = session.expires_at {
-                if std::time::SystemTime::now() < expires {
-                    tracing::debug!("Using cached SeekNow session (in-memory)");
-                    return Ok(());
-                }
-            }
+        if session.auth_token.is_some() && session.expires_at.is_some_and(|e| std::time::SystemTime::now() < e) {
+            tracing::debug!("Using cached SeekNow session (in-memory)");
+            return Ok(());
         }
 
         drop(session); // Release lock before auth attempts.
@@ -189,16 +175,14 @@ impl AdvancedWebClient {
                 .await
                 .map_err(|e| Error::Other(format!("Parse error: {e}")))?;
 
-            if let Some(status) = body.get("status").and_then(|v| v.as_str()) {
-                if status == "link_sent" {
-                    tracing::info!(
-                        email = %self.email,
-                        "Passwordless link sent; check email for login link"
-                    );
-                    // In production, would wait for user to click link or accept clipboard paste.
-                    // For automation, would extract link from email or polling.
-                    return Ok(());
-                }
+            if body.get("status").and_then(|v| v.as_str()) == Some("link_sent") {
+                tracing::info!(
+                    email = %self.email,
+                    "Passwordless link sent; check email for login link"
+                );
+                // In production, would wait for user to click link or accept clipboard paste.
+                // For automation, would extract link from email or polling.
+                return Ok(());
             }
         }
 
@@ -237,7 +221,7 @@ impl AdvancedWebClient {
                 let mut session = self.session.lock().await;
                 session.auth_token = Some(token.to_string());
                 session.auth_time = Some(std::time::SystemTime::now());
-                if let Some(expires_in) = body.get("expires_in").and_then(|v| v.as_u64()) {
+                if let Some(expires_in) = body.get("expires_in").and_then(Value::as_u64) {
                     session.expires_at = Some(
                         std::time::SystemTime::now()
                             + std::time::Duration::from_secs(expires_in),
@@ -292,9 +276,9 @@ impl AdvancedWebClient {
         // Headers: Authorization: Bearer {token} (if token-based auth)
 
         let auth_header = if let Some(token) = &self.session.lock().await.auth_token {
-            format!("Bearer {}", token)
+            format!("Bearer {token}")
         } else {
-            "".to_string()
+            String::new()
         };
 
         let resp = self
@@ -356,12 +340,13 @@ impl AdvancedWebClient {
         }
 
         // Method 2: Fall back to web scraping.
-        self.search_via_scraping(query, query_type)
-            .await
-            .or_else(|e| {
+        match self.search_via_scraping(query, query_type).await {
+            Ok(r) => Ok(r),
+            Err(e) => {
                 tracing::error!(error = %e, "All SeekNow search methods failed");
                 Err(e)
-            })
+            }
+        }
     }
 
     /// Fetch remaining credits.
@@ -386,9 +371,9 @@ impl AdvancedWebClient {
 
             let remaining = body
                 .get("remaining")
-                .and_then(|v| v.as_u64())
+                .and_then(Value::as_u64)
                 .unwrap_or(0) as u32;
-            let daily_limit = body.get("daily_limit").and_then(|v| v.as_u64()).map(|v| v as u32);
+            let daily_limit = body.get("daily_limit").and_then(Value::as_u64).map(|v| v as u32);
 
             return Ok((remaining, daily_limit));
         }
