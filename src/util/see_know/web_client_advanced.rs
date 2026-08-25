@@ -7,9 +7,9 @@
 //! 4. Use browser session replay (cookie restoration)
 
 use reqwest::Client;
-use serde_json::{json, Value};
-use std::sync::Arc;
+use serde_json::{Value, json};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::core::error::{Error, Result};
@@ -61,7 +61,8 @@ impl AdvancedWebClient {
 
     /// Load session token from cookie file (manual login persisted).
     fn load_cookie_session(&self) -> Option<String> {
-        std::fs::read_to_string(&self.cookie_file).ok()
+        std::fs::read_to_string(&self.cookie_file)
+            .ok()
             .and_then(|content| {
                 let lines: Vec<&str> = content.lines().collect();
                 lines.last().map(ToString::to_string)
@@ -89,7 +90,11 @@ impl AdvancedWebClient {
         let session = self.session.lock().await;
 
         // Check in-memory cached session validity.
-        if session.auth_token.is_some() && session.expires_at.is_some_and(|e| std::time::SystemTime::now() < e) {
+        if session.auth_token.is_some()
+            && session
+                .expires_at
+                .is_some_and(|e| std::time::SystemTime::now() < e)
+        {
             tracing::debug!("Using cached SeekNow session (in-memory)");
             return Ok(());
         }
@@ -103,9 +108,8 @@ impl AdvancedWebClient {
             session.auth_token = Some(token);
             session.auth_time = Some(std::time::SystemTime::now());
             // Set a reasonable expiry (24 hours, may be longer depending on server)
-            session.expires_at = Some(
-                std::time::SystemTime::now() + std::time::Duration::from_secs(86400)
-            );
+            session.expires_at =
+                Some(std::time::SystemTime::now() + std::time::Duration::from_secs(86400));
             return Ok(());
         }
 
@@ -122,9 +126,17 @@ impl AdvancedWebClient {
         .collect::<Vec<_>>();
 
         for (i, password) in passwords.iter().enumerate() {
-            tracing::debug!(attempt = i + 1, total = passwords.len(), "Trying password auth");
+            tracing::debug!(
+                attempt = i + 1,
+                total = passwords.len(),
+                "Trying password auth"
+            );
             if self.try_password_auth(password).await.is_ok() {
-                tracing::info!("SeekNow: authenticated via password (attempt {}/{})", i + 1, passwords.len());
+                tracing::info!(
+                    "SeekNow: authenticated via password (attempt {}/{})",
+                    i + 1,
+                    passwords.len()
+                );
                 return Ok(());
             }
         }
@@ -186,7 +198,10 @@ impl AdvancedWebClient {
             }
         }
 
-        Err(Error::Module { module: "web_auth".into(), message: "Passwordless auth not available".into() })
+        Err(Error::Module {
+            module: "web_auth".into(),
+            message: "Passwordless auth not available".into(),
+        })
     }
 
     /// Attempt password-based login.
@@ -223,8 +238,7 @@ impl AdvancedWebClient {
                 session.auth_time = Some(std::time::SystemTime::now());
                 if let Some(expires_in) = body.get("expires_in").and_then(Value::as_u64) {
                     session.expires_at = Some(
-                        std::time::SystemTime::now()
-                            + std::time::Duration::from_secs(expires_in),
+                        std::time::SystemTime::now() + std::time::Duration::from_secs(expires_in),
                     );
                 }
                 tracing::info!("SeekNow password auth successful");
@@ -250,7 +264,10 @@ impl AdvancedWebClient {
         // Returns: { providers: ["google", "github", "discord"] }
         // (Would require user interaction to click OAuth button + approve)
 
-        Err(Error::Module { module: "web_auth".into(), message: "OAuth not yet implemented".into() })
+        Err(Error::Module {
+            module: "web_auth".into(),
+            message: "OAuth not yet implemented".into(),
+        })
     }
 
     /// Attempt API key authentication flow (reverse-engineered).
@@ -262,7 +279,10 @@ impl AdvancedWebClient {
         // Returns: { key: "seek-...", created_at: "...", plan: "enterprise" }
 
         // Requires prior session; skip if no auth yet.
-        Err(Error::Module { module: "web_auth".into(), message: "API key flow requires prior auth".into() })
+        Err(Error::Module {
+            module: "web_auth".into(),
+            message: "API key flow requires prior auth".into(),
+        })
     }
 
     /// Perform a search via reverse-engineered API call (if web UI uses internal API).
@@ -305,7 +325,10 @@ impl AdvancedWebClient {
         } else if resp.status().as_u16() == 401 {
             // Token expired; clear session so next call will re-authenticate.
             self.session.lock().await.auth_token = None;
-            return Err(Error::Module { module: "web_auth".into(), message: "Token expired; re-authenticate required".into() });
+            return Err(Error::Module {
+                module: "web_auth".into(),
+                message: "Token expired; re-authenticate required".into(),
+            });
         }
 
         Ok(Vec::new())
@@ -369,11 +392,11 @@ impl AdvancedWebClient {
                 .await
                 .map_err(|e| Error::Other(format!("Parse error: {e}")))?;
 
-            let remaining = body
-                .get("remaining")
+            let remaining = body.get("remaining").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let daily_limit = body
+                .get("daily_limit")
                 .and_then(Value::as_u64)
-                .unwrap_or(0) as u32;
-            let daily_limit = body.get("daily_limit").and_then(Value::as_u64).map(|v| v as u32);
+                .map(|v| v as u32);
 
             return Ok((remaining, daily_limit));
         }

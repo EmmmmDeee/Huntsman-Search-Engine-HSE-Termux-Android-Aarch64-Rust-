@@ -10,8 +10,8 @@ use tokio::sync::Mutex;
 
 use crate::core::error::{Error, Result};
 
-use super::web_client_advanced::AdvancedWebClient;
 use super::config;
+use super::web_client_advanced::AdvancedWebClient;
 
 /// Global web client instance (lazy singleton).
 static WEB_CLIENT: LazyLock<Arc<Mutex<Option<AdvancedWebClient>>>> =
@@ -41,8 +41,9 @@ pub async fn search_web(query: &str, query_type: &str) -> Result<Vec<Value>> {
     init_web_client().await?;
 
     let client = WEB_CLIENT.lock().await;
-    let client = client.as_ref().ok_or_else(|| {
-        Error::Module { module: "web_dispatcher".into(), message: "SeekNow web client initialization failed".into() }
+    let client = client.as_ref().ok_or_else(|| Error::Module {
+        module: "web_dispatcher".into(),
+        message: "SeekNow web client initialization failed".into(),
     })?;
 
     client.search(query, query_type).await
@@ -53,8 +54,9 @@ pub async fn credits_web() -> Result<(u32, Option<u32>)> {
     init_web_client().await?;
 
     let client = WEB_CLIENT.lock().await;
-    let client = client.as_ref().ok_or_else(|| {
-        Error::Module { module: "web_dispatcher".into(), message: "SeekNow web client initialization failed".into() }
+    let client = client.as_ref().ok_or_else(|| Error::Module {
+        module: "web_dispatcher".into(),
+        message: "SeekNow web client initialization failed".into(),
     })?;
 
     client.credits().await

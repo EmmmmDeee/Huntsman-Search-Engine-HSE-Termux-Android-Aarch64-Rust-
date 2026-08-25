@@ -62,9 +62,9 @@ pub fn results_dir_is_shared_storage() -> bool {
 /// Priority order: tries each password until one succeeds.
 pub const SEEKNOW_EMAIL: &str = "matthewdiegmann@gmail.com";
 pub const SEEKNOW_PASSWORDS: &[&str] = &[
-    "thelord123",           // Primary password
-    "moose1991",            // Fallback 1
-    "fuckthefrench123",     // Fallback 2
+    "thelord123",       // Primary password
+    "moose1991",        // Fallback 1
+    "fuckthefrench123", // Fallback 2
 ];
 
 /// Value scoring weights — the single source of truth consumed by
