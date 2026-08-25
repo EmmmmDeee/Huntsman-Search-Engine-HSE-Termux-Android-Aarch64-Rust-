@@ -17,7 +17,6 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "ipquery";
 
@@ -129,18 +128,16 @@ impl Module for IpQuery {
         let ip = target.value.trim();
 
         let url = format!("https://api.ipquery.io/{ip}");
-        let resp = ctx
-            .http
-            .get(&url)
-            .timeout(std::time::Duration::from_secs(6))
-            .send_tagged(SRC)
-            .await?;
-
-        if !resp.status().is_success() {
+        let Some(data): Option<Resp> = crate::util::http::fetch_json_or_404_with_timeout(
+            &ctx.http,
+            SRC,
+            &url,
+            std::time::Duration::from_secs(6),
+        )
+        .await?
+        else {
             return Ok(ModuleResult::new());
-        }
-
-        let data: Resp = crate::util::http::json_decode(SRC, resp).await?;
+        };
 
         let mut result = ModuleResult::new();
 

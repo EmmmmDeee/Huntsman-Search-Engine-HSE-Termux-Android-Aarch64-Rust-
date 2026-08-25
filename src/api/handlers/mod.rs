@@ -59,6 +59,28 @@ pub(crate) fn not_found() -> axum::response::Response {
     (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
 }
 
+/// Loopback-only access gate shared by every mutating or sensitive-metadata
+/// endpoint (key read/write, update trigger, cell DB import/clear, debug log
+/// downloads, key-pool/harvest status): only a client connecting from a
+/// loopback address may invoke them. Returns the `403` response to send for a
+/// non-loopback peer, or `None` when the call is allowed.
+///
+/// NB: this trusts the socket peer address. Behind a loopback-bound reverse
+/// proxy every forwarded client appears as loopback, so this is a
+/// localhost-architecture guard, not an authenticated-caller check — the same
+/// limitation every one of these handlers already carried individually before
+/// they shared this one gate.
+pub(crate) fn reject_non_loopback(
+    peer: &std::net::SocketAddr,
+    message: &str,
+) -> Option<axum::response::Response> {
+    if peer.ip().is_loopback() {
+        None
+    } else {
+        Some(forbidden(message))
+    }
+}
+
 /// 400 with a `{ "error": <msg> }` body — the client-error sibling of
 /// [`internal_error`] / [`not_found`]. Accepts both `&'static str` literals and
 /// owned `String`s (e.g. a `format!`-built validation message), so the ~10
@@ -313,7 +335,17 @@ fn budget_block(snap: crate::util::budget::BudgetSnapshot) -> Value {
 }
 
 pub async fn version() -> Json<Value> {
-    Json(json!({ "version": crate::VERSION }))
+    // `version` alone cannot distinguish two builds from different `main`
+    // commits between version bumps, which is how a stale install passed for a
+    // current one. `commit`/`dirty` name the exact revision; `verifiable` says
+    // whether that name can be trusted (a dirty build is not its SHA).
+    Json(json!({
+        "version": crate::VERSION,
+        "commit": crate::BUILD_SHA,
+        "dirty": crate::BUILD_DIRTY,
+        "verifiable": crate::build_sha_is_verifiable(),
+        "build_id": crate::build_id(),
+    }))
 }
 
 /// Search-engine liveness panel data. Serves the latest cached sweep (populated
@@ -543,16 +575,52 @@ pub async fn selftest_run() -> impl IntoResponse {
 pub async fn logs_download(
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
 ) -> impl IntoResponse {
-    if !peer.ip().is_loopback() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "debug logs are loopback-only" })),
-        )
-            .into_response();
+    if let Some(rejection) = reject_non_loopback(&peer, "debug logs are loopback-only") {
+        return rejection;
     }
     let body = crate::util::log_capture::dump();
     let filename = format!("hse-debug-{}.log", crate::core::entity::unix_now());
     crate::api::scan_export::attachment_response(body, "text/plain; charset=utf-8", &filename)
+}
+
+/// `GET /api/v1/logs/tail?after=N` — the **live** counterpart to
+/// [`logs_download`]: return only the verbose-log lines committed since the
+/// caller's cursor, as JSON, so the Web UI can stream the debug log the way the
+/// Termux CLI shows it instead of forcing a whole-file download.
+///
+/// `after` is the [`crate::util::log_capture::Tail::cursor`] from the previous
+/// call (omit or `0` for a first read). The response is
+/// `{ lines: [..], cursor: N, missed: M, dropped: D }`: `cursor` is what to
+/// pass next, `missed` is lines evicted before this read could return them (a
+/// real gap the UI surfaces, never silently skips), and `dropped` is the ring's
+/// all-time eviction count for parity with the download header.
+///
+/// **Loopback-only**, identical to [`logs_download`]: the ring holds TRACE-level
+/// logs — scan targets and discovered PII — so it must never stream to a LAN
+/// peer under a non-loopback bind.
+pub async fn logs_tail(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if let Some(rejection) = reject_non_loopback(&peer, "debug logs are loopback-only") {
+        return rejection;
+    }
+    // A malformed/absent `after` reads as 0 (a first read) rather than erroring:
+    // the endpoint is a convenience poll, and 0 is the safe "give me the current
+    // ring" default. `dropped` is derived as cursor - retained so the UI can
+    // show the all-time eviction total without a second lock/endpoint.
+    let after = params
+        .get("after")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let tail = crate::util::log_capture::tail(after);
+    Json(json!({
+        "lines": tail.lines,
+        "cursor": tail.cursor,
+        "missed": tail.missed,
+        "dropped": tail.dropped,
+    }))
+    .into_response()
 }
 
 /// `GET /api/v1/debug/bundle` — the consolidated **system self-diagnosis
@@ -574,12 +642,9 @@ pub async fn system_debug_bundle(
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
     State(s): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    if !peer.ip().is_loopback() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "the system debug bundle is loopback-only" })),
-        )
-            .into_response();
+    if let Some(rejection) = reject_non_loopback(&peer, "the system debug bundle is loopback-only")
+    {
+        return rejection;
     }
     // Validation runs against a throwaway temp DB (offline, side-effect-free).
     let selftest = crate::selftest::run().await;

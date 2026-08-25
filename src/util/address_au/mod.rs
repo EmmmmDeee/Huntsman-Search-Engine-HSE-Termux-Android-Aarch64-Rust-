@@ -49,24 +49,34 @@ fn full_pattern() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
         Regex::new(
-            r"(?ix)
+            // Case-insensitivity is scoped to the KEYWORD alternations only —
+            // deliberately NOT a global `(?i)`. Under a global flag the `[A-Z]`
+            // anchors on <street>/<suburb> match lowercase as well, which voids
+            // the Title-Case structure gate this pattern is written to enforce
+            // and lets ordinary lowercase prose ("… 42 minutes about the close
+            // matter brisbane qld 4000") mint a fabricated address at 0.70+
+            // confidence. Street and suburb WORDS must therefore be capitalised
+            // (Title Case or ALL CAPS both satisfy `[A-Z][A-Za-z…]+`), while the
+            // level/suite prefix, the street-type suffix and the state code stay
+            // case-insensitive because those are fixed vocabulary, not names.
+            r"(?x)
             (?:                                              # optional level/suite/unit prefix
-                (?P<lvl>Level\s+\d{1,3}|Lvl\s+\d{1,3}|L\d{1,3}|
+                (?P<lvl>(?i:Level\s+\d{1,3}|Lvl\s+\d{1,3}|L\d{1,3}|
                  Suite\s+\d{1,4}[A-Za-z]?|Ste\s+\d{1,4}[A-Za-z]?|
                  Unit\s+\d{1,4}[A-Za-z]?|U\s*\d{1,4}[A-Za-z]?|
-                 Shop\s+\d{1,4}[A-Za-z]?|Office\s+\d{1,4}[A-Za-z]?)
+                 Shop\s+\d{1,4}[A-Za-z]?|Office\s+\d{1,4}[A-Za-z]?))
                 [\s,/]+
             )?
             (?:(?P<unit>\d{1,4}[A-Za-z]?)\s*/\s*)?           # optional unit/lot, must end with '/'
             (?P<num>\d{1,5}[A-Za-z]?)\s+                      # street number (required)
             (?P<street>[A-Z][A-Za-z'\.\-]+(?:\s+[A-Z][A-Za-z'\.\-]+){0,5}\s+
-              (?:Street|St|Road|Rd|Avenue|Ave|Lane|Ln|Drive|Dr|Court|Ct|
+              (?i:Street|St|Road|Rd|Avenue|Ave|Lane|Ln|Drive|Dr|Court|Ct|
                  Crescent|Cres|Place|Pl|Way|Highway|Hwy|Parade|Pde|Terrace|Tce|
                  Boulevard|Blvd|Circuit|Cct|Close|Cl|Esplanade|Esp|Square|Sq))
             ,?\s+
             (?P<suburb>[A-Z][A-Za-z'\-]+(?:\s+[A-Z][A-Za-z'\-]+){0,4})
             ,?\s+
-            (?P<state>ACT|NSW|NT|QLD|SA|TAS|VIC|WA)\s+
+            (?P<state>(?i:ACT|NSW|NT|QLD|SA|TAS|VIC|WA))\s+
             (?P<postcode>\d{4})
         ",
         )
@@ -204,7 +214,7 @@ static STATE_NAMES_MATCHER: std::sync::LazyLock<MatchSet> =
 ///
 /// Iterator over the AU state codes named as whole 2–3 letter tokens in `text`
 /// (case-insensitive), in reading order, with repeats. Shared by [`state_code`]
-/// (which takes the first) and [`single_state_code`] (which checks distinctness),
+/// (which takes the last) and [`single_state_code`] (which checks distinctness),
 /// so the whole-token abbreviation scan lives in exactly one place.
 /// `eq_ignore_ascii_case` tests membership without allocating an uppercased copy
 /// of each token.
@@ -221,8 +231,13 @@ fn state_abbrev_tokens(text: &str) -> impl Iterator<Item = &'static str> + '_ {
 /// (the `WA` in "Walesby", the `SA` in "Sandgate"). Pure; no I/O.
 #[must_use]
 pub fn state_code(text: &str) -> Option<&'static str> {
-    // 1) Whole-token abbreviation (case-insensitive) — first match wins.
-    if let Some(s) = state_abbrev_tokens(text).next() {
+    // 1) Whole-token abbreviation (case-insensitive) — the LAST match wins,
+    //    for the same reason `str_util::rfind_word_ascii_ci` prefers the last
+    //    occurrence: an AU address ends "… SUBURB STATE POSTCODE", so the
+    //    trailing state token is the address's own, while an earlier one is
+    //    coincidental — a company name ("NT Logistics Pty Ltd, … VIC 3000")
+    //    or the ordinary word "act" matched case-insensitively.
+    if let Some(s) = state_abbrev_tokens(text).last() {
         return Some(s);
     }
     // 2) Full state name as a substring (names are distinctive multi-word or
@@ -896,9 +911,11 @@ fn au_network_operator_in(
 }
 
 /// True when the four bytes `bytes[i..i + 4]` form a **standalone** Australian
-/// postcode: four ASCII digits parsing to `2000..=9999` that are not part of a
-/// longer digit run on either side — so `20267` is rejected rather than read as
-/// `2026`, and `12026` is not read as `2026` either.
+/// postcode: four ASCII digits that fall in an assigned state range per
+/// [`state_for_postcode`] — which includes the leading-zero ACT (`0200..=0299`)
+/// and NT (`0800..=0999`) ranges a bare `2000..=9999` gate would drop — and that
+/// are not part of a longer digit run on either side, so `20267` is rejected
+/// rather than read as `2026`, and `12026` is not read as `2026` either.
 ///
 /// This is the single canonical postcode-boundary predicate shared by the AU
 /// free-text parsers (`modules::au_property::extract_postcode` and

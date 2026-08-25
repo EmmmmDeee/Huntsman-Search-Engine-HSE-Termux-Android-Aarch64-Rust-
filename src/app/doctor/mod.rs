@@ -10,10 +10,12 @@
 //! months-stale import is a real "check for a refresh" signal — see
 //! [`crate::util::cell_db::is_stale`]), a live WiGLE account introspection
 //! that surfaces the email-unverified throttling warning before it starts
-//! silently truncating result sets, and a live SeekNow account probe that
+//! silently truncating result sets, a live SeekNow account probe that
 //! catches a dead/plan-lacking key before it silently zeroes out HSE's
 //! highest-priority paid source (and its proactive API-key-harvesting
-//! reach — see [`crate::util::key_harvest`]) on every scan.
+//! reach — see [`crate::util::key_harvest`]) on every scan, and — when
+//! `feature.ai_daemon` is armed — an Ollama reachability/model probe so
+//! `hse analyze`/`hse-ai-daemon` setup issues surface here first.
 
 use crate::core::error::Result;
 use crate::{
@@ -358,26 +360,33 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
     // our queries don't otherwise expose until they start silently
     // returning fewer results.
     println!("\nWiGLE account:");
-    let wigle_user = loaded
-        .get("HUNTSMAN_WIGLE_USER")
-        .map_or(keys::WIGLE_DEFAULT_USER, String::as_str)
-        .to_string();
-    let wigle_token = loaded
-        .get("HUNTSMAN_WIGLE_TOKEN")
-        .map_or(keys::WIGLE_DEFAULT_TOKEN, String::as_str)
-        .to_string();
-    let http = crate::util::http::build_client();
-    let status =
-        crate::modules::wigle::refresh_account_status(&http, &wigle_user, &wigle_token).await;
-    match status.verified {
-        Some(true) => println!("  email-verified: yes"),
-        Some(false) => println!(
-            "  email-verified: NO — WiGLE throttles DB queries until email is confirmed.\n                  Log into wigle.net/account and click the verify link."
+    // Both halves of the HTTP-Basic pair are required and nothing is embedded,
+    // so report an unconfigured account as exactly that instead of probing with
+    // blanks and printing "not reachable".
+    let wigle = keys::resolve_key(loaded.get("HUNTSMAN_WIGLE_USER").map(String::as_str)).zip(
+        keys::resolve_key(loaded.get("HUNTSMAN_WIGLE_TOKEN").map(String::as_str)),
+    );
+    match wigle {
+        None => println!(
+            "  NOT CONFIGURED — set HUNTSMAN_WIGLE_USER and HUNTSMAN_WIGLE_TOKEN.\n    {}",
+            keys::signup_hint("HUNTSMAN_WIGLE_TOKEN")
+                .unwrap_or("this build ships no credential for WiGLE")
         ),
-        None => println!("  email-verified: unknown — /profile/user not reachable"),
-    }
-    if let Some(user) = status.user.as_deref() {
-        println!("  user:           {user}");
+        Some((wigle_user, wigle_token)) => {
+            let http = crate::util::http::build_client();
+            let status =
+                crate::modules::wigle::refresh_account_status(&http, wigle_user, wigle_token).await;
+            match status.verified {
+                Some(true) => println!("  email-verified: yes"),
+                Some(false) => println!(
+                    "  email-verified: NO — WiGLE throttles DB queries until email is confirmed.\n                  Log into wigle.net/account and click the verify link."
+                ),
+                None => println!("  email-verified: unknown — /profile/user not reachable"),
+            }
+            if let Some(user) = status.user.as_deref() {
+                println!("  user:           {user}");
+            }
+        }
     }
 
     // ── SeekNow account health (network call, best-effort) ──────────────
@@ -395,12 +404,24 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
     // immediately actionable ("could not resolve see-know.eu" → check the domain
     // + resolver), and an operator override is visible.
     println!("  api base: {}", crate::util::see_know::base_url());
-    let seeknow_key = crate::util::see_know::resolve_key(
+    let seeknow_key = crate::util::keys::resolve_key(
         loaded
             .get(crate::util::see_know::KEY_ENV)
             .map(String::as_str),
     );
     use crate::util::see_know::CreditsProbe;
+    // No embedded default exists any more, so an unconfigured slot means there is
+    // nothing to probe with. Say so — probing with an empty key would report
+    // "INVALID" and send the operator hunting for a key problem that is really a
+    // configuration gap.
+    let Some(seeknow_key) = seeknow_key else {
+        println!(
+            "  NOT CONFIGURED — set HUNTSMAN_SEEKNOW_KEY (or use the UI Settings panel).\n    {}",
+            crate::util::keys::signup_hint(crate::util::see_know::KEY_ENV)
+                .unwrap_or("this build ships no credential for SeekNow")
+        );
+        return finish(critical);
+    };
     match crate::util::see_know::credits_probe(seeknow_key).await {
         CreditsProbe::Ok {
             remaining,
@@ -434,6 +455,50 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
         ),
     }
 
+    // ── AI-daemon (Ollama) health (network call, best-effort) ──────────────
+    // feature.ai_daemon is off by default. When armed, this is the fastest
+    // way for an operator to confirm the whole `hse analyze`/`hse-ai-daemon`
+    // setup — armed, Ollama reachable, model pulled — before running `hse
+    // analyze` for the first time, mirroring the WiGLE/SeekNow account
+    // probes above. Reuses `OllamaClient::health_check`, the exact
+    // reachability+model check `hse analyze`/`hse-ai-daemon` themselves run
+    // at startup, so this section can never disagree with what those
+    // commands see.
+    println!("\nAI-daemon (Ollama):");
+    if !crate::util::settings::ai_daemon_enabled() {
+        println!(
+            "  armed: no — feature.ai_daemon is off. Enable with `hse config feature.ai_daemon on`."
+        );
+    } else {
+        println!("  armed: yes");
+        let base_url = loaded
+            .get("HUNTSMAN_OLLAMA_URL")
+            .map_or(crate::ai::ollama::DEFAULT_BASE_URL, String::as_str)
+            .to_string();
+        println!("  base url: {base_url}");
+        match loaded.get("HUNTSMAN_OLLAMA_MODEL") {
+            None => println!(
+                "  model: none configured — set HUNTSMAN_OLLAMA_MODEL or pass --model to \
+                 `hse analyze`"
+            ),
+            Some(model) => {
+                let client = crate::ai::ollama::OllamaClient::new(base_url, model.clone());
+                match client.health_check().await {
+                    Ok(()) => println!("  model '{model}': reachable and pulled"),
+                    Err(e) => println!("  model '{model}': {e}"),
+                }
+            }
+        }
+    }
+
+    finish(critical)
+}
+
+/// The doctor run's exit verdict: a critical storage fault is the one condition
+/// that turns a diagnostic report into a non-zero exit. Shared by the normal end
+/// of [`cmd_doctor`] and its early return for an unconfigured SeekNow key, so both exit
+/// paths agree on what counts as failure.
+fn finish(critical: bool) -> crate::core::error::Result<()> {
     if critical {
         return Err(crate::core::error::Error::Other(
             "critical storage fault — the database could not be opened or failed its \

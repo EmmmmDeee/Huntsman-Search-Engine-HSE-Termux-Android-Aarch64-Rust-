@@ -31,7 +31,7 @@ use serde::Deserialize;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -49,8 +49,9 @@ use fetch::{fetch_detail, fetch_wigle, fetch_wigle_ssid, fetch_wigle_typed};
 /// call sites being rewritten) so this module reads unchanged.
 pub(super) use crate::util::wifi::is_generic_ssid;
 
-// WiGLE credentials (env names + embedded fallbacks) are resolved by the
-// single-sourced `crate::util::keys::wigle_credentials`.
+// WiGLE credentials (env names) are resolved by the single-sourced
+// `crate::util::keys::wigle_credentials`, which yields `None` unless the
+// operator configured BOTH halves of the pair — nothing is embedded.
 
 #[derive(Deserialize)]
 struct Resp {
@@ -173,6 +174,18 @@ pub fn reset_budget() {
     SSID_BUDGET.reset_scan();
 }
 
+/// Remove `scan_id`'s tracked state from every WiGLE sub-budget. Called by
+/// the engine at scan finalisation so a long-lived `hse serve` / `hse live`
+/// process doesn't grow the per-scan maps without bound as scans come and
+/// go — mirrors [`crate::util::found_keys::drain`]'s per-scan cleanup.
+pub fn cleanup_scan(scan_id: &str) {
+    GEO_BUDGET.cleanup_scan(scan_id);
+    BSSID_BUDGET.cleanup_scan(scan_id);
+    CELL_BUDGET.cleanup_scan(scan_id);
+    BLUETOOTH_BUDGET.cleanup_scan(scan_id);
+    SSID_BUDGET.cleanup_scan(scan_id);
+}
+
 /// Aggregate snapshot of every WiGLE sub-budget — surfaced on
 /// `/api/v1/stats` alongside the SeekNow / OathNet blocks so
 /// operators can see remaining quota across all observation types
@@ -260,7 +273,11 @@ impl Module for Wigle {
         // by the operator's daily allowance. Each sub-budget is
         // independent and env-tunable.
 
-        let (user, token) = crate::util::keys::wigle_credentials(ctx);
+        // WiGLE authenticates with an API-name/token PAIR and this build embeds
+        // no credential, so a missing half is a clean "needs key" skip rather
+        // than a 401 charged against the operator's daily allowance.
+        let (user, token) = crate::util::keys::wigle_credentials(ctx)
+            .ok_or_else(|| Error::MissingKey("HUNTSMAN_WIGLE_TOKEN".into()))?;
 
         // Each sub-search charges at the point a request is actually issued —
         // SSID past its skip filters, BSSID per observation kind probed — so a

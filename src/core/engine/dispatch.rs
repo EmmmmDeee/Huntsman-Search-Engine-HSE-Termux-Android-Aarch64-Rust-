@@ -1147,51 +1147,58 @@ impl super::ScanEngine {
             // `regional_enabled()` reads the CURRENT task's ambient — still
             // valid here since dispatch runs on the same task `with_regional`
             // was established on in `run_with_ledger`, right up to this spawn.
+            // The per-scan quota-budget ambient (`util::budget::with_scan`)
+            // needs the identical re-application for the identical reason —
+            // see that module's doc comment.
             let scope_sid = sid.to_string();
+            let budget_scope_sid = sid.to_string();
             let regional_on = crate::util::regional::regional_enabled();
             set.spawn(crate::util::found_keys::with_scan(
                 scope_sid,
-                crate::util::regional::with_regional(regional_on, async move {
-                    let _permit = permit;
+                crate::util::regional::with_regional(
+                    regional_on,
+                    crate::util::budget::with_scan(budget_scope_sid, async move {
+                        let _permit = permit;
 
-                    log_module_dispatch(name, &target);
-                    emitter.emit(
-                        &sid,
-                        EventKind::ModuleStart {
-                            module: name.into(),
-                        },
-                    );
+                        log_module_dispatch(name, &target);
+                        emitter.emit(
+                            &sid,
+                            EventKind::ModuleStart {
+                                module: name.into(),
+                            },
+                        );
 
-                    // `.instrument()` (not an ambient span) because a spawned task
-                    // does NOT inherit the dispatcher's current span — without it the
-                    // external HTTP logs from this concurrently-running module would
-                    // be context-less. Carries {scan_id, module, target} for the same
-                    // end-to-end trace the sequential path gets.
-                    let result = run_module_guarded(
-                        module_timeout_ms,
-                        name,
-                        module_arc.process(&target, &ctx),
-                    )
-                    .instrument(tracing::info_span!(
-                        "module",
-                        module = name,
-                        scan_id = %sid,
-                        target = %target.value
-                    ))
-                    .await;
+                        // `.instrument()` (not an ambient span) because a spawned task
+                        // does NOT inherit the dispatcher's current span — without it the
+                        // external HTTP logs from this concurrently-running module would
+                        // be context-less. Carries {scan_id, module, target} for the same
+                        // end-to-end trace the sequential path gets.
+                        let result = run_module_guarded(
+                            module_timeout_ms,
+                            name,
+                            module_arc.process(&target, &ctx),
+                        )
+                        .instrument(tracing::info_span!(
+                            "module",
+                            module = name,
+                            scan_id = %sid,
+                            target = %target.value
+                        ))
+                        .await;
 
-                    if throttle_ms > 0 {
-                        sleep(Duration::from_millis(throttle_ms)).await;
-                    }
+                        if throttle_ms > 0 {
+                            sleep(Duration::from_millis(throttle_ms)).await;
+                        }
 
-                    DispatchOutcome {
-                        name,
-                        result,
-                        ttl_secs,
-                        cache_key,
-                        attack_techniques,
-                    }
-                }),
+                        DispatchOutcome {
+                            name,
+                            result,
+                            ttl_secs,
+                            cache_key,
+                            attack_techniques,
+                        }
+                    }),
+                ),
             ));
         }
 

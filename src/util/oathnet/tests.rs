@@ -20,19 +20,15 @@ use super::*;
         BUDGET_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// No OathNet credential is embedded any more: the shared key policy treats
+    /// an absent or blank slot as unconfigured, so `oathnet_pro` reports a clean
+    /// "needs key" skip rather than querying with someone else's key.
     #[test]
-    fn resolve_key_uses_provided_when_non_empty() {
-        assert_eq!(resolve_key(Some("my-key")), "my-key");
-    }
-
-    #[test]
-    fn resolve_key_falls_back_to_hardcoded_when_none() {
-        assert_eq!(resolve_key(None), HARDCODED_KEY);
-    }
-
-    #[test]
-    fn resolve_key_falls_back_to_hardcoded_when_empty() {
-        assert_eq!(resolve_key(Some("")), HARDCODED_KEY);
+    fn key_is_required_with_no_embedded_fallback() {
+        use crate::util::keys::resolve_key;
+        assert_eq!(resolve_key(Some("my-key")), Some("my-key"));
+        assert_eq!(resolve_key(None), None);
+        assert_eq!(resolve_key(Some("")), None);
     }
 
     #[test]
@@ -829,5 +825,21 @@ use super::*;
             seen.len(),
             partial.len(),
             "every partial reason must be distinct"
+        );
+    }
+
+    #[test]
+    fn quota_config_provides_runtime_defaults() {
+        let config = crate::util::quota_config::oathnet_quota();
+        assert_eq!(config.per_scan_limit, 4, "default per-scan limit should be 4");
+        assert_eq!(
+            config.daily_limit, 10000,
+            "default daily limit should be 10000"
+        );
+
+        let snapshot = budget_snapshot();
+        assert!(
+            snapshot.scan_cap >= config.per_scan_limit,
+            "configured per-scan limit should influence the budget cap"
         );
     }

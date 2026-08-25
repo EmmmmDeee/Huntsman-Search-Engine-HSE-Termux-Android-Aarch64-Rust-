@@ -17,7 +17,6 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "ipinfo";
 
@@ -210,18 +209,16 @@ impl Module for IpInfo {
         let ip = target.value.trim();
 
         let url = format!("https://ipinfo.io/{ip}/json");
-        let resp = ctx
-            .http
-            .get(&url)
-            .timeout(std::time::Duration::from_secs(6))
-            .send_tagged(SRC)
-            .await?;
-
-        if !resp.status().is_success() {
+        let Some(data): Option<IpInfoResp> = crate::util::http::fetch_json_or_404_with_timeout(
+            &ctx.http,
+            SRC,
+            &url,
+            std::time::Duration::from_secs(6),
+        )
+        .await?
+        else {
             return Ok(ModuleResult::new());
-        }
-
-        let data: IpInfoResp = crate::util::http::json_decode(SRC, resp).await?;
+        };
 
         let mut result = ModuleResult::new();
         result.entities = build_entities(ip, &data, &ctx.scan_id);

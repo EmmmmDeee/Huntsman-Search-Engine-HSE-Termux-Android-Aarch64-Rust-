@@ -36,6 +36,12 @@ use breach::*;
 pub fn reset_budget() {
     crate::util::oathnet::reset_budget();
 }
+
+/// Re-export the per-scan budget cleanup, same shim rationale as
+/// [`reset_budget`]. Called at scan finalisation.
+pub fn cleanup_scan(scan_id: &str) {
+    crate::util::oathnet::cleanup_scan(scan_id);
+}
 use crate::util::key_harvest::{extract_api_keys_from_item, store_api_credential};
 
 const SRC: &str = "oathnet_pro";
@@ -151,7 +157,7 @@ impl Module for OathnetPro {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = oathnet::resolve_key(ctx.key_opt(oathnet::KEY_ENV));
+        let key = ctx.key(oathnet::KEY_ENV)?;
         // Origin fingerprint of the exact key in use — stamped on every entity so
         // each finding declares which API key (and provider) returned it.
         let key_fp = oathnet::key_fingerprint(key);

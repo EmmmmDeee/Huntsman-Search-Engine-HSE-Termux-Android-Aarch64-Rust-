@@ -29,6 +29,34 @@ use super::*;
         assert!(offset_to_region(-5).contains("Eastern"));
     }
 
+    #[test]
+    fn offset_to_region_recognises_utc_plus_11_as_australia_eastern() {
+        // AEDT (Australian eastern DAYLIGHT time, UTC+11) — infer_timezone can
+        // legitimately resolve to +11 in summer, and tag_timezone_jurisdiction
+        // already treats 10 and 11 identically as AU-eastern evidence.
+        // offset_to_region used to fall through to "Unknown timezone region"
+        // for +11, so an AEDT-clustered subject got tagged country:AU with an
+        // unreadable Address value AND no Coordinates entity at all, since
+        // city_coords can't resolve "Unknown timezone region" to any city.
+        assert_eq!(offset_to_region(11), offset_to_region(10));
+        assert!(offset_to_region(11).contains("Australia"));
+    }
+
+    #[test]
+    fn histogram_australia_eastern_daylight_offset_11() {
+        // Activity at UTC hours 21,22,23,0..10 = the full 08:00-22:00 local
+        // window at UTC+11 (AEDT) — the wraparound analogue of
+        // histogram_us_eastern above. A shorter, non-full-width cluster here
+        // ties across several adjacent offsets (an 11-hour run has 3 hours of
+        // slack against the 14-hour window, so offsets -12..-10 and 11..12
+        // all match it fully, and first-wins on ties picks -12) — using the
+        // complete 14-hour window makes offset 11 the unique, un-tied winner.
+        let hours: Vec<u32> = vec![21, 22, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let tz = infer_timezone(&hours).expect("should succeed");
+        assert_eq!(tz.utc_offset, 11);
+        assert!(tz.region.contains("Australia"));
+    }
+
     #[tokio::test]
     async fn module_metadata() {
         let m = BreachTimezone;
@@ -73,6 +101,46 @@ use super::*;
         let mut e = Entity::new(EntityKind::Address, offset_to_region(10), 0.5, "scan");
         tag_timezone_jurisdiction(&mut e, 10, offset_to_region(10));
         assert!(e.has_tag("country:AU"), "UTC+10 must remain country:AU");
+    }
+
+    #[test]
+    fn utc_plus_11_still_tags_australia_eastern() {
+        let mut e = Entity::new(EntityKind::Address, offset_to_region(11), 0.5, "scan");
+        tag_timezone_jurisdiction(&mut e, 11, offset_to_region(11));
+        assert!(
+            e.has_tag("country:AU"),
+            "UTC+11 (AEDT) must tag country:AU, same as UTC+10 (AEST)"
+        );
+    }
+
+    #[test]
+    fn coordinates_entity_carries_the_same_jurisdiction_tag_as_the_address_entity() {
+        // Regression: entities_for_inference used to build the Coordinates
+        // entity without ever calling tag_timezone_jurisdiction on it, so a
+        // subject whose timezone resolved to an AU offset got an Address
+        // entity tagged country:AU but a sibling Coordinates entity with no
+        // jurisdiction tag at all — even though AU-056's coord_state() reads
+        // au-state:/country: tags off Coordinates entities specifically.
+        let tz = TimezoneInference {
+            utc_offset: 10,
+            region: offset_to_region(10),
+            confidence: 0.5,
+            concentration: 0.9,
+        };
+        let entities = entities_for_inference(&tz, 10, "scan");
+        let addr = entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Address)
+            .expect("Address entity must be present");
+        let coords = entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Coordinates)
+            .expect("Coordinates entity must be present for a resolvable AU region");
+        assert!(addr.has_tag("country:AU"));
+        assert!(
+            coords.has_tag("country:AU"),
+            "Coordinates entity must carry the same jurisdiction tag as the Address entity"
+        );
     }
 
     #[test]

@@ -261,6 +261,29 @@ pub async fn fetch_json_or_404<T: DeserializeOwned>(
     fetch_json_inner(client, module, url, &[404]).await
 }
 
+/// Like [`fetch_json_or_404`] but with an explicit per-request `timeout`
+/// instead of relying on the shared client's default (connect-only — see
+/// [`super::client::build_client`]'s docstring) plus the outer per-module
+/// `max_timeout_ms()` wrap. [`fetch_json_or_404`] also adds a circuit
+/// breaker and a curl fallback on transport failure; this helper composes
+/// the same [`RequestBuilderExt::send_tagged`] / [`ok_or_absent`] /
+/// [`super::url::json_decode`] building blocks callers already reach for
+/// individually, without either of those — so it's a drop-in for modules
+/// that specifically want a tighter HTTP-call timeout, not a superset of
+/// [`fetch_json_or_404`]'s other behaviour.
+pub async fn fetch_json_or_404_with_timeout<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    module: &'static str,
+    url: &str,
+    timeout: std::time::Duration,
+) -> Result<Option<T>> {
+    let resp = client.get(url).timeout(timeout).send_tagged(module).await?;
+    let Some(resp) = ok_or_absent(module, resp, &[404]).await? else {
+        return Ok(None);
+    };
+    super::url::json_decode(module, resp).await.map(Some)
+}
+
 /// Like [`fetch_json_or_404`] but treats **both** `400 Bad Request` and
 /// `404 Not Found` as the clean "no such resource" signal (`Ok(None)`).
 ///
@@ -627,6 +650,47 @@ pub async fn http_status_error(module: &str, resp: reqwest::Response) -> Error {
     let status = resp.status();
     let snippet = error_snippet(resp).await;
     Error::module(module, format!("HTTP {status}: {snippet}"))
+}
+
+/// Classify a **keyless** response by status: a code in `absent` -> `Ok(None)` (the
+/// endpoint's clean "no such subject" signal, which the caller maps to an empty
+/// result); any other non-2xx -> `Err` via [`http_status_error`]; `2xx` ->
+/// `Ok(Some(resp))` for the caller to read.
+///
+/// This is the non-JSON counterpart of [`fetch_json_or_404`] — for the scrapers and
+/// XML endpoints that must read the body themselves — and the keyless counterpart of
+/// [`keyed_ok_or_404`]. It exists because the modules that hand-rolled this step wrote
+/// `if !resp.status().is_success() { return Ok(empty) }`, which folds a 403 scraper
+/// block, a 429 throttle and a 5xx outage into the same answer as a genuine miss. That
+/// is exactly the collapse the fail-closed invariant forbids: for a registry lookup the
+/// empty result is not "nothing to report", it is a *negative claim about a named
+/// subject* — "not a registered practitioner", "holds no licence" — which an analyst
+/// will act on. Failing closed makes the operator see the refusal instead.
+///
+/// Pass the codes that genuinely mean absence *for that endpoint* and nothing more.
+/// `&[]` is correct for an endpoint that signals a miss in the body of a `200` (an
+/// empty results table, an `<error>` element) — there, every non-2xx is a failure.
+///
+/// Pairs with `let-else`:
+///
+/// ```ignore
+/// let Some(resp) = http::ok_or_absent(SRC, resp, &[404]).await? else {
+///     return Ok(ModuleResult::new());
+/// };
+/// ```
+pub async fn ok_or_absent(
+    module: &str,
+    resp: reqwest::Response,
+    absent: &[u16],
+) -> Result<Option<reqwest::Response>> {
+    let status = resp.status();
+    if absent.contains(&status.as_u16()) {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        return Err(http_status_error(module, resp).await);
+    }
+    Ok(Some(resp))
 }
 
 /// Classify a keyed-API response by status — the full post-send operation that

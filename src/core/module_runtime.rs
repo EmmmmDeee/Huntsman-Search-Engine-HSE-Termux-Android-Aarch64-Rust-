@@ -39,6 +39,13 @@ pub trait ModuleRuntime: Send + Sync {
     fn drain_found_keys(&self, _scan_id: &str) -> Vec<Entity> {
         Vec::new()
     }
+
+    /// Remove `scan_id`'s tracked per-scan quota-budget state from every
+    /// budget-owning module. Called once at scan finalisation so a
+    /// long-lived `hse serve` / `hse live` process doesn't grow those
+    /// per-scan maps without bound as scans come and go — mirrors
+    /// `drain_found_keys`'s per-scan cleanup for the found-key sink.
+    fn cleanup_scan_budgets(&self, _scan_id: &str) {}
 }
 
 /// Runtime used by tests and deliberately module-free engine instances.
@@ -58,5 +65,6 @@ mod tests {
         runtime.refresh_round_budget();
         assert_eq!(runtime.identify_api_key("candidate"), None);
         assert!(runtime.drain_found_keys("scan").is_empty());
+        runtime.cleanup_scan_budgets("scan");
     }
 }

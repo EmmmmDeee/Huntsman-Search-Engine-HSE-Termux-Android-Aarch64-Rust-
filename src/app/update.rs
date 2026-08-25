@@ -22,14 +22,33 @@ pub const INSTALL_CMD: &str = concat!(
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/// `HUNTSMAN_INSTALL_DIR`, preferring the process environment and falling
+/// back to a direct, bad-line-resilient read of `env_file`. The two sources
+/// can disagree: `crate::util::keys::load()` (which populates the process
+/// env via `dotenvy`) abandons the rest of the env file at the first
+/// malformed line, so a variable listed after one is still visible to
+/// [`crate::util::keys::load_from_file_only`] — the same reader that backs
+/// the debug bundle's `keys_present` report — while never reaching
+/// `std::env::var`. Takes the file path explicitly so this is testable
+/// without touching the real `$HOME`.
+fn install_dir_var(env_file: &Path) -> Option<String> {
+    std::env::var("HUNTSMAN_INSTALL_DIR")
+        .ok()
+        .or_else(|| crate::util::keys::load_from_file_only(env_file).remove("HUNTSMAN_INSTALL_DIR"))
+}
+
 /// Search for the Huntsman source directory in order of priority:
 ///
 /// 1. `HUNTSMAN_INSTALL_DIR` env var — written by `install.sh` on every run.
 /// 2. Common install paths under `$HOME` (`.local/share/hse`, `hse`, `.hse`).
 /// 3. Upward traversal from the running binary (dev / in-place builds).
 pub fn find_install_dir() -> Option<PathBuf> {
-    // 1. Env var written by install.sh
-    if let Ok(d) = std::env::var("HUNTSMAN_INSTALL_DIR") {
+    // 1. Env var written by install.sh — see `install_dir_var` for why this
+    // isn't a bare `std::env::var` check. Only checking the process env here
+    // used to let self-update fail with "no local source found" even on a
+    // build whose own debug bundle reported this exact variable as present.
+    let env_file = Path::new(&crate::util::keys::env_path()).to_path_buf();
+    if let Some(d) = install_dir_var(&env_file) {
         let p = PathBuf::from(d);
         if is_hse_source(&p) {
             return Some(p);
@@ -99,6 +118,48 @@ pub fn changelog_lines(dir: &Path) -> Vec<String> {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.lines().map(str::to_owned).collect())
         .unwrap_or_default()
+}
+
+/// The commit the tracking branch (`@{u}`) currently points at.
+///
+/// Read straight after [`commits_behind`]'s fetch, so it names the same upstream
+/// state the "N commits behind" figure was computed from. This is the revision an
+/// update must actually land on — passing it to the installer is what stops the
+/// installer picking a *different* build that merely reports the same version.
+/// `None` when git is absent, no upstream is configured, or the remote is
+/// unreachable.
+pub fn upstream_sha(dir: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "@{u}"])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit())).then_some(sha)
+}
+
+/// How far the local install is behind upstream, and the exact commit upstream
+/// is at. Both come from one fetch so they cannot disagree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamState {
+    /// Commits on `@{u}` not in `HEAD`.
+    pub behind: u64,
+    /// The commit `@{u}` points at, when resolvable.
+    pub sha: Option<String>,
+}
+
+/// Convenience wrapper: find the install dir and report upstream state.
+/// Returns `None` when offline or no install dir.
+pub fn check_upstream() -> Option<UpstreamState> {
+    let dir = find_install_dir()?;
+    let behind = commits_behind(&dir)?;
+    Some(UpstreamState {
+        behind,
+        sha: upstream_sha(&dir),
+    })
 }
 
 /// Convenience wrapper: find the install dir and return how many commits behind
@@ -193,7 +254,14 @@ pub fn record_check_stamp(now: u64) {
 /// build alive after we exit (reparented to init). `forbid(unsafe)` rules out
 /// `pre_exec`, so the shell does the detaching. Best-effort — any failure to
 /// even spawn is swallowed (the command must never suffer for an update attempt).
-fn spawn_detached_update() {
+///
+/// `target_sha` is the upstream commit this update is FOR. It is passed to the
+/// installer as `HSE_REQUIRE_SHA`, which makes the installer accept a prebuilt
+/// only if that binary proves it was built from this commit, and verify the
+/// installed binary afterwards. Without it the installer would be free to
+/// "update" to a cached or latest-release build that reports the same version
+/// while being older than the commit that triggered this update.
+fn spawn_detached_update(target_sha: Option<&str>) {
     let Some(dir) = find_install_dir() else {
         return;
     };
@@ -207,12 +275,16 @@ fn spawn_detached_update() {
         mkdir \"$L\" 2>/dev/null || exit 0; \
         trap 'rmdir \"$L\" 2>/dev/null' EXIT; \
         nohup bash \"$HSE_AU_SCRIPT\" >> \"$HSE_AU_LOG\" 2>&1";
-    let _ = std::process::Command::new("bash")
-        .arg("-c")
+    let mut cmd = std::process::Command::new("bash");
+    cmd.arg("-c")
         .arg(DETACHED_UPDATE_SH)
         .env("HSE_AU_SCRIPT", script)
         .env("HSE_AU_LOG", autoupdate_log_path())
-        .env("HSE_AU_LOCK", cache_dir().join("hse-autoupdate.lock"))
+        .env("HSE_AU_LOCK", cache_dir().join("hse-autoupdate.lock"));
+    if let Some(sha) = target_sha {
+        cmd.env("HSE_REQUIRE_SHA", sha);
+    }
+    let _ = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -248,21 +320,26 @@ pub async fn maybe_auto_update() -> AutoUpdateOutcome {
     record_check_stamp(now);
 
     // Time-box the git fetch so an unreachable remote never delays the command.
-    let behind = match tokio::time::timeout(
+    let upstream = match tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        tokio::task::spawn_blocking(check_updates),
+        tokio::task::spawn_blocking(check_upstream),
     )
     .await
     {
-        Ok(Ok(b)) => b,
+        Ok(Ok(u)) => u,
         _ => return AutoUpdateOutcome::None,
     };
-    let Some(n) = behind.filter(|&n| n > 0) else {
+    let Some(state) = upstream.filter(|s| s.behind > 0) else {
         return AutoUpdateOutcome::None;
     };
+    let n = state.behind;
 
     if auto {
-        spawn_detached_update();
+        // Pin the update to the commit this check actually observed. `main` can
+        // advance between here and the installer's own resolution, and — more to
+        // the point — the installer must not satisfy this update with a stale
+        // prebuilt that merely reports the same version.
+        spawn_detached_update(state.sha.as_deref());
         AutoUpdateOutcome::Applying {
             commits: n,
             log: autoupdate_log_path(),
@@ -292,8 +369,23 @@ pub async fn apply_update(ref_: Option<String>) -> Result<()> {
     cmd.arg(&script_path)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    if let Some(r) = ref_ {
-        cmd.env("HSE_REF", r);
+    match ref_ {
+        // An explicit ref is the operator's instruction: let the installer
+        // resolve it. Pinning our own SHA here would override what they asked
+        // for.
+        Some(r) => {
+            cmd.env("HSE_REF", r);
+        }
+        // Default (`hse update` with no ref): demand the exact upstream commit
+        // we can see right now. The installer then refuses to satisfy this with
+        // a cached or latest-release prebuilt that reports the same version but
+        // is an older commit, and verifies the installed binary before
+        // declaring success — restoring the previous one if it cannot.
+        None => {
+            if let Some(sha) = find_install_dir().as_deref().and_then(upstream_sha) {
+                cmd.env("HSE_REQUIRE_SHA", sha);
+            }
+        }
     }
 
     let status = tokio::task::spawn_blocking(move || cmd.status())
@@ -353,6 +445,51 @@ pub fn self_restart() -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn install_dir_var_recovers_a_value_stranded_after_a_malformed_env_line() {
+        // Regression coverage for the self-update "no local source found"
+        // failure: `crate::util::keys::load()` (which feeds HUNTSMAN_* into
+        // the process env via `dotenvy`) abandons the rest of the file at
+        // the first malformed line, so HUNTSMAN_INSTALL_DIR listed after one
+        // never reaches `std::env::var` even though the file-only reader
+        // recovers it fine (proven by
+        // `load_from_file_recovers_keys_after_a_malformed_line` in
+        // `util::keys::tests`). `install_dir_var` must fall back to that
+        // same resilient read rather than reporting no install dir at all.
+        //
+        // This assumes HUNTSMAN_INSTALL_DIR is not itself set in the test
+        // process's real environment — true for this suite and CI alike.
+        assert!(
+            std::env::var("HUNTSMAN_INSTALL_DIR").is_err(),
+            "test assumption: HUNTSMAN_INSTALL_DIR must not be set in the process env"
+        );
+
+        let dir = tempfile::tempdir().expect("should succeed");
+        let env_file = dir.path().join(".huntsman.env");
+        std::fs::write(
+            &env_file,
+            "this is a malformed line with no equals sign\n\
+             HUNTSMAN_INSTALL_DIR=/opt/hse-source\n",
+        )
+        .expect("should succeed");
+
+        assert_eq!(
+            install_dir_var(&env_file),
+            Some("/opt/hse-source".to_string()),
+            "a malformed earlier line must not strand HUNTSMAN_INSTALL_DIR"
+        );
+
+        // An env file with nothing relevant, or that doesn't exist at all,
+        // yields no false positive.
+        let empty = dir.path().join("empty.env");
+        std::fs::write(&empty, "HUNTSMAN_OTHER_KEY=x\n").expect("should succeed");
+        assert_eq!(install_dir_var(&empty), None);
+        assert_eq!(
+            install_dir_var(&dir.path().join("does-not-exist.env")),
+            None
+        );
+    }
 
     #[test]
     fn should_check_now_respects_the_throttle_window() {
@@ -587,5 +724,81 @@ mod tests {
         std::fs::create_dir(&not_git).expect("should succeed");
         assert_eq!(commits_behind(&not_git), None);
         assert!(changelog_lines(&not_git).is_empty());
+        assert_eq!(upstream_sha(&not_git), None);
+    }
+
+    /// The updater must name the exact commit it wants, not just "N behind".
+    ///
+    /// This is what closes the stale-update hole: `install.sh` receives this SHA
+    /// as `HSE_REQUIRE_SHA`, so it rejects a cached or latest-release prebuilt
+    /// that reports the same `--version` while being an older commit. A
+    /// behind-count alone cannot express that requirement.
+    #[test]
+    fn upstream_sha_names_the_commit_the_update_targets() {
+        if !git_available() {
+            eprintln!(
+                "skipping upstream_sha_names_the_commit_the_update_targets: git not installed"
+            );
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("should succeed");
+        let remote = tmp.path().join("remote");
+        let local = tmp.path().join("local");
+        std::fs::create_dir(&remote).expect("should succeed");
+
+        git_fixture(&remote, &["init", "-q", "--initial-branch=main"]);
+        git_fixture(&remote, &["commit", "-q", "-m", "init", "--allow-empty"]);
+        git_fixture(
+            tmp.path(),
+            &[
+                "clone",
+                "-q",
+                remote.to_str().expect("should succeed"),
+                local.to_str().expect("should succeed"),
+            ],
+        );
+
+        // Advance the remote; the clone stays put.
+        std::fs::write(remote.join("a.txt"), "a").expect("should succeed");
+        git_fixture(&remote, &["add", "a.txt"]);
+        git_fixture(&remote, &["commit", "-q", "-m", "add a"]);
+
+        let state = {
+            // `commits_behind` performs the fetch that makes `@{u}` current;
+            // `check_upstream` pairs them so the count and the SHA describe the
+            // same observation.
+            let behind = commits_behind(&local).expect("should resolve");
+            UpstreamState {
+                behind,
+                sha: upstream_sha(&local),
+            }
+        };
+        assert_eq!(state.behind, 1);
+
+        let sha = state.sha.expect("upstream SHA must resolve after a fetch");
+        assert_eq!(sha.len(), 40, "must be a full commit SHA: {sha}");
+        assert!(sha.chars().all(|c| c.is_ascii_hexdigit()), "got: {sha}");
+
+        // It must be the REMOTE's tip — the commit an update should land on —
+        // and specifically NOT the local HEAD it is being compared against.
+        let remote_head = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&remote)
+            .output()
+            .expect("should succeed");
+        let remote_head = String::from_utf8(remote_head.stdout).expect("utf8");
+        assert_eq!(sha, remote_head.trim(), "must name the upstream tip");
+
+        let local_head = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&local)
+            .output()
+            .expect("should succeed");
+        let local_head = String::from_utf8(local_head.stdout).expect("utf8");
+        assert_ne!(
+            sha,
+            local_head.trim(),
+            "naming the local HEAD would make the update a no-op"
+        );
     }
 }

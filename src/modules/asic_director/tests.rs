@@ -127,3 +127,51 @@ fn request_failed_false_when_entities_were_found() {
     assert!(!request_failed(false, true));
     assert!(!request_failed(true, true));
 }
+
+#[test]
+fn clean_html_decodes_numeric_character_references() {
+    // Regression: the hand-rolled decoder knew four named entities and nothing
+    // else, so an ordinary Australian surname published as a numeric reference
+    // carried its escape all the way into the stored director name.
+    assert_eq!(clean_html("<td>Daniel O&#39;Brien</td>"), "Daniel O'Brien");
+    assert_eq!(clean_html("<td>ACME &quot;Group&quot;</td>"), "ACME \"Group\"");
+    assert_eq!(clean_html("<td>Ren&#xE9;e Dubois</td>"), "Renée Dubois");
+}
+
+// Timing ratios are a property of how the scheduler treated two microsecond-scale
+// samples, not a property of the code, so this does NOT belong in the gated run:
+// an adversarial audit reproduced it failing roughly one run in ten under 4x CPU
+// oversubscription, which would redden `main` for reasons unrelated to any diff.
+// `#[ignore]`d to match the house convention for the other perf baselines
+// (`core::correlator::perf`, the engine throughput test, `util::found_keys`).
+// The quadratic regression it guards is documented with real measurements in the
+// commit that removed it; run this by hand to re-confirm.
+#[test]
+#[ignore = "timing ratio; run with --ignored --nocapture"]
+fn clean_html_is_linear_in_ampersand_count() {
+    // Regression: every `&` rebuilt the whole remaining document into a String to
+    // run `starts_with` against it, making the scan quadratic. This asserts the
+    // shape rather than a wall-clock number: 8x the input must not cost ~64x the
+    // time. The old implementation missed that by a wide margin (8 KB 1.59 ms ->
+    // 64 KB 100 ms, a 63x rise); a linear scan lands near 8x.
+    let row = "<tr><td>ACME &amp; SONS PTY LTD</td></tr>";
+    let small = row.repeat(200);
+    let large = row.repeat(1600);
+
+    let t0 = std::time::Instant::now();
+    let a = clean_html(&small);
+    let small_ns = t0.elapsed().as_nanos().max(1);
+    let t1 = std::time::Instant::now();
+    let b = clean_html(&large);
+    let large_ns = t1.elapsed().as_nanos().max(1);
+
+    assert!(a.contains("ACME & SONS PTY LTD"));
+    assert!(b.contains("ACME & SONS PTY LTD"));
+    // Generous ceiling so a loaded CI runner cannot flake this, while a return to
+    // quadratic behaviour still fails it decisively.
+    let ratio = large_ns as f64 / small_ns as f64;
+    assert!(
+        ratio < 24.0,
+        "8x the input cost {ratio:.1}x the time; expected roughly linear (<24x)"
+    );
+}

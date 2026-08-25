@@ -62,7 +62,11 @@ pub(crate) fn non_negative_rate(s: &str) -> Result<f64, String> {
 #[derive(Parser)]
 #[command(
     name = "hse",
-    version = crate::VERSION,
+    // Version AND commit: two binaries built from different `main` commits
+    // between version bumps otherwise report an identical `--version`, which is
+    // exactly how a stale install passed for an up-to-date one. `hse build-sha`
+    // is the machine-readable form the installer compares against.
+    version = crate::build_id(),
     about = "Huntsman Search Engine (HSE) — GhostSec-tradition all-source OSINT / GEOINT recon for Termux aarch64",
     long_about = "Huntsman Search Engine (HSE) — an all-source OSINT / GEOINT / NETINT reconnaissance\n\
                   engine in the GhostSec tradition: SpiderFoot-inspired breadth without the daemon or the\n\
@@ -277,6 +281,20 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Print the git commit this binary was built from (40-char hex), for
+    /// scripting. Exits non-zero when the build carries no verifiable revision —
+    /// a dirty tree, or a build with no `.git` and no `HSE_BUILD_SHA`.
+    ///
+    /// `install.sh` and `hse update` use this to decide whether a candidate
+    /// binary IS the revision they were asked to install. A non-zero exit means
+    /// "cannot prove it", which callers must treat as a mismatch and build from
+    /// source rather than trust.
+    #[command(hide = true, name = "build-sha")]
+    BuildSha {
+        /// Emit `sha`, `dirty` and `version` as JSON instead of the bare SHA.
+        #[arg(long)]
+        json: bool,
+    },
     /// Liveness panel: probe every free search engine and report up/blocked/down
     /// + latency. Subsumed by `hse diagnostics`; kept for scripting.
     #[command(hide = true)]
@@ -377,6 +395,32 @@ pub enum Command {
         /// Emit the machine-readable JSON report instead of the text summary.
         #[arg(long)]
         json: bool,
+    },
+    /// AI-daemon scan analysis: prompt a locally-run Ollama instance for a
+    /// plain-language summary and ranked findings on an already-completed
+    /// scan's discovered entities. Opt-in (`hse config feature.ai_daemon on`)
+    /// and requires Ollama to be installed, running, and reachable — never
+    /// runs as part of `hse scan`/`hse serve`/`hse live`. See `src/ai/`. Also
+    /// reads `HUNTSMAN_OLLAMA_TIMEOUT_MS` (generation timeout in
+    /// milliseconds; default 120000, floor 1000) — no `--timeout` flag exists
+    /// for it, since a single analysis call has no other caller-tunable knob
+    /// to group it with.
+    Analyze {
+        /// Stored scan id to analyse (`latest` for the most recent completed scan).
+        #[arg(long)]
+        scan_id: Option<String>,
+        /// Emit the machine-readable JSON report instead of the text summary.
+        #[arg(long)]
+        json: bool,
+        /// Ollama base URL (default `http://127.0.0.1:11434`, or
+        /// `HUNTSMAN_OLLAMA_URL`).
+        #[arg(long, env = "HUNTSMAN_OLLAMA_URL")]
+        ollama_url: Option<String>,
+        /// Ollama model tag to use (or `HUNTSMAN_OLLAMA_MODEL`); required —
+        /// there is no default model, since a default would silently invoke
+        /// whatever an operator happens to have pulled.
+        #[arg(long, env = "HUNTSMAN_OLLAMA_MODEL")]
+        model: Option<String>,
     },
     /// Verify environment: DB path, key file, Termux detection, module counts.
     /// (Subsumed by `hse diagnostics`; kept for scripting and the API/UI.)

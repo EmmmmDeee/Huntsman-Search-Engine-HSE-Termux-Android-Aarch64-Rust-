@@ -27,6 +27,12 @@ export function clearLiveTimer(){ if (S.liveTimer){ clearInterval(S.liveTimer); 
 export function clearScanTimer(){ if (S.scanTimer){ clearTimeout(S.scanTimer); S.scanTimer = null; } }
 export function clearEnginesTimer(){ if (S.enginesTimer){ clearInterval(S.enginesTimer); S.enginesTimer = null; } }
 
+/* ═══════════ Page: DEBUG LOG (#/debuglog) — live tail of the verbose ring ═══════════ */
+/* Polls GET /api/v1/logs/tail every 1.5s from a held cursor, appending only new
+   lines. Torn down centrally by render() like every other page timer so leaving
+   the view (or re-entering it) never leaves a detached poller firing. */
+export function clearDebugLogTimer(){ if (S.debugLogTimer){ clearInterval(S.debugLogTimer); S.debugLogTimer = null; } }
+
 /* ═══════════ Page: SETTINGS (#/opts) — self-update + cell-DB import pollers ═══════════ */
 /* Both poll a background job's phase every 2.5s and self-clear when it reaches a
    terminal phase. Navigating away MID-JOB used to leak them (the interval kept

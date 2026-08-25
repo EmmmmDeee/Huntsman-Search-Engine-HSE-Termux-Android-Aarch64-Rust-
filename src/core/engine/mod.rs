@@ -557,10 +557,18 @@ impl ScanEngine {
         let regional_on = scan.options.regional_search
             || crate::util::settings::get_bool("feature.regional", false);
         crate::util::found_keys::with_scan(
-            sid,
+            sid.clone(),
             crate::util::regional::with_regional(
                 regional_on,
-                self.run_with_ledger_inner(scan, target, ctx, dispatched),
+                // Per-scan quota-budget ambient (PROBLEM_TREE T2.11 sibling —
+                // see `util::budget`'s module doc): without this, SeekNow /
+                // OathNet / WiGLE budget resets and checks would fall back to
+                // the unscoped "" bucket, shared by every concurrently-running
+                // `hse serve` scan.
+                crate::util::budget::with_scan(
+                    sid,
+                    self.run_with_ledger_inner(scan, target, ctx, dispatched),
+                ),
             ),
         )
         .await
@@ -652,6 +660,14 @@ impl ScanEngine {
     ) -> Result<Scan> {
         scan.status = ScanStatus::Running;
         self.store.upsert_scan(&scan)?;
+
+        // Clear any stale events from previous scan attempts with this scan_id
+        // (possible in hse serve when the same target runs twice). Per-scan event
+        // isolation must start from a clean slate — subsequent modules emit fresh
+        // events that belong only to this scan, not to a prior abandoned run.
+        if let Err(e) = self.store.delete_events_for_scan(&scan.id) {
+            tracing::warn!(scan_id = %scan.id, error = %e, "failed to clear stale events at scan start");
+        }
 
         // Reset every module's per-scan state — rate budgets + the foreign-API-key
         // sink — so long-lived processes (`hse serve` / `hse live`) get a fresh
@@ -981,6 +997,10 @@ impl ScanEngine {
             // rolled-back transaction) — see each phase helper's own doc comment.
             let mut entities =
                 merge_found_keys_and_flatten(module_runtime.as_ref(), &scan.id, entity_map);
+            // Drop this scan's per-scan quota-budget state now that it's done,
+            // so a long-lived `hse serve` / `hse live` process doesn't grow
+            // the budget-owning modules' per-scan maps without bound.
+            module_runtime.cleanup_scan_budgets(&scan.id);
             let folded = apply_finalise_enrichment_passes(store.as_ref(), &scan.id, &mut entities);
             if !folded.is_empty() {
                 // The address-locality fold removed each victim from the in-memory
@@ -2479,7 +2499,30 @@ fn merge_found_keys_and_flatten(
             }
         }
     }
-    entity_map.into_values().collect()
+    // Confidence-rank the flattened Vec, breaking ties on `uid` for a total order.
+    //
+    // This is load-bearing twice over. `into_values()` yields raw `HashMap` order, and this Vec is
+    // what `finalise_scan` hands to `derive_and_persist_relations` →
+    // `resolve_coreferences`, whose `.take(MAX_COREF_NODES)` documents the precondition it relies
+    // on: "`entities` arrives confidence-ranked, so `.take` keeps the strongest identities — a
+    // deterministic prefix". On this path that was simply untrue. Above the 5_000 identity-entity
+    // ceiling the truncation therefore kept a DIFFERENT SUBSET on every run — not merely a
+    // different order, so no later sort could recover it — and the derived SameAs/AliasOf/
+    // IdentifiedBy edges persisted to `relations` (and exported to GEXF/GraphML) differed between
+    // two runs over identical data. Below the ceiling the ranking half was still unhonoured.
+    //
+    // Every other caller already satisfied the precondition — the import path guards with its own
+    // 5_000 ceiling, gap-fill passes `TrackedEntityMap::snapshot()` (uid-sorted for this same
+    // reason), and `/identities` passes display-ranked output — which is what made this path the
+    // outlier rather than the rule.
+    let mut out: Vec<Entity> = entity_map.into_values().collect();
+    out.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
+    out
 }
 
 /// Phase 2: the sequential offline enrichment passes that run once, after

@@ -94,9 +94,28 @@ const SCHEMA_DDL: &str = "
                 data_json   TEXT NOT NULL
             );
 
+            -- Opt-in AI-daemon analysis (`src/ai/`, `hse analyze` / `hse-ai-daemon`).
+            -- One row per scan (a re-run overwrites); an absent row means not
+            -- yet analysed, never a failed analysis attempt -- a failed
+            -- attempt is simply retried at the daemon's next poll rather than
+            -- latched here. See the Runtime AI-independence invariant in
+            -- src/lib.rs.
+            CREATE TABLE IF NOT EXISTS scan_analysis (
+                scan_id     TEXT PRIMARY KEY,
+                model       TEXT NOT NULL,
+                created_at  INTEGER NOT NULL,
+                data_json   TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_entities_scan ON entities(scan_id);
             CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind);
             CREATE INDEX IF NOT EXISTS idx_scans_started ON scans(started_at DESC);
+            -- Serves scans_pending_analysis's `WHERE status IN (...) ORDER BY
+            -- started_at` (the AI-daemon poll query, run on an interval for the
+            -- process's whole lifetime) as an index range scan instead of a full
+            -- table scan of `scans`, which — unlike entities/events/relations —
+            -- is never bulk-pruned and only grows.
+            CREATE INDEX IF NOT EXISTS idx_scans_status_started ON scans(status, started_at);
             CREATE INDEX IF NOT EXISTS idx_corr_scan     ON correlations(scan_id);
             CREATE INDEX IF NOT EXISTS idx_obs_scan      ON entity_observations(scan_id);
             CREATE INDEX IF NOT EXISTS idx_obs_entity    ON entity_observations(entity_uid);
@@ -182,6 +201,29 @@ const SCHEMA_DDL: &str = "
             -- `best_*` is the strongest sighting, which is the closest pass and
             -- so the best single estimate of where the device is; ties break on
             -- the lowest sighting id, making the result deterministic.
+            --
+            -- DROPped and recreated rather than `CREATE VIEW IF NOT EXISTS`: a
+            -- view is pure derived logic with no data of its own, so recreating
+            -- it on every open costs nothing and is the only way a corrected
+            -- definition ever reaches a database that already exists. With
+            -- `IF NOT EXISTS` the first binary to create the view owns it
+            -- forever and every later fix silently applies to fresh installs
+            -- only — which is exactly how the `best_latitude` bug below
+            -- survived: the tests build `:memory:` stores and so always saw
+            -- the new definition.
+            -- The CREATE below is also IF NOT EXISTS: not to freeze the
+            -- definition (the unconditional DROP above already prevents
+            -- that for a single connection's own sequential open) but so
+            -- two connections racing to open this same file concurrently
+            -- (expected under cfg(test), where every test shares one
+            -- store, and possible in production between hse and
+            -- hse-ai-daemon) can't have the loser's CREATE fail because
+            -- the winner's DROP+CREATE ran in between the loser's own
+            -- DROP and CREATE. Both sides run the same schema, so
+            -- whichever wins defines an identical view.
+            DROP VIEW IF EXISTS rf_trackable;
+            DROP VIEW IF EXISTS rf_shared_names;
+            DROP VIEW IF EXISTS rf_devices;
             CREATE VIEW IF NOT EXISTS rf_devices AS
             SELECT s.scan_id,
                    s.network_id,
@@ -200,14 +242,32 @@ const SCHEMA_DDL: &str = "
                      WHERE b.scan_id = s.scan_id AND b.network_id = s.network_id
                        AND b.name IS NOT NULL
                      ORDER BY b.id ASC LIMIT 1)                   AS name,
+                   -- The position of the best-evidenced sighting that HAS one.
+                   --
+                   -- Both halves of that matter. Filtering on `latitude IS NOT
+                   -- NULL` rather than on `signal_dbm IS NOT NULL` is what makes
+                   -- the answer the device's position at all: ordering by signal
+                   -- alone picks the strongest sighting and then reads whatever
+                   -- latitude it happens to carry, so a device whose loudest
+                   -- pass had no GPS fix reported no position even when a weaker
+                   -- pass located it precisely. And ranking NULL signals last
+                   -- instead of excluding them keeps a source that reports a
+                   -- position but no level (a Bluetooth sweep without RSSI, a
+                   -- capture whose `Signal` field is absent or unparseable)
+                   -- locatable — before, every such device rolled up with
+                   -- `distinct_fixes > 0` and `best_latitude` NULL, a row that
+                   -- contradicts itself, and `rf_summary.with_position`
+                   -- undercounted by exactly those devices.
                    (SELECT b.latitude FROM rf_sightings b
                      WHERE b.scan_id = s.scan_id AND b.network_id = s.network_id
-                       AND b.signal_dbm IS NOT NULL
-                     ORDER BY b.signal_dbm DESC, b.id ASC LIMIT 1) AS best_latitude,
+                       AND b.latitude IS NOT NULL
+                     ORDER BY b.signal_dbm IS NULL, b.signal_dbm DESC,
+                              b.id ASC LIMIT 1)                   AS best_latitude,
                    (SELECT b.longitude FROM rf_sightings b
                      WHERE b.scan_id = s.scan_id AND b.network_id = s.network_id
-                       AND b.signal_dbm IS NOT NULL
-                     ORDER BY b.signal_dbm DESC, b.id ASC LIMIT 1) AS best_longitude,
+                       AND b.latitude IS NOT NULL
+                     ORDER BY b.signal_dbm IS NULL, b.signal_dbm DESC,
+                              b.id ASC LIMIT 1)                   AS best_longitude,
                    COUNT(DISTINCT CASE WHEN s.latitude IS NOT NULL
                          THEN ROUND(s.latitude, 5) || ',' || ROUND(s.longitude, 5) END)
                                                                   AS distinct_fixes
@@ -706,16 +766,60 @@ impl Store {
         let mut superseded: Vec<i64> = Vec::new();
         let early_return = {
             let mut stmt = conn.prepare_cached(
-                "SELECT rowid, entity_uids FROM correlations WHERE scan_id = ?1 AND rule_id = ?2",
+                "SELECT rowid, entity_uids, description FROM correlations \
+                 WHERE scan_id = ?1 AND rule_id = ?2",
             )?;
             let mut rows = stmt.query(params![c.scan_id, c.rule_id])?;
             let mut already_represented = false;
             while let Some(row) = rows.next()? {
                 let rowid: i64 = row.get(0)?;
                 let j: String = row.get(1)?;
-                let old_uids = serde_json::from_str::<Vec<String>>(&j).unwrap_or_default();
+                let old_desc: String = row.get(2)?;
+                let old_uids = match serde_json::from_str::<Vec<String>>(&j) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        // Fail closed, not open: `unwrap_or_default()` here used
+                        // to fall back to an empty Vec, and an empty set is a
+                        // SUBSET of every other set — so a row whose uid list
+                        // failed to parse (a truncated write, or a value from a
+                        // schema that has since drifted) was judged "superseded"
+                        // by the very next correlation upserted under the same
+                        // (scan_id, rule_id) and silently DELETED, even though
+                        // its `data_json` (the finding itself) was perfectly
+                        // intact. Skip it instead: it participates in neither
+                        // containment check below, so it can never be marked
+                        // superseded and never falsely satisfies the
+                        // already-represented early return. The new row is
+                        // still inserted and the two coexist rather than
+                        // dedupe — a live finding survives at the cost of a
+                        // rarer duplicate, not the reverse.
+                        tracing::warn!(
+                            scan_id = %c.scan_id,
+                            rule_id = %c.rule_id,
+                            rowid,
+                            error = %e,
+                            "correlation row's entity_uids failed to parse — \
+                             excluded from supersede comparison, not deleted"
+                        );
+                        continue;
+                    }
+                };
                 let old_set: HashSet<&str> = old_uids.iter().map(String::as_str).collect();
                 if new_set.is_subset(&old_set) {
+                    // EQUAL sets whose description changed are the capped-sample
+                    // case: a rule that samples its members (AU-037 sorts then
+                    // truncates to 20 secrets + 5 identities) publishes a sample,
+                    // not the cluster, so the "a cluster only grows" premise
+                    // above does not hold for it. When later rounds add members
+                    // that all sort outside the retained sample, the uid list is
+                    // byte-identical while the count in the description has
+                    // grown. Treating that as "already represented" froze the
+                    // FIRST count in the dossier — reporting 25 exposed
+                    // passwords when 30 were found. Prefer the newer row.
+                    if old_desc != c.description && old_set.is_subset(&new_set) {
+                        superseded.push(rowid);
+                        continue;
+                    }
                     // Subset of (or equal to) a stored correlation — already represented.
                     already_represented = true;
                     break;
@@ -886,6 +990,14 @@ impl Store {
         )?;
         tx.execute("DELETE FROM events WHERE scan_id = ?1", params![scan_id])?;
         tx.execute("DELETE FROM relations WHERE scan_id = ?1", params![scan_id])?;
+        // AI-daemon analysis (`scan_analysis`) is scan-scoped like every table
+        // above; omitting it here would leave an orphaned analysis referencing a
+        // deleted scan_id on disk after `hse delete` — the exact PII-retention
+        // gap `delete_scan` exists to close.
+        tx.execute(
+            "DELETE FROM scan_analysis WHERE scan_id = ?1",
+            params![scan_id],
+        )?;
         // `stealer_rows` is scan-scoped like every table above and holds the most
         // sensitive payload in the store — stolen login/password pairs. It has no
         // other prune path, so omitting it here left a deleted scan's credentials
@@ -937,6 +1049,61 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(true)
+    }
+
+    // ── AI-daemon scan analysis (see `src/ai/`, `core::port::StoragePort`) ──
+
+    /// Persist (or overwrite) the AI-daemon's analysis for one scan.
+    pub fn upsert_scan_analysis(
+        &self,
+        analysis: &crate::core::scan_analysis::ScanAnalysis,
+    ) -> Result<()> {
+        let json = serde_json::to_string(analysis)?;
+        let conn = self.conn.lock();
+        conn.prepare_cached(
+            "INSERT INTO scan_analysis(scan_id, model, created_at, data_json)
+             VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(scan_id) DO UPDATE SET
+               model      = excluded.model,
+               created_at = excluded.created_at,
+               data_json  = excluded.data_json",
+        )?
+        .execute(params![
+            analysis.scan_id,
+            analysis.model,
+            analysis.created_at as i64,
+            json,
+        ])?;
+        Ok(())
+    }
+
+    /// The persisted AI-daemon analysis for one scan, if any.
+    pub fn get_scan_analysis(
+        &self,
+        scan_id: &str,
+    ) -> Result<Option<crate::core::scan_analysis::ScanAnalysis>> {
+        self.query_one_json(
+            "SELECT data_json FROM scan_analysis WHERE scan_id = ?1",
+            params![scan_id],
+        )
+    }
+
+    /// Terminal (`complete`/`aborted`) scans with no persisted analysis yet,
+    /// oldest-first, bounded to `limit` — the AI daemon's poll query. A plain
+    /// `NOT IN (SELECT scan_id FROM scan_analysis)` anti-join, cheap at this
+    /// table's scale (one row per analysed scan) and avoids deserialising any
+    /// `data_json` just to get an id.
+    pub fn scans_pending_analysis(&self, limit: usize) -> Result<Vec<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT id FROM scans
+             WHERE status IN ('complete', 'aborted')
+               AND id NOT IN (SELECT scan_id FROM scan_analysis)
+             ORDER BY started_at ASC, id ASC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
+        Ok(collect_rows(rows, "scans_pending_analysis"))
     }
 
     /// Prune events older than `max_age_secs` and limit total rows to
@@ -994,6 +1161,18 @@ impl Store {
         }
         tx.commit()?;
         Ok(events.len())
+    }
+
+    /// Clear all events for a scan_id — used at scan initialization to ensure a
+    /// clean slate in long-lived processes like `hse serve` where the same target
+    /// may run multiple times. Per-scan event isolation must start from fresh,
+    /// not from leftover abandoned events. Non-fatal: if this fails, logging warns
+    /// and the scan proceeds (events will just accumulate, but won't cause an
+    /// actual scan failure).
+    pub fn delete_events_for_scan(&self, scan_id: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM events WHERE scan_id = ?1", params![scan_id])?;
+        Ok(())
     }
 
     pub fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {
@@ -1072,6 +1251,24 @@ impl crate::core::port::StoragePort for Store {
         Store::delete_scan(self, scan_id)
     }
 
+    fn upsert_scan_analysis(
+        &self,
+        analysis: &crate::core::scan_analysis::ScanAnalysis,
+    ) -> Result<()> {
+        Store::upsert_scan_analysis(self, analysis)
+    }
+
+    fn get_scan_analysis(
+        &self,
+        scan_id: &str,
+    ) -> Result<Option<crate::core::scan_analysis::ScanAnalysis>> {
+        Store::get_scan_analysis(self, scan_id)
+    }
+
+    fn scans_pending_analysis(&self, limit: usize) -> Result<Vec<String>> {
+        Store::scans_pending_analysis(self, limit)
+    }
+
     fn upsert_entity(&self, entity: &Entity) -> Result<()> {
         Store::upsert_entity(self, entity)
     }
@@ -1148,6 +1345,10 @@ impl crate::core::port::StoragePort for Store {
 
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {
         Store::events_for_scan(self, scan_id)
+    }
+
+    fn delete_events_for_scan(&self, scan_id: &str) -> Result<()> {
+        Store::delete_events_for_scan(self, scan_id)
     }
 
     fn recent_module_outcome_events(&self, limit: usize) -> Result<Vec<Event>> {

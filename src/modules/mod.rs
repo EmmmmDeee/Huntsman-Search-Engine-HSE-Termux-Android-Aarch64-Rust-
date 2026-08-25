@@ -307,7 +307,7 @@ impl crate::core::module_runtime::ModuleRuntime for BuiltinModuleRuntime {
         see_know::reset_budget();
         wigle::reset_budget();
         typosquat::reset_seen();
-        search_engines::reset_session_liveness();
+        search_engines::reset_session_liveness(scan_id);
         reset_found_keys(scan_id);
     }
 
@@ -321,6 +321,12 @@ impl crate::core::module_runtime::ModuleRuntime for BuiltinModuleRuntime {
 
     fn drain_found_keys(&self, scan_id: &str) -> Vec<crate::core::entity::Entity> {
         drain_found_key_entities(scan_id)
+    }
+
+    fn cleanup_scan_budgets(&self, scan_id: &str) {
+        oathnet_pro::cleanup_scan(scan_id);
+        see_know::cleanup_scan(scan_id);
+        wigle::cleanup_scan(scan_id);
     }
 }
 

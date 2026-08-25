@@ -51,15 +51,15 @@ mod integration_tests;
 // Budget / quota management — includes BudgetSnapshot re-export so external
 // consumers (`api::handlers::stats`) keep working through the original path.
 pub use budget::{
-    BudgetSnapshot, budget_remaining, budget_snapshot, is_key_invalid, is_quota_exhausted,
-    refresh_round_budget, release_quota_probe, reset_budget, scale_scan_cap_from_daily,
-    scan_budget_remaining, set_scan_cap_override, should_probe_quota,
+    BudgetSnapshot, budget_remaining, budget_snapshot, cleanup_scan, is_key_invalid,
+    is_quota_exhausted, refresh_round_budget, release_quota_probe, reset_budget,
+    scale_scan_cap_from_daily, scan_budget_remaining, set_scan_cap_override, should_probe_quota,
 };
 
 // Key helpers + the resolved API base host (so `hse doctor` can show WHICH
 // host a failing probe tried — the single most useful fact when the failure is
 // DNS host-resolution, the observed live symptom).
-pub use client::{base_url, key_fingerprint, resolve_key};
+pub use client::{base_url, key_fingerprint};
 
 // Endpoint functions
 pub(crate) use endpoints::get_path;
@@ -72,5 +72,12 @@ pub use endpoints::{
 // Shared JSON helper — single definition in `util::json`, re-exported here so
 // existing `crate::util::see_know::val_str` call sites are unchanged.
 pub use crate::util::json::val_str;
+
+/// [`val_str`]'s number-coercing siblings — SeekNow records share most field
+/// names with OathNet's V2 schema (see `see_know::extract`'s own doc), and
+/// `oathnet_pro` already reaches for these on the identifier fields breach/
+/// stealer dumps routinely encode as JSON numbers (`discord_id`, `steamid`,
+/// phone). Re-exported for the same reason as `val_str` above.
+pub use crate::util::json::{val_str_coerce, val_str_or_coerce};
 
 pub const KEY_ENV: &str = "HUNTSMAN_SEEKNOW_KEY";

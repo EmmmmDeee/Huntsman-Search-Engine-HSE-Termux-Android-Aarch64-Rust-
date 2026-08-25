@@ -72,3 +72,30 @@ use super::*;
         assert!(!is_professional_host("github.com"));
         assert!(!is_professional_host("reddit.com"));
     }
+
+    #[test]
+    fn github_location_entities_decode_exactly_once() {
+        // Regression: the local `.replace()` chain fed each replacement the
+        // previous one's output, so an `&amp;` decoding to `&` paired with the
+        // text after it into an entity the next link decoded again. A location
+        // holding the literal text `&lt;` (served as `&amp;lt;`) was recorded
+        // as `<`.
+        let html = r#"<span class="p-label">a &amp;lt;b&amp;gt; c</span>"#;
+        assert_eq!(
+            extract_github_location(html).as_deref(),
+            Some("a &lt;b&gt; c"),
+            "each &…; is consumed exactly once; no double-decode"
+        );
+    }
+
+    #[test]
+    fn github_location_decodes_numeric_character_references() {
+        // The old chain covered five named entities only, so a non-ASCII place
+        // name served as a numeric reference was stored raw as "S&#227;o Paulo".
+        let html = r#"<span class="p-label">S&#227;o Paulo, Brazil</span>"#;
+        assert_eq!(
+            extract_github_location(html).as_deref(),
+            Some("São Paulo, Brazil"),
+            "decimal character references resolve"
+        );
+    }

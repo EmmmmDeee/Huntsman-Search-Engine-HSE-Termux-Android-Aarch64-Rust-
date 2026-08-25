@@ -10,9 +10,6 @@ use crate::util::response_cache::ResponseCache;
 use super::budget::{mark_key_invalid, mark_quota_exhausted};
 use super::enterprise_config::ENTERPRISE;
 
-// Embedded fallback: the single-source-of-truth default lives in `util::keys`.
-const HARDCODED_KEY: &str = crate::util::keys::SEEKNOW_DEFAULT_KEY;
-
 /// Per-process response cache backed by the shared
 /// [`ResponseCache`] primitive (cap [`ENTERPRISE`]`.cache_size` — sized to
 /// comfortably hold every distinct endpoint × query a single scan
@@ -150,14 +147,6 @@ pub(super) fn base_urls_for(primary: String) -> Vec<String> {
         }
     }
     urls
-}
-
-/// The SeekNow API key to use for a request: the per-scan context key `ctx_key`
-/// when the operator supplied one, otherwise the built-in default
-/// ([`crate::util::keys::resolve_or_default`]). Mirrors `oathnet::resolve_key`.
-#[must_use]
-pub fn resolve_key(ctx_key: Option<&str>) -> &str {
-    crate::util::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
 }
 
 /// A stable, human-identifiable fingerprint of the SeekNow API key used for a
@@ -347,16 +336,111 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
 /// It stays as a guard for the case where a proxy or DoH layer surfaces the
 /// rejection as an error string instead.
 pub(super) fn transport_err_is_terminal_auth(err_str: &str) -> bool {
-    err_str.contains("401")
-        || err_str.contains("Unauthorized")
-        || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
+    // Single case-normalised pass, matching the exact substrings `is_auth_error`
+    // recognises on the body-classification path. A prior version checked
+    // `"invalid"` against the original-case string while lower-casing only the
+    // "key" half, so a proxy/DoH-surfaced message like "Invalid API key" (the
+    // capitalised form `is_auth_error` explicitly anticipates) never matched —
+    // the fallback loop kept retrying every alternate domain with the same
+    // rejected key instead of failing fast.
+    //
+    // "401" is checked separately, via `contains_401_as_a_status_code` rather
+    // than a bare substring match, for an unrelated reason: see that
+    // function's own doc for why a plain `contains("401")` misclassifies an
+    // ordinary timeout whose elapsed-ms duration happens to embed those
+    // digits.
+    let lower = err_str.to_lowercase();
+    contains_401_as_a_status_code(err_str)
+        || lower.contains("unauthorized")
+        || lower.contains("invalid_api_key")
+        || lower.contains("invalid api key")
+        || lower.contains("plan_required")
+}
+
+/// True if `s` contains "401" as an isolated token, not merely as three
+/// consecutive digits inside a longer number. A curl transport-level failure
+/// (this function's only caller is the pre-response, connection/DNS/timeout
+/// path) commonly reports an elapsed duration — libcurl's own timeout message
+/// is literally "Operation timed out after {ms} milliseconds..." — so a bare
+/// `contains("401")` matched an elapsed time landing anywhere in
+/// 401/4010-4019/40100-40199/… milliseconds, wrongly classifying an ordinary
+/// timeout as a rejected key and aborting the whole multi-domain fallback
+/// instead of trying the next domain. The existing test suite already asserts
+/// `"connection timed out"` must NEVER be terminal — this closes the same gap
+/// for a differently-worded timeout that happens to embed those digits.
+fn contains_401_as_a_status_code(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    s.match_indices("401").any(|(i, _)| {
+        let before_is_digit = i > 0 && bytes[i - 1].is_ascii_digit();
+        let after_is_digit = bytes.get(i + 3).is_some_and(u8::is_ascii_digit);
+        !before_is_digit && !after_is_digit
+    })
 }
 
 pub(super) fn classify_status(body: &str, status: u16) -> Result<Value> {
     if status == 0 || (500..600).contains(&status) {
+        // A 5xx is usually a genuine transient gateway/CDN failure (the
+        // common case: an HTML error page, no JSON body) — but a
+        // misconfigured upstream or WAF can also wrap a genuine auth/quota
+        // rejection in a 5xx. Peek at the body with the SAME narrow
+        // top-level `error`/`message` envelope check `parse_response`'s JSON
+        // path already trusts (never a raw substring scan of the whole
+        // payload — see `classify_terminal`'s doc comment for why that
+        // matters) before defaulting to transient, so a permanently-bad key
+        // still latches instead of retrying every fallback domain for the
+        // rest of the scan.
+        if let Ok(value) = serde_json::from_str::<Value>(body) {
+            match classify_terminal(&value) {
+                Some(Terminal::Auth) => {
+                    mark_key_invalid(body);
+                    return Ok(Value::Null);
+                }
+                Some(Terminal::Quota) => {
+                    mark_quota_exhausted();
+                    return Ok(Value::Null);
+                }
+                _ => {}
+            }
+        }
         return Err(Error::RateLimited(format!(
             "seek_now: HTTP {status} transient upstream failure"
         )));
+    }
+    // HTTP 401 is unambiguous per both HTTP semantics and SeekNow's own
+    // documented mapping (docs/SEEKNOW_SETUP.md: "401 Unauthorized — Invalid/
+    // expired API key"): the whole key is bad, independent of how the JSON
+    // body happens to word it. Without this status-code check, a 401 body that
+    // didn't use one of the three exact substrings `is_auth_error` checks (e.g.
+    // `{"error":"unauthorized"}`) fell through to `parse_response`, which found
+    // no recognised error/quota envelope in a well-formed JSON object and
+    // returned it as an ordinary — silently EMPTY — success: the scan then
+    // burned through every remaining lookup against a key the server had
+    // already and definitively rejected, and `hse doctor`'s "key invalid"
+    // diagnostic never latched.
+    if status == 401 {
+        mark_key_invalid(body);
+        return Ok(Value::Null);
+    }
+    // HTTP 403 is documented DIFFERENTLY: "Plan doesn't allow endpoint — skips
+    // endpoint, continues with others" — a PER-ENDPOINT restriction, not a
+    // key-wide rejection. It must NEVER call `mark_key_invalid`: that disables
+    // SeekNow for the rest of the scan ACROSS EVERY ENDPOINT, so one
+    // plan-gated endpoint's 403 would wrongly silence every other,
+    // currently-working endpoint too — a false-positive lockout worse than the
+    // gap this is fixing. Surfacing it as a typed `Err` (rather than falling
+    // through to the same silent `Ok(empty)` success as the 401 case used to)
+    // is enough: `fold_endpoint_result` (every SeekNow dispatcher's shared
+    // fold) warns and skips just this one endpoint, and
+    // `ModuleResult::or_hard_failure` escalates it only if the WHOLE seed still
+    // ends up with zero entities. Excluded when the body already carries a
+    // known auth/plan marker (`plan_required` in particular is the ACCOUNT
+    // having no paid plan at all, a genuinely key-wide issue) — that case falls
+    // through to the existing, already-tested body-based latch below.
+    if status == 403 && !is_auth_error(body) {
+        return Err(Error::module(
+            "seek_now",
+            "HTTP 403 (endpoint not covered by the account's plan)",
+        ));
     }
     // A CDN/gateway 429 "Too Many Requests" is commonly served as an HTML or
     // plain-text interstitial, NOT the API's JSON `{"error":"rate_limit"}`
@@ -543,7 +627,3 @@ pub(super) async fn get_raw_with_fallback(endpoint_path: &str, key: &str) -> Res
     // Exhausted all domains; return the last error.
     Err(last_error.unwrap_or_else(|| Error::module("see_know", "all domains exhausted")))
 }
-
-/// Expose the hardcoded default key so tests can assert on it.
-#[cfg(test)]
-pub(super) const HARDCODED_KEY_FOR_TESTS: &str = HARDCODED_KEY;

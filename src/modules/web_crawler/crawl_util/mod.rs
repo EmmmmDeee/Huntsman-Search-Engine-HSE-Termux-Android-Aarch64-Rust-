@@ -255,6 +255,13 @@ pub(super) async fn probe_config_leaks(
             results.push(r);
         }
     }
+    // `JoinSet` yields in completion order — whichever probe finished first, which is
+    // nondeterministic. Sort by the probed path (unique per probe, so a total order) before
+    // returning, matching every other `JoinSet` in `src/modules/` (`dns_intel`'s three,
+    // `portscan`, `cloud_storage`, `typosquat`, `api_key_probe`). This was the only one that
+    // did not, so the `ApiKey` entities the caller derives from `leaks` reached
+    // `EventKind::EntityFound` in a run-varying order.
+    results.sort_by(|a, b| a.0.cmp(&b.0));
     results
 }
 

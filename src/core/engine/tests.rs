@@ -4245,3 +4245,50 @@ async fn a_watchdog_guard_aborts_its_task_when_its_owner_unwinds() {
          no longer owns — a later, unrelated scan would die for no visible reason"
     );
 }
+
+/// `merge_found_keys_and_flatten` feeds `resolve_coreferences`, whose
+/// `.take(MAX_COREF_NODES)` documents the precondition that its input "arrives
+/// confidence-ranked". Flattening a `HashMap` with `into_values()` satisfied neither that
+/// precondition nor the determinism invariant: above the ceiling the truncation kept a
+/// different SUBSET per run, so the derived SameAs/AliasOf/IdentifiedBy edges persisted to
+/// `relations` — and exported to GEXF/GraphML — differed between two runs over identical data.
+///
+/// Asserts the ranking directly, and asserts it is insertion-order independent: the two maps
+/// hold identical entities added in opposite orders, which is what a re-run varies.
+#[test]
+fn flattened_entities_are_confidence_ranked_and_insertion_order_independent() {
+    struct NoKeys;
+    impl ModuleRuntime for NoKeys {}
+
+    let mk = |uid: &str, conf: f64| {
+        let mut e = Entity::new(EntityKind::Username, uid, conf, "scan-1");
+        e.uid = uid.to_string();
+        e
+    };
+    // Two equal confidences so the `uid` tie-break is exercised, not just the primary key.
+    let specs = [("aaa", 0.4_f64), ("bbb", 0.9), ("ccc", 0.6), ("ddd", 0.9)];
+
+    let mut forward: HashMap<String, Entity> = HashMap::new();
+    for (uid, c) in specs {
+        forward.insert(uid.to_string(), mk(uid, c));
+    }
+    let mut reverse: HashMap<String, Entity> = HashMap::new();
+    for (uid, c) in specs.iter().rev() {
+        reverse.insert(uid.to_string(), mk(uid, *c));
+    }
+
+    let a = merge_found_keys_and_flatten(&NoKeys, "scan-1", forward);
+    let b = merge_found_keys_and_flatten(&NoKeys, "scan-1", reverse);
+
+    let order: Vec<&str> = a.iter().map(|e| e.uid.as_str()).collect();
+    assert_eq!(
+        order,
+        vec!["bbb", "ddd", "ccc", "aaa"],
+        "confidence descending, ties broken on uid ascending"
+    );
+    assert_eq!(
+        order,
+        b.iter().map(|e| e.uid.as_str()).collect::<Vec<_>>(),
+        "identical entities must flatten identically regardless of insertion order"
+    );
+}

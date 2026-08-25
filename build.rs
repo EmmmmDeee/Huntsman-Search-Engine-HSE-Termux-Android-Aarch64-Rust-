@@ -8,8 +8,11 @@
 
 use std::fmt::Write as _;
 use std::path::Path;
+use std::process::Command;
 
 fn main() {
+    emit_build_provenance();
+
     let mut files: Vec<(String, u32)> = Vec::new();
     collect(Path::new("src"), &mut files);
     files.sort(); // deterministic order (by relative path)
@@ -43,6 +46,71 @@ fn main() {
     // leave the manifest STALE for every file under src/core, src/modules, … after
     // an edit. Declaring each file (content changes) AND each directory (file
     // add/remove at any depth) is what keeps the manifest accurate.
+}
+
+/// Stamp the exact source revision into the binary as `HSE_GIT_SHA` /
+/// `HSE_GIT_DIRTY`.
+///
+/// The version string alone cannot identify a build. `Cargo.toml`'s version
+/// changes only on a deliberate bump, so every commit merged to `main` between
+/// two bumps produces a binary reporting the SAME version as the release — which
+/// is precisely how the installer and the auto-updater came to "succeed" while
+/// leaving a device several commits behind. A commit SHA is the only identifier
+/// that distinguishes them, so `install.sh` can refuse a prebuilt that is not the
+/// revision it was asked for.
+///
+/// Resolution order:
+/// 1. `HSE_BUILD_SHA` — for builds from a source archive with no `.git`
+///    (CI passes `github.sha`). Also the escape hatch for reproducible builds.
+/// 2. `git rev-parse HEAD` in the source tree.
+/// 3. `unknown` — never fabricated. Consumers treat `unknown` as "cannot verify"
+///    and fall back to building from source rather than trusting the binary.
+fn emit_build_provenance() {
+    println!("cargo:rerun-if-env-changed=HSE_BUILD_SHA");
+    // A commit/checkout changes HEAD (or, on a branch, the ref it points at).
+    for p in [".git/HEAD", ".git/ORIG_HEAD"] {
+        if Path::new(p).exists() {
+            println!("cargo:rerun-if-changed={p}");
+        }
+    }
+
+    // `Some("")` is a meaningful result here (a clean `git status --porcelain`),
+    // so success-with-empty-output must be distinguishable from failure.
+    let git = |args: &[&str]| -> Option<String> {
+        let out = Command::new("git").args(args).output().ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+
+    let head = git(&["rev-parse", "HEAD"]).filter(|s| s.len() == 40);
+    let override_sha = std::env::var("HSE_BUILD_SHA")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let sha = override_sha
+        .clone()
+        .or_else(|| head.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // Only claim a build is clean when we actually looked, and only when the
+    // revision we are stamping is the one the tree is actually at. An override
+    // that disagrees with HEAD is unverifiable by construction, and asserting
+    // clean there would let a modified tree masquerade as the pristine revision
+    // the SHA names — which is precisely the confusion this stamp exists to end.
+    let dirty = match git(&["status", "--porcelain", "--untracked-files=no"]) {
+        Some(s) if !s.is_empty() => "1",
+        Some(_) => match (&override_sha, &head) {
+            (Some(o), Some(h)) if o != h => "unknown",
+            _ => "0",
+        },
+        // git absent, or not a repository (a source-archive build).
+        None => "unknown",
+    };
+
+    println!("cargo:rustc-env=HSE_GIT_SHA={sha}");
+    println!("cargo:rustc-env=HSE_GIT_DIRTY={dirty}");
 }
 
 /// Recursively collect `*.rs` files under `dir` as (path-with-forward-slashes,

@@ -41,7 +41,7 @@ pub(super) fn build_search_body(query: &str, query_type: &str, limit: u32) -> St
         format!(
             r#"{{"query":"{}","type":"{}","limit":{}}}"#,
             escape_json(query),
-            query_type,
+            escape_json(query_type),
             limit
         )
     }

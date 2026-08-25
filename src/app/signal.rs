@@ -25,6 +25,16 @@ fn dbm(v: Option<f64>) -> String {
     v.map_or_else(|| "—".to_string(), |s| format!("{s:.0}"))
 }
 
+/// Clip to a column width on a char boundary. A vendor name from the IEEE
+/// registry can be far wider than the column and may contain multi-byte
+/// characters, so slicing by byte index would panic.
+fn truncate(s: &str, width: usize) -> String {
+    if s.chars().count() <= width {
+        return s.to_string();
+    }
+    s.chars().take(width.saturating_sub(1)).collect::<String>() + "…"
+}
+
 fn radio_label(r: RadioKind) -> &'static str {
     match r {
         RadioKind::Wifi => "wifi",
@@ -55,6 +65,7 @@ fn print_devices(rows: &[RfDeviceRow], limit: usize, json: bool) {
                     "radio": radio_label(d.radio),
                     "address": address_label(d.locally_administered),
                     "oui": d.oui,
+                    "vendor": d.vendor,
                     "device_class": d.device_class,
                     "name": d.name,
                     "sightings": d.sightings,
@@ -75,19 +86,22 @@ fn print_devices(rows: &[RfDeviceRow], limit: usize, json: bool) {
         return;
     }
     println!(
-        "  {:<18} {:<5} {:<7} {:>5} {:>5} {:>5}  {:<14} NAME",
-        "NETWORK ID", "RADIO", "ADDRESS", "DBM", "SEEN", "FIXES", "CLASS"
+        "  {:<18} {:<5} {:<7} {:>5} {:>5}  {:<26} NAME",
+        "NETWORK ID", "RADIO", "ADDRESS", "DBM", "SEEN", "VENDOR"
     );
     for d in rows.iter().take(limit) {
         println!(
-            "  {:<18} {:<5} {:<7} {:>5} {:>5} {:>5}  {:<14} {}",
+            "  {:<18} {:<5} {:<7} {:>5} {:>5}  {:<26} {}",
             d.network_id,
             radio_label(d.radio),
             address_label(d.locally_administered),
             dbm(d.best_signal_dbm),
             d.sightings,
-            d.distinct_fixes,
-            d.device_class.as_deref().unwrap_or("—"),
+            // The source-reported device class where there is one, else the
+            // vendor. They answer different questions — what the device IS
+            // versus who made it — but only one column fits, and a class is the
+            // more specific answer when available.
+            truncate(d.device_class.as_deref().or(d.vendor).unwrap_or("—"), 26,),
             d.name.as_deref().unwrap_or("—"),
         );
     }

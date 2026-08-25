@@ -19,7 +19,7 @@ pub(crate) fn extract_division(html: &str) -> Option<(String, Option<String>)> {
 
     // AEC pattern: "division of <name>". `find_range` returns boundary-safe
     // `[start, end)` from original bytes — no offset-on-a-copy panic risk.
-    if let Some((pos, end)) = DIVISION_MARKER.find_range(&text) {
+    if let Some((_, end)) = DIVISION_MARKER.find_range(&text) {
         let rest = &text[end..];
         // Allow apostrophes: real AU divisions/suburbs carry them (the federal
         // Division of O'Connor, the ACT suburb O'Malley). Without `'\''` the
@@ -31,8 +31,16 @@ pub(crate) fn extract_division(html: &str) -> Option<(String, Option<String>)> {
             .take_while(|c| c.is_alphabetic() || *c == '-' || *c == ' ' || *c == '\'')
             .collect();
         let name = name.trim().to_string();
-        if !name.is_empty() && name.len() < 40 {
-            let suburb = extract_suburb_hint(&text[pos..]);
+        // Chars, not bytes — a division name is text, and the sibling
+        // `au_property` parser this allow-list is kept in step with is
+        // deliberately full-Unicode.
+        if !name.is_empty() && name.chars().count() < 40 {
+            // Window starts PAST the marker (`end`, not `pos`): the hint's
+            // backward walk from the postcode accepts letters and spaces, so a
+            // window that included the marker let it walk back through the
+            // marker phrase itself ("division of Sydney" → hint "division of
+            // Sydney").
+            let suburb = extract_suburb_hint(&text[end..]);
             return Some((name, suburb));
         }
     }
@@ -40,15 +48,17 @@ pub(crate) fn extract_division(html: &str) -> Option<(String, Option<String>)> {
     // State EC pattern: "enrolled in <Division>" or "enrolled for <Division>".
     // One aho-corasick pass covers both markers; `end` skips past whichever
     // matched without needing to know its length.
-    if let Some((pos, end)) = ENROLLED_MARKERS.find_range(&text) {
+    if let Some((_, end)) = ENROLLED_MARKERS.find_range(&text) {
         let rest = &text[end..];
         let name: String = rest
             .chars()
             .take_while(|c| c.is_alphabetic() || *c == '-' || *c == ' ' || *c == '\'')
             .collect();
         let name = name.trim().to_string();
-        if !name.is_empty() && name.len() < 40 {
-            return Some((name, extract_suburb_hint(&text[pos..])));
+        // Chars, not bytes, as above.
+        if !name.is_empty() && name.chars().count() < 40 {
+            // Past the marker, as above.
+            return Some((name, extract_suburb_hint(&text[end..])));
         }
     }
 
@@ -115,7 +125,9 @@ fn extract_suburb_hint(window: &str) -> Option<String> {
                 .rev()
                 .collect();
             let suburb = suburb.trim().to_string();
-            if !suburb.is_empty() && suburb.len() < 30 {
+            // Chars, not bytes: an accented suburb well inside the intended
+            // 30-character limit must not be silently discarded.
+            if !suburb.is_empty() && suburb.chars().count() < 30 {
                 return Some(suburb);
             }
         }
@@ -147,6 +159,28 @@ mod extract_division_tests {
         let html = "<p>You are enrolled in Parramatta</p>";
         let (name, _) = extract_division(html).expect("should succeed");
         assert_eq!(name, "Parramatta");
+    }
+
+    #[test]
+    fn suburb_hint_excludes_the_marker_phrase() {
+        // Regression: the hint window started at the MARKER's own start
+        // (`&text[pos..]`), so the backward walk from the postcode — which
+        // accepts letters, spaces and apostrophes — ran back THROUGH the marker
+        // and returned "enrolled for Bondi Beach". That bogus hint then
+        // overrides the trusted offline division centroid suburb in
+        // entity::build, minting an Address entity valued "enrolled for Bondi
+        // Beach, NSW" at the high-confidence residency tier, which feeds the geo
+        // and residency correlator rules.
+        let (name, hint) =
+            extract_division("<p>You are enrolled for Bondi Beach 2026</p>").expect("matches");
+        assert_eq!(name, "Bondi Beach");
+        assert_eq!(hint.as_deref(), Some("Bondi Beach"));
+
+        // Same shape on the AEC "division of" path.
+        let (name, hint) =
+            extract_division("<div>Division of Sydney NSW 2000</div>").expect("matches");
+        assert_eq!(name, "Sydney NSW");
+        assert_eq!(hint.as_deref(), Some("Sydney NSW"));
     }
 
     #[test]
