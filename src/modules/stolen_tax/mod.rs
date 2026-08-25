@@ -22,7 +22,6 @@ const API_BASE: &str = "https://api.stolen.tax/api/v1/search";
 
 pub struct StolenTax;
 
-
 #[derive(Debug, Deserialize)]
 struct StolenTaxResponse {
     success: bool,
@@ -123,7 +122,7 @@ impl Module for StolenTax {
             TargetKind::Organisation => "org",
             _ => return Ok(result),
         };
-        let url = format!("{}/{endpoint}?query={query_param}", API_BASE);
+        let url = format!("{API_BASE}/{endpoint}?query={query_param}");
 
         let Some(response) = crate::util::http::fetch_keyed_json::<StolenTaxResponse>(
             ctx,
@@ -164,7 +163,7 @@ fn build_entities(
             let mut entity = Entity::new(EntityKind::Email, email, confidence::MEDIUM, scan_id);
             entity.add_evidence(Evidence::new(
                 SRC,
-                format!("Exposed in breach: correlated with {}", query_value),
+                format!("Exposed in breach: correlated with {query_value}"),
             ));
             entity
         }),
@@ -179,7 +178,7 @@ fn build_entities(
                     Entity::new(EntityKind::Username, username, confidence::MEDIUM, scan_id);
                 entity.add_evidence(Evidence::new(
                     SRC,
-                    format!("Exposed in breach: correlated with {}", query_value),
+                    format!("Exposed in breach: correlated with {query_value}"),
                 ));
                 entity
             }),
@@ -197,21 +196,21 @@ fn build_entities(
             },
         );
 
-        if let Some(email) = &account.email {
-            if email != query_value {
-                let mut entity = Entity::new(EntityKind::Email, email, confidence::MEDIUM, scan_id);
-                entity.add_evidence(Evidence::new(SRC, evidence_text.clone()));
-                entities.push(entity);
-            }
+        if let Some(email) = &account.email
+            && email != query_value
+        {
+            let mut entity = Entity::new(EntityKind::Email, email, confidence::MEDIUM, scan_id);
+            entity.add_evidence(Evidence::new(SRC, evidence_text.clone()));
+            entities.push(entity);
         }
 
-        if let Some(username) = &account.username {
-            if username != query_value {
-                let mut entity =
-                    Entity::new(EntityKind::Username, username, confidence::MEDIUM, scan_id);
-                entity.add_evidence(Evidence::new(SRC, evidence_text.clone()));
-                entities.push(entity);
-            }
+        if let Some(username) = &account.username
+            && username != query_value
+        {
+            let mut entity =
+                Entity::new(EntityKind::Username, username, confidence::MEDIUM, scan_id);
+            entity.add_evidence(Evidence::new(SRC, evidence_text.clone()));
+            entities.push(entity);
         }
     }
 
@@ -225,7 +224,7 @@ fn build_entities(
             );
             let mut entity = Entity::new(
                 EntityKind::Credential,
-                &format!("breach:{}", name),
+                format!("breach:{name}"),
                 confidence::HIGH,
                 scan_id,
             );
