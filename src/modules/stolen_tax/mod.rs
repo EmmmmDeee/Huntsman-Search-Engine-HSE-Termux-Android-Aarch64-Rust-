@@ -18,8 +18,10 @@ use crate::core::{
 };
 
 const SRC: &str = "stolen_tax";
+const API_BASE: &str = "https://api.stolen.tax/api/v1/search";
 
 pub struct StolenTax;
+
 
 #[derive(Debug, Deserialize)]
 struct StolenTaxResponse {
@@ -31,7 +33,6 @@ struct StolenTaxResponse {
 #[derive(Debug, Deserialize)]
 struct StolenTaxData {
     breaches: Option<Vec<BreachRecord>>,
-    exposures: Option<Vec<ExposureRecord>>,
     #[serde(default)]
     emails: Vec<String>,
     #[serde(default)]
@@ -42,24 +43,9 @@ struct StolenTaxData {
 
 #[derive(Debug, Deserialize)]
 struct BreachRecord {
-    id: Option<String>,
     name: Option<String>,
-    title: Option<String>,
     date: Option<String>,
     record_count: Option<i64>,
-    description: Option<String>,
-    #[serde(default)]
-    affected_categories: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ExposureRecord {
-    id: Option<String>,
-    source: Option<String>,
-    date_published: Option<String>,
-    record_count: Option<i64>,
-    #[serde(default)]
-    exposed_fields: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,21 +108,14 @@ impl Module for StolenTax {
         let mut result = ModuleResult::new();
 
         let query_param = crate::util::http::urlencode(&target.value);
-        let url = match target.kind {
-            TargetKind::Email => {
-                format!("https://api.stolen.tax/api/v1/search/email?query={}", query_param)
-            }
-            TargetKind::Username => {
-                format!("https://api.stolen.tax/api/v1/search/username?query={}", query_param)
-            }
-            TargetKind::Domain => {
-                format!("https://api.stolen.tax/api/v1/search/domain?query={}", query_param)
-            }
-            TargetKind::Organisation => {
-                format!("https://api.stolen.tax/api/v1/search/org?query={}", query_param)
-            }
+        let endpoint = match target.kind {
+            TargetKind::Email => "email",
+            TargetKind::Username => "username",
+            TargetKind::Domain => "domain",
+            TargetKind::Organisation => "org",
             _ => return Ok(result),
         };
+        let url = format!("{}/{endpoint}?query={query_param}", API_BASE);
 
         let Some(response) = crate::util::http::fetch_keyed_json::<StolenTaxResponse>(
             ctx,
@@ -172,69 +151,57 @@ fn build_entities(
 ) -> Vec<Entity> {
     let mut entities = Vec::new();
 
-    for email in &data.emails {
-        if email != query_value {
+    entities.extend(
+        data.emails.iter().filter(|e| *e != query_value).map(|email| {
             let mut entity = Entity::new(EntityKind::Email, email, confidence::MEDIUM, scan_id);
             entity.add_evidence(Evidence::new(
                 SRC,
                 format!("Exposed in breach: correlated with {}", query_value),
             ));
-            entities.push(entity);
-        }
-    }
+            entity
+        }),
+    );
 
-    for username in &data.usernames {
-        if username != query_value {
-            let mut entity = Entity::new(
-                EntityKind::Username,
-                username,
-                confidence::MEDIUM,
-                scan_id,
-            );
-            entity.add_evidence(Evidence::new(
-                SRC,
-                format!("Exposed in breach: correlated with {}", query_value),
-            ));
-            entities.push(entity);
-        }
-    }
+    entities.extend(
+        data.usernames
+            .iter()
+            .filter(|u| *u != query_value)
+            .map(|username| {
+                let mut entity =
+                    Entity::new(EntityKind::Username, username, confidence::MEDIUM, scan_id);
+                entity.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Exposed in breach: correlated with {}", query_value),
+                ));
+                entity
+            }),
+    );
 
     for account in &data.associated_accounts {
+        let evidence_text = account.platform.as_ref().map_or_else(
+            || "Associated account in breach data".to_string(),
+            |platform| {
+                format!(
+                    "Associated account on {} (first seen: {})",
+                    platform,
+                    account.first_seen.as_deref().unwrap_or("unknown")
+                )
+            },
+        );
+
         if let Some(email) = &account.email {
             if email != query_value {
                 let mut entity = Entity::new(EntityKind::Email, email, confidence::MEDIUM, scan_id);
-                let evidence_text = if let Some(platform) = &account.platform {
-                    format!(
-                        "Associated account on {} (first seen: {})",
-                        platform,
-                        account.first_seen.as_deref().unwrap_or("unknown")
-                    )
-                } else {
-                    "Associated account in breach data".to_string()
-                };
-                entity.add_evidence(Evidence::new(SRC, evidence_text));
+                entity.add_evidence(Evidence::new(SRC, evidence_text.clone()));
                 entities.push(entity);
             }
         }
 
         if let Some(username) = &account.username {
             if username != query_value {
-                let mut entity = Entity::new(
-                    EntityKind::Username,
-                    username,
-                    confidence::MEDIUM,
-                    scan_id,
-                );
-                let evidence_text = if let Some(platform) = &account.platform {
-                    format!(
-                        "Associated account on {} (first seen: {})",
-                        platform,
-                        account.first_seen.as_deref().unwrap_or("unknown")
-                    )
-                } else {
-                    "Associated account in breach data".to_string()
-                };
-                entity.add_evidence(Evidence::new(SRC, evidence_text));
+                let mut entity =
+                    Entity::new(EntityKind::Username, username, confidence::MEDIUM, scan_id);
+                entity.add_evidence(Evidence::new(SRC, evidence_text.clone()));
                 entities.push(entity);
             }
         }
