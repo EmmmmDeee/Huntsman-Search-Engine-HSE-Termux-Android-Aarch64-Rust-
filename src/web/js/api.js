@@ -1,10 +1,65 @@
 /* ─── API client ─── */
+
+/* Bearer token, only relevant to a networked deployment (a PaaS or LAN bind
+   where the server was started with HSE_API_TOKEN set). On the default
+   loopback install no token is configured, the server installs no auth layer,
+   nothing here ever fires, and the UI behaves exactly as before.
+
+   Stored in sessionStorage rather than localStorage so the secret dies with the
+   tab instead of persisting on a shared device. It is ALSO mirrored into a
+   cookie, because the live-scan log is an SSE stream and `EventSource` cannot
+   set an Authorization header — a cookie is the only carrier that reaches it.
+   `SameSite=Strict` keeps the cookie off cross-site requests, and the server's
+   existing X-HSE-CSRF requirement already blocks cross-site mutations. */
+const TOKEN_KEY = 'hse_api_token';
+
+function storedToken(){
+  try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; }
+}
+
+function rememberToken(t){
+  try { sessionStorage.setItem(TOKEN_KEY, t); } catch {}
+  // Mirror to a cookie for EventSource. Session cookie (no Max-Age) so it is
+  // discarded with the browser session, matching sessionStorage's lifetime.
+  try {
+    const secure = location.protocol === 'https:' ? '; Secure' : '';
+    document.cookie = `hse_token=${encodeURIComponent(t)}; Path=/; SameSite=Strict${secure}`;
+  } catch {}
+}
+
+export function clearToken(){
+  try { sessionStorage.removeItem(TOKEN_KEY); } catch {}
+  try { document.cookie = 'hse_token=; Path=/; Max-Age=0; SameSite=Strict'; } catch {}
+}
+
+/* Prompt once per 401. Returns '' if the operator dismisses, in which case the
+   original error surfaces normally rather than looping. */
+function askForToken(){
+  const t = (globalThis.prompt || (()=>null))(
+    'This Huntsman instance requires an API token.\n\n' +
+    'It was set with HSE_API_TOKEN when the server started.'
+  );
+  if (!t) return '';
+  rememberToken(t.trim());
+  return t.trim();
+}
+
 export const API = {
   async _req(path, opts){
     opts = opts || {};
     const init = {method: opts.method||'GET'};
     if (opts.body){ init.headers = {'Content-Type':'application/json'}; init.body = JSON.stringify(opts.body); }
-    const r = await fetch(path, init);
+    const tok = storedToken();
+    if (tok){ init.headers = Object.assign({}, init.headers, {'Authorization': `Bearer ${tok}`}); }
+    let r = await fetch(path, init);
+    // A 401 means this deployment is token-gated. Ask once and retry, so the
+    // operator is not left staring at an unexplained failure on every panel.
+    if (r.status === 401 && !opts._retried){
+      const fresh = askForToken();
+      if (fresh){
+        return API._req(path, Object.assign({}, opts, {_retried: true}));
+      }
+    }
     if (opts.raw) return r;
     if (!r.ok){
       let err = `HTTP ${r.status}`;

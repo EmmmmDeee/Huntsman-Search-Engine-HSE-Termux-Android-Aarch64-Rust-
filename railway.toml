@@ -1,0 +1,45 @@
+# Railway deployment config for Huntsman Search Engine.
+#
+# Termux remains the primary target; this is an additional deployment path.
+# Read docs/RAILWAY.md first — a public deployment of an OSINT store carries
+# obligations that an on-device install does not.
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "/usr/local/bin/docker-entrypoint.sh serve"
+
+# Health check hits the one route deliberately left unauthenticated, so the
+# probe needs no credential. Generous timeout: the first boot runs SQLite
+# migrations against a cold volume.
+healthcheckPath = "/api/v1/health"
+healthcheckTimeout = 120
+
+# A scan is stateful work with a live SQLite writer behind it. Restarting on
+# failure is right; restarting endlessly against a genuinely broken config
+# (a bad token, an unwritable volume) just burns credit, so the count is capped.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+
+# ── Required volume (configure in the Railway UI, it cannot be declared here) ──
+# Mount path: /data
+#   HOME=/data is set in the Dockerfile, and HSE resolves its database to
+#   $HOME/.huntsman/huntsman.db. Without this volume every redeploy silently
+#   discards all scan history — the entrypoint warns when /data is not a mount.
+#
+# ── Required environment variables ──
+#   HSE_API_TOKEN        A long random secret (`openssl rand -hex 32`).
+#                        The container REFUSES TO START on a public bind
+#                        without it — see docker-entrypoint.sh.
+#
+# ── Optional ──
+#   HUNTSMAN_OLLAMA_URL  http://<ollama-service>.railway.internal:11434
+#                        Point at a separate Ollama service to enable
+#                        `hse analyze`. Railway is CPU-only (no GPU), so keep
+#                        to small models; see docs/RAILWAY.md for measured
+#                        expectations.
+#   HUNTSMAN_OLLAMA_MODEL   e.g. qwen2.5:3b
+#   HSE_ALLOW_PUBLIC_NO_AUTH=1   Deliberately run WITHOUT auth. Only for a
+#                        throwaway instance with an empty database.
