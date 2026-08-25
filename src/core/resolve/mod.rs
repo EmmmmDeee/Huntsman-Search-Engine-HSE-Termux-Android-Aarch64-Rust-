@@ -328,44 +328,62 @@ fn canonical_phone(value: &str) -> Option<String> {
     Some(out)
 }
 
-/// Canonical form of a free-text token string — lowercase, trimmed, with
-/// internal whitespace collapsed to single spaces and surrounding punctuation
-/// stripped. The shared core of [`canonical_handle`] and [`canonical_name`].
-///
-/// Returns `None` when nothing remains after stripping (an empty or
-/// punctuation-only value), since an empty key cannot identify anything.
-fn canonical_tokens(value: &str) -> Option<String> {
-    // Lowercase, then split on any non-alphanumeric boundary so punctuation and
-    // runs of whitespace both act as separators; rejoin tokens with single
-    // spaces. This collapses "  Jane   Citizen  ", "Jane Citizen" and
-    // "Jane.Citizen" to the same "jane citizen", and strips surrounding
-    // punctuation as a side effect of dropping empty split fragments.
-    let lower = value.to_lowercase();
-    let mut canon = String::with_capacity(lower.len());
-    for tok in lower.split(|c: char| !c.is_alphanumeric()) {
-        if tok.is_empty() {
-            continue;
-        }
-        if !canon.is_empty() {
-            canon.push(' ');
-        }
-        canon.push_str(tok);
-    }
-    (!canon.is_empty()).then_some(canon)
-}
-
-/// Canonical form of a username / handle: [`canonical_tokens`] applied to the
-/// value (lowercase, trim, collapse whitespace, strip surrounding punctuation).
+/// Canonical form of a username / handle: [`canonical_word_tokens`] applied to
+/// the value (lowercase, collapse whitespace runs to single spaces, strip each
+/// token's surrounding punctuation — internal punctuation is preserved).
 ///
 /// Order is preserved for handles (unlike [`canonical_name`]): a handle is an
-/// opaque token, so its internal order is significant — only formatting noise is
-/// normalised away.
+/// opaque token, so its internal order is significant — only whitespace
+/// formatting noise is normalised away.
+///
+/// Regression: this used to route through a stricter tokeniser that treated
+/// EVERY non-alphanumeric character — `.`, `_`, `-` alike — as an equivalent
+/// separator, so `"jordan.avery"` and `"jordan_avery"` canonicalised
+/// identically and [`suggest_merges`] fused them into one full-trust `SameAs`
+/// edge via [`crate::core::relation::builders::derive_canonical_identities`].
+/// No platform actually treats those as interchangeable — GitHub handles allow
+/// only hyphens, Twitter/X only underscores, Instagram both dots and
+/// underscores as DISTINCT characters — so a separator difference is exactly
+/// the kind of "provider-specific" guess this module's own doc says it does
+/// not make (unlike Gmail dot-blindness, which IS a documented, provider-wide
+/// equivalence). Two independently-registered accounts that merely happen to
+/// share letters around a different separator are not the mechanically-exact
+/// collision this module requires; preserving the separator (like
+/// [`canonical_name`] already does for a name's internal hyphen/apostrophe)
+/// keeps that false-merge risk closed.
 fn canonical_handle(value: &str) -> Option<String> {
-    canonical_tokens(value)
+    canonical_word_tokens(value)
 }
 
-/// Canonical form of a person's name: [`canonical_tokens`] applied in NATURAL
-/// token order, after folding the comma surname-first form to natural order.
+/// Generational/professional suffix tokens that follow a comma WITHOUT making
+/// it a surname-first separator (`"Smith, Jr."`, `"Smith, PhD"`) — mirrors
+/// `modules::name_intel::permute`'s identical `GEN_SUFFIXES` list.
+/// `core` must not depend on `modules` (see this module's own doc comment), so
+/// this is a small, self-contained duplicate scoped to exactly the check
+/// [`canonical_name`] needs, not a shared import.
+const GEN_SUFFIXES: &[&str] = &[
+    "jr", "sr", "ii", "iii", "iv", "v", "vi", "esq", "phd", "md", "dds", "jd", "mba", "rn", "np",
+    "do", "psyd",
+];
+
+/// True when `segment` — the side of a comma [`canonical_name`] would
+/// otherwise treat as a given name — reduces entirely to
+/// generational/professional suffix tokens once each token's surrounding
+/// punctuation is trimmed (`"Jr."`, `"Jr"`, `"PhD"`). An empty result (nothing
+/// survives) is NOT suffix-only; that case is handled separately by the
+/// empty-string guard at the call site.
+fn is_generational_suffix_only(segment: &str) -> bool {
+    let tokens: Vec<&str> = segment.split_whitespace().collect();
+    !tokens.is_empty()
+        && tokens.iter().all(|t| {
+            let trimmed = t.trim_matches(|c: char| !c.is_alphanumeric());
+            !trimmed.is_empty() && GEN_SUFFIXES.contains(&trimmed.to_lowercase().as_str())
+        })
+}
+
+/// Canonical form of a person's name: [`canonical_word_tokens`] applied in
+/// NATURAL token order, after folding the comma surname-first form to natural
+/// order.
 ///
 /// A single comma marks the surname-first form (`"Citizen, Jane"`,
 /// `"Citizen, Jane Q"`): the pre-comma surname is moved to the end so it folds to
@@ -382,14 +400,76 @@ fn canonical_handle(value: &str) -> Option<String> {
 /// signal; without it, two orderings are two different names, and a false merge
 /// is worse than a missed one (the weaker shared-surname signal is handled
 /// elsewhere, e.g. [`crate::core::geo_family`]).
+///
+/// One more case the comma does NOT mark: a trailing generational/professional
+/// suffix (`"Smith, Jr."`, `"Smith, PhD"`) — [`is_generational_suffix_only`]
+/// excludes it, so `"John Smith, Jr."` and the equally-standard no-comma
+/// spelling `"John Smith Jr."` both canonicalise to `"john smith jr"` instead
+/// of the comma form wrongly reordering to `"jr john smith"` and permanently
+/// fragmenting one suffixed person's corroboration across two UIDs.
 fn canonical_name(value: &str) -> Option<String> {
     let reordered = match value.split_once(',') {
-        Some((surname, given)) if !surname.trim().is_empty() && !given.trim().is_empty() => {
+        Some((surname, given))
+            if !surname.trim().is_empty()
+                && !given.trim().is_empty()
+                && !is_generational_suffix_only(given) =>
+        {
             format!("{} {}", given.trim(), surname.trim())
         }
         _ => value.to_string(),
     };
-    canonical_tokens(&reordered)
+    canonical_word_tokens(&reordered)
+}
+
+/// Canonical form of a value's whitespace-delimited tokens — lowercase, with
+/// each token's SURROUNDING punctuation stripped but internal punctuation (a
+/// hyphen, an apostrophe, a dot, an underscore) preserved. Shared core of
+/// [`canonical_name`] and [`canonical_handle`].
+///
+/// Deliberately does NOT split on every non-alphanumeric character the way an
+/// earlier version of this helper did — that treated a hyphen/dot/underscore
+/// exactly like the whitespace between distinct tokens, which collapsed two
+/// meaningfully different values onto one canonical key:
+///
+/// * `"Anna Smith-Jones"` (one hyphenated compound surname, three whitespace
+///   tokens: `anna`, `smith-jones`) and `"Anna Smith Jones"` (three genuinely
+///   distinct tokens: `anna`, `smith`, `jones` — a different given/middle
+///   name, or simply a different person with an unhyphenated two-part
+///   surname) both folded to the identical key `"anna smith jones"`.
+/// * `"jordan.avery"` and `"jordan_avery"` (two independently-registered
+///   accounts on platforms that use the separator character itself to
+///   distinguish handles — GitHub hyphens-only, Twitter/X underscores-only,
+///   Instagram dots and underscores as distinct characters) both folded to
+///   `"jordan avery"`.
+///
+/// Either fuses two names/handles that are not reliably the same real-world
+/// thing into one high-trust `SameAs`/`AliasOf` edge
+/// ([`crate::core::relation::builders::derive_canonical_identities`] treats
+/// every [`suggest_merges`] group as an EXACT collision, never a fuzzy guess).
+/// A hyphen/apostrophe/dot/underscore inside a name or handle is not
+/// formatting noise the way case or a run of whitespace is — it typically
+/// joins two components into one meaningful unit (`Smith-Jones`, `O'Brien`,
+/// a platform-specific handle separator) rather than separating them, so
+/// splitting on it turns one token into two and risks exactly the collision
+/// above. Only WHITESPACE separates tokens here; non-alphanumeric characters
+/// at a token's own edges (a stray quote, a trailing comma an earlier pass
+/// missed) are still stripped, matching this module's conservative default —
+/// [when in doubt, this module suggests nothing](self) — of narrowing what
+/// merges rather than widening it.
+fn canonical_word_tokens(value: &str) -> Option<String> {
+    let lower = value.to_lowercase();
+    let mut canon = String::with_capacity(lower.len());
+    for tok in lower.split_whitespace() {
+        let trimmed = tok.trim_matches(|c: char| !c.is_alphanumeric());
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !canon.is_empty() {
+            canon.push(' ');
+        }
+        canon.push_str(trimmed);
+    }
+    (!canon.is_empty()).then_some(canon)
 }
 
 #[cfg(test)]
