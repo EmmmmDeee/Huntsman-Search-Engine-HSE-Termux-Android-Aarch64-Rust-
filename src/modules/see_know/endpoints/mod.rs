@@ -15,7 +15,7 @@
 use futures::future::join_all;
 use serde_json::Value;
 
-use crate::core::error::Result;
+use crate::core::error::{Error, Result};
 use crate::core::scan::TargetKind;
 use crate::util::see_know;
 
