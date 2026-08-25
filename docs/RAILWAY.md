@@ -66,9 +66,23 @@ Volume: mount at /data          <- REQUIRED, see below
 ```
 
 **The volume is not optional.** `HOME=/data` and HSE resolves its database to
-`$HOME/.huntsman/huntsman.db`. Without a mount at `/data`, every redeploy
-silently discards all scan history. The entrypoint warns when `/data` is not a
-mountpoint.
+`$HOME/.huntsman/huntsman.db` (verified by redirecting `HOME` and observing
+where state actually lands). Without a mount at `/data`, every redeploy silently
+discards all scan history. The entrypoint warns when `/data` is not a mountpoint.
+
+**Volume ownership is handled for you.** A platform mounts its volume root-owned,
+over the top of whatever the image prepared. A container that has already
+dropped privileges cannot then write to it — the server starts and dies trying
+to create its database. So the entrypoint runs as root just long enough to take
+ownership of `/data` (only when ownership is actually wrong), then drops to
+uid 10001 with `setpriv` before exec'ing the server. The process you end up with
+is unprivileged; nothing here runs the engine as root.
+
+**Single replica only.** The store is a local SQLite file in WAL mode on one
+attached volume. WAL allows many readers but exactly one writer, and a volume
+attaches to one instance — so do not scale this service horizontally, and note
+that `railway.toml` sets `overlapSeconds = 0` to stop a new deployment from
+briefly running alongside the old one against the same file.
 
 Environment:
 
@@ -79,6 +93,12 @@ Environment:
 | `HUNTSMAN_OLLAMA_URL` | no | Enables `hse analyze`. See below. |
 | `HUNTSMAN_OLLAMA_MODEL` | no | e.g. `qwen2.5:3b`. |
 | `HSE_ALLOW_PUBLIC_NO_AUTH` | no | Set to `1` to run open deliberately. Only for a throwaway instance with an empty database. |
+
+Build argument (recommended):
+
+| Build arg | Purpose |
+|---|---|
+| `HSE_BUILD_SHA` | Pass `$RAILWAY_GIT_COMMIT_SHA`. `build.rs` normally derives the revision from `git rev-parse HEAD`, but `.dockerignore` excludes `.git` to keep the build context at ~20 MB instead of 19 GB — so without this, `hse version` reports an unknown revision. `build.rs` documents this variable as the escape hatch "for builds from a source archive with no `.git`". |
 
 ### 2. Optional: an Ollama service for `hse analyze`
 
