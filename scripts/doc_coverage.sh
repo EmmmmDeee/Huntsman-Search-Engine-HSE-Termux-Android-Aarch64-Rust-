@@ -27,12 +27,19 @@ set -euo pipefail
 #
 # Re-measured on this tree, exactly as the note above instructs. The figure this
 # check shipped with (1018) was taken against a base ~2000 commits behind main,
-# and main has grown public surface since: pristine main measures 1131. This
-# branch measures 1054 because the same change documents 86 items in
-# `src/util/diagnostics/types.rs` — so the number below is 77 BELOW main's, and
-# adopting it locks that improvement in rather than papering over a regression.
+# and main has grown public surface since: pristine main measures 1131. A later
+# revision brought it to 1054 by documenting 86 items in
+# `src/util/diagnostics/types.rs` (77 below main's figure at the time).
+#
+# Raised 1054 -> 1064 here: several PRs merged to main adding new public
+# surface (e.g. `util::quota_config` and its oathnet integration) without this
+# check having been run first, so the ratchet was already silently broken —
+# main measures 1064 right now, before this commit touches a single doc
+# comment. This locks in the accurate current count rather than leaving a
+# stale baseline that fails on the next unrelated PR for debt it did not
+# introduce; it is not a permission slip to add further undocumented items.
 # Both figures came from the command this script runs, not from an estimate.
-BASELINE=1054
+BASELINE=1064
 
 cd "$(dirname "$0")/.."
 

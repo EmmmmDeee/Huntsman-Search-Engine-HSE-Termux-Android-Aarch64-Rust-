@@ -233,8 +233,14 @@ impl QuotaBudget {
     /// Mirrors [`scan_cap`](Self::scan_cap)'s own precedence exactly: an override
     /// or env value of `0` means "unset", not "cap at zero".
     pub fn operator_pinned_scan_cap(&self) -> bool {
+        // Same source and precedence as `scan_cap()`: the override moved from a
+        // single struct-level atomic to a per-scan `ScanState.cap_override`
+        // (keyed by `current_scan()`) when scan-scoped state replaced the old
+        // per-field atomics, and this check must read the same place `scan_cap`
+        // does or the two could disagree about whether a cap is operator-pinned.
         let scan = current_scan();
-        if self.lock().get(&scan).map_or(0, |s| s.cap_override) > 0 {
+        let override_value = self.lock().get(&scan).map_or(0, |s| s.cap_override);
+        if override_value > 0 {
             return true;
         }
         std::env::var(self.env_scan_cap_var)

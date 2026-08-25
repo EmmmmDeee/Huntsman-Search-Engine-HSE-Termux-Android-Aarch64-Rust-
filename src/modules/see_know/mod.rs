@@ -419,32 +419,29 @@ impl Module for SeekNow {
         // collapses to the slowest single endpoint instead of summing
         // every call's latency. Budget gates inside util::see_know
         // turn no-quota calls into instant empty-vec returns.
-        // First hard failure seen across the identity-pivot hops, folded into
-        // the final return below via `or_hard_failure`: kept ONLY if the seed
-        // ends up with zero entities, so a partial outage that still yielded
-        // real evidence elsewhere is never turned into an error the operator
-        // would misread as "this seed failed entirely". The endpoint matrix's
-        // OWN fail-closed signal is separate — see `seeknow_never_answered`
-        // below, which uses `dispatched`/`failed_calls` instead: a fan-out
-        // where every dispatched endpoint failed needs to surface even when
-        // pivots never ran at all (nothing to fold `or_hard_failure` against).
+        // First hard failure seen across the endpoint matrix and the pivot
+        // hops, folded into the final return below via `or_hard_failure`: kept
+        // ONLY if the seed ends up with zero entities, so a partial outage
+        // that still yielded real evidence elsewhere is never turned into an
+        // error the operator would misread as "this seed failed entirely".
         let mut hard_failure: Option<Error> = None;
 
-        // Dispatch tallies, hoisted so the fail-closed check below can see them
-        // even when the block never ran (cancelled, or no quota left) — in that
-        // case `dispatched` stays 0 and the check is inert, which is correct:
-        // nothing was asked of SeekNow, so nothing failed.
-        let mut dispatched = 0usize;
-        let mut failed_calls = 0usize;
         if !ctx.cancel.is_cancelled() && see_know::budget_remaining() {
             // effective_plan() dispatches the FULL matrix, including the
             // single-origin platform checks — the maximisation directive
             // means SeekNow's platform-specific profile depth is worth the
             // quota even where free coverage exists at presence-only depth.
             let plan = effective_plan(target.kind, v, &ctx.scan_id);
-            let endpoint_results = dispatch_plan(key, v, &plan).await;
-            dispatched = endpoint_results.len();
-            failed_calls = endpoint_results.iter().filter(|o| o.failed).count();
+            let (endpoint_results, plan_failure) = dispatch_plan(key, v, &plan).await;
+            // Dispatch tallies feed `seeknow_never_answered` just below. Declared
+            // here rather than hoisted above the `if`: nothing outside this
+            // block reads them, and when the block is skipped entirely
+            // (cancelled, or no quota left) `seeknow_never_answered` is never
+            // called at all — which is the same "inert" outcome a hoisted
+            // `dispatched == 0` would have produced, since nothing was asked
+            // of SeekNow and so nothing failed.
+            let dispatched = endpoint_results.len();
+            let failed_calls = endpoint_results.iter().filter(|o| o.failed).count();
 
             // Build the target matcher once for the whole result set — its
             // lowercase + term-split allocations are loop-invariant across
@@ -491,6 +488,22 @@ impl Module for SeekNow {
                 }
             }
 
+            // Only a TOTAL matrix outage is allowed to become a candidate hard
+            // failure — every dispatched endpoint failed AND the matrix (plus
+            // whatever the broad /search call above already gathered)
+            // contributed nothing. Gating on `seeknow_never_answered` here is
+            // load-bearing, not decorative: without it, a single endpoint's
+            // transient failure inside an 18-endpoint matrix would set
+            // `hard_failure` on its own, and if the other 17 all legitimately
+            // answered "nothing here" this seed would surface as an `Err`
+            // instead of the clean negative it actually is — exactly the
+            // false alarm `seeknow_never_answered`'s own doc says must not
+            // happen. `plan_failure` is guaranteed `Some` whenever this fires
+            // (every failed call sets it), so nothing is lost by gating here.
+            if seeknow_never_answered(dispatched, failed_calls, !result.is_empty()) {
+                hard_failure = hard_failure.or(plan_failure);
+            }
+
             // Identity-pivot pass — SeekNow's unique edge over the free
             // username stack. Discord/Steam IDs surfaced by the extractor are
             // resolved to their LINKED accounts, and because those links chain
@@ -504,23 +517,10 @@ impl Module for SeekNow {
             }
         }
 
-        // The endpoint matrix's own fail-closed gate: every dispatched call
-        // failed AND nothing was found anywhere in the final result (endpoint
-        // matrix or pivots). See `seeknow_never_answered`'s own doc for the
-        // full truth table this decides.
-        if seeknow_never_answered(dispatched, failed_calls, !result.entities.is_empty()) {
-            return Err(Error::module(
-                SRC,
-                "every dispatched SeekNow endpoint failed — rate-limited, or unreachable \
-                 after the retry policy was spent — and nothing was found; this is not \
-                 \"no breach or stealer records for this subject\"",
-            ));
-        }
-
-        // A pivot-hop hard failure must never read the same as "SeekNow
-        // legitimately found nothing" — see `ModuleResult::or_hard_failure`'s
-        // own doc for the tolerance rule this applies: any real evidence
-        // gathered above (endpoint matrix or pivots) is kept regardless.
+        // A total outage across this seed's endpoint matrix and pivot hops must
+        // never read the same as "SeekNow legitimately found nothing" — see
+        // `ModuleResult::or_hard_failure`'s own doc for the tolerance rule this
+        // applies: any real evidence gathered above is kept regardless.
         result.or_hard_failure(hard_failure)
     }
 }

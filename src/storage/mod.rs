@@ -775,19 +775,34 @@ impl Store {
                 let rowid: i64 = row.get(0)?;
                 let j: String = row.get(1)?;
                 let old_desc: String = row.get(2)?;
-                // A parse failure is NOT "this row has zero members" — those are
-                // different facts, and `unwrap_or_default()` used to conflate
-                // them. An empty set is a subset of every set, so a genuinely
-                // unparseable `entity_uids` (a truncated write, or a value from a
-                // schema that has since drifted) made every later upsert for the
-                // same (scan_id, rule_id) look like a strict superset and
-                // silently DELETE the row — even though `data_json` (the finding
-                // itself) was perfectly intact and only the supersede index was
-                // corrupt. `continue` leaves the row alone entirely: never
-                // superseded, never counted as "already represented", exactly
-                // the fail-closed default for data we cannot interpret.
-                let Ok(old_uids) = serde_json::from_str::<Vec<String>>(&j) else {
-                    continue;
+                let old_uids = match serde_json::from_str::<Vec<String>>(&j) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        // Fail closed, not open: `unwrap_or_default()` here used
+                        // to fall back to an empty Vec, and an empty set is a
+                        // SUBSET of every other set — so a row whose uid list
+                        // failed to parse (a truncated write, or a value from a
+                        // schema that has since drifted) was judged "superseded"
+                        // by the very next correlation upserted under the same
+                        // (scan_id, rule_id) and silently DELETED, even though
+                        // its `data_json` (the finding itself) was perfectly
+                        // intact. Skip it instead: it participates in neither
+                        // containment check below, so it can never be marked
+                        // superseded and never falsely satisfies the
+                        // already-represented early return. The new row is
+                        // still inserted and the two coexist rather than
+                        // dedupe — a live finding survives at the cost of a
+                        // rarer duplicate, not the reverse.
+                        tracing::warn!(
+                            scan_id = %c.scan_id,
+                            rule_id = %c.rule_id,
+                            rowid,
+                            error = %e,
+                            "correlation row's entity_uids failed to parse — \
+                             excluded from supersede comparison, not deleted"
+                        );
+                        continue;
+                    }
                 };
                 let old_set: HashSet<&str> = old_uids.iter().map(String::as_str).collect();
                 if new_set.is_subset(&old_set) {
