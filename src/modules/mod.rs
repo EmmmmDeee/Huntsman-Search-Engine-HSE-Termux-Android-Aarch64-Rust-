@@ -22,7 +22,9 @@ pub mod au_electoral;
 pub mod au_geo;
 pub mod au_people;
 pub mod au_property;
+pub mod au_rdap;
 pub mod au_unclaimed;
+pub mod auspost;
 pub mod austlii;
 pub mod beacondb;
 pub mod bgpview;
@@ -49,11 +51,14 @@ pub mod cloud_storage;
 pub mod codeberg_user;
 pub mod codewars_user;
 pub mod comb_search;
+pub mod commoncrawl;
 pub mod contact_enrich;
 pub mod cpan_user;
 pub mod crates_io;
 pub mod criminal_ip;
+pub mod crossref_search;
 pub mod crtsh;
+pub mod data_gov_au;
 pub mod dehashed;
 pub mod device_sensors;
 // Shared Termux `termux-location` fix primitives (the `Fix` shape +
@@ -77,6 +82,7 @@ pub mod email_parse;
 pub mod emailrep;
 pub mod employer_pivot;
 pub mod epieos;
+pub mod europepmc_search;
 pub mod exa_search;
 pub mod exif_geo;
 pub mod fediverse;
@@ -410,6 +416,10 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(subdomain_center::SubdomainCenter),
             Arc::new(threatfox::ThreatFox),
             Arc::new(rdap_domain::RdapDomain),
+            // AU-specific RDAP (auDA) sibling of the generic `rdap_domain`
+            // above — discloses registrant identity a generic RDAP client
+            // can't reach for a .au domain, so it dispatches right after it.
+            Arc::new(au_rdap::AuRdap),
             Arc::new(ripestat::RipeStat),
             Arc::new(search_engines::SearchEngines),
             Arc::new(webserver_banner::WebserverBanner),
@@ -464,6 +474,9 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(phone_intl::PhoneIntl),
             Arc::new(phone_au::PhoneAu),
             Arc::new(wayback::Wayback),
+            // Common Crawl's own independent web-crawl index for a domain's
+            // URLs — a separate corpus from the Wayback CDX lookup above.
+            Arc::new(commoncrawl::CommonCrawl),
             Arc::new(sitemap::Sitemap),
             Arc::new(device_sensors::DeviceSensors),
             Arc::new(cell_intel::CellIntel),
@@ -498,6 +511,9 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(wiki_geosearch::WikiGeoSearch),
             Arc::new(wikidata_geo::WikidataGeo),
             Arc::new(qld_cadastre::QldCadastre),
+            // Coordinates -> Address reverse lookup against Australia Post,
+            // alongside the other AU-specific geo sources above.
+            Arc::new(auspost::AusPost),
             Arc::new(sunrise_sunset::SunriseSunset),
             // Geolocation enrichment (passive, zero-API)
             Arc::new(geo_domain_classifier::GeoDomainClassifier),
@@ -519,8 +535,13 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(name_intel::NameIntel),
             Arc::new(social_location::SocialLocation),
             Arc::new(wikidata::Wikidata),
+            // Academic-literature search by name, two independent corpora
+            // (kept adjacent: same target kinds, same search shape).
+            Arc::new(crossref_search::CrossrefSearch),
+            Arc::new(europepmc_search::EuropePmcSearch),
             // Australian + global public-records / corporate registries
             Arc::new(opencorporates::OpenCorporates),
+            Arc::new(data_gov_au::DataGovAu),
             Arc::new(au_unclaimed::AuUnclaimed),
             Arc::new(au_people::AuPeople),
             Arc::new(asic_director::AsicDirector),
