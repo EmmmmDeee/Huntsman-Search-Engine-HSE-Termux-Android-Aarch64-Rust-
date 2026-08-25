@@ -401,7 +401,7 @@ hse serve  # Watch Live tab for events
 - **SeekNow integration:** `docs/SEEKNOW_SETUP.md`
 - **Turnstile workaround:** `docs/SEEKNOW_WEB_AUTOMATION.md`
 - **Ollama fine-tuning:** `docs/OSINT_MODEL_FINE_TUNING.md`
-- **Advanced exploitation:** `docs/ADVANCED_TECHNIQUES.md`
+- **Credential & session hygiene:** `docs/ADVANCED_TECHNIQUES.md`
 - **Architecture details:** README.md → Architecture section
 
 ---

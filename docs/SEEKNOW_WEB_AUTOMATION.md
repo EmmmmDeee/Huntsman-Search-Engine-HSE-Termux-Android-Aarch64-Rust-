@@ -16,9 +16,9 @@ Cloudflare Turnstile is a bot protection service that:
 - Requires browser automation (Playwright/Puppeteer) to solve
 - Is applied to `/api/auth/login`, `/wp-login.php`, and related endpoints
 
-### Our Findings (Exhaustive Penetration Test, 2026-08-25)
+### Our Findings (Compatibility Testing, 2026-08-25)
 
-We tested **every possible authentication method**:
+We tested the documented authentication endpoints against our own account:
 
 | Method | Endpoint | Result | HTTP Status |
 |--------|----------|--------|------------|
@@ -42,7 +42,7 @@ The only viable path forward is **one-time manual browser login, then session re
 
 1. **Open browser** and navigate to: https://see-know.ru
 2. **Solve Turnstile challenge** when prompted
-3. **Log in** with your credentials (email: matthewdiegmann@gmail.com, password: moose1991)
+3. **Log in** with your SeekNow account credentials
 4. **Verify you're logged in** (you should see your dashboard)
 
 ### Step 2: Extract Session Token
@@ -113,10 +113,9 @@ hse doctor
 1. **In-memory cache** — Check if token is already loaded
 2. **Persistent cache** — Load from `~/.huntsman/seeknow_session.txt` (manual login)
 3. **Fallback methods** — Try automated auth (will fail due to Turnstile):
-   - Hardcoded credentials from config
+   - Configured password (`HUNTSMAN_SEEKNOW_EMAIL` / `HUNTSMAN_SEEKNOW_PASSWORD`), if set
    - Passwordless email link
    - OAuth
-   - API key reverse-engineering
 4. **Final fallback** — Return clear error message with manual login instructions
 
 ### File: `src/util/see_know/web_client_advanced.rs`
@@ -228,11 +227,11 @@ The `playwright` crate (for Rust) does not have a stable, maintained version in 
 
 Once available, we could implement:
 
-1. **Turnstile bypass via Playwright** (if stable Rust crate released)
-2. **WebDriver support** (Selenium, WebSocket-based automation)
-3. **OAuth flow automation** (if SeekNow adds OAuth support)
-4. **Passwordless email extraction** (if we can integrate email polling)
+1. **OAuth flow automation** (if SeekNow adds OAuth support)
+2. **Passwordless email extraction** (if we can integrate email polling)
 
+Both remain within SeekNow's own documented, ToS-compliant login flows — the
+goal is a smoother experience for your own account, not defeating Turnstile.
 For now, **manual login + token reuse** is the most practical solution.
 
 ---

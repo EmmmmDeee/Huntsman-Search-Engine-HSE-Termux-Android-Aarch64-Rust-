@@ -17,20 +17,29 @@ use super::web_client_advanced::AdvancedWebClient;
 static WEB_CLIENT: LazyLock<Arc<Mutex<Option<AdvancedWebClient>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(None)));
 
-/// Initialize the web client with hardcoded credentials from config.
+/// Initialize the web client from environment-configured credentials
+/// (`HUNTSMAN_SEEKNOW_EMAIL` / `HUNTSMAN_SEEKNOW_PASSWORD`).
 async fn init_web_client() -> Result<()> {
+    let email = config::seeknow_email().ok_or_else(|| Error::Module {
+        module: "web_dispatcher".into(),
+        message: "HUNTSMAN_SEEKNOW_EMAIL not set; required for the SeekNow web-automation \
+                  fallback (only needed when HUNTSMAN_SEEKNOW_KEY is not configured)"
+            .into(),
+    })?;
+
+    init_web_client_with(email, config::seeknow_password()).await
+}
+
+/// Initialize the web client with explicit credentials — split out from
+/// [`init_web_client`] so tests can exercise it without touching real
+/// process environment variables.
+async fn init_web_client_with(email: String, password: Option<String>) -> Result<()> {
     let mut client = WEB_CLIENT.lock().await;
     if client.is_some() {
         return Ok(());
     }
 
-    // Create client with hardcoded email and NO initial password.
-    // The client will try all passwords from config.rs in order.
-    let web_client = AdvancedWebClient::new(
-        config::SEEKNOW_EMAIL.to_string(),
-        None, // Let the client pick passwords from config
-        "https://see-know.ru".to_string(),
-    );
+    let web_client = AdvancedWebClient::new(email, password, "https://see-know.ru".to_string());
 
     *client = Some(web_client);
     Ok(())
@@ -78,17 +87,31 @@ mod tests {
     #[tokio::test]
     async fn test_web_client_lazy_init() {
         // First call initializes.
-        assert!(init_web_client().await.is_ok());
+        assert!(
+            init_web_client_with("test@example.com".to_string(), None)
+                .await
+                .is_ok()
+        );
 
         // Second call reuses (no re-init).
-        assert!(init_web_client().await.is_ok());
+        assert!(
+            init_web_client_with("test@example.com".to_string(), None)
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
     async fn test_shutdown_web() {
-        init_web_client().await.ok();
+        init_web_client_with("test@example.com".to_string(), None)
+            .await
+            .ok();
         shutdown_web().await;
         // After shutdown, next init should re-create.
-        assert!(init_web_client().await.is_ok());
+        assert!(
+            init_web_client_with("test@example.com".to_string(), None)
+                .await
+                .is_ok()
+        );
     }
 }

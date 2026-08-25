@@ -113,30 +113,11 @@ impl AdvancedWebClient {
             return Ok(());
         }
 
-        // Method 1: Try all password fallbacks from config (hardcoded + provided).
-        let passwords = vec![
-            self.password.clone(),
-            // Hardcoded fallbacks from config.rs
-            Some("thelord123".to_string()),
-            Some("moose1991".to_string()),
-            Some("fuckthefrench123".to_string()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-
-        for (i, password) in passwords.iter().enumerate() {
-            tracing::debug!(
-                attempt = i + 1,
-                total = passwords.len(),
-                "Trying password auth"
-            );
+        // Method 1: Try the configured password, if any.
+        if let Some(password) = &self.password {
+            tracing::debug!("Trying password auth");
             if self.try_password_auth(password).await.is_ok() {
-                tracing::info!(
-                    "SeekNow: authenticated via password (attempt {}/{})",
-                    i + 1,
-                    passwords.len()
-                );
+                tracing::info!("SeekNow: authenticated via password");
                 return Ok(());
             }
         }

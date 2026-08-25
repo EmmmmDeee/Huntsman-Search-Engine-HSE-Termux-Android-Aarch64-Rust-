@@ -58,14 +58,26 @@ pub fn results_dir_is_shared_storage() -> bool {
     })
 }
 
-/// SeekNow authentication credentials (web login fallback).
-/// Priority order: tries each password until one succeeds.
-pub const SEEKNOW_EMAIL: &str = "matthewdiegmann@gmail.com";
-pub const SEEKNOW_PASSWORDS: &[&str] = &[
-    "thelord123",       // Primary password
-    "moose1991",        // Fallback 1
-    "fuckthefrench123", // Fallback 2
-];
+/// SeekNow authentication email for the web-automation fallback login path
+/// (used only when the `see_know` module's API key — `HUNTSMAN_SEEKNOW_KEY`
+/// — is not configured), read from `HUNTSMAN_SEEKNOW_EMAIL`. Never hardcode
+/// a real address here: this file is committed to source control.
+#[must_use]
+pub fn seeknow_email() -> Option<String> {
+    std::env::var("HUNTSMAN_SEEKNOW_EMAIL")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// SeekNow authentication password for the web-automation fallback login
+/// path, read from `HUNTSMAN_SEEKNOW_PASSWORD`. Never hardcode a real
+/// password here: this file is committed to source control.
+#[must_use]
+pub fn seeknow_password() -> Option<String> {
+    std::env::var("HUNTSMAN_SEEKNOW_PASSWORD")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
 
 /// Value scoring weights — the single source of truth consumed by
 /// [`crate::modules::see_know::query_optimizer`]'s `ValueScorer`.
