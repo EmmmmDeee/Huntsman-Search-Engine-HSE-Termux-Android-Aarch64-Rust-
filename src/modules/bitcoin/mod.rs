@@ -239,6 +239,8 @@ pub(super) fn build_entities(
     out
 }
 
+/// Bitcoin wallet clustering — see the module docs for the refusal rules
+/// (CoinJoin, payment outputs, coinbase inputs) that make this safe to run.
 pub struct Bitcoin;
 
 impl Bitcoin {
