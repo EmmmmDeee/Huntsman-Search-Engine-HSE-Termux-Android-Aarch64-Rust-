@@ -21,10 +21,16 @@
 
 use std::sync::Arc;
 
+use crate::api::auth;
 use crate::core::error::{Error, Result};
 use crate::util::http::build_client;
 
-pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()> {
+pub(super) async fn cmd_serve(
+    bind: String,
+    allow_key_write: bool,
+    auth_token: Option<String>,
+    allow_unauthenticated: bool,
+) -> Result<()> {
     use std::net::SocketAddr;
 
     use crate::api::{AppState, UpdateInfo, UpdatePhase, routes::router};
@@ -65,12 +71,17 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
     // value, and shutdown needs the SAME `cancellations`/`live` registries to
     // signal in-flight work to stop before the process exits.
     let state_for_shutdown = Arc::clone(&state);
-    let app = router(state, &bind);
+
+    // Resolved BEFORE the listener binds: a bad `--auth-token` (blank) must
+    // fail startup outright rather than bind a port the operator then has to
+    // notice is unauthenticated.
+    let auth_token = auth::resolve(&bind, auth_token, allow_unauthenticated)?.map(Arc::new);
+    let app = router(state, &bind, auth_token.clone());
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .map_err(|e| bind_error(&bind, &e))?;
 
-    warn_if_exposed(&bind);
+    announce_bind_posture(&bind, auth_token.as_deref());
 
     // Search-engine liveness: sweep at startup and on an interval, populating the
     // cache that backs the web liveness panel + `GET /api/v1/engines/health` and
@@ -328,17 +339,15 @@ fn normalise_bind(bind: &str) -> String {
     }
 }
 
-/// True if `bind`'s host is a loopback address (or `localhost`). Drives the
-/// LAN-exposure warning.
-fn is_loopback_bind(bind: &str) -> bool {
-    // Strip the trailing `:port`, then any IPv6 brackets, to isolate the host.
-    let host = bind.rsplit_once(':').map_or(bind, |(h, _)| h);
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    match host.parse::<std::net::IpAddr>() {
-        Ok(ip) => ip.is_loopback(),
-        Err(_) => host == "localhost",
-    }
-}
+// `is_loopback_bind` used to have a second, private copy here that drifted
+// from `api::routes::is_loopback_bind`: it split a bare `"::1"` (no port) at
+// the LAST colon, isolating host `"::"` — neither a valid IP nor
+// `"localhost"` — so it misreported the IPv6 loopback as exposed. Harmless
+// while this was warning-only text; not harmless once the same question also
+// decides whether `announce_bind_posture` treats the bind as needing a
+// credential. Deleted in favour of the one canonical, correctly-tested
+// definition, imported below.
+use crate::api::routes::is_loopback_bind;
 
 /// Warn loudly when bound to a non-loopback address: the UI and API are then
 /// reachable from the local network with no authentication on most
@@ -347,17 +356,36 @@ fn is_loopback_bind(bind: &str) -> bool {
 /// blocks key writes regardless of bind. `127.0.0.1` (the default) is the
 /// localhost-only convention, not an enforced restriction — nothing stops an
 /// operator from binding elsewhere, so this warning is the only safeguard.
-fn warn_if_exposed(bind: &str) {
-    if !is_loopback_bind(bind) {
-        tracing::warn!(
-            "bound to a NON-loopback address ({bind}) — the UI and API are reachable from the \
-             local network with NO AUTHENTICATION on most endpoints. This is not just read \
-             visibility: anyone reachable at this address can TRIGGER new scans, start live \
-             sessions (consuming your API key quota), and run radar (the device's own WiFi/ \
-             Bluetooth/cell/GPS sensor sweep) — not only view existing results. Key-writing \
-             (PUT /settings/keys) is the sole exception and always stays loopback-only \
-             regardless of this bind. Use 127.0.0.1 for the localhost-only default."
-        );
+/// Report the bind's exposure and, on a non-loopback bind, the one-time
+/// credential disclosure — replaces the old warn-only `warn_if_exposed`, now
+/// that a non-loopback bind is actually enforced (`auth::resolve`) rather than
+/// merely flagged. Key-writing (`PUT /settings/keys`) stays loopback-only
+/// regardless of this bind or `token`, unconditionally, as a second layer.
+fn announce_bind_posture(bind: &str, token: Option<&auth::AuthToken>) {
+    if is_loopback_bind(bind) {
+        return;
+    }
+    match token {
+        Some(t) => {
+            tracing::warn!(
+                "bound to a NON-loopback address ({bind}) — authentication is REQUIRED on \
+                 every request. Open this once to authorise this browser:\n\n    \
+                 http://{bind}/?t={plain}\n\nOr send 'Authorization: Bearer {plain}' from a \
+                 script. This token is shown only here — never in a log line, an API \
+                 response, or an export.",
+                plain = t.reveal()
+            );
+        }
+        None => {
+            tracing::warn!(
+                "bound to a NON-loopback address ({bind}) with --allow-unauthenticated: the UI \
+                 and API are reachable from the network with NO AUTHENTICATION. Anyone \
+                 reachable at this address can trigger scans, start live sessions (consuming \
+                 your API key quota), and run radar (the device's own WiFi/Bluetooth/cell/GPS \
+                 sensor sweep) — not just view results. Key-writing (PUT /settings/keys) is \
+                 the sole exception and always stays loopback-only."
+            );
+        }
     }
 }
 

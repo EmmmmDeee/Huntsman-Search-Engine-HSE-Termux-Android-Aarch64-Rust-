@@ -374,7 +374,11 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
 ///   allows the matching `http://<bind>` origin. Prevents arbitrary websites
 ///   from issuing cross-origin requests when the user has exposed HSE on a
 ///   non-loopback interface.
-pub fn router(state: Arc<AppState>, bind: &str) -> Router {
+pub fn router(
+    state: Arc<AppState>,
+    bind: &str,
+    auth_token: Option<Arc<super::auth::AuthToken>>,
+) -> Router {
     let cors = build_cors_layer(bind);
 
     // /api/v1 — explicit, versioned API surface. Inner fallback emits a
@@ -588,24 +592,10 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
     // anything under /api but outside /v1, again returning JSON 404
     // rather than SPA HTML. The CSRF guard wraps every `/api` request so a
     // cross-site simple-request POST to any mutating endpoint is rejected.
-    let mut api = Router::new()
+    let api = Router::new()
         .nest("/v1", api_v1)
         .fallback(api_not_found)
         .layer(axum::middleware::from_fn(enforce_csrf));
-
-    // Bearer gate, installed ONLY when a token is configured. Absent the
-    // variable the layer does not exist, so the on-device default keeps its
-    // zero-friction behaviour and there is no "auth enabled but not enforced"
-    // state to get wrong. Outermost of the /api stack: an unauthenticated
-    // request is rejected before CSRF, routing, or handler work.
-    if let Ok(token) = std::env::var(API_TOKEN_ENV)
-        && !token.is_empty()
-    {
-        api = api.layer(axum::middleware::from_fn_with_state(
-            Arc::new(token),
-            enforce_bearer_auth,
-        ));
-    }
 
     let app = Router::new()
         .nest("/api", api)
@@ -654,6 +644,20 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
                 },
             ))
         }
+        None => app,
+    };
+
+    // Bearer-token gate (`api::auth`) — installed ONLY when the caller
+    // resolved a token (a non-loopback bind, or an operator-supplied token on
+    // loopback for defence in depth; see `auth::resolve`). Outermost of the
+    // whole app, not just `/api`: it covers the static bundle and SPA shell
+    // too, so an unauthenticated request is rejected before ANY other layer
+    // — CSRF, CORS, Host allowlist, routing, or handler work — runs.
+    let app = match auth_token {
+        Some(token) => app.layer(axum::middleware::from_fn_with_state(
+            token,
+            super::auth::enforce_auth,
+        )),
         None => app,
     };
 
@@ -741,117 +745,14 @@ async fn enforce_csrf(req: axum::extract::Request, next: axum::middleware::Next)
     next.run(req).await
 }
 
-/// Environment variable holding the bearer token that gates the HTTP API.
-///
-/// Unset (the default, and the only sane one for the on-device Termux case)
-/// means no bearer check at all: on a loopback bind the OS already restricts
-/// who can connect, and requiring a token there would be friction with no
-/// security benefit.
-pub const API_TOKEN_ENV: &str = "HSE_API_TOKEN";
-
-/// Paths exempt from the bearer check.
-///
-/// Health must stay open or a platform's own health probe cannot verify the
-/// container without being handed a credential — and a deployment that fails
-/// its health check is restarted forever. Health exposes no scan data.
-const AUTH_EXEMPT_PATHS: &[&str] = &["/api/v1/health"];
-
-/// Cookie carrying the same token, for `EventSource` (SSE) which cannot send
-/// headers. Written by the SPA after the operator enters the token once.
-const AUTH_COOKIE_PREFIX: &str = "hse_token=";
-
-/// Compare two secrets without leaking their common prefix length through
-/// timing. `==` on `str`/`[u8]` short-circuits at the first differing byte,
-/// which over many requests is enough to recover a token byte by byte.
-///
-/// Length is deliberately folded into the accumulator rather than returned
-/// early, so a wrong-length guess costs the same as a right-length one.
-fn secret_eq(a: &[u8], b: &[u8]) -> bool {
-    // Fold length as a boolean, NOT as `(a.len() ^ b.len()) as u8`: that cast
-    // truncates, so a length difference of exactly 256 (or any multiple) would
-    // XOR to zero and vanish from the accumulator.
-    let mut diff = u8::from(a.len() != b.len());
-    // Walk the longer of the two so the loop count does not depend on which
-    // side is shorter. Out-of-range indices contribute a fixed sentinel.
-    let n = a.len().max(b.len());
-    for i in 0..n {
-        let x = a.get(i).copied().unwrap_or(0);
-        let y = b.get(i).copied().unwrap_or(1);
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
-/// Bearer-token gate for the whole API surface.
-///
-/// Exists because HSE's default posture — a loopback bind on a personal device
-/// — stops holding the moment it is deployed behind a public URL (a PaaS, a
-/// reverse proxy, a LAN bind). The stored graph is third-party personal data;
-/// publishing it to anyone who guesses the hostname is a materially different
-/// exposure from serving it to the phone it was collected on.
-///
-/// Fail-closed in both directions: with the variable set, a request without a
-/// valid token is rejected; with it unset the middleware is never installed at
-/// all, so there is no code path where a misread token silently allows access.
-async fn enforce_bearer_auth(
-    axum::extract::State(expected): axum::extract::State<Arc<String>>,
-    req: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> Response {
-    // `OriginalUri`, NOT `req.uri()`. This layer is installed on the `/api`
-    // router which is subsequently `nest`ed, and `nest` strips the matched
-    // prefix before inner layers see the request — so `req.uri().path()` here
-    // is `/v1/health`, not `/api/v1/health`. Matching the stripped path against
-    // a full-path constant silently exempts nothing, which fails the platform
-    // health check and restarts the container forever.
-    let path = req
-        .extensions()
-        .get::<axum::extract::OriginalUri>()
-        .map_or_else(|| req.uri().path().to_owned(), |u| u.0.path().to_owned());
-
-    if AUTH_EXEMPT_PATHS.contains(&path.as_str()) {
-        return next.run(req).await;
-    }
-
-    // Two carriers, because one of them cannot work for the whole surface:
-    // `Authorization` is the right answer for API clients, but the live-scan
-    // log is an SSE stream and `EventSource` cannot set request headers at all.
-    // A cookie rides along automatically, so the browser UI keeps working.
-    //
-    // Cookie auth would normally invite CSRF; here `enforce_csrf` already
-    // requires an `X-HSE-CSRF` header on every mutating request, and a
-    // cross-site *simple* request cannot set one. So the cookie carrier adds
-    // no new cross-site write path.
-    let presented = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(str::to_owned)
-        .or_else(|| {
-            req.headers()
-                .get(header::COOKIE)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|jar| {
-                    jar.split(';')
-                        .find_map(|c| c.trim().strip_prefix(AUTH_COOKIE_PREFIX).map(str::to_owned))
-                })
-        })
-        .unwrap_or_default();
-
-    if !secret_eq(presented.as_bytes(), expected.as_bytes()) {
-        return (
-            StatusCode::UNAUTHORIZED,
-            [
-                (header::CONTENT_TYPE, "application/json"),
-                (header::WWW_AUTHENTICATE, "Bearer"),
-            ],
-            r#"{"error":"missing or invalid bearer token"}"#,
-        )
-            .into_response();
-    }
-    next.run(req).await
-}
+// The bearer-token gate previously lived here as a route-local layer
+// (API_TOKEN_ENV / secret_eq / enforce_bearer_auth), wrapping only `/api` and
+// keyed on `HSE_API_TOKEN` being set. It is superseded by `api::auth`
+// (installed in `router()`, above): bind-conditional rather than opt-in-only
+// (so a bare `hse serve --bind 0.0.0.0` run outside a container is protected
+// too, not just the Railway/Docker entrypoint path), covering the whole app
+// rather than `/api` alone, and using a server-set `HttpOnly` cookie instead
+// of one the SPA's own JS could read. See `api::auth`'s module docs.
 
 /// Content-Security-Policy for the embedded SPA.
 ///
@@ -1085,7 +986,7 @@ fn if_none_match_hit(if_none_match: &str, etag: &str) -> bool {
 ///
 /// Anything that doesn't parse as a loopback IP — and isn't literally
 /// `localhost` — is treated as a network-exposed interface.
-fn is_loopback_bind(bind: &str) -> bool {
+pub(crate) fn is_loopback_bind(bind: &str) -> bool {
     use std::net::{IpAddr, SocketAddr};
 
     if let Ok(sa) = bind.parse::<SocketAddr>() {
@@ -1144,130 +1045,4 @@ fn build_cors_layer(bind: &str) -> CorsLayer {
 #[cfg(test)]
 mod tests {
     include!("tests.rs");
-}
-
-#[cfg(test)]
-mod bearer_auth_tests {
-    use super::*;
-
-    #[test]
-    fn secret_eq_matches_identical_secrets() {
-        assert!(secret_eq(b"correct-horse", b"correct-horse"));
-    }
-
-    #[test]
-    fn secret_eq_rejects_a_differing_byte() {
-        assert!(!secret_eq(b"correct-horse", b"correct-horsE"));
-    }
-
-    #[test]
-    fn secret_eq_rejects_a_prefix() {
-        // The classic short-circuit case: a guess that is a correct prefix must
-        // not compare equal just because every byte it *does* have matches.
-        assert!(!secret_eq(b"correct", b"correct-horse"));
-        assert!(!secret_eq(b"correct-horse", b"correct"));
-    }
-
-    #[test]
-    fn secret_eq_rejects_an_empty_guess() {
-        // A request with no credential presents an empty string; it must never
-        // satisfy a configured token.
-        assert!(!secret_eq(b"", b"a-real-token"));
-    }
-
-    #[test]
-    fn secret_eq_folds_a_length_delta_that_truncates_to_zero() {
-        // Regression: the length term was `(a.len() ^ b.len()) as u8`, which
-        // truncates. 256 ^ 0 == 256 -> 0u8, so this length difference was
-        // invisible in the accumulator and only the byte loop caught it.
-        let long = vec![b'x'; 256];
-        assert!(!secret_eq(&long, b""));
-        // ...and the mirrored case.
-        assert!(!secret_eq(b"", &long));
-    }
-
-    #[test]
-    fn secret_eq_is_order_independent() {
-        assert_eq!(secret_eq(b"abc", b"abcd"), secret_eq(b"abcd", b"abc"));
-    }
-
-    // NOTE: an earlier version of this test asserted only that
-    // `AUTH_EXEMPT_PATHS` *contains* the health string. That passed while the
-    // exemption was in fact broken — the middleware sits on the `/api` router,
-    // which is then `nest`ed, and `nest` strips the matched prefix before inner
-    // layers run, so the path being compared was `/v1/health`. A live request
-    // returned 401 for health, which on a PaaS means a failed health probe and
-    // an endless restart loop. The test below exercises the real nesting.
-
-    /// Build the same shape the production router uses: an inner router
-    /// carrying the auth layer, nested under a prefix. This is what makes the
-    /// stripped-prefix bug reproducible in a unit test.
-    fn nested_app_with_auth(token: &str) -> Router {
-        let inner = Router::new()
-            .route("/v1/health", axum::routing::get(|| async { "ok" }))
-            .route("/v1/modules", axum::routing::get(|| async { "secret" }))
-            .layer(axum::middleware::from_fn_with_state(
-                Arc::new(token.to_owned()),
-                enforce_bearer_auth,
-            ));
-        Router::new().nest("/api", inner)
-    }
-
-    async fn status_of(app: Router, uri: &str, bearer: Option<&str>) -> StatusCode {
-        use tower::ServiceExt;
-        let mut req = axum::extract::Request::builder().uri(uri);
-        if let Some(t) = bearer {
-            req = req.header(header::AUTHORIZATION, format!("Bearer {t}"));
-        }
-        app.oneshot(req.body(axum::body::Body::empty()).expect("request builds"))
-            .await
-            .expect("router responds")
-            .status()
-    }
-
-    #[tokio::test]
-    async fn health_is_exempt_through_the_nest_so_platform_probes_work() {
-        let st = status_of(nested_app_with_auth("tok"), "/api/v1/health", None).await;
-        assert_eq!(
-            st,
-            StatusCode::OK,
-            "health must be reachable without a credential even when nested; \
-             a 401 here fails the platform health check and restarts forever"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_data_route_still_requires_the_token_through_the_nest() {
-        let st = status_of(nested_app_with_auth("tok"), "/api/v1/modules", None).await;
-        assert_eq!(st, StatusCode::UNAUTHORIZED, "data routes must stay gated");
-    }
-
-    #[tokio::test]
-    async fn a_data_route_admits_the_correct_token() {
-        let st = status_of(nested_app_with_auth("tok"), "/api/v1/modules", Some("tok")).await;
-        assert_eq!(st, StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn a_prefix_of_the_token_is_rejected() {
-        let st = status_of(
-            nested_app_with_auth("tok-long"),
-            "/api/v1/modules",
-            Some("tok"),
-        )
-        .await;
-        assert_eq!(st, StatusCode::UNAUTHORIZED);
-    }
-
-    #[test]
-    fn no_scan_route_is_accidentally_exempt() {
-        // The exempt list is the whole bypass surface: anything holding scan
-        // data must not appear in it.
-        for path in AUTH_EXEMPT_PATHS {
-            assert!(
-                !path.contains("scans") && !path.contains("entities"),
-                "{path} would expose scan data without a token"
-            );
-        }
-    }
 }

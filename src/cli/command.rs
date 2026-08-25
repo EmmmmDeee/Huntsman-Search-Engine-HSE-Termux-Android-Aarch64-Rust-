@@ -562,6 +562,16 @@ pub enum Command {
         /// deployments.
         #[arg(long)]
         no_key_write: bool,
+        /// Bearer token required on every request when `--bind` is not
+        /// loopback. Omit it and HSE mints a 256-bit one and prints it once at
+        /// startup with a ready-to-open URL. Ignored on a loopback bind unless
+        /// you want defence in depth behind a reverse proxy.
+        #[arg(long, env = "HSE_AUTH_TOKEN")]
+        auth_token: Option<String>,
+        /// Expose a non-loopback bind with NO authentication. Must be typed
+        /// explicitly — there is no way to reach this state by accident.
+        #[arg(long)]
+        allow_unauthenticated: bool,
     },
     /// Manage the multi-key pool (add, list, validate, remove, status).
     Keys {

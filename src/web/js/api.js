@@ -1,16 +1,22 @@
 /* ─── API client ─── */
 
-/* Bearer token, only relevant to a networked deployment (a PaaS or LAN bind
-   where the server was started with HSE_API_TOKEN set). On the default
-   loopback install no token is configured, the server installs no auth layer,
-   nothing here ever fires, and the UI behaves exactly as before.
+/* Bearer token, only relevant to a networked deployment (a non-loopback bind,
+   where `hse serve` requires one — see `api::auth`). On the default loopback
+   install no token is enforced, nothing here ever fires, and the UI behaves
+   exactly as before.
 
-   Stored in sessionStorage rather than localStorage so the secret dies with the
-   tab instead of persisting on a shared device. It is ALSO mirrored into a
-   cookie, because the live-scan log is an SSE stream and `EventSource` cannot
-   set an Authorization header — a cookie is the only carrier that reaches it.
-   `SameSite=Strict` keeps the cookie off cross-site requests, and the server's
-   existing X-HSE-CSRF requirement already blocks cross-site mutations. */
+   The PRIMARY browser flow needs none of this: opening the `?t=<token>` URL
+   printed at startup makes the SERVER set a real `HttpOnly` session cookie
+   (`hse_auth`), which the browser then attaches automatically to every
+   same-origin request — including `EventSource`, which cannot set headers —
+   with no client-side bookkeeping at all. `sessionStorage` here is a
+   FALLBACK for a client that lands on the app without following that link
+   (a bookmark, a saved tab): it lets a 401 prompt for the token once and
+   retry via an `Authorization` header for the rest of the tab's life. It
+   cannot and does not try to write the real cookie itself — that cookie is
+   `HttpOnly` specifically so a script (including this one) can never read or
+   set it; a same-named, script-writable cookie would be a strictly weaker
+   substitute, not a mirror of the real one. */
 const TOKEN_KEY = 'hse_api_token';
 
 function storedToken(){
@@ -19,12 +25,6 @@ function storedToken(){
 
 function rememberToken(t){
   try { sessionStorage.setItem(TOKEN_KEY, t); } catch {}
-  // Mirror to a cookie for EventSource. Session cookie (no Max-Age) so it is
-  // discarded with the browser session, matching sessionStorage's lifetime.
-  try {
-    const secure = location.protocol === 'https:' ? '; Secure' : '';
-    document.cookie = `hse_token=${encodeURIComponent(t)}; Path=/; SameSite=Strict${secure}`;
-  } catch {}
 }
 
 /* Authorization headers for the call sites that cannot go through API._req:
@@ -42,15 +42,16 @@ export function authHeaders(base){
 
 export function clearToken(){
   try { sessionStorage.removeItem(TOKEN_KEY); } catch {}
-  try { document.cookie = 'hse_token=; Path=/; Max-Age=0; SameSite=Strict'; } catch {}
 }
 
 /* Prompt once per 401. Returns '' if the operator dismisses, in which case the
    original error surfaces normally rather than looping. */
 function askForToken(){
   const t = (globalThis.prompt || (()=>null))(
-    'This Huntsman instance requires an API token.\n\n' +
-    'It was set with HSE_API_TOKEN when the server started.'
+    'This Huntsman instance requires an auth token.\n\n' +
+    'It was printed at startup (or set with --auth-token / HSE_AUTH_TOKEN). ' +
+    'Opening the full URL from that startup line instead of typing it here ' +
+    'signs this browser in automatically and you will not see this prompt again.'
   );
   if (!t) return '';
   rememberToken(t.trim());

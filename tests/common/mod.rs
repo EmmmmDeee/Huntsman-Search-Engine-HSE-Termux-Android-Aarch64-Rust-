@@ -507,5 +507,9 @@ fn test_app_with_store_and_state(suffix: &str) -> (axum::Router, Arc<Store>, Arc
             huntsman_search_engine::api::CellsImportPhase::default(),
         )),
     });
-    (router(Arc::clone(&state), "127.0.0.1:8080"), store, state)
+    (
+        router(Arc::clone(&state), "127.0.0.1:8080", None),
+        store,
+        state,
+    )
 }

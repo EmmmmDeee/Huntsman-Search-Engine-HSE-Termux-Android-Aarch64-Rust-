@@ -40,7 +40,10 @@ PORT="${PORT:-8080}"
 # supported non-loopback path. Note what does and does NOT carry over: CORS is
 # bound to the origin derived from this bind, but the Host-header allowlist is
 # deliberately skipped for a non-loopback bind (see routes/mod.rs), so it is
-# NOT protecting this deployment. HSE_API_TOKEN is the control here.
+# NOT protecting this deployment. `hse serve` itself now enforces a bearer
+# token on any non-loopback bind (api::auth) — HSE_AUTH_TOKEN / --auth-token
+# is the control that supplies it explicitly, which this entrypoint requires
+# below rather than accepting the binary's own auto-minted fallback.
 export HSE_BIND="${HSE_BIND:-0.0.0.0:${PORT}}"
 
 is_public_bind() {
@@ -50,24 +53,33 @@ is_public_bind() {
     esac
 }
 
-# Fail closed. HSE's HTTP API has no authentication of its own: on a public URL
-# every scan route, and the entire stored graph of third-party personal data, is
-# readable by anyone who finds the hostname. HSE_API_TOKEN enables the bearer
-# check in front of every route except /api/v1/health.
+# Fail closed, and STRICTER than the binary's own default. `hse serve` itself
+# will happily auto-mint a token and print it to stdout if HSE_AUTH_TOKEN is
+# unset on a public bind — fine for an interactive LAN session an operator
+# reads the log of, but wrong for a platform: a redeploy mints a NEW token
+# every time, silently invalidating anything bookmarked, and stdout on a PaaS
+# is a log line, not a place an operator reliably sees before someone else
+# reaches the URL first. So this entrypoint requires the token be supplied
+# explicitly rather than accepting that fallback.
 #
 # HSE_ALLOW_PUBLIC_NO_AUTH=1 is a deliberate, explicit override for someone who
 # genuinely wants an open instance (a throwaway demo with an empty database).
 # It is not the default, and it is not silent.
-if is_public_bind && [ -z "${HSE_API_TOKEN:-}" ] && [ "${HSE_ALLOW_PUBLIC_NO_AUTH:-0}" != "1" ]; then
+HSE_EXTRA_ARGS=()
+if is_public_bind && [ "${HSE_ALLOW_PUBLIC_NO_AUTH:-0}" = "1" ]; then
+    HSE_EXTRA_ARGS+=(--allow-unauthenticated)
+elif is_public_bind && [ -z "${HSE_AUTH_TOKEN:-}" ]; then
     cat >&2 <<'REFUSAL'
 hse: refusing to start.
 
-  Bind is public but HSE_API_TOKEN is unset, which would publish an
-  unauthenticated OSINT database — including any personal data about third
-  parties that previous scans collected — to anyone who finds this URL.
+  Bind is public but HSE_AUTH_TOKEN is unset. hse serve would otherwise
+  auto-generate one and print it to this log, which is the wrong default for
+  a platform deploy: a redeploy mints a NEW token every time (silently
+  invalidating anything bookmarked), and this log is not somewhere an
+  operator reliably reads before someone else reaches the URL first.
 
   Fix (pick one):
-    - Set HSE_API_TOKEN to a long random secret (recommended):
+    - Set HSE_AUTH_TOKEN to a long random secret (recommended):
           openssl rand -hex 32
       Then send it as:  Authorization: Bearer <token>
     - Or bind loopback only:            HSE_BIND=127.0.0.1:8080
@@ -90,7 +102,7 @@ fi
 
 case "${1:-serve}" in
     serve)
-        exec hse serve --bind "${HSE_BIND}"
+        exec hse serve --bind "${HSE_BIND}" "${HSE_EXTRA_ARGS[@]}"
         ;;
     ai-daemon)
         # The background poller that analyses newly-completed scans. Runs as its

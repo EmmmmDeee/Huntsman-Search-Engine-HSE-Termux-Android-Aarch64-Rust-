@@ -19,7 +19,7 @@ Two consequences:
 
 1. **The API has no authentication of its own.** Nothing in the crate gated the
    HTTP surface before this deployment path existed, because loopback *was* the
-   gate. `HSE_API_TOKEN` adds a bearer check in front of every route except
+   gate. `HSE_AUTH_TOKEN` adds a bearer check in front of every route except
    `/api/v1/health`. The container **refuses to start** on a public bind without
    it — a warning in a deploy log nobody reads is not a control.
 
@@ -88,7 +88,7 @@ Environment:
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `HSE_API_TOKEN` | **yes** | Bearer token. `openssl rand -hex 32`. Container refuses to start on a public bind without it. |
+| `HSE_AUTH_TOKEN` | **yes** | Bearer token. `openssl rand -hex 32`. Container refuses to start on a public bind without it. |
 | `PORT` | injected | Railway sets this; the entrypoint binds `0.0.0.0:$PORT`. |
 | `HUNTSMAN_OLLAMA_URL` | no | Enables `hse analyze`. See below. |
 | `HUNTSMAN_OLLAMA_MODEL` | no | e.g. `qwen2.5:3b`. |
@@ -150,16 +150,24 @@ model is absent or unreachable.
 **API clients** send the header:
 
 ```bash
-curl -H "Authorization: Bearer $HSE_API_TOKEN" https://<app>/api/v1/scans
+curl -H "Authorization: Bearer $HSE_AUTH_TOKEN" https://<app>/api/v1/scans
 ```
 
-**The web UI** prompts for the token on its first 401 and remembers it for the
-browser session (`sessionStorage`, cleared when the tab closes). It also writes
-a `SameSite=Strict` session cookie carrying the same value, because the
-live-scan log is an SSE stream and `EventSource` cannot send an `Authorization`
-header — the cookie is the only carrier that reaches it. Cross-site abuse of
-that cookie is blocked by the pre-existing `X-HSE-CSRF` requirement on every
-mutating request.
+**The web UI, recommended:** open the URL from the deploy log once —
+`https://<app>/?t=<token>` — the server itself sets an `HttpOnly;
+SameSite=Strict` session cookie and redirects to the same page without the
+token in the address bar. Every later request in that browser, including the
+live-scan `EventSource` stream (which cannot set an `Authorization` header),
+carries the cookie automatically; nothing else to configure. Cross-site abuse
+of the cookie is blocked by the pre-existing `X-HSE-CSRF` requirement on every
+mutating request, and because it is `HttpOnly` no script on the page —
+including an injected one — can read or forge it.
+
+**A bookmarked URL with no token** still works via a client-side fallback: the
+SPA prompts once on the first 401 and remembers what you enter for the browser
+session (`sessionStorage`, cleared when the tab closes), sending it as an
+`Authorization` header on every request that goes through the app's own
+fetch helper.
 
 `/api/v1/health` stays open so Railway's health check works without a
 credential. It returns no scan data.

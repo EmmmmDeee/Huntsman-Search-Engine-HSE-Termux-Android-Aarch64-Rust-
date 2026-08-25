@@ -9,6 +9,7 @@
 //! The router is wired by the `serve` CLI adapter using the shared runtime from
 //! [`crate::app::runtime`].
 
+pub mod auth;
 pub mod cells_handlers;
 pub mod handlers;
 pub mod key_harvest_handlers;

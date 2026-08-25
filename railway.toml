@@ -60,7 +60,7 @@ restartPolicyMaxRetries = 5
 #   scan history; the entrypoint warns when /data is not a mountpoint.
 #
 # ── Required environment variables ───────────────────────────────────────────
-#   HSE_API_TOKEN        A long random secret (`openssl rand -hex 32`).
+#   HSE_AUTH_TOKEN        A long random secret (`openssl rand -hex 32`).
 #                        The container REFUSES TO START on a public bind
 #                        without it (docker-entrypoint.sh).
 #
