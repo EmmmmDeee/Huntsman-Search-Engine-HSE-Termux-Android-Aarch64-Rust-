@@ -38,6 +38,13 @@ pub mod enterprise_config;
 #[cfg(test)]
 mod tests;
 
+// Re-exported (not just `mod`-visible) so `modules::see_know::tests` — a
+// different file whose tests also call `reset_budget()` — can take the SAME
+// lock as this module's own tests. See `budget::BUDGET_TEST_LOCK`'s doc
+// comment for why one shared lock is required, not one per file.
+#[cfg(test)]
+pub(crate) use budget::BUDGET_TEST_LOCK;
+
 // Honest coverage ledger for SeekNow's documented API surface vs. what HSE
 // actually calls (see the file's own doc comment for the "previously made a
 // false comprehensive-coverage claim, now self-consistency-checked with

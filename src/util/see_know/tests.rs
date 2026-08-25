@@ -1,9 +1,9 @@
 use serde_json::json;
 
 use super::budget::{
-    budget_increment, budget_snapshot, is_key_invalid, is_quota_exhausted, release_quota_probe,
-    reset_budget, scale_scan_cap_from_daily, scan_budget_remaining, set_scan_cap_override,
-    should_probe_quota,
+    BUDGET_TEST_LOCK, budget_increment, budget_snapshot, is_key_invalid, is_quota_exhausted,
+    release_quota_probe, reset_budget, scale_scan_cap_from_daily, scan_budget_remaining,
+    set_scan_cap_override, should_probe_quota,
 };
 use super::client::{
     CLIENT, CLIENT_FAST, base_urls_for, cache_get, cache_key, cache_put, classify_status,
@@ -501,14 +501,11 @@ fn empty_results_are_never_cached_but_non_empty_are() {
     );
 }
 
-// Serialises the tests that touch the shared `BUDGET` global (scan-cap
-// override + budget counters). `cargo test` runs tests in parallel, so
-// without this they interleave `reset_budget()` / `set_scan_cap_override()`
-// and clobber each other — a real CI flake: a concurrent `reset_budget`
-// cleared an override mid-test, so `scan_cap` read the default (160)
-// instead of the value just set (80). parking_lot::Mutex never poisons if
-// a test panics while holding it.
-static BUDGET_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+// `BUDGET_TEST_LOCK` (imported above from `super::budget`) serialises the
+// tests here that touch the shared `BUDGET` global (scan-cap override +
+// budget counters) — see its doc comment for why it now lives there instead
+// of as a static private to this file: `modules::see_know::tests` touches
+// the same global and must take the same lock, not a different one.
 
 #[test]
 fn scan_budget_remaining_decreases_with_increments() {
