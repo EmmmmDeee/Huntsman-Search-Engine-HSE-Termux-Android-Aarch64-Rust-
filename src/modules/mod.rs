@@ -27,6 +27,7 @@ pub mod austlii;
 pub mod beacondb;
 pub mod bgpview;
 pub mod bitbucket_user;
+pub mod bitcoin;
 pub mod bluesky_user;
 pub mod builtwith;
 // Shared "maximum raw data" breach/stealer extractor — a `pub(crate)` HELPER
@@ -439,6 +440,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(bluesky_user::BlueskyUser),
             Arc::new(plc_directory::PlcDirectory),
             Arc::new(mastodon_user::MastodonUser),
+            Arc::new(bitcoin::Bitcoin),
             Arc::new(gitlab_user::GitlabUser),
             Arc::new(gitea_user::GiteaUser),
             Arc::new(sourceforge_user::SourceforgeUser),
