@@ -2641,6 +2641,10 @@ fn open_has_a_nonzero_busy_timeout() {
          immediately instead of waiting (got {ms}). If a rusqlite upgrade \
          dropped its default, set the pragma explicitly in Store::open."
     );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn upsert_correlation_never_deletes_a_row_whose_uid_list_will_not_parse() {
     use crate::core::correlator::{Correlation, Severity};
     let path = tmp_db();

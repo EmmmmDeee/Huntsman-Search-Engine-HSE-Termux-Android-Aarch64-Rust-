@@ -170,12 +170,12 @@ pub(crate) async fn web_search(query: &str, deadline: Instant) -> (Vec<WebResult
         coverage.queried += 1;
         match res {
             Some(results) => {
-                record_hit(name);
+                record_hit(WEBSEARCH_SCAN_ID, name);
                 coverage.answered.push(name);
                 per_engine.push(results);
             }
             None => {
-                record_empty(name);
+                record_empty(WEBSEARCH_SCAN_ID, name);
                 coverage.silent.push(name);
             }
         }
