@@ -176,6 +176,7 @@ pub mod sourceforge_user;
 pub mod stackoverflow_user;
 pub mod steam_profile;
 pub mod streaming_probe;
+pub mod stolen_tax;
 pub mod structured_id;
 pub mod subdomain_center;
 pub mod subdomain_takeover;
@@ -354,6 +355,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(hudsonrock::HudsonRock),
             Arc::new(comb_search::CombSearch),
             Arc::new(xposed_or_not::XposedOrNot),
+            Arc::new(stolen_tax::StolenTax),
             Arc::new(osintcat::OsintCat),
             Arc::new(niamonx::NiamonX),
             Arc::new(pwned_passwords::PwnedPasswords),
