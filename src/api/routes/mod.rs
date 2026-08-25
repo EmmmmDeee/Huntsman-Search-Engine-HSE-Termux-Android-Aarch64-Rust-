@@ -807,8 +807,7 @@ async fn enforce_bearer_auth(
     let path = req
         .extensions()
         .get::<axum::extract::OriginalUri>()
-        .map(|u| u.0.path().to_owned())
-        .unwrap_or_else(|| req.uri().path().to_owned());
+        .map_or_else(|| req.uri().path().to_owned(), |u| u.0.path().to_owned());
 
     if AUTH_EXEMPT_PATHS.contains(&path.as_str()) {
         return next.run(req).await;

@@ -1,0 +1,48 @@
+# Docker build context exclusions.
+#
+# Without this file the context is ~19 GB — `target/` alone is the whole local
+# build cache — and every byte is uploaded to the builder before the first
+# instruction runs. On a PaaS that is a failed or absurdly slow deploy, and the
+# cache is worthless anyway: the image compiles from scratch inside the builder
+# stage against its own pinned toolchain.
+
+# Build output — the single largest offender.
+target/
+**/target/
+
+# Version-control metadata. The build needs the sources, not the history.
+.git/
+.github/
+
+# Local state that must never be baked into an image: a key file here would be
+# readable by anyone who pulls the image.
+.env
+*.env
+!keys.env.example
+!.env.example
+.huntsman/
+*.db
+*.db-wal
+*.db-shm
+
+# Editor / OS noise.
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Android/Termux-only assets that have no role in a container build.
+.cargo/config.toml
+
+# Documentation and CI config: not needed to compile, and excluding them keeps
+# an unrelated doc edit from invalidating the Docker layer cache.
+docs/
+scripts/
+fuzz/
+
+# NOT excluded, deliberately:
+#   benches/  — Cargo.toml declares [[bench]] targets whose paths default to
+#               benches/<name>.rs. Excluding them risks a manifest resolution
+#               error for no meaningful context saving.
+#   build.rs  — required; it generates the source manifest from src/.
+#   README.md — tiny, and referenced by packaging metadata.

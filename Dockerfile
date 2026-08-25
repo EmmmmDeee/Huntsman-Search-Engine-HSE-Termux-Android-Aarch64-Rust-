@@ -13,15 +13,42 @@
 # what CI's MSRV job verifies.
 FROM rust:1.88-bookworm AS builder
 
+# build.rs derives the build SHA from `git rev-parse HEAD`, falling back to this
+# variable "for builds from a source archive with no .git" — which is exactly
+# what a Docker context is, since .dockerignore excludes .git to keep the
+# context small. Without it `hse version` reports an unknown revision, so pass
+# it from CI/Railway:  --build-arg HSE_BUILD_SHA=$RAILWAY_GIT_COMMIT_SHA
+ARG HSE_BUILD_SHA=""
+ENV HSE_BUILD_SHA=$HSE_BUILD_SHA
+
 WORKDIR /build
 
-# Dependency pre-build: copying the manifests alone lets Docker cache the whole
-# dependency graph, so an edit to src/ does not re-download and re-compile ~400
-# crates. The dummy main.rs is replaced by the real sources in the next layer.
-COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p src && echo 'fn main() {}' > src/main.rs \
-    && cargo build --release --locked --bin hse 2>/dev/null || true \
-    && rm -rf src
+# Dependency pre-build: compile the third-party graph in its own layer so an
+# edit under src/ does not re-download and re-compile ~400 crates on every
+# deploy.
+#
+# The stub tree below is not decoration — it is the minimum Cargo needs to PARSE
+# this manifest. Cargo validates every declared target at parse time, so a stub
+# is required for the lib, all three [[bin]]s, both [[bench]]s AND build.rs.
+# Verified: with only `src/main.rs`, `cargo metadata` fails with
+#   "can't find `correlation_pass` bench at `benches/correlation_pass.rs`"
+# which an earlier `|| true` here swallowed — leaving the layer a silent no-op
+# that cached nothing while appearing to work. No `|| true`: if this layer
+# cannot do its job, the build must say so.
+#
+# Building the stub *lib* is what populates the cache: Cargo compiles every
+# crate in [dependencies] for the target being built, whether or not the source
+# references it.
+COPY Cargo.toml Cargo.lock build.rs ./
+RUN mkdir -p src/bin/hse_ai_daemon src/bin/dep_cooldown benches \
+    && echo 'fn main() {}' > src/main.rs \
+    && : > src/lib.rs \
+    && echo 'fn main() {}' > src/bin/hse_ai_daemon/main.rs \
+    && echo 'fn main() {}' > src/bin/dep_cooldown/main.rs \
+    && echo 'fn main() {}' > benches/scan_throughput.rs \
+    && echo 'fn main() {}' > benches/correlation_pass.rs \
+    && cargo build --release --locked --lib \
+    && rm -rf src benches build.rs
 
 COPY . .
 
