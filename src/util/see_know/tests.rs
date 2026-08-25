@@ -2,9 +2,8 @@ use serde_json::json;
 
 use super::budget::{
     budget_increment, budget_snapshot, is_key_invalid, is_quota_exhausted, release_quota_probe,
-    reset_budget, scan_budget_remaining, set_scan_cap_override, should_probe_quota,
-    budget_increment, budget_snapshot, is_quota_exhausted, release_quota_probe, reset_budget,
-    scale_scan_cap_from_daily, scan_budget_remaining, set_scan_cap_override, should_probe_quota,
+    reset_budget, scale_scan_cap_from_daily, scan_budget_remaining, set_scan_cap_override,
+    should_probe_quota,
 };
 use super::client::{
     CLIENT, CLIENT_FAST, HARDCODED_KEY_FOR_TESTS, base_urls_for, cache_get, cache_key, cache_put,

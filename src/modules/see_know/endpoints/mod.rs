@@ -200,9 +200,9 @@ fn plan_endpoints(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
     }
 }
 
-/// Dispatch every endpoint in `plan` concurrently. Returns
-/// `(endpoint_name, items)` pairs in plan order so downstream
-/// extractors stay deterministic, plus the first hard failure observed.
+/// Dispatch every endpoint in `plan` concurrently. Returns one
+/// [`EndpointOutcome`] per call, in plan order so downstream extractors stay
+/// deterministic, plus the first hard failure observed.
 ///
 /// Budget enforcement happens inside each endpoint helper at the
 /// `util::see_know` layer — both the response cache and the
@@ -224,12 +224,23 @@ fn plan_endpoints(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
 /// a PARTIAL outage (which `or_hard_failure` deliberately tolerates, because
 /// real evidence arrived from elsewhere) is still diagnosable.
 ///
+/// Deliberately does NOT go through the shared [`super::fold_endpoint_result`]
+/// (`(&'static str, Vec<Value>)`, used by `pivots::dispatch_discord_pivots` /
+/// `dispatch_steam_pivots`): those two callers destructure a plain tuple and
+/// changing the shared function's return type would ripple into both,
+/// unrelated to this dispatcher. Each [`EndpointOutcome`] carries its own
+/// `failed` flag so a caller can tell "this endpoint legitimately found
+/// nothing" from "this endpoint's call failed" per-entry — the distinction the
+/// tuple form cannot make, and which [`seeknow_never_answered`] in the parent
+/// module depends on to count exactly how many of the dispatched calls failed.
+///
 /// [`ModuleResult::or_hard_failure`]: crate::core::module::ModuleResult::or_hard_failure
+/// [`seeknow_never_answered`]: super::seeknow_never_answered
 pub(super) async fn dispatch_plan(
     key: &str,
     value: &str,
     plan: &[EndpointCall],
-) -> (Vec<(&'static str, Vec<Value>)>, Option<Error>) {
+) -> (Vec<EndpointOutcome>, Option<Error>) {
     let futures = plan.iter().copied().map(|call| {
         let value_owned = value.to_string();
         async move { (call.label(), call.invoke(key, &value_owned).await) }
@@ -239,7 +250,29 @@ pub(super) async fn dispatch_plan(
     let out = join_all(futures)
         .await
         .into_iter()
-        .map(|(label, outcome)| super::fold_endpoint_result(label, outcome, &mut first_failure))
+        .map(|(label, outcome)| match outcome {
+            Ok(items) => EndpointOutcome {
+                label,
+                items,
+                failed: false,
+            },
+            Err(e) => {
+                // Mirrors `fold_endpoint_result`'s diagnostic exactly, so a
+                // partial outage here is just as visible in logs as one going
+                // through the shared pivot dispatchers.
+                tracing::warn!(
+                    endpoint = label,
+                    error = %e,
+                    "see_know endpoint failed — contributed nothing to this seed"
+                );
+                first_failure.get_or_insert(e);
+                EndpointOutcome {
+                    label,
+                    items: Vec::new(),
+                    failed: true,
+                }
+            }
+        })
         .collect();
     (out, first_failure)
 }
