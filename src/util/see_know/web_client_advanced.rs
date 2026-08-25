@@ -9,6 +9,7 @@
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::path::PathBuf;
 use tokio::sync::Mutex;
 
 use crate::core::error::{Error, Result};
@@ -21,6 +22,8 @@ pub struct AdvancedWebClient {
     password: Option<String>,
     /// Base URL (usually https://see-know.ru).
     base_url: String,
+    /// Path to cookie file for session persistence (manual login).
+    cookie_file: PathBuf,
     /// HTTP client (reused across calls for session persistence).
     http: Client,
     /// Cached session cookies/tokens.
@@ -48,12 +51,16 @@ impl Default for SessionState {
 }
 
 impl AdvancedWebClient {
-    /// Create a new advanced web client.
+    /// Create a new advanced web client with optional cookie file for session persistence.
     pub fn new(email: String, password: Option<String>, base_url: String) -> Self {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let cookie_file = PathBuf::from(format!("{}/.huntsman/seeknow_session.txt", home));
+
         AdvancedWebClient {
             email,
             password,
             base_url,
+            cookie_file,
             http: Client::builder()
                 .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                 .build()
@@ -62,25 +69,59 @@ impl AdvancedWebClient {
         }
     }
 
+    /// Load session token from cookie file (manual login persisted).
+    fn load_cookie_session(&self) -> Option<String> {
+        std::fs::read_to_string(&self.cookie_file).ok()
+            .and_then(|content| {
+                let lines: Vec<&str> = content.lines().collect();
+                lines.last().map(|s| s.to_string())
+            })
+    }
+
+    /// Save session token to cookie file for future reuse.
+    fn save_cookie_session(&self, token: &str) -> Result<()> {
+        if let Some(parent) = self.cookie_file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&self.cookie_file, token)
+            .map_err(|e| Error::Other(format!("Failed to save session cookie: {e}")))?;
+        Ok(())
+    }
+
     /// Authentication flow: try multiple methods in order.
-    /// 1. Check cached session (still valid?)
-    /// 2. Try hardcoded credential fallbacks (from config)
-    /// 3. Try passwordless email link
-    /// 4. Try OAuth (if supported)
+    /// 1. Check cached session (in-memory)
+    /// 2. Try loading session from cookie file (manual login persisted)
+    /// 3. Try hardcoded credential fallbacks (from config)
+    /// 4. Try passwordless email link
+    /// 5. Try OAuth (if supported)
+    /// 6. Try API key reverse-engineering
     async fn authenticate(&self) -> Result<()> {
         let session = self.session.lock().await;
 
-        // Check cached session validity.
+        // Check in-memory cached session validity.
         if let Some(_token) = &session.auth_token {
             if let Some(expires) = session.expires_at {
                 if std::time::SystemTime::now() < expires {
-                    tracing::debug!("Using cached SeekNow session");
+                    tracing::debug!("Using cached SeekNow session (in-memory)");
                     return Ok(());
                 }
             }
         }
 
         drop(session); // Release lock before auth attempts.
+
+        // Try loading session from cookie file (manual login persisted to disk).
+        if let Some(token) = self.load_cookie_session() {
+            tracing::info!("Loaded SeekNow session from cookie file");
+            let mut session = self.session.lock().await;
+            session.auth_token = Some(token);
+            session.auth_time = Some(std::time::SystemTime::now());
+            // Set a reasonable expiry (24 hours, may be longer depending on server)
+            session.expires_at = Some(
+                std::time::SystemTime::now() + std::time::Duration::from_secs(86400)
+            );
+            return Ok(());
+        }
 
         // Method 1: Try all password fallbacks from config (hardcoded + provided).
         let passwords = vec![
@@ -190,6 +231,9 @@ impl AdvancedWebClient {
                 .map_err(|e| Error::Other(format!("Parse error: {e}")))?;
 
             if let Some(token) = body.get("token").and_then(|v| v.as_str()) {
+                // Save successful token to cookie file for future reuse
+                let _ = self.save_cookie_session(token);
+
                 let mut session = self.session.lock().await;
                 session.auth_token = Some(token.to_string());
                 session.auth_time = Some(std::time::SystemTime::now());
@@ -207,7 +251,11 @@ impl AdvancedWebClient {
         // SeekNow login page returns 400 "Security check failed" due to Cloudflare
         // Turnstile bot protection on /wp-login.php. HTTP-only requests cannot solve
         // the Turnstile challenge. Requires browser (Playwright/Puppeteer) or manual login.
-        Err(Error::Module { module: "web_auth".into(), message: "Password auth failed (Turnstile challenge requires browser)".into() })
+        // User can login manually and save session cookie to ~/.huntsman/seeknow_session.txt
+        Err(Error::Module {
+            module: "web_auth".into(),
+            message: "Password auth blocked by Turnstile. Manual login required: use browser to login at https://see-know.ru, extract auth token, save to ~/.huntsman/seeknow_session.txt".into()
+        })
     }
 
     /// Attempt OAuth flow (Google, GitHub, etc.).
