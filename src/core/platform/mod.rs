@@ -135,7 +135,12 @@ mod tests {
     fn an_explicit_constrained_profile_wins() {
         // Bypasses detection entirely: true regardless of the host signals,
         // even a 64-core box with terabytes of RAM.
-        assert!(decide_constrained(Some("constrained"), false, Some(64), Some(999_999)));
+        assert!(decide_constrained(
+            Some("constrained"),
+            false,
+            Some(64),
+            Some(999_999)
+        ));
     }
 
     #[test]
@@ -163,9 +168,18 @@ mod tests {
 
     #[test]
     fn a_small_host_is_detected_as_constrained() {
-        assert!(decide_constrained(None, false, Some(1), Some(8192)), "1 vCPU");
-        assert!(decide_constrained(None, false, Some(16), Some(512)), "512 MiB");
-        assert!(decide_constrained(None, true, Some(8), Some(8192)), "termux");
+        assert!(
+            decide_constrained(None, false, Some(1), Some(8192)),
+            "1 vCPU"
+        );
+        assert!(
+            decide_constrained(None, false, Some(16), Some(512)),
+            "512 MiB"
+        );
+        assert!(
+            decide_constrained(None, true, Some(8), Some(8192)),
+            "termux"
+        );
     }
 
     #[test]
