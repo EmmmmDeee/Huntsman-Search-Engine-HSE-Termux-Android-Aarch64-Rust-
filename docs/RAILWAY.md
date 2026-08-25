@@ -126,9 +126,20 @@ credential. It returns no scan data.
 
 Handled by the existing code, not by this deployment path:
 
-- **CORS tightens automatically on a non-loopback bind** — only the matching
-  origin is allowed, instead of the permissive loopback policy.
-- **Host-header allowlist** defeats DNS rebinding.
+- **CORS is bound to the origin derived from the bind address**, in every case —
+  never `allow_origin(Any)`, on loopback or otherwise. (A stale doc comment near
+  the top of `src/api/routes/mod.rs` still describes the old permissive-loopback
+  policy; the implementation in `build_cors_layer` is the authority.)
+
+  A Railway-specific consequence: the allowlist is computed from the *bind*
+  (`0.0.0.0:$PORT`), which never equals the public hostname the browser uses. The
+  embedded SPA is served same-origin from the same binary, so it is unaffected —
+  same-origin requests do not consult CORS at all. But a **cross-origin browser
+  client on another domain will be refused**, by design. Server-side API clients
+  (curl, scripts) are unaffected: CORS is a browser control.
+- **CSRF**: every mutating `/api` request requires an `X-HSE-CSRF` header, which
+  a cross-site *simple* request cannot set. This is what makes the auth cookie
+  safe to use as a carrier.
 - **Key writes and cell-DB import require a loopback peer** regardless of the
   bind address, so a public instance cannot have API keys written into it over
   the network.
@@ -144,6 +155,13 @@ Not handled — know these before you deploy:
   can do everything, including delete scans.
 - **No audit log of API access.** Scan provenance is recorded; who called the
   API is not.
+- **The Host-header allowlist does NOT apply here.** It is deliberately
+  loopback-only — `src/api/routes/mod.rs` states it is "skipped for a
+  non-loopback bind: the operator opted into exposure and the valid Host set …
+  isn't enumerable here". It exists to defeat DNS rebinding against a
+  *loopback* install, which is not the Railway threat. On a public deployment
+  the bearer token is the control, not the Host check. Do not read the
+  on-device hardening as covering this path.
 - **The token is compared in constant time**, but it lives in the environment
   and in `sessionStorage` — treat it as a shared secret, rotate it by changing
   the variable and redeploying.
