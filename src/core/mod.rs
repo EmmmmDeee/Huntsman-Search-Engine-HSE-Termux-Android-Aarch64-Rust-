@@ -37,6 +37,7 @@ pub mod metrics;
 pub mod module;
 pub mod module_runtime;
 pub mod network;
+pub mod platform;
 pub mod path;
 pub mod pivot;
 pub mod port;
