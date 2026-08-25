@@ -25,15 +25,21 @@ set -euo pipefail
 
 # Externally-public items still missing documentation. MUST NOT increase.
 #
-# Re-measured on this tree after merging the latest main (47e520cc), exactly as
-# the note above instructs. The prior branch figure was 1062; re-merging current
-# main — which had since repaired its own see_know/budget breakage and advanced
-# its public surface — brings the measured count to 1063. The +1 is main's merged
-# surface (the ranked culprits are `api/settings_handlers`, `storage`, and
-# `api/handlers`, all main-evolved files this branch does not author), not an
-# undocumented item this branch introduced: the see_know module is now taken
-# verbatim from main, and every public item this branch adds elsewhere carries a
-# doc. The ratchet holds it at this re-measured floor so it cannot climb further.
+# Re-measured on this tree, exactly as the note above instructs. The figure this
+# check shipped with (1018) was taken against a base ~2000 commits behind main,
+# and main has grown public surface since: pristine main measures 1131. A later
+# revision brought it to 1054 by documenting 86 items in
+# `src/util/diagnostics/types.rs` (77 below main's figure at the time).
+#
+# Raised 1054 -> 1064 on main (#448): several PRs merged adding new public
+# surface (e.g. `util::quota_config` and its oathnet integration) without this
+# check having been run first, so the ratchet was already silently broken —
+# pristine main measures 1064. This branch merges that main and re-measures on
+# the combined tree: it comes to 1063, one BELOW main's floor, because the branch
+# documents public items pristine main does not (the `diagnostics::types` set and
+# the `see_know::SeekNow` struct) while adding no new undocumented surface of its
+# own — its see_know module is taken verbatim from main. Locked at the tighter
+# 1063 rather than left slack at 1064, per the ratchet's fall-never-rise rule.
 # The figure came from the command this script runs, not from an estimate.
 BASELINE=1063
 
