@@ -93,6 +93,30 @@ Environment:
 | `HUNTSMAN_OLLAMA_URL` | no | Enables `hse analyze`. See below. |
 | `HUNTSMAN_OLLAMA_MODEL` | no | e.g. `qwen2.5:3b`. |
 | `HSE_ALLOW_PUBLIC_NO_AUTH` | no | Set to `1` to run open deliberately. Only for a throwaway instance with an empty database. |
+| `HSE_RESOURCE_PROFILE` | no | `constrained` or `full`. Overrides capability detection — see below. |
+
+### Resource profile on a small instance
+
+HSE trims per-module time budgets on constrained hosts. That decision used to be
+keyed on "am I running under Termux?", which is a question about *identity*, not
+about *capacity* — so a small container (½–1 vCPU, 512 MB) was handed the full
+desktop budget despite being more constrained than a modern phone, letting a
+pathological module burn 90–120 s per target.
+
+It is now keyed on capability. Detection uses `available_parallelism()`, which
+respects the cgroup CPU quota (a 0.5-vCPU instance on a 64-core host reports the
+quota, not the machine), plus a coarse memory floor. On a Railway hobby-sized
+instance this should detect as constrained on its own.
+
+Set `HSE_RESOURCE_PROFILE` when you want to decide rather than be detected:
+
+- `constrained` — trimmed budgets. Right for small instances and for keeping
+  compute spend predictable.
+- `full` — desktop budgets. Right for a larger instance where you would rather
+  wait than lose a slow provider's results.
+
+An unrecognised value is ignored and detection runs as if it were unset, so a
+typo cannot silently pin the wrong profile.
 
 Build argument (recommended):
 
