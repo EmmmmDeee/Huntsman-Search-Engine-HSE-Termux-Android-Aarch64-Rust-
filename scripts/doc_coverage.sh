@@ -39,7 +39,7 @@ set -euo pipefail
 # stale baseline that fails on the next unrelated PR for debt it did not
 # introduce; it is not a permission slip to add further undocumented items.
 # Both figures came from the command this script runs, not from an estimate.
-BASELINE=1064
+BASELINE=1052
 
 cd "$(dirname "$0")/.."
 
