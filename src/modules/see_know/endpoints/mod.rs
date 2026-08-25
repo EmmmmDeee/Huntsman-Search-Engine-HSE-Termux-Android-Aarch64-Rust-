@@ -244,24 +244,6 @@ pub(super) async fn dispatch_plan(
     (out, first_failure)
 }
 
-/// What one dispatched endpoint actually did.
-///
-/// Carrying `failed` alongside the rows is the whole point: `.unwrap_or_default()`
-/// used to collapse a throttled or unreachable endpoint into the same empty
-/// vector a genuinely-empty answer produces, so an 18-endpoint fan-out could be
-/// blanked by a rate-limit burst and still be recorded as a clean, successful
-/// scan that simply found nothing. The upstream layer takes care to distinguish
-/// `RateLimited` from exhausted credits; that classification was being discarded
-/// at this one boundary.
-pub(super) struct EndpointOutcome {
-    /// The endpoint's short label, as used in evidence and tracing.
-    pub(super) label: &'static str,
-    /// The rows it returned. Empty when it failed.
-    pub(super) items: Vec<Value>,
-    /// True when the call itself failed, as opposed to answering with nothing.
-    pub(super) failed: bool,
-}
-
 /// Enum of SeekNow endpoints the module can target. Centralising them
 /// here makes the per-target dispatch plan trivially extensible — to
 /// wire up a new endpoint, add a variant + a match arm in
