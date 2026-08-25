@@ -775,7 +775,19 @@ impl Store {
                 let rowid: i64 = row.get(0)?;
                 let j: String = row.get(1)?;
                 let old_desc: String = row.get(2)?;
-                let old_uids = serde_json::from_str::<Vec<String>>(&j).unwrap_or_default();
+                // A stored uid list that will not parse (a truncated write, or a
+                // value left by a schema that has since drifted) must NEVER drive a
+                // supersede decision. `unwrap_or_default()` here would yield an
+                // empty set, and the empty set is a subset of every `new_set`, so
+                // the corrupt row would be deleted as "superseded" on the very next
+                // upsert of this (scan, rule) — silently dropping a finding whose
+                // `data_json` is still perfectly readable. Skip it: leave it in
+                // place, and do not let it mark the new row already-represented.
+                // A legitimately empty list serialises as `[]` and still parses to
+                // `Ok(vec![])`, so this only excludes genuinely-unparseable rows.
+                let Ok(old_uids) = serde_json::from_str::<Vec<String>>(&j) else {
+                    continue;
+                };
                 let old_set: HashSet<&str> = old_uids.iter().map(String::as_str).collect();
                 if new_set.is_subset(&old_set) {
                     // EQUAL sets whose description changed are the capped-sample
