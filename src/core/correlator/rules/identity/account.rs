@@ -54,12 +54,33 @@ pub(in crate::core::correlator) fn rule_au_011_cross_platform_username(
             let mut max_count: u64 = 0;
             let mut best_list: Option<&str> = None;
             for ev in &e.evidence {
-                let count = ev
+                let raw_count = ev
                     .attributes
                     .get("platforms_count")
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(0);
-                let list = ev.attributes.get("platforms").map(String::as_str);
+                // `platforms_count`/`platforms` count EVERY hit a sweep module
+                // found, including status-only HTTP-code guesses with no body
+                // verification (see AU-055's doc comment below for a real scan
+                // where nearly every "hit" was exactly this). When the same
+                // evidence record also carries `hits_verified` (username_search's
+                // aggregate summary does), trust that count instead — it excludes
+                // the unverified guesses that would otherwise fabricate a false
+                // "confirmed on N platforms" claim. The specific platform NAMES
+                // can't be split by verification status from `platforms` (one
+                // joined string), so a verified-count record contributes no name
+                // list: a smaller, honest claim beats a detailed, fabricated one.
+                let verified = ev
+                    .attributes
+                    .get("hits_verified")
+                    .and_then(|s| s.parse::<u64>().ok());
+                let (count, list) = match verified {
+                    Some(v) => (v, None),
+                    None => (
+                        raw_count,
+                        ev.attributes.get("platforms").map(String::as_str),
+                    ),
+                };
                 if count > max_count {
                     max_count = count;
                     best_list = list;
@@ -339,6 +360,24 @@ pub(in crate::core::correlator) fn rule_au_034_handle_reuse_identity(
     out
 }
 
+/// A discovery source CONFIRMS a handle only when it actually DETECTED it, not
+/// when it merely guessed from a bare HTTP status. `social_probe`/`username_search`
+/// tag a status guess `detection: status-only`; `username_search`'s aggregate
+/// summary entity instead carries `hits_verified`/`hits_status_only`, so an
+/// all-guess summary (`hits_verified == 0`) is NOT a confirmation. Shared by
+/// AU-035 and AU-077 — both merge a derivation source with a discovery source
+/// on the same entity, so both need the identical status-only discount (mirrors
+/// AU-045/AU-003/AU-055).
+fn is_verified_discovery(ev: &crate::core::entity::Evidence) -> bool {
+    USERNAME_DISCOVERY_SOURCES.contains(&ev.source.as_str())
+        && ev.attributes.get("detection").map(String::as_str) != Some("status-only")
+        && ev
+            .attributes
+            .get("hits_verified")
+            .and_then(|v| v.parse::<u32>().ok())
+            .is_none_or(|n| n > 0)
+}
+
 /// AU-035 — Inferred handle confirmed in the wild.
 ///
 /// A `Username` that was first *derived* by inference (a name permutation from
@@ -365,16 +404,25 @@ pub(in crate::core::correlator) fn rule_au_035_confirmed_derived_handle(
             .copied()
             .filter(|s| USERNAME_DERIVATION_SOURCES.contains(s))
             .collect();
-        let mut confirmed_by: Vec<&str> = sources
+        // Membership in USERNAME_DISCOVERY_SOURCES alone isn't confirmation — a
+        // status-only guess (no body verification) is not independent proof the
+        // handle is real. Filter to evidence records that pass the same
+        // verified-discovery discount AU-077 applies for the identical
+        // derived+discovered merge on this same entity kind. Collected via
+        // BTreeSet (not Vec+sort) so a source with multiple qualifying evidence
+        // records lists once, not once per record.
+        let confirmed_by: Vec<&str> = e
+            .evidence
             .iter()
-            .copied()
-            .filter(|s| USERNAME_DISCOVERY_SOURCES.contains(s))
+            .filter(|ev| is_verified_discovery(ev))
+            .map(|ev| ev.source.as_str())
+            .collect::<std::collections::BTreeSet<&str>>()
+            .into_iter()
             .collect();
         if inferred_by.is_empty() || confirmed_by.is_empty() {
             continue;
         }
         inferred_by.sort_unstable();
-        confirmed_by.sort_unstable();
         out.push(Correlation::new(
             "AU-035",
             "Inferred handle confirmed in the wild",
@@ -943,23 +991,10 @@ pub(in crate::core::correlator) fn rule_au_077_name_derived_username_confirmed(
     ts: u64,
 ) -> Vec<Correlation> {
     let entities = context.entities();
-    // A discovery source CONFIRMS the handle only when it actually DETECTED it, not
-    // when it merely guessed from a bare HTTP status. `social_probe`/`username_search`
-    // tag a status guess `detection: status-only`; `username_search`'s aggregate
-    // summary entity instead carries `hits_verified`/`hits_status_only`, so an
-    // all-guess summary (`hits_verified == 0`) is NOT a confirmation — and because it
-    // merges by value with a `name_intel`-derived handle, counting it fired a false
-    // High "prediction confirmed" on two stacked guesses with zero verified hits.
-    // Mirror the status-only discount AU-045/AU-003/AU-055 already apply.
-    fn is_verified_discovery(ev: &crate::core::entity::Evidence) -> bool {
-        USERNAME_DISCOVERY_SOURCES.contains(&ev.source.as_str())
-            && ev.attributes.get("detection").map(String::as_str) != Some("status-only")
-            && ev
-                .attributes
-                .get("hits_verified")
-                .and_then(|v| v.parse::<u32>().ok())
-                .is_none_or(|n| n > 0)
-    }
+    // Uses the shared `is_verified_discovery` (above AU-035) — because it merges
+    // by value with a `name_intel`-derived handle, an unguarded discovery-source
+    // membership check fired a false High "prediction confirmed" on two stacked
+    // guesses with zero verified hits.
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::Username)

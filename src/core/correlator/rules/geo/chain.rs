@@ -164,7 +164,17 @@ pub(in crate::core::correlator) fn rule_au_026_validated_address(
     let mut out = Vec::new();
     for e in entities_of_kind(entities, EntityKind::Address)
         .into_iter()
-        .filter(|e| e.confidence >= 0.50)
+        // GEO_SOURCES already excludes IP-geo sources (see above), but that
+        // only screens which SOURCE validated the address — it says nothing
+        // about whether the Address entity ITSELF is a registrant/hosting
+        // address rather than the subject's own. `opencorporates`/`gleif_lei`
+        // (both in GEO_SOURCES) routinely emit exactly that: a company's
+        // registered address, tagged REGISTRANT/HOSTING elsewhere in this
+        // crate. Without this guard, two such sources on one registrant
+        // address "validate" a business address as the subject's own —
+        // the same infra-votes-identity defect AU-030 (below, same file) and
+        // AU-018/AU-056/AU-085 (siblings) already exclude.
+        .filter(|e| e.confidence >= 0.50 && !is_infrastructure_geo(e))
     {
         let sources = tagged_matching_sources(e, GEO_SOURCES);
         if sources.len() >= 2 {
