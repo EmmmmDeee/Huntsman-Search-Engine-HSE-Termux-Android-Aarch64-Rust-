@@ -83,6 +83,14 @@ so keys never leave the device).
 > That's the whole install: **one command, then `hse serve`, then open
 > `http://127.0.0.1:8080` in Chrome.** Everything below is reference detail.
 
+> **On Termux aarch64 the installer also sets up on-device AI.** It installs
+> Ollama from the official Termux package, pulls a Qwen model sized to the
+> device's RAM, and arms `hse analyze` — so a scan can be summarised on the
+> phone with nothing leaving it. Opt out with `HSE_WITH_AI=0`; see
+> [AI-Daemon Scan Analysis](#ai-daemon-scan-analysis-opt-in). No 32-bit `arm`
+> ollama package exists, so armv7 devices skip this step with a message and
+> everything else works unchanged.
+
 > **Web & API scans are as thorough as the CLI.** A scan launched from the
 > Chrome SPA's **New Scan** wizard, or via `POST /api/v1/scans` with `options`
 > omitted, uses the same comprehensive defaults as `hse scan` — full depth,
@@ -169,6 +177,8 @@ hse doctor                                                  # verify environment
 hse modules                                                 # list all 174 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
+hse keys status                                             # multi-key pool: what's loaded, per source
+hse-ai status                                               # local model server (Termux aarch64)
 hse query "melbourne coworking spaces"                      # general web search across the free engines
 hse query "acme.example" --dark                             # dark-web EXPOSURE: onion pages mentioning an asset
 hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
@@ -429,20 +439,82 @@ correlation scores, or exports, and does nothing at all unless both armed and
 Ollama is actually reachable — an unreachable/misconfigured Ollama is a clear
 error, never a silent no-op.
 
+### Installed for you on Termux aarch64
+
+`install.sh` now sets this up end to end: it installs Ollama from the official
+Termux package (`pkg install ollama` — an **aarch64-only** package; there is no
+32-bit `arm` build), picks a model sized to the device's RAM, pulls it, and
+arms `feature.ai_daemon`. Nothing leaves the phone.
+
+| Device RAM | Model pulled | On-disk |
+|---|---|---|
+| ≥ 7.5 GB | `qwen2.5:7b` | ~5.2 GB |
+| ≥ 4.5 GB | `qwen2.5:3b` | ~2.2 GB |
+| ≥ 2.8 GB | `qwen2.5:1.5b` | ~1.2 GB |
+| below that | *skipped, with a message* | — |
+
+Sizing is deliberate: a model too large for the device does not merely run
+slowly, it gets killed by Android's low-memory killer, which looks to you like
+Ollama randomly dying. Override with `HSE_AI_MODEL=…`, or opt out entirely with
+`HSE_WITH_AI=0`.
+
 ```bash
-# 1. Install and start Ollama separately (not installed by HSE), then pull a model:
-ollama pull qwen2.5:7b
+hse-ai status          # is the model server up? which model?
+hse-ai start           # start it, holding the same wake-lock as hse-bg
+hse-ai pull qwen2.5:3b # fetch a different model
+hse-ai stop            # free the RAM
 
-# 2. Arm the feature (off by default):
-hse config feature.ai_daemon on
+hse scan -k name -v "Jane Roe"
+hse analyze --scan-id latest        # model comes from ~/.huntsman.env
+```
 
-# 3a. One-shot, on-demand analysis of a stored scan:
+`hse-ai` shares the refcounted wake-lock with `hse-bg`, because Android kills
+the model server the moment the screen turns off and a half-killed server is
+indistinguishable from a hung one.
+
+### Manual setup (other platforms)
+
+```bash
+ollama pull qwen2.5:7b              # install Ollama yourself
+hse config feature.ai_daemon on     # arm the feature (off by default)
 hse analyze --scan-id latest --model qwen2.5:7b
 
-# 3b. Or run the background poller, which analyzes newly-completed scans on an
-#     interval (HUNTSMAN_AI_POLL_INTERVAL_SECS, default 60s, floor 15s):
+# Or the background poller, which analyzes newly-completed scans on an
+# interval (HUNTSMAN_AI_POLL_INTERVAL_SECS, default 60s, floor 15s):
 HUNTSMAN_OLLAMA_MODEL=qwen2.5:7b hse-ai-daemon
 ```
+
+### What the model is and is not allowed to assert
+
+A local model is a fallible narrator, so its output is checked rather than
+trusted:
+
+- **Every finding must cite the entities it rests on.** Citations are resolved
+  against the scan's actual entities; a finding citing anything that does not
+  resolve is discarded whole — a claim citing one real and one invented entity
+  is not partly true. If a model returns findings and *none* ground, that is a
+  surfaced error, never a silently empty "clean scan".
+- **Severity is capped by the evidence under it.** A finding can never be
+  scored more severe than its strongest cited entity is confident. This can
+  only lower a score.
+- **Identity expansion defaults to exclusion.** Before a discovered username or
+  email is expanded as "also the subject", it is triaged; only an affirmative,
+  grounded, high-confidence verdict earns expansion. A wrong exclusion costs
+  one lead — a wrong inclusion spends a scan round collecting an uninvolved
+  person's data.
+- **What can be decided exactly is never asked of a model.** An entity whose
+  value matches the subject's own name is settled by string comparison.
+
+This matters concretely: probed before these checks existed, a well-formed
+model response asserting a home address and a cleartext credential — neither
+present anywhere in the scan — parsed cleanly and would have been stored as
+critical exposure. For people-centric OSINT the subject is a real person, so a
+fabricated address is a physical-safety claim.
+
+> **Scope note.** These checks were validated against `qwen2.5:3b` on x86_64.
+> The Termux/Android path is wired up but has not been run on-device here; a
+> 3B model was also observed making poor identity judgements, which is why the
+> most important case is decided without a model at all.
 
 `HUNTSMAN_OLLAMA_URL` (default `http://127.0.0.1:11434`) and
 `HUNTSMAN_OLLAMA_TIMEOUT_MS` (default 120000, floor 1000) tune both entry
@@ -450,7 +522,7 @@ points. See `src/ai/` for the implementation and `src/lib.rs`'s `Runtime
 AI-independence` invariant for why this layer exists as a narrow, isolated
 exception rather than a change to the deterministic core.
 
-Skipping step 2 or omitting a model produces a clear startup error
+Skipping the arming step or omitting a model produces a clear startup error
 (`feature.ai_daemon is off` / `no Ollama model configured`), never a silent
 no-op — and `hse doctor` reports both preconditions (armed? model reachable
 and pulled?) in one place before you run either entry point for the first
