@@ -204,7 +204,10 @@ impl AdvancedWebClient {
             }
         }
 
-        Err(Error::Module { module: "web_auth".into(), message: "Password auth failed".into() })
+        // SeekNow login page returns 400 "Security check failed" due to Cloudflare
+        // Turnstile bot protection on /wp-login.php. HTTP-only requests cannot solve
+        // the Turnstile challenge. Requires browser (Playwright/Puppeteer) or manual login.
+        Err(Error::Module { module: "web_auth".into(), message: "Password auth failed (Turnstile challenge requires browser)".into() })
     }
 
     /// Attempt OAuth flow (Google, GitHub, etc.).
