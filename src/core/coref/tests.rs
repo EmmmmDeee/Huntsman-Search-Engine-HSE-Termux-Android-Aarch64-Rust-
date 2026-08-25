@@ -31,6 +31,26 @@ fn name_tokens_inside_a_handle_link_a_person() {
     assert!(out[0].score >= 0.62);
 }
 
+/// Regression: two 2-char name tokens ("vy", "le" — routine for short
+/// Vietnamese/Chinese given/surnames) used to satisfy the name-token tier's
+/// old ≥2-char floor by being nothing more than the literal decomposition of
+/// an unrelated handle's own letter run ("le" + "vy" tiling "levy" inside
+/// "levy2024"), asserting a co-reference between an unrelated Person and
+/// Username with zero corroborating evidence. The tier's per-token floor is
+/// now 3 characters, so this specific pair no longer fires name-token-match;
+/// with no other signal either, the pair emits no coreference at all.
+#[test]
+fn short_two_char_name_tokens_do_not_falsely_link_an_unrelated_handle() {
+    let person = Entity::new(EntityKind::Person, "Vy Le", 0.7, "s");
+    let user = Entity::new(EntityKind::Username, "levy2024", 0.7, "s");
+    let out = resolve_coreferences(&[person, user], DEFAULT_MIN_SCORE, 50);
+    assert!(
+        out.is_empty(),
+        "an unrelated person and handle must not co-refer on 2-char token \
+         coincidence alone: {out:?}"
+    );
+}
+
 /// A single shared first-name token must NOT, alone, link two people — the
 /// name-token tier needs ≥2 tokens, so namesakes don't fuse.
 #[test]
