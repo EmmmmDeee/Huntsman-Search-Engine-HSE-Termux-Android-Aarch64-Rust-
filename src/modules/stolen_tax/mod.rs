@@ -20,6 +20,7 @@ use crate::core::{
 const SRC: &str = "stolen_tax";
 const API_BASE: &str = "https://api.stolen.tax/api/v1/search";
 
+/// The Stolen.tax [`Module`] marker type — see the module-level docs above.
 pub struct StolenTax;
 
 #[derive(Debug, Deserialize)]
@@ -84,24 +85,30 @@ impl Module for StolenTax {
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,
-            TargetKind::Email | TargetKind::Username | TargetKind::Domain | TargetKind::Organisation
+            TargetKind::Email
+                | TargetKind::Username
+                | TargetKind::Domain
+                | TargetKind::Organisation
         )
     }
 
     fn category(&self) -> ModuleCategory {
-        ModuleCategory::Infrastructure
-    }
-
-    fn attack_techniques(&self) -> &'static [&'static str] {
-        &["T1589.001", "T1589.002", "T1589.003", "T1596.004", "T1598.003"]
+        // Breach corpora, same as hibp/dehashed/niamonx/osintcat — the default
+        // Breach technique mapping (T1589.001 Credentials + T1589.002 Email
+        // Addresses) already covers what this module collects, so no
+        // `attack_techniques()` override is needed.
+        ModuleCategory::Breach
     }
 
     fn produces(&self) -> &'static [EntityKind] {
+        // Only what `build_entities` actually constructs: correlated emails,
+        // usernames, and a Credential marker per named breach. `accepts()`
+        // also takes Domain/Organisation as query selectors (the API can
+        // search by them), but the entities returned are always these three
+        // kinds, never a Domain/Organisation entity itself.
         const KINDS: &[EntityKind] = &[
             EntityKind::Email,
             EntityKind::Username,
-            EntityKind::Domain,
-            EntityKind::Organisation,
             EntityKind::Credential,
         ];
         KINDS
@@ -151,22 +158,21 @@ impl Module for StolenTax {
     }
 }
 
-fn build_entities(
-    data: &StolenTaxData,
-    query_value: &str,
-    scan_id: &str,
-) -> Vec<Entity> {
+fn build_entities(data: &StolenTaxData, query_value: &str, scan_id: &str) -> Vec<Entity> {
     let mut entities = Vec::new();
 
     entities.extend(
-        data.emails.iter().filter(|e| *e != query_value).map(|email| {
-            let mut entity = Entity::new(EntityKind::Email, email, confidence::MEDIUM, scan_id);
-            entity.add_evidence(Evidence::new(
-                SRC,
-                format!("Exposed in breach: correlated with {query_value}"),
-            ));
-            entity
-        }),
+        data.emails
+            .iter()
+            .filter(|e| *e != query_value)
+            .map(|email| {
+                let mut entity = Entity::new(EntityKind::Email, email, confidence::MEDIUM, scan_id);
+                entity.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Exposed in breach: correlated with {query_value}"),
+                ));
+                entity
+            }),
     );
 
     entities.extend(
