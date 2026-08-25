@@ -426,12 +426,6 @@ impl Module for SeekNow {
         // error the operator would misread as "this seed failed entirely".
         let mut hard_failure: Option<Error> = None;
 
-        // Dispatch tallies, hoisted so the fail-closed check below can see them
-        // even when the block never ran (cancelled, or no quota left) — in that
-        // case `dispatched` stays 0 and the check is inert, which is correct:
-        // nothing was asked of SeekNow, so nothing failed.
-        let mut dispatched = 0usize;
-        let mut failed_calls = 0usize;
         if !ctx.cancel.is_cancelled() && see_know::budget_remaining() {
             // effective_plan() dispatches the FULL matrix, including the
             // single-origin platform checks — the maximisation directive
@@ -440,16 +434,13 @@ impl Module for SeekNow {
             let plan = effective_plan(target.kind, v, &ctx.scan_id);
             let (endpoint_results, plan_failure) = dispatch_plan(key, v, &plan).await;
             hard_failure = hard_failure.or(plan_failure);
-            let endpoint_results = dispatch_plan(key, v, &plan).await;
-            dispatched = endpoint_results.len();
-            failed_calls = endpoint_results.iter().filter(|o| o.failed).count();
 
             // Build the target matcher once for the whole result set — its
             // lowercase + term-split allocations are loop-invariant across
             // every record of every endpoint, so they must not repeat per row.
             let match_ctx = TargetMatch::new(v);
-            for outcome in &endpoint_results {
-                let (endpoint, items) = (outcome.label, &outcome.items);
+            for (endpoint, items) in &endpoint_results {
+                let endpoint = *endpoint;
                 // Per-endpoint yield tracing: surfaces which endpoints return
                 // data for which target kinds in live logs, supporting the
                 // operator's directive to identify advantageous SeekNow usage.
@@ -508,31 +499,6 @@ impl Module for SeekNow {
         // applies: any real evidence gathered above is kept regardless.
         result.or_hard_failure(hard_failure)
     }
-}
-
-/// Whether this scan's SeekNow fan-out should surface as a real
-/// [`Error::module`] rather than its ordinary empty success.
-///
-/// True precisely when every endpoint that was dispatched failed AND nothing was
-/// found. A fan-out where some endpoints answered — even if every one of them
-/// answered with nothing — is a genuine negative about the subject and must stay
-/// an `Ok`; only "SeekNow never actually answered this scan" is a failure. A plan
-/// that dispatched nothing at all (cancelled, or out of quota) is likewise not a
-/// failure, so `dispatched == 0` is false here.
-///
-/// Partial degradation is deliberately NOT an error: with an 18-endpoint matrix a
-/// single throttled endpoint alongside seventeen good answers is still useful
-/// intelligence. It is not silent either — [`dispatch_plan`] logs a warning per
-/// failed call, so a rate-limit burst is visible in the operator's log even when
-/// this returns false.
-///
-/// Mirrors [`crate::modules::asic_director`]'s `request_failed` and
-/// `au_property`'s `all_legs_unreachable` for the multi-call case. Pure and free
-/// of `ModuleContext`/network, so it is unit-testable without a live server or an
-/// API key — see `tests::seeknow_never_answered_*`.
-#[must_use]
-fn seeknow_never_answered(dispatched: usize, failed_calls: usize, found_any_entity: bool) -> bool {
-    dispatched > 0 && failed_calls == dispatched && !found_any_entity
 }
 
 /// Fold a non-empty universal-search result set (from either the fast
