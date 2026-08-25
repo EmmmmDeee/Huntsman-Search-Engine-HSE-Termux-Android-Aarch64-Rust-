@@ -198,6 +198,17 @@ const INFRA_DOMAINS: &[&str] = &[
     "googledomains.com", // Google Cloud DNS nameservers (ns-cloud-*.googledomains.com)
     "cloudns.net",       // ClouDNS managed DNS
     "dnsimple.com",      // DNSimple managed DNS
+    // VPS/cloud hosts' own default nameservers — as common in the wild as the
+    // managed-DNS providers above, and the same "provider's estate, not the
+    // subject" case. Mirrors `util::domains::INFRA_MAIL`, which already lists
+    // these (that list's own doc comment says it mirrors this one's intent —
+    // these six had drifted out of this one).
+    "digitalocean.com", // ns1-3.digitalocean.com
+    "linode.com",       // ns1-5.linode.com
+    "hetzner.com",      // hydrogen.ns.hetzner.com, oxygen.ns.hetzner.com
+    "hetzner.de",       // helium.ns.hetzner.de
+    "ovh.net",          // dns100.ovh.net, ns100.ovh.net
+    "ovh.com",
     // Registrar / hosting control-plane
     "secureserver.net",
     "domaincontrol.com",

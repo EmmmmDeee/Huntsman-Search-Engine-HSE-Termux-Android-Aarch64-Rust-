@@ -403,6 +403,16 @@ fn is_infra_domain_matches_shared_providers() {
         "ns2-09.azure-dns.net",
         "ns-cloud-a1.googledomains.com",
         "ns1.cloudns.net",
+        // VPS/cloud hosts' own default nameservers (the exact shape a
+        // domain-scan's own NS lookup surfaces for a subject hosted there —
+        // this flooded `web_crawler` with a bare `ns1.digitalocean.com`
+        // crawl target in a real scan before these were added).
+        "ns1.digitalocean.com",
+        "ns3.digitalocean.com",
+        "ns1.linode.com",
+        "hydrogen.ns.hetzner.com",
+        "helium.ns.hetzner.de",
+        "ns100.ovh.net",
         "myapp.azureedge.net",
         "myservice.cloudapp.net",
         "django-env.elasticbeanstalk.com",
