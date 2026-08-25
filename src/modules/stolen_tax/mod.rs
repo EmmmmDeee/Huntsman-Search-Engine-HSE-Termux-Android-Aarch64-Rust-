@@ -74,6 +74,14 @@ impl Module for StolenTax {
         ModuleCost::KeyGated
     }
 
+    fn cache_ttl_secs(&self) -> u64 {
+        // Breach/credential records are immutable once indexed — a repeat scan
+        // of an already-queried identifier replays the cached result for FREE
+        // within the window instead of re-spending a paid lookup, matching the
+        // dehashed/see_know/oathnet_pro/intelx paid-breach-module convention.
+        86_400
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,
@@ -275,7 +283,6 @@ mod tests {
     fn test_build_entities_deduplication() {
         let data = StolenTaxData {
             breaches: None,
-            exposures: None,
             emails: vec!["user@example.com".to_string()],
             usernames: vec!["testuser".to_string()],
             associated_accounts: vec![],
