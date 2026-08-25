@@ -20,7 +20,7 @@ pub struct AdvancedWebClient {
     email: String,
     /// Password (optional; may not be needed for some auth flows).
     password: Option<String>,
-    /// Base URL (usually https://see-know.ru).
+    /// Base URL (usually <https://see-know.ru>).
     base_url: String,
     /// Path to cookie file for session persistence (manual login).
     cookie_file: PathBuf,
