@@ -1344,6 +1344,7 @@ mod numeric_identifier_coercion_tests {
                 &json!({"latitude": null, "lat": -33.8688, "longitude": 151.2093, "lon": null}),
                 "ip_info",
                 "s",
+                true,
                 &mut seen,
                 &mut r,
             );

@@ -355,7 +355,7 @@ pub(super) fn transport_err_is_terminal_auth(err_str: &str) -> bool {
     // the fallback loop kept retrying every alternate domain with the same
     // rejected key instead of failing fast.
     let lower = err_str.to_lowercase();
-    err_str.contains("401")
+    contains_401_as_a_status_code(err_str)
         || lower.contains("unauthorized")
         || lower.contains("invalid_api_key")
         || lower.contains("invalid api key")

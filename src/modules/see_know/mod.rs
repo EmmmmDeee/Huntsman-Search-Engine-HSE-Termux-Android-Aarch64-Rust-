@@ -426,12 +426,6 @@ impl Module for SeekNow {
         // error the operator would misread as "this seed failed entirely".
         let mut hard_failure: Option<Error> = None;
 
-        // Dispatch tallies, hoisted so the fail-closed check below can see them
-        // even when the block never ran (cancelled, or no quota left) — in that
-        // case `dispatched` stays 0 and the check is inert, which is correct:
-        // nothing was asked of SeekNow, so nothing failed.
-        let mut dispatched = 0usize;
-        let mut failed_calls = 0usize;
         if !ctx.cancel.is_cancelled() && see_know::budget_remaining() {
             // effective_plan() dispatches the FULL matrix, including the
             // single-origin platform checks — the maximisation directive
@@ -439,10 +433,15 @@ impl Module for SeekNow {
             // quota even where free coverage exists at presence-only depth.
             let plan = effective_plan(target.kind, v, &ctx.scan_id);
             let (endpoint_results, plan_failure) = dispatch_plan(key, v, &plan).await;
-            hard_failure = hard_failure.or(plan_failure);
-            let endpoint_results = dispatch_plan(key, v, &plan).await;
-            dispatched = endpoint_results.len();
-            failed_calls = endpoint_results.iter().filter(|o| o.failed).count();
+            // Dispatch tallies feed `seeknow_never_answered` below. Declared
+            // here rather than hoisted above the `if`: nothing outside this
+            // block reads them, and when the block is skipped entirely
+            // (cancelled, or no quota left) `seeknow_never_answered` is never
+            // called at all — which is the same "inert" outcome a hoisted
+            // `dispatched == 0` would have produced, since nothing was asked
+            // of SeekNow and so nothing failed.
+            let dispatched = endpoint_results.len();
+            let failed_calls = endpoint_results.iter().filter(|o| o.failed).count();
 
             // Build the target matcher once for the whole result set — its
             // lowercase + term-split allocations are loop-invariant across
@@ -487,6 +486,22 @@ impl Module for SeekNow {
                         &mut result,
                     );
                 }
+            }
+
+            // Only a TOTAL matrix outage is allowed to become a candidate hard
+            // failure — every dispatched endpoint failed AND the matrix (plus
+            // whatever the broad /search call above already gathered)
+            // contributed nothing. Gating on `seeknow_never_answered` here is
+            // load-bearing, not decorative: without it, a single endpoint's
+            // transient failure inside an 18-endpoint matrix would set
+            // `hard_failure` on its own, and if the other 17 all legitimately
+            // answered "nothing here" this seed would surface as an `Err`
+            // instead of the clean negative it actually is — exactly the
+            // false alarm `seeknow_never_answered`'s own doc says must not
+            // happen. `plan_failure` is guaranteed `Some` whenever this fires
+            // (every failed call sets it), so nothing is lost by gating here.
+            if seeknow_never_answered(dispatched, failed_calls, !result.is_empty()) {
+                hard_failure = hard_failure.or(plan_failure);
             }
 
             // Identity-pivot pass — SeekNow's unique edge over the free
