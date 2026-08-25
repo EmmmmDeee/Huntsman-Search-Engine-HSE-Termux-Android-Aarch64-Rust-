@@ -18,7 +18,7 @@ SeekNow is fully integrated into HSE with 19 working endpoints. Despite the publ
 
 **Option A: Environment Variable (Simplest)**
 ```bash
-export HUNTSMAN_SEEKNOW_KEY="seek-YOUR_ACTUAL_KEY_HERE"
+export HUNTSMAN_SEEKNOW_KEY="[your-api-key-here]"
 hse scan <target>
 ```
 
@@ -27,7 +27,7 @@ hse scan <target>
 mkdir -p ~/.huntsman
 cat > ~/.huntsman/config.toml << 'EOF'
 [services]
-seeknow_key = "seek-YOUR_ACTUAL_KEY_HERE"
+seeknow_key = "[your-api-key-here]"
 
 # Optional: override per-scan budget (default: auto-scaled from daily quota)
 seeknow_scan_cap = 500  # credits per scan (auto-scaled to 300-2500 range)
@@ -37,7 +37,7 @@ EOF
 **Option C: Hardcode in This Session (Development)**
 ```bash
 # Use the env var immediately:
-HUNTSMAN_SEEKNOW_KEY="seek-YOUR_ACTUAL_KEY_HERE" hse scan target@example.com
+HUNTSMAN_SEEKNOW_KEY="[your-api-key-here]" hse scan target@example.com
 ```
 
 ---
@@ -46,7 +46,7 @@ HUNTSMAN_SEEKNOW_KEY="seek-YOUR_ACTUAL_KEY_HERE" hse scan target@example.com
 
 Check remaining quota without spending credits:
 ```bash
-HUNTSMAN_SEEKNOW_KEY="seek-YOUR_ACTUAL_KEY_HERE" hse stats
+HUNTSMAN_SEEKNOW_KEY="[your-api-key-here]" hse stats
 # Shows: "SeekNow: 15000 credits remaining" (or current daily remainder)
 ```
 
@@ -199,8 +199,8 @@ Example `/search` response for `target@example.com`:
     {
       "email": "target@example.com",
       "username": "targetuser",
-      "password": "PlainPassword123",
-      "password_hash": "5f4dcc3b5aa765d61d8327deb882cf99",
+      "password": "[example-password-hash]",
+      "password_hash": "[md5-hash-example]",
       "hash_type": "md5",
       "first_name": "John",
       "last_name": "Doe",
@@ -322,7 +322,7 @@ pub const ENTERPRISE: u32 = 15_000;
 
 **Key environment variables:**
 ```bash
-HUNTSMAN_SEEKNOW_KEY="seek-..."              # Your API key (REQUIRED)
+HUNTSMAN_SEEKNOW_KEY="[your-api-key-here]"              # Your API key (REQUIRED)
 HUNTSMAN_SEEKNOW_SCAN_CAP=750                # Override per-scan budget (optional)
 ```
 
@@ -332,7 +332,7 @@ HUNTSMAN_SEEKNOW_SCAN_CAP=750                # Override per-scan budget (optiona
 
 ```bash
 # Set API key
-export HUNTSMAN_SEEKNOW_KEY="seek-YOUR_KEY_HERE"
+export HUNTSMAN_SEEKNOW_KEY="[your-api-key-here]"
 
 # Scan a username (credential harvesting focus)
 hse scan octocat
@@ -362,7 +362,7 @@ hse scan octocat
 1. **Get your API key** from https://see-know.ru/account
 2. **Set the environment variable:**
    ```bash
-   export HUNTSMAN_SEEKNOW_KEY="seek-YOUR_KEY_HERE"
+   export HUNTSMAN_SEEKNOW_KEY="[your-api-key-here]"
    ```
 3. **Verify quota:**
    ```bash
