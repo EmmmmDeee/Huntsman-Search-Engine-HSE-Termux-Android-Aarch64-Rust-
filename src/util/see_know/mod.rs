@@ -35,6 +35,10 @@ mod endpoints;
 // `budget` module reads via `enterprise_config::ENTERPRISE`).
 pub mod enterprise_config;
 
+// Web automation client (fallback when API key unavailable).
+mod web_client_advanced;
+pub mod web_dispatcher;
+
 #[cfg(test)]
 mod tests;
 
