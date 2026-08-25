@@ -233,7 +233,8 @@ impl QuotaBudget {
     /// Mirrors [`scan_cap`](Self::scan_cap)'s own precedence exactly: an override
     /// or env value of `0` means "unset", not "cap at zero".
     pub fn operator_pinned_scan_cap(&self) -> bool {
-        if self.cap_override.load(Ordering::Acquire) > 0 {
+        let scan = current_scan();
+        if self.lock().get(&scan).map_or(0, |s| s.cap_override) > 0 {
             return true;
         }
         std::env::var(self.env_scan_cap_var)

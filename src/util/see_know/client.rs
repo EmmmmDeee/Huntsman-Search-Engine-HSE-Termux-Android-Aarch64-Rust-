@@ -348,14 +348,20 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
 /// rejection as an error string instead.
 pub(super) fn transport_err_is_terminal_auth(err_str: &str) -> bool {
     // Single case-normalised pass, matching the exact substrings `is_auth_error`
-    // recognises on the body-classification path. The previous version checked
+    // recognises on the body-classification path. A prior version checked
     // `"invalid"` against the original-case string while lower-casing only the
     // "key" half, so a proxy/DoH-surfaced message like "Invalid API key" (the
     // capitalised form `is_auth_error` explicitly anticipates) never matched —
     // the fallback loop kept retrying every alternate domain with the same
     // rejected key instead of failing fast.
+    //
+    // "401" is checked separately, via `contains_401_as_a_status_code` rather
+    // than a bare substring match, for an unrelated reason: see that
+    // function's own doc for why a plain `contains("401")` misclassifies an
+    // ordinary timeout whose elapsed-ms duration happens to embed those
+    // digits.
     let lower = err_str.to_lowercase();
-    err_str.contains("401")
+    contains_401_as_a_status_code(err_str)
         || lower.contains("unauthorized")
         || lower.contains("invalid_api_key")
         || lower.contains("invalid api key")

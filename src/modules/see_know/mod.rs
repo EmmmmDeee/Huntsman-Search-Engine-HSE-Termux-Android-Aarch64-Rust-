@@ -419,11 +419,15 @@ impl Module for SeekNow {
         // collapses to the slowest single endpoint instead of summing
         // every call's latency. Budget gates inside util::see_know
         // turn no-quota calls into instant empty-vec returns.
-        // First hard failure seen across the endpoint matrix and the pivot
-        // hops, folded into the final return below via `or_hard_failure`: kept
-        // ONLY if the seed ends up with zero entities, so a partial outage
-        // that still yielded real evidence elsewhere is never turned into an
-        // error the operator would misread as "this seed failed entirely".
+        // First hard failure seen across the identity-pivot hops, folded into
+        // the final return below via `or_hard_failure`: kept ONLY if the seed
+        // ends up with zero entities, so a partial outage that still yielded
+        // real evidence elsewhere is never turned into an error the operator
+        // would misread as "this seed failed entirely". The endpoint matrix's
+        // OWN fail-closed signal is separate — see `seeknow_never_answered`
+        // below, which uses `dispatched`/`failed_calls` instead: a fan-out
+        // where every dispatched endpoint failed needs to surface even when
+        // pivots never ran at all (nothing to fold `or_hard_failure` against).
         let mut hard_failure: Option<Error> = None;
 
         // Dispatch tallies, hoisted so the fail-closed check below can see them
@@ -438,8 +442,6 @@ impl Module for SeekNow {
             // means SeekNow's platform-specific profile depth is worth the
             // quota even where free coverage exists at presence-only depth.
             let plan = effective_plan(target.kind, v, &ctx.scan_id);
-            let (endpoint_results, plan_failure) = dispatch_plan(key, v, &plan).await;
-            hard_failure = hard_failure.or(plan_failure);
             let endpoint_results = dispatch_plan(key, v, &plan).await;
             dispatched = endpoint_results.len();
             failed_calls = endpoint_results.iter().filter(|o| o.failed).count();
@@ -502,10 +504,23 @@ impl Module for SeekNow {
             }
         }
 
-        // A total outage across this seed's endpoint matrix and pivot hops must
-        // never read the same as "SeekNow legitimately found nothing" — see
-        // `ModuleResult::or_hard_failure`'s own doc for the tolerance rule this
-        // applies: any real evidence gathered above is kept regardless.
+        // The endpoint matrix's own fail-closed gate: every dispatched call
+        // failed AND nothing was found anywhere in the final result (endpoint
+        // matrix or pivots). See `seeknow_never_answered`'s own doc for the
+        // full truth table this decides.
+        if seeknow_never_answered(dispatched, failed_calls, !result.entities.is_empty()) {
+            return Err(Error::module(
+                SRC,
+                "every dispatched SeekNow endpoint failed — rate-limited, or unreachable \
+                 after the retry policy was spent — and nothing was found; this is not \
+                 \"no breach or stealer records for this subject\"",
+            ));
+        }
+
+        // A pivot-hop hard failure must never read the same as "SeekNow
+        // legitimately found nothing" — see `ModuleResult::or_hard_failure`'s
+        // own doc for the tolerance rule this applies: any real evidence
+        // gathered above (endpoint matrix or pivots) is kept regardless.
         result.or_hard_failure(hard_failure)
     }
 }

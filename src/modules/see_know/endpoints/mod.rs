@@ -15,7 +15,7 @@
 use futures::future::join_all;
 use serde_json::Value;
 
-use crate::core::error::{Error, Result};
+use crate::core::error::Result;
 use crate::core::scan::TargetKind;
 use crate::util::see_know;
 
@@ -200,9 +200,10 @@ fn plan_endpoints(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
     }
 }
 
-/// Dispatch every endpoint in `plan` concurrently. Returns
-/// `(endpoint_name, items)` pairs in plan order so downstream
-/// extractors stay deterministic, plus the first hard failure observed.
+/// Dispatch every endpoint in `plan` concurrently. Returns one
+/// [`EndpointOutcome`] per call, in plan order, so downstream extractors stay
+/// deterministic and the caller can tell a genuine empty answer from a call
+/// that never got one.
 ///
 /// Budget enforcement happens inside each endpoint helper at the
 /// `util::see_know` layer — both the response cache and the
@@ -212,36 +213,53 @@ fn plan_endpoints(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
 /// (but not at) its budget. Letting the util layer enforce the
 /// budget restores that free corroboration.
 ///
-/// The returned `Option<Error>` feeds [`ModuleResult::or_hard_failure`], this
-/// repo's shared rule for a module with independent concurrent sub-fetches: keep
-/// every entity any sub-fetch produced, but if the plan yielded NOTHING and a
-/// sub-fetch genuinely failed, surface that error rather than a silent empty
-/// success. This previously used `unwrap_or_default()`, which discarded the
-/// typed error entirely — so an endpoint that had exhausted its retries against
-/// a 5xx/429/timeout returned an empty vec indistinguishable from "this endpoint
-/// legitimately had no data", and the caller's `if !items.is_empty()` trace
-/// guard suppressed even a debug line. A per-endpoint warning is emitted too, so
-/// a PARTIAL outage (which `or_hard_failure` deliberately tolerates, because
-/// real evidence arrived from elsewhere) is still diagnosable.
+/// `EndpointOutcome::failed` feeds [`seeknow_never_answered`]: this used to be
+/// `.unwrap_or_default()`, which discarded the typed error entirely — so an
+/// endpoint that had exhausted its retries against a 5xx/429/timeout returned
+/// an empty vec indistinguishable from "this endpoint legitimately had no
+/// data", and the caller's `if !items.is_empty()` trace guard suppressed even
+/// a debug line. A per-endpoint warning is emitted here too, so a PARTIAL
+/// outage (which the caller's policy deliberately tolerates, because real
+/// evidence arrived from elsewhere) is still diagnosable.
 ///
-/// [`ModuleResult::or_hard_failure`]: crate::core::module::ModuleResult::or_hard_failure
+/// [`seeknow_never_answered`]: super::seeknow_never_answered
 pub(super) async fn dispatch_plan(
     key: &str,
     value: &str,
     plan: &[EndpointCall],
-) -> (Vec<(&'static str, Vec<Value>)>, Option<Error>) {
+) -> Vec<EndpointOutcome> {
     let futures = plan.iter().copied().map(|call| {
         let value_owned = value.to_string();
-        async move { (call.label(), call.invoke(key, &value_owned).await) }
+        async move {
+            match call.invoke(key, &value_owned).await {
+                Ok(items) => EndpointOutcome {
+                    label: call.label(),
+                    items,
+                    failed: false,
+                },
+                // A terminal failure, NOT an absent record. `get_path` only
+                // yields `Err` once its retry policy is spent, so this is
+                // `Error::RateLimited` after `RATE_LIMIT_BACKOFF`, or a
+                // transport error that survived paced retries. The
+                // quota-exhausted and key-invalid cases are modelled
+                // separately as an empty `Ok`, so `Err` here means the call
+                // failed — never "SeekNow has nothing on this subject".
+                Err(e) => {
+                    tracing::warn!(
+                        endpoint = call.label(),
+                        error = %e,
+                        "see_know endpoint call failed; recorded as a failure, not as \"no records\""
+                    );
+                    EndpointOutcome {
+                        label: call.label(),
+                        items: Vec::new(),
+                        failed: true,
+                    }
+                }
+            }
+        }
     });
-
-    let mut first_failure = None;
-    let out = join_all(futures)
-        .await
-        .into_iter()
-        .map(|(label, outcome)| super::fold_endpoint_result(label, outcome, &mut first_failure))
-        .collect();
-    (out, first_failure)
+    join_all(futures).await
 }
 
 /// What one dispatched endpoint actually did.

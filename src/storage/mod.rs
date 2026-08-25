@@ -775,7 +775,20 @@ impl Store {
                 let rowid: i64 = row.get(0)?;
                 let j: String = row.get(1)?;
                 let old_desc: String = row.get(2)?;
-                let old_uids = serde_json::from_str::<Vec<String>>(&j).unwrap_or_default();
+                // A parse failure is NOT "this row has zero members" — those are
+                // different facts, and `unwrap_or_default()` used to conflate
+                // them. An empty set is a subset of every set, so a genuinely
+                // unparseable `entity_uids` (a truncated write, or a value from a
+                // schema that has since drifted) made every later upsert for the
+                // same (scan_id, rule_id) look like a strict superset and
+                // silently DELETE the row — even though `data_json` (the finding
+                // itself) was perfectly intact and only the supersede index was
+                // corrupt. `continue` leaves the row alone entirely: never
+                // superseded, never counted as "already represented", exactly
+                // the fail-closed default for data we cannot interpret.
+                let Ok(old_uids) = serde_json::from_str::<Vec<String>>(&j) else {
+                    continue;
+                };
                 let old_set: HashSet<&str> = old_uids.iter().map(String::as_str).collect();
                 if new_set.is_subset(&old_set) {
                     // EQUAL sets whose description changed are the capped-sample

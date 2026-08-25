@@ -239,9 +239,8 @@ use super::*;
         // short-circuit without any HTTP regardless of budget state.
         // (Per-endpoint budget gating is exercised by the util-level
         // tests in `crate::util::see_know::tests`.)
-        let (out, failure) = dispatch_plan("key", "alice", &[]).await;
-        assert!(out.is_empty());
-        assert!(failure.is_none(), "no calls made, so no failure to report");
+        let out = dispatch_plan("key", "alice", &[]).await;
+        assert!(out.is_empty(), "no calls made, so no outcomes to report");
     }
 
     #[test]
