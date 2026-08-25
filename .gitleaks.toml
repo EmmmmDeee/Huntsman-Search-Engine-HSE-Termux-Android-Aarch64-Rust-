@@ -1,0 +1,67 @@
+# gitleaks configuration for Huntsman Search Engine.
+#
+# Context that makes this file unusual: HSE's whole domain is FINDING leaked
+# credentials in breach corpora and stealer logs. `util::key_harvest` ships
+# detection patterns for ~40 providers, and its tests assert against synthetic
+# keys in each provider's real shape. A secret scanner reads those exactly like
+# a leak. So the allowlists below exempt test fixtures and detection-pattern
+# sources — and NOTHING under production paths, which is where a real embedded
+# credential would actually do harm.
+#
+# The repository shipped live OathNet / HIBP / WiGLE / SeekNow credentials until
+# they were removed and revoked; this scan is what stops that recurring.
+
+[extend]
+useDefault = true
+
+# ── Synthetic credentials that exist so HSE can recognise the real thing ──────
+[[allowlists]]
+description = "Test fixtures and captured upstream responses"
+paths = [
+  # Unit-test fixtures: synthetic keys in each provider's real shape, asserted
+  # against by the key-harvest / correlator / import test suites.
+  '''(^|/)tests\.rs$''',
+  '''(^|/)tests/''',
+  # Captured upstream responses used as parser fixtures (search-engine HTML,
+  # provider JSON). Verbatim third-party pages, not our credentials.
+  '''(^|/)testdata/''',
+]
+
+[[allowlists]]
+description = "Credential-detection patterns and parsed third-party key formats"
+paths = [
+  # The credential DETECTION patterns themselves — PEM headers and provider key
+  # prefixes that the scanner reads as the secrets they are designed to match.
+  '''^src/util/key_harvest/crypto\.rs$''',
+  # AT Protocol DID documents embed `key:` fields (public verification keys) in
+  # the format strings this module parses.
+  '''^src/modules/plc_directory/mod\.rs$''',
+  # Correlator rules naming provider token formats in doc comments and in the
+  # inline fixtures that exercise breach-record shapes.
+  '''^src/core/correlator/rules/handle_variant\.rs$''',
+  '''^src/core/correlator/rules/breach\.rs$''',
+]
+
+# ── Documentation placeholders ────────────────────────────────────────────────
+# These are the strings the setup guides now tell operators to REPLACE. Matching
+# them would train reviewers to ignore this scan's output — the failure mode that
+# let a real key sit in docs/SEEKNOW_SETUP.md across many releases.
+[[allowlists]]
+description = "Obvious documentation placeholders"
+regexes = [
+  '''seek-REPLACE_WITH_YOUR_OWN_KEY''',
+  '''seek-YOUR_KEY''',
+  '''insert_[a-z0-9_]+_here''',
+]
+
+# ── The retired-credential digest table ───────────────────────────────────────
+# Scoped with `condition = "AND"` so it exempts ONLY a bare 64-char lowercase hex
+# SHA-256 in that one file — a re-embedded plaintext key there still fails the
+# scan, which is the whole point of keeping the file otherwise in scope. Digests
+# are one-way and each source value carries ≥128 bits of entropy, so publishing
+# them discloses nothing.
+[[allowlists]]
+description = "SHA-256 digests of revoked credentials, kept so upgrades can purge them"
+condition = "AND"
+paths = ['''^src/util/keys/constants\.rs$''']
+regexes = ['''\b[0-9a-f]{64}\b''']

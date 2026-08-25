@@ -59,7 +59,7 @@ pub use budget::{
 // Key helpers + the resolved API base host (so `hse doctor` can show WHICH
 // host a failing probe tried — the single most useful fact when the failure is
 // DNS host-resolution, the observed live symptom).
-pub use client::{base_url, key_fingerprint, resolve_key};
+pub use client::{base_url, key_fingerprint};
 
 // Endpoint functions
 pub(crate) use endpoints::get_path;

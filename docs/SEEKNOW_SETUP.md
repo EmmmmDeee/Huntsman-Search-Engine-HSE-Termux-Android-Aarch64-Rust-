@@ -177,15 +177,16 @@ hse doctor
 ### Example ~/.huntsman.env
 
 ```bash
-# Minimal (HSE auto-configures everything)
-export HUNTSMAN_SEEKNOW_KEY="seek-fdc8677a1c480a7bf59b866b81eda1f44b9944caf395c699"
+# Minimal. HSE embeds NO key of its own — this slot is required.
+# Replace the placeholder below with the key from your SeekNow dashboard.
+export HUNTSMAN_SEEKNOW_KEY="seek-REPLACE_WITH_YOUR_OWN_KEY"
 
 # Advanced (override per-scan budget for testing)
-export HUNTSMAN_SEEKNOW_KEY="seek-fdc8677a1c480a7bf59b866b81eda1f44b9944caf395c699"
+export HUNTSMAN_SEEKNOW_KEY="seek-REPLACE_WITH_YOUR_OWN_KEY"
 export HUNTSMAN_SEEKNOW_SCAN_CAP=100  # Limit to 100 credits per scan
 
 # Explicit endpoint (only if self-hosting or using an alternate mirror — rare)
-export HUNTSMAN_SEEKNOW_KEY="seek-fdc8677a1c480a7bf59b866b81eda1f44b9944caf395c699"
+export HUNTSMAN_SEEKNOW_KEY="seek-REPLACE_WITH_YOUR_OWN_KEY"
 export HUNTSMAN_SEEKNOW_BASE="https://see-know.ru/api/v1"
 ```
 
