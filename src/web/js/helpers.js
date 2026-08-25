@@ -1,3 +1,4 @@
+import { authHeaders } from '/static/js/api.js';
 /* ─── Helpers ─── */
 export const $ = (s,r)=>(r||document).querySelector(s);
 export const $$ = (s,r)=>Array.from((r||document).querySelectorAll(s));
@@ -213,7 +214,7 @@ export async function downloadFile(url, opts){
     return false; // a download from this control is already in flight
   }
   try {
-    const resp = await fetch(url, { headers: { 'Accept': 'application/octet-stream' } });
+    const resp = await fetch(url, { headers: authHeaders({ 'Accept': 'application/octet-stream' }) });
     if (!resp.ok){
       let msg = 'HTTP ' + resp.status;
       try { const j = await resp.clone().json(); if (j && j.error) msg = j.error; }

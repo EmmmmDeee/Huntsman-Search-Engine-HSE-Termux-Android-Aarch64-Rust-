@@ -27,6 +27,19 @@ function rememberToken(t){
   } catch {}
 }
 
+/* Authorization headers for the call sites that cannot go through API._req:
+   the raw fetch() used by the events.history backfill and by the download
+   helper (which streams octet-stream bodies rather than JSON). Without this
+   they bypass token injection entirely and 401 on a token-gated deployment
+   while every other panel works — a confusing partial failure.
+
+   Returns `base` unchanged when no token is configured, so the default
+   loopback install is byte-for-byte unaffected. */
+export function authHeaders(base){
+  const t = storedToken();
+  return t ? Object.assign({}, base || {}, {'Authorization': `Bearer ${t}`}) : (base || {});
+}
+
 export function clearToken(){
   try { sessionStorage.removeItem(TOKEN_KEY); } catch {}
   try { document.cookie = 'hse_token=; Path=/; Max-Age=0; SameSite=Strict'; } catch {}
@@ -143,7 +156,7 @@ export const API = {
   // The X-HSE-CSRF header makes this a non-simple request: same-origin (here) it
   // sends straight through, but a cross-site caller must preflight, which CORS
   // rejects — so a hostile page can't POST a forged dossier into the local DB.
-  importDossier: text=>fetch('/api/v1/scans/import',{method:'POST',headers:{'Content-Type':'text/plain','X-HSE-CSRF':'1'},body:text}).then(async r=>{ if(!r.ok){ let e='HTTP '+r.status; try{ e=(await r.json()).error||e; }catch{} throw new Error(e); } return r.json(); }),
+  importDossier: text=>fetch('/api/v1/scans/import',{method:'POST',headers:authHeaders({'Content-Type':'text/plain','X-HSE-CSRF':'1'}),body:text}).then(async r=>{ if(!r.ok){ let e='HTTP '+r.status; try{ e=(await r.json()).error||e; }catch{} throw new Error(e); } return r.json(); }),
   rerun:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/rerun',{method:'POST'}),
   cancel:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/cancel',{method:'POST'}),
   remove:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id),{method:'DELETE'}),

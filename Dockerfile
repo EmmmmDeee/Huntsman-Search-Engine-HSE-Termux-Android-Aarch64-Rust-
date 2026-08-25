@@ -88,7 +88,13 @@ ENV HOME=/data \
 RUN mkdir -p /data && chown -R huntsman:huntsman /data
 VOLUME ["/data"]
 
-USER huntsman
+# NOTE: deliberately NOT `USER huntsman`. A platform volume mounted at /data
+# arrives owned by root, and a container that has already dropped privileges
+# cannot chown it — the server would start and then fail to create its
+# database. The entrypoint therefore starts as root, takes ownership of /data
+# only if it is not already correct, and drops to uid 10001 via setpriv before
+# exec'ing the server. Verified: with a root-owned volume and a pre-dropped
+# uid, `touch /data/probe` fails with EACCES.
 EXPOSE 8080
 
 # The platform's own healthcheck should hit /api/v1/health, which is

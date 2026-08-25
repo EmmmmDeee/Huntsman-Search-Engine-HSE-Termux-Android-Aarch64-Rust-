@@ -1,6 +1,6 @@
 import { $, esc, fmtClock, kindPill, saveShownRows } from '/static/js/helpers.js';
 import { S } from '/static/js/state.js';
-import { API } from '/static/js/api.js';
+import { API, authHeaders } from '/static/js/api.js';
 
 /* ── Scan Log (history + live SSE) ──
    v0.10+ — engine persists every event to SQLite, so completed scans
@@ -136,7 +136,7 @@ export async function renderLog(host, scan){
   let history = [];
   let historyError = null;
   try {
-    const r = await fetch('/api/v1/scans/'+encodeURIComponent(scan.id)+'/events.history');
+    const r = await fetch('/api/v1/scans/'+encodeURIComponent(scan.id)+'/events.history', {headers: authHeaders()});
     if (r.ok){
       const j = await r.json();
       history = j.events || [];

@@ -1,45 +1,78 @@
 # Railway deployment config for Huntsman Search Engine.
 #
 # Termux remains the primary target; this is an additional deployment path.
-# Read docs/RAILWAY.md first — a public deployment of an OSINT store carries
-# obligations that an on-device install does not.
+# Read docs/RAILWAY.md before deploying — a public deployment of an OSINT store
+# carries obligations an on-device install does not.
+#
+# Key names and values below follow Railway's config-as-code reference. Note
+# `builder` is documented with UPPERCASE values (RAILPACK | DOCKERFILE); a
+# lowercase value is not a documented spelling.
 
 [build]
-builder = "dockerfile"
+builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
+
+# Rebuild only when something that affects the binary or image changes. Without
+# this, editing a doc triggers a full Rust rebuild — minutes of build credit for
+# no change in behaviour. (docs/ is excluded from the image context anyway, so a
+# doc-only commit cannot alter the result.)
+watchPatterns = [
+    "src/**",
+    "Cargo.toml",
+    "Cargo.lock",
+    "build.rs",
+    "Dockerfile",
+    "docker-entrypoint.sh",
+    ".dockerignore",
+]
 
 [deploy]
 startCommand = "/usr/local/bin/docker-entrypoint.sh serve"
 
-# Health check hits the one route deliberately left unauthenticated, so the
-# probe needs no credential. Generous timeout: the first boot runs SQLite
-# migrations against a cold volume.
+# Hits the one route deliberately left unauthenticated, so the probe needs no
+# credential. Generous: first boot runs SQLite migrations against a cold volume.
 healthcheckPath = "/api/v1/health"
 healthcheckTimeout = 120
 
-# A scan is stateful work with a live SQLite writer behind it. Restarting on
-# failure is right; restarting endlessly against a genuinely broken config
-# (a bad token, an unwritable volume) just burns credit, so the count is capped.
+# On SIGTERM the server drains in-flight scans and live sessions
+# (`SHUTDOWN_DRAIN_GRACE`, 10s in src/api/mod.rs) before exiting. Give Railway
+# more than that so a redeploy does not sever a running scan mid-write.
+drainingSeconds = 20
+
+# ZERO overlap is deliberate and load-bearing. The scan store is a local SQLite
+# file (WAL) on a single attached volume: WAL permits many readers but only ONE
+# writer, and a Railway volume attaches to one instance. Overlapping a new
+# deployment with the old one would put two writers on the same file.
+# For the same reason this service must run as a SINGLE REPLICA — do not scale
+# it horizontally in the Railway UI.
+overlapSeconds = 0
+
+# Restarting on failure is right for a crash; restarting endlessly against a
+# genuinely broken config (a bad token, an unwritable volume) just burns credit.
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
 
-# ── Required volume (configure in the Railway UI, it cannot be declared here) ──
+# ── Required volume (configure in the Railway UI; not declarable here) ────────
 # Mount path: /data
-#   HOME=/data is set in the Dockerfile, and HSE resolves its database to
-#   $HOME/.huntsman/huntsman.db. Without this volume every redeploy silently
-#   discards all scan history — the entrypoint warns when /data is not a mount.
+#   HOME=/data is set in the Dockerfile and HSE resolves its database to
+#   $HOME/.huntsman/huntsman.db — verified by redirecting HOME and observing
+#   where state lands. Without this volume every redeploy silently discards all
+#   scan history; the entrypoint warns when /data is not a mountpoint.
 #
-# ── Required environment variables ──
+# ── Required environment variables ───────────────────────────────────────────
 #   HSE_API_TOKEN        A long random secret (`openssl rand -hex 32`).
 #                        The container REFUSES TO START on a public bind
-#                        without it — see docker-entrypoint.sh.
+#                        without it (docker-entrypoint.sh).
 #
-# ── Optional ──
-#   HUNTSMAN_OLLAMA_URL  http://<ollama-service>.railway.internal:11434
-#                        Point at a separate Ollama service to enable
-#                        `hse analyze`. Railway is CPU-only (no GPU), so keep
-#                        to small models; see docs/RAILWAY.md for measured
-#                        expectations.
+# ── Recommended build variable ───────────────────────────────────────────────
+#   HSE_BUILD_SHA        Pass RAILWAY_GIT_COMMIT_SHA as a build arg so
+#                        `hse version` reports the real revision. build.rs
+#                        normally reads .git, which the image context excludes.
+#
+# ── Optional ─────────────────────────────────────────────────────────────────
+#   HUNTSMAN_OLLAMA_URL     http://<ollama-service>.railway.internal:11434
+#                           Enables `hse analyze`. Railway is CPU-only (no GPU);
+#                           keep to small models. See docs/RAILWAY.md.
 #   HUNTSMAN_OLLAMA_MODEL   e.g. qwen2.5:3b
 #   HSE_ALLOW_PUBLIC_NO_AUTH=1   Deliberately run WITHOUT auth. Only for a
-#                        throwaway instance with an empty database.
+#                           throwaway instance with an empty database.
