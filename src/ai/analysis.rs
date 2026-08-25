@@ -224,7 +224,7 @@ impl Facet {
 }
 
 /// Prefix of the citation labels the model is asked to copy (`E1`, `E2`, …).
-const LABEL_PREFIX: &str = "E";
+pub(crate) const LABEL_PREFIX: &str = "E";
 
 /// The citation label for the entity at 0-based `rank`.
 fn evidence_label(rank: usize) -> String {
@@ -244,7 +244,7 @@ fn evidence_label(rank: usize) -> String {
 /// (O(k) in its corroboration count), so it's computed once per entity here
 /// rather than repeatedly inside the sort comparator, which would otherwise
 /// re-derive it O(log n) times per entity across the sort.
-fn rank_entities(entities: &[Entity]) -> Vec<(f64, &Entity)> {
+pub(crate) fn rank_entities(entities: &[Entity]) -> Vec<(f64, &Entity)> {
     let mut ranked: Vec<(f64, &Entity)> = entities.iter().map(|e| (e.c_effective(), e)).collect();
     ranked.sort_by(|(a, ea), (b, eb)| {
         b.partial_cmp(a)
@@ -342,19 +342,19 @@ pub fn response_schema() -> serde_json::Value {
 /// brackets (`"[E2]"`, `" e2 "`), because those are transcription noise from a
 /// small local model rather than a different claim. Anything else — a bare
 /// number, a uid, a value copied out of the data — does not resolve.
-fn resolve_evidence<'a>(cited: &[String], ranked: &[(f64, &'a Entity)]) -> Option<Vec<&'a Entity>> {
+pub(crate) fn resolve_evidence<'a>(
+    cited: &[String],
+    ranked: &[(f64, &'a Entity)],
+) -> Option<Vec<&'a Entity>> {
     if cited.is_empty() {
         return None;
     }
     let mut out = Vec::with_capacity(cited.len());
     for label in cited {
         let cleaned = label.trim().trim_matches(['[', ']', '"', '\'']).trim();
-        let Some(digits) = cleaned
+        let digits = cleaned
             .strip_prefix(LABEL_PREFIX)
-            .or_else(|| cleaned.strip_prefix(&LABEL_PREFIX.to_lowercase()))
-        else {
-            return None;
-        };
+            .or_else(|| cleaned.strip_prefix(&LABEL_PREFIX.to_lowercase()))?;
         // 1-based in the prompt; `E0` is not a label this code ever emits, so
         // it must not resolve to rank 0.
         let idx = digits.trim().parse::<usize>().ok()?.checked_sub(1)?;

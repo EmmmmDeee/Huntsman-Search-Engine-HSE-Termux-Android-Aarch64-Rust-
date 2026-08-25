@@ -29,6 +29,7 @@
 
 pub mod analysis;
 pub mod ollama;
+pub mod triage;
 
 use std::borrow::Cow;
 
