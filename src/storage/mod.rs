@@ -775,7 +775,25 @@ impl Store {
                 let rowid: i64 = row.get(0)?;
                 let j: String = row.get(1)?;
                 let old_desc: String = row.get(2)?;
-                let old_uids = serde_json::from_str::<Vec<String>>(&j).unwrap_or_default();
+                // A row whose stored uid list fails to parse must be left
+                // alone, not treated as an empty set: an empty set is a
+                // subset of every set, so silently defaulting here made
+                // `old_set.is_subset(&new_set)` unconditionally true for it
+                // below, adding it to `superseded` and deleting it a real
+                // finding just because its stored representation happened to
+                // be unreadable. Skip the row entirely instead — it is
+                // neither superseded by, nor representative of, `new_set`.
+                let old_uids = match serde_json::from_str::<Vec<String>>(&j) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            rowid,
+                            error = %e,
+                            "a stored correlation's entity_uids failed to parse — leaving it in place rather than risking an incorrect supersede/delete"
+                        );
+                        continue;
+                    }
+                };
                 let old_set: HashSet<&str> = old_uids.iter().map(String::as_str).collect();
                 if new_set.is_subset(&old_set) {
                     // EQUAL sets whose description changed are the capped-sample
