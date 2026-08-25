@@ -62,7 +62,11 @@ pub(crate) fn non_negative_rate(s: &str) -> Result<f64, String> {
 #[derive(Parser)]
 #[command(
     name = "hse",
-    version = crate::VERSION,
+    // Version AND commit: two binaries built from different `main` commits
+    // between version bumps otherwise report an identical `--version`, which is
+    // exactly how a stale install passed for an up-to-date one. `hse build-sha`
+    // is the machine-readable form the installer compares against.
+    version = crate::build_id(),
     about = "Huntsman Search Engine (HSE) — GhostSec-tradition all-source OSINT / GEOINT recon for Termux aarch64",
     long_about = "Huntsman Search Engine (HSE) — an all-source OSINT / GEOINT / NETINT reconnaissance\n\
                   engine in the GhostSec tradition: SpiderFoot-inspired breadth without the daemon or the\n\
@@ -274,6 +278,20 @@ pub enum Command {
         #[arg(short, long)]
         category: Option<String>,
         /// Output as JSON (same shape as `/api/v1/modules`).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the git commit this binary was built from (40-char hex), for
+    /// scripting. Exits non-zero when the build carries no verifiable revision —
+    /// a dirty tree, or a build with no `.git` and no `HSE_BUILD_SHA`.
+    ///
+    /// `install.sh` and `hse update` use this to decide whether a candidate
+    /// binary IS the revision they were asked to install. A non-zero exit means
+    /// "cannot prove it", which callers must treat as a mismatch and build from
+    /// source rather than trust.
+    #[command(hide = true, name = "build-sha")]
+    BuildSha {
+        /// Emit `sha`, `dirty` and `version` as JSON instead of the bare SHA.
         #[arg(long)]
         json: bool,
     },

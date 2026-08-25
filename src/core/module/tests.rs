@@ -34,6 +34,27 @@ use super::*;
         );
     }
 
+    /// A present-but-blank slot is an unconfigured slot, not a credential.
+    ///
+    /// This matters now that no key is embedded in the build: `HUNTSMAN_FOO=` in
+    /// an env file used to resolve to `Some("")`, which a keyed module would
+    /// then send as its credential — spending a request to earn a 401 that reads
+    /// like a revoked key rather than like "you never set this".
+    #[test]
+    fn key_treats_a_blank_value_as_missing() {
+        for blank in ["", "   ", "\t"] {
+            let ctx = make_ctx(HashMap::from([(
+                "HUNTSMAN_FOO".to_string(),
+                blank.to_string(),
+            )]));
+            let err = ctx.key("HUNTSMAN_FOO").expect_err("blank must not resolve");
+            assert!(
+                matches!(err, Error::MissingKey(ref k) if k == "HUNTSMAN_FOO"),
+                "expected MissingKey for {blank:?}, got: {err:?}",
+            );
+        }
+    }
+
     // ── ModuleContext::key_opt ───────────────────────────────────────────
 
     #[test]

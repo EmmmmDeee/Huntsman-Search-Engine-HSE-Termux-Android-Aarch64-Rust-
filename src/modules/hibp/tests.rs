@@ -23,19 +23,20 @@ fn cost_is_key_gated() {
     assert_eq!(Hibp.cost(), ModuleCost::KeyGated);
 }
 
+/// HIBP has no free tier and this build embeds no credential, so the module is
+/// key-gated end to end: `ctx.key` is the only source, and an absent or blank
+/// slot yields `Error::MissingKey` — which the dispatcher renders as a clean
+/// "needs key" skip (with the subscription URL) instead of issuing a request.
 #[test]
-fn resolve_key_prefers_provided() {
-    assert_eq!(resolve_key(Some("my-key")), "my-key");
-}
-
-#[test]
-fn resolve_key_falls_back_to_hardcoded() {
-    assert_eq!(resolve_key(None), HARDCODED_KEY);
-}
-
-#[test]
-fn resolve_key_falls_back_on_empty() {
-    assert_eq!(resolve_key(Some("")), HARDCODED_KEY);
+fn key_is_required_with_no_embedded_fallback() {
+    use crate::util::keys::resolve_key;
+    assert_eq!(resolve_key(Some("my-key")), Some("my-key"));
+    assert_eq!(resolve_key(None), None);
+    assert_eq!(resolve_key(Some("")), None);
+    // The env var the module reads must be one the operator can actually set —
+    // i.e. registered in the Settings grid and carrying a signup hint.
+    assert!(crate::util::keys::KNOWN_KEYS.contains(&KEY_ENV));
+    assert!(crate::util::keys::signup_hint(KEY_ENV).is_some());
 }
 
 #[test]

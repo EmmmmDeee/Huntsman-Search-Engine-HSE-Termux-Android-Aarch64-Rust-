@@ -287,7 +287,7 @@ impl Module for SeekNow {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = see_know::resolve_key(ctx.key_opt(see_know::KEY_ENV));
+        let key = ctx.key(see_know::KEY_ENV)?;
         // Stable origin fingerprint of the exact key in use — stamped onto every
         // entity this module produces so each finding declares which API key
         // (and provider) returned it. Computed once per scan.
@@ -433,7 +433,7 @@ impl Module for SeekNow {
             // quota even where free coverage exists at presence-only depth.
             let plan = effective_plan(target.kind, v, &ctx.scan_id);
             let (endpoint_results, plan_failure) = dispatch_plan(key, v, &plan).await;
-            // Dispatch tallies feed `seeknow_never_answered` below. Declared
+            // Dispatch tallies feed `seeknow_never_answered` just below. Declared
             // here rather than hoisted above the `if`: nothing outside this
             // block reads them, and when the block is skipped entirely
             // (cancelled, or no quota left) `seeknow_never_answered` is never
