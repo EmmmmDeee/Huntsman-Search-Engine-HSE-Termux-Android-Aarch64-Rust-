@@ -531,7 +531,15 @@ diagnostic bundle") for the complete engine state in one file.
 
 - **[`docs/ALL_IN_ONE_SETUP.md`](docs/ALL_IN_ONE_SETUP.md)** — **Complete end-to-end setup** combining HSE, SeekNow authentication (API key or manual browser login), Ollama LLM integration, and Web UI. Includes prerequisites, one-line installation, Ollama model selection, background service setup for Termux, and troubleshooting for all common issues. **This is the recommended starting point.**
 
+### 🎯 Advanced Security Research Guides
+
+**For authorized penetration testing and vulnerability research:**
+
 - **[`docs/ADVANCED_TECHNIQUES.md`](docs/ADVANCED_TECHNIQUES.md)** — **Security research intensity framework** (White Hat / Gray Hat / Black Hat) documenting authentication methods, reverse-engineering approaches, bot detection evasion, and exploitation techniques. Includes workaround permutation matrix, real-world bash/curl examples, and legal/ethical considerations.
+
+- **[`docs/HAT_PROGRESSION_PRACTICAL.md`](docs/HAT_PROGRESSION_PRACTICAL.md)** — **Practical darkening-hat methodology** showing step-by-step progression from defensive hardening (White Hat) → investigative reverse engineering (Gray Hat) → aggressive exploitation (Black Hat). Includes authorization checkpoints, realism checks for evasion techniques, and detection avoidance analysis.
+
+- **[`docs/QWEN_AUTONOMOUS_PENTEST.md`](docs/QWEN_AUTONOMOUS_PENTEST.md)** — **LLM-powered autonomous penetration testing** framework using Ollama Qwen model to autonomously analyze vulnerabilities, generate payloads, create fuzzing wordlists, and iterate attack strategies. Includes Python/bash examples for vulnerability analysis, payload generation, response analysis, and full exploitation workflows with built-in authorization verification.
 
 ### Core Reference
 
@@ -541,6 +549,7 @@ diagnostic bundle") for the complete engine state in one file.
 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Common install/runtime errors + fixes |
 | [`docs/OSINT_API_REFERENCE.md`](docs/OSINT_API_REFERENCE.md) | External OSINT-provider API reference (free tiers, key shapes, integration status) |
 | [`docs/SEEKNOW_SETUP.md`](docs/SEEKNOW_SETUP.md) | SeekNow (see-know.ru) API setup + full endpoint reference |
+| [`docs/SEEKNOW_WEB_AUTOMATION.md`](docs/SEEKNOW_WEB_AUTOMATION.md) | SeekNow web automation, Turnstile analysis, manual login workflow, browser automation framework evaluation |
 | [`docs/OATHNET_API_GUIDE.txt`](docs/OATHNET_API_GUIDE.txt) | OathNet API contract reference |
 | [`docs/OPERATIONAL_CONSTITUTION.md`](docs/OPERATIONAL_CONSTITUTION.md) | Reasoning, evidence, and analysis standards governing HSE work |
 | [`docs/PERSISTENT_INTELLIGENCE.md`](docs/PERSISTENT_INTELLIGENCE.md) | How understanding accumulates across reasoning cycles (constitution companion) |
