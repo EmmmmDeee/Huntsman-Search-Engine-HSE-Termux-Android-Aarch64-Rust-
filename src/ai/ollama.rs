@@ -193,19 +193,57 @@ impl OllamaClient {
     /// model and hardware, so the caller wraps this in a `tokio::time::timeout`
     /// sized for its own context (see `analysis::analyze_scan`).
     pub async fn generate(&self, prompt: &str) -> Result<String> {
+        // Ollama's stable, broadly-supported JSON-mode: constrains decoding to
+        // well-formed JSON, so a model doesn't wrap its answer in prose or a
+        // markdown code fence despite the prompt asking for bare JSON. Does NOT
+        // constrain the *shape* — see [`generate_structured`] for that.
+        self.post_generate(serde_json::json!("json"), prompt).await
+    }
+
+    /// [`generate`](Self::generate), but constraining decoding to `schema` (a
+    /// JSON Schema object) rather than merely to well-formed JSON.
+    ///
+    /// Ollama's schema `format` makes a shape mismatch *impossible to emit*
+    /// instead of merely detectable afterwards. That matters most exactly where
+    /// this crate is weakest: a small local model (a 3B, say) asked for a
+    /// multi-field object over a long entity list will readily return valid
+    /// JSON of the wrong shape — observed in practice as a response missing
+    /// `summary` entirely, which `analysis::parse_response` could only reject,
+    /// costing the operator the whole (slow, local) generation.
+    ///
+    /// Schema `format` is newer than the plain `"json"` mode, so an older
+    /// Ollama rejects the request outright. Rather than dropping support for
+    /// those installs — the compatibility constraint this module was already
+    /// written to respect — a rejection falls back to plain JSON-mode, which is
+    /// exactly the previous behaviour. `analysis::parse_response` still
+    /// validates the shape and fails closed either way: constrained decoding is
+    /// an improvement to the odds of a usable answer, never a replacement for
+    /// validating one.
+    pub async fn generate_structured(
+        &self,
+        prompt: &str,
+        schema: serde_json::Value,
+    ) -> Result<String> {
+        match self.post_generate(schema, prompt).await {
+            Ok(text) => Ok(text),
+            Err(e) if is_unsupported_format(&e) => {
+                self.post_generate(serde_json::json!("json"), prompt).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The shared `POST /api/generate` body/response handling behind
+    /// [`generate`](Self::generate) and
+    /// [`generate_structured`](Self::generate_structured); `format` is the only
+    /// thing that differs between them.
+    async fn post_generate(&self, format: serde_json::Value, prompt: &str) -> Result<String> {
         let url = format!("{}/api/generate", self.base_url);
         let body = serde_json::json!({
             "model": self.model,
             "prompt": prompt,
             "stream": false,
-            // Ollama's stable, broadly-supported JSON-mode: constrains decoding
-            // to well-formed JSON, so a model doesn't wrap its answer in prose
-            // or a markdown code fence despite the prompt asking for bare JSON.
-            // This does NOT constrain to a specific *shape* (a full JSON-schema
-            // `format` exists in newer Ollama releases, but isn't assumed here
-            // to stay compatible with older installs) — `analysis::parse_response`
-            // still validates the shape and fails closed on a mismatch.
-            "format": "json",
+            "format": format,
         });
         let resp = self
             .http
@@ -237,6 +275,18 @@ impl OllamaClient {
         let parsed: GenerateResponse = serde_json::from_str(&text)?;
         Ok(parsed.response)
     }
+}
+
+/// Does `e` look like an Ollama that does not understand a schema `format`?
+///
+/// Matched on the 4xx status this module already renders into the message
+/// rather than on wording alone: an older Ollama rejects the request, while a
+/// *reachability* failure (connect refused, timeout) carries no status and must
+/// NOT be mistaken for "unsupported" — retrying that against a dead endpoint
+/// would just double the wait before surfacing the same error.
+fn is_unsupported_format(e: &Error) -> bool {
+    let msg = e.to_string();
+    msg.contains("/api/generate returned HTTP 4")
 }
 
 /// A response/error body is arbitrary upstream text — max chars kept when

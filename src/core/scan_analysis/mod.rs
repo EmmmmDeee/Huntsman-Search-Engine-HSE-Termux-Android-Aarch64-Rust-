@@ -26,7 +26,33 @@ pub struct AnalysisFinding {
     /// therefore advisory, not a deterministic score — unlike
     /// [`crate::core::correlator`]'s confidence scoring, this is not reproducible
     /// across runs or models and must never be treated as such.
+    ///
+    /// Bounded at write time by the strength of [`evidence`](Self::evidence):
+    /// see `evidence_ceiling` in `src/ai/analysis.rs`. A finding can never be
+    /// scored more severe than the evidence it rests on is strong.
     pub severity: u8,
+    /// [`crate::core::entity::Entity::uid`]s of the entities this finding rests
+    /// on — the audit trail that makes the finding checkable rather than merely
+    /// plausible.
+    ///
+    /// Never empty on a finding produced by the current pipeline: `src/ai/`
+    /// rejects any finding whose cited evidence does not resolve to entities
+    /// actually discovered by the scan, which is what stops a model from
+    /// asserting a home address or a credential that appears nowhere in the
+    /// data. `#[serde(default)]` so analyses persisted before this field
+    /// existed still deserialise (they land here as an empty vec, correctly
+    /// signalling "this record predates grounding" rather than failing the read).
+    #[serde(default)]
+    pub evidence: Vec<String>,
+    /// What the subject should actually do about this finding.
+    ///
+    /// This crate is defensive-only (`SECURITY.md`): for people-centric OSINT
+    /// the operator is typically reviewing their own or an authorised subject's
+    /// exposure, so a finding is only actionable if it says how to reduce it.
+    /// `#[serde(default)]` for the same backward-compatibility reason as
+    /// [`evidence`](Self::evidence).
+    #[serde(default)]
+    pub remediation: String,
 }
 
 /// One scan's persisted AI-daemon analysis result.
