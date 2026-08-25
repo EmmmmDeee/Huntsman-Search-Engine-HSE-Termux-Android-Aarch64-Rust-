@@ -126,3 +126,19 @@ fn ip_target_matches_ip_fields() {
     // Should not match unrelated IPs.
     assert!(!tm.matches(&json!({ "ip_address": "5.6.7.8" })));
 }
+
+#[test]
+fn short_non_ascii_target_stays_exact_only() {
+    // Regression: MIN_SIGNIFICANT_TERM was compared against str::len() (bytes),
+    // so a two-CHARACTER non-ASCII token (6 bytes for CJK) slipped into
+    // permissive substring mode — the exact class of failure the mode gate
+    // exists to stop, landing hardest on non-Anglo targets.
+    let tm = TargetMatch::new("李明");
+    // Substring containment inside a longer name must NOT count as the subject.
+    assert!(!tm.matches(&json!({ "full_name": "李明轩" })));
+    // Exact equality still holds.
+    assert!(tm.matches(&json!({ "full_name": "李明" })));
+    // Same bug shape in Cyrillic: "ян" is 2 chars / 4 bytes.
+    let tm = TargetMatch::new("ян");
+    assert!(!tm.matches(&json!({ "full_name": "янина петрова" })));
+}

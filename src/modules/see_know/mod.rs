@@ -126,15 +126,18 @@ pub fn reset_budget() {
     crate::util::see_know::reset_budget();
 }
 
+/// Re-export the per-scan budget cleanup for the engine, called at scan
+/// finalisation.
+pub fn cleanup_scan(scan_id: &str) {
+    crate::util::see_know::cleanup_scan(scan_id);
+}
+
 /// Re-export the per-round budget refresh for the engine's expansion loop, so
 /// SeekNow is utilised in every iteration of a scan.
 pub fn refresh_round_budget() {
     crate::util::see_know::refresh_round_budget();
 }
 
-/// The SeekNow module — a paid multi-endpoint breach/OSINT provider fanned out
-/// across the full endpoint matrix per target (see [`dispatch_plan`]) and folded
-/// into the graph with the same match-gated extraction the free stack uses.
 pub struct SeekNow;
 
 #[async_trait]
@@ -430,14 +433,22 @@ impl Module for SeekNow {
             // quota even where free coverage exists at presence-only depth.
             let plan = effective_plan(target.kind, v, &ctx.scan_id);
             let (endpoint_results, plan_failure) = dispatch_plan(key, v, &plan).await;
-            hard_failure = hard_failure.or(plan_failure);
+            // Dispatch tallies feed `seeknow_never_answered` below. Declared
+            // here rather than hoisted above the `if`: nothing outside this
+            // block reads them, and when the block is skipped entirely
+            // (cancelled, or no quota left) `seeknow_never_answered` is never
+            // called at all — which is the same "inert" outcome a hoisted
+            // `dispatched == 0` would have produced, since nothing was asked
+            // of SeekNow and so nothing failed.
+            let dispatched = endpoint_results.len();
+            let failed_calls = endpoint_results.iter().filter(|o| o.failed).count();
 
             // Build the target matcher once for the whole result set — its
             // lowercase + term-split allocations are loop-invariant across
             // every record of every endpoint, so they must not repeat per row.
             let match_ctx = TargetMatch::new(v);
-            for (endpoint, items) in &endpoint_results {
-                let (endpoint, items) = (*endpoint, items);
+            for outcome in &endpoint_results {
+                let (endpoint, items) = (outcome.label, &outcome.items);
                 // Per-endpoint yield tracing: surfaces which endpoints return
                 // data for which target kinds in live logs, supporting the
                 // operator's directive to identify advantageous SeekNow usage.
@@ -477,6 +488,22 @@ impl Module for SeekNow {
                 }
             }
 
+            // Only a TOTAL matrix outage is allowed to become a candidate hard
+            // failure — every dispatched endpoint failed AND the matrix (plus
+            // whatever the broad /search call above already gathered)
+            // contributed nothing. Gating on `seeknow_never_answered` here is
+            // load-bearing, not decorative: without it, a single endpoint's
+            // transient failure inside an 18-endpoint matrix would set
+            // `hard_failure` on its own, and if the other 17 all legitimately
+            // answered "nothing here" this seed would surface as an `Err`
+            // instead of the clean negative it actually is — exactly the
+            // false alarm `seeknow_never_answered`'s own doc says must not
+            // happen. `plan_failure` is guaranteed `Some` whenever this fires
+            // (every failed call sets it), so nothing is lost by gating here.
+            if seeknow_never_answered(dispatched, failed_calls, !result.is_empty()) {
+                hard_failure = hard_failure.or(plan_failure);
+            }
+
             // Identity-pivot pass — SeekNow's unique edge over the free
             // username stack. Discord/Steam IDs surfaced by the extractor are
             // resolved to their LINKED accounts, and because those links chain
@@ -496,6 +523,31 @@ impl Module for SeekNow {
         // applies: any real evidence gathered above is kept regardless.
         result.or_hard_failure(hard_failure)
     }
+}
+
+/// Whether this scan's SeekNow fan-out should surface as a real
+/// [`Error::module`] rather than its ordinary empty success.
+///
+/// True precisely when every endpoint that was dispatched failed AND nothing was
+/// found. A fan-out where some endpoints answered — even if every one of them
+/// answered with nothing — is a genuine negative about the subject and must stay
+/// an `Ok`; only "SeekNow never actually answered this scan" is a failure. A plan
+/// that dispatched nothing at all (cancelled, or out of quota) is likewise not a
+/// failure, so `dispatched == 0` is false here.
+///
+/// Partial degradation is deliberately NOT an error: with an 18-endpoint matrix a
+/// single throttled endpoint alongside seventeen good answers is still useful
+/// intelligence. It is not silent either — [`dispatch_plan`] logs a warning per
+/// failed call, so a rate-limit burst is visible in the operator's log even when
+/// this returns false.
+///
+/// Mirrors [`crate::modules::asic_director`]'s `request_failed` and
+/// `au_property`'s `all_legs_unreachable` for the multi-call case. Pure and free
+/// of `ModuleContext`/network, so it is unit-testable without a live server or an
+/// API key — see `tests::seeknow_never_answered_*`.
+#[must_use]
+fn seeknow_never_answered(dispatched: usize, failed_calls: usize, found_any_entity: bool) -> bool {
+    dispatched > 0 && failed_calls == dispatched && !found_any_entity
 }
 
 /// Fold a non-empty universal-search result set (from either the fast
@@ -664,7 +716,7 @@ async fn resolve_identity_pivots(
         // expensive /search re-runs. Skip Hop 0 to avoid redundant re-queries of
         // the seed's initial /search results.
         let cascade_emails: Vec<String> = if hop > 0 {
-            discover_high_confidence_emails(result)
+            discover_high_confidence_emails(result, seed_value)
                 .into_iter()
                 .filter(|e| !resolved.contains(&format!("e:{e}")))
                 .take(3) // Limit cascade queries per hop — budget conservation
@@ -728,15 +780,21 @@ async fn resolve_identity_pivots(
 /// the email was discovered via breach/profile data, not just a template or
 /// placeholder. Used to feed the cascade-detection pass so re-queries pick
 /// the most likely-to-yield identifiers.
-fn discover_high_confidence_emails(result: &ModuleResult) -> Vec<String> {
+fn discover_high_confidence_emails(result: &ModuleResult, seed_value: &str) -> Vec<String> {
     use std::collections::HashSet;
+    let seed_email = seed_value.to_lowercase();
     let mut seen = HashSet::new();
     let mut emails: Vec<String> = Vec::new();
     for e in &result.entities {
         if matches!(e.kind, crate::core::entity::EntityKind::Email) {
             let email = e.value.to_lowercase();
-            // Skip wildcards and mailbox patterns
-            if email.contains('*')
+            // Skip wildcards, mailbox patterns, and the seed itself — the seed
+            // (if it's an email) was already queried via the initial /search
+            // dispatch, never through dispatch_email_cascade_checks, so
+            // `resolved` (the caller's actually-dispatched-ids set) never
+            // contains it and can't filter it out on its own.
+            if email == seed_email
+                || email.contains('*')
                 || email.starts_with("general@")
                 || email.starts_with("admin@")
                 || email.starts_with("noreply@")

@@ -106,9 +106,8 @@ impl Module for Proxycurl {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) {
-            Some(k) => k,
-            None => return Ok(ModuleResult::new()),
+        let Some(key) = ctx.key_opt(KEY_ENV) else {
+            return Ok(ModuleResult::new());
         };
 
         let Some(api_url) = url::profile_url(target) else {

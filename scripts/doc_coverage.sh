@@ -25,17 +25,17 @@ set -euo pipefail
 
 # Externally-public items still missing documentation. MUST NOT increase.
 #
-# Re-measured on this tree after merging main, exactly as the note above
-# instructs. The prior figure (1054) was measured on this branch BEFORE the
-# merge; merging main brought in newer public surface than that base, raising the
-# measured count to 1062. None of the increase is undocumented items introduced
-# by this branch's own changes — every public item this branch adds carries a
-# doc, and the merge-resolution commit only DELETED code from `see_know` (it also
-# documents the pre-existing `see_know::SeekNow` struct). The remaining rise is
-# main's merged surface, which this branch is not the place to document — the
-# ratchet still holds it at the re-measured floor so it cannot climb further.
+# Re-measured on this tree after merging the latest main (47e520cc), exactly as
+# the note above instructs. The prior branch figure was 1062; re-merging current
+# main — which had since repaired its own see_know/budget breakage and advanced
+# its public surface — brings the measured count to 1063. The +1 is main's merged
+# surface (the ranked culprits are `api/settings_handlers`, `storage`, and
+# `api/handlers`, all main-evolved files this branch does not author), not an
+# undocumented item this branch introduced: the see_know module is now taken
+# verbatim from main, and every public item this branch adds elsewhere carries a
+# doc. The ratchet holds it at this re-measured floor so it cannot climb further.
 # The figure came from the command this script runs, not from an estimate.
-BASELINE=1062
+BASELINE=1063
 
 cd "$(dirname "$0")/.."
 

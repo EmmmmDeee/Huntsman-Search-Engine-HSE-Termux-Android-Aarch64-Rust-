@@ -1332,6 +1332,27 @@ mod numeric_identifier_coercion_tests {
                 "Null Island rejected"
             );
         }
+        // Regression: a JSON `null` on the first-tried key name must fall
+        // through to the next key in the fallback list, not be treated as
+        // "present" and stop the search — `item.get("latitude")` returns
+        // `Some(&Value::Null)` for an explicit null, which previously made
+        // `parse_coord` give up before ever trying the `"lat"` fallback that
+        // carried the real value.
+        {
+            let (mut seen, mut r) = (HashSet::new(), ModuleResult::new());
+            extract_geo_entities(
+                &json!({"latitude": null, "lat": -33.8688, "longitude": 151.2093, "lon": null}),
+                "ip_info",
+                "s",
+                true,
+                &mut seen,
+                &mut r,
+            );
+            assert!(
+                r.entities.iter().any(|e| e.kind == EntityKind::Coordinates),
+                "a null on the preferred key must not suppress the valid fallback key's value"
+            );
+        }
         // Location hint, timezone, ASN + org (ip_info only).
         {
             let (mut seen, mut r) = (HashSet::new(), ModuleResult::new());
@@ -1560,7 +1581,7 @@ mod numeric_identifier_coercion_tests {
         result.push(Entity::new(EntityKind::Email, "*@example.com", 0.9, "t"));
         result.push(Entity::new(EntityKind::Username, "jmeyer", 0.9, "t"));
 
-        let emails = discover_high_confidence_emails(&result);
+        let emails = discover_high_confidence_emails(&result, "unrelated@example.com");
         assert_eq!(
             emails,
             vec!["jordan.meyer@example.com"],
@@ -1576,13 +1597,35 @@ mod numeric_identifier_coercion_tests {
         result.push(Entity::new(EntityKind::Email, "Jordan.Meyer@Example.com", 0.9, "t"));
         result.push(Entity::new(EntityKind::Email, "jordan.meyer@example.com", 0.9, "t"));
 
-        let emails = discover_high_confidence_emails(&result);
+        let emails = discover_high_confidence_emails(&result, "unrelated@example.com");
         assert_eq!(
             emails.len(),
             1,
             "case-variant duplicates must collapse to a single cascade query"
         );
         assert_eq!(emails[0], "jordan.meyer@example.com");
+    }
+
+    #[test]
+    fn discover_high_confidence_emails_excludes_the_seed_itself() {
+        // Regression: the doc comment on discover_high_confidence_emails has
+        // always promised to exclude "already-queried seeds (the seed_value
+        // itself, if it's an email)", but the function never took a seed
+        // parameter to filter against — it returned the seed's own email
+        // unfiltered, so a cascade hop would re-query (via
+        // /network/email-check) an identifier already covered by the
+        // seed's initial /search dispatch, burning one of only 3 cascade
+        // slots per hop on a redundant lookup.
+        let mut result = ModuleResult::new();
+        result.push(Entity::new(EntityKind::Email, "jordan.meyer@example.com", 0.9, "t"));
+        result.push(Entity::new(EntityKind::Email, "pivot.found@example.com", 0.9, "t"));
+
+        let emails = discover_high_confidence_emails(&result, "Jordan.Meyer@Example.com");
+        assert_eq!(
+            emails,
+            vec!["pivot.found@example.com"],
+            "the seed email (case-insensitively) must not be re-offered for cascade dispatch"
+        );
     }
 
     #[tokio::test]
@@ -1749,3 +1792,49 @@ mod numeric_identifier_coercion_tests {
              it was dropped before the geo wiring was added to absorb_search_hits"
         );
     }
+
+// ── Fail-closed: a failed SeekNow fan-out is not "no records" ────────────────
+//
+// SeekNow is a breach/stealer source, so the difference between "we asked and
+// the subject is clean" and "our key was throttled and we never got an answer"
+// is the difference between intelligence and a false negative. `dispatch_plan`
+// used to `.unwrap_or_default()` every call, collapsing both into the same
+// empty vector. These pin the policy that replaced it.
+
+#[test]
+fn seeknow_never_answered_when_every_dispatched_call_failed_and_nothing_found() {
+    // The case that used to be silent: an 18-endpoint matrix blanked by a
+    // rate-limit burst, reported as a clean scan finding nothing.
+    assert!(seeknow_never_answered(18, 18, false));
+    assert!(seeknow_never_answered(1, 1, false));
+}
+
+#[test]
+fn seeknow_answered_is_not_a_failure_even_when_it_found_nothing() {
+    // Endpoints answered and the subject is simply clean — a genuine negative,
+    // and the single most common outcome. Must stay an `Ok`.
+    assert!(!seeknow_never_answered(18, 0, false));
+    // Partial degradation: seventeen good answers alongside one throttled
+    // endpoint is still useful intelligence, not a module failure. It is not
+    // silent either — `dispatch_plan` warns per failed call.
+    assert!(!seeknow_never_answered(18, 17, false));
+    assert!(!seeknow_never_answered(2, 1, false));
+}
+
+#[test]
+fn seeknow_failure_is_suppressed_once_anything_was_found() {
+    // Entities reached the graph, so the scan did learn something; a failure
+    // now would discard real findings. Mirrors `asic_director::request_failed`,
+    // which is also gated on `!found_any_entity`.
+    assert!(!seeknow_never_answered(18, 18, true));
+    assert!(!seeknow_never_answered(1, 1, true));
+}
+
+#[test]
+fn seeknow_dispatching_nothing_is_not_a_failure() {
+    // Cancelled mid-scan, or no quota left, so nothing was ever asked of
+    // SeekNow. Nothing was asked, so nothing failed — `dispatched == 0` must
+    // never trip the error, or every cancelled scan would report a dead key.
+    assert!(!seeknow_never_answered(0, 0, false));
+    assert!(!seeknow_never_answered(0, 0, true));
+}

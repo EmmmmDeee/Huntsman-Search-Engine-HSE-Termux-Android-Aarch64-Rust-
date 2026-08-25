@@ -1,6 +1,34 @@
 use crate::api::scan_export::csv_escape;
 
     #[test]
+    fn reject_non_loopback_allows_loopback_and_refuses_everything_else() {
+        use super::reject_non_loopback;
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+        for ip in [
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ] {
+            let peer = SocketAddr::new(ip, 8080);
+            assert!(
+                reject_non_loopback(&peer, "x is loopback-only").is_none(),
+                "{ip} must be allowed"
+            );
+        }
+
+        for ip in [
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7)),
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        ] {
+            let peer = SocketAddr::new(ip, 8080);
+            let rejection = reject_non_loopback(&peer, "x is loopback-only")
+                .expect("non-loopback peer must be rejected");
+            assert_eq!(rejection.status(), axum::http::StatusCode::FORBIDDEN);
+        }
+    }
+
+    #[test]
     fn validated_target_accepts_good_and_prefixes_bad() {
         use super::validated_target;
         use crate::core::scan::TargetKind;

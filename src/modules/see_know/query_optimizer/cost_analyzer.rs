@@ -63,14 +63,19 @@ impl CostAnalyzer {
         latency_points * time_stress
     }
 
-    /// Get cascade cost multiplier by depth
+    /// Get cascade cost multiplier by depth. `0` and `1` are both the
+    /// baseline "no cascade overhead" case — this function is written
+    /// against a 1-based depth convention, but `resolve_identity_pivots`
+    /// (the module's own hop loop) counts hops 0-based, so a `0` must not
+    /// fall through to the same 20x "beyond 4 hops" penalty as an
+    /// out-of-range depth.
     pub fn get_cascade_multiplier(&self, cascade_depth: u8) -> f32 {
         match cascade_depth {
-            1 => 1.0,  // No cascade overhead
-            2 => 2.5,  // Secondary queries
-            3 => 5.0,  // Tertiary queries
-            4 => 10.0, // Quaternary queries
-            _ => 20.0, // Beyond 4 hops
+            0 | 1 => 1.0, // No cascade overhead
+            2 => 2.5,     // Secondary queries
+            3 => 5.0,     // Tertiary queries
+            4 => 10.0,    // Quaternary queries
+            _ => 20.0,    // Beyond 4 hops
         }
     }
 
@@ -194,6 +199,12 @@ mod tests {
     #[test]
     fn test_cascade_multipliers() {
         let analyzer = CostAnalyzer::new();
+        // Regression: depth 0 must be the same "no overhead" baseline as
+        // depth 1, not fall through to the 20x "beyond 4 hops" catch-all —
+        // the module's own hop loop (resolve_identity_pivots) counts hops
+        // 0-based, so a future per-hop wiring of this multiplier must not
+        // 20x-penalize the seed hop.
+        assert_eq!(analyzer.get_cascade_multiplier(0), 1.0);
         assert_eq!(analyzer.get_cascade_multiplier(1), 1.0);
         assert_eq!(analyzer.get_cascade_multiplier(2), 2.5);
         assert_eq!(analyzer.get_cascade_multiplier(3), 5.0);

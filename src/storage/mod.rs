@@ -211,10 +211,20 @@ const SCHEMA_DDL: &str = "
             -- only — which is exactly how the `best_latitude` bug below
             -- survived: the tests build `:memory:` stores and so always saw
             -- the new definition.
+            -- The CREATE below is also IF NOT EXISTS: not to freeze the
+            -- definition (the unconditional DROP above already prevents
+            -- that for a single connection's own sequential open) but so
+            -- two connections racing to open this same file concurrently
+            -- (expected under cfg(test), where every test shares one
+            -- store, and possible in production between hse and
+            -- hse-ai-daemon) can't have the loser's CREATE fail because
+            -- the winner's DROP+CREATE ran in between the loser's own
+            -- DROP and CREATE. Both sides run the same schema, so
+            -- whichever wins defines an identical view.
             DROP VIEW IF EXISTS rf_trackable;
             DROP VIEW IF EXISTS rf_shared_names;
             DROP VIEW IF EXISTS rf_devices;
-            CREATE VIEW rf_devices AS
+            CREATE VIEW IF NOT EXISTS rf_devices AS
             SELECT s.scan_id,
                    s.network_id,
                    MIN(s.radio)                                   AS radio,
@@ -267,7 +277,7 @@ const SCHEMA_DDL: &str = "
             -- Names carried by more than one radio: a mesh deployment or a
             -- 2.4/5 GHz pair. The radio count is the size of the installation,
             -- which is how a commercial site is told from a house.
-            CREATE VIEW rf_shared_names AS
+            CREATE VIEW IF NOT EXISTS rf_shared_names AS
             SELECT scan_id, name, COUNT(DISTINCT network_id) AS radios
               FROM rf_sightings
              WHERE name IS NOT NULL AND name <> ''
@@ -276,7 +286,7 @@ const SCHEMA_DDL: &str = "
 
             -- Only fixed-address devices are followable across sightings; a
             -- randomised address seen twice is not evidence of one device.
-            CREATE VIEW rf_trackable AS
+            CREATE VIEW IF NOT EXISTS rf_trackable AS
             SELECT * FROM rf_devices WHERE locally_admin = 0;
 
             -- Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN). Keyed by
@@ -756,46 +766,60 @@ impl Store {
         let mut superseded: Vec<i64> = Vec::new();
         let early_return = {
             let mut stmt = conn.prepare_cached(
-                "SELECT rowid, entity_uids FROM correlations WHERE scan_id = ?1 AND rule_id = ?2",
+                "SELECT rowid, entity_uids, description FROM correlations \
+                 WHERE scan_id = ?1 AND rule_id = ?2",
             )?;
             let mut rows = stmt.query(params![c.scan_id, c.rule_id])?;
             let mut already_represented = false;
             while let Some(row) = rows.next()? {
                 let rowid: i64 = row.get(0)?;
                 let j: String = row.get(1)?;
-                // A uid list that will not parse must take NO part in the
-                // containment decision. `unwrap_or_default()` here substituted an
-                // EMPTY set, and the empty set is a subset of every set, so the
-                // `old_set.is_subset(&new_set)` arm below matched unconditionally
-                // and the row was queued into `superseded` — then hard-DELETEd by
-                // the transaction below. One unparseable value therefore destroyed
-                // a stored finding outright, silently, and `upsert_correlation`
-                // still returned `Ok(())`. That is the very outcome the atomic
-                // transaction underneath exists to prevent, arrived at by a
-                // different route.
-                //
-                // Skip the row instead: it is neither evidence that this
-                // correlation is already represented, nor evidence that it is
-                // superseded, because its membership is unknown. Leaving a
-                // possibly-stale row costs a duplicate; deleting it loses
-                // intelligence that cannot be recovered. Logged rather than
-                // propagated, matching `deserialize_rows`' house rule that one bad
-                // row must not fail the whole operation.
-                let old_uids: Vec<String> = match serde_json::from_str(&j) {
+                let old_desc: String = row.get(2)?;
+                let old_uids = match serde_json::from_str::<Vec<String>>(&j) {
                     Ok(v) => v,
                     Err(e) => {
+                        // Fail closed, not open: `unwrap_or_default()` here used
+                        // to fall back to an empty Vec, and an empty set is a
+                        // SUBSET of every other set — so a row whose uid list
+                        // failed to parse (a truncated write, or a value from a
+                        // schema that has since drifted) was judged "superseded"
+                        // by the very next correlation upserted under the same
+                        // (scan_id, rule_id) and silently DELETED, even though
+                        // its `data_json` (the finding itself) was perfectly
+                        // intact. Skip it instead: it participates in neither
+                        // containment check below, so it can never be marked
+                        // superseded and never falsely satisfies the
+                        // already-represented early return. The new row is
+                        // still inserted and the two coexist rather than
+                        // dedupe — a live finding survives at the cost of a
+                        // rarer duplicate, not the reverse.
                         tracing::warn!(
                             scan_id = %c.scan_id,
                             rule_id = %c.rule_id,
                             rowid,
                             error = %e,
-                            "correlations.entity_uids will not parse; row skipped for supersede, left intact"
+                            "correlation row's entity_uids failed to parse — \
+                             excluded from supersede comparison, not deleted"
                         );
                         continue;
                     }
                 };
                 let old_set: HashSet<&str> = old_uids.iter().map(String::as_str).collect();
                 if new_set.is_subset(&old_set) {
+                    // EQUAL sets whose description changed are the capped-sample
+                    // case: a rule that samples its members (AU-037 sorts then
+                    // truncates to 20 secrets + 5 identities) publishes a sample,
+                    // not the cluster, so the "a cluster only grows" premise
+                    // above does not hold for it. When later rounds add members
+                    // that all sort outside the retained sample, the uid list is
+                    // byte-identical while the count in the description has
+                    // grown. Treating that as "already represented" froze the
+                    // FIRST count in the dossier — reporting 25 exposed
+                    // passwords when 30 were found. Prefer the newer row.
+                    if old_desc != c.description && old_set.is_subset(&new_set) {
+                        superseded.push(rowid);
+                        continue;
+                    }
                     // Subset of (or equal to) a stored correlation — already represented.
                     already_represented = true;
                     break;
