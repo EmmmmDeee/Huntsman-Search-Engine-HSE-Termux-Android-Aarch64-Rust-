@@ -138,6 +138,10 @@ pub fn refresh_round_budget() {
     crate::util::see_know::refresh_round_budget();
 }
 
+/// The SeekNow breach/stealer provider module.
+///
+/// Highest-priority provider (`u8::MAX`): its paid endpoint matrix is dispatched
+/// ahead of the free stack for every seed it accepts.
 pub struct SeekNow;
 
 #[async_trait]
@@ -440,7 +444,6 @@ impl Module for SeekNow {
             let plan = effective_plan(target.kind, v, &ctx.scan_id);
             let (endpoint_results, plan_failure) = dispatch_plan(key, v, &plan).await;
             hard_failure = hard_failure.or(plan_failure);
-            let endpoint_results = dispatch_plan(key, v, &plan).await;
             dispatched = endpoint_results.len();
             failed_calls = endpoint_results.iter().filter(|o| o.failed).count();
 
@@ -506,6 +509,19 @@ impl Module for SeekNow {
         // never read the same as "SeekNow legitimately found nothing" — see
         // `ModuleResult::or_hard_failure`'s own doc for the tolerance rule this
         // applies: any real evidence gathered above is kept regardless.
+        //
+        // `seeknow_never_answered` is the belt to that braces: every dispatched
+        // endpoint failing while nothing was found is an outage even if no typed
+        // error survived to `hard_failure`, so the scan must not record a clean
+        // empty success. A partial failure deliberately does not reach here.
+        if seeknow_never_answered(dispatched, failed_calls, !result.entities.is_empty()) {
+            hard_failure = hard_failure.or_else(|| {
+                Some(Error::module(
+                    "see_know",
+                    "every dispatched SeekNow endpoint failed for this seed",
+                ))
+            });
+        }
         result.or_hard_failure(hard_failure)
     }
 }

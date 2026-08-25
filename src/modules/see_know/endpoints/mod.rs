@@ -229,7 +229,7 @@ pub(super) async fn dispatch_plan(
     key: &str,
     value: &str,
     plan: &[EndpointCall],
-) -> (Vec<(&'static str, Vec<Value>)>, Option<Error>) {
+) -> (Vec<EndpointOutcome>, Option<Error>) {
     let futures = plan.iter().copied().map(|call| {
         let value_owned = value.to_string();
         async move { (call.label(), call.invoke(key, &value_owned).await) }
@@ -239,7 +239,20 @@ pub(super) async fn dispatch_plan(
     let out = join_all(futures)
         .await
         .into_iter()
-        .map(|(label, outcome)| super::fold_endpoint_result(label, outcome, &mut first_failure))
+        .map(|(label, outcome)| {
+            // Record whether the CALL failed before folding, because the fold
+            // deliberately flattens an error into an empty item list so that
+            // per-record extraction is unaffected. Without capturing it here the
+            // caller cannot tell a throttled endpoint from one that genuinely
+            // had nothing — the exact collapse `EndpointOutcome` exists to stop.
+            let failed = outcome.is_err();
+            let (label, items) = super::fold_endpoint_result(label, outcome, &mut first_failure);
+            EndpointOutcome {
+                label,
+                items,
+                failed,
+            }
+        })
         .collect();
     (out, first_failure)
 }

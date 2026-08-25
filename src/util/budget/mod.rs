@@ -45,10 +45,15 @@ use std::sync::{LazyLock, Mutex};
 /// `/api/v1/stats` handler and the `hse doctor` diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BudgetSnapshot {
+    /// Calls already spent by the CURRENT scan.
     pub scan_used: u32,
+    /// Effective per-scan ceiling: runtime override, else env var, else default.
     pub scan_cap: u32,
+    /// Calls spent by every scan in this process since start.
     pub session_used: u32,
+    /// Effective per-session ceiling — the operator's daily-quota contract.
     pub session_cap: u32,
+    /// True once the provider reported the quota spent, latched for the scan.
     pub quota_exhausted: bool,
 }
 
@@ -233,7 +238,12 @@ impl QuotaBudget {
     /// Mirrors [`scan_cap`](Self::scan_cap)'s own precedence exactly: an override
     /// or env value of `0` means "unset", not "cap at zero".
     pub fn operator_pinned_scan_cap(&self) -> bool {
-        if self.cap_override.load(Ordering::Acquire) > 0 {
+        // Read the runtime override from the same per-scan state `scan_cap`
+        // reads it from, so the two cannot drift: the override is scan-scoped
+        // (installed by the engine at scan start, cleared by `reset_scan`), not
+        // a process-wide atomic.
+        let scan = current_scan();
+        if self.lock().get(&scan).map_or(0, |s| s.cap_override) > 0 {
             return true;
         }
         std::env::var(self.env_scan_cap_var)

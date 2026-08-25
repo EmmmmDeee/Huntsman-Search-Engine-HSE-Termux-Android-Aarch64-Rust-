@@ -87,6 +87,8 @@ pub(super) fn cache_put(key: String, items: Vec<Value>) {
 /// can never drift from the literal `base_url` resolves against.
 const DEFAULT_BASE: &str = "https://see-know.ru/api/v1";
 
+/// The API base URL in force: the operator's override when one is set and vetted,
+/// otherwise [`DEFAULT_BASE`].
 pub fn base_url() -> String {
     // Default promoted (2026-07-29) to `.ru` — the operator-designated primary
     // endpoint SeekNow is currently using. Prior history: default started on
@@ -355,7 +357,7 @@ pub(super) fn transport_err_is_terminal_auth(err_str: &str) -> bool {
     // the fallback loop kept retrying every alternate domain with the same
     // rejected key instead of failing fast.
     let lower = err_str.to_lowercase();
-    err_str.contains("401")
+    contains_401_as_a_status_code(err_str)
         || lower.contains("unauthorized")
         || lower.contains("invalid_api_key")
         || lower.contains("invalid api key")

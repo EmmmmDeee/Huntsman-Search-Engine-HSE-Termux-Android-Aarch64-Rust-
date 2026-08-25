@@ -18,6 +18,10 @@ mod templates; // `impl Store`: cross-scan pathway-template learning
 pub use entities::EvidenceAnomaly;
 pub use signal::{RfDeviceRow, RfSummary};
 
+/// The SQLite WAL-backed persistence layer.
+///
+/// One `Store` owns one connection behind a mutex; every scan, entity,
+/// correlation, relation and event for the whole application flows through it.
 pub struct Store {
     conn: Mutex<Connection>,
 }
@@ -444,6 +448,8 @@ fn deserialize_rows<T: serde::de::DeserializeOwned>(raw: Vec<String>, context: &
 }
 
 impl Store {
+    /// Open (creating if absent) the database at `path`, applying the pragmas
+    /// and the `CREATE … IF NOT EXISTS` schema, then stamping `SCHEMA_VERSION`.
     pub fn open(path: &str) -> Result<Self> {
         // Performance pragmas are env-tunable (low-RAM Termux devices may want a
         // smaller page cache / mmap); the schema itself is static (SCHEMA_DDL).
@@ -586,6 +592,7 @@ impl Store {
 
     // ── Scans ──────────────────────────────────────────────────────────────
 
+    /// Insert `scan`, or update every mutable column when its id already exists.
     pub fn upsert_scan(&self, scan: &Scan) -> Result<()> {
         let json = serde_json::to_string(scan)?;
         let conn = self.conn.lock();
@@ -641,10 +648,14 @@ impl Store {
             .map_err(Into::into)
     }
 
+    /// The scan with this id, or `None` when no such row exists. A corrupt
+    /// `data_json` on a matched row is an `Err`, never a silent `None`.
     pub fn get_scan(&self, id: &str) -> Result<Option<Scan>> {
         self.query_one_json("SELECT data_json FROM scans WHERE id = ?1", params![id])
     }
 
+    /// The most recent `limit` scans, newest first, with a deterministic
+    /// tie-break for scans sharing a start second.
     pub fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
         let raw: Vec<String> = {
             let conn = self.conn.lock();
@@ -775,7 +786,35 @@ impl Store {
                 let rowid: i64 = row.get(0)?;
                 let j: String = row.get(1)?;
                 let old_desc: String = row.get(2)?;
-                let old_uids = serde_json::from_str::<Vec<String>>(&j).unwrap_or_default();
+                // A uid list that will not parse must take NO part in the
+                // containment decision. `unwrap_or_default()` substituted an EMPTY
+                // set, and the empty set is a subset of every set, so the
+                // `old_set.is_subset(&new_set)` arm below matched unconditionally
+                // and the row was queued into `superseded` — then hard-DELETEd by
+                // the transaction below. One unparseable value therefore destroyed
+                // a stored finding outright, silently, while still returning
+                // `Ok(())`.
+                //
+                // Skip the row instead: it is neither evidence that this
+                // correlation is already represented, nor evidence that it is
+                // superseded, because its membership is unknown. Leaving a
+                // possibly-stale row costs a duplicate; deleting it loses
+                // intelligence that cannot be recovered. Logged rather than
+                // propagated, matching `deserialize_rows`' house rule that one bad
+                // row must not fail the whole operation.
+                let old_uids: Vec<String> = match serde_json::from_str(&j) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            scan_id = %c.scan_id,
+                            rule_id = %c.rule_id,
+                            rowid,
+                            error = %e,
+                            "correlations.entity_uids will not parse — row skipped for supersede, left intact"
+                        );
+                        continue;
+                    }
+                };
                 let old_set: HashSet<&str> = old_uids.iter().map(String::as_str).collect();
                 if new_set.is_subset(&old_set) {
                     // EQUAL sets whose description changed are the capped-sample
