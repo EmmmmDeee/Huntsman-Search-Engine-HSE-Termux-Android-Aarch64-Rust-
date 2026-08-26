@@ -55,6 +55,45 @@ fn consumer_dot_boundary() {
     );
 }
 
+#[tokio::test]
+async fn freemail_country_variants_are_skipped_like_the_dot_com_form() {
+    // CONSUMER_PROVIDERS previously listed only the bare `.com` form of
+    // hotmail/live/yahoo, omitting their country-flavoured aliases
+    // (hotmail.co.uk, yahoo.de, …) — the SAME globally-hosted Microsoft/Yahoo
+    // backend under cosmetic per-country branding, not a real regional
+    // signal. These fell through to ccTLD inference and were geolocated as
+    // if the domain carried a real signal, unlike the identical bare `.com`
+    // form. Deliberately narrower than a full `util::domains::is_freemail`
+    // delegation would be: that canonical list also includes GENUINELY
+    // regional ISP webmail brands (bigpond.com/bigpond.net.au — see
+    // `bigpond_email_produces_two_entities` below), which this module must
+    // keep treating as a real AU geo signal via REGIONAL_PROVIDERS.
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = ModuleContext {
+        scan_id: "s".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    for addr in [
+        "alice@hotmail.co.uk",
+        "alice@yahoo.de",
+        "alice@live.fr",
+        "alice@hotmail.com",
+    ] {
+        let result = EmailHeaderGeo
+            .process(&Target::new(TargetKind::Email, addr), &ctx)
+            .await
+            .expect("should succeed");
+        assert!(
+            result.entities.is_empty(),
+            "{addr} is a freemail provider and must carry no geo signal: {:?}",
+            result.entities
+        );
+    }
+}
+
 #[test]
 fn unknown_provider_returns_none() {
     assert!(detect_corporate_provider("company.com").is_none());
