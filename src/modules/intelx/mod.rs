@@ -59,9 +59,6 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::http::RequestBuilderExt;
-use crate::util::http::error_snippet;
-
 pub(crate) const KEY_ENV: &str = "HUNTSMAN_INTELX_KEY";
 pub(crate) const BASE: &str = "https://2.intelx.io";
 pub(crate) const MAX_RESULTS: u32 = 50;
@@ -313,53 +310,31 @@ impl Module for IntelX {
             "media": 0,
             "terminate": []
         });
-        // Key cascade — START phase only. A dead/rate-limited key on the search
-        // start rotates to the next usable pooled IntelX key and restarts the
-        // search, so one process() call spends every credential the pool holds
-        // before failing. The cascade CANNOT extend to the poll/terminate phases:
-        // the returned `search_id` is bound to the account that started the
-        // search, so those phases must stay on whichever key won here (threaded
-        // via the mutable `key` below). `tried` stops re-handing a burned key.
-        let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut key = initial_key.to_string();
-        let start: StartResp = 'cascade: loop {
-            tried.insert(key.clone());
-            let mut retries = 0u32;
-            loop {
-                let resp = ctx
-                    .http
+        // Key cascade via the shared primitive (T2: keyed-API consolidation) —
+        // START phase only. A dead/rate-limited key on the search start rotates
+        // to the next usable pooled IntelX key and restarts the search, so one
+        // process() call spends every credential the pool holds before failing.
+        // The cascade CANNOT extend to the poll/terminate phases: the returned
+        // `search_id` is bound to the account that started the search, so those
+        // phases must stay on whichever key won here — `keyed_cascade_with_key`
+        // (not the plain `keyed_cascade`) hands back that winning key for
+        // exactly this reason. `absent_statuses: &[]`: every non-2xx here is
+        // either a retryable 429 (handled inside the primitive, same 2-retry/
+        // 4s-cap budget this loop used before) or a real failure — there is no
+        // "no results" status for a search *start*.
+        let Some((resp, key)) =
+            crate::util::http::keyed_cascade_with_key(ctx, SRC, initial_key, &[], |k| {
+                ctx.http
                     .post(format!("{BASE}/intelligent/search"))
-                    .header("x-key", &key)
+                    .header("x-key", k)
                     .header("Accept", "application/json")
                     .json(&body)
-                    .send_tagged(SRC)
-                    .await?;
-                let status = resp.status();
-                if status.is_success() {
-                    break 'cascade crate::util::http::json_decode(SRC, resp).await?;
-                }
-                let code = status.as_u16();
-                if code == 429 && retries < 2 {
-                    // 15s module budget across search + poll phases: cap each
-                    // backoff at 4s so two retries can't exhaust process()'s timeout.
-                    let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 4, 4);
-                    retries += 1;
-                    tokio::time::sleep(Duration::from_secs(retry_secs)).await;
-                    continue;
-                }
-                crate::util::http::note_keyed_error(code, SRC, &key, ctx);
-                if crate::util::http::is_keyed_error_status(code)
-                    && let Some(next) = ctx.next_pooled_key(SRC, &tried)
-                {
-                    key = next;
-                    continue 'cascade;
-                }
-                return Err(Error::module(
-                    "intelx",
-                    format!("HTTP {status} on start: {}", error_snippet(resp).await),
-                ));
-            }
+            })
+            .await?
+        else {
+            return Ok(ModuleResult::new());
         };
+        let start: StartResp = crate::util::http::json_decode(SRC, resp).await?;
         let search_id = match (start.id, start.status) {
             (Some(id), Some(0) | None) if !id.is_empty() => id,
             (_, Some(1)) => return Ok(ModuleResult::new()), // invalid term
