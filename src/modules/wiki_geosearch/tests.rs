@@ -66,6 +66,52 @@ fn empty_or_placeless_response_yields_nothing() {
 }
 
 #[test]
+fn invalid_coordinates_are_skipped_not_emitted() {
+    // Regression guard: the GeoSearch API returns raw floats with no
+    // validation of its own. A null-island row (lat=lon=0, a common
+    // upstream-bug default) or an out-of-range row must not become a
+    // Coordinates entity — only presence of a value was checked before,
+    // never validity.
+    let places = vec![
+        GeoPlace {
+            pageid: Some(1),
+            title: Some("Null Island Glitch".into()),
+            lat: Some(0.0),
+            lon: Some(0.0),
+            dist: Some(10.0),
+        },
+        GeoPlace {
+            pageid: Some(2),
+            title: Some("Out Of Range".into()),
+            lat: Some(200.0),
+            lon: Some(-999.0),
+            dist: Some(20.0),
+        },
+        GeoPlace {
+            pageid: Some(3),
+            title: Some("Sydney Opera House".into()),
+            lat: Some(-33.8568),
+            lon: Some(151.2153),
+            dist: Some(0.0),
+        },
+    ];
+    let ents = build_entities("-33.8568,151.2153", &places, "scan");
+    assert_eq!(
+        ents.len(),
+        1,
+        "only the one place with valid coords should be emitted, got {ents:?}"
+    );
+    assert!(
+        ents[0]
+            .evidence
+            .iter()
+            .any(|ev| ev.attributes.get("title").map(String::as_str)
+                == Some("Sydney Opera House")),
+        "the surviving entity must be the valid place, not a null-island/out-of-range one"
+    );
+}
+
+#[test]
 fn module_metadata_is_free_geo_coordinate_consumer() {
     let m = WikiGeoSearch;
     assert_eq!(m.name(), "wiki_geosearch");
