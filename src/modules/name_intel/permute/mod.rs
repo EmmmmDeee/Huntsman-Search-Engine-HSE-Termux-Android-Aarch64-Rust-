@@ -687,7 +687,16 @@ pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<ScoredEmail> {
             }
         }
     }
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    // Sort by score descending, then break ties deterministically on the address
+    // (ascending). The `.take(MAX_EMAILS)` cutoff below shapes the scan graph —
+    // surviving speculative emails become new lead targets — so *which* equal-score
+    // addresses survive must not depend on input/insertion order. Matches the
+    // engine's explicit tie-break convention.
+    scored.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.cmp(&b.1))
+    });
     scored
         .into_iter()
         .take(MAX_EMAILS)

@@ -92,15 +92,19 @@ pub async fn cmd_export(
             )));
         }
     };
-    // `full` / `debug` embed full PII *and* the raw API corpus — including any
-    // third-party keys harvested during the scan — which is why the auto-saved
-    // dossier writes them 0600 + atomically (`export/dossier.rs`). An explicit
-    // `--out` for those formats must get the identical private guarantee, or it
-    // silently drops the same secrets into a world-readable, umask-default file
-    // (a real exposure on a shared Android device). The shareable scan exports
-    // (json/csv/gexf/report) keep the plain write so an operator can hand them
-    // off without first having to loosen 0600 perms.
-    let sensitive = matches!(fmt.as_str(), "full" | "debug");
+    // A `--out` file gets 0600 (atomic, private) iff it MAY carry unredacted
+    // secrets — harvested third-party API keys, breach passwords, credential-class
+    // entity values — otherwise a plain umask-default write silently drops them
+    // into a world-readable file (a real exposure on a shared Android device, the
+    // same secrets the auto-saved dossier writes 0600 via `export/dossier.rs`).
+    // `full`/`debug` embed the full PII + raw API corpus by contract; `report`
+    // embeds the full `Entity` list and CANNOT be `--redact`ed (see above), so it
+    // always carries them too; json/csv/gexf carry them only when the operator did
+    // NOT pass `--redact`. A redacted shareable export (json/csv/gexf) and the
+    // value-free `events` log stay world-readable so an operator can still hand
+    // them off without first loosening perms.
+    let sensitive = matches!(fmt.as_str(), "full" | "debug" | "report")
+        || (matches!(fmt.as_str(), "json" | "csv" | "gexf") && !redact);
     match out {
         Some(path) => {
             if sensitive {

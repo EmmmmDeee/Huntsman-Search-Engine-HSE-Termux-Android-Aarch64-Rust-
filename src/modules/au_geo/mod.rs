@@ -263,6 +263,24 @@ async fn query_layer(
         return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
     let body = read_text(SRC, resp).await?;
+    // ArcGIS/Esri REST characteristically returns errors as HTTP 200 with a
+    // `{"error":{…}}` envelope (a WAF interstitial can too), so a 200 whose body
+    // is not a decodable `QueryResp` is NOT "point not in this layer": collapsing
+    // it to `Ok(None)` fails OPEN — the point reports as having no Australian
+    // geography AND records a circuit-breaker success, so a systematic upstream
+    // 200-error becomes indistinguishable from a genuine miss and never trips
+    // outage detection. Decode FAILURE ⇒ `Err` (fail closed, mirroring `geocode`);
+    // decode-success-but-no-feature stays a real miss (`parse_feature`'s `Ok(None)`).
+    // The serde error is deliberately NOT interpolated: a column number could trip
+    // the engine's `429`/`402` rate-limit text match, and serde quotes offending
+    // values into the unredacted `ModuleError` event.
+    if serde_json::from_str::<QueryResp>(&body).is_err() {
+        return Err(crate::core::error::Error::module(
+            SRC,
+            "ArcGIS layer query returned a success status whose body did not decode \
+             as a feature response (error envelope or WAF page)",
+        ));
+    }
     Ok(parse_feature(&body, spec.name_field, spec.code_field))
 }
 

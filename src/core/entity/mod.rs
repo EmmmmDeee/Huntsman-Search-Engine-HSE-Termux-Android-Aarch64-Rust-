@@ -615,7 +615,15 @@ impl Entity {
             kind,
             value: normalised,
             raw_value: value,
-            confidence: confidence.clamp(0.0, 1.0),
+            // `f64::clamp` returns NaN UNCHANGED, so a non-finite confidence would
+            // slip through and violate the frontier's total-order determinism
+            // (confidence → depth → id) and the saturating `c_effective()` model
+            // (which multiplies through it). Sanitize a non-finite input to 0.0.
+            confidence: if confidence.is_finite() {
+                confidence.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
             corroboration: 1,
             observed_at: unix_now(),
             evidence: Vec::new(),
