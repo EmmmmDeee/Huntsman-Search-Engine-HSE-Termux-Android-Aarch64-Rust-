@@ -718,6 +718,25 @@ fn au035_no_fire_on_all_guess_summary_with_zero_verified_hits() {
     );
 }
 
+#[test]
+fn au035_no_fire_on_social_probe_all_status_only_summary() {
+    // Same shared `is_verified_discovery` guard as AU-077 (OD-17): `social_probe`
+    // is also in USERNAME_DISCOVERY_SOURCES, and its Username-kind summary used
+    // to have no `hits_verified` attribute at all, which the guard treated as
+    // vacuously verified rather than unconfirmed.
+    let mut e = Entity::new(EntityKind::Username, "jdoe", 0.9, "scan-test");
+    e.add_evidence(Evidence::new("name_intel", "test"));
+    e.add_evidence(
+        Evidence::new("social_probe", "test")
+            .with_attr("hits_verified", "0")
+            .with_attr("hits_status_only", "2"),
+    );
+    assert!(
+        rule_au_035_confirmed_derived_handle(&RuleContext::new(&[e]), "scan-test", 0).is_empty(),
+        "an all-status-only social_probe summary must not confirm AU-035"
+    );
+}
+
 // ── AU-036 ──────────────────────────────────────────────────────────
 
 /// Build a canonical Email entity carrying one `email_canonical` evidence
@@ -3568,6 +3587,27 @@ fn au075_non_breach_parent_is_not_a_named_associate() {
 }
 
 #[test]
+fn au075_does_not_report_a_see_know_relationship_label_as_a_name() {
+    // `see_know`'s associate extractor stores the associate's real name as the
+    // entity's own `.value` and uses `relationship` for the CATEGORY label
+    // ("relative"/"household"/"associate"/"neighbor"), never a name. A prior
+    // `("relationship", "relation")` entry in ASSOCIATE_KEYS read that label as
+    // if it were a person's name, reporting the literal word "relative" as a
+    // named associate on any SeekNow relative/household hit.
+    let mut e = Entity::new(EntityKind::Person, "Jane Smith", 0.9, "s");
+    e.add_evidence(
+        Evidence::new("see_know", "SeekNow relative of Cindy Haynes")
+            .with_attr("relationship", "relative")
+            .with_attr("related_to", "Cindy Haynes"),
+    );
+    let r = super::rules::rule_au_075_named_associate(&RuleContext::new(&[e]), "s", 0);
+    assert!(
+        r.iter().all(|c| !c.description.contains("'relative'")),
+        "the relationship category label must never be reported as an associate's name: {r:?}"
+    );
+}
+
+#[test]
 fn au090_jurisdiction_two_sources_agree_is_high() {
     let mut e = Entity::new(EntityKind::Person, "Cindy Haynes", 0.9, "s");
     e.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("state", "QLD"));
@@ -4166,6 +4206,30 @@ fn au101_breach_dob_and_gov_id_count_as_facets() {
     assert_eq!(r[0].severity, super::Severity::Medium);
     assert!(r[0].description.contains("date of birth"));
     assert!(r[0].description.contains("government ID"));
+}
+
+#[test]
+fn au101_ignores_non_breach_sourced_dob_gov_id_phone_and_email_attributes() {
+    // AU-101 duplicated AU-073/AU-074's DOB/gov-ID key vocabularies (plus its own
+    // phone/email attribute scan) but, unlike those two rules, never gated on
+    // `is_breach_source` — so a public, non-breach source emitting the identical
+    // attribute keys silently inflated the facet count. Name + address is 2 real
+    // facets; a non-breach DOB + checksum-valid TFN + valid phone + valid email
+    // must not add 4 more — the total must stay at 2, below the n>=4 firing floor.
+    let person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
+    let mut addr = Entity::new(EntityKind::Address, "Spring Hill QLD 4000", 0.7, "s");
+    addr.add_evidence(
+        Evidence::new("search_engines", "public record")
+            .with_attr("date_of_birth", "1990-01-01")
+            .with_attr("tfn", "123456782") // checksum-valid TFN
+            .with_attr("phone", "+61 7 3123 4567")
+            .with_attr("email", "namesake@example.com"),
+    );
+    assert!(
+        super::rules::rule_au_101_identity_resolution(&RuleContext::new(&[person, addr]), "s", 0)
+            .is_empty(),
+        "a non-breach source's DOB/gov-ID/phone/email attributes must not count as resolved facets"
+    );
 }
 
 // ─── AU-104 tests (Australian bank account / institution exposure) ────────────
@@ -8342,6 +8406,40 @@ fn au019_fires_for_three_breach_dates_within_30_days() {
 }
 
 #[test]
+fn au019_ignores_a_certificate_transparency_date_on_a_breach_tagged_domain() {
+    // A domain can be genuinely `breach`-tagged (e.g. seon's `breach_domain_entity`)
+    // while ALSO carrying merged evidence from a Certificate-Transparency module
+    // (`certspotter`/`crtsh`/`cert_intel`) if the same domain is independently
+    // discovered elsewhere in the scan — those CT modules are the ONLY producers
+    // of `not_before`, a routine TLS certificate issuance date with nothing to do
+    // with any breach. Only 2 genuine breach dates exist (the two emails) — one
+    // short of AU-019's 3-member floor — so the cluster must NOT complete via the
+    // domain's unrelated `not_before`, even though the domain itself carries the
+    // `breach` tag and merges evidence from a real breach source too.
+    let mut domain = Entity::new(EntityKind::Domain, "evil.example", 0.8, "s");
+    domain.tag("breach");
+    domain.add_evidence(Evidence::new("seon", "breach — no date on this record"));
+    domain.add_evidence(Evidence::new("crtsh", "cert").with_attr("not_before", "2024-01-15"));
+
+    let mk_email = |v: &str, d: &str| {
+        let mut e = Entity::new(EntityKind::Email, v, 0.8, "s");
+        e.tag("breach");
+        e.add_evidence(Evidence::new("hibp", "b").with_attr("breach_date", d));
+        e
+    };
+    let ents = vec![
+        mk_email("a@x.com", "2024-01-01"),
+        mk_email("b@x.com", "2024-01-10"),
+        domain,
+    ];
+    let r = rule_au_019_temporal_breach_cluster(&RuleContext::new(&ents), "s", 0);
+    assert!(
+        r.is_empty(),
+        "a CT module's not_before date must not complete a breach cluster: {r:?}"
+    );
+}
+
+#[test]
 fn au020_fires_for_two_person_entities() {
     let ents = vec![
         Entity::new(EntityKind::Person, "Jane Doe", 0.6, "s"),
@@ -9754,24 +9852,63 @@ fn au077_fires_when_username_search_has_a_verified_hit() {
 }
 
 #[test]
-fn au077_does_not_fire_on_a_status_only_per_record_discovery() {
+fn au077_does_not_fire_on_a_status_only_social_probe_summary() {
     use super::rules::rule_au_077_name_derived_username_confirmed;
-    // Per-record variant: a discovery module (social_probe) that tags its hit
-    // `detection: status-only` is a bare-status guess, not a confirmation.
+    // `social_probe`'s Username-kind target-echo summary (the only Username
+    // entity that module ever produces — see `social_probe::build_target_summary`)
+    // carries `hits_verified`/`hits_status_only`, not a per-record `detection`
+    // attribute (that attribute lives only on the module's separate per-platform
+    // `Url` entities, which never reach this Username-keyed rule). A prior
+    // version of this test hand-built a `detection: status-only` attribute on a
+    // Username entity — a shape `social_probe` never actually produces — which
+    // masked the real defect (OD-17): an ABSENT `hits_verified` was treated as
+    // vacuously verified, so an all-status-only social_probe summary used to
+    // pass this exact gate.
     let mut u = Entity::new(EntityKind::Username, "jsmith", 0.8, "s");
     u.add_evidence(Evidence::new(
         "name_intel",
         "Derived from John Smith".to_string(),
     ));
     u.add_evidence(
-        Evidence::new("social_probe", "status 200 for jsmith".to_string())
-            .with_attr("detection", "status-only"),
+        Evidence::new(
+            "social_probe",
+            "Probed 30 platforms, found 3 profiles".to_string(),
+        )
+        .with_attr("hits_verified", "0")
+        .with_attr("hits_status_only", "3"),
     );
     let r = rule_au_077_name_derived_username_confirmed(&RuleContext::new(&[u]), "s", 0);
     assert!(
         r.is_empty(),
-        "a status-only per-record discovery must not confirm AU-077: {r:?}"
+        "an all-status-only social_probe summary must not confirm AU-077: {r:?}"
     );
+}
+
+#[test]
+fn au077_fires_when_social_probe_has_a_verified_hit() {
+    use super::rules::rule_au_077_name_derived_username_confirmed;
+    // The genuine case the guard must still allow: at least one platform in the
+    // social_probe summary was body-marker VERIFIED (hits_verified >= 1).
+    let mut u = Entity::new(EntityKind::Username, "jsmith", 0.8, "s");
+    u.add_evidence(Evidence::new(
+        "name_intel",
+        "Derived from John Smith".to_string(),
+    ));
+    u.add_evidence(
+        Evidence::new(
+            "social_probe",
+            "Probed 30 platforms, found 2 profiles".to_string(),
+        )
+        .with_attr("hits_verified", "1")
+        .with_attr("hits_status_only", "1"),
+    );
+    let r = rule_au_077_name_derived_username_confirmed(&RuleContext::new(&[u]), "s", 0);
+    assert_eq!(
+        r.len(),
+        1,
+        "a verified social_probe hit is a genuine confirmation: {r:?}"
+    );
+    assert_eq!(r[0].severity, super::Severity::High);
 }
 
 #[test]

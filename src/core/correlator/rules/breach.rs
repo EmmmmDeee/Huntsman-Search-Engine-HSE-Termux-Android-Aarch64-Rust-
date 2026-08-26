@@ -696,6 +696,20 @@ pub(in crate::core::correlator) fn rule_au_019_temporal_breach_cluster(
             continue;
         }
         for ev in &e.evidence {
+            // The entity-level `breach` tag is not enough on its own: a domain
+            // genuinely breach-tagged by one source (e.g. `seon`'s
+            // `breach_domain_entity`) can ALSO merge in a Certificate-Transparency
+            // module's evidence (`certspotter`/`crtsh`/`cert_intel`, none of them
+            // breach sources) if the same domain is independently discovered
+            // during the engine's normal pivot expansion. Those CT modules are the
+            // only producers of `not_before` — a routine TLS certificate issuance
+            // date — so without this gate a domain's unrelated cert renewal could
+            // supply a fabricated third member of a "coordinated compromise"
+            // cluster. Mirrors the `is_breach_source` gate every sibling rule in
+            // `breach_pii.rs` applies.
+            if !is_breach_source(&ev.source) {
+                continue;
+            }
             for field in ["breach_date", "not_before", "earliest_record", "date"] {
                 if let Some(d) = ev.attributes.get(field)
                     && let Some(day) = d.get(..10)
