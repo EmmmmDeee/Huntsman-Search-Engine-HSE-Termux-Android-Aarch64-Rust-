@@ -50,8 +50,15 @@ fn from_resp(resp: &ZippoResp) -> Vec<Locality> {
             if name.is_empty() {
                 return None;
             }
-            let lat = p.latitude.trim().parse().ok()?;
-            let lon = p.longitude.trim().parse().ok()?;
+            let lat: f64 = p.latitude.trim().parse().ok()?;
+            let lon: f64 = p.longitude.trim().parse().ok()?;
+            // The doc above promises "unparseable coordinates" are skipped, but a
+            // numeric-but-nonsensical value (out of range, or the API's own
+            // null-island default) parsed clean and shipped straight through — no
+            // caller in the chain gated it. Extend "unparseable" to cover that.
+            if !crate::util::geo::is_valid_coords(lat, lon) {
+                return None;
+            }
             Some(Locality {
                 suburb: name.to_string(),
                 lat,
