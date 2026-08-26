@@ -393,9 +393,9 @@ see_know: budget remaining: 249
 Phase 1 (Paid, Sequential Priority)
   255: SeekNow (discovers keys, emails, infrastructure)
    ↓ (discovered keys unlock downstream modules)
-  200: OathNet Pro (overlapping coverage, complementary corpus)
-  190: Shodan (if API key found)
-  180: Censys (if API key found)
+  127: OathNet Pro (overlapping coverage, complementary corpus)
+  105: Shodan (if API key found)
+   78: Censys (if API key found)
    
 Phase 2 (Free Expansion, Unlimited Parallelism)
   ↓ (on every new Domain, Email, IP entity)
@@ -522,13 +522,16 @@ hse scan --kind email --value admin@mycompany.com --depth 3 --full
 - ✅ Key fingerprinting (head…tail) used in results, never full secret
 - ✅ Per-module isolation (each module gets only its own key)
 
-**Q: I've seen both `.eu` and `.icu` mentioned for SeekNow — which should I use?**
-- **Use `.eu`** — it's the vendor's own stated domain (HSE default) and what
-  their live site's own generated exports name as their platform
+**Q: I've seen `.eu`, `.icu`, and `.ru` mentioned for SeekNow — which does HSE use?**
+- **HSE defaults to `.ru`** — `https://see-know.ru/api/v1` is the built-in
+  default (`DEFAULT_BASE` in `src/util/see_know/client.rs`); this is what you
+  get unless you override it
+- `.eu` is the vendor's own stated domain and what their live site's own
+  generated exports name as their platform — override with
+  `HUNTSMAN_SEEKNOW_BASE=https://see-know.eu/api/v1` if you'd rather use it
 - `.icu` has been observed failing to resolve via DNS on some real-world
   networks/carriers (a common failure mode for that TLD's abuse reputation)
-  even when it happens to be reachable from others — prefer `.eu`
-- HSE automatically uses `https://see-know.ru/api/v1`
+  even when it happens to be reachable from others — avoid it
 
 **Q: How do I disable SeekNow temporarily?**
 ```bash

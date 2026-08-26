@@ -4021,9 +4021,10 @@ fn every_src_file_is_wired_into_the_module_tree() {
 /// invariants are enforced by the guards in this file rather than by prose. This
 /// test makes that mechanical: cite a document, and it has to exist.
 ///
-/// Scoped to `.rs` files deliberately. `docs/IMPLEMENTATION_BLUEPRINT.md` lists
-/// documents it plans to create (`— **NEW**`), which is a legitimate forward
-/// reference in a planning document, not a broken citation.
+/// Scoped to `.rs` files deliberately: a planning document may legitimately
+/// list documents it intends to create (marked e.g. `— NEW`), which is a
+/// forward reference, not a broken citation — only `.rs` sources make a claim
+/// that the cited doc already backs them.
 #[test]
 fn every_docs_path_cited_from_rust_source_exists() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));

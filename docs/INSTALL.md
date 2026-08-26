@@ -88,7 +88,7 @@ hse-bg stop
 ## Manual build (Termux)
 
 ```bash
-pkg install -y rust clang make pkg-config openssl-tool
+pkg install -y git rust clang make pkg-config openssl-tool
 git clone --depth 1 \
   https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git \
   ~/hse
@@ -139,5 +139,3 @@ Run `pkg install rust` and retry.
 
 **Low RAM (< 1.5 GB)**
 Set `CARGO_BUILD_JOBS=1` before running the installer to limit parallel compilation.
-
-See [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) for a full list of known issues.
