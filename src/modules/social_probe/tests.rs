@@ -131,7 +131,7 @@ fn probe_with_no_hits_does_not_echo_the_seed() {
     // source and inflates the seed to VERIFIED on phantom evidence.
     assert!(!should_echo_target(0));
     let t = Target::new(TargetKind::Username, "haigenb");
-    assert!(build_target_summary(&t, 0, 28, 0, 0, &[], "scan").is_none());
+    assert!(build_target_summary(&t, 0, 0, 28, &[], "scan").is_none());
 }
 
 #[test]
@@ -173,13 +173,13 @@ fn blocked_zero_hit_sweep_is_inconclusive_not_a_confirmed_absence() {
 fn probe_with_a_hit_echoes_the_seed_as_corroboration() {
     assert!(should_echo_target(1));
     let t = Target::new(TargetKind::Username, "haigenb");
-    let summary = build_target_summary(&t, 1, 28, 1, 0, &["github"], "scan")
+    let summary = build_target_summary(&t, 1, 1, 28, &["github"], "scan")
         .expect("a confirmed profile must echo the seed");
     assert_eq!(summary.value, "haigenb");
     assert!(summary.has_tag("social-probed"));
     assert!(!summary.has_tag("multi-platform"));
     // Three or more confirmed profiles flags the multi-platform footprint.
-    let multi = build_target_summary(&t, 3, 28, 3, 0, &["github", "reddit", "twitch"], "scan")
+    let multi = build_target_summary(&t, 3, 3, 28, &["github", "reddit", "twitch"], "scan")
         .expect("entity");
     assert!(multi.has_tag("multi-platform"));
 }
@@ -198,7 +198,7 @@ fn module_metadata() {
 fn build_target_summary_evidence_lists_confirmed_platforms() {
     let t = Target::new(TargetKind::Username, "testuser");
     let confirmed = &["github", "reddit"];
-    let e = build_target_summary(&t, 2, 30, 2, 0, confirmed, "scan").expect("should succeed");
+    let e = build_target_summary(&t, 2, 2, 30, confirmed, "scan").expect("should succeed");
     let attr = e.evidence[0]
         .attributes
         .get("platforms")
@@ -206,6 +206,53 @@ fn build_target_summary_evidence_lists_confirmed_platforms() {
     assert!(attr.is_some(), "platforms attribute must be present");
     let platforms = attr.expect("should succeed");
     assert!(platforms.contains("github") && platforms.contains("reddit"));
+}
+
+#[test]
+fn build_target_summary_stamps_hits_verified_and_status_only() {
+    // OD-17: AU-035/AU-077's is_verified_discovery reads `hits_verified` on
+    // THIS aggregate evidence record (the per-platform verified/weak split
+    // lives on separate Url entities the rule never scans). An absent
+    // attribute reads as vacuously verified, so an all-status-only sweep
+    // could fabricate a "prediction confirmed" bridge. Must mirror
+    // `username_search`/`streaming_probe`'s existing hits_verified shape.
+    let t = Target::new(TargetKind::Username, "testuser");
+
+    // All hits status-only (weak-detection): 0 verified of 2 found.
+    let weak =
+        build_target_summary(&t, 2, 0, 30, &["reddit", "tumblr"], "scan").expect("should succeed");
+    assert_eq!(
+        weak.evidence[0]
+            .attributes
+            .get("hits_verified")
+            .map(String::as_str),
+        Some("0")
+    );
+    assert_eq!(
+        weak.evidence[0]
+            .attributes
+            .get("hits_status_only")
+            .map(String::as_str),
+        Some("2")
+    );
+
+    // A mixed sweep: 1 body-verified + 2 status-only of 3 found.
+    let mixed = build_target_summary(&t, 3, 1, 30, &["github", "reddit", "tumblr"], "scan")
+        .expect("should succeed");
+    assert_eq!(
+        mixed.evidence[0]
+            .attributes
+            .get("hits_verified")
+            .map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(
+        mixed.evidence[0]
+            .attributes
+            .get("hits_status_only")
+            .map(String::as_str),
+        Some("2")
+    );
 }
 
 #[test]
@@ -220,7 +267,7 @@ fn build_target_summary_stamps_platforms_count_for_au011() {
     // canonical count attribute must now be present and equal the number of
     // confirmed platforms.
     let t = Target::new(TargetKind::Username, "testuser");
-    let e = build_target_summary(&t, 3, 30, 3, 0, &["github", "reddit", "twitch"], "scan")
+    let e = build_target_summary(&t, 3, 3, 30, &["github", "reddit", "twitch"], "scan")
         .expect("should succeed");
     assert_eq!(
         e.evidence[0]
@@ -229,48 +276,5 @@ fn build_target_summary_stamps_platforms_count_for_au011() {
             .map(String::as_str),
         Some("3"),
         "platforms_count must equal the confirmed-platform count so AU-011 can count it"
-    );
-}
-
-#[test]
-fn build_target_summary_stamps_hits_verified_and_hits_status_only() {
-    // OD-17: the summary must split verified (body-marker) hits from bare
-    // status-code guesses, mirroring `username_search`'s aggregate summary —
-    // `identity::account`'s shared `is_verified_discovery` (AU-035/AU-077)
-    // treats an ABSENT `hits_verified` as vacuously verified, so before this
-    // attribute existed an all-guess social_probe summary passed the same
-    // confirmation gate as a genuinely verified one.
-    let t = Target::new(TargetKind::Username, "testuser");
-    let e = build_target_summary(&t, 3, 30, 1, 2, &["github", "reddit", "twitch"], "scan")
-        .expect("should succeed");
-    let attrs = &e.evidence[0].attributes;
-    assert_eq!(
-        attrs.get("hits_verified").map(String::as_str),
-        Some("1"),
-        "hits_verified must equal the body-marker-confirmed count"
-    );
-    assert_eq!(
-        attrs.get("hits_status_only").map(String::as_str),
-        Some("2"),
-        "hits_status_only must equal the bare status-code-guess count"
-    );
-}
-
-#[test]
-fn build_target_summary_reports_zero_verified_hits_for_an_all_status_only_run() {
-    // The specific shape that used to fool `is_verified_discovery`: every
-    // confirmed platform was a bare status-code guess, so hits_verified must
-    // be an explicit "0" (present, not absent) — that is what lets the
-    // correlator's confirmation gate correctly refuse to treat it as verified.
-    let t = Target::new(TargetKind::Username, "testuser");
-    let e =
-        build_target_summary(&t, 2, 30, 0, 2, &["site1", "site2"], "scan").expect("should succeed");
-    assert_eq!(
-        e.evidence[0]
-            .attributes
-            .get("hits_verified")
-            .map(String::as_str),
-        Some("0"),
-        "an all-status-only run must stamp hits_verified=0, not leave it absent"
     );
 }

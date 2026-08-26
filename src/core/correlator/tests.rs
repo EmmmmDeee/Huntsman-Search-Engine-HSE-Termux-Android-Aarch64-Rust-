@@ -10164,18 +10164,16 @@ fn au077_fires_when_username_search_has_a_verified_hit() {
 }
 
 #[test]
-fn au077_does_not_fire_on_a_status_only_social_probe_summary() {
+fn au077_does_not_fire_on_a_social_probe_summary_with_zero_verified_hits() {
     use super::rules::rule_au_077_name_derived_username_confirmed;
-    // `social_probe`'s Username-kind target-echo summary (the only Username
-    // entity that module ever produces — see `social_probe::build_target_summary`)
-    // carries `hits_verified`/`hits_status_only`, not a per-record `detection`
-    // attribute (that attribute lives only on the module's separate per-platform
-    // `Url` entities, which never reach this Username-keyed rule). A prior
-    // version of this test hand-built a `detection: status-only` attribute on a
-    // Username entity — a shape `social_probe` never actually produces — which
-    // masked the real defect (OD-17): an ABSENT `hits_verified` was treated as
-    // vacuously verified, so an all-status-only social_probe summary used to
-    // pass this exact gate.
+    // OD-17: social_probe's real Username-entity evidence is its aggregate
+    // target-summary record (checked/found/platforms_count/platforms plus
+    // hits_verified/hits_status_only) — a per-record `detection` attribute
+    // lives only on the separate Url entity social_probe emits per platform,
+    // which AU-077 never inspects. (The previous version of this test hand-built
+    // a `detection` attribute directly on the Username entity, a shape
+    // social_probe's real summary path never produces.) All hits here are
+    // status-only, so zero are verified.
     let mut u = Entity::new(EntityKind::Username, "jsmith", 0.8, "s");
     u.add_evidence(Evidence::new(
         "name_intel",
@@ -10184,10 +10182,14 @@ fn au077_does_not_fire_on_a_status_only_social_probe_summary() {
     u.add_evidence(
         Evidence::new(
             "social_probe",
-            "Probed 30 platforms, found 3 profiles".to_string(),
+            "Probed 30 platforms, found 2 profiles".to_string(),
         )
+        .with_attr("checked", "30")
+        .with_attr("found", "2")
+        .with_attr("platforms_count", "2")
+        .with_attr("platforms", "reddit, tumblr")
         .with_attr("hits_verified", "0")
-        .with_attr("hits_status_only", "3"),
+        .with_attr("hits_status_only", "2"),
     );
     let r = rule_au_077_name_derived_username_confirmed(&RuleContext::new(&[u]), "s", 0);
     assert!(

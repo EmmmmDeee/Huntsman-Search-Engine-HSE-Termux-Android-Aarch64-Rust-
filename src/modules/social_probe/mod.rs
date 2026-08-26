@@ -335,6 +335,7 @@ impl Module for SocialProbe {
 
         let mut result = ModuleResult::new();
         let mut found_count = 0u32;
+        let mut verified_count = 0u32;
         let mut checked_count = 0u32;
         // Probes that returned no definitive answer — `fetch_with_status` code 0,
         // i.e. curl could not connect / was blocked / had no egress — as distinct
@@ -342,12 +343,6 @@ impl Module for SocialProbe {
         // Drives the M6 inconclusive-vs-absent verdict after the sweep.
         let mut inconclusive_probes = 0u32;
         let mut found_platforms: Vec<&str> = Vec::new();
-        // Split by verification strength (see `detection_strength`) so the
-        // target-echo summary can carry the same `hits_verified`/
-        // `hits_status_only` split `username_search` already stamps — see
-        // `build_target_summary`.
-        let mut verified_hits = 0u32;
-        let mut weak_hits = 0u32;
 
         let platforms = match target.kind {
             TargetKind::Username => USERNAME_PLATFORMS,
@@ -397,9 +392,7 @@ impl Module for SocialProbe {
 
                 let (confidence, verified) = detection_strength(platform);
                 if verified {
-                    verified_hits += 1;
-                } else {
-                    weak_hits += 1;
+                    verified_count += 1;
                 }
 
                 let mut entity = Entity::new(EntityKind::Url, &url, confidence, &ctx.scan_id);
@@ -480,9 +473,8 @@ impl Module for SocialProbe {
         if let Some(summary) = build_target_summary(
             target,
             found_count,
+            verified_count,
             checked_count,
-            verified_hits,
-            weak_hits,
             &found_platforms,
             &ctx.scan_id,
         ) {
@@ -535,9 +527,8 @@ pub(super) fn should_echo_target(found_count: u32) -> bool {
 pub(super) fn build_target_summary(
     target: &Target,
     found_count: u32,
+    verified_count: u32,
     checked_count: u32,
-    verified_hits: u32,
-    weak_hits: u32,
     found_platforms: &[&str],
     scan_id: &str,
 ) -> Option<Entity> {
@@ -571,17 +562,17 @@ pub(super) fn build_target_summary(
         // profiles-checked convention) rather than replacing it.
         .with_attr("platforms_count", found_platforms.len().to_string())
         .with_attr("platforms", found_platforms.join(", "))
-        // `hits_verified`/`hits_status_only` mirror `username_search`'s
-        // identical attributes. Without them, `found_platforms` mixes
-        // body-marker-confirmed hits with bare status-code guesses
-        // indistinguishably, and `identity::account`'s shared
-        // `is_verified_discovery` (AU-035/AU-077) treats an ABSENT
-        // `hits_verified` as vacuously verified — so an all-status-only
-        // social_probe summary used to pass its confirmation gate exactly
-        // like a genuinely body-verified one. AU-011 also prefers this exact
-        // count over the raw `platforms_count` when present.
-        .with_attr("hits_verified", verified_hits.to_string())
-        .with_attr("hits_status_only", weak_hits.to_string()),
+        // AU-035/AU-077's `is_verified_discovery` reads `hits_verified` on THIS
+        // aggregate record — the per-platform verified/weak split lives on the
+        // separate Url entities those rules never scan. An absent attribute
+        // reads as vacuously verified, so an all-status-only sweep could still
+        // fabricate a "prediction confirmed" bridge. Mirrors the shape
+        // `username_search`/`streaming_probe` already stamp.
+        .with_attr("hits_verified", verified_count.to_string())
+        .with_attr(
+            "hits_status_only",
+            (found_count - verified_count).to_string(),
+        ),
     );
     Some(summary)
 }
