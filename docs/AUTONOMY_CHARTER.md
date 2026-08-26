@@ -101,22 +101,38 @@ The loop runs these stages in order. All are load-bearing; none may be skipped.
 6. **SHIP** — commit with a precise red→green message, push, open one PR to
    `main`, drive CI to green (re-diagnose and re-kick on failure; address review
    comments by verify-then-fix), squash-merge on green.
-7. **RECORD** — append the outcome to the ledger below: unit shipped, leverage
-   rationale, evidence, and any candidate rejected-with-reason.
+7. **RECORD** — append the outcome to `.agent/state.json`, the canonical
+   per-cycle ledger (see the historical Ledger section below for why): unit
+   shipped, leverage rationale, evidence, and any candidate rejected-with-reason.
 8. **REFRESH** — regenerate only the controller prompt's per-cycle state block,
    display the full updated prompt in a fenced box, then begin the next cycle at
    RECONCILE. This charter's core is copied verbatim, never rewritten.
 
 ---
 
-## Ledger (append-only record of shipped and rejected units)
+## Ledger — historical appendix (2026-08-02 to 2026-08-26)
 
-Each cycle appends one row. Rejected candidates are recorded too, so they are
-not re-proposed. This is committed state, not memory.
+**Canonical mechanism: `.agent/state.json`.** This table's RECORD stage lapsed
+after the `▸`/#334 row (below) and per-cycle tracking continued exclusively in
+`.agent/state.json` from cycle 1 of *that* counter onward — see its own
+`$comment` header, `cycle_N_slots`/`cycle_N_provenance` entries, and
+`rejected_candidates`/`open_defects` lists for the live record of shipped and
+rejected units. The 2026-08-26 row below left this as an open decision for a
+future consolidation cycle; this note (added 2026-08-26, same day, by the
+cycle that made the call) resolves it: **do not resume appending rows to this
+table.** Nothing below is deleted or renumbered — INV-2/INV-3 govern code
+ratchets, not prose, but discarding the record of cycles 1/2/▸ would serve no
+one, and rewriting this table's cycle numbers to match state.json's would
+fabricate a correspondence between two counters that were never the same
+sequence. This section is retained as a historical appendix only.
 
-Rows are written **one cycle in arrears**: a cycle's row records its PR number,
-which only exists after SHIP, so cycle *N* records cycle *N−1*. This keeps every
-row factual rather than predicting an unassigned number.
+Each cycle appended one row while this table was live. Rejected candidates
+were recorded too, so they would not be re-proposed. This is committed state,
+not memory.
+
+Rows were written **one cycle in arrears**: a cycle's row records its PR
+number, which only exists after SHIP, so cycle *N* records cycle *N−1*. This
+kept every row factual rather than predicting an unassigned number.
 
 | Cycle | Date | PR | Unit | Leverage rationale | Evidence | Rejected-with-reason |
 |------:|------|----|------|--------------------|----------|----------------------|
@@ -126,4 +142,5 @@ row factual rather than predicting an unassigned number.
 
 | ▸ | 2026-08-03 | #334 | Query feature + hardening — a bundle, not a single unit (this session ran multiple units on one branch, off the charter's one-unit-per-PR model; recorded here honestly rather than split retroactively). Units: `export`-prefix key-overwrite fix; supply-chain gate greened (scoped NCSA exception + dated `paste` ignore); unused `pdf`/`crossbeam-channel` removed; `hse query` general search + `--dark` Ahmia dark-web EXPOSURE (defensive — never fetches onion); engine fan-out consolidated across scan + query; live-drift coverage for both network paths; dead `truncate_display` deleted; install stale-purge; README. | Highest-leverage among available non-decision-gated work after the correctness/platform/verifiability dimensions were swept clean; each unit was root-cause, deletion-or-consolidation-first, and behaviour-preserving where applicable. | Full `scripts/gate.sh` PASS (8/8 executable); CI 6/6 green incl. the aarch64-linux-android cross-build and MSRV 1.88; `hse query` verified live (16 ranked results, cross-engine corroboration). Squash-merged as `c5d9527`. Ledger gap for PRs #331–#333 is left unreconstructed — recording their red→green evidence second-hand would violate INV-1 (never fabricate). | A `--source` enum (web / dark) replacing the `--dark` bool: rejected — speculative abstraction with only two sources (charter's "prefer simplification over expansion"); revisit when a third source exists. Register Ahmia as a `Module`: deferred, not rejected — it would make every `hse scan` auto-hit ahmia.fi, a network-footprint/scope change to RAISE, not ship silently. |
 | — | 2026-08-26 | — | **Process note, not a shipped unit.** This table's RECORD stage (step 7: "append the outcome to the ledger below") lapsed after the row above — confirmed by a docs/state-tracking audit this cycle, not assumed. | Per-cycle tracking did not stop; it continued in `.agent/state.json`, a parallel mechanism with its OWN independent cycle counter (its "cycle 1" ≠ this ledger's "cycle 1" — the two were never unified), now at cycle 33 with 30+ further shipped and rejected units recorded there, spanning `git log` PR numbers well past #334 through at least #458. Backfilling per-PR leverage/evidence rows here for that gap would mean reconstructing rationale this session did not observe firsthand — exactly what INV-1 (never fabricate) and this ledger's own #331–#333 gap note (row above) already declined to do, applied consistently to a much larger gap. | `.agent/state.json`'s own header `$comment` + its `cycle_1_slots` … `cycle_33_slots`/`cycle_33_provenance` entries; `git log --oneline` on `origin/main` at the time of this note (head `60824b0`, merge-commit PR numbers up to `#458`). | Rewriting this ledger's history to match state.json's cycle numbers: rejected — would fabricate a correspondence between two counters that were never the same sequence. Deleting the stale table: rejected — INV-2/INV-3 govern code ratchets, not prose, but silently discarding the record of cycles 1/2/▸ serves no one either. Left as an open decision for a future cycle: either resume appending real rows here (duplicating state.json), or edit this ledger's own RECORD-stage text to name `.agent/state.json` as the canonical mechanism and retire this table to a historical appendix. Not resolved unilaterally in a consolidation-themed cycle whose mandate is reducing drift, not choosing this repo's future governance process. |
-<!-- New ledger rows are appended above this line by the RECORD stage. -->
+| — | 2026-08-26 | — | **Decision, not a shipped unit.** Resolves the row above's open question, same day: option 2 taken (name `.agent/state.json` canonical, retire this table to a historical appendix; see the section note above the table). | A junk/redundancy-consolidation cycle whose own mandate is reducing drift is exactly the "future consolidation cycle" the row above deferred to, and the two options were never equally costed: option 1 (resume duplicating rows here) grows the duplication this pass exists to remove, while option 2 removes it at zero information loss — `.agent/state.json` already carries strictly more detail (per-module file/line evidence, full rejected-candidate reasoning) than this table's rows ever did. | This edit itself (docs/AUTONOMY_CHARTER.md, step 7 + section heading); `.agent/state.json` cycle 41 (`cycle_count`/`last_verified_commit` fields) as the now-explicitly-canonical record. | Backfilling cycles 1–41 into this table's row format: rejected — same INV-1 fabrication concern as the row above, applied to a now-larger gap; `.agent/state.json` is the record, not a source to transcribe from. |
+<!-- This table is a closed historical appendix — new cycle outcomes are recorded in .agent/state.json, not appended here. -->
