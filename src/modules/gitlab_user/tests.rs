@@ -99,7 +99,7 @@ fn build_entities_minimal_account_emits_only_the_username() {
     assert_eq!(u.kind, EntityKind::Username);
     assert_eq!(u.value, "quietuser");
     assert!(u.has_tag("gitlab") && u.has_tag("code"));
-    assert!((u.confidence - confidence::VERY_HIGH_PLUS).abs() < 0.01);
+    assert!((u.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
     assert_eq!(
         u.evidence[0]
             .attributes
