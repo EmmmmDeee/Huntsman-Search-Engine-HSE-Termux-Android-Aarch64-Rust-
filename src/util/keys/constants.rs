@@ -8,6 +8,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_OATHNET_KEY",
     "HUNTSMAN_NIAMONX_KEY",
     "HUNTSMAN_OSINTCAT_KEY",
+    "HUNTSMAN_STOLEN_TAX_KEY",
     "HUNTSMAN_HIBP_KEY",
     "HUNTSMAN_DEHASHED_KEY",
     "HUNTSMAN_HUNTER_KEY",
@@ -162,6 +163,9 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
         "HUNTSMAN_FULLHUNT_KEY" => "FullHunt — paid; https://fullhunt.io",
         "HUNTSMAN_NIAMONX_KEY" => "NiamonX — paid; https://niamonx.io",
         "HUNTSMAN_OSINTCAT_KEY" => "OSINT Cat — paid; https://osintcat.net",
+        "HUNTSMAN_STOLEN_TAX_KEY" => {
+            "Stolen.tax — paid; https://stolen.tax (dashboard: https://stolen.tax/api-dashboard)"
+        }
         "HUNTSMAN_PASSIVETOTAL_KEY" => "PassiveTotal / RiskIQ — paid; https://community.riskiq.com",
         "HUNTSMAN_ZOOMEYE_KEY" => "ZoomEye — paid; https://www.zoomeye.org",
         _ => return None,
