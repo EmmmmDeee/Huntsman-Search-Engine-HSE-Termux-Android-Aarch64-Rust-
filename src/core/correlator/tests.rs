@@ -3495,8 +3495,13 @@ fn au072_does_not_fire_on_uncorroborated_name_permutation_guesses() {
 fn au072_counts_a_name_permutation_guess_once_a_reliable_source_confirms_it() {
     // Same speculative guess as above, but this one is independently confirmed
     // by a real corpus hit — it is no longer "uncorroborated" and legitimately
-    // combines with a genuine, unrelated PayID to fire.
-    let mut confirmed_guess = Entity::new(EntityKind::Email, "j.smith@gmail.com", 0.4, "s");
+    // combines with a genuine, unrelated PayID to fire. Confidence is set above
+    // AU-072's own MIN_CONF floor (0.50) — realistic for a hibp-confirmed hit,
+    // and it isolates this test's actual point (that the hibp evidence source
+    // is what clears is_uncorroborated_name_permutation) from that floor: drop
+    // the "hibp" evidence line and it reverts to excluded regardless of
+    // confidence, since is_uncorroborated_name_permutation never looks at it.
+    let mut confirmed_guess = Entity::new(EntityKind::Email, "j.smith@gmail.com", 0.6, "s");
     confirmed_guess.tag("name-derived");
     confirmed_guess.tag("payid");
     confirmed_guess.tag("payid:email");
