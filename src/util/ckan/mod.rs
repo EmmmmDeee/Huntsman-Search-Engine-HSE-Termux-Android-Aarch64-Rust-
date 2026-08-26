@@ -54,6 +54,20 @@ pub fn field_str(rec: &Map<String, Value>, key: &str) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
+/// A usable CKAN field: [`field_str`] with the literal-string `"null"`
+/// sentinel filtered too.
+///
+/// `field_str` only drops JSON `null`/empty, so a register that stores an
+/// absent value as the literal text `"null"` would otherwise pass it through
+/// as a real value. This exact wrapper was independently reimplemented,
+/// verbatim, in the `asic_persons` and `asic_business_names` modules (and a
+/// third time in `asic_banned_orgs` with one extra dataset-specific
+/// sentinel) before being hoisted here — one filter, not a per-module copy.
+#[must_use]
+pub fn field(rec: &Map<String, Value>, key: &str) -> Option<String> {
+    field_str(rec, key).filter(|s| !s.eq_ignore_ascii_case("null"))
+}
+
 /// Build a CKAN `datastore_search` URL: a full-text query `q` against
 /// `resource_id` on a portal's `action_base` (e.g.
 /// `https://data.gov.au/data/api/3/action`), capped at `limit` rows.

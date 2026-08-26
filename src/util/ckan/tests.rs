@@ -32,6 +32,22 @@ use super::*;
     }
 
     #[test]
+    fn field_filters_the_literal_null_sentinel_that_field_str_does_not() {
+        // Several ASIC registers store an absent value as the literal text
+        // "null" (not JSON null), which `field_str` alone passes through.
+        let rec = record(r#"{"Name":"null","Real":"ACME"}"#);
+        assert_eq!(field(&rec, "Name"), None);
+        assert_eq!(field(&rec, "Real").as_deref(), Some("ACME"));
+    }
+
+    #[test]
+    fn field_is_case_insensitive_and_still_trims_via_field_str() {
+        let rec = record(r#"{"Shout":"NULL","Padded":"  ACME  "}"#);
+        assert_eq!(field(&rec, "Shout"), None);
+        assert_eq!(field(&rec, "Padded").as_deref(), Some("ACME"));
+    }
+
+    #[test]
     fn response_captures_application_error() {
         // HTTP 200 + success=false (bad resource id / portal error) must be
         // visible, with no `result`, so callers can surface it rather than
