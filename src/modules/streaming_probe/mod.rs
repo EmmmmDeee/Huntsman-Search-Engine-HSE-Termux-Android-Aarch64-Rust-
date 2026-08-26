@@ -46,7 +46,8 @@ use crate::util::http::urlencode;
 // per-site adapter, M6 disambiguation), single-sourced in `util::probe` and
 // shared with `username_search`.
 use crate::util::probe::{
-    BODY_PROBE_CAP, BROWSER_ACCEPT, BROWSER_UA, ProbeResult, WithSite, inconclusive,
+    BODY_PROBE_CAP, BROWSER_ACCEPT, BROWSER_UA, ProbeResult, WithSite,
+    classify_non_matching_status, inconclusive,
 };
 
 const SRC: &str = "streaming_probe";
@@ -158,10 +159,13 @@ impl Module for StreamingProbe {
                             confidence,
                             verified,
                         },
-                        Detect::StatusEq(_) => ProbeResult::NotFound,
+                        // Same policy as `username_search`: a status that is not
+                        // this site's presence code may be a WAF challenge, a
+                        // throttle or an outage, none of which is an absence.
+                        Detect::StatusEq(_) => classify_non_matching_status(status),
                         Detect::StatusAndNotBody(want, needle) => {
                             if status != want {
-                                return ProbeResult::NotFound;
+                                return classify_non_matching_status(status);
                             }
                             match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP).await {
                                 Some(body) if body.contains(needle) => ProbeResult::NotFound,
