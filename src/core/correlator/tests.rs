@@ -3461,6 +3461,38 @@ fn au073_dob_corroborated_across_sources_disambiguates_namesakes() {
 }
 
 #[test]
+fn au073_counts_two_see_know_corpora_as_independent_not_one_source() {
+    // Regression: `see_know`/`oathnet_pro` stamp ONE constant module `source`
+    // across rows from DIFFERENT breach corpora (real `source_db`/`dbname`
+    // values per row) — the exact bug AU-105 already fixed for itself
+    // (`au105_reads_the_see_know_source_db_breach_name`). Two genuinely
+    // distinct corpora (LinkedIn, Adobe) both asserting the same DOB is
+    // 2-corpora corroboration and must be High, not Medium from a collapsed
+    // "1 source (see_know)".
+    let mut e = Entity::new(EntityKind::Email, "c@contoso.com", 0.9, "s");
+    e.add_evidence(
+        Evidence::new("see_know", "breach")
+            .with_attr("dob", "1985-03-02")
+            .with_attr("source_db", "linkedin.com"),
+    );
+    e.add_evidence(
+        Evidence::new("see_know", "breach")
+            .with_attr("dob", "1985-03-02")
+            .with_attr("source_db", "adobe.com"),
+    );
+    let r = super::rules::rule_au_073_subject_date_of_birth(&RuleContext::new(&[e]), "s", 0);
+    let main = r
+        .iter()
+        .find(|c| c.description.contains("1985-03-02"))
+        .expect("the DOB fires");
+    assert_eq!(
+        main.severity,
+        Severity::High,
+        "two distinct see_know corpora must count as 2 independent sources, not 1: {r:?}"
+    );
+}
+
+#[test]
 fn au073_derives_subject_age_from_dob() {
     // ts = 2026-01-01 00:00 UTC; DOB 1992-07-01 → age 33 (July birthday not yet
     // passed). Also exercises the new `date_birth` key (OathNet's field).
@@ -3911,6 +3943,34 @@ fn au093_full_street_address_is_high_and_geocoded() {
 }
 
 #[test]
+fn au093_does_not_assemble_an_address_from_an_accumulated_multi_value_record() {
+    // Regression: `Evidence::with_attr`'s "a; b" accumulation (the same
+    // mechanism `Entity::absorb`'s `merge_evidence_attrs` uses when two
+    // breach rows sharing one (source, summary) — e.g. SeeKnow's per-dbname
+    // summary — fold into one evidence record) can leave a single record's
+    // "suburb"/"state" attribute holding TWO DIFFERENT real suburbs/states
+    // from two different underlying rows. `merge_evidence_attrs` re-sorts
+    // each key's accumulated values independently (a BTreeSet collapse), so
+    // there is no reliable correspondence between which suburb goes with
+    // which state even when both have the same count — record_attr must
+    // refuse to assemble from an ambiguous record rather than guess a
+    // (possibly wrong, possibly geographically-impossible) pairing.
+    let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    p.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("suburb", "Bondi Beach")
+            .with_attr("suburb", "Richmond")
+            .with_attr("state", "NSW")
+            .with_attr("state", "VIC"),
+    );
+    assert!(
+        super::rules::rule_au_093_au_address_from_breach(&RuleContext::new(&[p]), "s", 0)
+            .is_empty(),
+        "an ambiguous accumulated suburb/state record must not assemble a fabricated address"
+    );
+}
+
+#[test]
 fn au093_geocode_reverse_geocode_is_not_labeled_breach() {
     // The proven defect, generalised: a reverse-geocode record carries the same
     // suburb/state/postcode attributes as a leaked address, but `geocode` is not
@@ -4217,6 +4277,34 @@ fn au101_counts_phone_and_email_facets_from_breach_evidence_attributes() {
         )
         .is_empty(),
         "without the phone facet the footprint is only 3 facets"
+    );
+}
+
+#[test]
+fn au101_does_not_count_a_name_intel_permutation_as_a_breach_facet() {
+    // Every OTHER attribute-based facet scan in this file (AU-073/074/075/090/
+    // 091/092/104/105) gates on is_breach_source immediately after
+    // scan_evidence; AU-101's four attribute loops (DOB, government ID, phone,
+    // email) never did. `name_intel` is a listed ENRICHMENT_ONLY_SOURCE -- a
+    // deterministic name-permutation guess, not an independent observation --
+    // exactly the source is_breach_source exists to exclude. Person + Address
+    // + Username is 3 facets (below the n>=4 floor, silent); a name_intel
+    // guessed email attribute must not tip it to a fabricated 4th facet.
+    let person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
+    let addr = Entity::new(EntityKind::Address, "Spring Hill QLD 4000", 0.7, "s");
+    let mut user = Entity::new(EntityKind::Username, "hbamford", 0.7, "s");
+    user.add_evidence(
+        Evidence::new("name_intel", "permuted guess")
+            .with_attr("email", "haigen.bamford@gmail.com"),
+    );
+    let r = super::rules::rule_au_101_identity_resolution(
+        &RuleContext::new(&[person, addr, user]),
+        "s",
+        0,
+    );
+    assert!(
+        r.is_empty(),
+        "a name_intel-guessed email attribute must not fabricate a 4th identity facet: {r:?}"
     );
 }
 
