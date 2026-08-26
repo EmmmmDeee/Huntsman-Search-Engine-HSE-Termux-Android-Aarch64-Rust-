@@ -826,6 +826,23 @@ fn au001_does_not_count_generic_search_as_a_breach_source() {
 }
 
 #[test]
+fn au001_recognises_real_breach_modules_the_allow_list_had_missed() {
+    // BREACH_SOURCES was a hand-maintained allow-list that never grew to cover
+    // several real breach-category modules -- confirmed against
+    // source_family_covers_every_breach_category_module (rules/tests.rs),
+    // which pins all of them as family "breach". Two of the previously-missed
+    // modules together must still fire AU-001, exactly as two listed ones do.
+    let e = email("x@y.com", &["intelx", "psbdmp"]);
+    let r = rule_au_001_multi_breach(&RuleContext::new(&[e]), "s1", 0);
+    assert_eq!(
+        r.len(),
+        1,
+        "intelx + psbdmp is two genuinely independent breach corpora: {r:?}"
+    );
+    assert_eq!(r[0].severity, Severity::Critical);
+}
+
+#[test]
 fn au001_does_not_raise_critical_on_a_role_mailbox() {
     // Live person-scan false positive: `abuse@godaddy.com` (a registrar desk) is in
     // HIBP + XposedOrNot as a matter of course — that is NOT the subject's breach
@@ -1130,6 +1147,30 @@ fn au009_fires_on_stealer_log() {
     assert_eq!(r[0].severity, Severity::High);
 }
 
+#[test]
+fn au009_fires_on_the_oathnet_pro_and_see_know_stealer_tag() {
+    // oathnet_pro::stealer::push_stealer_entity and push_oathnet_entity (the
+    // two richest stealer-log extraction paths in this codebase) tag their
+    // entities "stealer", not "stealer-log" -- confirmed against
+    // src/modules/oathnet_pro/stealer.rs and breach.rs. see_know's stealer
+    // extraction does the same (src/modules/see_know/extract/mod.rs). AU-009
+    // must recognise both literals, or a subject whose credentials were
+    // captured live by malware and surfaced via OathNet/SeeKnow gets no
+    // "Stealer-log compromise" finding at all.
+    let oathnet = tagged(
+        EntityKind::Email,
+        "a@b.com",
+        &["breach", "oathnet-pro", "stealer"],
+    );
+    let see_know = tagged(EntityKind::Email, "c@d.com", &["see-know", "stealer"]);
+    let r = rule_au_009_stealer_log(&RuleContext::new(&[oathnet, see_know]), "s", 0);
+    assert_eq!(
+        r.len(),
+        2,
+        "both the OathNet Pro and SeeKnow stealer-tagged emails must fire AU-009: {r:?}"
+    );
+}
+
 // ── AU-037 ──────────────────────────────────────────────────────────
 
 #[test]
@@ -1157,6 +1198,26 @@ fn au037_fires_critical_on_plaintext_credentials() {
 
     // No secret entities → no firing.
     assert!(rule_au_037_credential_exposure(&RuleContext::new(&[email]), "s", 0).is_empty());
+}
+
+#[test]
+fn au037_does_not_fire_on_a_published_public_key() {
+    // github_user (fetch.rs) and pgp (mod.rs) both mint EntityKind::Credential
+    // for a PUBLISHED public key -- an SSH/PGP key fingerprint the subject
+    // themselves posted on GitHub or a keyserver, tagged "ssh-key"/"pgp-key",
+    // used only to feed AU-048's cross-account key-sharing link. A public
+    // key's private half is definitionally not "directly recoverable"; AU-037
+    // must not treat one as breach/stealer credential exposure.
+    let mut ssh_key = Entity::new(EntityKind::Credential, "SHA256:abc123", 0.9, "s");
+    ssh_key.tag("ssh-key");
+    ssh_key.tag("public-key");
+    ssh_key.tag("github");
+    let mut pgp_key = Entity::new(EntityKind::Credential, "0xDEADBEEF", 0.9, "s");
+    pgp_key.tag("pgp-key");
+    assert!(
+        rule_au_037_credential_exposure(&RuleContext::new(&[ssh_key, pgp_key]), "s", 0).is_empty(),
+        "a published SSH/PGP public key must not fire AU-037"
+    );
 }
 
 #[test]
