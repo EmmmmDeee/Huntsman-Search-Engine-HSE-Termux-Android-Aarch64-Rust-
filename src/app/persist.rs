@@ -29,6 +29,35 @@ pub(crate) fn strongest_identity_label(entities: &[Entity], fallback: impl Into<
         .map_or_else(|| fallback.into(), |e| e.value.clone())
 }
 
+/// Confidence-rank `entities` in place — descending, ties broken on `uid` for
+/// a total order — before deriving relations. Mirrors
+/// `core::engine::merge_found_keys_and_flatten`'s identical ranking on the
+/// live-scan path, and for the identical reason: `derive_all_within` →
+/// `derive_coreferences` → `resolve_coreferences`'s `.take(MAX_COREF_NODES)`
+/// documents the precondition it relies on — "`entities` arrives
+/// confidence-ranked, so `.take` keeps the strongest identities — a
+/// deterministic prefix".
+///
+/// [`persist_entities_as_scan`] (the shared tail of `hse import` and
+/// `hse ingest --auto-scan`) used to hand entities through in raw
+/// file-arrival/dedup order instead, so above the identity-entity ceiling the
+/// truncation kept a DIFFERENT SUBSET on every run — re-importing the same
+/// underlying data with source rows in a different order could drop a
+/// different, possibly stronger, identity pair from ever being scored, not
+/// merely reorder the result. Below the ceiling the ranking half was still
+/// unhonoured. The web upload path (`api::scan_handlers::core`) already
+/// guards this precondition with its own entity-count ceiling; this
+/// CLI-facing path shares the same `derive_all_within` call but had neither
+/// that ceiling nor this sort.
+fn confidence_rank(entities: &mut [Entity]) {
+    entities.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
+}
+
 /// Persist `entities` as a `Complete` scan `sid` (labelled `label`, target kind
 /// `kind`) in the default store, then derive the deterministic entity relations
 /// and run the correlator over it — exactly as a live scan's finalise does, so a
@@ -59,6 +88,7 @@ pub(crate) async fn persist_entities_as_scan(
     // and correlated in this same pass.
     let mut entities = entities.to_vec();
     crate::core::engine::enrich_offline_geo(&mut entities, sid);
+    confidence_rank(&mut entities);
     let entities = &entities[..];
 
     let store: Arc<dyn StoragePort> =
@@ -127,6 +157,48 @@ mod tests {
         // Fallback only when neither is present.
         let ip = Entity::new(EntityKind::IpAddress, "1.1.1.1", 0.9, "s");
         assert_eq!(strongest_identity_label(&[ip], "fallback"), "fallback");
+    }
+
+    #[test]
+    fn confidence_rank_sorts_descending_with_uid_tiebreak() {
+        // Regression: `persist_entities_as_scan` used to hand entities to
+        // `derive_all_within` in raw arrival order, so `resolve_coreferences`'s
+        // `.take(MAX_COREF_NODES)` truncation (above the 5,000 identity-entity
+        // ceiling) kept an arbitrary subset rather than the strongest one.
+        // `confidence_rank` must sort strongest-first, and break an exact
+        // confidence tie deterministically on `uid` (never on arrival order,
+        // which a re-import with re-sorted source rows can change).
+        let weak = Entity::new(EntityKind::Email, "weak@example.com", 0.3, "s");
+        let strong = Entity::new(EntityKind::Email, "strong@example.com", 0.9, "s");
+        let mid = Entity::new(EntityKind::Email, "mid@example.com", 0.6, "s");
+        let mut entities = vec![weak.clone(), strong.clone(), mid.clone()];
+        confidence_rank(&mut entities);
+        assert_eq!(
+            entities.iter().map(|e| e.value.clone()).collect::<Vec<_>>(),
+            vec!["strong@example.com", "mid@example.com", "weak@example.com"],
+            "must be strongest-first regardless of arrival order"
+        );
+
+        // Equal confidence: uid order, not arrival order, decides the tie —
+        // reversing the input must not change the output.
+        let a = Entity::new(EntityKind::Email, "a-tie@example.com", 0.5, "s");
+        let b = Entity::new(EntityKind::Email, "b-tie@example.com", 0.5, "s");
+        let expected_uid_order = {
+            let mut uids = vec![a.uid.clone(), b.uid.clone()];
+            uids.sort();
+            uids
+        };
+        let mut forward = vec![a.clone(), b.clone()];
+        confidence_rank(&mut forward);
+        let mut reversed = vec![b, a];
+        confidence_rank(&mut reversed);
+        let forward_uids: Vec<String> = forward.iter().map(|e| e.uid.clone()).collect();
+        let reversed_uids: Vec<String> = reversed.iter().map(|e| e.uid.clone()).collect();
+        assert_eq!(forward_uids, expected_uid_order);
+        assert_eq!(
+            forward_uids, reversed_uids,
+            "a confidence tie must resolve identically regardless of input order"
+        );
     }
 
     #[tokio::test]
