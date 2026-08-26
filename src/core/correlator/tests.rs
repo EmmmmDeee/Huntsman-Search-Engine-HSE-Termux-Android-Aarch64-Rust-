@@ -9294,6 +9294,24 @@ fn au111_fires_on_cloudflare_fronted_domain_with_spf_ip() {
 }
 
 #[test]
+fn au111_matches_domain_identity_case_insensitively() {
+    // The "domain" evidence attribute another module stamps is not uniformly
+    // normalised (dns_intel::resolve sets it straight from the raw seed
+    // value), while waf_detect's own Domain entity value IS lowercased. A
+    // mixed-case seed must still match instead of silently non-matching on a
+    // raw string `==`.
+    let dom = cdn_fronted_domain("example.com", "Cloudflare");
+    let ip = spf_ip("203.0.113.9", "Example.com");
+    let r = rule_au_111_cdn_origin_candidate(&RuleContext::new(&[dom, ip]), "s", 0);
+    assert_eq!(
+        r.len(),
+        1,
+        "a case-differing but identical domain must still match"
+    );
+    assert_eq!(r[0].rule_id, "AU-111");
+}
+
+#[test]
 fn au111_fires_for_cloudfront_and_incapsula_using_waf_detect_names() {
     // Regression: the fronting-provider list must use the EXACT strings
     // `waf_detect` emits (`AWS CloudFront`, `Imperva/Incapsula`). An earlier list
