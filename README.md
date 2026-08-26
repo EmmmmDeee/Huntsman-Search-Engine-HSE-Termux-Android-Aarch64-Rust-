@@ -162,6 +162,22 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 
 ---
 
+## Deploy (Railway)
+
+```sh
+railway up
+```
+
+Railway builds the repo's `Dockerfile` automatically. Before your first
+deploy: attach a **Volume at `/data`** (state doesn't survive a redeploy
+without one) and set `HSE_AUTH_TOKEN` (Railway binds a public, non-loopback
+address, which HSE gates behind a bearer token). See
+[`docs/RAILWAY.md`](docs/RAILWAY.md) for the full walkthrough, what's already
+wired up (health check, `$PORT` binding, volume-ownership handling), and the
+single-instance constraint (local SQLite — do not scale replicas above 1).
+
+---
+
 ## Quick Start
 
 > **Want the complete setup with Ollama LLM analysis, SeekNow integration, and Web UI all at once?** See [`docs/ALL_IN_ONE_SETUP.md`](docs/ALL_IN_ONE_SETUP.md) for step-by-step guidance including prerequisites, Ollama installation, model selection, and troubleshooting — **this is the recommended path for new users.**
@@ -538,6 +554,7 @@ diagnostic bundle") for the complete engine state in one file.
 | Document | Content |
 |----------|---------|
 | [`docs/INSTALL.md`](docs/INSTALL.md) | All install paths + Termux quirks |
+| [`docs/RAILWAY.md`](docs/RAILWAY.md) | Deploying to Railway — Volume setup, `HSE_AUTH_TOKEN`, health check, single-instance constraint |
 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Common install/runtime errors + fixes |
 | [`docs/OSINT_API_REFERENCE.md`](docs/OSINT_API_REFERENCE.md) | External OSINT-provider API reference (free tiers, key shapes, integration status) |
 | [`docs/SEEKNOW_SETUP.md`](docs/SEEKNOW_SETUP.md) | SeekNow (see-know.ru) API setup + full endpoint reference |
