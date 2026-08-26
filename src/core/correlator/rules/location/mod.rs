@@ -1018,9 +1018,14 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
     // postcode. Among equal-rank candidates the most-confident wins; deterministic.
     // `Coordinates` are EXCLUDED — their `lat,lon` value's digits would be misread
     // as a postcode (e.g. `…,151.2093` → "2093"); a coordinate's location is rung 2.
+    // `is_infrastructure_geo` is ALSO excluded, matching the Address rollup rules
+    // (AU-018/026/030) this guard's own doc comment names as its consumers —
+    // without it a WHOIS-registrant/hosting address could anchor the headline
+    // "best location" estimate on the company's filing address instead of the
+    // subject's own.
     let mut pc: Vec<(u8, f64, &Entity, f64, f64)> = entities
         .iter()
-        .filter(|e| e.kind != EntityKind::Coordinates)
+        .filter(|e| e.kind != EntityKind::Coordinates && !is_infrastructure_geo(e))
         .filter_map(|e| {
             let pcode = crate::core::geo_family::au_postcode(e)?;
             let (lat, lon) = crate::util::city_coords::city_coords(&pcode)?;
@@ -1211,8 +1216,14 @@ pub(crate) fn au_location_corroboration(entities: &[Entity]) -> Option<LocationC
             uid: e.uid.clone(),
         });
     }
+    // `is_infrastructure_geo` catches HOSTING/REGISTRANT/`infra:`-tagged entities
+    // (a registrant/hosting address must not corroborate the subject's location,
+    // matching the postcode rung above); `PLATFORM_INFRA` is a distinct tag it
+    // doesn't itself check, so both stay.
     for e in entities.iter().filter(|e| {
-        e.kind != EntityKind::Coordinates && !e.has_tag(crate::core::tags::PLATFORM_INFRA)
+        e.kind != EntityKind::Coordinates
+            && !e.has_tag(crate::core::tags::PLATFORM_INFRA)
+            && !is_infrastructure_geo(e)
     }) {
         let Some(pc) = crate::core::geo_family::au_postcode(e) else {
             continue;
