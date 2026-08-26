@@ -1,5 +1,16 @@
 # SeekNow Web Automation & Manual Login Fallback
 
+> **⚠️ Not currently wired into a scan.** The code this document describes
+> (`AdvancedWebClient` in `web_client_advanced.rs`, `search_web()`/
+> `credits_web()` in `web_dispatcher.rs`) exists and compiles, but nothing in
+> `src/modules/see_know/` — the module that actually runs during a scan —
+> calls it. Today, an unset `HUNTSMAN_SEEKNOW_KEY` simply skips SeekNow for
+> the scan; it never falls back to a saved `seeknow_session.txt`. Following
+> the steps below will save a session token to disk, but HSE will not yet
+> use it. Wiring it in is an open decision (would make SeekNow's web-login
+> path part of every scan's network footprint) — see `.agent/state.json`
+> cycle 34 for the audit that found this gap.
+
 ## Status: Investigating Cloudflare Turnstile Protection
 
 SeekNow uses **Cloudflare Turnstile bot protection** on its login endpoints, which prevents all automated (HTTP-only) authentication attempts. This document explains the limitation and the supported workaround.
@@ -88,11 +99,16 @@ echo "YOUR_TOKEN_HERE" > ~/.huntsman/seeknow_session.txt
 cat ~/.huntsman/seeknow_session.txt
 ```
 
-**That's it!** HSE will now:
+**Saved — but see the warning at the top of this document.** As of this
+writing, nothing in the live scan path reads this file: `search_web()`/
+`credits_web()` (`web_dispatcher.rs`) are never called from
+`src/modules/see_know/`. The design intent, once wired in, is for HSE to:
 - Automatically load this token on startup
 - Reuse it for all API requests
 - Refresh it when it expires (24-hour default)
-- No manual re-login needed
+- Require no manual re-login
+
+but none of that happens today from a saved token alone.
 
 ### Step 4: Test It Works
 

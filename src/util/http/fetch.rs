@@ -623,6 +623,43 @@ pub fn is_auth_failure_400_body(body: &str) -> bool {
     AUTH_400_SIGNATURES.iter().any(|s| lower.contains(s))
 }
 
+/// Case-insensitive substrings that mark a provider's own in-body failure
+/// message — reported via a `success:false`/`error`/`message`-shaped field on
+/// an otherwise-2xx response — as a KEY or QUOTA problem rather than a
+/// merely-invalid target or query. Distinct from [`AUTH_400_SIGNATURES`]:
+/// that list disambiguates an already-non-2xx `400`, while this one also
+/// covers quota/credit exhaustion and is checked against a body the HTTP
+/// status alone gave no reason to distrust (a `200`).
+const KEY_OR_QUOTA_MESSAGE_SIGNATURES: &[&str] = &[
+    "unauthorized",
+    "permission",
+    "exceeded",
+    "insufficient credits",
+    "invalid api key",
+    "invalid key",
+];
+
+/// True if `message` — text from a provider's own in-body failure field on an
+/// otherwise-2xx response — names a KEY or QUOTA problem rather than a
+/// merely-invalid target/query. Some providers (IPQS, Criminal IP, and others
+/// sharing their response shape) answer a dead or exhausted key with `HTTP
+/// 200` and an in-body status instead of a `401`/`403`/`429`, so a
+/// status-only cascade cannot see it — without inspecting the message a
+/// burned key is indistinguishable from a clean empty result and the key
+/// pool never rotates past it. Pure and case-insensitive, so callers unit-test
+/// it against documented phrases without a live call. Pair with
+/// [`keyed_cascade_json`]'s [`BodyVerdict::KeyFailure`] (see `ipqs`/
+/// `criminal_ip` for the canonical wiring) or, for a bespoke cascade that
+/// can't use that primitive directly, call [`crate::core::module::ModuleContext::report_key_exhausted`]
+/// yourself when this returns `true`.
+#[must_use]
+pub fn is_key_or_quota_message(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    KEY_OR_QUOTA_MESSAGE_SIGNATURES
+        .iter()
+        .any(|p| m.contains(p))
+}
+
 /// Mark `key` exhausted (so the key pool / rotation can react) when `code` is a
 /// key-problem status per [`is_keyed_error_status`]; a no-op otherwise.
 ///
@@ -1079,7 +1116,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::append_capped;
-    use super::{is_auth_failure_400_body, is_keyed_error_status};
+    use super::{is_auth_failure_400_body, is_key_or_quota_message, is_keyed_error_status};
 
     #[test]
     fn auth_400_body_matches_real_provider_bodies() {
@@ -1107,6 +1144,34 @@ mod tests {
             r#"{"error":"validation","message":"query parameter 'q' is required"}"#
         ));
         assert!(!is_auth_failure_400_body(""));
+    }
+
+    #[test]
+    fn key_or_quota_message_classifies_real_provider_phrases_but_not_bad_targets() {
+        // The exact phrases IPQS answers a dead/exhausted key with (originally
+        // this module's own local classifier before it was generalised to a
+        // shared primitive so criminal_ip-shaped modules elsewhere — stolen_tax,
+        // niamonx — can reuse it instead of re-deriving their own list).
+        for m in [
+            "You have insufficient credits to make this query",
+            "Invalid API Key.",
+            "You have exceeded your request quota",
+            "You do not have permission to access this endpoint",
+            "Unauthorized",
+        ] {
+            assert!(is_key_or_quota_message(m), "must classify key/quota: {m:?}");
+        }
+        // A merely-invalid target stays a clean empty result (NOT a key failure).
+        for m in [
+            "Please enter a valid IP address.",
+            "Please enter a valid email address.",
+            "",
+        ] {
+            assert!(
+                !is_key_or_quota_message(m),
+                "an invalid-target message must not be treated as a key failure: {m:?}"
+            );
+        }
     }
 
     #[test]
