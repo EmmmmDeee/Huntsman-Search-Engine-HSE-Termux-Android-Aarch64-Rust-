@@ -56,7 +56,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{RequestBuilderExt, UA_OSINT, read_text, urlencode};
+use crate::util::http::{RequestBuilderExt, UA_OSINT, ok_or_absent, read_text, urlencode};
 use crate::util::str_util::is_handle;
 
 mod feed;
@@ -232,9 +232,17 @@ impl Module for RedditUser {
 ///
 /// `Ok(None)` is a clean miss: a 404 means no such account, which is the answer
 /// this module exists to give and must not be reported as a failure. Any other
-/// non-success is also `Ok(None)` — there is nothing to parse — but is logged,
-/// because a blanket 403 is exactly how this module died the first time and the
-/// next time it happens the log should say so.
+/// Every OTHER non-success is a refusal, not an answer, and is now an
+/// `Err(Error::module(..))`. `Ok(None)` reaches the caller as an empty, *successful*
+/// `ModuleResult` — indistinguishable from "this account posted nothing" — so
+/// folding a 403 (Reddit blocking the client), a 429 (throttled) or a 5xx (Reddit
+/// down) into it reported a clean absence for an account that was never actually
+/// checked, and told the engine's circuit breaker the source was healthy. Logging
+/// it was not enough: a log line is not a result, and nothing downstream reads it.
+///
+/// [`ok_or_absent`] is the shared, tested spelling of exactly this split
+/// (`Ok(Some)` = answered, `Ok(None)` = declared absent, `Err` = refused), so the
+/// policy stays in one place rather than being re-derived per module.
 async fn fetch_feed(ctx: &ModuleContext, handle: &str) -> Result<Option<String>> {
     let url = format!("{PROFILE_BASE}/{}/.rss", urlencode(handle));
     let resp = ctx
@@ -259,15 +267,13 @@ async fn fetch_feed(ctx: &ModuleContext, handle: &str) -> Result<Option<String>>
         .send_tagged(SRC)
         .await?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        if status != reqwest::StatusCode::NOT_FOUND {
-            tracing::warn!(
-                "{SRC}: {url} answered HTTP {status} — no findings for u/{handle} from this source"
-            );
-        }
+    // 404 is the ONE honest negative this endpoint offers: `.rss` answers 200 for
+    // a real account and 404 for one that does not exist, so it is a clean
+    // existence oracle. 403 is never Reddit's not-found signal, so it must not be
+    // softened into one here.
+    let Some(resp) = ok_or_absent(SRC, resp, &[404]).await? else {
         return Ok(None);
-    }
+    };
 
     let xml = read_text(SRC, resp).await?;
     // `read_text` does not archive, so record it here: the feed IS the source

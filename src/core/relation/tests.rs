@@ -265,19 +265,23 @@ fn entity_with_attr(
 fn shared_selector_links_domains_by_shared_registrant() {
     // The synthetic corporate → hidden-subsidiary archetype: two domains the engine
     // found separately, tied by one registrant email already sitting in their evidence.
+    // A personal-looking local part, deliberately NOT a role mailbox
+    // (admin@/support@/…) — is_proxy_registrant treats those as infrastructure,
+    // not an individuating registrant, which would make this fixture assert
+    // nothing once the proxy/infra-email guard applies here too.
     let a = entity_with_attr(
         EntityKind::Domain,
         "company-a.com",
         0.7,
         "registrant_email",
-        "admin@holdco.com",
+        "jane.doe@holdco.com",
     );
     let b = entity_with_attr(
         EntityKind::Domain,
         "company-b.com",
         0.6,
         "registrant_email",
-        "admin@holdco.com",
+        "jane.doe@holdco.com",
     );
     let edges = derive_shared_selector(&[a, b], "s");
     assert_eq!(edges.len(), 1, "shared registrant ⇒ one affiliation edge");
@@ -337,6 +341,36 @@ fn shared_selector_skips_crowded_privacy_proxy_values() {
     assert!(
         derive_shared_selector(&ents, "s").is_empty(),
         "a crowd-shared registrant proxy mints no edges"
+    );
+}
+
+#[test]
+fn shared_selector_skips_an_uncrowded_privacy_proxy_registrant() {
+    // Regression: the crowd test above only exercises AFFILIATION_CROWD_CAP —
+    // 7 members already exceeds the cap regardless of the org's proxy status.
+    // The narrower, previously-unguarded case: just TWO unrelated domains that
+    // happen to share one privacy-proxy registrant — well under the crowd cap,
+    // so only a dedicated is_proxy_registrant check (the guard
+    // derive_co_ownership's Source A already applies) can catch it.
+    // `derive_shared_selector` must not assert these two domains are
+    // affiliated purely because they share a registration-privacy vendor.
+    let a = entity_with_attr(
+        EntityKind::Domain,
+        "unrelated-a.example",
+        0.6,
+        "registrant_org",
+        "WhoisGuard, Inc.",
+    );
+    let b = entity_with_attr(
+        EntityKind::Domain,
+        "unrelated-b.example",
+        0.6,
+        "registrant_org",
+        "WhoisGuard, Inc.",
+    );
+    assert!(
+        derive_shared_selector(&[a, b], "s").is_empty(),
+        "an uncrowded privacy-proxy registrant must not assert an affiliation"
     );
 }
 
@@ -1285,6 +1319,28 @@ fn residency_links_person_to_place_by_owner_and_tag() {
         rels.iter()
             .any(|r| r.from_uid == subject.uid && r.to_uid == coord.uid),
         "exact-name-match place binds to the subject"
+    );
+}
+
+#[test]
+fn residency_does_not_bind_an_exact_name_match_place_when_two_subjects_are_present() {
+    // Regression: `hse import <dir>` can merge two DIFFERENT people's own prior
+    // scan exports (each independently subject-tagged) into one entity set.
+    // The exact-name-match tag carries no record of WHICH subject's name
+    // earned it, so with two subjects present, binding it to BOTH would
+    // fabricate a home address for whichever one it does not actually belong
+    // to. Alice's own address must not become "Bob's address" too.
+    let mut alice = ent(EntityKind::Person, "Alice Anderson", 0.8);
+    alice.tag("subject");
+    let mut bob = ent(EntityKind::Person, "Bob Baker", 0.8);
+    bob.tag("subject");
+    let mut addr = ent(EntityKind::Address, "1 Example St, QLD 4000", 0.5);
+    addr.tag("exact-name-match");
+
+    let rels = derive_residency(&[alice, bob, addr], "s");
+    assert!(
+        rels.is_empty(),
+        "an ambiguous exact-name-match place (2 subjects present) must bind no one, got: {rels:?}"
     );
 }
 

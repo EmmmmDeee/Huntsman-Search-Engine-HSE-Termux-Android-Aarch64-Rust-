@@ -745,7 +745,7 @@ pub struct IdentityClusterResult {
 
 /// Resolve the **transitive identity equivalence classes** of the relation graph:
 /// group every identity entity reachable from another (within `max_hops`) into a
-/// single cluster, via union-find over the [`identity_paths`] link set. Returns
+/// single cluster, via union-find over a set of *identity-binding* links. Returns
 /// only multi-member clusters (`len() >= 2`), each carrying the weakest-link
 /// confidence of the links that bind it, sorted by first member UID.
 ///
@@ -758,11 +758,36 @@ pub struct IdentityClusterResult {
 /// link. Because the floor gates the binding links, every returned cluster's
 /// `min_confidence` is itself `>= min_confidence`.
 ///
+/// A link binds only when EVERY hop's [`RelationKind::binds_identity`] is true —
+/// a chain that passes through even one `AssociatedWith`/`EmployedBy`/`LocatedAt`-
+/// shaped hop relates two DIFFERENT real-world things, not one identity, and must
+/// not fuse them (see that predicate's doc for the full rationale and the false
+/// union — two distinct namesakes sharing an employer — this closed).
+///
+/// Two independent link sources are unioned together, deliberately NOT just the
+/// [`identity_paths`] output:
+/// 1. **Direct edges** — every qualifying [`Relation`] between two identity
+///    entities in `entities`, read straight from `relations` with no cap. This
+///    is what guarantees a real, single-hop link can never silently vanish: an
+///    identity-rich scan's pairwise sweep is capped at [`IDENTITY_PAIR_PROBE_CAP`]
+///    pairs for cost (that cap is correct and necessary for the O(n²) transitive
+///    search below), but a direct edge is an O(1) fact already sitting in
+///    `relations` — there is no reason its visibility here should depend on
+///    which pairs a capped O(n²) sweep happened to reach first. Before this,
+///    a scan with enough identity entities to exceed the cap could lose an
+///    otherwise-isolated direct link entirely, with no warning.
+/// 2. **Transitive paths** — [`identity_paths`]' existing capped, `max_hops`-
+///    bounded pairwise search, for chains of 2+ hops. Its cap/cost tradeoff is
+///    unchanged and remains appropriate here: multi-hop discovery is the
+///    genuinely combinatorial part (a permutation-heavy scan can derive
+///    hundreds of identity entities), while direct edges above are cheap
+///    regardless of entity count.
+///
 /// This is the cluster-level synthesis of the pairwise transitive closure: where
 /// AU-060 reports "A is linked to B", this collapses every such link into "{A, B,
-/// C, …} is one identity". Built on the shared `identity_paths` finder, so a
-/// cluster's membership can never disagree with the pairwise links the dossier
-/// renders (one finder, no drift). Deterministic — members and clusters are
+/// C, …} is one identity". A cluster's membership can never disagree with the
+/// pairwise links the dossier renders for the transitive (2+ hop) case — direct
+/// edges are additionally exhaustive. Deterministic — members and clusters are
 /// sorted, independent of input and hash-iteration order.
 pub fn resolve_identity_clusters(
     entities: &[Entity],
@@ -770,23 +795,54 @@ pub fn resolve_identity_clusters(
     max_hops: usize,
     min_confidence: f64,
 ) -> Vec<IdentityClusterResult> {
-    // Keep only links strong enough to *bind* identities. Filtering here — before
-    // the union — is what stops one weak edge from collapsing strangers together:
-    // a sub-floor link is simply absent from the equivalence relation. Every link
-    // that survives also defines the component's weakest-link confidence below.
-    let paths: Vec<IdentityPath> = identity_paths(entities, relations, max_hops)
-        .into_iter()
-        .filter(|p| p.min_confidence >= min_confidence)
-        .collect();
-    if paths.is_empty() {
+    // One (from_uid, to_uid, weakest_confidence) triple per binding link,
+    // regardless of source (direct edge or transitive path) — the union-find
+    // and per-component confidence below treat them identically.
+    let mut links: Vec<(&str, &str, f64)> = Vec::new();
+
+    // Source 1: direct edges. Uncapped — see the doc comment above for why this
+    // must never be subject to IDENTITY_PAIR_PROBE_CAP. `is_identity_kind` +
+    // `entities` membership mirrors identity_paths'/sorted_confined_adjacency's
+    // own confinement (a dangling/quarantined endpoint is not traversable).
+    let kind_of: HashMap<&str, &EntityKind> =
+        entities.iter().map(|e| (e.uid.as_str(), &e.kind)).collect();
+    for r in relations {
+        if r.confidence < min_confidence || !r.kind.binds_identity() {
+            continue;
+        }
+        let (a, b) = (r.from_uid.as_str(), r.to_uid.as_str());
+        if a == b {
+            continue; // a self-loop binds nothing
+        }
+        let (Some(ka), Some(kb)) = (kind_of.get(a), kind_of.get(b)) else {
+            continue; // endpoint absent from the confirmed entity set
+        };
+        if is_identity_kind(ka) && is_identity_kind(kb) {
+            links.push((a, b, r.confidence));
+        }
+    }
+
+    // Source 2: transitive (2+ hop) paths, capped/bounded exactly as before.
+    // Filtered to links whose EVERY hop binds identity — a chain that passes
+    // through even one non-binding hop (e.g. two people who share an employer,
+    // Person --EmployedBy--> Org <--EmployedBy-- Person) relates two different
+    // people, not one identity.
+    let transitive_paths = identity_paths(entities, relations, max_hops);
+    for p in &transitive_paths {
+        if p.min_confidence >= min_confidence && p.steps.iter().all(|s| s.kind.binds_identity()) {
+            links.push((p.from_uid.as_str(), p.to_uid.as_str(), p.min_confidence));
+        }
+    }
+
+    if links.is_empty() {
         return Vec::new();
     }
 
     // Intern every identity UID that participates in a link.
     let mut index: HashMap<&str, usize> = HashMap::new();
     let mut uids: Vec<&str> = Vec::new();
-    for p in &paths {
-        for u in [p.from_uid.as_str(), p.to_uid.as_str()] {
+    for &(from_uid, to_uid, _) in &links {
+        for u in [from_uid, to_uid] {
             if !index.contains_key(u) {
                 index.insert(u, uids.len());
                 uids.push(u);
@@ -797,17 +853,17 @@ pub fn resolve_identity_clusters(
     // Union-find over the interned uids — the canonical disjoint-set primitive.
     // Merge the endpoints of every surviving link.
     let mut uf = crate::util::union_find::UnionFind::new(uids.len());
-    for p in &paths {
-        uf.union(index[p.from_uid.as_str()], index[p.to_uid.as_str()]);
+    for &(from_uid, to_uid, _) in &links {
+        uf.union(index[from_uid], index[to_uid]);
     }
 
-    // Weakest-link confidence per component: the minimum link min_confidence
+    // Weakest-link confidence per component: the minimum link confidence
     // among every link whose endpoints landed in that component.
     let mut comp_conf: HashMap<usize, f64> = HashMap::new();
-    for p in &paths {
-        let r = uf.find(index[p.from_uid.as_str()]);
+    for &(from_uid, _, conf) in &links {
+        let r = uf.find(index[from_uid]);
         let e = comp_conf.entry(r).or_insert(f64::INFINITY);
-        *e = e.min(p.min_confidence);
+        *e = e.min(conf);
     }
 
     // Group members by component root.
@@ -1081,6 +1137,106 @@ mod tests {
                 "every returned cluster clears the floor it was resolved under"
             );
         }
+    }
+
+    #[test]
+    fn resolve_identity_clusters_does_not_fuse_declared_associates() {
+        // Regression: resolve_identity_clusters used to apply only a confidence
+        // floor, no RelationKind filter, so a full-confidence AssociatedWith edge
+        // between two DISTINCT, differently-named people fused them into one
+        // "identity" — the exact shape derive_declared_associations emits for a
+        // declared co-owner record. Two real, unrelated people must stay two
+        // clusters (in fact: zero clusters here, since AssociatedWith is their
+        // only link).
+        let alice = Entity::new(EntityKind::Person, "Alice Smith", 0.8, "s");
+        let bob = Entity::new(EntityKind::Person, "Bob Jones", 0.8, "s");
+        let rels = [Relation::new(
+            alice.uid.clone(),
+            bob.uid.clone(),
+            RelationKind::AssociatedWith,
+            0.9,
+            "s",
+        )];
+        let clusters = resolve_identity_clusters(&[alice, bob], &rels, 4, 0.0);
+        assert!(
+            clusters.is_empty(),
+            "an AssociatedWith edge must never bind two people into one identity, got: {clusters:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_identity_clusters_does_not_fuse_two_people_via_a_shared_employer() {
+        // Regression: the same false-union class as above, via a 2-hop bridge —
+        // two DIFFERENT people who each declare the same employer
+        // (Person --EmployedBy--> Org <--EmployedBy-- Person) must not become
+        // "one identity" just because they share an employer. The Organisation
+        // itself is not an identity kind, so it never appears as a cluster
+        // member; the two people must simply stay unclustered.
+        let jane = Entity::new(EntityKind::Person, "Jane Citizen", 0.8, "s");
+        let mark = Entity::new(EntityKind::Person, "Mark Roe", 0.8, "s");
+        let acme = Entity::new(EntityKind::Organisation, "Acme Pty Ltd", 0.8, "s");
+        let rels = [
+            Relation::new(
+                jane.uid.clone(),
+                acme.uid.clone(),
+                RelationKind::EmployedBy,
+                0.9,
+                "s",
+            ),
+            Relation::new(
+                mark.uid.clone(),
+                acme.uid.clone(),
+                RelationKind::EmployedBy,
+                0.9,
+                "s",
+            ),
+        ];
+        let clusters = resolve_identity_clusters(&[jane, mark, acme], &rels, 4, 0.0);
+        assert!(
+            clusters.is_empty(),
+            "a shared-employer bridge must never bind two people into one identity, got: {clusters:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_identity_clusters_never_drops_a_direct_edge_to_the_pair_probe_cap() {
+        // Regression: identity_paths' O(n^2) pairwise sweep is capped at
+        // IDENTITY_PAIR_PROBE_CAP total pairs for cost — correct for THAT
+        // best-effort sweep, but resolve_identity_clusters used to derive its
+        // ENTIRE link set from it, so a real, single-hop, high-confidence edge
+        // could be silently invisible to identity resolution whenever the
+        // identity count was large enough that the capped sweep never reached
+        // that specific pair. Direct edges must be found independently of the
+        // pair cap.
+        let n = 400usize;
+        let mut ents: Vec<Entity> = (0..n)
+            .map(|i| Entity::new(EntityKind::Email, format!("id{i}@x.com"), 0.8, "s"))
+            .collect();
+        ents.sort_by(|a, b| a.uid.cmp(&b.uid));
+        let total_pairs = n * (n - 1) / 2;
+        assert!(
+            total_pairs > IDENTITY_PAIR_PROBE_CAP,
+            "test setup must exceed the cap so this actually exercises it"
+        );
+        // The ONLY edge in the whole graph: directly joins the two
+        // largest-UID identities — the very last pair the capped pairwise
+        // sweep would ever enumerate.
+        let a = &ents[n - 2];
+        let b = &ents[n - 1];
+        let rels = [Relation::new(
+            a.uid.clone(),
+            b.uid.clone(),
+            RelationKind::DerivedFrom,
+            0.95,
+            "s",
+        )];
+        let clusters = resolve_identity_clusters(&ents, &rels, 4, 0.0);
+        assert_eq!(
+            clusters.len(),
+            1,
+            "the one real direct edge must still form a 2-member cluster"
+        );
+        assert_eq!(clusters[0].members.len(), 2);
     }
 
     #[test]

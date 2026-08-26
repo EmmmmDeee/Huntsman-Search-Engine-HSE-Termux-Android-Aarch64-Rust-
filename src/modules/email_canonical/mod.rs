@@ -26,6 +26,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::canonical::canonical_email_mailbox;
 
 const SRC: &str = "email_canonical";
 
@@ -38,29 +39,23 @@ const CANON_CONF: f64 = confidence::HIGH_PLUSPLUS;
 pub struct EmailCanonical;
 
 /// Compute the canonical mailbox form of `email`, or `None` when the address is
-/// unparseable or already canonical (nothing new to emit).
+/// unparseable, has a domain with no dot (`user@localhost` is never a real
+/// Internet mailbox), or is already canonical (nothing new to emit).
+///
+/// The Gmail-dot/`+tag` folding itself is
+/// [`canonical_email_mailbox`] — the same rule
+/// [`crate::core::resolve`]'s merge-suggestion pass applies to existing
+/// entities, so the two can never disagree on what counts as one mailbox. This
+/// wrapper adds only the two rules specific to *emitting a new entity*: reject
+/// a domain that cannot be a real Internet mailbox, and emit nothing when the
+/// seed was already canonical.
 fn canonicalise(email: &str) -> Option<String> {
-    let lower = email.trim().to_ascii_lowercase();
-    let (local, domain) = lower.split_once('@')?;
-    if local.is_empty() || domain.is_empty() || !domain.contains('.') {
+    let lower = email.trim().to_lowercase();
+    let (_, domain) = lower.split_once('@')?;
+    if !domain.contains('.') {
         return None;
     }
-
-    // Strip `+tag` subaddressing — the base mailbox is what matters for
-    // identity. Widely supported (Gmail, Microsoft, Fastmail, Proton, iCloud).
-    let base = local.split('+').next().unwrap_or(local);
-
-    // Gmail (and its googlemail.com alias) ignores dots in the local-part.
-    let (local_canon, domain_canon) = if domain == "gmail.com" || domain == "googlemail.com" {
-        (base.replace('.', ""), "gmail.com")
-    } else {
-        (base.to_string(), domain)
-    };
-
-    if local_canon.is_empty() {
-        return None;
-    }
-    let canon = format!("{local_canon}@{domain_canon}");
+    let canon = canonical_email_mailbox(&lower)?;
     (canon != lower).then_some(canon)
 }
 

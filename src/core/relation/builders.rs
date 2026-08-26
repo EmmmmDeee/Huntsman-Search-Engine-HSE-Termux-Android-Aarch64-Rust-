@@ -630,6 +630,20 @@ const AFFILIATION_DAMP: f64 = 0.45;
 /// host — so it links nothing. A genuine owner selector is shared by a few affiliates.
 const AFFILIATION_CROWD_CAP: usize = 6;
 
+/// True for an evidence attribute key that carries a WHOIS registrant/admin
+/// value — the subset of [`AFFILIATION_SELECTOR_ATTRS`] a privacy-proxy
+/// service can populate, and therefore the keys
+/// [`link_by_shared_attribute`] must check against
+/// [`crate::util::domains::is_proxy_registrant`] before treating a shared
+/// value as individuating. `admin_org` is included alongside
+/// `registrant_email`/`registrant_org` because a privacy-proxy WHOIS record
+/// blankets every contact field it populates, not the registrant field alone.
+fn is_whois_registrant_attr(key: &str) -> bool {
+    ["registrant_email", "registrant_org", "admin_org"]
+        .iter()
+        .any(|a| key.eq_ignore_ascii_case(a))
+}
+
 /// Evidence attribute keys whose value names a real person — the owner /
 /// registrant / account holder a module recorded alongside an identifier or a
 /// place. Matched case-insensitively against present Person entities, so an
@@ -944,9 +958,17 @@ pub fn derive_identity_ownership(entities: &[Entity], scan_id: &str) -> Vec<Rela
 /// place whose evidence carries an owner/resident attribute ([`PERSON_NAME_ATTRS`])
 /// matching a present Person (`qld_unclaimed`'s `owner = ERIK DIEGMANN`). Failing
 /// that, a place the scan already flagged as the subject's via the geo
-/// correlator's `exact-name-match` tag binds to the subject(s) — reusing that
-/// vetted decision rather than re-deriving it. Deduped per (person, place);
-/// deterministic output order.
+/// correlator's `exact-name-match` tag binds to THE subject — reusing that
+/// vetted decision rather than re-deriving it, but ONLY when exactly one subject
+/// is present. The tag itself carries no record of which person's name earned it,
+/// so with two or more subjects (`hse import <dir>` can merge separate people's
+/// own prior scan exports, each independently subject-tagged, into one entity
+/// set fed here) there is no way to tell WHICH subject a given exact-name-match
+/// place actually belongs to — binding it to every co-present subject fabricates
+/// a home address for whichever of them it does not actually belong to. Binding
+/// none in that ambiguous case is the conservative, correct default: a missed
+/// lead is a far smaller harm than an asserted address for the wrong person.
+/// Deduped per (person, place); deterministic output order.
 pub fn derive_residency(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     use std::collections::HashSet;
 
@@ -981,16 +1003,19 @@ pub fn derive_residency(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
         if linked || !place.has_tag("exact-name-match") {
             continue;
         }
-        for s in &subjects {
-            if seen.insert((s.uid.clone(), place.uid.clone())) {
-                out.push(Relation::new(
-                    s.uid.as_str(),
-                    place.uid.as_str(),
-                    RelationKind::LocatedAt,
-                    s.confidence.min(place.confidence),
-                    scan_id,
-                ));
-            }
+        // Ambiguous with 0 or 2+ subjects present — see the function doc for why
+        // this must bind no one rather than guess.
+        let [s] = subjects.as_slice() else {
+            continue;
+        };
+        if seen.insert((s.uid.clone(), place.uid.clone())) {
+            out.push(Relation::new(
+                s.uid.as_str(),
+                place.uid.as_str(),
+                RelationKind::LocatedAt,
+                s.confidence.min(place.confidence),
+                scan_id,
+            ));
         }
     }
     sort_edges(&mut out);
@@ -1331,6 +1356,30 @@ fn link_by_shared_attribute(
         for ev in &e.evidence {
             for (key, val) in &ev.attributes {
                 if !attrs.iter().any(|a| key.eq_ignore_ascii_case(a)) {
+                    continue;
+                }
+                // A WHOIS registrant/admin field populated by a privacy-proxy
+                // service (WhoisGuard, Domains By Proxy, …) is not an
+                // individuating owner selector — it is shared by millions of
+                // unrelated domains. `derive_co_ownership`'s Source A already
+                // excludes exactly this for its own registrant grouping; this
+                // engine pivots on the SAME attribute keys
+                // (`AFFILIATION_SELECTOR_ATTRS`: registrant_email/
+                // registrant_org/admin_org) via `derive_shared_selector`, so it
+                // needs the identical guard or a scan with only a handful of
+                // domains sharing one privacy-proxy service fabricates an
+                // AssociatedWith affiliation between their unrelated owners —
+                // `AFFILIATION_CROWD_CAP` alone does nothing when the crowd
+                // itself is small. Every other selector this engine pivots on
+                // (cert_serial, key_fingerprint, gravatar_hash, and
+                // CO_MENTION_SOURCE_ATTRS' url/source_url/page) is unaffected:
+                // `is_whois_registrant_attr` matches only the three WHOIS keys.
+                if is_whois_registrant_attr(key)
+                    && crate::util::domains::is_proxy_registrant(
+                        val,
+                        key.eq_ignore_ascii_case("registrant_email"),
+                    )
+                {
                     continue;
                 }
                 let v = val.trim().to_lowercase();
