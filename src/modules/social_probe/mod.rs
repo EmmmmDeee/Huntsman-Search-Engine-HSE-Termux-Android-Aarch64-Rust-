@@ -335,6 +335,7 @@ impl Module for SocialProbe {
 
         let mut result = ModuleResult::new();
         let mut found_count = 0u32;
+        let mut verified_count = 0u32;
         let mut checked_count = 0u32;
         // Probes that returned no definitive answer — `fetch_with_status` code 0,
         // i.e. curl could not connect / was blocked / had no egress — as distinct
@@ -390,6 +391,9 @@ impl Module for SocialProbe {
                 found_platforms.push(platform.name);
 
                 let (confidence, verified) = detection_strength(platform);
+                if verified {
+                    verified_count += 1;
+                }
 
                 let mut entity = Entity::new(EntityKind::Url, &url, confidence, &ctx.scan_id);
                 entity.tag("social-profile");
@@ -469,6 +473,7 @@ impl Module for SocialProbe {
         if let Some(summary) = build_target_summary(
             target,
             found_count,
+            verified_count,
             checked_count,
             &found_platforms,
             &ctx.scan_id,
@@ -522,6 +527,7 @@ pub(super) fn should_echo_target(found_count: u32) -> bool {
 pub(super) fn build_target_summary(
     target: &Target,
     found_count: u32,
+    verified_count: u32,
     checked_count: u32,
     found_platforms: &[&str],
     scan_id: &str,
@@ -551,7 +557,18 @@ pub(super) fn build_target_summary(
         // being tagged `multi-platform` here. Kept alongside `found` (its own
         // profiles-checked convention) rather than replacing it.
         .with_attr("platforms_count", found_platforms.len().to_string())
-        .with_attr("platforms", found_platforms.join(", ")),
+        .with_attr("platforms", found_platforms.join(", "))
+        // AU-035/AU-077's `is_verified_discovery` reads `hits_verified` on THIS
+        // aggregate record — the per-platform verified/weak split lives on the
+        // separate Url entities those rules never scan. An absent attribute
+        // reads as vacuously verified, so an all-status-only sweep could still
+        // fabricate a "prediction confirmed" bridge. Mirrors the shape
+        // `username_search`/`streaming_probe` already stamp.
+        .with_attr("hits_verified", verified_count.to_string())
+        .with_attr(
+            "hits_status_only",
+            (found_count - verified_count).to_string(),
+        ),
     );
     Some(summary)
 }
