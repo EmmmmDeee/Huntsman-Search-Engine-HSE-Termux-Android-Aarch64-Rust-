@@ -5683,6 +5683,51 @@ fn au027_excludes_infrastructure_coordinates() {
 }
 
 #[test]
+fn au027_excludes_infrastructure_addresses() {
+    use super::rules::rule_au_027_address_coordinates_chain;
+    // Mirrors au027_excludes_infrastructure_coordinates, but for the ADDRESS
+    // side: unlike `coords` (filtered on `!is_infrastructure_geo` above), the
+    // `addresses` collection has no such filter, so a WHOIS-registrant address
+    // — a company's filing/privacy address, not the subject's home — rides
+    // into `entity_uids` unfiltered. The registrant address here has no
+    // `geoint`/`reverse-geocoded`/`validated` tag of its own and no
+    // geographic relationship to the coordinates (a different city
+    // entirely); only the coordinates' `geocoded` tag satisfies the rule's
+    // geo-tag gate, so a purely-infrastructure address with zero real
+    // grounding still gets asserted as part of a "validated geolocation
+    // chain".
+    let mut registrant_addr = Entity::new(
+        EntityKind::Address,
+        "123 Corporate Ave, Melbourne, VIC",
+        0.60,
+        "scan",
+    );
+    registrant_addr.tag(crate::core::tags::REGISTRANT);
+    let registrant_uid = registrant_addr.uid.clone();
+
+    let anchored = |v: &str| {
+        let mut e = Entity::new(EntityKind::Coordinates, v, 0.80, "scan");
+        e.tag("geocoded");
+        e.add_evidence(Evidence::new("geocode", "reverse-geocoded"));
+        e
+    };
+
+    let out = rule_au_027_address_coordinates_chain(
+        &RuleContext::new(&[
+            registrant_addr,
+            anchored("-27.4698,153.0251"), // Brisbane — unrelated to the Melbourne registrant address
+            anchored("-27.4690,153.0235"),
+        ]),
+        "scan",
+        0,
+    );
+    assert!(
+        out.is_empty() || !out[0].entity_uids.contains(&registrant_uid),
+        "a WHOIS-registrant address must not be fused into an AU-027 chain: {out:?}"
+    );
+}
+
+#[test]
 fn au048_links_accounts_sharing_a_public_key() {
     // A public key published by two accounts → cryptographic proof of one
     // controller (same private key). Single account → no link.
