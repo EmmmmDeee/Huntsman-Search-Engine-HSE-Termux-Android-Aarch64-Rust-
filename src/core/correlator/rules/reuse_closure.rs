@@ -70,16 +70,23 @@ pub(in crate::core::correlator) fn rule_au_121_credential_reuse_blast_radius(
             let mut raw: Vec<String> = Vec::new();
             let mut handles: Vec<String> = Vec::new();
             // A handle is only a safe union-find pivot if it is a DISTINCTIVE
-            // identity: not a generic role handle (admin/info/support/…) and not an
-            // all-numeric id (10001), either of which two unrelated people can
-            // independently carry. Pivoting on one fuses strangers into a single
-            // reuse component — a false shared-secret blast radius. Mirrors the
-            // persona_key guard in core::relation::builders (minus its len>=4 arm,
-            // which is not needed to reject these and would drop legitimate short
-            // handles).
-            let is_pivotable = |h: &str| {
-                !h.is_empty() && !h.bytes().all(|b| b.is_ascii_digit()) && !is_generic_handle(h)
-            };
+            // identity: not too short, not a generic role handle
+            // (admin/info/support/…), and not an all-numeric id (10001) — any of
+            // which two unrelated people can independently carry. Pivoting on one
+            // fuses strangers into a single reuse component — a false Critical
+            // shared-secret blast radius (this rule's own severity), which is why
+            // the length floor is NOT dropped the way an earlier version of this
+            // comment argued: a short handle like "cj" bridging two independent
+            // breach corpora is exactly the collision `is_anchorable_handle`'s
+            // len>=4 exists to reject, and this rule's blast radius spans
+            // independent secrets (cross-corpus), unlike AU-047/AU-106's
+            // single-secret co-occurrence. Delegates to the canonical guard
+            // (core::relation::builders::persona_key uses the same one) so the
+            // two can't drift; the all-digit check stays explicit since
+            // is_anchorable_handle doesn't apply it ("10001" is length-5,
+            // non-generic, and would otherwise pass).
+            let is_pivotable =
+                |h: &str| is_anchorable_handle(h) && !h.bytes().all(|b| b.is_ascii_digit());
             // `attr_values` per key, not `attributes.get`: two rows of one breach
             // corpus fold into a single evidence record whose colliding accounts
             // accumulate as `"alice; bob_work"`, so reading the value whole
@@ -288,17 +295,17 @@ mod tests {
 
     #[test]
     fn au114_fires_on_a_transitive_chain_no_single_secret_spans() {
-        // Secret A ties alice+bob; secret B ties bob+carol. alice and carol share
-        // no secret, but the chain makes all three one blast radius.
+        // Secret A ties alice+bobby; secret B ties bobby+carol. alice and carol
+        // share no secret, but the chain makes all three one blast radius.
         let a = secret_with(
             EntityKind::Password,
             HASH_A,
-            &[("username", "alice"), ("username", "bob")],
+            &[("username", "alice"), ("username", "bobby")],
         );
         let b = secret_with(
             EntityKind::Password,
             HASH_B,
-            &[("username", "bob"), ("username", "carol")],
+            &[("username", "bobby"), ("username", "carol")],
         );
         let out = rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a, b]), "s", 0);
         assert_eq!(out.len(), 1, "the transitive chain must fire once");
@@ -307,6 +314,33 @@ mod tests {
             out[0].severity,
             Severity::Critical,
             "a salted-hash chain is construction-unique → Critical"
+        );
+    }
+
+    #[test]
+    fn au121_does_not_bridge_two_secrets_on_a_short_handle() {
+        // Same shape as the transitive-chain test above, but the bridging
+        // handle is "cj" (2 chars) instead of "bobby" (5) — short enough that
+        // two unrelated people plausibly picked it independently on unrelated
+        // sites. Must NOT fire: is_pivotable requires is_anchorable_handle's
+        // len>=4 floor, the same guard persona_key applies for identical
+        // reasons, so a coincidental short-handle collision across two
+        // independent secrets no longer fabricates a Critical cross-identity
+        // link between strangers.
+        let a = secret_with(
+            EntityKind::Password,
+            HASH_A,
+            &[("username", "alice"), ("username", "cj")],
+        );
+        let b = secret_with(
+            EntityKind::Password,
+            HASH_B,
+            &[("username", "cj"), ("username", "carol")],
+        );
+        let out = rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a, b]), "s", 0);
+        assert!(
+            out.is_empty(),
+            "a 2-character handle must not bridge two independent secrets"
         );
     }
 
@@ -398,12 +432,12 @@ mod tests {
         let a = secret_with(
             EntityKind::Password,
             "Tr0ub4dour&3xtra_L0ng!",
-            &[("username", "alice"), ("username", "bob")],
+            &[("username", "alice"), ("username", "bobby")],
         );
         let b = secret_with(
             EntityKind::Password,
             "c0rrect-h0rse-b4ttery-st4ple-9",
-            &[("username", "bob"), ("username", "carol")],
+            &[("username", "bobby"), ("username", "carol")],
         );
         let out = rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a, b]), "s", 0);
         assert_eq!(out.len(), 1);
@@ -412,19 +446,20 @@ mod tests {
 
     #[test]
     fn au114_mixed_hash_and_plaintext_chain_is_high_not_critical() {
-        // Weakest-link: a component bound by a salted hash (alice–bob) AND a reused
-        // plaintext password (bob–carol) is only as certain as its plaintext edge,
-        // which two strangers could coincidentally share → High, not Critical.
-        // Under the old OR rule the hash alone forced the whole chain to Critical.
+        // Weakest-link: a component bound by a salted hash (alice–bobby) AND a
+        // reused plaintext password (bobby–carol) is only as certain as its
+        // plaintext edge, which two strangers could coincidentally share →
+        // High, not Critical. Under the old OR rule the hash alone forced the
+        // whole chain to Critical.
         let a = secret_with(
             EntityKind::Password,
             HASH_A,
-            &[("username", "alice"), ("username", "bob")],
+            &[("username", "alice"), ("username", "bobby")],
         );
         let b = secret_with(
             EntityKind::Password,
             "c0rrect-h0rse-b4ttery-st4ple-9",
-            &[("username", "bob"), ("username", "carol")],
+            &[("username", "bobby"), ("username", "carol")],
         );
         let out = rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a, b]), "s", 0);
         assert_eq!(out.len(), 1);
