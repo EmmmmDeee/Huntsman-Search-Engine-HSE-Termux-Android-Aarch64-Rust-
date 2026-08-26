@@ -946,30 +946,79 @@ pub(in crate::core::correlator) fn rule_au_095_exposed_key_portfolio(
 ///
 /// This is the pivot the operator asked for — the provider is the intelligence,
 /// not the secret it contains; nothing here is used to authenticate. Severity
-/// High (a strong, specific attribution): a single OSINT artifact is a lead,
-/// several across categories is a profile. One finding per scan.
+/// High (a strong, specific attribution) requires subject-ownership grounding
+/// (item 25) — [`osint_key_is_subject_grounded`] — since the universal harvester
+/// also mints these artifacts from crawled pages, wayback snapshots, search
+/// results, and public source code that the subject never possessed. An
+/// ungrounded artifact still surfaces as a Medium tradecraft lead rather than
+/// being silently dropped, but is never worded as subject possession.
 pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
     context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
     let entities = context.entities();
-    use std::collections::{BTreeMap, BTreeSet};
-
-    let mut providers: BTreeSet<&str> = BTreeSet::new();
-    // category slug → distinct providers in it, for a tradecraft breakdown.
-    let mut by_category: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    let mut uids: Vec<String> = Vec::new();
 
     // Both provider-access kinds carry the pivot tags: a harvested ApiKey and a
     // leaked login Credential for the same provider are equal practitioner
     // evidence. The `osint-practitioner` tag is only ever stamped on these two
     // kinds, so the tag filter alone is sufficient — but the kind guard keeps the
     // intent explicit and pins it if the tag is ever reused elsewhere.
-    for e in entities.iter().filter(|e| {
-        matches!(e.kind, EntityKind::ApiKey | EntityKind::Credential)
-            && e.has_tag("osint-practitioner")
-    }) {
+    let (grounded, ungrounded): (Vec<&Entity>, Vec<&Entity>) = entities
+        .iter()
+        .filter(|e| {
+            matches!(e.kind, EntityKind::ApiKey | EntityKind::Credential)
+                && e.has_tag("osint-practitioner")
+        })
+        .partition(|e| osint_key_is_subject_grounded(e));
+
+    [
+        au096_finding(&grounded, true, scan_id, ts),
+        au096_finding(&ungrounded, false, scan_id, ts),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// Subject-ownership grounding for a harvested OSINT-provider artifact (item
+/// 25), used by [`rule_au_096_osint_practitioner`]. An artifact's mere
+/// presence in a scan is NOT possession: the universal harvester surfaces
+/// keys found in crawled pages, wayback snapshots, search results and public
+/// source code — none of which the subject owns or controls. An artifact is
+/// attributable to the subject only when it was observed in the subject's OWN
+/// compromised data — a breach or stealer-log record — which is exactly the
+/// possession standard AU-037 (leaked passwords/credentials) and AU-009
+/// (stealer-log) already apply. Grounding is: at least one evidence entry
+/// whose source is a breach/stealer source.
+fn osint_key_is_subject_grounded(e: &Entity) -> bool {
+    e.evidence
+        .iter()
+        .any(|ev| super::breach_pii::is_breach_source(&ev.source))
+}
+
+/// Build one AU-096 finding over `keys` — the shared shape
+/// [`rule_au_096_osint_practitioner`] uses for the grounded (subject-
+/// possession) and ungrounded (unassigned-lead) partitions. `None` for an
+/// empty partition.
+fn au096_finding(
+    keys: &[&Entity],
+    grounded: bool,
+    scan_id: &str,
+    ts: u64,
+) -> Option<Correlation> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    if keys.is_empty() {
+        return None;
+    }
+
+    let mut providers: BTreeSet<&str> = BTreeSet::new();
+    // category slug → distinct providers in it, for a tradecraft breakdown.
+    let mut by_category: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    let mut uids: Vec<String> = Vec::new();
+
+    for e in keys {
         let provider = e
             .tags
             .iter()
@@ -985,10 +1034,6 @@ pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
         uids.push(e.uid.clone());
     }
 
-    if providers.is_empty() {
-        return Vec::new();
-    }
-
     let tradecraft = by_category
         .iter()
         .map(|(cat, provs)| {
@@ -1000,22 +1045,43 @@ pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
         .collect::<Vec<_>>()
         .join("; ");
 
-    vec![Correlation::new(
-        "AU-096",
-        "OSINT practitioner (recon-provider access)",
-        Severity::High,
+    let description = if grounded {
         format!(
             "Subject holds {} OSINT/recon-provider credential(s) (API keys and/or leaked \
-             logins) across {} provider(s) — by possession an OSINT practitioner. Tradecraft: \
-             {tradecraft}. The provider is the pivot (tooling, intent); artifacts are \
-             catalogued, not used.",
+             logins) across {} provider(s), observed in the subject's own breach/stealer data \
+             — by possession an OSINT practitioner. Tradecraft: {tradecraft}. The provider is \
+             the pivot (tooling, intent); artifacts are catalogued, not used.",
             uids.len(),
             providers.len()
-        ),
+        )
+    } else {
+        format!(
+            "{} OSINT/recon-provider credential(s) across {} provider(s) surfaced in this scan \
+             (crawled pages, wayback snapshots, search results, or public source — NOT the \
+             subject's own compromised data), so this is a tradecraft lead pending ownership \
+             grounding, not a subject attribution. Tradecraft: {tradecraft}.",
+            uids.len(),
+            providers.len()
+        )
+    };
+
+    Some(Correlation::new(
+        "AU-096",
+        if grounded {
+            "OSINT practitioner (recon-provider access)"
+        } else {
+            "OSINT recon-tool key (unassigned lead)"
+        },
+        if grounded {
+            Severity::High
+        } else {
+            Severity::Medium
+        },
+        description,
         uids,
         scan_id,
         ts,
-    )]
+    ))
 }
 
 /// AU-037 — Plaintext credential exposure.

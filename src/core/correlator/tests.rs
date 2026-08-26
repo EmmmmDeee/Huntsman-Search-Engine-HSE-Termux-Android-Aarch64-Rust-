@@ -6937,11 +6937,28 @@ fn au095_no_keys_no_finding() {
 
 #[cfg(test)]
 fn osint_key_ent(value: &str, service: &str, category: &str) -> Entity {
+    // Grounded in the subject's OWN breach/stealer data (item 25) — a real
+    // subject-possession fixture, distinct from `osint_key_ent_ungrounded`
+    // below, which carries no such evidence.
     let mut e = Entity::new(EntityKind::ApiKey, value, 0.80, "s");
     e.tag("api-key");
     e.tag(format!("service:{service}"));
     e.tag("osint-practitioner");
     e.tag(format!("osint-category:{category}"));
+    e.add_evidence(Evidence::new("oathnet_pro", "breach record"));
+    e
+}
+
+#[cfg(test)]
+fn osint_key_ent_ungrounded(value: &str, service: &str, category: &str) -> Entity {
+    // Same pivot tags as `osint_key_ent`, but surfaced via a non-breach source
+    // (a crawled page) — the subject never possessed this artifact.
+    let mut e = Entity::new(EntityKind::ApiKey, value, 0.80, "s");
+    e.tag("api-key");
+    e.tag(format!("service:{service}"));
+    e.tag("osint-practitioner");
+    e.tag(format!("osint-category:{category}"));
+    e.add_evidence(Evidence::new("web_crawler", "crawled page"));
     e
 }
 
@@ -6974,12 +6991,14 @@ fn au096_flags_osint_practitioner_with_tradecraft() {
 #[cfg(test)]
 fn osint_cred_ent(value: &str, service: &str, category: &str) -> Entity {
     // The leaked-login path (`store_api_credential`) mints a Credential — not an
-    // ApiKey — but carries the same OSINT-practitioner pivot tags.
+    // ApiKey — but carries the same OSINT-practitioner pivot tags. Grounded in
+    // the subject's own breach data (item 25), matching `osint_key_ent`.
     let mut e = Entity::new(EntityKind::Credential, value, 0.65, "s");
     e.tag("stealer-credential");
     e.tag(format!("service:{service}"));
     e.tag("osint-practitioner");
     e.tag(format!("osint-category:{category}"));
+    e.add_evidence(Evidence::new("oathnet_pro", "breach record"));
     e
 }
 
@@ -7128,6 +7147,68 @@ fn au096_ignores_non_osint_keys() {
     assert!(
         super::rules::rule_au_096_osint_practitioner(&RuleContext::new(&[aws]), "s", 0).is_empty()
     );
+}
+
+#[test]
+fn au096_ungrounded_key_is_an_unassigned_lead_not_subject_possession() {
+    // Item 25: a Shodan key surfaced by web_crawler (a page HSE crawled, not the
+    // subject's own compromised data) must never be worded as subject
+    // possession — it is a tradecraft lead pending ownership grounding.
+    let shodan = osint_key_ent_ungrounded(
+        "shodankey32xxxxxxxxxxxxxxxxxxxxxx",
+        "shodan",
+        "attack-surface",
+    );
+    let r = super::rules::rule_au_096_osint_practitioner(&RuleContext::new(&[shodan]), "s", 0);
+    assert_eq!(r.len(), 1, "one unassigned-lead finding");
+    assert_eq!(r[0].rule_id, "AU-096");
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(
+        !r[0].description.contains("Subject holds"),
+        "an ungrounded artifact must never be worded as subject possession: {}",
+        r[0].description
+    );
+    assert!(r[0].description.contains("shodan"));
+}
+
+#[test]
+fn au096_mixed_grounding_yields_two_findings_and_never_inflates_possession() {
+    // A grounded Dehashed key (subject's own breach data) and an ungrounded
+    // Shodan key (a crawled page) must yield two SEPARATE findings — the
+    // ungrounded key must not inflate the possession count of the grounded one.
+    let grounded = osint_key_ent("dehashedkey", "dehashed", "breach-leak");
+    let ungrounded = osint_key_ent_ungrounded(
+        "shodankey32xxxxxxxxxxxxxxxxxxxxxx",
+        "shodan",
+        "attack-surface",
+    );
+    let r = super::rules::rule_au_096_osint_practitioner(
+        &RuleContext::new(&[grounded, ungrounded]),
+        "s",
+        0,
+    );
+    assert_eq!(r.len(), 2, "grounded and ungrounded partitions each fire: {r:?}");
+
+    let high = r
+        .iter()
+        .find(|c| c.severity == super::Severity::High)
+        .expect("a High subject-possession finding");
+    assert!(high.description.contains("Subject holds"));
+    assert!(
+        high.description.contains("1 OSINT/recon-provider credential"),
+        "the ungrounded key must not inflate the grounded count: {}",
+        high.description
+    );
+    assert!(high.description.contains("dehashed"));
+    assert!(!high.description.contains("shodan"));
+
+    let medium = r
+        .iter()
+        .find(|c| c.severity == super::Severity::Medium)
+        .expect("a Medium unassigned-lead finding");
+    assert!(!medium.description.contains("Subject holds"));
+    assert!(medium.description.contains("shodan"));
+    assert!(!medium.description.contains("dehashed"));
 }
 
 #[test]
