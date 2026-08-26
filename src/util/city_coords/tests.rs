@@ -359,3 +359,18 @@ use super::*;
         // A genuine AU tabulated row must not be gated out by the AU-place check.
         assert_eq!(city_coords("Newcastle, NSW 2300"), Some((-32.9283, 151.7817)));
     }
+
+    #[test]
+    fn is_tabulated_au_city_matches_exact_multi_word_names_only() {
+        assert!(is_tabulated_au_city("gold coast"));
+        assert!(is_tabulated_au_city("brisbane"));
+        // Exact-match, case-sensitive by design — callers lowercase first, same
+        // as every other lookup in this module.
+        assert!(!is_tabulated_au_city("Gold Coast"));
+        // Tabulated, but not Australian — CITIES also carries representative
+        // overseas cities for the free-text city_coords() lookup.
+        assert!(!is_tabulated_au_city("new york"));
+        // An arbitrary phrase, and a superset of a real name, must not match.
+        assert!(!is_tabulated_au_city("smith gold coast"));
+        assert!(!is_tabulated_au_city("nowhere special"));
+    }
