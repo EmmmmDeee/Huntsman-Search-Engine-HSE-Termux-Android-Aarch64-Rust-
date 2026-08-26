@@ -82,13 +82,18 @@ pub fn is_whois_privacy_placeholder(s: &str) -> bool {
         "data protected",
         "not disclosed",
         "registration private", // GoDaddy default registrant
+        "private registration", // same notice, the other word order
         "domains by proxy",     // GoDaddy proxy service
+        "domainsbyproxy",       // same service, concatenated (no spaces)
         "whoisguard",           // Namecheap proxy service
         "identity protection",  // Identity Protection Service
         "statutory masking",    // .au registry redaction notice
         "gdpr masked",
-        "withheld",    // Withheld for Privacy
-        "unavailable", // Name Unavailable / Currently Unavailable
+        "withheld",                   // Withheld for Privacy
+        "unavailable",                // Name Unavailable / Currently Unavailable
+        "non-public data", // GDPR-era registrar notice, distinct wording from "gdpr masked"
+        "domain protection services", // a US registrar-affiliated proxy brand
+        "protecteddomainservices", // same brand, concatenated
     ];
     MARKERS
         .iter()
@@ -343,6 +348,23 @@ mod tests {
         assert!(is_username_derived_name("rhino-ryno23"));
         assert!(!is_username_derived_name("Smith-Jones"));
         assert!(!is_username_derived_name("Alice Smith"));
+    }
+
+    #[test]
+    fn recognises_markers_ported_from_util_domains_is_proxy_registrant() {
+        // Consolidation fix: these markers were only in the sibling
+        // util::domains::is_proxy_registrant's separate list before the two
+        // were unified — a genuine privacy-proxy registrant string in one of
+        // these shapes previously passed the WHOIS modules' check while
+        // failing the correlator/relation-builder's identical check (or vice
+        // versa), purely depending on which code path evaluated it.
+        assert!(is_whois_privacy_placeholder("DomainsByProxy.com"));
+        assert!(is_whois_privacy_placeholder("Private Registration"));
+        assert!(is_whois_privacy_placeholder("Non-Public Data"));
+        assert!(is_whois_privacy_placeholder(
+            "Domain Protection Services, Inc."
+        ));
+        assert!(is_whois_privacy_placeholder("ProtectedDomainServices"));
     }
 
     #[test]
