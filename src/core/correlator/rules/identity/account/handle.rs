@@ -188,7 +188,8 @@ pub(in crate::core::correlator) fn rule_au_034_handle_reuse_identity(
     let mut out = Vec::new();
     for u in &usernames {
         let handle = canonical_handle(&u.value);
-        if handle.len() < MIN_HANDLE_LEN || is_generic_handle(&handle) {
+        // Chars, not bytes -- see is_anchorable_handle's doc for why.
+        if handle.chars().count() < MIN_HANDLE_LEN || is_generic_handle(&handle) {
             continue;
         }
         let Some(matches) = emails_by_handle.get(&handle) else {
@@ -349,7 +350,8 @@ pub(in crate::core::correlator) fn rule_au_076_email_username_localpart_bridge(
     let mut usernames_by_canon: BTreeMap<String, Vec<&Entity>> = BTreeMap::new();
     for e in entities.iter().filter(|e| e.kind == EntityKind::Username) {
         let ch = canonical_handle(&e.value);
-        if ch.len() >= 4 && !is_generic_handle(&ch) {
+        // Chars, not bytes -- see is_anchorable_handle's doc for why.
+        if ch.chars().count() >= 4 && !is_generic_handle(&ch) {
             usernames_by_canon.entry(ch).or_default().push(e);
         }
     }
@@ -367,7 +369,8 @@ pub(in crate::core::correlator) fn rule_au_076_email_username_localpart_bridge(
         // Strip plus-addressing (`haigen+tag@…` → `haigen`) before canonicalising.
         let local = local_raw.split('+').next().unwrap_or(local_raw);
         let canon_local = canonical_handle(local);
-        if canon_local.len() < 4 || is_generic_handle(&canon_local) {
+        // Chars, not bytes -- see is_anchorable_handle's doc for why.
+        if canon_local.chars().count() < 4 || is_generic_handle(&canon_local) {
             continue;
         }
         if usernames_by_canon.contains_key(&canon_local) {
