@@ -40,7 +40,8 @@ use crate::util::http::{RequestBuilderExt, urlencode};
 // enum, per-site adapter, and the M6 zero-hit disambiguation are single-sourced
 // in `util::probe` (see `streaming_probe`, which shares the same primitives).
 use crate::util::probe::{
-    BODY_PROBE_CAP, BROWSER_ACCEPT, BROWSER_UA, ProbeResult, WithSite, inconclusive,
+    BODY_PROBE_CAP, BROWSER_ACCEPT, BROWSER_UA, ProbeResult, WithSite,
+    classify_non_matching_status, inconclusive,
 };
 
 const SRC: &str = "username_search";
@@ -172,10 +173,15 @@ impl Module for UsernameSearch {
                     };
                     match site.detect {
                         Detect::StatusEq(want) if status == want => found(url),
-                        Detect::StatusEq(_) => ProbeResult::NotFound,
+                        // A status that is not this site's presence code is not
+                        // automatically an absence: a 403 WAF challenge, a 429
+                        // throttle or a 5xx outage establishes nothing. See
+                        // `classify_non_matching_status` — the shared policy that
+                        // keeps a blocked sweep out of `definitive_absent`.
+                        Detect::StatusEq(_) => classify_non_matching_status(status),
                         Detect::StatusAndBody(want, needle) => {
                             if status != want {
-                                return ProbeResult::NotFound;
+                                return classify_non_matching_status(status);
                             }
                             let body =
                                 match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP)
@@ -193,7 +199,7 @@ impl Module for UsernameSearch {
                         }
                         Detect::StatusAndNotBody(want, needle) => {
                             if status != want {
-                                return ProbeResult::NotFound;
+                                return classify_non_matching_status(status);
                             }
                             let body =
                                 match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP)

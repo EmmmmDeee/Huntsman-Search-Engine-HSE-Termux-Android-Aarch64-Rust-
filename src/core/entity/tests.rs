@@ -2414,3 +2414,52 @@ fn identifier_kinds_keep_their_pre_existing_uids() {
         );
     }
 }
+
+#[test]
+fn seed_and_url_extract_do_not_corroborate_the_operators_own_input() {
+    // Regression (live andersonbushikai.com URL scan, debug bundle
+    // 6b2d34664852…): the operator's own seed was counted as an independent
+    // corroborating source of itself. The seed URL entity carried exactly two
+    // evidence records — `[search_engines]` and `[seed] Scan seed —
+    // operator-provided target` — and reported `source_count=2`, `c_eff=0.99`,
+    // class VERIFIED. One real observation was presented as two.
+    let mut url = Entity::new(EntityKind::Url, "https://example.com/locations", 0.90, "s");
+    url.add_evidence(Evidence::new(
+        "seed",
+        "Scan seed — operator-provided target (subject anchor)",
+    ));
+    url.add_evidence(Evidence::new(
+        "search_engines",
+        "Search returned 18 results",
+    ));
+    assert_eq!(
+        url.source_count(),
+        1,
+        "the seed is the operator's input, not an independent sighting of it"
+    );
+
+    // Same class of defect for `url_extract`: its own module doc states it is
+    // "pure offline, zero network" and derives the host from a URL already in
+    // the graph. In the same scan it was one of the five "independent sources"
+    // AU-003 reported for andersonbushikai.com, and one of the five
+    // "infrastructure sources" AU-010 listed.
+    let mut dom = Entity::new(EntityKind::Domain, "example.com", 0.92, "s");
+    dom.add_evidence(Evidence::new("url_extract", "Host extracted from URL seed"));
+    dom.add_evidence(Evidence::new("dns_intel", "SOA record"));
+    dom.add_evidence(Evidence::new("doh_resolver", "A record"));
+    assert_eq!(
+        dom.source_count(),
+        2,
+        "url_extract restates a URL already known; only the two live lookups corroborate"
+    );
+
+    // A seed-only entity still reports one source, not zero: with no
+    // corroborating evidence the stored magnitude is honoured, exactly as for
+    // any other evidence-less entity.
+    let mut seed_only = Entity::new(EntityKind::Url, "https://example.com/", 0.90, "s");
+    seed_only.add_evidence(Evidence::new(
+        "seed",
+        "Scan seed — operator-provided target",
+    ));
+    assert_eq!(seed_only.source_count(), 1);
+}

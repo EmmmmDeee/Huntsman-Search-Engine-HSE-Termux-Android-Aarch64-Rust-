@@ -435,3 +435,73 @@ fn noise_ratio_and_tiers_are_computed() {
     assert_eq!(r.tiers, (1, 0, 2));
     assert!((r.noise_ratio - 2.0 / 3.0).abs() < 1e-9);
 }
+
+#[test]
+fn weak_corroboration_counts_distinct_sources_not_observation_magnitude() {
+    // Regression (live andersonbushikai.com scan, debug bundle 6b2d34664852…):
+    // the audit reported "76% of entities have a single source" when 14 of the
+    // 17 entities carried source_count=1 — 82%. It filtered on `corroboration`,
+    // the summed per-module observation MAGNITUDE, rather than the count of
+    // distinct sources. `Entity::source_count`'s own doc warns about exactly
+    // this: summed within-module counts "are NOT a count of independent
+    // sources", and using them "over-credited single-source findings".
+    //
+    // The bundle's shape: `mail.andersonbushikai.com` had one source
+    // (`dns_intel`) but corroboration=2 — two records from the SAME module — so
+    // it was scored as corroborated and the single-source share was understated.
+    let mut entities: Vec<AuditEntity> = Vec::new();
+    for i in 0..13 {
+        let mut e = ent("domain", &format!("single{i}.example.com"), 0.8, 1, &[]);
+        e.sources = vec!["dns_intel".into()];
+        entities.push(e);
+    }
+    // One source, but two same-module records — the entity the old check missed.
+    let mut magnitude_only = ent("domain", "mail.example.com", 0.8, 2, &[]);
+    magnitude_only.sources = vec!["dns_intel".into()];
+    entities.push(magnitude_only);
+    // Genuinely corroborated: three distinct sources.
+    for i in 0..3 {
+        let mut e = ent("domain", &format!("multi{i}.example.com"), 0.9, 3, &[]);
+        e.sources = vec!["dns_intel".into(), "doh_resolver".into(), "crtsh".into()];
+        entities.push(e);
+    }
+    assert_eq!(entities.len(), 17);
+
+    let r = audit(&entities, LogSignals::default());
+    let f = r
+        .findings
+        .iter()
+        .find(|f| f.category == "weak-corroboration")
+        .expect("14 of 17 single-source must raise the finding");
+    assert!(
+        f.message.starts_with("82%"),
+        "must report the distinct-source share (14/17 = 82%), got {:?}",
+        f.message
+    );
+}
+
+#[test]
+fn weak_corroboration_ignores_non_corroborating_sources() {
+    // A `seed` or `url_extract` record is the operator's own input restated, not
+    // an independent sighting, so an entity backed only by one real lookup plus
+    // one of those is still single-source for this finding — the same rule
+    // `Entity::source_count` applies.
+    let mut entities: Vec<AuditEntity> = Vec::new();
+    for i in 0..14 {
+        let mut e = ent("domain", &format!("d{i}.example.com"), 0.8, 1, &[]);
+        e.sources = vec!["dns_intel".into(), "seed".into(), "url_extract".into()];
+        entities.push(e);
+    }
+    for i in 0..3 {
+        let mut e = ent("domain", &format!("m{i}.example.com"), 0.9, 2, &[]);
+        e.sources = vec!["dns_intel".into(), "doh_resolver".into()];
+        entities.push(e);
+    }
+    let r = audit(&entities, LogSignals::default());
+    let f = r
+        .findings
+        .iter()
+        .find(|f| f.category == "weak-corroboration")
+        .expect("seed/url_extract must not mask single-source dominance");
+    assert!(f.message.starts_with("82%"), "got {:?}", f.message);
+}

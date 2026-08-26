@@ -37,7 +37,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::ckan::{datastore_search_url, field_str};
+use crate::util::ckan::{datastore_search_url, field};
 
 const SRC: &str = "asic_persons";
 /// data.gov.au CKAN action base — `datastore_search` is appended by
@@ -446,9 +446,7 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResu
         ("LICENCE_ABN", "licensee"),
         ("REP_APPOINTED_ABN", "rep_appointer"),
     ] {
-        if let Some(abn) =
-            field(rec, key).filter(|a| a.chars().filter(char::is_ascii_digit).count() == 11)
-        {
+        if let Some(abn) = field(rec, key).filter(|a| crate::util::abn::is_valid_abn(a)) {
             let mut e = Entity::new(EntityKind::AbnAcn, &abn, confidence::NOTABLE, scan_id);
             e.tag("au");
             e.tag("asic");
@@ -512,11 +510,10 @@ fn emit_credit_rep(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleR
     p.add_evidence(ev.clone());
     result.push(p);
 
-    // The rep's own ABN/ACN (11- or 9-digit), when registered against the name.
-    if let Some(id) = field(rec, "CRED_REP_ABN_ACN").filter(|a| {
-        let n = a.chars().filter(char::is_ascii_digit).count();
-        n == 11 || n == 9
-    }) {
+    // The rep's own ABN or ACN, when it is a genuinely checksum-valid one.
+    if let Some(id) = field(rec, "CRED_REP_ABN_ACN")
+        .filter(|a| crate::util::abn::is_valid_abn(a) || crate::util::abn::is_valid_acn(a))
+    {
         let mut e = Entity::new(EntityKind::AbnAcn, &id, confidence::MEDIUM_PLUS, scan_id);
         e.tag("au");
         e.tag("asic");
@@ -608,15 +605,6 @@ fn push_address(
         );
         result.push(c);
     }
-}
-
-/// A non-empty, non-`"null"` trimmed string field (JSON string or number).
-/// A usable ASIC field value: the shared CKAN [`field_str`] stringification
-/// (CONVENTIONS §4 — one stringifier, not a per-module copy) with this
-/// register's `"null"` sentinel filter on top (`field_str` only drops JSON
-/// null / empty, so the literal string `"null"` would otherwise pass through).
-fn field(rec: &Map<String, Value>, key: &str) -> Option<String> {
-    field_str(rec, key).filter(|s| !s.eq_ignore_ascii_case("null"))
 }
 
 /// `"SURNAME, FIRSTNAME"` → `"Firstname Surname"` (title-cased); other forms are

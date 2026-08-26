@@ -76,6 +76,24 @@ fn abn_is_deduped_across_records() {
 }
 
 #[test]
+fn checksum_invalid_abn_is_not_emitted_as_a_pivot() {
+    // "11111111111" has the right digit count (11) but fails the ATO mod-89
+    // checksum (util::abn::is_valid_abn) — ASIC's own export can carry a
+    // data-entry typo, and a mere digit count must not be trusted as a real
+    // ABN pivot.
+    let mut seen = std::collections::HashSet::new();
+    let mut r = ModuleResult::new();
+    let bad = rec(&REC.replace("86634681397", "11111111111"));
+    emit_business_name(&bad, "scan", &mut seen, &mut r);
+    assert!(
+        !r.entities.iter().any(|x| x.kind == EntityKind::AbnAcn),
+        "a checksum-invalid ABN must not be emitted as a pivot"
+    );
+    // The registered-name finding itself is unaffected.
+    assert!(r.entities.iter().any(|x| x.kind == EntityKind::Organisation));
+}
+
+#[test]
 fn name_matching_requires_all_tokens() {
     let tokens = name_tokens("Cut Above Painting");
     assert!(record_name_matches(&rec(REC), &tokens));

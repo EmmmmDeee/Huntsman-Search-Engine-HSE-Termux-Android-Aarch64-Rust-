@@ -1,0 +1,11 @@
+target/
+.git/
+fuzz/target/
+proptest-regressions/
+docs/
+*.md
+.claude/
+.github/
+.env
+.env.example
+scripts/finetune/

@@ -20,6 +20,7 @@
 //!   * **Hyphenated surname** — "Smith-Jones" yields merged and per-part shapes.
 
 use crate::core::confidence;
+use crate::util::canonical::GEN_SUFFIXES;
 
 // ── Output caps ──────────────────────────────────────────────────────────────
 pub(super) const MAX_USERNAMES: usize = 48;
@@ -145,11 +146,9 @@ const HONORIFICS: &[&str] = &[
     "det", "insp", "cpl",
 ];
 
-/// Trailing generational / professional suffixes stripped from the last token.
-const GEN_SUFFIXES: &[&str] = &[
-    "jr", "sr", "ii", "iii", "iv", "v", "vi", "esq", "phd", "md", "dds", "jd", "mba", "rn", "np",
-    "do", "psyd",
-];
+// Trailing generational / professional suffixes stripped from the last token:
+// see `crate::util::canonical::GEN_SUFFIXES`, shared with `core::resolve` so a
+// name that is "just a suffix" to one is never "a given name" to the other.
 
 // ── Phonetic / nickname alias table ──────────────────────────────────────────
 
@@ -687,7 +686,16 @@ pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<ScoredEmail> {
             }
         }
     }
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    // Sort by score descending, then break ties deterministically on the address
+    // (ascending). The `.take(MAX_EMAILS)` cutoff below shapes the scan graph —
+    // surviving speculative emails become new lead targets — so *which* equal-score
+    // addresses survive must not depend on input/insertion order. Matches the
+    // engine's explicit tie-break convention.
+    scored.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.cmp(&b.1))
+    });
     scored
         .into_iter()
         .take(MAX_EMAILS)

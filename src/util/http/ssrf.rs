@@ -152,6 +152,13 @@ impl reqwest::dns::Resolve for SsrfResolver {
 pub(super) fn client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .dns_resolver(std::sync::Arc::new(SsrfResolver))
+        // Never honor an ambient `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`: reqwest's
+        // default would route through it and let the PROXY perform DNS resolution,
+        // silently bypassing the `SsrfResolver` private-IP filter installed above.
+        // The engine's own egress control is `HUNTSMAN_SEARCH_PROXY` via the vetted
+        // curl pool, not this guarded reqwest path — so an ambient proxy env must
+        // never neutralize the SSRF DNS guard here.
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() >= 10 {
                 attempt.error("too many redirects")

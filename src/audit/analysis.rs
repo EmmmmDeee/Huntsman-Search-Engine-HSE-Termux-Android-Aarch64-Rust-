@@ -412,7 +412,27 @@ pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
 
     // ── 6. Single-source dominance (weak corroboration) ──────────────────────
     if entity_total >= 10 {
-        let single = entities.iter().filter(|e| e.corroboration <= 1).count();
+        // Count DISTINCT corroborating sources, not the `corroboration` field.
+        // That field is the summed per-module observation MAGNITUDE, and
+        // `Entity::source_count`'s doc is explicit that summed within-module
+        // counts "are NOT a count of independent sources" and that using them
+        // "over-credited single-source findings". Using it here understated the
+        // very problem this finding exists to report: a live scan with 14 of 17
+        // entities on a single source was reported as 76% because one of them
+        // carried two records from the same module. Non-corroborating passes
+        // (`seed`, `url_extract`, `geo_normalize`, `name_intel`, …) are excluded
+        // for the same reason they are excluded from `source_count` — they
+        // restate the input rather than independently confirming it.
+        let single = entities
+            .iter()
+            .filter(|e| {
+                e.sources
+                    .iter()
+                    .filter(|s| !crate::core::entity::is_non_corroborating_source(s))
+                    .count()
+                    <= 1
+            })
+            .count();
         let share = single as f64 / entity_total as f64;
         if share >= 0.6 {
             findings.push(Finding {

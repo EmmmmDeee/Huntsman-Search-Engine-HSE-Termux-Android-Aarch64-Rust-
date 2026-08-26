@@ -139,10 +139,24 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
             if let Some(k) = ev.attributes.get("api_key_origin") {
                 key_origins.insert(k.clone());
             }
+            let mut named_a_site = false;
             for sk in ["source", "source_db", "dbname"] {
                 if let Some(v) = ev.attributes.get(sk).filter(|v| !v.is_empty()) {
                     sources.insert(v.clone());
+                    named_a_site = true;
                 }
+            }
+            // Fall back to the MODULE that produced the record. `provider`,
+            // `source`, `source_db` and `dbname` are optional attributes only
+            // the paid providers set, so a scan served entirely by free modules
+            // rendered all three provenance lines as "(none)" — a section whose
+            // whole job is to say where the data came from asserting that
+            // nothing was known, while the evidence tree printed every module
+            // by name a few lines below. `Evidence::source` is documented as
+            // "Module that produced this evidence" and is always populated, so
+            // it is the honest floor for this roll-up.
+            if !named_a_site && !ev.source.is_empty() {
+                sources.insert(ev.source.clone());
             }
         }
     }

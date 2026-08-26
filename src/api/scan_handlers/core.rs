@@ -671,9 +671,17 @@ pub async fn scan_import(
             // Run the correlator so cross-entry handle-reuse / breach clusters
             // surface exactly as they would for a live scan. Best-effort: a
             // correlator hiccup must not fail an otherwise-successful import.
-            let correlator = crate::core::correlator::Correlator::new(Arc::clone(&store));
+            // Route through the canonical panic guard (`guarded_correlation_pass`),
+            // exactly as the CLI import path (`app::persist`) does — a correlator
+            // rule panicking on adversarial imported entities must degrade to "no
+            // correlations", not unwind the import after the entities were already
+            // committed. (`Correlator::run` was left unguarded ONLY on this API path.)
             let mut correlations = 0usize;
-            if let Ok(hits) = correlator.run(&sid2) {
+            let guard_store = Arc::clone(&store);
+            let sid_run = sid2.clone();
+            if let Some(hits) = crate::core::engine::guarded_correlation_pass(&sid2, move || {
+                crate::core::correlator::Correlator::new(guard_store).run(&sid_run)
+            }) {
                 for c in &hits {
                     if store.upsert_correlation(c).is_ok() {
                         correlations += 1;

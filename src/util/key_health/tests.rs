@@ -8,6 +8,7 @@ fn sh(module: &str, failures: u32, err: Option<&str>) -> SourceHealth {
         last_error: err.map(str::to_string),
         ever_yielded: false,
         consecutive_zero_yield: 0,
+        newest_event_at: 0,
     }
 }
 

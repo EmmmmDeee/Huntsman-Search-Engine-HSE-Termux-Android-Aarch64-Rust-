@@ -22,7 +22,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::ckan::{datastore_search_url, field_str};
+use crate::util::ckan::{self, datastore_search_url};
 
 const SRC: &str = "asic_banned_orgs";
 /// data.gov.au CKAN action base — `datastore_search` is appended by
@@ -167,10 +167,9 @@ fn emit_banned_org(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleR
     org.add_evidence(ev.clone());
     result.push(org);
 
-    // The ACN (9 digits) — a pivot into the company register.
-    if let Some(acn) =
-        field(rec, "BD_ORG_ACN").filter(|a| a.chars().filter(char::is_ascii_digit).count() == 9)
-    {
+    // The ACN — a pivot into the company register, kept only when it is a
+    // genuinely checksum-valid ACN rather than merely 9 digits.
+    if let Some(acn) = field(rec, "BD_ORG_ACN").filter(|a| crate::util::abn::is_valid_acn(a)) {
         let mut e = Entity::new(EntityKind::AbnAcn, &acn, confidence::NOTABLE, scan_id);
         e.tag("au");
         e.tag("asic");
@@ -184,14 +183,13 @@ fn emit_banned_org(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleR
     }
 }
 
-/// A usable ASIC field value: the shared CKAN [`field_str`] stringification
-/// (CONVENTIONS §4 — one stringifier, not a per-module copy) with this
-/// register's dataset-specific sentinel filter on top. ASIC stores an absent
-/// value as the literal `"null"` or `"Not available"` text, which `field_str`
-/// (which only drops JSON null / empty) would otherwise surface as a real value.
+/// A usable ASIC field value: the shared [`ckan::field`] (null-filtered
+/// stringification) with this register's own extra sentinel on top — ASIC
+/// stores an absent value here as the literal `"null"` **or** `"Not
+/// available"` text, and only the former is a generic-enough CKAN quirk to
+/// live in the shared helper.
 fn field(rec: &Map<String, Value>, key: &str) -> Option<String> {
-    field_str(rec, key)
-        .filter(|s| !s.eq_ignore_ascii_case("null") && !s.eq_ignore_ascii_case("Not available"))
+    ckan::field(rec, key).filter(|s| !s.eq_ignore_ascii_case("Not available"))
 }
 
 #[cfg(test)]

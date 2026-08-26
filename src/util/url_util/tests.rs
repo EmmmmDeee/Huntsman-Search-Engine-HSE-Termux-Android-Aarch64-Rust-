@@ -1,5 +1,5 @@
 
-use super::{host_from_url, host_only};
+use super::{host_from_url, host_only, is_tracking_param_key};
 
     #[test]
     fn host_only_strips_scheme_path_and_port() {
@@ -91,4 +91,27 @@ use super::{host_from_url, host_only};
         );
         assert_eq!(host_from_url("http://localhost:8080"), None); // no dot
         assert_eq!(host_from_url(""), None);
+    }
+
+    #[test]
+    fn is_tracking_param_key_matches_utm_prefix_case_insensitively() {
+        assert!(is_tracking_param_key("utm_source"));
+        assert!(is_tracking_param_key("UTM_Campaign"));
+        assert!(!is_tracking_param_key("utmz")); // no underscore: not the prefix
+    }
+
+    #[test]
+    fn is_tracking_param_key_matches_the_curated_list_case_insensitively() {
+        assert!(is_tracking_param_key("fbclid"));
+        assert!(is_tracking_param_key("GCLID"));
+        assert!(is_tracking_param_key("igsh"));
+        assert!(is_tracking_param_key("vero_id"));
+    }
+
+    #[test]
+    fn is_tracking_param_key_preserves_content_bearing_params() {
+        assert!(!is_tracking_param_key("id"));
+        assert!(!is_tracking_param_key("v"));
+        assert!(!is_tracking_param_key("page"));
+        assert!(!is_tracking_param_key("q"));
     }

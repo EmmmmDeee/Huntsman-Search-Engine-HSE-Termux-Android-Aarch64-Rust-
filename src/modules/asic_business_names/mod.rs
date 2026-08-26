@@ -22,7 +22,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::ckan::{datastore_search_url, field_str};
+use crate::util::ckan::{datastore_search_url, field};
 
 const SRC: &str = "asic_business_names";
 /// data.gov.au CKAN action base — `datastore_search` is appended by
@@ -178,9 +178,10 @@ fn emit_business_name(
     org.add_evidence(ev.clone());
     result.push(org);
 
-    // The ABN of the entity holding the name — a keyless pivot into the ABR.
-    if let Some(abn) =
-        field(rec, "BN_ABN").filter(|a| a.chars().filter(char::is_ascii_digit).count() == 11)
+    // The ABN of the entity holding the name — a keyless pivot into the ABR,
+    // kept only when it is a genuinely checksum-valid ABN rather than merely
+    // 11 digits.
+    if let Some(abn) = field(rec, "BN_ABN").filter(|a| crate::util::abn::is_valid_abn(a))
         && seen_abn.insert(abn.clone())
     {
         let mut e = Entity::new(EntityKind::AbnAcn, &abn, confidence::NOTABLE, scan_id);
@@ -220,14 +221,6 @@ fn emit_business_name(
         );
         result.push(addr);
     }
-}
-
-/// A usable ASIC field value: the shared CKAN [`field_str`] stringification
-/// (CONVENTIONS §4 — one stringifier, not a per-module copy) with this
-/// register's `"null"` sentinel filter on top (`field_str` only drops JSON
-/// null / empty, so the literal string `"null"` would otherwise pass through).
-fn field(rec: &Map<String, Value>, key: &str) -> Option<String> {
-    field_str(rec, key).filter(|s| !s.eq_ignore_ascii_case("null"))
 }
 
 #[cfg(test)]
