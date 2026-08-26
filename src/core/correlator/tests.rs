@@ -1543,6 +1543,36 @@ fn au014_excludes_infrastructure_coordinates() {
 }
 
 #[test]
+fn au014_does_not_count_cooccurring_tags_as_two_sources() {
+    // Regression: the `hits.len() >= 2` disjunct bypasses the "corroborating
+    // sources only" guard the function's own comment describes, because it
+    // counts co-occurring TAGS on one entity rather than independent evidence
+    // sources. `wigle::wifi_ap_entities` mints exactly this shape for every
+    // WiGLE-trilaterated Wi-Fi AP: ONE Coordinates entity from ONE evidence
+    // record (source "wigle"), tagged with BOTH "wifi-observed" and "geoint"
+    // (see wigle/mod.rs's own emit site and its test asserting both tags).
+    // Before the fix this fired "confirmed by 2 geo source(s)" from a single,
+    // uncorroborated database lookup.
+    let mut e = Entity::new(
+        EntityKind::Coordinates,
+        "-27.4766,153.0280",
+        crate::core::confidence::HIGH_PLUS,
+        "s",
+    );
+    e.tag("wigle");
+    e.tag("wifi-observed");
+    e.tag("geoint");
+    e.add_evidence(Evidence::new(
+        "wigle",
+        "WiGLE-observed position of WiFi AP AA:BB:CC:DD:EE:01",
+    ));
+    assert!(
+        rule_au_014_geo_cluster(&RuleContext::new(&[e]), "s", 0).is_empty(),
+        "a single WiGLE evidence record must not fire AU-014 on tag co-occurrence alone"
+    );
+}
+
+#[test]
 fn geo_normalize_alone_does_not_over_fire_corroboration_rules() {
     // Regression: a coarse qld_unclaimed geo set, each entity touched only
     // by the deterministic `geo_normalize` enrichment pass, must NOT light
