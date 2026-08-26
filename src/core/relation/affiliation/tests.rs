@@ -184,6 +184,25 @@ fn employment_binds_a_tagged_employer_to_the_subject_only_and_damps_it() {
 }
 
 #[test]
+fn employment_does_not_bind_a_tagged_employer_when_two_subjects_are_present() {
+    // Regression: `hse import <dir>` can merge two DIFFERENT people's own prior
+    // scan exports (each independently subject-tagged) into one entity set fed
+    // to derive_employment. A `current-employer`-tagged Organisation carries no
+    // record of WHICH subject's profile it came from, so with two subjects
+    // present, binding it to BOTH would fabricate an employer for whichever one
+    // it does not actually belong to. Mark must not accrete Jane's employer.
+    let jane = subject("Jane Citizen", 0.85);
+    let mark = subject("Mark Roe", 0.8);
+    let acme = tagged_org("Acme Pty Ltd", 0.7, "current-employer", None);
+
+    let rels = derive_employment(&[jane, mark, acme], "s");
+    assert!(
+        rels.is_empty(),
+        "an ambiguous subject-scoped tag (2 subjects present) must bind no one, got: {rels:?}"
+    );
+}
+
+#[test]
 fn a_named_employment_is_not_downgraded_by_also_being_tagged() {
     // Both paths describe the same pair. The named one runs first and claims the
     // pair, so the damped path can't overwrite it with a weaker edge.
