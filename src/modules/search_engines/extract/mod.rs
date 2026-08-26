@@ -265,6 +265,15 @@ fn extract_coords_from_text(text: &str) -> Vec<String> {
             continue;
         }
         if let Some(ll) = coords::parse(cand) {
+            // `coords::parse` is an input-parser: it deliberately keeps `0,0`
+            // (a page may legitimately state that literal). This call site is
+            // the output side — the Coordinates entity these strings become is
+            // exactly the "provider response" `is_valid_coords`'s doc names as
+            // its job, so apply it here rather than fabricating a null-island
+            // finding from a snippet's placeholder/garbage `geo:0,0`.
+            if !crate::util::geo::is_valid_coords(ll.lat, ll.lon) {
+                continue;
+            }
             let key = ((ll.lat * 1e4).round() as i64, (ll.lon * 1e4).round() as i64);
             if seen.insert(key) {
                 out.push(format!("{:.4},{:.4}", ll.lat, ll.lon));

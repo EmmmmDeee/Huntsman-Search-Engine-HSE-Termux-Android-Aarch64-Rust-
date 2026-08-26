@@ -33,6 +33,26 @@ use super::*;
         assert_eq!(dup.len(), 1, "identical points must dedup: {dup:?}");
     }
 
+    #[test]
+    fn extract_coords_from_text_rejects_null_island() {
+        // `geo:0,0` parses cleanly as an in-range decimal pair — coords::parse
+        // deliberately keeps it (it's a legitimate literal a page could state) —
+        // but this call site turns the result straight into a Coordinates
+        // entity, so it must apply the output-side null-island/range gate
+        // itself. A scraped snippet's placeholder/garbage geo: URI must not
+        // fabricate a null-island finding.
+        let null_island = extract_coords_from_text("Tracker default geo:0,0;u=1 unset");
+        assert!(
+            null_island.is_empty(),
+            "geo:0,0 must not yield a Coordinates entity: {null_island:?}"
+        );
+        // A real point elsewhere in the same text still comes through.
+        let mixed =
+            extract_coords_from_text("Bad default geo:0,0 but also geo:-27.4766,153.0166 here");
+        assert_eq!(mixed.len(), 1, "only the valid point should survive: {mixed:?}");
+        assert!(mixed[0].starts_with("-27.476"), "got {mixed:?}");
+    }
+
     /// The recycler must respect the module's hard fetch deadline: with a deadline
     /// already in the past it issues NO requests and adds NO entities, so it can
     /// never overrun the engine's kill timeout (which would discard the whole
@@ -182,7 +202,7 @@ use super::*;
     fn instagram_sr(username: &str, display: &str, query: &str) -> SearchResult {
         SearchResult {
             url: format!("https://instagram.com/{username}"),
-            title: format!("{display} (@{username}) \u{2022} Instagram Photos and Videos"),
+            title: format!("{display} (@{username}) • Instagram Photos and Videos"),
             snippet: format!("{username} photos"),
             engine: "test",
             query: query.to_string(),
@@ -209,7 +229,7 @@ use super::*;
         let target = Target::new(TargetKind::Username, "ryno23_");
         let results = [SearchResult {
             url: "https://example.com/ryno23_".to_string(),
-            title: "Ryne Manka (@ryno23_) \u{2022} Photos".to_string(),
+            title: "Ryne Manka (@ryno23_) • Photos".to_string(),
             snippet: "ryno23_".to_string(),
             engine: "test",
             query: "ryno23_".to_string(),
@@ -256,7 +276,7 @@ use super::*;
         let target = Target::new(TargetKind::Username, "alice");
         let results = [SearchResult {
             url: "https://instagram.com/ryno23_".to_string(),
-            title: "Ryne Manka (@ryno23_) \u{2022} Instagram Photos".to_string(),
+            title: "Ryne Manka (@ryno23_) • Instagram Photos".to_string(),
             snippet: "photos".to_string(),
             engine: "test",
             query: "alice".to_string(),
