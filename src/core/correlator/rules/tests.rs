@@ -261,9 +261,11 @@ use crate::core::entity::Evidence;
 
     #[test]
     fn au121_transitive_credential_reuse_blast_radius_fires() {
-        // Secret A ties alice+bob; a DIFFERENT secret B ties bob+carol. No single
-        // secret spans all three, so only the transitive-closure rule (AU-121)
-        // surfaces the full three-account blast radius — the AU-047 blind spot.
+        // Secret A ties alice+robert; a DIFFERENT secret B ties robert+carol. No
+        // single secret spans all three, so only the transitive-closure rule
+        // (AU-121) surfaces the full three-account blast radius — the AU-047
+        // blind spot. (Bridge handle must be >= IDENTITY_OVERLAP_MIN chars to
+        // stay a valid union-find pivot.)
         let mut a = Entity::new(
             EntityKind::Password,
             "$2b$12$abcdefghijklmnopqrstuv0123456789ABCDEFGHIJKLMNOPqrst",
@@ -271,14 +273,14 @@ use crate::core::entity::Evidence;
             "scan-au121",
         );
         a.add_evidence(Evidence::new("breach", "record").with_attr("username", "alice"));
-        a.add_evidence(Evidence::new("breach", "record").with_attr("username", "bob"));
+        a.add_evidence(Evidence::new("breach", "record").with_attr("username", "robert"));
         let mut b = Entity::new(
             EntityKind::Password,
             "$2b$12$ZYXWVUTSRQPONMLKJIHGFE9876543210zyxwvutsrqponmlkAAAA",
             0.9,
             "scan-au121",
         );
-        b.add_evidence(Evidence::new("breach", "record").with_attr("username", "bob"));
+        b.add_evidence(Evidence::new("breach", "record").with_attr("username", "robert"));
         b.add_evidence(Evidence::new("breach", "record").with_attr("username", "carol"));
         let results = super::rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a, b]), "scan-au121", 0);
         assert_eq!(
