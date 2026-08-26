@@ -670,30 +670,42 @@ fi
 ok "rustc $RUST_FULL (>= $RUST_MIN_VERSION required)"
 
 # ─── Rust standard library integrity (Termux) ────────────────────────────────
-# A broken / partially-installed Termux `rust` package can ship libstd as only a
-# shared object (.so) and omit the static archive (.rlib). Every build-script
-# and proc-macro then fails to *link* with:
+# A broken / partially-installed Termux `rust` package can leave the sysroot
+# missing the static archive (.rlib) for std, or for one of the crates std
+# itself is built from (core, alloc, compiler_builtins, and the
+# backtrace-support crates addr2line/gimli/object/miniz_oxide/adler2/
+# rustc_demangle/std_detect/hashbrown/cfg_if/unwind/panic_unwind/
+# rustc_std_workspace_core/rustc_std_workspace_alloc), shipping only a shared
+# object (.so) instead. Every build-script and proc-macro then fails to
+# *link* with:
 #   error: crate `std` required to be available in rlib format, but was not found
 # (library crates still compile — they emit metadata and never link std — so the
-# failure looks baffling: "only the build scripts break"). Detect it up front
-# and self-heal with a reinstall, turning a 3×-retry mystery into a repair or a
-# clear diagnosis BEFORE the long source build.
+# failure looks baffling: "only the build scripts break").
+#
+# A one-filename `ls` check (libstd-*.rlib present?) is not sufficient: a
+# sysroot can ship std's own .rlib while missing one of ITS dependencies'
+# .rlibs and fail to link identically — seen in the wild reporting "rust std
+# OK" and then failing on `crate std required to be available in rlib format`
+# minutes later, deep into the source build. So actually attempt the link:
+# compile a trivial program the same way a build script gets compiled. That
+# exercises the real requirement instead of guessing which filenames matter,
+# and self-heals with a reinstall BEFORE the long source build.
 if [[ $IS_TERMUX -eq 1 ]]; then
-    SYSROOT="$(rustc --print sysroot 2>/dev/null || true)"
+    SMOKE_DIR="$HOME/.cache/hse-rustc-smoke"
+    rm -rf "$SMOKE_DIR" 2>/dev/null || true
+    mkdir -p "$SMOKE_DIR"
+    printf 'fn main() {}\n' > "$SMOKE_DIR/probe.rs"
     HOST_TRIPLE="$(rustc -vV 2>/dev/null | awk '/^host:/ {print $2}')"
-    RLIB_DIR="$SYSROOT/lib/rustlib/$HOST_TRIPLE/lib"
-    if [[ -n "$SYSROOT" && -n "$HOST_TRIPLE" && -d "$RLIB_DIR" ]]; then
-        if ls "$RLIB_DIR"/libstd-*.rlib >/dev/null 2>&1; then
-            ok "rust std OK (static libstd present for $HOST_TRIPLE)"
-        elif ls "$RLIB_DIR"/libstd-*.so >/dev/null 2>&1; then
-            # High-confidence broken signal: dynamic libstd present, static absent.
-            log_warn "rust sysroot has no static std (libstd-*.rlib) — builds would fail to link"
-            hint "Repairing the Termux 'rust' package (apt reinstall)…"
-            if DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall rust >> "$LOG_FILE" 2>&1 \
-                && ls "$RLIB_DIR"/libstd-*.rlib >/dev/null 2>&1; then
-                ok "rust std repaired (reinstalled)"
-            else
-                die "Termux 'rust' package is broken: no static std in $RLIB_DIR
+    if rustc -o "$SMOKE_DIR/probe" "$SMOKE_DIR/probe.rs" >"$SMOKE_DIR/err" 2>&1; then
+        ok "rust std OK (static linking works for ${HOST_TRIPLE:-host})"
+    elif grep -q "required to be available in rlib format" "$SMOKE_DIR/err" 2>/dev/null; then
+        log_warn "rust sysroot can't statically link std (or a crate it depends on) — builds would fail to link"
+        hint "Repairing the Termux 'rust' package (apt reinstall)…"
+        if DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall rust >> "$LOG_FILE" 2>&1 \
+            && rustc -o "$SMOKE_DIR/probe" "$SMOKE_DIR/probe.rs" >"$SMOKE_DIR/err" 2>&1; then
+            ok "rust std repaired (reinstalled)"
+        else
+            die "Termux 'rust' package is broken: rustc can't statically link std (or a crate it depends on)
   Upstream Termux packaging issue, not an HSE bug — and the prebuilt download
   above didn't resolve it either. Options:
     • check network + re-run (the installer auto-fetches a prebuilt aarch64 binary)
@@ -701,11 +713,12 @@ if [[ $IS_TERMUX -eq 1 ]]; then
     • use a local file:   HSE_PREBUILT=/path/to/hse bash install.sh
     • wait for Termux:    pkg upgrade rust   (then re-run)
     • report it:          https://github.com/termux/termux-packages/issues"
-            fi
         fi
-        # Any other layout (neither .rlib nor .so matched) → unexpected; skip the
-        # check rather than risk a false positive.
+    else
+        log_warn "rustc smoke-link test failed for an unexpected reason — proceeding anyway"
+        hint "$(tail -n 3 "$SMOKE_DIR/err" 2>/dev/null)"
     fi
+    rm -rf "$SMOKE_DIR" 2>/dev/null || true
 fi
 
 # ─── Clone or update ─────────────────────────────────────────────────────────
