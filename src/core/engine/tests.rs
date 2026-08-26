@@ -4325,3 +4325,143 @@ fn flattened_entities_are_confidence_ranked_and_insertion_order_independent() {
         "identical entities must flatten identically regardless of insertion order"
     );
 }
+
+/// End-to-end regression for the discarded expansion `StopReason`.
+///
+/// `Engine::run` used to call `let _ = self.run_expansion(...)`, throwing away
+/// the expansion's own account of why it stopped. The scan was then marked
+/// `ScanStatus::Complete` whether it had exhausted its candidate frontier or
+/// been cut off mid-frontier by `max_entities` / `max_wall_time_secs`, so every
+/// consumer that reads the finished scan back — `hse scan`, `hse export`, the
+/// dossier, `GET report.json` — presented a truncated search as a complete
+/// answer. For an intelligence artifact that is the most consequential possible
+/// error: it invites "absent from this scan" to be read as "does not exist".
+///
+/// This drives the REAL engine (not `budget_check` in isolation) and asserts on
+/// the `Scan` it hands back, so the whole chain — budget gate → `run_expansion`
+/// return → `finalise_scan` → scan record → disclosure — is covered.
+#[tokio::test]
+async fn a_budget_truncated_scan_records_why_it_stopped_and_is_disclosed() {
+    use crate::core::scan::StopReason;
+    use crate::core::test_support::InMemoryStore;
+
+    const NAMES: [&str; 6] = [
+        "truncation_probe_0",
+        "truncation_probe_1",
+        "truncation_probe_2",
+        "truncation_probe_3",
+        "truncation_probe_4",
+        "truncation_probe_5",
+    ];
+    let modules: Vec<Arc<dyn Module>> = NAMES
+        .iter()
+        .map(|&name| Arc::new(SingleFindingModule { name, value: name }) as Arc<dyn Module>)
+        .collect();
+
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(256);
+    let engine = ScanEngine::new(modules, store, bus.clone());
+
+    let target = Target::new(TargetKind::Username, "truncation-seed");
+    // depth >= 1 so the expansion actually runs, and a cap low enough that the
+    // seed round alone overruns it — the budget gate must fire.
+    let scan = Scan::new(
+        crate::core::entity::scan_id("username", "truncation-seed"),
+        target.clone(),
+    )
+    .with_options(ScanOptions {
+        depth: 1,
+        // Large enough that the seed round still produces expandable usernames
+        // (so the expansion has a candidate frontier at all), small enough that
+        // the frontier is over budget the moment expansion begins — which is
+        // where `budget_check` sits. A cap so low that the seed round itself is
+        // cut short leaves `next` empty and stops on `NoMoreCandidates` instead,
+        // which is a genuinely different (and benign) outcome.
+        max_entities: Some(NAMES.len()),
+        min_expand_confidence: 0.0,
+        ..Default::default()
+    });
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: Default::default(),
+        cancel: Default::default(),
+    };
+
+    let finished = engine.run(scan, target, ctx).await.expect("scan runs");
+
+    assert_eq!(
+        finished.stop_reason,
+        Some(StopReason::MaxEntities(NAMES.len())),
+        "a scan stopped by max_entities must record that as its stop reason; \
+         got {:?} — the expansion's StopReason is being discarded again",
+        finished.stop_reason
+    );
+    assert!(
+        finished
+            .stop_reason
+            .expect("recorded just above")
+            .truncated(),
+        "max_entities is a truncating stop reason"
+    );
+    let caveat = finished
+        .completeness_caveat("this scan")
+        .expect("a truncated scan must never read as a complete answer");
+    assert!(
+        caveat.contains("TRUNCATED") && caveat.contains("not evidence"),
+        "the disclosure must name the truncation and warn that absence here is \
+         not evidence of absence: {caveat}"
+    );
+}
+
+/// The converse guarantee: a scan that was NOT cut short must not acquire a
+/// caveat. A warning that fires on every scan is one operators learn to ignore,
+/// which would cost exactly the signal the test above adds.
+#[tokio::test]
+async fn an_unbudgeted_scan_is_not_reported_as_truncated() {
+    use crate::core::test_support::InMemoryStore;
+
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(256);
+    let engine = ScanEngine::new(
+        vec![Arc::new(SingleFindingModule {
+            name: "untruncated_probe",
+            value: "untruncated_probe",
+        }) as Arc<dyn Module>],
+        store,
+        bus.clone(),
+    );
+
+    let target = Target::new(TargetKind::Username, "untruncated-seed");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("username", "untruncated-seed"),
+        target.clone(),
+    )
+    .with_options(ScanOptions {
+        depth: 1,
+        max_entities: None,
+        max_wall_time_secs: None,
+        ..Default::default()
+    });
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: Default::default(),
+        cancel: Default::default(),
+    };
+
+    let finished = engine.run(scan, target, ctx).await.expect("scan runs");
+
+    assert!(
+        !finished.stop_reason.is_some_and(|r| r.truncated()),
+        "no budget was set, so nothing can have truncated this scan; got {:?}",
+        finished.stop_reason
+    );
+    assert_eq!(
+        finished.completeness_caveat("this scan"),
+        None,
+        "an uncapped, completed scan is a complete answer and must not be caveated"
+    );
+}

@@ -89,7 +89,7 @@ use crate::core::{
     module_runtime::{ModuleRuntime, NoopModuleRuntime},
     port::StoragePort,
     relation::{Relation, RelationKind},
-    scan::{Scan, ScanOptions, ScanStatus, Target, TargetKind},
+    scan::{Scan, ScanOptions, ScanStatus, StopReason, Target, TargetKind},
 };
 
 pub struct ScanEngine {
@@ -113,13 +113,21 @@ pub struct ScanEngine {
     host: Arc<dyn EngineHost>,
 }
 
-/// Reason an expansion round stopped before depth was exhausted.
-enum StopReason {
-    NoMoreCandidates,
-    DepthExhausted,
-    MaxEntities(usize),
-    MaxWallTime(u64),
-    Cancelled,
+/// Everything the run accumulated that `finalise_scan` needs to write onto the
+/// terminal scan record. Bundled rather than passed as four more parameters —
+/// the same shape [`ExpansionState`] uses for the expansion's borrows — so the
+/// call signature stays inside the argument budget as the set grows.
+pub(crate) struct ScanOutcome {
+    /// Per-scan module execution tally, applied to the `modules_*` columns.
+    pub stats: ModuleStats,
+    /// Typed lineage edges collected during the run.
+    pub relations: Vec<Relation>,
+    /// Correlation keys already emitted live, so finalise does not re-emit them.
+    pub emitted_corr: HashSet<String>,
+    /// Why the expansion stopped — `None` for a depth-0 scan, which runs none.
+    /// See [`StopReason`]; this is what lets a finished scan disclose that its
+    /// search was cut short by a budget rather than genuinely exhausted.
+    pub stop_reason: Option<StopReason>,
 }
 
 /// Accumulator for per-scan module execution statistics.
@@ -373,18 +381,6 @@ struct ExpansionState<'a> {
     /// expansion round's `DispatchCx` borrows the one set computed at scan start,
     /// without widening `run_expansion`'s argument list.
     quarantined: &'a HashSet<String>,
-}
-
-impl StopReason {
-    fn label(&self) -> String {
-        match self {
-            Self::NoMoreCandidates => "no more high-confidence candidates".into(),
-            Self::DepthExhausted => "maximum expansion depth reached".into(),
-            Self::MaxEntities(n) => format!("max_entities={n} reached"),
-            Self::MaxWallTime(s) => format!("max_wall_time_secs={s} exceeded"),
-            Self::Cancelled => "cancelled by operator".into(),
-        }
-    }
 }
 
 /// Cheaply-cloneable event emitter. Enqueues to the DB-writer actor, then
@@ -883,6 +879,10 @@ impl ScanEngine {
         let seed_snapshot: Vec<Entity> = entity_map.snapshot();
         self.correlate_incremental(&scan.id, &seed_snapshot, &mut emitted_corr);
 
+        // `None` for a depth-0 scan: it runs no expansion, so there is no
+        // expansion-stop reason to report and `completeness_caveat` must not
+        // invent one.
+        let mut stop_reason: Option<StopReason> = None;
         if opts.depth > 0 {
             let est = ExpansionState {
                 entity_map: &mut entity_map,
@@ -893,9 +893,15 @@ impl ScanEngine {
                 emitted_corr: &mut emitted_corr,
                 quarantined: &quarantined,
             };
-            let _ = self
-                .run_expansion(&scan.id, &target, &mut ctx, &opts, started, est)
-                .await;
+            // The expansion's own account of why it stopped. Previously
+            // discarded (`let _ =`), which is what left a budget-truncated scan
+            // indistinguishable from an exhaustive one on every path that reads
+            // the scan back from the store — see [`StopReason`]. Recorded onto
+            // the scan record in `finalise_scan` below.
+            stop_reason = Some(
+                self.run_expansion(&scan.id, &target, &mut ctx, &opts, started, est)
+                    .await,
+            );
 
             // Active gap-fill (last leg of the recursive-linking program): for any
             // single-route link the expansion gates left fragile, run the missing
@@ -959,9 +965,12 @@ impl ScanEngine {
                 scan,
                 entity_map.into_inner(),
                 &ctx,
-                stats,
-                lineage,
-                emitted_corr,
+                ScanOutcome {
+                    stats,
+                    relations: lineage,
+                    emitted_corr,
+                    stop_reason,
+                },
             )
             .await;
         // Drain the DB-writer actor so the ScanComplete event (and all events
@@ -980,10 +989,14 @@ impl ScanEngine {
         mut scan: Scan,
         entity_map: HashMap<String, Entity>,
         ctx: &ModuleContext,
-        stats: ModuleStats,
-        mut lineage_relations: Vec<Relation>,
-        mut emitted_corr: HashSet<String>,
+        outcome: ScanOutcome,
     ) -> Result<Scan> {
+        let ScanOutcome {
+            stats,
+            relations: mut lineage_relations,
+            mut emitted_corr,
+            stop_reason,
+        } = outcome;
         let store = Arc::clone(&self.store);
         let emitter = self.emitter.clone();
         let module_runtime = Arc::clone(&self.module_runtime);
@@ -1068,6 +1081,11 @@ impl ScanEngine {
             scan.modules_deduped = stats.deduped;
             scan.modules_skipped = stats.skipped;
             scan.modules_cached = stats.cached;
+            // Recorded on EVERY terminal path below (failed as well as
+            // complete/aborted): why the expansion stopped is just as material
+            // to a failed scan's reader, and setting it once here means a new
+            // terminal branch cannot forget it.
+            scan.stop_reason = stop_reason;
 
             if persisted == 0 && first_err.is_some() {
                 scan.status = ScanStatus::Failed;

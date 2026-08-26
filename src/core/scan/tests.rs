@@ -1660,3 +1660,143 @@ fn scan_status_is_terminal_partitions_every_variant() {
     assert!(ScanStatus::Failed.is_terminal());
     assert!(ScanStatus::Aborted.is_terminal());
 }
+
+// ── StopReason / completeness disclosure ───────────────────────────────────
+//
+// The defect these pin: a scan cut short by `max_entities` /
+// `max_wall_time_secs` reaches `ScanStatus::Complete` exactly like one that
+// exhausted its candidates, and the engine used to discard the expansion's
+// `StopReason` entirely (`let _ = self.run_expansion(...)`). Every consumer
+// that reads a finished scan back from the store therefore reported a
+// truncated search as a complete answer — which invites "absent from this
+// scan" to be read as "does not exist", the one claim an intelligence artifact
+// must never make falsely.
+
+fn scan_for(status: ScanStatus, stop_reason: Option<StopReason>) -> Scan {
+    let mut s = Scan::new(
+        "abcdef0123456789",
+        Target {
+            kind: TargetKind::Email,
+            value: "a@b.test".into(),
+        },
+    );
+    s.status = status;
+    s.stop_reason = stop_reason;
+    s
+}
+
+#[test]
+fn stop_reason_truncated_separates_budget_cutoffs_from_exhaustion() {
+    // Exhaustive over the enum: a new variant must be classified deliberately.
+    // The two benign reasons mean the search space really was covered; the two
+    // budget reasons mean it was not.
+    assert!(!StopReason::NoMoreCandidates.truncated());
+    assert!(!StopReason::DepthExhausted.truncated());
+    assert!(StopReason::MaxEntities(500).truncated());
+    assert!(StopReason::MaxWallTime(60).truncated());
+    // Cancelled is surfaced by ScanStatus::Aborted, which every disclosure path
+    // keys off separately — counting it here too would double-warn one event.
+    assert!(!StopReason::Cancelled.truncated());
+}
+
+#[test]
+fn stop_reason_label_names_the_budget_that_cut_the_scan_short() {
+    // The label is single-sourced: it is what the live `ExpansionStop` event,
+    // the persisted record and every renderer all print, so an operator can
+    // match the warning in a dossier to the event in the stream.
+    assert!(StopReason::MaxEntities(500).label().contains("500"));
+    assert!(StopReason::MaxWallTime(60).label().contains("60"));
+    assert!(
+        StopReason::NoMoreCandidates
+            .label()
+            .contains("no more high-confidence candidates")
+    );
+}
+
+#[test]
+fn a_truncated_complete_scan_is_caveated_and_an_exhaustive_one_is_not() {
+    let truncated = scan_for(ScanStatus::Complete, Some(StopReason::MaxEntities(500)));
+    let caveat = truncated
+        .completeness_caveat("this scan")
+        .expect("a budget-truncated scan must never read as a complete answer");
+    assert!(caveat.contains("TRUNCATED"), "{caveat}");
+    assert!(
+        caveat.contains("not evidence"),
+        "the caveat must say absence here is not evidence of absence: {caveat}"
+    );
+    assert!(caveat.contains("500"), "must name the budget: {caveat}");
+
+    // …and the converse: genuinely exhaustive scans must NOT acquire a caveat,
+    // or the warning becomes noise operators learn to ignore.
+    for benign in [StopReason::NoMoreCandidates, StopReason::DepthExhausted] {
+        assert_eq!(
+            scan_for(ScanStatus::Complete, Some(benign)).completeness_caveat("this scan"),
+            None,
+            "{benign:?} is a complete answer"
+        );
+    }
+}
+
+#[test]
+fn completeness_caveat_names_the_subject_it_was_given() {
+    // Callers refer to the scan differently ("scan latest", "scan a1b2", "this
+    // scan"); the single-sourced wording has to open with whichever they pass.
+    let s = scan_for(ScanStatus::Aborted, None);
+    assert!(
+        s.completeness_caveat("scan latest")
+            .expect("aborted is always caveated")
+            .starts_with("scan latest")
+    );
+}
+
+#[test]
+fn a_scan_row_written_before_stop_reason_existed_still_loads_and_stays_silent() {
+    // DATA INTEGRITY / backward compatibility. `Scan` round-trips through the
+    // `scans.data_json` column, so every row already on an operator's device
+    // predates this field. It must deserialise (not error, which would make
+    // existing scans unreadable) AND must not acquire a warning invented from
+    // its absence — `None` means "unknown", never "truncated".
+    let legacy = r#"{
+        "id": "old",
+        "target": {"kind": "email", "value": "a@b.test"},
+        "status": "complete",
+        "started_at": 1,
+        "finished_at": 2,
+        "entity_count": 3,
+        "error": null
+    }"#;
+    let scan: Scan = serde_json::from_str(legacy).expect("legacy scan rows must still deserialise");
+    assert_eq!(scan.stop_reason, None);
+    assert_eq!(scan.entity_count, 3);
+    assert_eq!(
+        scan.completeness_caveat("this scan"),
+        None,
+        "an unknown stop reason must never be reported as a truncation"
+    );
+}
+
+#[test]
+fn stop_reason_survives_the_json_round_trip_the_store_uses() {
+    // `upsert_scan` serialises the whole `Scan` to `data_json` and reads it
+    // back the same way, so the payload carried in that column is exactly this.
+    for reason in [
+        StopReason::NoMoreCandidates,
+        StopReason::DepthExhausted,
+        StopReason::MaxEntities(500),
+        StopReason::MaxWallTime(60),
+        StopReason::Cancelled,
+    ] {
+        let before = scan_for(ScanStatus::Complete, Some(reason));
+        let json = serde_json::to_string(&before).expect("scan serialises");
+        let after: Scan = serde_json::from_str(&json).expect("scan round-trips");
+        assert_eq!(
+            after.stop_reason,
+            Some(reason),
+            "{reason:?} must survive persistence"
+        );
+        assert_eq!(
+            after.completeness_caveat("s"),
+            before.completeness_caveat("s")
+        );
+    }
+}
