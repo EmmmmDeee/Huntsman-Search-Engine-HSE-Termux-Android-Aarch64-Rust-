@@ -160,6 +160,18 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 > pkg install -y git rust binutils clang openssh && git clone --depth 1 git@github.com:EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git ~/hse && cd ~/hse && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
 > ```
 
+> **Seeing "crate `std` required to be available in rlib format, but was not
+> found in this form" (or the same for `core`/`alloc`/…)?** A broken/partial
+> Termux `rust` package shipped libstd as a dynamic library only, missing the
+> static `.rlib` every build script and proc-macro needs to link against —
+> library crates still compile, so only the build step fails. Not an HSE bug.
+> Fix:
+> ```bash
+> pkg reinstall rust
+> ```
+> then retry the build above. The one-line installer already detects and
+> self-heals this automatically before it starts building.
+
 ---
 
 ## Quick Start
