@@ -382,6 +382,99 @@ fn source_count_ignores_stored_field_when_all_evidence_is_noncorroborating() {
 }
 
 #[test]
+fn merging_in_a_derived_duplicate_does_not_drop_an_already_grounded_tier() {
+    // Regression (critical audit): the promotion-source GROUNDING GATE in
+    // source_count() reads `self.has_tag("derived")` fresh on every call, but
+    // that tag is unioned wholesale into `self` by absorb()'s generic tag-merge
+    // loop whenever ANY merged-in duplicate happened to carry it -- regardless
+    // of whether that duplicate contributed anything to REAL evidence. Many
+    // modules (name_intel, url_extract, email_parse, ...) tag their output
+    // "derived" while using an otherwise-weak or non-corroborating source.
+    //
+    // Before this fix: an entity genuinely grounded by ONE independent real
+    // source (crtsh) plus a legitimate multipath_corroboration promotion
+    // record (source_count()==2, C_eff lifted to Verified) could be merged
+    // with an unrelated, same-UID "derived" duplicate carrying only
+    // non-corroborating evidence (name_intel). After the merge, `self`
+    // acquires the "derived" tag, so the gate silently tightens from
+    // real>=1 to real>=2; real is still 1, so grounded flips false and the
+    // promotion evidence stops counting -- source_count() drops from 2 to 1
+    // and the entity's classification falls from Verified to Probable,
+    // directly contradicting Entity::classify's own doc ("a tier can only
+    // ever rise as merges add corroboration") and the "GREATEST-semantics
+    // merge (confidence, corroboration only ever increase)" architecture
+    // invariant.
+    let mut a = Entity::new(EntityKind::Domain, "example.com", 0.65, "scan");
+    a.add_evidence(Evidence::new("crtsh", "cert SAN"));
+    a.add_evidence(Evidence::new(
+        MULTIPATH_CORROBORATION_SOURCE,
+        "linked via 2 pathways",
+    ));
+    assert_eq!(
+        a.source_count(),
+        2,
+        "grounded by crtsh + a legitimate promotion"
+    );
+    assert_eq!(a.classify(), Classification::Verified);
+
+    let mut b = Entity::new(EntityKind::Domain, "example.com", 0.30, "scan");
+    b.tag("derived");
+    b.add_evidence(Evidence::new("name_intel", "Speculative domain guess"));
+    a.merge(b);
+
+    assert_eq!(
+        a.confidence, 0.65,
+        "GREATEST: confidence unaffected (max(0.65,0.30))"
+    );
+    assert_eq!(
+        a.source_count(),
+        2,
+        "merging in a low-value derived duplicate must not un-ground an          already-grounded entity"
+    );
+    assert_eq!(
+        a.classify(),
+        Classification::Verified,
+        "tier must not drop from merging in MORE evidence"
+    );
+}
+
+#[test]
+fn a_genuinely_independent_merge_graduates_a_derived_entity() {
+    // Symmetric case: an entity that started as a pure derivation guess
+    // (real=0, so grounded is false regardless of the gate) is later merged
+    // with a genuinely independently-OBSERVED duplicate of the same value.
+    // The merged entity should graduate out of the stricter "derived" gate —
+    // matching the "candidate" tag's own symmetric promotion rule just above
+    // this code in absorb().
+    let mut guess = Entity::new(EntityKind::Domain, "example.org", 0.30, "scan");
+    guess.tag("derived");
+    guess.add_evidence(Evidence::new("name_intel", "Speculative domain guess"));
+    assert_eq!(
+        guess.source_count(),
+        1,
+        "no real evidence yet, floored at 1"
+    );
+
+    let mut observed = Entity::new(EntityKind::Domain, "example.org", 0.7, "scan");
+    observed.add_evidence(Evidence::new("crtsh", "cert SAN"));
+    observed.add_evidence(Evidence::new(
+        MULTIPATH_CORROBORATION_SOURCE,
+        "linked via 2 pathways",
+    ));
+    guess.merge(observed);
+
+    assert!(
+        !guess.has_tag("derived"),
+        "a genuinely independent merge must graduate the entity out of the          derived gate, exactly as a non-candidate merge clears quarantine"
+    );
+    assert_eq!(
+        guess.source_count(),
+        2,
+        "now real>=1 suffices (non-derived), so the promotion source counts"
+    );
+}
+
+#[test]
 fn promotion_source_alone_does_not_ground_entity() {
     // A multipath_corroboration evidence item with no real source underneath
     // must NOT push source_count above 1 — the grounding gate is the guard.
