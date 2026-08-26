@@ -502,15 +502,20 @@ pub fn tag_flags(entity: &mut crate::core::entity::Entity, flags: &[(Option<bool
     }
 }
 
-/// Score a wireless-geolocation fix by the accuracy radius (in metres) its
-/// provider reported: a fix good to a doorway is worth more than one good to a
-/// suburb.
+/// Score a geolocation fix by the accuracy radius (in metres) its provider
+/// reported: a fix good to a doorway is worth more than one good to a suburb.
 ///
-/// Shared by the BSSID-geolocation providers (`mylnikov`, `beacondb`) so two
-/// answers to the same question are scored on one scale — a provider-local copy
-/// of this ladder would let the same 150 m fix outrank or undercut its peer
-/// purely by which module happened to return it, and the correlator ranks
-/// coordinates across sources.
+/// Shared by every accuracy-radius-reporting geolocation provider — the
+/// BSSID-based ones (`mylnikov`, `beacondb`) directly, and the cell-tower ones
+/// (`cell_intel`, `cell_local`, `opencellid`) via
+/// [`crate::util::cell_db::accuracy_to_confidence`] — so two answers to the
+/// same question ("how much should this claimed precision be trusted?") are
+/// scored on one scale. A provider-local copy of this ladder would let the
+/// same 150 m fix outrank or undercut its peer purely by which module
+/// happened to return it — the exact defect this crate's `Coordinates`
+/// entities must not have, since the correlator's cross-source location
+/// rules (AU-052/AU-053) weight and admit coordinates by this confidence
+/// regardless of which module produced them.
 ///
 /// A missing radius is treated as the wide 5000 m default. Untrusted JSON is
 /// handled up front: a negative, NaN or infinite radius also degrades to that

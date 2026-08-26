@@ -190,10 +190,16 @@ mod tests {
 
     #[test]
     fn accuracy_to_confidence_tiers() {
-        assert!((accuracy_to_confidence(50) - confidence::HIGH_PLUSPLUS_PLUS).abs() < 1e-6);
-        assert!((accuracy_to_confidence(300) - confidence::VERY_HIGH).abs() < 1e-6);
-        assert!((accuracy_to_confidence(1000) - confidence::HIGH).abs() < 1e-6);
-        assert!((accuracy_to_confidence(5000) - confidence::MEDIUM).abs() < 1e-6);
-        assert!((accuracy_to_confidence(50_000) - 0.35).abs() < 1e-6);
+        // accuracy_to_confidence delegates to the canonical util::geo ladder
+        // (see its doc comment) — pin the delegation itself, at every tier
+        // boundary, rather than a second hardcoded copy of the thresholds, so
+        // this test can't silently drift from the one canonical scale.
+        for m in [0, 50, 200, 201, 1000, 1001, 5000, 5001, 50_000] {
+            assert_eq!(
+                accuracy_to_confidence(m),
+                crate::util::geo::confidence_for_accuracy_m(Some(m as f64)),
+                "accuracy_to_confidence({m}) must match the canonical geo ladder"
+            );
+        }
     }
 }
