@@ -427,8 +427,18 @@ fn derive_person_affiliation(
         }
     }
 
-    // ── Subject-scoped: a tagged organisation binds to the subject ───────
-    if !subjects.is_empty() {
+    // ── Subject-scoped: a tagged organisation binds to THE subject ───────
+    // Only when exactly one subject is present. The grounding modules stamp a
+    // SUBJECT_AFFILIATION_TAGS row on an Organisation with no record of WHICH
+    // person's own profile it came from — that's fine for an ordinary scan (one
+    // subject by construction), but `hse import <dir>` can merge several
+    // people's own prior scan exports, each independently subject-tagged, into
+    // one entity set fed here. With two or more subjects present there is no
+    // way to tell which one a given tagged Organisation actually belongs to;
+    // binding it to every co-present subject would fabricate an employer/
+    // membership for whichever of them it does not actually belong to. Binding
+    // none in that ambiguous case is the conservative, correct default.
+    if let [s] = subjects.as_slice() {
         let tags: Vec<&str> = SUBJECT_AFFILIATION_TAGS
             .iter()
             .filter(|(_, k)| *k == kind)
@@ -439,17 +449,15 @@ fn derive_person_affiliation(
             .filter(|e| e.kind == EntityKind::Organisation)
             .filter(|e| tags.iter().any(|t| e.has_tag(t)))
         {
-            for s in &subjects {
-                push_edge(
-                    &mut out,
-                    &mut seen,
-                    s,
-                    org,
-                    kind,
-                    SUBJECT_AFFILIATION_DAMP,
-                    scan_id,
-                );
-            }
+            push_edge(
+                &mut out,
+                &mut seen,
+                s,
+                org,
+                kind,
+                SUBJECT_AFFILIATION_DAMP,
+                scan_id,
+            );
         }
     }
 
