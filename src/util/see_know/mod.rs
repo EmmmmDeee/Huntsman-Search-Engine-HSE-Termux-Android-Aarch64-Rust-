@@ -35,8 +35,19 @@ mod endpoints;
 // `budget` module reads via `enterprise_config::ENTERPRISE`).
 pub mod enterprise_config;
 
+// Web automation client (fallback when API key unavailable).
+mod web_client_advanced;
+pub mod web_dispatcher;
+
 #[cfg(test)]
 mod tests;
+
+// Re-exported (not just `mod`-visible) so `modules::see_know::tests` — a
+// different file whose tests also call `reset_budget()` — can take the SAME
+// lock as this module's own tests. See `budget::BUDGET_TEST_LOCK`'s doc
+// comment for why one shared lock is required, not one per file.
+#[cfg(test)]
+pub(crate) use budget::BUDGET_TEST_LOCK;
 
 // Honest coverage ledger for SeekNow's documented API surface vs. what HSE
 // actually calls (see the file's own doc comment for the "previously made a

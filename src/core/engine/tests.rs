@@ -83,6 +83,39 @@ fn consolidate_address_localities_folds_postcode_variants_codebase_wide() {
     assert!(entities.iter().any(|e| e.kind == EntityKind::Email));
 }
 
+#[test]
+fn consolidate_address_localities_preserves_earliest_generation_even_when_survivor_is_the_longer_later_value()
+ {
+    use crate::core::entity::{Entity, EntityKind};
+
+    // Same locality, discovered directly in the seed round (generation 0) in
+    // its bare form, and only later — via a geocode/postcode lookup reached
+    // several pivots out (generation 2) — in its more specific, postcode-
+    // bearing form. Survivor selection picks the LONGER value (the postcode
+    // form), which here is the LATER-discovered one: `absorb` must not let
+    // that silently advance the merged entity's generation past the true
+    // earliest round the locality was actually confirmed in.
+    let mut bare = Entity::new(EntityKind::Address, "Murrumbateman, NSW", 0.45, "s");
+    bare.generation = 0;
+    let mut withpc = Entity::new(EntityKind::Address, "Murrumbateman, NSW 2582", 0.50, "s");
+    withpc.generation = 2;
+
+    let mut entities = vec![bare, withpc];
+    let _folded = consolidate_address_localities(&mut entities);
+
+    assert_eq!(entities.len(), 1, "the two variants should fold to one");
+    let survivor = &entities[0];
+    assert_eq!(
+        survivor.value, "Murrumbateman, NSW 2582",
+        "specificity still wins the display value"
+    );
+    assert_eq!(
+        survivor.generation, 0,
+        "the merged locality entity must preserve the EARLIEST true discovery generation (0), \
+         not silently advance to the later-discovered spelling's generation"
+    );
+}
+
 /// Free, offline cross-angle confirmation: a lone single-source family-candidate
 /// near the subject's confirmed location is promoted (tagged + corroborated) into
 /// a reliable relative, while a far namesake is left alone — and the pass is

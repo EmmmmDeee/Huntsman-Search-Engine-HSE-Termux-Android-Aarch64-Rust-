@@ -1510,7 +1510,21 @@ mod numeric_identifier_coercion_tests {
         // A graph with no discord:/steam: IDs converges on the first hop with
         // no HTTP and no new entities — the termination guarantee on the empty
         // case (the multi-hop network behaviour is covered at the util layer).
-        crate::util::see_know::reset_budget();
+        //
+        // Takes the shared BUDGET_TEST_LOCK because `reset_budget()` mutates
+        // the same process-wide `BUDGET` state `util::see_know::tests`'s own
+        // budget tests do (default task-local scan id "" for every test in
+        // both files — see the lock's doc comment) — without it, a
+        // concurrently-running budget test's `set_scan_cap_override` could be
+        // silently cleared by this call, or vice versa. Scoped to a block so
+        // the guard drops before the `.await` below (holding a sync mutex
+        // guard across an await point is its own hazard, and unnecessary
+        // here: nothing after `reset_budget()` in this test touches the
+        // shared budget state).
+        {
+            let _guard = crate::util::see_know::BUDGET_TEST_LOCK.lock();
+            crate::util::see_know::reset_budget();
+        }
         let mut seen = HashSet::new();
         let mut result = ModuleResult::new();
         result.push(Entity::new(EntityKind::Email, "a@b.com", 0.8, "t"));
@@ -1633,7 +1647,18 @@ mod numeric_identifier_coercion_tests {
         // An empty email list converges immediately — no futures, no attempts,
         // no HTTP. Mirrors the discord/steam dispatchers' empty-input guard so
         // the cascade pass can never spin up work with nothing to resolve.
-        crate::util::see_know::reset_budget();
+        //
+        // Takes BUDGET_TEST_LOCK for the same reason as
+        // `resolve_identity_pivots_is_noop_and_terminates_without_ids` above:
+        // `reset_budget()` touches the same process-wide `BUDGET` state
+        // `util::see_know::tests`'s budget tests serialise on. Scoped to a
+        // block so the guard drops before the `.await` below (see that
+        // test's comment for why holding it across the await is unnecessary
+        // here).
+        {
+            let _guard = crate::util::see_know::BUDGET_TEST_LOCK.lock();
+            crate::util::see_know::reset_budget();
+        }
         let (results, attempted, failure) = dispatch_email_cascade_checks("key", Vec::new()).await;
         assert!(results.is_empty());
         assert!(attempted.is_empty());

@@ -197,6 +197,14 @@ impl Module for NiamonX {
         ModuleCost::KeyGated
     }
 
+    fn cache_ttl_secs(&self) -> u64 {
+        // Breach/ULP corpora are immutable once indexed — the same
+        // dehashed/see_know/oathnet_pro/intelx/hibp convention: a repeat scan
+        // of an already-queried identifier replays for free within the
+        // window instead of re-spending against this module's paid quota.
+        86_400
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         15_000
     }

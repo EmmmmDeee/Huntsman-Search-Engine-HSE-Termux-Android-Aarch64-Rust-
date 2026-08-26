@@ -30,8 +30,11 @@
 //!   between two mailboxes at different domains** — see "Different mailboxes"
 //!   below.
 //! * **name-token-match** (`0.62`) — one side is a `Person` whose every name
-//!   token (≥2 chars) appears in the other's canonical handle (`John Smith` ↔
+//!   token (≥3 chars) appears in the other's canonical handle (`John Smith` ↔
 //!   `johnsmith_au`), with ≥2 tokens so a bare shared first name can't fire it.
+//!   (The 3-char floor closes a narrower collision the ≥2-tokens rule alone
+//!   didn't: two 2-char tokens can be nothing more than an unrelated handle's
+//!   own letter run spelled out — see [`string_signal`]'s `name_token` comment.)
 //! * **substring-overlap** (`0.45`) — the handles share a ≥4-char run
 //!   ([`crate::core::scan::identity_overlaps`]) without being equal.
 //! * **shared-source** (`1 − 0.7ᵏ`, k = shared corroborating sources) —
@@ -187,13 +190,29 @@ fn string_signal(
     if norm_a == norm_b {
         return Some((W_HANDLE_EQUIV, "handle-equivalence"));
     }
-    // Name-token match: a Person's every token (≥2 chars), of which there are ≥2,
+    // Name-token match: a Person's every token (≥3 chars), of which there are ≥2,
     // is a substring of the OTHER side's canonical handle.
+    //
+    // The ≥2-tokens rule guards against a bare shared first name firing this
+    // tier, but a 2-char floor left a narrower collision open: a 2-char given
+    // name plus a 2-char surname (routine for short Vietnamese/Chinese names —
+    // "Vy Le", "An Vu") can be nothing more than the literal decomposition of
+    // an unrelated handle's own 4-letter run. `resolve_coreferences(["Vy Le"
+    // (Person), "levy2024" (Username)], ...)` scored 0.62 name-token-match
+    // with ZERO corroborating evidence: `identity_norm("levy2024")` contains
+    // both "le" (offset 0) and "vy" (offset 2) as adjacent, overlapping
+    // substrings of the very run ("levy") that spells them out, no
+    // word-boundary check required. Raising the per-token floor to 3
+    // characters closes that specific collision surface while leaving the
+    // tier's only passing example (`"John"`/`"Smith"`, 4/5 chars) untouched;
+    // a genuinely short name is still reachable via `shared-source`
+    // corroboration, matching this codebase's default of favouring a missed
+    // link over a false one.
     let name_token = |person: &str, handle_norm: &str| -> bool {
         let tokens: Vec<String> = person
             .split_whitespace()
             .map(identity_norm)
-            .filter(|t| t.len() >= 2)
+            .filter(|t| t.len() >= 3)
             .collect();
         tokens.len() >= 2 && tokens.iter().all(|t| handle_norm.contains(t.as_str()))
     };

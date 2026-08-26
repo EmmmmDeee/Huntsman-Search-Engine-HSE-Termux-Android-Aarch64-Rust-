@@ -142,20 +142,120 @@ fn token_swapped_names_are_distinct_people() {
     assert!(suggest_merges(&[c, d]).is_empty());
 }
 
+#[test]
+fn hyphenated_compound_surname_does_not_merge_with_an_unrelated_three_token_name() {
+    // Regression: `canonical_name` used to route through `canonical_tokens`,
+    // which treats EVERY non-alphanumeric character (including a hyphen) as a
+    // token boundary. That folded the hyphenated compound surname "Smith-Jones"
+    // into the SAME two tokens "smith" + "jones" a genuinely different name
+    // ("Smith Jones", three whitespace tokens: a different given/middle name or
+    // simply a different, unrelated person) also produces — both canonicalised
+    // to "anna smith jones" and were fused into one full-trust SameAs edge.
+    let a = ent(EntityKind::Person, "Anna Smith-Jones");
+    let b = ent(EntityKind::Person, "Anna Smith Jones");
+    assert!(
+        suggest_merges(&[a, b]).is_empty(),
+        "a hyphenated surname and an unrelated 3-token name must not merge"
+    );
+}
+
+#[test]
+fn hyphenated_surname_still_merges_across_comma_reversal() {
+    // The fix above must not regress the legitimate equivalence this module
+    // exists to catch: the comma surname-first form of the SAME hyphenated name
+    // still canonicalises identically (the hyphen itself is preserved verbatim,
+    // not treated as noise to fold away OR as a token boundary). Case/whitespace
+    // variants are deliberately NOT exercised here — `identity_fold` already
+    // folds those for `Person` at the UID layer, before this module ever runs,
+    // so they would not be distinct entities to merge in the first place.
+    let a = ent(EntityKind::Person, "Anna Smith-Jones");
+    let b = ent(EntityKind::Person, "Smith-Jones, Anna");
+    assert_ne!(a.uid, b.uid, "comma form is a distinct UID the resolver must unify");
+    let g = only_group(&[a.clone(), b.clone()]);
+    assert_eq!(g.canonical, "anna smith-jones");
+    assert_eq!(g.members, sorted_uids(&[&a, &b]));
+}
+
+#[test]
+fn apostrophe_surname_does_not_merge_with_an_unrelated_three_token_name() {
+    // Same defect class and same fix, for an apostrophe rather than a hyphen —
+    // common in Irish/Scottish/French-derived Australian surnames (O'Brien,
+    // D'Souza). "O'Brien" must stay one token, not split into "o" + "brien".
+    let a = ent(EntityKind::Person, "Mary O'Brien");
+    let b = ent(EntityKind::Person, "Mary O Brien");
+    assert!(
+        suggest_merges(&[a, b]).is_empty(),
+        "an apostrophe surname and an unrelated 3-token name must not merge"
+    );
+}
+
+#[test]
+fn comma_before_generational_suffix_still_canonicalises_with_natural_order() {
+    // Regression: `canonical_name` used to treat ANY single comma as the
+    // bibliographic surname-first marker, so "John Smith, Jr." reordered to
+    // "Jr. John Smith" — while the equally-standard no-comma spelling
+    // "John Smith Jr." kept natural order. The two canonicalised differently
+    // and could never merge, permanently fragmenting one suffixed person's
+    // corroboration whenever sources disagreed on the comma-before-suffix
+    // convention. `is_generational_suffix_only` (mirroring name_intel's
+    // GEN_SUFFIXES list) now excludes a suffix-only post-comma segment from
+    // the surname-first reorder, so both spellings land on "john smith jr".
+    let a = ent(EntityKind::Person, "John Smith, Jr.");
+    let b = ent(EntityKind::Person, "John Smith Jr.");
+    assert_ne!(a.uid, b.uid, "distinct raw spellings going in");
+    let g = only_group(&[a.clone(), b.clone()]);
+    assert_eq!(g.canonical, "john smith jr");
+    assert_eq!(g.members, sorted_uids(&[&a, &b]));
+}
+
+#[test]
+fn comma_before_a_real_given_name_still_reorders_as_surname_first() {
+    // The fix above must not regress the ordinary surname-first case: a
+    // post-comma segment that is a real given name (not a suffix) still
+    // triggers the reorder.
+    let a = ent(EntityKind::Person, "Smith, John");
+    let b = ent(EntityKind::Person, "John Smith");
+    let g = only_group(&[a.clone(), b.clone()]);
+    assert_eq!(g.canonical, "john smith");
+    assert_eq!(g.members, sorted_uids(&[&a, &b]));
+}
+
 // ── Username: formatting noise only ───────────────────────────────────────────
 
 #[test]
-fn username_canonicalises_case_and_punctuation() {
+fn username_canonicalises_case_and_whitespace() {
     // The entity normaliser lowercases+strips a leading `@`, so to get two
-    // DISTINCT stored values we vary internal punctuation/spacing, which the
-    // resolver canonicalises away.
-    let a = ent(EntityKind::Username, "Jordan.Avery");
+    // DISTINCT stored values we vary internal whitespace, which the resolver
+    // still canonicalises away — unlike separator punctuation (see the
+    // false-merge regression test below), a run of whitespace really is
+    // formatting noise for a handle.
+    let a = ent(EntityKind::Username, "Jordan  Avery");
     let b = ent(EntityKind::Username, "jordan avery");
     assert_ne!(a.value, b.value);
     let g = only_group(&[a.clone(), b.clone()]);
     assert_eq!(g.kind, "username");
     assert_eq!(g.canonical, "jordan avery");
     assert_eq!(g.members, sorted_uids(&[&a, &b]));
+}
+
+#[test]
+fn username_separator_variants_do_not_merge() {
+    // Regression: `canonical_handle` used to route through a tokeniser that
+    // treated '.', '_' and '-' as interchangeable separators (the same
+    // fixed defect class as the hyphenated-Person-name tests above), so
+    // "jordan.avery" and "jordan_avery" canonicalised identically and were
+    // fused into a full-trust SameAs relation edge on spelling coincidence
+    // alone. No platform treats those as the same login — GitHub allows only
+    // hyphens, Twitter/X only underscores, Instagram both dots and
+    // underscores as DISTINCT characters — so two independently-registered
+    // accounts must not be merged on separator choice.
+    let a = ent(EntityKind::Username, "jordan.avery");
+    let b = ent(EntityKind::Username, "jordan_avery");
+    let c = ent(EntityKind::Username, "jordan-avery");
+    assert!(
+        suggest_merges(&[a, b, c]).is_empty(),
+        "distinct separator characters must not merge two independently-registered handles"
+    );
 }
 
 // ── No-duplicate / empty cases ────────────────────────────────────────────────
@@ -194,7 +294,7 @@ fn already_exact_duplicates_are_not_resuggested() {
 fn different_kinds_with_same_canonical_do_not_cross_group() {
     // Grouping is strictly within a kind. A username and a person that happen to
     // share a canonical string are never merged together.
-    let u_a = ent(EntityKind::Username, "Jane.Citizen");
+    let u_a = ent(EntityKind::Username, "Jane  Citizen");
     let u_b = ent(EntityKind::Username, "jane citizen");
     let p_a = ent(EntityKind::Person, "Jane Citizen");
     let p_b = ent(EntityKind::Person, "Citizen, Jane");

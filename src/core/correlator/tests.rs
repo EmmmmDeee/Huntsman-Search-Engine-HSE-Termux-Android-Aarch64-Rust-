@@ -694,6 +694,30 @@ fn au035_no_fire_when_only_inferred_or_only_discovered() {
     );
 }
 
+#[test]
+fn au035_no_fire_when_confirmation_is_status_only() {
+    // Derived by name_intel, but the "discovery" source is a status-only guess
+    // (no body verification) — must NOT count as independent confirmation,
+    // mirroring the discount AU-077 already applies for the identical merge.
+    let mut e = Entity::new(EntityKind::Username, "jdoe", 0.9, "scan-test");
+    e.add_evidence(Evidence::new("name_intel", "test"));
+    e.add_evidence(Evidence::new("username_search", "test").with_attr("detection", "status-only"));
+    assert!(
+        rule_au_035_confirmed_derived_handle(&RuleContext::new(&[e]), "scan-test", 0).is_empty()
+    );
+}
+
+#[test]
+fn au035_no_fire_on_all_guess_summary_with_zero_verified_hits() {
+    let mut e = Entity::new(EntityKind::Username, "jdoe", 0.9, "scan-test");
+    e.add_evidence(Evidence::new("name_intel", "test"));
+    e.add_evidence(Evidence::new("username_search", "test").with_attr("hits_verified", "0"));
+    assert!(
+        rule_au_035_confirmed_derived_handle(&RuleContext::new(&[e]), "scan-test", 0).is_empty(),
+        "an all-guess summary with zero verified hits must not confirm"
+    );
+}
+
 // ── AU-036 ──────────────────────────────────────────────────────────
 
 /// Build a canonical Email entity carrying one `email_canonical` evidence
@@ -1366,6 +1390,40 @@ fn au011_fires_on_three_platforms() {
 fn au011_no_fire_on_two_platforms() {
     let e = username_summary("alice", 2, "github, reddit");
     assert!(rule_au_011_cross_platform_username(&RuleContext::new(&[e]), "s", 0).is_empty());
+}
+
+#[test]
+fn au011_discounts_status_only_hits_when_hits_verified_present() {
+    // platforms_count=4 (raw, includes status-only guesses) but hits_verified=1:
+    // AU-011 must trust the verified count, not the inflated raw one, so this
+    // must NOT fire despite 4 >= 3.
+    let mut e = Entity::new(EntityKind::Username, "alice", 0.9, "scan-test");
+    e.add_evidence(
+        Evidence::new("username_search", "summary")
+            .with_attr("platforms_count", "4")
+            .with_attr("platforms", "a, b, c, d")
+            .with_attr("hits_verified", "1")
+            .with_attr("hits_status_only", "3"),
+    );
+    assert!(
+        rule_au_011_cross_platform_username(&RuleContext::new(&[e]), "s", 0).is_empty(),
+        "an inflated raw count with only 1 verified hit must not fire"
+    );
+}
+
+#[test]
+fn au011_fires_on_genuinely_verified_hits() {
+    let mut e = Entity::new(EntityKind::Username, "alice", 0.9, "scan-test");
+    e.add_evidence(
+        Evidence::new("username_search", "summary")
+            .with_attr("platforms_count", "3")
+            .with_attr("platforms", "github, reddit, twitter")
+            .with_attr("hits_verified", "3")
+            .with_attr("hits_status_only", "0"),
+    );
+    let r = rule_au_011_cross_platform_username(&RuleContext::new(&[e]), "s", 0);
+    assert_eq!(r.len(), 1);
+    assert!(r[0].description.contains("3 platforms"));
 }
 
 // ── AU-012 ──────────────────────────────────────────────────────────
@@ -8348,6 +8406,23 @@ fn au026_fires_for_address_from_two_geo_sources() {
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-026");
     assert_eq!(r[0].severity, Severity::High);
+}
+
+#[test]
+fn au026_does_not_validate_a_registrant_address_as_the_subjects_own() {
+    // Same two independent GEO_SOURCES as the positive case above, but the
+    // Address is tagged REGISTRANT (opencorporates/gleif_lei both emit exactly
+    // this shape) — an infra/company address, not the subject's own. Must not
+    // fire, the same infra-must-not-seed-identity discipline AU-030/018/056/085
+    // already apply.
+    let mut a = Entity::new(EntityKind::Address, "1 Main St, Sydney NSW 2000", 0.6, "s");
+    a.tag(crate::core::tags::REGISTRANT);
+    a.add_evidence(Evidence::new("opencorporates", "x"));
+    a.add_evidence(Evidence::new("gleif_lei", "x"));
+    assert!(
+        rule_au_026_validated_address(&RuleContext::new(&[a]), "s", 0).is_empty(),
+        "a registrant-tagged address must not be validated as the subject's own"
+    );
 }
 
 #[test]

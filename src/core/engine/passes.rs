@@ -60,6 +60,23 @@ pub(super) fn consolidate_address_localities(entities: &mut Vec<Entity>) -> Vec<
                     .then_with(|| entities[b].value.cmp(&entities[a].value))
             })
             .expect("group is non-empty");
+        // The survivor is chosen by value SPECIFICITY, not discovery order, so
+        // it is not necessarily the earliest-discovered member —
+        // `Entity::absorb` deliberately leaves `generation` untouched on the
+        // precondition (its own doc comment) that `self` is always the
+        // pre-existing, earlier-or-equal entity. A more specific spelling
+        // (e.g. a postcode added by a later-round geocode lookup) is commonly
+        // discovered AFTER the bare form a seed-round search already found,
+        // so without this the fold would silently advance a directly-observed
+        // seed-round locality to a later, wrong generation. Restore the
+        // invariant explicitly: the fold keeps the group's EARLIEST true
+        // discovery generation, independent of which member's value won.
+        let earliest_generation = idxs
+            .iter()
+            .map(|&i| entities[i].generation)
+            .min()
+            .expect("group is non-empty");
+        entities[survivor].generation = earliest_generation;
         for &victim in idxs {
             if victim != survivor {
                 folds.push((survivor, entities[victim].clone()));

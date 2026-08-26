@@ -6,6 +6,30 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::util::budget::QuotaBudget;
 
+/// Serialises every test — in this file's own `tests` module AND in
+/// `modules::see_know::tests`, a SEPARATE file that also calls
+/// [`reset_budget`] directly — that touches [`BUDGET`]'s shared per-scan
+/// state (scan-cap override, counters, latches).
+///
+/// `cargo test` runs the whole crate's unit tests in one process, and the
+/// task-local scan id that [`crate::util::budget::with_scan`] would set is
+/// left unset (falls back to `""`) by every ordinary `#[test]`/`#[tokio::test]`
+/// that doesn't explicitly scope one — which is every test in both files —
+/// so they all share ONE `""` bucket in [`BUDGET`]'s per-scan map. Without a
+/// SINGLE shared lock, two tests running concurrently interleave
+/// `reset_budget()` / `set_scan_cap_override()` and clobber each other: this
+/// exact race was fixed once already for the tests within this file (see the
+/// history at this static's original call sites), but that fix only
+/// serialised call sites that already knew about it — `modules::see_know`'s
+/// own test file calls [`reset_budget`] too and, being a different file, was
+/// not serialised by a lock private to this one. `pub(crate)` (rather than
+/// keeping it file-private) is what lets that other file take the SAME lock
+/// instead of a different one that would leave the two files still racing
+/// each other. `parking_lot::Mutex` never poisons if a test panics while
+/// holding it.
+#[cfg(test)]
+pub(crate) static BUDGET_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 // Re-export the shared snapshot type so external consumers
 // (`api::handlers::stats`) keep working through the original path.
 pub use crate::util::budget::BudgetSnapshot;

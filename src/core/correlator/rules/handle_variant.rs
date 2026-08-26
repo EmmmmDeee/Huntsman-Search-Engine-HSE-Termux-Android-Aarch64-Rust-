@@ -82,7 +82,16 @@ pub(in crate::core::correlator) fn rule_au_123_numeric_variant_handle_persona(
         // Reject common-role handles AND common dictionary/vanity words: a
         // stem two strangers could each independently pick (a popular word,
         // not a distinctive identity) is too weak to attribute a persona on.
-        if stem.len() < MIN_STEM_LEN || is_generic_handle(&stem) || is_common_password(&stem) {
+        // Char count, not byte length: `canonical_handle` lowercases via
+        // `to_ascii_lowercase` (a documented no-op on non-ASCII) without
+        // restricting to ASCII, so a non-Latin stem (CJK/Cyrillic/etc., where
+        // one character is 2-3 UTF-8 bytes) would clear a byte-length floor at
+        // fewer characters than the Latin-script bar this constant is
+        // calibrated for.
+        if stem.chars().count() < MIN_STEM_LEN
+            || is_generic_handle(&stem)
+            || is_common_password(&stem)
+        {
             continue;
         }
         let g = groups.entry(stem).or_default();
@@ -257,6 +266,26 @@ mod tests {
             )
             .is_empty(),
             "generic role stem must not link"
+        );
+    }
+
+    #[test]
+    fn au123_silent_on_a_short_non_latin_stem_that_would_clear_a_byte_length_check() {
+        // "李明" is 2 characters but 6 UTF-8 bytes — a stale byte-length check
+        // would treat it as long enough (>= MIN_STEM_LEN=5 bytes) even though
+        // it is far short of 5 CHARACTERS, the bar this constant is calibrated
+        // for on Latin-script handles ("dev"/"john").
+        assert!(
+            rule_au_123_numeric_variant_handle_persona(
+                &RuleContext::new(&[
+                    handle("李明1990", "github_user"),
+                    handle("李明2015", "keybase"),
+                ]),
+                "s",
+                0
+            )
+            .is_empty(),
+            "a 2-character stem must not link even if it clears a byte-length floor"
         );
     }
 
