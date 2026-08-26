@@ -4,6 +4,7 @@
 
 use super::super::super::EMAIL_CONFIRMATION_SOURCES;
 use super::super::*;
+use super::*;
 
 /// AU-036 — Email alias convergence (one mailbox).
 ///
@@ -89,11 +90,7 @@ pub(in crate::core::correlator) fn rule_au_038_verified_cross_platform_identity(
     // Distinct registrable-ish hosts among the confirmed profiles (www-stripped).
     let hosts: BTreeSet<String> = confirmed
         .iter()
-        .filter_map(|e| url::Url::parse(&e.value).ok())
-        .filter_map(|u| {
-            u.host_str()
-                .map(|h| h.trim_start_matches("www.").to_lowercase())
-        })
+        .filter_map(|e| www_stripped_host(&e.value))
         .collect();
     if hosts.len() < 2 {
         return Vec::new();
@@ -151,14 +148,9 @@ pub(in crate::core::correlator) fn rule_au_086_name_derived_email_confirmed(
             derived && confirmed
         })
         .map(|e| {
-            let confirmed_by: Vec<&str> = e
-                .evidence
-                .iter()
-                .filter(|ev| EMAIL_CONFIRMATION_SOURCES.contains(&ev.source.as_str()))
-                .map(|ev| ev.source.as_str())
-                .collect::<std::collections::BTreeSet<&str>>()
-                .into_iter()
-                .collect();
+            let confirmed_by: Vec<&str> = sorted_evidence_sources(&e.evidence, |ev| {
+                EMAIL_CONFIRMATION_SOURCES.contains(&ev.source.as_str())
+            });
             Correlation {
                 rule_id: "AU-086".into(),
                 rule_name: "Name-derived email confirmed".into(),
