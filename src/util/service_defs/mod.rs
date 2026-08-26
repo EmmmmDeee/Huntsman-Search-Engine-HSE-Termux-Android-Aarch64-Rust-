@@ -886,6 +886,40 @@ pub fn is_poolable_service(service: &str) -> bool {
     find_service(service).is_some()
 }
 
+/// True when `service`'s HTTP-200 response BODY actually signals a
+/// rejected/dead key — a status-only classifier (`key_pool::validation`'s
+/// probe) can't see this on its own, since a 2xx normally means the request
+/// succeeded. A separate function rather than a `ServiceDef` field (unlike
+/// [`ServiceDef::probe_parser`]) so adding a new entry never touches the other
+/// 48+ existing literals — this is checked for exactly one service today.
+///
+/// Currently only **Criminal IP** is covered: `modules::criminal_ip`'s own
+/// live-scan cascade (`keyed_cascade_json`'s verdict closure) already proved
+/// its in-body `status` field reports `401`/`402`/`429` for a dead/exhausted
+/// key on an HTTP 200 — this mirrors that exact, already-shipped logic rather
+/// than inventing new classification.
+///
+/// Deliberately does **not** yet cover FOFA or BuiltWith, which have the
+/// identical always-200 shape (`error`/`Errors` fields) — their in-body error
+/// field can ALSO fire for a non-key reason: FOFA's own test suite documents
+/// an `errmsg: "Invalid query"` case, and BuiltWith's `Errors[].Message` has
+/// no confirmed complete vocabulary either. Guessing a phrase broad enough to
+/// catch "key is dead" but narrow enough to spare "your query is malformed"
+/// requires live verification this environment cannot perform (both
+/// providers' docs are unreachable — bot-gated, same as this session hit for
+/// DeHashed). Extend this match arm, not its call sites, once that phrase is
+/// confirmed — never with an unverified guess.
+#[must_use]
+pub fn body_rejects_key(service: &str, body: &Value) -> bool {
+    match service {
+        "criminal_ip" => matches!(
+            body.get("status").and_then(Value::as_i64),
+            Some(401 | 402 | 429)
+        ),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

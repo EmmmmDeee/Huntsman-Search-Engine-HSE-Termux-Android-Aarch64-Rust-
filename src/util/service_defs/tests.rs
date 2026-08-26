@@ -1,6 +1,35 @@
 use super::*;
 
     #[test]
+    fn body_rejects_key_flags_only_criminal_ips_dead_key_statuses() {
+        // Mirrors modules/criminal_ip/mod.rs's own live-scan `keyed_cascade_json`
+        // verdict exactly: 401/402/429 in the body means the key is dead, any
+        // other in-body status (including a real success) does not.
+        for status in [401, 402, 429] {
+            assert!(body_rejects_key(
+                "criminal_ip",
+                &serde_json::json!({ "status": status })
+            ));
+        }
+        assert!(!body_rejects_key(
+            "criminal_ip",
+            &serde_json::json!({ "status": 200 })
+        ));
+        assert!(!body_rejects_key("criminal_ip", &serde_json::json!({})));
+    }
+
+    #[test]
+    fn body_rejects_key_is_false_for_every_other_service() {
+        // Deliberately opt-in per service (see the function's own doc for why
+        // FOFA/BuiltWith aren't covered yet) — an identical-looking body must
+        // never flip a service this function has no entry for.
+        let suspicious = serde_json::json!({ "status": 401 });
+        for service in ["fofa", "builtwith", "shodan", "unknown_service"] {
+            assert!(!body_rejects_key(service, &suspicious));
+        }
+    }
+
+    #[test]
     fn poolable_only_for_recognised_providers() {
         // Recognised keyed providers (in SERVICE_DEFS) are poolable...
         assert!(is_poolable_service("shodan"));
