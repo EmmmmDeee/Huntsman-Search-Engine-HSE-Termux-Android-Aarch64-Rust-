@@ -826,6 +826,23 @@ fn au001_does_not_count_generic_search_as_a_breach_source() {
 }
 
 #[test]
+fn au001_recognises_real_breach_modules_the_allow_list_had_missed() {
+    // BREACH_SOURCES was a hand-maintained allow-list that never grew to cover
+    // several real breach-category modules -- confirmed against
+    // source_family_covers_every_breach_category_module (rules/tests.rs),
+    // which pins all of them as family "breach". Two of the previously-missed
+    // modules together must still fire AU-001, exactly as two listed ones do.
+    let e = email("x@y.com", &["intelx", "psbdmp"]);
+    let r = rule_au_001_multi_breach(&RuleContext::new(&[e]), "s1", 0);
+    assert_eq!(
+        r.len(),
+        1,
+        "intelx + psbdmp is two genuinely independent breach corpora: {r:?}"
+    );
+    assert_eq!(r[0].severity, Severity::Critical);
+}
+
+#[test]
 fn au001_does_not_raise_critical_on_a_role_mailbox() {
     // Live person-scan false positive: `abuse@godaddy.com` (a registrar desk) is in
     // HIBP + XposedOrNot as a matter of course — that is NOT the subject's breach
@@ -1130,6 +1147,30 @@ fn au009_fires_on_stealer_log() {
     assert_eq!(r[0].severity, Severity::High);
 }
 
+#[test]
+fn au009_fires_on_the_oathnet_pro_and_see_know_stealer_tag() {
+    // oathnet_pro::stealer::push_stealer_entity and push_oathnet_entity (the
+    // two richest stealer-log extraction paths in this codebase) tag their
+    // entities "stealer", not "stealer-log" -- confirmed against
+    // src/modules/oathnet_pro/stealer.rs and breach.rs. see_know's stealer
+    // extraction does the same (src/modules/see_know/extract/mod.rs). AU-009
+    // must recognise both literals, or a subject whose credentials were
+    // captured live by malware and surfaced via OathNet/SeeKnow gets no
+    // "Stealer-log compromise" finding at all.
+    let oathnet = tagged(
+        EntityKind::Email,
+        "a@b.com",
+        &["breach", "oathnet-pro", "stealer"],
+    );
+    let see_know = tagged(EntityKind::Email, "c@d.com", &["see-know", "stealer"]);
+    let r = rule_au_009_stealer_log(&RuleContext::new(&[oathnet, see_know]), "s", 0);
+    assert_eq!(
+        r.len(),
+        2,
+        "both the OathNet Pro and SeeKnow stealer-tagged emails must fire AU-009: {r:?}"
+    );
+}
+
 // ── AU-037 ──────────────────────────────────────────────────────────
 
 #[test]
@@ -1157,6 +1198,26 @@ fn au037_fires_critical_on_plaintext_credentials() {
 
     // No secret entities → no firing.
     assert!(rule_au_037_credential_exposure(&RuleContext::new(&[email]), "s", 0).is_empty());
+}
+
+#[test]
+fn au037_does_not_fire_on_a_published_public_key() {
+    // github_user (fetch.rs) and pgp (mod.rs) both mint EntityKind::Credential
+    // for a PUBLISHED public key -- an SSH/PGP key fingerprint the subject
+    // themselves posted on GitHub or a keyserver, tagged "ssh-key"/"pgp-key",
+    // used only to feed AU-048's cross-account key-sharing link. A public
+    // key's private half is definitionally not "directly recoverable"; AU-037
+    // must not treat one as breach/stealer credential exposure.
+    let mut ssh_key = Entity::new(EntityKind::Credential, "SHA256:abc123", 0.9, "s");
+    ssh_key.tag("ssh-key");
+    ssh_key.tag("public-key");
+    ssh_key.tag("github");
+    let mut pgp_key = Entity::new(EntityKind::Credential, "0xDEADBEEF", 0.9, "s");
+    pgp_key.tag("pgp-key");
+    assert!(
+        rule_au_037_credential_exposure(&RuleContext::new(&[ssh_key, pgp_key]), "s", 0).is_empty(),
+        "a published SSH/PGP public key must not fire AU-037"
+    );
 }
 
 #[test]
@@ -1539,6 +1600,36 @@ fn au014_excludes_infrastructure_coordinates() {
         rule_au_014_geo_cluster(&RuleContext::new(&[anchored]), "s", 0).len(),
         1,
         "an anchored two-source coordinate still fires AU-014"
+    );
+}
+
+#[test]
+fn au014_does_not_count_cooccurring_tags_as_two_sources() {
+    // Regression: the `hits.len() >= 2` disjunct bypasses the "corroborating
+    // sources only" guard the function's own comment describes, because it
+    // counts co-occurring TAGS on one entity rather than independent evidence
+    // sources. `wigle::wifi_ap_entities` mints exactly this shape for every
+    // WiGLE-trilaterated Wi-Fi AP: ONE Coordinates entity from ONE evidence
+    // record (source "wigle"), tagged with BOTH "wifi-observed" and "geoint"
+    // (see wigle/mod.rs's own emit site and its test asserting both tags).
+    // Before the fix this fired "confirmed by 2 geo source(s)" from a single,
+    // uncorroborated database lookup.
+    let mut e = Entity::new(
+        EntityKind::Coordinates,
+        "-27.4766,153.0280",
+        crate::core::confidence::HIGH_PLUS,
+        "s",
+    );
+    e.tag("wigle");
+    e.tag("wifi-observed");
+    e.tag("geoint");
+    e.add_evidence(Evidence::new(
+        "wigle",
+        "WiGLE-observed position of WiFi AP AA:BB:CC:DD:EE:01",
+    ));
+    assert!(
+        rule_au_014_geo_cluster(&RuleContext::new(&[e]), "s", 0).is_empty(),
+        "a single WiGLE evidence record must not fire AU-014 on tag co-occurrence alone"
     );
 }
 
@@ -3362,6 +3453,76 @@ fn au072_register_resolvable_abn_raises_severity() {
 }
 
 #[test]
+fn au072_does_not_fire_on_uncorroborated_name_permutation_guesses() {
+    // Two purely-speculative name_intel email permutations, each merely
+    // annotated by the enrichment-only `payid` module (no independent
+    // corroboration either belongs to the subject), must not fabricate a
+    // consolidated payment-identity surface — under default settings
+    // (`--gate-speculative` off) these guesses expand and reach every
+    // enrichment-only module exactly like a real identifier would.
+    let mut guess1 = Entity::new(EntityKind::Email, "j.smith@gmail.com", 0.4, "s");
+    guess1.tag("name-derived");
+    guess1.tag("payid");
+    guess1.tag("payid:email");
+    guess1.add_evidence(Evidence::new(
+        "name_intel",
+        "Speculative email permuted from name",
+    ));
+    guess1.add_evidence(Evidence::new("payid", "PayID-eligible email"));
+
+    let mut guess2 = Entity::new(EntityKind::Email, "jsmith@outlook.com", 0.35, "s");
+    guess2.tag("name-derived");
+    guess2.tag("payid");
+    guess2.tag("payid:email");
+    guess2.add_evidence(Evidence::new(
+        "name_intel",
+        "Speculative email permuted from name",
+    ));
+    guess2.add_evidence(Evidence::new("payid", "PayID-eligible email"));
+
+    assert!(
+        super::rules::rule_au_072_payid_payment_surface(
+            &RuleContext::new(&[guess1, guess2]),
+            "s",
+            0
+        )
+        .is_empty(),
+        "two uncorroborated name-permutation guesses must not fabricate a PayID surface"
+    );
+}
+
+#[test]
+fn au072_counts_a_name_permutation_guess_once_a_reliable_source_confirms_it() {
+    // Same speculative guess as above, but this one is independently confirmed
+    // by a real corpus hit — it is no longer "uncorroborated" and legitimately
+    // combines with a genuine, unrelated PayID to fire.
+    let mut confirmed_guess = Entity::new(EntityKind::Email, "j.smith@gmail.com", 0.4, "s");
+    confirmed_guess.tag("name-derived");
+    confirmed_guess.tag("payid");
+    confirmed_guess.tag("payid:email");
+    confirmed_guess.add_evidence(Evidence::new(
+        "name_intel",
+        "Speculative email permuted from name",
+    ));
+    confirmed_guess.add_evidence(Evidence::new("hibp", "Found in a breach corpus"));
+
+    let mut real_phone = Entity::new(EntityKind::Phone, "+61410959140", 0.8, "s");
+    real_phone.tag("payid");
+    real_phone.tag("payid:phone");
+
+    let r = super::rules::rule_au_072_payid_payment_surface(
+        &RuleContext::new(&[confirmed_guess, real_phone]),
+        "s",
+        0,
+    );
+    assert_eq!(
+        r.len(),
+        1,
+        "a corroborated former-guess plus a real PayID should still fire"
+    );
+}
+
+#[test]
 fn au073_dob_corroborated_across_sources_disambiguates_namesakes() {
     // Two independent sources assert the same DOB (one as an ISO datetime that
     // must normalise) → High. A namesake's DOB from a single source is a
@@ -3387,6 +3548,38 @@ fn au073_dob_corroborated_across_sources_disambiguates_namesakes() {
         .find(|c| c.description.contains("1975-01-01"))
         .expect("the namesake DOB is surfaced separately");
     assert_eq!(minor.severity, Severity::Medium, "single source → Medium");
+}
+
+#[test]
+fn au073_counts_two_see_know_corpora_as_independent_not_one_source() {
+    // Regression: `see_know`/`oathnet_pro` stamp ONE constant module `source`
+    // across rows from DIFFERENT breach corpora (real `source_db`/`dbname`
+    // values per row) — the exact bug AU-105 already fixed for itself
+    // (`au105_reads_the_see_know_source_db_breach_name`). Two genuinely
+    // distinct corpora (LinkedIn, Adobe) both asserting the same DOB is
+    // 2-corpora corroboration and must be High, not Medium from a collapsed
+    // "1 source (see_know)".
+    let mut e = Entity::new(EntityKind::Email, "c@contoso.com", 0.9, "s");
+    e.add_evidence(
+        Evidence::new("see_know", "breach")
+            .with_attr("dob", "1985-03-02")
+            .with_attr("source_db", "linkedin.com"),
+    );
+    e.add_evidence(
+        Evidence::new("see_know", "breach")
+            .with_attr("dob", "1985-03-02")
+            .with_attr("source_db", "adobe.com"),
+    );
+    let r = super::rules::rule_au_073_subject_date_of_birth(&RuleContext::new(&[e]), "s", 0);
+    let main = r
+        .iter()
+        .find(|c| c.description.contains("1985-03-02"))
+        .expect("the DOB fires");
+    assert_eq!(
+        main.severity,
+        Severity::High,
+        "two distinct see_know corpora must count as 2 independent sources, not 1: {r:?}"
+    );
 }
 
 #[test]
@@ -3863,6 +4056,34 @@ fn au093_full_street_address_is_high_and_geocoded() {
 }
 
 #[test]
+fn au093_does_not_assemble_an_address_from_an_accumulated_multi_value_record() {
+    // Regression: `Evidence::with_attr`'s "a; b" accumulation (the same
+    // mechanism `Entity::absorb`'s `merge_evidence_attrs` uses when two
+    // breach rows sharing one (source, summary) — e.g. SeeKnow's per-dbname
+    // summary — fold into one evidence record) can leave a single record's
+    // "suburb"/"state" attribute holding TWO DIFFERENT real suburbs/states
+    // from two different underlying rows. `merge_evidence_attrs` re-sorts
+    // each key's accumulated values independently (a BTreeSet collapse), so
+    // there is no reliable correspondence between which suburb goes with
+    // which state even when both have the same count — record_attr must
+    // refuse to assemble from an ambiguous record rather than guess a
+    // (possibly wrong, possibly geographically-impossible) pairing.
+    let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    p.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("suburb", "Bondi Beach")
+            .with_attr("suburb", "Richmond")
+            .with_attr("state", "NSW")
+            .with_attr("state", "VIC"),
+    );
+    assert!(
+        super::rules::rule_au_093_au_address_from_breach(&RuleContext::new(&[p]), "s", 0)
+            .is_empty(),
+        "an ambiguous accumulated suburb/state record must not assemble a fabricated address"
+    );
+}
+
+#[test]
 fn au093_geocode_reverse_geocode_is_not_labeled_breach() {
     // The proven defect, generalised: a reverse-geocode record carries the same
     // suburb/state/postcode attributes as a leaked address, but `geocode` is not
@@ -4220,6 +4441,34 @@ fn au101_excludes_a_registrant_phone_and_email_from_the_facet_count() {
         "an untagged phone/email must still count as real facets"
     );
     assert_eq!(r[0].severity, super::Severity::High);
+}
+
+#[test]
+fn au101_does_not_count_a_name_intel_permutation_as_a_breach_facet() {
+    // Every OTHER attribute-based facet scan in this file (AU-073/074/075/090/
+    // 091/092/104/105) gates on is_breach_source immediately after
+    // scan_evidence; AU-101's four attribute loops (DOB, government ID, phone,
+    // email) never did. `name_intel` is a listed ENRICHMENT_ONLY_SOURCE -- a
+    // deterministic name-permutation guess, not an independent observation --
+    // exactly the source is_breach_source exists to exclude. Person + Address
+    // + Username is 3 facets (below the n>=4 floor, silent); a name_intel
+    // guessed email attribute must not tip it to a fabricated 4th facet.
+    let person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
+    let addr = Entity::new(EntityKind::Address, "Spring Hill QLD 4000", 0.7, "s");
+    let mut user = Entity::new(EntityKind::Username, "hbamford", 0.7, "s");
+    user.add_evidence(
+        Evidence::new("name_intel", "permuted guess")
+            .with_attr("email", "haigen.bamford@gmail.com"),
+    );
+    let r = super::rules::rule_au_101_identity_resolution(
+        &RuleContext::new(&[person, addr, user]),
+        "s",
+        0,
+    );
+    assert!(
+        r.is_empty(),
+        "a name_intel-guessed email attribute must not fabricate a 4th identity facet: {r:?}"
+    );
 }
 
 #[test]
@@ -5814,6 +6063,51 @@ fn au027_excludes_infrastructure_coordinates() {
         "anchored coordinates still chain with the address"
     );
     assert_eq!(out2[0].rule_id, "AU-027");
+}
+
+#[test]
+fn au027_excludes_infrastructure_addresses() {
+    use super::rules::rule_au_027_address_coordinates_chain;
+    // Mirrors au027_excludes_infrastructure_coordinates, but for the ADDRESS
+    // side: unlike `coords` (filtered on `!is_infrastructure_geo` above), the
+    // `addresses` collection has no such filter, so a WHOIS-registrant address
+    // — a company's filing/privacy address, not the subject's home — rides
+    // into `entity_uids` unfiltered. The registrant address here has no
+    // `geoint`/`reverse-geocoded`/`validated` tag of its own and no
+    // geographic relationship to the coordinates (a different city
+    // entirely); only the coordinates' `geocoded` tag satisfies the rule's
+    // geo-tag gate, so a purely-infrastructure address with zero real
+    // grounding still gets asserted as part of a "validated geolocation
+    // chain".
+    let mut registrant_addr = Entity::new(
+        EntityKind::Address,
+        "123 Corporate Ave, Melbourne, VIC",
+        0.60,
+        "scan",
+    );
+    registrant_addr.tag(crate::core::tags::REGISTRANT);
+    let registrant_uid = registrant_addr.uid.clone();
+
+    let anchored = |v: &str| {
+        let mut e = Entity::new(EntityKind::Coordinates, v, 0.80, "scan");
+        e.tag("geocoded");
+        e.add_evidence(Evidence::new("geocode", "reverse-geocoded"));
+        e
+    };
+
+    let out = rule_au_027_address_coordinates_chain(
+        &RuleContext::new(&[
+            registrant_addr,
+            anchored("-27.4698,153.0251"), // Brisbane — unrelated to the Melbourne registrant address
+            anchored("-27.4690,153.0235"),
+        ]),
+        "scan",
+        0,
+    );
+    assert!(
+        out.is_empty() || !out[0].entity_uids.contains(&registrant_uid),
+        "a WHOIS-registrant address must not be fused into an AU-027 chain: {out:?}"
+    );
 }
 
 #[test]

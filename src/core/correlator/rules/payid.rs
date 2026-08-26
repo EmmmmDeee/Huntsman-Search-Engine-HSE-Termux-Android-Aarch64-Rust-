@@ -16,8 +16,15 @@ use super::*;
 /// A register-resolvable ABN among them lifts the severity — its holder name is
 /// resolvable from the public register now, with no banking app.
 ///
-/// Runs on the confirmed (candidate-filtered) view, so speculative name-permuted
-/// addresses — kept at CANDIDATE — never inflate the count.
+/// `payid` is an [enrichment-only source](crate::core::entity::ENRICHMENT_ONLY_SOURCES)
+/// (see its module docs): it annotates *any* well-formed email/phone/ABN it is
+/// dispatched to, including a purely speculative `name_intel` permutation guess
+/// that `--gate-speculative` has not (the default) stopped from expanding. Two
+/// such guesses sharing nothing but a name-derived shape would otherwise satisfy
+/// `MIN_PAYIDS` on zero real evidence either belongs to the subject, fabricating
+/// a payment-deanonymisation finding. [`Entity::is_uncorroborated_name_permutation`]
+/// excludes exactly those — a reliable corroborating hit (breach/registry/profile)
+/// clears the exclusion and lets the identifier count again.
 pub(in crate::core::correlator) fn rule_au_072_payid_payment_surface(
     context: &RuleContext,
     scan_id: &str,
@@ -37,10 +44,18 @@ pub(in crate::core::correlator) fn rule_au_072_payid_payment_surface(
     // its own producer first, matching the confidence discipline every sibling
     // identity-aggregation rule in this file applies (e.g. AU-070's
     // `IDENTITY_LINK_MIN_CONF`, AU-101's per-facet floors).
+    // `is_uncorroborated_name_permutation` catches the complementary case a bare
+    // confidence floor can miss: a speculative `name_intel` guess that
+    // `--gate-speculative` hasn't stopped from expanding can still carry a
+    // moderate confidence despite having zero real corroborating evidence.
     const MIN_CONF: f64 = 0.50;
     let payids: Vec<&Entity> = entities
         .iter()
-        .filter(|e| e.has_tag("payid") && e.confidence >= MIN_CONF)
+        .filter(|e| {
+            e.has_tag("payid")
+                && e.confidence >= MIN_CONF
+                && !e.is_uncorroborated_name_permutation()
+        })
         .collect();
     if payids.len() < MIN_PAYIDS {
         return Vec::new();
