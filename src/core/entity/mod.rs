@@ -1227,13 +1227,34 @@ impl Entity {
         // the moment `other` was NOT itself a candidate — a single non-candidate
         // corroboration is enough, symmetric with the confidence rule.
         let other_is_candidate = other.tags.iter().any(|t| t == crate::core::tags::CANDIDATE);
+        // `derived` marks an entity whose OWN evidence is a deterministic
+        // derivation of the seed (see `ENRICHMENT_ONLY_SOURCES`'s doc),
+        // consulted fresh on every call by `source_count`'s GROUNDING GATE to
+        // require a stricter 2-real-source bar before a promotion pass counts.
+        // Like `candidate` above, it must not be a plain accumulating tag:
+        // wholesale-unioning it let merging in an unrelated, low-value derived
+        // duplicate (contributing NOTHING to real evidence — e.g. a
+        // `name_intel`/`url_extract` restatement) retroactively raise an
+        // ALREADY-grounded entity's gate threshold, dropping its
+        // classification tier purely from absorbing MORE evidence — violating
+        // this file's own "a tier can only ever rise as merges add
+        // corroboration" invariant. Fixed the same way as `candidate`, but as
+        // a logical AND rather than OR: exclude it from the general union
+        // below, then keep it only when BOTH sides carried it, so a single
+        // genuinely-independent (non-derived) side graduates the merged
+        // entity out of the stricter gate for good — symmetric with a single
+        // non-candidate side clearing quarantine.
+        let other_is_derived = other.tags.iter().any(|t| t == "derived");
         for t in other.tags {
-            if t != crate::core::tags::CANDIDATE {
+            if t != crate::core::tags::CANDIDATE && t != "derived" {
                 self.tag(t);
             }
         }
         if !other_is_candidate {
             self.tags.retain(|t| t != crate::core::tags::CANDIDATE);
+        }
+        if !other_is_derived {
+            self.tags.retain(|t| t != "derived");
         }
     }
 }

@@ -141,6 +141,42 @@ use super::*;
     }
 
     #[test]
+    fn mark_rate_limited_is_per_scan_not_process_wide() {
+        // Regression (critical audit): oathnet's RATE_LIMITED latch used to be
+        // a bare process-wide AtomicBool, not part of this per-scan map like
+        // every other sticky flag QuotaBudget owns -- so under hse serve's
+        // concurrent scans, one scan's 429-backoff-exhaustion would silently
+        // block/mislabel every other concurrently-running scan's queries, and
+        // any new scan starting would clear the flag out from under a still-
+        // rate-limited sibling scan. mark_rate_limited()/is_rate_limited()
+        // must behave exactly like mark_exhausted()/is_exhausted(): scoped to
+        // the current-scan ambient, cleared only by that scan's own
+        // reset_scan(), invisible to and un-resettable by a sibling scan.
+        let b = fresh();
+        with_scan_sync("scan-a", || {
+            assert!(!b.is_rate_limited());
+            b.mark_rate_limited();
+            assert!(b.is_rate_limited());
+        });
+        // A concurrently-tracked sibling scan sees no rate limit...
+        with_scan_sync("scan-b", || {
+            assert!(
+                !b.is_rate_limited(),
+                "scan-b must not inherit scan-a's rate-limit latch"
+            );
+            b.reset_scan(); // ...and its own reset must not touch scan-a.
+        });
+        with_scan_sync("scan-a", || {
+            assert!(
+                b.is_rate_limited(),
+                "sibling scan-b's reset_scan() must not clear scan-a's latch"
+            );
+            b.reset_scan();
+            assert!(!b.is_rate_limited(), "scan-a's own reset clears its latch");
+        });
+    }
+
+    #[test]
     fn reset_scan_clears_override_too() {
         let b = fresh();
         b.set_scan_cap_override(99);

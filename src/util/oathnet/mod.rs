@@ -3,7 +3,6 @@
 //! without violating the "no inter-module imports" invariant.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 use serde::Deserialize;
@@ -287,12 +286,12 @@ pub fn real_quota() -> Option<RealQuota> {
 /// for every later re-scan of the same email/username/phone, indefinitely,
 /// with no live re-check and no way for the operator to force a refresh.
 pub fn reset_budget() {
+    // `BUDGET.reset_scan()` clears the rate-limit latch too: it lives in the
+    // same per-scan ScanState the quota-exhausted flag does, so a rate limit
+    // one scan hit can never bench -- or, before this was scan-scoped, get
+    // silently un-latched by -- a different, concurrently-running scan.
     BUDGET.reset_scan();
     RESPONSE_CACHE.clear();
-    // Per-scan, exactly like the quota latch `reset_scan` clears: a rate limit
-    // one scan hit must not bench the provider for every later scan in a
-    // long-lived `hse serve`/`hse live` process.
-    RATE_LIMITED.store(false, Ordering::Release);
 }
 
 /// Remove `scan_id`'s tracked budget state entirely. Called by the engine at
@@ -332,10 +331,14 @@ pub fn set_scan_cap_override(cap: u32) {
 /// the wrong one is exactly the misdirection [`Completeness`] exists to remove.
 ///
 /// This records the cause without touching the stop: the quota latch is still
-/// set, so every existing gate behaves precisely as before. Cleared by
-/// [`reset_budget`] at the scan boundary, like the rest of the per-scan state.
-static RATE_LIMITED: AtomicBool = AtomicBool::new(false);
-
+/// set, so every existing gate behaves precisely as before. Lives in
+/// [`BUDGET`]'s own per-scan state (not a bare process-wide flag) for the
+/// identical reason `mark_exhausted`/`is_exhausted` already do: under
+/// `hse serve`'s concurrent scans, a process-wide latch let one scan's 429
+/// silently block/mislabel every OTHER concurrently-running scan's queries,
+/// and let any new scan starting clear the flag out from under a still-
+/// rate-limited sibling. Cleared by [`reset_budget`] at the scan boundary,
+/// like the rest of the per-scan state.
 fn mark_quota_exhausted() {
     BUDGET.mark_exhausted();
     tracing::warn!("OathNet daily quota exhausted — skipping remaining queries");
@@ -343,13 +346,13 @@ fn mark_quota_exhausted() {
 
 /// Latch that the stop came from a rate limit, not a spent daily quota.
 fn mark_rate_limited() {
-    RATE_LIMITED.store(true, Ordering::Release);
+    BUDGET.mark_rate_limited();
     tracing::warn!("OathNet rate-limited with retries exhausted — skipping remaining queries");
 }
 
 /// True when this scan stopped querying OathNet because of a persistent 429.
 fn is_rate_limited() -> bool {
-    RATE_LIMITED.load(Ordering::Acquire)
+    BUDGET.is_rate_limited()
 }
 
 fn base_url() -> String {
