@@ -73,6 +73,56 @@ fn exports_never_brand_a_non_complete_scan_as_complete() {
 }
 
 #[test]
+fn render_json_kind_is_a_uniform_string_including_for_other_variant() {
+    // Regression (critical audit): render_json called serde_json::to_value(e)
+    // directly on the whole Entity. serde's default externally-tagged
+    // representation renders EntityKind's 20 unit variants as a bare string
+    // ("email") but the Other(String) catch-all as a nested object
+    // ({"other":"iban"}) -- so the exported `kind` field's JSON TYPE silently
+    // switched depending on which kind an entity happened to be. Other is not
+    // an edge case: it's the real representation for IBANs, AT-Proto DIDs,
+    // nostr keys, app-link identifiers, and more. Any consumer treating
+    // `kind` as always-a-string (jq -r '.[].kind', a typed deserializer)
+    // broke on exactly those entities while working for the other 20 kinds.
+    // CSV/GEXF sidestep this by using e.kind.to_string() (the Display impl,
+    // always a plain string) -- JSON was the sole outlier renderer.
+    use crate::core::entity::{Entity, EntityKind};
+    let dir = tempfile::tempdir().expect("should succeed");
+    let db = dir.path().join("kind_test.db");
+    let store = Store::open(db.to_str().expect("should succeed")).expect("should succeed");
+    let target = Target::new(TargetKind::Email, "seed@example.com");
+    let scan = Scan::new("scan-kind", target);
+    store.upsert_scan(&scan).expect("should succeed");
+    let ordinary = Entity::new(EntityKind::Email, "seed@example.com", 0.9, "scan-kind");
+    let other = Entity::new(
+        EntityKind::Other("iban".into()),
+        "GB33BUKB20201555555555",
+        0.8,
+        "scan-kind",
+    );
+    store
+        .upsert_entities_batch(&[ordinary, other])
+        .expect("should succeed");
+
+    let body = render_json(&store, "scan-kind", false).expect("should succeed");
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&body).expect("valid json");
+    for entity in &parsed {
+        assert!(
+            entity["kind"].is_string(),
+            "every entity's `kind` field must be a plain JSON string, got: {entity}"
+        );
+    }
+    let iban_kind = parsed
+        .iter()
+        .find(|e| e["value"] == "GB33BUKB20201555555555")
+        .expect("the Other-kind entity is present")["kind"]
+        .as_str()
+        .expect("kind is a string")
+        .to_string();
+    assert_eq!(iban_kind, "other:iban");
+}
+
+#[test]
 fn render_full_dumps_every_field_and_provenance() {
     use crate::core::entity::{Entity, EntityKind, Evidence};
     let dir = tempfile::tempdir().expect("should succeed");
