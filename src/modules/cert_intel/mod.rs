@@ -227,11 +227,17 @@ fn never_answered(attempted: usize, failed: usize, found_any: bool) -> bool {
 /// subdomain relationship. A `%.domain` CT query returns the WHOLE matched
 /// certificate's SAN list, which on a shared-hosting cert includes unrelated
 /// co-tenant domains — so a proper subdomain of `parent` is a confirmed asset
-/// (confidence::EXPERT, tagged [`tags::SUBDOMAIN`]) while a co-listed non-subdomain is only a
+/// (confidence::VERY_HIGH, tagged [`tags::SUBDOMAIN`]) while a co-listed non-subdomain is only a
 /// weak co-hosting lead (confidence::LOW_MEDIUM, tagged `co-hosted`): they must NOT carry identical
 /// high confidence, or an unrelated co-tenant is over-attributed to the subject.
-/// Matches the discrimination the TLS-SAN path and the sibling `crtsh` module
-/// already apply. Dedups across both cert paths via `seen_subs`.
+/// `VERY_HIGH` matches the sibling `crtsh`/`certspotter`/`hackertarget` modules'
+/// identical "confirmed subdomain via a recon aggregator" claim, so a real
+/// subdomain independently hit by more than one of these siblings in the same
+/// scan gets one consistent confidence rather than one that depends on which
+/// subset of redundant modules happened to succeed. Lower than the TLS-SAN
+/// path's `HIGH_PLUSPLUS_PLUS` below — a live handshake is stronger evidence
+/// than a historical CT-log record. Dedups across both cert paths via
+/// `seen_subs`.
 fn ct_log_entities(
     entries: &[CrtEntry],
     parent: &str,
@@ -279,7 +285,7 @@ fn ct_log_entities(
             }
             let is_sub = crate::util::domains::is_proper_subdomain_of(&name, parent);
             let conf = if is_sub {
-                confidence::EXPERT
+                confidence::VERY_HIGH
             } else {
                 confidence::LOW_MEDIUM
             };
