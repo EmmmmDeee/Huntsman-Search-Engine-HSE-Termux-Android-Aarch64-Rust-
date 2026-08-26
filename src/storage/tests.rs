@@ -1192,6 +1192,70 @@ fn delete_scan_cascades_to_events() {
 }
 
 #[test]
+fn delete_scan_cascades_to_rf_sightings() {
+    // Regression (critical audit): rf_sightings holds MAC addresses, GPS fixes,
+    // and signal strength from a WiGLE import or a local radar sweep, scoped
+    // to a scan_id exactly like stealer_rows -- but delete_scan's cascade never
+    // reached it, so RF wardriving data survived indefinitely after an
+    // operator explicitly deleted the scan that produced it.
+    use crate::core::rf::{RadioKind, RfSighting, RfSource};
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    insert_scan(&store, "scan-with-rf");
+    insert_scan(&store, "scan-keeper");
+    let sighting = |mac: &str| RfSighting {
+        network_id: mac.into(),
+        radio: RadioKind::Wifi,
+        source: RfSource::WigleKml,
+        device_class: None,
+        name: Some("TestAP".into()),
+        encryption: None,
+        observed_at: None,
+        observed_epoch: Some(1_700_000_000),
+        signal_dbm: Some(-53.0),
+        accuracy_m: None,
+        latitude: Some(-33.87),
+        longitude: Some(151.21),
+        raw_type: None,
+    };
+    store
+        .insert_rf_sightings_batch(
+            "scan-with-rf",
+            &[sighting("AA:BB:CC:DD:EE:01"), sighting("AA:BB:CC:DD:EE:02")],
+        )
+        .expect("should succeed");
+    store
+        .insert_rf_sightings_batch("scan-keeper", &[sighting("AA:BB:CC:DD:EE:03")])
+        .expect("should succeed");
+    assert_eq!(
+        store
+            .rf_devices_for_scan("scan-with-rf")
+            .expect("should succeed")
+            .len(),
+        2
+    );
+
+    assert!(store.delete_scan("scan-with-rf").expect("should succeed"));
+    assert!(
+        store
+            .rf_devices_for_scan("scan-with-rf")
+            .expect("should succeed")
+            .is_empty(),
+        "delete_scan must cascade to rf_sightings so device MACs/GPS/signal \
+         strength do not persist after the scan that captured them is deleted"
+    );
+    // An unrelated scan's RF data is untouched.
+    assert_eq!(
+        store
+            .rf_devices_for_scan("scan-keeper")
+            .expect("should succeed")
+            .len(),
+        1
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn delete_scan_cascades_to_stealer_rows() {
     use crate::core::stealer_row::{StealerRow, StealerRowKind};
     let path = tmp_db();

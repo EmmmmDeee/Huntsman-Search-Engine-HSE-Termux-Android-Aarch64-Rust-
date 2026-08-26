@@ -503,9 +503,10 @@ pub async fn scan_delete(
             .into_response();
     }
     // `delete_scan` is a multi-table cascade transaction (scans, correlations,
-    // observations, events, relations, stealer_rows, entities + FTS sync) under
-    // the global connection mutex — the heaviest write in the API. Run it off the
-    // reactor so a large-scan delete can't stall unrelated requests.
+    // observations, events, relations, scan_analysis, stealer_rows,
+    // rf_sightings, entities + FTS sync) under the global connection mutex —
+    // the heaviest write in the API. Run it off the reactor so a large-scan
+    // delete can't stall unrelated requests.
     let store = Arc::clone(&s.store);
     let id_db = id.clone();
     match super::offload_store(move || store.delete_scan(&id_db)).await {

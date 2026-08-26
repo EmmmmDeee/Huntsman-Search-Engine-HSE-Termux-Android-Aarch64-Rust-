@@ -2380,6 +2380,53 @@ async fn search_endpoint_returns_fts_indexed_entities() {
     );
 }
 
+#[tokio::test]
+async fn search_endpoint_excludes_candidate_tagged_entities() {
+    // Regression (critical audit): every sibling entity-serving read endpoint
+    // (`/entities`, `/diamond`, `/attack`, `/identities`, ...) enforces the
+    // candidate quarantine via EntityViewGate::apply_candidate_gate before
+    // returning entities -- CANDIDATE is documented as "held out of every
+    // shareable export... enforced, not advisory". This endpoint,
+    // search_entities, handed the raw storage query result straight back with
+    // no gate at all, so a quarantined same-name-stranger record (the classic
+    // unconfirmed-namesake case a breach search surfaces) reappeared in full
+    // through the primary global-search UI even though it never survived any
+    // scan-scoped default view.
+    use huntsman_search_engine::core::tags;
+    let (app, store) = test_app_with_store("search-candidate");
+    let scan = Scan::new(
+        "s-search-candidate",
+        Target::new(TargetKind::FullName, "Jordan Leigh Meyers"),
+    );
+    store.upsert_scan(&scan).unwrap();
+    let mut quarantined = Entity::new(
+        EntityKind::Email,
+        "jordan.stranger@example.com",
+        0.25,
+        "s-search-candidate",
+    );
+    quarantined.tag(tags::CANDIDATE);
+    store.upsert_entity(&quarantined).unwrap();
+
+    let resp = app
+        .oneshot(get("/api/v1/search?q=jordan.stranger"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let vals: Vec<String> = json["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["value"].as_str().unwrap_or("").to_lowercase())
+        .collect();
+    assert!(
+        !vals.iter().any(|v| v.contains("jordan.stranger")),
+        "a candidate-tagged (quarantined) entity must not surface through \
+         global search, got {vals:?}"
+    );
+}
+
 // ── SPA contract tests ──────────────────────────────────────────────────────
 //
 // Guard the embedded single-page app against the regression classes a Rust

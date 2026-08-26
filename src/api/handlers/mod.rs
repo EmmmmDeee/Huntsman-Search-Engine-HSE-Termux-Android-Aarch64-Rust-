@@ -869,9 +869,18 @@ pub async fn search_entities(
     // Off-reactor: the FTS query runs under the global SQLite mutex on a blocking
     // thread, matching the sibling handlers' discipline.
     let store = Arc::clone(&s.store);
-    let query = query.to_string();
-    match offload_store(move || store.search_entities(&query, limit)).await {
-        Ok(entities) => ok_list("entities", entities),
+    let query_owned = query.to_string();
+    match offload_store(move || store.search_entities(&query_owned, limit)).await {
+        Ok(mut entities) => {
+            // Candidate quarantine, enforced everywhere else an entity-serving
+            // endpoint returns a Vec<Entity> — this is the one search reaches
+            // across the WHOLE database unscoped by scan, so a same-name
+            // stranger a breach search couldn't confirm as the subject (the
+            // canonical CANDIDATE case) must not resurface here after being
+            // held out of every scan-scoped default view.
+            crate::api::scan_handlers::apply_candidate_gate(&mut entities, &params);
+            ok_list("entities", entities)
+        }
         Err(e) => e,
     }
 }
