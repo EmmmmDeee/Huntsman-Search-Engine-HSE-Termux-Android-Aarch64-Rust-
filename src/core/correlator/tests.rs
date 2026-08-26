@@ -7187,7 +7187,11 @@ fn au096_mixed_grounding_yields_two_findings_and_never_inflates_possession() {
         "s",
         0,
     );
-    assert_eq!(r.len(), 2, "grounded and ungrounded partitions each fire: {r:?}");
+    assert_eq!(
+        r.len(),
+        2,
+        "grounded and ungrounded partitions each fire: {r:?}"
+    );
 
     let high = r
         .iter()
@@ -7195,7 +7199,8 @@ fn au096_mixed_grounding_yields_two_findings_and_never_inflates_possession() {
         .expect("a High subject-possession finding");
     assert!(high.description.contains("Subject holds"));
     assert!(
-        high.description.contains("1 OSINT/recon-provider credential"),
+        high.description
+            .contains("1 OSINT/recon-provider credential"),
         "the ungrounded key must not inflate the grounded count: {}",
         high.description
     );

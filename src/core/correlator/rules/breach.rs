@@ -1001,12 +1001,7 @@ fn osint_key_is_subject_grounded(e: &Entity) -> bool {
 /// [`rule_au_096_osint_practitioner`] uses for the grounded (subject-
 /// possession) and ungrounded (unassigned-lead) partitions. `None` for an
 /// empty partition.
-fn au096_finding(
-    keys: &[&Entity],
-    grounded: bool,
-    scan_id: &str,
-    ts: u64,
-) -> Option<Correlation> {
+fn au096_finding(keys: &[&Entity], grounded: bool, scan_id: &str, ts: u64) -> Option<Correlation> {
     use std::collections::{BTreeMap, BTreeSet};
 
     if keys.is_empty() {
