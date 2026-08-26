@@ -603,4 +603,35 @@ mod tests {
             None
         );
     }
+
+    #[test]
+    fn extract_ratemyagent_suburb_keeps_multi_word_au_markets_whole() {
+        // OD-18: a single-trailing-token heuristic truncates prominent
+        // multi-word ratemyagent.com.au markets to their last word only
+        // ("gold coast" -> "coast"). The AU-locality gazetteer lookup must
+        // recover the full name whenever the elastic <name> prefix happens to
+        // be exactly two tokens (the failure mode's precondition).
+        assert_eq!(
+            extract_ratemyagent_suburb("https://x/real-estate-agent/jane-smith-gold-coast-xy12/"),
+            Some("gold coast".to_string())
+        );
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://x/real-estate-agent/jane-smith-sunshine-coast-xy12/"
+            ),
+            Some("sunshine coast".to_string())
+        );
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://x/real-estate-agent/jane-smith-port-macquarie-xy12/"
+            ),
+            Some("port macquarie".to_string())
+        );
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://x/real-estate-agent/jane-smith-alice-springs-xy12/"
+            ),
+            Some("alice springs".to_string())
+        );
+    }
 }

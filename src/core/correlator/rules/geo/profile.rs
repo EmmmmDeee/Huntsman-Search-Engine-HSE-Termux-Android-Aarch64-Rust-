@@ -133,6 +133,16 @@ pub(super) fn extract_ratemyagent_suburb(url: &str) -> Option<String> {
     if !id.chars().all(|c| c.is_ascii_alphanumeric()) || id.len() < 2 {
         return None;
     }
+    // The elastic <name> prefix is itself unbounded (given/middle/surname
+    // tokens), so a bare single-token heuristic truncates multi-word AU
+    // markets (Gold Coast, Sunshine Coast, Port Macquarie, Alice Springs, …)
+    // to their last word only. Try the known-AU-locality gazetteer first,
+    // widest window wins; only when nothing matches fall back to the
+    // original single-token heuristic (OD-18).
+    let before_id = &parts[..parts.len() - 1];
+    if let Some(window) = crate::util::geo::au_locality_match_len(before_id, 3) {
+        return Some(before_id[before_id.len() - window..].join(" "));
+    }
     let suburb = parts[parts.len() - 2];
     if suburb.len() >= 4 && suburb.chars().all(|c| c.is_ascii_alphabetic()) {
         Some(suburb.to_string())
