@@ -11,7 +11,7 @@
     "cycle 9 sweep (wf_e136c553): 5 dims x adversarial verify. REFUTED as not-a-defect (do not re-open): AbortOnDrop doc claim (engine/mod.rs:158 — the doc is actually true); enrich_geospatial catch_unwind is not over-guarding worth removing; diagnostics ModuleLedger HashMap->BTreeMap (failure scenario unachievable); /scans/{id}/stealer-rows 'unbounded' (deliberate, documented, tested design); scan-log DOM O(n) (already capped at LOG_MAX_ROWS=1200, committed design). DEFERRED confirmed findings for a future cycle (recorded, not lost): F2 latest_completed_scan skips Aborted scans (storage/mod.rs:513 — `hse export/diff latest` jumps past an aborted scan); F3 live/radar session cancel handle shared with per-iteration wall-time watchdog (core/live/mod.rs:433); F4 scans.js dashboard has no `aborted` bucket + computes an unrendered `failed` count; F18 SPA discards /entities pagination envelope so Browse understates a truncated large scan (index.js:44); F20 dossier upload reads whole file to a JS string with no client-side size check (new_scan.js:445); F22 Scan-Log SSE never resolves the pill to 'complete' when the tailed scan finishes (log.js:89). These are the top of cycle-10's pool; F2 pairs naturally with cycle-9 slot 1 (both terminal-state correctness)."
   ],
   "cycle_count": 41,
-  "last_verified_commit": "PLACEHOLDER_FINAL_COMMIT",
+  "last_verified_commit": "79737d51",
   "verified_against": {
     "note": "This crate declares NO [features]; `--all-features` is a no-op here (main's #379 correction, preserved across the merge). The authoritative gate is scripts/gate.sh, which spans several workflow files and includes the rustdoc-lint and MSRV passes that reconstructing from ci.yml alone drops.",
     "toolchain": "1.97.1 (rust-toolchain.toml)",
