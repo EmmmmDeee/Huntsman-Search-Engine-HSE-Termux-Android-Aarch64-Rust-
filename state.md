@@ -1,6 +1,6 @@
 # Ultracode Refactor Ledger — Huntsman Search Engine
 
-Updated: 2026-08-26T05:10Z (run started 2026-08-26T03:52:28Z)
+Updated: 2026-08-26T05:12Z (run started 2026-08-26T03:52:28Z)
 
 ## BASELINE (verified this run, at origin/main 60824b0)
 
@@ -62,8 +62,13 @@ Every store-reading consumer was therefore blind to truncation.
 - Exit codes: `cmd_scan` no longer returns `Ok(())` for a Failed scan; batch
   mode no longer exits 0 when seeds failed.
 - Gate green; **6882 pass / 0 fail** (+12 new tests).
-STATUS AT RUN END: pushed, draft PR #472 open, CI not yet observed.
-**Next run: check #472's CI first.** If red, fix it before starting new work.
+STATUS AT RUN END: pushed; draft PR #472 open; **CI run 32932179923 GREEN —
+all 4 jobs success on commit 258a2c118**: Check & test (Linux x86_64 stable),
+MSRV (1.88), Build (aarch64-linux-android Termux target, incl. test compile),
+install.sh syntax (bash + shellcheck). That covers all four checks this
+container could not run locally, so the changeset is fully verified.
+Awaiting the babysitter to mark ready + auto-merge. **Next run: confirm #472
+merged; if it is still open and red, fix it before starting new work.**
 
 ## MATERIAL GAPS — confirmed by adversarial verification, NOT yet fixed
 
