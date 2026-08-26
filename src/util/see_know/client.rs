@@ -1,5 +1,5 @@
 //! HTTP client, response cache, API key helpers, and low-level JSON I/O for
-//! the SeekNow (see-know.eu) API.
+//! the SeekNow (see-know.ru) API.
 
 use serde_json::Value;
 

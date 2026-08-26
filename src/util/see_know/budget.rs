@@ -234,12 +234,12 @@ pub(super) fn mark_key_invalid(body: &str) {
     // upgrade the plan.
     if !KEY_INVALID.swap(true, Ordering::Relaxed) {
         let reason = if body.contains("plan_required") {
-            "the account has no paid plan (plan_required) — upgrade at https://see-know.eu/pricing"
+            "the account has no paid plan (plan_required) — upgrade at https://see-know.ru/pricing"
         } else {
             "the API key was rejected (invalid_api_key)"
         };
         tracing::warn!(
-            "SeekNow (see-know.eu) lookups disabled: {reason}. Set a valid, \
+            "SeekNow (see-know.ru) lookups disabled: {reason}. Set a valid, \
              plan-enabled key via HUNTSMAN_SEEKNOW_KEY or the UI Settings panel."
         );
     }
