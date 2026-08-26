@@ -374,3 +374,16 @@ use super::*;
         assert!(!is_tabulated_au_city("smith gold coast"));
         assert!(!is_tabulated_au_city("nowhere special"));
     }
+
+    #[test]
+    fn is_tabulated_au_city_recognises_port_macquarie() {
+        // Discovered mid-merge (2026-08-26): a concurrent session's own OD-18
+        // fix (correlator::rules::geo::profile::extract_ratemyagent_suburb)
+        // names "Port Macquarie" as one of four target markets the defect
+        // must resolve, and its own provenance notes explicitly recorded this
+        // gap and deliberately deferred it as a separate gazetteer-coverage
+        // question. Closed here instead: a genuinely major NSW mid-north-coast
+        // town (~90k population) is a two-line, zero-risk addition. Added
+        // alongside the other NSW regional entries.
+        assert!(is_tabulated_au_city("port macquarie"));
+    }

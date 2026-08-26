@@ -117,6 +117,23 @@ use super::*;
     }
 
     #[test]
+    fn is_proxy_registrant_delegates_to_the_canonical_whois_placeholder_check() {
+        // Consolidation fix: is_proxy_registrant used to maintain its own
+        // separate marker list that had drifted from
+        // core::validation::is_whois_privacy_placeholder (the whois/whoisxml
+        // modules' identical check) in BOTH directions. Now delegates, so
+        // markers either list alone used to carry are recognised by both.
+        // Was only in is_proxy_registrant's old list:
+        assert!(is_proxy_registrant("DomainsByProxy.com", false));
+        assert!(is_proxy_registrant("Domain Protection Services, Inc.", false));
+        // Was only in is_whois_privacy_placeholder's old list:
+        assert!(is_proxy_registrant("Statutory Masking Enabled", false));
+        assert!(is_proxy_registrant("GDPR Masked", false));
+        // A genuine company name must still pass through untouched.
+        assert!(!is_proxy_registrant("Acme Pty Ltd", false));
+    }
+
+    #[test]
     fn app_package_id_detects_reverse_dns_packages() {
         // Real Android / iOS reverse-DNS app identifiers — the stealer-log
         // `domain` values that must NOT become Domain entities.

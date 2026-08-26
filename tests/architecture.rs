@@ -3606,12 +3606,10 @@ fn entity_confidence_uses_named_ladder_constants() {
         ("src/modules/epieos/mod.rs", "0.42"), // [revealed]
         ("src/modules/fediverse/mod.rs", "0.68"),
         ("src/modules/geo_intel/ip_geo.rs", "0.68"),
-        ("src/modules/hexpm_user/mod.rs", "0.87"), // [revealed]
         ("src/modules/ip2location/mod.rs", "0.68"),
         ("src/modules/ip_reputation/mod.rs", "0.68"),
         ("src/modules/mastodon_user/mod.rs", "0.28"),
         ("src/modules/mastodon_user/mod.rs", "0.38"),
-        ("src/modules/mastodon_user/mod.rs", "0.68"),
         ("src/modules/nostr/mod.rs", "0.66"),
         ("src/modules/npm_author/mod.rs", "0.66"),
         ("src/modules/npm_author/mod.rs", "0.74"),

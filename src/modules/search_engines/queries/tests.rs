@@ -204,6 +204,24 @@ use super::*;
     }
 
     #[test]
+    fn build_queries_base_email_recognises_freemail_providers_beyond_the_big_four() {
+        use crate::core::scan::Target;
+        // Consolidation fix: the exclusion previously hardcoded only
+        // gmail/yahoo/hotmail/outlook, missing the 40+ other providers (and
+        // country variants) the canonical `util::domains::is_freemail` list
+        // already recognises — so e.g. an iCloud or UK-Yahoo address still
+        // spent a query-budget slot on the noisy employer-signal dork.
+        let pivot = "site:linkedin.com OR site:github.com OR site:facebook.com";
+        for addr in ["alice@icloud.com", "alice@yahoo.co.uk", "alice@protonmail.com"] {
+            let q = build_queries_base(&Target::new(TargetKind::Email, addr));
+            assert!(
+                !q.iter().any(|s| s == &format!("\"{addr}\" {pivot}")),
+                "canonical freemail provider {addr} must not emit the social-pivot dork: {q:?}"
+            );
+        }
+    }
+
+    #[test]
     fn build_queries_base_username_emits_bare_handle_and_intitle() {
         use crate::core::scan::Target;
         // Username is normalised to lowercase.

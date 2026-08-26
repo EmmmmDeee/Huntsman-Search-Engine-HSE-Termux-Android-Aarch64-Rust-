@@ -572,6 +572,7 @@ const CITIES: &[(&str, f64, f64)] = &[
     ("newcastle", -32.9283, 151.7817),
     ("wollongong", -34.4278, 150.8931),
     ("central coast", -33.3000, 151.3500),
+    ("port macquarie", -31.4333, 152.9000),
     ("tamworth", -31.0833, 150.9167),
     ("wagga wagga", -35.1083, 147.3598),
     ("albury", -36.0737, 146.9135),

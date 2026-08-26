@@ -473,6 +473,19 @@ pub(in crate::core::correlator) fn rule_au_074_au_government_id_exposure(
 // ── AU-075 — Named associate from a breach/stealer record ────────────────────
 
 /// Relationship evidence keys mapped to the relationship they assert.
+///
+/// Deliberately does NOT include a bare `"relationship"` key: unlike every key
+/// here (where the ATTRIBUTE VALUE is the associate's own name, e.g. a breach
+/// record's `spouse` field holding `"Thomas Haynes"`), `see_know`'s associate
+/// extractor (`modules::see_know::extract::associates`) stores the associate's
+/// name as the entity's own `.value` and uses its `relationship` attribute for
+/// the CATEGORY label instead (`"relative"`, `"household"`, `"associate"`,
+/// `"neighbor"`) — the one breach-classified producer of a `relationship`
+/// attribute in this codebase. A `("relationship", "relation")` entry here
+/// would read that category label as if it were a person's name, guaranteed-
+/// misreporting e.g. "Subject linked to 'relative' (relation)" on any SeekNow
+/// relative/household hit — not a rare edge case, but the module's own
+/// documented single highest-value field family for a person-centric scan.
 const ASSOCIATE_KEYS: &[(&str, &str)] = &[
     ("spouse", "spouse"),
     ("partner", "partner"),
@@ -487,7 +500,6 @@ const ASSOCIATE_KEYS: &[(&str, &str)] = &[
     ("parent", "parent"),
     ("guardian", "guardian"),
     ("dependent", "dependent"),
-    ("relationship", "relation"),
     ("owner_name", "stealer-log owner"),
 ];
 
@@ -1347,6 +1359,10 @@ pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
 
     // Government ID: any breach gov-ID field passing its validator (the AU-074
     // detector), counted as a single "government ID" facet across all classes.
+    // Same gate as AU-074: without it, e.g. an ACMA radio-licensee's
+    // `licence_number` attribute (a routine public business fact on an
+    // `Organisation` entity, not a person's identity document) passed the
+    // `drivers_licence` class's key list with no validator to reject it.
     for gid in GOV_IDS {
         for (raw, src, uid) in scan_evidence(entities, gid.keys) {
             if !is_breach_source(src) {
@@ -1368,6 +1384,9 @@ pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
     // resolved facet of the subject. Each class is a `BTreeSet` keyed by the
     // facet label, so a subject who has BOTH a Phone entity and a phone attribute
     // still counts "phone" exactly once — no double-count, n stays honest.
+    // Gated on `is_breach_source` like the two facets above: a non-breach
+    // enricher (`pgp`, `hunter_io`, `hlr_cnam`, `ipqs`, `seon`, …) emitting a
+    // bare `email`/`phone` attribute is not a breach-resolved facet.
     const PHONE_ATTR_KEYS: &[&str] = &["phone", "phone_number", "mobile", "cell"];
     for (raw, src, uid) in scan_evidence(entities, PHONE_ATTR_KEYS) {
         if !is_breach_source(src) {

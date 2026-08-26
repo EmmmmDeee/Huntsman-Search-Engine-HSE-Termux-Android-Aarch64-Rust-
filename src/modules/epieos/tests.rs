@@ -32,6 +32,11 @@ fn module_metadata() {
 }
 
 #[test]
+fn caches_for_a_day_like_the_other_paid_lookup_modules() {
+    assert_eq!(Epieos.cache_ttl_secs(), 86_400);
+}
+
+#[test]
 fn parse_response() {
     let raw = r#"{"google_id":"123","name":"John Smith",
         "maps_reviews":[{"place_name":"Sydney Opera House","rating":5.0,"date":"2024-01-15"}],

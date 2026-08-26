@@ -635,5 +635,17 @@ mod tests {
             ),
             Some("port augusta".to_string())
         );
+        // Port Macquarie is one of the four markets this defect's own
+        // description names, but CITIES' NSW-regional block did not carry it
+        // until this was discovered mid-merge (see
+        // is_tabulated_au_city_recognises_port_macquarie in city_coords) —
+        // without that entry this case silently fell back to the last-token
+        // heuristic ("macquarie", not "port macquarie").
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://www.ratemyagent.com.au/real-estate-agent/jane-smith-port-macquarie-xy12/"
+            ),
+            Some("port macquarie".to_string())
+        );
     }
 }

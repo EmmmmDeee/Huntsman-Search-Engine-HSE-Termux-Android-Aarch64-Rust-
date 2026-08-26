@@ -235,7 +235,12 @@ pub(super) fn build_phone_entities(
         return Vec::new();
     }
 
-    let mut entity = target.to_entity(0.92, scan_id);
+    // EXPERT matches this same file's Gravatar path below, and the crate-wide
+    // convention for "a third-party API confirmed the target is valid"
+    // (emailrep/epieos/whois/see_know/oathnet_pro use HIGH_PLUSPLUS_PLUS;
+    // criminal_ip also uses EXPERT) — a bare 0.92 scored the identical claim a
+    // full tier above every sibling for no documented reason.
+    let mut entity = target.to_entity(confidence::EXPERT, scan_id);
     entity.tag("numverify");
     entity.tag("validated");
     entity.tag(format!("transport:{transport}"));

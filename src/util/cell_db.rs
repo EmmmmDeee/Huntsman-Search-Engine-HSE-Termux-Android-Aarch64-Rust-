@@ -204,21 +204,22 @@ pub fn count_by_mcc(conn: &Connection) -> rusqlite::Result<Vec<(i64, u64)>> {
 }
 
 /// Map a cell tower's reported accuracy radius (metres) to a coordinate
-/// confidence score: a tight urban small-cell (≤100 m) is highly trusted;
-/// a rural macro-cell (>10 km centroid) is only loosely trusted.
+/// confidence score: a tight urban small-cell is highly trusted; a rural
+/// macro-cell (multi-km centroid) is only loosely trusted.
 ///
-/// Single authoritative implementation shared by `cell_intel`, `cell_local`,
-/// and `opencellid` — all three modules use the same [`CellRow::range_m`] field
-/// so the scale must be identical across them.
+/// Delegates to the single canonical ladder,
+/// [`crate::util::geo::confidence_for_accuracy_m`], so the two can't drift —
+/// that function's own doc explains why a provider-local copy is a defect,
+/// not a convenience: it lets an identically-precise fix outrank or undercut
+/// its peer purely by which module happened to report it. `cell_intel`,
+/// `cell_local` and `opencellid` all use the same [`CellRow::range_m`] field
+/// and now score it on the exact scale the WiFi/beacon providers
+/// (`mylnikov`, `beacondb`) already share, so a `Coordinates` entity's
+/// confidence reflects claimed precision, never its source module — the
+/// property the correlator's cross-source location rules (AU-052/AU-053) and
+/// their shared `>= 0.50` admissibility floor depend on.
 pub fn accuracy_to_confidence(range_m: u64) -> f64 {
-    use crate::core::confidence;
-    match range_m {
-        0..=100 => confidence::HIGH_PLUSPLUS_PLUS,
-        101..=500 => confidence::VERY_HIGH,
-        501..=2000 => confidence::HIGH,
-        2001..=10000 => confidence::MEDIUM,
-        _ => 0.35,
-    }
+    crate::util::geo::confidence_for_accuracy_m(Some(range_m as f64))
 }
 
 // ── Import history ─────────────────────────────────────────────────────────────

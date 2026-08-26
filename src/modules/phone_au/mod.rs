@@ -144,18 +144,27 @@ pub fn classify_au_phone(national: &str) -> Option<AuLine> {
         return None;
     }
 
-    // Non-geographic service prefixes (longest first).
-    if national.starts_with("1800") {
+    // Non-geographic service prefixes (longest first). 1800/1300/190x are
+    // EXACTLY 10 national digits (the `13xxxx` shortcode is the sole 6-digit
+    // exception) — the same exact-length gate `util::address_au::
+    // au_phone_line_type` enforces. A LONGER number that merely BEGINS with
+    // these digits is not an AU service line: an 11-digit NANP number's `1`
+    // country code + area code collides (`+1 800…` reads as `1800…`,
+    // `+1 900…`/`+1 90x…` reads as `190…`), and without this exact-length
+    // check those were misclassified as AU Freephone/Premium instead of
+    // Unknown/rejected — the same false-positive class `au_phone_line_type`
+    // was hardened against (AU-050).
+    if national.len() == 10 && national.starts_with("1800") {
         return Some(AuLine::simple(LineType::Freephone));
     }
-    if national.starts_with("1300") {
+    if national.len() == 10 && national.starts_with("1300") {
         return Some(AuLine::simple(LineType::LocalRate));
     }
-    if national.starts_with("190") {
+    if national.len() == 10 && national.starts_with("190") {
         // 1900/1901/1902… premium rate.
         return Some(AuLine::simple(LineType::Premium));
     }
-    if national.starts_with("13") {
+    if national.len() == 6 && national.starts_with("13") {
         // 13 XX XX local-rate shortcode (6 digits).
         return Some(AuLine::simple(LineType::LocalRate));
     }

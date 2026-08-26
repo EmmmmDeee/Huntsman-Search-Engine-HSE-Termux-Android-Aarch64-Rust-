@@ -258,8 +258,15 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
     // Bio (HTML) — strip tags, then extract emails and URLs.
     if let Some(ref note_html) = acct.note {
         let note_text = crate::util::html::strip_html(note_html);
-        for email in crate::util::extract::emails(&note_text) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.68, scan_id);
+        // Delegates to the shared bio-email extractor every other bio-carrying
+        // profile module already uses (launchpad_user, gitlab_user,
+        // codeberg_user, cpan_user, gitea_user) instead of reimplementing the
+        // identical extract-then-build-Email-entity loop inline — that
+        // helper's own doc records it already had to be patched once (a
+        // `.take(limit)` silently dropped real contact-email pivots past the
+        // 3rd-5th); this module's independent copy would not have inherited
+        // that fix, and would not automatically inherit its next one either.
+        for mut e in profile_kit::bio_emails(&note_text, 0.68, scan_id) {
             e.tag("mastodon");
             e.tag("public-profile");
             e.add_evidence(

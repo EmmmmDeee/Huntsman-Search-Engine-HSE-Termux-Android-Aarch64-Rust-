@@ -535,7 +535,11 @@ pub(super) fn build_target_summary(
     if !should_echo_target(found_count) {
         return None;
     }
-    let mut summary = target.to_entity(0.82, scan_id);
+    // VERY_HIGH_PLUSPLUS matches the identical "independently confirmed across
+    // platforms" claim its structural siblings' summaries use
+    // (username_search, streaming_probe) — a bare 0.82 scored the same claim
+    // a full tier lower for no documented reason.
+    let mut summary = target.to_entity(confidence::VERY_HIGH_PLUSPLUS, scan_id);
     summary.tag("social-probed");
     if found_count >= 3 {
         summary.tag("multi-platform");
