@@ -613,21 +613,6 @@ pub(in crate::core::correlator) fn rule_au_001_multi_breach(
     ts: u64,
 ) -> Vec<Correlation> {
     let entities = context.entities();
-    const BREACH_SOURCES: &[&str] = &[
-        "hudsonrock",
-        "xposed_or_not",
-        "breach_directory",
-        "dehashed",
-        "hibp",
-        "oathnet_pro",
-        "emailrep",
-        // NOTE: the generic `search_engines` source is deliberately NOT listed.
-        // A web-search hit is not breach corroboration, and counting it would let
-        // one real breach + one search result fire a false Critical. (An earlier
-        // `search_engines:oathnet` entry was dead — the module emits the plain
-        // `search_engines` source — so it was removed rather than "fixed" to
-        // `search_engines`, which would introduce exactly that false positive.)
-    ];
     let mut out = Vec::new();
     for e in entities_of_kind(entities, EntityKind::Email) {
         // A role / provider mailbox (abuse@, noreply@, dns@, …) appears in breach
@@ -639,9 +624,23 @@ pub(in crate::core::correlator) fn rule_au_001_multi_breach(
         if crate::core::validation::is_role_mailbox(&e.value) {
             continue;
         }
-        let sources = tagged_matching_sources(e, BREACH_SOURCES);
-        if sources.len() >= 2 {
-            let mut names: Vec<&str> = sources.into_iter().collect();
+        // Independence-filtered (corroborating_sources, not raw evidence_sources)
+        // sources the canonical `source_family` classifies "breach" — not a
+        // hand-maintained allow-list, which drifted: it never grew to cover
+        // intelx/comb_search/psbdmp/niamonx/osintcat/see_know/pwned_passwords/
+        // leakix even though `source_family` (pinned by its own regression test,
+        // `source_family_covers_every_breach_category_module`) has classified
+        // every one of them "breach" all along, and it carried a dead
+        // `"breach_directory"` literal matching no real module. Deriving from
+        // `source_family` means this can never drift from it again, and
+        // `search_engines` (family "search") stays excluded for free — no
+        // special-case needed.
+        let sources = e
+            .corroborating_sources()
+            .into_iter()
+            .filter(|s| source_family(s) == "breach");
+        let mut names: Vec<&str> = sources.collect();
+        if names.len() >= 2 {
             names.sort_unstable();
             out.push(Correlation::new(
                 "AU-001",
@@ -670,7 +669,16 @@ pub(in crate::core::correlator) fn rule_au_009_stealer_log(
     let entities = context.entities();
     entities
         .iter()
-        .filter(|e| e.kind == EntityKind::Email && e.has_tag("stealer-log"))
+        // `stealer-log` (niamonx, hudsonrock via tags::STEALER_LOG) and
+        // `stealer` (oathnet_pro::stealer's push_stealer_entity/
+        // push_oathnet_entity, see_know's stealer extraction -- this
+        // codebase's two richest stealer-log extraction paths) are two
+        // distinct literals both meaning "seen in an infostealer log dump".
+        // Checking only the former silently missed both.
+        .filter(|e| {
+            e.kind == EntityKind::Email
+                && (e.has_tag(crate::core::tags::STEALER_LOG) || e.has_tag("stealer"))
+        })
         .map(|e| Correlation {
             rule_id: "AU-009".into(),
             rule_name: "Stealer-log compromise".into(),
@@ -1020,6 +1028,11 @@ pub(in crate::core::correlator) fn rule_au_037_credential_exposure(
     for e in entities {
         match e.kind {
             EntityKind::Password => passwords += 1,
+            // A published SSH/PGP public key (github_user/pgp mint these to
+            // feed AU-048's cross-account key-sharing link) is not a breach
+            // secret -- its private half is definitionally not "directly
+            // recoverable". Same exclusion AU-048 itself already applies.
+            EntityKind::Credential if e.has_tag("ssh-key") || e.has_tag("pgp-key") => continue,
             EntityKind::Credential => credentials += 1,
             _ => continue,
         }
