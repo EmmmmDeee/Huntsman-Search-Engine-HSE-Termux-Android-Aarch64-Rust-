@@ -486,8 +486,10 @@ fn core_does_not_import_util_directly() {
     // Un-blinding `scan_dir` (#355) surfaced four real violations here, all in
     // `core/engine/mod.rs`: three `util::egress` calls and one
     // `util::scraper_health` import. They were frozen in a shrink-only list
-    // rather than allow-listed, because CLAUDE.md is explicit that a tripped
-    // invariant is a design decision to raise, not silence.
+    // rather than allow-listed, because docs/AUTONOMY_CHARTER.md's INV-3 is
+    // explicit that a tripped invariant is a design decision to raise, not
+    // silence ("No deleted assertion, no new `#[allow]`/`#[ignore]` ... unless
+    // replaced by a strictly stronger check in the same commit").
     //
     // They were then resolved properly: `core::engine_host::EngineHost` is the
     // contract, `util::engine_host::UtilEngineHost` implements it, and
