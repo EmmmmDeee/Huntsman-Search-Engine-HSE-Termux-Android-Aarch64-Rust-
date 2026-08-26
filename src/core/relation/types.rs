@@ -138,6 +138,65 @@ pub enum RelationKind {
 }
 
 impl RelationKind {
+    /// True for a kind whose edge may bind two identity-bearing entities into
+    /// ONE identity conclusion (union-find equivalence, per
+    /// [`crate::core::relation::graph::resolve_identity_clusters`]) — as
+    /// opposed to a kind that merely relates two DISTINCT real-world things.
+    ///
+    /// False for every kind documented above as connecting DIFFERENT people or
+    /// entities rather than asserting identity: [`AssociatedWith`](Self::AssociatedWith)
+    /// is explicitly "associated **people**... a kinship/associate *candidate*",
+    /// not the same individual; [`EmployedBy`](Self::EmployedBy),
+    /// [`OfficerOf`](Self::OfficerOf) and [`MemberOf`](Self::MemberOf) tie a
+    /// Person to an Organisation they merely belong to, not to another person —
+    /// two different people who share an employer must not fuse into "one
+    /// identity" via that shared Organisation as a 2-hop bridge;
+    /// [`LocatedAt`](Self::LocatedAt) is the same shape (two different
+    /// residents of one address are not one person); [`ControlledBy`](Self::ControlledBy)
+    /// and [`OperatedBy`](Self::OperatedBy) are corporate-hierarchy /
+    /// attribution edges, not identity; [`SameOperator`](Self::SameOperator)'s
+    /// own doc calls it "the infrastructure-layer counterpart of
+    /// AssociatedWith" — domains a shared operator co-controls, not one
+    /// identity in two forms.
+    ///
+    /// True for every kind that DOES assert one identity: the explicit
+    /// equivalence kinds ([`SameAs`](Self::SameAs), [`AliasOf`](Self::AliasOf),
+    /// [`SameIdentity`](Self::SameIdentity), [`SharesSecretWith`](Self::SharesSecretWith),
+    /// [`IdentifiedBy`](Self::IdentifiedBy) — an identifier bound to its
+    /// holder), plus the structural/infrastructure kinds
+    /// ([`SubdomainOf`](Self::SubdomainOf), [`BelongsToDomain`](Self::BelongsToDomain),
+    /// [`HostedOn`](Self::HostedOn), [`ResolvesTo`](Self::ResolvesTo),
+    /// [`RegisteredBy`](Self::RegisteredBy), [`CoLocatedWith`](Self::CoLocatedWith),
+    /// [`DerivedFrom`](Self::DerivedFrom)) that this module's tests already
+    /// rely on to chain one person's own selectors together (e.g. a username
+    /// pivot that derives its owner's email).
+    ///
+    /// Added after an audit found `resolve_identity_clusters` applied only a
+    /// confidence floor, no kind filter: a full-confidence `AssociatedWith`
+    /// edge between two distinct, differently-named people (or two different
+    /// people who merely share an employer, bridged through one `EmployedBy`
+    /// hop each) fused them into one `IdentityClusterResult` — the correlator
+    /// then reported "N identities resolve to one" for two real, unrelated
+    /// individuals. This predicate is consulted ONLY by identity-cluster
+    /// binding; [`crate::core::relation::graph::identity_paths`]'s other
+    /// consumers (the dossier's CONNECTIONS section, `connection_templates`)
+    /// still see every kind — a person's genuine associates and affiliations
+    /// remain visible there, just never folded into "this is the same person".
+    #[must_use]
+    pub fn binds_identity(self) -> bool {
+        !matches!(
+            self,
+            Self::AssociatedWith
+                | Self::EmployedBy
+                | Self::OfficerOf
+                | Self::MemberOf
+                | Self::LocatedAt
+                | Self::ControlledBy
+                | Self::OperatedBy
+                | Self::SameOperator
+        )
+    }
+
     /// The edge kind's stable snake_case tag — identical to the serde wire form
     /// and the stored `relations.kind` column, so the DB value and the API/SPA
     /// edge label can never drift (pinned by a test).

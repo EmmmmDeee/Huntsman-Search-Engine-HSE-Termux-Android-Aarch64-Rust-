@@ -160,6 +160,18 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 > pkg install -y git rust binutils clang openssh && git clone --depth 1 git@github.com:EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git ~/hse && cd ~/hse && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
 > ```
 
+> **Seeing "crate `std` required to be available in rlib format, but was not
+> found in this form" (or the same for `core`/`alloc`/…)?** A broken/partial
+> Termux `rust` package shipped libstd as a dynamic library only, missing the
+> static `.rlib` every build script and proc-macro needs to link against —
+> library crates still compile, so only the build step fails. Not an HSE bug.
+> Fix:
+> ```bash
+> pkg reinstall rust
+> ```
+> then retry the build above. The one-line installer already detects and
+> self-heals this automatically before it starts building.
+
 ---
 
 ## Deploy (Railway)
@@ -330,13 +342,27 @@ design and every dependency underneath it are HSE's own:
 - **Settings** — API key management with validation
 - **Dark mode** by default, light mode opt-out toggle
 
-Binds to `127.0.0.1:8080` by default — no LAN exposure. This is the
-operator-followed default, not an enforced restriction: `--bind`/`HSE_BIND`
-accept any address, and binding non-loopback exposes scan/live/radar
-**triggering** (not just viewing results) to anyone who can reach that
-address, with no authentication — only key-writing (`PUT /settings/keys`)
-stays loopback-only regardless of bind. Use 127.0.0.1 unless you specifically
-need LAN access and understand that trade-off.
+Binds to `127.0.0.1:8080` by default — no LAN exposure, and no authentication
+to configure, since only this device can connect.
+
+`--bind`/`HSE_BIND` accept any address. Binding a **non-loopback** address
+would otherwise expose scan/live/radar **triggering** (not just viewing
+results) to anyone who can reach it, so HSE requires a bearer token on every
+request for such a bind. Supply one with `--auth-token`/`HSE_AUTH_TOKEN`, or
+let HSE mint a 256-bit token and print it once at startup with a
+ready-to-open URL:
+
+```
+hse serve --bind 0.0.0.0:8080
+#   http://0.0.0.0:8080/?t=<token>
+```
+
+Opening that link sets an `HttpOnly; SameSite=Strict` session cookie and drops
+the token from the address bar; scripts send `Authorization: Bearer <token>`
+instead. The token is disclosed only on that startup line — never in a log, an
+API response, or an export. `--allow-unauthenticated` restores the old
+open-LAN behaviour for a deliberately public deployment. Key-writing
+(`PUT /settings/keys`) stays loopback-only regardless of bind, as before.
 
 ---
 

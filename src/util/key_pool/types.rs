@@ -139,6 +139,23 @@ impl KeyEntry {
         }
     }
 
+    /// A key auto-harvested from scanned content (a crawled page body, an HTTP
+    /// header, a WHOIS/DNS field, a breach record) carries a `discovered_by`
+    /// provenance tag; a key the operator supplied deliberately (`hse keys add`,
+    /// the pool API) does not. Harvested keys are still POOLED as portfolio
+    /// intelligence, but they must NEVER authenticate HSE's own outbound
+    /// requests: an attacker who plants a valid-looking key on a page HSE crawls
+    /// could otherwise make the engine adopt and use it, exposing the
+    /// investigation's targets to the key's owner (a canary/honeypot) or
+    /// attributing the operator's traffic to a stranger's account. This mirrors
+    /// [`crate::util::key_harvest::store_api_credential`]'s "reuse requires a
+    /// deliberate operator action" policy; the auth chokepoint that enforces it
+    /// is [`KeyPool::next_key_excluding`](crate::util::key_pool::KeyPool::next_key_excluding).
+    #[must_use]
+    pub fn is_harvested(&self) -> bool {
+        self.discovered_by.is_some()
+    }
+
     pub fn success_rate(&self) -> f64 {
         if self.use_count == 0 {
             return 1.0;

@@ -41,6 +41,23 @@ fn emits_adverse_org_and_acn() {
 }
 
 #[test]
+fn checksum_invalid_acn_is_not_emitted_as_a_pivot() {
+    // "111111111" has the right digit count (9) but fails the ASIC check-digit
+    // checksum (util::abn::is_valid_acn) — ASIC's own export can carry a
+    // data-entry typo, and a mere digit count must not be trusted as a real
+    // ACN pivot.
+    let bad = rec(&REC.replace("081402379", "111111111"));
+    let mut r = ModuleResult::new();
+    emit_banned_org(&bad, "scan", &mut r);
+    assert!(
+        !r.entities.iter().any(|x| x.kind == EntityKind::AbnAcn),
+        "a checksum-invalid ACN must not be emitted as a pivot"
+    );
+    // The organisation finding itself is unaffected.
+    assert!(r.entities.iter().any(|x| x.kind == EntityKind::Organisation));
+}
+
+#[test]
 fn name_matching_requires_all_tokens() {
     let tokens = name_tokens("Australian Business Insurance");
     assert!(record_name_matches(&rec(REC), &tokens));

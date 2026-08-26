@@ -53,6 +53,16 @@ pub(super) fn render_json(store: &Store, sid: &str, redact: bool) -> Result<Stri
             let mut v = serde_json::to_value(e)
                 .map_err(|err| Error::Other(format!("entity serialise: {err}")))?;
             if let serde_json::Value::Object(ref mut m) = v {
+                // Normalise `kind` to a plain string. serde's default
+                // externally-tagged representation renders EntityKind's unit
+                // variants as a bare string ("email") but the Other(String)
+                // catch-all as {"other":"iban"} -- a JSON TYPE that silently
+                // depends on which kind the entity happens to be. Other is
+                // the real representation for IBANs, DIDs, nostr keys, and
+                // more, so this is not an edge case. `to_string()` (the
+                // Display impl) always yields a plain string ("other:iban")
+                // and matches what CSV/GEXF already emit for the same field.
+                m.insert("kind".into(), serde_json::json!(e.kind.to_string()));
                 m.insert("c_effective".into(), serde_json::json!(e.c_effective()));
                 m.insert("source_count".into(), serde_json::json!(e.source_count()));
                 m.insert(
@@ -129,10 +139,24 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
             if let Some(k) = ev.attributes.get("api_key_origin") {
                 key_origins.insert(k.clone());
             }
+            let mut named_a_site = false;
             for sk in ["source", "source_db", "dbname"] {
                 if let Some(v) = ev.attributes.get(sk).filter(|v| !v.is_empty()) {
                     sources.insert(v.clone());
+                    named_a_site = true;
                 }
+            }
+            // Fall back to the MODULE that produced the record. `provider`,
+            // `source`, `source_db` and `dbname` are optional attributes only
+            // the paid providers set, so a scan served entirely by free modules
+            // rendered all three provenance lines as "(none)" — a section whose
+            // whole job is to say where the data came from asserting that
+            // nothing was known, while the evidence tree printed every module
+            // by name a few lines below. `Evidence::source` is documented as
+            // "Module that produced this evidence" and is always populated, so
+            // it is the honest floor for this roll-up.
+            if !named_a_site && !ev.source.is_empty() {
+                sources.insert(ev.source.clone());
             }
         }
     }

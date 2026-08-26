@@ -247,10 +247,58 @@ fn parse_dms(s: &str) -> Option<LatLon> {
         (parse_side(a)?, parse_side(b)?)
     } else if let Some((a, b)) = split_on_hemisphere(s) {
         (parse_side(a)?, parse_side(b)?)
+    } else if let Some(result) = parse_dms_single_prefix_hemisphere(s) {
+        return Some(result);
     } else {
         return parse_dms_halved(s);
     };
 
+    combine(lhs, rhs)
+}
+
+/// Handle the one shape `split_on_hemisphere` cannot delimit: exactly one
+/// PREFIX-style hemisphere letter, with no comma and no second letter to mark
+/// where the other axis begins (`"S33.87 151.21"`). `split_on_hemisphere`
+/// needs a second letter to find that boundary and gives up, and the fallback
+/// `parse_dms_halved` has no concept of hemisphere at all — so without this,
+/// the letter's sign was silently dropped, producing a validated, in-range
+/// coordinate mirrored into the wrong hemisphere with no error.
+///
+/// Halves the numeric tokens exactly like [`parse_dms_halved`], but applies
+/// the lone letter's sign/axis to the FIRST half — the value it prefixes —
+/// via the same [`combine`] axis-pinning convention the two-letter path uses,
+/// instead of discarding it.
+fn parse_dms_single_prefix_hemisphere(s: &str) -> Option<LatLon> {
+    let mut hemis = s.char_indices().filter(|(_, c)| hemisphere(*c).is_some());
+    let (pos, letter) = hemis.next()?;
+    if hemis.next().is_some() {
+        return None; // 2+ letters: split_on_hemisphere already handles this shape
+    }
+    // Must genuinely be a prefix: nothing but whitespace precedes it (a
+    // value-preceded letter is the suffix shape split_on_hemisphere handles).
+    if s[..pos].chars().any(|c| !c.is_whitespace()) {
+        return None;
+    }
+    let (is_lat, neg) = hemisphere(letter)?;
+    let tokens = scan_numbers(s);
+    let n = tokens.len();
+    if n < 2 || !n.is_multiple_of(2) {
+        return None;
+    }
+    let (first_v, first_min, first_sec) = fold_numbers(&tokens[..n / 2])?;
+    let (second_v, second_min, second_sec) = fold_numbers(&tokens[n / 2..])?;
+    let lhs = Side {
+        value: if neg { -first_v } else { first_v },
+        axis_is_lat: Some(is_lat),
+        used_min: first_min,
+        used_sec: first_sec,
+    };
+    let rhs = Side {
+        value: second_v,
+        axis_is_lat: None,
+        used_min: second_min,
+        used_sec: second_sec,
+    };
     combine(lhs, rhs)
 }
 

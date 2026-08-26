@@ -19,6 +19,8 @@ use std::fmt;
 use std::hash::BuildHasher;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::util::url_util::is_tracking_param_key;
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 /// Corroboration boost coefficient (architecture invariant).
@@ -70,7 +72,30 @@ pub const CANDIDATE_CONF: f64 = 0.25;
 /// and fired AU-003 / AU-034. Excluding it means a permutation needs two
 /// *genuine* sources to corroborate, while the derived entity still appears as a
 /// lead in the dossier (its evidence is kept and shown).
-pub const ENRICHMENT_ONLY_SOURCES: &[&str] = &["geo_normalize", "name_intel", "payid"];
+///
+/// `seed` is the operator's own target, recorded as evidence so the subject
+/// anchor is traceable. It is the INPUT to the scan, so counting it as a source
+/// that corroborates the input is a tautology: a live URL scan
+/// (`andersonbushikai.com`, debug bundle 6b2d34664852…) showed the seed URL with
+/// evidence from exactly `search_engines` + `seed` reported as
+/// `source_count=2`, `c_eff=0.99`, VERIFIED — one real observation presented as
+/// two. Because AU-003's floor for most kinds is 2, the seed alone could carry
+/// an entity half-way to a "corroborated by 2 independent source(s)" finding.
+///
+/// `url_extract` derives a `Domain` from a `Url` already in the graph. Its own
+/// module doc states it is "pure offline, zero network … confidence is derived
+/// from the URL's presence in the graph, not from a live check" — the same
+/// derivation-of-a-known-fact as `name_intel`, adding no independent sighting.
+/// In that same scan it was counted among the five "independent sources" AU-003
+/// reported for the apex domain, and among the five "infrastructure sources"
+/// AU-010 listed as confirming it.
+pub const ENRICHMENT_ONLY_SOURCES: &[&str] = &[
+    "geo_normalize",
+    "name_intel",
+    "payid",
+    "seed",
+    "url_extract",
+];
 
 /// True if `source` is a deterministic self-enrichment pass rather than an
 /// independent intelligence source (see [`ENRICHMENT_ONLY_SOURCES`]).
@@ -592,7 +617,15 @@ impl Entity {
             kind,
             value: normalised,
             raw_value: value,
-            confidence: confidence.clamp(0.0, 1.0),
+            // `f64::clamp` returns NaN UNCHANGED, so a non-finite confidence would
+            // slip through and violate the frontier's total-order determinism
+            // (confidence → depth → id) and the saturating `c_effective()` model
+            // (which multiplies through it). Sanitize a non-finite input to 0.0.
+            confidence: if confidence.is_finite() {
+                confidence.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
             corroboration: 1,
             observed_at: unix_now(),
             evidence: Vec::new(),
@@ -1194,13 +1227,34 @@ impl Entity {
         // the moment `other` was NOT itself a candidate — a single non-candidate
         // corroboration is enough, symmetric with the confidence rule.
         let other_is_candidate = other.tags.iter().any(|t| t == crate::core::tags::CANDIDATE);
+        // `derived` marks an entity whose OWN evidence is a deterministic
+        // derivation of the seed (see `ENRICHMENT_ONLY_SOURCES`'s doc),
+        // consulted fresh on every call by `source_count`'s GROUNDING GATE to
+        // require a stricter 2-real-source bar before a promotion pass counts.
+        // Like `candidate` above, it must not be a plain accumulating tag:
+        // wholesale-unioning it let merging in an unrelated, low-value derived
+        // duplicate (contributing NOTHING to real evidence — e.g. a
+        // `name_intel`/`url_extract` restatement) retroactively raise an
+        // ALREADY-grounded entity's gate threshold, dropping its
+        // classification tier purely from absorbing MORE evidence — violating
+        // this file's own "a tier can only ever rise as merges add
+        // corroboration" invariant. Fixed the same way as `candidate`, but as
+        // a logical AND rather than OR: exclude it from the general union
+        // below, then keep it only when BOTH sides carried it, so a single
+        // genuinely-independent (non-derived) side graduates the merged
+        // entity out of the stricter gate for good — symmetric with a single
+        // non-candidate side clearing quarantine.
+        let other_is_derived = other.tags.iter().any(|t| t == "derived");
         for t in other.tags {
-            if t != crate::core::tags::CANDIDATE {
+            if t != crate::core::tags::CANDIDATE && t != "derived" {
                 self.tag(t);
             }
         }
         if !other_is_candidate {
             self.tags.retain(|t| t != crate::core::tags::CANDIDATE);
+        }
+        if !other_is_derived {
+            self.tags.retain(|t| t != "derived");
         }
     }
 }
@@ -1487,75 +1541,6 @@ impl fmt::Write for HashWrite<'_> {
         self.0.update(s.as_bytes());
         Ok(())
     }
-}
-
-/// Pure-tracking URL query-parameter keys that are safe to drop during
-/// normalisation so two discoveries of the same resource — one with a tracking
-/// suffix, one without — hash to the same UID and corroborate instead of
-/// fragmenting into two single-source entities.
-///
-/// Curated conservatively from the widely-used ClearURLs / Brave / Firefox
-/// strip-lists: only params that are *unambiguously* tracking are listed.
-/// Resource-identifying params (YouTube `v`, generic `id`/`p`/`q`/`page`) are
-/// deliberately ABSENT and always preserved — dropping one would alias two
-/// genuinely different pages into one UID (a false merge), the opposite and
-/// worse failure. The `utm_*` family is matched by prefix in
-/// [`is_tracking_param_key`] rather than enumerated here.
-const URL_TRACKING_PARAMS: &[&str] = &[
-    // Google / Ads
-    "gclid",
-    "gclsrc",
-    "dclid",
-    "gbraid",
-    "wbraid",
-    "_ga",
-    "_gl",
-    // Facebook / Instagram / Meta
-    "fbclid",
-    "fb_action_ids",
-    "fb_action_types",
-    "fb_ref",
-    "fb_source",
-    "igshid",
-    "igsh",
-    "mibextid",
-    // Microsoft / Bing, Twitter/X, Yandex
-    "msclkid",
-    "twclid",
-    "ref_src",
-    "ref_url",
-    "yclid",
-    // Email / marketing automation
-    "mc_cid",
-    "mc_eid",
-    "mkt_tok",
-    "_hsenc",
-    "_hsmi",
-    "hsctatracking",
-    "vero_id",
-    "vero_conv",
-    "oly_anon_id",
-    "oly_enc_id",
-    "wickedid",
-    // Misc analytics
-    "spm",
-    "scm",
-    "s_kwcid",
-    "_openstat",
-    "icid",
-];
-
-/// True when a query-parameter key is pure tracking and safe to drop during URL
-/// normalisation: the `utm_*` family (case-insensitive prefix) or an exact
-/// (case-insensitive) match in [`URL_TRACKING_PARAMS`]. Uses `get(..4)` rather
-/// than slicing so a non-ASCII key can never panic on a char boundary.
-fn is_tracking_param_key(key: &str) -> bool {
-    if key.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("utm_")) {
-        return true;
-    }
-    URL_TRACKING_PARAMS
-        .iter()
-        .any(|p| key.eq_ignore_ascii_case(p))
 }
 
 /// Canonicalise a URL query string for dedup: drop pure-tracking params

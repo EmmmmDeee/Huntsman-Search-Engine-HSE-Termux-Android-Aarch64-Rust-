@@ -279,7 +279,15 @@ impl KeyPool {
         for offset in 0..len {
             let i = (*idx + offset) % len;
             let entry = &entries[i];
-            if !entry.is_usable() || exclude.contains(&entry.value) {
+            // Never authenticate HSE's own request with an auto-HARVESTED key (one
+            // discovered in scanned content — a crawled page, an HTTP header, a
+            // WHOIS/DNS field, a breach record). Such a key is attacker-plantable:
+            // an adversary who seeds a valid-looking token on a page HSE crawls
+            // could otherwise make the engine adopt and use it, exposing the
+            // investigation's targets to the key's owner. Harvested keys remain
+            // pooled as portfolio intelligence but are not auth-eligible; reuse
+            // requires a deliberate `hse keys add` (see `KeyEntry::is_harvested`).
+            if !entry.is_usable() || entry.is_harvested() || exclude.contains(&entry.value) {
                 continue;
             }
             let rank = entry.selection_rank(now);

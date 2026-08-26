@@ -578,6 +578,44 @@ fn au034_links_username_to_email_by_shared_handle() {
 }
 
 #[test]
+fn au034_and_au076_byte_vs_char_handle_floor_does_not_bridge_a_short_cjk_name() {
+    // Regression (critical audit): MIN_HANDLE_LEN's floor (rule_au_034) and the
+    // matching AU-076 checks were compared against str::len() -- UTF-8 BYTES --
+    // not chars(). "李明" is 2 characters but 6 bytes, so it cleared the ">= 4"
+    // gate meant to exclude short/common handles. Two unrelated people who
+    // both happen to share this common Chinese name (like "John Smith") would
+    // otherwise be bridged into one identity by a coincidental short-name
+    // match -- the exact false-positive the length floor exists to prevent,
+    // and the identical bug class already fixed for the sibling AU-123 rule
+    // (see au123_silent_on_a_short_non_latin_stem_that_would_clear_a_byte_length_check)
+    // but never propagated here.
+    use super::rules::rule_au_076_email_username_localpart_bridge;
+    assert_eq!("李明".chars().count(), 2);
+    assert_eq!("李明".len(), 6); // bytes -- would clear a ">= 4" byte check
+
+    let entities = vec![
+        username("李明", &["github_user"]),
+        email("李明@gmail.com", &["hibp"]),
+    ];
+    let r = rule_au_034_handle_reuse_identity(&RuleContext::new(&entities), "scan-test", 0);
+    assert!(
+        r.is_empty(),
+        "a 2-character handle must not bridge identities, AU-034 fired: {r:?}"
+    );
+
+    let mut email_e = Entity::new(EntityKind::Email, "李明@gmail.com", 0.9, "s");
+    email_e.add_evidence(Evidence::new("hibp", "breach hit".to_string()));
+    let mut uname_e = Entity::new(EntityKind::Username, "李明", 0.8, "s");
+    uname_e.add_evidence(Evidence::new("github_user", "profile".to_string()));
+    let r2 =
+        rule_au_076_email_username_localpart_bridge(&RuleContext::new(&[email_e, uname_e]), "s", 0);
+    assert!(
+        r2.is_empty(),
+        "a 2-character local-part must not bridge identities, AU-076 fired: {r2:?}"
+    );
+}
+
+#[test]
 fn au034_handle_match_is_separator_insensitive_and_strips_plus_tag() {
     // `jordanmeyers` ↔ `jordan.meyers+news@x.com`: dots removed and the
     // Gmail `+tag` stripped, so the canonical handles match.
@@ -10624,6 +10662,31 @@ fn au081_bare_transposition_is_a_medium_lead_not_a_high_merge() {
 }
 
 #[test]
+fn au081_hyphenated_surname_does_not_collide_with_unrelated_three_token_name() {
+    use super::rules::rule_au_081_canonical_person_name_match;
+    // Regression: the rule used to tokenise on '-' and '.' as if they were word
+    // separators, so a hyphenated compound surname ("Smith-Jones") reduced to
+    // the SAME sorted token set as an unrelated space-separated name
+    // ("Smith Jones") — and unlike a bare reordering, `is_bare_transposition`
+    // did not catch this: the tokens' ORIGINAL order was identical too (the
+    // hyphen split lined up with the space split), so it fired as a full,
+    // undamped match. The shared `name_word_tokens` tokeniser preserves the
+    // hyphen inside its token, so the two names no longer share a canonical
+    // form at all — same defect class, same fix, as
+    // `core::resolve::canonical_name`'s identical regression test.
+    let mut breach = Entity::new(EntityKind::Person, "Anna Smith-Jones", 0.8, "s");
+    breach.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
+    let mut social = Entity::new(EntityKind::Person, "Anna Smith Jones", 0.75, "s");
+    social.add_evidence(Evidence::new("proxycurl", "LinkedIn profile".to_string()));
+    let r = rule_au_081_canonical_person_name_match(&RuleContext::new(&[breach, social]), "s", 0);
+    assert!(
+        r.is_empty(),
+        "a hyphenated compound surname must not collide with an unrelated \
+         space-separated name: {r:?}"
+    );
+}
+
+#[test]
 fn au081_tool_derived_name_is_not_independent_corroboration() {
     use super::rules::rule_au_081_canonical_person_name_match;
     // The manufactured-corroboration hole: one Person is a REAL record from a
@@ -11088,5 +11151,65 @@ fn a_normally_quarantined_scan_does_not_trip_the_alarm() {
     assert!(
         examined * QUARANTINE_ALARM_RATIO >= ents.len(),
         "90% examined must not raise an alarm"
+    );
+}
+
+#[test]
+fn seed_and_url_extract_do_not_manufacture_infra_consensus_or_cross_source_corroboration() {
+    // Regression (live andersonbushikai.com URL scan, debug bundle
+    // 6b2d34664852…): the apex domain's evidence chain was `url_extract` (the
+    // offline restatement of the seed URL's own host) plus `dns_intel`,
+    // `mnemonic_pdns`, `waf_detect`, `webserver_banner` — four REAL lookups.
+    // AU-003 reported "corroborated by 5 independent source(s)" and AU-010
+    // reported "confirmed by 5 infrastructure sources: dns_intel,
+    // mnemonic_pdns, url_extract, waf_detect, webserver_banner" — both
+    // one-too-many, because url_extract restates a fact already in the graph
+    // rather than observing it independently.
+    use crate::core::test_support::InMemoryStore;
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let sid = "seed-infra-test";
+
+    let mut domain = Entity::new(EntityKind::Domain, "example.com", 0.92, sid);
+    for src in [
+        "url_extract",
+        "dns_intel",
+        "mnemonic_pdns",
+        "waf_detect",
+        "webserver_banner",
+    ] {
+        domain.add_evidence(Evidence::new(src, "seen"));
+    }
+    store.upsert_entity(&domain).expect("should succeed");
+
+    let corr = Correlator::new(Arc::clone(&store));
+    let hits = corr.run(sid).expect("should succeed");
+
+    let au003 = hits
+        .iter()
+        .find(|c| c.rule_id == "AU-003")
+        .expect("4 real sources still clears AU-003's floor");
+    assert!(
+        au003
+            .description
+            .contains("corroborated by 4 independent source"),
+        "url_extract must not be counted as a 5th independent source, got: {}",
+        au003.description
+    );
+
+    let au010 = hits
+        .iter()
+        .find(|c| c.rule_id == "AU-010")
+        .expect("4 real infrastructure sources still clears AU-010's floor");
+    assert!(
+        !au010.description.contains("url_extract"),
+        "url_extract must not be listed as an infrastructure source, got: {}",
+        au010.description
+    );
+    assert!(
+        au010
+            .description
+            .contains("confirmed by 4 infrastructure sources"),
+        "got: {}",
+        au010.description
     );
 }
