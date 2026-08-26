@@ -10150,6 +10150,31 @@ fn au081_bare_transposition_is_a_medium_lead_not_a_high_merge() {
 }
 
 #[test]
+fn au081_hyphenated_surname_does_not_collide_with_unrelated_three_token_name() {
+    use super::rules::rule_au_081_canonical_person_name_match;
+    // Regression: the rule used to tokenise on '-' and '.' as if they were word
+    // separators, so a hyphenated compound surname ("Smith-Jones") reduced to
+    // the SAME sorted token set as an unrelated space-separated name
+    // ("Smith Jones") — and unlike a bare reordering, `is_bare_transposition`
+    // did not catch this: the tokens' ORIGINAL order was identical too (the
+    // hyphen split lined up with the space split), so it fired as a full,
+    // undamped match. The shared `name_word_tokens` tokeniser preserves the
+    // hyphen inside its token, so the two names no longer share a canonical
+    // form at all — same defect class, same fix, as
+    // `core::resolve::canonical_name`'s identical regression test.
+    let mut breach = Entity::new(EntityKind::Person, "Anna Smith-Jones", 0.8, "s");
+    breach.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
+    let mut social = Entity::new(EntityKind::Person, "Anna Smith Jones", 0.75, "s");
+    social.add_evidence(Evidence::new("proxycurl", "LinkedIn profile".to_string()));
+    let r = rule_au_081_canonical_person_name_match(&RuleContext::new(&[breach, social]), "s", 0);
+    assert!(
+        r.is_empty(),
+        "a hyphenated compound surname must not collide with an unrelated \
+         space-separated name: {r:?}"
+    );
+}
+
+#[test]
 fn au081_tool_derived_name_is_not_independent_corroboration() {
     use super::rules::rule_au_081_canonical_person_name_match;
     // The manufactured-corroboration hole: one Person is a REAL record from a

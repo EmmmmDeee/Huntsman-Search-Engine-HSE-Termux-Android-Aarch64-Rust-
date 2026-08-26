@@ -20,6 +20,7 @@
 //!   * **Hyphenated surname** — "Smith-Jones" yields merged and per-part shapes.
 
 use crate::core::confidence;
+use crate::util::canonical::GEN_SUFFIXES;
 
 // ── Output caps ──────────────────────────────────────────────────────────────
 pub(super) const MAX_USERNAMES: usize = 48;
@@ -145,11 +146,9 @@ const HONORIFICS: &[&str] = &[
     "det", "insp", "cpl",
 ];
 
-/// Trailing generational / professional suffixes stripped from the last token.
-const GEN_SUFFIXES: &[&str] = &[
-    "jr", "sr", "ii", "iii", "iv", "v", "vi", "esq", "phd", "md", "dds", "jd", "mba", "rn", "np",
-    "do", "psyd",
-];
+// Trailing generational / professional suffixes stripped from the last token:
+// see `crate::util::canonical::GEN_SUFFIXES`, shared with `core::resolve` so a
+// name that is "just a suffix" to one is never "a given name" to the other.
 
 // ── Phonetic / nickname alias table ──────────────────────────────────────────
 

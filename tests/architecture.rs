@@ -243,6 +243,21 @@ fn core_does_not_import_util_directly() {
                 // `util::oui`/`util::abn`. AU-118 uses it to flag a phishing /
                 // brand-impersonation domain standing up beside the genuine one.
                 && !line.contains("util::confusable")
+                // Pure, offline canonical-identity-form helpers (Gmail dot/
+                // `+tag` mailbox folding, the shared generational-suffix
+                // list; no I/O, no deps) — same leaf category as
+                // `util::confusable`/`util::abn`. `core::resolve` calls this
+                // instead of keeping its own copy so its merge-suggestion
+                // pass and `modules::email_canonical`'s enrichment pass can
+                // never silently disagree on what counts as one mailbox.
+                && !line.contains("util::canonical")
+                // Pure, offline URL tracking-param denylist + predicate (no
+                // I/O, no deps) — same leaf category as `util::canonical`
+                // immediately above. `core::entity`'s `Url` UID normaliser
+                // calls this instead of keeping its own copy so it can never
+                // silently drift from `modules::search_engines`'s SERP-dedup
+                // key, which strips the same params for the same reason.
+                && !line.contains("util::url_util::is_tracking_param_key")
                 && !line.contains("util::preflight")
                 && !line.contains("util::keys::signup_hint")
                 && !line.contains("util::oathnet::reset_budget")
