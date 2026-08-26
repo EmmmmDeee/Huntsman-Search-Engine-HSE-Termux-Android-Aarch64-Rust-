@@ -344,6 +344,19 @@ pub fn normalise_phone(s: &str) -> Option<String> {
     if digits.starts_with("0061") {
         return validated(format!("+{}", &digits[2..]));
     }
+    // AU international without the leading `+`: `61` + a 9-digit national
+    // number, gated on the same ACMA national-significant-number lead
+    // (2/3/4/5/7/8) the 9-digit and leading-`0` branches below already
+    // enforce. Without this gate, a foreign number that happens to start
+    // with "61" (e.g. a French local number's international-without-`+`
+    // form) whose national lead is 1/6/9 would be fabricated into a
+    // non-existent `+61` AU number.
+    if let Some(nat) = digits.strip_prefix("61")
+        && nat.len() == 9
+        && matches!(nat.as_bytes()[0], b'2' | b'3' | b'4' | b'5' | b'7' | b'8')
+    {
+        return validated(format!("+61{nat}"));
+    }
     // The second digit must be a real ACMA AU national-significant-number
     // lead (2/3/4/5/7/8), matching the gate the 9-digit branch below already
     // enforces. Without this, any 10-digit string starting with `0` —
@@ -371,7 +384,14 @@ pub fn normalise_phone(s: &str) -> Option<String> {
     {
         return validated(format!("+61{digits}"));
     }
-    if digits.starts_with("1300") || digits.starts_with("1800") {
+    // AU non-geographic service numbers (freephone/local-rate) are EXACTLY 10
+    // national digits per the ACMA Numbering Plan — the same exact-length gate
+    // `au_phone_line_type` below enforces. Without it, a malformed value that
+    // merely STARTS WITH "1300"/"1800" (e.g. a truncated 7-digit scrape, or an
+    // over-long 13-digit garbage string) still cleared the generic 10-15-digit
+    // E.164 floor once "+61" was prepended, fabricating a non-existent AU
+    // service number instead of correctly refusing to normalise it.
+    if digits.len() == 10 && (digits.starts_with("1300") || digits.starts_with("1800")) {
         return validated(format!("+61{digits}"));
     }
     None
