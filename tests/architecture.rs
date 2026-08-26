@@ -4230,7 +4230,15 @@ fn modules_do_not_collapse_a_non_2xx_into_an_empty_result() {
     // the same negative — but unlike the probe helpers it makes no such claim in a
     // doc comment. Left as-is pending a maintainer decision rather than changed on a
     // guess; listed here so the exemption is visible instead of silently unscanned.
-    const EXEMPT: &[&str] = &["exif_geo"];
+    //
+    // `github_commits` degrades a non-2xx GitHub *search* to an empty result by
+    // an explicit, reasoned decision recorded at the call site ("best-effort and
+    // free: a 403/429 means rate-limited, not a scan error"), and it still feeds
+    // the status to the key pool via `note_keyed_error` so a dead token is never
+    // silent. Whether that carve-out should also cover 5xx is a maintainer call,
+    // not an unambiguous defect — listed so the exemption is visible instead of
+    // being hidden by a matcher that simply could not see it.
+    const EXEMPT: &[&str] = &["exif_geo", "github_commits"];
 
     let mut violations = Vec::new();
     let mut scanned = 0usize;
@@ -4257,9 +4265,26 @@ fn modules_do_not_collapse_a_non_2xx_into_an_empty_result() {
                     continue;
                 }
                 scanned += 1;
-                // The collapse is the `return Ok(..)` in the guarded block; a
-                // `return Err(..)` or a propagating `?` on the next lines is correct.
-                let body: String = lines[i + 1..lines.len().min(i + 3)].concat();
+                // The collapse is the `return Ok(..)` anywhere in the guarded
+                // block; a `return Err(..)` or a propagating `?` is correct.
+                //
+                // Scan the WHOLE block by brace depth rather than a fixed
+                // two-line window. The window is why this lint could not see
+                // `reddit_user`, whose guard logged the status across four lines
+                // before folding a 403 into `Ok(None)` on the fifth — the exact
+                // defect this test exists to catch, sitting in-tree and green.
+                // A bounded walk costs nothing and cannot be defeated by an
+                // intervening comment or log line.
+                let mut depth = 0i32;
+                let mut body = String::new();
+                for line in &lines[i..lines.len().min(i + 40)] {
+                    body.push_str(line);
+                    depth += line.matches('{').count() as i32;
+                    depth -= line.matches('}').count() as i32;
+                    if depth <= 0 && !body.is_empty() {
+                        break;
+                    }
+                }
                 if body.contains("return Ok(") {
                     violations.push(format!("{}:{}", path.display(), i + 1));
                 }

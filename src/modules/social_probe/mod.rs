@@ -375,11 +375,28 @@ impl Module for SocialProbe {
             )
             .await;
 
+            // A probe that did not answer must not be counted as a definitive
+            // "no such handle here".
+            //
             // Code 0 = curl gave no definitive answer (couldn't connect / blocked
-            // / no egress). It can never be a hit (`exists_codes` are real HTTP
-            // statuses), so count it as inconclusive rather than letting it fall
-            // through as a definitive not-found.
-            if code == 0 {
+            // / no egress); it can never be a hit, since `exists_codes` are real
+            // HTTP statuses, and the classifier maps it to `Error` like any other
+            // non-answer. That case was already handled.
+            //
+            // A real-but-refusing status needs the same treatment and did not get
+            // it: a 403 WAF challenge, a 429 throttle or a 5xx outage is not in
+            // `exists_codes`, so it silently fell through as a *definitive*
+            // "no such handle here" and never reached `inconclusive_sweep`. Only
+            // curl-level failure was counted, so a platform that answers every
+            // probe with a challenge page looked like a confirmed absence.
+            // `classify_non_matching_status` is the same policy the two
+            // `util::probe` enumerators use.
+            let refused = !platform.exists_codes.contains(&code)
+                && matches!(
+                    crate::util::probe::classify_non_matching_status(code),
+                    crate::util::probe::ProbeResult::Error
+                );
+            if refused {
                 inconclusive_probes += 1;
             }
 
