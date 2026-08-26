@@ -1,6 +1,16 @@
 # See-Know Enterprise Features Guide
 **Status:** Phase 2.4 (To-Be Implemented)
 
+> **⚠️ Not implemented — never built.** The three `/enterprise/discord/*`
+> endpoints this guide documents are Enterprise-plan-gated and, per
+> `docs/SEEKNOW_SETUP.md`'s endpoint reference table, were never built: no
+> code in `src/modules/see_know/` calls them. Their 5-credit prices below are
+> real (tracked in `ENDPOINT_COSTS`, `src/util/see_know/config.rs`, for
+> budgeting purposes and CI-checked against this doc), but the curl-shaped
+> examples, JSON response schemas, and "automatically detects enterprise
+> tier" language that follow describe a dispatch path that does not exist
+> yet — nothing in this guide can currently be exercised against a live scan.
+
 ## Overview
 This guide covers enterprise-only features in the See-Know module, including Discord history export, raw message access, and advanced reporting.
 

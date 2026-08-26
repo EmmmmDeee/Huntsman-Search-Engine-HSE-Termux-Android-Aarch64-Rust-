@@ -147,4 +147,5 @@ self-heals this automatically before it starts building.
 **Low RAM (< 1.5 GB)**
 Set `CARGO_BUILD_JOBS=1` before running the installer to limit parallel compilation.
 
-See [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) for a full list of known issues.
+For SeekNow API errors (not install/runtime issues), see
+[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
