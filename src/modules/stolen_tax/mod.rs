@@ -121,6 +121,9 @@ impl Module for StolenTax {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
 
+        let Some(initial_key) = ctx.key_opt("HUNTSMAN_STOLEN_TAX_KEY") else {
+            return Ok(result);
+        };
         let query_param = crate::util::http::urlencode(&target.value);
         let endpoint = match target.kind {
             TargetKind::Email => "email",
@@ -129,26 +132,43 @@ impl Module for StolenTax {
             TargetKind::Organisation => "org",
             _ => return Ok(result),
         };
-        let url = format!("{API_BASE}/{endpoint}?query={query_param}");
 
-        let Some(response) = crate::util::http::fetch_keyed_json::<StolenTaxResponse>(
+        // Key cascade via the shared primitive. Stolen.tax reports a dead or
+        // exhausted key as an in-body `success:false` + `error` message on an
+        // HTTP 200 — the same shape as ipqs/criminal_ip — so a status-only
+        // cascade cannot see it: without this, a burned key read as a clean
+        // empty result on every scan instead of rotating to the next pooled
+        // credential or surfacing an operator-visible failure.
+        let Some(response): Option<StolenTaxResponse> = crate::util::http::keyed_cascade_json(
             ctx,
             SRC,
-            &url,
-            "HUNTSMAN_STOLEN_TAX_KEY",
-            "Api-Key",
+            initial_key,
+            &[],
+            |key| {
+                let url = format!("{API_BASE}/{endpoint}?query={query_param}");
+                ctx.http.get(url).header("Api-Key", key)
+            },
+            |parsed: &StolenTaxResponse| {
+                if parsed.success {
+                    return crate::util::http::BodyVerdict::Accept;
+                }
+                let msg = parsed.error.as_deref().unwrap_or_default();
+                if crate::util::http::is_key_or_quota_message(msg) {
+                    return crate::util::http::BodyVerdict::KeyFailure {
+                        code: 401,
+                        detail: Some(msg.to_string()),
+                    };
+                }
+                if !msg.is_empty() {
+                    tracing::debug!("stolen_tax API error: {msg}");
+                }
+                crate::util::http::BodyVerdict::Absent
+            },
         )
         .await?
         else {
             return Ok(result);
         };
-
-        if !response.success {
-            if let Some(err) = response.error {
-                tracing::debug!("stolen_tax API error: {}", err);
-            }
-            return Ok(result);
-        }
 
         if let Some(data) = response.data {
             result.entities = build_entities(&data, &target.value, &ctx.scan_id);
