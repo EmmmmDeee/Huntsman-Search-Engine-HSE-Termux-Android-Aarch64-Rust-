@@ -579,8 +579,9 @@ diagnostic bundle") for the complete engine state in one file.
 
 | Document | Content |
 |----------|---------|
-| [`docs/INSTALL.md`](docs/INSTALL.md) | All install paths + Termux quirks |
+| [`docs/INSTALL.md`](docs/INSTALL.md) | All install paths + Termux quirks + install/runtime troubleshooting |
 | [`docs/RAILWAY.md`](docs/RAILWAY.md) | Deploying to Railway — Volume setup, `HSE_AUTH_TOKEN`, health check, single-instance constraint |
+| [`docs/AUTONOMY.md`](docs/AUTONOMY.md) | Running HSE unattended: `hse-bg`/`hse-watch`, boot persistence, scheduled sweeps |
 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | SeekNow API error troubleshooting (connectivity, auth, budget, rate limits) — for install/runtime issues see `docs/INSTALL.md`'s own Troubleshooting section instead |
 | [`docs/OSINT_API_REFERENCE.md`](docs/OSINT_API_REFERENCE.md) | External OSINT-provider API reference (free tiers, key shapes, integration status) |
 | [`docs/SEEKNOW_SETUP.md`](docs/SEEKNOW_SETUP.md) | SeekNow (see-know.ru) API setup + full endpoint reference |
