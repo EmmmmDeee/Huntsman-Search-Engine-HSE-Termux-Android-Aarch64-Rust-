@@ -92,9 +92,14 @@ that still feeds the key pool).
 +22 tests; **6904 pass / 0 fail**. Falsified: with the classifier reverted to
 always-NotFound and `Proof::is_confirmed` to always-true, 5 of the new tests fail
 and pass again with the fix restored.
-STATUS AT RUN END: pushed as 1f47792f3; draft PR #472 open and its body rewritten
-to cover both commits; CI run 32939531183 was IN PROGRESS at exit (gitleaks and
-install.sh already success). **Next run: confirm #472's CI and merge state first.**
+STATUS AT RUN END: pushed as 1f47792f3; draft PR #472 open, body rewritten to
+cover both commits; **CI FULLY GREEN on 1f47792f3 — all 8 checks success**:
+Check & test (Linux x86_64 stable), MSRV (1.88), Build (aarch64-linux-android
+Termux target), install.sh syntax (bash + shellcheck), rust-clippy, clippy,
+gitleaks, cargo bench --test. That covers all four checks this container could
+not run locally, so the changeset is fully verified end to end.
+Awaiting the babysitter to mark ready + auto-merge.
+**Next run: confirm #472 merged; if still open and red, fix before new work.**
 
 ## MATERIAL GAPS — confirmed, NOT yet fixed (ranked)
 
