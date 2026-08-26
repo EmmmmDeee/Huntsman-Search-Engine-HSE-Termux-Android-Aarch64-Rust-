@@ -434,45 +434,6 @@ pub fn nearest_au_locality(lat: f64, lon: f64) -> Option<(&'static str, &'static
         .min_by(|a, b| a.2.total_cmp(&b.2))
 }
 
-/// Longest-match lookup of `tokens` (e.g. a hyphenated URL slug already split on
-/// `-`, in order) against [`AU_LOCALITY_ANCHORS`]' names. Tries windows of the
-/// trailing tokens from widest (bounded by `max_window`) down to a single
-/// token, so a genuine multi-word match wins over an accidental single-word
-/// one, and returns how many trailing tokens the FIRST (widest) match
-/// consumed — or `None` if no window matches. Matching is case-insensitive
-/// and ignores a parenthetical qualifier in the anchor's own name (so
-/// `"Sunshine Coast (Maroochydore)"` matches the two tokens `sunshine`,
-/// `coast`).
-///
-/// Exists because a naive single-trailing-token suburb heuristic truncates
-/// multi-word AU place names — Gold Coast, Sunshine Coast, Port Macquarie,
-/// Alice Springs, … — to their last word only.
-///
-/// ```
-/// use huntsman_search_engine::util::geo::au_locality_match_len;
-///
-/// // "jane-smith-gold-coast-xy12" split on '-', trailing id already stripped.
-/// assert_eq!(au_locality_match_len(&["jane", "smith", "gold", "coast"], 3), Some(2));
-/// // A plain single-word capital still matches at window 1.
-/// assert_eq!(au_locality_match_len(&["jane", "smith", "brisbane"], 3), Some(1));
-/// // No AU locality anywhere in the trailing window → no match.
-/// assert_eq!(au_locality_match_len(&["jane", "smith", "nowhereville"], 3), None);
-/// ```
-#[must_use]
-pub fn au_locality_match_len(tokens: &[&str], max_window: usize) -> Option<usize> {
-    let max_window = max_window.min(tokens.len());
-    (1..=max_window).rev().find(|&window| {
-        let candidate = tokens[tokens.len() - window..].join(" ");
-        AU_LOCALITY_ANCHORS.iter().any(|&(name, ..)| {
-            name.split('(')
-                .next()
-                .unwrap_or(name)
-                .trim()
-                .eq_ignore_ascii_case(&candidate)
-        })
-    })
-}
-
 /// Tag `entity` with its Australian state and `country:AU` when `(lat, lon)`
 /// falls inside an AU state/territory; a no-op otherwise. Coordinate-emitting
 /// modules apply this exact AU-relevance pair (`au-state:{STATE}` + `country:AU`)

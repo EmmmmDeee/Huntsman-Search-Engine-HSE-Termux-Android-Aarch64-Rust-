@@ -8052,6 +8052,29 @@ fn au_058_non_real_estate_url_does_not_fire() {
 }
 
 #[test]
+fn au_058_ratemyagent_url_extracts_multi_word_suburb() {
+    use super::rules::rule_au_058_professional_profile_geo;
+
+    let ents = vec![{
+        let mut e = Entity::new(
+            EntityKind::Url,
+            "https://www.ratemyagent.com.au/real-estate-agent/haigen-bamford-gold-coast-as105/",
+            0.50,
+            "scan",
+        );
+        e.add_evidence(Evidence::new("social_probe", "profile found".to_string()));
+        e
+    }];
+    let out = rule_au_058_professional_profile_geo(&RuleContext::new(&ents), "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert!(
+        out[0].description.contains("gold coast"),
+        "must extract the full two-word suburb, not just its last word: {}",
+        out[0].description
+    );
+}
+
+#[test]
 fn au_058_below_confidence_threshold_does_not_fire() {
     use super::rules::rule_au_058_professional_profile_geo;
 

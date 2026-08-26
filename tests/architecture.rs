@@ -354,13 +354,6 @@ fn core_does_not_import_util_directly() {
                 // anchor set; no I/O), same leaf category as `au_state_for_coords`.
                 // AU-099 uses it to label a bare coordinate with a human locality.
                 && !line.contains("util::geo::nearest_au_locality")
-                // Pure, dependency-free longest-match lookup of a token sequence
-                // against the same curated AU-locality anchor set `nearest_au_locality`
-                // reads (no I/O), same leaf category. AU-058 uses it to recover a
-                // multi-word AU suburb/market name (Gold Coast, Sunshine Coast, …)
-                // from a hyphenated profile-URL slug instead of truncating to the
-                // last token.
-                && !line.contains("util::geo::au_locality_match_len")
                 // Pure, dependency-free great-circle distance (haversine; no I/O,
                 // no deps), same leaf category as `nearest_au_locality`. The
                 // multi-source location-corroboration scorer
@@ -383,6 +376,16 @@ fn core_does_not_import_util_directly() {
                 // (no I/O, no network). The engine's address_to_coords_pass uses
                 // it to convert Address entities into Coordinates for geo correlation.
                 && !line.contains("util::city_coords::city_coords")
+                // Pure, dependency-free offline AU-locality exact-match lookup
+                // (no I/O, no network), same leaf category as `city_coords`
+                // immediately above — it reuses the identical `CITIES` table,
+                // just as an exact-phrase membership test rather than a
+                // free-text address geocoder. AU-058 uses it to disambiguate a
+                // multi-word suburb (Gold Coast, Sunshine Coast, Alice
+                // Springs, …) embedded in a ratemyagent.com.au URL slug, where
+                // hyphen-splitting alone can't tell an elastic agent-name
+                // prefix from a multi-word suburb.
+                && !line.contains("util::city_coords::is_tabulated_au_city")
                 // Pure, dependency-free offline surname-distinctiveness heuristic
                 // (a small embedded common-surname set; no state, no I/O), same leaf
                 // category as `address_au::locality_key`. `core::leads` uses it to

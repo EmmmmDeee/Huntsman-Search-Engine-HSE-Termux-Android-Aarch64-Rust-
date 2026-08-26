@@ -605,33 +605,47 @@ mod tests {
     }
 
     #[test]
-    fn extract_ratemyagent_suburb_keeps_multi_word_au_markets_whole() {
-        // OD-18: a single-trailing-token heuristic truncates prominent
-        // multi-word ratemyagent.com.au markets to their last word only
-        // ("gold coast" -> "coast"). The AU-locality gazetteer lookup must
-        // recover the full name whenever the elastic <name> prefix happens to
-        // be exactly two tokens (the failure mode's precondition).
+    fn extract_ratemyagent_suburb_recognises_multi_word_au_suburbs() {
+        // Gold Coast, Sunshine Coast and Alice Springs are all prominent
+        // ratemyagent.com.au markets — a two-token suburb must not truncate to
+        // its last word alone ("coast", not "gold coast").
         assert_eq!(
-            extract_ratemyagent_suburb("https://x/real-estate-agent/jane-smith-gold-coast-xy12/"),
+            extract_ratemyagent_suburb(
+                "https://www.ratemyagent.com.au/real-estate-agent/john-smith-gold-coast-12345/"
+            ),
             Some("gold coast".to_string())
         );
         assert_eq!(
             extract_ratemyagent_suburb(
-                "https://x/real-estate-agent/jane-smith-sunshine-coast-xy12/"
+                "https://www.ratemyagent.com.au/real-estate-agent/jane-doe-sunshine-coast-x9z12/"
             ),
             Some("sunshine coast".to_string())
         );
         assert_eq!(
             extract_ratemyagent_suburb(
-                "https://x/real-estate-agent/jane-smith-port-macquarie-xy12/"
-            ),
-            Some("port macquarie".to_string())
-        );
-        assert_eq!(
-            extract_ratemyagent_suburb(
-                "https://x/real-estate-agent/jane-smith-alice-springs-xy12/"
+                "https://www.ratemyagent.com.au/real-estate-agent/pat-lee-alice-springs-ab123/"
             ),
             Some("alice springs".to_string())
+        );
+        // An elastic single-token <name> ahead of a real two-word suburb must
+        // still resolve the full suburb, not just its last word.
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://www.ratemyagent.com.au/real-estate-agent/soloname-port-augusta-z1/"
+            ),
+            Some("port augusta".to_string())
+        );
+        // Port Macquarie is one of the four markets this defect's own
+        // description names, but CITIES' NSW-regional block did not carry it
+        // until this was discovered mid-merge (see
+        // is_tabulated_au_city_recognises_port_macquarie in city_coords) —
+        // without that entry this case silently fell back to the last-token
+        // heuristic ("macquarie", not "port macquarie").
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://www.ratemyagent.com.au/real-estate-agent/jane-smith-port-macquarie-xy12/"
+            ),
+            Some("port macquarie".to_string())
         );
     }
 }
