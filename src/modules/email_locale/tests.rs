@@ -156,3 +156,61 @@ use super::*;
             addr1.evidence
         );
     }
+
+    #[tokio::test]
+    async fn two_accounts_sharing_a_local_part_across_domains_both_survive_the_merge() {
+        // Finding (cycle 35): the evidence summary keyed only on the local-part
+        // text (`"Email local part '{local}' matches ..."`), omitting the domain.
+        // Two DIFFERENT accounts that happen to spell the local part identically
+        // but differ only in domain — the same person's own two mailboxes, or two
+        // unrelated people who spell a Swedish surname the same way — produced a
+        // byte-identical summary and collapsed onto ONE evidence entry on merge,
+        // silently losing a genuinely independent corroborating signal.
+        let (bus, _rx) = tokio::sync::broadcast::channel(1);
+        let ctx = ModuleContext {
+            scan_id: "s".into(),
+            bus,
+            http: reqwest::Client::new(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+
+        let r1 = EmailLocale
+            .process(
+                &Target::new(TargetKind::Email, "erik.hansson@company-a.example"),
+                &ctx,
+            )
+            .await
+            .expect("should succeed");
+        let r2 = EmailLocale
+            .process(
+                &Target::new(TargetKind::Email, "erik.hansson@company-b.example"),
+                &ctx,
+            )
+            .await
+            .expect("should succeed");
+
+        let mut addr1 = r1
+            .entities
+            .into_iter()
+            .find(|e| e.kind == EntityKind::Address && e.has_tag("locale-inferred"))
+            .expect("erik.hansson@company-a.example must produce a locale-inferred Address");
+        let addr2 = r2
+            .entities
+            .into_iter()
+            .find(|e| e.kind == EntityKind::Address && e.has_tag("locale-inferred"))
+            .expect("erik.hansson@company-b.example must produce a locale-inferred Address");
+
+        addr1.merge(addr2);
+        let locale_count = addr1
+            .evidence
+            .iter()
+            .filter(|ev| ev.source == "email_locale")
+            .count();
+        assert_eq!(
+            locale_count, 2,
+            "two accounts sharing an identical local part but different domains must not \
+             collide onto one evidence entry: {:?}",
+            addr1.evidence
+        );
+    }

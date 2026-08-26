@@ -11,7 +11,9 @@
 //! discovered connection's quality.
 
 use super::*;
-use crate::core::relation::{identity_uids, sorted_confined_adjacency, strongest_path_in};
+use crate::core::relation::{
+    IDENTITY_PAIR_PROBE_CAP, identity_uids, sorted_confined_adjacency, strongest_path_in,
+};
 
 /// AU-069 — High-integrity connection.
 pub(in crate::core::correlator) fn rule_au_069_high_integrity_connection(
@@ -34,8 +36,14 @@ pub(in crate::core::correlator) fn rule_au_069_high_integrity_connection(
     let adj = sorted_confined_adjacency(entities, relations);
 
     let mut out = Vec::new();
-    for (i, &a) in ids.iter().enumerate() {
+    let mut probes = 0usize;
+    'outer: for (i, &a) in ids.iter().enumerate() {
         for &b in &ids[i + 1..] {
+            if probes >= IDENTITY_PAIR_PROBE_CAP {
+                // Deterministic bound reached — see `IDENTITY_PAIR_PROBE_CAP`.
+                break 'outer;
+            }
+            probes += 1;
             let Some(path) = strongest_path_in(&adj, a, b, MAX_HOPS) else {
                 continue;
             };
@@ -178,6 +186,66 @@ mod tests {
         assert!(
             rule_au_069_high_integrity_connection(&RuleContext::new(&[a, b]), &rels, "s", 0)
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn au069_pairwise_sweep_is_capped_and_never_reaches_a_late_pair() {
+        // Finding (cycle 35): unlike AU-062/multipath and AU-063/gap (both of which
+        // bound their pairwise sweep with `IDENTITY_PAIR_PROBE_CAP`), AU-069's
+        // O(identities^2) sweep had no cap at all. Build enough identities that the
+        // full sweep would exceed the cap (120 identities -> C(120,2) = 7_140 pairs
+        // > IDENTITY_PAIR_PROBE_CAP's 6_000), wire a genuine high-integrity route
+        // ONLY between the two identities that sort lexicographically LAST by uid
+        // (so the sorted, prefix-stable sweep reaches it only after every earlier
+        // pair has been probed), and confirm the sweep never finds it.
+        let n = 120;
+        let fillers: Vec<Entity> = (0..n)
+            .map(|i| mk(EntityKind::Email, &format!("filler{i}@example.com")))
+            .collect();
+        let mut sorted_uids: Vec<String> = fillers.iter().map(|e| e.uid.clone()).collect();
+        sorted_uids.sort_unstable();
+        let (last, second_last) = (
+            sorted_uids[sorted_uids.len() - 1].clone(),
+            sorted_uids[sorted_uids.len() - 2].clone(),
+        );
+        let a = fillers
+            .iter()
+            .find(|e| e.uid == last)
+            .expect("should succeed")
+            .clone();
+        let b = fillers
+            .iter()
+            .find(|e| e.uid == second_last)
+            .expect("should succeed")
+            .clone();
+        // A Domain bridge is not an identity kind (see `is_identity_kind`), so it
+        // can never itself be selected as a pair endpoint — only `a`/`b` are.
+        let bridge = mk(EntityKind::Domain, "bridge.example");
+        let rels = [edge(&a, &bridge, 0.95), edge(&bridge, &b, 0.95)];
+        let mut ents = fillers;
+        ents.push(bridge.clone());
+        let out = rule_au_069_high_integrity_connection(&RuleContext::new(&ents), &rels, "s", 0);
+        assert!(
+            out.is_empty(),
+            "the capped sweep must never reach the lexicographically-last pair, even \
+             though a genuine high-integrity route connects it — an uncapped sweep \
+             would find it"
+        );
+
+        // Sanity check: the SAME route, in a small scan where the cap can't bind,
+        // fires normally — proving the emptiness above is the cap, not a broken
+        // route/fixture.
+        let small = rule_au_069_high_integrity_connection(
+            &RuleContext::new(&[a, b, bridge]),
+            &rels,
+            "s",
+            0,
+        );
+        assert_eq!(
+            small.len(),
+            1,
+            "the same route must fire when the sweep is small enough for the cap to never bind"
         );
     }
 }

@@ -56,7 +56,13 @@ impl SimAnonymity {
 }
 
 /// Every tier tag, for the correlator rule that surfaces an anonymous SIM.
-pub const ANONYMITY_TAGS: &[&str] = &["sim-mvno-prepaid", "sim-voip"];
+/// Ordered VoIP-before-MVNO, matching [`classify_carrier`]'s own priority (VoIP
+/// is "the strongest, most distinctly-named tier"): AU-068 picks the first tag
+/// an entity carries via this order, so if a phone ever carries both tiers'
+/// tags (e.g. ported between carriers across re-scans), the higher-anonymity
+/// VoIP tier wins, consistent with `classify_carrier` and with
+/// [`SimAnonymity::score`] ranking VoIP above MVNO.
+pub const ANONYMITY_TAGS: &[&str] = &["sim-voip", "sim-mvno-prepaid"];
 
 /// Recover the tier from one of its [`SimAnonymity::tag`] strings (the inverse of
 /// `tag`), so a reader (AU-068) can render the label from an entity's tag alone.
@@ -225,5 +231,22 @@ mod tests {
         assert_eq!(tier_for_tag("hlr-verified"), None);
         // VoIP is harder to attribute than an MVNO.
         assert!(SimAnonymity::VoipVirtual.score() > SimAnonymity::PrepaidMvno.score());
+    }
+
+    #[test]
+    fn anonymity_tags_lists_voip_before_mvno() {
+        // Finding (cycle 35): AU-068 (`rule_au_068_anonymous_sim`) picks the tier
+        // from the FIRST tag in `ANONYMITY_TAGS` an entity carries
+        // (`ANONYMITY_TAGS.iter().find_map(...)`). `classify_carrier` explicitly
+        // checks VoIP first because it is "the strongest, most distinctly-named
+        // tier" — if a phone ever carries both tier tags (e.g. ported between
+        // carriers across re-scans, merging both tags onto one entity),
+        // `ANONYMITY_TAGS`'s own order must agree, or AU-068 would report the
+        // weaker MVNO tier even though VoIP won the classification priority.
+        assert_eq!(
+            ANONYMITY_TAGS,
+            &["sim-voip", "sim-mvno-prepaid"],
+            "ANONYMITY_TAGS must list VoIP before MVNO, matching classify_carrier's own priority"
+        );
     }
 }

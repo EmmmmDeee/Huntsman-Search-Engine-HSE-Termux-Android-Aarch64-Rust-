@@ -298,10 +298,16 @@ fn is_valid_tfn(value: &str) -> bool {
 }
 
 /// Medicare card number — 10 digits, first digit 2-6, 9th digit is the
-/// weighted mod-10 check of the first eight (the 10th is the issue number).
+/// weighted mod-10 check of the first eight (the 10th is the issue number; an
+/// 11th "IRN" individual-reference-number digit is sometimes appended in raw
+/// data). Exact-length match, matching [`is_valid_tfn`]'s convention: `< 10`
+/// (minimum only, no upper bound) let an over-length numeral whose first 8
+/// digits coincidentally satisfy the checksum (~1-in-20 for arbitrary digit
+/// noise, e.g. a mis-mapped/concatenated field) validate as a genuine Medicare
+/// number.
 fn is_valid_medicare(value: &str) -> bool {
     let d: Vec<u32> = value.chars().filter_map(|c| c.to_digit(10)).collect();
-    if d.len() < 10 || !(2..=6).contains(&d[0]) {
+    if !(10..=11).contains(&d.len()) || !(2..=6).contains(&d[0]) {
         return false;
     }
     const W: [u32; 8] = [1, 3, 7, 9, 1, 3, 7, 9];
@@ -1253,8 +1259,14 @@ pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
     for e in entities {
         let label = match e.kind {
             EntityKind::Person if e.confidence >= 0.50 => "legal name",
-            EntityKind::Email => "email",
-            EntityKind::Phone => "phone",
+            // Exclude an infrastructure identifier (registrant/hosting) — a
+            // domain's WHOIS registrant email/phone is not the subject's own, so
+            // it must not inflate the identity-resolution breadth `n` toward the
+            // Medium/High thresholds. Same guard the Address facet below and
+            // AU-092/AU-098's address class apply via `is_infrastructure_geo` /
+            // `address_state` — this facet previously had no such floor.
+            EntityKind::Email if e.confidence >= 0.50 && !is_infrastructure_geo(e) => "email",
+            EntityKind::Phone if e.confidence >= 0.50 && !is_infrastructure_geo(e) => "phone",
             EntityKind::Username => "username",
             // Exclude an infrastructure address (registrant/hosting) — it is not
             // the subject's physical address, so it must not inflate the
@@ -1387,33 +1399,62 @@ pub(in crate::core::correlator) fn rule_au_104_bank_account_exposure(
     ts: u64,
 ) -> Vec<Correlation> {
     let entities = context.entities();
-    // institution -> (distinct sources, uids).
-    let mut by_bank: BTreeMap<&'static str, SourcesAndUids> = BTreeMap::new();
-    for (raw, source, uid) in scan_evidence(entities, BSB_KEYS) {
-        // A BSB/account exposure counts only from a genuine breach/stealer
-        // source (see `is_breach_source`).
-        if !is_breach_source(source) {
-            continue;
-        }
-        if let Some(bank) = crate::util::bsb::bsb_institution(&raw) {
-            let entry = by_bank.entry(bank).or_default();
-            entry.0.insert(source.to_string());
-            entry.1.insert(uid.to_string());
+    struct BankExposure {
+        sources: BTreeSet<String>,
+        uids: BTreeSet<String>,
+        // A bank account number observed in the SAME evidence record as a BSB
+        // resolving to this bank — the difference between "we know their bank"
+        // and "we hold their account credential". Scoped per-record (not global)
+        // so an unrelated breach/field that merely happens to share a key name
+        // (`account_number` is common outside banking too) can't escalate every
+        // resolved bank in the scan.
+        has_account: bool,
+    }
+    let mut by_bank: BTreeMap<&'static str, BankExposure> = BTreeMap::new();
+
+    for e in entities {
+        for ev in &e.evidence {
+            // A BSB/account exposure counts only from a genuine breach/stealer
+            // source (see `is_breach_source`) — applied to the account-number
+            // check too, not just the BSB scan.
+            if !is_breach_source(ev.source.as_str()) {
+                continue;
+            }
+            let record_has_account = BANK_ACCOUNT_KEYS.iter().any(|key| {
+                ev.attributes
+                    .keys()
+                    .find(|k| k.eq_ignore_ascii_case(key))
+                    .is_some_and(|actual| ev.attr_values(actual).next().is_some())
+            });
+            for key in BSB_KEYS {
+                let Some(actual_key) = ev.attributes.keys().find(|k| k.eq_ignore_ascii_case(key))
+                else {
+                    continue;
+                };
+                for raw in ev.attr_values(actual_key) {
+                    if let Some(bank) = crate::util::bsb::bsb_institution(raw) {
+                        let entry = by_bank.entry(bank).or_insert_with(|| BankExposure {
+                            sources: BTreeSet::new(),
+                            uids: BTreeSet::new(),
+                            has_account: false,
+                        });
+                        entry.sources.insert(ev.source.clone());
+                        entry.uids.insert(e.uid.clone());
+                        entry.has_account |= record_has_account;
+                    }
+                }
+            }
         }
     }
     if by_bank.is_empty() {
         return Vec::new();
     }
 
-    // A bank account number co-occurring with the BSB is the difference between
-    // "we know their bank" and "we hold their account credential".
-    let has_account = !scan_evidence(entities, BANK_ACCOUNT_KEYS).is_empty();
-
     by_bank
         .into_iter()
-        .map(|(bank, (sources, uids))| {
-            let n = sources.len();
-            let (severity, exposure) = if has_account {
+        .map(|(bank, info)| {
+            let n = info.sources.len();
+            let (severity, exposure) = if info.has_account {
                 (
                     Severity::High,
                     "with an account number — a full, directly-abusable bank-account credential",
@@ -1431,13 +1472,13 @@ pub(in crate::core::correlator) fn rule_au_104_bank_account_exposure(
                 format!(
                     "Subject banks with {bank} — an Australian BSB exposed across {n} source(s) \
                      ({}); {exposure}.",
-                    sources
+                    info.sources
                         .iter()
                         .map(String::as_str)
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
-                uids.into_iter().collect(),
+                info.uids.into_iter().collect(),
                 scan_id,
                 ts,
             )

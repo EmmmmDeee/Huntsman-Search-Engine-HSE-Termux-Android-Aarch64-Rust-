@@ -82,13 +82,17 @@ pub fn is_whois_privacy_placeholder(s: &str) -> bool {
         "data protected",
         "not disclosed",
         "registration private", // GoDaddy default registrant
+        "private registration", // word-order variant of the above
         "domains by proxy",     // GoDaddy proxy service
+        "domainsbyproxy",       // no-space variant
         "whoisguard",           // Namecheap proxy service
         "identity protection",  // Identity Protection Service
         "statutory masking",    // .au registry redaction notice
         "gdpr masked",
-        "withheld",    // Withheld for Privacy
-        "unavailable", // Name Unavailable / Currently Unavailable
+        "withheld",                // Withheld for Privacy
+        "unavailable",             // Name Unavailable / Currently Unavailable
+        "non-public data",         // kept in lockstep with
+        "protecteddomainservices", // `util::domains::REGISTRANT_PROXY_MARKERS`
     ];
     MARKERS
         .iter()

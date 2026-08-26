@@ -119,7 +119,7 @@ impl Module for EmailLocale {
             let ev = Evidence::new(
                 SRC,
                 format!(
-                    "Email local part '{local}' matches {} naming pattern",
+                    "Email local part '{local}@{domain}' matches {} naming pattern",
                     geo.locale
                 ),
             )

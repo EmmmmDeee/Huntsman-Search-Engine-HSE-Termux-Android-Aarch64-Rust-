@@ -563,6 +563,15 @@ const REGISTRANT_PROXY_MARKERS: &[&str] = &[
     "super privacy",
     "domain protection services",
     "protecteddomainservices",
+    // Kept in lockstep with `core::validation::is_whois_privacy_placeholder`'s
+    // marker list (the two had drifted apart: this list lacked these two, and
+    // that one lacks several of the above) — a `.au`-registry-redacted
+    // registrant ("Statutory Masking Applied", the AU registry's own redaction
+    // notice) or a GDPR-masked EU registrant would otherwise pass this check
+    // as if it were a genuine single registrant identity, letting AU-109 fuse
+    // any two unrelated domains that both carry the same boilerplate notice.
+    "statutory masking",
+    "gdpr masked",
 ];
 
 /// True when a WHOIS registrant value (org name or email address) is a privacy

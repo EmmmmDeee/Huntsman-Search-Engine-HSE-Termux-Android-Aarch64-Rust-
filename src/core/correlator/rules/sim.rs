@@ -79,6 +79,30 @@ mod tests {
     }
 
     #[test]
+    fn au068_prefers_voip_when_a_phone_carries_both_tier_tags() {
+        // Finding (cycle 35): a phone can end up carrying BOTH anonymity tags
+        // (e.g. ported between carriers across re-scans, merging both tags onto
+        // one entity). `classify_carrier` treats VoIP as the strongest tier, so
+        // the reader must agree — reporting VoIP, not silently falling back to
+        // the weaker MVNO tier because of tag-list iteration order.
+        let mut phone = Entity::new(
+            EntityKind::Phone,
+            "+61400000003",
+            confidence::HIGH_PLUSPLUS_PLUS,
+            "s",
+        );
+        phone.tag("sim-mvno-prepaid");
+        phone.tag("sim-voip");
+        let out = rule_au_068_anonymous_sim(&RuleContext::new(&[phone]), "s", 0);
+        assert_eq!(out.len(), 1);
+        assert!(
+            out[0].description.contains("VoIP"),
+            "VoIP must win when a phone carries both tier tags: {}",
+            out[0].description
+        );
+    }
+
+    #[test]
     fn au068_silent_on_an_ordinary_phone() {
         // A verified phone with no anonymity tag is not a burner finding.
         let mut phone = Entity::new(

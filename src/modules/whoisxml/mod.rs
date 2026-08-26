@@ -305,6 +305,7 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
             );
             e.tag("whoisxml");
             e.tag(format!("whois-{role}"));
+            e.tag(crate::core::tags::REGISTRANT);
             let mut ev = base_ev.clone().with_attr("contact_role", role);
             if let Some(cc) = nonempty(&c.country_code) {
                 ev = ev.with_attr("country_code", &cc);
@@ -320,6 +321,7 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
             let mut e = Entity::new(EntityKind::Person, &name, confidence::MEDIUM_PLUS, scan_id);
             e.tag("whoisxml");
             e.tag(format!("whois-{role}"));
+            e.tag(crate::core::tags::REGISTRANT);
             let mut ev = base_ev.clone().with_attr("contact_role", role);
             if let Some(country) = nonempty(&c.country) {
                 ev = ev.with_attr("country", &country);
@@ -331,12 +333,15 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
             out.push(e);
         }
 
-        if let Some(email) = nonempty(&c.email).filter(|s| s.contains('@')) {
+        if let Some(email) = nonempty(&c.email).filter(|s| {
+            s.contains('@') && !crate::core::validation::is_whois_privacy_placeholder(s)
+        }) {
             let low = email.to_lowercase();
             if seen.insert(format!("mail:{low}")) {
                 let mut e = Entity::new(EntityKind::Email, &email, confidence::HIGH_PLUS, scan_id);
                 e.tag("whoisxml");
                 e.tag(format!("whois-{role}-email"));
+                e.tag(crate::core::tags::REGISTRANT);
                 e.add_evidence(base_ev.clone().with_attr("contact_role", role));
                 out.push(e);
             }
@@ -354,6 +359,7 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
                     let mut e = Entity::new(EntityKind::Phone, &phone, confidence::HIGH, scan_id);
                     e.tag("whoisxml");
                     e.tag(format!("whois-{role}"));
+                    e.tag(crate::core::tags::REGISTRANT);
                     e.add_evidence(base_ev.clone().with_attr("contact_role", role));
                     out.push(e);
                 }
@@ -370,6 +376,7 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
             e.tag("whoisxml");
             e.tag(format!("whois-{role}"));
             e.tag("geo-hint");
+            e.tag(crate::core::tags::REGISTRANT);
             e.add_evidence(base_ev.clone().with_attr("contact_role", role));
             out.push(e);
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(&loc) {

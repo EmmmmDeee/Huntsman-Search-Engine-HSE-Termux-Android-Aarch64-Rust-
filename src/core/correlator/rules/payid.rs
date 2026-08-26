@@ -27,7 +27,21 @@ pub(in crate::core::correlator) fn rule_au_072_payid_payment_surface(
     use std::collections::BTreeSet;
     const MIN_PAYIDS: usize = 2;
 
-    let payids: Vec<&Entity> = entities.iter().filter(|e| e.has_tag("payid")).collect();
+    // `payid` is enrichment-only (see its module doc) and mints its annotation at
+    // a deliberately low confidence — PayID-eligibility is a property of the
+    // identifier's *shape*, not independent corroboration that it belongs to the
+    // subject. Without a floor here, two low-confidence, uncorroborated
+    // identifiers that merely happen to be PayID-shaped (e.g. a stray email/phone
+    // picked up by weak enrichment) would fabricate a payment-identity-surface
+    // claim; the floor requires each to have been independently corroborated by
+    // its own producer first, matching the confidence discipline every sibling
+    // identity-aggregation rule in this file applies (e.g. AU-070's
+    // `IDENTITY_LINK_MIN_CONF`, AU-101's per-facet floors).
+    const MIN_CONF: f64 = 0.50;
+    let payids: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.has_tag("payid") && e.confidence >= MIN_CONF)
+        .collect();
     if payids.len() < MIN_PAYIDS {
         return Vec::new();
     }

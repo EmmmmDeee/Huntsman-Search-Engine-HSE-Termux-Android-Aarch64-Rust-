@@ -3321,6 +3321,26 @@ fn au072_payid_surface_fires_on_multiple_payids_and_links_them() {
 }
 
 #[test]
+fn au072_does_not_fire_on_low_confidence_uncorroborated_payids() {
+    // Finding (cycle 35): `payid` is enrichment-only and mints its annotation at a
+    // deliberately low confidence (0.30) — PayID-eligibility is a property of the
+    // identifier's *shape*, not corroboration that it belongs to the subject. The
+    // rule had no confidence floor, so two never-independently-corroborated
+    // PayID-shaped identifiers could fabricate a payment-identity-surface claim.
+    let mut email = Entity::new(EntityKind::Email, "a@contoso.com", 0.30, "s");
+    email.tag("payid");
+    email.tag("payid:email");
+    let mut phone = Entity::new(EntityKind::Phone, "+61410959140", 0.30, "s");
+    phone.tag("payid");
+    phone.tag("payid:phone");
+    assert!(
+        super::rules::rule_au_072_payid_payment_surface(&RuleContext::new(&[email, phone]), "s", 0)
+            .is_empty(),
+        "two uncorroborated, low-confidence PayID annotations must not fire"
+    );
+}
+
+#[test]
 fn au072_register_resolvable_abn_raises_severity() {
     let mut email = Entity::new(EntityKind::Email, "a@contoso.com", 0.8, "s");
     email.tag("payid");
@@ -3529,6 +3549,29 @@ fn au074_government_id_exposure_validates_checksum_and_masks() {
             .count(),
         1,
         "the bad-checksum TFN produced no finding"
+    );
+}
+
+#[test]
+fn au074_medicare_rejects_an_overlength_numeral_with_a_coincidental_checksum() {
+    // Finding (cycle 35): `is_valid_medicare` checked `d.len() < 10` — a MINIMUM
+    // only, no upper bound — so an over-length numeral (a mis-mapped/concatenated
+    // field) whose first 8 digits coincidentally satisfy the mod-10 checksum
+    // validated as a genuine Medicare number. "21234567" is the valid prefix from
+    // the CRITICAL-finding test above (checksum digit 0); padding it to 14 digits
+    // must now be rejected, while the genuine 10-digit number still validates.
+    let mut over_length = Entity::new(EntityKind::Credential, "leak3", 0.9, "s");
+    over_length
+        .add_evidence(Evidence::new("dehashed", "breach").with_attr("medicare", "21234567099999"));
+    let r = super::rules::rule_au_074_au_government_id_exposure(
+        &RuleContext::new(&[over_length]),
+        "s",
+        0,
+    );
+    assert!(
+        r.iter().all(|c| !c.description.contains("Medicare")),
+        "a 14-digit numeral must not validate as a Medicare number even with a \
+         coincidentally-matching checksum prefix"
     );
 }
 
@@ -4130,6 +4173,56 @@ fn au101_counts_phone_and_email_facets_from_breach_evidence_attributes() {
 }
 
 #[test]
+fn au101_excludes_a_registrant_phone_and_email_from_the_facet_count() {
+    // Finding (cycle 35): the Email/Phone facet arms had no `is_infrastructure_geo`
+    // guard, unlike the sibling Address arm five lines below — a domain's WHOIS
+    // registrant phone/email (e.g. SEON's registrant-contact enrichment,
+    // `tags::REGISTRANT`) is not the subject's own, yet it silently counted
+    // toward the cross-facet identity-resolution breadth. Person + AbnAcn +
+    // Username = 3 facets (below the n>=4 floor); a REGISTRANT-tagged phone and
+    // email must not tip it to 5.
+    let person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
+    let abn = Entity::new(EntityKind::AbnAcn, "51824753556", 0.9, "s");
+    let user = Entity::new(EntityKind::Username, "haigenb", 0.8, "s");
+    let mut reg_phone = Entity::new(EntityKind::Phone, "+61281234567", 0.8, "s");
+    reg_phone.tag(crate::core::tags::REGISTRANT);
+    let mut reg_email = Entity::new(EntityKind::Email, "abuse@registrar.example", 0.8, "s");
+    reg_email.tag(crate::core::tags::REGISTRANT);
+    assert!(
+        super::rules::rule_au_101_identity_resolution(
+            &RuleContext::new(&[
+                person.clone(),
+                abn.clone(),
+                user.clone(),
+                reg_phone,
+                reg_email
+            ]),
+            "s",
+            0
+        )
+        .is_empty(),
+        "a REGISTRANT-tagged phone/email must not count toward identity-resolution breadth"
+    );
+
+    // Control: the SAME phone/email, untagged (a real personal contact), DO
+    // count — proving the guard excludes only infrastructure data, not the
+    // facet class itself.
+    let phone = Entity::new(EntityKind::Phone, "+61281234567", 0.8, "s");
+    let email = Entity::new(EntityKind::Email, "h@example.com", 0.8, "s");
+    let r = super::rules::rule_au_101_identity_resolution(
+        &RuleContext::new(&[person, abn, user, phone, email]),
+        "s",
+        0,
+    );
+    assert_eq!(
+        r.len(),
+        1,
+        "an untagged phone/email must still count as real facets"
+    );
+    assert_eq!(r[0].severity, super::Severity::High);
+}
+
+#[test]
 fn au101_thin_footprint_and_low_confidence_do_not_fire() {
     // Three facets is below the threshold — the single-facet rules' job.
     let person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
@@ -4197,6 +4290,47 @@ fn au104_escalates_to_high_when_account_number_co_occurs() {
     assert_eq!(r[0].severity, super::Severity::High);
     assert!(r[0].description.contains("ANZ"));
     assert!(r[0].description.contains("account number"));
+}
+
+#[test]
+fn au104_does_not_escalate_from_an_unrelated_non_breach_account_number_key() {
+    // Finding (cycle 35): `has_account` was computed globally from EVERY entity's
+    // evidence with no `is_breach_source` filter and no co-occurrence scoping, so
+    // any entity anywhere in the scan carrying a key merely NAMED `account_number`
+    // — even from a totally unrelated, non-breach enrichment source — escalated
+    // EVERY resolved bank to High. Must stay Medium.
+    let mut person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
+    person.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("bsb", "062-000"));
+    person.add_evidence(
+        Evidence::new("payid", "PayID-eligible").with_attr("account_number", "MEMBER-99"),
+    );
+    let r = super::rules::rule_au_104_bank_account_exposure(&RuleContext::new(&[person]), "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(
+        r[0].severity,
+        super::Severity::Medium,
+        "an account_number key from an unrelated non-breach source must not escalate"
+    );
+    assert!(r[0].description.contains("BSB only"));
+}
+
+#[test]
+fn au104_does_not_escalate_when_the_account_number_is_in_a_different_breach_record() {
+    // The BSB and an account number are both in genuine breach evidence, but in
+    // DIFFERENT records — not co-occurring "in the same data" per the rule's own
+    // doc comment. Must stay Medium, not silently escalate to High.
+    let mut person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
+    person.add_evidence(Evidence::new("oathnet_pro", "breach A").with_attr("bsb", "062-000"));
+    person.add_evidence(
+        Evidence::new("oathnet_pro", "breach B").with_attr("account_number", "999888777"),
+    );
+    let r = super::rules::rule_au_104_bank_account_exposure(&RuleContext::new(&[person]), "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(
+        r[0].severity,
+        super::Severity::Medium,
+        "an account number from a DIFFERENT breach record must not escalate this bank"
+    );
 }
 
 #[test]
