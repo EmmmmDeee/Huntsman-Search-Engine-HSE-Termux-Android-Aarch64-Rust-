@@ -1007,6 +1007,16 @@ impl Store {
             "DELETE FROM stealer_rows WHERE scan_id = ?1",
             params![scan_id],
         )?;
+        // `rf_sightings` is scan-scoped exactly like stealer_rows and carries
+        // device MAC addresses, GPS fixes, and signal strength from a WiGLE
+        // import or a local radar sweep. It has no other prune path, so
+        // omitting it here left an operator's own wardriving/counter-
+        // surveillance data live on disk indefinitely after they explicitly
+        // deleted the scan that captured it.
+        tx.execute(
+            "DELETE FROM rf_sightings WHERE scan_id = ?1",
+            params![scan_id],
+        )?;
         // FTS sync: a contentless-external FTS5 index never observes a bare
         // DELETE on its content table, so each orphaned row's text must be
         // removed with an explicit 'delete' command BEFORE the row goes away.
