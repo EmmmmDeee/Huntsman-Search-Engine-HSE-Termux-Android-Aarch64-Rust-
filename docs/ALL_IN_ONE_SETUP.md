@@ -293,19 +293,10 @@ sv up ollama
 sv status ollama
 ```
 
-Similarly for HSE AI daemon:
-
-```bash
-mkdir -p $PREFIX/var/service/hse-ai-daemon
-cat > $PREFIX/var/service/hse-ai-daemon/run <<'EOF'
-#!/data/data/com.termux/files/usr/bin/sh
-export HUNTSMAN_OLLAMA_MODEL=qwen2.5:7b
-exec hse-ai-daemon
-EOF
-
-chmod +x $PREFIX/var/service/hse-ai-daemon/run
-sv-enable hse-ai-daemon
-```
+Similarly for the HSE AI daemon — see the README's
+["Running `hse-ai-daemon` persistently (Termux)"](../README.md#running-hse-ai-daemon-persistently-termux)
+for the same `termux-services` setup plus what `sv-enable`/`sv down`/`sv up`
+do once it's running.
 
 ---
 
@@ -313,13 +304,9 @@ sv-enable hse-ai-daemon
 
 ### "SeekNow: All authentication methods failed"
 
-**Problem:** Token file doesn't exist or session expired.
-
-**Solution:**
-1. Re-login via browser to https://see-know.ru
-2. Extract fresh token from DevTools
-3. Save to `~/.huntsman/seeknow_session.txt`
-4. Retry scan
+See `docs/SEEKNOW_WEB_AUTOMATION.md`'s Troubleshooting section ("All SeekNow
+authentication methods failed") — same fix (re-login, re-extract the token,
+re-save it to `~/.huntsman/seeknow_session.txt`), kept in one place.
 
 ### "Ollama connection refused"
 
