@@ -3433,6 +3433,76 @@ fn au072_register_resolvable_abn_raises_severity() {
 }
 
 #[test]
+fn au072_does_not_fire_on_uncorroborated_name_permutation_guesses() {
+    // Two purely-speculative name_intel email permutations, each merely
+    // annotated by the enrichment-only `payid` module (no independent
+    // corroboration either belongs to the subject), must not fabricate a
+    // consolidated payment-identity surface — under default settings
+    // (`--gate-speculative` off) these guesses expand and reach every
+    // enrichment-only module exactly like a real identifier would.
+    let mut guess1 = Entity::new(EntityKind::Email, "j.smith@gmail.com", 0.4, "s");
+    guess1.tag("name-derived");
+    guess1.tag("payid");
+    guess1.tag("payid:email");
+    guess1.add_evidence(Evidence::new(
+        "name_intel",
+        "Speculative email permuted from name",
+    ));
+    guess1.add_evidence(Evidence::new("payid", "PayID-eligible email"));
+
+    let mut guess2 = Entity::new(EntityKind::Email, "jsmith@outlook.com", 0.35, "s");
+    guess2.tag("name-derived");
+    guess2.tag("payid");
+    guess2.tag("payid:email");
+    guess2.add_evidence(Evidence::new(
+        "name_intel",
+        "Speculative email permuted from name",
+    ));
+    guess2.add_evidence(Evidence::new("payid", "PayID-eligible email"));
+
+    assert!(
+        super::rules::rule_au_072_payid_payment_surface(
+            &RuleContext::new(&[guess1, guess2]),
+            "s",
+            0
+        )
+        .is_empty(),
+        "two uncorroborated name-permutation guesses must not fabricate a PayID surface"
+    );
+}
+
+#[test]
+fn au072_counts_a_name_permutation_guess_once_a_reliable_source_confirms_it() {
+    // Same speculative guess as above, but this one is independently confirmed
+    // by a real corpus hit — it is no longer "uncorroborated" and legitimately
+    // combines with a genuine, unrelated PayID to fire.
+    let mut confirmed_guess = Entity::new(EntityKind::Email, "j.smith@gmail.com", 0.4, "s");
+    confirmed_guess.tag("name-derived");
+    confirmed_guess.tag("payid");
+    confirmed_guess.tag("payid:email");
+    confirmed_guess.add_evidence(Evidence::new(
+        "name_intel",
+        "Speculative email permuted from name",
+    ));
+    confirmed_guess.add_evidence(Evidence::new("hibp", "Found in a breach corpus"));
+
+    let mut real_phone = Entity::new(EntityKind::Phone, "+61410959140", 0.8, "s");
+    real_phone.tag("payid");
+    real_phone.tag("payid:phone");
+
+    let r = super::rules::rule_au_072_payid_payment_surface(
+        &RuleContext::new(&[confirmed_guess, real_phone]),
+        "s",
+        0,
+    );
+    assert_eq!(
+        r.len(),
+        1,
+        "a corroborated former-guess plus a real PayID should still fire"
+    );
+}
+
+#[test]
 fn au073_dob_corroborated_across_sources_disambiguates_namesakes() {
     // Two independent sources assert the same DOB (one as an ISO datetime that
     // must normalise) → High. A namesake's DOB from a single source is a
