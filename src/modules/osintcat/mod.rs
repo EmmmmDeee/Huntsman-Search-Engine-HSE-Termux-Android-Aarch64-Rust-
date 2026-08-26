@@ -92,6 +92,15 @@ impl Module for OsintCat {
         ModuleCost::KeyGated
     }
 
+    fn cache_ttl_secs(&self) -> u64 {
+        // Breach records are immutable once indexed and platform-footprint
+        // registration is stable within a day (same "IP intel: 24h" bracket
+        // censys/builtwith apply to slower-moving paid data) — together
+        // worth caching to avoid re-spending the paid email-osint credit on
+        // a repeat scan of an already-queried address.
+        86_400
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         20_000
     }
