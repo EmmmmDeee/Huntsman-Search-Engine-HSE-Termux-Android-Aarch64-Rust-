@@ -23,26 +23,6 @@ use crate::util::http::urlencode;
 
 const KEY_ENV: &str = "HUNTSMAN_IPQS_KEY";
 
-/// True if an IPQS `success:false` `message` names a KEY / QUOTA failure rather
-/// than a merely-invalid target. IPQS returns HTTP 200 even on a dead/exhausted
-/// key (the failure is in-body), so without this a paid vendor's dead key is
-/// indistinguishable from a clean empty result on every IP/email/phone lookup.
-/// Pure + case-insensitive so it is unit-tested against the documented phrases
-/// without a live call.
-fn is_key_or_quota_failure(message: &str) -> bool {
-    let m = message.to_ascii_lowercase();
-    [
-        "unauthorized",
-        "permission",
-        "exceeded",
-        "insufficient credits",
-        "invalid api key",
-        "invalid key",
-    ]
-    .iter()
-    .any(|p| m.contains(p))
-}
-
 #[derive(Deserialize)]
 struct Common {
     #[serde(default)]
@@ -292,7 +272,7 @@ impl Module for IpQs {
             |parsed: &Common| {
                 if parsed.success == Some(false) {
                     let msg = parsed.message.as_deref().unwrap_or_default();
-                    if is_key_or_quota_failure(msg) {
+                    if crate::util::http::is_key_or_quota_message(msg) {
                         // Carry IPQS's own message through: it is the only thing
                         // that distinguishes quota exhaustion from a bad key
                         // from a plan limit, and the operator needs that to act.

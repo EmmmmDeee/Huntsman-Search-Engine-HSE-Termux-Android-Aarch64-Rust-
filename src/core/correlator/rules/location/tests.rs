@@ -355,6 +355,29 @@ use super::*;
         e
     }
 
+    /// A WHOIS-registrant address (a company's filing address, not the
+    /// subject's home) must not drive the postcode-grain rung the way a real
+    /// breach/register address does. `is_infrastructure_geo` exists exactly
+    /// to stop a registrant/hosting location from voting the subject's
+    /// physical position (its own doc comment names the postcode/address
+    /// rollup rules as consumers), but the postcode rungs (3 & 4) below only
+    /// filtered on entity kind, never on this guard.
+    #[test]
+    fn best_location_does_not_use_a_whois_registrant_address_as_the_postcode_grain() {
+        let mut registrant = Entity::new(
+            EntityKind::Address,
+            "123 Corporate Ave, Melbourne, VIC, 3000",
+            crate::core::confidence::MEDIUM_PLUS,
+            "s",
+        );
+        registrant.tag(crate::core::tags::REGISTRANT);
+        let est = best_au_location_estimate(&[registrant]);
+        assert!(
+            est.is_none(),
+            "a WHOIS-registrant address must not produce a location estimate: {est:?}"
+        );
+    }
+
     /// A subject outside Australia must still get a headline location.
     ///
     /// Rung 2 used to be filtered through `is_australian_coord`, so a person in

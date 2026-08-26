@@ -61,6 +61,7 @@ HUNTSMAN_WHOISXML_KEY="insert_whoisxml_key_here"
 # --- TIER 3: IDENTITY RECONSTRUCTION, LEAK COMPILATIONS & PERSONA MAPPING ---
 HUNTSMAN_INTELX_KEY="insert_intelx_io_key_here"
 HUNTSMAN_HIBP_KEY="insert_haveibeenpwned_key_here"
+HUNTSMAN_STOLEN_TAX_KEY="insert_stolen_tax_key_here"
 HUNTSMAN_EPIEOS_KEY="insert_epieos_key_here"
 HUNTSMAN_OSINTCAT_KEY="insert_osintcat_key_here"
 HUNTSMAN_SEON_KEY="insert_seon_key_here"
