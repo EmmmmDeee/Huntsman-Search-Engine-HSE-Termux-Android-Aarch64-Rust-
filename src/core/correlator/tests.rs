@@ -10048,23 +10048,37 @@ fn au077_fires_when_username_search_has_a_verified_hit() {
 }
 
 #[test]
-fn au077_does_not_fire_on_a_status_only_per_record_discovery() {
+fn au077_does_not_fire_on_a_social_probe_summary_with_zero_verified_hits() {
     use super::rules::rule_au_077_name_derived_username_confirmed;
-    // Per-record variant: a discovery module (social_probe) that tags its hit
-    // `detection: status-only` is a bare-status guess, not a confirmation.
+    // OD-17: social_probe's real Username-entity evidence is its aggregate
+    // target-summary record (checked/found/platforms_count/platforms plus
+    // hits_verified/hits_status_only) — a per-record `detection` attribute
+    // lives only on the separate Url entity social_probe emits per platform,
+    // which AU-077 never inspects. (The previous version of this test hand-built
+    // a `detection` attribute directly on the Username entity, a shape
+    // social_probe's real summary path never produces.) All hits here are
+    // status-only, so zero are verified.
     let mut u = Entity::new(EntityKind::Username, "jsmith", 0.8, "s");
     u.add_evidence(Evidence::new(
         "name_intel",
         "Derived from John Smith".to_string(),
     ));
     u.add_evidence(
-        Evidence::new("social_probe", "status 200 for jsmith".to_string())
-            .with_attr("detection", "status-only"),
+        Evidence::new(
+            "social_probe",
+            "Probed 30 platforms, found 2 profiles".to_string(),
+        )
+        .with_attr("checked", "30")
+        .with_attr("found", "2")
+        .with_attr("platforms_count", "2")
+        .with_attr("platforms", "reddit, tumblr")
+        .with_attr("hits_verified", "0")
+        .with_attr("hits_status_only", "2"),
     );
     let r = rule_au_077_name_derived_username_confirmed(&RuleContext::new(&[u]), "s", 0);
     assert!(
         r.is_empty(),
-        "a status-only per-record discovery must not confirm AU-077: {r:?}"
+        "an all-status-only social_probe summary must not confirm AU-077: {r:?}"
     );
 }
 
