@@ -538,7 +538,7 @@ diagnostic bundle") for the complete engine state in one file.
 | Document | Content |
 |----------|---------|
 | [`docs/INSTALL.md`](docs/INSTALL.md) | All install paths + Termux quirks |
-| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Common install/runtime errors + fixes |
+| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | SeekNow API error troubleshooting (connectivity, auth, budget, rate limits) — for install/runtime issues see `docs/INSTALL.md`'s own Troubleshooting section instead |
 | [`docs/OSINT_API_REFERENCE.md`](docs/OSINT_API_REFERENCE.md) | External OSINT-provider API reference (free tiers, key shapes, integration status) |
 | [`docs/SEEKNOW_SETUP.md`](docs/SEEKNOW_SETUP.md) | SeekNow (see-know.ru) API setup + full endpoint reference |
 | [`docs/SEEKNOW_WEB_AUTOMATION.md`](docs/SEEKNOW_WEB_AUTOMATION.md) | SeekNow web automation, Turnstile analysis, manual login workflow, browser automation framework evaluation |
