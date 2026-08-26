@@ -6,6 +6,7 @@
 
 use super::super::super::{USERNAME_DERIVATION_SOURCES, USERNAME_DISCOVERY_SOURCES};
 use super::super::*;
+use super::*;
 
 pub(in crate::core::correlator) fn rule_au_011_cross_platform_username(
     context: &RuleContext,
@@ -285,14 +286,7 @@ pub(in crate::core::correlator) fn rule_au_035_confirmed_derived_handle(
         // derived+discovered merge on this same entity kind. Collected via
         // BTreeSet (not Vec+sort) so a source with multiple qualifying evidence
         // records lists once, not once per record.
-        let confirmed_by: Vec<&str> = e
-            .evidence
-            .iter()
-            .filter(|ev| is_verified_discovery(ev))
-            .map(|ev| ev.source.as_str())
-            .collect::<std::collections::BTreeSet<&str>>()
-            .into_iter()
-            .collect();
+        let confirmed_by: Vec<&str> = sorted_evidence_sources(&e.evidence, is_verified_discovery);
         if inferred_by.is_empty() || confirmed_by.is_empty() {
             continue;
         }
@@ -485,14 +479,8 @@ pub(in crate::core::correlator) fn rule_au_077_name_derived_username_confirmed(
             has_derived && has_confirmed
         })
         .map(|e| {
-            let confirmed_by: Vec<&str> = e
-                .evidence
-                .iter()
-                .filter(|ev| is_verified_discovery(ev))
-                .map(|ev| ev.source.as_str())
-                .collect::<std::collections::BTreeSet<&str>>()
-                .into_iter()
-                .collect();
+            let confirmed_by: Vec<&str> =
+                sorted_evidence_sources(&e.evidence, is_verified_discovery);
             let confirmed_by_str = confirmed_by.join(", ");
             Correlation {
                 rule_id: "AU-077".into(),

@@ -370,6 +370,36 @@ impl Module for NiamonX {
 
 // ── HTTP helpers ─────────────────────────────────────────────────────────
 
+/// If `error` — a provider "dataguard" message carried in the response body
+/// of an otherwise-2xx reply — names a key/quota problem, burn `key` in the
+/// pool and return the `Err` that `process()`'s existing burned-key cascade
+/// (`is_burned`, above) reacts to. Mirrors how a real HTTP 401/403/429 is
+/// already handled by `keyed_ok_or_404` for this same module's three
+/// endpoints, for the in-body failure shape a status-only check can't see —
+/// the same gap `ipqs`/`criminal_ip`/`stolen_tax` close via
+/// `keyed_cascade_json`'s `BodyVerdict`, which this module's own bespoke
+/// concurrent-endpoint cascade can't drop in for directly. `endpoint` names
+/// which of the three concurrent calls this is, for the error message only.
+/// A non-key-shaped `error` (the common case — e.g. a genuine "not found"
+/// dataguard reason) is left for the caller's existing `emit_*` handling to
+/// log and skip, exactly as before this fix.
+fn check_dataguard_key_failure(
+    ctx: &crate::core::module::ModuleContext,
+    key: &str,
+    endpoint: &str,
+    error: Option<&str>,
+) -> Result<()> {
+    let Some(msg) = error else { return Ok(()) };
+    if !crate::util::http::is_key_or_quota_message(msg) {
+        return Ok(());
+    }
+    ctx.report_key_exhausted(SRC, key, 401);
+    Err(Error::module(
+        SRC,
+        format!("niamonx {endpoint} reported an in-body key failure: {msg}"),
+    ))
+}
+
 async fn fetch_pbs_v1(
     http: &reqwest::Client,
     key: &str,
@@ -387,9 +417,16 @@ async fn fetch_pbs_v1(
     let resp = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp)
         .await?
         .ok_or_else(|| Error::module(SRC, "HTTP 404 from breaches_search"))?;
-    crate::util::http::json_scanned(resp, SRC)
+    let parsed: PbsV1Response = crate::util::http::json_scanned(resp, SRC)
         .await
-        .map_err(|e| Error::module(SRC, e))
+        .map_err(|e| Error::module(SRC, e))?;
+    check_dataguard_key_failure(
+        ctx,
+        key,
+        "pbs_v1",
+        parsed.data.as_ref().and_then(|d| d.error.as_deref()),
+    )?;
+    Ok(parsed)
 }
 
 async fn fetch_pbs_v2(
@@ -412,9 +449,16 @@ async fn fetch_pbs_v2(
     let resp = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp)
         .await?
         .ok_or_else(|| Error::module(SRC, "HTTP 404 from breaches_s_v2"))?;
-    crate::util::http::json_scanned(resp, SRC)
+    let parsed: PbsV2Response = crate::util::http::json_scanned(resp, SRC)
         .await
-        .map_err(|e| Error::module(SRC, e))
+        .map_err(|e| Error::module(SRC, e))?;
+    check_dataguard_key_failure(
+        ctx,
+        key,
+        "pbs_v2",
+        parsed.data.as_ref().and_then(|d| d.error.as_deref()),
+    )?;
+    Ok(parsed)
 }
 
 async fn fetch_ulp(
@@ -441,9 +485,16 @@ async fn fetch_ulp(
     let resp = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp)
         .await?
         .ok_or_else(|| Error::module(SRC, "HTTP 404 from ulp_search"))?;
-    crate::util::http::json_scanned(resp, SRC)
+    let parsed: UlpResponse = crate::util::http::json_scanned(resp, SRC)
         .await
-        .map_err(|e| Error::module(SRC, e))
+        .map_err(|e| Error::module(SRC, e))?;
+    check_dataguard_key_failure(
+        ctx,
+        key,
+        "ulp_search",
+        parsed.data.as_ref().and_then(|d| d.error.as_deref()),
+    )?;
+    Ok(parsed)
 }
 
 // ── Emitters ──────────────────────────────────────────────────────────────

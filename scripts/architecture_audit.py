@@ -5,11 +5,13 @@ and correctness risks **from the running binary**, not from reading source.
 
 Why the binary and not the source
 ---------------------------------
-``CLAUDE.md`` makes the running software the source of truth for the module and
-CLI reference, because a static doc drifts. The same argument applies with more
-force to an architectural inventory: what matters is the graph the *registry*
-actually exposes at runtime, which is what dispatch walks. A grep over
-``src/modules`` sees files; this sees the system.
+``docs/AUTONOMY_CHARTER.md``'s SENSE stage makes the running software the
+source of truth for the module and CLI reference ("derive current state from
+authoritative sources only, never from recall: build and query the binary"),
+because a static doc drifts. The same argument applies with more force to an
+architectural inventory: what matters is the graph the *registry* actually
+exposes at runtime, which is what dispatch walks. A grep over ``src/modules``
+sees files; this sees the system.
 
 Inputs, in order of preference:
 

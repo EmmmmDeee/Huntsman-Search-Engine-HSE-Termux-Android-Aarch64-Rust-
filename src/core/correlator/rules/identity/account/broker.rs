@@ -3,6 +3,7 @@
 //! Split from `account.rs`; rules re-exported by `super`.
 
 use super::super::*;
+use super::*;
 
 /// AU-054 — PII located on data broker(s).
 ///
@@ -141,10 +142,7 @@ pub(in crate::core::correlator) fn rule_au_055_primary_source_accounts(
             && OWNED_ACCOUNT_TAGS.iter().any(|t| e.has_tag(t))
             && !e.has_tag("weak-detection")
     }) {
-        let Some(host) = url::Url::parse(&e.value).ok().and_then(|u| {
-            u.host_str()
-                .map(|h| h.trim_start_matches("www.").to_lowercase())
-        }) else {
+        let Some(host) = www_stripped_host(&e.value) else {
             continue;
         };
         if broker_for_host(&host).is_some() {
