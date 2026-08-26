@@ -107,19 +107,24 @@ impl Module for EmailLocale {
         }
 
         if let Some(geo) = detect_locale_from_local_part(local) {
-            // Include the source local-part in the summary: `Entity::absorb`
-            // dedups evidence by (source, summary), and the locale-inferred
-            // Address entity is keyed by REGION, not by email — so two
-            // genuinely distinct emails independently matching the SAME
+            // Include the source local-part AND domain in the summary:
+            // `Entity::absorb` dedups evidence by (source, summary), and the
+            // locale-inferred Address entity is keyed by REGION, not by email —
+            // so two genuinely distinct emails independently matching the SAME
             // locale pattern merge onto the same entity. Without a per-email
             // distinguisher here, their evidence collided into one entry
             // (byte-identical summary), and AU-083 — which requires >=2
             // distinct email_locale evidence entries to corroborate — could
-            // never fire from real scan data.
+            // never fire from real scan data. The local part alone is not
+            // enough: two real aliases of the same person sharing a local part
+            // across providers (`erik.johansson@gmail.com` /
+            // `erik.johansson@hotmail.com`, a common OSINT pattern) still
+            // collided on an identical summary; the domain makes every
+            // genuinely distinct email produce a genuinely distinct entry.
             let ev = Evidence::new(
                 SRC,
                 format!(
-                    "Email local part '{local}' matches {} naming pattern",
+                    "Email local part '{local}' ({domain}) matches {} naming pattern",
                     geo.locale
                 ),
             )
