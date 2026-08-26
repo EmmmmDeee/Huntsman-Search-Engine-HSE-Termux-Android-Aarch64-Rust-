@@ -723,6 +723,28 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         probe_parser: None,
     },
     ServiceDef {
+        name: "dehashed",
+        env_var: "HUNTSMAN_DEHASHED_KEY",
+        category: "breach",
+        // DeHashed v2's only endpoint is `POST /v2/search` with a required JSON
+        // body (`modules/dehashed/mod.rs`) — no keyless/GET account-status
+        // endpoint is documented. Same reasoning as `urlhaus`/`niamonx` below: a
+        // GET-based probe against the real endpoint safely lands `Indeterminate`
+        // (never a false `Invalid`, since only a 401/403 or an auth-shaped 400
+        // body — neither plausible from a request the server can't even parse —
+        // flips the verdict) rather than fabricating an unverified alternate
+        // endpoint. It still confirms the pool integration (rotation, dashboard
+        // visibility, real `report_key_exhausted` effect) works, and — unlike no
+        // entry at all — lets `key_health::likely_env_var` resolve this module's
+        // env var so a live auth failure (observed: `HTTP 403 Forbidden:
+        // {"error": "Issue with API Key"}`) surfaces in `hse doctor`'s
+        // "CONFIGURED KEY(S) REJECTED" report instead of being silently dropped.
+        test_url: "https://api.dehashed.com/v2/search",
+        key_header: KeyPlacement::Header("Dehashed-Api-Key"),
+        rate_limit_reset_secs: 60,
+        probe_parser: None,
+    },
+    ServiceDef {
         name: "fullcontact",
         env_var: "HUNTSMAN_FULLCONTACT_KEY",
         category: "identity",

@@ -217,6 +217,26 @@ use super::*;
         }
     }
 
+    // `dehashed` was missing its own `ServiceDef` entirely — not one of the
+    // "nine" above, but the exact same bug class: `fullcontact`'s own comment
+    // ("same reasoning as `urlhaus`/`dehashed` above") already claimed a
+    // `dehashed` entry sits above it in this file, yet `find_service("dehashed")`
+    // returned `None` — no pool integration, invisible to
+    // `key_health::likely_env_var`, and every `add_and_validate("dehashed", ..)`
+    // call silently no-op'd (`validate_key` returns `None` the instant
+    // `find_service` does, before ever reaching the network).
+    #[test]
+    fn dehashed_is_poolable_and_uses_dehashed_api_key_header() {
+        // modules/dehashed/mod.rs sends `Dehashed-Api-Key: <key>` (v2, POST-only).
+        assert!(is_poolable_service("dehashed"));
+        let def = find_service("dehashed").expect("dehashed service def present");
+        assert_eq!(def.env_var, "HUNTSMAN_DEHASHED_KEY");
+        match &def.key_header {
+            KeyPlacement::Header(h) => assert_eq!(*h, "Dehashed-Api-Key"),
+            other => panic!("dehashed must authenticate with Dehashed-Api-Key, got {other:?}"),
+        }
+    }
+
     #[test]
     fn service_for_env_resolves_the_canonical_pool_name() {
         assert_eq!(
