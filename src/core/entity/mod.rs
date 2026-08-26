@@ -19,6 +19,8 @@ use std::fmt;
 use std::hash::BuildHasher;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::util::url_util::is_tracking_param_key;
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 /// Corroboration boost coefficient (architecture invariant).
@@ -1518,75 +1520,6 @@ impl fmt::Write for HashWrite<'_> {
         self.0.update(s.as_bytes());
         Ok(())
     }
-}
-
-/// Pure-tracking URL query-parameter keys that are safe to drop during
-/// normalisation so two discoveries of the same resource — one with a tracking
-/// suffix, one without — hash to the same UID and corroborate instead of
-/// fragmenting into two single-source entities.
-///
-/// Curated conservatively from the widely-used ClearURLs / Brave / Firefox
-/// strip-lists: only params that are *unambiguously* tracking are listed.
-/// Resource-identifying params (YouTube `v`, generic `id`/`p`/`q`/`page`) are
-/// deliberately ABSENT and always preserved — dropping one would alias two
-/// genuinely different pages into one UID (a false merge), the opposite and
-/// worse failure. The `utm_*` family is matched by prefix in
-/// [`is_tracking_param_key`] rather than enumerated here.
-const URL_TRACKING_PARAMS: &[&str] = &[
-    // Google / Ads
-    "gclid",
-    "gclsrc",
-    "dclid",
-    "gbraid",
-    "wbraid",
-    "_ga",
-    "_gl",
-    // Facebook / Instagram / Meta
-    "fbclid",
-    "fb_action_ids",
-    "fb_action_types",
-    "fb_ref",
-    "fb_source",
-    "igshid",
-    "igsh",
-    "mibextid",
-    // Microsoft / Bing, Twitter/X, Yandex
-    "msclkid",
-    "twclid",
-    "ref_src",
-    "ref_url",
-    "yclid",
-    // Email / marketing automation
-    "mc_cid",
-    "mc_eid",
-    "mkt_tok",
-    "_hsenc",
-    "_hsmi",
-    "hsctatracking",
-    "vero_id",
-    "vero_conv",
-    "oly_anon_id",
-    "oly_enc_id",
-    "wickedid",
-    // Misc analytics
-    "spm",
-    "scm",
-    "s_kwcid",
-    "_openstat",
-    "icid",
-];
-
-/// True when a query-parameter key is pure tracking and safe to drop during URL
-/// normalisation: the `utm_*` family (case-insensitive prefix) or an exact
-/// (case-insensitive) match in [`URL_TRACKING_PARAMS`]. Uses `get(..4)` rather
-/// than slicing so a non-ASCII key can never panic on a char boundary.
-fn is_tracking_param_key(key: &str) -> bool {
-    if key.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("utm_")) {
-        return true;
-    }
-    URL_TRACKING_PARAMS
-        .iter()
-        .any(|p| key.eq_ignore_ascii_case(p))
 }
 
 /// Canonicalise a URL query string for dedup: drop pure-tracking params

@@ -389,11 +389,18 @@ pub(in crate::core::correlator) fn rule_au_079_bio_cross_mention(
 /// collection methods (e.g. name extracted from a breach record *and* from
 /// a public professional profile).
 ///
-/// Canonical normalisation: lowercase all words, strip punctuation used in
-/// "Last, First" or hyphenated formats, sort tokens alphabetically.  This
-/// makes all of `"Haigen Bamford"`, `"HAIGEN BAMFORD"`, `"Bamford, Haigen"`,
-/// and `"Bamford-Haigen"` equivalent — the sort removes ordering ambiguity
-/// and the case-fold handles all-caps breach dumps.
+/// Canonical normalisation: lowercase all words, split into tokens on
+/// WHITESPACE only — via [`crate::util::canonical::name_word_tokens`], the
+/// same tokeniser `core::resolve::canonical_name` uses — then sort tokens
+/// alphabetically. This makes `"Haigen Bamford"`, `"HAIGEN BAMFORD"` and
+/// `"Bamford, Haigen"` equivalent: the sort removes ordering ambiguity, the
+/// case-fold handles all-caps breach dumps, and stripping a token's
+/// SURROUNDING punctuation (rather than splitting on it) folds the trailing
+/// comma without also splitting a hyphenated compound surname like
+/// `"Smith-Jones"` into two tokens that could then collide with an unrelated
+/// space-separated `"Smith Jones"` — the false-merge class
+/// `core::resolve`'s own module docs describe closing, which this rule used
+/// to reopen by tokenising on `-`/`.` as if they were separators.
 ///
 /// Gates: both entities must have ≥ 2 non-trivial (len ≥ 2) name tokens
 /// after normalisation, and must come from at least one source family the
@@ -417,30 +424,29 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
     ts: u64,
 ) -> Vec<Correlation> {
     let entities = context.entities();
-    // Normalise: lowercase → split on whitespace/comma/hyphen/period → filter
-    // ≥ 2-char tokens → sort → join with space.
-    fn normalise_name(s: &str) -> Option<String> {
-        let mut tokens: Vec<String> = s
-            .split(|c: char| c.is_whitespace() || c == ',' || c == '-' || c == '.')
-            .filter(|t| !t.is_empty())
-            .map(str::to_lowercase)
+    // The name's tokens in ORIGINAL order (unsorted). Two records that group on the
+    // same sorted canonical but differ here matched only by REORDERING.
+    //
+    // Tokenised via the shared `name_word_tokens` (whitespace-only splitting,
+    // internal hyphen/apostrophe/dot preserved) rather than a local
+    // separator set, so a hyphenated compound surname can never split into
+    // tokens that then collide with an unrelated space-separated name — see
+    // this rule's doc comment above.
+    fn ordered_tokens(s: &str) -> Vec<String> {
+        crate::util::canonical::name_word_tokens(s)
+            .into_iter()
             .filter(|t| t.len() >= 2)
-            .collect();
+            .collect()
+    }
+
+    // Normalise: tokenise (above) → sort → join with space.
+    fn normalise_name(s: &str) -> Option<String> {
+        let mut tokens = ordered_tokens(s);
         if tokens.len() < 2 {
             return None; // too ambiguous
         }
         tokens.sort();
         Some(tokens.join(" "))
-    }
-
-    // The name's tokens in ORIGINAL order (unsorted). Two records that group on the
-    // same sorted canonical but differ here matched only by REORDERING.
-    fn ordered_tokens(s: &str) -> Vec<String> {
-        s.split(|c: char| c.is_whitespace() || c == ',' || c == '-' || c == '.')
-            .filter(|t| !t.is_empty())
-            .map(str::to_lowercase)
-            .filter(|t| t.len() >= 2)
-            .collect()
     }
     // A "bare transposition": the two names share a token multiset (they already
     // grouped on the sorted canonical) but differ in order, and NEITHER declared

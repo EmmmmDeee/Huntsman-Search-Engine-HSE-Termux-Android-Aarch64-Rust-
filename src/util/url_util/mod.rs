@@ -56,6 +56,85 @@ pub fn host_from_url(url: &str) -> Option<String> {
     Some(host)
 }
 
+/// Pure-tracking URL query-parameter keys that are safe to drop when building
+/// a dedup key for a URL, so two discoveries of the same resource — one with a
+/// tracking suffix, one without — key identically instead of fragmenting.
+///
+/// Shared by [`crate::core::entity`]'s `Url` entity-UID normalisation and
+/// `modules::search_engines::helpers::urls::canonicalize_url`'s SERP
+/// cross-engine dedup key: before this list moved here, each kept its own
+/// independently-curated copy, and they had already drifted — the search
+/// module's local list was missing several of these (`twclid`, `igsh`,
+/// `mibextid`, `vero_id`, `spm`, `icid`, …), so a URL varying only in one of
+/// those params deduplicated as one entity but as two distinct search
+/// results. One list means the two consumers can no longer silently disagree
+/// on what counts as tracking noise.
+///
+/// Curated conservatively from the widely-used ClearURLs / Brave / Firefox
+/// strip-lists: only params that are *unambiguously* tracking are listed.
+/// Resource-identifying params (YouTube `v`, generic `id`/`p`/`q`/`page`) are
+/// deliberately ABSENT and always preserved — dropping one would alias two
+/// genuinely different resources into one key (a false merge), the opposite
+/// and worse failure. The `utm_*` family is matched by prefix in
+/// [`is_tracking_param_key`] rather than enumerated here.
+pub const URL_TRACKING_PARAMS: &[&str] = &[
+    // Google / Ads
+    "gclid",
+    "gclsrc",
+    "dclid",
+    "gbraid",
+    "wbraid",
+    "_ga",
+    "_gl",
+    // Facebook / Instagram / Meta
+    "fbclid",
+    "fb_action_ids",
+    "fb_action_types",
+    "fb_ref",
+    "fb_source",
+    "igshid",
+    "igsh",
+    "mibextid",
+    // Microsoft / Bing, Twitter/X, Yandex
+    "msclkid",
+    "twclid",
+    "ref_src",
+    "ref_url",
+    "yclid",
+    // Email / marketing automation
+    "mc_cid",
+    "mc_eid",
+    "mkt_tok",
+    "_hsenc",
+    "_hsmi",
+    "hsctatracking",
+    "vero_id",
+    "vero_conv",
+    "oly_anon_id",
+    "oly_enc_id",
+    "wickedid",
+    // Misc analytics
+    "spm",
+    "scm",
+    "s_kwcid",
+    "_openstat",
+    "icid",
+];
+
+/// True when a query-parameter key is pure tracking and safe to drop during URL
+/// canonicalisation: the `utm_*` family (case-insensitive prefix) or an exact
+/// (case-insensitive) match in [`URL_TRACKING_PARAMS`]. Uses `get(..4)` rather
+/// than slicing so a non-ASCII key can never panic on a char boundary.
+#[must_use]
+pub fn is_tracking_param_key(key: &str) -> bool {
+    if key.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("utm_")) {
+        return true;
+    }
+    URL_TRACKING_PARAMS
+        .iter()
+        .any(|p| key.eq_ignore_ascii_case(p))
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");
