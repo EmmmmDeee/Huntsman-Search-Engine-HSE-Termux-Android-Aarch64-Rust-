@@ -90,12 +90,18 @@ async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> ProbeOutcome
     let mut cmd = tokio::process::Command::new("curl");
     cmd.args([
         "-s",
-        "-o",
-        "/dev/null",
         "-w",
-        "%{http_code}",
+        "\n%{http_code}",
         "--max-time",
         &secs,
+        // The body is now inspected (see `classify_probe_response`'s 400
+        // handling below), so — unlike the old `-o /dev/null` version — it is
+        // no longer discarded; cap it exactly as every other curl invocation
+        // in this codebase does (`util::curl::FETCH_HARDENING_ARGS`'s own
+        // `--max-filesize`), so a misbehaving endpoint can't make this probe
+        // buffer an unbounded response.
+        "--max-filesize",
+        crate::util::curl::CURL_MAX_DOWNLOAD_BYTES,
     ]);
 
     match sdef.key_header {
@@ -138,13 +144,49 @@ async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> ProbeOutcome
     let Some(output) = output else {
         return ProbeOutcome::Indeterminate;
     };
-    let code = String::from_utf8_lossy(&output.stdout);
-    match code.trim() {
+    let raw = String::from_utf8_lossy(&output.stdout);
+    // `-w "\n%{http_code}"` unconditionally appends a newline then the status
+    // code after the body, so the LAST newline in the stream is always that
+    // separator — `rsplit_once` finds it regardless of any newlines the body
+    // itself contains (JSON bodies are typically single-line, but this must
+    // not assume it). No output at all (e.g. curl killed before writing
+    // anything) leaves no separator to find, which the `None` arm treats the
+    // same as any other unparseable response: indeterminate, never a rejection.
+    let (body, code) = raw.rsplit_once('\n').unwrap_or(("", raw.as_ref()));
+    classify_probe_response(body, code.trim())
+}
+
+/// Classify a validation probe's outcome from the response body and status
+/// code — pure, so the 400-as-auth-rejection case is unit-tested directly
+/// without a live round-trip.
+///
+/// Split from [`validate_against_endpoint`] because that function's curl
+/// subprocess call previously discarded the body (`-o /dev/null`) and
+/// classified on the status code alone. That missed a real, already-diagnosed
+/// gap: Netlas and ONYPHE both answer a missing/invalid key with a `400 Bad
+/// Request` rather than 401/403 (see
+/// [`crate::util::http::is_auth_failure_400_body`], added when the *live scan*
+/// cascade hit this same ambiguity — `AUTH_400_SIGNATURES`'s doc comment
+/// carries the real observed bodies). This probe runs earlier, when an
+/// operator adds the key (`add_and_validate`) or `hse doctor` re-checks it: a
+/// bad Netlas/ONYPHE key fell through every arm to `Indeterminate`, so
+/// `add_and_validate` stored it `Untested` — silently omitting the one
+/// diagnostic (the pool's `Invalid` status) that would have told the operator
+/// their key doesn't work — instead of catching it at the point they can
+/// still fix it, before a scan burns a `next_key` selection on it.
+fn classify_probe_response(body: &str, code: &str) -> ProbeOutcome {
+    match code {
         "200" | "201" | "204" | "301" | "302" => ProbeOutcome::Valid,
         // A definitive auth rejection — the only outcome that proves the key bad.
         "401" | "403" => ProbeOutcome::Rejected,
-        // Connect failure (curl writes "000"), rate-limit (429), 5xx, or any other
-        // status: the key's validity could not be determined, so don't condemn it.
+        // Netlas/ONYPHE-shaped: a 400 whose body carries an auth-failure
+        // signature is a rejection in disguise, not an ambiguous bad-request.
+        // Gated on the body check so a genuine bad-query 400 (no such
+        // signature) still falls through to `Indeterminate`, unchanged.
+        "400" if crate::util::http::is_auth_failure_400_body(body) => ProbeOutcome::Rejected,
+        // Connect failure (curl writes "000"), rate-limit (429), 5xx, an
+        // ordinary bad-query 400, or any other status: the key's validity
+        // could not be determined, so don't condemn it.
         _ => ProbeOutcome::Indeterminate,
     }
 }
@@ -158,6 +200,75 @@ pub fn merge_pool_into_env(pool: &KeyPool, keys: &mut std::collections::HashMap<
         }
         if let Some(val) = pool.next_key(sdef.name) {
             keys.insert(sdef.env_var.to_string(), val);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_2xx_or_redirect_status_is_valid_regardless_of_body() {
+        for code in ["200", "201", "204", "301", "302"] {
+            assert_eq!(classify_probe_response("", code), ProbeOutcome::Valid);
+        }
+    }
+
+    #[test]
+    fn a_401_or_403_is_rejected_regardless_of_body() {
+        assert_eq!(
+            classify_probe_response("irrelevant", "401"),
+            ProbeOutcome::Rejected
+        );
+        assert_eq!(
+            classify_probe_response("irrelevant", "403"),
+            ProbeOutcome::Rejected
+        );
+    }
+
+    // The exact bodies `AUTH_400_SIGNATURES` documents as observed live from a
+    // dead key — Netlas and ONYPHE both answer with 400, not 401/403.
+    #[test]
+    fn a_400_with_an_auth_failure_body_is_rejected_not_indeterminate() {
+        assert_eq!(
+            classify_probe_response(
+                r#"{"detail":"Request had invalid authorization credentials: API key not found"}"#,
+                "400"
+            ),
+            ProbeOutcome::Rejected,
+            "Netlas' dead-key 400 must be recognised as a rejection, so a bad \
+             key is reported Invalid at add-time instead of sitting Untested"
+        );
+        assert_eq!(
+            classify_probe_response(
+                r#"{"count":0,"error":3,"status":"nok","text":"Invalid API key format","took":0}"#,
+                "400"
+            ),
+            ProbeOutcome::Rejected,
+            "ONYPHE's dead-key 400 must be recognised as a rejection"
+        );
+    }
+
+    #[test]
+    fn a_400_without_an_auth_signature_stays_indeterminate() {
+        // A genuine bad-query 400 must NOT be misread as a key rejection —
+        // only the documented auth-failure phrasing flips the verdict.
+        assert_eq!(
+            classify_probe_response(r#"{"error":"malformed request"}"#, "400"),
+            ProbeOutcome::Indeterminate
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_or_transient_status_is_indeterminate() {
+        // "000" is curl's own marker for a connect failure (no HTTP response
+        // at all); 429/5xx are transient, not a verdict on the key itself.
+        for code in ["000", "429", "500", "503"] {
+            assert_eq!(
+                classify_probe_response("", code),
+                ProbeOutcome::Indeterminate
+            );
         }
     }
 }
