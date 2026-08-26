@@ -209,6 +209,53 @@ fn build_target_summary_evidence_lists_confirmed_platforms() {
 }
 
 #[test]
+fn build_target_summary_stamps_hits_verified_and_status_only() {
+    // OD-17: AU-035/AU-077's is_verified_discovery reads `hits_verified` on
+    // THIS aggregate evidence record (the per-platform verified/weak split
+    // lives on separate Url entities the rule never scans). An absent
+    // attribute reads as vacuously verified, so an all-status-only sweep
+    // could fabricate a "prediction confirmed" bridge. Must mirror
+    // `username_search`/`streaming_probe`'s existing hits_verified shape.
+    let t = Target::new(TargetKind::Username, "testuser");
+
+    // All hits status-only (weak-detection): 0 verified of 2 found.
+    let weak =
+        build_target_summary(&t, 2, 0, 30, &["reddit", "tumblr"], "scan").expect("should succeed");
+    assert_eq!(
+        weak.evidence[0]
+            .attributes
+            .get("hits_verified")
+            .map(String::as_str),
+        Some("0")
+    );
+    assert_eq!(
+        weak.evidence[0]
+            .attributes
+            .get("hits_status_only")
+            .map(String::as_str),
+        Some("2")
+    );
+
+    // A mixed sweep: 1 body-verified + 2 status-only of 3 found.
+    let mixed = build_target_summary(&t, 3, 1, 30, &["github", "reddit", "tumblr"], "scan")
+        .expect("should succeed");
+    assert_eq!(
+        mixed.evidence[0]
+            .attributes
+            .get("hits_verified")
+            .map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(
+        mixed.evidence[0]
+            .attributes
+            .get("hits_status_only")
+            .map(String::as_str),
+        Some("2")
+    );
+}
+
+#[test]
 fn build_target_summary_stamps_platforms_count_for_au011() {
     // AU-011 (cross-platform username footprint) counts how many platforms ONE
     // module confirmed a handle on by reading the `platforms_count` evidence
