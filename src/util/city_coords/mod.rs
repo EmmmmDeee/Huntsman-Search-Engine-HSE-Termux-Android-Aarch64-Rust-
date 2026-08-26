@@ -291,6 +291,20 @@ fn names_au_locality(lower: &str) -> bool {
             && crate::util::address_au::single_state_code(lower).is_some())
 }
 
+/// True when `name` (already lowercased, space-separated words) EXACTLY
+/// matches a tabulated Australian locality's canonical name in [`CITIES`] —
+/// e.g. `"gold coast"` or `"brisbane"`. Unlike [`city_coords`]'s free-text
+/// phrase search, this takes one already-segmented candidate phrase and asks
+/// only "is this exact name a known AU suburb?" — for a caller that has
+/// already split its own text into candidate words (e.g. hyphenated URL slug
+/// tokens) and needs to disambiguate which word-count window is the real
+/// suburb, not geocode an address. Pure; no I/O.
+pub(crate) fn is_tabulated_au_city(name: &str) -> bool {
+    CITIES
+        .iter()
+        .any(|&(city, lat, lon)| city == name && crate::util::geo::is_in_australia(lat, lon))
+}
+
 /// Resolve a bare 4-digit AU postcode to an approximate `(lat, lon)`.
 ///
 /// Delegates to the single source of truth — the ground-truth offline gazetteer

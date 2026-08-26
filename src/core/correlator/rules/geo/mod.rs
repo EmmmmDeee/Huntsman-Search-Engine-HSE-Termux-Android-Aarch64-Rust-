@@ -603,4 +603,37 @@ mod tests {
             None
         );
     }
+
+    #[test]
+    fn extract_ratemyagent_suburb_recognises_multi_word_au_suburbs() {
+        // Gold Coast, Sunshine Coast and Alice Springs are all prominent
+        // ratemyagent.com.au markets — a two-token suburb must not truncate to
+        // its last word alone ("coast", not "gold coast").
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://www.ratemyagent.com.au/real-estate-agent/john-smith-gold-coast-12345/"
+            ),
+            Some("gold coast".to_string())
+        );
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://www.ratemyagent.com.au/real-estate-agent/jane-doe-sunshine-coast-x9z12/"
+            ),
+            Some("sunshine coast".to_string())
+        );
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://www.ratemyagent.com.au/real-estate-agent/pat-lee-alice-springs-ab123/"
+            ),
+            Some("alice springs".to_string())
+        );
+        // An elastic single-token <name> ahead of a real two-word suburb must
+        // still resolve the full suburb, not just its last word.
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://www.ratemyagent.com.au/real-estate-agent/soloname-port-augusta-z1/"
+            ),
+            Some("port augusta".to_string())
+        );
+    }
 }
