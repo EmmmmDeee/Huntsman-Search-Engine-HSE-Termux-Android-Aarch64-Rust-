@@ -251,6 +251,23 @@ IF cascade_enabled AND pivot_found:
     SKIP cascade
 ```
 
+### Worked Example: Username Target
+
+A second candidate set, to show the scoring isn't specific to email targets —
+same mechanical ranking as the email example above (step 2), applied to a
+username input:
+
+```
+Candidates for `unique_username_123`:
+  /username/social: Value=75, Cost=1.0, ROI=75
+  /search: Value=50, Cost=1.0, ROI=50
+  /username/history: Value=40, Cost=1.0, ROI=40
+
+Ranked by ROI: /username/social first, then /search, then /username/history
+— all three are cheap enough (1 credit each) that a typical budget executes
+all three rather than stopping at the first hit.
+```
+
 ---
 
 ## Part 4: Intelligent Cascade Routing
