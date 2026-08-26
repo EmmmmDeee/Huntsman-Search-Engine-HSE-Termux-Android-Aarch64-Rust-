@@ -103,6 +103,19 @@ async fn run_batch(base: ScanCmd, path: &str) -> crate::core::error::Result<()> 
         }
     }
     eprintln!("\nbatch complete: {ok} succeeded, {failed} failed, {total} total");
+    // A batch that lost seeds did not do what it was asked to do, so it must not
+    // report success — this returned `Ok(())` even when every single seed
+    // failed, which made `hse scan --input-file … && publish` publish nothing.
+    // Failing here does NOT abort the run: every seed has already been attempted
+    // and its results stored by this point (per-seed failures are still reported
+    // as they happen and never sink the rest of the list), so this changes only
+    // the exit status, not how much work gets done.
+    if failed > 0 {
+        return Err(crate::core::error::Error::Other(format!(
+            "batch: {failed}/{total} seed(s) failed ({ok} succeeded) — \
+             see the per-seed errors above"
+        )));
+    }
     Ok(())
 }
 
@@ -350,6 +363,14 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         Err(e) => eprintln!("warning: could not write full dossier: {e}"),
     }
 
+    // How complete this scan's answer actually is, from the single source every
+    // read path shares. Computed once here and surfaced on ALL THREE output
+    // formats: the table below, the JSON payload, and the dossier's
+    // frontmatter. Previously `hse scan` read neither `scan.status` nor
+    // `scan.error`, so a Failed scan and a budget-truncated one both rendered
+    // exactly like a clean, exhaustive one.
+    let caveat = scan.completeness_caveat("this scan");
+
     if cmd.output == "json" {
         // Full self-optimization payload — scan + entities + correlations
         // + diagnostics (module ranking, confidence calibration, geo
@@ -377,6 +398,12 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "scan": scan,
+                // `scan` already carries `status` and `stop_reason`, but a
+                // consumer would have to re-implement the truncation predicate
+                // to act on them. Surface the rendered caveat (null when the
+                // scan is a complete answer) so `--output json` discloses
+                // exactly what the human formats do.
+                "completeness_caveat": caveat,
                 "entities": entities,
                 "correlations": correlations,
                 "relations": relations,
@@ -410,12 +437,22 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     } else {
         let color = use_color();
         println!(
-            "\nScan {} — {} entities for {}={}",
+            "\nScan {} — {} entities for {}={} [{}]",
             &sid[..8],
             entities.len(),
             kind_str,
-            cmd.value
+            cmd.value,
+            scan.status.as_str()
         );
+        // The caveat goes to stderr, next to the scan's other operator notes,
+        // so it survives `hse scan … > results.txt` — the case where a silently
+        // truncated scan is most likely to be read later as a complete answer.
+        if let Some(ref c) = caveat {
+            eprintln!("⚠ {c}");
+        }
+        if let Some(ref e) = scan.error {
+            eprintln!("⚠ scan error: {e}");
+        }
         if scan.modules_run > 0 {
             // `skipped` is shown so toggle effects are observable in the
             // standard view: excluding a module (`--exclude`) or disabling one
@@ -483,6 +520,24 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
                 );
             }
         }
+    }
+
+    // Exit status must agree with the scan's own verdict. `cmd_scan` used to
+    // return `Ok(())` unconditionally, so `hse scan … && next-step` ran the next
+    // step after a scan that failed outright — and `$?` was 0 for a scan whose
+    // every module errored. A Failed scan is an error; the results above are
+    // still printed first, because a partial result is worth more to the
+    // operator than a bare exit code.
+    //
+    // Aborted and budget-truncated scans deliberately stay `Ok`: the operator
+    // asked for the stop in one case and set the budget in the other, so
+    // neither is a failure — both are disclosed through `caveat` above instead.
+    if scan.status == crate::core::scan::ScanStatus::Failed {
+        return Err(crate::core::error::Error::Other(format!(
+            "scan {} failed: {}",
+            &sid[..8],
+            scan.error.as_deref().unwrap_or("no error recorded")
+        )));
     }
     Ok(())
 }

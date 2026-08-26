@@ -720,6 +720,78 @@ impl ScanStatus {
     }
 }
 
+/// Why a scan's expansion stopped.
+///
+/// # Why this is persisted rather than only emitted
+///
+/// The engine has always known this — [`crate::core::event::EventKind`]'s
+/// `ExpansionStop` carries [`StopReason::label`] onto the live event stream.
+/// But the reason was never written to the scan record, so every consumer that
+/// reads a *finished* scan back from the store (`hse scan`'s table output,
+/// `hse export`, `hse audit`, the dossier, the HTTP API) saw only
+/// [`ScanStatus::Complete`] and could not tell a scan that genuinely exhausted
+/// its candidates from one that was cut off partway by a budget.
+///
+/// That distinction is the difference between "there is no more evidence" and
+/// "we stopped looking" — the single most consequential thing an OSINT scan can
+/// get wrong, because an analyst reads the first as a negative finding. The
+/// entities such a scan *did* produce are all genuine; the defect is the
+/// silence about what was never reached. So the fix is disclosure, matching the
+/// principle [`Scan::module_accounting_line`] already states: report the
+/// shortfall, never fabricate the missing part.
+///
+/// [`StopReason::truncated`] is the predicate that separates the two benign
+/// terminations (the search space was genuinely exhausted) from the two
+/// truncating ones (a budget cut the search short).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopReason {
+    /// The frontier emptied — every candidate above the expansion confidence
+    /// floor was pursued. Not a truncation.
+    NoMoreCandidates,
+    /// `--depth` rounds all ran to completion. Not a truncation: the operator
+    /// asked for exactly this much expansion and got it.
+    DepthExhausted,
+    /// `max_entities` reached — expansion stopped with candidates still queued.
+    MaxEntities(usize),
+    /// `max_wall_time_secs` exceeded — expansion stopped with candidates still
+    /// queued.
+    MaxWallTime(u64),
+    /// Operator-initiated cancellation. Reported through
+    /// [`ScanStatus::Aborted`] as well; carried here so the scan record names
+    /// the same reason the event stream did.
+    Cancelled,
+}
+
+impl StopReason {
+    /// One human sentence naming the reason, single-sourced so the live
+    /// `ExpansionStop` event, the persisted scan record and every renderer
+    /// cannot drift.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::NoMoreCandidates => "no more high-confidence candidates".into(),
+            Self::DepthExhausted => "maximum expansion depth reached".into(),
+            Self::MaxEntities(n) => format!("max_entities={n} reached"),
+            Self::MaxWallTime(s) => format!("max_wall_time_secs={s} exceeded"),
+            Self::Cancelled => "cancelled by operator".into(),
+        }
+    }
+
+    /// Whether the expansion was cut short with work still outstanding — i.e.
+    /// whether absence of evidence in this scan may be an artefact of the
+    /// budget rather than a finding.
+    ///
+    /// [`Self::Cancelled`] is deliberately **not** truncating here: an operator
+    /// cancel is already surfaced by [`ScanStatus::Aborted`], which every
+    /// disclosure path keys off separately, so counting it twice would attach
+    /// two different warnings to one event.
+    #[must_use]
+    pub fn truncated(&self) -> bool {
+        matches!(self, Self::MaxEntities(_) | Self::MaxWallTime(_))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scan {
     pub id: String,
@@ -751,6 +823,14 @@ pub struct Scan {
     pub modules_cached: usize,
     #[serde(default)]
     pub options: ScanOptions,
+    /// Why this scan's expansion stopped, once it has. `None` on a scan that
+    /// has not finished expanding, on a depth-0 scan (which runs no expansion),
+    /// and on any scan record written before this field existed — hence
+    /// `#[serde(default)]`: `Scan` round-trips through the `scans.data_json`
+    /// column, so an older row deserialises with `None` and every consumer
+    /// treats it exactly as it did before, with no schema migration.
+    #[serde(default)]
+    pub stop_reason: Option<StopReason>,
 }
 
 impl Scan {
@@ -801,6 +881,58 @@ impl Scan {
         }
     }
 
+    /// The operator-facing caveat this scan needs, or `None` when its results
+    /// stand on their own as a complete answer.
+    ///
+    /// The single source for "how much of this scan should you trust", so the
+    /// offline read paths (`hse export`, `audit`, `gap`, `diff`, `benchmark`),
+    /// `hse scan`'s own output and the dossier cannot drift apart on it.
+    /// `subject` names the scan the way the caller refers to it ("scan a1b2c3",
+    /// "scan latest", "this scan") and opens the sentence.
+    ///
+    /// The four status arms reproduce the framing established when this
+    /// distinction was first drawn, and are pinned by tests in
+    /// `crate::app::runtime`: `Aborted` is deliberately NOT bucketed with
+    /// `Failed`/`Pending`/`Running`, because those three can still change (a
+    /// crash-recovered partial write, a scan not yet started, one actively
+    /// being written) whereas a completed abort's data is as final as a
+    /// `Complete` scan's — just shorter.
+    ///
+    /// The `Complete` arm is the one this gained when [`StopReason`] became
+    /// part of the scan record: a scan whose expansion was cut off by
+    /// `max_entities` / `max_wall_time_secs` reaches `Complete` like any other,
+    /// but its silence about what it never reached is not a finding. Returns
+    /// `None` for a benign stop reason and for `stop_reason: None` — including
+    /// every row written before the field existed — so no warning is ever
+    /// retro-fitted onto a scan on no evidence.
+    #[must_use]
+    pub fn completeness_caveat(&self, subject: &str) -> Option<String> {
+        match self.status {
+            ScanStatus::Complete => {
+                let r = self.stop_reason?;
+                r.truncated().then(|| {
+                    format!(
+                        "{subject} finished, but its expansion was TRUNCATED by a budget \
+                         ({}) — it stopped with candidates still queued, so a result missing \
+                         from this scan is not evidence that it does not exist; re-run with a \
+                         higher --max-entities / --max-wall-time-secs to search further",
+                        r.label()
+                    )
+                })
+            }
+            ScanStatus::Aborted => Some(format!(
+                "{subject} was stopped early by the operator (aborted) — entities from \
+                 modules that completed before the stop are final; no further data will \
+                 arrive for this scan"
+            )),
+            other => Some(format!(
+                "{subject} is {status}, not complete — recovering its checkpointed \
+                 (partial) entities; results may be incomplete",
+                status = other.as_str()
+            )),
+        }
+    }
+
     pub fn new(id: impl Into<String>, target: Target) -> Self {
         Self {
             id: id.into(),
@@ -817,6 +949,7 @@ impl Scan {
             modules_skipped: 0,
             modules_cached: 0,
             options: ScanOptions::default(),
+            stop_reason: None,
         }
     }
 
