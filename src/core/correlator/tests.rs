@@ -58,7 +58,7 @@ fn temporal_breach_cluster_survives_non_ascii_breach_date() {
     let mk = |value: &str, date: &str| {
         let mut e = Entity::new(EntityKind::Email, value, 0.8, "scan");
         e.tag("breach");
-        e.add_evidence(Evidence::new("test", "breach").with_attr("breach_date", date));
+        e.add_evidence(Evidence::new("hibp", "breach").with_attr("breach_date", date));
         e
     };
     let ents = vec![
@@ -76,7 +76,7 @@ fn temporal_breach_cluster_window_is_anchored_not_rolling() {
     let mk = |value: &str, date: &str| {
         let mut e = Entity::new(EntityKind::Email, value, 0.8, "scan");
         e.tag("breach");
-        e.add_evidence(Evidence::new("test", "breach").with_attr("breach_date", date));
+        e.add_evidence(Evidence::new("hibp", "breach").with_attr("breach_date", date));
         e
     };
     // Three breaches genuinely within a 30-day window → one cluster fires.
