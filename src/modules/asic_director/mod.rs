@@ -132,7 +132,19 @@ fn build_director_entities(
     // ACN entity → feeds abn_lookup for full address/coords.
     if !acn.is_empty() {
         let acn_clean: String = acn.chars().filter(char::is_ascii_digit).collect();
-        if acn_clean.len() == 9 {
+        // Checksum-validate before trusting it, exactly like every other
+        // caller in this codebase that mints an ACN-shaped value
+        // (au_business_id, the search_engines extractor,
+        // core::correlator::rules::org, core::scan's TargetKind inference).
+        // extract_acn() collects every digit anywhere in the row rather than
+        // a run anchored on the "ACN" label, so a company name that itself
+        // contains digits ("7-Eleven Stores Pty Ltd", "1300 Smiles Limited")
+        // glues those leading digits onto the real ACN's stream, producing a
+        // fabricated 9-digit value. Length alone can't catch that — the
+        // corruption preserves the count — but the checksum almost always
+        // will, so this is the honest floor against shipping a corrupted
+        // value to the live ASIC ABN Lookup API as a "confirmed" pivot.
+        if acn_clean.len() == 9 && crate::util::abn::is_valid_acn(&acn_clean) {
             let mut acn_e = Entity::new(
                 EntityKind::AbnAcn,
                 &acn_clean,
