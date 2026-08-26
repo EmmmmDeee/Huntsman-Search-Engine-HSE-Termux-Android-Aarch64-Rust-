@@ -70,7 +70,30 @@ pub const CANDIDATE_CONF: f64 = 0.25;
 /// and fired AU-003 / AU-034. Excluding it means a permutation needs two
 /// *genuine* sources to corroborate, while the derived entity still appears as a
 /// lead in the dossier (its evidence is kept and shown).
-pub const ENRICHMENT_ONLY_SOURCES: &[&str] = &["geo_normalize", "name_intel", "payid"];
+///
+/// `seed` is the operator's own target, recorded as evidence so the subject
+/// anchor is traceable. It is the INPUT to the scan, so counting it as a source
+/// that corroborates the input is a tautology: a live URL scan
+/// (`andersonbushikai.com`, debug bundle 6b2d34664852…) showed the seed URL with
+/// evidence from exactly `search_engines` + `seed` reported as
+/// `source_count=2`, `c_eff=0.99`, VERIFIED — one real observation presented as
+/// two. Because AU-003's floor for most kinds is 2, the seed alone could carry
+/// an entity half-way to a "corroborated by 2 independent source(s)" finding.
+///
+/// `url_extract` derives a `Domain` from a `Url` already in the graph. Its own
+/// module doc states it is "pure offline, zero network … confidence is derived
+/// from the URL's presence in the graph, not from a live check" — the same
+/// derivation-of-a-known-fact as `name_intel`, adding no independent sighting.
+/// In that same scan it was counted among the five "independent sources" AU-003
+/// reported for the apex domain, and among the five "infrastructure sources"
+/// AU-010 listed as confirming it.
+pub const ENRICHMENT_ONLY_SOURCES: &[&str] = &[
+    "geo_normalize",
+    "name_intel",
+    "payid",
+    "seed",
+    "url_extract",
+];
 
 /// True if `source` is a deterministic self-enrichment pass rather than an
 /// independent intelligence source (see [`ENRICHMENT_ONLY_SOURCES`]).

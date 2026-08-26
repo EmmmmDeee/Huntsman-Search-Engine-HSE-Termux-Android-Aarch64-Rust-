@@ -1553,3 +1553,40 @@ fn render_full_omits_the_live_tally_once_the_scan_is_terminal() {
         "the live tally must not appear on a finalised scan: {out}"
     );
 }
+
+#[test]
+fn provenance_names_the_modules_when_no_provider_attributes_exist() {
+    // Regression (live andersonbushikai.com scan, debug bundle 6b2d34664852…):
+    // the PROVENANCE block reported `providers/api key origins/sources: (none)`
+    // three times for a scan whose 17 entities were produced by seven named
+    // modules — dns_intel, doh_resolver, mnemonic_pdns, url_extract,
+    // search_engines, waf_detect, webserver_banner — every one of them printed
+    // in the evidence tree immediately below. The roll-up only read optional
+    // `provider`/`source`/`source_db` ATTRIBUTES that paid providers happen to
+    // set, and ignored `Evidence::source`, which is documented as "Module that
+    // produced this evidence". A section whose whole job is to say where the
+    // data came from asserted that nothing was known.
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let dir = tempfile::tempdir().expect("should succeed");
+    let db = dir.path().join("prov_test.db");
+    let store = Store::open(db.to_str().expect("should succeed")).expect("should succeed");
+    let target = Target::new(TargetKind::Url, "https://example.com/locations");
+    let scan = Scan::new("scan-prov", target);
+    store.upsert_scan(&scan).expect("should succeed");
+    let mut e = Entity::new(EntityKind::Domain, "example.com", 0.92, "scan-prov");
+    e.add_evidence(Evidence::new("dns_intel", "SOA record for example.com"));
+    e.add_evidence(Evidence::new("doh_resolver", "A record"));
+    store.upsert_entity(&e).expect("should succeed");
+
+    let out = render_full(&store, "scan-prov").expect("should succeed");
+    assert!(
+        out.contains("sources/sites  : dns_intel, doh_resolver"),
+        "modules that produced the evidence must be named, got:\n{}",
+        out.lines()
+            .filter(|l| l.starts_with("sources/sites")
+                || l.starts_with("providers")
+                || l.starts_with("api key origins"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
