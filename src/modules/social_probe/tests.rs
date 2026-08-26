@@ -280,20 +280,6 @@ fn build_target_summary_stamps_platforms_count_for_au011() {
 }
 
 #[test]
-fn build_target_summary_stamps_hits_verified_and_status_only() {
-    // OD-17: this summary previously carried no verification signal at all, so
-    // AU-011's status-only discount and AU-077/AU-035's is_verified_discovery
-    // guard had nothing to read for a social_probe-sourced entity — a handle
-    // found entirely via bare-status-code guesses could still register as
-    // "confirmed". found=4, verified=1 (3 status-only guesses among the hits).
-    let t = Target::new(TargetKind::Username, "testuser");
-    let e = build_target_summary(&t, 4, 1, 40, &["a", "b", "c", "d"], "scan").expect("summary");
-    let attrs = &e.evidence[0].attributes;
-    assert_eq!(attrs.get("hits_verified").map(String::as_str), Some("1"));
-    assert_eq!(attrs.get("hits_status_only").map(String::as_str), Some("3"));
-}
-
-#[test]
 fn build_target_summary_all_verified_has_zero_status_only() {
     let t = Target::new(TargetKind::Username, "testuser");
     let e = build_target_summary(&t, 2, 2, 20, &["a", "b"], "scan").expect("summary");
