@@ -226,14 +226,20 @@ mod tests {
         use crate::core::entity::Evidence;
         let mut a = dom("iqana.org");
         a.tag("typosquat");
-        a.add_evidence(Evidence::new("typosquat", "Registered lookalike via insertion"));
+        a.add_evidence(Evidence::new(
+            "typosquat",
+            "Registered lookalike via insertion",
+        ));
         a.add_evidence(Evidence::new(
             "recall",
             "Recalled from the local intelligence database (prior scan)",
         ));
         let mut b = dom("izana.org");
         b.tag("typosquat");
-        b.add_evidence(Evidence::new("typosquat", "Registered lookalike via insertion"));
+        b.add_evidence(Evidence::new(
+            "typosquat",
+            "Registered lookalike via insertion",
+        ));
         b.add_evidence(Evidence::new(
             "recall",
             "Recalled from the local intelligence database (prior scan)",

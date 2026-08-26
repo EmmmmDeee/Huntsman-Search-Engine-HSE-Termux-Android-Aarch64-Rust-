@@ -263,8 +263,8 @@ fn build_target_summary_reports_zero_verified_hits_for_an_all_status_only_run() 
     // be an explicit "0" (present, not absent) — that is what lets the
     // correlator's confirmation gate correctly refuse to treat it as verified.
     let t = Target::new(TargetKind::Username, "testuser");
-    let e = build_target_summary(&t, 2, 30, 0, 2, &["site1", "site2"], "scan")
-        .expect("should succeed");
+    let e =
+        build_target_summary(&t, 2, 30, 0, 2, &["site1", "site2"], "scan").expect("should succeed");
     assert_eq!(
         e.evidence[0]
             .attributes

@@ -1328,9 +1328,7 @@ pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
         // The same validity gate the phone rules use: ≥8 digits and not a single
         // repeated digit (a placeholder like 0000000000).
         let digits: Vec<char> = raw.chars().filter(char::is_ascii_digit).collect();
-        if is_breach_source(source)
-            && digits.len() >= 8
-            && !digits.iter().all(|c| *c == digits[0])
+        if is_breach_source(source) && digits.len() >= 8 && !digits.iter().all(|c| *c == digits[0])
         {
             facets.entry("phone").or_default().insert(uid.to_string());
         }

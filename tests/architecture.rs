@@ -354,6 +354,13 @@ fn core_does_not_import_util_directly() {
                 // anchor set; no I/O), same leaf category as `au_state_for_coords`.
                 // AU-099 uses it to label a bare coordinate with a human locality.
                 && !line.contains("util::geo::nearest_au_locality")
+                // Pure, dependency-free longest-match lookup of a token sequence
+                // against the same curated AU-locality anchor set `nearest_au_locality`
+                // reads (no I/O), same leaf category. AU-058 uses it to recover a
+                // multi-word AU suburb/market name (Gold Coast, Sunshine Coast, …)
+                // from a hyphenated profile-URL slug instead of truncating to the
+                // last token.
+                && !line.contains("util::geo::au_locality_match_len")
                 // Pure, dependency-free great-circle distance (haversine; no I/O,
                 // no deps), same leaf category as `nearest_au_locality`. The
                 // multi-source location-corroboration scorer
