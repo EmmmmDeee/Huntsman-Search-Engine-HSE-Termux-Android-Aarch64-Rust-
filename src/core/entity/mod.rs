@@ -1329,7 +1329,8 @@ impl EntityBuilder {
         self.entity
     }
 
-    /// Finish and push the entity into a [`ModuleResult`] — the terminal step
+    /// Finish and push the entity into a
+    /// [`ModuleResult`](crate::core::module::ModuleResult) — the terminal step
     /// for the overwhelmingly common "build one entity and emit it" case.
     pub fn push_to(self, result: &mut crate::core::module::ModuleResult) {
         result.push(self.entity);
