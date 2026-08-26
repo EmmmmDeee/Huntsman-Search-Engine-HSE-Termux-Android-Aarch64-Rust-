@@ -113,10 +113,17 @@ pub(in crate::core::correlator) fn rule_au_058_professional_profile_geo(
     out
 }
 
-/// Extract the suburb token from a ratemyagent.com.au agent URL slug.
+/// Extract the suburb token(s) from a ratemyagent.com.au agent URL slug.
 ///
-/// Pattern: `/real-estate-agent/<name>-<suburb>-<id>/`
-/// The trailing ID is stripped; the preceding token is the suburb.
+/// Pattern: `/real-estate-agent/<name>-<suburb>-<id>/`, where `<name>` is an
+/// elastic run of one or more hyphenated tokens and `<suburb>` itself may be
+/// multiple words (Gold Coast, Sunshine Coast and Alice Springs are all
+/// prominent ratemyagent.com.au markets) — hyphen-splitting alone cannot say
+/// where the elastic `<name>` ends and a multi-word `<suburb>` begins. Tries
+/// the longest window (up to `MAX_SUBURB_WORDS` tokens) ending right before
+/// the id that exactly matches a tabulated Australian locality first, falling
+/// back to the single trailing token when nothing tabulated matches — an
+/// untabulated suburb still resolves, just at one-word grain, as before.
 pub(super) fn extract_ratemyagent_suburb(url: &str) -> Option<String> {
     let path_start = url.find("/real-estate-agent/")?;
     let slug_area = &url[path_start + "/real-estate-agent/".len()..];
@@ -133,7 +140,26 @@ pub(super) fn extract_ratemyagent_suburb(url: &str) -> Option<String> {
     if !id.chars().all(|c| c.is_ascii_alphanumeric()) || id.len() < 2 {
         return None;
     }
-    let suburb = parts[parts.len() - 2];
+    let before_id = &parts[..parts.len() - 1];
+    const MAX_SUBURB_WORDS: usize = 3;
+    for window in (2..=MAX_SUBURB_WORDS.min(before_id.len())).rev() {
+        let candidate = &before_id[before_id.len() - window..];
+        if !candidate
+            .iter()
+            .all(|t| t.len() >= 2 && t.chars().all(|c| c.is_ascii_alphabetic()))
+        {
+            continue;
+        }
+        let joined_lower = candidate
+            .iter()
+            .map(|t| t.to_lowercase())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if crate::util::city_coords::is_tabulated_au_city(&joined_lower) {
+            return Some(candidate.join(" "));
+        }
+    }
+    let suburb = *before_id.last()?;
     if suburb.len() >= 4 && suburb.chars().all(|c| c.is_ascii_alphabetic()) {
         Some(suburb.to_string())
     } else {
