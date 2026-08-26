@@ -522,13 +522,14 @@ hse scan --kind email --value admin@mycompany.com --depth 3 --full
 - ✅ Key fingerprinting (head…tail) used in results, never full secret
 - ✅ Per-module isolation (each module gets only its own key)
 
-**Q: I've seen both `.eu` and `.icu` mentioned for SeekNow — which should I use?**
-- **Use `.eu`** — it's the vendor's own stated domain (HSE default) and what
-  their live site's own generated exports name as their platform
+**Q: I've seen both `.ru` and `.icu` mentioned for SeekNow — which should I use?**
+- **Use `.ru`** — it's HSE's coded default (`DEFAULT_BASE` in
+  `src/util/see_know/client.rs`) and what every example in this guide uses
 - `.icu` has been observed failing to resolve via DNS on some real-world
   networks/carriers (a common failure mode for that TLD's abuse reputation)
-  even when it happens to be reachable from others — prefer `.eu`
-- HSE automatically uses `https://see-know.ru/api/v1`
+  even when it happens to be reachable from others — prefer `.ru`
+- HSE automatically uses `https://see-know.ru/api/v1`; override only via
+  `HUNTSMAN_SEEKNOW_BASE` if you have a specific reason to (proxy, testing)
 
 **Q: How do I disable SeekNow temporarily?**
 ```bash

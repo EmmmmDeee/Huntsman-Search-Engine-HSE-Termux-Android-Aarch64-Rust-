@@ -119,10 +119,13 @@ else
 fi
 
 # ── audit.yml: only fires when a manifest changed, so mirror that ────────────
-# Must match audit.yml's `push.paths` exactly (src/bin/dep_cooldown/** included)
-# — a mismatch here means this script silently SKIPS the check locally on a
-# commit that only touches dep_cooldown's own source, while CI still runs it.
-if git diff --quiet HEAD -- Cargo.toml Cargo.lock deny.toml dep-cooldown.toml src/bin/dep_cooldown 2>/dev/null; then
+# Must match audit.yml's `push.paths` exactly (src/bin/dep_cooldown/** included,
+# and fuzz/Cargo.{toml,lock} because audit.yml's filter is `**/Cargo.{toml,lock}`
+# — the fuzz/ crate has its own manifest, which that glob covers and this list
+# must too) — a mismatch here means this script silently SKIPS the check
+# locally on a commit that only touches dep_cooldown's or fuzz's own manifest,
+# while CI still runs it.
+if git diff --quiet HEAD -- Cargo.toml Cargo.lock deny.toml dep-cooldown.toml src/bin/dep_cooldown fuzz/Cargo.toml fuzz/Cargo.lock 2>/dev/null; then
     skip "cargo-audit / deny / machete / dep-cooldown" "no manifest change (audit.yml path filter)"
 else
     for t in cargo-audit cargo-deny cargo-machete; do
