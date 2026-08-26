@@ -131,6 +131,30 @@ fn prefix_hemisphere() {
 }
 
 #[test]
+fn single_prefix_hemisphere_letter_keeps_its_sign() {
+    // Regression (critical audit): with exactly one PREFIX-style hemisphere
+    // letter and no comma, split_on_hemisphere needs a second letter to find
+    // where longitude begins, so it gave up (returned None) and parse_dms
+    // fell through to parse_dms_halved -- which has no concept of hemisphere
+    // at all. The letter's sign was silently dropped, producing a validated,
+    // in-range coordinate mirrored into the wrong hemisphere with no error.
+    let p = parse("S33.87 151.21").expect("should succeed");
+    near(p.lat, -33.87, 1e-9, "lat"); // Sydney, AU -- was wrongly +33.87
+    near(p.lon, 151.21, 1e-9, "lon");
+
+    // A leading W similarly pins the FIRST value as longitude (E/W), leaving
+    // the second value to take the complementary axis (latitude), matching
+    // combine()'s axis-pinning convention for the two-letter case.
+    let q = parse("W151.21 33.87").expect("should succeed");
+    near(q.lat, 33.87, 1e-9, "lat");
+    near(q.lon, -151.21, 1e-9, "lon");
+
+    // Leading whitespace before the letter is still a genuine prefix.
+    let r = parse("  S33.87 151.21").expect("should succeed");
+    near(r.lat, -33.87, 1e-9, "lat");
+}
+
+#[test]
 fn dms_halved_no_delimiter() {
     // Glyph DMS with neither comma nor hemisphere: the six numbers split 3/3.
     let p = parse("33°52'12\" 151°12'36\"").expect("should succeed");

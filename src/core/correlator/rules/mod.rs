@@ -263,7 +263,11 @@ pub(in crate::core) fn is_generic_handle(handle: &str) -> bool {
 pub(in crate::core) fn is_anchorable_handle(value: &str) -> bool {
     const MIN_HANDLE_LEN: usize = 4;
     let handle = canonical_handle(value);
-    handle.len() >= MIN_HANDLE_LEN && !is_generic_handle(&handle)
+    // Chars, not bytes: a 2-character CJK/Cyrillic handle is 4-6+ bytes and
+    // would otherwise clear this floor at fewer characters than the
+    // Latin-script bar it is calibrated for -- the same class of bug already
+    // fixed for the sibling AU-123 rule (handle_variant.rs's MIN_STEM_LEN).
+    handle.chars().count() >= MIN_HANDLE_LEN && !is_generic_handle(&handle)
 }
 
 /// Modules that *derive* a username by inference — a name permutation, an email

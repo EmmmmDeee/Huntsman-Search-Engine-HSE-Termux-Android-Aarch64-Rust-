@@ -53,6 +53,16 @@ pub(super) fn render_json(store: &Store, sid: &str, redact: bool) -> Result<Stri
             let mut v = serde_json::to_value(e)
                 .map_err(|err| Error::Other(format!("entity serialise: {err}")))?;
             if let serde_json::Value::Object(ref mut m) = v {
+                // Normalise `kind` to a plain string. serde's default
+                // externally-tagged representation renders EntityKind's unit
+                // variants as a bare string ("email") but the Other(String)
+                // catch-all as {"other":"iban"} -- a JSON TYPE that silently
+                // depends on which kind the entity happens to be. Other is
+                // the real representation for IBANs, DIDs, nostr keys, and
+                // more, so this is not an edge case. `to_string()` (the
+                // Display impl) always yields a plain string ("other:iban")
+                // and matches what CSV/GEXF already emit for the same field.
+                m.insert("kind".into(), serde_json::json!(e.kind.to_string()));
                 m.insert("c_effective".into(), serde_json::json!(e.c_effective()));
                 m.insert("source_count".into(), serde_json::json!(e.source_count()));
                 m.insert(
