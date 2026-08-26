@@ -131,7 +131,7 @@ fn probe_with_no_hits_does_not_echo_the_seed() {
     // source and inflates the seed to VERIFIED on phantom evidence.
     assert!(!should_echo_target(0));
     let t = Target::new(TargetKind::Username, "haigenb");
-    assert!(build_target_summary(&t, 0, 28, &[], "scan").is_none());
+    assert!(build_target_summary(&t, 0, 0, 28, &[], "scan").is_none());
 }
 
 #[test]
@@ -173,14 +173,14 @@ fn blocked_zero_hit_sweep_is_inconclusive_not_a_confirmed_absence() {
 fn probe_with_a_hit_echoes_the_seed_as_corroboration() {
     assert!(should_echo_target(1));
     let t = Target::new(TargetKind::Username, "haigenb");
-    let summary = build_target_summary(&t, 1, 28, &["github"], "scan")
+    let summary = build_target_summary(&t, 1, 1, 28, &["github"], "scan")
         .expect("a confirmed profile must echo the seed");
     assert_eq!(summary.value, "haigenb");
     assert!(summary.has_tag("social-probed"));
     assert!(!summary.has_tag("multi-platform"));
     // Three or more confirmed profiles flags the multi-platform footprint.
-    let multi =
-        build_target_summary(&t, 3, 28, &["github", "reddit", "twitch"], "scan").expect("entity");
+    let multi = build_target_summary(&t, 3, 3, 28, &["github", "reddit", "twitch"], "scan")
+        .expect("entity");
     assert!(multi.has_tag("multi-platform"));
 }
 
@@ -198,7 +198,7 @@ fn module_metadata() {
 fn build_target_summary_evidence_lists_confirmed_platforms() {
     let t = Target::new(TargetKind::Username, "testuser");
     let confirmed = &["github", "reddit"];
-    let e = build_target_summary(&t, 2, 30, confirmed, "scan").expect("should succeed");
+    let e = build_target_summary(&t, 2, 2, 30, confirmed, "scan").expect("should succeed");
     let attr = e.evidence[0]
         .attributes
         .get("platforms")
@@ -220,7 +220,7 @@ fn build_target_summary_stamps_platforms_count_for_au011() {
     // canonical count attribute must now be present and equal the number of
     // confirmed platforms.
     let t = Target::new(TargetKind::Username, "testuser");
-    let e = build_target_summary(&t, 3, 30, &["github", "reddit", "twitch"], "scan")
+    let e = build_target_summary(&t, 3, 3, 30, &["github", "reddit", "twitch"], "scan")
         .expect("should succeed");
     assert_eq!(
         e.evidence[0]
@@ -230,4 +230,27 @@ fn build_target_summary_stamps_platforms_count_for_au011() {
         Some("3"),
         "platforms_count must equal the confirmed-platform count so AU-011 can count it"
     );
+}
+
+#[test]
+fn build_target_summary_stamps_hits_verified_and_status_only() {
+    // OD-17: this summary previously carried no verification signal at all, so
+    // AU-011's status-only discount and AU-077/AU-035's is_verified_discovery
+    // guard had nothing to read for a social_probe-sourced entity — a handle
+    // found entirely via bare-status-code guesses could still register as
+    // "confirmed". found=4, verified=1 (3 status-only guesses among the hits).
+    let t = Target::new(TargetKind::Username, "testuser");
+    let e = build_target_summary(&t, 4, 1, 40, &["a", "b", "c", "d"], "scan").expect("summary");
+    let attrs = &e.evidence[0].attributes;
+    assert_eq!(attrs.get("hits_verified").map(String::as_str), Some("1"));
+    assert_eq!(attrs.get("hits_status_only").map(String::as_str), Some("3"));
+}
+
+#[test]
+fn build_target_summary_all_verified_has_zero_status_only() {
+    let t = Target::new(TargetKind::Username, "testuser");
+    let e = build_target_summary(&t, 2, 2, 20, &["a", "b"], "scan").expect("summary");
+    let attrs = &e.evidence[0].attributes;
+    assert_eq!(attrs.get("hits_verified").map(String::as_str), Some("2"));
+    assert_eq!(attrs.get("hits_status_only").map(String::as_str), Some("0"));
 }

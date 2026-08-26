@@ -570,18 +570,53 @@ mod tests {
 
     #[test]
     fn extract_ratemyagent_suburb_reads_slug_and_strips_query() {
+        // Brisbane/Geelong are known AU localities, so the gazetteer match
+        // returns the canonically-cased name — a real improvement over the
+        // raw lowercase slug token, not a regression (see the multi-word
+        // suburb test below for why a gazetteer match is needed at all).
         assert_eq!(
             extract_ratemyagent_suburb(
                 "https://www.ratemyagent.com.au/real-estate-agent/john-smith-brisbane-abc12/"
             ),
-            Some("brisbane".to_string())
+            Some("Brisbane".to_string())
         );
         // A trailing query string is stripped before parsing.
         assert_eq!(
             extract_ratemyagent_suburb(
                 "https://www.ratemyagent.com.au/real-estate-agent/jane-doe-geelong-x9z?ref=1"
             ),
-            Some("geelong".to_string())
+            Some("Geelong".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_ratemyagent_suburb_matches_a_multi_word_locality_as_one_unit() {
+        // OD-18: parts[len-2] alone ("coast") used to be returned regardless
+        // of the elastic <name> portion's length. Gold Coast/Sunshine Coast
+        // are two of ratemyagent.com.au's most prominent AU markets.
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://www.ratemyagent.com.au/real-estate-agent/jane-doe-gold-coast-x9z2/"
+            ),
+            Some("Gold Coast".to_string())
+        );
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://www.ratemyagent.com.au/real-estate-agent/john-smith-port-macquarie-ab12/"
+            ),
+            Some("Port Macquarie".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_ratemyagent_suburb_falls_back_to_single_token_for_an_unlisted_suburb() {
+        // A plausible but not-in-the-gazetteer suburb still falls back to the
+        // original single-token heuristic rather than returning None.
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://www.ratemyagent.com.au/real-estate-agent/jane-doe-woolloongabba-x1/"
+            ),
+            Some("woolloongabba".to_string())
         );
     }
 

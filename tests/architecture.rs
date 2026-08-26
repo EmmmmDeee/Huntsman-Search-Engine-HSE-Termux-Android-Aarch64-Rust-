@@ -290,6 +290,18 @@ fn core_does_not_import_util_directly() {
                 // duplicate a `util` responsibility). Scoped to the single
                 // function actually used so the guard stays precise.
                 && !line.contains("util::timefmt::hms_utc")
+                // Pure, offline name lookup over a static curated locality
+                // table (case-insensitive string compare; no coordinates, no
+                // I/O, no deps) — same leaf category as `util::oui`/
+                // `util::confusable`. AU-058's ratemyagent.com.au suburb
+                // extractor (geo::profile) uses it to greedily match a known
+                // AU place name against a URL slug's hyphen-joined tokens, so
+                // "Gold Coast"/"Port Macquarie"-shaped suburbs resolve as one
+                // unit instead of truncating to their last token — the same
+                // table `nearest_au_locality` already uses for coordinate
+                // lookups, so the two locality notions can't drift apart.
+                // Scoped to the single function actually used.
+                && !line.contains("util::geo::match_au_locality_name")
                 // Persistent capability toggles (universal toggleability): the
                 // engine's module gate reads `module.<name>` on/off.
                 && !line.contains("util::settings::get_bool")

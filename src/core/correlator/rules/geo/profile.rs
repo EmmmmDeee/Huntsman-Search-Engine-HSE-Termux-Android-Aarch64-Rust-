@@ -115,8 +115,13 @@ pub(in crate::core::correlator) fn rule_au_058_professional_profile_geo(
 
 /// Extract the suburb token from a ratemyagent.com.au agent URL slug.
 ///
-/// Pattern: `/real-estate-agent/<name>-<suburb>-<id>/`
-/// The trailing ID is stripped; the preceding token is the suburb.
+/// Pattern: `/real-estate-agent/<name>-<suburb>-<id>/`, where `<name>` is
+/// elastic (1+ tokens) and `<suburb>` may itself be multiple tokens ("Gold
+/// Coast", "Port Macquarie") — hyphens alone can't tell a 2-token suburb from
+/// a 2-token name, so this tries the longest known-AU-locality match (via
+/// [`crate::util::geo::match_au_locality_name`], the same curated table
+/// `nearest_au_locality` uses) over the tokens just before the id, falling
+/// back to the single-token heuristic when nothing matches.
 pub(super) fn extract_ratemyagent_suburb(url: &str) -> Option<String> {
     let path_start = url.find("/real-estate-agent/")?;
     let slug_area = &url[path_start + "/real-estate-agent/".len()..];
@@ -133,9 +138,16 @@ pub(super) fn extract_ratemyagent_suburb(url: &str) -> Option<String> {
     if !id.chars().all(|c| c.is_ascii_alphanumeric()) || id.len() < 2 {
         return None;
     }
-    let suburb = parts[parts.len() - 2];
+    let before_id = &parts[..parts.len() - 1];
+    for window in (1..=before_id.len().min(3)).rev() {
+        let candidate = before_id[before_id.len() - window..].join(" ");
+        if let Some(name) = crate::util::geo::match_au_locality_name(&candidate) {
+            return Some(name.to_string());
+        }
+    }
+    let suburb = before_id.last()?;
     if suburb.len() >= 4 && suburb.chars().all(|c| c.is_ascii_alphabetic()) {
-        Some(suburb.to_string())
+        Some((*suburb).to_string())
     } else {
         None
     }

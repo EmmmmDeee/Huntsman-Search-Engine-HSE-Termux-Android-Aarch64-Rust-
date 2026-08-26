@@ -434,6 +434,21 @@ pub fn nearest_au_locality(lat: f64, lon: f64) -> Option<(&'static str, &'static
         .min_by(|a, b| a.2.total_cmp(&b.2))
 }
 
+/// Match `candidate` (case-insensitive) against a known AU locality name from
+/// the same curated table [`nearest_au_locality`] uses, ignoring any
+/// parenthetical alternate name (`"Central Coast (Gosford)"` matches on
+/// `"Central Coast"`). Returns the canonical, correctly-spaced name on a
+/// match. Pure and offline — a name lookup over a static table, no
+/// coordinates or I/O involved.
+#[must_use]
+pub fn match_au_locality_name(candidate: &str) -> Option<&'static str> {
+    let candidate = candidate.trim();
+    AU_LOCALITY_ANCHORS.iter().find_map(|&(name, ..)| {
+        let base = name.split(" (").next().unwrap_or(name);
+        base.eq_ignore_ascii_case(candidate).then_some(base)
+    })
+}
+
 /// Tag `entity` with its Australian state and `country:AU` when `(lat, lon)`
 /// falls inside an AU state/territory; a no-op otherwise. Coordinate-emitting
 /// modules apply this exact AU-relevance pair (`au-state:{STATE}` + `country:AU`)

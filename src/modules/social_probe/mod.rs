@@ -335,6 +335,12 @@ impl Module for SocialProbe {
 
         let mut result = ModuleResult::new();
         let mut found_count = 0u32;
+        // Body-marker-confirmed hits, as distinct from a bare-status-code guess
+        // (`detection_strength`'s `verified` flag) — stamped on the target
+        // summary as `hits_verified` so AU-011/AU-035/AU-077 can discount
+        // status-only guesses here the same way they already do for
+        // `username_search`'s identically-shaped summary.
+        let mut verified_count = 0u32;
         let mut checked_count = 0u32;
         // Probes that returned no definitive answer — `fetch_with_status` code 0,
         // i.e. curl could not connect / was blocked / had no egress — as distinct
@@ -390,6 +396,9 @@ impl Module for SocialProbe {
                 found_platforms.push(platform.name);
 
                 let (confidence, verified) = detection_strength(platform);
+                if verified {
+                    verified_count += 1;
+                }
 
                 let mut entity = Entity::new(EntityKind::Url, &url, confidence, &ctx.scan_id);
                 entity.tag("social-profile");
@@ -469,6 +478,7 @@ impl Module for SocialProbe {
         if let Some(summary) = build_target_summary(
             target,
             found_count,
+            verified_count,
             checked_count,
             &found_platforms,
             &ctx.scan_id,
@@ -522,6 +532,7 @@ pub(super) fn should_echo_target(found_count: u32) -> bool {
 pub(super) fn build_target_summary(
     target: &Target,
     found_count: u32,
+    verified_count: u32,
     checked_count: u32,
     found_platforms: &[&str],
     scan_id: &str,
@@ -551,7 +562,18 @@ pub(super) fn build_target_summary(
         // being tagged `multi-platform` here. Kept alongside `found` (its own
         // profiles-checked convention) rather than replacing it.
         .with_attr("platforms_count", found_platforms.len().to_string())
-        .with_attr("platforms", found_platforms.join(", ")),
+        .with_attr("platforms", found_platforms.join(", "))
+        // Mirrors username_search's `hits_verified`/`hits_status_only` shape:
+        // without these, AU-011's status-only discount and AU-077/AU-035's
+        // is_verified_discovery guard have no verification signal to read for
+        // a social_probe-sourced summary, so a handle found entirely via
+        // bare-status-code guesses (no body-marker confirmation) could still
+        // count as "confirmed" here.
+        .with_attr("hits_verified", verified_count.to_string())
+        .with_attr(
+            "hits_status_only",
+            (found_count - verified_count).to_string(),
+        ),
     );
     Some(summary)
 }

@@ -9775,6 +9775,39 @@ fn au077_does_not_fire_on_a_status_only_per_record_discovery() {
 }
 
 #[test]
+fn au077_does_not_fire_on_the_real_social_probe_summary_shape() {
+    use super::rules::rule_au_077_name_derived_username_confirmed;
+    // OD-17: the test above hand-builds a per-record `detection` attribute
+    // directly on a Username entity — a shape social_probe's real pipeline
+    // never produces there (only its separate per-platform Url-kind entities
+    // carry `detection`; the Username-kind target-echo summary instead
+    // carries `hits_verified`/`hits_status_only`, see build_target_summary).
+    // This uses THAT real shape: a summary found entirely via status-only
+    // guesses (hits_verified=0) merged with a derivation source must still
+    // not confirm AU-077.
+    let mut u = Entity::new(EntityKind::Username, "jsmith", 0.8, "s");
+    u.add_evidence(Evidence::new(
+        "name_intel",
+        "Derived from John Smith".to_string(),
+    ));
+    u.add_evidence(
+        Evidence::new(
+            "social_probe",
+            "Probed 40 platforms, found 2 profiles".to_string(),
+        )
+        .with_attr("checked", "40")
+        .with_attr("found", "2")
+        .with_attr("hits_verified", "0")
+        .with_attr("hits_status_only", "2"),
+    );
+    let r = rule_au_077_name_derived_username_confirmed(&RuleContext::new(&[u]), "s", 0);
+    assert!(
+        r.is_empty(),
+        "an all-status-only social_probe summary must not confirm AU-077: {r:?}"
+    );
+}
+
+#[test]
 fn au086_name_derived_email_confirmed_fires_on_predict_plus_confirm() {
     use super::rules::rule_au_086_name_derived_email_confirmed;
     // An email name_intel permuted from the subject AND confirmed by a breach
