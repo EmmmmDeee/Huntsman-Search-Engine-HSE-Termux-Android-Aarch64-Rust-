@@ -158,7 +158,7 @@ Lazy singleton integration that:
 | Limitation | Reason | Workaround |
 |-----------|--------|-----------|
 | **Automated login fails** | Turnstile requires JavaScript/browser | Manual login once, reuse token |
-| **Token expires** | 24-hour expiration | HSE automatically refreshes when expired |
+| **Token expires** | 24-hour expiration | Manual re-login required — HSE does not read or refresh this token at all yet (see the warning at the top of this doc) |
 | **Multiple devices** | Token is device-specific | Save same token to all HSE instances: copy `~/.huntsman/seeknow_session.txt` |
 | **Account locked** | Too many failed login attempts | Wait 15 minutes, then manual login again |
 | **Need API key instead?** | API keys require authentication to retrieve | Not currently supported; use session token instead |

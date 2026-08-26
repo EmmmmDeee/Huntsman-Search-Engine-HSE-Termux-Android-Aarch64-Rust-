@@ -1,13 +1,18 @@
 # See-Know Enterprise Features — Planning Reference (Not Implemented)
 
-**Status: planned, not built.** Nothing in this document is live in HSE
-today. There is no automatic plan-tier detection, no enterprise-endpoint
-dispatch, and no code anywhere in `src/` that calls `/enterprise/discord/*`.
-`hse doctor` does not report a "SeekNow account: Enterprise" line, and no
-`--dry-run` flag, tier-detection routine, or SLA monitoring exists. This
-document exists only as a pricing/scope reference in case this integration
-is built later — treat every command and JSON example below as illustrative,
-not runnable.
+> **⚠️ Not implemented — never built.** The three `/enterprise/discord/*`
+> endpoints this guide documents are Enterprise-plan-gated and, per
+> `docs/SEEKNOW_SETUP.md`'s endpoint reference table, were never built: no
+> code in `src/modules/see_know/` calls them. Their 5-credit prices below are
+> real (tracked in `ENDPOINT_COSTS`, `src/util/see_know/config.rs`, for
+> budgeting purposes and CI-checked against this doc), but the "automatically
+> detects enterprise tier" language some earlier versions of this guide used
+> describes a dispatch path that does not exist — nothing below can currently
+> be exercised against a live scan; `hse doctor` reports no tier-detection
+> status, and no `PlanTier`/tier-detection code exists anywhere in `src/`.
+
+## Overview
+This guide covers enterprise-only features in the See-Know module, including Discord history export, raw message access, and advanced reporting.
 
 ## What the See-Know Enterprise plan advertises
 

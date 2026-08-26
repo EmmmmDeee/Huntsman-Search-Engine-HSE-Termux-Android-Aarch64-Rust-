@@ -9,6 +9,19 @@ see [`docs/SEEKNOW_WEB_AUTOMATION.md`](SEEKNOW_WEB_AUTOMATION.md) for the
 supported, ToS-compliant authentication paths (API key, or manual browser
 login with local session persistence).
 
+> **⚠️ §1 and §3 below describe mechanisms HSE does not have**, verified
+> against current `src/`: no `--verbose` flag exists on `hse doctor` (its
+> only flag is `--live`), so it cannot show a session-age line; more
+> fundamentally, per `SEEKNOW_WEB_AUTOMATION.md`'s own warning, nothing in
+> `src/modules/see_know/` reads `~/.huntsman/seeknow_session.txt` at all yet
+> — there is no session to refresh or force-expire. §3's
+> `HUNTSMAN_SEEKNOW_KEY_EMAIL`/`_USERNAME`/`_INFRASTRUCTURE` env vars and
+> "hierarchical key selection" don't exist in source either — HSE reads one
+> `HUNTSMAN_SEEKNOW_KEY`, not a per-scan-kind set (`--kind`/`--value`
+> themselves ARE real flags; it's the per-kind key routing that isn't). The
+> shell snippets below will run without erroring — they just don't do what
+> the surrounding prose claims.
+
 ---
 
 ## 1. Credential Rotation & Expiration Management

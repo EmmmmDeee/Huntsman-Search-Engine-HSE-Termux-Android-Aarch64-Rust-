@@ -139,3 +139,6 @@ Run `pkg install rust` and retry.
 
 **Low RAM (< 1.5 GB)**
 Set `CARGO_BUILD_JOBS=1` before running the installer to limit parallel compilation.
+
+For SeekNow API errors (not install/runtime issues), see
+[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
