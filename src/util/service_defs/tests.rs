@@ -59,6 +59,40 @@ use super::*;
     }
 
     #[test]
+    fn threatfox_validation_probe_uses_auth_key_not_api_key() {
+        // modules/threatfox/mod.rs sends `Auth-Key: <key>` (the shared
+        // abuse.ch scheme also used by `urlhaus`, confirmed by that sibling's
+        // ServiceDef and by both modules' own doc comments) — a probe sending
+        // `API-KEY` instead hits no header abuse.ch actually checks, so a
+        // valid key would always be misclassified `Invalid`.
+        let def = find_service("threatfox").expect("threatfox service def present");
+        match &def.key_header {
+            KeyPlacement::Header(h) => assert_eq!(*h, "Auth-Key"),
+            other => panic!("threatfox must authenticate with Auth-Key, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn numverify_validation_probe_uses_the_current_apilayer_gateway() {
+        // modules/numverify/mod.rs migrated to the unified `api.apilayer.com`
+        // gateway with an `apikey` header; this def was left pointing at the
+        // legacy `apilayer.net` host with the key as an `access_key` query
+        // param — a scheme the module no longer uses, and one the legacy
+        // host answers with a false HTTP 200 for ANY key (garbage included).
+        let def = find_service("numverify").expect("numverify service def present");
+        assert!(
+            def.test_url.starts_with("https://api.apilayer.com/"),
+            "numverify must probe the current api.apilayer.com gateway, not the \
+             legacy apilayer.net host, got: {}",
+            def.test_url
+        );
+        match &def.key_header {
+            KeyPlacement::Header(h) => assert_eq!(*h, "apikey"),
+            other => panic!("numverify must authenticate with an apikey header, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn netlas_validation_probe_uses_x_api_key_not_bearer() {
         // The netlas module (modules/netlas/mod.rs) and api_key_probe both send an
         // `X-API-Key` header, so the ServiceDef the validator reads must match — a

@@ -121,6 +121,21 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         rate_limit_reset_secs: 60,
         probe_parser: Some(|_v| vec![("status".into(), "authenticated".into())]),
     },
+    // KNOWN LIMITATION: IPQS embeds the key as a URL PATH segment —
+    // `https://www.ipqualityscore.com/api/json/{endpoint}/{key}/{value}`
+    // (`modules/ipqs/mod.rs`'s own request builder; corroborated by
+    // `util/raw_archive/url.rs`'s and its tests' identical documented shape).
+    // No existing `KeyPlacement` variant can express "append the key to the
+    // path with no query string" — `QueryParam` always inserts `?param=` or
+    // `&param=`, so this probe's actual request
+    // (`https://ipqualityscore.com/api/json/account/?key=<key>`) is
+    // structurally wrong regardless of the key's validity, and IPQS's real
+    // `/account/` endpoint additionally answers any request with `HTTP 200`
+    // (auth failure is only in the JSON body), so even a correctly-placed
+    // key couldn't be classified `Valid`/`Rejected` under the current
+    // status-code-only probe. A real fix needs a path-segment `KeyPlacement`
+    // variant (same class of gap as `wigle`'s paired-credential one above)
+    // plus a body-aware verdict; deliberately out of scope here.
     ServiceDef {
         name: "ipqs",
         env_var: "HUNTSMAN_IPQS_KEY",
@@ -143,8 +158,19 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         name: "numverify",
         env_var: "HUNTSMAN_NUMVERIFY_KEY",
         category: "identity",
-        test_url: "https://apilayer.net/api/validate?number=14158586273&access_key=",
-        key_header: KeyPlacement::QueryParam("access_key"),
+        // `apilayer.net`/`access_key` is the legacy direct API. The module
+        // migrated to the unified APILayer gateway (`modules/numverify/mod.rs`'s
+        // own doc comment + its real `api.apilayer.com` GET with an `apikey`
+        // header) but this def was never updated to match — the legacy host
+        // answers ANY key, even garbage, with `HTTP 200` (`{"success":false,
+        // "error":{"code":101,...}}`), which this probe's status-only check
+        // reads as unconditionally `Valid`. The real host correctly 401s a
+        // bad/missing key. The number is the NANP block reserved for
+        // fictional use (same convention as the `hlrlookups`/`opencnam`
+        // probes below) — this only exercises the auth header, never a real
+        // subscriber.
+        test_url: "https://api.apilayer.com/number_verification/validate?number=15555550100",
+        key_header: KeyPlacement::Header("apikey"),
         rate_limit_reset_secs: 60,
         probe_parser: Some(|v| {
             let mut out = Vec::new();
@@ -263,7 +289,13 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         env_var: "HUNTSMAN_THREATFOX_KEY",
         category: "threat_intel",
         test_url: "https://threatfox-api.abuse.ch/api/v1/",
-        key_header: KeyPlacement::Header("API-KEY"),
+        // abuse.ch's real header is `Auth-Key` (modules/threatfox/mod.rs's own
+        // doc comment and `.header("Auth-Key", key)` call; the sibling
+        // `urlhaus` entry below — same abuse.ch account, same key — already
+        // has this right). `API-KEY` sent no header abuse.ch actually checks,
+        // so this probe 401ed every genuinely valid key — same class of bug
+        // as the `see_know`/`netlas` header mismatches the tests below guard.
+        key_header: KeyPlacement::Header("Auth-Key"),
         rate_limit_reset_secs: 60,
         probe_parser: None,
     },
