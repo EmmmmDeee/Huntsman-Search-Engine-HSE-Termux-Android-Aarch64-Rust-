@@ -8,7 +8,7 @@
 **All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
 SpiderFoot-inspired breadth without the daemon or the footprint.**
 
-Pure-Rust OSINT / GEOINT platform with **174 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **175 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 dark-console Web UI, zero native dependencies, keyless-first.
 
@@ -164,9 +164,11 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 
 ## Quick Start
 
+> **Want the complete setup with Ollama LLM analysis, SeekNow integration, and Web UI all at once?** See [`docs/ALL_IN_ONE_SETUP.md`](docs/ALL_IN_ONE_SETUP.md) for step-by-step guidance including prerequisites, Ollama installation, model selection, and troubleshooting — **this is the recommended path for new users.**
+
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 174 modules
+hse modules                                                 # list all 175 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse query "melbourne coworking spaces"                      # general web search across the free engines
@@ -234,7 +236,7 @@ the onion address itself.
 
 ---
 
-## Module Overview (174 modules — 136 free, 38 key-gated/paid)
+## Module Overview (175 modules — 136 free, 39 key-gated/paid)
 
 > A curated highlight of the modules below (not the full list). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run
@@ -429,6 +431,8 @@ correlation scores, or exports, and does nothing at all unless both armed and
 Ollama is actually reachable — an unreachable/misconfigured Ollama is a clear
 error, never a silent no-op.
 
+> **Complete integration guide:** See [`docs/ALL_IN_ONE_SETUP.md`](docs/ALL_IN_ONE_SETUP.md) for an end-to-end walkthrough combining HSE installation, SeekNow authentication, Ollama setup across all platforms (Linux/Termux/macOS/Docker), model selection, and Web UI launch — with comprehensive troubleshooting for all common issues.
+
 ```bash
 # 1. Install and start Ollama separately (not installed by HSE), then pull a model:
 ollama pull qwen2.5:7b
@@ -521,12 +525,23 @@ diagnostic bundle") for the complete engine state in one file.
 
 ## Documentation
 
+### 🚀 All-In-One Guides (Start Here)
+
+**New to HSE?** Start with these comprehensive integration guides:
+
+- **[`docs/ALL_IN_ONE_SETUP.md`](docs/ALL_IN_ONE_SETUP.md)** — **Complete end-to-end setup** combining HSE, SeekNow authentication (API key or manual browser login), Ollama LLM integration, and Web UI. Includes prerequisites, one-line installation, Ollama model selection, background service setup for Termux, and troubleshooting for all common issues. **This is the recommended starting point.**
+
+- **[`docs/ADVANCED_TECHNIQUES.md`](docs/ADVANCED_TECHNIQUES.md)** — **SeekNow credential & session hygiene** — token rotation, multi-device session isolation, and API key segmentation for your own account.
+
+### Core Reference
+
 | Document | Content |
 |----------|---------|
 | [`docs/INSTALL.md`](docs/INSTALL.md) | All install paths + Termux quirks |
 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Common install/runtime errors + fixes |
 | [`docs/OSINT_API_REFERENCE.md`](docs/OSINT_API_REFERENCE.md) | External OSINT-provider API reference (free tiers, key shapes, integration status) |
 | [`docs/SEEKNOW_SETUP.md`](docs/SEEKNOW_SETUP.md) | SeekNow (see-know.ru) API setup + full endpoint reference |
+| [`docs/SEEKNOW_WEB_AUTOMATION.md`](docs/SEEKNOW_WEB_AUTOMATION.md) | SeekNow web automation, Turnstile analysis, manual login workflow, browser automation framework evaluation |
 | [`docs/OATHNET_API_GUIDE.txt`](docs/OATHNET_API_GUIDE.txt) | OathNet API contract reference |
 | [`docs/OPERATIONAL_CONSTITUTION.md`](docs/OPERATIONAL_CONSTITUTION.md) | Reasoning, evidence, and analysis standards governing HSE work |
 | [`docs/PERSISTENT_INTELLIGENCE.md`](docs/PERSISTENT_INTELLIGENCE.md) | How understanding accumulates across reasoning cycles (constitution companion) |

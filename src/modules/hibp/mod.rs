@@ -309,6 +309,15 @@ impl Module for Hibp {
         ModuleCost::KeyGated
     }
 
+    fn cache_ttl_secs(&self) -> u64 {
+        // Breach/paste records are immutable once indexed — the same
+        // dehashed/see_know/oathnet_pro/intelx convention (C9's "IP intel:
+        // 24h" bracket generalised to paid breach lookups). Doubly valuable
+        // here: HIBP's 10 req/min rate limit means a cache hit also avoids
+        // burning the module's own throttle budget, not just a query credit.
+        86_400
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email | TargetKind::Domain)
     }

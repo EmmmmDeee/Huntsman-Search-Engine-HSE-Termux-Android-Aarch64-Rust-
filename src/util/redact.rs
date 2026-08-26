@@ -27,6 +27,7 @@
 //! `full`/`debug` dossiers, whose documented contract is total, unredacted
 //! transparency for an authorised local interpreter.
 
+use crate::core::correlator::Correlation;
 use crate::core::entity::{Entity, EntityKind};
 
 /// The placeholder substituted for a redacted credential-class value. Fixed and
@@ -151,10 +152,50 @@ fn redact_coordinates(e: &mut Entity) {
     }
 }
 
+/// Minimum secret length scrubbed from a correlation description. A raw
+/// credential-class value under this length is not itself sensitive enough to
+/// justify the false-positive risk of blanket substring replacement (e.g. a
+/// one-character "password" matching unrelated text elsewhere in the
+/// sentence); real breach passwords/API keys are essentially never this
+/// short.
+const MIN_SCRUBBED_SECRET_LEN: usize = 4;
+
+/// Scrub any raw credential-class entity value that a correlation's free-text
+/// `description` may embed. Most correlator rules describe entities only by
+/// kind/confidence (safe), but some — e.g. `AU-121` "Transitive
+/// credential-reuse blast radius" (`src/core/correlator/rules/reuse_closure.rs`)
+/// — synthesise their description from the underlying secret values
+/// themselves, independently of the entity list, so [`redact_entities`]
+/// masking the *entities* is not sufficient on its own.
+///
+/// `entities` MUST be the **unredacted** list — call this before
+/// [`redact_entities`] runs on that same list, while the raw secret values it
+/// searches for are still present. Like [`redact_entities`], this is for a
+/// surface leaving the full-trust boundary (e.g. an LLM analysis prompt); it
+/// is not applied to the full/debug dossier.
+pub fn redact_correlations(correlations: &mut [Correlation], entities: &[Entity]) {
+    let secrets: Vec<&str> = entities
+        .iter()
+        .filter(|e| is_credential_kind(&e.kind) && e.value.len() >= MIN_SCRUBBED_SECRET_LEN)
+        .map(|e| e.value.as_str())
+        .collect();
+    if secrets.is_empty() {
+        return;
+    }
+    for c in correlations {
+        for secret in &secrets {
+            if c.description.contains(secret) {
+                c.description = c.description.replace(secret, REDACTED);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::confidence;
+    use crate::core::correlator::Severity;
     use crate::core::entity::{Entity, Evidence};
 
     #[test]
@@ -272,5 +313,70 @@ mod tests {
         redact_entities(&mut v);
         assert_eq!(v[0].value, once[0].value);
         assert_eq!(v[0].evidence[0].summary, once[0].evidence[0].summary);
+    }
+
+    fn correlation(description: &str) -> Correlation {
+        Correlation::new(
+            "AU-121",
+            "Transitive credential-reuse blast radius",
+            Severity::Critical,
+            description.to_string(),
+            vec!["uid1".to_string()],
+            "scan1",
+            0,
+        )
+    }
+
+    #[test]
+    fn redact_correlations_masks_a_raw_secret_embedded_in_the_description() {
+        let secret = Entity::new(EntityKind::Password, "hunter2", confidence::VERY_LOW, "src");
+        let mut corr = vec![correlation("3 accounts chain via 1 reused secret: hunter2")];
+        redact_correlations(&mut corr, &[secret]);
+        assert!(
+            !corr[0].description.contains("hunter2"),
+            "raw secret leaked into description: {}",
+            corr[0].description
+        );
+        assert!(corr[0].description.contains(REDACTED));
+    }
+
+    #[test]
+    fn redact_correlations_ignores_non_credential_entities() {
+        let email = Entity::new(
+            EntityKind::Email,
+            "user@example.com",
+            confidence::HIGH,
+            "src",
+        );
+        let mut corr = vec![correlation("Email user@example.com seen in dumps")];
+        redact_correlations(&mut corr, &[email]);
+        assert!(
+            corr[0].description.contains("user@example.com"),
+            "non-credential values are not scrubbed"
+        );
+    }
+
+    #[test]
+    fn redact_correlations_leaves_short_values_unscrubbed() {
+        // Below MIN_SCRUBBED_SECRET_LEN: broad substring replacement on a
+        // value this short risks mangling unrelated description text for no
+        // real security benefit.
+        let secret = Entity::new(EntityKind::Password, "abc", confidence::VERY_LOW, "src");
+        let mut corr = vec![correlation("reused secret: abc")];
+        redact_correlations(&mut corr, &[secret]);
+        assert!(corr[0].description.contains("abc"));
+    }
+
+    #[test]
+    fn redact_correlations_is_a_noop_with_no_correlations_or_no_secrets() {
+        let mut empty: Vec<Correlation> = vec![];
+        redact_correlations(&mut empty, &[]);
+        assert!(empty.is_empty());
+
+        let email = Entity::new(EntityKind::Email, "a@b.com", confidence::HIGH, "src");
+        let mut corr = vec![correlation("nothing sensitive here")];
+        let before = corr[0].description.clone();
+        redact_correlations(&mut corr, &[email]);
+        assert_eq!(corr[0].description, before);
     }
 }
