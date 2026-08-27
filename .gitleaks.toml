@@ -14,21 +14,27 @@
 [extend]
 useDefault = true
 
-# ── Provider key shapes the default ruleset has no rule for ───────────────────
-# 2026-08-27 credential audit (docs/CREDENTIAL_AUDIT_2026-08-27.md): a
-# live-shaped SeekNow key sat in .agent/state.json for ~17 days because
-# neither gitleaks' default ruleset nor this file had a pattern shaped for it
-# — the scanner had nothing to match on. These mirror the shapes
-# tests/architecture.rs already guards in src/, scanned repo-wide.
+# ── HSE-specific provider-key shapes ──────────────────────────────────────────
+# The two formats this project has actually leaked (see file header) are shaped
+# unlike anything in gitleaks' own default ruleset, so a real one slipping back
+# in would NOT be caught by `useDefault` alone — confirmed the hard way: a real
+# SeekNow key sat in .agent/state.json (a git-tracked file outside src/, so also
+# outside tests/architecture.rs's `no_provider_credential_is_embedded_in_source`,
+# which only scans src/**/*.rs) for ~17 days undetected before a 2026-08-27
+# credential audit found and redacted it (docs/CREDENTIAL_AUDIT_2026-08-27.md).
+# These rules mirror that same test's `looks_like_provider_key` shapes, but
+# scanned repo-wide — gitleaks' actual job — rather than only Rust source.
 [[rules]]
 id = "hse-seeknow-key"
-description = "SeekNow bearer token (seek-<hex>)"
+description = "SeekNow (see-know) API bearer token"
 regex = '''seek-[0-9a-f]{32,}'''
+tags = ["key", "seeknow"]
 
 [[rules]]
 id = "hse-wigle-api-name"
-description = "WiGLE API name (AID<hex>)"
-regex = '''AID[0-9a-f]{24,}'''
+description = "WiGLE API name (paired with a token)"
+regex = '''\bAID[0-9a-f]{24,}\b'''
+tags = ["key", "wigle"]
 
 # ── Synthetic credentials that exist so HSE can recognise the real thing ──────
 [[allowlists]]

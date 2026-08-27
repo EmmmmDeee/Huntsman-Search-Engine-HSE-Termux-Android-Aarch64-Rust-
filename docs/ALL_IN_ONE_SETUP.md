@@ -363,7 +363,7 @@ hse serve  # Watch Live tab for events
 
 1. **Run several scans** to populate history and test results
 2. **Fine-tune Ollama model** for your analysis needs — see `docs/OSINT_MODEL_FINE_TUNING.md`
-3. **Explore advanced modules** — `hse selftest` shows all 175 available modules
+3. **Explore advanced modules** — `hse selftest` shows all 181 available modules
 4. **Set up CI/automation** — webhook integrations, scheduled scans, etc.
 5. **Share scans** — Export to JSON/CSV from Web UI or API
 

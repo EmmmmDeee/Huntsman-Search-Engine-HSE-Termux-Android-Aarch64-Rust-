@@ -396,7 +396,7 @@ pub async fn scan_location(
         Ok(pair) => pair,
         Err(resp) => return resp,
     };
-    let best = crate::api::scan_export::extract_au_location_fix(&correlations, &entities);
+    let best = crate::app::export::extract_au_location_fix(&correlations, &entities);
     Json(json!({ "best_location": best })).into_response()
 }
 

@@ -1,16 +1,17 @@
 //! Export and download handlers for a scan — CSV, JSON report, GEXF, debug
-//! bundle — plus the pure rendering functions shared with the CLI.
-//!
-//! The rendering functions (`entities_to_csv`, `build_scan_report`,
-//! `extract_au_location_fix`) are `pub(crate)` so `app::export` can reuse them
-//! and produce byte-identical output to the HTTP endpoints.
+//! bundle. HTTP transport and presentation ONLY: the canonical rendering
+//! functions (`entities_to_csv`, `build_scan_report`, `extract_au_location_fix`,
+//! `csv_escape`, `formula_guard`) live in [`crate::app::export`] — the shared
+//! composition layer — so this module and the `hse export` CLI subcommand call
+//! into the SAME implementation and stay byte-identical. This file owns only
+//! the axum handlers, the download/attachment response plumbing, and the
+//! customer-facing provider-name redaction (`redact` submodule, unchanged).
 
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
 use std::sync::Arc;
 
 use super::handlers::{not_found, offload_store};
@@ -46,116 +47,12 @@ pub async fn scan_entities_csv(
     // Redaction of the proprietary source names in the `sources` /
     // `corroborating_sources` columns is enforced by `download_response`.
     download_response(
-        entities_to_csv(&entities),
+        crate::app::export::entities_to_csv(&entities),
         "text/csv; charset=utf-8",
         &id,
         "csv",
         "csv",
     )
-}
-
-/// Canonical CSV rendering for a scan's entities. Shared by the HTTP
-/// endpoint `/api/v1/scans/{id}/entities.csv` and the `hse export
-/// --format csv` CLI subcommand so both produce byte-identical
-/// output — operators piping the two interchangeably can rely on
-/// the column shape staying in sync.
-pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> String {
-    use std::fmt::Write as _;
-    let mut body = String::with_capacity(192 + entities.len() * 192);
-    // `evidence_urls` + `evidence` make every row self-verifiable: the operator
-    // can follow the source links and read each module's finding without
-    // reconstructing anything from the value alone. `source_count` +
-    // `corroborating_sources` sit next to `corroboration` + `sources` for the
-    // same reason: `corroboration` is a raw per-module observation magnitude
-    // (summed on merge, never deduplicated) that does NOT drive `c_effective`
-    // — `source_count` (distinct corroborating sources) does. Without both
-    // numbers side by side, a reader has no way to tell from the CSV alone
-    // whether a high `corroboration` reflects genuine independent agreement.
-    // `uid` and `generation` are APPENDED (never inserted) so the header still
-    // begins with the exact prefix `looks_like_hse_csv` sniffs for and every
-    // by-name column lookup — the import and audit parsers both resolve columns
-    // by header name — keeps working on older and newer files alike.
-    // `uid` is the join key: it is what the JSON export, the debug bundle, the
-    // Browse pane and the /entities/{uid} pivot endpoint all identify a finding
-    // by, so without it a CSV row could only be matched back to the other
-    // artifacts by string-matching kind+value. `generation` (hops from the seed)
-    // travels with it for the same reason it was added to the bundle — it
-    // separates a seed-adjacent finding from one three pivots out.
-    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags,uid,generation\n");
-    for e in entities {
-        let eff = e.c_effective();
-        let source_count = e.source_count();
-        let tier = e.classify().to_string();
-        let mut sources: Vec<&str> = e.evidence_sources().into_iter().collect();
-        sources.sort_unstable();
-        let sources = sources.join("|");
-        let mut corroborating: Vec<&str> = e.corroborating_sources().into_iter().collect();
-        corroborating.sort_unstable();
-        let corroborating_sources = corroborating.join("|");
-        let tags = e.tags.join("|");
-
-        // Distinct full URLs across all evidence (the verifiable links), and a
-        // per-source summary trail of what each module actually found.
-        let mut urls: Vec<&str> = Vec::new();
-        for ev in &e.evidence {
-            for key in ["url", "source_url", "profile_url", "permalink"] {
-                if let Some(u) = ev.attributes.get(key)
-                    && !u.is_empty()
-                    && !urls.contains(&u.as_str())
-                {
-                    urls.push(u.as_str());
-                }
-            }
-        }
-        let evidence_urls = urls.join(" | ");
-        // Append each evidence's full attribute record (the same `k = v` detail
-        // the dossier renderer prints per evidence row) after its summary, so
-        // the CSV's own self-verifiable promise holds for hard evidentiary
-        // fields (a leaked DOB, a password hash, …) that a module recorded as
-        // structured `attributes` rather than folding into prose. `BTreeMap`
-        // iteration is already key-sorted, so output stays deterministic
-        // without an extra sort.
-        let evidence = e
-            .evidence
-            .iter()
-            .map(|ev| {
-                let attrs: Vec<String> = ev
-                    .attributes
-                    .iter()
-                    .filter(|(_, v)| !v.is_empty())
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect();
-                if attrs.is_empty() {
-                    format!("[{}] {}", ev.source, ev.summary)
-                } else {
-                    format!("[{}] {} ({})", ev.source, ev.summary, attrs.join("; "))
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" || ");
-
-        let _ = writeln!(
-            body,
-            "{},{},{},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{},{}",
-            csv_escape(&e.kind.to_string()),
-            csv_escape(&e.value),
-            csv_escape(&e.raw_value),
-            e.confidence,
-            eff,
-            e.corroboration,
-            source_count,
-            tier,
-            e.observed_at,
-            csv_escape(&sources),
-            csv_escape(&corroborating_sources),
-            csv_escape(&evidence_urls),
-            csv_escape(&evidence),
-            csv_escape(&tags),
-            csv_escape(&e.uid),
-            e.generation,
-        );
-    }
-    body
 }
 
 pub async fn scan_report_json(
@@ -170,7 +67,7 @@ pub async fn scan_report_json(
     let (id2, store) = (id.clone(), Arc::clone(&s.store));
     let (cand, infra) = (wants_candidates(&params), wants_infra(&params));
     match offload_store(move || {
-        build_scan_report(store.as_ref(), &id2, cand, infra).map(|opt| {
+        crate::app::export::build_scan_report(store.as_ref(), &id2, cand, infra).map(|opt| {
             opt.map(|report| {
                 serde_json::to_string_pretty(&report).unwrap_or_else(|e| {
                     tracing::warn!(error = %e, "failed to serialize scan report to JSON string");
@@ -187,188 +84,6 @@ pub async fn scan_report_json(
         Ok(None) => not_found(),
         Err(e) => e,
     }
-}
-
-/// Canonical scan-report JSON envelope. Shared by the HTTP endpoint
-/// `/api/v1/scans/{id}/report.json` and the `hse export --format
-/// report` CLI subcommand so the on-device and over-the-wire
-/// dossiers stay byte-equivalent.
-///
-/// Generic over the storage handle: the HTTP layer hands in an
-/// `Arc<dyn StoragePort>` (via `&*s.store`), the CLI hands in a
-/// `&Store` directly. Both expose `get_scan / entities_for_scan /
-/// correlations_for_scan` with matching signatures.
-///
-/// Returns `Ok(None)` when no scan with that id exists, so callers
-/// can map straight to a 404. Bubbles storage errors otherwise.
-pub(crate) fn build_scan_report(
-    store: &dyn crate::core::port::StoragePort,
-    scan_id: &str,
-    include_candidates: bool,
-    include_infra: bool,
-) -> crate::core::error::Result<Option<serde_json::Value>> {
-    let Some(scan) = store.get_scan(scan_id)? else {
-        return Ok(None);
-    };
-    let mut entities = store.entities_for_scan(scan_id)?;
-    // Quarantine in the dossier too: speculative `candidate` entities (the
-    // non-target breach-dump rows) are hidden by default so the report reads
-    // as the target's confirmed footprint. `include_candidates=true` returns
-    // the full set for investigation.
-    if !include_candidates {
-        entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
-    }
-    // Strip platform/shared-infrastructure entities (cloud buckets, CDN IPs,
-    // analytics IDs sourced from third-party platform pages) from default
-    // output. They inflate the count and obscure subject-owned entities.
-    // `include_infra=true` (via `--include-infra` or `--output full`) restores
-    // them.
-    if !include_infra {
-        // The operator-provided seed is the subject — it must ALWAYS appear in
-        // its own report, even when it is itself infrastructure (e.g. a scan
-        // seeded with a datacenter/CDN IP that an IP module re-emits as
-        // `hosting`, which then merges `platform-infra` onto the seed anchor).
-        entities.retain(|e| !e.has_tag(crate::core::tags::PLATFORM_INFRA) || e.has_tag("seed"));
-    }
-    let correlations = store.correlations_for_scan(scan_id)?;
-    let best_location = extract_au_location_fix(&correlations, &entities);
-    // The calibrated 0–100 Exposure Index — the SAME headline verdict the CLI
-    // `print_dossier` and the debug bundle both open with. This envelope is the
-    // canonical over-the-wire/on-device dossier (shared by GET report.json and
-    // `hse export --format report`), yet it was the one dossier rendering that
-    // omitted the summary score, so a consumer reading report.json alone could
-    // not tell a MINIMAL scan from a HIGH one without recomputing it. `assess`
-    // is pure and excludes candidate/sub-floor rows internally, so the score is
-    // identical whether or not this envelope filtered candidates above, and the
-    // determinism audit still holds (nothing here varies but `exported_at`).
-    let exposure = crate::core::exposure::assess(&entities, &correlations);
-    // How complete this scan's answer is, rendered from the SAME
-    // `Scan::completeness_caveat` the CLI, the dossier and the offline read
-    // paths use. `scan` above already carries `status` and `stop_reason`, but a
-    // consumer would have to re-implement the truncation predicate to act on
-    // them, and the whole point of this envelope is that report.json is the
-    // canonical dossier — it must not be the one surface that reads as a
-    // complete answer when the scan was cut short. `null` when the scan needs no
-    // caveat. Deterministic: derived only from fields written once at finalise,
-    // so `export_formats_determinism_audit` still holds.
-    let completeness_caveat = scan.completeness_caveat("this scan");
-    Ok(Some(json!({
-        "scan": scan,
-        "completeness_caveat": completeness_caveat,
-        "entities": entities,
-        "entity_count": entities.len(),
-        "correlations": correlations,
-        "correlation_count": correlations.len(),
-        "exposure": exposure,
-        // Best AU geolocation fix synthesised by AU-059 cross-seed geo synergy.
-        // `null` when no AU-059 fired; present with full structured fields when
-        // ≥2 orthogonal AU source classes converged on a location.
-        "best_location": best_location,
-        // DETERMINISM: `exported_at` is the SOLE intentional source of
-        // non-determinism in any export. It is meaningful here — report.json is a
-        // point-in-time snapshot whose "when was this pulled" is part of its
-        // value — and is the documented exception to byte-reproducibility. The
-        // diffable/reproducible artifacts are the debug bundle (no timestamp,
-        // proven byte-stable) and entity-level `scan_diff`. The
-        // `export_formats_determinism_audit` test pins that NO OTHER field of the
-        // report varies across renders, so any newly-introduced non-determinism
-        // fails CI rather than silently breaking reproducibility.
-        "exported_at": crate::core::entity::unix_now(),
-    })))
-}
-
-/// Parse the structured geo-fix fields that AU-059 embeds in its description.
-///
-/// AU-059 description format:
-/// `"N AU coordinate(s) from M orthogonal source class(es) [C1, C2] converge on
-///  LAT,LON (geohash=GH, state=STATE); synergy confidence SC — MITRE T1591.001"`
-///
-/// Returns a JSON object `{lat, lon, geohash, state, synergy_confidence,
-/// source_count, class_count, severity}` from the highest-rank AU-059 firing,
-/// or `serde_json::Value::Null` when no AU-059 correlation exists for the scan.
-/// The AU-059 `best_location` for the export, read **structurally** from the
-/// scan entities rather than by parsing the finding prose. It is present iff
-/// AU-059 actually fired this scan (the gated, ranked finding); the geo fields
-/// come from the one canonical [`crate::core::correlator::au059_synergy_fix`]
-/// computation the rule itself uses, so the structured export and the finding
-/// can never drift (they did, by construction, when this re-parsed the prose).
-/// Severity and the post-hoc `rank` are taken from the emitted correlation.
-pub(crate) fn extract_au_location_fix(
-    correlations: &[crate::core::correlator::Correlation],
-    entities: &[crate::core::entity::Entity],
-) -> serde_json::Value {
-    // Independent-source corroboration (computed regardless of which headline fix
-    // wins): how many DISTINCT methods agree on a locality, folding in the
-    // postcode-grain signals the synergy fix can't see. Attached to whichever fix
-    // is returned so the JSON surface always reports the corroboration strength.
-    let corroboration = crate::core::correlator::au_location_corroboration(entities).map(|c| {
-        json!({
-            "lat": c.lat,
-            "lon": c.lon,
-            "radius_km": c.radius_km,
-            "state": c.state,
-            "locality": c.locality,
-            "independent_classes": c.independent_classes,
-            "signal_count": c.signal_count,
-            "classes": c.class_names,
-            "confidence": c.confidence,
-        })
-    });
-
-    // Primary: the AU-059 multi-source cross-class synergy fix (strongest). The
-    // structured fields are recomputed from the entities, never parsed from prose.
-    let best = correlations
-        .iter()
-        .filter(|c| c.rule_id == "AU-059")
-        .max_by(|a, b| {
-            a.rank
-                .partial_cmp(&b.rank)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-    let mut fix = if let Some(c) = best
-        && let Some(synergy) = crate::core::correlator::au059_synergy_fix(entities)
-    {
-        json!({
-            "lat": synergy.lat,
-            "lon": synergy.lon,
-            "radius_km": synergy.radius_km,
-            "geohash": synergy.geohash,
-            "state": synergy.state,
-            "synergy_confidence": synergy.synergy_confidence,
-            "severity": c.severity.as_canonical(),
-            "rank": c.rank,
-            "source_count": synergy.count,
-            "class_count": synergy.class_names.len(),
-            "rule_id": "AU-059",
-        })
-    } else {
-        // Fallback: the single-signal best-location estimate, so the web/JSON
-        // surface carries a headline fix whenever ANY AU location signal exists —
-        // not only the ≥2-class synergy case. Carries the precision radius, nearest
-        // locality, and the basis it was derived from. `Null` only when there is no
-        // AU location at all.
-        match crate::core::correlator::best_au_location_estimate(entities) {
-            Some(est) => json!({
-                "lat": est.lat,
-                "lon": est.lon,
-                "radius_km": est.radius_km,
-                "geohash": est.geohash,
-                "state": est.state,
-                "locality": est.locality,
-                "confidence": est.confidence,
-                "basis": est.basis,
-                "source": "single-signal",
-            }),
-            None => serde_json::Value::Null,
-        }
-    };
-
-    if let Some(obj) = fix.as_object_mut()
-        && let Some(corr) = corroboration
-    {
-        obj.insert("corroboration".to_string(), corr);
-    }
-    fix
 }
 
 pub async fn scan_export_gexf(
@@ -543,59 +258,6 @@ pub(crate) fn attachment_response(
         headers.insert(axum::http::header::CONTENT_DISPOSITION, v);
     }
     resp
-}
-
-/// RFC-4180 CSV field escaping with **formula-injection defanging**: a field
-/// whose first byte is `= + - @ TAB CR` — or `'` itself, which is guarded too so
-/// the escape stays invertible, see [`formula_guard`] — is prefixed with a `'`
-/// so Excel / LibreOffice don't execute it as a formula on open (OWASP
-/// CSV-injection), then any field containing `, " \n \r` is double-quoted with
-/// embedded quotes doubled. Every cell in an exported scan CSV passes through
-/// this.
-pub(crate) fn csv_escape(s: &str) -> String {
-    let body = formula_guard(s);
-    if body.contains([',', '"', '\n', '\r']) {
-        format!("\"{}\"", body.replace('"', "\"\""))
-    } else {
-        body.into_owned()
-    }
-}
-
-/// Neutralise a spreadsheet formula trigger at the start of a CSV field,
-/// **without** applying RFC-4180 quoting.
-///
-/// A leading `=`/`+`/`-`/`@`/CR/TAB causes Excel and LibreOffice to interpret
-/// the cell as a formula on file open — a hostile API response with
-/// `first_name = "=cmd|'/c calc'!A1"` could otherwise turn an exported CSV into
-/// RCE on the operator's workstation. Prepend a single quote to defang, per
-/// OWASP guidance.
-///
-/// A leading apostrophe is ALSO guarded (doubled). Without that the escape
-/// isn't invertible: a genuine value like `'=hunter` would export unchanged as
-/// `'=hunter`, indistinguishable from a guarded `=hunter`, and the import
-/// reverse (`app::import::csv`'s `strip_csv_formula_guard`) would strip
-/// its real apostrophe. By escaping any leading `'` too, this is a clean
-/// bijection — export prepends `'` iff the first byte is a trigger OR `'`, and
-/// import strips exactly one leading `'` — so every value round-trips
-/// byte-for-byte at any nesting.
-///
-/// Split out of [`csv_escape`] so the two CSV writers in this crate can share
-/// **one** guard while differing on who does the quoting. [`csv_escape`] quotes
-/// by hand for the scan export; `cli::ingest` hands its fields to `csv::Writer`,
-/// which RFC-4180-quotes them itself — passing them through `csv_escape` first
-/// would double-quote. Returns [`std::borrow::Cow::Borrowed`] when no guard is
-/// needed, which is the overwhelmingly common case (emails, IPs, domains,
-/// hashes), so the shared guard costs no allocation on the hot path.
-pub(crate) fn formula_guard(s: &str) -> std::borrow::Cow<'_, str> {
-    let needs_guard = s
-        .as_bytes()
-        .first()
-        .is_some_and(|b| matches!(*b, b'=' | b'+' | b'-' | b'@' | b'\t' | b'\r' | b'\''));
-    if needs_guard {
-        std::borrow::Cow::Owned(format!("'{s}"))
-    } else {
-        std::borrow::Cow::Borrowed(s)
-    }
 }
 
 #[cfg(test)]
