@@ -81,10 +81,10 @@ pub const TACTICS: &[Tactic] = &[
     },
 ];
 
-/// The complete MITRE ATT&CK Enterprise technique catalogue ([`ATTACK_VERSION`])
+/// The complete MITRE ATT&CK Enterprise technique catalogue ([`super::ATTACK_VERSION`])
 /// — every current technique and sub-technique, sorted by `id` for stable output
 /// and easy review. This is reference vocabulary for the WHOLE framework; HSE's
-/// claimed *coverage* is a strict subset ([`reconnaissance`]).
+/// claimed *coverage* is a strict subset ([`super::reconnaissance`]).
 pub const ENTERPRISE: &[Technique] = &[
     Technique {
         id: "T1001",
