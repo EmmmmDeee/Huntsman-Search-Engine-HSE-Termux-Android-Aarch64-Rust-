@@ -112,78 +112,18 @@ pub fn format_embedded_report(validation: &EmbeddedValidation) -> String {
 }
 
 /// Categorize credential keys by API provider type.
+///
+/// Delegates to the single-sourced [`crate::util::keys::category_for`] so this
+/// report and `hse credentials list` never drift into disagreeing classifications.
 fn categorize_credentials(keys: Vec<&str>) -> HashMap<String, String> {
-    let mut categories = HashMap::new();
-
-    for key in keys {
-        let category = match key {
-            // Threat Intelligence & Malware
-            k if k.contains("VIRUSTOTAL") => "Threat Intelligence",
-            k if k.contains("GREYNOISE") => "Threat Intelligence",
-            k if k.contains("URLSCAN") => "Threat Intelligence",
-            k if k.contains("ABUSEIPDB") => "Threat Intelligence",
-            k if k.contains("THREATFOX") => "Threat Intelligence",
-            k if k.contains("ABUSECH") => "Threat Intelligence",
-
-            // Breach & Intelligence
-            k if k.contains("SEEKNOW") => "Breach Intelligence",
-            k if k.contains("HIBP") => "Breach Intelligence",
-            k if k.contains("INTELLIGENCE_X") => "Breach Intelligence",
-            k if k.contains("OATHNET") => "Breach Intelligence",
-            k if k.contains("STOLEN") => "Breach Intelligence",
-            k if k.contains("DEHASHED") => "Breach Intelligence",
-
-            // Infrastructure/IP/Domain
-            k if k.contains("SHODAN") => "Infrastructure Intelligence",
-            k if k.contains("SECURITYTRAILS") => "Infrastructure Intelligence",
-            k if k.contains("LEAKIX") => "Infrastructure Intelligence",
-            k if k.contains("CRIMINALIP") => "Infrastructure Intelligence",
-            k if k.contains("IPQUALITYSCORE") => "Infrastructure Intelligence",
-            k if k.contains("CENSYS") => "Infrastructure Intelligence",
-            k if k.contains("FOFA") => "Infrastructure Intelligence",
-            k if k.contains("NETLAS") => "Infrastructure Intelligence",
-            k if k.contains("ONYPHE") => "Infrastructure Intelligence",
-            k if k.contains("WHOISXML") => "Infrastructure Intelligence",
-            k if k.contains("DOMAINSDB") => "Infrastructure Intelligence",
-            k if k.contains("OSINTCAT") => "Infrastructure Intelligence",
-
-            // Identity/Person
-            k if k.contains("PROXYCURL") => "Identity Intelligence",
-            k if k.contains("HUNTER") => "Identity Intelligence",
-            k if k.contains("EMAILREP") => "Identity Intelligence",
-            k if k.contains("GITHUB") && !k.contains("COMMITS") => "Identity Intelligence",
-            k if k.contains("FULLCONTACT") => "Identity Intelligence",
-            k if k.contains("SEON") => "Identity Intelligence",
-            k if k.contains("TROVE") => "Identity Intelligence",
-
-            // Telecommunications
-            k if k.contains("NUMVERIFY") => "Telecommunications",
-            k if k.contains("OPENCNAM") => "Telecommunications",
-            k if k.contains("EPIEOS") => "Telecommunications",
-            k if k.contains("NIAMONX") => "Telecommunications",
-            k if k.contains("HLR") => "Telecommunications",
-
-            // Geolocation
-            k if k.contains("WIGLE") => "Geolocation",
-            k if k.contains("OPENCELLID") => "Geolocation",
-
-            // Business Intelligence
-            k if k.contains("OPENCORPORATES") => "Business Intelligence",
-            k if k.contains("OPENSANCTIONS") => "Business Intelligence",
-            k if k.contains("BUILTWITH") => "Business Intelligence",
-
-            // Search & AI
-            k if k.contains("EXA") => "Search & AI",
-            k if k.contains("ALIENVAULT") => "Search & AI",
-            k if k.contains("ZOOMEYE") => "Search & AI",
-
-            _ => "Other Services",
-        };
-
-        categories.insert(key.to_string(), category.to_string());
-    }
-
-    categories
+    keys.into_iter()
+        .map(|key| {
+            (
+                key.to_string(),
+                crate::util::keys::category_for(key).to_string(),
+            )
+        })
+        .collect()
 }
 
 /// Check for common validation issues.

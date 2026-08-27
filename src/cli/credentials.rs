@@ -265,32 +265,19 @@ async fn test_github_credential(token: &str) -> Result<()> {
     }
 }
 
+/// Groups embedded credential keys by API provider category.
+///
+/// Delegates to the single-sourced [`crate::util::keys::category_for`] so this
+/// listing and the `hse doctor` embedded-credentials report never drift into
+/// disagreeing classifications.
 fn categorize_all_credentials(
     embedded: &std::collections::HashMap<&str, &str>,
 ) -> HashMap<String, Vec<String>> {
     let mut categories: HashMap<String, Vec<String>> = HashMap::new();
 
     for key in embedded.keys() {
-        let category = match *key {
-            k if k.contains("VIRUSTOTAL") || k.contains("GREYNOISE") || k.contains("URLSCAN") => {
-                "Threat Intelligence"
-            }
-            k if k.contains("SEEKNOW") || k.contains("HIBP") || k.contains("DEHASHED") => {
-                "Breach Intelligence"
-            }
-            k if k.contains("SHODAN") || k.contains("CENSYS") || k.contains("FOFA") => {
-                "Infrastructure Intelligence"
-            }
-            k if k.contains("PROXYCURL") || k.contains("HUNTER") || k.contains("GITHUB") => {
-                "Identity Intelligence"
-            }
-            k if k.contains("WIGLE") || k.contains("OPENCELLID") => "Geolocation",
-            k if k.contains("OPENCORPORATES") || k.contains("BUILTWITH") => "Business Intelligence",
-            _ => "Other Services",
-        };
-
         categories
-            .entry(category.to_string())
+            .entry(crate::util::keys::category_for(key).to_string())
             .or_default()
             .push(key.to_string());
     }
