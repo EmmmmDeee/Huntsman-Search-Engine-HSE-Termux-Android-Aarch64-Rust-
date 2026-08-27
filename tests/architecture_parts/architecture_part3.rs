@@ -636,11 +636,28 @@ fn wigle_is_reachable_from_an_ssid_seed() {
 
 /// Concatenated source of the correlator unit-test files used by the
 /// meta-guard (`every_dispatched_correlation_rule_has_a_firing_test`).
+///
+/// `tests.rs` itself `include!`s fragments from a `tests/` subdirectory (split
+/// purely for reliable transmission through this repo's push tooling — see
+/// `tests.rs`'s own doc comment), so those fragments are read and concatenated
+/// too; otherwise a rule whose sole firing test lives in a fragment would look
+/// untested to this scanner even though it compiles into the same test binary.
 fn correlator_tests_source() -> String {
     let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core/correlator");
-    let a = fs::read_to_string(base.join("tests.rs")).unwrap_or_default();
-    let b = fs::read_to_string(base.join("rules/tests.rs")).unwrap_or_default();
-    format!("{a}\n{b}")
+    let mut out = fs::read_to_string(base.join("tests.rs")).unwrap_or_default();
+    if let Ok(rd) = fs::read_dir(base.join("tests")) {
+        let mut parts: Vec<_> = rd.flatten().map(|e| e.path()).collect();
+        parts.sort(); // deterministic concatenation order
+        for p in parts {
+            if p.extension().is_some_and(|e| e == "rs") {
+                out.push('\n');
+                out.push_str(&fs::read_to_string(&p).unwrap_or_default());
+            }
+        }
+    }
+    out.push('\n');
+    out.push_str(&fs::read_to_string(base.join("rules/tests.rs")).unwrap_or_default());
+    out
 }
 
 /// True iff `line` contains `len(), N` where N is a positive decimal integer.
