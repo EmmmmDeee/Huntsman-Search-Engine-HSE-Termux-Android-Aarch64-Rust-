@@ -17,7 +17,7 @@ it. The running software is the source of truth — cross-check with `hse --help
 | Layer | Component | What it does | Set up by |
 |---|---|---|---|
 | Install | `install.sh` | Builds/fetches the `hse` binary, wires everything below | one command |
-| Keys | `~/.huntsman.env` | Optional API keys (`HUNTSMAN_*`); ~79% of modules need none | `install.sh` template + `hse set-key` |
+| Keys | `~/.huntsman.env` | Optional API keys (`HUNTSMAN_*`); ~75% of modules need none | `install.sh` template + `hse set-key` |
 | Server | `hse-bg` | Runs `hse serve` under `nohup` + wake-lock (survives screen-off) | `install.sh` (Termux) |
 | Collection | `hse-watch` | Sweeps a watchlist on an interval via `hse scan --input-file` | `install.sh` (Termux) |
 | Autostart | `~/.termux/boot/hse-autostart` | Starts `hse-bg` + `hse-watch` on device boot | `install.sh` if Termux:Boot present |
