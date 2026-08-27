@@ -505,7 +505,7 @@ fn au033_links_abn_to_acnc_and_gleif_registry_orgs() {
     }
 }
 
-// ── AU-048 ───────────────────────────────────────────────────────
+// ── AU-048 ──────────────────────────────────────────────────────────
 fn shared_key(tag: &str, emails: &[&str]) -> Entity {
     let mut e = Entity::new(EntityKind::Credential, "AAAAB3NzaC1shared", 0.9, "scan");
     e.tag(tag);
