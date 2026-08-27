@@ -19,7 +19,8 @@ static EMBEDDED_KEYS: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::
 /// Get the embedded credentials map.
 pub fn get_embedded_keys() -> &'static HashMap<&'static str, &'static str> {
     EMBEDDED_KEYS.get_or_init(|| {
-        let keys = HashMap::new();
+        #[allow(unused_mut)] // mut is needed when users uncomment insert() calls
+        let mut keys = HashMap::new();
 
         // ════════════════════════════════════════════════════════════════════════════════════
         // THREAT INTELLIGENCE & MALWARE SCANNING
