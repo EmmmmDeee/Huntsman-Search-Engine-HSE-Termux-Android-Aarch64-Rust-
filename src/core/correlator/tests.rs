@@ -505,7 +505,7 @@ fn au033_links_abn_to_acnc_and_gleif_registry_orgs() {
     }
 }
 
-// ── AU-048 ──────────────────────────────────────────────────────────
+// ── AU-048 ───────────────────────────────────────────────────────
 fn shared_key(tag: &str, emails: &[&str]) -> Entity {
     let mut e = Entity::new(EntityKind::Credential, "AAAAB3NzaC1shared", 0.9, "scan");
     e.tag(tag);
@@ -792,22 +792,25 @@ fn canonical_email(value: &str, source_emails: &[&str]) -> Entity {
     e
 }
 
-// Split into part files under tests_parts/ purely to keep each file small
-// enough for reliable transmission through the push tooling used in this
-// repo's environment — `include!` splices them back into this same module
-// scope at compile time, so this is byte-for-byte the same test suite as one
-// file; behavior, test names, and results are unaffected.
-include!("tests_parts/tests_part02.rs");
-include!("tests_parts/tests_part03.rs");
-include!("tests_parts/tests_part04.rs");
-include!("tests_parts/tests_part05.rs");
-include!("tests_parts/tests_part06.rs");
-include!("tests_parts/tests_part07.rs");
-include!("tests_parts/tests_part08.rs");
-include!("tests_parts/tests_part09.rs");
-include!("tests_parts/tests_part10.rs");
-include!("tests_parts/tests_part11.rs");
-include!("tests_parts/tests_part12.rs");
-include!("tests_parts/tests_part13.rs");
-include!("tests_parts/tests_part14.rs");
-include!("tests_parts/tests_part15.rs");
+// Split into part files under tests/ (a plain directory alongside this file —
+// `mod tests;` above already resolves to tests.rs, so this does not conflict)
+// purely to keep each file small enough for reliable transmission through the
+// push tooling used in this repo's environment, and to keep these synthetic
+// test-fixture credentials covered by .gitleaks.toml's `(^|/)tests/`
+// allowlist. `include!` splices them back into this same module scope at
+// compile time, so this is byte-for-byte the same test suite as one file;
+// behavior, test names, and results are unaffected.
+include!("tests/part02.rs");
+include!("tests/part03.rs");
+include!("tests/part04.rs");
+include!("tests/part05.rs");
+include!("tests/part06.rs");
+include!("tests/part07.rs");
+include!("tests/part08.rs");
+include!("tests/part09.rs");
+include!("tests/part10.rs");
+include!("tests/part11.rs");
+include!("tests/part12.rs");
+include!("tests/part13.rs");
+include!("tests/part14.rs");
+include!("tests/part15.rs");
