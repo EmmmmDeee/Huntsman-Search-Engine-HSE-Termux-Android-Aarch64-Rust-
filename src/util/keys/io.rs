@@ -121,7 +121,7 @@ pub fn load() -> HashMap<String, String> {
     // Merge embedded credentials as fallback for keys not already configured
     // (env file or process env). Embedded keys have lowest priority and never
     // override configured keys.
-    for (k, v) in super::embedded_credentials::get_embedded_keys().iter() {
+    for (k, v) in super::embedded_credentials::get_embedded_keys() {
         map.entry(k.to_string()).or_insert_with(|| v.to_string());
     }
 
