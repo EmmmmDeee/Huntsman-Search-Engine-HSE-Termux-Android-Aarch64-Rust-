@@ -144,7 +144,7 @@ fn au031_benign_infra_verdict_vetoes_adjacency() {
     );
 }
 
-// ── AU-032 (graph-aware: co-location cluster) ───────────────────────────
+// ── AU-032 (graph-aware: co-location cluster) ───────────────────────
 
 #[test]
 fn au032_fires_on_three_node_colocation_cluster() {
@@ -269,7 +269,7 @@ fn au032_ignores_non_colocation_edges() {
     );
 }
 
-// ── AU-060 (graph-aware: transitive identity closure) ──────────────────────────
+// ── AU-060 (graph-aware: transitive identity closure) ────────────────
 
 #[test]
 fn au060_fires_on_two_hop_identity_chain() {
