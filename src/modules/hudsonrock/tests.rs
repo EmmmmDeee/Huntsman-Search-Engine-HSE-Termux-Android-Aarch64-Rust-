@@ -75,7 +75,8 @@ use super::*;
             malware_path: None,
             credentials: vec![],
         };
-        assert!((compute_confidence(&[recent]) - FRESH_CONFIDENCE).abs() < 1e-9);
+        let now = parse_iso_epoch("2026-07-15T00:00:00Z").unwrap();
+        assert!((compute_confidence(&[recent], now) - FRESH_CONFIDENCE).abs() < 1e-9);
     }
 
     #[test]
@@ -90,7 +91,8 @@ use super::*;
             malware_path: None,
             credentials: vec![],
         };
-        assert!((compute_confidence(&[old]) - BASE_CONFIDENCE).abs() < 1e-9);
+        let now = parse_iso_epoch("2026-08-27T00:00:00Z").unwrap();
+        assert!((compute_confidence(&[old], now) - BASE_CONFIDENCE).abs() < 1e-9);
     }
 
     #[test]
@@ -184,12 +186,14 @@ use super::*;
             malware_path: None,
             credentials: vec![],
         };
-        assert!((compute_confidence(&[old, recent]) - FRESH_CONFIDENCE).abs() < 1e-9);
+        let now = parse_iso_epoch("2026-07-15T00:00:00Z").unwrap();
+        assert!((compute_confidence(&[old, recent], now) - FRESH_CONFIDENCE).abs() < 1e-9);
     }
 
     #[test]
     fn compute_confidence_empty_yields_base() {
-        assert!((compute_confidence(&[]) - BASE_CONFIDENCE).abs() < 1e-9);
+        let now = parse_iso_epoch("2026-08-27T00:00:00Z").unwrap();
+        assert!((compute_confidence(&[], now) - BASE_CONFIDENCE).abs() < 1e-9);
     }
 
     #[test]
