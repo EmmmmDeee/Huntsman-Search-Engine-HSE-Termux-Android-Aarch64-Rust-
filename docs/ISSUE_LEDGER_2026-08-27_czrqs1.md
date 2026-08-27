@@ -175,6 +175,26 @@ disposition | commit.
 - **Disposition**: FIXED.
 - **Commit**: `b0afe9a81`
 
+### IL-9 — `cargo machete`'s plain run false-positives on 2 renamed-lib crates
+- **Severity**: Informational (tooling false positive, not a real defect)
+- **Evidence**: re-running the issue census directly (not just via
+  `scripts/gate.sh`'s CI-mirroring skip path) after merging `main`, plain
+  `cargo machete` flagged `kamadak-exif` and `md-5` as unused dependencies.
+  Both are used extensively in non-test source (`src/util/exif.rs`'s
+  `exif::Reader`/`exif::Tag`/…, `src/util/gravatar/mod.rs`'s `md5::compute`).
+- **Root cause**: both crates publish under a package name that differs
+  from their library/import name (`kamadak-exif` → `exif`, `md-5` → `md5`).
+  Plain `cargo machete` matches usage by guessing the import name from the
+  package name text (hyphens → underscores), so it never recognises
+  `exif`/`md5` as satisfying `kamadak-exif`/`md-5`.
+- **Remediation**: none needed — `cargo machete --with-metadata` (which
+  resolves real crate metadata instead of guessing) reports zero unused
+  dependencies, confirming both are genuinely used. Recorded here so a
+  future run isn't misled by the plain command's output without re-deriving
+  this.
+- **Disposition**: NOT A DEFECT — documented false positive, no code change.
+- **Commit**: none (documentation only, this ledger).
+
 ---
 
 ## Won't-fix / deferred (documented, not silently dropped)
@@ -188,9 +208,12 @@ disposition | commit.
 - **`HUNTSMAN_SEEKNOW_EMAIL`/`_PASSWORD` in `KNOWN_KEYS`** (IL-3) — a UI
   design decision (masking a plaintext password in a grid built for API
   keys), not a mechanical documentation fix.
-- **17 open PRs** this branch's history substantively addresses — closing
-  or commenting on them requires GitHub write access unavailable this
-  session (see the audit report's "Known risks" section).
+- **16 other open PRs** (excluding this run's own #485) this branch's
+  history substantively addresses. GitHub write access was unavailable for
+  most of this session (see the audit report's "Known risks" section) and
+  was restored only late in the run, after this ledger's fix commits
+  landed; triaging and closing the now-superseded ones with evidence is
+  left as a follow-up rather than rushed in the time remaining.
 - **`RUSTSEC-2024-0436` (`paste` crate, unmaintained)** — already carries
   a written, still-accurate justification in `deny.toml` predating this
   session; re-verified as still correct (the crate is genuinely
