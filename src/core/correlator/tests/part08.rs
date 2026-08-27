@@ -600,7 +600,7 @@ fn au048_discloses_when_the_account_list_is_truncated() {
     );
 }
 
-// ─── Associates / household family (AU-049 … AU-051) ────────────────────────────────────────
+// ─── Associates / household family (AU-049 … AU-051) ─────────────────────────
 
 #[cfg(test)]
 fn person_at(name: &str, addr: &str) -> Entity {
