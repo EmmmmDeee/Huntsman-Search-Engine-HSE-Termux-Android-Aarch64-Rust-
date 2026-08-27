@@ -278,12 +278,10 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         rate_limit_reset_secs: 6,
         probe_parser: Some(|_v| vec![("status".into(), "authenticated".into())]),
     },
-    // NOTE: DeHashed is intentionally absent. Its v2 API is POST-only
-    // (`POST /v2/search` with a `Dehashed-Api-Key` header), which the
-    // GET-based key validator here cannot probe without spending a paid
-    // search credit — and the legacy v1 `GET /search` URL it used now 404s.
-    // The `dehashed` module reads HUNTSMAN_DEHASHED_KEY from the env directly,
-    // so a validator def would only ever mis-report a valid key as invalid.
+    // NOTE: DeHashed has no keyless/GET account-status endpoint to probe (its
+    // v2 API is POST-only) — see the `dehashed` def below (search "name:
+    // \"dehashed\"") for how it is registered anyway (`probe_parser: None`,
+    // pool/dashboard integration only).
     ServiceDef {
         name: "threatfox",
         env_var: "HUNTSMAN_THREATFOX_KEY",
@@ -507,7 +505,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         probe_parser: None,
     },
     // (DeHashed v2 is key-only; the former `dehashed_user` account-email def
-    // is obsolete — see the note where the `dehashed` def used to live.)
+    // is obsolete — see the `dehashed` def below for the current entry.)
     ServiceDef {
         name: "binaryedge",
         env_var: "HUNTSMAN_BINARYEDGE_KEY",
@@ -700,8 +698,8 @@ static SERVICE_DEFS: &[ServiceDef] = &[
     // `Auth-Key` header → 401; a present-but-wrong `Auth-Key` → 404 (its real
     // endpoints are POST-only, so this GET path doesn't cleanly echo the
     // auth verdict a valid key would get). Either way the probe lands
-    // `Indeterminate`, never a false `Invalid` — the same safe trade-off
-    // `dehashed`'s omission note above documents for a POST-only API.
+    // `Indeterminate`, never a false `Invalid` — the same safe trade-off the
+    // `dehashed` def below documents for its own POST-only API.
     // abuse.ch's 2024 auth rollout unified URLhaus/ThreatFox/MalwareBazaar
     // under one Auth-Key, which is why `urlhaus`'s own code falls back to
     // `HUNTSMAN_THREATFOX_KEY` when no dedicated key is set — registered here
