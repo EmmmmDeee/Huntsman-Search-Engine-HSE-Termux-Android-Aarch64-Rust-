@@ -152,7 +152,9 @@ pub fn slugify(s: &str) -> String {
     let mut last_dash = true;
     for ch in s.chars() {
         if ch.is_alphanumeric() {
-            slug.push(ch.to_ascii_lowercase());
+            for lowercase_ch in ch.to_lowercase() {
+                slug.push(lowercase_ch);
+            }
             last_dash = false;
         } else if !last_dash {
             slug.push('-');
