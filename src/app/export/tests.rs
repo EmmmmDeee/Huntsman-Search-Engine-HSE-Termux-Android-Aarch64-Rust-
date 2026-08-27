@@ -952,7 +952,7 @@ fn explicit_scan_id_is_existence_checked_no_silent_empty_export() {
     );
 }
 
-// ── join_or_dash ───────────────────────────────────────────────────
+// ── join_or_dash ──────────────────────────────────────────────────────────────
 
 #[test]
 fn join_or_dash_comma_joins_multiple_values() {
@@ -972,7 +972,7 @@ fn join_or_dash_empty_iterator_is_explicit_none() {
     assert_eq!(join_or_dash(v.iter()), "(none)");
 }
 
-// ── Property test: export determinism as a GENERAL property ───────────
+// ── Property test: export determinism as a GENERAL property ─────────────────
 //
 // `export_formats_determinism_audit` above proves byte-reproducibility for one
 // hand-built fixture (double-rendering the same store). This generalises that
@@ -1133,7 +1133,7 @@ mod prop {
     }
 }
 
-// ── System self-diagnosis bundle ──────────────────────────────
+// ── System self-diagnosis bundle ───────────────────────────────────────────
 
 fn passing_selftest() -> crate::selftest::Report {
     crate::selftest::Report {
@@ -1641,7 +1641,7 @@ fn provenance_names_the_modules_when_no_provider_attributes_exist() {
     );
 }
 
-// ── build_scan_report ──────────────────────────────────────
+// ── build_scan_report ───────────────────────────────────────────────────
 
 #[test]
 fn report_hides_candidates_by_default_and_includes_on_request() {
@@ -1781,7 +1781,7 @@ fn default_report_always_keeps_the_seed_even_if_it_is_infrastructure() {
     );
 }
 
-// ── entities_to_csv ───────────────────────────────────────────
+// ── entities_to_csv ─────────────────────────────────────────────────────
 
 #[test]
 fn entities_to_csv_assembles_header_and_escaped_rows() {
@@ -1967,7 +1967,7 @@ fn csv_evidence_column_omits_empty_attribute_values() {
     );
 }
 
-// ── AU-059 best_location emit→extract contract ───────────────────
+// ── AU-059 best_location emit→extract contract ───────────────────────────
 
 /// Build a tagged AU `Coordinates` entity for a given source, mirroring the
 /// correlator's own fixture so the convergence path is identical.
