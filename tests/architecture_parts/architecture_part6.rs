@@ -287,10 +287,14 @@ fn collect_bare_confidence(dir: &Path, root: &Path, out: &mut Vec<(String, Strin
         // the gating marker is never inside the file itself for the scanner to
         // see. Skip them whole — test fixtures are deliberately allowed to use
         // bare literals (a threshold assertion that moves when a constant moves
-        // is a weaker test).
+        // is a weaker test). A `tests/` directory component catches the same
+        // test code when `tests.rs` splits its content into `tests/partNN.rs`
+        // fragments via `include!` (done purely to keep each file small enough
+        // for reliable transmission through this repo's push tooling).
         if path
             .file_name()
             .is_some_and(|n| n == "tests.rs" || n.to_string_lossy().ends_with("_tests.rs"))
+            || path.components().any(|c| c.as_os_str() == "tests")
             || path.extension().is_none_or(|e| e != "rs")
         {
             continue;
@@ -536,13 +540,15 @@ fn collect_hand_rolled_derivations(dir: &Path, root: &Path, out: &mut Vec<(Strin
             collect_hand_rolled_derivations(&path, root, out);
             continue;
         }
-        // Same test-file exclusions as the bare-literal scan above: a test that
-        // asserts `(e.confidence - 0.72).abs() < 1e-9` is comparing, not
+        // Same test-file exclusions as the bare-literal scan above (including
+        // the `tests/` directory-component case — see its comment): a test
+        // that asserts `(e.confidence - 0.72).abs() < 1e-9` is comparing, not
         // deriving, and freezing those would make every threshold assertion in
         // the tree a ratchet entry.
         if path
             .file_name()
             .is_some_and(|n| n == "tests.rs" || n.to_string_lossy().ends_with("_tests.rs"))
+            || path.components().any(|c| c.as_os_str() == "tests")
             || path.extension().is_none_or(|e| e != "rs")
         {
             continue;
