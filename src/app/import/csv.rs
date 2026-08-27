@@ -272,7 +272,7 @@ pub(super) async fn cmd_import_csv(body: &str, output: &str) -> Result<()> {
     Ok(())
 }
 
-// ─── HSE's own CSV export (round-trip) ────────────────────────────────────────
+// ─── HSE's own CSV export (round-trip) ───────────────────────────────────
 
 /// Detect HSE's own entity CSV export by its exact, unambiguous header — so a
 /// prior scan's `hse export … --format csv` can be re-ingested (merge two scans,
@@ -316,7 +316,7 @@ fn kind_from_str(s: &str) -> Option<EntityKind> {
 }
 
 /// Reconstruct entities from HSE's own CSV export, faithfully restoring each
-/// Reverse HSE's CSV anti-formula-injection guard. `api::scan_export::csv_escape`
+/// Reverse HSE's CSV anti-formula-injection guard. `crate::app::export::csv_escape`
 /// prepends a single apostrophe when a cell's first byte is a formula trigger
 /// (`= + - @ TAB CR`) OR is itself an apostrophe (so Excel/LibreOffice render it
 /// as text, not a formula). That escape is a bijection: it adds a `'` iff the
@@ -440,7 +440,7 @@ pub(super) async fn cmd_import_hse_csv(body: &str, output: &str) -> Result<()> {
 #[cfg(test)]
 mod formula_guard_tests {
     use super::strip_csv_formula_guard as strip;
-    use crate::api::scan_export::csv_escape;
+    use crate::app::export::csv_escape;
 
     #[test]
     fn strip_removes_exactly_one_leading_apostrophe() {
