@@ -272,7 +272,7 @@ pub(super) async fn cmd_import_csv(body: &str, output: &str) -> Result<()> {
     Ok(())
 }
 
-// ─── HSE's own CSV export (round-trip) ───────────────────────────────────
+// ─── HSE's own CSV export (round-trip) ────────────────────────────────────────
 
 /// Detect HSE's own entity CSV export by its exact, unambiguous header — so a
 /// prior scan's `hse export … --format csv` can be re-ingested (merge two scans,

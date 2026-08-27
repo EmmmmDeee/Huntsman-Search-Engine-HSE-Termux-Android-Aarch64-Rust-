@@ -92,7 +92,7 @@ fn csv_scan_id_conflict_note(csv_path: &str) -> String {
     format!("note: both --csv and --scan-id given — using --csv \"{csv_path}\", ignoring --scan-id")
 }
 
-// ── CSV export parser (header-driven, tolerant of every export version) ─────
+// ── CSV export parser (header-driven, tolerant of every export version) ───────
 
 /// Parse an `hse` CSV export. Keys off the header row by NAME, so it works across
 /// the old (`…,sources,tags`) and new (`…,sources,evidence_urls,evidence,tags`)
@@ -161,7 +161,7 @@ fn split_pipe(s: &str) -> Vec<String> {
         .collect()
 }
 
-// ── Store loader ────────────────────────────────────────────────────────
+// ── Store loader ──────────────────────────────────────────────────────────────
 
 fn load_from_store(scan_id: &str) -> Result<Vec<AuditEntity>> {
     use crate::storage::Store;
@@ -176,7 +176,7 @@ fn load_from_store(scan_id: &str) -> Result<Vec<AuditEntity>> {
         .collect())
 }
 
-// ── Log parser (JSONL or tracing-text) ──────────────────────────────────
+// ── Log parser (JSONL or tracing-text) ────────────────────────────────────────
 
 /// Parse a debug-log / event stream into source-health signals. Each line is
 /// tried as JSON first (a scan-event / structured record); on failure it is
@@ -323,12 +323,12 @@ fn ingest_json(s: &mut LogSignals, v: &serde_json::Value) {
     }
 }
 
-// ── Rendering ──────────────────────────────────────────────────────────
+// ── Rendering ─────────────────────────────────────────────────────────────────
 
 fn print_report(r: &AuditReport, source: &str) {
-    println!("\n════════════════════════════════════════════════════════════════");
+    println!("\n══════════════════════════════════════════════════════════════");
     println!("  Huntsman scan audit");
-    println!("════════════════════════════════════════════════════════════════");
+    println!("══════════════════════════════════════════════════════════════");
     println!("source     : {source}");
     println!("score      : {}/100   ({})", r.score, r.grade());
     println!(
