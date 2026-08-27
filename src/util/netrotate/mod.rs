@@ -117,6 +117,13 @@ fn norm_host(host: &str) -> String {
 /// rotation DNS resolvers) and therefore must never be scanned. Reads the
 /// environment, so impure — the matching itself ([`host_matches_infra`]) is
 /// pure and tested.
+///
+/// `HUNTSMAN_PROXY` is NOT an alternative way to configure the proxy HSE
+/// itself uses for outbound requests — that is `HUNTSMAN_SEARCH_PROXY`
+/// exclusively (see [`crate::util::egress::PROXY_ENV`]). `HUNTSMAN_PROXY` is
+/// exclusion-only: naming a proxy host HSE itself doesn't manage (e.g. one
+/// configured system-wide, outside HSE's own settings) so it is never
+/// mistaken for a scan target.
 #[must_use]
 pub fn configured_infra_hosts() -> Vec<String> {
     let mut hosts: Vec<String> = Vec::new();

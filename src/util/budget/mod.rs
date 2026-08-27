@@ -45,10 +45,15 @@ use std::sync::{LazyLock, Mutex};
 /// `/api/v1/stats` handler and the `hse doctor` diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BudgetSnapshot {
+    /// Calls already spent by the CURRENT scan.
     pub scan_used: u32,
+    /// Effective per-scan ceiling: runtime override, else env var, else default.
     pub scan_cap: u32,
+    /// Calls spent by every scan in this process since start.
     pub session_used: u32,
+    /// Effective per-session ceiling — the operator's daily-quota contract.
     pub session_cap: u32,
+    /// True once the provider reported the quota spent, latched for the scan.
     pub quota_exhausted: bool,
 }
 

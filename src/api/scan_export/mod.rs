@@ -242,8 +242,19 @@ pub(crate) fn build_scan_report(
     // identical whether or not this envelope filtered candidates above, and the
     // determinism audit still holds (nothing here varies but `exported_at`).
     let exposure = crate::core::exposure::assess(&entities, &correlations);
+    // How complete this scan's answer is, rendered from the SAME
+    // `Scan::completeness_caveat` the CLI, the dossier and the offline read
+    // paths use. `scan` above already carries `status` and `stop_reason`, but a
+    // consumer would have to re-implement the truncation predicate to act on
+    // them, and the whole point of this envelope is that report.json is the
+    // canonical dossier — it must not be the one surface that reads as a
+    // complete answer when the scan was cut short. `null` when the scan needs no
+    // caveat. Deterministic: derived only from fields written once at finalise,
+    // so `export_formats_determinism_audit` still holds.
+    let completeness_caveat = scan.completeness_caveat("this scan");
     Ok(Some(json!({
         "scan": scan,
+        "completeness_caveat": completeness_caveat,
         "entities": entities,
         "entity_count": entities.len(),
         "correlations": correlations,

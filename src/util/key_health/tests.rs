@@ -78,6 +78,28 @@ fn empty_health_yields_no_issues() {
     assert!(auth_failing_sources(&[]).is_empty());
 }
 
+#[test]
+fn dehashed_auth_failure_resolves_its_env_var() {
+    // The exact body observed live (this session's on-device `hse doctor` run):
+    // dehashed was missing from `service_defs::SERVICE_DEFS` entirely, so
+    // `likely_env_var` had no registration to resolve against and returned
+    // `None` — this real, actionable auth failure was silently dropped from
+    // `hse doctor`'s "CONFIGURED KEY(S) REJECTED" report even though the
+    // upstream's own body plainly says the key is bad.
+    let health = vec![sh(
+        "dehashed",
+        30,
+        Some("[dehashed] HTTP 403 Forbidden: { \"error\": \"Issue with API Key\" }"),
+    )];
+    let issues = auth_failing_sources(&health);
+    assert_eq!(issues.len(), 1, "dehashed's 403 must be recognised as auth-shaped");
+    assert_eq!(
+        issues[0].likely_env_var,
+        Some("HUNTSMAN_DEHASHED_KEY"),
+        "dehashed must now resolve to its own env var via service_defs"
+    );
+}
+
 /// A capped detail must DISCLOSE that it was capped. Silently clipping an
 /// upstream's auth error makes a truncated message indistinguishable from the
 /// provider's complete reply, so an operator cannot tell the actionable part

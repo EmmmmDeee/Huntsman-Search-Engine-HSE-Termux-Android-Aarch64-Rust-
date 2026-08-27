@@ -14,6 +14,22 @@
 [extend]
 useDefault = true
 
+# ── Provider key shapes the default ruleset has no rule for ───────────────────
+# 2026-08-27 credential audit (docs/CREDENTIAL_AUDIT_2026-08-27.md): a
+# live-shaped SeekNow key sat in .agent/state.json for ~17 days because
+# neither gitleaks' default ruleset nor this file had a pattern shaped for it
+# — the scanner had nothing to match on. These mirror the shapes
+# tests/architecture.rs already guards in src/, scanned repo-wide.
+[[rules]]
+id = "hse-seeknow-key"
+description = "SeekNow bearer token (seek-<hex>)"
+regex = '''seek-[0-9a-f]{32,}'''
+
+[[rules]]
+id = "hse-wigle-api-name"
+description = "WiGLE API name (AID<hex>)"
+regex = '''AID[0-9a-f]{24,}'''
+
 # ── Synthetic credentials that exist so HSE can recognise the real thing ──────
 [[allowlists]]
 description = "Test fixtures and captured upstream responses"

@@ -41,11 +41,21 @@ use super::*;
             coords.evidence[0].attributes.get("country_iso").map(String::as_str),
             Some("AU")
         );
+        // Item 24: the IP-geolocation postcode is network-derived, so it surfaces
+        // under the `postal` key (excluded from the residential POSTCODE_KEYS), NOT
+        // the canonical `postcode` key that would let it masquerade as residence.
+        assert_eq!(
+            coords.evidence[0].attributes.get("postal").map(String::as_str),
+            Some("4343")
+        );
+        assert_eq!(coords.evidence[0].attributes.get("postcode"), None);
 
-        // Address is country:AU-tagged directly from the country code, and the
-        // composed value keeps suburb precision.
+        // Address is country:AU-tagged directly from the country code. Item 24: the
+        // postcode is NOT embedded in the Address value — `au_postcode` reads an
+        // Address value's trailing 4-digit run, which would place the IP's postcode
+        // on the residential location rung. The value keeps suburb/state grain.
         let addr = entity(&es, EntityKind::Address).expect("address");
-        assert_eq!(addr.value, "Gatton, Queensland 4343, Australia");
+        assert_eq!(addr.value, "Gatton, Queensland, Australia");
         assert!(addr.tags.iter().any(|t| t == "country:AU"));
     }
 

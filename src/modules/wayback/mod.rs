@@ -110,8 +110,6 @@ fn build_entity(kind: EntityKind, value: &str, rows: &[Row], scan_id: &str) -> O
         10,
     );
 
-    let mut entity = Entity::new(kind, value, confidence::HIGH_PLUSPLUS, scan_id);
-    entity.tag("archived");
     let mut ev = Evidence::new(
         SRC,
         format!("Wayback Machine: {count} archived snapshot(s)"),
@@ -131,8 +129,12 @@ fn build_entity(kind: EntityKind, value: &str, rows: &[Row], scan_id: &str) -> O
     if !status_dist.is_empty() {
         ev = ev.with_attr("status_distribution", &status_dist);
     }
-    entity.add_evidence(ev);
-    Some(entity)
+    Some(
+        Entity::builder(kind, value, confidence::HIGH_PLUSPLUS, scan_id)
+            .tag("archived")
+            .evidence(ev)
+            .build(),
+    )
 }
 
 /// Recover historical subdomains of `domain` from a CDX domain-match response

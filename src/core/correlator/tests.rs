@@ -4978,6 +4978,62 @@ fn best_location_uses_a_breach_postcode_when_nothing_finer() {
 }
 
 #[test]
+fn best_location_ip_derived_postcode_never_occupies_the_residential_rung() {
+    use super::best_au_location_estimate;
+    // Item 24 acceptance: an IP-geolocation module (ip2location/ipquery, `infra`
+    // family) classifies its postcode as network-derived (`postal` attribute, not
+    // `postcode`) and does not embed it in the Address value, so the residential
+    // "breach/register postcode" rung never fires on an IP's postcode. This mimics
+    // the fixed IP-geo Address output: a `postal` attribute and a value with no
+    // 4-digit postcode.
+    let mut ip_addr = Entity::new(
+        EntityKind::Address,
+        "Gatton, Queensland, Australia",
+        0.62,
+        "s",
+    );
+    ip_addr.tag("ip2location");
+    ip_addr.add_evidence(
+        Evidence::new("ip2location", "IP geolocation")
+            .with_attr("ip", "101.169.42.148")
+            .with_attr("postal", "4343"),
+    );
+    assert!(
+        best_au_location_estimate(&[ip_addr]).is_none(),
+        "an IP-derived postcode must not produce a residential postcode fix"
+    );
+
+    // Demonstrates the vector the producer fix closes: `au_postcode` reads ANY
+    // Address value's trailing 4-digit run, regardless of the entity's origin or
+    // tags. Had ip2location kept the postcode in its Address value (its pre-fix
+    // shape, "…, Queensland 4343, Australia"), the IP's postcode WOULD have reached
+    // the residential rung — which is why the fix is at the producer (drop the
+    // postcode from the IP address value), not a tag check here.
+    let mut ip_addr_prefix = Entity::new(
+        EntityKind::Address,
+        "Gatton, Queensland 4343, Australia",
+        0.62,
+        "s",
+    );
+    ip_addr_prefix.tag("ip2location");
+    let est_prefix =
+        best_au_location_estimate(&[ip_addr_prefix]).expect("value-embedded postcode resolves");
+    assert_eq!(
+        est_prefix.basis, "breach/register postcode",
+        "the pre-fix IP address value would wrongly reach the residential rung"
+    );
+
+    // Contrast — a genuine register/breach postcode remains residential-eligible
+    // (rung 4), proving it is the ORIGIN, not the postcode value, that gates the
+    // residential rung.
+    let mut breach = Entity::new(EntityKind::Person, "Jo Citizen", 0.6, "s");
+    breach.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("postcode", "4000"));
+    let est = best_au_location_estimate(&[breach]).expect("a genuine breach postcode resolves");
+    assert_eq!(est.basis, "breach/register postcode");
+    assert_eq!(est.state, Some("QLD"));
+}
+
+#[test]
 fn best_location_prefers_a_coordinate_over_an_address() {
     use super::best_au_location_estimate;
     // A Brisbane coordinate AND a Perth name-matched address: the finer coordinate
@@ -6881,11 +6937,28 @@ fn au095_no_keys_no_finding() {
 
 #[cfg(test)]
 fn osint_key_ent(value: &str, service: &str, category: &str) -> Entity {
+    // Grounded in the subject's OWN breach/stealer data (item 25) — a real
+    // subject-possession fixture, distinct from `osint_key_ent_ungrounded`
+    // below, which carries no such evidence.
     let mut e = Entity::new(EntityKind::ApiKey, value, 0.80, "s");
     e.tag("api-key");
     e.tag(format!("service:{service}"));
     e.tag("osint-practitioner");
     e.tag(format!("osint-category:{category}"));
+    e.add_evidence(Evidence::new("oathnet_pro", "breach record"));
+    e
+}
+
+#[cfg(test)]
+fn osint_key_ent_ungrounded(value: &str, service: &str, category: &str) -> Entity {
+    // Same pivot tags as `osint_key_ent`, but surfaced via a non-breach source
+    // (a crawled page) — the subject never possessed this artifact.
+    let mut e = Entity::new(EntityKind::ApiKey, value, 0.80, "s");
+    e.tag("api-key");
+    e.tag(format!("service:{service}"));
+    e.tag("osint-practitioner");
+    e.tag(format!("osint-category:{category}"));
+    e.add_evidence(Evidence::new("web_crawler", "crawled page"));
     e
 }
 
@@ -6918,12 +6991,14 @@ fn au096_flags_osint_practitioner_with_tradecraft() {
 #[cfg(test)]
 fn osint_cred_ent(value: &str, service: &str, category: &str) -> Entity {
     // The leaked-login path (`store_api_credential`) mints a Credential — not an
-    // ApiKey — but carries the same OSINT-practitioner pivot tags.
+    // ApiKey — but carries the same OSINT-practitioner pivot tags. Grounded in
+    // the subject's own breach data (item 25), matching `osint_key_ent`.
     let mut e = Entity::new(EntityKind::Credential, value, 0.65, "s");
     e.tag("stealer-credential");
     e.tag(format!("service:{service}"));
     e.tag("osint-practitioner");
     e.tag(format!("osint-category:{category}"));
+    e.add_evidence(Evidence::new("oathnet_pro", "breach record"));
     e
 }
 
@@ -7072,6 +7147,73 @@ fn au096_ignores_non_osint_keys() {
     assert!(
         super::rules::rule_au_096_osint_practitioner(&RuleContext::new(&[aws]), "s", 0).is_empty()
     );
+}
+
+#[test]
+fn au096_ungrounded_key_is_an_unassigned_lead_not_subject_possession() {
+    // Item 25: a Shodan key surfaced by web_crawler (a page HSE crawled, not the
+    // subject's own compromised data) must never be worded as subject
+    // possession — it is a tradecraft lead pending ownership grounding.
+    let shodan = osint_key_ent_ungrounded(
+        "shodankey32xxxxxxxxxxxxxxxxxxxxxx",
+        "shodan",
+        "attack-surface",
+    );
+    let r = super::rules::rule_au_096_osint_practitioner(&RuleContext::new(&[shodan]), "s", 0);
+    assert_eq!(r.len(), 1, "one unassigned-lead finding");
+    assert_eq!(r[0].rule_id, "AU-096");
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(
+        !r[0].description.contains("Subject holds"),
+        "an ungrounded artifact must never be worded as subject possession: {}",
+        r[0].description
+    );
+    assert!(r[0].description.contains("shodan"));
+}
+
+#[test]
+fn au096_mixed_grounding_yields_two_findings_and_never_inflates_possession() {
+    // A grounded Dehashed key (subject's own breach data) and an ungrounded
+    // Shodan key (a crawled page) must yield two SEPARATE findings — the
+    // ungrounded key must not inflate the possession count of the grounded one.
+    let grounded = osint_key_ent("dehashedkey", "dehashed", "breach-leak");
+    let ungrounded = osint_key_ent_ungrounded(
+        "shodankey32xxxxxxxxxxxxxxxxxxxxxx",
+        "shodan",
+        "attack-surface",
+    );
+    let r = super::rules::rule_au_096_osint_practitioner(
+        &RuleContext::new(&[grounded, ungrounded]),
+        "s",
+        0,
+    );
+    assert_eq!(
+        r.len(),
+        2,
+        "grounded and ungrounded partitions each fire: {r:?}"
+    );
+
+    let high = r
+        .iter()
+        .find(|c| c.severity == super::Severity::High)
+        .expect("a High subject-possession finding");
+    assert!(high.description.contains("Subject holds"));
+    assert!(
+        high.description
+            .contains("1 OSINT/recon-provider credential"),
+        "the ungrounded key must not inflate the grounded count: {}",
+        high.description
+    );
+    assert!(high.description.contains("dehashed"));
+    assert!(!high.description.contains("shodan"));
+
+    let medium = r
+        .iter()
+        .find(|c| c.severity == super::Severity::Medium)
+        .expect("a Medium unassigned-lead finding");
+    assert!(!medium.description.contains("Subject holds"));
+    assert!(medium.description.contains("shodan"));
+    assert!(!medium.description.contains("dehashed"));
 }
 
 #[test]
