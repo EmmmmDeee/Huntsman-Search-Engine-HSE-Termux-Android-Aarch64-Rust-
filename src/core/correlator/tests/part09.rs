@@ -484,12 +484,14 @@ fn osint_key_ent(value: &str, service: &str, category: &str) -> Entity {
 
 #[test]
 fn au096_flags_osint_practitioner_with_tradecraft() {
-    let shodan = osint_key_ent(
+    let mut shodan = osint_key_ent(
         "shodankey32xxxxxxxxxxxxxxxxxxxxxx",
         "shodan",
         "attack-surface",
     );
-    let dehashed = osint_key_ent("dehashedkey", "dehashed", "breach-leak");
+    shodan.add_evidence(Evidence::new("dehashed", "breach"));
+    let mut dehashed = osint_key_ent("dehashedkey", "dehashed", "breach-leak");
+    dehashed.add_evidence(Evidence::new("dehashed", "breach"));
     let r = super::rules::rule_au_096_osint_practitioner(
         &RuleContext::new(&[shodan, dehashed]),
         "s",
