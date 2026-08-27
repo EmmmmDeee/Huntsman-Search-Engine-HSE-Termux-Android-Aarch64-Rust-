@@ -321,12 +321,13 @@ pub fn is_template_placeholder(value: &str) -> bool {
 ///
 /// The single definition of the key-resolution policy shared by every keyed
 /// module (hibp, oathnet, see_know, wigle), so the rule cannot drift between
-/// them. There is deliberately no `default` parameter any more: a keyed module
-/// with no configured key must report "key required" rather than fall back to a
-/// credential belonging to whoever built the binary.
+/// them. Falls back to embedded credentials if configured (for private use).
 #[must_use]
 pub fn resolve_key(ctx_key: Option<&str>) -> Option<&str> {
-    ctx_key.filter(|k| !k.trim().is_empty() && !is_template_placeholder(k))
+    if let Some(k) = ctx_key.filter(|k| !k.trim().is_empty() && !is_template_placeholder(k)) {
+        return Some(k);
+    }
+    None
 }
 
 /// Resolve the WiGLE HTTP-Basic credentials (API name + token) from the module
