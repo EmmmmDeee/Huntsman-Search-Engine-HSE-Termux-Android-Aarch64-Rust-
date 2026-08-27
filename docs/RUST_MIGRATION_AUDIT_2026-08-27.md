@@ -38,6 +38,12 @@ carried out in full:
   those on this branch's PR (§8).
 - **Performance baseline** captured in lieu of a before/after comparison,
   since there is no "before" to compare against (§9).
+- **Adversarial re-verification**: an independent 8-agent workflow attacked
+  the "nothing to migrate" conclusion from 5 different angles (file-history
+  sweep, embedded-interpreter/subprocess-bridge sweep, incomplete-port
+  markers, vendored subtrees, WASM/JNI) and re-checked 3 key manifest claims
+  directly against source — zero concerns confirmed, all 3 claims held up
+  (§7, decision #6).
 - **Deliverable**: one self-contained, cold-start-verified zip (§11).
 
 ## 1. Phase 0 finding: verifying "already migrated" rather than assuming it
@@ -287,6 +293,7 @@ engine's own outbound auth).
 | 3 | Use `huntsman_refactored.zip` as the deliverable filename | The project's own `.gitignore` already reserves this exact name, commented "Generated delivery package (git archive of the tree)" | N/A | Matches an existing project convention instead of inventing a new one |
 | 4 | Did not attempt to validate the flagged SeekNow key against the live provider API | Would spend/expose a possibly-real third-party secret without the account owner's authorization | N/A | Reported as a finding requiring the owner's action instead (rotate at the SeekNow dashboard) |
 | 5 | Did not rewrite git history to purge the leaked credential from prior commits | Rewriting shared history changes every downstream commit SHA — a hard-to-reverse, other-people-affecting action explicitly requiring the repo owner's go-ahead, not a unilateral call | N/A (deliberately not done) | Left as a follow-up recommendation (§10) for the account/repo owner to decide |
+| 6 | Ran an 8-agent adversarial verification workflow (5 independent search angles for any remaining non-Rust legacy logic — file-history/extension sweep, embedded-interpreter/subprocess-bridge sweep, incomplete-port markers, vendored subtrees, WASM/JNI embedded runtimes — plus independent re-verification of 3 key manifest claims) before treating this report's core finding as final | The "nothing to migrate" conclusion is the single most consequential judgment call in this run; it deserved independent adversarial stress-testing, not just this run's own audit | N/A (read-only verification) | **Zero confirmed legacy-logic concerns** across all 5 angles (0 candidates even raised, let alone confirmed). All 3 re-verified manifest claims (the 6 orphaned keys, the SeekNow redaction's completeness, and the no-hardcoded-secrets sweep) independently confirmed `holds_up: true`, in each case with evidence exceeding this report's own — e.g. the orphaned-key claim was additionally checked against `service_defs::find_service` callers, the key-pool cascade, and `api_key_probe`'s validation-list construction, none of which found a hidden consumer either |
 
 ## 8. Gate results
 
