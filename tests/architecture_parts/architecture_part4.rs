@@ -536,7 +536,7 @@ fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
                     // `use is_valid_coords` in a unit test can't satisfy the gate.
                     //
                     // This was `s.split("mod tests").next()`, which cut at the
-                    // first occurrence of the *substring* "mod tests" — so with
+                    // first occurrence of the *substring* `mod tests` — so with
                     // `#[cfg(test)] mod tests;` at the top of a file, every
                     // production function below it vanished. For a gate phrased
                     // as "must CONTAIN the guard call" that fails the safe way
