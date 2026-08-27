@@ -124,7 +124,7 @@ fn au052_excludes_infrastructure_geo_live_peekyou_case() {
     assert!(hits[0].description.contains("tight"));
 }
 
-// ─── Geo out-of-area anomaly (AU-053) ────────────────────────────────────────────
+// ─── Geo out-of-area anomaly (AU-053) ────────────────────────────────────────
 
 #[test]
 fn au053_flags_a_sighting_outside_the_established_area() {
@@ -389,7 +389,7 @@ fn au_056_silent_without_both_signal_classes() {
     );
 }
 
-// ─── AU-085 tests (phone-region jurisdiction cross-check) ───────────────────────────
+// ─── AU-085 tests (phone-region jurisdiction cross-check) ─────────────────────
 
 #[test]
 fn au_085_corroborates_when_phone_region_matches_address_state() {
@@ -538,7 +538,7 @@ fn au_085_silent_for_mobile_or_missing_class() {
     );
 }
 
-// ─── AU-102 tests (phone line-type profile) ────────────────────────────────────
+// ─── AU-102 tests (phone line-type profile) ──────────────────────────────────
 
 #[test]
 fn au_102_profiles_premises_mobile_and_business_lines() {
@@ -608,7 +608,7 @@ fn au_102_dedups_the_same_number_across_formats() {
     assert!(!out[0].description.contains("2 geographic"));
 }
 
-// ─── AU-103 tests (autonomous device self-location) ───────────────────────────────────────────
+// ─── AU-103 tests (autonomous device self-location) ──────────────────────────
 
 #[test]
 fn au_103_gps_fix_with_corroboration_is_high_self_location() {
@@ -742,7 +742,7 @@ fn au_103_silent_with_no_device_signals() {
     assert!(rule_au_103_device_self_location(&RuleContext::new(&[]), "scan", 0).is_empty());
 }
 
-// ─── AU-057 tests ───────────────────────────────────────────────────────────────────
+// ─── AU-057 tests ─────────────────────────────────────────────────────────────
 
 #[test]
 fn au_057_two_brisbane_coords_produce_synthesised_fix() {
