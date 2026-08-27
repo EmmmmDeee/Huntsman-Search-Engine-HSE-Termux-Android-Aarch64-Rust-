@@ -9,6 +9,7 @@
 //! full reference.
 
 pub(crate) mod config;
+mod credentials;
 mod diagnostics;
 mod engines;
 mod ingest;
@@ -180,6 +181,19 @@ async fn run_command(command: Command) -> Result<()> {
         } => provision::cmd_provision(env_only, verify_only, dry_run, discover).await,
         Command::SetKey { name, value } => keys_cmd::cmd_set_key(name, value),
         Command::Keys { action } => keys_cmd::cmd_keys(action).await,
+        Command::Credentials { action } => {
+            use crate::cli::command::CredentialsAction;
+            match action {
+                CredentialsAction::List { detailed } => credentials::cmd_credentials_list(detailed).await,
+                CredentialsAction::Template { output } => {
+                    credentials::cmd_credentials_template(output.as_deref()).await
+                }
+                CredentialsAction::Validate => credentials::cmd_credentials_validate().await,
+                CredentialsAction::Test { key_name } => {
+                    credentials::cmd_credentials_test(key_name.as_deref()).await
+                }
+            }
+        }
         Command::Import { file, output } => cmd_import(&file, &output).await,
         Command::Ingest {
             file,

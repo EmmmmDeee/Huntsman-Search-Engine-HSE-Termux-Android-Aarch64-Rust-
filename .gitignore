@@ -1,6 +1,10 @@
 # Rust build artefacts
 /target/
 
+# Generated deployment packages (scripts/build-deployment-package.sh output —
+# large binaries/zips, regenerate locally rather than committing)
+/build/
+
 # Generated delivery package (git archive of the tree — circular to commit)
 /huntsman_refactored.zip
 

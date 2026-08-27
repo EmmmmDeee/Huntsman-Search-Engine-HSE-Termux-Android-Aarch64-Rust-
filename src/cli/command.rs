@@ -9,6 +9,31 @@ use clap::{Parser, Subcommand};
 
 use super::keys_cmd::KeysAction;
 
+#[derive(Subcommand)]
+pub enum CredentialsAction {
+    /// List all embedded and configured API credentials with status.
+    List {
+        /// Show detailed information including signup URLs.
+        #[arg(long)]
+        detailed: bool,
+    },
+    /// Generate a credential template for configuration.
+    Template {
+        /// Optional output file path. If omitted, prints to stdout.
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Validate configured credentials for common issues.
+    Validate,
+    /// Test live API connectivity for configured credentials.
+    Test {
+        /// Test a specific credential by name (e.g., HUNTSMAN_SHODAN_KEY).
+        /// If omitted, tests all configured credentials.
+        #[arg(value_name = "KEY_NAME")]
+        key_name: Option<String>,
+    },
+}
+
 /// Parse a `--min-confidence` argument, rejecting anything that is not a usable
 /// threshold.
 ///
@@ -871,6 +896,12 @@ pub enum Command {
         /// Emit the machine-readable JSON report instead of the text summary.
         #[arg(long)]
         json: bool,
+    },
+
+    /// Manage embedded API credentials: list, validate, test, and configure.
+    Credentials {
+        #[command(subcommand)]
+        action: CredentialsAction,
     },
 
     /// Upgrade hse in place: `git pull` + rebuild + atomic binary swap.
