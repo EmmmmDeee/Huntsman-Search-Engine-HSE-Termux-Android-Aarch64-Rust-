@@ -42,6 +42,14 @@ pub fn get_embedded_keys() -> &'static HashMap<&'static str, &'static str> {
         // Signup: https://www.abuseipdb.com/register
         // keys.insert("HUNTSMAN_ABUSEIPDB_KEY", "your-abuseipdb-api-key");
 
+        // Abuse.ch ThreatFox — malware threat intelligence
+        // Signup: https://threatfox.abuse.ch/api/
+        // keys.insert("HUNTSMAN_THREATFOX_KEY", "your-threatfox-api-key");
+
+        // Abuse.ch URLhaus — malicious URL database
+        // No signup required for basic access
+        // keys.insert("HUNTSMAN_ABUSECH_KEY", "your-abusech-api-key");
+
         // ════════════════════════════════════════════════════════════════════════════════════
         // BREACH & INTELLIGENCE
         // ════════════════════════════════════════════════════════════════════════════════════
@@ -61,6 +69,14 @@ pub fn get_embedded_keys() -> &'static HashMap<&'static str, &'static str> {
         // OathNet Pro — breach + stealer intelligence
         // Signup: https://oathnet.org
         // keys.insert("HUNTSMAN_OATHNET_KEY", "your-oathnet-bearer-token");
+
+        // Stolen.tax — exposed password + data dumps
+        // Signup: https://stolen.tax/
+        // keys.insert("HUNTSMAN_STOLEN_TAX_KEY", "your-stolen-tax-api-key");
+
+        // DeHashed — breach + stealer logs
+        // Signup: https://www.dehashed.com/
+        // keys.insert("HUNTSMAN_DEHASHED_KEY", "your-dehashed-api-key");
 
         // ════════════════════════════════════════════════════════════════════════════════════
         // INFRASTRUCTURE / IP / DOMAIN INTELLIGENCE
@@ -86,6 +102,35 @@ pub fn get_embedded_keys() -> &'static HashMap<&'static str, &'static str> {
         // Signup: https://www.ipqualityscore.com/
         // keys.insert("HUNTSMAN_IPQS_KEY", "your-ipqs-api-key");
 
+        // Censys — scan database + certificate intelligence (requires ID + SECRET)
+        // Signup: https://censys.io/
+        // keys.insert("HUNTSMAN_CENSYS_ID", "your-censys-id");
+        // keys.insert("HUNTSMAN_CENSYS_SECRET", "your-censys-secret");
+
+        // FOFA — China-based scan database + asset intelligence
+        // Signup: https://fofa.info/
+        // keys.insert("HUNTSMAN_FOFA_KEY", "your-fofa-api-key");
+
+        // Netlas — scan database + infrastructure intelligence
+        // Signup: https://netlas.io/
+        // keys.insert("HUNTSMAN_NETLAS_KEY", "your-netlas-api-key");
+
+        // Onyphe — internet exposure intelligence
+        // Signup: https://www.onyphe.io/
+        // keys.insert("HUNTSMAN_ONYPHE_KEY", "your-onyphe-api-key");
+
+        // WHOIS-XML — domain + IP intelligence
+        // Signup: https://whois.whoisxmlapi.com/
+        // keys.insert("HUNTSMAN_WHOISXML_KEY", "your-whoisxml-api-key");
+
+        // DomainsDB — domain intelligence + reverse DNS
+        // Signup: https://domainsdb.info/
+        // keys.insert("HUNTSMAN_DOMAINSDB_KEY", "your-domainsdb-api-key");
+
+        // OSINTCat — infrastructure asset search
+        // Signup: https://osintcat.com/
+        // keys.insert("HUNTSMAN_OSINTCAT_KEY", "your-osintcat-api-key");
+
         // ════════════════════════════════════════════════════════════════════════════════════
         // IDENTITY / PERSON INTELLIGENCE
         // ════════════════════════════════════════════════════════════════════════════════════
@@ -106,14 +151,97 @@ pub fn get_embedded_keys() -> &'static HashMap<&'static str, &'static str> {
         // Signup: https://github.com/settings/tokens
         // keys.insert("HUNTSMAN_GITHUB_TOKEN", "ghp_your-github-token");
 
+        // FullContact — person/company data enrichment
+        // Signup: https://www.fullcontact.com/
+        // keys.insert("HUNTSMAN_FULLCONTACT_KEY", "your-fullcontact-api-key");
+
+        // SEON — email/phone/person intelligence
+        // Signup: https://seon.io/
+        // keys.insert("HUNTSMAN_SEON_KEY", "your-seon-api-key");
+
+        // Trove — personal data intelligence + people search
+        // Signup: https://trove.ai/
+        // keys.insert("HUNTSMAN_TROVE_KEY", "your-trove-api-key");
+
+        // ════════════════════════════════════════════════════════════════════════════════════
+        // TELECOMMUNICATIONS & IDENTITY VERIFICATION
+        // ════════════════════════════════════════════════════════════════════════════════════
+
+        // NumVerify — phone number validation + carrier lookup
+        // Signup: https://numverify.com/
+        // keys.insert("HUNTSMAN_NUMVERIFY_KEY", "your-numverify-api-key");
+
+        // OpenCNAM — reverse phone lookup (caller ID)
+        // Signup: https://www.opencnam.com/
+        // keys.insert("HUNTSMAN_OPENCNAM_KEY", "your-opencnam-api-key");
+
+        // Epieos Tools — phone number OSINT
+        // Signup: https://tools.epieos.com/
+        // keys.insert("HUNTSMAN_EPIEOS_KEY", "your-epieos-api-key");
+
+        // Niamonx — HLR lookup + mobile analytics
+        // Signup: https://niamonx.io/
+        // keys.insert("HUNTSMAN_NIAMONX_KEY", "your-niamonx-api-key");
+        // keys.insert("HUNTSMAN_HLR_KEY", "your-hlr-api-key");
+
         // ════════════════════════════════════════════════════════════════════════════════════
         // GEOINT / LOCATION INTELLIGENCE
         // ════════════════════════════════════════════════════════════════════════════════════
 
-        // WiGLE — Wi-Fi/cell tower geolocation (requires both USER and TOKEN)
+        // WiGLE — Wi-Fi/cell/BT/geo geolocation database
         // Signup: https://wigle.net/
         // keys.insert("HUNTSMAN_WIGLE_USER", "your-wigle-username");
         // keys.insert("HUNTSMAN_WIGLE_TOKEN", "your-wigle-token");
+        // keys.insert("HUNTSMAN_WIGLE_SSID_SCAN_CAP", "1000");
+        // keys.insert("HUNTSMAN_WIGLE_SSID_SESSION_CAP", "10000");
+        // keys.insert("HUNTSMAN_WIGLE_BSSID_SCAN_CAP", "1000");
+        // keys.insert("HUNTSMAN_WIGLE_BSSID_SESSION_CAP", "10000");
+        // keys.insert("HUNTSMAN_WIGLE_CELL_SCAN_CAP", "1000");
+        // keys.insert("HUNTSMAN_WIGLE_CELL_SESSION_CAP", "10000");
+        // keys.insert("HUNTSMAN_WIGLE_GEO_SCAN_CAP", "1000");
+        // keys.insert("HUNTSMAN_WIGLE_GEO_SESSION_CAP", "10000");
+        // keys.insert("HUNTSMAN_WIGLE_BT_SCAN_CAP", "1000");
+        // keys.insert("HUNTSMAN_WIGLE_BT_SESSION_CAP", "10000");
+
+        // OpenCellID — cellular geolocation database
+        // Signup: https://opencellid.org/
+        // keys.insert("HUNTSMAN_OPENCELLID_KEY", "your-opencellid-api-key");
+
+        // ════════════════════════════════════════════════════════════════════════════════════
+        // BUSINESS & CORPORATE INTELLIGENCE
+        // ════════════════════════════════════════════════════════════════════════════════════
+
+        // OpenCorporates — business registry + company intelligence
+        // Signup: https://opencorporates.com/
+        // keys.insert("HUNTSMAN_OPENCORP_KEY", "your-opencorp-api-key");
+
+        // OpenSanctions — sanctions/enforcement database
+        // Signup: https://www.opensanctions.org/
+        // keys.insert("HUNTSMAN_OPENSANCTIONS_KEY", "your-opensanctions-api-key");
+
+        // BuiltWith — technology intelligence + website profiling
+        // Signup: https://builtwith.com/
+        // keys.insert("HUNTSMAN_BUILTWITH_KEY", "your-builtwith-api-key");
+
+        // ════════════════════════════════════════════════════════════════════════════════════
+        // ENTERPRISE / INTERNAL CONFIGURATION
+        // ════════════════════════════════════════════════════════════════════════════════════
+
+        // ABN Lookup — Australian business register lookup (ABN GUID)
+        // Signup: https://www.abn.gov.au/
+        // keys.insert("HUNTSMAN_ABR_GUID", "your-abr-guid");
+
+        // Huntsman internal proxy configuration for enterprise use
+        // keys.insert("HUNTSMAN_SEARCH_PROXY", "http://proxy.example.com:8080");
+
+        // Email domains list (semicolon-separated) for advanced filtering
+        // keys.insert("HUNTSMAN_EMAIL_DOMAINS", "example.com;company.com");
+
+        // Engine health check interval (seconds)
+        // keys.insert("HUNTSMAN_ENGINE_HEALTH_SECS", "300");
+
+        // SeekNow scan cap per-scan (default: unlimited)
+        // keys.insert("HUNTSMAN_SEEKNOW_SCAN_CAP", "1000");
 
         // ════════════════════════════════════════════════════════════════════════════════════
         // ADDITIONAL SERVICES
@@ -122,6 +250,14 @@ pub fn get_embedded_keys() -> &'static HashMap<&'static str, &'static str> {
         // Exa AI — neural semantic web search
         // Signup: https://exa.ai/
         // keys.insert("HUNTSMAN_EXA_KEY", "your-exa-ai-api-key");
+
+        // AlienVault OTX — open-source threat intelligence
+        // Signup: https://otx.alienvault.com/
+        // keys.insert("HUNTSMAN_ALIENVAULT_KEY", "your-alienvault-api-key");
+
+        // ZoomEye — China-based internet-wide scan database
+        // Signup: https://www.zoomeye.org/
+        // keys.insert("HUNTSMAN_ZOOMEYE_KEY", "your-zoomeye-api-key");
 
         keys
     })
