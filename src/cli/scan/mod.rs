@@ -517,7 +517,7 @@ fn apply_named_profile(name: &str, options: ScanOptions) -> Result<ScanOptions, 
 
 /// Strip platform/shared-infrastructure entities (cloud buckets, CDN IPs,
 /// analytics IDs) from `hse scan`'s printed/JSON/dossier output, mirroring
-/// [`crate::api::scan_export::build_scan_report`]'s `include_infra` filter so
+/// [`crate::app::export::build_scan_report`]'s `include_infra` filter so
 /// the same scan reads consistently across `hse scan`, `hse export`, and the
 /// API. The operator-provided seed always survives even if it is itself
 /// infrastructure. A no-op when `include_infra` is `true`.
