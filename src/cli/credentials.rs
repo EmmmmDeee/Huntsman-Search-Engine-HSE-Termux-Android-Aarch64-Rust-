@@ -195,74 +195,59 @@ async fn test_single_credential(name: &str, value: &str) -> Result<()> {
     }
 }
 
-async fn test_shodan_credential(key: &str) -> Result<()> {
-    let client = crate::util::http::build_client();
-    let url = format!("https://api.shodan.io/account/profile?key={key}");
-
-    let response = client
-        .get(&url)
+/// Sends `request`, and maps the response through `is_ok` to a pass/fail
+/// credential check — the shared shape every `test_*_credential` below
+/// reduces to (build client + request, send, judge the status, name the
+/// provider in the error). Centralised so a fifth provider is one small
+/// `test_*_credential` function, not another copy of this boilerplate.
+async fn check_credential(
+    provider: &str,
+    request: reqwest::RequestBuilder,
+    is_ok: impl Fn(reqwest::StatusCode) -> bool,
+) -> Result<()> {
+    let response = request
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await?;
-
-    if response.status().is_success() {
+    let status = response.status();
+    if is_ok(status) {
         Ok(())
     } else {
-        let status = response.status();
-        Err(Error::Other(format!("Shodan auth failed: {status}")))
+        Err(Error::Other(format!("{provider} auth failed: {status}")))
     }
+}
+
+async fn test_shodan_credential(key: &str) -> Result<()> {
+    let client = crate::util::http::build_client();
+    let url = format!("https://api.shodan.io/account/profile?key={key}");
+    check_credential("Shodan", client.get(&url), |s| s.is_success()).await
 }
 
 async fn test_virustotal_credential(key: &str) -> Result<()> {
     let client = crate::util::http::build_client();
-    let response = client
+    let request = client
         .get("https://www.virustotal.com/api/v3/me")
-        .header("x-apikey", key)
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await?;
-
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        let status = response.status();
-        Err(Error::Other(format!("VirusTotal auth failed: {status}")))
-    }
+        .header("x-apikey", key);
+    check_credential("VirusTotal", request, |s| s.is_success()).await
 }
 
 async fn test_hibp_credential(key: &str) -> Result<()> {
     let client = crate::util::http::build_client();
-    let response = client
+    let request = client
         .get("https://haveibeenpwned.com/api/v3/breaches")
         .header("User-Agent", "Huntsman-Search-Engine")
-        .header("hibp-api-key", key)
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await?;
-
-    if response.status().is_success() || response.status().as_u16() == 404 {
-        Ok(())
-    } else {
-        let status = response.status();
-        Err(Error::Other(format!("HIBP auth failed: {status}")))
-    }
+        .header("hibp-api-key", key);
+    // HIBP returns 404 for "no breaches found", which still proves the key
+    // authenticated — only that response body differs from a hit.
+    check_credential("HIBP", request, |s| s.is_success() || s.as_u16() == 404).await
 }
 
 async fn test_github_credential(token: &str) -> Result<()> {
     let client = crate::util::http::build_client();
-    let response = client
+    let request = client
         .get("https://api.github.com/user")
-        .header("Authorization", format!("Bearer {token}"))
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await?;
-
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        let status = response.status();
-        Err(Error::Other(format!("GitHub auth failed: {status}")))
-    }
+        .header("Authorization", format!("Bearer {token}"));
+    check_credential("GitHub", request, |s| s.is_success()).await
 }
 
 /// Groups embedded credential keys by API provider category.
