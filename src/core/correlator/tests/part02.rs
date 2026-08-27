@@ -50,7 +50,7 @@ fn username_summary(value: &str, count: u64, platforms: &str) -> Entity {
     e
 }
 
-// ── AU-001 ───────────────────────────────────────────────────────
+// ── AU-001 ──────────────────────────────────────────────────────────
 
 #[test]
 fn au001_fires_at_two_breach_sources() {
@@ -120,7 +120,7 @@ fn au001_does_not_raise_critical_on_a_role_mailbox() {
     );
 }
 
-// ── AU-002 ────────────────────────────────────────────────────
+// ── AU-002 ──────────────────────────────────────────────────────────
 
 #[test]
 fn au002_fires_with_all_three_kinds() {
@@ -144,7 +144,7 @@ fn au002_no_fire_missing_kind() {
     assert!(rule_au_002_identity_cluster(&RuleContext::new(&entities), "s", 0).is_empty());
 }
 
-// ── AU-003 ────────────────────────────────────────────────────
+// ── AU-003 ──────────────────────────────────────────────────────────
 
 #[test]
 fn au003_fires_at_kind_specific_thresholds() {
@@ -259,7 +259,7 @@ fn au003_excludes_weak_detection_only_entities() {
     );
 }
 
-// ── AU-004 ────────────────────────────────────────────────────
+// ── AU-004 ──────────────────────────────────────────────────────────
 
 #[test]
 fn au004_fires_on_malicious_domain() {
@@ -328,7 +328,7 @@ fn au004_no_fire_on_single_threat_source_plus_enrichment() {
     );
 }
 
-// ── AU-005 ────────────────────────────────────────────────────
+// ── AU-005 ──────────────────────────────────────────────────────────
 
 #[test]
 fn au005_fires_on_tor_exit() {
@@ -338,7 +338,7 @@ fn au005_fires_on_tor_exit() {
     assert_eq!(r[0].severity, Severity::High);
 }
 
-// ── AU-006 ────────────────────────────────────────────────────
+// ── AU-006 ──────────────────────────────────────────────────────────
 
 #[test]
 fn au006_fires_on_vpn_but_not_tor() {
@@ -363,7 +363,7 @@ fn au006_excludes_all_anon_tags_not_just_tor_exit() {
     assert!(rule_au_006_proxy_vpn(&RuleContext::new(&[anon_vpn]), "s", 0).is_empty());
 }
 
-// ── AU-007 ────────────────────────────────────────────────────
+// ── AU-007 ──────────────────────────────────────────────────────────
 
 #[test]
 fn au007_fires_on_high_risk() {
@@ -373,7 +373,7 @@ fn au007_fires_on_high_risk() {
     assert_eq!(r[0].severity, Severity::High);
 }
 
-// ── AU-008 ────────────────────────────────────────────────────
+// ── AU-008 ──────────────────────────────────────────────────────────
 
 #[test]
 fn au008_fires_on_vulnerable_tag() {
@@ -400,7 +400,7 @@ fn au008_benign_infra_verdict_vetoes_exposed_service() {
     assert!(rule_au_008_exposed_service(&RuleContext::new(&[e]), "s", 0).is_empty());
 }
 
-// ── AU-009 ────────────────────────────────────────────────────
+// ── AU-009 ──────────────────────────────────────────────────────────
 
 #[test]
 fn au009_fires_on_stealer_log() {
@@ -434,7 +434,7 @@ fn au009_fires_on_the_oathnet_pro_and_see_know_stealer_tag() {
     );
 }
 
-// ── AU-037 ────────────────────────────────────────────────────
+// ── AU-037 ──────────────────────────────────────────────────────────
 
 #[test]
 fn au037_fires_critical_on_plaintext_credentials() {
@@ -517,7 +517,7 @@ fn au037_entity_uids_are_deterministic_under_input_order() {
     assert!(forward[0].entity_uids.len() <= 21);
 }
 
-// ── AU-038 ────────────────────────────────────────────────────
+// ── AU-038 ──────────────────────────────────────────────────────────
 
 #[test]
 fn au038_fires_on_confirmed_profiles_across_platforms() {
@@ -643,7 +643,7 @@ fn au038_excludes_weak_detection_status_only_guesses() {
     assert!(!r[0].description.contains("onlyfans"));
 }
 
-// ── AU-010 ────────────────────────────────────────────────────
+// ── AU-010 ──────────────────────────────────────────────────────────
 
 #[test]
 fn au010_fires_at_three_sources_on_domain() {
@@ -699,7 +699,7 @@ fn au010_recall_replay_does_not_manufacture_consensus() {
     );
 }
 
-// ── AU-011 ────────────────────────────────────────────────────
+// ── AU-011 ──────────────────────────────────────────────────────────
 
 #[test]
 fn au011_fires_on_three_platforms() {
@@ -750,7 +750,7 @@ fn au011_fires_on_genuinely_verified_hits() {
     assert!(r[0].description.contains("3 platforms"));
 }
 
-// ── AU-012 ────────────────────────────────────────────────────
+// ── AU-012 ──────────────────────────────────────────────────────────
 
 #[test]
 fn au012_fires_when_username_and_personal_site_url_present() {
@@ -788,7 +788,7 @@ fn au012_no_fire_without_username() {
     assert!(rule_au_012_identity_linked_domain(&RuleContext::new(&entities), "s", 0).is_empty());
 }
 
-// ── AU-013 ────────────────────────────────────────────────────
+// ── AU-013 ──────────────────────────────────────────────────────────
 
 #[test]
 fn au013_fires_on_two_lan_entities() {
