@@ -253,7 +253,7 @@ fn au087_rides_along_named_person_and_covers_edu_domains() {
     );
 }
 
-// ─── Authoritative AU register confirmation (AU-088) ─────────────────────────────
+// ─── Authoritative AU register confirmation (AU-088) ─────────────────────────
 
 #[cfg(test)]
 fn ent_from_source(kind: EntityKind, value: &str, source: &str) -> Entity {
@@ -329,7 +329,7 @@ fn au088_non_register_sources_do_not_fire() {
     );
 }
 
-// ─── Australian corporate network (AU-089) ───────────────────────────────────────────
+// ─── Australian corporate network (AU-089) ───────────────────────────────────
 
 #[test]
 fn au089_two_distinct_companies_fire_medium() {
@@ -754,7 +754,7 @@ fn au100_dedups_multiple_emails_on_one_domain() {
     assert!(r[0].description.contains("2 email(s)"));
 }
 
-// ─── Geo convex footprint (AU-052) ───────────────────────────────────────────────────
+// ─── Geo convex footprint (AU-052) ───────────────────────────────────────────
 
 #[cfg(test)]
 fn coord_from(value: &str, source: &str) -> Entity {
