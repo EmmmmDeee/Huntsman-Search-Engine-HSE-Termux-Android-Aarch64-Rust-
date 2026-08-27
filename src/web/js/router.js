@@ -5,9 +5,9 @@ export function parseHash(){
   const segs = path.split('/').filter(Boolean);
   const query = {};
   (qs||'').split('&').filter(Boolean).forEach(p=>{
-    const eq = p.indexOf('=');
-    const k = eq === -1 ? p : p.slice(0, eq);
-    const v = eq === -1 ? '' : p.slice(eq + 1);
+    const i = p.indexOf('=');
+    const k = i === -1 ? p : p.slice(0, i);
+    const v = i === -1 ? '' : p.slice(i + 1);
     // A malformed percent-encoding (e.g. a bare trailing '%', or one hex digit
     // short — plausible from a hand-edited address bar or a corrupted bookmark)
     // throws URIError. parseHash() is called synchronously before render()'s own
