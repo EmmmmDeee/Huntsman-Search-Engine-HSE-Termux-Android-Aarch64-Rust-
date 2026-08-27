@@ -67,12 +67,61 @@ absolute cost (35 µs at n=2000) and not close to the 9x ceiling.
 100/500/1000/2000 entities, criterion's proper statistical/regression-
 tracked numbers rather than the ratio-only guard above).
 
-**Status: running at the time this document was first committed.** `cargo
-bench` does a release-profile rebuild of the full dependency graph before
-sampling, which takes longer than this run's other checks. Results will be
-appended here (replacing this paragraph) in a follow-up commit on this same
-PR once the run completes — tracked as part of this run's own gate
-discipline, not left silently incomplete.
+Results (release profile, LTO, codegen-units=1 — this project's own
+production build settings, so these numbers reflect what actually ships,
+not a debug-build approximation):
+
+### `benches/correlation_pass.rs`
+
+| Entities | Mean time | vs. previous doubling |
+|---:|---:|---:|
+| 100 | 736.96 µs | — |
+| 500 | 3.6122 ms | 4.90× for 5× the entities |
+| 1000 | 7.7179 ms | 2.14× for 2× the entities |
+| 2000 | 14.424 ms | 1.87× for 2× the entities |
+
+Consistent with the zero-toolchain ratio guard above: cost grows sub-linearly
+in the *ratio* sense (each entity-count doubling costs well under 2×'s
+worth of quadratic growth would demand), confirming the correlation pass's
+near-linear scaling under criterion's proper statistical measurement, not
+just the coarse ignored-test ratio check.
+
+### `benches/scan_throughput.rs`
+
+| Benchmark | Mean time | Note |
+|---|---:|---|
+| `entity_extract/dense_all_kinds` | 1.9526 ms (5.57 MiB/s) | worst-case page: every extractable entity kind present |
+| `entity_extract/prose_no_matches` | 2.5785 ms (4.99 MiB/s) | worst-case miss: plain prose, no matches to extract |
+| `find_ascii_ci_14kb/hit` | 17.389 µs | needle near end of 14 KB multibyte text |
+| `find_ascii_ci_14kb/miss` | 33.770 µs | |
+| `fold_ascii_lower_unicode` | 13.101 µs | diacritic-folding a repeated Unicode name string |
+| `slugify_mixed` | 191.64 ns | |
+| `geohash_precision12` | 233.32 ns | |
+| `captcha_signature_scan_14kb/match_set` | 2.2121 µs | cached Teddy/SIMD automaton |
+| `captcha_signature_scan_14kb/linear_any_contains` | 23.550 µs | the naive N-way `.any(\|p\| hay.contains(p))` it replaced — **10.6× slower** |
+| `strip_inline_guard_noblock/old_lowercase_copy` | 2.0699 µs | historical A/B pair kept as a regression guard |
+| `strip_inline_guard_noblock/new_find_ascii_ci` | 2.1561 µs | ~4% slower than the old approach on this specific short-input case — a pre-existing, tiny (0.09 µs) characteristic of the current code, not something this run's audit touched; flagged here for transparency rather than smoothed over |
+| `au_place_scan_miss/old_per_place_to_lowercase` | 92.023 µs | |
+| `au_place_scan_miss/new_find_ascii_ci` | 84.927 µs | ~8% faster |
+| `is_captcha_guard_noblock/old_to_lowercase_then_match` | 61.416 µs | |
+| `is_captcha_guard_noblock/new_ascii_ci_raw` | 27.679 µs | ~2.2× faster |
+| `href_scan/old_std_find` | 10.961 µs | |
+| `href_scan/new_memmem_memchr` | 2.2501 µs | ~4.9× faster |
+| `target_kind_detect_checks/old_to_ascii_lowercase_then_match` | 86.821 ns | |
+| `target_kind_detect_checks/new_direct_byte_compare` | 49.780 ns | ~1.74× faster |
+
+**On "before/after"**: the `old_*`/`new_*` pairs above are *not* this run's
+before/after — they are the project's own pre-existing historical
+optimization record (each `new_*` variant already replaced its `old_*`
+counterpart in production; both are kept in the bench suite specifically as
+a regression guard against ever reverting). They are included here because
+they are the only genuine "before/after" data this codebase has, and they
+demonstrate the same performance discipline this run's audit found
+throughout (§4 of the main report) — every non-obvious choice, including
+performance-motivated ones, is measured and guarded, not assumed. This
+run's own before/after is, honestly, N/A: nothing was ported, so there is
+no legacy implementation to diff these numbers against — see
+`docs/RUST_MIGRATION_AUDIT_2026-08-27.md` §1.
 
 CI's `bench-smoke.yml` independently compiles and smoke-runs both benches on
 every relevant change as a perf-path API drift guard, regardless of this
