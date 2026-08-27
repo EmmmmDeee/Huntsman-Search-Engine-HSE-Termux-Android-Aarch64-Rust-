@@ -17,9 +17,17 @@ mod tests;
 
 pub(crate) use dossier::{dossier_dir, dossier_dir_path, write_full_dossier};
 pub(crate) use renderers::{
-    KeyPoolSummary, SystemDebugInputs, render_debug_bundle, render_event_log, render_full,
-    render_system_debug_bundle,
+    KeyPoolSummary, SystemDebugInputs, build_scan_report, entities_to_csv, extract_au_location_fix,
+    formula_guard, render_debug_bundle, render_event_log, render_full, render_system_debug_bundle,
 };
+// `csv_escape` has no production caller outside `renderers.rs` itself (only
+// `formula_guard` is shared with `cli::ingest`'s CSV writer) — its cross-module
+// re-export exists solely so `api::handlers::tests` and `app::import::csv`'s
+// test module can exercise the same escaping the scan-export path uses,
+// without duplicating the function. Test-only, so a normal `cargo check`
+// build never sees an unused-re-export warning for it.
+#[cfg(test)]
+pub(crate) use renderers::csv_escape;
 
 use crate::core::error::{Error, Result};
 use crate::default_db_path;
@@ -64,7 +72,7 @@ pub async fn cmd_export(
     // rejected for `full`/`debug` (whose contract is total unredacted
     // transparency for a local interpreter) and for `report` (its nested
     // scan-report shape embeds the full `Entity` list — see
-    // `api::scan_export::build_scan_report`'s `"entities": entities` — but does
+    // `build_scan_report`'s `"entities": entities` — but does
     // not route it through the entity redaction pass, so `--redact` cannot be
     // honoured there today), so a caller is never lulled into thinking a
     // still-sensitive artifact was scrubbed. `events` genuinely carries no
