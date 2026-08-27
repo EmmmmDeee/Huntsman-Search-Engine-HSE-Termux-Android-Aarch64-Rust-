@@ -19,7 +19,7 @@ static EMBEDDED_KEYS: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::
 /// Get the embedded credentials map.
 pub fn get_embedded_keys() -> &'static HashMap<&'static str, &'static str> {
     EMBEDDED_KEYS.get_or_init(|| {
-        let mut keys = HashMap::new();
+        let keys = HashMap::new();
 
         // ════════════════════════════════════════════════════════════════════════════════════
         // THREAT INTELLIGENCE & MALWARE SCANNING
@@ -126,19 +126,14 @@ pub fn get_embedded_keys() -> &'static HashMap<&'static str, &'static str> {
     })
 }
 
-/// Get an embedded key for the given environment variable name.
-pub fn get_embedded_key(env_var: &str) -> Option<&'static str> {
-    get_embedded_keys().get(env_var).copied()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn embedded_keys_are_static() {
+    fn embedded_keys_map_is_created() {
         let keys = get_embedded_keys();
-        // Verify the map is created and accessible
-        assert!(keys.len() >= 0); // Will be 0 until keys are added
+        // Verify the map is created and accessible (it will be empty until keys are added)
+        assert_eq!(keys.len(), 0);
     }
 }
