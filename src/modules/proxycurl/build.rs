@@ -13,9 +13,16 @@ use crate::core::{
 use crate::util::domains::is_freemail;
 
 use super::types::{Certification, DateField, Education, LinkedInProfile};
-use super::{MAX_EXPERIENCES, MAX_LISTED, SRC};
 
 use crate::util::str_util::nonempty;
+
+const SRC: &str = "proxycurl";
+
+/// Caps on per-profile output, keeping a single dump bounded. Personal emails and
+/// phones are NOT capped — they are the subject's own discovered contact pivots
+/// (a handful per profile) and dropping them loses real leads.
+const MAX_EXPERIENCES: usize = 5;
+const MAX_LISTED: usize = 3; // companies/schools surfaced inline on the Person
 
 /// The registrable-ish domain of an email's local@domain, lowercased.
 pub(super) fn email_domain(email: &str) -> Option<String> {

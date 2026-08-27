@@ -194,7 +194,7 @@
       "id": "ingest-csv-lacks-formula-injection-guard",
       "category": "HARDENING / security",
       "detail": "#365's csv::Writer fix made `hse ingest -F csv` structurally valid RFC 4180, but it does not apply the anti-formula-injection guard that api::scan_export::csv_escape applies on the scan-export path. Ingest's input is an UNTRUSTED document, so a value beginning =/+/-/@/CR/TAB is written verbatim and executes when the operator opens the export in Excel or LibreOffice. The scan-export path is guarded; the ingest path is not.",
-      "status": "CLOSED (already fixed by the time cycle 15 re-verified it, which said so in its own provenance narrative but never updated this entry) — src/cli/ingest/mod.rs:473-486 routes every ingest-CSV field through api::scan_export::formula_guard before csv::Writer, with regression test format_csv_defangs_a_spreadsheet_formula_from_an_ingested_document. Re-confirmed directly against source before closing this entry, not from the cycle 15 note alone."
+      "status": "CLOSED — re-verified cycle 43 against current source, not from memory. src/cli/ingest/mod.rs:476-488 (landed via PR #479, commit 26fe12229) now runs every field (kind/value/confidence/source_pattern) through the shared api::scan_export::formula_guard before csv::Writer::write_record, matching the fix_direction this entry originally called for. The prior hedge ('if not already fixed on main') resolved true; no further action needed."
     },
     {
       "id": "OD-8",
@@ -202,7 +202,7 @@
       "loc": "src/core/correlator/rules/assoc.rs:334",
       "severity": "High",
       "source": "wave4 assoc/gap auditor (cycle 24)",
-      "status": "PARTIALLY CLOSED cycle 28 (commit c8070060f) — false-NEGATIVE half fixed (NANP over-length numbers no longer misread as AU service lines; exact-length gate in au_phone_line_type). False-POSITIVE half split to OD-14.",
+      "status": "CLOSED — false-NEGATIVE half fixed cycle 28 (commit c8070060f: NANP over-length numbers no longer misread as AU service lines; exact-length gate in au_phone_line_type). False-POSITIVE half split to OD-14, itself CLOSED cycle 31 (commit 0f33bf491). Both halves resolved; re-verified cycle 43 that OD-14's status field says CLOSED rather than assuming it.",
       "summary": "Shared-phone associate veto calls au_phone_line_type on the +-stripped normalise_phone key, so its internal contains('+') country-code strip never fires. FALSE POS: '+61 1800 xxx xxx' AU freephone in intl form -> key '611800…' -> classifier returns None -> is_business_service veto skipped -> fabricated High associate cluster on a shared business desk. FALSE NEG: '+1 90x xxx xxxx' NANP numbers -> key '190x…' collides with AU premium 190x/freephone 1800 -> genuine shared-line associations dropped for NANP area codes 901-909. Comment at 332-333 ('Non-AU numbers stay grouped') is false.",
       "fix_direction": "Gate the business-service veto on confirmed-AU membership (to_e164_au/validate_phone_e164) before classifying; normalise +61-form to national number first so a NANP '1…' key can never match 1800/190x."
     },

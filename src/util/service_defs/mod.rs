@@ -335,7 +335,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         name: "zoomeye",
         env_var: "HUNTSMAN_ZOOMEYE_KEY",
         category: "infrastructure",
-        test_url: "https://api.zoomeye.org/resources-info",
+        test_url: "https://api.zoomeye.ai/resources-info",
         key_header: KeyPlacement::Header("API-KEY"),
         rate_limit_reset_secs: 60,
         probe_parser: Some(|v| {
