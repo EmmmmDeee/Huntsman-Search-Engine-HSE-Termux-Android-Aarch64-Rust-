@@ -37,7 +37,11 @@ pub async fn cmd_credentials_list(detailed: bool) -> Result<()> {
             let signup = crate::util::keys::signup_hint(key).unwrap_or("https://example.com");
 
             if detailed {
-                let state = if configured { "CONFIGURED" } else { "unconfigured" };
+                let state = if configured {
+                    "CONFIGURED"
+                } else {
+                    "unconfigured"
+                };
                 println!("   {status} {key:<35} {state}");
                 println!("      └─ {signup}");
             } else {
@@ -281,9 +285,7 @@ fn categorize_all_credentials(
                 "Identity Intelligence"
             }
             k if k.contains("WIGLE") || k.contains("OPENCELLID") => "Geolocation",
-            k if k.contains("OPENCORPORATES") || k.contains("BUILTWITH") => {
-                "Business Intelligence"
-            }
+            k if k.contains("OPENCORPORATES") || k.contains("BUILTWITH") => "Business Intelligence",
             _ => "Other Services",
         };
 

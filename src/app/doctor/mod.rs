@@ -179,7 +179,10 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
     // Validate and report on embedded credentials: total availability,
     // categorization, configuration status, and any detected issues.
     let embedded_validation = embedded_validation::validate_embedded_credentials(&loaded);
-    print!("\n{}", embedded_validation::format_embedded_report(&embedded_validation));
+    print!(
+        "\n{}",
+        embedded_validation::format_embedded_report(&embedded_validation)
+    );
 
     // ── Unset keys + where to get them (mostly free), ranked by acquisition ──
     // The "failing modules" in a scan are usually just these — unconfigured

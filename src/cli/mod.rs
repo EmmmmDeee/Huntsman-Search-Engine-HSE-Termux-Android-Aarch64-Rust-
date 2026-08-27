@@ -184,7 +184,9 @@ async fn run_command(command: Command) -> Result<()> {
         Command::Credentials { action } => {
             use crate::cli::command::CredentialsAction;
             match action {
-                CredentialsAction::List { detailed } => credentials::cmd_credentials_list(detailed).await,
+                CredentialsAction::List { detailed } => {
+                    credentials::cmd_credentials_list(detailed).await
+                }
                 CredentialsAction::Template { output } => {
                     credentials::cmd_credentials_template(output.as_deref()).await
                 }

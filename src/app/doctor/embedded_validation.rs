@@ -30,9 +30,7 @@ pub struct CategoryStats {
 }
 
 /// Validate embedded credentials and produce a diagnostic report.
-pub fn validate_embedded_credentials(
-    loaded_keys: &HashMap<String, String>,
-) -> EmbeddedValidation {
+pub fn validate_embedded_credentials(loaded_keys: &HashMap<String, String>) -> EmbeddedValidation {
     let embedded = crate::util::keys::get_embedded_keys();
     let mut validation = EmbeddedValidation {
         total_embedded: embedded.len(),
@@ -199,9 +197,7 @@ fn validate_issues(
     // Check for placeholder values (too short, contains "your-")
     for (key, value) in embedded {
         let is_placeholder = value.len() < 5 || value.contains("your-") || value.contains("xxx");
-        if is_placeholder
-            && let Some(category) = categories.get(&key.to_string())
-        {
+        if is_placeholder && let Some(category) = categories.get(&key.to_string()) {
             validation.issues.push(format!(
                 "{key} [{category}] appears to be a placeholder — configure with actual API key"
             ));
@@ -245,7 +241,11 @@ mod tests {
 
     #[test]
     fn test_categories_non_empty() {
-        let keys = vec!["HUNTSMAN_SHODAN_KEY", "HUNTSMAN_VIRUSTOTAL_KEY", "HUNTSMAN_HIBP_KEY"];
+        let keys = vec![
+            "HUNTSMAN_SHODAN_KEY",
+            "HUNTSMAN_VIRUSTOTAL_KEY",
+            "HUNTSMAN_HIBP_KEY",
+        ];
         let categories = categorize_credentials(keys);
         assert!(!categories.is_empty());
         assert_eq!(categories.len(), 3);
