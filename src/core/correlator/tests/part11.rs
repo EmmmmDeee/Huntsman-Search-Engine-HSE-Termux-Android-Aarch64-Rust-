@@ -43,7 +43,7 @@ fn au_057_excludes_infrastructure_coordinates() {
     );
 }
 
-// ─── AU-058 tests ────────────────────────────────────────────────────────────
+// ─── AU-058 tests ──────────────────────────────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn au_058_ratemyagent_url_extracts_suburb() {
@@ -124,7 +124,7 @@ fn au_058_below_confidence_threshold_does_not_fire() {
     assert!(rule_au_058_professional_profile_geo(&RuleContext::new(&ents), "scan", 0).is_empty());
 }
 
-// ─── Recursive-scan simulation: cross-seed geo synergy for a subject ─────
+// ─── Recursive-scan simulation: cross-seed geo synergy for a subject ─────────
 //
 // An offline, deterministic stand-in for a live recursive scan. Real modules
 // hit the network; here we construct the `Coordinates` entities those modules
@@ -341,7 +341,7 @@ mod geo_synergy_sim {
     }
 }
 
-// ── All-eleven-class integration proof ───────────────────────────
+// ── All-eleven-class integration proof ───────────────────────────────────
 //
 // Drives all 11 orthogonal AU geo source classes (PhotoGps, WifiSensor,
 // Geocode, Registry, Directory, Social, Phone, Enrichment, Search,
@@ -731,7 +731,7 @@ fn au059_class_diversity_bonus_is_per_point_not_a_global_no_op() {
     );
 }
 
-// ── T1.3: firing assertions for the 12 previously-unasserted rules ──────────────
+// ── T1.3: firing assertions for the 12 previously-unasserted rules ────────────
 // (PROBLEM_TREE §3.1 T1.3 — these rules were dispatched but no test proved they
 // actually produce a correlation; a silently-dead rule would pass CI.)
 
