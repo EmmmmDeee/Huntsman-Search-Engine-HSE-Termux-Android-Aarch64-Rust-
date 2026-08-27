@@ -602,6 +602,13 @@ fn no_inline_module_bodies_outside_allowed_exceptions() {
             }
             if path.extension().is_none_or(|e| e != "rs")
                 || path.file_name().is_some_and(|n| n == "tests.rs")
+                // A `tests/` directory component catches the same test code
+                // when `tests.rs` splits its content into `tests/partNN.rs`
+                // fragments via `include!` (done purely to keep each file
+                // small enough for reliable transmission through this repo's
+                // push tooling) — those fragments are entirely test code too,
+                // just as a file literally named `tests.rs` is.
+                || path.components().any(|c| c.as_os_str() == "tests")
             {
                 continue;
             }
