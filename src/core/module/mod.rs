@@ -346,12 +346,8 @@ impl ModuleContext {
     }
 
     /// Fetch an optional key — None if absent (no error).
-    /// Falls back to embedded credentials if configured for private use.
     pub fn key_opt(&self, name: &str) -> Option<&str> {
-        self.keys
-            .get(name)
-            .map(String::as_str)
-            .or_else(|| crate::util::keys::get_embedded_keys().get(name).copied())
+        self.keys.get(name).map(String::as_str)
     }
 
     /// Fetch the next pooled key for `service` that isn't already in `tried` —

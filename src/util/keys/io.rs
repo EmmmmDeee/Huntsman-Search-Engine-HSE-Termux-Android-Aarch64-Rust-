@@ -118,6 +118,13 @@ pub fn load() -> HashMap<String, String> {
     // CSV-expanded service already has its env entry set above, so this skips it.
     crate::util::key_pool::merge_pool_into_env(&pool, &mut map);
 
+    // Merge embedded credentials as fallback for keys not already configured
+    // (env file or process env). Embedded keys have lowest priority and never
+    // override configured keys.
+    for (k, v) in super::embedded_credentials::get_embedded_keys().iter() {
+        map.entry(k.to_string()).or_insert_with(|| v.to_string());
+    }
+
     map
 }
 
