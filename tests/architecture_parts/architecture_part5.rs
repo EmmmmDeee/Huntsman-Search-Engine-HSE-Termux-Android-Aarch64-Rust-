@@ -298,7 +298,7 @@ fn every_checked_feature_flag_is_registered() {
     );
 }
 
-// ── Canonical entity classifier convergence tests ────────────────────────────────────────
+// ── Canonical entity classifier convergence tests ─────────────────────────────
 // Phase 1, item 1: `core::classifier` owns the canonical embedded-entity locators;
 // `util::entity_extractor` re-uses them. These tests assert that the re-exported
 // patterns are identical to the canonical ones and that classification is
@@ -391,7 +391,7 @@ fn core_extract_is_deterministic() {
     );
 }
 
-// ── Confidence-ladder invariant ───────────────────────────────────────────────
+// ── Confidence-ladder invariant ──────────────────────────────────────────────
 
 /// Split the top-level, comma-separated arguments of a call. `s` must start at
 /// the call's opening `(`. Nested delimiters and string literals are skipped so
