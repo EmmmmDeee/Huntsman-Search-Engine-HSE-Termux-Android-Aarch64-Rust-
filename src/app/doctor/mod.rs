@@ -1,11 +1,11 @@
 //! `hse doctor` — health-check subcommand.
 //!
 //! Reports Termux detection, DB path, key path, module/cost counts,
-//! HUNTSMAN_* keys loaded, a per-source scraper health signal derived from
-//! the persisted event log (`PROBLEM_TREE` T2.7 / `SOLUTION_TREE`
-//! SOL-HEALTH-SIGNAL — see [`crate::util::scraper_health`]), a cross-scan
-//! **weak findings** review list (every stored entity below the confidence
-//! review threshold — see [`crate::storage::Store::low_confidence_evidence`]),
+//! HUNTSMAN_* keys loaded, embedded credentials validation, a per-source
+//! scraper health signal derived from the persisted event log (`PROBLEM_TREE`
+//! T2.7 / `SOLUTION_TREE` SOL-HEALTH-SIGNAL — see [`crate::util::scraper_health`]),
+//! a cross-scan **weak findings** review list (every stored entity below the
+//! confidence review threshold — see [`crate::storage::Store::low_confidence_evidence`]),
 //! the local cell-tower database's freshness (no auto-resync exists yet, so a
 //! months-stale import is a real "check for a refresh" signal — see
 //! [`crate::util::cell_db::is_stale`]), a live WiGLE account introspection
@@ -16,6 +16,8 @@
 //! reach — see [`crate::util::key_harvest`]) on every scan, and — when
 //! `feature.ai_daemon` is armed — an Ollama reachability/model probe so
 //! `hse analyze`/`hse-ai-daemon` setup issues surface here first.
+
+mod embedded_validation;
 
 use crate::core::error::Result;
 use crate::{
@@ -172,6 +174,12 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
     if huntsman_keys.is_empty() {
         println!("  (none set; all free modules still work)");
     }
+
+    // ── Embedded credentials validation ────────────────────────────────
+    // Validate and report on embedded credentials: total availability,
+    // categorization, configuration status, and any detected issues.
+    let embedded_validation = embedded_validation::validate_embedded_credentials(&loaded);
+    print!("\n{}", embedded_validation::format_embedded_report(&embedded_validation));
 
     // ── Unset keys + where to get them (mostly free), ranked by acquisition ──
     // The "failing modules" in a scan are usually just these — unconfigured
