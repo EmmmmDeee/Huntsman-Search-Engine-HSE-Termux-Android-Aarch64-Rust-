@@ -154,7 +154,7 @@ impl Module for OpenCellId {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let api_key = match ctx.key_opt(KEY_ENV) {
+        let api_key = match crate::util::keys::resolve_key(ctx.key_opt(KEY_ENV)) {
             Some(k) => k,
             None => return Ok(ModuleResult::new()),
         };

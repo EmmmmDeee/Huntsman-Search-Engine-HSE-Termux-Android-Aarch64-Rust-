@@ -113,7 +113,7 @@ impl Module for CellIntel {
             termux_sensor::unparseable_for(SRC, termux_sensor::Sensor::CellInfo, &e)
         })?;
 
-        let api_key = ctx.key_opt(OPENCELLID_KEY_ENV);
+        let api_key = crate::util::keys::resolve_key(ctx.key_opt(OPENCELLID_KEY_ENV));
         let mut result = ModuleResult::new();
         let mut seen = HashSet::new();
 

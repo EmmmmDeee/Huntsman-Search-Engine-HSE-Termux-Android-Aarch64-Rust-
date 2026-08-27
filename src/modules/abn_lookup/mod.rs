@@ -110,7 +110,7 @@ impl Module for AbnLookup {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let guid = match ctx.key_opt(KEY_ENV) {
+        let guid = match crate::util::keys::resolve_key(ctx.key_opt(KEY_ENV)) {
             Some(k) => k,
             None => return Ok(ModuleResult::new()),
         };
