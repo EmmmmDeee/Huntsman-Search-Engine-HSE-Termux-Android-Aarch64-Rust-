@@ -638,12 +638,12 @@ fn module_names_are_unique() {
     );
 }
 
-// Split into part files under tests/ (a plain directory alongside this file —
-// `mod tests;` above already resolves to tests.rs, so this does not conflict)
-// purely to keep each file small enough for reliable transmission through the
-// push tooling used in this repo's environment — `include!` splices them back
-// into this same module scope at compile time, so this is byte-for-byte the
-// same test suite as one file; behavior, test names, and results are unaffected.
+// Split into part files under architecture_parts/ (not directly in tests/, so
+// Cargo doesn't auto-discover them as separate test binaries) purely to keep
+// each file small enough for reliable transmission through the push tooling
+// used in this repo's environment — `include!` splices them back into this
+// same module scope at compile time, so this is byte-for-byte the same test
+// suite as one file; behavior, test names, and results are unaffected.
 include!("architecture_parts/architecture_part2.rs");
 include!("architecture_parts/architecture_part3.rs");
 include!("architecture_parts/architecture_part4.rs");
