@@ -26,6 +26,7 @@ pub mod au_unclaimed;
 pub mod austlii;
 pub mod beacondb;
 pub mod bgpview;
+pub mod binaryedge;
 pub mod bitbucket_user;
 pub mod bluesky_user;
 pub mod builtwith;
@@ -37,6 +38,8 @@ pub mod builtwith;
 // `pub mod` as dead-at-runtime.
 pub(crate) mod breach_rich;
 pub mod breach_timezone;
+pub mod breachdirectory;
+pub mod c99;
 pub mod cell_intel;
 pub mod cell_local;
 pub mod censys;
@@ -81,6 +84,7 @@ pub mod exif_geo;
 pub mod fediverse;
 pub mod fofa;
 pub mod fullcontact;
+pub mod fullhunt;
 pub mod gaming_profile;
 pub mod geo_domain_classifier;
 pub mod geo_intel;
@@ -138,6 +142,7 @@ pub mod opencorporates;
 pub mod opensanctions;
 pub mod osintcat;
 pub mod overpass;
+pub mod passivetotal;
 pub mod payid;
 pub mod pgp;
 pub mod phone_au;
@@ -154,6 +159,7 @@ pub mod wikidata_geo;
 pub(crate) mod profile_kit;
 pub mod proxycurl;
 pub mod psbdmp;
+pub mod pulsedive;
 pub mod pwned_passwords;
 pub mod pypi_user;
 pub mod qld_cadastre;
@@ -368,6 +374,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(censys::Censys),
             Arc::new(greynoise::GreyNoise),
             Arc::new(dehashed::DeHashed),
+            Arc::new(breachdirectory::BreachDirectory),
             Arc::new(intelx::IntelX),
             Arc::new(securitytrails::SecurityTrails),
             Arc::new(leakix::LeakIx),
@@ -376,6 +383,11 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(zoomeye::ZoomEye),
             Arc::new(fofa::Fofa),
             Arc::new(builtwith::BuiltWith),
+            Arc::new(binaryedge::BinaryEdge),
+            Arc::new(c99::C99),
+            Arc::new(fullhunt::FullHunt),
+            Arc::new(pulsedive::Pulsedive),
+            Arc::new(passivetotal::PassiveTotal),
             Arc::new(ipqs::IpQs),
             Arc::new(contact_enrich::ContactEnrich),
             Arc::new(hunter_io::HunterIo),
