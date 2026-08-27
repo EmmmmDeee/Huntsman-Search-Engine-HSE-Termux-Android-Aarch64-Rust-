@@ -332,3 +332,69 @@ fn real_scan_us_breach_address_reproduction() {
          to the subject — it must never be corroborated as '~0 km' away"
     );
 }
+
+#[test]
+fn person_grain_postcode_refuses_an_ip_geolocation() {
+    // Exactly what `ipquery` builds: a CITY-grain Address composed from the IP's
+    // city/state/country, carrying `geo_ev()` — which folds the IP block's `zip`
+    // in as `postcode` alongside the `ip` it came from
+    // (`modules/ipquery/mod.rs:267,292`). `ip2location` and `ip_geo` do the same.
+    let ip_geo = {
+        let mut e = Entity::new(
+            EntityKind::Address,
+            "Sydney, New South Wales, Australia",
+            0.58,
+            "s",
+        );
+        e.tag("ipquery");
+        e.add_evidence(
+            Evidence::new("ipquery", "Geolocation for 1.2.3.4")
+                .with_attr("ip", "1.2.3.4")
+                .with_attr("postcode", "2000"),
+        );
+        e
+    };
+    // `au_postcode` still reports it — the raw accessor is unchanged, and other
+    // callers may legitimately want the IP's postcode.
+    assert_eq!(au_postcode(&ip_geo).as_deref(), Some("2000"));
+    // The person-grain accessor refuses it. This is what keeps a geolocation
+    // database's guess for an IP BLOCK out of the headline residence rung, where
+    // it was reported as an 8 km "postcode / suburb grain" fix at full
+    // confidence — walking around the login-IP rung's deliberate ≤ 0.50 cap.
+    assert!(
+        au_postcode_person_grain(&ip_geo).is_none(),
+        "an IP geolocation must not supply a suburb-grain postcode"
+    );
+}
+
+#[test]
+fn person_grain_postcode_keeps_a_real_postal_record() {
+    // A breach/register postcode carries no `ip` attribute, so it is untouched —
+    // the legitimate rung-3/4 input must still work.
+    assert_eq!(
+        au_postcode_person_grain(&fam("Stephen Moreau", Some("4169"))).as_deref(),
+        Some("4169")
+    );
+    // An Address naming its postcode in the VALUE, with no evidence at all.
+    let addr = Entity::new(EntityKind::Address, "QLD 4518, Australia", 0.3, "s");
+    assert_eq!(au_postcode_person_grain(&addr).as_deref(), Some("4518"));
+}
+
+#[test]
+fn person_grain_postcode_survives_a_mixed_provenance_entity() {
+    // An entity corroborated by BOTH an IP geolocation and a real postal record
+    // keeps the postal one: only the IP-derived evidence records are skipped,
+    // not the whole entity.
+    let mut mixed = Entity::new(EntityKind::Person, "Stephen Moreau", 0.5, "s");
+    mixed.add_evidence(
+        Evidence::new("ipquery", "Geolocation for 1.2.3.4")
+            .with_attr("ip", "1.2.3.4")
+            .with_attr("postcode", "2000"),
+    );
+    mixed.add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", "4169"));
+    assert_eq!(
+        au_postcode_person_grain(&mixed).as_deref(),
+        Some("4169"),
+        "the real postal record must survive alongside an IP geolocation"
+    );
+}

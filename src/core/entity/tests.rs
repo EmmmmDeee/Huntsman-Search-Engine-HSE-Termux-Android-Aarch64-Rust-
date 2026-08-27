@@ -26,6 +26,67 @@ fn uid_differs_across_kinds() {
     assert_ne!(e.uid, d.uid);
 }
 
+// ── EntityBuilder equivalence ─────────────────────────────────────────────
+
+#[test]
+fn builder_produces_the_same_entity_as_the_hand_rolled_sequence() {
+    // Hand-rolled: the exact new + tag + tag + add_evidence sequence copied
+    // across the module fleet.
+    let mut hand = Entity::new(EntityKind::Domain, "Example.COM", 0.83, "scan-1");
+    hand.tag("archived");
+    hand.tag("web");
+    hand.add_evidence(
+        Evidence::new("wayback", "3 snapshots")
+            .with_attr("snapshot_count", "3")
+            .with_attr("first_seen", "2020"),
+    );
+
+    // Builder: same inputs, same order.
+    let built = Entity::builder(EntityKind::Domain, "Example.COM", 0.83, "scan-1")
+        .tag("archived")
+        .tag("web")
+        .evidence(
+            Evidence::new("wayback", "3 snapshots")
+                .with_attr("snapshot_count", "3")
+                .with_attr("first_seen", "2020"),
+        )
+        .build();
+
+    // Byte-identical in every observable field (observed_at is a timestamp set
+    // by the constructor in both, so compare the fields the builder governs).
+    assert_eq!(built.uid, hand.uid);
+    assert_eq!(built.kind, hand.kind);
+    assert_eq!(built.value, hand.value); // normalisation preserved
+    assert_eq!(built.raw_value, hand.raw_value);
+    assert!((built.confidence - hand.confidence).abs() < f64::EPSILON);
+    assert_eq!(built.tags, hand.tags); // order + de-dupe preserved
+    assert_eq!(built.evidence.len(), hand.evidence.len());
+    assert_eq!(built.evidence[0].source, hand.evidence[0].source);
+    assert_eq!(built.evidence[0].summary, hand.evidence[0].summary);
+    assert_eq!(built.evidence[0].attributes, hand.evidence[0].attributes);
+}
+
+#[test]
+fn builder_tags_dedupe_and_tags_iter_helper_works() {
+    let e = Entity::builder(EntityKind::Email, "a@b.com", 0.5, "s")
+        .tag("dup")
+        .tags(["dup", "fresh", "fresh"]) // both de-dupe against prior + each other
+        .build();
+    assert_eq!(e.tags, vec!["dup".to_string(), "fresh".to_string()]);
+}
+
+#[test]
+fn builder_push_to_emits_into_module_result() {
+    use crate::core::module::ModuleResult;
+    let mut result = ModuleResult::new();
+    Entity::builder(EntityKind::IpAddress, "1.2.3.4", 0.9, "s")
+        .tag("infra")
+        .push_to(&mut result);
+    assert_eq!(result.entities.len(), 1);
+    assert_eq!(result.entities[0].kind, EntityKind::IpAddress);
+    assert!(result.entities[0].has_tag("infra"));
+}
+
 #[test]
 fn demote_to_candidate_caps_confidence_tags_and_is_idempotent() {
     let mut e = Entity::new(EntityKind::Email, "stranger@example.com", 0.70, "s");

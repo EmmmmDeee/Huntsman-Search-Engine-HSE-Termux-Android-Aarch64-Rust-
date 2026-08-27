@@ -1,8 +1,40 @@
-use super::{AreaResp, KEY_REJECTED_MSG, OpenCellId, accuracy_to_confidence};
+use super::{AreaResp, KEY_ENV, KEY_REJECTED_MSG, OpenCellId, accuracy_to_confidence};
 use crate::core::{
-    module::{Module, ModuleCost},
+    module::{Module, ModuleContext, ModuleCost},
     scan::{Target, TargetKind},
 };
+
+/// Regression: an unedited `hse provision` template writes the literal
+/// placeholder string into `~/.huntsman.env` uncommented, and this module
+/// used to read it via bare `ctx.key_opt` — bypassing `resolve_key`'s
+/// blank/placeholder filter — so it would have forwarded
+/// `"insert_opencellid_key_here"` to the live OpenCelliD API as a credential
+/// instead of cleanly skipping. Must behave identically to a missing key.
+#[tokio::test]
+async fn placeholder_key_is_a_clean_skip_not_a_forwarded_credential() {
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        KEY_ENV.to_string(),
+        "insert_opencellid_key_here".to_string(),
+    );
+    let ctx = ModuleContext {
+        scan_id: "scan".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys,
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let target = Target::new(TargetKind::Coordinates, "-27.47,153.02");
+    let result = OpenCellId
+        .process(&target, &ctx)
+        .await
+        .expect("must not error");
+    assert!(
+        result.entities.is_empty(),
+        "an unedited template placeholder must be treated as no key configured"
+    );
+}
 
 #[test]
 fn module_metadata() {

@@ -93,6 +93,7 @@ HUNTSMAN_WIGLE_TOKEN="insert_wigle_api_key_here"
 HUNTSMAN_OPENCELLID_KEY="insert_opencellid_key_here"
 HUNTSMAN_BUILTWITH_KEY="insert_builtwith_key_here"
 HUNTSMAN_ABR_GUID="insert_abr_guid_here"
+HUNTSMAN_AUSPOST_KEY="insert_auspost_api_key_here"
 # [RESERVED] not yet wired to a module:
 HUNTSMAN_MACADDRESS_KEY="insert_macaddress_io_key_here"
 HUNTSMAN_MAXMIND_KEY="insert_maxmind_key_here"

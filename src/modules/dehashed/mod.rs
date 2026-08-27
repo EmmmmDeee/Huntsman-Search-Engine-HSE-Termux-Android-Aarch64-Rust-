@@ -190,8 +190,13 @@ impl Module for DeHashed {
             .map_err(|e| crate::core::error::Error::module(build::SRC, e))?;
 
         let entries = body.entries.unwrap_or_default();
-        let total = body.total.unwrap_or(entries.len() as u64);
-        if entries.is_empty() && total == 0 {
+        // Do NOT fabricate an exact total the provider did not give. `body.total`
+        // stays `Option`: `Some(n)` is DeHashed's authoritative count; `None`
+        // means the provider omitted it, and `build_breach_entity` then reports
+        // the observed rows as a floor (or as complete when the page was short)
+        // rather than passing `entries.len()` off as an exact total (item 21).
+        let total = body.total;
+        if entries.is_empty() && total.unwrap_or(0) == 0 {
             return Ok(ModuleResult::new());
         }
 

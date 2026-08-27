@@ -1,6 +1,7 @@
 //! Format renderers — JSON, CSV, GEXF, report, full dossier, debug bundle.
 
 use crate::core::error::{Error, Result};
+use crate::core::scan::Scan;
 use crate::storage::Store;
 
 /// A scan's entities with the quarantined `candidate` rows removed — the
@@ -16,8 +17,8 @@ fn confirmed_entities(store: &Store, sid: &str) -> Result<Vec<crate::core::entit
     Ok(entities)
 }
 
-/// Why an export of a scan in this state is only a PARTIAL view, or `None`
-/// when the scan genuinely ran to completion.
+/// Why an export of this scan is only a PARTIAL view, or `None` when the scan
+/// genuinely ran to completion.
 ///
 /// Single source of truth for the completeness decision, so the dossier header
 /// and the debug-bundle header can never disagree about whether an artifact is
@@ -26,10 +27,23 @@ fn confirmed_entities(store: &Store, sid: &str) -> Result<Vec<crate::core::entit
 /// produced before the stop, so branding it "complete" tells the operator the
 /// absence of a finding is a real negative when it may just be work that never
 /// happened — the one claim an evidentiary artifact must never make falsely.
-fn partial_export_reason(status: crate::core::scan::ScanStatus) -> Option<&'static str> {
+///
+/// A budget-truncated scan is exactly that case, and used to slip through: it
+/// reaches [`ScanStatus::Complete`](crate::core::scan::ScanStatus::Complete) like any other, so classifying on status
+/// alone branded it "complete" while its expansion had stopped with candidates
+/// still queued. Taking the whole [`Scan`] closes that hole — see
+/// [`StopReason`](crate::core::scan::StopReason).
+///
+/// Determinism: every input here is immutable once the scan is terminal
+/// (`status` and `stop_reason` are both written once, at finalise), so this
+/// keeps the debug bundle's byte-identical-across-exports contract.
+fn partial_export_reason(scan: &Scan) -> Option<&'static str> {
     use crate::core::scan::ScanStatus;
-    match status {
-        ScanStatus::Complete => None,
+    match scan.status {
+        ScanStatus::Complete => scan
+            .stop_reason
+            .is_some_and(|r| r.truncated())
+            .then_some("budget-truncated"),
         ScanStatus::Aborted => Some("aborted"),
         ScanStatus::Failed => Some("failed"),
         // A snapshot taken mid-flight is partial by construction: more findings
@@ -320,7 +334,7 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
 
     let mut s = String::new();
     let _ = writeln!(s, "═══════════════════════════════════════════════════════");
-    let dossier_state = match partial_export_reason(scan.status) {
+    let dossier_state = match partial_export_reason(&scan) {
         None => "complete, unredacted".to_string(),
         Some(reason) => format!("partial, {reason}, unredacted"),
     };
@@ -334,6 +348,11 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
         scan.target.value
     );
     let _ = writeln!(s, "status     : {:?}", scan.status);
+    // WHY the expansion stopped, not just that the scan ended. Immutable once
+    // terminal, so the bundle stays byte-identical across exports.
+    if let Some(r) = scan.stop_reason {
+        let _ = writeln!(s, "stopped    : {}", r.label());
+    }
     let _ = writeln!(s, "entities   : {}", entities.len());
     let _ = writeln!(s, "relations  : {}", relations.len());
     // Full module accounting — including the timed-out/skipped/cached counts the
@@ -673,7 +692,7 @@ pub(crate) fn render_debug_bundle(
     let scan = store
         .get_scan(sid)?
         .ok_or_else(|| Error::Other(format!("scan {sid} not found")))?;
-    let snapshot_state = match partial_export_reason(scan.status) {
+    let snapshot_state = match partial_export_reason(&scan) {
         None => "complete scan snapshot".to_string(),
         Some(reason) => format!("partial {reason} scan snapshot"),
     };
@@ -1871,7 +1890,7 @@ pub(crate) fn extract_au_location_fix(
 
 #[cfg(test)]
 mod tests {
-    use super::render_raw_response_body;
+    use super::{partial_export_reason, render_raw_response_body};
 
     #[test]
     fn raw_response_body_masks_an_echoed_api_key_but_keeps_the_rest() {
@@ -1898,5 +1917,78 @@ mod tests {
             rendered.contains("\"result\": \"ok\""),
             "unrelated fields must survive untouched: {rendered}"
         );
+    }
+
+    /// The defect this pins: `partial_export_reason` classified on
+    /// `ScanStatus` alone, and a budget-truncated scan reaches
+    /// `ScanStatus::Complete` like any other. So the dossier header read
+    /// "complete, unredacted" and the debug bundle read "complete scan
+    /// snapshot" for a scan whose expansion had stopped with candidates still
+    /// queued — precisely the false claim this function's own doc says an
+    /// evidentiary artifact must never make.
+    #[test]
+    fn a_budget_truncated_scan_is_not_branded_a_complete_export() {
+        use crate::core::scan::{Scan, ScanStatus, StopReason, Target, TargetKind};
+
+        let mk = |stop: Option<StopReason>| {
+            let mut sc = Scan::new(
+                "s1",
+                Target {
+                    kind: TargetKind::Email,
+                    value: "a@b.test".into(),
+                },
+            );
+            sc.status = ScanStatus::Complete;
+            sc.stop_reason = stop;
+            sc
+        };
+
+        for stop in [StopReason::MaxEntities(500), StopReason::MaxWallTime(60)] {
+            assert_eq!(
+                partial_export_reason(&mk(Some(stop))),
+                Some("budget-truncated"),
+                "{stop:?} must mark the export partial"
+            );
+        }
+
+        // …and the converse, so the "partial" brand keeps its meaning: a scan
+        // that genuinely ran out of candidates, one that ran every requested
+        // depth round, and a row written before `stop_reason` existed are all
+        // complete exports.
+        for stop in [
+            None,
+            Some(StopReason::NoMoreCandidates),
+            Some(StopReason::DepthExhausted),
+        ] {
+            assert_eq!(
+                partial_export_reason(&mk(stop)),
+                None,
+                "{stop:?} is a complete export"
+            );
+        }
+    }
+
+    /// The pre-existing classifications must survive unchanged — this function
+    /// is the single source both artifact headers share.
+    #[test]
+    fn non_complete_statuses_keep_their_partial_reasons() {
+        use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
+
+        for (status, want) in [
+            (ScanStatus::Aborted, "aborted"),
+            (ScanStatus::Failed, "failed"),
+            (ScanStatus::Pending, "live"),
+            (ScanStatus::Running, "live"),
+        ] {
+            let mut sc = Scan::new(
+                "s1",
+                Target {
+                    kind: TargetKind::Email,
+                    value: "a@b.test".into(),
+                },
+            );
+            sc.status = status;
+            assert_eq!(partial_export_reason(&sc), Some(want), "{status:?}");
+        }
     }
 }
