@@ -114,7 +114,7 @@ hse export --scan-id <id> --format json --out scan_entities.json --redact
 
 `--redact` only applies to the `json`/`csv`/`gexf` export formats — `report`
 rejects it outright, because `report`'s nested scan-report shape embeds the
-full `Entity` list (`api::scan_export::build_scan_report`'s
+full `Entity` list (`crate::app::export::build_scan_report`'s
 `"entities": entities`) without routing it through the redaction pass, so it
 is the wrong export for this pipeline regardless of `--redact`. `--format
 json` is also the format `analysis::build_prompt` itself is grounded in: each

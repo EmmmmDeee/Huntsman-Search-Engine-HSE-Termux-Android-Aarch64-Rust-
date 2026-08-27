@@ -84,6 +84,7 @@ HUNTSMAN_PROXYCURL_KEY="insert_proxycurl_key_here"
 # key-free today; these keys are placeholders for future paid tiers):
 HUNTSMAN_XPOSEDORNOT_KEY="insert_xposedornot_key_here"
 HUNTSMAN_HUDSONROCK_KEY="insert_hudsonrock_key_here"
+# Consumed by the dehashed module today (KEY_ENV in src/modules/dehashed/mod.rs) — NOT reserved:
 HUNTSMAN_DEHASHED_KEY="insert_dehashed_v2_api_key_here"
 
 # --- TIER 4: LOCAL WIRELESS, CELLULAR & GEOSPATIAL SIGINT ENRICHMENT ---
@@ -94,8 +95,11 @@ HUNTSMAN_BUILTWITH_KEY="insert_builtwith_key_here"
 HUNTSMAN_ABR_GUID="insert_abr_guid_here"
 # [RESERVED] not yet wired to a module:
 HUNTSMAN_MACADDRESS_KEY="insert_macaddress_io_key_here"
-HUNTSMAN_IPINFO_KEY="insert_ipinfo_io_key_here"
 HUNTSMAN_MAXMIND_KEY="insert_maxmind_key_here"
+# [RESERVED] not yet wired to a module (ipinfo module runs key-free today via
+# its free tier; this key is a placeholder for a future token-gated tier —
+# e.g. IPinfo's unlimited-request Lite tier or richer paid fields):
+HUNTSMAN_IPINFO_KEY="insert_ipinfo_io_key_here"
 
 # --- OPERATOR DEFAULT SEED (optional, local-only — never shipped) ---
 # Set this to YOUR OWN default scan target so `hse scan` / `hse live` can run

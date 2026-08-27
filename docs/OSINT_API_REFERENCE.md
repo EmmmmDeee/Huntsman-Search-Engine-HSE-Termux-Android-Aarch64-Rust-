@@ -81,7 +81,9 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **Pulsedive** | indicator/threat enrichment | free | alnum | M K D |
 | **ThreatFox (abuse.ch)** | IOCs (malware, C2) | free | abuse.ch key | M K D |
 | **URLhaus (abuse.ch)** | malicious URL feed | free | — | M D |
+| **PhishTank** | phishing-URL verification feed/lookup | free | app key | D C |
 | **MalwareBazaar (abuse.ch)** | malware-sample intel | free | abuse.ch key | D |
+| **MalShare** | malware-sample repository (hash/source/filename search + download) | free (2k/day key) | alnum | D C |
 | **urlscan.io** | URL scan + screenshots + DOM | free | UUID | M K D |
 | **AlienVault OTX** | open threat exchange pulses | free (keyless) | 64 hex | M K D |
 | **Hybrid Analysis** | sandbox malware reports | free (vetted) | 64 alnum | D C |
@@ -130,7 +132,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 
 | Provider | What it gives | Free tier | Key shape | HSE |
 |---|---|---|---|---|
-| **IPinfo** | IP geo/ASN/company/privacy | 50k/mo | hex token | M K D |
+| **IPinfo** | IP geo/ASN/company/privacy | 50k/mo | hex token | M D |
 | **IP2Location** | IP geo (API + DB) | free (1k/day, keyless) | — | M D |
 | **ipgeolocation.io** | IP geo/timezone/astronomy | 1k/day | alnum | D C |
 | **ipstack** | IP geo | 100/mo | 32 hex | D C |
@@ -204,6 +206,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **WiGLE** | wifi/BT/cell wardriving DB | free (ltd) | API name + token | M K D |
 | **OpenCellID** | cell-tower geolocation | free key | alnum | M K D |
 | **Unwired Labs / Mylnikov** | cell/wifi geolocation | ltd/free | alnum | M(mylnikov) D |
+| **macaddress.io** | MAC OUI/vendor lookup, VM-interface detection | free (key) | alnum | D C |
 | **Google/Combain geolocation** | wifi/cell→position | paid | `AIza…`/key | C |
 | *(keyless)* **mls / cell_intel / wifi_intel** | offline cell/wifi context | free | — | M |
 
@@ -256,7 +259,7 @@ VIRUSTOTAL, ABUSEIPDB, ABUSECH, THREATFOX, ALIENVAULT, URLSCAN, PULSEDIVE,
 PASSIVETOTAL, SECTRAILS, WHOISXML, DOMAINSDB, BUILTWITH, C99, BREACHDIR, NUMVERIFY,
 HLR, OPENCNAM, IPQS, OPENCELLID, WIGLE (USER+TOKEN), OPENCORP, TROVE, EXA, ABR_GUID`.
 
-Most are optional — ~79% of HSE modules need **no** key. Add a key only to escalate
+Most are optional — ~75% of HSE modules need **no** key. Add a key only to escalate
 a specific source; HSE never marks up provider pricing (pay the provider directly,
 usually on a free tier).
 
