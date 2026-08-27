@@ -227,7 +227,7 @@ fn build_result(target: &Target, data: &CavalierResp, scan_id: &str) -> ModuleRe
         return ModuleResult::new();
     }
 
-    let confidence = compute_confidence(&data.stealers);
+    let confidence = compute_confidence(&data.stealers, crate::core::entity::unix_now());
     let mut entity = target.to_entity(confidence, scan_id);
     entity.tag(tags::BREACH);
     entity.tag(tags::STEALER_LOG);
@@ -303,8 +303,7 @@ fn build_result(target: &Target, data: &CavalierResp, scan_id: &str) -> ModuleRe
     result
 }
 
-fn compute_confidence(stealers: &[Stealer]) -> f64 {
-    let now_secs = crate::core::entity::unix_now();
+fn compute_confidence(stealers: &[Stealer], now_secs: u64) -> f64 {
     let cutoff = now_secs.saturating_sub(FRESHNESS_WINDOW_DAYS * 86400);
 
     let has_recent = stealers.iter().any(|s| {
