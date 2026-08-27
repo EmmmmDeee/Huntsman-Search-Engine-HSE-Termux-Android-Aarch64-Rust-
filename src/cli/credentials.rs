@@ -25,7 +25,7 @@ pub async fn cmd_credentials_list(detailed: bool) -> Result<()> {
     let mut total_configured = 0;
 
     for (category, keys) in categories {
-        println!("📦 {}", category);
+        println!("📦 {category}");
         for key in &keys {
             total_embedded += 1;
             let configured = loaded.contains_key(key);
@@ -34,35 +34,28 @@ pub async fn cmd_credentials_list(detailed: bool) -> Result<()> {
             }
 
             let status = if configured { "✓" } else { "○" };
-            let signup = crate::util::keys::signup_hint(key)
-                .unwrap_or("https://example.com")
-                .to_string();
+            let signup = crate::util::keys::signup_hint(key).unwrap_or("https://example.com");
 
             if detailed {
-                println!(
-                    "   {} {:<35} {}",
-                    status, key,
-                    if configured { "CONFIGURED" } else { "unconfigured" }
-                );
-                println!("      └─ {}", signup);
+                let state = if configured { "CONFIGURED" } else { "unconfigured" };
+                println!("   {status} {key:<35} {state}");
+                println!("      └─ {signup}");
             } else {
-                println!("   {} {}", status, key);
+                println!("   {status} {key}");
             }
         }
         println!();
     }
 
     println!("Summary:");
-    println!("  Total available: {}", total_embedded);
-    println!("  Configured: {}", total_configured);
-    println!(
-        "  Coverage: {}%",
-        if total_embedded > 0 {
-            (total_configured * 100) / total_embedded
-        } else {
-            0
-        }
-    );
+    println!("  Total available: {total_embedded}");
+    println!("  Configured: {total_configured}");
+    let coverage = if total_embedded > 0 {
+        (total_configured * 100) / total_embedded
+    } else {
+        0
+    };
+    println!("  Coverage: {coverage}%");
 
     Ok(())
 }
@@ -72,9 +65,9 @@ pub async fn cmd_credentials_template(output: Option<&str>) -> Result<()> {
 
     if let Some(path) = output {
         std::fs::write(path, &template)?;
-        println!("✓ Credential template written to: {}", path);
+        println!("✓ Credential template written to: {path}");
     } else {
-        println!("{}", template);
+        println!("{template}");
     }
 
     Ok(())
@@ -84,30 +77,33 @@ pub async fn cmd_credentials_validate() -> Result<()> {
     let loaded = crate::util::keys::load();
     let embedded = crate::util::keys::get_embedded_keys();
 
-    println!("Validating {} loaded credentials...\n", loaded.len());
+    let loaded_count = loaded.len();
+    println!("Validating {loaded_count} loaded credentials...\n");
 
     let mut issues = Vec::new();
     let mut warnings = Vec::new();
 
     // Check for placeholder values
     for (key, value) in &loaded {
-        if value.len() < 8 {
-            issues.push(format!("{}: key is too short ({})", key, value.len()));
+        let len = value.len();
+        if len < 8 {
+            issues.push(format!("{key}: key is too short ({len})"));
         }
         if value.contains("your-") || value.contains("xxx") || value.contains("example") {
-            warnings.push(format!("{}: appears to be a placeholder", key));
+            warnings.push(format!("{key}: appears to be a placeholder"));
         }
     }
 
     // Check for duplicate configurations
-    let env_keys: std::collections::HashSet<_> = loaded.keys().map(|k| k.as_str()).collect();
+    let env_keys: std::collections::HashSet<_> = loaded.keys().map(String::as_str).collect();
     let embedded_keys: std::collections::HashSet<_> = embedded.keys().copied().collect();
     let duplicates: Vec<_> = env_keys.intersection(&embedded_keys).copied().collect();
 
     if !duplicates.is_empty() {
-        println!("⚠ {} credential(s) configured in both environment and embedded:", duplicates.len());
+        let dup_count = duplicates.len();
+        println!("⚠ {dup_count} credential(s) configured in both environment and embedded:");
         for dup in duplicates {
-            println!("  - {}", dup);
+            println!("  - {dup}");
         }
         println!("  Environment variables take priority.\n");
     }
@@ -116,16 +112,18 @@ pub async fn cmd_credentials_validate() -> Result<()> {
         println!("✓ All credentials validated successfully!");
     } else {
         if !warnings.is_empty() {
-            println!("⚠ Warnings ({}):", warnings.len());
+            let count = warnings.len();
+            println!("⚠ Warnings ({count}):");
             for w in warnings {
-                println!("  - {}", w);
+                println!("  - {w}");
             }
             println!();
         }
         if !issues.is_empty() {
-            println!("✗ Issues ({}):", issues.len());
+            let count = issues.len();
+            println!("✗ Issues ({count}):");
             for i in issues {
-                println!("  - {}", i);
+                println!("  - {i}");
             }
             return Err(Error::Other("Credential validation failed".to_string()));
         }
@@ -140,14 +138,15 @@ pub async fn cmd_credentials_test(key_name: Option<&str>) -> Result<()> {
     if let Some(name) = key_name {
         // Test single credential
         if let Some(value) = loaded.get(name) {
-            println!("Testing credential: {}\n", name);
+            println!("Testing credential: {name}\n");
             test_single_credential(name, value).await?;
         } else {
-            return Err(Error::Other(format!("Credential {} not found", name)));
+            return Err(Error::Other(format!("Credential {name} not found")));
         }
     } else {
         // Test all configured credentials
-        println!("Testing all {} configured credentials...\n", loaded.len());
+        let total = loaded.len();
+        println!("Testing all {total} configured credentials...\n");
         let mut success = 0;
         let mut failed = 0;
 
@@ -158,9 +157,9 @@ pub async fn cmd_credentials_test(key_name: Option<&str>) -> Result<()> {
             }
         }
 
-        println!("\nResults: {} success, {} failed", success, failed);
+        println!("\nResults: {success} success, {failed} failed");
         if failed > 0 {
-            return Err(Error::Other(format!("{} credential tests failed", failed)));
+            return Err(Error::Other(format!("{failed} credential tests failed")));
         }
     }
 
@@ -175,18 +174,18 @@ async fn test_single_credential(name: &str, value: &str) -> Result<()> {
         n if n.contains("HIBP") => test_hibp_credential(value).await,
         n if n.contains("GITHUB") => test_github_credential(value).await,
         _ => {
-            println!("  {}: skipped (no test available)", name);
+            println!("  {name}: skipped (no test available)");
             Ok(())
         }
     };
 
     match test_result {
         Ok(_) => {
-            println!("  ✓ {} authenticated", name);
+            println!("  ✓ {name} authenticated");
             Ok(())
         }
         Err(e) => {
-            println!("  ✗ {} failed: {}", name, e);
+            println!("  ✗ {name} failed: {e}");
             Err(e)
         }
     }
@@ -194,7 +193,7 @@ async fn test_single_credential(name: &str, value: &str) -> Result<()> {
 
 async fn test_shodan_credential(key: &str) -> Result<()> {
     let client = crate::util::http::build_client();
-    let url = format!("https://api.shodan.io/account/profile?key={}", key);
+    let url = format!("https://api.shodan.io/account/profile?key={key}");
 
     let response = client
         .get(&url)
@@ -205,7 +204,8 @@ async fn test_shodan_credential(key: &str) -> Result<()> {
     if response.status().is_success() {
         Ok(())
     } else {
-        Err(Error::Other(format!("Shodan auth failed: {}", response.status())))
+        let status = response.status();
+        Err(Error::Other(format!("Shodan auth failed: {status}")))
     }
 }
 
@@ -221,7 +221,8 @@ async fn test_virustotal_credential(key: &str) -> Result<()> {
     if response.status().is_success() {
         Ok(())
     } else {
-        Err(Error::Other(format!("VirusTotal auth failed: {}", response.status())))
+        let status = response.status();
+        Err(Error::Other(format!("VirusTotal auth failed: {status}")))
     }
 }
 
@@ -238,7 +239,8 @@ async fn test_hibp_credential(key: &str) -> Result<()> {
     if response.status().is_success() || response.status().as_u16() == 404 {
         Ok(())
     } else {
-        Err(Error::Other(format!("HIBP auth failed: {}", response.status())))
+        let status = response.status();
+        Err(Error::Other(format!("HIBP auth failed: {status}")))
     }
 }
 
@@ -246,7 +248,7 @@ async fn test_github_credential(token: &str) -> Result<()> {
     let client = crate::util::http::build_client();
     let response = client
         .get("https://api.github.com/user")
-        .header("Authorization", format!("Bearer {}", token))
+        .header("Authorization", format!("Bearer {token}"))
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await?;
@@ -254,7 +256,8 @@ async fn test_github_credential(token: &str) -> Result<()> {
     if response.status().is_success() {
         Ok(())
     } else {
-        Err(Error::Other(format!("GitHub auth failed: {}", response.status())))
+        let status = response.status();
+        Err(Error::Other(format!("GitHub auth failed: {status}")))
     }
 }
 
@@ -286,7 +289,7 @@ fn categorize_all_credentials(
 
         categories
             .entry(category.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(key.to_string());
     }
 
@@ -348,7 +351,7 @@ export HUNTSMAN_OPENCELLID_KEY="your-opencellid-api-key"
 # See: https://github.com/EmmmmDeee/Huntsman-Search-Engine
 # For complete list of all 60+ supported APIs
 "#
-        .to_string()
+    .to_string()
 }
 
 #[cfg(test)]

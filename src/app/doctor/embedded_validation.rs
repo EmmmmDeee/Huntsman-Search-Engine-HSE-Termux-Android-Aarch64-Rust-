@@ -42,7 +42,7 @@ pub fn validate_embedded_credentials(
     };
 
     // Categorize embedded credentials
-    let categories = categorize_credentials(embedded.keys().map(|k| *k).collect());
+    let categories = categorize_credentials(embedded.keys().copied().collect());
 
     for (key, category) in &categories {
         let is_configured = loaded_keys.contains_key(key);
@@ -86,13 +86,13 @@ pub fn format_embedded_report(validation: &EmbeddedValidation) -> String {
     if !validation.by_category.is_empty() {
         output.push_str("  Coverage by category:\n");
         let mut sorted: Vec<_> = validation.by_category.values().collect();
-        sorted.sort_by(|a, b| b.configured.cmp(&a.configured));
+        sorted.sort_by_key(|s| std::cmp::Reverse(s.configured));
         for stats in sorted {
-            let pct = if stats.total > 0 {
-                (stats.configured * 100) / stats.total
-            } else {
-                0
-            };
+            let pct = stats
+                .configured
+                .checked_mul(100)
+                .and_then(|v| v.checked_div(stats.total))
+                .unwrap_or(0);
             output.push_str(&format!(
                 "    - {:<30} {}/{} ({}%)\n",
                 stats.name, stats.configured, stats.total, pct
@@ -104,7 +104,7 @@ pub fn format_embedded_report(validation: &EmbeddedValidation) -> String {
     if !validation.issues.is_empty() {
         output.push_str("  Issues detected:\n");
         for issue in &validation.issues {
-            output.push_str(&format!("    ⚠ {}\n", issue));
+            output.push_str(&format!("    ⚠ {issue}\n"));
         }
     } else if validation.configured_embedded > 0 {
         output.push_str("  ✓ No validation issues detected\n");
@@ -197,20 +197,20 @@ fn validate_issues(
     let embedded = crate::util::keys::get_embedded_keys();
 
     // Check for placeholder values (too short, contains "your-")
-    for (key, value) in embedded.iter() {
-        if value.len() < 5 || value.contains("your-") || value.contains("xxx") {
-            if let Some(category) = categories.get(&key.to_string()) {
-                validation.issues.push(format!(
-                    "{} [{}] appears to be a placeholder — configure with actual API key",
-                    key, category
-                ));
-            }
+    for (key, value) in embedded {
+        let is_placeholder = value.len() < 5 || value.contains("your-") || value.contains("xxx");
+        if is_placeholder
+            && let Some(category) = categories.get(&key.to_string())
+        {
+            validation.issues.push(format!(
+                "{key} [{category}] appears to be a placeholder — configure with actual API key"
+            ));
         }
     }
 
     // Check for keys in loaded map that don't exist in embedded (environment-only)
-    let embedded_keys: HashSet<_> = embedded.keys().map(|k| *k).collect();
-    let configured_keys: HashSet<_> = loaded_keys.keys().map(|k| k.as_str()).collect();
+    let embedded_keys: HashSet<_> = embedded.keys().copied().collect();
+    let configured_keys: HashSet<_> = loaded_keys.keys().map(String::as_str).collect();
 
     let env_only: Vec<_> = configured_keys
         .difference(&embedded_keys)
