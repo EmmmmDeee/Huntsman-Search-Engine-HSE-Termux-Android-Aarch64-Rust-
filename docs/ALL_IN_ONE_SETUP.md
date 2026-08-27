@@ -199,16 +199,13 @@ hse serve
 
 ```bash
 # Search an email
-hse scan user@example.com
+hse scan --kind email --value user@example.com
 
 # Search a username
-hse scan octocat
+hse scan --kind username --value octocat
 
 # Search a domain
-hse scan example.com
-
-# Batch scan
-hse scan user1@example.com user2@example.com octocat
+hse scan --kind domain --value example.com
 ```
 
 ### Via API
@@ -374,7 +371,6 @@ hse serve  # Watch Live tab for events
 
 ## 🔗 Additional Resources
 
-- **Quick start:** `docs/SEEKNOW_QUICK_START.md`
 - **SeekNow integration:** `docs/SEEKNOW_SETUP.md`
 - **Turnstile workaround:** `docs/SEEKNOW_WEB_AUTOMATION.md`
 - **Ollama fine-tuning:** `docs/OSINT_MODEL_FINE_TUNING.md`

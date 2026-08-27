@@ -393,9 +393,9 @@ see_know: budget remaining: 249
 Phase 1 (Paid, Sequential Priority)
   255: SeekNow (discovers keys, emails, infrastructure)
    ↓ (discovered keys unlock downstream modules)
-  200: OathNet Pro (overlapping coverage, complementary corpus)
-  190: Shodan (if API key found)
-  180: Censys (if API key found)
+  127: OathNet Pro (overlapping coverage, complementary corpus)
+  105: Shodan (if API key found)
+   78: Censys (if API key found)
    
 Phase 2 (Free Expansion, Unlimited Parallelism)
   ↓ (on every new Domain, Email, IP entity)
@@ -522,14 +522,17 @@ hse scan --kind email --value admin@mycompany.com --depth 3 --full
 - ✅ Key fingerprinting (head…tail) used in results, never full secret
 - ✅ Per-module isolation (each module gets only its own key)
 
-**Q: I've seen both `.ru` and `.icu` mentioned for SeekNow — which should I use?**
-- **Use `.ru`** — it's HSE's coded default (`DEFAULT_BASE` in
-  `src/util/see_know/client.rs`) and what every example in this guide uses
+**Q: I've seen `.eu`, `.icu`, and `.ru` mentioned for SeekNow — which does HSE use?**
+- **HSE defaults to `.ru`** — `https://see-know.ru/api/v1` is the built-in
+  default (`DEFAULT_BASE` in `src/util/see_know/client.rs`) and what every
+  example in this guide uses; this is what you get unless you override it
+- `.eu` is the vendor's own stated domain and what their live site's own
+  generated exports name as their platform — override with
+  `HUNTSMAN_SEEKNOW_BASE=https://see-know.eu/api/v1` if you have a specific
+  reason to (proxy, testing, or you'd rather use the vendor-stated host)
 - `.icu` has been observed failing to resolve via DNS on some real-world
   networks/carriers (a common failure mode for that TLD's abuse reputation)
-  even when it happens to be reachable from others — prefer `.ru`
-- HSE automatically uses `https://see-know.ru/api/v1`; override only via
-  `HUNTSMAN_SEEKNOW_BASE` if you have a specific reason to (proxy, testing)
+  even when it happens to be reachable from others — avoid it
 
 **Q: How do I disable SeekNow temporarily?**
 ```bash
