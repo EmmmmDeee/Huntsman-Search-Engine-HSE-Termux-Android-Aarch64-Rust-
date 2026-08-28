@@ -15,6 +15,27 @@ fn entities_of_kind(entities: &[Entity], kind: EntityKind) -> Vec<&Entity> {
     entities.iter().filter(|e| e.kind == kind).collect()
 }
 
+/// Filter entities of a specific kind that have a specific tag.
+fn entities_of_kind_with_tag<'a>(
+    entities: &'a [Entity],
+    kind: EntityKind,
+    tag: &str,
+) -> Vec<&'a Entity> {
+    entities
+        .iter()
+        .filter(|e| e.kind == kind && e.has_tag(tag))
+        .collect()
+}
+
+/// Collect the subset of allowed tags that are present on the entity.
+fn present_tags<'a>(entity: &Entity, allowed: &[&'a str]) -> Vec<&'a str> {
+    allowed
+        .iter()
+        .copied()
+        .filter(|t| entity.has_tag(t))
+        .collect()
+}
+
 fn tagged_matching_sources<'a>(entity: &'a Entity, allowed: &[&str]) -> HashSet<&'a str> {
     entity
         .evidence_sources()

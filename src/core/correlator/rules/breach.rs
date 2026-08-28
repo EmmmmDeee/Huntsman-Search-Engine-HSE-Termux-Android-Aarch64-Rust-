@@ -664,9 +664,8 @@ pub(in crate::core::correlator) fn rule_au_009_stealer_log(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Email && e.has_tag("stealer-log"))
+    entities_of_kind_with_tag(entities, EntityKind::Email, "stealer-log")
+        .into_iter()
         .map(|e| Correlation {
             rule_id: "AU-009".into(),
             rule_name: "Stealer-log compromise".into(),
@@ -927,10 +926,7 @@ pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
     let mut by_category: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     let mut uids: Vec<String> = Vec::new();
 
-    for e in entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::ApiKey && e.has_tag("osint-practitioner"))
-    {
+    for e in entities_of_kind_with_tag(entities, EntityKind::ApiKey, "osint-practitioner") {
         let provider = e
             .tags
             .iter()
@@ -1062,11 +1058,14 @@ pub(in crate::core::correlator) fn rule_au_043_paste_exposure(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let uids: Vec<String> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Url && e.has_tag(crate::core::tags::PASTE_EXPOSED))
-        .map(|e| e.uid.clone())
-        .collect();
+    let uids: Vec<String> = entities_of_kind_with_tag(
+        entities,
+        EntityKind::Url,
+        crate::core::tags::PASTE_EXPOSED,
+    )
+    .into_iter()
+    .map(|e| e.uid.clone())
+    .collect();
     if uids.is_empty() {
         return Vec::new();
     }

@@ -164,11 +164,11 @@ fn person_anchored_coords(entities: &[Entity]) -> Vec<(&Entity, (f64, f64))> {
 /// (an independent corroborating class), so the two never disagree on what counts
 /// as a person login-IP fix. Pure; offline.
 fn person_login_ip_coords(entities: &[Entity]) -> Vec<(&Entity, (f64, f64))> {
-    let login_ips: std::collections::HashSet<&str> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::IpAddress && e.has_tag("geolocation-lead"))
-        .map(|e| e.value.as_str())
-        .collect();
+    let login_ips: std::collections::HashSet<&str> =
+        entities_of_kind_with_tag(entities, EntityKind::IpAddress, "geolocation-lead")
+            .into_iter()
+            .map(|e| e.value.as_str())
+            .collect();
     if login_ips.is_empty() {
         return Vec::new();
     }

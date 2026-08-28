@@ -46,7 +46,7 @@ pub(in crate::core::correlator) fn rule_au_014_geo_cluster(
     entities_of_kind(entities, EntityKind::Coordinates)
         .into_iter()
         .filter_map(|e| {
-            let hits: Vec<&str> = GEO_TAGS.iter().copied().filter(|t| e.has_tag(t)).collect();
+            let hits = present_tags(e, GEO_TAGS);
             // Corroborating sources only: the deterministic `geo_normalize`
             // enrichment pass is not an independent geo observation, so a lone
             // postcode-centroid it touched must not look like a "cluster".
