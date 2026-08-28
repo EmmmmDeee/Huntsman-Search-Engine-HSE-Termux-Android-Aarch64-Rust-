@@ -135,10 +135,17 @@ pub(super) fn build_entities(
 ) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
+    // Confirmed HN account from a single successful public-API lookup — the
+    // HIGH_PLUSPLUS_PLUS single-source "confirmed account" tier (OD-19 in
+    // .agent/state.json; gitlab_user/gitea_user stamp the identical class), not
+    // VERY_HIGH_PLUS (0.90), which the ladder reserves for "exceeds multi-source
+    // threshold". The rich account metadata below is one source's word, and
+    // cross-service agreement is the correlator's job (AU-045), not this
+    // entity's base grade.
     let mut u = Entity::new(
         EntityKind::Username,
         &user.id,
-        confidence::VERY_HIGH_PLUS,
+        confidence::HIGH_PLUSPLUS_PLUS,
         scan_id,
     );
     u.tag("hacker-news");

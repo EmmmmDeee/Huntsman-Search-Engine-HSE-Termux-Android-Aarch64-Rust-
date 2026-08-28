@@ -88,6 +88,10 @@ fn build_entities_emits_username_with_metadata() {
     assert_eq!(u.kind, EntityKind::Username);
     assert_eq!(u.value, "pg");
     assert!(u.has_tag("hacker-news"));
+    // OD-21: a single-source confirmed-account lookup sits at HIGH_PLUSPLUS_PLUS
+    // (0.85), not VERY_HIGH_PLUS (0.90, which the ladder reserves for
+    // multi-source). Matches gitlab_user/gitea_user.
+    assert!((u.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
     let attr = |k: &str| u.evidence[0].attributes.get(k).map(String::as_str);
     assert_eq!(attr("profile_url"), Some("https://news.ycombinator.com/user?id=pg"));
     assert_eq!(attr("karma"), Some("42"));
