@@ -25,3 +25,18 @@
 # name = "example-crate"
 # version = "1.2.3"
 # reason = "RUSTSEC-XXXX-XXXX fix, reviewed manually YYYY-MM-DD"
+
+# chacha20 0.10.1 was YANKED from crates.io (2026-08-27); deny.toml's
+# `[advisories] yanked = "deny"` therefore fails the graph on it, forcing the
+# move to the fixed 0.10.2. That release is <4 days old, so it also trips this
+# cooldown gate — the two supply-chain policies bind against each other here.
+# The trigger is a maintainer YANK (a retraction signal), not the fresh-publish
+# compromise risk this cooldown guards against, and 0.10.2 is chacha20's own
+# next patch reached only transitively (hickory-resolver -> hickory-proto ->
+# rand -> chacha20), with no first-party use of the crate. Deliberate, reviewed
+# upgrade to escape the yank now; exact-version scoped, so it lapses the moment
+# the lock moves off 0.10.2. Reviewed 2026-08-28.
+[[allow]]
+name = "chacha20"
+version = "0.10.2"
+reason = "escape yanked 0.10.1 (deny.toml yanked=deny); 0.10.2 is the fixed release, transitive-only via hickory-resolver->rand; reviewed 2026-08-28"

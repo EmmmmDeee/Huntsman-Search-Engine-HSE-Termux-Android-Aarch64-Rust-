@@ -11,8 +11,9 @@ use crate::core::module::ModuleContext;
 use super::{BASE_URL, SRC};
 
 /// Fetch the ABR record for an exact 11-digit ABN (`AbnDetails.aspx`).
-/// `Ok(None)` when the API is unreachable or returns a 4xx other than the
-/// auth/rate-limit cases that [`fetch_jsonp`] promotes to errors. The ABN is
+/// `Ok(None)` is a genuine miss (a 200 `"not recognised"`/empty body, or a
+/// non-auth `>= 400`). A transport failure (the source is unreachable) and the
+/// auth/rate-limit cases are promoted to `Err` by [`fetch_jsonp`]. The ABN is
 /// pre-validated as digits-only by the caller, so it needs no URL-encoding.
 pub(super) async fn fetch_abn(ctx: &ModuleContext, guid: &str, abn: &str) -> Result<Option<Value>> {
     let url = format!("{BASE_URL}/AbnDetails.aspx?abn={abn}&callback=cb&guid={guid}");
@@ -166,18 +167,32 @@ pub(super) fn parse_jsonp_body(body: &str) -> Option<Value> {
 /// dropping data). `401`/`403` are surfaced as errors — they signal a bad or
 /// unregistered GUID, which is operator-actionable, not a transient miss. Any
 /// other `>= 400` degrades to `Ok(None)` ("no record"). A success body is
-/// handed to [`parse_jsonp_body`]. A curl/transport failure ([`curl_with_status`]
-/// returning `None`) is also `Ok(None)`. Every 401/403/429 is also reported to
+/// handed to [`parse_jsonp_body`]. A total curl/transport failure
+/// ([`curl_with_status`] returning `None`: a process-spawn failure, connection
+/// error, or timeout that never yields an HTTP status) is surfaced as an `Err`
+/// — the module's SOLE ABR source failing to answer is an outage the
+/// orchestrator must see, never a legitimate `Ok(None)` "no record" (a genuine
+/// miss is only ever a 200 with a `"not recognised"`/empty body or a non-auth
+/// `>= 400`). This mirrors the sibling AU scrapers and this function's own
+/// 429-after-retry error path. Every 401/403/429 is also reported to
 /// the key pool (`report_key_exhausted` against the registered `"abr"`
 /// service) — curl's own status-only round-trip previously surfaced these as
 /// a module error the operator could see, but never told the pool, so the
 /// GUID never showed as degraded on the health dashboard and (for an
 /// operator with more than one registered GUID) the pool never rotated away
 /// from a dead one.
-async fn fetch_jsonp(ctx: &ModuleContext, guid: &str, url: &str) -> Result<Option<Value>> {
+pub(super) async fn fetch_jsonp(
+    ctx: &ModuleContext,
+    guid: &str,
+    url: &str,
+) -> Result<Option<Value>> {
     let (body, status, retry_after) = match curl_with_status(url, 10_000).await {
         Some(triple) => triple,
-        None => return Ok(None),
+        // A total transport failure of the SOLE ABR source (curl spawn error,
+        // connection refused, or timeout — no HTTP status ever returned) is an
+        // outage, not a "no record" answer. Surface it so process() propagates
+        // via `?` rather than showing the operator a false "no ABN found".
+        None => return Err(Error::module(SRC, "ABR unreachable: transport failure")),
     };
 
     if status == 429 {
@@ -185,7 +200,14 @@ async fn fetch_jsonp(ctx: &ModuleContext, guid: &str, url: &str) -> Result<Optio
         tokio::time::sleep(Duration::from_secs(delay)).await;
         let (body, status, _) = match curl_with_status(url, 10_000).await {
             Some(triple) => triple,
-            None => return Ok(None),
+            // Same rule as the initial fetch: a transport failure on the retry
+            // is an outage, not a clean miss.
+            None => {
+                return Err(Error::module(
+                    SRC,
+                    "ABR unreachable: transport failure on retry",
+                ));
+            }
         };
         if status == 429 {
             ctx.report_key_exhausted("abr", guid, status);
