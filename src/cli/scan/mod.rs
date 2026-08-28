@@ -80,27 +80,23 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     // Depth resolution. `--auto`/`--recursive` only kick in when the operator
     // gave no explicit `--depth` (sentinel: `cmd.depth.is_none()`); otherwise an
     // omitted `--depth` falls back to the product default (DEFAULT_SCAN_DEPTH=2).
-    let (depth, min_expand_confidence, max_concurrent) = if cmd.auto && cmd.depth.is_none() {
-        let has_paid = keys::load().contains_key("HUNTSMAN_OATHNET_KEY");
-        let (auto_depth, auto_conf) = crate::core::scan::optimal_depth(target_kind, has_paid);
-        eprintln!(
-            "auto: depth={auto_depth} min_conf={auto_conf:.2} (paid_keys={})",
-            has_paid
-        );
-        (auto_depth, auto_conf, cmd.max_concurrent.max(2))
-    } else if cmd.recursive && cmd.depth.is_none() {
-        (
-            crate::core::scan::MAX_DEPTH,
-            cmd.min_expand_confidence.min(0.40),
-            cmd.max_concurrent.max(2),
-        )
-    } else {
-        (
-            cmd.depth.unwrap_or(crate::core::scan::DEFAULT_SCAN_DEPTH),
-            cmd.min_expand_confidence,
-            cmd.max_concurrent,
-        )
-    };
+    let has_paid = keys::load().contains_key("HUNTSMAN_OATHNET_KEY");
+    let (depth, min_expand_confidence, max_concurrent) = resolve_scan_tuning(
+        cmd.auto,
+        cmd.recursive,
+        cmd.depth,
+        cmd.min_expand_confidence,
+        cmd.max_concurrent,
+        || {
+            let (auto_depth, auto_conf) =
+                crate::core::scan::optimal_depth(target_kind, has_paid);
+            eprintln!(
+                "auto: depth={auto_depth} min_conf={auto_conf:.2} (paid_keys={})",
+                has_paid
+            );
+            (auto_depth, auto_conf)
+        },
+    );
 
     let mut exclude_modules = split_csv(cmd.exclude).unwrap_or_default();
     if cmd.adaptive {
@@ -113,12 +109,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
                 "adaptive: no ledger yet (run a few scans first to populate ~/.huntsman/module_stats.json)"
             );
         } else {
-            let added: Vec<String> = routing
-                .recommended_skips
-                .iter()
-                .filter(|m| !exclude_modules.iter().any(|e| e == *m))
-                .cloned()
-                .collect();
+            let added = new_adaptive_skips(&exclude_modules, &routing.recommended_skips);
             if !added.is_empty() {
                 eprintln!(
                     "adaptive: ledger has {} scans; skipping {} historically zero-yield modules: {}",
@@ -376,7 +367,6 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
 /// * `--auto` outranks `--recursive` when both are set.
 /// * Either mode raises concurrency to at least 2; `--recursive` additionally
 ///   clamps the expansion floor to ≤ 0.40.
-#[cfg(test)]
 fn resolve_scan_tuning(
     auto: bool,
     recursive: bool,
@@ -406,7 +396,6 @@ fn resolve_scan_tuning(
 /// The adaptive `recommended` skips not already excluded by the operator,
 /// preserving recommendation order. **Pure** so the dedup-against-existing
 /// logic is unit-tested without a ledger on disk.
-#[cfg(test)]
 fn new_adaptive_skips(existing: &[String], recommended: &[String]) -> Vec<String> {
     recommended
         .iter()

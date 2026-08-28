@@ -216,7 +216,10 @@ fn emit_footprint(fp: &OcFootprintResponse, entity: &mut Entity, result: &mut Mo
                     Evidence::new(SRC, format!("[{}] {k}: {v}", r.domain))
                         .with_attr("platform", &r.domain)
                         .with_attr("key", k)
-                        .with_attr("value", v.to_string()),
+                        .with_attr(
+                            "value",
+                            v.as_str().map_or_else(|| v.to_string(), str::to_string),
+                        ),
                 );
                 // Username ExtraData keys become pivot entities.
                 if k.eq_ignore_ascii_case("username")
