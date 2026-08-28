@@ -92,9 +92,14 @@ const REDDIT_HOSTS: &[&str] = &[
 const MAX_POSTED_LINKS: usize = 40;
 
 /// The feed answering 200 at all is proof the account exists, under the name the
-/// document itself gives. Matches what the old `about.json` path graded the same
-/// finding, so nothing downstream sees this rebuild as a downgrade.
-const ACCOUNT_CONF: f64 = confidence::VERY_HIGH_PLUS;
+/// document itself gives — a single-source, no-corroboration existence signal.
+/// HIGH_PLUSPLUS_PLUS is this codebase's settled tier for that class (OD-19;
+/// gitlab_user/gitea_user stamp the identical class); it sits *below*
+/// VERY_HIGH_PLUS (0.90), which the ladder reserves for "exceeds multi-source
+/// threshold" a bare feed 200 cannot meet. (The prior VERY_HIGH_PLUS grade
+/// rested only on parity with the retired `about.json` path — history, not
+/// evidence; OD-21 corrected it.)
+const ACCOUNT_CONF: f64 = confidence::HIGH_PLUSPLUS_PLUS;
 
 /// An email in the profile description. The account published it about itself in
 /// the one field it controls and signs, which is as strong as an unverified

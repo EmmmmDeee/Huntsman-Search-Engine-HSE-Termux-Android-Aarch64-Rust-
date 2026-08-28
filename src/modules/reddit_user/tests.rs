@@ -296,6 +296,16 @@ fn summarise_survives_a_multibyte_subreddit_name() {
 // ── transform::feed_to_entities ─────────────────────────────────────────────
 
 #[test]
+fn account_confidence_is_the_single_source_confirmed_account_tier() {
+    // OD-21: "the feed answered 200" is a single-source existence signal — the
+    // HIGH_PLUSPLUS_PLUS (0.85) tier (matches gitlab/gitea), NOT VERY_HIGH_PLUS
+    // (0.90), which the ladder reserves for multi-source. Pins the constant
+    // against the silent drift OD-21 was filed for (its prior grade rested only
+    // on parity with the retired about.json path, not on evidence).
+    assert!((ACCOUNT_CONF - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
+}
+
+#[test]
 fn account_entity_carries_the_window_and_its_coverage_caveat() {
     let ents = entities();
     let u = &ents[find(&ents, EntityKind::Username, "spez")];

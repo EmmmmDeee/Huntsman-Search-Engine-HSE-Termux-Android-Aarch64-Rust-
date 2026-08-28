@@ -39,15 +39,25 @@ use crate::util::http::{RequestBuilderExt, fetch_json, fetch_json_or_404, json_d
 
 const SRC: &str = "gaming_profile";
 
-/// Confidence for a Roblox account that resolves EXACTLY from the target
-/// handle. A unique-handle platform match with a live public profile — on par
-/// with `github_user`'s profile confidence, a notch below it because gaming
-/// handles collide across people more often than dev handles.
-const ROBLOX_CONF: f64 = confidence::VERY_HIGH_PLUS;
+/// Confidence for a Roblox account that resolves EXACTLY from the target handle
+/// — a single-source, exact-handle platform-existence lookup with a live public
+/// profile. HIGH_PLUSPLUS_PLUS is this codebase's settled tier for that evidence
+/// class (OD-19 in .agent/state.json; gitea_user/gitlab_user stamp the identical
+/// class), with the richer Roblox profile (creation date, description, verified
+/// badge) riding as evidence rather than a base-confidence premium — exactly how
+/// gitea/gitlab carry profile metadata at 0.85. NOT VERY_HIGH_PLUS (0.90): the
+/// ladder reserves that for "exceeds multi-source threshold", which one platform
+/// lookup cannot meet however rich its payload. (github_user grades its own
+/// confirmed username higher, at VERY_HIGH_PLUSPLUS = 0.95 — a separate flagship
+/// tier, not a peer this constant tracks; an earlier comment here cited it as
+/// "on par", which was stale.)
+const ROBLOX_CONF: f64 = confidence::HIGH_PLUSPLUS_PLUS;
 
 /// Confidence for a Minecraft (Java) account that resolves EXACTLY from the
-/// target handle. Slightly below Roblox: Mojang confirms only existence + UUID,
-/// not a rich profile, though a Java account being paid makes the hit solid.
+/// target handle. Same HIGH_PLUSPLUS_PLUS single-source exact-handle-existence
+/// tier as Roblox above: Mojang confirms existence + UUID (a paid Java account,
+/// so a solid hit) while Roblox additionally returns a profile — a difference in
+/// evidence richness carried in the evidence payload, not in the base grade.
 const MINECRAFT_CONF: f64 = confidence::HIGH_PLUSPLUS_PLUS;
 
 /// Max characters of a Roblox bio carried as evidence — bounds graph/log size
