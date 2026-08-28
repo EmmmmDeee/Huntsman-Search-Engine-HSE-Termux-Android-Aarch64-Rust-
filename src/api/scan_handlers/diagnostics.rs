@@ -7,7 +7,7 @@ use axum::{
 use serde_json::json;
 use std::sync::Arc;
 
-use super::super::handlers::{internal_error, not_found, ok_list};
+use super::super::handlers::{not_found, ok_list};
 use crate::api::AppState;
 use crate::core::scan::Target;
 
@@ -16,7 +16,7 @@ pub async fn scan_audit(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
@@ -25,17 +25,16 @@ pub async fn scan_audit(
     // can anchor the engine-health signal to WHEN this scan actually ran,
     // not to whatever the live liveness cache says right now (see
     // `engine_health_signals`). Same off-reactor batching as before.
-    let loaded = tokio::task::spawn_blocking(move || {
+    let (scan, entities, events) = match super::offload_store(move || {
         let scan = store.get_scan(&id2)?;
         let entities = store.entities_for_scan(&id2)?;
         let events = store.events_for_scan(&id2).unwrap_or_default();
-        Ok::<_, crate::core::error::Error>((scan, entities, events))
+        Ok((scan, entities, events))
     })
-    .await;
-    let (scan, entities, events) = match loaded {
-        Ok(Ok(triple)) => triple,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    .await
+    {
+        Ok(triple) => triple,
+        Err(resp) => return resp,
     };
     let normalised: Vec<crate::audit::AuditEntity> = entities
         .iter()
@@ -123,22 +122,12 @@ pub async fn scan_metrics(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
-            store.entities_for_scan(&id2)?,
-            store.relations_for_scan(&id2)?,
-        ))
-    })
-    .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    let (entities, relations) = match super::entities_and_relations(&s, &id).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
     };
     let metrics = crate::core::metrics::compute(&entities, &relations);
     (StatusCode::OK, Json(metrics)).into_response()
@@ -149,16 +138,12 @@ pub async fn scan_duplicates(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await;
-    let entities = match loaded {
-        Ok(Ok(e)) => e,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    let entities = match super::scan_entities_only(&s, &id).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
     let groups = crate::core::resolve::suggest_merges(&entities);
     ok_list("duplicates", groups)
@@ -169,22 +154,12 @@ pub async fn scan_pivots(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
-            store.entities_for_scan(&id2)?,
-            store.relations_for_scan(&id2)?,
-        ))
-    })
-    .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    let (entities, relations) = match super::entities_and_relations(&s, &id).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
     };
     let pivots = crate::core::pivot::detect(&entities, &relations);
     let bridges = crate::core::pivot::bridges(&entities, &relations);
@@ -205,22 +180,12 @@ pub async fn scan_gaps(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
-            store.entities_for_scan(&id2)?,
-            store.relations_for_scan(&id2)?,
-        ))
-    })
-    .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    let (entities, relations) = match super::entities_and_relations(&s, &id).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
     };
 
     let report = crate::core::gap::analyze(&entities, &relations);
@@ -278,24 +243,13 @@ pub async fn scan_benchmark(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let scan = match s.store.get_scan(&id) {
-        Ok(Some(sc)) => sc,
+    // The `scan` record is needed for the report, so it rides along in the same
+    // off-reactor batch as the entity/relation loads (see `scan_with_graph`,
+    // which also folds in the 404 existence probe).
+    let (scan, entities, relations) = match super::scan_with_graph(&s, &id).await {
+        Ok(Some(triple)) => triple,
         Ok(None) => return not_found(),
-        Err(e) => return internal_error(&e),
-    };
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
-            store.entities_for_scan(&id2)?,
-            store.relations_for_scan(&id2)?,
-        ))
-    })
-    .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+        Err(resp) => return resp,
     };
     let report = crate::core::benchmark::report(&scan, &entities, &relations);
     (StatusCode::OK, Json(report)).into_response()

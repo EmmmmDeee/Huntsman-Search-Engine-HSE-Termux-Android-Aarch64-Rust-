@@ -89,6 +89,48 @@ pub fn au_postcode(e: &Entity) -> Option<String> {
         .find_map(|ev| ev.attributes.get("postcode").and_then(|v| valid(v)))
 }
 
+/// [`au_postcode`], but refusing a postcode that an **IP geolocation** supplied.
+///
+/// `au_postcode`'s evidence-attribute path accepts a `postcode` attribute on any
+/// entity kind, and the IP-geo providers stamp exactly that from the IP block's
+/// `zip`: `ipquery` folds its `geo_ev()` — carrying both `postcode` and `ip` —
+/// onto a **city-grain** `Address` it composes from city/state/country
+/// (`ipquery/mod.rs:267,292`), and `ip2location` (`mod.rs:178,189`) and `ip_geo`
+/// (`mod.rs:148`) do the same.
+///
+/// That is not the subject's postcode. It is a geolocation database's guess for
+/// an address BLOCK — frequently the ISP's registered location — and the
+/// codebase already knows it: the headline-estimate's login-IP rung down-weights
+/// and caps this exact class at ≤ 0.50 confidence and a 25–50 km radius, with
+/// the comment "so a coarse IP city never rivals a suburb-grain postcode in any
+/// downstream read". Letting the same IP reach the postcode rung through its
+/// `postcode` attribute walks around that cap and reports an 8 km "postcode /
+/// suburb grain" residence at full confidence — and labels its provenance
+/// "breach/register postcode", which it is not.
+///
+/// The discriminator is the `ip` attribute that every IP-geo provider records
+/// beside the postcode — the same attribute `person_login_ip_coords` already
+/// keys off to recognise a login-IP fix, so this adds no new convention. An
+/// entity whose evidence is *entirely* IP-derived is refused outright; otherwise
+/// only the IP-derived records are skipped, so an entity that also carries a
+/// real postal record still yields its postcode.
+pub fn au_postcode_person_grain(e: &Entity) -> Option<String> {
+    let ip_derived = |ev: &crate::core::entity::Evidence| ev.attributes.contains_key("ip");
+    if !e.evidence.is_empty() && e.evidence.iter().all(ip_derived) {
+        return None;
+    }
+    let stripped = Entity {
+        evidence: e
+            .evidence
+            .iter()
+            .filter(|ev| !ip_derived(ev))
+            .cloned()
+            .collect(),
+        ..e.clone()
+    };
+    au_postcode(&stripped)
+}
+
 /// A confirmed subject location with the entity it was derived from — the richer
 /// anchor form for the correlator, which needs the source UID to wire the
 /// correlation graph edge.
@@ -121,9 +163,31 @@ pub fn subject_fixes(entities: &[Entity]) -> Vec<SubjectFix> {
     let mut out = Vec::new();
     for e in entities {
         let coord = match e.kind {
+            // `hse radar` seeds every sweep with a sentinel Coordinates entity
+            // (0,0) minted at confidence 0.90 with an `exact-name-match`-adjacent
+            // `seed`/`subject` shape — it would otherwise sail past both the
+            // confidence floor and the name-match escape hatch below and anchor
+            // every family-candidate distance check on null island instead of
+            // the subject's real location.
             EntityKind::Coordinates
-                if e.confidence >= SUBJECT_FIX_MIN || e.has_tag("exact-name-match") =>
+                if crate::core::scan::is_radar_sentinel(
+                    crate::core::scan::TargetKind::Coordinates,
+                    &e.value,
+                ) =>
             {
+                None
+            }
+            EntityKind::Coordinates
+                if (e.confidence >= SUBJECT_FIX_MIN || e.has_tag("exact-name-match"))
+                    && !crate::core::correlator::is_infrastructure_geo(e) =>
+            {
+                // Infrastructure geo (a datacentre/hosting/CDN point, or any bare
+                // IP/WHOIS coordinate with no anchoring source) must NOT anchor the
+                // subject: a 0.60 ip_geo/hosting fix would otherwise widen the
+                // subject's "confirmed area" to the host's metro, so a same-surname
+                // candidate near the DATACENTRE reads as kin. Genuine person fixes
+                // (signal_radar/device_sensors/exif_geo/geocode/…) are anchoring and
+                // pass. Mirrors the correlator geo rules (AU-017/030/052/…).
                 crate::util::geohash::parse_coords(&e.value)
             }
             EntityKind::Address if e.has_tag("exact-name-match") => {

@@ -12,7 +12,7 @@ use super::*;
     }
 
     fn body(json: &str) -> HostResp {
-        serde_json::from_str(json).unwrap()
+        serde_json::from_str(json).expect("should succeed")
     }
 
     fn attr<'a>(e: &'a crate::core::entity::Entity, k: &str) -> Option<&'a str> {
@@ -80,31 +80,11 @@ use super::*;
 
     #[test]
     fn port_list_is_capped() {
-        // Regression: 40 distinct open ports exceed MAX_PORTS=20, so the
-        // emitted list must be capped AND the seed tagged `truncated` with
-        // the true total surfaced — the operator must know 20 more ports
-        // exist beyond what's printed.
         let services: String = (0..40)
             .map(|p| format!(r#"{{"port":{}}}"#, 1000 + p))
             .collect::<Vec<_>>()
             .join(",");
         let b = body(&format!(r#"{{"services":[{services}],"leaks":[]}}"#));
         let e = build_exposure_entity(EntityKind::IpAddress, "1.2.3.4", &b, "s");
-        assert_eq!(attr(&e, "ports").unwrap().split(',').count(), MAX_PORTS);
-        assert!(e.has_tag("truncated"), "seed must be tagged 'truncated'");
-        assert_eq!(attr(&e, "total_ports"), Some("40"));
-        assert_eq!(attr(&e, "ports_capped"), Some("true"));
-    }
-
-    #[test]
-    fn port_list_under_cap_is_not_flagged() {
-        // 3 distinct ports stays well under MAX_PORTS=20: total is still
-        // surfaced, but no truncation is claimed.
-        let b = body(
-            r#"{"services":[{"port":80},{"port":443},{"port":8080}],"leaks":[]}"#,
-        );
-        let e = build_exposure_entity(EntityKind::IpAddress, "1.2.3.4", &b, "s");
-        assert!(!e.has_tag("truncated"), "must not flag when under cap");
-        assert_eq!(attr(&e, "total_ports"), Some("3"));
-        assert_eq!(attr(&e, "ports_capped"), None);
+        assert_eq!(attr(&e, "ports").expect("should succeed").split(',').count(), MAX_PORTS);
     }

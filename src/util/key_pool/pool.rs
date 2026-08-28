@@ -1,6 +1,6 @@
 //! `PoolData` and `KeyPool` — the in-memory pool structure and all mutation methods.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,14 @@ pub(super) use crate::util::service_defs::rate_limit_reset;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PoolData {
-    pub services: HashMap<String, Vec<KeyEntry>>,
+    /// Keys grouped by service name. A `BTreeMap` (not `HashMap`) so iteration
+    /// is in sorted service order: `hse keys list` prints its service blocks
+    /// deterministically, and `export_json` emits stable, byte-reproducible
+    /// top-level key order for two pools with the same contents — a `HashMap`
+    /// left both at process-random order. The round-robin `KeyPool::indices`
+    /// stays a `HashMap`: it is internal selection state, never iterated for
+    /// output.
+    pub services: BTreeMap<String, Vec<KeyEntry>>,
 }
 
 /// Per-status key counts for one service — the breakdown surfaced inside a
@@ -236,6 +243,22 @@ impl KeyPool {
     /// (`use_count`/`last_used`), so the *next* call sees the load it just placed
     /// and naturally moves on to the next-idlest key.
     pub fn next_key(&self, service: &str) -> Option<String> {
+        self.next_key_excluding(service, &std::collections::HashSet::new())
+    }
+
+    /// Select a key exactly as [`Self::next_key`] does, but skip any key whose
+    /// plaintext value is in `exclude`. This is the in-scan **key cascade**: when
+    /// a module's current key hits a terminal 401/403/429, it records that value
+    /// in a tried-set and asks the pool for the next USABLE key it hasn't burned,
+    /// so a single `process()` call spends every credential the pool holds for the
+    /// service before it gives up — instead of dying on the first key's quota
+    /// while sibling keys sit idle. `exclude` is empty for the plain `next_key`
+    /// path, so that hot path allocates nothing.
+    pub fn next_key_excluding(
+        &self,
+        service: &str,
+        exclude: &std::collections::HashSet<String>,
+    ) -> Option<String> {
         let lower = service.to_lowercase();
         let now = crate::core::entity::unix_now();
         let mut data = self.data.lock();
@@ -256,7 +279,15 @@ impl KeyPool {
         for offset in 0..len {
             let i = (*idx + offset) % len;
             let entry = &entries[i];
-            if !entry.is_usable() {
+            // Never authenticate HSE's own request with an auto-HARVESTED key (one
+            // discovered in scanned content — a crawled page, an HTTP header, a
+            // WHOIS/DNS field, a breach record). Such a key is attacker-plantable:
+            // an adversary who seeds a valid-looking token on a page HSE crawls
+            // could otherwise make the engine adopt and use it, exposing the
+            // investigation's targets to the key's owner. Harvested keys remain
+            // pooled as portfolio intelligence but are not auth-eligible; reuse
+            // requires a deliberate `hse keys add` (see `KeyEntry::is_harvested`).
+            if !entry.is_usable() || entry.is_harvested() || exclude.contains(&entry.value) {
                 continue;
             }
             let rank = entry.selection_rank(now);

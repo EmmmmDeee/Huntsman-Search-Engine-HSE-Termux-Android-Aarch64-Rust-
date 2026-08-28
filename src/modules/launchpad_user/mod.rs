@@ -20,6 +20,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -50,6 +51,10 @@ pub(super) struct LpPerson {
     /// `false` when the account is deactivated or suspended.
     #[serde(default = "default_true")]
     pub(super) is_valid: bool,
+    /// The account's declared IANA time zone (e.g. `"Australia/Brisbane"`) — a
+    /// chronolocation lead, previously decoded nowhere.
+    #[serde(default)]
+    pub(super) time_zone: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -71,22 +76,40 @@ pub(super) fn build_entities(person: LpPerson, scan_id: &str) -> Vec<Entity> {
             .with_attr("profile_url", &profile_url)
     };
 
-    // Confirmed username on Launchpad.
-    let mut e = Entity::new(EntityKind::Username, handle, 0.85, scan_id);
+    // Confirmed username on Launchpad. Surface the declared IANA time zone as a
+    // chronolocation lead, and coarsely tag an Australia/* zone country:AU.
+    let mut e = Entity::new(
+        EntityKind::Username,
+        handle,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     e.tag("launchpad");
     e.tag("public-profile");
-    e.add_evidence(ev());
+    let mut uev = ev();
+    if let Some(tz) = person
+        .time_zone
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        uev = uev.with_attr("time_zone", tz);
+        if tz.starts_with("Australia/") {
+            e.tag("country:AU");
+        }
+    }
+    e.add_evidence(uev);
     out.push(e);
 
     // Profile URL.
-    let mut u = Entity::new(EntityKind::Url, &profile_url, 0.78, scan_id);
+    let mut u = Entity::new(EntityKind::Url, &profile_url, confidence::STRONG, scan_id);
     u.tag("launchpad");
     u.add_evidence(ev());
     out.push(u);
 
     // Display name → Person (multi-word only).
     if let Some(name) = person.display_name.as_deref()
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.72, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::ATTRIBUTED, scan_id)
     {
         p.tag("launchpad");
         p.add_evidence(ev().with_attr("source_field", "display_name"));
@@ -117,7 +140,7 @@ impl Module for LaunchpadUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Launchpad profile: display name, bio, email (Ubuntu/Debian ecosystem, free)"
+        "Launchpad profile recon — harvests display name, bio, and email across the Ubuntu/Debian ecosystem (free)"
     }
     fn priority(&self) -> u8 {
         53

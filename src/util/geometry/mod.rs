@@ -19,6 +19,7 @@
 //! All functions are pure, deterministic, and dependency-free.
 
 pub(crate) mod circle;
+pub(crate) mod coherence;
 pub(crate) mod fix;
 pub(crate) mod footprint;
 pub(crate) mod median;
@@ -28,6 +29,7 @@ mod tests;
 
 // Re-export all public items so callers use `util::geometry::*` as before.
 pub use circle::{EnclosingCircle, min_enclosing_circle};
+pub use coherence::{coherent_groups, is_coherent, max_pairwise_km};
 pub use fix::{LocationFix, location_fix, point_in_convex_hull};
 pub use footprint::{GeoFootprint, geo_footprint};
 pub use median::{

@@ -176,6 +176,30 @@ impl Breaker {
         }
     }
 
+    /// Record a request the host **explicitly refused as rate-limited** (429)
+    /// at epoch second `now`, honouring the cooldown it asked for.
+    ///
+    /// Distinct from [`on_failure`](Self::on_failure) in both triggers and
+    /// timing, because a 429 is a different kind of evidence. A 5xx or a
+    /// transport error is a guess about health — one bad node, one unlucky
+    /// socket — so it takes [`FAILURE_THRESHOLD`] of them before we conclude
+    /// the host is down. A 429 is the server stating its own contract: further
+    /// requests *will* be refused, and `Retry-After` says for how long. There
+    /// is nothing to accumulate evidence about, so this opens the breaker on
+    /// the first one and uses the server's window rather than the local
+    /// [`COOLDOWN_SECS`] guess.
+    ///
+    /// `retry_after_secs` is the caller's already-parsed and already-clamped
+    /// hint (see [`crate::util::http::retry_after_secs`], which applies both a
+    /// default and a ceiling), floored at one second so a `Retry-After: 0` —
+    /// or a caller that passes zero — cannot produce an open breaker that
+    /// admits traffic immediately, which would defeat the whole point.
+    pub fn on_rate_limited(&mut self, now: u64, retry_after_secs: u64) {
+        self.state = BreakerState::Open;
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.retry_at = now.saturating_add(retry_after_secs.max(1));
+    }
+
     /// Trip to `Open`, scheduling the next probe one cooldown from `now`.
     fn open_from(&mut self, now: u64) {
         self.state = BreakerState::Open;
@@ -218,6 +242,17 @@ pub fn record_success(host: &str) {
 pub fn record_failure(host: &str, now: u64) {
     let mut reg = REGISTRY.lock();
     reg.entry(host.to_owned()).or_default().on_failure(now);
+}
+
+/// Record that `host` refused a request as rate-limited (429) at epoch second
+/// `now`, backing every caller off for the `retry_after_secs` the server itself
+/// asked for. Opens the breaker immediately — see [`Breaker::on_rate_limited`]
+/// for why a 429 is not counted toward [`FAILURE_THRESHOLD`] like a 5xx is.
+pub fn record_rate_limited(host: &str, now: u64, retry_after_secs: u64) {
+    let mut reg = REGISTRY.lock();
+    reg.entry(host.to_owned())
+        .or_default()
+        .on_rate_limited(now, retry_after_secs);
 }
 
 /// Snapshot of `host`'s current stored [`BreakerState`], or `None` if the host

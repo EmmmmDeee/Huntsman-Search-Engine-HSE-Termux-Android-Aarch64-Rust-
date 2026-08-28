@@ -90,7 +90,7 @@ fn last_success_at_reflects_a_recorded_success_not_an_untouched_default() {
     let before = unhealthy_modules()
         .into_iter()
         .find(|h| h.name == m)
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(
         before.last_success_at, None,
         "a module that has never succeeded must report no last-success time"
@@ -101,7 +101,7 @@ fn last_success_at_reflects_a_recorded_success_not_an_untouched_default() {
     let after = unhealthy_modules()
         .into_iter()
         .find(|h| h.name == m)
-        .unwrap();
+        .expect("should succeed");
     assert!(
         after.last_success_at.is_some(),
         "after a recorded success, last_success_at must be stamped"

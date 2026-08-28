@@ -20,6 +20,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -97,7 +98,13 @@ pub(super) const USERNAME_PLATFORMS: &[Platform] = &[
     },
     Platform {
         name: "reddit",
-        url_pattern: "https://www.reddit.com/user/{}/about.json",
+        // The public Atom feed, NOT `about.json`. Verified live in July 2026:
+        // the JSON endpoint answers 403 to every non-OAuth client regardless of
+        // User-Agent, which this probe read as "account does not exist" — so
+        // reddit reported a silent false negative on every scan. `.rss` answers
+        // 200 for a real account and 404 for one that does not exist, which is
+        // the clean existence oracle `exists_codes` needs.
+        url_pattern: "https://www.reddit.com/user/{}/.rss",
         exists_codes: &[200],
         negative_patterns: &[],
     },
@@ -291,7 +298,7 @@ impl Module for SocialProbe {
     }
 
     fn description(&self) -> &'static str {
-        "Direct profile probing across 20+ social platforms"
+        "Social identity sweep — direct profile probing across 20+ platforms"
     }
 
     fn priority(&self) -> u8 {
@@ -328,8 +335,13 @@ impl Module for SocialProbe {
 
         let mut result = ModuleResult::new();
         let mut found_count = 0u32;
+        let mut verified_count = 0u32;
         let mut checked_count = 0u32;
-        let mut transport_failures = 0u32;
+        // Probes that returned no definitive answer — `fetch_with_status` code 0,
+        // i.e. curl could not connect / was blocked / had no egress — as distinct
+        // from a definitive not-found (a real HTTP status that just isn't a hit).
+        // Drives the M6 inconclusive-vs-absent verdict after the sweep.
+        let mut inconclusive_probes = 0u32;
         let mut found_platforms: Vec<&str> = Vec::new();
 
         let platforms = match target.kind {
@@ -363,8 +375,29 @@ impl Module for SocialProbe {
             )
             .await;
 
-            if code == 0 {
-                transport_failures += 1;
+            // A probe that did not answer must not be counted as a definitive
+            // "no such handle here".
+            //
+            // Code 0 = curl gave no definitive answer (couldn't connect / blocked
+            // / no egress); it can never be a hit, since `exists_codes` are real
+            // HTTP statuses, and the classifier maps it to `Error` like any other
+            // non-answer. That case was already handled.
+            //
+            // A real-but-refusing status needs the same treatment and did not get
+            // it: a 403 WAF challenge, a 429 throttle or a 5xx outage is not in
+            // `exists_codes`, so it silently fell through as a *definitive*
+            // "no such handle here" and never reached `inconclusive_sweep`. Only
+            // curl-level failure was counted, so a platform that answers every
+            // probe with a challenge page looked like a confirmed absence.
+            // `classify_non_matching_status` is the same policy the two
+            // `util::probe` enumerators use.
+            let refused = !platform.exists_codes.contains(&code)
+                && matches!(
+                    crate::util::probe::classify_non_matching_status(code),
+                    crate::util::probe::ProbeResult::Error
+                );
+            if refused {
+                inconclusive_probes += 1;
             }
 
             let body_blocks = !platform.negative_patterns.is_empty()
@@ -375,6 +408,9 @@ impl Module for SocialProbe {
                 found_platforms.push(platform.name);
 
                 let (confidence, verified) = detection_strength(platform);
+                if verified {
+                    verified_count += 1;
+                }
 
                 let mut entity = Entity::new(EntityKind::Url, &url, confidence, &ctx.scan_id);
                 entity.tag("social-profile");
@@ -415,7 +451,8 @@ impl Module for SocialProbe {
                     && host.contains('.')
                     && !crate::core::scan::is_noncentral_domain(&host)
                 {
-                    let mut dom = Entity::new(EntityKind::Domain, &host, 0.40, &ctx.scan_id);
+                    let mut dom =
+                        Entity::new(EntityKind::Domain, &host, confidence::LOW, &ctx.scan_id);
                     dom.tag("social-platform");
                     dom.add_evidence(
                         Evidence::new(
@@ -431,6 +468,21 @@ impl Module for SocialProbe {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
 
+        // M6: a zero-hit run where at least half the probes returned no definitive
+        // answer (curl code 0 — blocked / unreachable / no egress) is
+        // *inconclusive*, not a confirmed absence. Surface it as a module error so
+        // a network-blocked sweep is never read as "this handle is on no social
+        // platform" — the same disambiguation `username_search` and
+        // `streaming_probe` make. `should_echo_target` already blocks the worse
+        // symptom (echoing the seed as corroboration), but a silent empty `Ok`
+        // still misreports the absence. A cancelled run is exempt: the operator
+        // stopped it, so the module asserts nothing about what it didn't probe.
+        if !ctx.cancel.is_cancelled()
+            && let Some(msg) = inconclusive_sweep(found_count, inconclusive_probes, checked_count)
+        {
+            return Err(Error::module(SRC, msg));
+        }
+
         // Add a summary echo of the target ONLY when at least one profile was
         // actually confirmed (see `should_echo_target`). The negative result is
         // still recorded in the dispatch log; it just must not vouch for the seed.
@@ -438,6 +490,7 @@ impl Module for SocialProbe {
         if let Some(summary) = build_target_summary(
             target,
             found_count,
+            verified_count,
             checked_count,
             &found_platforms,
             &ctx.scan_id,
@@ -445,23 +498,33 @@ impl Module for SocialProbe {
             result.push(summary);
         }
 
-        if all_platforms_failed_transport(transport_failures, checked_count, found_count) {
-            return Err(Error::module(
-                SRC,
-                "every social_probe platform request failed at the transport level (no network reachable?) — cannot determine whether the subject has social profiles",
-            ));
-        }
-
         Ok(result)
     }
 }
 
-/// True only when every platform request failed at the transport level (curl
-/// never got a real HTTP status back) and nothing was found — a genuine
-/// total outage, distinguished from platforms that legitimately answered
-/// with a real negative (403/404/500/soft-404 body block).
-fn all_platforms_failed_transport(transport_failures: u32, checked: u32, found: u32) -> bool {
-    found == 0 && checked > 0 && transport_failures == checked
+/// Post-sweep M6 verdict: a zero-hit run is *inconclusive* — not a confirmed
+/// absence — when at least half the attempted probes returned no definitive
+/// answer (`fetch_with_status` code `0`: curl could not connect / was blocked /
+/// had no egress). Returns the error message to surface, or `None` when the run
+/// is a genuine result (any hit, or a mostly-definitive set of not-founds).
+///
+/// Pure, so the policy is testable without the network. Delegates the "mostly
+/// blocked" threshold to [`crate::util::probe::inconclusive`] — the same
+/// predicate the `username_search` and `streaming_probe` enumerators use — so
+/// all three existence-probe modules agree on when a blocked sweep must be
+/// reported as inconclusive rather than as a confirmed absence.
+fn inconclusive_sweep(found: u32, inconclusive_probes: u32, checked: u32) -> Option<String> {
+    crate::util::probe::inconclusive(
+        found as usize,
+        inconclusive_probes as usize,
+        checked as usize,
+    )
+    .then(|| {
+        format!(
+            "inconclusive: {inconclusive_probes}/{checked} platform probes returned no \
+             definitive answer (blocked / unreachable / no egress) — not a confirmed absence"
+        )
+    })
 }
 
 /// Whether a completed probe run should echo the target back as a corroborating
@@ -481,6 +544,7 @@ pub(super) fn should_echo_target(found_count: u32) -> bool {
 pub(super) fn build_target_summary(
     target: &Target,
     found_count: u32,
+    verified_count: u32,
     checked_count: u32,
     found_platforms: &[&str],
     scan_id: &str,
@@ -488,7 +552,11 @@ pub(super) fn build_target_summary(
     if !should_echo_target(found_count) {
         return None;
     }
-    let mut summary = target.to_entity(0.82, scan_id);
+    // VERY_HIGH_PLUSPLUS matches the identical "independently confirmed across
+    // platforms" claim its structural siblings' summaries use
+    // (username_search, streaming_probe) — a bare 0.82 scored the same claim
+    // a full tier lower for no documented reason.
+    let mut summary = target.to_entity(confidence::VERY_HIGH_PLUSPLUS, scan_id);
     summary.tag("social-probed");
     if found_count >= 3 {
         summary.tag("multi-platform");
@@ -510,7 +578,18 @@ pub(super) fn build_target_summary(
         // being tagged `multi-platform` here. Kept alongside `found` (its own
         // profiles-checked convention) rather than replacing it.
         .with_attr("platforms_count", found_platforms.len().to_string())
-        .with_attr("platforms", found_platforms.join(", ")),
+        .with_attr("platforms", found_platforms.join(", "))
+        // AU-035/AU-077's `is_verified_discovery` reads `hits_verified` on THIS
+        // aggregate record — the per-platform verified/weak split lives on the
+        // separate Url entities those rules never scan. An absent attribute
+        // reads as vacuously verified, so an all-status-only sweep could still
+        // fabricate a "prediction confirmed" bridge. Mirrors the shape
+        // `username_search`/`streaming_probe` already stamp.
+        .with_attr("hits_verified", verified_count.to_string())
+        .with_attr(
+            "hits_status_only",
+            (found_count - verified_count).to_string(),
+        ),
     );
     Some(summary)
 }

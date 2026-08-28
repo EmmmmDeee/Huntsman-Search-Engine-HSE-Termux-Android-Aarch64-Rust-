@@ -3,142 +3,18 @@
 
 mod common;
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use async_trait::async_trait;
 use axum::body::Body;
 use http::Request;
 use serde_json::Value;
 use tower::ServiceExt;
 
-use huntsman_search_engine::{
-    api::{AppState, routes::router},
-    core::{
-        engine::ScanEngine,
-        entity::{Entity, EntityKind},
-        error::Result,
-        live::LiveScanner,
-        module::{Module, ModuleContext, ModuleResult},
-        relation::{Relation, RelationKind},
-        scan::{Scan, Target, TargetKind},
-    },
-    storage::Store,
+use huntsman_search_engine::core::{
+    entity::{Entity, EntityKind},
+    relation::{Relation, RelationKind},
+    scan::{Scan, Target, TargetKind},
 };
 
-// ── Synthetic module (mirrors tests/smoke.rs) ─────────────────────────────
-
-/// Echoes the seed back as an entity of the same kind.
-struct SyntheticModule;
-
-#[async_trait]
-impl Module for SyntheticModule {
-    fn name(&self) -> &'static str {
-        "synthetic"
-    }
-    fn priority(&self) -> u8 {
-        100
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Email)
-    }
-    fn description(&self) -> &'static str {
-        "test-only echo module"
-    }
-    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut r = ModuleResult::new();
-        let mut e = Entity::new(EntityKind::Email, &target.value, 0.95, &ctx.scan_id);
-        e.tag("synthetic");
-        r.push(e);
-        Ok(r)
-    }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────
-
-/// Return a fresh temp-db path, removing any leftover files from prior runs.
-fn tmp_db(suffix: &str) -> String {
-    common::tmp_db("api", suffix)
-}
-
-/// Build a complete axum `Router` backed by a fresh SQLite store.
-/// Each test gets its own database via the `suffix` parameter.
-fn test_app(suffix: &str) -> axum::Router {
-    let path = tmp_db(suffix);
-    let store = Arc::new(Store::open(&path).unwrap());
-    let (bus, _rx) = tokio::sync::broadcast::channel(256);
-    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
-    let engine = Arc::new(ScanEngine::new(
-        modules,
-        Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
-        bus.clone(),
-    ));
-    let live = LiveScanner::new(
-        Arc::clone(&engine),
-        bus.clone(),
-        reqwest::Client::new(),
-        Default::default(),
-    );
-    let state = Arc::new(AppState {
-        store,
-        engine,
-        bus,
-        live,
-        http: reqwest::Client::new(),
-        allow_key_write: false,
-        cancellations: Arc::new(parking_lot::Mutex::new(HashMap::new())),
-        scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
-            huntsman_search_engine::api::MAX_CONCURRENT_SCANS,
-        )),
-        update_info: Arc::new(std::sync::Mutex::new(
-            huntsman_search_engine::api::UpdateInfo::default(),
-        )),
-        cells_import: Arc::new(std::sync::Mutex::new(
-            huntsman_search_engine::api::CellsImportPhase::default(),
-        )),
-    });
-    router(state, "127.0.0.1:8080")
-}
-
-/// Like [`test_app`] but also hands back the shared store so a test can seed
-/// entities directly (synchronous, FTS-indexed in the same transaction as the
-/// write) without depending on an async scan completing.
-fn test_app_with_store(suffix: &str) -> (axum::Router, Arc<Store>) {
-    let path = tmp_db(suffix);
-    let store = Arc::new(Store::open(&path).unwrap());
-    let (bus, _rx) = tokio::sync::broadcast::channel(256);
-    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
-    let engine = Arc::new(ScanEngine::new(
-        modules,
-        Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
-        bus.clone(),
-    ));
-    let live = LiveScanner::new(
-        Arc::clone(&engine),
-        bus.clone(),
-        reqwest::Client::new(),
-        Default::default(),
-    );
-    let state = Arc::new(AppState {
-        store: Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
-        engine,
-        bus,
-        live,
-        http: reqwest::Client::new(),
-        allow_key_write: false,
-        cancellations: Arc::new(parking_lot::Mutex::new(HashMap::new())),
-        scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
-            huntsman_search_engine::api::MAX_CONCURRENT_SCANS,
-        )),
-        update_info: Arc::new(std::sync::Mutex::new(
-            huntsman_search_engine::api::UpdateInfo::default(),
-        )),
-        cells_import: Arc::new(std::sync::Mutex::new(
-            huntsman_search_engine::api::CellsImportPhase::default(),
-        )),
-    });
-    (router(state, "127.0.0.1:8080"), store)
-}
+use common::{test_app, test_app_exposed, test_app_with_state, test_app_with_store};
 
 /// Parse a response body into a `serde_json::Value`.
 async fn body_json(resp: axum::response::Response) -> Value {
@@ -148,9 +24,31 @@ async fn body_json(resp: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
+/// Read a response body as UTF-8 text (for plain-text downloads like
+/// `debug.txt` / `events.log`, which aren't JSON).
+async fn body_text(resp: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
 /// Shorthand: build a GET request.
 fn get(uri: &str) -> Request<Body> {
     Request::builder().uri(uri).body(Body::empty()).unwrap()
+}
+
+/// Shorthand: a GET request carrying a loopback `ConnectInfo` peer, for
+/// endpoints whose extractor requires it (they read `peer.is_loopback()` to gate
+/// or redact operator-identifying fields). Mirrors production, where HSE binds
+/// loopback, and the `keys/pool`-style tests that inject the peer inline.
+fn get_loopback(uri: &str) -> Request<Body> {
+    let mut req = get(uri);
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+            "127.0.0.1:9999".parse().unwrap(),
+        ));
+    req
 }
 
 /// Shorthand: build a POST request with a JSON body. Carries the `X-HSE-CSRF`
@@ -174,6 +72,31 @@ fn delete(uri: &str) -> Request<Body> {
         .header("x-hse-csrf", "1")
         .body(Body::empty())
         .unwrap()
+}
+
+/// Poll `GET /scans/{id}` until the spawned scan's background task has left
+/// `Running`/`Pending` (bounded — panics after 5s so a real regression fails
+/// fast rather than hanging). `spawn_scan`'s task is merely queued, not run,
+/// by the time the `202 Accepted` response returns, so any test that needs
+/// the scan to have actually finished (e.g. before deleting it, now that
+/// `scan_delete` refuses an in-flight scan) must wait for this rather than
+/// assuming completion.
+async fn wait_for_scan_to_finish(app: &axum::Router, scan_id: &str) {
+    for _ in 0..500 {
+        let resp = app
+            .clone()
+            .oneshot(get(&format!("/api/v1/scans/{scan_id}")))
+            .await
+            .unwrap();
+        let json = body_json(resp).await;
+        match json["status"].as_str() {
+            Some("running" | "pending") => {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            _ => return,
+        }
+    }
+    panic!("scan {scan_id} did not finish within 5s");
 }
 
 /// Create a scan via POST and return `(app_clone, scan_id)`.
@@ -381,7 +304,7 @@ async fn stats_endpoint_includes_seeknow_block() {
     // /api/v1/stats must surface the SeekNow budget snapshot so the
     // operator can see remaining quota at a glance from the UI.
     let app = test_app("stats_seeknow");
-    let resp = app.oneshot(get("/api/v1/stats")).await.unwrap();
+    let resp = app.oneshot(get_loopback("/api/v1/stats")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let json = body_json(resp).await;
     let sn = json
@@ -410,7 +333,7 @@ async fn stats_endpoint_includes_wigle_sub_budgets() {
     // bluetooth). All four must surface on stats so operators can
     // see remaining quota per observation type.
     let app = test_app("stats_wigle");
-    let resp = app.oneshot(get("/api/v1/stats")).await.unwrap();
+    let resp = app.oneshot(get_loopback("/api/v1/stats")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let json = body_json(resp).await;
     let wn = json.get("wigle").expect("stats must include wigle block");
@@ -453,7 +376,7 @@ async fn stats_endpoint_includes_oathnet_block() {
     // After the budget consolidation, oathnet exposes the same wire
     // shape as seeknow (both back-ended by util::budget::QuotaBudget).
     let app = test_app("stats_oathnet");
-    let resp = app.oneshot(get("/api/v1/stats")).await.unwrap();
+    let resp = app.oneshot(get_loopback("/api/v1/stats")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let json = body_json(resp).await;
     let on = json
@@ -835,10 +758,27 @@ async fn scan_get_not_found() {
 #[tokio::test]
 async fn scan_delete_returns_ok() {
     let (app, scan_id) = create_scan("scan_del").await;
-    let resp = app
-        .oneshot(delete(&format!("/api/v1/scans/{scan_id}")))
-        .await
-        .unwrap();
+    wait_for_scan_to_finish(&app, &scan_id).await;
+    // `wait_for_scan_to_finish` polls the persisted `status` field, which the
+    // engine sets to `complete` slightly BEFORE the spawned task's own
+    // `CancelRegistryGuard` drops (finalisation's post-`engine.run()`
+    // diagnostics tail still runs first) — so `scan_delete`'s in-flight guard
+    // can still legitimately see the id in `cancellations` for a moment after
+    // `status` already reads `complete`. Retry like a real client would.
+    let mut resp = None;
+    for _ in 0..500 {
+        let r = app
+            .clone()
+            .oneshot(delete(&format!("/api/v1/scans/{scan_id}")))
+            .await
+            .unwrap();
+        if r.status() != 409 {
+            resp = Some(r);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let resp = resp.expect("scan never left the in-flight registry within 5s");
     assert_eq!(resp.status(), 200);
     let json = body_json(resp).await;
     assert_eq!(json["deleted"].as_str().unwrap(), scan_id);
@@ -854,6 +794,62 @@ async fn scan_delete_not_found() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
+}
+
+// ── 10b. Scan delete refuses an in-flight scan (data-integrity guard) ────
+
+/// Deleting a scan while its engine task is still alive used to race
+/// `Store::delete_scan`'s cascade against the still-running scan's own
+/// mid-flight `upsert_entities_batch`/`upsert_scan`/`upsert_correlation`
+/// writes under the SAME scan_id — silently resurrecting a "deleted" scan
+/// in a partially-rebuilt, potentially inconsistent state, with the client
+/// already told 200 "deleted". `s.cancellations` holds an entry for exactly
+/// as long as the scan's spawned task is alive (installed at `spawn_scan`,
+/// removed by `CancelRegistryGuard`'s Drop when the task returns), so it's
+/// the authoritative "is this still running" signal `scan_delete` now
+/// checks first. Seeds `cancellations` directly rather than racing a real
+/// spawned scan's completion, so this is deterministic.
+#[tokio::test]
+async fn scan_delete_refuses_an_in_flight_scan_then_succeeds_once_it_ends() {
+    let (app, state) = test_app_with_state("scan_del_inflight");
+    let scan = Scan::new(
+        "inflight1",
+        Target::new(TargetKind::Email, "test@contoso.com"),
+    );
+    state.store.upsert_scan(&scan).unwrap();
+    state.cancellations.lock().insert(
+        "inflight1".to_string(),
+        huntsman_search_engine::core::cancel::CancelHandle::new(),
+    );
+
+    let resp = app
+        .clone()
+        .oneshot(delete("/api/v1/scans/inflight1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        409,
+        "an in-flight scan must not be deletable out from under its own writer"
+    );
+    assert!(
+        state.store.get_scan("inflight1").unwrap().is_some(),
+        "the refused delete must not have touched the scan row"
+    );
+
+    // Simulate the scan's task ending (what `CancelRegistryGuard::drop` does).
+    state.cancellations.lock().remove("inflight1");
+
+    let resp = app
+        .oneshot(delete("/api/v1/scans/inflight1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "once no longer in-flight, delete must succeed as normal"
+    );
+    assert!(state.store.get_scan("inflight1").unwrap().is_none());
 }
 
 // ── 11. Scan entities (empty initially) ──────────────────────────────────
@@ -1308,7 +1304,7 @@ async fn manifest_is_valid_installable_pwa() {
 #[tokio::test]
 async fn stats_returns_counts() {
     let app = test_app("stats");
-    let resp = app.oneshot(get("/api/v1/stats")).await.unwrap();
+    let resp = app.oneshot(get_loopback("/api/v1/stats")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let json = body_json(resp).await;
     assert!(
@@ -1363,6 +1359,35 @@ async fn settings_keys_get_lists_keys() {
         "response must contain keys array"
     );
     assert!(json["keys"].as_array().is_some());
+
+    // Convex acquisition guidance: unset keys ranked highest-leverage first, each
+    // with a tier and (usually) a free-signup hint. The web-UI operator gets the
+    // same ranking `hse doctor` prints.
+    let acq = json["acquisition"]
+        .as_array()
+        .expect("response must contain an acquisition array");
+    assert!(
+        !acq.is_empty(),
+        "a fresh test app has unset keys, so acquisition must be non-empty"
+    );
+    // Ranking is Multiplier > Expansion > Terminal: the tier rank must be
+    // non-increasing across the list (never a lower tier before a higher one).
+    let rank = |t: &str| match t {
+        "multiplier" => 2,
+        "expansion" => 1,
+        _ => 0,
+    };
+    let mut prev = i32::MAX;
+    for e in acq {
+        let tier = e["tier"].as_str().expect("each entry has a tier");
+        assert!(e["name"].as_str().is_some(), "each entry has a name");
+        let r = rank(tier);
+        assert!(
+            r <= prev,
+            "acquisition must be ranked highest-leverage first (saw {tier} out of order)"
+        );
+        prev = r;
+    }
 }
 
 #[tokio::test]
@@ -1383,6 +1408,39 @@ async fn settings_keys_get_refuses_non_loopback_peer() {
         403,
         "settings/keys GET must be loopback-only"
     );
+}
+
+#[tokio::test]
+async fn keys_health_refuses_non_loopback_peer() {
+    // The dead-key diagnosis reveals which configured services are failing auth —
+    // sensitive infra metadata, gated loopback-only like every sibling key route.
+    use std::net::SocketAddr;
+    let app = test_app("keys_health_lan");
+    let lan: SocketAddr = "192.168.1.50:40000".parse().unwrap();
+    let mut req = get("/api/v1/keys/health");
+    req.extensions_mut().insert(axum::extract::ConnectInfo(lan));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 403, "keys/health must be loopback-only");
+}
+
+#[tokio::test]
+async fn keys_health_loopback_returns_rejected_array() {
+    use std::net::SocketAddr;
+    let app = test_app("keys_health_ok");
+    let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    let mut req = get("/api/v1/keys/health");
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(loopback));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    // A fresh test app has no scan-outcome history, so nothing is rejected — but
+    // the shape (count + rejected array) must always be present for the SPA.
+    assert!(
+        json["rejected"].as_array().is_some(),
+        "rejected must be an array"
+    );
+    assert_eq!(json["count"].as_u64(), Some(0));
 }
 
 // ── 17. Settings keys PUT (forbidden) ─────────────────────────────────────
@@ -1624,6 +1682,132 @@ async fn scan_gexf_quarantines_candidate_nodes_by_default() {
     );
 }
 
+// ── Graph / identity read endpoints: candidate quarantine ────────────────
+
+#[tokio::test]
+async fn scan_relations_quarantines_candidate_endpoints_by_default() {
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("relations_candidate");
+    let sid = "s-rel-cand";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+    let subject = Entity::new(EntityKind::Email, "subject@real.example", 0.9, sid);
+    let mut candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, sid);
+    candidate.tag(CANDIDATE);
+    store.upsert_entity(&subject).unwrap();
+    store.upsert_entity(&candidate).unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            subject.uid.as_str(),
+            candidate.uid.as_str(),
+            RelationKind::AssociatedWith,
+            0.5,
+            sid,
+        ))
+        .unwrap();
+
+    // Default: the edge to the quarantined candidate is dropped — its value never
+    // leaks via from_value/to_value, and no dangling UID remains.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/relations")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert!(
+        json["relations"].as_array().is_some_and(Vec::is_empty),
+        "candidate-endpoint edge must be hidden by default: {json}"
+    );
+    assert!(
+        !json.to_string().contains("stranger@breach.example"),
+        "no candidate PII may leak into the relations view by default: {json}"
+    );
+
+    // Opt-in returns the edge with the candidate endpoint resolved.
+    let resp2 = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/relations?include_candidates=1"
+        )))
+        .await
+        .unwrap();
+    let json2 = body_json(resp2).await;
+    assert_eq!(
+        json2["relations"].as_array().map(Vec::len),
+        Some(1),
+        "include_candidates=1 returns the edge: {json2}"
+    );
+    assert!(
+        json2.to_string().contains("stranger@breach.example"),
+        "opt-in resolves the candidate endpoint value: {json2}"
+    );
+}
+
+#[tokio::test]
+async fn scan_network_quarantines_candidate_nodes_by_default() {
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("network_candidate");
+    let sid = "s-net-cand";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+    let subject = Entity::new(EntityKind::Email, "subject@real.example", 0.9, sid);
+    let mut candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, sid);
+    candidate.tag(CANDIDATE);
+    store.upsert_entity(&subject).unwrap();
+    store.upsert_entity(&candidate).unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            subject.uid.as_str(),
+            candidate.uid.as_str(),
+            RelationKind::AssociatedWith,
+            0.5,
+            sid,
+        ))
+        .unwrap();
+
+    // Default: the quarantined candidate must not appear as a network node.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/network")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = axum::body::to_bytes(resp.into_body(), 5_000_000)
+        .await
+        .unwrap();
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        !body.contains("stranger@breach.example"),
+        "a quarantined candidate must not leak into the network graph by default: {body}"
+    );
+
+    // Opt-in surfaces the linked candidate node.
+    let resp2 = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/network?include_candidates=1"
+        )))
+        .await
+        .unwrap();
+    let bytes2 = axum::body::to_bytes(resp2.into_body(), 5_000_000)
+        .await
+        .unwrap();
+    let body2 = String::from_utf8_lossy(&bytes2);
+    assert!(
+        body2.contains("stranger@breach.example"),
+        "include_candidates=1 surfaces the candidate node: {body2}"
+    );
+}
+
 // ── JSON report ─────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -1684,6 +1868,134 @@ async fn scan_entities_facets_returns_facets() {
     assert_eq!(resp.status(), 200);
     let json = body_json(resp).await;
     assert!(json["facets"].is_array());
+}
+
+#[tokio::test]
+async fn scan_diamond_rolls_entities_up_by_vertex() {
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("diamond");
+    let sid = "s-diamond";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+    // One entity per Diamond vertex the kind-classifier produces, plus a
+    // quarantined candidate that the endpoint must exclude by default.
+    store
+        .upsert_entity(&Entity::new(EntityKind::Person, "Jordan Avery", 0.9, sid))
+        .unwrap();
+    store
+        .upsert_entity(&Entity::new(EntityKind::Domain, "jordan.example", 0.8, sid))
+        .unwrap();
+    store
+        .upsert_entity(&Entity::new(EntityKind::Password, "leaked-hash", 0.7, sid))
+        .unwrap();
+    let mut cand = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, sid);
+    cand.tag(CANDIDATE);
+    store.upsert_entity(&cand).unwrap();
+
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{sid}/diamond")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    // The quarantined candidate is excluded by default → 3 across 3 vertices.
+    assert_eq!(
+        json["total"].as_u64(),
+        Some(3),
+        "candidate excluded by default: {json}"
+    );
+    let vertices = json["vertices"].as_array().unwrap();
+    let vcount = |name: &str| -> u64 {
+        vertices
+            .iter()
+            .find(|v| v["vertex"] == name)
+            .and_then(|v| v["count"].as_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(vcount("victim"), 1, "Person → victim: {json}");
+    assert_eq!(
+        vcount("infrastructure"),
+        1,
+        "Domain → infrastructure: {json}"
+    );
+    assert_eq!(vcount("capability"), 1, "Password → capability: {json}");
+    // Adversary is a relational role — the kind classifier never emits it.
+    assert_eq!(
+        vcount("adversary"),
+        0,
+        "adversary is relational, not intrinsic: {json}"
+    );
+}
+
+#[tokio::test]
+async fn scan_attack_rolls_up_reconnaissance_coverage_and_navigator_layer() {
+    let (app, store) = test_app_with_store("attack");
+    let sid = "s-attack";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::Domain, "example.org"),
+        ))
+        .unwrap();
+    // Two entities exercising WHOIS (T1596.002); one exercising Search Engines.
+    let mut a = Entity::new(EntityKind::Domain, "example.org", 0.9, sid);
+    a.tag("attack:T1596.002");
+    a.tag("attack:T1593.002");
+    store.upsert_entity(&a).unwrap();
+    let mut b = Entity::new(EntityKind::IpAddress, "203.0.113.7", 0.8, sid);
+    b.tag("attack:T1596.002");
+    store.upsert_entity(&b).unwrap();
+
+    // Default: coverage rollup with per-technique entity counts + honest gaps.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/attack")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["tactic_id"], "TA0043");
+    let covered = json["covered"].as_array().unwrap();
+    let count_of = |id: &str| -> u64 {
+        covered
+            .iter()
+            .find(|c| c["id"] == id)
+            .and_then(|c| c["entity_count"].as_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(
+        count_of("T1596.002"),
+        2,
+        "WHOIS collected 2 entities: {json}"
+    );
+    assert_eq!(count_of("T1593.002"), 1, "Search Engines 1 entity: {json}");
+    // The tactic HSE performs no collection for shows up as an honest gap.
+    let uncovered = json["uncovered"].as_array().unwrap();
+    assert!(
+        uncovered.iter().any(|t| t["id"] == "T1598"),
+        "Phishing for Information must be an honest gap: {json}"
+    );
+
+    // ?format=navigator → a MITRE ATT&CK Navigator layer.
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{sid}/attack?format=navigator")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let layer = body_json(resp).await;
+    assert_eq!(layer["domain"], "enterprise-attack");
+    let whois = layer["techniques"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["techniqueID"] == "T1596.002")
+        .cloned()
+        .unwrap();
+    assert_eq!(whois["score"], 2, "navigator score = entity count: {layer}");
 }
 
 // ── Cancel nonexistent ──────────────────────────────────────────────────
@@ -1794,6 +2106,100 @@ async fn scan_entities_filter_quarantines_candidate_entities_by_default() {
     );
 }
 
+#[tokio::test]
+async fn scan_entities_pagination_works() {
+    use huntsman_search_engine::core::entity::{Entity, EntityKind};
+    use huntsman_search_engine::core::scan::{Scan, Target, TargetKind};
+    let (app, store) = test_app_with_store("entities_paginate");
+    let sid = "s-paginate";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Test Subject"),
+        ))
+        .unwrap();
+    // Insert 50 entities to test pagination.
+    for i in 0..50 {
+        let entity = Entity::new(
+            EntityKind::Email,
+            format!("test{i:02}@example.com"),
+            0.8,
+            sid,
+        );
+        store.upsert_entity(&entity).unwrap();
+    }
+
+    // Test default pagination (offset=0, limit=1000): should return all 50.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/entities")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["count"], 50, "default should return all 50 entities");
+    assert_eq!(json["total"], 50, "total should be 50");
+    assert_eq!(json["offset"], 0, "default offset should be 0");
+    assert_eq!(json["limit"], 1000, "default limit should be 1000");
+
+    // Test custom limit: offset=0, limit=10.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/entities?offset=0&limit=10"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["count"], 10, "limit=10 should return 10 entities");
+    assert_eq!(json["total"], 50, "total should still be 50");
+    assert_eq!(json["offset"], 0, "offset should be 0");
+    assert_eq!(json["limit"], 10, "limit should be 10");
+
+    // Test middle page: offset=20, limit=15.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/entities?offset=20&limit=15"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["count"], 15, "offset=20,limit=15 should return 15");
+    assert_eq!(json["total"], 50, "total should still be 50");
+    assert_eq!(json["offset"], 20, "offset should be 20");
+    assert_eq!(json["limit"], 15, "limit should be 15");
+
+    // Test out-of-range page: offset=45, limit=20.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/entities?offset=45&limit=20"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(
+        json["count"], 5,
+        "offset=45,limit=20 should return 5 entities (45+5=50)"
+    );
+    assert_eq!(json["total"], 50, "total should still be 50");
+    assert_eq!(json["offset"], 45, "offset should be 45");
+
+    // Test limit capped at 10000.
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{sid}/entities?limit=100000")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["count"], 50, "limit should be capped at 10000");
+    assert_eq!(json["limit"], 10000, "limit should be capped to 10000");
+}
+
 // ── Live list (empty) ───────────────────────────────────────────────────
 
 #[tokio::test]
@@ -1886,6 +2292,8 @@ async fn sub_resource_endpoints_404_for_unknown_scan() {
         "entities.csv",
         "events.history",
         "graph.gexf",
+        "cross-scan",
+        "snake.svg",
     ] {
         let unknown = app
             .clone()
@@ -1905,6 +2313,8 @@ async fn sub_resource_endpoints_404_for_unknown_scan() {
         "entities.csv",
         "events.history",
         "graph.gexf",
+        "cross-scan",
+        "snake.svg",
     ] {
         let known = app
             .clone()
@@ -1967,6 +2377,53 @@ async fn search_endpoint_returns_fts_indexed_entities() {
         v.iter()
             .any(|x| x.contains("jordan") && x.contains("meyers")),
         "any-order hit, got {v:?}"
+    );
+}
+
+#[tokio::test]
+async fn search_endpoint_excludes_candidate_tagged_entities() {
+    // Regression (critical audit): every sibling entity-serving read endpoint
+    // (`/entities`, `/diamond`, `/attack`, `/identities`, ...) enforces the
+    // candidate quarantine via EntityViewGate::apply_candidate_gate before
+    // returning entities -- CANDIDATE is documented as "held out of every
+    // shareable export... enforced, not advisory". This endpoint,
+    // search_entities, handed the raw storage query result straight back with
+    // no gate at all, so a quarantined same-name-stranger record (the classic
+    // unconfirmed-namesake case a breach search surfaces) reappeared in full
+    // through the primary global-search UI even though it never survived any
+    // scan-scoped default view.
+    use huntsman_search_engine::core::tags;
+    let (app, store) = test_app_with_store("search-candidate");
+    let scan = Scan::new(
+        "s-search-candidate",
+        Target::new(TargetKind::FullName, "Jordan Leigh Meyers"),
+    );
+    store.upsert_scan(&scan).unwrap();
+    let mut quarantined = Entity::new(
+        EntityKind::Email,
+        "jordan.stranger@example.com",
+        0.25,
+        "s-search-candidate",
+    );
+    quarantined.tag(tags::CANDIDATE);
+    store.upsert_entity(&quarantined).unwrap();
+
+    let resp = app
+        .oneshot(get("/api/v1/search?q=jordan.stranger"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let vals: Vec<String> = json["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["value"].as_str().unwrap_or("").to_lowercase())
+        .collect();
+    assert!(
+        !vals.iter().any(|v| v.contains("jordan.stranger")),
+        "a candidate-tagged (quarantined) entity must not surface through \
+         global search, got {vals:?}"
     );
 }
 
@@ -2074,12 +2531,20 @@ async fn spa_served_with_required_ui_structure() {
     );
     // Directive UI checklist — this scaffolding must stay present.
     for marker in [
-        "<html",             // a real HTML document
-        "viewport",          // touch / mobile-optimised
-        "#222",              // dark theme (navbar dark)
-        "/static/d3.min.js", // interactive node graph (D3)
-        "tablesorter",       // sortable data tables
-        "#/dash",            // tabbed navigation (client-side hash routes)
+        "<html",    // a real HTML document
+        "viewport", // touch / mobile-optimised
+        // Dark-by-default console background (`--bg`, with `body.light-theme`
+        // as the opt-in alternative). Tracks the palette, so it moves when the
+        // palette legitimately moves — it exists to catch shipping a *light*
+        // default, not to freeze one shade.
+        "#0a0d11",
+        // SPA module entry point. This slot used to pin `/static/d3.min.js`,
+        // the vendored force-graph engine; the graph is now a dependency-free
+        // concentric SVG layout in `js/scan_info/graph.js`, so the thing worth
+        // pinning is that the module graph still has a root to load.
+        "/static/js/main.js",
+        "tablesorter", // sortable data tables
+        "#/dash",      // tabbed navigation (client-side hash routes)
         "#/scans",
         "#/newscan",
         "EventSource", // live event log (SSE)
@@ -2148,6 +2613,11 @@ async fn spa_references_only_registered_api_endpoints() {
             "plan" => "/api/v1/plan?value=example.com".to_string(),
             // Cell-tower DB status — ungated GET, safe to probe with no side effects.
             "cells" => "/api/v1/cells/status".to_string(),
+            // Live capability probe — POST-only (a real network sweep per keyless
+            // module), so a bare GET returns 405, not the fallback 404; the
+            // assertion only needs "not 404", confirming the route is registered
+            // WITHOUT firing the live network probe in the hermetic suite.
+            "capabilities" => "/api/v1/capabilities/probe".to_string(),
             // System self-diagnosis bundle — loopback-gated and it also needs a
             // `ConnectInfo` peer, so a bare probe GET reaches the handler and
             // returns 403/500 (never the fallback 404), confirming the route is
@@ -2602,6 +3072,27 @@ async fn keys_pool_get_is_masked_and_revoke_is_write_gated() {
 }
 
 #[tokio::test]
+async fn keys_pool_add_is_write_gated() {
+    // Adding a new pooled key is a write — refused without --allow-key-write
+    // (test_app default), same policy as revoke/rotate. This is the web
+    // equivalent of `hse keys add`, previously CLI-only.
+    use std::net::SocketAddr;
+    let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    let app = test_app("keys-pool-add");
+    let mut post = Request::builder()
+        .method("POST")
+        .uri("/api/v1/keys/pool/add")
+        .header("content-type", "application/json")
+        .header("x-hse-csrf", "1")
+        .body(Body::from(r#"{"service":"shodan","key":"NEW-KEY-VALUE"}"#))
+        .unwrap();
+    post.extensions_mut()
+        .insert(axum::extract::ConnectInfo(loopback));
+    let resp = app.oneshot(post).await.unwrap();
+    assert_eq!(resp.status(), http::StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn keys_pool_rotate_is_write_gated() {
     // Rotation is a write — refused without --allow-key-write (test_app default),
     // never a silent no-op.
@@ -3019,12 +3510,82 @@ async fn scan_debug_bundle_404_unknown_and_text_attachment_for_known() {
         cd.contains("attachment") && cd.contains(".txt"),
         "debug.txt must carry a download Content-Disposition, got {cd:?}"
     );
+    // Filename must be the clean `hse-debug-<id>.txt` — NOT the double-suffixed
+    // `hse-debug.txt-<id>.debug.txt` the ext-only builder used to emit when a
+    // caller passed "debug.txt" for both the label and the extension.
+    assert!(
+        cd.contains("filename=\"hse-debug-") && cd.ends_with(".txt\""),
+        "debug bundle filename must be hse-debug-<id>.txt (no doubled extension), got {cd:?}"
+    );
 
     let resp = app
         .oneshot(get("/api/v1/scans/__nope__/debug.txt"))
         .await
         .unwrap();
     assert_eq!(resp.status(), 404, "debug.txt must 404 for an unknown scan");
+}
+
+#[tokio::test]
+async fn scan_events_log_404_unknown_and_text_attachment_for_known() {
+    let (app, sid) = create_scan("events-log-cov").await;
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/events.log")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "events.log must 200 for a known scan");
+    let ct = resp
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        ct.starts_with("text/plain"),
+        "events.log must be text/plain, got {ct:?}"
+    );
+    let cd = resp
+        .headers()
+        .get(http::header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        cd.contains("attachment") && cd.contains(".log"),
+        "events.log must carry a download Content-Disposition, got {cd:?}"
+    );
+    assert!(
+        cd.contains("filename=\"hse-events-") && cd.ends_with(".log\""),
+        "events.log filename must be hse-events-<id>.log, got {cd:?}"
+    );
+    // Body must be render_event_log's output: structured JSON lines, one object
+    // per event, with no box/tree/status glyphs. Guards against the body
+    // silently drifting from the shared renderer to an error page or the old
+    // glyph timeline.
+    let body = body_text(resp).await;
+    assert!(
+        !body.contains('─') && !body.contains('▶') && !body.contains('✔'),
+        "events.log must be glyph-free structured JSON, got {body:?}"
+    );
+    for line in body.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("events.log line is not JSON: {line:?} — {e}"));
+        assert!(
+            v.get("time").is_some() && v.get("level").is_some() && v.get("kind").is_some(),
+            "each events.log line must lead with time/level/kind, got {line:?}"
+        );
+    }
+
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/events.log"))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        404,
+        "events.log must 404 for an unknown scan"
+    );
 }
 
 // ── Security: DNS-rebind Host guard + scan-import CSRF ──────────────────────
@@ -3200,4 +3761,450 @@ async fn system_debug_bundle_returns_the_diagnostic_artifact_on_loopback() {
     ] {
         assert!(body.contains(header), "bundle missing section: {header}");
     }
+}
+
+#[tokio::test]
+async fn radar_recurring_returns_devices_array() {
+    // With an empty radar history the endpoint must still answer 200 with a
+    // well-formed (empty) devices array — the cross-sweep persistent-device
+    // review surface (AU-122/117's temporal counterpart, core::radar_track).
+    let app = test_app("radar-recurring");
+    let resp = app.oneshot(get("/api/v1/radar/recurring")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert!(
+        json["devices"].as_array().is_some(),
+        "response must carry a 'devices' array"
+    );
+}
+
+#[tokio::test]
+async fn scan_cross_scan_ranks_bridges_and_quarantines_candidates_by_default() {
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("cross_scan_category");
+    let sid = "s-xscan";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+
+    // Three bridged entities at different tiers, plus an unbridged one and a
+    // quarantined candidate that also carries a bridge tag.
+    let mut relation_tier = Entity::new(EntityKind::Email, "top@real.example", 0.9, sid);
+    relation_tier.tag("cross-scan-relation");
+    let mut recurrence_tier = Entity::new(EntityKind::Username, "midhandle", 0.8, sid);
+    recurrence_tier.tag("cross-scan");
+    let mut alias_tier = Entity::new(EntityKind::Email, "lowalias@real.example", 0.7, sid);
+    alias_tier.tag("cross-scan-alias");
+    let unbridged = Entity::new(EntityKind::Email, "plain@real.example", 0.9, sid);
+    let mut candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, sid);
+    candidate.tag(CANDIDATE);
+    candidate.tag("cross-scan-relation");
+    for e in [
+        &relation_tier,
+        &recurrence_tier,
+        &alias_tier,
+        &unbridged,
+        &candidate,
+    ] {
+        store.upsert_entity(e).unwrap();
+    }
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/cross-scan")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+
+    // A quarantined candidate is absent even though it carries the strongest tag.
+    assert!(
+        !json.to_string().contains("stranger@breach.example"),
+        "candidate PII must not leak into the cross-scan category by default: {json}"
+    );
+    let bridges = json["bridges"].as_array().expect("bridges array");
+    assert_eq!(bridges.len(), 3, "only bridged, visible entities: {json}");
+    // Ranked strongest tier first.
+    assert_eq!(bridges[0]["tier"], "relation");
+    assert_eq!(bridges[1]["tier"], "recurrence");
+    assert_eq!(bridges[2]["tier"], "kind_alias");
+    // The unbridged entity is not a member of the category.
+    assert!(
+        !json.to_string().contains("plain@real.example"),
+        "an entity with no history bridge is not in the category: {json}"
+    );
+
+    // ?min_tier filters to a tier and above.
+    let filtered = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/cross-scan?min_tier=cooccurrence"
+        )))
+        .await
+        .unwrap();
+    let filtered = body_json(filtered).await;
+    assert_eq!(
+        filtered["bridges"].as_array().map(Vec::len),
+        Some(1),
+        "min_tier=cooccurrence keeps only the relation-tier bridge: {filtered}"
+    );
+
+    // An unknown tier is a client error, not a silently empty result.
+    let bad = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/cross-scan?min_tier=bogus"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400);
+
+    // Opt-in surfaces the candidate bridge.
+    let opted = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/cross-scan?include_candidates=1"
+        )))
+        .await
+        .unwrap();
+    let opted = body_json(opted).await;
+    assert!(
+        opted.to_string().contains("stranger@breach.example"),
+        "explicit opt-in must return the candidate bridge: {opted}"
+    );
+}
+
+#[tokio::test]
+async fn scan_cross_scan_walks_the_history_transitively_and_reports_its_limits() {
+    // End-to-end over the REAL store (the in-memory port is not the thing that
+    // ships): a bridge into a prior scan is followed one hop further, the chain
+    // that reached the far identifier is returned with it, and nothing
+    // quarantined escapes the scan the requester asked for.
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("cross_scan_transitive");
+    let (here, prior, far) = ("s-here", "s-prior", "s-far");
+    for sid in [here, prior, far] {
+        store
+            .upsert_scan(&Scan::new(sid, Target::new(TargetKind::FullName, "Jordan")))
+            .unwrap();
+    }
+
+    // The direct bridge: one email recorded by BOTH this scan and the prior one.
+    let mut bridge = Entity::new(EntityKind::Email, "jordan@corp.example", 0.9, here);
+    bridge.tag("cross-scan");
+    store.upsert_entity(&bridge).unwrap();
+    store
+        .upsert_entity(&Entity::new(
+            EntityKind::Email,
+            "jordan@corp.example",
+            0.9,
+            prior,
+        ))
+        .unwrap();
+
+    // Reachable ONLY by opening the prior scan: a username it shares with a
+    // third investigation this scan has never touched.
+    for sid in [prior, far] {
+        store
+            .upsert_entity(&Entity::new(EntityKind::Username, "jmeyers", 0.8, sid))
+            .unwrap();
+    }
+    // Two things the walk must refuse, both sitting in the prior scan:
+    // shared infrastructure, and a quarantined candidate.
+    for sid in [prior, far] {
+        store
+            .upsert_entity(&Entity::new(
+                EntityKind::IpAddress,
+                "104.20.37.187",
+                0.95,
+                sid,
+            ))
+            .unwrap();
+        let mut c = Entity::new(EntityKind::Email, "quarantined@breach.example", 0.9, sid);
+        c.tag(CANDIDATE);
+        store.upsert_entity(&c).unwrap();
+    }
+
+    let json = body_json(
+        app.clone()
+            .oneshot(get(&format!("/api/v1/scans/{here}/cross-scan")))
+            .await
+            .unwrap(),
+    )
+    .await;
+
+    let t = &json["transitive"];
+    assert_eq!(t["requested"], true, "the walk runs by default: {json}");
+    let links = t["links"].as_array().expect("transitive links array");
+    assert_eq!(
+        links.len(),
+        1,
+        "exactly the one reachable identifier: {json}"
+    );
+    assert_eq!(links[0]["value"], "jmeyers");
+    assert_eq!(links[0]["degree"], 2);
+    // The chain is auditable: through our bridge, via the prior scan.
+    assert_eq!(links[0]["via_uids"][0], serde_json::json!(bridge.uid));
+    assert_eq!(links[0]["via_scan_ids"][0], prior);
+    // And it names the investigation it opens up.
+    assert_eq!(links[0]["prior_scan_ids"][0], far);
+    assert_eq!(
+        t["complete"], true,
+        "nothing was over budget, dropped, or failed: {json}"
+    );
+
+    // A transitive link is a LEAD, so it is never folded into `bridges` —
+    // which remains only what THIS scan actually recorded.
+    let bridges = json["bridges"].as_array().expect("bridges");
+    assert_eq!(bridges.len(), 1);
+    assert_eq!(bridges[0]["value"], "jordan@corp.example");
+
+    // Shared infrastructure must not wire two investigations together.
+    assert!(
+        !json.to_string().contains("104.20.37.187"),
+        "an IP is context, not identity — it must not be a transitive link: {json}"
+    );
+
+    // The quarantine holds through the walk, and — unlike the direct bridges —
+    // `include_candidates` cannot widen it: the candidate lives in ANOTHER scan.
+    for query in ["", "?include_candidates=1"] {
+        let json = body_json(
+            app.clone()
+                .oneshot(get(&format!("/api/v1/scans/{here}/cross-scan{query}")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            !json.to_string().contains("quarantined@breach.example"),
+            "a quarantined value from a prior scan must never escape via the \
+             transitive walk (query `{query}`): {json}"
+        );
+    }
+
+    // `?transitive=0` opts out of the extra store loads entirely.
+    let skipped = body_json(
+        app.clone()
+            .oneshot(get(&format!(
+                "/api/v1/scans/{here}/cross-scan?transitive=0"
+            )))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(skipped["transitive"]["requested"], false);
+    assert_eq!(skipped["transitive"]["total"], 0);
+    assert_eq!(skipped["transitive"]["scans_visited"], 0);
+    assert_eq!(
+        skipped["bridges"].as_array().map(Vec::len),
+        Some(1),
+        "opting out of the walk must not change the direct bridges: {skipped}"
+    );
+}
+
+#[tokio::test]
+async fn scan_snake_svg_renders_and_hides_candidate_nodes_by_default() {
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("snake_svg");
+    let sid = "s-snake";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+    let mut subject = Entity::new(EntityKind::Email, "subject@real.example", 0.9, sid);
+    subject.tag("subject");
+    let mut candidate = Entity::new(EntityKind::Email, "stranger@bad.example", 0.5, sid);
+    candidate.tag(CANDIDATE);
+    store.upsert_entity(&subject).unwrap();
+    store.upsert_entity(&candidate).unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            subject.uid.as_str(),
+            candidate.uid.as_str(),
+            RelationKind::SameAs,
+            0.9,
+            sid,
+        ))
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/snake.svg")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("image/svg+xml")
+    );
+    // The out-of-horizon count is reported rather than silently dropped.
+    assert!(resp.headers().contains_key("x-snake-beyond-horizon"));
+    let body = String::from_utf8(
+        axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(body.starts_with("<svg"), "must be a standalone SVG: {body}");
+    assert!(
+        body.contains("subject@real.example"),
+        "the subject is drawn: {body}"
+    );
+    assert!(
+        !body.contains("stranger@bad.example"),
+        "candidate PII must not be drawn by default: {body}"
+    );
+
+    // Opt-in draws the candidate node.
+    let opted = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/snake.svg?include_candidates=1"
+        )))
+        .await
+        .unwrap();
+    let opted = String::from_utf8(
+        axum::body::to_bytes(opted.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(
+        opted.contains("stranger@bad.example"),
+        "explicit opt-in must draw the candidate: {opted}"
+    );
+
+    // Invalid tuning params are client errors, not silent fallbacks.
+    for q in ["depth=0", "depth=abc", "size=nope"] {
+        let bad = app
+            .clone()
+            .oneshot(get(&format!("/api/v1/scans/{sid}/snake.svg?{q}")))
+            .await
+            .unwrap();
+        assert_eq!(bad.status(), 400, "{q} must be rejected");
+    }
+}
+
+// ── non-loopback bind: the bearer-token gate ────────────────────────────────
+//
+// `test_app` builds the loopback router, where the gate is deliberately absent.
+// These use `test_app_exposed`, which builds the SAME route table the way a
+// `--bind 0.0.0.0:8080` server does, and prove the gate covers the real surface
+// rather than a toy route: scan data, scan dispatch, the radar sweep that
+// activates the device's own sensors, the SPA, and the static bundle.
+
+const EXPOSED_TOKEN: &str = "test-token-0123456789abcdef";
+
+/// A GET carrying a valid bearer token.
+fn get_authed(uri: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .header("authorization", format!("Bearer {EXPOSED_TOKEN}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn exposed_bind_rejects_every_unauthenticated_surface() {
+    let app = test_app_exposed("auth_reject", EXPOSED_TOKEN);
+
+    // Read paths (the subject's PII), control paths (quota burn + the device's
+    // own WiFi/Bluetooth/cell/GPS sweep), and the console itself.
+    for uri in [
+        "/api/v1/scans",
+        "/api/v1/stats",
+        "/api/v1/search?q=a",
+        "/api/v1/settings/keys",
+        "/api/v1/radar/history",
+        "/",
+        "/static/app.css",
+    ] {
+        let resp = app.clone().oneshot(get(uri)).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            401,
+            "{uri} must demand a token on a non-loopback bind"
+        );
+    }
+}
+
+#[tokio::test]
+async fn exposed_bind_rejects_an_unauthenticated_mutation() {
+    let app = test_app_exposed("auth_reject_post", EXPOSED_TOKEN);
+    // The CSRF header alone must NOT be enough — it is a cross-site control,
+    // and any non-browser client can set it. This is the regression that would
+    // re-open LAN scan dispatch / radar triggering.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/radar")
+        .header("x-hse-csrf", "1")
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        401,
+        "X-HSE-CSRF must not substitute for authentication"
+    );
+}
+
+#[tokio::test]
+async fn exposed_bind_admits_a_valid_token() {
+    let app = test_app_exposed("auth_accept", EXPOSED_TOKEN);
+    let resp = app
+        .clone()
+        .oneshot(get_authed("/api/v1/scans"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "a valid bearer token must be admitted");
+
+    // And the SPA itself, so the console is reachable once authenticated.
+    let spa = app.oneshot(get_authed("/")).await.unwrap();
+    assert_eq!(spa.status(), 200);
+}
+
+#[tokio::test]
+async fn exposed_bind_bootstraps_a_browser_then_drops_the_token_from_the_url() {
+    let app = test_app_exposed("auth_bootstrap", EXPOSED_TOKEN);
+    let resp = app
+        .oneshot(get(&format!("/?t={EXPOSED_TOKEN}")))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 303, "first navigation must redirect");
+    let loc = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .expect("redirect must carry Location");
+    assert_eq!(loc, "/", "the token must not survive in the URL");
+    let cookie = resp
+        .headers()
+        .get("set-cookie")
+        .and_then(|v| v.to_str().ok())
+        .expect("bootstrap must pin a session cookie");
+    assert!(cookie.contains("HttpOnly") && cookie.contains("SameSite=Strict"));
+}
+
+#[tokio::test]
+async fn loopback_bind_is_unchanged_by_the_auth_work() {
+    // The default on-device path must behave exactly as it did before: no
+    // token, no 401, no redirect.
+    let app = test_app("auth_loopback_unchanged");
+    let resp = app.oneshot(get("/api/v1/scans")).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "the loopback default must not require a token"
+    );
 }

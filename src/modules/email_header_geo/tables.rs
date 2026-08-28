@@ -1,15 +1,44 @@
 //! Static lookup tables for email domain geolocation.
 
-/// Consumer webmail providers — domains that carry no geographic signal.
+/// Consumer webmail providers — domains that carry no geographic signal
+/// because the SAME provider is reachable identically from anywhere (unlike
+/// [`crate::util::domains::is_freemail`], which this list deliberately does
+/// NOT delegate to: that canonical check also treats REGIONAL ISP webmail
+/// brands — `bigpond.com`, `bigpond.net.au` — as freemail, but this module's
+/// own `REGIONAL_PROVIDERS` table correctly treats them as a genuine AU geo
+/// signal. `is_freemail`'s "no employer/ownership signal" and this list's "no
+/// LOCATION signal" are different axes; consolidating them collapsed the
+/// distinction and silently broke bigpond.com's geolocation).
+///
+/// Includes each brand's country-flavoured aliases (`hotmail.co.uk`,
+/// `yahoo.de`, …) alongside the bare `.com` form — omitting them let the
+/// identical globally-hosted provider fall through to ccTLD inference and be
+/// geolocated as if the country-flavoured domain carried a real signal.
 pub(super) const CONSUMER_PROVIDERS: &[&str] = &[
     "gmail.com",
     "googlemail.com",
     "outlook.com",
     "hotmail.com",
+    "hotmail.co.uk",
+    "hotmail.fr",
+    "hotmail.de",
+    "hotmail.it",
+    "hotmail.es",
     "live.com",
+    "live.co.uk",
+    "live.fr",
+    "live.de",
     "yahoo.com",
     "yahoo.co.uk",
     "yahoo.co.jp",
+    "yahoo.co.in",
+    "yahoo.fr",
+    "yahoo.de",
+    "yahoo.es",
+    "yahoo.it",
+    "yahoo.com.br",
+    "yahoo.com.mx",
+    "yahoo.com.ar",
     "aol.com",
     "icloud.com",
     "me.com",
@@ -32,6 +61,14 @@ pub(super) const CCTLD_REGIONS: &[(&str, &str)] = &[
     (".edu.au", "Australia"),
     (".gov.au", "Australia"),
     (".org.au", "Australia"),
+    (".net.au", "Australia"),
+    (".id.au", "Australia"),
+    (".asn.au", "Australia"),
+    // Catch-all for a direct `.au` registration and every other `.*.au` shape
+    // (`.csiro.au`, …). MUST stay after the specific rows above:
+    // `infer_geo_from_email_domain` returns the FIRST `ends_with` match, so the
+    // specific second-level TLDs win first and this only backstops the residue.
+    (".au", "Australia"),
     (".co.uk", "United Kingdom"),
     (".ac.uk", "United Kingdom"),
     (".gov.uk", "United Kingdom"),

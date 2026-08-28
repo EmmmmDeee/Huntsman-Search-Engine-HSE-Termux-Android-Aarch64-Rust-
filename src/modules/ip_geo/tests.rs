@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
     #[test]
@@ -11,13 +12,13 @@ use super::*;
     #[test]
     fn deserialize_full_response() {
         let json = r#"{"status":"success","country":"Australia","countryCode":"AU","regionName":"Queensland","city":"Brisbane","zip":"4000","lat":-27.4679,"lon":153.0281,"timezone":"Australia/Brisbane","isp":"Telstra","org":"Telstra Corp","as":"AS1221 Telstra","mobile":false,"proxy":false,"hosting":false}"#;
-        let r: IpApiResp = serde_json::from_str(json).unwrap();
+        let r: IpApiResp = serde_json::from_str(json).expect("should succeed");
         assert_eq!(r.status, "success");
         assert_eq!(r.country.as_deref(), Some("Australia"));
         assert_eq!(r.country_code.as_deref(), Some("AU"));
         assert_eq!(r.city.as_deref(), Some("Brisbane"));
-        assert!((r.lat.unwrap() - (-27.4679)).abs() < 0.001);
-        assert!((r.lon.unwrap() - 153.0281).abs() < 0.001);
+        assert!((r.lat.expect("should succeed") - (-27.4679)).abs() < 0.001);
+        assert!((r.lon.expect("should succeed") - 153.0281).abs() < 0.001);
         assert_eq!(r.isp.as_deref(), Some("Telstra"));
         assert_eq!(r.mobile, Some(false));
         assert_eq!(r.proxy, Some(false));
@@ -27,7 +28,7 @@ use super::*;
     #[test]
     fn deserialize_fail_response() {
         let json = r#"{"status":"fail","message":"invalid query"}"#;
-        let r: IpApiResp = serde_json::from_str(json).unwrap();
+        let r: IpApiResp = serde_json::from_str(json).expect("should succeed");
         assert_eq!(r.status, "fail");
         assert!(r.country.is_none());
     }
@@ -35,7 +36,7 @@ use super::*;
     #[test]
     fn deserialize_proxy_hosting_flags() {
         let json = r#"{"status":"success","country":"US","lat":37.7,"lon":-122.4,"mobile":false,"proxy":true,"hosting":true}"#;
-        let r: IpApiResp = serde_json::from_str(json).unwrap();
+        let r: IpApiResp = serde_json::from_str(json).expect("should succeed");
         assert_eq!(r.proxy, Some(true));
         assert_eq!(r.hosting, Some(true));
     }
@@ -43,14 +44,14 @@ use super::*;
     #[test]
     fn deserialize_mobile_flag() {
         let json = r#"{"status":"success","country":"AU","lat":-33.8,"lon":151.2,"mobile":true,"proxy":false,"hosting":false}"#;
-        let r: IpApiResp = serde_json::from_str(json).unwrap();
+        let r: IpApiResp = serde_json::from_str(json).expect("should succeed");
         assert_eq!(r.mobile, Some(true));
     }
 
     #[test]
     fn deserialize_missing_optional_fields() {
         let json = r#"{"status":"success"}"#;
-        let r: IpApiResp = serde_json::from_str(json).unwrap();
+        let r: IpApiResp = serde_json::from_str(json).expect("should succeed");
         assert_eq!(r.status, "success");
         assert!(r.lat.is_none());
         assert!(r.lon.is_none());
@@ -89,8 +90,8 @@ use super::*;
         let coords = of_kind(&ents, EntityKind::Coordinates).expect("Coordinates entity");
         // coarse_provider_coords formats raw to 4 dp; Entity::new normalises to 6.
         assert_eq!(coords.value, "-27.467900,153.028100");
-        // Residential (no proxy/hosting/mobile) → 0.60.
-        assert!((coords.confidence - 0.60).abs() < 1e-9);
+        // Residential (no proxy/hosting/mobile) → confidence::MEDIUM_PLUS.
+        assert!((coords.confidence - confidence::MEDIUM_PLUS).abs() < 1e-9);
         assert!(coords.has_tag("geoint"));
         assert!(coords.has_tag("country:AU"));
         assert!(coords.has_tag("au-relevant"), "shared coarse builder tags AU box");
@@ -112,7 +113,7 @@ use super::*;
         assert_eq!(addr.value, "Brisbane, Queensland, Australia");
         assert!(addr.has_tag("geoint"));
 
-        assert_eq!(of_kind(&ents, EntityKind::Asn).unwrap().value, "AS1221 Telstra");
+        assert_eq!(of_kind(&ents, EntityKind::Asn).expect("should succeed").value, "AS1221 Telstra");
 
         let org = of_kind(&ents, EntityKind::Organisation).expect("Organisation");
         assert_eq!(org.value, "Telstra Corp");
@@ -148,7 +149,7 @@ use super::*;
                 "as":"AS13335 Cloudflare","org":"Cloudflare Inc",
                 "mobile":false,"proxy":true,"hosting":true}"#,
         );
-        let ents = build_entities(&body, "203.0.55.55", "s");
+        let ents = build_entities(&body, "203.confidence::MEDIUM_HIGH.55", "s");
 
         let coords = of_kind(&ents, EntityKind::Coordinates).expect("Coordinates entity");
         // hosting/proxy → 0.35.
@@ -174,8 +175,8 @@ use super::*;
             .into_iter()
             .find(|e| e.kind == EntityKind::Coordinates)
             .expect("Coordinates entity");
-        // mobile → 0.50.
-        assert!((coords.confidence - 0.50).abs() < 1e-9);
+        // mobile → confidence::MEDIUM.
+        assert!((coords.confidence - confidence::MEDIUM).abs() < 1e-9);
         assert!(coords.has_tag("mobile"));
         assert!(coords.has_tag("au-state:NSW"), "Sydney → NSW box");
     }
@@ -196,7 +197,7 @@ use super::*;
         );
         let addr = of_kind(&ents, EntityKind::Address).expect("Address survives");
         assert_eq!(addr.value, "Accra, Greater Accra, Ghana");
-        assert_eq!(of_kind(&ents, EntityKind::Asn).unwrap().value, "AS30986");
+        assert_eq!(of_kind(&ents, EntityKind::Asn).expect("should succeed").value, "AS30986");
         assert!(of_kind(&ents, EntityKind::Organisation).is_some());
     }
 

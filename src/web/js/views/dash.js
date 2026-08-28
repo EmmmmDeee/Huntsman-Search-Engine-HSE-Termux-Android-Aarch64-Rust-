@@ -32,7 +32,14 @@ function moduleHealthPanel(health){
 
 /* ═══════════ Page: DASHBOARD (#/dash) ═══════════ */
 export async function renderDash(v){
-  const [stats, mods, scansData, health] = await Promise.all([API.stats(), API.modules(), API.scans(), API.moduleHealth()]);
+  // allSettled, not all: a single secondary endpoint failure (module health,
+  // the module catalogue, …) must degrade its own panel to zeros/empty, not
+  // blank the entire home page.
+  const [statsR, modsR, scansR, healthR] = await Promise.allSettled([API.stats(), API.modules(), API.scans(), API.moduleHealth()]);
+  const stats     = statsR.status  === 'fulfilled' ? statsR.value  : {};
+  const mods      = modsR.status   === 'fulfilled' ? modsR.value   : { count: 0, modules: [] };
+  const scansData = scansR.status  === 'fulfilled' ? scansR.value  : { scans: [] };
+  const health    = healthR.status === 'fulfilled' ? healthR.value : null;
   const s = stats;
   const recent = (scansData.scans || []).slice(0, 8);
   const byStatus = s.scans_by_status || {};

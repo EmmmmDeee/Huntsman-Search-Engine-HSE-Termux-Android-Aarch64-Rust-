@@ -24,7 +24,7 @@ fn emits_username_and_profile_url() {
     let u = ents
         .iter()
         .find(|e| e.kind == EntityKind::Username)
-        .unwrap();
+        .expect("should succeed");
     assert!(u.has_tag("codewars") && u.has_tag("public-profile"));
     assert!((u.confidence - 0.84).abs() < 0.01);
 }
@@ -35,9 +35,9 @@ fn emits_person_from_multi_word_name() {
     let ents = build_entities(user, "scan-cw-002");
     let p = ents.iter().find(|e| e.kind == EntityKind::Person);
     assert!(p.is_some(), "must emit Person from multi-word name");
-    assert_eq!(p.unwrap().value, "Kim Developer");
-    assert!(p.unwrap().has_tag("codewars"));
-    assert!((p.unwrap().confidence - 0.68).abs() < 0.01);
+    assert_eq!(p.expect("should succeed").value, "Kim Developer");
+    assert!(p.expect("should succeed").has_tag("codewars"));
+    assert!((p.expect("should succeed").confidence - 0.68).abs() < 0.01);
 }
 
 #[test]
@@ -53,9 +53,12 @@ fn emits_organisation_from_clan() {
     let ents = build_entities(user, "scan-cw-004");
     let o = ents.iter().find(|e| e.kind == EntityKind::Organisation);
     assert!(o.is_some(), "must emit Organisation from clan field");
-    assert_eq!(o.unwrap().value, "Hack The Planet");
-    assert!(o.unwrap().has_tag("self-asserted") && o.unwrap().has_tag("codewars"));
-    assert!((o.unwrap().confidence - 0.48).abs() < 0.01);
+    assert_eq!(o.expect("should succeed").value, "Hack The Planet");
+    assert!(
+        o.expect("should succeed").has_tag("self-asserted")
+            && o.expect("should succeed").has_tag("codewars")
+    );
+    assert!((o.expect("should succeed").confidence - 0.48).abs() < 0.01);
 }
 
 #[test]
@@ -64,8 +67,8 @@ fn emits_address_from_city() {
     let ents = build_entities(user, "scan-cw-005");
     let a = ents.iter().find(|e| e.kind == EntityKind::Address);
     assert!(a.is_some(), "must emit Address from city field");
-    assert_eq!(a.unwrap().value, "Tokyo");
-    assert!(a.unwrap().has_tag("self-asserted"));
+    assert_eq!(a.expect("should succeed").value, "Tokyo");
+    assert!(a.expect("should succeed").has_tag("self-asserted"));
 }
 
 #[test]

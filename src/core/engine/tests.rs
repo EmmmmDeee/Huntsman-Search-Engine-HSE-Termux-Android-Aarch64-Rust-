@@ -5,6 +5,41 @@
 
 use super::*;
 
+#[tokio::test]
+async fn injected_module_runtime_is_used_by_the_engine() {
+    use crate::core::test_support::InMemoryStore;
+
+    struct RecordingRuntime(Arc<std::sync::atomic::AtomicU64>);
+
+    impl ModuleRuntime for RecordingRuntime {
+        fn reset_per_scan(&self, _scan_id: &str) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    let resets = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let runtime: Arc<dyn ModuleRuntime> = Arc::new(RecordingRuntime(Arc::clone(&resets)));
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(16);
+    let engine = ScanEngine::with_module_runtime(vec![], store, bus.clone(), runtime);
+    let target = Target::new(TargetKind::Username, "subject");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("username", "subject"),
+        target.clone(),
+    );
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: Default::default(),
+        cancel: Default::default(),
+    };
+
+    engine.run(scan, target, ctx).await.expect("should succeed");
+
+    assert_eq!(resets.load(std::sync::atomic::Ordering::Relaxed), 1);
+}
+
 #[test]
 fn consolidate_address_localities_folds_postcode_variants_codebase_wide() {
     use crate::core::entity::{Entity, EntityKind, Evidence};
@@ -19,8 +54,13 @@ fn consolidate_address_localities_folds_postcode_variants_codebase_wide() {
     let other = Entity::new(EntityKind::Address, "Brisbane, QLD 4000", 0.45, "s");
     let unrelated = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
 
+    let bare_uid = bare.uid.clone();
+    let survivor_uid = withpc.uid.clone();
     let mut entities = vec![bare, withpc, other, unrelated];
-    consolidate_address_localities(&mut entities);
+    let folded = consolidate_address_localities(&mut entities);
+    // The fold map names the victim (bare) → survivor (postcode-bearing), so the
+    // engine can detach the victim's observation and re-point its lineage edges.
+    assert_eq!(folded, vec![(bare_uid, survivor_uid)]);
 
     let addrs: Vec<&Entity> = entities
         .iter()
@@ -43,6 +83,39 @@ fn consolidate_address_localities_folds_postcode_variants_codebase_wide() {
     assert!(entities.iter().any(|e| e.kind == EntityKind::Email));
 }
 
+#[test]
+fn consolidate_address_localities_preserves_earliest_generation_even_when_survivor_is_the_longer_later_value()
+ {
+    use crate::core::entity::{Entity, EntityKind};
+
+    // Same locality, discovered directly in the seed round (generation 0) in
+    // its bare form, and only later — via a geocode/postcode lookup reached
+    // several pivots out (generation 2) — in its more specific, postcode-
+    // bearing form. Survivor selection picks the LONGER value (the postcode
+    // form), which here is the LATER-discovered one: `absorb` must not let
+    // that silently advance the merged entity's generation past the true
+    // earliest round the locality was actually confirmed in.
+    let mut bare = Entity::new(EntityKind::Address, "Murrumbateman, NSW", 0.45, "s");
+    bare.generation = 0;
+    let mut withpc = Entity::new(EntityKind::Address, "Murrumbateman, NSW 2582", 0.50, "s");
+    withpc.generation = 2;
+
+    let mut entities = vec![bare, withpc];
+    let _folded = consolidate_address_localities(&mut entities);
+
+    assert_eq!(entities.len(), 1, "the two variants should fold to one");
+    let survivor = &entities[0];
+    assert_eq!(
+        survivor.value, "Murrumbateman, NSW 2582",
+        "specificity still wins the display value"
+    );
+    assert_eq!(
+        survivor.generation, 0,
+        "the merged locality entity must preserve the EARLIEST true discovery generation (0), \
+         not silently advance to the later-discovered spelling's generation"
+    );
+}
+
 /// Free, offline cross-angle confirmation: a lone single-source family-candidate
 /// near the subject's confirmed location is promoted (tagged + corroborated) into
 /// a reliable relative, while a far namesake is left alone — and the pass is
@@ -54,6 +127,7 @@ fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
     // Subject's confirmed GPS near Woodford, QLD.
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     gps.tag("geoint");
+    gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
     // A single-source (QLD register) family-candidate near the subject.
     let mut erik = Entity::new(EntityKind::Person, "Erik Moreau", 0.32, "s");
     erik.tag("family-candidate");
@@ -75,7 +149,10 @@ fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
         "only the in-area relative is promoted"
     );
 
-    let erik = ents.iter().find(|e| e.value == "Erik Moreau").unwrap();
+    let erik = ents
+        .iter()
+        .find(|e| e.value == "Erik Moreau")
+        .expect("should succeed");
     assert!(erik.has_tag("geo-corroborated"));
     assert!(
         erik.evidence
@@ -93,7 +170,10 @@ fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
     );
     assert_eq!(erik.classify(), Classification::Probable);
 
-    let far = ents.iter().find(|e| e.value.contains("4870")).unwrap();
+    let far = ents
+        .iter()
+        .find(|e| e.value.contains("4870"))
+        .expect("should succeed");
     assert!(
         !far.has_tag("geo-corroborated"),
         "a far namesake stays a candidate"
@@ -123,6 +203,7 @@ fn promote_breach_candidate_geo_corroborated_lifts_same_place_same_name_records(
     // Subject's confirmed GPS in Brisbane.
     let mut gps = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
     gps.tag("geoint");
+    gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
 
     // A same-name breach candidate in the same metro (South Brisbane 4101, ~2 km).
     let mut near = Entity::new(EntityKind::Email, "matt@example.com", 0.25, "s");
@@ -143,7 +224,10 @@ fn promote_breach_candidate_geo_corroborated_lifts_same_place_same_name_records(
         "only the same-metro breach record is re-promoted"
     );
 
-    let near = ents.iter().find(|e| e.value == "matt@example.com").unwrap();
+    let near = ents
+        .iter()
+        .find(|e| e.value == "matt@example.com")
+        .expect("should succeed");
     assert!(
         !near.has_tag(crate::core::tags::CANDIDATE),
         "un-quarantined out of candidate"
@@ -159,7 +243,7 @@ fn promote_breach_candidate_geo_corroborated_lifts_same_place_same_name_records(
     let far = ents
         .iter()
         .find(|e| e.value == "matt2@example.com")
-        .unwrap();
+        .expect("should succeed");
     assert!(
         far.has_tag(crate::core::tags::CANDIDATE),
         "an interstate same-name namesake stays quarantined"
@@ -178,6 +262,92 @@ fn promote_breach_candidate_geo_corroborated_lifts_same_place_same_name_records(
         e
     }];
     assert_eq!(promote_breach_candidate_geo_corroborated(&mut lone), 0);
+}
+
+/// Reconsideration must keep running on a LARGE working set — the case where
+/// coming back to a set-aside lead matters most. Before this was split from the
+/// live-correlation bound, a working set over 400 entities skipped the whole
+/// free/offline re-promotion pass, so a breach candidate that a later round had
+/// geo-corroborated was never lifted above the expansion floor and so never
+/// expanded (finalise re-promotes it, but finalise is after the last expansion
+/// round). This builds a set well past the old bound and asserts the promotion
+/// still happens AND is written back dirty-tracked so it is checkpointed.
+#[test]
+fn reconsider_working_set_still_promotes_above_the_live_correlation_bound() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    let mut map = TrackedEntityMap::new();
+
+    // Subject's confirmed GPS in Brisbane, and a same-metro same-name breach
+    // candidate (South Brisbane 4101, ~2 km) that reconsideration should lift.
+    let mut gps = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    gps.tag("geoint");
+    gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
+    map.insert(gps.uid.clone(), gps);
+    let mut cand = Entity::new(EntityKind::Email, "matt@example.com", 0.25, "s");
+    cand.tag(crate::core::tags::CANDIDATE);
+    cand.tag("breach");
+    cand.add_evidence(Evidence::new("oathnet_pro", "breach row").with_attr("postcode", "4101"));
+    let cand_uid = cand.uid.clone();
+    map.insert(cand_uid.clone(), cand);
+
+    // Pad with inert entities until the set is comfortably past the OLD bound
+    // (the live-correlation threshold), so the only thing that lets the
+    // promotion run is reconsideration's own, higher bound.
+    let pad_target = ScanEngine::INCREMENTAL_CORRELATE_MAX_ENTITIES + 100;
+    for i in 0..pad_target {
+        let e = Entity::new(EntityKind::Username, format!("filler{i}"), 0.8, "s");
+        map.insert(e.uid.clone(), e);
+    }
+    assert!(
+        map.len() > ScanEngine::INCREMENTAL_CORRELATE_MAX_ENTITIES,
+        "set must exceed the old gate for this test to be meaningful"
+    );
+    assert!(map.len() <= RECONSIDER_MAX_ENTITIES);
+
+    // Clear the dirty set the setup inserts left behind, so the next
+    // `take_dirty()` reflects ONLY what reconsideration itself changed.
+    let _ = map.take_dirty();
+
+    let promoted = reconsider_working_set(&mut map, &[]);
+    assert_eq!(
+        promoted, 1,
+        "the geo-corroborated breach candidate is promoted"
+    );
+
+    // The re-promotion is visible in the map (written back)...
+    let lifted = map.get(&cand_uid).expect("candidate still present");
+    assert!(
+        !lifted.has_tag(crate::core::tags::CANDIDATE),
+        "un-quarantined"
+    );
+    assert!(lifted.has_tag("breach-corroborated"));
+    assert!(lifted.confidence >= 0.50, "lifted to Probable");
+    // ...and ONLY it is dirty-tracked. Writing the whole snapshot back would
+    // dirty every entity in the working set on this single promotion and force
+    // the round's checkpoint to persist all ~500 — the dirty set must contain
+    // exactly the one entity that actually changed.
+    let dirty = map.take_dirty();
+    assert_eq!(
+        dirty.len(),
+        1,
+        "exactly one entity changed, so exactly one must be dirty (got {})",
+        dirty.len()
+    );
+    assert_eq!(dirty[0].uid, cand_uid);
+
+    // A pathologically huge set is bounded out (the per-round clone guard), and
+    // returns 0 rather than stalling.
+    let mut huge = TrackedEntityMap::new();
+    for i in 0..(RECONSIDER_MAX_ENTITIES + 1) {
+        let e = Entity::new(EntityKind::Username, format!("u{i}"), 0.5, "s");
+        huge.insert(e.uid.clone(), e);
+    }
+    assert_eq!(
+        reconsider_working_set(&mut huge, &[]),
+        0,
+        "over-bound is skipped"
+    );
 }
 
 /// Free, offline: an identity pair joined by two orthogonal pathways has BOTH
@@ -220,7 +390,7 @@ fn promote_multipath_corroborated_lifts_only_orthogonally_linked_endpoints() {
         "both identity endpoints are promoted"
     );
     for v in ["a@x.com", "bob"] {
-        let e = ents.iter().find(|e| e.value == v).unwrap();
+        let e = ents.iter().find(|e| e.value == v).expect("should succeed");
         assert!(e.has_tag("multipath-corroborated"), "{v} must be tagged");
         assert!(
             e.evidence
@@ -231,7 +401,7 @@ fn promote_multipath_corroborated_lifts_only_orthogonally_linked_endpoints() {
     }
     // The conduit intermediates are NOT themselves corroborated.
     for v in ["x.com", "Acme Pty"] {
-        let e = ents.iter().find(|e| e.value == v).unwrap();
+        let e = ents.iter().find(|e| e.value == v).expect("should succeed");
         assert!(
             !e.has_tag("multipath-corroborated"),
             "{v} is a conduit, not a corroborated endpoint"
@@ -282,7 +452,7 @@ fn promote_cross_scan_corroborated_lifts_queued_endpoints_idempotently() {
         "both queued endpoints are promoted"
     );
     for uid in [&ua, &ub] {
-        let e = ents.iter().find(|e| &e.uid == uid).unwrap();
+        let e = ents.iter().find(|e| &e.uid == uid).expect("should succeed");
         assert!(
             e.has_tag("cross-scan-corroborated"),
             "endpoint must be tagged"
@@ -295,7 +465,10 @@ fn promote_cross_scan_corroborated_lifts_queued_endpoints_idempotently() {
         );
     }
     // An entity not in the boost set is untouched.
-    let other = ents.iter().find(|e| e.value == "x.com").unwrap();
+    let other = ents
+        .iter()
+        .find(|e| e.value == "x.com")
+        .expect("should succeed");
     assert!(!other.has_tag("cross-scan-corroborated"));
 
     // Idempotent, and an empty boost set is a no-op.
@@ -318,6 +491,7 @@ fn flag_geo_discordant_namesakes_is_surname_aware_and_tag_only() {
     // Subject's confirmed GPS near Woodford, QLD (Brisbane catchment).
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     gps.tag("geoint");
+    gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
     // Far (Perth, ~3600 km) COMMON-surname candidate → a likely namesake.
     let mut common = Entity::new(EntityKind::Person, "Curt Smith", 0.32, "s");
     common.tag("family-candidate");
@@ -339,7 +513,10 @@ fn flag_geo_discordant_namesakes_is_surname_aware_and_tag_only() {
         "only the far COMMON-surname namesake is flagged"
     );
 
-    let common = ents.iter().find(|e| e.value == "Curt Smith").unwrap();
+    let common = ents
+        .iter()
+        .find(|e| e.value == "Curt Smith")
+        .expect("should succeed");
     assert!(common.has_tag("geo-discordant"));
     // Tag-only: confidence and the corroboration count are untouched, so a
     // negative signal can never PROMOTE the namesake it means to demote.
@@ -351,12 +528,18 @@ fn flag_geo_discordant_namesakes_is_surname_aware_and_tag_only() {
     );
 
     // A far DISTINCTIVE surname is distant kin, not a namesake.
-    let rare = ents.iter().find(|e| e.value == "Curt Moreau").unwrap();
+    let rare = ents
+        .iter()
+        .find(|e| e.value == "Curt Moreau")
+        .expect("should succeed");
     assert!(
         !rare.has_tag("geo-discordant"),
         "a far distinctive surname is kin, never a namesake"
     );
-    let near = ents.iter().find(|e| e.value.contains("4519")).unwrap();
+    let near = ents
+        .iter()
+        .find(|e| e.value.contains("4519"))
+        .expect("should succeed");
     assert!(
         !near.has_tag("geo-discordant"),
         "an in-area relative is never a namesake"
@@ -386,6 +569,7 @@ fn namesake_flagging_uses_the_subject_surname() {
 
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     gps.tag("geoint");
+    gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
     // A far family-candidate Address (no name of its own) in Perth, WA.
     let mut far = Entity::new(EntityKind::Address, "WA 6000, Australia", 0.32, "s");
     far.tag("family-candidate");
@@ -477,18 +661,18 @@ fn finalise_correlation_pass_survives_a_panicking_rule() {
     // scan harvested. The guard degrades a caught panic to `None` (no finalise
     // correlations), exactly as the live incremental pass does, so the scan still
     // finalises.
-    let panicked = guarded_finalise_correlation("s", || panic!("kaboom in a correlation rule"));
+    let panicked = guarded_correlation_pass("s", || panic!("kaboom in a correlation rule"));
     assert!(
         panicked.is_none(),
         "a panicking finalise pass must be caught and degrade to no firings, not unwind"
     );
 
     // A returned error is likewise swallowed to `None` (unchanged behaviour).
-    let errored = guarded_finalise_correlation("s", || Err(Error::module("correlator", "boom")));
+    let errored = guarded_correlation_pass("s", || Err(Error::module("correlator", "boom")));
     assert!(errored.is_none(), "a returned error yields no firings");
 
     // The happy path passes the firings straight through for emission.
-    let ok = guarded_finalise_correlation("s", || {
+    let ok = guarded_correlation_pass("s", || {
         Ok(vec![Correlation::new(
             "AU-000",
             "test correlation",
@@ -626,7 +810,7 @@ fn cmp_expansion_candidates_is_a_consistent_total_order() {
 
 #[test]
 fn allowlist_applies_on_expansion_rounds_not_just_the_seed() {
-    // Regression: the allowlist ("only these modules run", docs/USAGE.md) was
+    // Regression: the allowlist ("only these modules run", `hse --help`) was
     // gated by `!is_expansion`, so non-allowlisted modules ran on discovered
     // entities during expansion — a real defect (focused/offline scans fanned
     // out to every network module the moment they expanded).
@@ -677,7 +861,10 @@ fn module_dispatch_is_logged_keyed_by_module_name() {
     struct VecWriter(Arc<Mutex<Vec<u8>>>);
     impl Write for VecWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
+            self.0
+                .lock()
+                .expect("should succeed")
+                .extend_from_slice(buf);
             Ok(buf.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
@@ -700,7 +887,8 @@ fn module_dispatch_is_logged_keyed_by_module_name() {
     tracing::subscriber::with_default(subscriber, || {
         log_module_dispatch("hibp", &Target::new(TargetKind::Email, "a@b.com"));
     });
-    let out = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+    let out =
+        String::from_utf8(buf.lock().expect("should succeed").clone()).expect("should succeed");
     assert!(
         out.contains("dispatch"),
         "dispatch event missing; got: {out:?}"
@@ -835,6 +1023,15 @@ fn pub_target() -> Target {
     Target::new(TargetKind::IpAddress, "1.1.1.1")
 }
 
+/// A shared empty capability-quarantine set for `DispatchCx` test literals —
+/// these tests exercise dispatch paths where capability-aware dispatch is off
+/// (nothing quarantined), so they borrow one process-static empty set.
+fn no_quarantine() -> &'static std::collections::HashSet<String> {
+    static EMPTY: std::sync::OnceLock<std::collections::HashSet<String>> =
+        std::sync::OnceLock::new();
+    EMPTY.get_or_init(std::collections::HashSet::new)
+}
+
 #[test]
 fn circuit_breaker_trip_skips_the_module_at_the_dispatch_gate() {
     // Wiring proof for the circuit breaker: once a module trips (a rate-limit /
@@ -896,8 +1093,9 @@ async fn cache_replay_does_not_feed_the_circuit_breaker_success_path() {
         opts: &opts,
         is_expansion: false,
         seed_kind: TargetKind::Email,
+        quarantined: no_quarantine(),
     };
-    let mut entity_map: HashMap<String, Entity> = HashMap::new();
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
     let mut stats = ModuleStats::default();
     let mut dispatched: DispatchLog = DispatchLog::new();
     let mut newly_inserted: Vec<String> = Vec::new();
@@ -1261,7 +1459,7 @@ fn target_distinct_sources_excludes_geo_normalize_enrichment() {
     );
 
     // A genuine second geo source lifts it to 2 → WiGLE may fire.
-    let e = map.get_mut(&coord.uid).unwrap();
+    let e = map.get_mut(&coord.uid).expect("should succeed");
     e.add_evidence(Evidence::new("geocode", "reverse geocode"));
     assert_eq!(target_distinct_sources(&map, &target), 2);
 
@@ -1669,8 +1867,8 @@ async fn recall_prior_entities_pulls_and_tags_prior_scan_findings() {
     );
     email.tag("planted");
     email.add_evidence(Evidence::new("plant", "found in an earlier scan"));
-    store.upsert_entity(&seed).unwrap();
-    store.upsert_entity(&email).unwrap();
+    store.upsert_entity(&seed).expect("should succeed");
+    store.upsert_entity(&email).expect("should succeed");
 
     let (bus, _rx) = tokio::sync::broadcast::channel(8);
     let engine = ScanEngine::new(vec![], store_port, bus);
@@ -1705,6 +1903,188 @@ async fn recall_prior_entities_pulls_and_tags_prior_scan_findings() {
             .recall_prior_entities(&target, "prior-scan", true)
             .is_empty(),
         "the sole prior scan is the requesting scan ⇒ empty recall"
+    );
+}
+
+/// Recalled prior-scan knowledge is injected before the seed round, so it is
+/// generation-0 background context for THIS scan — its stored generation
+/// (relative to a different scan's seed) is meaningless here and must be reset.
+#[tokio::test]
+async fn recall_resets_generation_to_zero() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+
+    let mut seed = Entity::new(EntityKind::Username, "recallgen", 0.9, "prior-scan");
+    seed.add_evidence(Evidence::new("anchor", "seed"));
+    let mut deep = Entity::new(EntityKind::Email, "deeplead@gmail.com", 0.8, "prior-scan");
+    deep.generation = 5; // was a deep pivot in the PRIOR scan
+    deep.add_evidence(Evidence::new("plant", "found deep in an earlier scan"));
+    store.upsert_entity(&seed).expect("should succeed");
+    store.upsert_entity(&deep).expect("should succeed");
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let engine = ScanEngine::new(vec![], store_port, bus);
+    let target = Target::new(TargetKind::Username, "recallgen");
+
+    let recalled = engine.recall_prior_entities(&target, "current-scan", true);
+    let got = recalled
+        .iter()
+        .find(|e| e.value == "deeplead@gmail.com")
+        .expect("recall surfaces the prior deep lead");
+    assert_eq!(
+        got.generation, 0,
+        "a recalled node re-enters at generation 0, not its prior-scan generation"
+    );
+}
+
+/// A role/provider mailbox (`dns@cloudflare.com`) admitted into the store by
+/// an older or now-gated code path must never be resurrected by recall — the
+/// live admission gate already refuses to mint one as a first-class Email
+/// entity (dns_intel's SOA-admin path, whois, ripestat, search_engines all
+/// agree), so recall replaying it forever regardless of that gate is the bug:
+/// a live `see-know.xyz` scan recalled `dns@cloudflare.com` at
+/// corroboration=396, glued together from 90+ unrelated domains' "Zone admin
+/// for X" evidence purely because the value is shared Cloudflare-wide. A
+/// genuine personal email must still recall normally.
+#[tokio::test]
+async fn recall_never_resurrects_a_role_mailbox_email() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+
+    let mut seed = Entity::new(EntityKind::Domain, "see-know.xyz", 0.9, "prior-scan");
+    seed.add_evidence(Evidence::new("anchor", "seed"));
+    let mut role = Entity::new(EntityKind::Email, "dns@cloudflare.com", 0.65, "prior-scan");
+    role.tag("dns-admin");
+    role.add_evidence(Evidence::new(
+        "dns_intel",
+        "Zone admin for unrelated-domain.com",
+    ));
+    let mut personal = Entity::new(EntityKind::Email, "owner@see-know.xyz", 0.8, "prior-scan");
+    personal.add_evidence(Evidence::new("whois", "Registrant contact"));
+    store.upsert_entity(&seed).expect("should succeed");
+    store.upsert_entity(&role).expect("should succeed");
+    store.upsert_entity(&personal).expect("should succeed");
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let engine = ScanEngine::new(vec![], store_port, bus);
+    let target = Target::new(TargetKind::Domain, "see-know.xyz");
+
+    let recalled = engine.recall_prior_entities(&target, "current-scan", true);
+    assert!(
+        !recalled.iter().any(|e| e.value == "dns@cloudflare.com"),
+        "a role mailbox must never be recalled, no matter how it got into the store"
+    );
+    assert!(
+        recalled.iter().any(|e| e.value == "owner@see-know.xyz"),
+        "a genuine personal/registrant email must still recall normally"
+    );
+}
+
+/// Expansion stamps every entity's `generation` with the round it was first
+/// discovered — its distance in pivots from the seed. A deterministic chain
+/// module emits exactly one successor per target, so the seed round yields a
+/// generation-0 child, round 1 a generation-1 child, round 2 a generation-2
+/// child. Merges preserve the earliest generation, so a later round re-emitting
+/// an earlier entity never resets it.
+struct ChainModule;
+
+#[async_trait::async_trait]
+impl Module for ChainModule {
+    fn name(&self) -> &'static str {
+        "chain"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Username)
+    }
+    fn produces(&self) -> &'static [EntityKind] {
+        const K: &[EntityKind] = &[EntityKind::Username];
+        K
+    }
+    async fn process(
+        &self,
+        target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        let mut r = crate::core::module::ModuleResult::new();
+        let next = match target.value.as_str() {
+            "seed" => Some("g0child"),
+            "g0child" => Some("g1child"),
+            "g1child" => Some("g2child"),
+            _ => None,
+        };
+        if let Some(n) = next {
+            let mut e = Entity::new(EntityKind::Username, n, 0.9, &ctx.scan_id);
+            e.tag("chain");
+            e.add_evidence(crate::core::entity::Evidence::new("chain", "synthetic"));
+            r.push(e);
+        }
+        Ok(r)
+    }
+}
+
+#[tokio::test]
+async fn expansion_stamps_entity_generation_per_round() {
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, _rx) = tokio::sync::broadcast::channel(256);
+    let engine = ScanEngine::new(vec![Arc::new(ChainModule)], store_port, bus.clone());
+
+    // depth 2 → rounds 1 and 2 run. Gates bypassed so the synthetic chain isn't
+    // pruned as a wrong-identity / low-confidence pivot, and ROI off so the
+    // adaptive-depth cutoff can't stop the chain early.
+    let opts = ScanOptions {
+        depth: 2,
+        expand_all_identities: true,
+        max_roi: false,
+        min_expand_confidence: 0.0,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Username, "seed");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("username", "seed"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let scan_id = scan.id.clone();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    engine.run(scan, target, ctx).await.expect("should succeed");
+
+    let ents = store.entities_for_scan(&scan_id).expect("should succeed");
+    let gen_of = |v: &str| ents.iter().find(|e| e.value == v).map(|e| e.generation);
+    // The seed's own anchor and its direct module output are generation 0 (zero pivots).
+    assert_eq!(gen_of("seed"), Some(0), "seed anchor is generation 0");
+    assert_eq!(
+        gen_of("g0child"),
+        Some(0),
+        "seed-round child is generation 0"
+    );
+    // Each expansion round is one pivot further out along the derivation trail.
+    assert_eq!(
+        gen_of("g1child"),
+        Some(1),
+        "first expansion child is generation 1"
+    );
+    assert_eq!(
+        gen_of("g2child"),
+        Some(2),
+        "second expansion child is generation 2"
     );
 }
 
@@ -1770,7 +2150,7 @@ async fn recall_prior_entities_tie_breaks_equal_confidence_by_uid() {
     // make the recalled run monotonic — a stable sort alone preserves the
     // randomised HashMap order.
     let seed = Entity::new(EntityKind::Username, "tiebreaksubject", 0.95, "prior-scan");
-    store.upsert_entity(&seed).unwrap();
+    store.upsert_entity(&seed).expect("should succeed");
     for i in 0..24u32 {
         let mut email = Entity::new(
             EntityKind::Email,
@@ -1779,7 +2159,7 @@ async fn recall_prior_entities_tie_breaks_equal_confidence_by_uid() {
             "prior-scan",
         );
         email.add_evidence(Evidence::new("plant", "found in an earlier scan"));
-        store.upsert_entity(&email).unwrap();
+        store.upsert_entity(&email).expect("should succeed");
     }
 
     let (bus, _rx) = tokio::sync::broadcast::channel(8);
@@ -1840,7 +2220,7 @@ async fn recall_resolves_a_fullname_seed_despite_reformatting() {
         let _ = std::fs::remove_file(format!("{p}-shm"));
     };
     cleanup(&path);
-    let store: Arc<dyn StoragePort> = Arc::new(Store::open(&path).unwrap());
+    let store: Arc<dyn StoragePort> = Arc::new(Store::open(&path).expect("should succeed"));
 
     // A prior scan stored the Person anchor TITLE-CASED (as name parsing does)
     // plus a discovered email no live module will re-emit.
@@ -1849,13 +2229,13 @@ async fn recall_resolves_a_fullname_seed_despite_reformatting() {
             "prior",
             Target::new(TargetKind::FullName, "Jordan Meyers"),
         ))
-        .unwrap();
+        .expect("should succeed");
     let mut person = Entity::new(EntityKind::Person, "Jordan Meyers", 0.9, "prior");
     person.add_evidence(Evidence::new("name_intel", "seed"));
     let mut email = Entity::new(EntityKind::Email, "jordanlead@gmail.com", 0.8, "prior");
     email.add_evidence(Evidence::new("hibp", "breach"));
-    store.upsert_entity(&person).unwrap();
-    store.upsert_entity(&email).unwrap();
+    store.upsert_entity(&person).expect("should succeed");
+    store.upsert_entity(&email).expect("should succeed");
 
     let (bus, _rx) = tokio::sync::broadcast::channel(8);
     let engine = ScanEngine::new(vec![], store, bus);
@@ -1872,6 +2252,89 @@ async fn recall_resolves_a_fullname_seed_despite_reformatting() {
             "recall must resolve FullName '{input}' to the prior scan's email via the token-set fallback"
         );
     }
+
+    cleanup(&path);
+}
+
+/// Real-behaviour regression (execution-validated): recall re-injects STORED
+/// entities the database already counts, so re-persisting them across repeated
+/// warm re-scans must be IDEMPOTENT in corroboration — the corroboration-0 reset
+/// in [`ScanEngine::recall_prior_entities`] keeps the GREATEST-merge from
+/// compounding the DB's count every scan. A live `see-know.xyz` run once
+/// ballooned a recalled node to corroboration 396 this way, and a synthetic
+/// name_intel re-scan loop reproduced 2 → 8 → 42 → 296 before the reset landed.
+///
+/// This pins the END-TO-END property the single-call `recall_resets_generation_
+/// to_zero` test structurally cannot reach: the blow-up only emerges across
+/// multiple persist→recall→persist cycles through the real merge. Drive eight
+/// real recall/re-persist cycles against the SQLite store and assert the count
+/// stays bounded — deleting the `corroboration = 0` line turns this into a
+/// ≥ 2ⁿ explosion the bound catches immediately.
+#[tokio::test]
+async fn recall_re_persist_does_not_inflate_corroboration_across_rescans() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::storage::Store;
+
+    let path = format!(
+        "{}/.hse-recall-inflation-{}.db",
+        std::env::temp_dir().to_string_lossy(),
+        std::process::id()
+    );
+    let cleanup = |p: &str| {
+        let _ = std::fs::remove_file(p);
+        let _ = std::fs::remove_file(format!("{p}-wal"));
+        let _ = std::fs::remove_file(format!("{p}-shm"));
+    };
+    cleanup(&path);
+    let store: Arc<dyn StoragePort> = Arc::new(Store::open(&path).expect("should succeed"));
+
+    // Scan 1 persists the seed + one discovered lead (each at the default
+    // corroboration 1) — the state a warm-database re-scan starts from.
+    store
+        .upsert_scan(&Scan::new(
+            "scan-1",
+            Target::new(TargetKind::Username, "invtarget"),
+        ))
+        .expect("should succeed");
+    let mut seed = Entity::new(EntityKind::Username, "invtarget", 0.9, "scan-1");
+    seed.add_evidence(Evidence::new("anchor", "seed"));
+    let mut lead = Entity::new(EntityKind::Email, "invlead@gmail.com", 0.8, "scan-1");
+    lead.add_evidence(Evidence::new("hibp", "breach"));
+    let lead_uid = lead.uid.clone();
+    store.upsert_entity(&seed).expect("should succeed");
+    store.upsert_entity(&lead).expect("should succeed");
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let engine = ScanEngine::new(vec![], store.clone(), bus);
+    let target = Target::new(TargetKind::Username, "invtarget");
+
+    // Eight warm re-scans: each recalls the prior entities (as the engine's seed
+    // round does) and re-persists them (as checkpoint/finalise does).
+    let mut corrs = Vec::new();
+    for i in 2..=9 {
+        let scan = format!("scan-{i}");
+        let recalled = engine.recall_prior_entities(&target, &scan, true);
+        assert!(
+            recalled.iter().any(|e| e.uid == lead_uid),
+            "recall must surface the prior lead on re-scan {i}"
+        );
+        store
+            .upsert_entities_batch(&recalled)
+            .expect("should succeed");
+        let held = store
+            .get_entity(&lead_uid)
+            .expect("should succeed")
+            .expect("lead persists across re-scans");
+        corrs.push(held.corroboration);
+    }
+
+    // Idempotent: re-persisting recalled (count-0) data never compounds the
+    // store's true count, so it stays flat. Without the reset this is the
+    // 2 → 8 → 42 → 296 blow-up (≥ 2ⁿ), which this bound catches at cycle 3.
+    assert!(
+        corrs.iter().all(|&c| c <= 2),
+        "recall re-persist inflated corroboration across re-scans (must stay bounded): {corrs:?}"
+    );
 
     cleanup(&path);
 }
@@ -2020,8 +2483,9 @@ async fn admitted_entities_are_stamped_with_their_modules_attack_techniques() {
             opts: &opts,
             is_expansion: false,
             seed_kind: TargetKind::Email,
+            quarantined: no_quarantine(),
         };
-        let mut entity_map: HashMap<String, Entity> = HashMap::new();
+        let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
         let mut stats = ModuleStats::default();
         let mut dispatched: DispatchLog = DispatchLog::new();
         let mut newly_inserted: Vec<String> = Vec::new();
@@ -2156,8 +2620,9 @@ async fn concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_s
         opts: &opts,
         is_expansion: false,
         seed_kind: TargetKind::Username,
+        quarantined: no_quarantine(),
     };
-    let mut entity_map: HashMap<String, Entity> = HashMap::new();
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
     let mut stats = ModuleStats::default();
     let mut dispatched: DispatchLog = DispatchLog::new();
     let mut newly_inserted: Vec<String> = Vec::new();
@@ -2183,13 +2648,175 @@ async fn concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_s
     );
 }
 
+/// A probe whose static metadata (priority / cost / category / declared outputs)
+/// is fully configurable, and whose `process()` emits ONE entity tagged with a
+/// distinctive value — so a truncated dispatch reveals WHICH module ran first.
+struct ConvexProbe {
+    name: &'static str,
+    value: &'static str,
+    priority: u8,
+    cost: ModuleCost,
+    category: crate::core::module::ModuleCategory,
+    produces: &'static [crate::core::entity::EntityKind],
+}
+
+#[async_trait::async_trait]
+impl Module for ConvexProbe {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn priority(&self) -> u8 {
+        self.priority
+    }
+    fn accepts(&self, _: &Target) -> bool {
+        true
+    }
+    fn cost(&self) -> ModuleCost {
+        self.cost
+    }
+    fn category(&self) -> crate::core::module::ModuleCategory {
+        self.category
+    }
+    fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
+        self.produces
+    }
+    async fn process(
+        &self,
+        _: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut e = Entity::new(EntityKind::Username, self.value, 0.9, &ctx.scan_id);
+        e.add_evidence(Evidence::new(self.name, "synthetic"));
+        let mut r = crate::core::module::ModuleResult::new();
+        r.push(e);
+        Ok(r)
+    }
+}
+
+/// End-to-end proof that the convex query-value order is the one the engine
+/// actually dispatches in under `convex_budget`. Two modules accept the seed: a
+/// HIGH-priority, paid, terminal one (low query value) and a LOW-priority,
+/// keyless, identity-producing one (high query value). Dispatched sequentially
+/// with `max_entities: 1`, exactly ONE module runs — so the single surviving
+/// entity names the module the engine chose to spend the budget on FIRST.
+///
+///   * `convex_budget: false` → plain priority order → the priority-90 paid
+///     terminal module runs → the survivor is `terminal_hit`.
+///   * `convex_budget: true`  → convex query-value order INVERTS it → the cheap,
+///     keyless, identity-unlocking module runs despite its priority of 10 → the
+///     survivor is `cascade_hit`.
+///
+/// This is the value-per-query guarantee: when the phone's budget truncates the
+/// dispatch sequence, the convex order has already spent it on the highest-return
+/// query. It also pins the safety property — the flag OFF is byte-identical to
+/// the established priority behaviour.
+#[tokio::test]
+async fn convex_budget_dispatches_the_highest_query_value_module_first() {
+    use crate::core::entity::EntityKind;
+    use crate::core::module::ModuleCategory;
+    use crate::core::test_support::InMemoryStore;
+
+    const TERMINAL_OUT: &[EntityKind] = &[EntityKind::Coordinates];
+    const CASCADE_OUT: &[EntityKind] = &[EntityKind::Email];
+
+    // Run one sequential, max_entities=1 dispatch and return the single surviving
+    // entity value — i.e. which module the engine fired first.
+    async fn survivor(convex_budget: bool) -> String {
+        let modules: Vec<Arc<dyn Module>> = vec![
+            Arc::new(ConvexProbe {
+                name: "hi_prio_paid_terminal",
+                value: "terminal_hit",
+                priority: 90,
+                cost: ModuleCost::Paid,
+                category: ModuleCategory::Threat,
+                produces: TERMINAL_OUT,
+            }),
+            Arc::new(ConvexProbe {
+                name: "lo_prio_free_cascade",
+                value: "cascade_hit",
+                priority: 10,
+                cost: ModuleCost::Free,
+                category: ModuleCategory::Breach,
+                produces: CASCADE_OUT,
+            }),
+        ];
+        let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+        let (bus, _rx) = tokio::sync::broadcast::channel(64);
+        let engine = ScanEngine::new(modules, store, bus.clone());
+
+        let target = Target::new(TargetKind::Username, "convex-order-seed");
+        let opts = ScanOptions {
+            // Sequential path: dispatches strictly in order, stops at the cap.
+            max_concurrent: 0,
+            max_entities: Some(1),
+            convex_budget,
+            ..Default::default()
+        };
+        let mut ctx = ModuleContext {
+            scan_id: "convex-order-scan".to_string(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+        let cx = DispatchCx {
+            scan_id: "convex-order-scan",
+            target: &target,
+            opts: &opts,
+            is_expansion: false,
+            seed_kind: TargetKind::Username,
+            quarantined: no_quarantine(),
+        };
+        let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+        let mut stats = ModuleStats::default();
+        let mut dispatched: DispatchLog = DispatchLog::new();
+        let mut newly_inserted: Vec<String> = Vec::new();
+        let mut state = DispatchState {
+            entity_map: &mut entity_map,
+            stats: &mut stats,
+            dispatched: &mut dispatched,
+            newly_inserted: &mut newly_inserted,
+        };
+        engine
+            .dispatch_target(&cx, &mut ctx, &mut state)
+            .await
+            .expect("dispatch runs");
+        assert_eq!(entity_map.len(), 1, "max_entities=1 must admit exactly one");
+        entity_map
+            .into_inner()
+            .into_values()
+            .next()
+            .expect("should succeed")
+            .value
+    }
+
+    // Flag OFF: established priority order — the priority-90 module wins.
+    assert_eq!(
+        survivor(false).await,
+        "terminal_hit",
+        "with convex_budget off the highest-PRIORITY module must dispatch first"
+    );
+    // Flag ON: convex order — the cheap, high-optionality query wins despite its
+    // far lower priority.
+    assert_eq!(
+        survivor(true).await,
+        "cascade_hit",
+        "with convex_budget on the highest-QUERY-VALUE module must dispatch first"
+    );
+}
+
 #[test]
 fn rank_enrichment_leverage_orders_join_keys_by_cross_scan_degree() {
     use crate::core::entity::{Entity, EntityKind};
     use crate::core::test_support::InMemoryStore;
 
     let store = InMemoryStore::new();
-    let up = |k, v, s| store.upsert_entity(&Entity::new(k, v, 0.7, s)).unwrap();
+    let up = |k, v, s| {
+        store
+            .upsert_entity(&Entity::new(k, v, 0.7, s))
+            .expect("should succeed");
+    };
 
     // An email observed across THREE investigations — in the in-memory store the
     // accumulated corroboration is the observation_count, i.e. cross-scan degree 3.
@@ -2266,8 +2893,8 @@ async fn checkpoint_entities_canonicalizes_evidence_order_regardless_of_arrival_
     let engine_b = ScanEngine::new(vec![], store_b.clone(), bus);
     engine_b.checkpoint_entities("scan-a", &mut [aaa_then_zzz]);
 
-    let recovered_a = store_a.entities_for_scan("scan-a").unwrap();
-    let recovered_b = store_b.entities_for_scan("scan-a").unwrap();
+    let recovered_a = store_a.entities_for_scan("scan-a").expect("should succeed");
+    let recovered_b = store_b.entities_for_scan("scan-a").expect("should succeed");
     assert_eq!(recovered_a.len(), 1);
     assert_eq!(recovered_b.len(), 1);
     let sources_a: Vec<&str> = recovered_a[0]
@@ -2404,11 +3031,18 @@ fn rank_autonomous_targets_orders_excludes_and_truncates() {
     use crate::core::scan::TargetKind;
     use std::collections::HashSet;
 
+    // The fixture's coordinate is tagged COARSE so it is excluded for the reason
+    // this test's comment always claimed — its GRAIN. It previously carried no
+    // tag and was excluded merely because the gate refused every Coordinates by
+    // kind, so it passed for the wrong reason; a precise fix is now seedable and
+    // only a coarse centroid is not.
+    let mut coarse_fix = Entity::new(EntityKind::Coordinates, "-33.8,151.2", 0.9, "s");
+    coarse_fix.tag(crate::core::tags::COARSE);
     let entities = vec![
         Entity::new(EntityKind::Email, "a@b.com", 0.9, "s"),
         Entity::new(EntityKind::Phone, "+61400111222", 0.9, "s"),
         Entity::new(EntityKind::Credential, "secret", 0.9, "s"), // not a cross-scan candidate
-        Entity::new(EntityKind::Coordinates, "-33.8,151.2", 0.9, "s"), // coarse geo — gated out
+        coarse_fix,                                              // coarse geo — gated out by grain
         Entity::new(EntityKind::Username, "alice", 0.6, "s"),
     ];
     // Uniform degree so the ordering is decided by pivot × confidence alone.
@@ -2419,7 +3053,8 @@ fn rank_autonomous_targets_orders_excludes_and_truncates() {
     assert_eq!(
         ranked.len(),
         3,
-        "only the cross-scan-candidate pivots (email/phone/username) survive the gate"
+        "the seedable pivots survive; a Credential is non-pivotable and a COARSE \
+         centroid is too imprecise to seed"
     );
     assert_eq!(ranked[0].kind, TargetKind::Email, "email pivots strongest");
     assert_eq!(ranked[1].kind, TargetKind::Phone, "phone next");
@@ -2598,7 +3233,10 @@ fn identity_aware_ranking_collapses_clusters_and_aggregates_leverage() {
         ranked[0].cluster_size, 2,
         "the richer identity is investigated first"
     );
-    let solo = ranked.iter().find(|t| t.cluster_size == 1).unwrap();
+    let solo = ranked
+        .iter()
+        .find(|t| t.cluster_size == 1)
+        .expect("should succeed");
     assert!(cluster.representative.score > solo.representative.score);
 }
 
@@ -2768,8 +3406,8 @@ async fn scan_completion_fires_the_configured_webhook() {
     // One-shot local HTTP sink on an ephemeral port: accept a single connection,
     // read the request, reply 200, and hand the raw request back over a channel.
     // Blocking IO on a std thread, off the async runtime.
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("should succeed");
+    let port = listener.local_addr().expect("should succeed").port();
     let (tx, rx) = mpsc::channel::<String>();
     let sink = std::thread::spawn(move || {
         if let Ok((mut sock, _)) = listener.accept() {
@@ -2839,5 +3477,991 @@ async fn scan_completion_fires_the_configured_webhook() {
     assert!(
         req.contains("\"target_value\":\"seed\""),
         "webhook body must carry the seed target:\n{req}"
+    );
+}
+
+/// A module whose `accepts()` panics on a real dispatch target — the exact
+/// bug class this test guards: only `Module::process()` is wrapped by
+/// `run_module_guarded`'s `catch_unwind`, so a panic in a per-target GATING
+/// call (`accepts()`, `cost()`, `cache_ttl_secs()`, ...), which every
+/// dispatch loop calls directly on the dispatching task, sits entirely
+/// outside that boundary. Must NOT panic for
+/// `crate::core::dependency::PROBE_VALUE` — `ScanEngine::new()` eagerly
+/// probes every module's `accepts()` against a synthetic value for every
+/// `TargetKind` at module-graph construction time (see
+/// `core::dependency::mod::build`), so an unconditional panic here would
+/// crash at graph-build, before this test ever reaches `run_panic_safe` —
+/// a real, distinct danger zone, but not the one under test.
+struct PanicsInAcceptsModule;
+
+#[async_trait::async_trait]
+impl Module for PanicsInAcceptsModule {
+    fn name(&self) -> &'static str {
+        "panics_in_accepts"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        // Only gate on `Username` — graph-build probes every OTHER
+        // `TargetKind` too, each with its own kind-specific normalisation
+        // of `PROBE_VALUE` (e.g. `Phone`'s digit-only strip), so comparing
+        // the probed value directly against the raw `PROBE_VALUE` constant
+        // would spuriously panic during construction for those kinds.
+        if t.kind != TargetKind::Username {
+            return false;
+        }
+        if t.value == crate::core::dependency::PROBE_VALUE {
+            return true;
+        }
+        panic!("kaboom in accepts() on a real dispatch target")
+    }
+    fn description(&self) -> &'static str {
+        "test-only: panics in accepts() to prove run_panic_safe's boundary"
+    }
+    async fn process(
+        &self,
+        _target: &Target,
+        _ctx: &ModuleContext,
+    ) -> Result<crate::core::module::ModuleResult> {
+        Ok(crate::core::module::ModuleResult::new())
+    }
+}
+
+#[tokio::test]
+async fn run_panic_safe_force_fails_a_scan_that_panics_outside_process() {
+    use crate::core::test_support::InMemoryStore;
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(
+        vec![Arc::new(PanicsInAcceptsModule)],
+        store_port,
+        bus.clone(),
+    );
+    let target = Target::new(TargetKind::Username, "seed");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("username", "seed"),
+        target.clone(),
+    );
+    let scan_id = scan.id.clone();
+    let ctx = ModuleContext {
+        scan_id: scan_id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+
+    let result = engine.run_panic_safe(scan, target, ctx).await;
+    assert!(
+        result.is_err(),
+        "a scan whose dispatch panics must surface as an Err, not silently vanish"
+    );
+
+    let persisted = store
+        .get_scan(&scan_id)
+        .expect("should succeed")
+        .expect("the scan row must still exist");
+    assert_eq!(
+        persisted.status,
+        ScanStatus::Failed,
+        "a panicked scan must be force-marked Failed, never left stuck Running"
+    );
+    assert!(
+        persisted
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("kaboom in accepts()")),
+        "the persisted error should carry the panic message: {:?}",
+        persisted.error
+    );
+    assert!(
+        persisted.finished_at.is_some(),
+        "a force-failed scan must have finished_at set"
+    );
+}
+
+// ── TrackedEntityMap: dirty-tracking contract ───────────────────────────
+//
+// The round loop's checkpoint used to re-clone and re-persist the WHOLE
+// accumulated entity_map every round with dispatch activity — round 50
+// re-persisted round 1's untouched entities all over again. TrackedEntityMap
+// narrows the checkpoint to only what changed since the last checkpoint,
+// while leaving read access (and thus live correlation, which genuinely
+// needs the full working set every round) completely unaffected. These
+// tests pin the wrapper's contract directly, independent of a full scan.
+
+fn tracked_test_entity(uid: &str) -> Entity {
+    Entity::new(EntityKind::Email, uid, 0.5, "test-scan")
+}
+
+#[test]
+fn tracked_entity_map_insert_marks_dirty() {
+    let mut map = TrackedEntityMap::new();
+    let e = tracked_test_entity("a@example.com");
+    map.insert(e.uid.clone(), e.clone());
+    let dirty = map.take_dirty();
+    assert_eq!(dirty.len(), 1);
+    assert_eq!(dirty[0].uid, e.uid);
+}
+
+#[test]
+fn tracked_entity_map_get_mut_on_existing_key_marks_dirty() {
+    let mut map = TrackedEntityMap::new();
+    let e = tracked_test_entity("a@example.com");
+    map.insert(e.uid.clone(), e.clone());
+    let _ = map.take_dirty(); // clear the insert's own dirty mark
+
+    map.get_mut(&e.uid).expect("entity present").confidence = 0.9;
+    let dirty = map.take_dirty();
+    assert_eq!(
+        dirty.len(),
+        1,
+        "a get_mut on an existing key must mark it dirty"
+    );
+    assert_eq!(
+        dirty[0].confidence, 0.9,
+        "take_dirty must reflect the mutation"
+    );
+}
+
+#[test]
+fn tracked_entity_map_get_mut_on_missing_key_does_not_mark_dirty() {
+    let mut map = TrackedEntityMap::new();
+    assert!(map.get_mut("does-not-exist").is_none());
+    assert!(
+        map.take_dirty().is_empty(),
+        "a get_mut miss must never fabricate a dirty entry"
+    );
+}
+
+#[test]
+fn tracked_entity_map_take_dirty_clears_the_set() {
+    let mut map = TrackedEntityMap::new();
+    let e = tracked_test_entity("a@example.com");
+    map.insert(e.uid.clone(), e);
+    assert_eq!(
+        map.take_dirty().len(),
+        1,
+        "first drain returns the inserted entity"
+    );
+    assert!(
+        map.take_dirty().is_empty(),
+        "a second drain with no intervening mutation must be empty — this is exactly what \
+         lets a round with no dispatch activity skip a checkpoint entirely"
+    );
+}
+
+#[test]
+fn tracked_entity_map_only_reports_entities_touched_since_the_last_drain() {
+    // Models exactly the round-loop pattern this wrapper exists for: round 1
+    // inserts two entities and checkpoints (draining both); round 2 mutates
+    // only ONE of them. The second checkpoint must see only that one --- not
+    // the untouched entity from round 1 re-persisted all over again.
+    let mut map = TrackedEntityMap::new();
+    let a = tracked_test_entity("a@example.com");
+    let b = tracked_test_entity("b@example.com");
+    map.insert(a.uid.clone(), a.clone());
+    map.insert(b.uid.clone(), b.clone());
+    let round1 = map.take_dirty();
+    assert_eq!(
+        round1.len(),
+        2,
+        "round 1's checkpoint sees everything inserted so far"
+    );
+
+    map.get_mut(&a.uid).expect("should succeed").confidence = 0.99;
+    let round2 = map.take_dirty();
+    assert_eq!(
+        round2.len(),
+        1,
+        "round 2's checkpoint must see ONLY the mutated entity, not b re-persisted unchanged"
+    );
+    assert_eq!(round2[0].uid, a.uid);
+}
+
+#[test]
+fn tracked_entity_map_deref_gives_full_read_access_regardless_of_dirty_state() {
+    // Live correlation reads the FULL working set every round via Deref, not
+    // just the dirty subset -- a correlation rule can legitimately relate an
+    // entity from an early round to one just discovered. Prove read access
+    // is never narrowed by dirty-tracking, including right after a drain.
+    let mut map = TrackedEntityMap::new();
+    let a = tracked_test_entity("a@example.com");
+    let b = tracked_test_entity("b@example.com");
+    let (a_uid, b_uid) = (a.uid.clone(), b.uid.clone());
+    map.insert(a.uid.clone(), a);
+    map.insert(b.uid.clone(), b);
+    let _ = map.take_dirty(); // fully drained -- dirty-tracking is now empty
+
+    assert_eq!(
+        map.len(),
+        2,
+        "Deref read access must be unaffected by drained dirty state"
+    );
+    assert!(map.contains_key(&a_uid));
+    assert!(map.contains_key(&b_uid));
+    assert_eq!(map.values().count(), 2);
+}
+
+#[test]
+fn tracked_entity_map_into_inner_yields_every_entity_regardless_of_dirty_state() {
+    // finalise_scan's one-time full flush must see everything, dirty or not
+    // -- it has no use for dirty-tracking, unlike the per-round checkpoint.
+    let mut map = TrackedEntityMap::new();
+    let a = tracked_test_entity("a@example.com");
+    let b = tracked_test_entity("b@example.com");
+    let (a_uid, b_uid) = (a.uid.clone(), b.uid.clone());
+    map.insert(a.uid.clone(), a);
+    map.insert(b.uid.clone(), b);
+    let _ = map.take_dirty();
+
+    let inner = map.into_inner();
+    assert_eq!(inner.len(), 2);
+    assert!(inner.contains_key(&a_uid));
+    assert!(inner.contains_key(&b_uid));
+}
+
+// ── Final breach sweep + autonomous audit ───────────────────────────────────
+
+/// A stand-in breach corpus. Its NAME is what matters: `source_family` classes
+/// anything containing "breach" into the breach family, so
+/// `is_breach_source` recognises it, the engine admits it to the sweep's
+/// allow-list, and the consensus pass counts it as an attesting corpus — the
+/// same three decisions a real corpus module goes through.
+///
+/// It answers every identity target with one Email entity derived from the
+/// target's value, so a dispatched sweep probe is observable in the store. The
+/// synthetic domain is deliberately NOT `example.*` — the engine's placeholder
+/// filter rejects those, which would make the fixture silently produce nothing.
+struct StubBreachCorpus {
+    name: &'static str,
+}
+
+#[async_trait::async_trait]
+impl Module for StubBreachCorpus {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn category(&self) -> crate::core::module::ModuleCategory {
+        crate::core::module::ModuleCategory::Breach
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(
+            t.kind,
+            TargetKind::Email | TargetKind::Username | TargetKind::FullName | TargetKind::Phone
+        )
+    }
+    fn produces(&self) -> &'static [EntityKind] {
+        const K: &[EntityKind] = &[EntityKind::Email];
+        K
+    }
+    async fn process(
+        &self,
+        target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        let local: String = target
+            .value
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect();
+        let mut e = Entity::new(
+            EntityKind::Email,
+            format!("{local}@leakset.net"),
+            0.9,
+            &ctx.scan_id,
+        );
+        e.add_evidence(crate::core::entity::Evidence::new(self.name, "synthetic"));
+        let mut r = crate::core::module::ModuleResult::new();
+        r.push(e);
+        Ok(r)
+    }
+}
+
+/// Collect every event the engine published, so a test can assert on the
+/// pipeline's own record of what it did rather than on side effects.
+fn drain_events(rx: &mut tokio::sync::broadcast::Receiver<crate::core::Event>) -> Vec<EventKind> {
+    let mut out = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        out.push(ev.kind);
+    }
+    out
+}
+
+/// End-to-end: the final bulk breach query is compiled and dispatched by the
+/// scan pipeline itself — not merely available to a CLI caller — and the
+/// autonomous audit runs after it.
+#[tokio::test]
+async fn a_scan_runs_the_final_breach_sweep_and_then_audits_it() {
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, mut rx) = tokio::sync::broadcast::channel(4096);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        store_port,
+        bus.clone(),
+    );
+
+    let opts = ScanOptions {
+        depth: 1,
+        expand_all_identities: true,
+        max_roi: false,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Email, "subject@example.com");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("email", "subject@example.com"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let scan_id = scan.id.clone();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    engine.run(scan, target, ctx).await.expect("should succeed");
+
+    let events = drain_events(&mut rx);
+    let sweep = events
+        .iter()
+        .find_map(|k| match k {
+            EventKind::BreachSweep {
+                anchors,
+                probes,
+                dropped,
+            } => Some((*anchors, *probes, *dropped)),
+            _ => None,
+        })
+        .expect("the scan pipeline must run the final breach sweep, not just offer it to the CLI");
+    let (anchors, probes, _dropped) = sweep;
+    assert!(
+        probes > 0 && anchors > 0,
+        "a confident Email seed must yield at least one anchor and probe; got \
+         {anchors} anchors / {probes} probes"
+    );
+
+    let audit = events
+        .iter()
+        .find_map(|k| match k {
+            EventKind::ConsensusAudit {
+                verdict, examined, ..
+            } => Some((verdict.clone(), *examined)),
+            _ => None,
+        })
+        .expect("the sweep must be audited autonomously once it has been used");
+    let (verdict, examined) = audit;
+    assert!(
+        examined > 0,
+        "the corpus module attested entities, so the audit had a population to grade"
+    );
+    assert_ne!(
+        verdict, "PENDING_REVIEW",
+        "an un-run audit must never be reported as the scan's verdict"
+    );
+
+    // The sweep's dispatches actually reached the store, tagged and attributed.
+    let ents = store.entities_for_scan(&scan_id).expect("should succeed");
+    let swept: Vec<&Entity> = ents
+        .iter()
+        .filter(|e| e.has_tag(crate::core::breach_consensus::SWEEP_TAG))
+        .collect();
+    assert!(
+        !swept.is_empty(),
+        "sweep-discovered entities must be tagged `{}` so a reader can tell what the \
+         final bulk query contributed; entities present: {:?}",
+        crate::core::breach_consensus::SWEEP_TAG,
+        ents.iter().map(|e| &e.value).collect::<Vec<_>>()
+    );
+    // Sweep finds sit one generation beyond gap-fill's `depth + 1`.
+    for e in &swept {
+        assert_eq!(
+            e.generation, 3,
+            "a depth-1 scan's sweep finds belong at generation 3 (depth + 2): {}",
+            e.value
+        );
+    }
+}
+
+/// The audit is grading, not collection: it costs no network I/O and answers a
+/// question a shallow scan needs answered too. A depth-0 scan that touched a
+/// corpus must still get a verdict — but must NOT run the sweep, which is
+/// expansion and which the operator switched off by asking for depth 0.
+#[tokio::test]
+async fn the_audit_runs_on_a_depth_zero_scan_but_the_sweep_does_not() {
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, mut rx) = tokio::sync::broadcast::channel(4096);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        store_port,
+        bus.clone(),
+    );
+
+    let opts = ScanOptions {
+        depth: 0,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Email, "shallow@example.com");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("email", "shallow@example.com"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    engine.run(scan, target, ctx).await.expect("should succeed");
+
+    let events = drain_events(&mut rx);
+    assert!(
+        !events
+            .iter()
+            .any(|k| matches!(k, EventKind::BreachSweep { .. })),
+        "depth 0 means no pivoting at all — the sweep dispatches new targets and \
+         must stay off"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|k| matches!(k, EventKind::ConsensusAudit { .. })),
+        "the audit reads evidence already collected, so a depth-0 scan that hit a \
+         corpus must still be graded"
+    );
+}
+
+/// The sweep must never manufacture the corroboration the consensus reports.
+/// Its grading pass records what the corpora said; it may not itself count as a
+/// corpus, or the weakest findings would be the ones it flattered most.
+#[tokio::test]
+async fn the_audit_does_not_inflate_the_confidence_it_grades() {
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, _rx) = tokio::sync::broadcast::channel(4096);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        store_port,
+        bus.clone(),
+    );
+
+    let opts = ScanOptions {
+        depth: 0,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Email, "solo@example.com");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("email", "solo@example.com"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let scan_id = scan.id.clone();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    engine.run(scan, target, ctx).await.expect("should succeed");
+
+    let ents = store.entities_for_scan(&scan_id).expect("should succeed");
+    let graded: Vec<&Entity> = ents
+        .iter()
+        .filter(|e| {
+            e.evidence
+                .iter()
+                .any(|ev| ev.source == crate::core::entity::CONSENSUS_SOURCE)
+        })
+        .collect();
+    assert!(
+        !graded.is_empty(),
+        "the fixture must actually be graded, or this test proves nothing"
+    );
+    for e in &graded {
+        // Exactly one real corpus attested each of these; the consensus summary
+        // must not have become a second "source" that lifts them.
+        let corroborating = e.corroborating_sources();
+        assert!(
+            !corroborating.contains(&crate::core::entity::CONSENSUS_SOURCE),
+            "the consensus summary counted itself as corroboration for {}",
+            e.value
+        );
+    }
+}
+
+/// The autonomous sweep must be able to seed the GEOLOCATION pivots — a hardware
+/// BSSID, a person-named SSID, a precise fix — while still refusing the ones that
+/// geolocate nobody.
+///
+/// Both halves matter. Before `is_autonomous_seed_candidate` existed, the sweep
+/// gated on `history::is_cross_scan_candidate`, whose `_ => false` arm rejected
+/// all three kinds outright: the engine rated MacAddress/Ssid at `geo_npv` 14.0
+/// with a 2.0x geo-proximity boost on the in-scan path, then refused to point a
+/// scan at them on the autonomous path. And a gate that admitted them
+/// indiscriminately would be just as wrong — it would flood the queue with
+/// randomised privacy MACs and carrier-default network names that no observation
+/// corpus can resolve to a place.
+///
+/// Also pins the two invariants the change must not break: the history gate's own
+/// semantics are untouched, and `kind_pivot_value` ranks the geo kinds explicitly
+/// instead of dumping them on the `_ => 0.12` catch-all floor.
+#[test]
+fn autonomous_sweep_seeds_specific_geo_pivots_and_refuses_generic_ones() {
+    use super::{is_autonomous_seed_candidate, kind_pivot_value, rank_autonomous_targets};
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::scan::TargetKind;
+    use std::collections::HashSet;
+
+    // ── Admitted: each resolves to ONE place ────────────────────────────────
+    let email = Entity::new(EntityKind::Email, "a@b.com", 0.90, "s");
+    // 0x3c: U/L bit clear (a real IEEE-assigned OUI), I/G bit clear (unicast).
+    let bssid = Entity::new(EntityKind::MacAddress, "3C:5A:B4:11:22:33", 0.60, "s");
+    // A person-chosen name — the exact false-positive class the whole-token
+    // matcher in `util::wifi` exists to protect.
+    let ssid = Entity::new(EntityKind::Ssid, "Freeman-Family", 0.55, "s");
+    // A genuine person-anchored fix carries an anchoring geo source (here an
+    // EXIF GPS tag); without one `is_infrastructure_geo` treats a bare lat/lon as
+    // an IP/WHOIS-derived infrastructure location, correctly NOT seedable.
+    let mut fix = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.90, "s");
+    fix.add_evidence(Evidence::new("exif_geo", "photo GPS"));
+
+    // ── Refused: each geolocates nobody ─────────────────────────────────────
+    // 0xaa: U/L bit set — a randomised privacy address that rotates ~15 min.
+    let random_mac = Entity::new(EntityKind::MacAddress, "AA:BB:CC:DD:EE:FF", 0.90, "s");
+    // All-zero placeholder: not a device.
+    let zero_mac = Entity::new(EntityKind::MacAddress, "00:00:00:00:00:00", 0.90, "s");
+    // Vendor default — thousands of unrelated routers share it.
+    let generic_ssid = Entity::new(EntityKind::Ssid, "NETGEAR-7788", 0.90, "s");
+    // Below the 4-character floor.
+    let tiny_ssid = Entity::new(EntityKind::Ssid, "hub", 0.90, "s");
+    // A region centroid a module explicitly flagged as non-specific.
+    let mut coarse_fix = Entity::new(EntityKind::Coordinates, "-25.2744,133.7751", 0.90, "s");
+    coarse_fix.tag(crate::core::tags::COARSE);
+    // A datacentre fix — locates a server, never a person.
+    let mut hosting_fix = Entity::new(EntityKind::Coordinates, "37.7749,-122.4194", 0.90, "s");
+    hosting_fix.tag(crate::core::tags::HOSTING);
+    // A real BSSID heard only faintly: ambient, below the confidence floor.
+    let faint_bssid = Entity::new(EntityKind::MacAddress, "3C:5A:B4:99:88:77", 0.45, "s");
+    // Group addresses. All are UNIVERSALLY administered — the U/L bit is clear —
+    // so the U/L test alone lets them through; only the I/G bit rejects them.
+    // Each names a protocol group, never one device at one premises.
+    let ipv4_multicast = Entity::new(EntityKind::MacAddress, "01:00:5E:00:00:FB", 0.90, "s");
+    let ipv6_multicast = Entity::new(EntityKind::MacAddress, "33:33:00:00:00:01", 0.90, "s");
+    let broadcast = Entity::new(EntityKind::MacAddress, "FF:FF:FF:FF:FF:FF", 0.90, "s");
+    // The radar sweep's `0,0` sentinel: minted seed/subject each sweep, but it
+    // locates nobody — `is_infrastructure_geo`'s sentinel check rejects it, so it
+    // can never seed an autonomous scan on null island.
+    let mut sentinel_fix = Entity::new(EntityKind::Coordinates, "0.000000,0.000000", 0.90, "s");
+    sentinel_fix.tag("seed");
+    sentinel_fix.tag("subject");
+    // An `infra:` map feature — a CCTV camera / cell tower scraped near a fix.
+    let mut infra_poi = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.55, "s");
+    infra_poi.tag("infra:surveillance");
+    // A WHOIS registrant / privacy-service address: the domain owner's filing
+    // location, not the subject's — the AU-092 class, now also excluded here.
+    let mut registrant_addr = Entity::new(EntityKind::Address, "VIC, Australia", 0.50, "s");
+    registrant_addr.tag(crate::core::tags::REGISTRANT);
+
+    let admitted = [&email, &bssid, &ssid, &fix];
+    let refused = [
+        &random_mac,
+        &zero_mac,
+        &generic_ssid,
+        &tiny_ssid,
+        &coarse_fix,
+        &hosting_fix,
+        &faint_bssid,
+        &ipv4_multicast,
+        &ipv6_multicast,
+        &broadcast,
+        &sentinel_fix,
+        &infra_poi,
+        &registrant_addr,
+    ];
+
+    // 1) The predicate itself, named per entity so a regression is diagnosable.
+    for e in admitted {
+        assert!(
+            is_autonomous_seed_candidate(e),
+            "{:?} {} must be seedable — it resolves to one place",
+            e.kind,
+            e.value
+        );
+    }
+    for e in refused {
+        assert!(
+            !is_autonomous_seed_candidate(e),
+            "{:?} {} must NOT seed a scan — it geolocates nobody",
+            e.kind,
+            e.value
+        );
+    }
+
+    // 2) The HISTORY gate is unchanged: none of the geo kinds became a
+    //    cross-investigation join key. This is the constraint the separate
+    //    predicate exists to honour — widening the shared gate instead would
+    //    pass (1) and fail here.
+    for e in [&bssid, &ssid, &fix] {
+        assert!(
+            !super::history::is_cross_scan_candidate(e),
+            "{:?} is a SEED, never a cross-scan join key — history semantics must not move",
+            e.kind
+        );
+    }
+
+    // 3) End to end through the ranker.
+    let mut entities: Vec<Entity> = Vec::new();
+    entities.extend(admitted.iter().map(|e| (*e).clone()));
+    entities.extend(refused.iter().map(|e| (*e).clone()));
+    let degree_of = |_uid: &str| 2usize;
+    let exclude = HashSet::new();
+
+    let ranked = rank_autonomous_targets(&entities, degree_of, &exclude, 50);
+    let kinds: HashSet<TargetKind> = ranked.iter().map(|t| t.kind).collect();
+    for k in [
+        TargetKind::Email,
+        TargetKind::MacAddress,
+        TargetKind::Ssid,
+        TargetKind::Coordinates,
+    ] {
+        assert!(kinds.contains(&k), "{k:?} must be seedable by the sweep");
+    }
+    assert_eq!(ranked.len(), 4, "exactly the four admitted entities");
+    for e in refused {
+        assert!(
+            ranked.iter().all(|t| t.uid != e.uid),
+            "{} leaked into the autonomous queue",
+            e.value
+        );
+    }
+
+    // 4) The geo kinds are ranked on their merits, not on the catch-all floor.
+    let mac = kind_pivot_value(&EntityKind::MacAddress);
+    let net = kind_pivot_value(&EntityKind::Ssid);
+    let coord = kind_pivot_value(&EntityKind::Coordinates);
+    assert!(
+        mac > net && net > coord,
+        "BSSID (unique hardware) > SSID (a colliding name) > coordinate (terminal): \
+         {mac} / {net} / {coord}"
+    );
+    assert!(
+        coord > kind_pivot_value(&EntityKind::Domain),
+        "a precise fix out-pivots shared infrastructure"
+    );
+    assert!(
+        net > kind_pivot_value(&EntityKind::Credential),
+        "the geo kinds must not sit on the `_ => 0.12` catch-all floor"
+    );
+}
+
+/// The working-set snapshot every correlation pass reads must be deterministic.
+///
+/// `TrackedEntityMap` wraps a `HashMap`, so the old
+/// `entity_map.values().cloned().collect()` handed the correlator whatever
+/// order the hasher produced. That order is not cosmetic:
+/// `correlator::confirmed_only` returns `Cow::Borrowed` in the common case, so
+/// caller order reaches the rules verbatim, and rules that build `entity_uids`
+/// in slice order bake it into a PERSISTED correlation row. `rank_and_sort`'s
+/// tie-break even documents the assumption that "the per-group entity_uids are
+/// already individually sorted" — false on the live path. The finalise pass
+/// could not repair it, because `Store::upsert_correlation` short-circuits when
+/// the new uid set is a subset of the old, so the live row survives.
+///
+/// Net effect: two runs over identical inputs could persist different
+/// `entity_uids` orderings for the same finding. This pins the fix at the one
+/// accessor all six snapshot sites now share.
+#[test]
+fn the_working_set_snapshot_is_deterministically_ordered() {
+    use crate::core::entity::{Entity, EntityKind};
+
+    // Insert in two different orders — what different hash seeds / different
+    // module completion orders produce across runs.
+    let values = [
+        ("a@example.com", EntityKind::Email),
+        ("b@example.com", EntityKind::Email),
+        ("+61400111222", EntityKind::Phone),
+        ("alice", EntityKind::Username),
+        ("example.com", EntityKind::Domain),
+    ];
+
+    let mut forward = super::TrackedEntityMap::new();
+    for (v, k) in &values {
+        let e = Entity::new(k.clone(), *v, 0.8, "s");
+        forward.insert(e.uid.clone(), e);
+    }
+
+    let mut backward = super::TrackedEntityMap::new();
+    for (v, k) in values.iter().rev() {
+        let e = Entity::new(k.clone(), *v, 0.8, "s");
+        backward.insert(e.uid.clone(), e);
+    }
+
+    let a: Vec<String> = forward.snapshot().into_iter().map(|e| e.uid).collect();
+    let b: Vec<String> = backward.snapshot().into_iter().map(|e| e.uid).collect();
+
+    assert_eq!(
+        a, b,
+        "two insertion orders of the same entities must snapshot identically — \
+         the correlator persists this order into entity_uids"
+    );
+    assert_eq!(a.len(), values.len(), "no entity lost by the snapshot");
+
+    // And the order is the documented one: sorted by uid, a total order since
+    // uid is a SHA-256 unique per entity.
+    let mut expected = a.clone();
+    expected.sort();
+    assert_eq!(a, expected, "snapshot must be sorted by uid");
+}
+
+/// A watchdog task must be reaped when its owner unwinds, not detached.
+///
+/// The wall-time watchdog was held in a bare `tokio::JoinHandle`, aborted only
+/// on the straight-line path at the end of the scan body. Dropping a
+/// `JoinHandle` DETACHES the task — it does not abort it — and `Cargo.toml`
+/// sets `panic = "unwind"`, so any panic between the spawn and that abort
+/// unwound straight past it. The watchdog then slept out its full deadline and
+/// fired `cancel()` on the caller's context long after the scan was gone,
+/// poisoning a shared token under a long-lived `serve`/`radar` so an unrelated
+/// later scan was cancelled with no operator-visible reason.
+///
+/// Drives the real hazard: a panic while the guard is live.
+#[tokio::test]
+async fn a_watchdog_guard_aborts_its_task_when_its_owner_unwinds() {
+    use crate::core::cancel::CancelHandle;
+
+    let cancel = CancelHandle::new();
+    let cancel_task = cancel.clone();
+
+    // Spawn under the guard, then panic while it is still in scope — exactly
+    // what a panicking module below the watchdog spawn does to the scan body.
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = super::AbortOnDrop(tokio::spawn(async move {
+            // Far shorter than a real deadline so the test is fast; the point
+            // is that it must never get to run this at all.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            cancel_task.cancel();
+        }));
+        panic!("a module panicked below the watchdog spawn");
+    }));
+    assert!(panicked.is_err(), "the test must actually unwind");
+
+    // Well past the task's own deadline. If the guard had merely detached it,
+    // the task would have woken and cancelled the caller's token by now.
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+    assert!(
+        !cancel.is_cancelled(),
+        "an unwound scan must not leave a watchdog alive to cancel a token it \
+         no longer owns — a later, unrelated scan would die for no visible reason"
+    );
+}
+
+/// `merge_found_keys_and_flatten` feeds `resolve_coreferences`, whose
+/// `.take(MAX_COREF_NODES)` documents the precondition that its input "arrives
+/// confidence-ranked". Flattening a `HashMap` with `into_values()` satisfied neither that
+/// precondition nor the determinism invariant: above the ceiling the truncation kept a
+/// different SUBSET per run, so the derived SameAs/AliasOf/IdentifiedBy edges persisted to
+/// `relations` — and exported to GEXF/GraphML — differed between two runs over identical data.
+///
+/// Asserts the ranking directly, and asserts it is insertion-order independent: the two maps
+/// hold identical entities added in opposite orders, which is what a re-run varies.
+#[test]
+fn flattened_entities_are_confidence_ranked_and_insertion_order_independent() {
+    struct NoKeys;
+    impl ModuleRuntime for NoKeys {}
+
+    let mk = |uid: &str, conf: f64| {
+        let mut e = Entity::new(EntityKind::Username, uid, conf, "scan-1");
+        e.uid = uid.to_string();
+        e
+    };
+    // Two equal confidences so the `uid` tie-break is exercised, not just the primary key.
+    let specs = [("aaa", 0.4_f64), ("bbb", 0.9), ("ccc", 0.6), ("ddd", 0.9)];
+
+    let mut forward: HashMap<String, Entity> = HashMap::new();
+    for (uid, c) in specs {
+        forward.insert(uid.to_string(), mk(uid, c));
+    }
+    let mut reverse: HashMap<String, Entity> = HashMap::new();
+    for (uid, c) in specs.iter().rev() {
+        reverse.insert(uid.to_string(), mk(uid, *c));
+    }
+
+    let a = merge_found_keys_and_flatten(&NoKeys, "scan-1", forward);
+    let b = merge_found_keys_and_flatten(&NoKeys, "scan-1", reverse);
+
+    let order: Vec<&str> = a.iter().map(|e| e.uid.as_str()).collect();
+    assert_eq!(
+        order,
+        vec!["bbb", "ddd", "ccc", "aaa"],
+        "confidence descending, ties broken on uid ascending"
+    );
+    assert_eq!(
+        order,
+        b.iter().map(|e| e.uid.as_str()).collect::<Vec<_>>(),
+        "identical entities must flatten identically regardless of insertion order"
+    );
+}
+
+/// End-to-end regression for the discarded expansion `StopReason`.
+///
+/// `Engine::run` used to call `let _ = self.run_expansion(...)`, throwing away
+/// the expansion's own account of why it stopped. The scan was then marked
+/// `ScanStatus::Complete` whether it had exhausted its candidate frontier or
+/// been cut off mid-frontier by `max_entities` / `max_wall_time_secs`, so every
+/// consumer that reads the finished scan back — `hse scan`, `hse export`, the
+/// dossier, `GET report.json` — presented a truncated search as a complete
+/// answer. For an intelligence artifact that is the most consequential possible
+/// error: it invites "absent from this scan" to be read as "does not exist".
+///
+/// This drives the REAL engine (not `budget_check` in isolation) and asserts on
+/// the `Scan` it hands back, so the whole chain — budget gate → `run_expansion`
+/// return → `finalise_scan` → scan record → disclosure — is covered.
+#[tokio::test]
+async fn a_budget_truncated_scan_records_why_it_stopped_and_is_disclosed() {
+    use crate::core::scan::StopReason;
+    use crate::core::test_support::InMemoryStore;
+
+    const NAMES: [&str; 6] = [
+        "truncation_probe_0",
+        "truncation_probe_1",
+        "truncation_probe_2",
+        "truncation_probe_3",
+        "truncation_probe_4",
+        "truncation_probe_5",
+    ];
+    let modules: Vec<Arc<dyn Module>> = NAMES
+        .iter()
+        .map(|&name| Arc::new(SingleFindingModule { name, value: name }) as Arc<dyn Module>)
+        .collect();
+
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(256);
+    let engine = ScanEngine::new(modules, store, bus.clone());
+
+    let target = Target::new(TargetKind::Username, "truncation-seed");
+    // depth >= 1 so the expansion actually runs, and a cap low enough that the
+    // seed round alone overruns it — the budget gate must fire.
+    let scan = Scan::new(
+        crate::core::entity::scan_id("username", "truncation-seed"),
+        target.clone(),
+    )
+    .with_options(ScanOptions {
+        depth: 1,
+        // Large enough that the seed round still produces expandable usernames
+        // (so the expansion has a candidate frontier at all), small enough that
+        // the frontier is over budget the moment expansion begins — which is
+        // where `budget_check` sits. A cap so low that the seed round itself is
+        // cut short leaves `next` empty and stops on `NoMoreCandidates` instead,
+        // which is a genuinely different (and benign) outcome.
+        max_entities: Some(NAMES.len()),
+        min_expand_confidence: 0.0,
+        ..Default::default()
+    });
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: Default::default(),
+        cancel: Default::default(),
+    };
+
+    let finished = engine.run(scan, target, ctx).await.expect("scan runs");
+
+    assert_eq!(
+        finished.stop_reason,
+        Some(StopReason::MaxEntities(NAMES.len())),
+        "a scan stopped by max_entities must record that as its stop reason; \
+         got {:?} — the expansion's StopReason is being discarded again",
+        finished.stop_reason
+    );
+    assert!(
+        finished
+            .stop_reason
+            .expect("recorded just above")
+            .truncated(),
+        "max_entities is a truncating stop reason"
+    );
+    let caveat = finished
+        .completeness_caveat("this scan")
+        .expect("a truncated scan must never read as a complete answer");
+    assert!(
+        caveat.contains("TRUNCATED") && caveat.contains("not evidence"),
+        "the disclosure must name the truncation and warn that absence here is \
+         not evidence of absence: {caveat}"
+    );
+}
+
+/// The converse guarantee: a scan that was NOT cut short must not acquire a
+/// caveat. A warning that fires on every scan is one operators learn to ignore,
+/// which would cost exactly the signal the test above adds.
+#[tokio::test]
+async fn an_unbudgeted_scan_is_not_reported_as_truncated() {
+    use crate::core::test_support::InMemoryStore;
+
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(256);
+    let engine = ScanEngine::new(
+        vec![Arc::new(SingleFindingModule {
+            name: "untruncated_probe",
+            value: "untruncated_probe",
+        }) as Arc<dyn Module>],
+        store,
+        bus.clone(),
+    );
+
+    let target = Target::new(TargetKind::Username, "untruncated-seed");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("username", "untruncated-seed"),
+        target.clone(),
+    )
+    .with_options(ScanOptions {
+        depth: 1,
+        max_entities: None,
+        max_wall_time_secs: None,
+        ..Default::default()
+    });
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: Default::default(),
+        cancel: Default::default(),
+    };
+
+    let finished = engine.run(scan, target, ctx).await.expect("scan runs");
+
+    assert!(
+        !finished.stop_reason.is_some_and(|r| r.truncated()),
+        "no budget was set, so nothing can have truncated this scan; got {:?}",
+        finished.stop_reason
+    );
+    assert_eq!(
+        finished.completeness_caveat("this scan"),
+        None,
+        "an uncapped, completed scan is a complete answer and must not be caveated"
     );
 }

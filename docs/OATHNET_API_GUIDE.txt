@@ -45,20 +45,35 @@ OathNet uses three response patterns:
 
 3.1 ENVELOPE JSON (most endpoints)
 
+    Live-confirmed (2026-07-15) against the real `GET /service/v2/breach/search`
+    response, after a real bug (T2.151) where trusting the OLD version of this
+    example's nesting meant cursor-based pagination compiled clean, passed its
+    own unit tests, and was still structurally inert against the live API the
+    whole time. The pagination block is keyed "meta" (not "_meta") and nested
+    inside "data"; the account's quota state is a TOP-LEVEL "_meta", a SIBLING
+    of "data" (not nested inside it); "next_cursor" is a sibling of "meta",
+    directly under "data" (not nested inside "meta" itself):
+
     {
       "success": true,
       "message": "OK",
       "data": {
         "items": [ ... ],
-        "_meta": {
+        "meta": {
           "count": 15,
           "total": 1234,
           "took_ms": 42,
           "has_more": true,
-          "total_pages": 83,
-          "lookups": {
-            "left_today": 487
-          }
+          "total_pages": 83
+        },
+        "next_cursor": "eyJvZmZzZXQiOjIwfQ=="
+      },
+      "_meta": {
+        "lookups": {
+          "used_today": 13,
+          "left_today": 487,
+          "daily_limit": 500,
+          "is_unlimited": false
         }
       }
     }

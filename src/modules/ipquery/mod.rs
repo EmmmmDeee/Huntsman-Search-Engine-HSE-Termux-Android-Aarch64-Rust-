@@ -10,13 +10,13 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "ipquery";
 
@@ -51,6 +51,8 @@ struct LocationBlock {
     #[serde(default)]
     state: Option<String>,
     #[serde(default)]
+    zipcode: Option<String>,
+    #[serde(default)]
     latitude: Option<f64>,
     #[serde(default)]
     longitude: Option<f64>,
@@ -82,7 +84,7 @@ impl Module for IpQuery {
         "ipquery"
     }
     fn description(&self) -> &'static str {
-        "Free IP risk assessment + geolocation via ipquery.io (no key, unlimited)"
+        "ipquery.io recon — resolves an IP to risk assessment and geolocation (free, no key, unlimited)"
     }
     fn priority(&self) -> u8 {
         27
@@ -126,36 +128,34 @@ impl Module for IpQuery {
         let ip = target.value.trim();
 
         let url = format!("https://api.ipquery.io/{ip}");
-        let resp = ctx
-            .http
-            .get(&url)
-            .timeout(std::time::Duration::from_secs(6))
-            .send_tagged(SRC)
-            .await?;
-
-        if !resp.status().is_success() {
+        let Some(data): Option<Resp> = crate::util::http::fetch_json_or_404_with_timeout(
+            &ctx.http,
+            SRC,
+            &url,
+            std::time::Duration::from_secs(6),
+        )
+        .await?
+        else {
             return Ok(ModuleResult::new());
-        }
-
-        let data: Resp = crate::util::http::json_decode(SRC, resp).await?;
+        };
 
         let mut result = ModuleResult::new();
 
         let risk = data.risk.as_ref();
         let risk_score = risk.and_then(|r| r.risk_score).unwrap_or(0);
 
-        let mut ip_entity = target.to_entity(0.80, &ctx.scan_id);
+        let mut ip_entity = target.to_entity(confidence::HIGH_PLUSPLUS, &ctx.scan_id);
         ip_entity.tag("ipquery");
-        [
-            (risk.and_then(|r| r.is_vpn), tags::VPN),
-            (risk.and_then(|r| r.is_tor), tags::TOR_EXIT),
-            (risk.and_then(|r| r.is_proxy), tags::PROXY),
-            (risk.and_then(|r| r.is_mobile), "mobile"),
-            (risk.and_then(|r| r.is_datacenter), "hosting"),
-        ]
-        .into_iter()
-        .filter(|(flag, _)| *flag == Some(true))
-        .for_each(|(_, tag)| ip_entity.tag(tag));
+        crate::util::geo::tag_flags(
+            &mut ip_entity,
+            &[
+                (risk.and_then(|r| r.is_vpn), tags::VPN),
+                (risk.and_then(|r| r.is_tor), tags::TOR_EXIT),
+                (risk.and_then(|r| r.is_proxy), tags::PROXY),
+                (risk.and_then(|r| r.is_mobile), "mobile"),
+                (risk.and_then(|r| r.is_datacenter), "hosting"),
+            ],
+        );
         if risk_score >= 70 {
             ip_entity.tag("high-risk");
         }
@@ -241,6 +241,7 @@ fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
     if let Some(loc) = data.location.as_ref().filter(|_| trusted_geo) {
         let cc = loc.country_code.as_deref().unwrap_or("");
         let tz = loc.timezone.as_deref().unwrap_or("");
+        let zip = loc.zipcode.as_deref().unwrap_or("");
         let geo_ev = || {
             // The originating IP, recorded explicitly so a finalise pass can
             // robustly tie this coordinate back to its source IpAddress (e.g.
@@ -257,12 +258,28 @@ fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
             if !tz.is_empty() {
                 ev = ev.with_attr("timezone", tz);
             }
+            // IP-geolocation postcode — a network-derived locator of the IP, NOT
+            // the subject's residence. Stamped under the network-derived `postal`
+            // key (as ip_whois_geo/ipinfo do) so it is excluded from the
+            // residential POSTCODE_KEYS the AU-091/AU-093 residential-locality
+            // rules read, rather than the canonical `postcode` key that would let
+            // an IP's postcode masquerade as the subject's home postcode (item
+            // 24). Folded onto both the Coordinates and the Address (both carry
+            // geo_ev()); the coarse IP location still flows via the coordinates.
+            if !zip.is_empty() {
+                ev = ev.with_attr("postal", zip);
+            }
             ev
         };
 
         // Confidence recalibrated 0.68 → 0.58 — see ip_geo.rs.
         if let (Some(lat), Some(lon)) = (loc.latitude, loc.longitude)
-            && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, 0.58, scan_id)
+            && let Some(mut ce) = crate::util::geo::coarse_provider_coords(
+                lat,
+                lon,
+                confidence::MEDIUM_SOLID,
+                scan_id,
+            )
         {
             ce.tag("ipquery");
             crate::util::geo::tag_au_state(&mut ce, lat, lon);
@@ -275,7 +292,7 @@ fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
         let country = loc.country.as_deref().unwrap_or("");
         if !city.is_empty() && !country.is_empty() {
             let addr = crate::util::geo::compose_address(city, state, country);
-            let mut ae = Entity::new(EntityKind::Address, &addr, 0.62, scan_id);
+            let mut ae = Entity::new(EntityKind::Address, &addr, confidence::NOTABLE, scan_id);
             ae.tag("ipquery");
             if cc.eq_ignore_ascii_case("AU") {
                 ae.tag("country:AU");
@@ -292,7 +309,7 @@ fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
             out.push(ae);
         }
         if let Some(org) = isp.org.as_deref().filter(|s| !s.is_empty()) {
-            let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, scan_id);
+            let mut oe = Entity::new(EntityKind::Organisation, org, confidence::HIGH, scan_id);
             oe.tag("ipquery");
             oe.add_evidence(Evidence::new(SRC, format!("ISP org for {ip}")));
             out.push(oe);

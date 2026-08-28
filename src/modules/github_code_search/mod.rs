@@ -1,8 +1,14 @@
 //! GitHub code search — mine public repositories for email/username seeds.
 //!
-//! Endpoint: `GET https://api.github.com/search/code?q={seed}&per_page=10`
+//! Endpoint: `GET https://api.github.com/search/code?q={seed}&per_page=100`
 //! Auth:     Optional GitHub Personal Access Token (`github` key in key pool).
 //!           Without a key: 10 req/min unauthenticated. With a key: 30 req/min.
+//!
+//! The search page is the API maximum (100) so a single request surfaces as
+//! many repositories — hence owner accounts and repo URLs — as GitHub will
+//! return. The follow-up per-repo commit-email harvest hits the separate core
+//! rate limit, so it is bounded to the first `COMMIT_FETCH_CAP` repositories
+//! per seed to keep request volume flat regardless of the wider result page.
 //!
 //! MITRE ATT&CK: T1593.003 — Search: Code Repositories.
 //!
@@ -53,7 +59,7 @@ impl Module for GithubCodeSearch {
     }
 
     fn description(&self) -> &'static str {
-        "GitHub code search — find repositories containing the seed email/username and pivot to owner accounts and commit emails"
+        "GitHub code search — surfaces repositories bearing the seed email/username and pivots to owner accounts and commit emails"
     }
 
     fn priority(&self) -> u8 {
@@ -97,8 +103,13 @@ impl Module for GithubCodeSearch {
         }
 
         let token = ctx.key_opt("HUNTSMAN_GITHUB_TOKEN");
+        // Request the API's maximum page size: the search itself is ONE request
+        // regardless of `per_page`, so widening it from 10 to 100 yields up to
+        // 10× more repositories — and therefore owner `Username` pivots and repo
+        // URLs (all built with no extra network call by `build_repo_entities`) —
+        // at zero additional search-request or rate-limit cost.
         let url = format!(
-            "{API}/search/code?q={}&per_page=10",
+            "{API}/search/code?q={}&per_page=100",
             crate::util::http::urlencode(seed),
         );
 
@@ -106,7 +117,10 @@ impl Module for GithubCodeSearch {
             .http
             .get(&url)
             .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header(
+                "X-GitHub-Api-Version",
+                crate::modules::github_api::API_VERSION,
+            )
             .header("User-Agent", "huntsman-search-engine/1.4");
         if let Some(tok) = token {
             req = req.bearer_auth(tok);
@@ -125,14 +139,25 @@ impl Module for GithubCodeSearch {
             }
             return Ok(ModuleResult::new());
         }
-        if !status.is_success() {
+        // 422 is GitHub's "unprocessable query" — a search term it cannot index
+        // (too short, only punctuation, unsupported qualifier). That is a
+        // genuine clean miss, not an outage, so it stays an empty result.
+        if status.as_u16() == 422 {
             return Ok(ModuleResult::new());
         }
+        // Any OTHER non-2xx (5xx outage, unexpected 4xx) is a real failure of the
+        // primary search, not "no code matched" — surface it instead of a silent
+        // empty result. The 403/429 rate-limit degrade above is intentionally
+        // preserved.
+        if !status.is_success() {
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
+        }
 
-        let body: SearchResp = match crate::util::http::json_scanned(resp, SRC).await {
-            Ok(b) => b,
-            Err(_) => return Ok(ModuleResult::new()),
-        };
+        // Status is a validated 2xx here, so a parse failure is a malformed body
+        // from a live endpoint — an outage, not an empty result set.
+        let body: SearchResp = crate::util::http::json_scanned(resp, SRC)
+            .await
+            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
 
         if body.items.is_empty() {
             return Ok(ModuleResult::new());
@@ -140,6 +165,16 @@ impl Module for GithubCodeSearch {
 
         let mut result = ModuleResult::new();
         let mut seen_repos: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Every discovered repo gets its owner/URL entities for free, but the
+        // per-repo commit-email harvest below is a SEPARATE request against
+        // GitHub's core rate limit (60/hr unauthenticated). Widening the search
+        // page to 100 must not fan that out to 100 commit calls per seed and
+        // exhaust the limit for the rest of the scan — so the commit harvest is
+        // bounded to the first `COMMIT_FETCH_CAP` distinct repos (the most
+        // relevant, since the search returns best-match order), keeping per-seed
+        // request volume the same as before the page widened.
+        const COMMIT_FETCH_CAP: usize = 10;
+        let mut commit_fetches = 0usize;
 
         for item in &body.items {
             let full_name = item
@@ -155,13 +190,22 @@ impl Module for GithubCodeSearch {
             result.extend(build_repo_entities(item, seed, target.kind, &ctx.scan_id));
 
             // Fetch recent commits for the repo to harvest author emails.
-            // Best-effort: skip on any error (rate limit, private repo).
+            // Best-effort: skip on any error (rate limit, private repo). Bounded
+            // to COMMIT_FETCH_CAP repos per seed to hold the core-API rate-limit
+            // cost flat as the search page widened.
+            if commit_fetches >= COMMIT_FETCH_CAP {
+                continue;
+            }
+            commit_fetches += 1;
             let commits_url = format!("{API}/repos/{full_name}/commits?per_page=5");
             let mut creq = ctx
                 .http
                 .get(&commits_url)
                 .header("Accept", "application/vnd.github+json")
-                .header("X-GitHub-Api-Version", "2022-11-28")
+                .header(
+                    "X-GitHub-Api-Version",
+                    crate::modules::github_api::API_VERSION,
+                )
                 .header("User-Agent", "huntsman-search-engine/1.4");
             if let Some(tok) = token {
                 creq = creq.bearer_auth(tok);

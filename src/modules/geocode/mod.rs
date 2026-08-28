@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -72,6 +73,18 @@ pub(super) struct NominatimAddr {
 
 pub(super) const SRC: &str = "geocode";
 
+/// Returned when Nominatim answers 2xx with a body that will not decode AND the
+/// curl fallback also fails to produce one.
+///
+/// A `const`, not a `format!`, and deliberately so — see the call site: the
+/// serde message would both trip the engine's text-matched rate-limit heuristic
+/// and quote the response body into a persisted event.
+const UNDECODABLE_MSG: &str = "Nominatim returned a success status whose body did not decode, and the curl fallback did not produce a usable answer either";
+
+/// Returned when neither transport answered at all.
+const NO_ANSWER_MSG: &str =
+    "Nominatim did not answer and the curl fallback did not produce a usable answer either";
+
 pub struct Geocode;
 
 #[async_trait]
@@ -81,7 +94,7 @@ impl Module for Geocode {
     }
 
     fn description(&self) -> &'static str {
-        "Bidirectional geocoding via OpenStreetMap Nominatim (Address \u{2194} Coordinates)"
+        "Bidirectional geocoding via OpenStreetMap Nominatim — resolves Address ↔ Coordinates both ways"
     }
 
     fn priority(&self) -> u8 {
@@ -114,60 +127,6 @@ impl Module for Geocode {
     }
 }
 
-/// Nominatim requires a valid, identifying `User-Agent` (usage policy) — a
-/// missing/generic UA is rejected. Shared by the forward fetch and its curl
-/// fallback.
-const NOMINATIM_UA: &str = "huntsman-search-engine/1.0 (+https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-)";
-
-/// Fetch and parse a Nominatim forward-geocode response, surfacing a genuine
-/// execution failure as a module `Err` rather than swallowing it into an empty
-/// result — the failure handling `reverse()` already has and `forward()`
-/// previously diverged from.
-///
-/// A reqwest transport error or a non-2xx falls back to a curl fetch (Nominatim
-/// intermittently blocks the reqwest User-Agent but answers curl); only when
-/// **both** paths fail is the lookup unexecutable → `Err`. A `200` that parses
-/// to an empty array stays the clean "address not resolvable" negative
-/// (`Ok(vec![])`); a `200` whose body does not parse is a real anomaly (`Err`,
-/// not a silent empty). Split out as a client+URL-taking seam so the contract is
-/// unit-testable against a local server. `json_scanned` still harvests any
-/// leaked API keys from the body (RULE 3); its `String` error (PII-free — a
-/// serde/body-cap note, never the address-bearing URL) is wrapped here.
-async fn forward_fetch(client: &reqwest::Client, url: &str) -> Result<Vec<NominatimResult>> {
-    let resp = client
-        .get(url)
-        .header("User-Agent", NOMINATIM_UA)
-        .send()
-        .await;
-    match resp {
-        Ok(r) if r.status().is_success() => crate::util::http::json_scanned(r, SRC)
-            .await
-            .map_err(|e| Error::module(SRC, e)),
-        outcome => match crate::util::curl::fetch(url, crate::MODULE_TIMEOUT_MS).await {
-            Some(body) => {
-                serde_json::from_str(&body).map_err(|e| Error::module(SRC, e.to_string()))
-            }
-            // Both the reqwest call and the curl fallback failed — the lookup
-            // could not execute. Surface it (like reverse()) instead of a
-            // swallowed empty result the operator can't tell from "not found".
-            // The message carries no URL (it embeds the address being searched).
-            None => Err(match outcome {
-                Ok(r) => Error::module(
-                    SRC,
-                    format!(
-                        "nominatim returned HTTP {} and the curl fallback failed",
-                        r.status()
-                    ),
-                ),
-                Err(_) => Error::module(
-                    SRC,
-                    "nominatim transport error and the curl fallback failed".to_string(),
-                ),
-            }),
-        },
-    }
-}
-
 impl Geocode {
     // ── Forward geocode: Address → Coordinates ──────────────────────
 
@@ -176,13 +135,77 @@ impl Geocode {
         if addr.is_empty() || addr.len() <= 2 {
             return Ok(ModuleResult::new());
         }
+        // A bare country name geocodes to the country CENTROID — the middle of
+        // the whole nation, not the subject's location — yet it arrives as a
+        // precise-looking fix and cascades into the geo-convergence rules (a
+        // coarse carrier-country signal inventing a street-level location, as a
+        // live +61 phone scan reproduced). Refuse to mint a coordinate from it;
+        // a finer address (street / suburb / comma-qualified) still geocodes.
+        if crate::util::place_grain::is_bare_country(addr) {
+            return Ok(ModuleResult::new());
+        }
 
         let url = format!(
             "https://nominatim.openstreetmap.org/search?q={}&format=json&limit=1&addressdetails=1",
             urlencode(addr)
         );
 
-        let results: Vec<NominatimResult> = forward_fetch(&ctx.http, &url).await?;
+        let resp = ctx
+            .http
+            .get(&url)
+            .header(
+                "User-Agent",
+                "huntsman-search-engine/1.0 (+https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-)",
+            )
+            .send()
+            .await;
+
+        // The `reverse` leg below already gets this right — `send_tagged` + `?`, an
+        // explicit status check, and a `map_err` on the decode. This leg, in the
+        // same module, used `unwrap_or_default()` on BOTH decodes and
+        // `Ok(ModuleResult::new())` when the fallback found nothing, so provider
+        // drift, a throttle and a total outage all arrived as "this address does
+        // not geocode" — a substantive negative about the subject's location.
+        //
+        // The curl fallback is deliberate and kept: Nominatim throttles the
+        // shared client hard enough that a second transport genuinely rescues
+        // the answer. What changes is only what happens when it does not.
+        //
+        // The line drawn here is decode-SUCCESS-with-zero-results (Nominatim
+        // answering `[]` for an address it cannot place — a real negative, and
+        // the common case) versus decode-FAILURE (a WAF interstitial or a schema
+        // change — not an answer at all). Same distinction as opencellid's
+        // 404-versus-401.
+        let results: Vec<NominatimResult> = match resp {
+            Ok(r) if r.status().is_success() => {
+                match crate::util::http::json_scanned::<Vec<NominatimResult>>(r, SRC).await {
+                    Ok(v) => v,
+                    // A clean 2xx whose body will not parse: try the other
+                    // transport before concluding anything, then fail closed.
+                    //
+                    // The serde message is deliberately NOT interpolated, for two
+                    // separate reasons. Its Display ends "at line 1 column N", and
+                    // the engine classifies module errors by TEXT — `is_rate_limited`
+                    // splits on non-alphanumerics and matches the bare tokens `429`
+                    // and `402`, so a decode failure at column 429 would trip a
+                    // 600-second rate-limit cooldown on a schema-drift coincidence.
+                    // And serde's `invalid type` errors quote the offending VALUE,
+                    // which lands in a `ModuleError` event persisted to the events
+                    // table; `json_scanned` is also the one JSON helper that does not
+                    // run `redact_credentials`. The decode error is still visible in
+                    // the log via `json_scanned` itself.
+                    Err(_) => forward_via_curl(&url)
+                        .await
+                        .ok_or_else(|| Error::module(SRC, UNDECODABLE_MSG))?,
+                }
+            }
+            // Transport error or a non-success status. Deliberately does NOT
+            // format the `reqwest::Error`: its Display embeds the request URL,
+            // which here carries the searched address.
+            _ => forward_via_curl(&url)
+                .await
+                .ok_or_else(|| Error::module(SRC, NO_ANSWER_MSG))?,
+        };
 
         let mut result = ModuleResult::new();
 
@@ -230,7 +253,7 @@ impl Geocode {
             .await?;
 
         if !resp.status().is_success() {
-            return Err(Error::module("geocode", format!("HTTP {}", resp.status())));
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
         let data: NominatimResp = crate::util::http::json_scanned(resp, SRC)
@@ -243,16 +266,47 @@ impl Geocode {
     }
 }
 
+/// The fallback transport for the forward leg: fetch through `curl` and decode.
+///
+/// `Some` only on a SUCCESSFUL decode — `None` covers both "curl could not
+/// reach Nominatim" and "curl returned something that is not a Nominatim
+/// response". Collapsing those two into one `None` is deliberate: the caller
+/// treats either as "the fallback did not answer", and neither is evidence
+/// about the address itself.
+///
+/// Note that an empty result list is `Some(vec![])`, NOT `None`. Nominatim
+/// answering `[]` is a real, decodable negative about an address it cannot
+/// place, and must stay distinguishable from a transport or parse failure.
+async fn forward_via_curl(url: &str) -> Option<Vec<NominatimResult>> {
+    let body = crate::util::curl::fetch(url, crate::MODULE_TIMEOUT_MS).await?;
+    decode_forward_body(&body)
+}
+
+/// The decode half of [`forward_via_curl`], split out so the `Some`/`None`
+/// boundary is unit-testable without spawning curl.
+///
+/// This is the boundary the whole fail-closed change turns on: `Some(vec![])`
+/// for a decodable empty answer (a real negative about the address) versus
+/// `None` for a body that is not a Nominatim response at all.
+fn decode_forward_body(body: &str) -> Option<Vec<NominatimResult>> {
+    serde_json::from_str(body).ok()
+}
+
 /// Build the forward-geocode Coordinates entity, shaping confidence and tags by
 /// AU relevance of the resolved point (offline [`crate::util::geo::is_in_australia`]):
-/// a fix that lands in Australia is a strong on-region anchor (0.70,
-/// `au-relevant`); one abroad is demoted to a candidate (0.40, `off-region` +
-/// `candidate`) so it sits below the 0.50 expansion floor and is quarantined
+/// a fix that lands in Australia is a strong on-region anchor (confidence::HIGH_PLUS,
+/// `au-relevant`); one abroad is demoted to a candidate (confidence::LOW, `off-region` +
+/// `candidate`) so it sits below the confidence::MEDIUM expansion floor and is quarantined
 /// from confirmed correlations — an ambiguous address string can't drag an
 /// AU-focused scan off-region. Pure (no I/O); the caller attaches evidence.
+#[must_use]
 pub(super) fn build_forward_entity(lat: f64, lon: f64, coords: &str, scan_id: &str) -> Entity {
     let in_au = crate::util::geo::is_in_australia(lat, lon);
-    let confidence = if in_au { 0.70 } else { 0.40 };
+    let confidence = if in_au {
+        confidence::HIGH_PLUS
+    } else {
+        confidence::LOW
+    };
     let mut e = Entity::new(EntityKind::Coordinates, coords, confidence, scan_id);
     e.tag("geocoded");
     if in_au {
@@ -275,7 +329,7 @@ pub(super) enum AuRelevance {
     /// the code is absent) — a strong, on-region anchor.
     InAustralia,
     /// Resolved to a known country that is not Australia — a candidate-grade
-    /// lead that AU-focused correlation rules (confidence ≥ 0.50) must not
+    /// lead that AU-focused correlation rules (confidence ≥ confidence::MEDIUM) must not
     /// anchor on, so it can't pull an investigation off-region.
     OffRegion,
     /// Region could not be determined (no country code, not in the AU box) —
@@ -298,6 +352,7 @@ pub(super) fn au_relevance(lat: f64, lon: f64, addr: Option<&NominatimAddr>) -> 
 
 /// Build the reverse-geocode Address entity, shaping confidence and tags by
 /// [`au_relevance`]. Pure (no I/O) so the AU-gating is unit-tested directly.
+#[must_use]
 pub(super) fn build_reverse_entity(
     lat: f64,
     lon: f64,
@@ -308,9 +363,9 @@ pub(super) fn build_reverse_entity(
     let relevance = au_relevance(lat, lon, data.address.as_ref());
 
     let confidence = match relevance {
-        AuRelevance::InAustralia => 0.78,
-        AuRelevance::Unknown => 0.55,
-        AuRelevance::OffRegion => 0.40,
+        AuRelevance::InAustralia => confidence::STRONG,
+        AuRelevance::Unknown => confidence::MEDIUM_HIGH,
+        AuRelevance::OffRegion => confidence::LOW,
     };
 
     let mut entity = Entity::new(EntityKind::Address, display, confidence, scan_id);

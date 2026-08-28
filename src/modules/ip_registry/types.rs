@@ -22,6 +22,23 @@ pub(super) struct RdapResp {
     pub(super) cidr0_cidrs: Vec<CidrEntry>,
     #[serde(default)]
     pub(super) events: Vec<RdapEvent>,
+    /// Nested contact objects (registrant / abuse / technical / administrative).
+    /// RDAP nests these — a registrant entity commonly carries its own child
+    /// abuse/technical contacts — so [`RdapContact`] recurses.
+    #[serde(default)]
+    pub(super) entities: Vec<RdapContact>,
+}
+
+/// One RDAP contact entity. Only the `roles`, `vcardArray`, and nested
+/// `entities` are modelled — the fields the registrant/abuse extraction needs.
+#[derive(Deserialize)]
+pub(super) struct RdapContact {
+    #[serde(default)]
+    pub(super) roles: Vec<String>,
+    #[serde(default, rename = "vcardArray")]
+    pub(super) vcard_array: Option<serde_json::Value>,
+    #[serde(default)]
+    pub(super) entities: Vec<RdapContact>,
 }
 
 #[derive(Deserialize)]

@@ -21,6 +21,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -39,7 +40,7 @@ impl Module for SteamProfile {
     }
 
     fn description(&self) -> &'static str {
-        "Free Steam profile lookup (SteamID64 / vanity → real name, location) via public XML"
+        "Free Steam profile recon — resolves SteamID64 / vanity to real name and location via public XML"
     }
 
     fn priority(&self) -> u8 {
@@ -96,9 +97,9 @@ impl Module for SteamProfile {
             .header("User-Agent", UA_BROWSER)
             .send_tagged(SRC)
             .await?;
-        if !resp.status().is_success() {
+        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
             return Ok(result);
-        }
+        };
         let xml = read_text(SRC, resp).await?;
         // A missing/private profile returns `<error>…could not be found</error>`
         // or carries no `<steamID64>` — a clean miss, not an error.
@@ -124,13 +125,17 @@ fn steam_lookup_url(v: &str) -> Option<(String, f64)> {
     if val.len() == 17 && val.bytes().all(|b| b.is_ascii_digit()) && val.starts_with("7656119") {
         return Some((
             format!("https://steamcommunity.com/profiles/{val}?xml=1"),
-            0.85,
+            confidence::HIGH_PLUSPLUS_PLUS,
         ));
     }
     // Vanity: an explicit `steam:` handle (strong context) or a plausibly-shaped
     // custom URL. A bare numeric (e.g. a phone/ID) is not a vanity.
     if prefixed || is_vanity_shaped(val) {
-        let conf = if prefixed { 0.70 } else { 0.60 };
+        let conf = if prefixed {
+            confidence::HIGH_PLUS
+        } else {
+            confidence::MEDIUM_PLUS
+        };
         return Some((
             format!("https://steamcommunity.com/id/{}?xml=1", urlencode(val)),
             conf,
@@ -176,7 +181,7 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
         let mut p = Entity::new(
             EntityKind::Person,
             realname,
-            (conf - 0.13).max(0.45),
+            (conf - 0.13).max(confidence::LOW_MEDIUM),
             scan_id,
         );
         p.tag("steam");
@@ -200,7 +205,7 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
     {
         if let Some(mut p) = crate::modules::profile_kit::person_from_name(
             &persona,
-            (conf - 0.20).max(0.40),
+            (conf - 0.20).max(confidence::LOW),
             scan_id,
         ) {
             p.tag("steam");
@@ -215,7 +220,7 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
             let mut u = Entity::new(
                 EntityKind::Username,
                 &persona,
-                (conf - 0.05).max(0.50),
+                (conf - 0.05).max(confidence::MEDIUM),
                 scan_id,
             );
             u.tag("steam");
@@ -263,7 +268,12 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
     // No cap: `util::extract::emails`/`urls` already dedupe internally.
     if let Some(bio) = extract_tag(xml, "summary") {
         for email in crate::util::extract::emails(&bio) {
-            let mut e = Entity::new(EntityKind::Email, &email, (conf - 0.15).max(0.45), scan_id);
+            let mut e = Entity::new(
+                EntityKind::Email,
+                &email,
+                (conf - 0.15).max(confidence::LOW_MEDIUM),
+                scan_id,
+            );
             e.tag("steam");
             e.tag("public-profile");
             e.add_evidence(ev.clone().with_attr("source_field", "summary"));
@@ -271,14 +281,29 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
         }
         for link in crate::util::extract::urls(&bio) {
             let link = link.as_str();
-            let mut url_e = Entity::new(EntityKind::Url, link, (conf - 0.20).max(0.40), scan_id);
+            // Skip Valve's own asset/platform hosts — Steam injects emoticon and
+            // avatar `<img>` URLs on these CDNs into the bio, and emitting them as
+            // `personal-site` made a shared asset host read downstream as an
+            // account the subject controls (AU-055 Critical). See
+            // `STEAM_PLATFORM_HOSTS`.
+            if crate::util::url_util::host_from_url(link)
+                .is_some_and(|h| is_steam_platform_host(&h))
+            {
+                continue;
+            }
+            let mut url_e = Entity::new(
+                EntityKind::Url,
+                link,
+                (conf - 0.20).max(confidence::LOW),
+                scan_id,
+            );
             url_e.tag("steam");
             url_e.tag("personal-site");
             url_e.add_evidence(ev.clone().with_attr("source_field", "summary"));
             result.push(url_e);
             if let Some(host) = crate::util::url_util::host_from_url(link)
                 && host.contains('.')
-                && host != "steamcommunity.com"
+                && !is_steam_platform_host(&host)
             {
                 let mut d =
                     Entity::new(EntityKind::Domain, &host, (conf - 0.25).max(0.38), scan_id);
@@ -296,9 +321,68 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
     }
 }
 
+/// Valve's own platform hosts. A Steam `<summary>` is HTML that Valve fills in:
+/// every `:emoticon:` token the user typed is rendered as an `<img>` on one of
+/// these asset CDNs, so mining the bio for links surfaces Steam's chrome, not
+/// the subject's own site. Emitting those as `personal-site` made a shared asset
+/// host read downstream as an account the subject CONTROLS (AU-055, Critical).
+/// Matched as a registrable suffix so every regional/CDN subdomain
+/// (`community.akamai.`, `community.cloudflare.`, `cdn.akamai.`, `avatars.`, …)
+/// is covered by one entry each. Steam's Akamai asset hosts are handled
+/// separately by [`is_steam_akamai_host`] — see that function for why the bare
+/// `akamaihd.net` suffix must NOT appear here.
+const STEAM_PLATFORM_HOSTS: &[&str] = &[
+    "steamstatic.com",
+    "steamcommunity.com",
+    "steampowered.com",
+    "valvesoftware.com",
+];
+
+/// Valve's Steam-specific Akamai asset hosts all live under `akamaihd.net` with a
+/// `steam…-a` leftmost label (`steamcdn-a.akamaihd.net`,
+/// `steamuserimages-a.akamaihd.net`, `steamcommunity-a.akamaihd.net`, …).
+/// `akamaihd.net` itself is Akamai's *shared* CDN suffix, serving countless
+/// unrelated third parties, so matching the bare suffix would drop a subject's
+/// genuine personal link merely for being Akamai-hosted — over-suppression that
+/// silently loses intelligence. Gating on a `steam`-prefixed leftmost label keeps
+/// only Valve's own asset hosts (present and future `steam*-a` names) while
+/// leaving any other `*.akamaihd.net` link intact.
+fn is_steam_akamai_host(host: &str) -> bool {
+    host.ends_with(".akamaihd.net")
+        && host
+            .split('.')
+            .next()
+            .is_some_and(|label| label.starts_with("steam"))
+}
+
+/// True when `host` is one of [`STEAM_PLATFORM_HOSTS`] (or a subdomain) or a
+/// Steam Akamai asset host ([`is_steam_akamai_host`]). ASCII-case-insensitive;
+/// `www.` is not special-cased because these hosts never carry it in the markup
+/// Valve emits.
+fn is_steam_platform_host(host: &str) -> bool {
+    let h = host.trim().to_ascii_lowercase();
+    is_steam_akamai_host(&h)
+        || STEAM_PLATFORM_HOSTS
+            .iter()
+            .any(|s| h == *s || h.ends_with(&format!(".{s}")))
+}
+
 /// Extract the text of the first `<tag>…</tag>`, unwrapping a CDATA section and
-/// decoding the few XML entities Steam emits outside CDATA. `None` if the tag is
-/// absent or empty.
+/// decoding the XML entities Steam emits. `None` if the tag is absent or empty.
+///
+/// Decoding runs on the CDATA-unwrapped text as well, not only on text outside
+/// CDATA: Steam wraps most profile fields in CDATA and still publishes escaped
+/// entities inside them, so decoding only the outside would leave those raw.
+///
+/// Decoding goes through [`crate::util::html::decode_entities`], the crate's
+/// single shared decoder, rather than a local `.replace()` chain. A chain feeds
+/// each replacement the *previous one's output*, so an `&amp;` that decodes to
+/// `&` can pair with the text following it into an entity a later link decodes
+/// again — a profile field holding the literal text `&lt;` (published as
+/// `&amp;lt;`) was stored as `<`. The shared decoder consumes each `&…;` exactly
+/// once, and additionally resolves `&nbsp;`, the typography entities and every
+/// numeric character reference: Steam profile fields are free text and carry all
+/// of those, which the chain passed through raw.
 fn extract_tag(xml: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
@@ -311,14 +395,7 @@ fn extract_tag(xml: &str, tag: &str) -> Option<String> {
     if inner.is_empty() {
         return None;
     }
-    Some(
-        inner
-            .replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&#39;", "'"),
-    )
+    Some(crate::util::html::decode_entities(inner))
 }
 
 #[cfg(test)]

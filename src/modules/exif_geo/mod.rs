@@ -8,8 +8,8 @@
 //! Workflow when a `Url` target arrives:
 //!   1. Skip non-image URLs by file extension (`.jpg`, `.jpeg`,
 //!      `.tif`, `.tiff`, `.webp`, `.heic`). `.png` is deliberately
-//!      excluded (see [`IMAGE_EXTS`]): PNGs almost never carry EXIF GPS,
-//!      so fetching them only wastes quota.
+//!      excluded (see [`crate::util::exif::IMAGE_EXTS`]): PNGs almost never
+//!      carry EXIF GPS, so fetching them only wastes quota.
 //!   2. Fetch the bytes via `ctx.http` (capped at 8 MB so a
 //!      misclassified video URL doesn't drain memory).
 //!   3. Parse with `kamadak-exif`. Returns nothing if no EXIF tags or
@@ -36,7 +36,7 @@
 //! Messages, Instagram) strip EXIF on send, so URLs to those
 //! sources usually return empty. Photos hosted on personal
 //! websites, archive sites, and old social-platform uploads
-//! frequently retain GPS. Confidence is set conservatively (0.80)
+//! frequently retain GPS. Confidence is set conservatively (confidence::HIGH_PLUSPLUS)
 //! because EXIF GPS can be wrong by ±50 m on the originating
 //! device but is otherwise authoritative.
 
@@ -50,31 +50,56 @@ use async_trait::async_trait;
 use exif::{Reader, Tag};
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 
+use crate::util::http::RequestBuilderExt;
 use extract::{clean_owner, device_fingerprint, looks_like_image_url};
-use parse::{extract_gps, read_str};
+use parse::{
+    extract_altitude, extract_gps, extract_img_direction, extract_positioning_error, read_str,
+};
 
 const SRC: &str = "exif_geo";
+
+/// What a response status means for an image fetch.
+///
+/// Pure and separated from `process` so the policy is unit-testable directly — the repo has no
+/// HTTP mocking, so a status decision left inline in the request path cannot be exercised at all.
+#[derive(Debug, PartialEq, Eq)]
+enum ImageFetch {
+    /// A body to parse.
+    Read,
+    /// The image genuinely is not there, so it has no metadata to read. A clean empty result.
+    Absent,
+    /// The host refused. NOT an answer about the image, and must never read as one.
+    Refused,
+}
+
+/// Classify an image-fetch status.
+///
+/// `206 Partial Content` is the EXPECTED success: the request sets a `Range` header, so it is
+/// admitted alongside the 2xx family rather than read as a refusal. `404`/`410` are the genuine
+/// absence. Everything else — `403` hotlink protection, `429`, `5xx` — is a refusal: reporting it
+/// as an empty result would state "this image carries no GPS coordinates, no camera serial and no
+/// owner name" when the image was never retrieved.
+fn classify_image_status(status: u16) -> ImageFetch {
+    match status {
+        206 => ImageFetch::Read,
+        s if (200..300).contains(&s) => ImageFetch::Read,
+        404 | 410 => ImageFetch::Absent,
+        _ => ImageFetch::Refused,
+    }
+}
 
 /// Cap on image fetch size (8 MiB). A high-res JPEG / HEIC normally
 /// fits well under this; large RAW files (CR3, ARW) typically
 /// exceed it but rarely appear from URL pivots. Prevents a
 /// misclassified video URL or PDF from draining memory.
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
-
-/// File extensions worth fetching for EXIF analysis. Anything else
-/// short-circuits before the HTTP call — no point downloading a
-/// PNG just to fail at the EXIF reader (PNGs *can* embed EXIF in
-/// rare cases but the vast majority don't, and we'd rather save the
-/// quota).
-pub(super) const IMAGE_EXTS: &[&str] = &[
-    ".jpg", ".jpeg", ".jpe", ".jfif", ".tif", ".tiff", ".heic", ".heif", ".webp",
-];
 
 pub struct ExifGeo;
 
@@ -85,7 +110,7 @@ impl Module for ExifGeo {
     }
 
     fn description(&self) -> &'static str {
-        "Extract GPS coordinates + camera metadata from image URLs via EXIF parsing"
+        "EXIF geolocation — parses image URLs to extract GPS coordinates and camera metadata for geolocation"
     }
 
     fn priority(&self) -> u8 {
@@ -146,18 +171,24 @@ impl Module for ExifGeo {
         // parse EXIF — the metadata sits in the first few KB of a
         // JPEG. Setting the Range header makes the polite-side of
         // the trade visible to upstream servers.
-        let resp = match ctx
+        // Fail closed on a fetch that did not happen. This module answers ONE image URL, so
+        // `result` is still empty at these returns: swallowing the transport error and the non-2xx
+        // reported "this image carries no GPS coordinates, no camera serial and no owner name" — a
+        // confident negative, and a decisive one for a GEOINT pivot — when the image was never
+        // retrieved at all. The engine reads `Ok(empty)` as a clean no-data outcome, so the
+        // provider also stayed healthy and was re-asked for every subsequent image URL.
+        let resp = ctx
             .http
             .get(url)
             .header("Range", format!("bytes=0-{}", MAX_BYTES.saturating_sub(1)))
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(_) => return Ok(result),
-        };
-        if !resp.status().is_success() && resp.status().as_u16() != 206 {
-            return Ok(result);
+            .send_tagged(SRC)
+            .await?;
+        match classify_image_status(resp.status().as_u16()) {
+            ImageFetch::Read => {}
+            ImageFetch::Absent => return Ok(result),
+            ImageFetch::Refused => {
+                return Err(crate::util::http::http_status_error(SRC, resp).await);
+            }
         }
 
         // Stream the body and bail the moment the running total exceeds
@@ -173,9 +204,20 @@ impl Module for ExifGeo {
         while let Some(chunk) = stream.next().await {
             let chunk = match chunk {
                 Ok(c) => c,
-                Err(_) => return Ok(result),
+                // The connection dropped mid-body. Same reasoning as the fetch above: the image
+                // was not read, so reporting no metadata would state a negative about bytes that
+                // were never seen.
+                Err(e) => {
+                    return Err(crate::core::error::Error::module(
+                        SRC,
+                        format!("image body download failed mid-stream: {e}"),
+                    ));
+                }
             };
             if body.len() + chunk.len() > MAX_BYTES as usize {
+                // Deliberately still a clean empty, and NOT an error: the cap is our own policy,
+                // applied on purpose, so an oversized image is a decision we made rather than a
+                // failure of the source. Existing behaviour, left unchanged.
                 return Ok(result);
             }
             body.extend_from_slice(&chunk);
@@ -231,29 +273,68 @@ impl Module for ExifGeo {
             )
         };
 
-        // 1. Coordinates — GPS IFD. Empirically reliable to ~10–50 m; base 0.80,
-        //    above single-source IP-geo (0.55–0.60), below WiGLE consensus (0.85).
+        // 1. Coordinates — GPS IFD. Empirically reliable to ~10–50 m; base confidence::HIGH_PLUSPLUS,
+        //    above single-source IP-geo (confidence::MEDIUM_HIGH–confidence::MEDIUM_PLUS), below WiGLE consensus (confidence::HIGH_PLUSPLUS_PLUS).
         if let Some((lat, lon)) = gps {
             let coord_str = format!("{lat:.6},{lon:.6}");
-            let mut e = Entity::new(EntityKind::Coordinates, &coord_str, 0.80, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Coordinates,
+                &coord_str,
+                confidence::HIGH_PLUSPLUS,
+                &ctx.scan_id,
+            );
             e.tag("geoint");
             e.tag("exif");
             e.tag("photo-derived");
             crate::util::geo::tag_au_state(&mut e, lat, lon);
-            e.add_evidence(
-                evidence(format!("EXIF GPS extracted from {url}"))
-                    .with_attr("latitude", lat.to_string())
-                    .with_attr("longitude", lon.to_string()),
-            );
+            // Real horizontal accuracy (GPSHPositioningError), when the camera
+            // reported it: stamp the `accuracy:<n>m` precision tag the location
+            // fusion ladder reads (`coord_accuracy_km`), so a phone fix that
+            // knows it is ±8 m is weighted at that grain instead of the generic
+            // photo grain. Absent tag ⇒ no tag — never a fabricated radius.
+            let accuracy_m = extract_positioning_error(&exif);
+            if let Some(acc) = accuracy_m {
+                // Preserve the camera's reported radius — the fusion ladder
+                // parses it as f64. Rounding to an integer metre would understate
+                // a 12.4 m radius as 12 m (claiming better accuracy than
+                // reported); the extractor already rejects a 0 m radius.
+                e.tag(format!("accuracy:{acc:.1}m"));
+            }
+            // Altitude (3-D fix) and camera heading (what the lens faced) — real
+            // GPS-IFD signals the scan path previously dropped; the local-ingest
+            // path already surfaces altitude, so this brings the two to parity.
+            let mut ev = evidence(format!("EXIF GPS extracted from {url}"))
+                .with_attr("latitude", lat.to_string())
+                .with_attr("longitude", lon.to_string());
+            if let Some(alt) = extract_altitude(&exif) {
+                ev = ev.with_attr("altitude_m", format!("{alt:.1}"));
+            }
+            if let Some((deg, r)) = extract_img_direction(&exif) {
+                ev = ev
+                    .with_attr("camera_heading_deg", format!("{deg:.1}"))
+                    .with_attr(
+                        "camera_heading_ref",
+                        if r == 'M' { "magnetic" } else { "true" },
+                    );
+            }
+            if let Some(acc) = accuracy_m {
+                ev = ev.with_attr("gps_accuracy_m", format!("{acc:.1}"));
+            }
+            e.add_evidence(ev);
             result.push(e);
         }
 
         // 2. DeviceId — a camera serial uniquely identifies one physical device,
         //    so the same serial across images links them to the same camera (and
         //    usually the same person): the highest-value EXIF cross-correlation.
-        //    Authoritative (camera firmware wrote it) → 0.75.
+        //    Authoritative (camera firmware wrote it) → confidence::VERY_HIGH.
         if let Some(fp) = fingerprint {
-            let mut e = Entity::new(EntityKind::DeviceId, &fp, 0.75, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::DeviceId,
+                &fp,
+                confidence::VERY_HIGH,
+                &ctx.scan_id,
+            );
             e.tag("exif");
             e.tag("camera");
             e.tag("device-fingerprint");
@@ -265,11 +346,16 @@ impl Module for ExifGeo {
 
         // 3. Person — the owner/artist named in metadata. CameraOwnerName is set
         //    in-camera by the owner, so it is a real identity lead. Kept below the
-        //    0.50 expansion floor (a metadata name is a lead, not a confirmed
+        //    confidence::MEDIUM expansion floor (a metadata name is a lead, not a confirmed
         //    identity) but NOT quarantined, so it correlates with same-named
         //    Person entities surfaced by search/breach modules.
         if let Some(name) = person_name {
-            let mut e = Entity::new(EntityKind::Person, &name, 0.45, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Person,
+                &name,
+                confidence::LOW_MEDIUM,
+                &ctx.scan_id,
+            );
             e.tag("exif");
             e.tag("photo-owner");
             e.add_evidence(evidence(format!(

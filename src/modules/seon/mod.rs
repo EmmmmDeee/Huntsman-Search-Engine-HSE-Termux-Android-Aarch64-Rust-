@@ -81,7 +81,7 @@ impl Module for Seon {
         "seon"
     }
     fn description(&self) -> &'static str {
-        "SEON email/phone enrichment — fraud score, breach exposure, WHOIS-style registrant PII"
+        "SEON email/phone enrichment — surfaces fraud score, breach exposure, and WHOIS-style registrant PII"
     }
     fn priority(&self) -> u8 {
         95
@@ -147,9 +147,8 @@ impl Module for Seon {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) {
-            Some(k) => k,
-            None => return Ok(ModuleResult::new()),
+        let Some(key) = ctx.key_opt(KEY_ENV) else {
+            return Ok(ModuleResult::new());
         };
 
         match target.kind {

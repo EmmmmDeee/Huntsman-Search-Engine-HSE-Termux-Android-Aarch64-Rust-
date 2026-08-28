@@ -10,15 +10,16 @@ use crate::core::module::ModuleContext;
 use crate::core::scan::{Scan, ScanOptions, Target};
 use crate::util::{keys, uid::scan_id};
 
-use super::{
-    build_runtime, color_confidence, color_severity, parse_target_kind, split_csv, truncate,
-    use_color,
-};
+use super::{color_confidence, color_severity, parse_target_kind, split_csv, truncate, use_color};
 
+#[derive(Clone)]
 pub(super) struct ScanCmd {
     /// `None` (or `"auto"`) auto-detects the kind from `value` — the unified scan.
     pub kind: Option<String>,
     pub value: String,
+    /// Batch mode: a path to a file of seeds (one target per line). When set,
+    /// `value` is ignored and the same scan pipeline runs once per file seed.
+    pub input_file: Option<String>,
     pub modules: Option<String>,
     pub exclude: Option<String>,
     pub throttle_ms: u64,
@@ -38,6 +39,7 @@ pub(super) struct ScanCmd {
     pub adaptive: bool,
     pub max_roi: bool,
     pub convex_budget: bool,
+    pub skip_dead_modules: bool,
     pub regional_search: bool,
     pub min_marginal_yield: Option<f64>,
     pub expansion_strategy: String,
@@ -53,7 +55,94 @@ pub(super) struct ScanCmd {
     pub include_infra: bool,
 }
 
+/// Parse a batch seed-list file body into ordered, de-duplicated seeds: one
+/// target per line, blank lines and `#`-comment lines skipped, surrounding
+/// whitespace trimmed. **Pure** (no IO) so the parsing is unit-tested directly.
+pub(super) fn parse_seed_list(body: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    body.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter(|l| seen.insert(l.to_string()))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Batch mode: run the SAME scan pipeline for every seed in `--input-file`,
+/// reusing [`cmd_scan`] per seed. This is HSE's keyless, any-seed generalisation
+/// of a "process this list of targets" batch tool — each seed's findings are
+/// scanned, stored (exportable afterwards per `scan_id` via `hse export`), and a
+/// per-seed failure is reported without aborting the run (one bad target must
+/// not sink the whole list).
+async fn run_batch(base: ScanCmd, path: &str) -> crate::core::error::Result<()> {
+    let body = std::fs::read_to_string(path).map_err(|e| {
+        crate::core::error::Error::Other(format!("cannot read --input-file '{path}': {e}"))
+    })?;
+    let seeds = parse_seed_list(&body);
+    if seeds.is_empty() {
+        return Err(crate::core::error::Error::Other(format!(
+            "no seeds in --input-file '{path}' (one target per line; blank and # lines ignored)"
+        )));
+    }
+    let total = seeds.len();
+    eprintln!("batch: scanning {total} seed(s) from {path}");
+    let (mut ok, mut failed) = (0usize, 0usize);
+    for (i, seed) in seeds.into_iter().enumerate() {
+        eprintln!("\n── batch [{}/{total}] {seed} ──", i + 1);
+        let mut per = base.clone();
+        per.value = seed.clone();
+        per.input_file = None; // guard against re-entry
+        // Box the recursive call: cmd_scan ↔ run_batch is a cycle, so at least
+        // one edge must be heap-indirected to keep the future finite-sized.
+        match Box::pin(cmd_scan(per)).await {
+            Ok(()) => ok += 1,
+            Err(e) => {
+                failed += 1;
+                eprintln!("batch: seed '{seed}' failed: {e}");
+            }
+        }
+    }
+    eprintln!("\nbatch complete: {ok} succeeded, {failed} failed, {total} total");
+    // A batch that lost seeds did not do what it was asked to do, so it must not
+    // report success — this returned `Ok(())` even when every single seed
+    // failed, which made `hse scan --input-file … && publish` publish nothing.
+    // Failing here does NOT abort the run: every seed has already been attempted
+    // and its results stored by this point (per-seed failures are still reported
+    // as they happen and never sink the rest of the list), so this changes only
+    // the exit status, not how much work gets done.
+    if failed > 0 {
+        return Err(crate::core::error::Error::Other(format!(
+            "batch: {failed}/{total} seed(s) failed ({ok} succeeded) — \
+             see the per-seed errors above"
+        )));
+    }
+    Ok(())
+}
+
+/// The output formats `hse scan` accepts, validated up front. The tail dispatch
+/// only special-cases `json`/`dossier` and treats every other value as `table`,
+/// so without this an unknown format is silently downgraded — `cmd_query`
+/// already guards its own format the same way.
+fn validate_scan_output_format(output: &str) -> crate::core::error::Result<()> {
+    match output {
+        "table" | "json" | "dossier" => Ok(()),
+        other => Err(crate::core::error::Error::Other(format!(
+            "unknown --output format {other:?} (expected `table`, `json`, or `dossier`)"
+        ))),
+    }
+}
+
 pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
+    // Validate the output format up front — BEFORE running the scan or entering
+    // batch mode — so a typo like `--output josn` fails fast with a clear
+    // message instead of paying for the full scan and then silently rendering
+    // the human table (which breaks `hse scan … --output json | jq`).
+    validate_scan_output_format(&cmd.output)?;
+    // Batch mode short-circuit: `--input-file` runs the whole pipeline once per
+    // file seed, reusing this same function (value is overwritten per seed).
+    if let Some(path) = cmd.input_file.clone() {
+        return run_batch(cmd, &path).await;
+    }
     // Unified scan: an omitted (or `auto`) --kind is inferred from the value's
     // shape; an explicit kind is parsed as before. Detection is reported on
     // stderr so the operator sees (and can override) what was chosen.
@@ -86,7 +175,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     // Depth resolution. `--auto`/`--recursive` only kick in when the operator
     // gave no explicit `--depth` (sentinel: `cmd.depth.is_none()`); otherwise an
     // omitted `--depth` falls back to the comprehensive product default
-    // (DEFAULT_SCAN_DEPTH = MAX_DEPTH). `--recursive`'s `.min(0.40)` never raises
+    // (DEFAULT_SCAN_DEPTH = 3). `--recursive`'s `.min(0.40)` never raises
     // the floor above the operator's value, so with the comprehensive default it
     // stays at the 0.20 expansion floor.
     let (depth, min_expand_confidence, max_concurrent) = if cmd.auto && cmd.depth.is_none() {
@@ -191,6 +280,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         profile: None,
         max_roi: cmd.max_roi,
         convex_budget: cmd.convex_budget,
+        skip_dead_modules: cmd.skip_dead_modules,
         regional_search: cmd.regional_search,
         min_marginal_yield: cmd.min_marginal_yield,
         expansion_strategy,
@@ -226,7 +316,8 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     }
 
     let sid = scan_id(target_kind.canonical_str(), &cmd.value);
-    let (store, bus, engine) = build_runtime(64)?;
+    let crate::app::runtime::ApplicationRuntime { store, bus, engine } =
+        crate::app::runtime::build_runtime(64)?;
 
     let scan = Scan::new(sid.clone(), target.clone()).with_options(options);
     let keys = keys::populate_and_load().await;
@@ -267,10 +358,18 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     // dossier (every entity, full provenance, every raw API response embedded)
     // and announce its path on stderr — regardless of the chosen stdout format.
     // Best-effort: a dossier write failure must never fail the scan itself.
-    match crate::cli::export::write_full_dossier(store.as_ref(), &sid) {
+    match crate::app::export::write_full_dossier(store.as_ref(), &sid) {
         Ok(path) => eprintln!("full dossier: {}", path.display()),
         Err(e) => eprintln!("warning: could not write full dossier: {e}"),
     }
+
+    // How complete this scan's answer actually is, from the single source every
+    // read path shares. Computed once here and surfaced on ALL THREE output
+    // formats: the table below, the JSON payload, and the dossier's
+    // frontmatter. Previously `hse scan` read neither `scan.status` nor
+    // `scan.error`, so a Failed scan and a budget-truncated one both rendered
+    // exactly like a clean, exhaustive one.
+    let caveat = scan.completeness_caveat("this scan");
 
     if cmd.output == "json" {
         // Full self-optimization payload — scan + entities + correlations
@@ -299,6 +398,12 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "scan": scan,
+                // `scan` already carries `status` and `stop_reason`, but a
+                // consumer would have to re-implement the truncation predicate
+                // to act on them. Surface the rendered caveat (null when the
+                // scan is a complete answer) so `--output json` discloses
+                // exactly what the human formats do.
+                "completeness_caveat": caveat,
                 "entities": entities,
                 "correlations": correlations,
                 "relations": relations,
@@ -332,12 +437,22 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     } else {
         let color = use_color();
         println!(
-            "\nScan {} — {} entities for {}={}",
+            "\nScan {} — {} entities for {}={} [{}]",
             &sid[..8],
             entities.len(),
             kind_str,
-            cmd.value
+            cmd.value,
+            scan.status.as_str()
         );
+        // The caveat goes to stderr, next to the scan's other operator notes,
+        // so it survives `hse scan … > results.txt` — the case where a silently
+        // truncated scan is most likely to be read later as a complete answer.
+        if let Some(ref c) = caveat {
+            eprintln!("⚠ {c}");
+        }
+        if let Some(ref e) = scan.error {
+            eprintln!("⚠ scan error: {e}");
+        }
         if scan.modules_run > 0 {
             // `skipped` is shown so toggle effects are observable in the
             // standard view: excluding a module (`--exclude`) or disabling one
@@ -353,6 +468,18 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             );
         } else {
             println!();
+        }
+        // Expansion timeline: how the working graph grew generation by generation
+        // outward from the seed. Only shown when expansion actually reached beyond
+        // the seed round (more than one generation present), so a plain depth-0
+        // scan stays uncluttered.
+        let timeline = crate::core::entity::expansion_timeline(&entities);
+        if timeline.len() > 1 {
+            let parts: Vec<String> = timeline
+                .iter()
+                .map(|(g, n)| format!("gen {g}: {n}"))
+                .collect();
+            println!("  expansion: {}\n", parts.join("  ·  "));
         }
         println!(
             "{:<16} {:>6} {:>6}  {:<10} {:<26} VALUE",
@@ -394,6 +521,24 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             }
         }
     }
+
+    // Exit status must agree with the scan's own verdict. `cmd_scan` used to
+    // return `Ok(())` unconditionally, so `hse scan … && next-step` ran the next
+    // step after a scan that failed outright — and `$?` was 0 for a scan whose
+    // every module errored. A Failed scan is an error; the results above are
+    // still printed first, because a partial result is worth more to the
+    // operator than a bare exit code.
+    //
+    // Aborted and budget-truncated scans deliberately stay `Ok`: the operator
+    // asked for the stop in one case and set the budget in the other, so
+    // neither is a failure — both are disclosed through `caveat` above instead.
+    if scan.status == crate::core::scan::ScanStatus::Failed {
+        return Err(crate::core::error::Error::Other(format!(
+            "scan {} failed: {}",
+            &sid[..8],
+            scan.error.as_deref().unwrap_or("no error recorded")
+        )));
+    }
     Ok(())
 }
 
@@ -427,7 +572,7 @@ fn apply_named_profile(name: &str, options: ScanOptions) -> Result<ScanOptions, 
 
 /// Strip platform/shared-infrastructure entities (cloud buckets, CDN IPs,
 /// analytics IDs) from `hse scan`'s printed/JSON/dossier output, mirroring
-/// [`crate::api::scan_export::build_scan_report`]'s `include_infra` filter so
+/// [`crate::app::export::build_scan_report`]'s `include_infra` filter so
 /// the same scan reads consistently across `hse scan`, `hse export`, and the
 /// API. The operator-provided seed always survives even if it is itself
 /// infrastructure. A no-op when `include_infra` is `true`.
@@ -537,8 +682,54 @@ fn entity_source_labels(e: &crate::core::entity::Entity) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::entity::{Entity, EntityKind, Evidence};
     use std::cell::Cell;
+
+    #[test]
+    fn scan_output_format_is_validated_up_front() {
+        for ok in ["table", "json", "dossier"] {
+            assert!(
+                validate_scan_output_format(ok).is_ok(),
+                "{ok} must be accepted"
+            );
+        }
+        // A typo must be rejected with a message that names the bad value and the
+        // valid set — not silently downgraded to the table view.
+        let err = validate_scan_output_format("josn")
+            .expect_err("a typo must be rejected")
+            .to_string();
+        assert!(err.contains("josn"), "error names the bad value: {err}");
+        assert!(err.contains("json"), "error lists the valid formats: {err}");
+    }
+
+    #[test]
+    fn parse_seed_list_skips_blanks_comments_and_dedups() {
+        let body = "\
+8.8.8.8
+  1.1.1.1
+
+# a comment line
+example.com
+8.8.8.8
+# another comment
+alice@example.com
+";
+        let seeds = parse_seed_list(body);
+        // Order preserved, whitespace trimmed, blanks + # lines dropped, the
+        // duplicate 8.8.8.8 collapsed to its first occurrence.
+        assert_eq!(
+            seeds,
+            vec![
+                "8.8.8.8".to_string(),
+                "1.1.1.1".to_string(),
+                "example.com".to_string(),
+                "alice@example.com".to_string(),
+            ]
+        );
+        // An all-blank / all-comment body yields no seeds (run_batch errors on it).
+        assert!(parse_seed_list("\n\n#only a comment\n   \n").is_empty());
+    }
 
     #[test]
     fn unknown_module_names_flags_typos_and_removed_modules() {
@@ -579,9 +770,19 @@ mod tests {
         // showed platform-infra entities regardless of the flag, unlike
         // `hse export` / the API which quarantine them by default. Pin the
         // actual filter behaviour the flag now drives.
-        let mut infra = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.6, "s");
+        let mut infra = Entity::new(
+            EntityKind::IpAddress,
+            "104.16.0.1",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         infra.tag(crate::core::tags::PLATFORM_INFRA);
-        let subject = Entity::new(EntityKind::Domain, "example-subject.test", 0.9, "s");
+        let subject = Entity::new(
+            EntityKind::Domain,
+            "example-subject.test",
+            confidence::VERY_HIGH_PLUS,
+            "s",
+        );
         let mut entities = vec![infra, subject];
 
         filter_infra_entities(&mut entities, false);
@@ -591,7 +792,12 @@ mod tests {
 
     #[test]
     fn filter_infra_entities_restores_infra_when_flag_set() {
-        let mut infra = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.6, "s");
+        let mut infra = Entity::new(
+            EntityKind::IpAddress,
+            "104.16.0.1",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         infra.tag(crate::core::tags::PLATFORM_INFRA);
         let mut entities = vec![infra];
 
@@ -608,7 +814,12 @@ mod tests {
         // A scan seeded with a datacenter/CDN IP that an IP module re-emits as
         // `hosting`, which then merges `platform-infra` onto the seed anchor —
         // the seed must still appear in its own report.
-        let mut seed = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.9, "s");
+        let mut seed = Entity::new(
+            EntityKind::IpAddress,
+            "104.16.0.1",
+            confidence::VERY_HIGH_PLUS,
+            "s",
+        );
         seed.tag(crate::core::tags::PLATFORM_INFRA);
         seed.tag("seed");
         let mut entities = vec![seed];
@@ -690,7 +901,7 @@ mod tests {
 
     #[test]
     fn source_labels_prefer_source_attr_then_dedup_and_sort() {
-        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.5, "s");
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", confidence::MEDIUM, "s");
         // A "source" attr overrides the raw evidence source name.
         e.add_evidence(Evidence::new("modB", "m").with_attr("source", "haveibeenpwned"));
         // No "source" attr → falls back to ev.source ("modA")…
@@ -703,7 +914,7 @@ mod tests {
 
     #[test]
     fn source_labels_em_dash_when_no_evidence() {
-        let e = Entity::new(EntityKind::Email, "x@y.com", 0.5, "s");
+        let e = Entity::new(EntityKind::Email, "x@y.com", confidence::MEDIUM, "s");
         assert_eq!(entity_source_labels(&e), "—");
     }
 
@@ -723,7 +934,7 @@ mod tests {
             regional_search: false,
             ..ScanOptions::default()
         };
-        let merged = apply_named_profile("skiptrace", options.clone()).unwrap();
+        let merged = apply_named_profile("skiptrace", options.clone()).expect("should succeed");
         assert_eq!(
             merged.modules, options.modules,
             "--modules must survive the overlay"
@@ -732,7 +943,8 @@ mod tests {
             merged.min_confidence, options.min_confidence,
             "--min-confidence must survive the overlay"
         );
-        let skiptrace = crate::core::profiles::resolve_profile("skiptrace").unwrap();
+        let skiptrace =
+            crate::core::profiles::resolve_profile("skiptrace").expect("should succeed");
         assert_eq!(merged.depth, skiptrace.depth);
         assert_eq!(
             merged.expansion_strategy, skiptrace.expansion_strategy,
@@ -746,7 +958,8 @@ mod tests {
 
     #[test]
     fn apply_named_profile_rejects_unknown_name() {
-        let err = apply_named_profile("not-a-real-profile", ScanOptions::default()).unwrap_err();
+        let err = apply_named_profile("not-a-real-profile", ScanOptions::default())
+            .expect_err("should be an error");
         assert!(
             err.starts_with("unknown --profile "),
             "error must carry the client-facing prefix, got: {err}"

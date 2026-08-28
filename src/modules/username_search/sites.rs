@@ -18,7 +18,7 @@ pub(super) struct Site {
 /// bucket can't slip into the 1600-line table unnoticed. Sorted.
 // Consumed only by the test that enforces it; it stands as living documentation
 // of the allowed buckets in non-test builds.
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub(super) const CATEGORIES: &[&str] = &[
     "blog",
     "business",
@@ -114,9 +114,12 @@ pub(super) const SITES: &[Site] = &[
         "social"
     ),
     s!("TikTok", "https://www.tiktok.com/@{}", G, 200, "social"),
+    // The public Atom feed, NOT `about.json`: verified live in July 2026, the
+    // JSON endpoint 403s for every non-OAuth client, which `StatusEq(200)` read
+    // as "no such account". `.rss` still answers 200/404 honestly.
     s!(
         "Reddit",
-        "https://www.reddit.com/user/{}/about.json",
+        "https://www.reddit.com/user/{}/.rss",
         G,
         200,
         "social"

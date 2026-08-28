@@ -3,7 +3,7 @@
 //! without violating the "no inter-module imports" invariant.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -12,10 +12,8 @@ use crate::core::error::{Error, Result};
 use crate::util::backoff::BackoffPolicy;
 use crate::util::budget::QuotaBudget;
 use crate::util::curl_client::{AuthScheme, CurlClient};
+use crate::util::quota_config;
 use crate::util::response_cache::ResponseCache;
-
-// Embedded fallback: single source of truth lives in `util::keys`.
-const HARDCODED_KEY: &str = crate::util::keys::OATHNET_DEFAULT_KEY;
 
 /// Retry pacing for a transient OathNet HTTP 429 (distinct from true daily
 /// quota exhaustion — see the inline notes in [`search`]). Mirrors
@@ -33,7 +31,7 @@ pub const KEY_ENV: &str = "HUNTSMAN_OATHNET_KEY";
 /// response. Empirically saves ~60% of OathNet API calls on expansion scans.
 ///
 /// Backed by the shared [`ResponseCache`] primitive (cap 1024).
-static RESPONSE_CACHE: ResponseCache<Vec<Value>> = ResponseCache::new(1024);
+static RESPONSE_CACHE: ResponseCache<SearchResult> = ResponseCache::new(1024);
 
 /// Shared curl-subprocess client. `x-api-key` auth, 12s curl timeout,
 /// 15s outer tokio timeout — same calibration as the SeekNow client
@@ -43,29 +41,128 @@ static CLIENT: CurlClient = CurlClient::new("oathnet", AuthScheme::XApiKey, 12, 
 
 /// Per-scan + per-session quota budget for OathNet API calls.
 ///
-/// Default 4 queries per scan (the OathNet quota is tighter than
-/// SeekNow's) with a 30-query session ceiling that prevents
-/// radar/live sessions from burning the daily allowance. Both caps
-/// are env-tunable via `HUNTSMAN_OATHNET_SCAN_CAP` and
-/// `HUNTSMAN_OATHNET_SESSION_CAP`.
-static BUDGET: QuotaBudget = QuotaBudget::new(
-    "oathnet",
-    4,
-    30,
-    "HUNTSMAN_OATHNET_SCAN_CAP",
-    "HUNTSMAN_OATHNET_SESSION_CAP",
-);
+/// Initialized lazily with per-scan limit from `quota_config` (env var
+/// `HSE_OATHNET_PER_SCAN_LIMIT`, default 4). The per-session ceiling is fixed
+/// at 30 to prevent radar/live sessions from burning the daily allowance.
+/// The provider's daily limit (from `HSE_OATHNET_DAILY_LIMIT` in quota_config)
+/// is tracked separately via `real_quota()`. Runtime overrides are still possible
+/// via `HUNTSMAN_OATHNET_SCAN_CAP` env var or `set_scan_cap_override()` method.
+static BUDGET: LazyLock<QuotaBudget> = LazyLock::new(|| {
+    let config = quota_config::oathnet_quota();
+    QuotaBudget::new(
+        "oathnet",
+        config.per_scan_limit,
+        30,
+        "HUNTSMAN_OATHNET_SCAN_CAP",
+        "HUNTSMAN_OATHNET_SESSION_CAP",
+    )
+});
+
+/// Whether an enumeration returned the whole answer — and if not, what stopped
+/// it.
+///
+/// Pagination has six exits and five of them can leave the item set short, and
+/// two further exits refuse the query at the door before a single request is
+/// made. Every one used to return a bare `Vec<Value>` indistinguishable from a
+/// complete result, so a dossier built on a truncated sweep reported N findings
+/// with nothing saying more existed. Only the budget exit said anything at all,
+/// and only to the log.
+///
+/// The causes are kept apart rather than collapsed into one `truncated: bool`
+/// because an operator acts on them differently: raise the scan cap (which
+/// spends money), wait for the daily quota to reset, retry after a rate limit,
+/// or report a provider that advertises more pages without a cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Completeness {
+    /// The provider reported no further pages. This is the whole answer.
+    Complete,
+    /// The operator's own scan/session budget stopped the query — either
+    /// mid-pagination with more pages available, or at the door before a single
+    /// request was made. The cap is a paid-quota spending guard and is working
+    /// as intended — the defect was never disclosing that it bit.
+    BudgetExhausted,
+    /// The provider's daily paid quota is spent: either it ran out
+    /// mid-enumeration (`left_today: 0`), or it was already latched before this
+    /// query was attempted.
+    QuotaExhausted,
+    /// Rate-limited with no retries left, mid-enumeration.
+    RateLimited,
+    /// The provider reported `has_more` but supplied no cursor to continue.
+    CursorMissing,
+    /// A page *after* the first failed with a persistent server error (5xx, or
+    /// no HTTP response at all) once retries were exhausted. Earlier pages are
+    /// real, paid-for records; the rest is unknown. A FIRST-page server error
+    /// keeps returning `Err` — there is nothing to preserve, and a provider
+    /// that is wholly unreachable is a failure, not a short answer.
+    ServerError,
+    /// A page *after* the first returned 404. Earlier pages are real; the rest
+    /// is unknown. A first-page 404 is a genuine empty result, not this.
+    PageVanished,
+}
+
+impl Completeness {
+    /// True when the item set is real but short of the full answer.
+    #[must_use]
+    pub fn is_partial(self) -> bool {
+        !matches!(self, Self::Complete)
+    }
+
+    /// Stable tag for evidence attributes and logs; `None` when complete.
+    #[must_use]
+    pub fn reason(self) -> Option<&'static str> {
+        match self {
+            Self::Complete => None,
+            Self::BudgetExhausted => Some("scan/session budget exhausted"),
+            Self::QuotaExhausted => Some("provider daily quota exhausted"),
+            Self::RateLimited => Some("rate-limited, retries exhausted"),
+            Self::CursorMissing => Some("provider reported more pages but gave no cursor"),
+            Self::ServerError => {
+                Some("a page after the first failed with a persistent server error")
+            }
+            Self::PageVanished => Some("a page after the first returned 404"),
+        }
+    }
+}
+
+/// A page-set plus whether it is the whole answer.
+///
+/// Cached as a unit, deliberately: the truncation has to survive a cache hit or
+/// the second caller for the same `(path, field, value)` is told a partial set
+/// is complete — which is what happened before, since `cache_put` ran on every
+/// exit including the truncating ones.
+#[derive(Debug, Clone)]
+pub struct SearchResult {
+    pub items: Vec<Value>,
+    pub completeness: Completeness,
+}
+
+impl SearchResult {
+    fn new(items: Vec<Value>, completeness: Completeness) -> Self {
+        Self {
+            items,
+            completeness,
+        }
+    }
+}
 
 fn cache_key(path: &str, field: &str, value: &str) -> String {
     format!("{path}:{field}:{}", value.to_lowercase())
 }
 
-fn cache_get(key: &str) -> Option<Vec<Value>> {
+fn cache_get(key: &str) -> Option<SearchResult> {
     RESPONSE_CACHE.get(key)
 }
 
-fn cache_put(key: String, items: &[Value]) {
-    RESPONSE_CACHE.put(key, items.to_vec());
+/// Cache the page-set WITH its completeness, so a hit reports the same truth the
+/// original call did.
+fn cache_put(key: String, items: Vec<Value>, completeness: Completeness) -> SearchResult {
+    // Takes the vec by value so callers move `all_items` in: the cache needs one
+    // copy and the caller needs one, and the previous `&[Value]` signature forced
+    // `to_vec()` on top of that clone — two deep copies of a page set that can
+    // run to thousands of breach rows, on every cache write.
+    let res = SearchResult::new(items, completeness);
+    RESPONSE_CACHE.put(key, res.clone());
+    res
 }
 
 /// Atomically reserve one query against the OathNet budget (see
@@ -137,6 +234,28 @@ fn real_quota_from_envelope(env: &Envelope) -> Option<RealQuota> {
     })
 }
 
+/// True when a parsed envelope's real quota meter shows a spent daily
+/// allowance — a metered (non-unlimited) account whose `left_today` has
+/// reached zero.
+///
+/// Read from the TYPED `_meta.lookups` block ([`real_quota_from_envelope`]),
+/// never a raw-body substring. The former `body.contains("\"left_today\":0")`
+/// guard ran BEFORE the body was parsed and the page accumulated, so the day's
+/// final SUCCESSFUL page — which carries its data AND `left_today:0` in the
+/// same body, because `used_today` counts the current call
+/// (`docs/OATHNET_API_GUIDE.txt`: `used_today:13 + left_today:487 =
+/// daily_limit:500`) — had its paid records silently dropped. It also
+/// false-latched on an unlimited account that happened to report
+/// `left_today:0`. Driving the latch off the typed meter fixes both: the
+/// `is_unlimited` guard excludes unlimited accounts, and the caller acts on
+/// this only AFTER accumulating a successful page — mirroring the sibling
+/// [`crate::util::see_know`] `credits_exhausted` discipline (exhaustion latches
+/// to stop LATER queries, but the data of the call that spent the last credit
+/// is still returned).
+fn envelope_quota_exhausted(env: &Envelope) -> bool {
+    real_quota_from_envelope(env).is_some_and(|q| !q.is_unlimited && q.left_today == 0)
+}
+
 /// Record a freshly-observed [`RealQuota`], overwriting whatever was
 /// captured before — the newest response is always the most accurate.
 fn record_real_quota(q: RealQuota) {
@@ -167,8 +286,20 @@ pub fn real_quota() -> Option<RealQuota> {
 /// for every later re-scan of the same email/username/phone, indefinitely,
 /// with no live re-check and no way for the operator to force a refresh.
 pub fn reset_budget() {
+    // `BUDGET.reset_scan()` clears the rate-limit latch too: it lives in the
+    // same per-scan ScanState the quota-exhausted flag does, so a rate limit
+    // one scan hit can never bench -- or, before this was scan-scoped, get
+    // silently un-latched by -- a different, concurrently-running scan.
     BUDGET.reset_scan();
     RESPONSE_CACHE.clear();
+}
+
+/// Remove `scan_id`'s tracked budget state entirely. Called by the engine at
+/// scan finalisation so a long-lived `hse serve` / `hse live` process
+/// doesn't grow [`BUDGET`]'s per-scan map without bound as scans come and
+/// go — mirrors [`crate::util::found_keys::drain`]'s per-scan cleanup.
+pub fn cleanup_scan(scan_id: &str) {
+    BUDGET.cleanup_scan(scan_id);
 }
 
 /// True while the shared OathNet budget can absorb at least one more billable
@@ -187,9 +318,41 @@ pub fn set_scan_cap_override(cap: u32) {
     BUDGET.set_scan_cap_override(cap);
 }
 
+/// Set when a 429 outlived its retry budget, so the *reason* the module stopped
+/// survives alongside the stop itself.
+///
+/// The 429 path latches `mark_quota_exhausted()` deliberately — a persistent
+/// rate limit must stop the scan firing at OathNet rather than retry forever —
+/// but that latch is the *daily quota* signal, and reusing it made a burst rate
+/// limit indistinguishable from a spent daily allowance everywhere the latch is
+/// read: the door guard in [`search`], and `"quota_exhausted"` in
+/// `api::key_harvest_handlers`. The two need opposite operator responses —
+/// retry shortly vs. wait for the daily reset, possibly hours — so reporting
+/// the wrong one is exactly the misdirection [`Completeness`] exists to remove.
+///
+/// This records the cause without touching the stop: the quota latch is still
+/// set, so every existing gate behaves precisely as before. Lives in
+/// [`BUDGET`]'s own per-scan state (not a bare process-wide flag) for the
+/// identical reason `mark_exhausted`/`is_exhausted` already do: under
+/// `hse serve`'s concurrent scans, a process-wide latch let one scan's 429
+/// silently block/mislabel every OTHER concurrently-running scan's queries,
+/// and let any new scan starting clear the flag out from under a still-
+/// rate-limited sibling. Cleared by [`reset_budget`] at the scan boundary,
+/// like the rest of the per-scan state.
 fn mark_quota_exhausted() {
     BUDGET.mark_exhausted();
     tracing::warn!("OathNet daily quota exhausted — skipping remaining queries");
+}
+
+/// Latch that the stop came from a rate limit, not a spent daily quota.
+fn mark_rate_limited() {
+    BUDGET.mark_rate_limited();
+    tracing::warn!("OathNet rate-limited with retries exhausted — skipping remaining queries");
+}
+
+/// True when this scan stopped querying OathNet because of a persistent 429.
+fn is_rate_limited() -> bool {
+    BUDGET.is_rate_limited()
 }
 
 fn base_url() -> String {
@@ -200,34 +363,15 @@ fn base_url() -> String {
     crate::util::endpoint_override::resolve("HUNTSMAN_OATHNET_BASE", "https://oathnet.org/api")
 }
 
-/// The OathNet API key to use for a request: the per-scan context key `ctx_key`
-/// when the operator supplied one, otherwise the built-in default
-/// ([`crate::util::keys::resolve_or_default`]). Mirrors `see_know::resolve_key`.
-#[must_use]
-pub fn resolve_key(ctx_key: Option<&str>) -> &str {
-    crate::util::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
-}
-
 /// Provider-prefixed, identifiable fingerprint of the OathNet API key used for a
 /// request, so every derived entity declares which key/origin returned it —
 /// without persisting the full secret across the entity store. Mirrors
 /// `see_know::key_fingerprint`. Pure, so it is unit-testable.
 #[must_use]
 pub fn key_fingerprint(key: &str) -> String {
-    let k = key.trim();
-    if k.is_empty() {
-        return "oathnet.org:(no key)".to_string();
-    }
-    if k.len() <= 12 {
-        return format!("oathnet.org:{k}");
-    }
-    let head: String = k.chars().take(8).collect();
-    let tail: String = {
-        let mut t: Vec<char> = k.chars().rev().take(4).collect();
-        t.reverse();
-        t.into_iter().collect()
-    };
-    format!("oathnet.org:{head}\u{2026}{tail}")
+    // Shared implementation in `util::key_fingerprint`; this fixes OathNet's
+    // label and truncation widths (show ≤12-byte keys whole, else 8…4).
+    crate::util::key_fingerprint::fingerprint("oathnet.org", key, 12, 8, 4)
 }
 
 #[derive(Deserialize)]
@@ -270,6 +414,27 @@ struct Lookups {
 struct ErrorDetail {
     #[serde(default)]
     status_code: Option<u16>,
+}
+
+/// Resolve the effective HTTP status for classifying an unsuccessful
+/// `search()` response: prefer the API's own `errors.status_code` (when
+/// present and nonzero — a `0` there is not a real status) over the
+/// transport-layer status, since the body's code may be more specific; but
+/// FALL BACK to the real HTTP status curl observed when the body doesn't
+/// provide one at all.
+///
+/// Previously `env.errors.status_code` was the ONLY signal available, via
+/// the status-discarding `CurlClient::get`. A genuine 404/429/5xx response
+/// whose body didn't happen to carry a matching `errors.status_code` field
+/// (a differently-shaped error body, a gateway/proxy response ahead of the
+/// real API) had no way to be classified at all and fell straight through
+/// to the generic `Err("API returned success=false")` at the end of the
+/// branch — discarding any results already accumulated from earlier,
+/// successful pages of the SAME paginated query. `get_with_status` gives an
+/// independent, always-available signal that can't be silently absent the
+/// way the body's own field can.
+fn effective_error_status(body_status: Option<u16>, http_status: u16) -> u16 {
+    body_status.filter(|&c| c != 0).unwrap_or(http_status)
 }
 
 #[derive(Deserialize)]
@@ -373,13 +538,28 @@ pub async fn search(
     value: &str,
     page_size: u32,
     session_id: Option<&str>,
-) -> Result<Vec<Value>> {
+) -> Result<SearchResult> {
     let ck = cache_key(path, field, value);
     if let Some(cached) = cache_get(&ck) {
         return Ok(cached);
     }
-    if is_quota_exhausted() || !budget_try_increment() {
-        return Ok(Vec::new());
+    // Split deliberately. Both arms return zero rows, but neither is a
+    // finding: no query was made, so nothing was established about this target.
+    // Reporting `Complete` here would have made "we were not allowed to ask"
+    // indistinguishable from "we asked and there is nothing" — the exact
+    // conflation this type exists to remove, one guard earlier than the
+    // pagination exits it was written for.
+    // Checked BEFORE the quota latch, because the 429 path sets both: the quota
+    // latch to stop, this one to say why. Reading the quota latch first would
+    // report every post-rate-limit refusal as a spent daily allowance.
+    if is_rate_limited() {
+        return Ok(SearchResult::new(Vec::new(), Completeness::RateLimited));
+    }
+    if is_quota_exhausted() {
+        return Ok(SearchResult::new(Vec::new(), Completeness::QuotaExhausted));
+    }
+    if !budget_try_increment() {
+        return Ok(SearchResult::new(Vec::new(), Completeness::BudgetExhausted));
     }
     // A search session (when the caller initialised one for this value) lets the
     // breach + stealer queries share ONE lookup. The id is threaded in
@@ -398,6 +578,9 @@ pub async fn search(
     // own scan/session budget is exhausted, exactly like a single-page query
     // already would, rather than a separately invented page-count cap.
     let mut all_items: Vec<Value> = Vec::new();
+    // Set by whichever exit stops pagination short; the loop's normal end
+    // leaves it `Complete`.
+    let mut completeness = Completeness::Complete;
     let mut cursor: Option<String> = None;
     loop {
         // Do NOT change filters between pages (the cursor is bound to the
@@ -419,8 +602,8 @@ pub async fn search(
         // latch exhaustion if backoff attempts run out, so a persistent 429
         // still degrades exactly as before rather than retrying forever.
         let mut attempt = 0u32;
-        let sd: SearchData = loop {
-            let body = CLIENT.get(&url, key).await?;
+        let (sd, quota_exhausted): (SearchData, bool) = loop {
+            let (body, http_status) = CLIENT.get_with_status(&url, key).await?;
             // Retain the paid response verbatim BEFORE parsing/extraction — operator
             // policy: purchased data is kept in absolute completeness until manually
             // deleted (see `util::raw_archive`). The endpoint label is the last two
@@ -435,23 +618,6 @@ pub async fn search(
                 _ => trimmed.to_owned(),
             };
             crate::util::raw_archive::record("oathnet", &endpoint_label, value, &body);
-            // Detect actual quota exhaustion. Earlier check used `body.contains("quota")`
-            // which false-positives on legitimate metadata fields like `session_quota`
-            // and `recommended_quota`. Match only true exhaustion signals.
-            // Detect quota exhaustion from STRUCTURALLY-SCOPED signals only. The former
-            // bare-phrase checks ("limit exceeded"/"Daily quota exceeded"/"quota exceeded")
-            // substring-matched the whole body, so a breach record whose free-text field
-            // contained one of those phrases both discarded the entire page AND latched the
-            // daily-quota kill for the rest of the scan. The `"left_today":0` JSON key/value
-            // is specific enough not to collide with payload text, and a genuine 429 is
-            // handled from the parsed envelope below.
-            if body.contains("\"left_today\":0")
-                || body.contains("\"is_unlimited\":false,\"left_today\":0")
-            {
-                mark_quota_exhausted();
-                cache_put(ck, &all_items);
-                return Ok(all_items);
-            }
             let env: Envelope =
                 serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
             // Record real quota state regardless of success/failure — a
@@ -461,26 +627,52 @@ pub async fn search(
             if let Some(q) = real_quota_from_envelope(&env) {
                 record_real_quota(q);
             }
+            // Detect true daily-quota exhaustion from the TYPED `_meta.lookups`
+            // meter — NOT a raw-body substring. The former
+            // `body.contains("\"left_today\":0")` check ran BEFORE the page was
+            // parsed and accumulated, silently discarding the day's final
+            // SUCCESSFUL page (which carries its data AND `left_today:0` in the
+            // same body). Compute the latch here but ACT on it only after the
+            // page is accumulated (the success path, below the retry loop) or
+            // when the body is a genuine non-success exhaustion (403, below).
+            // See [`envelope_quota_exhausted`].
+            let quota_exhausted = envelope_quota_exhausted(&env);
             if !env.success {
-                if env.errors.as_ref().and_then(|e| e.status_code) == Some(404) {
+                let code = effective_error_status(
+                    env.errors.as_ref().and_then(|e| e.status_code),
+                    http_status,
+                );
+                if code == 404 {
                     // Negative-cache the clean miss so subsequent scans of the same
                     // dead target don't re-spend an OathNet lookup confirming it's
                     // still empty. The cache is per-process so this only affects
                     // within-session re-queries. Only a true first-page 404 negative-
                     // caches an empty result; a 404 on a later page still returns
                     // whatever earlier pages already accumulated.
-                    if all_items.is_empty() {
-                        cache_put(ck, &[]);
+                    // A FIRST-page 404 is a genuine empty result and is
+                    // negative-cached as complete. A 404 on a later page means
+                    // earlier pages are real and the remainder is unknown.
+                    let completeness = if all_items.is_empty() {
+                        Completeness::Complete
                     } else {
-                        cache_put(ck, &all_items);
-                    }
-                    return Ok(all_items);
+                        Completeness::PageVanished
+                    };
+                    return Ok(cache_put(ck, all_items, completeness));
                 }
-                if env.errors.as_ref().and_then(|e| e.status_code) == Some(429) {
+                if code == 429 {
                     if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
+                        // Both latches: `mark_quota_exhausted` is what actually
+                        // stops the scan re-firing at OathNet (every existing
+                        // gate reads it, unchanged), while `mark_rate_limited`
+                        // records that a 429 — not a spent daily allowance —
+                        // is why. Without the second, this call correctly
+                        // reports `RateLimited` and then every LATER query in
+                        // the scan is refused at the door as `QuotaExhausted`,
+                        // telling the operator to wait hours for a reset that
+                        // was never the problem.
                         mark_quota_exhausted();
-                        cache_put(ck, &all_items);
-                        return Ok(all_items);
+                        mark_rate_limited();
+                        return Ok(cache_put(ck, all_items, Completeness::RateLimited));
                     }
                     let delay = RATE_LIMIT_BACKOFF.delay(attempt);
                     tracing::debug!(
@@ -506,9 +698,11 @@ pub async fn search(
                 // a real failure signal, not a clean "no more pages" or a
                 // quota condition, and must not be silently absorbed as
                 // either.
-                if let Some(code) = env.errors.as_ref().and_then(|e| e.status_code)
-                    && (500..600).contains(&code)
-                {
+                // Status 0 means curl reported no HTTP response at all (a
+                // connection reset after connect) — transient in the same
+                // way a 5xx is, per `CurlClient::get_with_status`'s doc, so
+                // it shares the same retry-then-fail treatment.
+                if code == 0 || (500..600).contains(&code) {
                     if RATE_LIMIT_BACKOFF.should_retry(attempt) {
                         let delay = RATE_LIMIT_BACKOFF.delay(attempt);
                         tracing::debug!(
@@ -522,33 +716,79 @@ pub async fn search(
                         attempt += 1;
                         continue;
                     }
+                    // Retries are spent. If earlier pages of THIS query already
+                    // came back, they are real, paid-for records: return them
+                    // marked truncated rather than throwing them away with an
+                    // `Err`. That is not "silently absorbing" the 5xx — the
+                    // `ServerError` completeness (and its `reason()`) states it
+                    // outright, and it brings this path in line with the 404
+                    // (`PageVanished`) and 429 (`RateLimited`) branches, which
+                    // already preserve accumulated pages. A FIRST-page failure
+                    // still errors: nothing was paid for, nothing is lost, and a
+                    // wholly unreachable provider must surface as a failure.
+                    if !all_items.is_empty() {
+                        tracing::debug!(
+                            path,
+                            status = code,
+                            fetched = all_items.len(),
+                            "oathnet server error mid-pagination — returning earlier pages as partial"
+                        );
+                        return Ok(cache_put(ck, all_items, Completeness::ServerError));
+                    }
                     return Err(Error::module(
                         "oathnet",
                         format!("HTTP {code} after {attempt} retries"),
                     ));
                 }
-                return Err(Error::module("oathnet", "API returned success=false"));
+                // A genuine non-success exhaustion body (HTTP 403 "You have
+                // reached your daily lookup limit") that carries the real
+                // `left_today:0` meter: latch and return whatever earlier pages
+                // accumulated — exactly what the old raw-body check did for this
+                // case, now driven off the typed meter so it cannot fire on a
+                // successful page's payload text.
+                if quota_exhausted {
+                    mark_quota_exhausted();
+                    return Ok(cache_put(ck, all_items, Completeness::QuotaExhausted));
+                }
+                // Carry the resolved status: a bare "success=false" gave the
+                // operator nothing to act on, when the difference between 401
+                // (bad key), 403 (plan too low) and anything else is exactly
+                // what decides their next step.
+                return Err(Error::module(
+                    "oathnet",
+                    format!("HTTP {code}: API returned success=false"),
+                ));
             }
             let data = match env.data {
                 Some(d) => d,
                 // Negative-cache empty data envelopes too (first page only).
                 None => {
-                    if all_items.is_empty() {
-                        cache_put(ck, &[]);
-                    } else {
-                        cache_put(ck, &all_items);
-                    }
-                    return Ok(all_items);
+                    // The provider returned an envelope with no data block: it
+                    // has nothing further, so this IS the whole answer.
+                    return Ok(cache_put(ck, all_items, Completeness::Complete));
                 }
             };
-            break serde_json::from_value(data)
-                .map_err(|e| Error::module("oathnet", e.to_string()))?;
+            break (
+                serde_json::from_value(data)
+                    .map_err(|e| Error::module("oathnet", e.to_string()))?,
+                quota_exhausted,
+            );
         };
 
         // Enrich each page against its OWN `dbname_info` block before
         // accumulating — different pages of the same paginated query can
         // legitimately carry different sets of breach databases.
         all_items.extend(enrich_with_breach_dates(sd.items, &sd.dbname_info));
+
+        // This page SUCCEEDED and spent the account's last daily credit
+        // (`left_today:0` on a metered account). KEEP the page — it is paid data
+        // the old raw-body pre-parse check discarded — but latch exhaustion so
+        // LATER queries in this scan are refused at the door, and stop paging.
+        if quota_exhausted {
+            mark_quota_exhausted();
+            completeness = Completeness::QuotaExhausted;
+            break;
+        }
 
         let has_more = sd.meta.as_ref().is_some_and(|m| m.has_more);
         // Prefer the live-confirmed real location (`data.next_cursor`,
@@ -560,7 +800,9 @@ pub async fn search(
         let Some(next) = continuation_cursor(has_more, next_cursor) else {
             if has_more {
                 // Server says more exist but gave no cursor to continue —
-                // nothing more this call can do.
+                // nothing more this call can do. The item set is short and the
+                // caller has to be told, not just the log.
+                completeness = Completeness::CursorMissing;
                 tracing::debug!(
                     path,
                     fetched = all_items.len(),
@@ -578,6 +820,7 @@ pub async fn search(
             // fetched rather than erroring, but say so — this is real,
             // honest partial data, not a silent truncation dressed up as
             // complete.
+            completeness = Completeness::BudgetExhausted;
             tracing::debug!(
                 path,
                 fetched = all_items.len(),
@@ -588,8 +831,7 @@ pub async fn search(
         cursor = Some(next);
     }
 
-    cache_put(ck, &all_items);
-    Ok(all_items)
+    Ok(cache_put(ck, all_items, completeness))
 }
 
 /// Additively stamp each row with the canonical `breach_date` its OWN `dbname`
@@ -836,7 +1078,11 @@ pub async fn init_session(key: &str, value: &str) -> Option<String> {
         .or_else(|| parsed.pointer("/data/session/id"))
         .and_then(|v| v.as_str())
         .map(str::to_string)?;
-    tracing::info!(session_id = %sid, query = %value, "OathNet search session initialised");
+    // `debug!`, not `info!`: `value` is the raw scan target (email / username /
+    // phone = PII). Every other target-bearing detail in the system lives at the
+    // debug/trace "raw logs" tier so `RUST_LOG=info` never surfaces the subject's
+    // identifier; this line must not be the one exception that leaks it at info.
+    tracing::debug!(session_id = %sid, query = %value, "OathNet search session initialised");
     Some(sid)
 }
 

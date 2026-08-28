@@ -99,6 +99,77 @@ impl super::Store {
         Ok(())
     }
 
+    /// Remove `entity_uids` from `scan_id`'s `entity_observations` — the
+    /// store-side half of the finalise-time address-locality fold. One cached
+    /// statement per uid under a single transaction (the uid list is the size of
+    /// one scan's folded address groups — single digits — so a bound `IN` list
+    /// would buy nothing). Returns the number of observation rows removed.
+    ///
+    /// A folded victim's `entities` row is kept when it is still observed by
+    /// ANOTHER scan (the store is content-addressed and shared). A victim left
+    /// with NO remaining observation, however, is fully absorbed into its
+    /// survivor and must be removed here: otherwise the idempotent backfill in
+    /// [`Store::open`](super::Store::open) would re-derive its `(uid, scan_id)`
+    /// observation from the retained row and silently resurrect the folded
+    /// duplicate on the next process restart. The orphan cleanup mirrors
+    /// [`Store::delete_scan`](super::Store::delete_scan) — an explicit FTS
+    /// `'delete'` before the row, so the contentless-external index stays
+    /// synchronised — but scoped to just the detached uids.
+    pub fn detach_scan_observations(&self, scan_id: &str, entity_uids: &[String]) -> Result<usize> {
+        if entity_uids.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        let mut n = 0usize;
+        {
+            let mut stmt = tx.prepare_cached(
+                "DELETE FROM entity_observations WHERE scan_id = ?1 AND entity_uid = ?2",
+            )?;
+            for uid in entity_uids {
+                n += stmt.execute(params![scan_id, uid])?;
+            }
+        }
+        // Collect any detached uid that now has zero observations (a fully
+        // absorbed victim), then FTS-delete + drop its row. Two passes so the
+        // lookup statement isn't borrowed while the delete statements run.
+        let orphans: Vec<(String, i64, String, String)> = {
+            let mut find = tx.prepare_cached(
+                "SELECT rowid, value, kind FROM entities e
+                 WHERE e.uid = ?1
+                   AND NOT EXISTS (SELECT 1 FROM entity_observations o WHERE o.entity_uid = e.uid)",
+            )?;
+            let mut acc = Vec::new();
+            for uid in entity_uids {
+                let mut rows = find.query_map(params![uid], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })?;
+                if let Some(row) = rows.next() {
+                    let (rowid, value, kind) = row?;
+                    acc.push((uid.clone(), rowid, value, kind));
+                }
+            }
+            acc
+        };
+        if !orphans.is_empty() {
+            let mut del_fts = tx.prepare_cached(
+                "INSERT INTO entities_fts(entities_fts, rowid, value, kind)
+                 VALUES('delete', ?1, ?2, ?3)",
+            )?;
+            let mut del_row = tx.prepare_cached("DELETE FROM entities WHERE uid = ?1")?;
+            for (uid, rowid, value, kind) in &orphans {
+                del_fts.execute(params![rowid, value, kind])?;
+                del_row.execute(params![uid])?;
+            }
+        }
+        tx.commit()?;
+        Ok(n)
+    }
+
     /// Persist a batch of entities under one transaction. On the happy path
     /// (every entity new or a clean merge) this collapses N per-entity
     /// commits into a single WAL fsync — a material win on low-power aarch64.
@@ -163,9 +234,17 @@ impl super::Store {
             // vs. reversed) persists byte-identically either way.
             merged.canonicalize_order();
             let merged_json = serde_json::to_string(&merged)?;
+            // `value` MUST be in the SET list. `Entity::merge` canonicalises the
+            // display spelling, and for Person/Organisation — the kinds whose UID
+            // is case/whitespace-folded — that spelling can genuinely change on
+            // merge. Omitting the column pinned it to whichever same-uid spelling
+            // was inserted FIRST, so the indexed column disagreed with the
+            // `data_json` beside it and the `q=` filter (which matches this
+            // column) found the subject or missed it depending on module
+            // completion order.
             tx.prepare_cached(
                 "UPDATE entities SET scan_id = ?1, confidence = ?2, corroboration = ?3,
-                 observed_at = ?4, data_json = ?5 WHERE uid = ?6",
+                 observed_at = ?4, data_json = ?5, value = ?6 WHERE uid = ?7",
             )?
             .execute(params![
                 merged.scan_id,
@@ -173,13 +252,16 @@ impl super::Store {
                 merged.corroboration as i64,
                 merged.observed_at as i64,
                 merged_json,
+                merged.value,
                 merged.uid,
             ])?;
             // Keep the FTS index synchronized. For a contentless-external FTS5
             // table the app must emit an explicit delete (old text, keyed by
             // rowid) then re-insert the new text. Only the value column is
-            // indexed, so skip the churn when the value is unchanged (the
-            // common merge case — same uid implies same normalised value).
+            // indexed, so skip the churn when the value is unchanged — the common
+            // case, since for every kind except Person/Organisation a shared UID
+            // implies an identical normalised value. For those two it can differ,
+            // which is exactly when this branch has to run.
             if old_value != merged.value {
                 // `prepare_cached` so a batch of value-changing merges reuses
                 // the compiled statements instead of recompiling the same SQL
@@ -323,7 +405,10 @@ impl super::Store {
              ORDER BY observed_at DESC, scan_id DESC",
         )?;
         let rows = stmt.query_map(params![entity_uid], |r| r.get::<_, String>(0))?;
-        Ok(rows.flatten().collect())
+        // `collect_rows`, not `.flatten()`: a dropped row here silently removes a
+        // whole PRIOR SCAN from cross-scan recall, so the read error must be
+        // logged rather than swallowed.
+        Ok(super::collect_rows(rows, "scan_ids_for_entity"))
     }
 
     pub fn observation_count(&self, entity_uid: &str) -> Result<usize> {
@@ -399,19 +484,16 @@ impl super::Store {
         let rows = stmt.query_map(params![scan_id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
         })?;
-        Ok(rows.flatten().collect())
+        // As above: a silently dropped facet row understates a kind's count with
+        // no trace that anything was lost.
+        Ok(super::collect_rows(rows, "entity_facets"))
     }
 
     pub fn get_entity(&self, uid: &str) -> Result<Option<Entity>> {
-        let json: Option<String> = {
-            let conn = self.conn.lock();
-            let mut stmt = conn.prepare_cached("SELECT data_json FROM entities WHERE uid = ?1")?;
-            let mut rows = stmt.query(params![uid])?;
-            rows.next()?.map(|r| r.get(0)).transpose()?
-        };
-        json.map(|j| serde_json::from_str(&j))
-            .transpose()
-            .map_err(Into::into)
+        self.query_one_json(
+            "SELECT data_json FROM entities WHERE uid = ?1",
+            params![uid],
+        )
     }
 
     /// Full-text entity search over the synchronized FTS5 index, ranked by
@@ -502,6 +584,7 @@ fn is_incidental_infra(e: &Entity) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::entity::EntityKind;
     use crate::storage::Store;
 
@@ -517,21 +600,26 @@ mod tests {
         let mut weak = Entity::new(EntityKind::Username, "ghost", 0.20, "scan-a");
         weak.add_evidence(Evidence::new("username_search", "speculative handle"));
         weak.observed_at = now;
-        store.upsert_entity(&weak).unwrap();
+        store.upsert_entity(&weak).expect("should succeed");
 
         // Strong + recent → above the threshold, not an anomaly.
-        let mut strong = Entity::new(EntityKind::Email, "real@example.com", 0.80, "scan-a");
+        let mut strong = Entity::new(
+            EntityKind::Email,
+            "real@example.com",
+            confidence::HIGH_PLUSPLUS,
+            "scan-a",
+        );
         strong.observed_at = now;
-        store.upsert_entity(&strong).unwrap();
+        store.upsert_entity(&strong).expect("should succeed");
 
         // Weak but OLD → outside the since-window, not flagged.
         let mut stale = Entity::new(EntityKind::Username, "stale", 0.10, "scan-a");
         stale.observed_at = now.saturating_sub(100_000);
-        store.upsert_entity(&stale).unwrap();
+        store.upsert_entity(&stale).expect("should succeed");
 
         let anomalies = store
             .low_confidence_evidence(Store::DEFAULT_LOW_CONFIDENCE_THRESHOLD, 3_600)
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(
             anomalies.len(),
             1,
@@ -546,7 +634,7 @@ mod tests {
         assert!(
             store
                 .low_confidence_evidence(0.15, 3_600)
-                .unwrap()
+                .expect("should succeed")
                 .is_empty(),
             "0.20 is not below a 0.15 threshold"
         );
@@ -586,13 +674,18 @@ mod tests {
     #[test]
     fn is_incidental_infra_flags_cdn_edge_ip() {
         // A Cloudflare anycast edge IP — high-confidence but shared infrastructure.
-        let e = Entity::new(EntityKind::IpAddress, "104.20.37.187", 0.95, "s");
+        let e = Entity::new(
+            EntityKind::IpAddress,
+            "104.20.37.187",
+            confidence::VERY_HIGH_PLUSPLUS,
+            "s",
+        );
         assert!(is_incidental_infra(&e));
     }
 
     #[test]
     fn is_incidental_infra_flags_mega_domain() {
-        let e = Entity::new(EntityKind::Domain, "facebook.com", 0.50, "s");
+        let e = Entity::new(EntityKind::Domain, "facebook.com", confidence::MEDIUM, "s");
         assert!(is_incidental_infra(&e));
     }
 
@@ -600,8 +693,13 @@ mod tests {
     fn is_incidental_infra_ignores_non_infra_kinds() {
         // The default arm: a person/username is never "shared infrastructure",
         // regardless of value.
-        let person = Entity::new(EntityKind::Person, "104.20.37.187", 0.50, "s");
-        let user = Entity::new(EntityKind::Username, "facebook.com", 0.50, "s");
+        let person = Entity::new(EntityKind::Person, "104.20.37.187", confidence::MEDIUM, "s");
+        let user = Entity::new(
+            EntityKind::Username,
+            "facebook.com",
+            confidence::MEDIUM,
+            "s",
+        );
         assert!(!is_incidental_infra(&person));
         assert!(!is_incidental_infra(&user));
     }

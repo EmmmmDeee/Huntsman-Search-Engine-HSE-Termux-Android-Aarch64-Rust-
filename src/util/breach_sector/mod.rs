@@ -200,8 +200,64 @@ const KNOWN_SOURCE_SECTORS: &[(&str, &str)] = &[
     ("optus", "telecom"), // Optus AU (2022, ~10M customers, names/DOB/ID numbers)
 ];
 
+/// Single-word descriptors that breach data providers glue directly onto brand
+/// names without a separator: `linkedinscrape`, `adobedump`, `combolinkedin`.
+/// Must not be plausible brand needles themselves; single-char affixes would
+/// cause false positives. Entries are ≥2 chars (shortest: `"db"`).
+const BREACH_DESCRIPTORS: &[&str] = &[
+    "scrape",
+    "combo",
+    "dump",
+    "leak",
+    "breach",
+    "database",
+    "db",
+    "hack",
+    "exposed",
+    "collection",
+    "data",
+    "hacked",
+    "stolen",
+    "combolists",
+    "lists",
+    "list",
+    "free",
+    "full",
+];
+
+/// True if `token` denotes `needle` — either as an exact match, or as `needle`
+/// with one known [`BREACH_DESCRIPTORS`] affix glued on (prefix or suffix)
+/// without a separator. This lets `"linkedinscrape"` resolve to `"linkedin"`
+/// and `"combolinkedin"` to `"linkedin"` while preventing a 4-char descriptor
+/// like `"data"` from matching inside `"updatedata"` (the descriptor must
+/// account for the ENTIRE non-needle portion of the token).
+fn token_denotes_brand(token: &str, needle: &str) -> bool {
+    if token == needle {
+        return true;
+    }
+    if token.len() <= needle.len() {
+        return false;
+    }
+    // Suffix: token = needle + descriptor (e.g. "linkedinscrape")
+    if token
+        .strip_prefix(needle)
+        .is_some_and(|s| BREACH_DESCRIPTORS.contains(&s))
+    {
+        return true;
+    }
+    // Prefix: token = descriptor + needle (e.g. "combolinkedin")
+    if token
+        .strip_suffix(needle)
+        .is_some_and(|s| BREACH_DESCRIPTORS.contains(&s))
+    {
+        return true;
+    }
+    false
+}
+
 /// Sector for a source whose name is a known breach **brand / domain**, matched
-/// as a whole alnum token (never a substring). `None` when no brand is present.
+/// as a whole alnum token (exact or with a single glued descriptor affix — see
+/// [`token_denotes_brand`]). `None` when no brand is present.
 fn known_brand_sector(lower: &str) -> Option<&'static str> {
     let tokens: Vec<&str> = lower
         .split(|c: char| !c.is_ascii_alphanumeric())
@@ -209,7 +265,7 @@ fn known_brand_sector(lower: &str) -> Option<&'static str> {
         .collect();
     KNOWN_SOURCE_SECTORS
         .iter()
-        .find(|(needle, _)| tokens.contains(needle))
+        .find(|(needle, _)| tokens.iter().any(|t| token_denotes_brand(t, needle)))
         .map(|(_, sector)| *sector)
 }
 

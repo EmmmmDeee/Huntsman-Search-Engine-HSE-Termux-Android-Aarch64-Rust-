@@ -309,11 +309,11 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
             let after = &lower[pos + place.len()..];
             let context: String = after.chars().take(60).collect();
             // Walk back to a char boundary; UTF-8 multi-byte chars
-            // (e.g. '>' substitutes spanning 3 bytes) must not be split.
-            let mut before_start = pos.saturating_sub(60);
-            while before_start > 0 && !lower.is_char_boundary(before_start) {
-                before_start -= 1;
-            }
+            // (e.g. '>' substitutes spanning 3 bytes) must not be split. This is
+            // the module's canonical safe-slicing primitive rather than a
+            // hand-rolled boundary walk.
+            let before_start =
+                crate::util::str_util::floor_char_boundary(&lower, pos.saturating_sub(60));
             let before: String = lower[before_start..pos].chars().collect();
             let combined = format!("{before} {context}");
             // Whole-word state detection. The window is free prose, so a bare
@@ -573,16 +573,27 @@ pub(in crate::modules::search_engines) fn extract_organisations_from_text(
                 continue;
             }
             let end = i + sfx.len();
+            // The suffix must fall at a word boundary. Without this, " Inc"
+            // matches inside "including"/"Incorporated", " Co" inside
+            // "corporate", " Ltd" inside "Ltda", etc. — minting a garbage
+            // organisation from a prose fragment. A live username scan
+            // (`rhino.ryno23`) produced the org "…Repco inc" from a Yahoo
+            // snippet reading "…Repco including pioneer platforms…". Advance by
+            // one (not to `end`) so a genuine later suffix can still match.
+            if bytes.get(end).is_some_and(u8::is_ascii_alphanumeric) {
+                i += 1;
+                continue;
+            }
             // Walk backwards to the start of the org name.
             let before = &text[..i];
-            let mut name_start = before
+            let raw_start = before
                 .rfind([',', '.', ';', '(', '\n'])
                 .map_or(i.saturating_sub(60), |d| d + 1);
             // The `i-60` fallback may land mid-code-point; snap forward to a
-            // boundary so the slice below is always valid.
-            while name_start < i && !text.is_char_boundary(name_start) {
-                name_start += 1;
-            }
+            // boundary with the canonical primitive so the slice below is always
+            // valid. `i` is an ASCII (space) boundary and `raw_start <= i`, so the
+            // next boundary never overshoots `i`.
+            let name_start = crate::util::str_util::ceil_char_boundary(text, raw_start);
             let org = text[name_start..end].trim();
             if org.len() >= 5 && org.starts_with(|c: char| c.is_ascii_uppercase()) {
                 // Lowercase once per candidate rather than once per term.
@@ -606,7 +617,7 @@ pub(in crate::modules::search_engines) fn extract_emails_from_text(text: &str) -
     let mut emails = crate::util::extract::page_emails(text);
     if emails.len() > 500 {
         tracing::warn!(
-            target: "hse::parser",
+            target: "huntsman::parser",
             cap = 500,
             text_len = text.len(),
             "extract_emails_from_text hit cap — additional mailboxes in this text were not extracted"
@@ -621,9 +632,22 @@ pub(in crate::modules::search_engines) fn extract_phones_from_text(text: &str) -
     // country-digit gate that rejects `+0…`). This wrapper keeps the search-context
     // cap + warning.
     let mut phones = crate::util::extract::phones(text);
+    // `util::extract::phones` is E.164-shaped, so AU DOMESTIC formats a SERP
+    // snippet routinely carries — `04xx xxx xxx` mobiles, `0x xxxx xxxx` area
+    // numbers, and `1300`/`1800` service lines — are silently dropped (they have
+    // no `+NN` prefix). Union in `util::address_au::extract_phones`, which
+    // recognises exactly those, so an AU subject's phone in a result snippet
+    // becomes a Phone entity instead of being lost. E.164 numbers stay FIRST
+    // (foreign `+NN` coverage unchanged); only AU numbers not already present
+    // are appended, preserving dedup + first-seen order.
+    for au in crate::util::address_au::extract_phones(text) {
+        if !phones.contains(&au) {
+            phones.push(au);
+        }
+    }
     if phones.len() > 300 {
         tracing::warn!(
-            target: "hse::parser",
+            target: "huntsman::parser",
             cap = 300,
             text_len = text.len(),
             "extract_phones_from_text hit cap — additional numbers in this text were not extracted"

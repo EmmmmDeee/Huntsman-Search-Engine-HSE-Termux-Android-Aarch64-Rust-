@@ -4,24 +4,41 @@
 //!   `GET https://cloudflare-dns.com/dns-query?name={domain}&type={type}`
 //!   `GET https://dns.google/resolve?name={domain}&type={type}`
 //!
-//! Queries A, AAAA, MX, TXT, NS, CNAME, SOA records. Extracts IPs from A/AAAA,
-//! mail servers from MX, nameservers from NS, SPF/DKIM from TXT, zone admin email
-//! and primary NS from SOA, and DMARC reporting addresses from a dedicated
-//! `_dmarc.{domain}` TXT query (RFC 7489 §6.6.3).
+//! Queries A, AAAA, MX, TXT, NS, CNAME, SOA, HTTPS, and CAA records. Extracts IPs
+//! from A/AAAA, mail servers from MX, nameservers from NS, SPF/DKIM from TXT,
+//! zone admin email and primary NS from SOA, DMARC reporting addresses from a
+//! dedicated `_dmarc.{domain}` TXT query (RFC 7489 §6.6.3), the ipv4hint/ipv6hint
+//! endpoint IPs from HTTPS/SVCB records (RFC 9460), and the authorised CAs +
+//! `iodef` security-contact from CAA records (RFC 8659) — the latter routed
+//! through the shared `dns_intel` iodef extractor — and the SMTP-TLS reporting
+//! contact from a `_smtp._tls.{domain}` TLSRPT record (RFC 8460). HTTPS and CAA
+//! are parsed from both the friendly presentation string and the raw RFC 3597
+//! wire form the two resolvers respectively return.
+//!
+//! CAA matters most on Termux: the hickory `dns_intel` module owns CAA over
+//! port-53, but that transport is frequently blocked on-device, so this DoH pass
+//! is often the only path by which a domain's CA policy and published
+//! security/abuse contact are enumerated.
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::collections::HashSet;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::dns::soa_rname_to_email;
+use crate::util::dns::soa_rname_to_email as shared_soa_rname_to_email;
 
 const SRC: &str = "doh_resolver";
+
+fn soa_rname_to_email(rname: &str) -> Option<String> {
+    let email = shared_soa_rname_to_email(rname);
+    (!email.is_empty()).then_some(email)
+}
 
 #[derive(Deserialize)]
 struct DohResp {
@@ -55,12 +72,18 @@ fn rtype_name(t: u16) -> Option<&'static str> {
         15 => Some("MX"),
         16 => Some("TXT"),
         28 => Some("AAAA"),
+        65 => Some("HTTPS"),
+        257 => Some("CAA"),
         _ => None,
     }
 }
 
-/// The record types we query at the apex domain, in order.
-const RECORD_TYPES: &[&str] = &["A", "AAAA", "MX", "TXT", "NS", "CNAME", "SOA"];
+/// The record types we query at the apex domain, in order. `HTTPS` (RFC 9460,
+/// type 65) is queried last as a supplementary infrastructure pass; its
+/// `ipv4hint`/`ipv6hint` addresses either mark an existing serving IP as an
+/// HTTPS/SVCB endpoint (via a UID merge) or surface a net-new one — see the
+/// `"HTTPS"` arm of [`records_for_type`].
+const RECORD_TYPES: &[&str] = &["A", "AAAA", "MX", "TXT", "NS", "CNAME", "SOA", "HTTPS"];
 
 /// Reconstruct a TXT record's logical value from the DoH JSON presentation form.
 /// **Pure.** A TXT record is one or more character-strings; the resolvers return
@@ -95,6 +118,242 @@ fn unquote_txt(data: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Extract the `ipv4hint` / `ipv6hint` addresses from an HTTPS/SVCB record
+/// (RFC 9460) as returned in a DoH JSON `data` field. **Pure**, fully
+/// bounds-checked — malformed input yields whatever parsed cleanly, never a
+/// panic. Handles BOTH forms the two resolvers emit: dns.google's friendly
+/// presentation string (`1 . alpn=h3,h2 ipv4hint=A,B ipv6hint=C,D`), and
+/// cloudflare-dns's raw RFC 3597 generic form (`\# <len> <hex octets>`), which
+/// carries the SvcParams as binary and must be decoded on the wire.
+///
+/// The hint addresses are the origin/edge IPs a client is told to connect to —
+/// infrastructure that an A/AAAA lookup may not surface (e.g. an HTTP/3-only or
+/// ECH-fronted endpoint), so a new one is a real pivot.
+fn parse_svcb_hints(data: &str) -> Vec<String> {
+    let data = data.trim();
+    if let Some(hex_body) = data.strip_prefix(r"\#") {
+        return svcb_hints_from_wire(hex_body);
+    }
+    // Friendly presentation form: whitespace-separated params, comma-lists.
+    let mut out = Vec::new();
+    for tok in data.split_whitespace() {
+        if let Some(list) = tok
+            .strip_prefix("ipv4hint=")
+            .or_else(|| tok.strip_prefix("ipv6hint="))
+        {
+            out.extend(
+                list.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+            );
+        }
+    }
+    out
+}
+
+/// Parse the binary SVCB RDATA behind an RFC 3597 `\#`-prefixed generic record
+/// (the space-separated `<decimal length> <hex octets…>` body) and return the
+/// `ipv4hint` (SvcParamKey 4) and `ipv6hint` (key 6) addresses. Every read is
+/// length-checked, so a truncated or hostile record simply stops early. **Pure.**
+fn svcb_hints_from_wire(hex_body: &str) -> Vec<String> {
+    let mut toks = hex_body.split_whitespace();
+    // First token is the RFC 3597 decimal rdata length; we bound on the actual
+    // decoded bytes instead, so skip it. The rest are hex octets.
+    toks.next();
+    let mut bytes: Vec<u8> = Vec::new();
+    for t in toks {
+        match u8::from_str_radix(t, 16) {
+            Ok(b) => bytes.push(b),
+            Err(_) => return Vec::new(), // non-hex octet → malformed, bail
+        }
+    }
+
+    let mut out = Vec::new();
+    // SvcPriority (2 octets).
+    let mut i = 2usize;
+    if bytes.len() < i {
+        return out;
+    }
+    // TargetName: length-prefixed labels terminated by a zero-length octet.
+    while i < bytes.len() {
+        let label_len = bytes[i] as usize;
+        i += 1;
+        if label_len == 0 {
+            break; // root / end of name
+        }
+        i = i.saturating_add(label_len);
+        if i > bytes.len() {
+            return out;
+        }
+    }
+    // SvcParams: repeated (key:2, len:2, value:len).
+    while i + 4 <= bytes.len() {
+        let key = u16::from_be_bytes([bytes[i], bytes[i + 1]]);
+        let vlen = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
+        i += 4;
+        if i + vlen > bytes.len() {
+            break;
+        }
+        let value = &bytes[i..i + vlen];
+        match key {
+            4 => {
+                for c in value.chunks_exact(4) {
+                    out.push(std::net::Ipv4Addr::new(c[0], c[1], c[2], c[3]).to_string());
+                }
+            }
+            6 => {
+                for c in value.chunks_exact(16) {
+                    let mut o = [0u8; 16];
+                    o.copy_from_slice(c);
+                    out.push(std::net::Ipv6Addr::from(o).to_string());
+                }
+            }
+            _ => {}
+        }
+        i += vlen;
+    }
+    out
+}
+
+/// Parse one CAA record's DoH `data` field into a `(tag, value)` pair with the
+/// tag lowercased. Handles BOTH resolver forms — exactly like `parse_svcb_hints`
+/// — because the two DoH endpoints disagree: dns.google returns the presentation
+/// string `0 issue "letsencrypt.org"`, while cloudflare-dns returns the raw RFC
+/// 3597 generic form `\# <declen> <hex octets>` whose CAA RDATA (RFC 8659 §4.1)
+/// is `flags(1) taglen(1) tag(taglen) value(rest)`. Every read is length-checked,
+/// so a truncated or non-CAA record yields `None` rather than panicking. **Pure.**
+fn parse_caa_rdata(data: &str) -> Option<(String, String)> {
+    let data = data.trim();
+    if let Some(hex_body) = data.strip_prefix(r"\#") {
+        // First token is the RFC 3597 decimal rdata length; bound on the decoded
+        // bytes instead, so skip it. The rest are hex octets.
+        let mut toks = hex_body.split_whitespace();
+        toks.next();
+        let mut bytes: Vec<u8> = Vec::new();
+        for t in toks {
+            bytes.push(u8::from_str_radix(t, 16).ok()?);
+        }
+        // flags(1) taglen(1) tag(taglen) value(rest)
+        if bytes.len() < 2 {
+            return None;
+        }
+        let taglen = bytes[1] as usize;
+        let tag_end = 2usize.checked_add(taglen)?;
+        if tag_end > bytes.len() {
+            return None;
+        }
+        let tag = String::from_utf8_lossy(&bytes[2..tag_end]).to_ascii_lowercase();
+        let value = String::from_utf8_lossy(&bytes[tag_end..])
+            .trim()
+            .to_string();
+        if tag.is_empty() || value.is_empty() {
+            return None;
+        }
+        return Some((tag, value));
+    }
+    // Presentation form: `<flags> <tag> "<value>"`.
+    let mut parts = data.splitn(3, char::is_whitespace);
+    let _flags = parts.next()?;
+    let tag = parts.next()?.to_ascii_lowercase();
+    let value = parts.next()?.trim().trim_matches('"').trim().to_string();
+    if tag.is_empty() || value.is_empty() {
+        return None;
+    }
+    Some((tag, value))
+}
+
+/// Build CAA entities from a DoH CAA answer set — transport parity with the
+/// hickory `dns_intel` CAA path, which on Termux frequently never runs (its
+/// UDP/TCP port-53 lookups are commonly blocked, leaving DoH as the sole
+/// resolver). Aggregates the `issue`/`issuewild`/`iodef` values onto one
+/// `caa`-tagged Domain entity, then routes each `iodef` value through the shared
+/// `dns_intel::iodef_entities` extractor so a published cert-violation reporting
+/// contact — a `mailto:` **security-contact Email** or an `http(s)://` reporting
+/// **Domain** — surfaces as a pivotable entity instead of being dropped on
+/// Termux. **Pure** (no network/IO).
+fn caa_entities(records: &[DohRecord], domain: &str, scan_id: &str) -> Vec<Entity> {
+    let mut issuers: Vec<String> = Vec::new();
+    let mut wildcards: Vec<String> = Vec::new();
+    let mut iodefs: Vec<String> = Vec::new();
+
+    for rec in records {
+        // parse_caa_rdata self-validates: a stray CNAME/other answer in the set
+        // fails to parse and is skipped, so no record-type filter is needed.
+        let Some((tag, value)) = parse_caa_rdata(&rec.data) else {
+            continue;
+        };
+        match tag.as_str() {
+            "issue" => issuers.push(value),
+            "issuewild" => wildcards.push(value),
+            "iodef" => iodefs.push(value),
+            _ => {}
+        }
+    }
+
+    if issuers.is_empty() && wildcards.is_empty() && iodefs.is_empty() {
+        return Vec::new();
+    }
+
+    let mut entity = Entity::new(
+        EntityKind::Domain,
+        domain,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
+    entity.tag("dns");
+    entity.tag("caa");
+    let mut ev = Evidence::new(
+        SRC,
+        format!(
+            "CAA policy published: {} issuer(s), {} wildcard issuer(s)",
+            issuers.len(),
+            wildcards.len()
+        ),
+    );
+    if !issuers.is_empty() {
+        ev = ev.with_attr("issue", issuers.join(","));
+    }
+    if !wildcards.is_empty() {
+        ev = ev.with_attr("issuewild", wildcards.join(","));
+    }
+    if !iodefs.is_empty() {
+        ev = ev.with_attr("iodef", iodefs.join(","));
+    }
+    entity.add_evidence(ev);
+
+    let mut out = vec![entity];
+    for value in &iodefs {
+        out.extend(crate::modules::dns_intel::iodef_entities(
+            value, domain, scan_id,
+        ));
+    }
+    out
+}
+
+/// Build entities from a `_smtp._tls.{domain}` TLSRPT answer set (RFC 8460).
+/// The `rua=` destinations are a published mail-security contact — parallel to
+/// DMARC `rua`, and on Termux reachable only over this DoH transport when
+/// port-53 is blocked. A `mailto:` destination becomes an `Email` tagged
+/// `tlsrpt-report`; an `https:` collection endpoint becomes a `Domain` for its
+/// host (a recursable lead). Role/provider-infrastructure mailboxes are gated
+/// (`is_infrastructure_email`) so this DoH transport surfaces the SAME contact
+/// set as the hickory `dns_intel` path — a provider desk like
+/// `sts-reports@google.com` is not clustered as the subject. **Pure** (no
+/// network/IO).
+fn tlsrpt_entities(records: &[DohRecord], domain: &str, scan_id: &str) -> Vec<Entity> {
+    // DoH TXT may arrive as multiple quoted chunks that RFC 1035 §3.3.14
+    // concatenates with no separator, so unquote each record with `unquote_txt`
+    // (not a bare `trim_matches('"')`) before handing the reassembled strings to
+    // the shared builder. The entity shape, confidence, and gating are
+    // single-sourced with the `dns_intel` transport in `util::tlsrpt`.
+    let txts: Vec<String> = records
+        .iter()
+        .map(|rec| unquote_txt(rec.data.trim()))
+        .collect();
+    crate::util::tlsrpt::report_entities(&txts, domain, scan_id, SRC)
 }
 
 /// Resolve a target to the domain to query. **Pure**: a `Url` is reduced to its
@@ -144,7 +403,12 @@ fn records_for_type(
             "A" | "AAAA" => {
                 let ip = rec.data.trim().trim_matches('"');
                 if !ip.is_empty() && seen.insert(format!("ip:{ip}")) {
-                    let mut e = Entity::new(EntityKind::IpAddress, ip, 0.80, scan_id);
+                    let mut e = Entity::new(
+                        EntityKind::IpAddress,
+                        ip,
+                        confidence::HIGH_PLUSPLUS,
+                        scan_id,
+                    );
                     e.tag("dns");
                     e.tag(if effective == "A" { "ipv4" } else { "ipv6" });
                     e.add_evidence(
@@ -152,6 +416,34 @@ fn records_for_type(
                             .with_attr("record_type", effective),
                     );
                     out.push(e);
+                }
+            }
+            "HTTPS" => {
+                // RFC 9460 HTTPS record: harvest its ipv4hint/ipv6hint addresses.
+                // A distinct `httpshint:` dedup key (NOT the A/AAAA `ip:` key) is
+                // used deliberately: for a CDN-fronted domain a hint typically
+                // REPEATS an A/AAAA IP, and emitting it here lets the engine merge
+                // it (same UID) into that IP's entity — stamping it `https-hint`/
+                // `svcb`, i.e. marking WHICH serving IPs speak the HTTPS/SVCB
+                // record (HTTP/3-capable, ECH-fronted) rather than discarding the
+                // fact. A hint that is NOT among the plain records is a genuinely
+                // new endpoint IP the A/AAAA lookup missed. Both are wins.
+                for ip in parse_svcb_hints(&rec.data) {
+                    if !ip.is_empty() && seen.insert(format!("httpshint:{ip}")) {
+                        let is_v6 = ip.contains(':');
+                        let mut e =
+                            Entity::new(EntityKind::IpAddress, &ip, confidence::VERY_HIGH, scan_id);
+                        e.tag("dns");
+                        e.tag(if is_v6 { "ipv6" } else { "ipv4" });
+                        e.tag("https-hint");
+                        e.tag("svcb");
+                        e.add_evidence(
+                            base(format!("HTTPS/SVCB record hint for {domain}"))
+                                .with_attr("record_type", "HTTPS")
+                                .with_attr("svcparam", if is_v6 { "ipv6hint" } else { "ipv4hint" }),
+                        );
+                        out.push(e);
+                    }
                 }
             }
             "MX" => {
@@ -162,7 +454,7 @@ fn records_for_type(
                     .unwrap_or("")
                     .trim_end_matches('.');
                 if !mx.is_empty() && mx.contains('.') && seen.insert(format!("mx:{mx}")) {
-                    let mut e = Entity::new(EntityKind::Domain, mx, 0.75, scan_id);
+                    let mut e = Entity::new(EntityKind::Domain, mx, confidence::VERY_HIGH, scan_id);
                     e.tag("dns");
                     e.tag("mx");
                     e.add_evidence(
@@ -174,7 +466,7 @@ fn records_for_type(
             "NS" => {
                 let ns = rec.data.trim().trim_end_matches('.');
                 if !ns.is_empty() && ns.contains('.') && seen.insert(format!("ns:{ns}")) {
-                    let mut e = Entity::new(EntityKind::Domain, ns, 0.70, scan_id);
+                    let mut e = Entity::new(EntityKind::Domain, ns, confidence::HIGH_PLUS, scan_id);
                     e.tag("dns");
                     e.tag("nameserver");
                     e.add_evidence(base(format!("NS record for {domain}")));
@@ -188,8 +480,12 @@ fn records_for_type(
                         match member {
                             crate::util::spf::Member::Ip(ip) => {
                                 if seen.insert(format!("spf:{ip}")) {
-                                    let mut e =
-                                        Entity::new(EntityKind::IpAddress, ip, 0.75, scan_id);
+                                    let mut e = Entity::new(
+                                        EntityKind::IpAddress,
+                                        ip,
+                                        confidence::VERY_HIGH,
+                                        scan_id,
+                                    );
                                     e.tag("dns");
                                     e.tag("spf");
                                     e.add_evidence(Evidence::new(
@@ -201,7 +497,12 @@ fn records_for_type(
                             }
                             crate::util::spf::Member::Include(inc) => {
                                 if seen.insert(format!("spfinc:{inc}")) {
-                                    let mut e = Entity::new(EntityKind::Domain, inc, 0.65, scan_id);
+                                    let mut e = Entity::new(
+                                        EntityKind::Domain,
+                                        inc,
+                                        confidence::HIGH,
+                                        scan_id,
+                                    );
                                     e.tag("dns");
                                     e.tag("spf-include");
                                     e.add_evidence(Evidence::new(
@@ -213,7 +514,12 @@ fn records_for_type(
                             }
                             crate::util::spf::Member::Redirect(red) => {
                                 if seen.insert(format!("spfinc:{red}")) {
-                                    let mut e = Entity::new(EntityKind::Domain, red, 0.65, scan_id);
+                                    let mut e = Entity::new(
+                                        EntityKind::Domain,
+                                        red,
+                                        confidence::HIGH,
+                                        scan_id,
+                                    );
                                     e.tag("dns");
                                     e.tag("spf-redirect");
                                     e.add_evidence(Evidence::new(
@@ -246,9 +552,22 @@ fn records_for_type(
                                     let addr = addr.trim();
                                     // May have `!size` suffix: `dmarc@example.com!10m`.
                                     let addr = addr.split('!').next().unwrap_or(addr).trim();
-                                    if addr.contains('@') && seen.insert(format!("dmarc:{addr}")) {
-                                        let mut e =
-                                            Entity::new(EntityKind::Email, addr, 0.60, scan_id);
+                                    // A role local-part or provider-domain rua/ruf
+                                    // address (`hostmaster@`, a third-party DMARC
+                                    // service) is infrastructure contact, not the
+                                    // subject's own mail — same gate dns_intel's
+                                    // parallel (non-DoH) DMARC parser already
+                                    // applies to `dmarc.report_addresses()`.
+                                    if addr.contains('@')
+                                        && !crate::util::domains::is_infrastructure_email(addr)
+                                        && seen.insert(format!("dmarc:{addr}"))
+                                    {
+                                        let mut e = Entity::new(
+                                            EntityKind::Email,
+                                            addr,
+                                            confidence::MEDIUM_PLUS,
+                                            scan_id,
+                                        );
                                         e.tag("dns");
                                         e.tag("dmarc-reporting");
                                         e.add_evidence(
@@ -273,7 +592,12 @@ fn records_for_type(
             "CNAME" => {
                 let cname = rec.data.trim().trim_end_matches('.');
                 if !cname.is_empty() && cname.contains('.') && seen.insert(format!("cn:{cname}")) {
-                    let mut e = Entity::new(EntityKind::Domain, cname, 0.80, scan_id);
+                    let mut e = Entity::new(
+                        EntityKind::Domain,
+                        cname,
+                        confidence::HIGH_PLUSPLUS,
+                        scan_id,
+                    );
                     e.tag("dns");
                     e.tag("cname");
                     e.add_evidence(base(format!("CNAME for {domain}")));
@@ -291,7 +615,8 @@ fn records_for_type(
                     // Primary nameserver.
                     let mname = parts[0].trim_end_matches('.');
                     if mname.contains('.') && seen.insert(format!("soa-ns:{mname}")) {
-                        let mut e = Entity::new(EntityKind::Domain, mname, 0.72, scan_id);
+                        let mut e =
+                            Entity::new(EntityKind::Domain, mname, confidence::ATTRIBUTED, scan_id);
                         e.tag("dns");
                         e.tag("soa");
                         e.tag("nameserver");
@@ -302,14 +627,19 @@ fn records_for_type(
                         );
                         out.push(e);
                     }
-                    // Zone admin email from RNAME.
+                    // Zone admin email from RNAME. A role local-part
+                    // (`hostmaster@`, the RFC 1035 §3.3.13 convention itself) or
+                    // provider-domain address is infrastructure contact, not the
+                    // subject's own mail — same gate dns_intel's parallel
+                    // (non-DoH) SOA handler already applies.
                     let rname = parts[1].trim_end_matches('.');
-                    let email = soa_rname_to_email(rname);
-                    if !email.is_empty()
+                    if let Some(email) = soa_rname_to_email(rname)
                         && email.contains('@')
+                        && !crate::util::domains::is_infrastructure_email(&email)
                         && seen.insert(format!("soa-email:{}", email.to_ascii_lowercase()))
                     {
-                        let mut e = Entity::new(EntityKind::Email, &email, 0.62, scan_id);
+                        let mut e =
+                            Entity::new(EntityKind::Email, &email, confidence::NOTABLE, scan_id);
                         e.tag("dns");
                         e.tag("soa");
                         e.tag("zone-admin");
@@ -336,7 +666,7 @@ impl Module for DohResolver {
         "doh_resolver"
     }
     fn description(&self) -> &'static str {
-        "DNS-over-HTTPS via Cloudflare + Google (A/AAAA/MX/TXT/NS/CNAME/SOA + DMARC — free)"
+        "DNS-over-HTTPS resolution via Cloudflare + Google — sweeps A/AAAA/MX/TXT/NS/CNAME/SOA/HTTPS plus DMARC, CAA, and TLSRPT (free)"
     }
     fn priority(&self) -> u8 {
         34
@@ -374,49 +704,180 @@ impl Module for DohResolver {
 
         let mut result = ModuleResult::new();
         let mut seen: HashSet<String> = HashSet::new();
-        let mut empty_count = 0usize;
+        let mut outcomes: Vec<DohOutcome> = Vec::new();
 
         for (i, rtype) in RECORD_TYPES.iter().enumerate() {
             if ctx.cancel.is_cancelled() {
                 break;
             }
-            let records = query_doh(&domain, rtype, &ctx.http).await;
-            if records.is_empty() {
-                empty_count += 1;
-            }
-            // If the first two queries (A + AAAA) both return nothing, both
-            // Cloudflare and Google DoH are unreachable from this IP — skip
-            // remaining record types to free the concurrency slot immediately.
-            if i == 1 && empty_count == 2 {
-                break;
-            }
+            let outcome = query_doh(&domain, rtype, &ctx.http).await;
             result.entities.extend(records_for_type(
                 rtype,
-                &records,
+                outcome.records(),
                 &domain,
                 &mut seen,
                 &ctx.scan_id,
             ));
+            outcomes.push(outcome);
+            // If the first two queries (A + AAAA) were both UNREACHABLE, neither
+            // Cloudflare nor Google is reachable from this IP — skip the
+            // remaining record types to free the concurrency slot immediately.
+            //
+            // Gated on unreachability, not on emptiness. The previous version
+            // broke when the first two merely returned no records, which a
+            // parked, MX-only or TXT-only domain does from a perfectly healthy
+            // resolver — so a legitimate answer was being read as an outage.
+            if i == 1 && dns_wholly_unreachable(&outcomes) {
+                break;
+            }
         }
 
         // DMARC lives at `_dmarc.{domain}` (RFC 7489 §6.6.3), not at the apex.
         // Query it separately so the parser sees the correct subdomain context.
         if !ctx.cancel.is_cancelled() {
             let dmarc_domain = format!("_dmarc.{domain}");
-            let dmarc_records = query_doh(&dmarc_domain, "TXT", &ctx.http).await;
+            let dmarc = query_doh(&dmarc_domain, "TXT", &ctx.http).await;
             result.entities.extend(records_for_type(
                 "TXT",
-                &dmarc_records,
+                dmarc.records(),
                 &domain,
                 &mut seen,
                 &ctx.scan_id,
+            ));
+            outcomes.push(dmarc);
+        }
+
+        // CAA (RFC 8659, type 257) — a dedicated aggregating pass, not part of the
+        // per-answer RECORD_TYPES loop, because CAA folds many answers into one
+        // policy entity + routes each `iodef` value to a security-contact entity.
+        // This is the Termux parity fix: on-device, hickory `dns_intel` (which
+        // owns CAA over port-53) is routinely unreachable, so without this the
+        // domain's authorised CAs and its published security/abuse contact are
+        // lost on the exact platform HSE targets.
+        if !ctx.cancel.is_cancelled() {
+            let caa = query_doh(&domain, "CAA", &ctx.http).await;
+            result
+                .entities
+                .extend(caa_entities(caa.records(), &domain, &ctx.scan_id));
+            outcomes.push(caa);
+        }
+
+        // TLSRPT (RFC 8460) lives at `_smtp._tls.{domain}` as a TXT record, like
+        // DMARC at `_dmarc.`. Its `rua=` names a published mail-security contact
+        // (Email or https endpoint) — another pivot lost on Termux without a DoH
+        // path, since the hickory transport that would resolve it is blocked.
+        if !ctx.cancel.is_cancelled() {
+            let tlsrpt_domain = format!("_smtp._tls.{domain}");
+            let tlsrpt = query_doh(&tlsrpt_domain, "TXT", &ctx.http).await;
+            result
+                .entities
+                .extend(tlsrpt_entities(tlsrpt.records(), &domain, &ctx.scan_id));
+            outcomes.push(tlsrpt);
+        }
+
+        // Every query failed to reach a resolver: nothing was established about
+        // this domain. Returning Ok here would report "no DNS records" — the same
+        // answer a domain with genuinely none produces — so a DoH outage would be
+        // indistinguishable from a real negative. On Termux this is the primary
+        // transport precisely because the system resolver is often blocked, so an
+        // operator reading a dossier needs to know DNS itself did not answer.
+        // Cancellation is NOT an outage. A cancelled scan aborts in-flight
+        // requests, which surfaces as `Unreachable`, so a scan cancelled after one
+        // unreachable query would otherwise be reported as "DNS never answered" —
+        // misattributing the operator's own stop (or the wall-time watchdog) to
+        // the network. The zero-query case is already excluded inside
+        // `dns_wholly_unreachable`; this covers the partial-then-cancelled case.
+        if !ctx.cancel.is_cancelled() && dns_wholly_unreachable(&outcomes) {
+            return Err(crate::core::error::Error::module(
+                SRC,
+                format!(
+                    "no DoH resolver answered for {domain}: both cloudflare-dns.com and \
+                     dns.google were unreachable or undecodable across {} quer{}. \
+                     Reporting this rather than an empty result, because zero records \
+                     from an unanswered query is indistinguishable from a domain that \
+                     genuinely has none.",
+                    outcomes.len(),
+                    if outcomes.len() == 1 { "y" } else { "ies" }
+                ),
             ));
         }
         Ok(result)
     }
 }
 
-async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> Vec<DohRecord> {
+/// What a DoH query actually established.
+///
+/// The distinction is the point. Both arms can carry zero records, but they mean
+/// opposite things to an operator: `Answered(vec![])` is a resolver saying "this
+/// name has no such record", while `Unreachable` is HSE saying "nobody answered,
+/// so I do not know". Collapsing them — as this returned a bare `Vec` before —
+/// makes a DNS outage indistinguishable from a domain with no DMARC record, and
+/// on Termux the DoH path is the primary transport precisely because the system
+/// resolver is often blocked, so the outage case is common rather than exotic.
+enum DohOutcome {
+    /// A provider RESOLVED the name. Either `NOERROR` with the answer, or
+    /// `NXDOMAIN` — an authoritative statement that the name does not exist,
+    /// which is a genuine negative and correctly carries zero records.
+    ///
+    /// `SERVFAIL`/`REFUSED`/`FORMERR` are deliberately NOT this: they are the
+    /// resolver failing to answer, not proof of absence, and treating them as an
+    /// empty answer would recreate the exact conflation this type exists to
+    /// prevent, one layer down.
+    Answered(Vec<DohRecord>),
+    /// Neither Cloudflare nor Google could be reached, or neither reply decoded.
+    /// Nothing was established about the domain.
+    Unreachable,
+}
+
+impl DohOutcome {
+    /// The records this outcome carries — empty for [`Self::Unreachable`], which
+    /// is why callers that only extend an entity list can treat both alike while
+    /// the aggregate check below still sees the difference.
+    fn records(&self) -> &[DohRecord] {
+        match self {
+            Self::Answered(r) => r,
+            Self::Unreachable => &[],
+        }
+    }
+}
+
+/// True when NOTHING was resolved for this domain — every query failed to reach a
+/// resolver, so the module established nothing at all.
+///
+/// Pure, so the decision that turns a scan into a `ModuleError` is unit-testable
+/// without a live DoH endpoint. Deliberately requires ALL outcomes to be
+/// unreachable: one provider answering, even with zero records, means DNS worked
+/// and the domain genuinely lacks that record.
+///
+/// An empty slice is NOT unreachable — no queries ran (cancellation), which is
+/// its own thing and must not be reported as a DNS outage.
+fn dns_wholly_unreachable(outcomes: &[DohOutcome]) -> bool {
+    !outcomes.is_empty()
+        && outcomes
+            .iter()
+            .all(|o| matches!(o, DohOutcome::Unreachable))
+}
+
+/// A decoded DoH reply's DNS `Status`, classified into "the resolver answered"
+/// versus "the resolver failed to answer".
+///
+/// `NOERROR` (0) carries the records. `NXDOMAIN` (3) is an authoritative
+/// negative — the name does not exist — so it resolves with zero records and
+/// needs no failover. Everything else (`SERVFAIL` 2, `REFUSED` 5, `FORMERR` 1,
+/// …) is the resolver failing, NOT a negative existence proof: those must fall
+/// through to the second provider, exactly as the pre-`DohOutcome` code did via
+/// its `&& data.status == 0` guard.
+///
+/// Pure, so the classification is unit-testable without a resolver.
+fn classify_status(status: i32, answer: Vec<DohRecord>) -> Option<Vec<DohRecord>> {
+    match status {
+        0 => Some(answer),
+        3 => Some(Vec::new()),
+        _ => None,
+    }
+}
+
+async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> DohOutcome {
     let cf_url = format!("https://cloudflare-dns.com/dns-query?name={domain}&type={rtype}");
     let resp = http
         .get(&cf_url)
@@ -426,9 +887,9 @@ async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> Vec<Doh
         .await;
     if let Ok(r) = resp
         && let Ok(data) = crate::util::http::json_decode::<DohResp>(SRC, r).await
-        && data.status == 0
+        && let Some(records) = classify_status(data.status, data.answer)
     {
-        return data.answer;
+        return DohOutcome::Answered(records);
     }
     let google_url = format!("https://dns.google/resolve?name={domain}&type={rtype}");
     let resp = http
@@ -438,11 +899,11 @@ async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> Vec<Doh
         .await;
     if let Ok(r) = resp
         && let Ok(data) = crate::util::http::json_decode::<DohResp>(SRC, r).await
-        && data.status == 0
+        && let Some(records) = classify_status(data.status, data.answer)
     {
-        return data.answer;
+        return DohOutcome::Answered(records);
     }
-    Vec::new()
+    DohOutcome::Unreachable
 }
 
 #[cfg(test)]

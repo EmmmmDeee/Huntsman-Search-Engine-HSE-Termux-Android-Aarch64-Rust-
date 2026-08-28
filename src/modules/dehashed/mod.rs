@@ -28,8 +28,6 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::RequestBuilderExt;
-use crate::util::http::handle_keyed_error;
 
 mod types;
 use types::DehashedResp;
@@ -59,7 +57,7 @@ impl Module for DeHashed {
         "dehashed"
     }
     fn description(&self) -> &'static str {
-        "Breach record search across leaked databases"
+        "DeHashed recon — searches breach records across leaked databases"
     }
     fn priority(&self) -> u8 {
         118
@@ -67,6 +65,15 @@ impl Module for DeHashed {
 
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid
+    }
+    fn cache_ttl_secs(&self) -> u64 {
+        // Breach/credential dumps are immutable once indexed — even more stable
+        // than the "IP intel: 24h" case C9 names. Persisting the derived
+        // entities lets a repeat scan of an already-purchased identifier replay
+        // them for FREE within the window instead of re-spending a paid lookup,
+        // closing the paid-module set (see_know/oathnet_pro/dehashed/intelx) so
+        // no paid query repeats an identifier bought in the last 24h.
+        86_400
     }
     fn accepts(&self, t: &Target) -> bool {
         matches!(
@@ -104,6 +111,7 @@ impl Module for DeHashed {
             "T1591.002", // Business Relationships — company / employer / org
             "T1592",     // Gather Victim Host Information — MAC / HWID / device_id
             "T1593.001", // Social Media — telegram / facebook / instagram / … handles
+            "T1597.002", // Purchase Technical Data — a paid, closed breach-data feed
         ]
     }
 
@@ -131,7 +139,7 @@ impl Module for DeHashed {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let Some(key) = ctx.key_opt(KEY_ENV) else {
+        let Some(initial_key) = ctx.key_opt(KEY_ENV) else {
             return Ok(ModuleResult::new());
         };
         let Some(selector) = selector_for(target.kind) else {
@@ -150,55 +158,57 @@ impl Module for DeHashed {
             "size": PAGE_SIZE,
         });
 
-        let mut retries = 2u8;
-        let body: DehashedResp = loop {
-            if ctx.cancel.is_cancelled() {
-                return Ok(ModuleResult::new());
-            }
-            let resp = ctx
-                .http
-                .post(V2_SEARCH_URL)
-                .header("Dehashed-Api-Key", key)
-                .header("Accept", "application/json")
-                .json(&payload)
-                .send_tagged(build::SRC)
-                .await?;
-            let status = resp.status();
-            if !status.is_success() {
-                let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, build::SRC, key, ctx)
-                    .await
-                {
-                    continue;
-                }
-                // The body carries DeHashed's own reason — notably the 401
-                // "You need a search subscription and API credits to use the
-                // API" that an account without an active search plan returns —
-                // so surface it verbatim for the operator.
-                return Err(crate::util::http::http_status_error(build::SRC, resp).await);
-            }
-            // json_scanned: dehashed responses contain breach data including
-            // leaked credentials — scan the raw body for API keys.
-            break crate::util::http::json_scanned(resp, build::SRC)
-                .await
-                .map_err(|e| crate::core::error::Error::module(build::SRC, e))?;
+        // Key cascade via the shared primitive: begin on the hot-injected key
+        // and, on a terminal key quota/auth failure, rotate to the next untried
+        // usable pooled key rather than surfacing an outage the pool could have
+        // avoided. `absent_statuses: &[]` — DeHashed's fixed POST search endpoint
+        // has no "absent" status: a no-hit search is a 200 with an empty result
+        // set, so every non-2xx stays a real error, exactly as before. The error
+        // body carries DeHashed's own reason (notably the 401 "You need a search
+        // subscription and API credits to use the API" an account without an
+        // active search plan returns), which the primitive surfaces verbatim.
+        // `_with_key` variant: the cascade may rotate away from `initial_key`, and
+        // the `api_key_origin` fingerprint stamped on every emitted record below
+        // must identify the key that ACTUALLY served this response, not the one
+        // the call started with.
+        let Some((resp, key)) =
+            crate::util::http::keyed_cascade_with_key(ctx, build::SRC, initial_key, &[], |key| {
+                ctx.http
+                    .post(V2_SEARCH_URL)
+                    .header("Dehashed-Api-Key", key)
+                    .header("Accept", "application/json")
+                    .json(&payload)
+            })
+            .await?
+        else {
+            return Ok(ModuleResult::new());
         };
+        // json_scanned: dehashed responses contain breach data including
+        // leaked credentials — scan the raw body for API keys.
+        let body: DehashedResp = crate::util::http::json_scanned(resp, build::SRC)
+            .await
+            .map_err(|e| crate::core::error::Error::module(build::SRC, e))?;
 
         let entries = body.entries.unwrap_or_default();
-        let total = body.total.unwrap_or(entries.len() as u64);
-        if entries.is_empty() && total == 0 {
+        // Do NOT fabricate an exact total the provider did not give. `body.total`
+        // stays `Option`: `Some(n)` is DeHashed's authoritative count; `None`
+        // means the provider omitted it, and `build_breach_entity` then reports
+        // the observed rows as a floor (or as complete when the page was short)
+        // rather than passing `entries.len()` off as an exact total (item 21).
+        let total = body.total;
+        if entries.is_empty() && total.unwrap_or(0) == 0 {
             return Ok(ModuleResult::new());
         }
 
         // Stable origin fingerprint of the exact key in use — stamped onto every
         // record's evidence as `api_key_origin`, so each finding declares its
         // provenance. The full secret is never written (the middle is elided).
-        let key_fp = crate::util::oathnet::key_fingerprint(key);
+        let key_fp = crate::util::oathnet::key_fingerprint(&key);
         let balance = balance_str(&body.balance);
         let mut result = ModuleResult::new();
         // The breach-presence headline is emitted ONLY when the response is
         // attributable to the subject — a bare `name:` count, or a page of
-        // same-name strangers, yields `None` rather than a false 0.88 hit on the
+        // same-name strangers, yields `None` rather than a false confidence::EXPERT hit on the
         // engine's pre-seeded subject anchor (see `build_breach_entity`).
         if let Some(headline) = build_breach_entity(
             target.kind.to_entity_kind(),

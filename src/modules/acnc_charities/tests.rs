@@ -15,7 +15,7 @@ fn sample() -> Vec<Map<String, Value>> {
         {"_id":2,"ABN":"42196844275","Charity_Legal_Name":"THE TRUSTEE FOR JOY SMITH FAMILY FOUNDATION","Town_City":"Malvern East","State":"VIC","Postcode":"3145","Country":"Australia","Charity_Website":null},
         {"_id":3,"ABN":"63311049449","Charity_Legal_Name":"Marshall Family Foundation","Town_City":"Fitzroy","State":"VIC","Postcode":"3065","Country":"Australia"}
     ]"#;
-    serde_json::from_str(raw).unwrap()
+    serde_json::from_str(raw).expect("should succeed")
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn exact_match_fans_out_pivots_candidate_does_not() {
         .expect("candidate still surfaced (no omission)");
     assert!(marshall.tags.iter().any(|t| t == "name-candidate"));
     assert!(
-        marshall.confidence < 0.50,
+        marshall.confidence < confidence::MEDIUM,
         "candidate must stay below expansion floor"
     );
     // Its ABN/postcode are in evidence (complete) but NOT a separate AbnAcn entity.
@@ -127,6 +127,65 @@ fn exact_match_fans_out_pivots_candidate_does_not() {
 }
 
 #[test]
+fn cross_field_ckan_matches_are_dropped_not_attributed() {
+    // CKAN's datastore_search?q= is full-text across EVERY column, so a seed
+    // carrying a place word ("Sydney Community Trust") also matches every row
+    // whose Town_City is Sydney. Those rows share no NAME token with the seed
+    // and were being emitted as `name-candidate` Organisations attributed to the
+    // subject. Australian charity names carry city/suburb words constantly, so
+    // the false-hit volume is high. Same defect + fix as au_unclaimed.
+    let raw = r#"[
+        {"_id":1,"ABN":"11111111111","Charity_Legal_Name":"Sydney Community Trust","Town_City":"Sydney","State":"NSW","Postcode":"2000"},
+        {"_id":2,"ABN":"22222222222","Charity_Legal_Name":"Riverbend Animal Rescue","Town_City":"Sydney","State":"NSW","Postcode":"2000"},
+        {"_id":3,"ABN":"33333333333","Charity_Legal_Name":"Wattle Grove Hospice","Address_Line_1":"12 Trust St","Town_City":"Newcastle","State":"NSW","Postcode":"2300"}
+    ]"#;
+    let recs: Vec<Map<String, Value>> = serde_json::from_str(raw).expect("should succeed");
+    let ents = records_to_entities(&recs, 3, "Sydney Community Trust", "s");
+
+    // The row whose NAME matches survives.
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Organisation && e.value == "Sydney Community Trust"),
+        "the genuine name match must still be emitted"
+    );
+    // Rows that matched only via Town_City / Address_Line_1 must not appear as
+    // ANY entity kind — no Organisation, no ABN, no Address.
+    for unrelated in ["Riverbend Animal Rescue", "Wattle Grove Hospice"] {
+        assert!(
+            !ents.iter().any(|e| e.value.contains(unrelated)),
+            "{unrelated} matched on a non-name column and must not be attributed \
+             to this subject: {:?}",
+            ents.iter().map(|e| &e.value).collect::<Vec<_>>()
+        );
+    }
+    for abn in ["22222222222", "33333333333"] {
+        assert!(
+            !ents.iter().any(|e| e.value == abn),
+            "a dropped row must contribute no AbnAcn pivot"
+        );
+    }
+}
+
+#[test]
+fn genuine_partial_name_match_survives_as_candidate() {
+    // The floor is deliberately permissive: sharing ONE real name token is what
+    // makes a legitimate near-miss a `name-candidate`. "Marshall Family
+    // Foundation" shares "family" with the seed and must survive, even though
+    // the stricter all-tokens exactness test correctly rejects it.
+    let recs = sample();
+    let ents = records_to_entities(&recs, 4, "The Smith Family", "s");
+    let marshall = ents
+        .iter()
+        .find(|e| e.value == "Marshall Family Foundation")
+        .expect("a genuine partial name match must survive the emission floor");
+    assert!(
+        marshall.tags.iter().any(|t| t == "name-candidate"),
+        "and it stays a candidate, not an exact match: {:?}",
+        marshall.tags
+    );
+}
+
+#[test]
 fn candidate_record_omits_nothing_from_evidence() {
     // The no-redaction rule: a candidate's full record stays in evidence.
     let recs = sample();
@@ -134,7 +193,7 @@ fn candidate_record_omits_nothing_from_evidence() {
     let joy = ents
         .iter()
         .find(|e| e.value.contains("JOY SMITH FAMILY"))
-        .unwrap();
+        .expect("should succeed");
     // "Joy Smith Family Foundation" contains both seed tokens → actually exact.
     assert!(joy.tags.iter().any(|t| t == "exact-name-match"));
     let attr = |k: &str| {
@@ -154,7 +213,7 @@ fn trading_names_split_and_emit_organisations() {
     let raw = r#"[
         {"_id":1,"ABN":"11111111111","Charity_Legal_Name":"Sydney University Business School Society","Other_Organisation_Names":"SUBS, Sydney University Business Society","Charity_Website":"https://subsoc.com.au","Town_City":"Camperdown","State":"NSW","Postcode":"2006"}
     ]"#;
-    let recs: Vec<Map<String, Value>> = serde_json::from_str(raw).unwrap();
+    let recs: Vec<Map<String, Value>> = serde_json::from_str(raw).expect("should succeed");
     let ents = records_to_entities(&recs, 1, "Sydney University Business School Society", "s");
     let orgs: Vec<&str> = ents
         .iter()
@@ -164,7 +223,10 @@ fn trading_names_split_and_emit_organisations() {
     assert!(orgs.contains(&"SUBS"));
     assert!(orgs.contains(&"Sydney University Business Society"));
     // Website with a scheme is normalised to a bare host.
-    let dom = ents.iter().find(|e| e.kind == EntityKind::Domain).unwrap();
+    let dom = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain)
+        .expect("should succeed");
     assert_eq!(dom.value, "subsoc.com.au");
 }
 
@@ -174,11 +236,17 @@ fn numeric_abn_and_postcode_are_stringified_not_dropped() {
     let raw = r#"[
         {"_id":1,"ABN":28000030179,"Charity_Legal_Name":"Numeric Fields Trust","Town_City":"Perth","State":"WA","Postcode":6000}
     ]"#;
-    let recs: Vec<Map<String, Value>> = serde_json::from_str(raw).unwrap();
+    let recs: Vec<Map<String, Value>> = serde_json::from_str(raw).expect("should succeed");
     let ents = records_to_entities(&recs, 1, "Numeric Fields Trust", "s");
-    let abn = ents.iter().find(|e| e.kind == EntityKind::AbnAcn).unwrap();
+    let abn = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::AbnAcn)
+        .expect("should succeed");
     assert_eq!(abn.value, "28000030179");
-    let addr = ents.iter().find(|e| e.kind == EntityKind::Address).unwrap();
+    let addr = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("should succeed");
     assert_eq!(addr.value, "Perth, WA 6000, Australia");
 }
 
@@ -201,13 +269,14 @@ fn locality_address_handles_missing_fields() {
 fn ckan_success_false_is_captured() {
     let err: CkanResp =
         serde_json::from_str(r#"{"success":false,"error":{"message":"Resource not found"}}"#)
-            .unwrap();
+            .expect("should succeed");
     assert_eq!(err.success, Some(false));
     assert!(err.result.is_none());
     let ok: CkanResp =
-        serde_json::from_str(r#"{"success":true,"result":{"total":0,"records":[]}}"#).unwrap();
+        serde_json::from_str(r#"{"success":true,"result":{"total":0,"records":[]}}"#)
+            .expect("should succeed");
     assert_eq!(ok.success, Some(true));
-    assert_eq!(ok.result.unwrap().records.len(), 0);
+    assert_eq!(ok.result.expect("should succeed").records.len(), 0);
 }
 
 #[test]

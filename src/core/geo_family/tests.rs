@@ -91,6 +91,8 @@ fn corroboration_needs_a_confirmed_subject_fix_and_proximity() {
     // anchor (only ≥0.60 confirmed fixes do).
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     gps.tag("geoint");
+    // Anchoring source (handset GNSS) — a real person fix, not infrastructure geo.
+    gps.add_evidence(Evidence::new("signal_radar", "gps"));
     let weak = Entity::new(EntityKind::Coordinates, "-20.0,145.0", 0.4, "s");
 
     let subject = subject_locations(&[gps.clone(), weak.clone()]);
@@ -126,10 +128,47 @@ fn corroboration_needs_a_confirmed_subject_fix_and_proximity() {
 }
 
 #[test]
+fn radar_sentinel_never_anchors_a_subject_fix() {
+    // `hse radar` seeds every sweep with a sentinel Coordinates entity (0,0) at
+    // confidence 0.90 with `seed`/`subject` tags — high enough to clear
+    // SUBJECT_FIX_MIN on its own. Without the sentinel guard it would anchor
+    // every family-candidate proximity check on null island; a Cairns namesake
+    // ~9600 km from (0,0) would then wrongly read as "far from the subject" for
+    // the right reason but the wrong location, and a coincidental near-(0,0)
+    // resolution (there is none in AU postcodes, but the anchor itself is
+    // simply wrong) would corroborate nobody real.
+    let mut sentinel = Entity::new(
+        EntityKind::Coordinates,
+        crate::core::scan::RADAR_SENTINEL_COORD_RAW,
+        0.90,
+        "s",
+    );
+    sentinel.tag("seed");
+    sentinel.tag("subject");
+    let mut real_gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
+    real_gps.tag("geoint");
+    real_gps.add_evidence(Evidence::new("signal_radar", "gps"));
+
+    let fixes = subject_fixes(&[sentinel.clone(), real_gps.clone()]);
+    assert_eq!(
+        fixes.len(),
+        1,
+        "the sentinel must not become a second confirmed subject fix"
+    );
+    assert_eq!(fixes[0].uid, real_gps.uid);
+
+    // Sentinel-only (a MAC-radar sweep with no other geo source) must anchor
+    // nothing at all, not fall back to null island.
+    assert!(subject_fixes(&[sentinel]).is_empty());
+}
+
+#[test]
 fn discordant_namesake_is_the_far_complement_of_corroboration() {
     // Subject's confirmed GPS near Woodford, QLD (Brisbane catchment).
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     gps.tag("geoint");
+    // Anchoring source (handset GNSS) — a real person fix, not infrastructure geo.
+    gps.add_evidence(Evidence::new("signal_radar", "gps"));
     let subject = subject_locations(&[gps]);
 
     // A same-surname candidate in Perth, WA (~3600 km) — shares the name, but a
@@ -172,6 +211,38 @@ fn discordant_namesake_is_the_far_complement_of_corroboration() {
     assert!(
         !is_namesake(&near, &subject, true),
         "a near relative is never a namesake, common surname or not"
+    );
+}
+
+#[test]
+fn subject_fix_excludes_infrastructure_coordinates() {
+    // A datacentre/hosting coordinate can clear SUBJECT_FIX_MIN yet is NOT the
+    // subject's location: anchoring on it would widen the "confirmed area" to the
+    // host's metro, so a same-surname candidate near the DATACENTRE reads as kin.
+    // A HOSTING-tagged coord and a bare coord (no anchoring source) must both be
+    // excluded from subject_fixes; a person-anchored coord is included (control).
+    let mut hosting = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    hosting.tag(crate::core::tags::HOSTING);
+    hosting.add_evidence(Evidence::new("ip_geo", "geolocated"));
+    assert!(
+        subject_fixes(&[hosting]).is_empty(),
+        "a hosting coordinate must not anchor the subject"
+    );
+
+    let mut bare = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    bare.add_evidence(Evidence::new("ip_geo", "geolocated"));
+    assert!(
+        subject_fixes(&[bare]).is_empty(),
+        "a bare IP-geo coordinate (no anchoring source) must not anchor the subject"
+    );
+
+    // Control: the same point, person-anchored (device GPS), IS a subject fix.
+    let mut anchored = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    anchored.add_evidence(Evidence::new("signal_radar", "gps"));
+    assert_eq!(
+        subject_fixes(&[anchored]).len(),
+        1,
+        "a person-anchored coordinate still anchors the subject"
     );
 }
 
@@ -259,5 +330,71 @@ fn real_scan_us_breach_address_reproduction() {
         None,
         "a US breach address with no resolvable AU postcode must not report ANY distance \
          to the subject — it must never be corroborated as '~0 km' away"
+    );
+}
+
+#[test]
+fn person_grain_postcode_refuses_an_ip_geolocation() {
+    // Exactly what `ipquery` builds: a CITY-grain Address composed from the IP's
+    // city/state/country, carrying `geo_ev()` — which folds the IP block's `zip`
+    // in as `postcode` alongside the `ip` it came from
+    // (`modules/ipquery/mod.rs:267,292`). `ip2location` and `ip_geo` do the same.
+    let ip_geo = {
+        let mut e = Entity::new(
+            EntityKind::Address,
+            "Sydney, New South Wales, Australia",
+            0.58,
+            "s",
+        );
+        e.tag("ipquery");
+        e.add_evidence(
+            Evidence::new("ipquery", "Geolocation for 1.2.3.4")
+                .with_attr("ip", "1.2.3.4")
+                .with_attr("postcode", "2000"),
+        );
+        e
+    };
+    // `au_postcode` still reports it — the raw accessor is unchanged, and other
+    // callers may legitimately want the IP's postcode.
+    assert_eq!(au_postcode(&ip_geo).as_deref(), Some("2000"));
+    // The person-grain accessor refuses it. This is what keeps a geolocation
+    // database's guess for an IP BLOCK out of the headline residence rung, where
+    // it was reported as an 8 km "postcode / suburb grain" fix at full
+    // confidence — walking around the login-IP rung's deliberate ≤ 0.50 cap.
+    assert!(
+        au_postcode_person_grain(&ip_geo).is_none(),
+        "an IP geolocation must not supply a suburb-grain postcode"
+    );
+}
+
+#[test]
+fn person_grain_postcode_keeps_a_real_postal_record() {
+    // A breach/register postcode carries no `ip` attribute, so it is untouched —
+    // the legitimate rung-3/4 input must still work.
+    assert_eq!(
+        au_postcode_person_grain(&fam("Stephen Moreau", Some("4169"))).as_deref(),
+        Some("4169")
+    );
+    // An Address naming its postcode in the VALUE, with no evidence at all.
+    let addr = Entity::new(EntityKind::Address, "QLD 4518, Australia", 0.3, "s");
+    assert_eq!(au_postcode_person_grain(&addr).as_deref(), Some("4518"));
+}
+
+#[test]
+fn person_grain_postcode_survives_a_mixed_provenance_entity() {
+    // An entity corroborated by BOTH an IP geolocation and a real postal record
+    // keeps the postal one: only the IP-derived evidence records are skipped,
+    // not the whole entity.
+    let mut mixed = Entity::new(EntityKind::Person, "Stephen Moreau", 0.5, "s");
+    mixed.add_evidence(
+        Evidence::new("ipquery", "Geolocation for 1.2.3.4")
+            .with_attr("ip", "1.2.3.4")
+            .with_attr("postcode", "2000"),
+    );
+    mixed.add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", "4169"));
+    assert_eq!(
+        au_postcode_person_grain(&mixed).as_deref(),
+        Some("4169"),
+        "the real postal record must survive alongside an IP geolocation"
     );
 }

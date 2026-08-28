@@ -28,6 +28,32 @@ use super::*;
     }
 
     #[test]
+    fn lowercase_prose_is_not_an_address() {
+        // Regression: the pattern's `(?i)` flag made its `[A-Z]` street/suburb
+        // anchors match lowercase too, voiding the Title-Case structure gate the
+        // pattern is written to enforce. Ordinary lowercase prose that happens to
+        // contain a number, a word doubling as a street suffix ("close", "place"),
+        // and a trailing state+postcode was minted as a fabricated AuAddress at
+        // 0.70+ confidence.
+        assert_eq!(
+            extract_first("please call me back in 42 minutes about the close matter brisbane qld 4000"),
+            None
+        );
+        assert_eq!(
+            extract_first("we had 3 long days at the place today sydney nsw 2000"),
+            None
+        );
+        // Genuine addresses still parse: Title Case, ALL CAPS, and a lowercase
+        // state code all remain acceptable — only the street/suburb WORDS must
+        // be capitalised.
+        assert!(extract_first("133 Mary Street, Brisbane City QLD 4000").is_some());
+        assert!(extract_first("133 MARY STREET, BRISBANE CITY QLD 4000").is_some());
+        assert!(extract_first("133 Mary Street, Brisbane City qld 4000").is_some());
+        assert!(extract_first("Level 11, 133 Mary Street, Brisbane City QLD 4000").is_some());
+        assert!(extract_first("LEVEL 11, 133 MARY STREET, BRISBANE CITY QLD 4000").is_some());
+    }
+
+    #[test]
     fn rejects_wrong_state_postcode() {
         // NSW with VIC postcode → invalid
         let s = "5 Test Street, Sydney NSW 3000";
@@ -77,6 +103,24 @@ use super::*;
     }
 
     #[test]
+    fn state_code_prefers_the_last_abbrev_token_nearest_the_trailing_postcode() {
+        // Regression: first-match-wins let an incidental leading token beat the
+        // real address state. A state abbreviation in a company name ("NT
+        // Logistics") or the ordinary word "act" must not outrank the state
+        // token that anchors the trailing "STATE POSTCODE" run.
+        assert_eq!(
+            state_code("NT LOGISTICS PTY LTD, 100 COLLINS ST, MELBOURNE VIC 3000"),
+            Some("VIC")
+        );
+        assert_eq!(
+            state_code("Trustee act, 5 Queen St, Brisbane QLD 4000"),
+            Some("QLD")
+        );
+        // A lone abbreviation anywhere still resolves.
+        assert_eq!(state_code("somewhere in the NT"), Some("NT"));
+    }
+
+    #[test]
     fn state_code_does_not_read_a_leading_us_street_number_as_an_au_postcode() {
         // Real captured US breach-record addresses (Huntsman scan 90b936dc…). A
         // 4-digit US STREET NUMBER must not be mistaken for an AU postcode: the
@@ -96,6 +140,23 @@ use super::*;
         // (no state word, so it reaches step 3) still resolves.
         assert_eq!(state_code("PO Box, 3001"), Some("VIC"));
         assert_eq!(state_code("Beerwah 4519"), Some("QLD"));
+    }
+
+    #[test]
+    fn single_state_code_only_resolves_unambiguous_states() {
+        // A single, unambiguous state → resolved (by code or by full name).
+        assert_eq!(single_state_code("Melbourne / VIC"), Some("VIC"));
+        assert_eq!(single_state_code("Brisbane / QLD"), Some("QLD"));
+        assert_eq!(single_state_code("Hobart / TAS"), Some("TAS"));
+        assert_eq!(single_state_code("Sydney, New South Wales"), Some("NSW"));
+        // Ambiguous multi-state labels — a coarse phone area code (02, 08) spans
+        // several states — must NOT collapse to one fabricated jurisdiction.
+        assert_eq!(single_state_code("Sydney / NSW / ACT"), None);
+        assert_eq!(single_state_code("Perth / SA / NT"), None);
+        // No state signal, and (unlike `state_code`) NO postcode fallback: an
+        // explicit state mention is required.
+        assert_eq!(single_state_code("just some text"), None);
+        assert_eq!(single_state_code("PO Box, 3001"), None);
     }
 
     #[test]
@@ -156,6 +217,34 @@ use super::*;
         assert_eq!(
             normalise_phone("1300 846 637").as_deref(),
             Some("+611300846637")
+        );
+    }
+
+    #[test]
+    fn normalise_phone_never_emits_invalid_e164() {
+        // Regression: the `+61…` / `0061…` / `1300…` branches used to return
+        // their candidate unvalidated, leaking syntactically invalid E.164
+        // (too short, or country-code-only) straight into correlation keys.
+        // Every branch now routes through the strict E.164 gate.
+        for junk in [
+            "+61",          // country code only
+            "+6100",        // too short + invalid national lead
+            "+610",         // leading-zero national part, too short
+            "0061",         // → "+61", country code only
+            "0061 0",       // → "+610", too short
+            "1300",         // → "+611300", 6 digits, below the 10-digit floor
+            "1800",         // → "+611800", ditto
+        ] {
+            assert_eq!(
+                normalise_phone(junk),
+                None,
+                "invalid/too-short input {junk:?} must not yield a malformed E.164"
+            );
+        }
+        // A well-formed international/local number is still accepted unchanged.
+        assert_eq!(
+            normalise_phone("+61 2 9374 4000").as_deref(),
+            Some("+61293744000")
         );
     }
 
@@ -223,6 +312,44 @@ use super::*;
     }
 
     #[test]
+    fn normalise_phone_recognises_bare_61_prefix() {
+        // Consolidation fix: normalise_phone previously had no branch for a
+        // bare (no `+`) `61`-prefixed international form — a common breach-
+        // dump style — even though the sibling `to_e164_au` recognised it.
+        // Gated on the same ACMA trunk-lead set as every other branch.
+        assert_eq!(
+            normalise_phone("61412345678").as_deref(),
+            Some("+61412345678")
+        );
+        for lead in ['1', '6', '9'] {
+            let bare = format!("61{lead}12345678");
+            assert_eq!(
+                normalise_phone(&bare),
+                None,
+                "bare-61 lead digit {lead} is not a real AU trunk code: {bare}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalise_phone_service_numbers_require_the_exact_acma_length() {
+        // Consolidation fix: the 1300/1800 branch previously had no length
+        // gate beyond the generic E.164 10-15-digit floor, so a malformed
+        // value merely STARTING WITH "1300"/"1800" (e.g. an 11-digit garbage
+        // string) still cleared that floor once "+61" was prepended,
+        // fabricating a non-existent AU service number instead of correctly
+        // refusing to normalise it. AU freephone/local-rate numbers are
+        // EXACTLY 10 national digits.
+        assert_eq!(normalise_phone("18005551234"), None); // 11 digits
+        assert_eq!(normalise_phone("1800555"), None); // 7 digits
+        // Exactly 10 digits still normalises correctly.
+        assert_eq!(
+            normalise_phone("1800123456").as_deref(),
+            Some("+611800123456")
+        );
+    }
+
+    #[test]
     fn au_phone_region_maps_geographic_area_codes() {
         // The four geographic area codes → region + member states.
         assert_eq!(
@@ -256,41 +383,86 @@ use super::*;
     fn au_phone_line_type_classifies_every_au_number_class() {
         // Mobile, geographic, VoIP, and the three service classes.
         assert_eq!(
-            au_phone_line_type("0412 345 678").unwrap().0,
+            au_phone_line_type("0412 345 678").expect("should succeed").0,
             AuLineType::Mobile
         );
         assert_eq!(
-            au_phone_line_type("(07) 3739 4511").unwrap().0,
+            au_phone_line_type("(07) 3739 4511").expect("should succeed").0,
             AuLineType::GeographicFixed
         );
         assert_eq!(
-            au_phone_line_type("+61 2 9876 5432").unwrap().0,
+            au_phone_line_type("+61 2 9876 5432").expect("should succeed").0,
             AuLineType::GeographicFixed
         );
         assert_eq!(
-            au_phone_line_type("0512 345 678").unwrap().0,
+            au_phone_line_type("0512 345 678").expect("should succeed").0,
             AuLineType::Voip
         );
         assert_eq!(
-            au_phone_line_type("1800 123 456").unwrap().0,
+            au_phone_line_type("1800 123 456").expect("should succeed").0,
             AuLineType::Freephone
         );
         assert_eq!(
-            au_phone_line_type("1300 975 707").unwrap().0,
+            au_phone_line_type("1300 975 707").expect("should succeed").0,
             AuLineType::LocalRate
         );
         // The 6-digit `13xxxx` short form the normaliser doesn't tabulate.
         assert_eq!(
-            au_phone_line_type("13 11 14").unwrap().0,
+            au_phone_line_type("13 11 14").expect("should succeed").0,
             AuLineType::LocalRate
         );
         assert_eq!(
-            au_phone_line_type("1902 123 456").unwrap().0,
+            au_phone_line_type("1902 123 456").expect("should succeed").0,
             AuLineType::Premium
         );
         // Not Australian / not a phone.
         assert!(au_phone_line_type("+1 555 123 4567").is_none());
         assert!(au_phone_line_type("not a phone").is_none());
+    }
+
+    #[test]
+    fn au_phone_line_type_rejects_nanp_numbers_that_collide_with_service_prefixes() {
+        // Regression: an 11-digit NANP number (`1` country code + area code) must
+        // not be read as a 10-digit AU service line. `+1 800…` (US toll-free) and
+        // `+1 900…`/`+1 909…` (US premium / area codes 900-909) share the leading
+        // digits of AU `1800`/`190x` but are one digit too long. Misclassifying
+        // them made AU-050 veto a shared US line as an AU "business desk" and drop
+        // the real association (false negative). Both the `+`/spaced form and the
+        // bare digit key AU-050 actually passes must resolve to `None`.
+        assert!(au_phone_line_type("+1 800 555 1234").is_none()); // US toll-free ≠ AU 1800
+        assert!(au_phone_line_type("18005551234").is_none());
+        assert!(au_phone_line_type("+1 909 555 0142").is_none()); // US 909 ≠ AU 190x
+        assert!(au_phone_line_type("19095550142").is_none());
+        assert!(au_phone_line_type("+1 900 555 1234").is_none()); // US premium ≠ AU 190x
+        // The genuine AU service forms (exactly 10 national digits) still classify.
+        assert_eq!(
+            au_phone_line_type("1800123456").expect("au freephone").0,
+            AuLineType::Freephone
+        );
+        assert_eq!(
+            au_phone_line_type("1902123456").expect("au premium").0,
+            AuLineType::Premium
+        );
+    }
+
+    #[test]
+    fn au_phone_line_type_rejects_foreign_plus_country_codes() {
+        // A `+` explicitly marks the country code; if it isn't 61/0061 the number
+        // is foreign, so it must be `None` even when its leading national digit
+        // would otherwise look like an AU class. Reachable via geo::jurisdiction,
+        // which classifies an entity's `+`-carrying value directly.
+        assert!(au_phone_line_type("+44 1800 123456").is_none()); // UK — was AU "Mobile" off the 4
+        assert!(au_phone_line_type("+81 3 1234 5678").is_none()); // JP — was AU "GeographicFixed" off the 8
+        assert!(au_phone_line_type("+49 151 2345678").is_none()); // DE — was AU "Mobile" off the 4
+        // AU numbers via +61 / 0061 still classify (the country code IS stripped).
+        assert_eq!(
+            au_phone_line_type("+61 2 9876 5432").expect("au geo").0,
+            AuLineType::GeographicFixed
+        );
+        assert_eq!(
+            au_phone_line_type("0061 412 345 678").expect("au mobile").0,
+            AuLineType::Mobile
+        );
     }
 
     #[test]
@@ -362,7 +534,7 @@ use super::*;
         assert_eq!(cat("JANE.ID.AU"), Some("individual"));
         assert_eq!(cat("acme.com.au."), Some("commercial"));
         // Each carries a human label distinct from the bare tag.
-        assert!(au_domain_registrant("john.id.au").unwrap().1.contains("natural-person"));
+        assert!(au_domain_registrant("john.id.au").expect("should succeed").1.contains("natural-person"));
     }
 
     #[test]
@@ -394,4 +566,84 @@ use super::*;
         assert_eq!(au_network_operator("Amazon Data Services"), None);
         // Short brand must be whole-word, not a substring.
         assert_eq!(au_network_operator("ACMETPGENETICS LIMITED"), None);
+    }
+
+    #[test]
+    fn au_network_operator_split_gates_common_word_brands_to_structured_fields() {
+        use super::au_network_operator_split;
+        // A common-word brand token in free-text `descr` prose must NOT attribute
+        // the ISP: "…used to belong to X" is the verb, not Belong the operator.
+        assert_eq!(
+            au_network_operator_split("", "address space that used to belong to acme"),
+            None,
+            "`belong` in descr prose is the verb, not the Belong ISP"
+        );
+        // But the genuine operator named in a STRUCTURED field is still recognised.
+        assert_eq!(
+            au_network_operator_split("Belong Internet Pty Ltd", ""),
+            Some(("Belong", AuNetworkKind::Consumer)),
+            "`Belong` in a structured isp/org field is the operator"
+        );
+        // An UNAMBIGUOUS operator is trusted even in descr prose (no collision).
+        assert_eq!(
+            au_network_operator_split("", "Reassigned to Telstra Limited"),
+            Some(("Telstra", AuNetworkKind::Consumer)),
+            "an unambiguous brand is trusted in descr too"
+        );
+        // Structured tier wins over descr.
+        assert_eq!(
+            au_network_operator_split("Optus", "belong to someone"),
+            Some(("Optus", AuNetworkKind::Consumer))
+        );
+    }
+
+    #[test]
+    fn is_standalone_postcode_at_accepts_only_bounded_in_range_codes() {
+        // Does ANY scan position of `s` satisfy the predicate? Mirrors how the
+        // au_property / au_electoral parsers call it.
+        fn any(s: &str) -> bool {
+            let b = s.as_bytes();
+            (0..b.len().saturating_sub(3)).any(|i| is_standalone_postcode_at(b, i))
+        }
+        // Standalone, in range.
+        assert!(any("Bondi Beach 2026 NSW"));
+        assert!(any("2000")); // exact four bytes, low end of NSW range
+        assert!(any("1234")); // NSW postcode (previously rejected, now accepted)
+        assert!(any("end 4017")); // final four bytes of the window, QLD
+        // Unassigned postcode that doesn't match any state range.
+        assert!(!any("no_match_here")); // non-numeric, definitely invalid
+        // 5+ digit runs: neither the 4-digit prefix nor suffix may match, and an
+        // in-range code embedded in a longer run is rejected.
+        assert!(!any("20267")); // prefix 2026 must not match
+        assert!(!any("12026")); // suffix 2026 must not match
+        assert!(!any("902000")); // embedded 2000 must not match
+        // Too short / non-digit.
+        assert!(!any("202"));
+        assert!(!any("abcd"));
+        // Totality: never panics on an out-of-range index.
+        assert!(!is_standalone_postcode_at(b"12", 0));
+        assert!(!is_standalone_postcode_at(b"", 0));
+    }
+
+    #[test]
+    fn is_standalone_postcode_at_accepts_nt_and_act_postcodes() {
+        // Regression: the boundary was previously hard-coded to 2000..=9999,
+        // excluding NT (0800-0999) and ACT-low (0200-0299). Now it delegates to
+        // the authoritative state_for_postcode map, so the predicates agree.
+        fn any(s: &str) -> bool {
+            let b = s.as_bytes();
+            (0..b.len().saturating_sub(3)).any(|i| is_standalone_postcode_at(b, i))
+        }
+        // NT postcodes now recognized.
+        assert!(any("Darwin NT 0800"));
+        assert!(any("Palmerston 0830"));
+        assert!(any("Katherine 0850"));
+        // ACT low-range postcodes now recognized.
+        assert!(any("Canberra 0200"));
+        assert!(any("Royal 0280"));
+        // Consistency: state_for_postcode recognizes these same codes.
+        assert_eq!(state_for_postcode("0800"), Some("NT"));
+        assert_eq!(state_for_postcode("0850"), Some("NT"));
+        assert_eq!(state_for_postcode("0200"), Some("ACT"));
+        assert_eq!(state_for_postcode("0280"), Some("ACT"));
     }

@@ -258,22 +258,22 @@ use super::*;
     fn primary_outranks_secondary() {
         let u = usernames(&p("Jordan Meyers"));
         let by = |h: &str| u.iter().find(|s| s.handle == h).map(|s| s.weight);
-        assert!(by("jordan.meyers").unwrap() > by("meyers.jordan").unwrap());
+        assert!(by("jordan.meyers").expect("should succeed") > by("meyers.jordan").expect("should succeed"));
     }
 
     #[test]
     fn derived_usernames_stay_below_the_probable_floor() {
         // Derived handles are unconfirmed guesses — every one must classify as
-        // Candidate (c_eff < 0.40) until a discovery module corroborates it, per
+        // Candidate (c_eff < confidence::LOW) until a discovery module corroborates it, per
         // name_intel's documented "low-confidence candidate" contract. Guards
         // every handle weight (incl. W_PRIMARY) against drifting back over the
-        // 0.40 floor, where a pure guess would masquerade as a Probable finding.
+        // confidence::LOW floor, where a pure guess would masquerade as a Probable finding.
         use crate::core::entity::{Classification, Entity, EntityKind};
         let handles = usernames(&p("Jordan Leigh Meyers 1987"));
         let max_w = handles.iter().map(|u| u.weight).fold(0.0_f64, f64::max);
         assert!(
-            max_w < 0.40,
-            "strongest derived handle weight {max_w} must stay below the 0.40 Probable floor"
+            max_w < confidence::LOW,
+            "strongest derived handle weight {max_w} must stay below the confidence::LOW Probable floor"
         );
         for u in &handles {
             let e = Entity::new(EntityKind::Username, &u.handle, u.weight, "s");
@@ -291,10 +291,62 @@ use super::*;
     fn emails_cross_logins_and_domains() {
         let domains = vec!["gmail.com".to_string(), "proton.me".to_string()];
         let e = emails(&p("Jordan Meyers"), &domains);
-        assert!(e.contains(&"jordan.meyers@gmail.com".to_string()));
-        assert!(e.contains(&"jordan.meyers@proton.me".to_string()));
-        assert!(e.iter().all(|a| a.contains('@')));
+        let addrs: Vec<&str> = e.iter().map(|s| s.addr.as_str()).collect();
+        assert!(addrs.contains(&"jordan.meyers@gmail.com"));
+        assert!(addrs.contains(&"jordan.meyers@proton.me"));
+        assert!(addrs.iter().all(|a| a.contains('@')));
         assert!(e.len() <= MAX_EMAILS);
+    }
+
+    /// The ranking `emails()` computes must reach the caller. It used to be
+    /// sorted on and then discarded, so every address persisted at one flat
+    /// confidence and nothing downstream could tell a strong guess from a weak
+    /// one.
+    #[test]
+    fn email_scores_survive_and_order_the_output() {
+        let domains = vec!["gmail.com".to_string(), "proton.me".to_string()];
+        let e = emails(&p("Jordan Meyers"), &domains);
+
+        // Descending by score, and the strongest shape on the strongest
+        // provider is first.
+        for w in e.windows(2) {
+            assert!(w[0].score >= w[1].score, "not ranked: {:?}", (w[0].score, w[1].score));
+        }
+        assert_eq!(e[0].addr, "jordan.meyers@gmail.com");
+
+        // The same handle shape on a weaker provider must score strictly lower —
+        // the distinction that was being thrown away.
+        let g = e.iter().find(|s| s.addr == "jordan.meyers@gmail.com").unwrap();
+        let pm = e.iter().find(|s| s.addr == "jordan.meyers@proton.me").unwrap();
+        assert!(g.score > pm.score, "provider weight must separate them");
+        assert!(
+            email_confidence(g.score) > email_confidence(pm.score),
+            "and that separation must reach the emitted confidence"
+        );
+    }
+
+    /// Restoring the ranking must not silently change which addresses survive an
+    /// expansion floor: the band is anchored so the best shape keeps exactly the
+    /// old flat value, and the worst stays above the default floor.
+    #[test]
+    fn email_confidence_band_is_anchored_and_cannot_cut_recall() {
+        assert!((email_confidence(1.0) - EMAIL_CONF).abs() < f64::EPSILON);
+        assert!((email_confidence(0.0) - EMAIL_CONF_FLOOR).abs() < f64::EPSILON);
+        // Monotone in the score.
+        assert!(email_confidence(0.9) > email_confidence(0.1));
+        // Out-of-range inputs are clamped, never extrapolated past the band.
+        assert!((email_confidence(9.0) - EMAIL_CONF).abs() < f64::EPSILON);
+        assert!((email_confidence(-9.0) - EMAIL_CONF_FLOOR).abs() < f64::EPSILON);
+        // Every emitted confidence stays inside the band.
+        let e = emails(&p("Jordan Meyers"), &default_domains());
+        for s in &e {
+            let c = email_confidence(s.score);
+            assert!(
+                (EMAIL_CONF_FLOOR..=EMAIL_CONF).contains(&c),
+                "{} escaped the band at {c}",
+                s.addr
+            );
+        }
     }
 
     #[test]
@@ -306,7 +358,7 @@ use super::*;
         // `first.last@proton` (top shape, long-tail provider).
         let domains = vec!["proton.me".to_string(), "gmail.com".to_string()];
         let e = emails(&p("Jordan Meyers"), &domains);
-        let pos = |needle: &str| e.iter().position(|a| a == needle);
+        let pos = |needle: &str| e.iter().position(|a| a.addr == needle);
         let gmail_flat = pos("jordanmeyers@gmail.com").expect("firstlast@gmail present");
         let proton_dot = pos("jordan.meyers@proton.me").expect("first.last@proton present");
         assert!(
@@ -315,7 +367,7 @@ use super::*;
         );
         // first.last@gmail — top shape × top provider — is the single best guess.
         assert_eq!(
-            e.first().map(String::as_str),
+            e.first().map(|s| s.addr.as_str()),
             Some("jordan.meyers@gmail.com")
         );
     }
@@ -325,7 +377,7 @@ use super::*;
         let domains: Vec<String> = (0..50).map(|i| format!("d{i}.com")).collect();
         let e = emails(&p("Jordan Leigh Meyers 90"), &domains);
         assert_eq!(e.len(), MAX_EMAILS);
-        let set: std::collections::HashSet<_> = e.iter().collect();
+        let set: std::collections::HashSet<&str> = e.iter().map(|s| s.addr.as_str()).collect();
         assert_eq!(set.len(), e.len(), "no duplicate addresses");
     }
 
@@ -341,7 +393,7 @@ use super::*;
             .split("/avatar/")
             .nth(1)
             .and_then(|t| t.split('?').next())
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(hash.len(), 32);
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
     }
@@ -350,7 +402,16 @@ use super::*;
     fn pivots_are_bounded_and_encoded() {
         let n = p("Jordan Leigh Meyers");
         let pv = pivots(&n, Some("jordan.meyers@gmail.com"));
-        assert!(pv.len() <= MAX_PIVOTS);
+        // EXACT, not `<=`. This is the maximal configuration (handle + email), so
+        // it must produce precisely MAX_PIVOTS. The old `<=` could not fail while
+        // the constant (30) sat above the real ceiling (26) — it passed whether
+        // the code emitted 26 or 30, which is no guard at all.
+        assert_eq!(
+            pv.len(),
+            MAX_PIVOTS,
+            "adding or removing a platform must update MAX_PIVOTS and the module \
+             doc's platform count together"
+        );
         assert!(!pv.is_empty());
         for piv in &pv {
             assert!(piv.url.starts_with("https://"), "non-https: {}", piv.url);
@@ -390,7 +451,7 @@ use super::*;
             assert_eq!(provider_weight(d), 0.5, "{d}");
         }
         for d in ["icloud.com", "me.com", "mac.com"] {
-            assert_eq!(provider_weight(d), 0.45, "{d}");
+            assert_eq!(provider_weight(d), confidence::LOW_MEDIUM, "{d}");
         }
         assert_eq!(provider_weight("aol.com"), 0.4);
         for d in ["gmx.com", "gmx.net", "mail.com"] {
@@ -531,7 +592,7 @@ use super::*;
     fn hyphenated_surname_yields_last_parts() {
         let n = p("Emily Smith-Jones");
         assert_eq!(n.last, "smithjones");
-        let parts = n.last_parts.as_deref().unwrap();
+        let parts = n.last_parts.as_deref().expect("should succeed");
         assert_eq!(parts, ["smith", "jones"]);
     }
 
@@ -560,7 +621,7 @@ use super::*;
         // Alias handles must still be below the Probable floor.
         let handles = usernames(&p("Michael Smith"));
         let max_w = handles.iter().map(|u| u.weight).fold(0.0_f64, f64::max);
-        assert!(max_w < 0.40, "alias handle weight {max_w} above Probable floor");
+        assert!(max_w < confidence::LOW, "alias handle weight {max_w} above Probable floor");
     }
 
     #[test]
@@ -667,14 +728,17 @@ use super::*;
         let domains = vec!["gmail.com".to_string(), "outlook.com".to_string()];
         let e = emails(&p("Onur Ada"), &domains);
         assert!(
-            e.contains(&"onur.ada@gmail.com".to_string()),
+            e.iter().any(|a| a.addr == "onur.ada@gmail.com"),
             "top gmail shape missing: {e:?}"
         );
         assert!(
-            e.iter().any(|a| a.ends_with("@outlook.com")),
+            e.iter().any(|a| a.addr.ends_with("@outlook.com")),
             "outlook variant missing: {e:?}"
         );
-        assert_eq!(e.first().map(String::as_str), Some("onur.ada@gmail.com"));
+        assert_eq!(
+            e.first().map(|s| s.addr.as_str()),
+            Some("onur.ada@gmail.com")
+        );
     }
 
     #[test]

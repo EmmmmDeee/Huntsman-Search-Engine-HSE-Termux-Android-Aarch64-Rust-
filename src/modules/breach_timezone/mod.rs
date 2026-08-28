@@ -12,6 +12,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -20,7 +21,7 @@ use crate::core::{
 
 const SRC: &str = "breach_timezone";
 const MIN_TIMESTAMPS: usize = 5;
-const MIN_CONCENTRATION: f64 = 0.70;
+const MIN_CONCENTRATION: f64 = confidence::HIGH_PLUS;
 
 pub struct BreachTimezone;
 
@@ -30,7 +31,7 @@ impl Module for BreachTimezone {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Infer timezone from breach/stealer timestamp clustering"
+        "Timezone triangulation — infers a target's timezone from clustering of breach/stealer timestamps"
     }
     fn priority(&self) -> u8 {
         7
@@ -63,66 +64,78 @@ impl Module for BreachTimezone {
         }
 
         if let Some(tz) = infer_timezone(&hours) {
-            let mut e = Entity::new(EntityKind::Address, tz.region, tz.confidence, &ctx.scan_id);
-            e.tag("geoint");
-            e.tag(crate::core::tags::COARSE);
-            e.tag("timezone-inferred");
-            // Tag AU timezones so AU-056 jurisdiction cross-check can use them.
-            match tz.utc_offset {
-                10 | 11 => {
-                    e.tag("country:AU");
-                    e.tag("au-state:AU");
-                }
-                8 if tz.region.contains("Perth") => {
-                    e.tag("country:AU");
-                    e.tag("au-state:WA");
-                }
-                9 if tz.region.contains("Darwin") => {
-                    e.tag("country:AU");
-                    e.tag("au-state:NT");
-                }
-                12 if tz.region.contains("New Zealand") => {
-                    e.tag("country:NZ");
-                }
-                _ => {}
+            for e in entities_for_inference(&tz, hours.len(), &ctx.scan_id) {
+                result.push(e);
             }
-            e.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!(
-                        "Activity clustering suggests UTC{:+} ({})",
-                        tz.utc_offset, tz.region
-                    ),
-                )
-                .with_attr("utc_offset", tz.utc_offset.to_string())
-                .with_attr("sample_count", hours.len().to_string())
-                .with_attr("concentration", format!("{:.0}%", tz.concentration * 100.0)),
-            );
-            if let Some((lat, lon)) = crate::util::city_coords::city_coords(tz.region) {
-                let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(
-                    EntityKind::Coordinates,
-                    &coord_val,
-                    tz.confidence - 0.10,
-                    &ctx.scan_id,
-                );
-                c.tag("addr-derived");
-                c.tag("geoint");
-                c.tag("timezone-inferred");
-                c.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!("Geocode of timezone-inferred region '{}'", tz.region),
-                    )
-                    .with_attr("utc_offset", tz.utc_offset.to_string()),
-                );
-                result.push(c);
-            }
-            result.push(e);
         }
 
         Ok(result)
     }
+}
+
+/// Build the Address (+ optional derived Coordinates) entities for a resolved
+/// [`TimezoneInference`] — pulled out of [`Module::process`] so this
+/// entity-construction logic is directly unit-testable without going through
+/// [`extract_hours_from_value`]'s digit-window parsing, and so the two
+/// entities' tagging can't silently diverge from each other again (see
+/// `coordinates_entity_carries_the_same_jurisdiction_tag_as_the_address_entity`
+/// in the tests below — the Coordinates entity used to be built here without
+/// the AU/NZ jurisdiction tag the Address entity got).
+fn entities_for_inference(
+    tz: &TimezoneInference,
+    sample_count: usize,
+    scan_id: &str,
+) -> Vec<Entity> {
+    let mut entities = Vec::with_capacity(2);
+
+    let mut e = Entity::new(EntityKind::Address, tz.region, tz.confidence, scan_id);
+    e.tag("geoint");
+    e.tag(crate::core::tags::COARSE);
+    e.tag("timezone-inferred");
+    // Tag AU/NZ jurisdiction so the AU-056 cross-check can use it.
+    tag_timezone_jurisdiction(&mut e, tz.utc_offset, tz.region);
+    e.add_evidence(
+        Evidence::new(
+            SRC,
+            format!(
+                "Activity clustering suggests UTC{:+} ({})",
+                tz.utc_offset, tz.region
+            ),
+        )
+        .with_attr("utc_offset", tz.utc_offset.to_string())
+        .with_attr("sample_count", sample_count.to_string())
+        .with_attr("concentration", format!("{:.0}%", tz.concentration * 100.0)),
+    );
+
+    if let Some((lat, lon)) = crate::util::city_coords::city_coords(tz.region) {
+        let coord_val = format!("{lat:.4},{lon:.4}");
+        let mut c = Entity::new(
+            EntityKind::Coordinates,
+            &coord_val,
+            confidence::derived_from(tz.confidence),
+            scan_id,
+        );
+        c.tag("addr-derived");
+        c.tag("geoint");
+        c.tag("timezone-inferred");
+        // Same jurisdiction signal as the Address entity `e` above — the
+        // AU-056 cross-check reads `au-state:`/`country:` tags off
+        // Coordinates entities specifically, so without this the derived
+        // coordinate carries no jurisdiction even though the module just
+        // inferred one.
+        tag_timezone_jurisdiction(&mut c, tz.utc_offset, tz.region);
+        c.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("Geocode of timezone-inferred region '{}'", tz.region),
+            )
+            .with_attr("utc_offset", tz.utc_offset.to_string()),
+        );
+        entities.push(c);
+    }
+
+    entities.push(e);
+    entities
 }
 
 struct TimezoneInference {
@@ -186,7 +199,7 @@ fn infer_timezone(hours: &[u32]) -> Option<TimezoneInference> {
     Some(TimezoneInference {
         utc_offset: best_offset,
         region,
-        confidence: confidence.min(0.60),
+        confidence: confidence.min(confidence::MEDIUM_PLUS),
         concentration,
     })
 }
@@ -205,9 +218,34 @@ fn offset_to_region(offset: i32) -> &'static str {
         5 => "South Asia (Pakistan)",
         8 => "East Asia (China/Singapore/Perth)",
         9 => "East Asia (Japan/Korea)",
-        10 => "Australia Eastern (Sydney/Melbourne)",
+        10 | 11 => "Australia Eastern (Sydney/Melbourne)",
         12 => "Pacific (New Zealand)",
         _ => "Unknown timezone region",
+    }
+}
+
+/// Attach an AU/NZ jurisdiction tag for a timezone inference, but only where a
+/// bare integer UTC offset can actually support the claim.
+///
+/// UTC+10/+11 is characteristically AU-eastern (AEST/AEDT), and UTC+12's
+/// dominant/representative country is New Zealand — those claims are sound. A
+/// bare +8/+9 offset CANNOT: UTC+8 is dominated by China/Singapore/Malaysia/
+/// Taiwan (~1.4B) with Perth (~2M) a tiny minority the hour histogram cannot
+/// single out, and Darwin is actually UTC+9:30 (unrepresentable in an
+/// integer-hour histogram) while UTC+9 is Japan/Korea. Tagging every +8 subject
+/// `country:AU`/`au-state:WA` (or +9 → NT) would fabricate an Australian
+/// jurisdiction the data does not support, so those offsets get no AU tag. Pure,
+/// so the jurisdiction logic is unit-testable.
+fn tag_timezone_jurisdiction(e: &mut Entity, utc_offset: i32, region: &str) {
+    match utc_offset {
+        10 | 11 => {
+            e.tag("country:AU");
+            e.tag("au-state:AU");
+        }
+        12 if region.contains("New Zealand") => {
+            e.tag("country:NZ");
+        }
+        _ => {}
     }
 }
 

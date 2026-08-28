@@ -1,9 +1,18 @@
 //! ZoomEye — internet-wide host/service search engine (Shodan/Censys-class).
 //! Key-gated; requires `HUNTSMAN_ZOOMEYE_KEY`.
 //!
-//! Endpoint: `GET https://api.zoomeye.org/host/search?query={dork}&page=1`
+//! Endpoint: `GET https://api.zoomeye.ai/host/search?query={dork}&page=1`
 //! Auth:     `API-KEY: {key}` request header (per ZoomEye docs / the service def
 //! the key-probe already validates against `…/resources-info`).
+//!
+//! ZoomEye splits its service by region: `api.zoomeye.org` (mainland-China-
+//! facing, vendor SDK: `knownsec/ZoomEye-*`) and `api.zoomeye.ai`
+//! (international, vendor SDK: `zoomeye-ai/ZoomEye-*`, docs at
+//! `zoomeye.ai/doc`) — a request to the wrong one for the caller's region gets
+//! a "service not available in your area" response rather than a normal
+//! auth/quota error. `.ai` is the default here since this is not a mainland-
+//! China-targeted tool; override with `HUNTSMAN_ZOOMEYE_BASE` (validated by
+//! [`crate::util::endpoint_override`]) for an operator who needs `.org`.
 //!
 //! Given an IP it dorks `ip:{ip}`; given a domain, `hostname:{domain}` (the hosts
 //! ZoomEye has indexed serving that name). Each match carries `portinfo` (the open
@@ -29,16 +38,19 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::RequestBuilderExt;
-use crate::util::http::{handle_keyed_error, json_decode, urlencode};
+use crate::util::http::{json_decode, urlencode};
 
 const KEY_ENV: &str = "HUNTSMAN_ZOOMEYE_KEY";
 const SRC: &str = "zoomeye";
+/// International endpoint (see module docs for the mainland-China/`.org` split).
+/// Override with `HUNTSMAN_ZOOMEYE_BASE`.
+const DEFAULT_BASE: &str = "https://api.zoomeye.ai/host/search";
 /// Cap matches processed — a broad dork can return thousands of hosts.
 const MAX_MATCHES: usize = 50;
 /// Cap distinct exposed ports tagged onto the seed IP.
@@ -48,32 +60,59 @@ const MAX_IPS: usize = 32;
 
 #[derive(Deserialize, Default)]
 struct ZoomResp {
-    /// ZoomEye signals an auth/quota failure as a plain HTTP 200 whose body
-    /// is `{"error": …}` with no `matches` key — every other field is
-    /// naturally absent (`#[serde(default)]`) on this shape, so checking
-    /// `error.is_some()` right after a successful deserialize is the only
-    /// way to detect it (see `process`).
-    #[serde(default)]
-    error: Option<String>,
     /// ZoomEye returns `matches` on success; an auth/quota error returns a
     /// `{"error": …}` body with no matches, which deserialises to empty here.
     #[serde(default)]
     matches: Vec<Value>,
-    /// ZoomEye's own total-hit count for the dork — the true universe (a
-    /// broad dork can index thousands of hosts), independent of both the
-    /// single page=1 fetch and the client-side [`MAX_MATCHES`] cap.
-    #[serde(default)]
-    total: u64,
 }
 
-/// Check a ZoomEye response for a body-level auth/quota error — a real
-/// failure the server signaled inside an otherwise-200 body, never a
-/// legitimate "nothing indexed" negative (which has no `error` key at all).
-/// Pure — unit-tested directly without live network.
-fn check_zoomeye_error(body: &ZoomResp) -> Result<()> {
-    match &body.error {
-        Some(msg) => Err(Error::module(SRC, format!("ZoomEye API error: {msg}"))),
-        None => Ok(()),
+/// Build the ZoomEye selector dork for a target — `ip:{ip}` or
+/// `hostname:{domain}` — or `None` when the target can't address one.
+///
+/// # Why this validates rather than escapes
+///
+/// The whole dork is URL-encoded for transport (`urlencode(&dork)` at the
+/// call site), but that only protects the HTTP query string — ZoomEye's own
+/// server decodes it back to plain text before its dork parser ever sees it.
+/// Unlike [`crate::modules::fofa::fofa_filter`]'s `field="value"` shape,
+/// ZoomEye's `field:value` dork has no quoting to escape a value into: a
+/// value containing whitespace or a second `:` would simply read as
+/// additional dork tokens once decoded server-side (ZoomEye's own docs
+/// describe space-separated `field:value` terms), the same class of
+/// query-injection FOFA's quoted filter was fixed against, just with no
+/// escape sequence available for this grammar.
+///
+/// So this validates instead of escaping — reachable via the same
+/// unvalidated-pivot-target path documented on `fofa_filter` (a Domain/IP
+/// entity minted straight from a provider's own response, e.g. this
+/// module's own `geoinfo`/hostname fields, then pivoted into a `Target`
+/// without going through [`Target::validate`](crate::core::scan::Target::validate)):
+///
+/// - `IpAddress` is parsed through [`std::net::IpAddr`] and the **parsed,
+///   reformatted** address is used — not the raw string — so even a
+///   technically-parseable-but-unusual representation is canonicalized
+///   before it reaches the dork. A real parser rather than a character-class
+///   check, consistent with how the standalone IPv4/IPv6 extractors validate.
+/// - `Domain` is checked against the exact ASCII alphanumeric/`.`/`-`/`_`
+///   class [`Target::validate`] already enforces for a *seed* Domain — a
+///   pivot value failing that same class is exactly the malformed/malicious
+///   case to reject, not the ordinary case to accept.
+#[must_use]
+fn zoomeye_dork(target: &Target) -> Option<String> {
+    match target.kind {
+        TargetKind::IpAddress => {
+            let addr: std::net::IpAddr = target.value.trim().parse().ok()?;
+            Some(format!("ip:{addr}"))
+        }
+        TargetKind::Domain => {
+            let domain = target.value.trim();
+            let valid = !domain.is_empty()
+                && domain
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_');
+            valid.then(|| format!("hostname:{domain}"))
+        }
+        _ => None,
     }
 }
 
@@ -86,7 +125,7 @@ impl Module for ZoomEye {
     }
 
     fn description(&self) -> &'static str {
-        "ZoomEye host/service search: exposed ports, banners, geoloc, ASN/operator for an IP or domain (key-gated)"
+        "ZoomEye host/service recon — enumerates exposed ports, banners, geoloc, and ASN/operator for an IP or domain (key-gated)"
     }
 
     fn priority(&self) -> u8 {
@@ -130,64 +169,34 @@ impl Module for ZoomEye {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) {
+        let initial_key = match ctx.key_opt(KEY_ENV) {
             Some(v) => v,
             None => return Ok(ModuleResult::new()),
         };
 
         let value = target.value.trim();
-        if value.is_empty() {
+        let Some(dork) = zoomeye_dork(target) else {
             return Ok(ModuleResult::new());
-        }
-        // The selector dork: an IP is queried verbatim; a domain is queried by
-        // hostname so ZoomEye returns the hosts it has indexed for that name.
-        let dork = match target.kind {
-            TargetKind::IpAddress => format!("ip:{value}"),
-            TargetKind::Domain => format!("hostname:{value}"),
-            _ => return Ok(ModuleResult::new()),
         };
-        let url = format!(
-            "https://api.zoomeye.org/host/search?query={}&page=1",
-            urlencode(&dork)
-        );
+        let base = crate::util::endpoint_override::resolve("HUNTSMAN_ZOOMEYE_BASE", DEFAULT_BASE);
+        let url = format!("{base}?query={}&page=1", urlencode(&dork));
 
-        let mut retries = 2u8;
-        let body: ZoomResp = loop {
-            if ctx.cancel.is_cancelled() {
-                return Ok(ModuleResult::new());
-            }
-            let resp = ctx
-                .http
+        // Key cascade via the shared primitive: on a terminal key quota/auth
+        // failure, rotate to the next untried usable pooled key so one call
+        // spends every credential the pool holds. `absent_statuses: &[404]` —
+        // 404 means nothing indexed for this selector, a clean miss rather than
+        // an error, exactly as this module treated it before.
+        let Some(resp) = crate::util::http::keyed_cascade(ctx, SRC, initial_key, &[404], |key| {
+            ctx.http
                 .get(&url)
                 .header("API-KEY", key)
                 .header("Accept", "application/json")
-                .send_tagged(SRC)
-                .await?;
-
-            let status = resp.status();
-            // 404 = nothing indexed for this selector — a clean miss, not an error.
-            if status.as_u16() == 404 {
-                return Ok(ModuleResult::new());
-            }
-            if !status.is_success() {
-                let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
-                    continue;
-                }
-                return Err(crate::util::http::http_status_error(SRC, resp).await);
-            }
-            break json_decode(SRC, resp).await?;
+        })
+        .await?
+        else {
+            return Ok(ModuleResult::new());
         };
-
-        // A 200 whose body is `{"error": …}` (auth/quota failure) must not
-        // read as a genuine "nothing indexed" clean miss — this file's own
-        // status-level auth handling above already burns the key and hard-
-        // errors for a literal 401/403 status, so the body-level equivalent
-        // gets the same treatment for consistency.
-        if body.error.is_some() {
-            crate::util::http::note_keyed_error(401, SRC, key, ctx);
-        }
-        check_zoomeye_error(&body)?;
+        let body: ZoomResp = json_decode(SRC, resp).await?;
 
         if body.matches.is_empty() {
             return Ok(ModuleResult::new());
@@ -215,8 +224,12 @@ impl Module for ZoomEye {
             if !skip_coords
                 && let Some((lat, lon)) = coords(m)
                 && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
-                && let Some(mut ce) =
-                    crate::util::geo::coarse_provider_coords(lat, lon, 0.55, &ctx.scan_id)
+                && let Some(mut ce) = crate::util::geo::coarse_provider_coords(
+                    lat,
+                    lon,
+                    confidence::MEDIUM_HIGH,
+                    &ctx.scan_id,
+                )
             {
                 if let Some(cc) = geo_country_code(m) {
                     ce.tag(format!("country:{}", cc.to_uppercase()));
@@ -229,7 +242,12 @@ impl Module for ZoomEye {
             if let Some(addr) = geo_address(m)
                 && seen.insert(format!("@addr:{}", addr.to_lowercase()))
             {
-                let mut ae = Entity::new(EntityKind::Address, &addr, 0.55, &ctx.scan_id);
+                let mut ae = Entity::new(
+                    EntityKind::Address,
+                    &addr,
+                    confidence::MEDIUM_HIGH,
+                    &ctx.scan_id,
+                );
                 ae.tag(crate::core::tags::GEOINT);
                 ae.add_evidence(ev());
                 result.push(ae);
@@ -239,14 +257,20 @@ impl Module for ZoomEye {
             if let Some(asn) = geo_asn(m)
                 && seen.insert(asn.to_lowercase())
             {
-                let mut ae = Entity::new(EntityKind::Asn, &asn, 0.75, &ctx.scan_id);
+                let mut ae =
+                    Entity::new(EntityKind::Asn, &asn, confidence::VERY_HIGH, &ctx.scan_id);
                 ae.add_evidence(ev());
                 result.push(ae);
             }
             if let Some(org) = geo_org(m).filter(|o| o.len() >= 3)
                 && seen.insert(format!("@org:{}", org.to_lowercase()))
             {
-                let mut oe = Entity::new(EntityKind::Organisation, &org, 0.55, &ctx.scan_id);
+                let mut oe = Entity::new(
+                    EntityKind::Organisation,
+                    &org,
+                    confidence::MEDIUM_HIGH,
+                    &ctx.scan_id,
+                );
                 oe.add_evidence(ev());
                 result.push(oe);
             }
@@ -269,7 +293,12 @@ impl Module for ZoomEye {
                 && ip != value
                 && seen.insert(format!("@ip:{ip}"))
             {
-                let mut ie = Entity::new(EntityKind::IpAddress, &ip, 0.70, &ctx.scan_id);
+                let mut ie = Entity::new(
+                    EntityKind::IpAddress,
+                    &ip,
+                    confidence::HIGH_PLUS,
+                    &ctx.scan_id,
+                );
                 ie.tag(SRC);
                 ie.add_evidence(ev());
                 result.push(ie);
@@ -277,71 +306,27 @@ impl Module for ZoomEye {
             }
         }
 
-        // ZoomEye's own `total` hit count vs. what this single page=1 fetch
-        // actually processed. A broad dork can index thousands of hosts, and
-        // `total` can exceed both the page size and MAX_MATCHES — signaling
-        // this requires a seed entity to exist even when there's no port
-        // surface to report (the domain-dork case never had one at all).
-        let shown = body.matches.len().min(MAX_MATCHES);
-        let capped = body.total as usize > shown;
-
-        // For an IP target, fold the exposed service surface onto the seed
-        // entity — created whenever there's a port surface to report OR the
-        // dork was truncated, so the truncation signal is never dropped.
-        if matches!(target.kind, TargetKind::IpAddress) && (!ports.is_empty() || capped) {
-            let mut e = target.to_entity(0.60, &ctx.scan_id);
+        // For an IP target, fold the exposed service surface onto the seed entity.
+        if matches!(target.kind, TargetKind::IpAddress) && !ports.is_empty() {
+            let mut e = target.to_entity(confidence::MEDIUM_PLUS, &ctx.scan_id);
             e.tag(SRC);
             for label in &ports {
                 e.tag(format!("port:{label}"));
             }
-            if !ports.is_empty() {
-                let mut ev =
-                    Evidence::new(SRC, format!("ZoomEye: {} exposed service(s)", ports.len()))
-                        .with_attr("ports", ports.join(", "));
-                if !port_details.is_empty() {
-                    // Full-fidelity policy (mirrors `webserver_banner`): a
-                    // detected app/banner reaches the operator verbatim, paired
-                    // with its port label so it stays traceable to one service.
-                    ev = ev.with_attr("service_details", port_details.join("; "));
-                }
-                e.add_evidence(ev);
+            let mut ev = Evidence::new(SRC, format!("ZoomEye: {} exposed service(s)", ports.len()))
+                .with_attr("ports", ports.join(", "));
+            if !port_details.is_empty() {
+                // Full-fidelity policy (mirrors `webserver_banner`): a
+                // detected app/banner reaches the operator verbatim, paired
+                // with its port label so it stays traceable to one service.
+                ev = ev.with_attr("service_details", port_details.join("; "));
             }
-            mark_match_truncation(&mut e, body.total, shown);
-            result.push(e);
-        } else if matches!(target.kind, TargetKind::Domain) && capped {
-            // No dedicated seed entity exists for a domain dork otherwise —
-            // create one solely to carry the truncation signal.
-            let mut e = target.to_entity(0.50, &ctx.scan_id);
-            e.tag(SRC);
-            e.tag("search-result");
-            mark_match_truncation(&mut e, body.total, shown);
+            e.add_evidence(ev);
             result.push(e);
         }
 
         Ok(result)
     }
-}
-
-/// Signal on the seed entity when ZoomEye's own `total` hit count exceeds
-/// `shown` (what this single page=1 fetch actually processed, already capped
-/// at [`MAX_MATCHES`]). **Pure**. Always records the true `total` as evidence
-/// when it's known (`total > 0`) — even under the cap, transparency about the
-/// full universe is useful — but only tags `truncated` and sets
-/// `matches_capped` when the fetched set is genuinely a partial view.
-fn mark_match_truncation(entity: &mut Entity, total: u64, shown: usize) {
-    if total == 0 {
-        return;
-    }
-    let mut ev = Evidence::new(
-        SRC,
-        format!("ZoomEye reported {total} total match(es); {shown} processed"),
-    )
-    .with_attr("total_matches", total.to_string());
-    if total as usize > shown {
-        ev = ev.with_attr("matches_capped", "true");
-        entity.tag("truncated");
-    }
-    entity.add_evidence(ev);
 }
 
 /// A trimmed, non-empty string field at the top level of a match document.

@@ -148,6 +148,68 @@ fn single_success_resets_failure_counter_while_closed() {
     );
 }
 
+#[test]
+fn rate_limited_opens_on_the_first_hit_unlike_a_5xx() {
+    // A 5xx is a guess about health and needs FAILURE_THRESHOLD of them to trip.
+    // A 429 is the server stating its own contract, so ONE opens the breaker —
+    // the distinction that stops a per-target loop from re-asking a server that
+    // already said "not now" (the observed WiGLE 429 storm).
+    let mut b = Breaker::new();
+    b.on_rate_limited(T0, 60);
+    assert_eq!(b.state(), BreakerState::Open);
+    assert!(!b.allow(T0), "a single 429 short-circuits the next request");
+}
+
+#[test]
+fn rate_limited_backs_off_for_the_server_requested_window() {
+    // Deliberately NOT COOLDOWN_SECS: the assertions below only prove the
+    // server's own window is honoured if it differs from the local default.
+    const SERVER_WINDOW: u64 = 90;
+    assert_ne!(
+        SERVER_WINDOW, COOLDOWN_SECS,
+        "test is only meaningful if the server window differs from the local default"
+    );
+
+    let mut b = Breaker::new();
+    b.on_rate_limited(T0, SERVER_WINDOW);
+    // Short-circuited for the whole window the server asked for — including
+    // past the point the local default would have released it.
+    assert!(!b.allow(T0 + COOLDOWN_SECS), "must not release on the local default");
+    assert!(
+        !b.allow(T0 + SERVER_WINDOW - 1),
+        "still backing off one second before the server's window closes"
+    );
+    // …then admits exactly one probe.
+    assert!(
+        b.allow(T0 + SERVER_WINDOW),
+        "probe admitted once the server's own window elapses"
+    );
+    assert_eq!(b.state(), BreakerState::HalfOpen);
+}
+
+#[test]
+fn rate_limited_floors_a_zero_window_at_one_second() {
+    // A `Retry-After: 0` (or a caller passing 0) must not produce an open breaker
+    // that admits traffic in the same second — that would defeat the back-off.
+    let mut b = Breaker::new();
+    b.on_rate_limited(T0, 0);
+    assert!(!b.allow(T0), "a zero window must still hold for its floored second");
+    assert!(b.allow(T0 + 1), "and release one second later");
+}
+
+#[test]
+fn registry_rate_limited_backs_every_caller_off_the_host() {
+    let host = "cb-test-429.example";
+    // One caller sees a 429 with a 90s server window…
+    record_rate_limited(host, T0, 90);
+    // …and every other caller sharing the host is short-circuited for it, with no
+    // socket opened — the fix for eight consecutive 429 round-trips in one sweep.
+    assert!(!allow_host(host, T0), "the host is backed off after a single 429");
+    assert!(!allow_host(host, T0 + 89));
+    assert!(allow_host(host, T0 + 90), "released after the server's own window");
+    assert_eq!(host_state(host), Some(BreakerState::HalfOpen));
+}
+
 // ── Process-global registry free functions ────────────────────────────────────
 
 #[test]

@@ -1,5 +1,19 @@
 use super::*;
 
+    /// A pinned clock for the freshness tests, parsed with the module's own
+    /// [`parse_iso_epoch`] so the fixtures and the clock share one definition
+    /// of time.
+    ///
+    /// These tests assert a verdict that is *relative* to now, so they must
+    /// supply now rather than read it. Reading the real clock is what made
+    /// `fresh_compromise_gets_higher_confidence` fail on 2026-07-30: its
+    /// fixture was dated 2026-05-01 and simply aged out of the 90-day
+    /// [`FRESHNESS_WINDOW_DAYS`] window. Every fixture below is positioned
+    /// relative to this constant, so they stay valid indefinitely.
+    fn pinned_now() -> u64 {
+        parse_iso_epoch("2026-06-01T00:00:00Z").expect("pinned test clock must parse")
+    }
+
     #[test]
     fn accepts_only_email_and_domain() {
         let m = HudsonRock;
@@ -30,7 +44,7 @@ use super::*;
         let r = HudsonRock
             .process(&Target::new(TargetKind::Username, "javery88"), &ctx)
             .await
-            .unwrap();
+            .expect("should succeed");
         assert!(
             r.is_empty(),
             "username must not call the email-only endpoint"
@@ -56,7 +70,7 @@ use super::*;
                 &ctx,
             )
             .await
-            .unwrap();
+            .expect("should succeed");
         assert!(
             r.is_empty(),
             "an app package must not trigger a search-by-domain call"
@@ -75,8 +89,7 @@ use super::*;
             malware_path: None,
             credentials: vec![],
         };
-        let now = parse_iso_epoch("2026-07-15T00:00:00Z").unwrap();
-        assert!((compute_confidence(&[recent], now) - FRESH_CONFIDENCE).abs() < 1e-9);
+        assert!((compute_confidence(&[recent], pinned_now()) - FRESH_CONFIDENCE).abs() < 1e-9);
     }
 
     #[test]
@@ -91,8 +104,7 @@ use super::*;
             malware_path: None,
             credentials: vec![],
         };
-        let now = parse_iso_epoch("2026-08-27T00:00:00Z").unwrap();
-        assert!((compute_confidence(&[old], now) - BASE_CONFIDENCE).abs() < 1e-9);
+        assert!((compute_confidence(&[old], pinned_now()) - BASE_CONFIDENCE).abs() < 1e-9);
     }
 
     #[test]
@@ -150,6 +162,25 @@ use super::*;
     }
 
     #[test]
+    fn parse_iso_epoch_rejects_out_of_range_year_without_overflow() {
+        // `date_compromised` is an attacker-influenced breach-API field. An
+        // out-of-range year must be rejected as None, never reach days_from_civil
+        // (`era * 146097`, i64) or the `days * 86400` (u64) — which under the test
+        // profile's overflow-checks would PANIC (and in release wrap to a garbage
+        // epoch → a wrong freshness verdict). Pre-fix, the first assertion overflowed
+        // `days * 86400` and panicked here.
+        assert!(parse_iso_epoch("9999999999999-01-01").is_none());
+        assert!(parse_iso_epoch("999999999999999999-12-31T00:00:00Z").is_none());
+        assert!(parse_iso_epoch("3000-01-01").is_none(), "above the 2100 ceiling");
+        assert!(parse_iso_epoch("1999-12-31").is_none(), "below the 2000 floor");
+        // A year string so long it can't fit i64 is rejected at the parse step.
+        assert!(parse_iso_epoch("99999999999999999999-01-01").is_none());
+        // The realistic breach-compromise window still parses.
+        assert!(parse_iso_epoch("2000-01-01").is_some());
+        assert!(parse_iso_epoch("2100-12-31").is_some());
+    }
+
+    #[test]
     fn module_metadata_full() {
         let m = HudsonRock;
         assert_eq!(m.name(), "hudsonrock");
@@ -186,14 +217,12 @@ use super::*;
             malware_path: None,
             credentials: vec![],
         };
-        let now = parse_iso_epoch("2026-07-15T00:00:00Z").unwrap();
-        assert!((compute_confidence(&[old, recent], now) - FRESH_CONFIDENCE).abs() < 1e-9);
+        assert!((compute_confidence(&[old, recent], pinned_now()) - FRESH_CONFIDENCE).abs() < 1e-9);
     }
 
     #[test]
     fn compute_confidence_empty_yields_base() {
-        let now = parse_iso_epoch("2026-08-27T00:00:00Z").unwrap();
-        assert!((compute_confidence(&[], now) - BASE_CONFIDENCE).abs() < 1e-9);
+        assert!((compute_confidence(&[], pinned_now()) - BASE_CONFIDENCE).abs() < 1e-9);
     }
 
     #[test]
@@ -280,7 +309,7 @@ use super::*;
         let r = HudsonRock
             .process(&Target::new(TargetKind::Email, "notanemail"), &ctx)
             .await
-            .unwrap();
+            .expect("should succeed");
         assert!(
             r.is_empty(),
             "email without '@' must not fire the HTTP request"

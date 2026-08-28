@@ -13,11 +13,11 @@
  * mental model. The state machine, router, and API client are HSE-specific
  * and talk to /api/v1/* (see src/api/routes/mod.rs).
  * ═══════════════════════════════════════════════════════════════════════ */
-import { $, $$, esc } from '/static/js/helpers.js';
+import { $, $$, esc, initDownloads } from '/static/js/helpers.js';
 import { API } from '/static/js/api.js';
 import { S } from '/static/js/state.js';
 import { parseHash, nav } from '/static/js/router.js';
-import { clearLiveTimer, clearScanTimer, clearEnginesTimer } from '/static/js/timers.js';
+import { clearLiveTimer, clearScanTimer, clearEnginesTimer, clearOptsTimers, clearDebugLogTimer } from '/static/js/timers.js';
 import { applyTheme } from '/static/js/theme.js';
 import { renderDash } from '/static/js/views/dash.js';
 import { renderScans } from '/static/js/views/scans.js';
@@ -32,10 +32,11 @@ import { entityPivot, toggleDetail } from '/static/js/scan_info/browse.js';
 import { toggleCorrMembers, pivotToEntity } from '/static/js/scan_info/correlations.js';
 import { renderOpts, pollUpdateBadge } from '/static/js/views/opts.js';
 import { globalSearch, renderSearch } from '/static/js/views/search.js';
-import { renderEngines, refreshEngines } from '/static/js/views/engines.js';
-import { renderHarvest, refreshHarvest } from '/static/js/views/key_harvest.js';
-import { renderLive, closeLiveStream } from '/static/js/views/live.js';
-import { initCompatShims, initNavbarToggle, initModals } from '/static/js/ui.js';
+import { renderEngines, refreshEngines, runCapabilityProbe } from '/static/js/views/engines.js';
+import { renderHarvest, refreshHarvest, harvestPoolFilter, harvestPoolRoi, harvestPoolGroup, harvestPoolSort } from '/static/js/views/key_harvest.js';
+import { renderLive, closeLiveStream, saveLiveShown } from '/static/js/views/live.js';
+import { renderDebugLog } from '/static/js/views/debug_log.js';
+import { initCompatShims, initMoreSheet, initModals, initTableLabels } from '/static/js/ui.js';
 
 /* Installed at module-load time (before any view can run) so the
  * `alertify.*`/`jQuery(...).tablesorter(...)` call sites scattered across
@@ -69,9 +70,11 @@ export async function render(){
   clearLiveTimer();
   clearScanTimer();
   clearEnginesTimer();
+  clearOptsTimers();
+  clearDebugLogTimer();
   S.route = parseHash();
-  $$('#main-navbar-collapse li').forEach(li=>li.classList.remove('active'));
-  const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans', engines:'nav-engines', harvest:'nav-harvest'};
+  $$('#mainnav .navlink').forEach(a=>a.classList.remove('active'));
+  const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans', engines:'nav-engines', harvest:'nav-harvest', debuglog:'nav-debuglog'};
   const navEl = $('#'+navMap[S.route.name]); if (navEl) navEl.classList.add('active');
 
   const v = $('#view');
@@ -86,6 +89,7 @@ export async function render(){
     if (S.route.name==='live')     return await renderLive(v);
     if (S.route.name==='engines')  return await renderEngines(v);
     if (S.route.name==='harvest')  return await renderHarvest(v);
+    if (S.route.name==='debuglog') return await renderDebugLog(v);
     if (S.route.name==='diff')     return await renderDiff(v);
   } catch(e){
     v.innerHTML = `<div class="alert alert-danger"><strong>Error.</strong> ${esc(e.message)}
@@ -102,14 +106,17 @@ Object.assign(window, {
   render, nav, globalSearch, previewPlan, uploadDossier, autoInvestigate,
   autoQueuePreview, autoSweepGo, submitWizard, submitBatch, entityPivot,
   toggleDetail, toggleCorrMembers, pivotToEntity, refreshEngines,
-  closeLiveStream, refreshHarvest,
+  runCapabilityProbe, closeLiveStream, saveLiveShown, refreshHarvest,
+  harvestPoolFilter, harvestPoolRoi, harvestPoolGroup, harvestPoolSort,
 });
 
 /* ═══════════ Bootstrap ═══════════ */
 (async function init(){
   applyTheme();
-  initNavbarToggle();
+  initMoreSheet();
   initModals();
+  initTableLabels();
+  initDownloads();
   if (typeof alertify !== 'undefined') alertify.set('notifier','position','top-right');
   try {
     const h = await API.health();

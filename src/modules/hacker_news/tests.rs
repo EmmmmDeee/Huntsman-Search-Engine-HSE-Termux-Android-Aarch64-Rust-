@@ -24,13 +24,13 @@ fn deserializes_account_and_null() {
     let json = r#"{"id":"pg","created":1160418092,"karma":157222,
         "about":"Reach me at paul@example.com or https://paulgraham.com/",
         "submitted":[1,2,3]}"#;
-    let u: Option<HnUser> = serde_json::from_str(json).unwrap();
-    let u = u.unwrap();
+    let u: Option<HnUser> = serde_json::from_str(json).expect("should succeed");
+    let u = u.expect("should succeed");
     assert_eq!(u.id, "pg");
     assert_eq!(u.karma, Some(157222));
-    assert_eq!(u.submitted.as_ref().unwrap().len(), 3);
+    assert_eq!(u.submitted.as_ref().expect("should succeed").len(), 3);
     // The literal `null` (unknown handle) is a clean None.
-    let none: Option<HnUser> = serde_json::from_str("null").unwrap();
+    let none: Option<HnUser> = serde_json::from_str("null").expect("should succeed");
     assert!(none.is_none());
 }
 
@@ -39,12 +39,12 @@ fn bio_extracts_email_and_url() {
     use crate::util::extract::{EMAIL_RE, URL_RE};
     let about = "Contact: Paul@Example.com — site https://paulgraham.com/bio.html.";
     assert_eq!(
-        EMAIL_RE.find(about).unwrap().as_str().to_lowercase(),
+        EMAIL_RE.find(about).expect("should succeed").as_str().to_lowercase(),
         "paul@example.com"
     );
     let link = URL_RE
         .find(about)
-        .unwrap()
+        .expect("should succeed")
         .as_str()
         .trim_end_matches(['.', ',', ')']);
     assert_eq!(link, "https://paulgraham.com/bio.html");
@@ -88,6 +88,10 @@ fn build_entities_emits_username_with_metadata() {
     assert_eq!(u.kind, EntityKind::Username);
     assert_eq!(u.value, "pg");
     assert!(u.has_tag("hacker-news"));
+    // OD-21: a single-source confirmed-account lookup sits at HIGH_PLUSPLUS_PLUS
+    // (0.85), not VERY_HIGH_PLUS (0.90, which the ladder reserves for
+    // multi-source). Matches gitlab_user/gitea_user.
+    assert!((u.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
     let attr = |k: &str| u.evidence[0].attributes.get(k).map(String::as_str);
     assert_eq!(attr("profile_url"), Some("https://news.ycombinator.com/user?id=pg"));
     assert_eq!(attr("karma"), Some("42"));
@@ -120,7 +124,7 @@ fn build_entities_bio_email_emits_email_entity() {
     };
     let pool = crate::util::key_pool::global_pool();
     let ents = build_entities(u, "scan-3", &pool);
-    let email = ents.iter().find(|e| e.kind == EntityKind::Email).unwrap();
+    let email = ents.iter().find(|e| e.kind == EntityKind::Email).expect("should succeed");
     assert_eq!(email.value, "alice@example.com");
     assert!(email.has_tag("hacker-news") && email.has_tag("public-profile"));
 }
@@ -136,7 +140,7 @@ fn build_entities_bio_url_emits_url_entity_without_trailing_punct() {
     };
     let pool = crate::util::key_pool::global_pool();
     let ents = build_entities(u, "scan-4", &pool);
-    let url = ents.iter().find(|e| e.kind == EntityKind::Url).unwrap();
+    let url = ents.iter().find(|e| e.kind == EntityKind::Url).expect("should succeed");
     assert!(url.value.starts_with("https://"));
     assert!(!url.value.ends_with('.'), "trailing dot must be stripped");
     assert!(url.has_tag("personal-site"));
@@ -192,6 +196,58 @@ fn algolia_domain_entities_emits_all_distinct_domains_deterministically() {
             .all(|e| e.kind == EntityKind::Domain && e.has_tag("hn-submission")),
         "each is an hn-submission-tagged Domain"
     );
+}
+
+#[test]
+fn algolia_domain_entities_collapses_case_variant_hosts() {
+    // Regression: `extract_domain_from_url` used to be hand-rolled here and did
+    // NOT lowercase, so two submissions differing only in host case minted two
+    // distinct `Domain` entities that the caller's case-sensitive
+    // `sort_unstable()` + `dedup()` could not collapse. Routing through the
+    // shared `util::url_util::host_from_url` (which lowercases) makes them one.
+    let urls = [
+        "https://Example.com/a",
+        "https://example.com/b",
+        "https://EXAMPLE.COM/c",
+    ];
+    let body = format!(
+        "[{}]",
+        urls.iter()
+            .map(|u| format!(r#"{{"url":"{u}"}}"#))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+
+    let out = algolia_domain_entities(&body, "someuser", "s");
+    assert_eq!(
+        out.len(),
+        1,
+        "case-variant hosts are ONE domain, not three: {out:?}"
+    );
+    assert_eq!(out[0].value, "example.com", "emitted lowercased");
+}
+
+#[test]
+fn algolia_domain_entities_accepts_an_uppercase_scheme() {
+    // A scheme is case-insensitive (RFC 3986 §3.1), and the shared helper this
+    // delegates to treats it that way — so the local "is it absolute?" guard
+    // must too. A case-SENSITIVE guard silently dropped `HTTPS://…` links the
+    // helper would have parsed fine.
+    let body = r#"[{"url":"HTTPS://Example.com/a"},{"url":"HtTp://other.org/b"}]"#;
+    let out = algolia_domain_entities(body, "someuser", "s");
+    let vals: Vec<&str> = out.iter().map(|e| e.value.as_str()).collect();
+    assert_eq!(vals, vec!["example.com", "other.org"]);
+}
+
+#[test]
+fn algolia_domain_entities_drops_a_query_from_a_pathless_link() {
+    // The shared helper cuts the authority at `?`/`#` even with no path slash,
+    // so a bare submission link with a tracking query yields the host alone —
+    // not `example.com?utm=x` minted as a "domain".
+    let body = r#"[{"url":"https://example.com?utm_source=hn"}]"#;
+    let out = algolia_domain_entities(body, "someuser", "s");
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].value, "example.com");
 }
 
 #[test]

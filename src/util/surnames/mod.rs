@@ -209,9 +209,22 @@ pub fn surname_of(full_name: &str) -> Option<String> {
 /// True if `surname` is among the most common English / Australian family names —
 /// so a bare shared-surname match on it is weak evidence of kinship and should be
 /// corroborated by another angle. Case-insensitive; surrounding whitespace ignored.
+///
+/// Apostrophes are folded out before lookup because the table stores the
+/// Celtic-prefix names in their apostrophe-free form (`obrien`, `oneill`,
+/// `oconnor`), whereas [`surname_of`] — the sole feeder of this predicate —
+/// lower-cases without stripping punctuation. Without folding, `surname_of`'s
+/// `"o'connor"` never equalled the table's `"oconnor"`, so `O'Connor` / `O'Brien`
+/// / `O'Neill` were misclassified as distinctive and wrongly escalated a bare
+/// shared-surname co-residency to a Critical "likely relatives" signal. Both the
+/// ASCII apostrophe and the typographic `’` (common in scraped register text)
+/// are folded.
 #[must_use]
 pub fn is_common(surname: &str) -> bool {
-    let key = surname.trim().to_lowercase();
+    let key = surname
+        .trim()
+        .to_lowercase()
+        .replace(['\'', '\u{2019}'], "");
     COMMON_SURNAMES.contains(key.as_str())
 }
 

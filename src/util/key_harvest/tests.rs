@@ -9,7 +9,7 @@ use super::*;
 
 #[test]
 fn detects_xai_grok_token() {
-    let (svc, _) = identify_api_key("xai-abcdef1234567890abcdefg").unwrap();
+    let (svc, _) = identify_api_key("xai-abcdef1234567890abcdefg").expect("should succeed");
     assert_eq!(svc, "xai_grok");
 }
 
@@ -18,10 +18,11 @@ fn detects_openai_svcacct_and_admin() {
     // High-entropy alphanumeric suffix so the FP gate passes.
     let (svc, _) =
         identify_api_key("sk-svcacct-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6")
-            .unwrap();
+            .expect("should succeed");
     assert_eq!(svc, "openai_svc");
     let (svc, _) =
-        identify_api_key("sk-admin-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6").unwrap();
+        identify_api_key("sk-admin-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6")
+            .expect("should succeed");
     assert_eq!(svc, "openai_admin");
 }
 
@@ -73,12 +74,68 @@ fn detects_airtable_pat_with_dot_separator() {
 fn detects_twilio_api_sid_distinct_from_account_sid() {
     // SK + 32 hex chars = 34 total
     let candidate = "SKabcdef1234567890abcdef1234567890ab";
-    let (svc, _) = identify_api_key(candidate).unwrap();
+    let (svc, _) = identify_api_key(candidate).expect("should succeed");
     assert_eq!(svc, "twilio_api_sid");
     // AC prefix already covered (account SID — same shape)
     let candidate = "ACabcdef1234567890abcdef1234567890ab";
-    let (svc, _) = identify_api_key(candidate).unwrap();
+    let (svc, _) = identify_api_key(candidate).expect("should succeed");
     assert_eq!(svc, "twilio");
+}
+
+#[test]
+fn twilio_sid_requires_a_hex_body_not_just_the_prefix() {
+    // A real Twilio SID is `AC`/`SK` + 32 HEX chars — the `SK` entry's own
+    // comment says so. The flat prefix+min_len table cannot enforce the hex
+    // body, so any high-entropy base64 token of the right length starting with
+    // those two bytes was misreported as a leaked Twilio credential — a
+    // false-positive exposure with HIGH_PLUSPLUS confidence, exactly the noise
+    // an operator's revoke-first ordering must not carry.
+    //
+    // These bodies contain non-hex letters (K, Z, Q, X, …) so they are NOT valid
+    // SIDs, yet each is 36 chars (>= min_len 34) and passes the entropy gate.
+    for candidate in [
+        "ACg7KZ2pQvXwTmBnRsLxjHqdFyCzeWkVpQ8r",
+        "SKg7KZ2pQvXwTmBnRsLxjHqdFyCzeWkVpQ8r",
+    ] {
+        assert!(
+            !matches!(
+                identify_api_key(candidate),
+                Some(("twilio" | "twilio_api_sid", _))
+            ),
+            "a non-hex body must not be classified as a Twilio SID: {candidate:?} -> {:?}",
+            identify_api_key(candidate)
+        );
+    }
+    // Real hex-bodied SIDs must still classify (regression guard).
+    assert_eq!(
+        identify_api_key("ACabcdef1234567890abcdef1234567890ab").map(|(s, _)| s),
+        Some("twilio")
+    );
+    assert_eq!(
+        identify_api_key("SKabcdef1234567890abcdef1234567890ab").map(|(s, _)| s),
+        Some("twilio_api_sid")
+    );
+}
+
+#[test]
+fn discord_token_requires_the_dotted_segment_structure() {
+    // A Discord bot token is `base64url(id).base64url(ts).base64url(hmac)` —
+    // three dot-separated segments. The `MT`/`ODk` entries match on two/three
+    // bytes plus min_len alone, so a dot-less base64 blob starting with those
+    // very common base64 bytes was misreported as a leaked Discord bot token.
+    for candidate in [
+        "MTg7KZ2pQvXwTmBnRsLxjHqdFyCzeWkVpQ8rT4uY6iO2aS5dG1hJ3kL",
+        "ODkg7KZ2pQvXwTmBnRsLxjHqdFyCzeWkVpQ8rT4uY6iO2aS5dG1hJ3",
+    ] {
+        assert!(
+            !matches!(identify_api_key(candidate), Some(("discord_bot", _))),
+            "a dot-less blob must not be classified as a Discord token: {candidate:?} -> {:?}",
+            identify_api_key(candidate)
+        );
+    }
+    // A real three-segment token must still classify (regression guard).
+    let real = "MTIzNDU2Nzg5MDEyMzQ1Njc4.GhIjKl.mNoPqRsTuVwXyZ0123456789abcdefgh";
+    assert_eq!(identify_api_key(real).map(|(s, _)| s), Some("discord_bot"));
 }
 
 // ── False-positive gate ───────────────────────────────────────
@@ -161,7 +218,7 @@ fn identify_api_key_rejects_uuid_unless_prefix_matches() {
 fn identify_api_key_still_accepts_real_high_entropy_key() {
     // Real-shape AWS key with high entropy + no exclusion words.
     let candidate = "AKIAJK28SLQQV61MNG9X";
-    let (svc, _) = identify_api_key(candidate).unwrap();
+    let (svc, _) = identify_api_key(candidate).expect("should succeed");
     assert_eq!(svc, "aws");
 }
 
@@ -192,12 +249,32 @@ const SUFFIX: &str = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6A1b2C3
 fn synthesise_for(prefix: &str, min_len: usize) -> String {
     let needed = min_len.saturating_sub(prefix.len());
     // Pad from SUFFIX, repeating if needed (alphanumeric → entropy stays high).
-    let mut suffix = String::with_capacity(needed);
-    while suffix.len() < needed {
-        let take = (needed - suffix.len()).min(SUFFIX.len());
-        suffix.push_str(&SUFFIX[..take]);
+    let pad = |n: usize| -> String {
+        let mut s = String::with_capacity(n);
+        while s.len() < n {
+            let take = (n - s.len()).min(SUFFIX.len());
+            s.push_str(&SUFFIX[..take]);
+        }
+        s
+    };
+    // A handful of short prefixes carry a mandatory body shape (see
+    // `patterns::body_shape_ok`); a synthetic sample must respect it or the
+    // classifier — correctly — refuses to round-trip it.
+    match prefix {
+        // Twilio SIDs: `AC`/`SK` + hex body.
+        "AC" | "SK" => {
+            const HEX: &str = "0123456789abcdef0123456789abcdef0123456789abcdef";
+            let body = &HEX[..needed.min(HEX.len()).max(1)];
+            format!("{prefix}{body}")
+        }
+        // Discord tokens: three non-empty base64url segments. Split the padding
+        // across the segments so the total still clears min_len.
+        "MT" | "ODk" => {
+            let seg = pad((needed / 3).max(4));
+            format!("{prefix}{seg}.{seg}.{seg}")
+        }
+        _ => format!("{prefix}{}", pad(needed)),
     }
-    format!("{prefix}{suffix}")
 }
 
 #[test]
@@ -487,14 +564,14 @@ fn service_domain_table_has_no_shadowed_entries() {
 fn generic_hex_32_is_detected_with_correct_service_tag() {
     // 32 lowercase hex with sufficient entropy → generic_hex
     let candidate = "a1b2c3d4e5f60718a9b0c1d2e3f40516";
-    let (svc, _) = identify_api_key(candidate).unwrap();
+    let (svc, _) = identify_api_key(candidate).expect("should succeed");
     assert_eq!(svc, "generic_hex");
 }
 
 #[test]
 fn generic_hex_64_is_detected() {
     let candidate = "a1b2c3d4e5f60718a9b0c1d2e3f40516fafbfcfdfe0102030405060708090a0b";
-    let (svc, _) = identify_api_key(candidate).unwrap();
+    let (svc, _) = identify_api_key(candidate).expect("should succeed");
     assert_eq!(svc, "generic_hex");
 }
 
@@ -510,7 +587,7 @@ fn generic_hex_rejected_when_too_long_or_short() {
 fn url_query_param_with_embedded_key_resolves() {
     // The detector's URL-param fallback extracts ?key=VALUE.
     let candidate = "https://api.shodan.io/host/8.8.8.8?key=A1b2C3d4E5f6G7h8I9j0K1l2";
-    let (svc, _) = identify_api_key(candidate).unwrap();
+    let (svc, _) = identify_api_key(candidate).expect("should succeed");
     // VALUE doesn't match a prefix but does pass the
     // url_param_key fallback (≥20 alnum/-/_).
     assert!(svc == "url_param_key" || svc != "unknown");
@@ -519,14 +596,14 @@ fn url_query_param_with_embedded_key_resolves() {
 #[test]
 fn url_query_param_with_known_prefix_resolves_to_specific_service() {
     let candidate = "https://api.example.com/v1?api_key=AKIAJK28SLQQV61MNG9X";
-    let (svc, _) = identify_api_key(candidate).unwrap();
+    let (svc, _) = identify_api_key(candidate).expect("should succeed");
     assert_eq!(svc, "aws");
 }
 
 #[test]
 fn user_password_format_splits_and_scans_password_half() {
     let candidate = "admin@example.com:AKIAJK28SLQQV61MNG9X";
-    let (svc, _) = identify_api_key(candidate).unwrap();
+    let (svc, _) = identify_api_key(candidate).expect("should succeed");
     assert_eq!(svc, "aws");
 }
 
@@ -633,6 +710,141 @@ fn md5_password_hash_is_not_emitted_as_an_api_key() {
     let (mut seen, mut result) = empty_state();
     extract_api_keys_from_item(&item, "scan", "oathnet_pro", &mut seen, &mut result);
     assert!(result.entities.iter().any(|e| e.kind == EntityKind::ApiKey));
+}
+
+// ─── store_api_credential ──────────────────────────────────────
+
+#[test]
+fn store_api_credential_reports_a_finding_instead_of_pooling_it() {
+    // Regression: this used to silently write the password straight into the
+    // shared, cross-scan key pool for later automatic reuse against the live
+    // service (`hse keys validate`) — no visible finding, no operator
+    // decision point. It must now surface as a plain Credential entity the
+    // operator can review, and touch nothing pool-related.
+    let item = serde_json::json!({
+        "url": "https://api.shodan.io/shodan/host/1.1.1.1",
+        "username": "victim@example.com",
+        "password": "hunter2-leaked",
+    });
+    let (mut seen, mut result) = empty_state();
+    store_api_credential(&item, "oathnet_pro", "test-scan", &mut seen, &mut result);
+
+    assert_eq!(
+        result.entities.len(),
+        1,
+        "expected exactly one finding, got {:?}",
+        result.entities
+    );
+    let cred = &result.entities[0];
+    assert_eq!(cred.kind, EntityKind::Credential);
+    assert_eq!(cred.value, "hunter2-leaked");
+    assert!(cred.has_tag("service:shodan"), "tags: {:?}", cred.tags);
+    assert!(cred.has_tag("stealer-credential"));
+    assert!(cred.has_tag("oathnet-pro"));
+}
+
+#[test]
+fn store_api_credential_dedups_the_same_service_and_password() {
+    let item = serde_json::json!({
+        "url": "https://api.shodan.io/shodan/host/1.1.1.1",
+        "username": "victim@example.com",
+        "password": "hunter2-leaked",
+    });
+    let (mut seen, mut result) = empty_state();
+    store_api_credential(&item, "oathnet_pro", "test-scan", &mut seen, &mut result);
+    store_api_credential(&item, "oathnet_pro", "test-scan", &mut seen, &mut result);
+    assert_eq!(
+        result.entities.len(),
+        1,
+        "duplicate row must not double-emit"
+    );
+}
+
+#[test]
+fn store_api_credential_ignores_unrecognised_services_and_empty_or_placeholder_passwords() {
+    let (mut seen, mut result) = empty_state();
+    for item in [
+        serde_json::json!({ "url": "https://not-a-real-service.example", "password": "x" }),
+        serde_json::json!({ "url": "https://api.shodan.io/host", "password": "" }),
+        serde_json::json!({ "url": "https://api.shodan.io/host", "password": "***" }),
+        serde_json::json!({ "url": "https://api.shodan.io/host", "password": "UPGRADE to see this" }),
+        serde_json::json!({}),
+    ] {
+        store_api_credential(&item, "oathnet_pro", "test-scan", &mut seen, &mut result);
+    }
+    assert!(result.entities.is_empty(), "got {:?}", result.entities);
+}
+
+#[test]
+fn store_api_credential_flags_osint_provider_login_as_practitioner() {
+    // A leaked *login* (not an API key) to an OSINT provider is a first-class
+    // practitioner signal: the record's URL host attributes it to Dehashed, so the
+    // Credential must carry the same `osint-practitioner` + `osint-category` tags
+    // the ApiKey path stamps — that is what feeds the AU-096 correlation for the
+    // ~100 providers reachable only through the domain table.
+    let item = serde_json::json!({
+        "url": "https://app.dehashed.com/login",
+        "username": "operator@example.com",
+        "password": "s3kritDehashedPassw0rd",
+    });
+    let (mut seen, mut result) = empty_state();
+    store_api_credential(&item, "oathnet_pro", "test-scan", &mut seen, &mut result);
+    assert_eq!(result.entities.len(), 1, "got {:?}", result.entities);
+    let cred = &result.entities[0];
+    assert_eq!(cred.kind, EntityKind::Credential);
+    assert!(cred.has_tag("service:dehashed"), "tags: {:?}", cred.tags);
+    assert!(
+        cred.has_tag("osint-practitioner"),
+        "a leaked OSINT-provider login flags its holder a practitioner: {:?}",
+        cred.tags
+    );
+    assert!(
+        cred.has_tag("osint-category:breach-leak"),
+        "tags: {:?}",
+        cred.tags
+    );
+}
+
+#[test]
+fn store_api_credential_does_not_flag_non_osint_service_login() {
+    // A leaked login to generic infra (GitLab) is still a credential finding, but
+    // NOT an OSINT-practitioner signal — the pivot must fire only for recon/breach/
+    // threat-intel providers, exactly mirroring `osint_category` returning `None`.
+    let item = serde_json::json!({
+        "url": "https://gitlab.com/users/sign_in",
+        "username": "dev@example.com",
+        "password": "gitlabPassw0rd123",
+    });
+    let (mut seen, mut result) = empty_state();
+    store_api_credential(&item, "oathnet_pro", "test-scan", &mut seen, &mut result);
+    assert_eq!(result.entities.len(), 1, "got {:?}", result.entities);
+    let cred = &result.entities[0];
+    assert!(cred.has_tag("service:gitlab"), "tags: {:?}", cred.tags);
+    assert!(
+        !cred.has_tag("osint-practitioner"),
+        "generic infra login must not be flagged OSINT: {:?}",
+        cred.tags
+    );
+}
+
+#[test]
+fn osint_keys_providers_are_all_classified() {
+    // Invariant (defect-class elimination): every provider in the dedicated
+    // context-attributed OSINT-key table IS, by definition, an OSINT provider, so
+    // each must resolve to a category in `osint_providers`. Without this, adding a
+    // provider to `OSINT_PROVIDERS` while forgetting to classify it would silently
+    // break the practitioner pivot for that provider — the key would be banked but
+    // never flagged `osint-practitioner`. Lock it here so the omission fails the
+    // build instead of shipping a silent miss.
+    for p in osint_keys::OSINT_PROVIDERS {
+        assert!(
+            crate::util::osint_providers::osint_category(p.service).is_some(),
+            "OSINT_PROVIDERS service `{}` is not classified in \
+             osint_providers::OSINT_SERVICES — the practitioner pivot would silently \
+             miss it",
+            p.service
+        );
+    }
 }
 
 #[test]
@@ -887,7 +1099,7 @@ fn extract_from_username_when_log_misformatted() {
 fn detects_btc_p2pkh_address() {
     // Genesis block address — the canonical P2PKH example.
     let addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa";
-    let (svc, _) = identify_api_key(addr).unwrap();
+    let (svc, _) = identify_api_key(addr).expect("should succeed");
     assert_eq!(svc, "crypto_btc");
 }
 
@@ -895,7 +1107,7 @@ fn detects_btc_p2pkh_address() {
 fn detects_btc_p2sh_address() {
     // Well-known multisig (BitGo cold storage).
     let addr = "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy";
-    let (svc, _) = identify_api_key(addr).unwrap();
+    let (svc, _) = identify_api_key(addr).expect("should succeed");
     assert_eq!(svc, "crypto_btc");
 }
 
@@ -903,7 +1115,7 @@ fn detects_btc_p2sh_address() {
 fn detects_btc_bech32_address() {
     // Public Casa cold-storage example.
     let addr = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
-    let (svc, _) = identify_api_key(addr).unwrap();
+    let (svc, _) = identify_api_key(addr).expect("should succeed");
     assert_eq!(svc, "crypto_btc");
 }
 
@@ -911,7 +1123,7 @@ fn detects_btc_bech32_address() {
 fn detects_eth_address() {
     // Vitalik's public ETH address — burn-the-house demo.
     let addr = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
-    let (svc, _) = identify_api_key(addr).unwrap();
+    let (svc, _) = identify_api_key(addr).expect("should succeed");
     assert_eq!(svc, "crypto_eth");
 }
 
@@ -919,11 +1131,11 @@ fn detects_eth_address() {
 fn detects_ltc_legacy_and_bech32() {
     // Litecoin L-prefix legacy address (valid base58check).
     let legacy = "LP9u4drz8SsEdB1SmVz5oD1Qi2fGqRTqrQ";
-    let (svc, _) = identify_api_key(legacy).unwrap();
+    let (svc, _) = identify_api_key(legacy).expect("should succeed");
     assert_eq!(svc, "crypto_ltc");
     // Bech32 form (valid `ltc1` checksum).
     let bech = "ltc1qw508d6qejxtdg4y5r3zarvary0c5xw7kgmn4n9";
-    let (svc, _) = identify_api_key(bech).unwrap();
+    let (svc, _) = identify_api_key(bech).expect("should succeed");
     assert_eq!(svc, "crypto_ltc");
 }
 
@@ -931,7 +1143,7 @@ fn detects_ltc_legacy_and_bech32() {
 fn detects_doge_address() {
     // Dogecoin D-prefix, 34 chars (valid base58check).
     let addr = "D953LgVoMCXTuNVtKwzM4x7FNx2J2TikE3";
-    let (svc, _) = identify_api_key(addr).unwrap();
+    let (svc, _) = identify_api_key(addr).expect("should succeed");
     assert_eq!(svc, "crypto_doge");
 }
 
@@ -939,7 +1151,7 @@ fn detects_doge_address() {
 fn detects_sol_address() {
     // Solana public address — 44 chars base58.
     let addr = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
-    let (svc, _) = identify_api_key(addr).unwrap();
+    let (svc, _) = identify_api_key(addr).expect("should succeed");
     assert_eq!(svc, "crypto_sol");
 }
 
@@ -950,7 +1162,7 @@ fn detects_xmr_address() {
     // in the Base58 set (no 0/O/I/l).
     let addr = "4AdUndXHHZ9pfQj27iMrL2QM5nYpZ8AyL3VBmHuMrL8ZzgnsAbHjy8mhLHBP1J7yU3KqHzPaH6vGm1JZqfwLnFq8m1jBxwZ";
     assert_eq!(addr.len(), 95, "synthetic XMR test fixture wrong length");
-    let (svc, _) = identify_api_key(addr).unwrap();
+    let (svc, _) = identify_api_key(addr).expect("should succeed");
     assert_eq!(svc, "crypto_xmr");
 }
 
@@ -1032,22 +1244,22 @@ fn detects_square_oauth_id_and_app_secret() {
     // Square OAuth ID + Application secret prefixes (sq0idp- /
     // sq0csp-) — separate from the existing sq0atp- access token.
     let oauth_id = "sq0idp-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5";
-    let (svc, _) = identify_api_key(oauth_id).unwrap();
+    let (svc, _) = identify_api_key(oauth_id).expect("should succeed");
     assert_eq!(svc, "square_oauth_id");
 
     let app_secret = "sq0csp-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
-    let (svc, _) = identify_api_key(app_secret).unwrap();
+    let (svc, _) = identify_api_key(app_secret).expect("should succeed");
     assert_eq!(svc, "square_app_secret");
 }
 
 #[test]
 fn detects_planetscale_password_and_token() {
     let pw = "pscale_pw_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0";
-    let (svc, _) = identify_api_key(pw).unwrap();
+    let (svc, _) = identify_api_key(pw).expect("should succeed");
     assert_eq!(svc, "planetscale_password");
 
     let tkn = "pscale_tkn_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0";
-    let (svc, _) = identify_api_key(tkn).unwrap();
+    let (svc, _) = identify_api_key(tkn).expect("should succeed");
     assert_eq!(svc, "planetscale_token");
 }
 
@@ -1078,7 +1290,7 @@ fn detects_all_four_doppler_token_classes() {
 #[test]
 fn detects_docker_hub_pat() {
     let cand = "dckr_pat_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
-    let (svc, _) = identify_api_key(cand).unwrap();
+    let (svc, _) = identify_api_key(cand).expect("should succeed");
     assert_eq!(svc, "docker_hub_pat");
 }
 
@@ -1089,25 +1301,25 @@ fn detects_vault_service_and_batch_tokens() {
         "hvs.{}",
         "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
     );
-    let (svc, _) = identify_api_key(&svc_token).unwrap();
+    let (svc, _) = identify_api_key(&svc_token).expect("should succeed");
     assert_eq!(svc, "vault_service");
 
     let batch_token = format!(
         "hvb.{}",
         "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
     );
-    let (svc, _) = identify_api_key(&batch_token).unwrap();
+    let (svc, _) = identify_api_key(&batch_token).expect("should succeed");
     assert_eq!(svc, "vault_batch");
 }
 
 #[test]
 fn detects_bitbucket_oauth_and_app_password() {
     let oauth = "BBDC-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5";
-    let (svc, _) = identify_api_key(oauth).unwrap();
+    let (svc, _) = identify_api_key(oauth).expect("should succeed");
     assert_eq!(svc, "bitbucket_oauth");
 
     let app_pw = "ATBB-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6";
-    let (svc, _) = identify_api_key(app_pw).unwrap();
+    let (svc, _) = identify_api_key(app_pw).expect("should succeed");
     assert_eq!(svc, "bitbucket_app_password");
 }
 
@@ -1120,11 +1332,11 @@ fn detects_mongodb_and_postgresql_uris() {
     // hosts like `cluster.mongodb.net` and `db.companyacme.com`
     // pass cleanly.
     let mongo = "mongodb://operator:Hunter2!@cluster.mongodb.net:27017/prod";
-    let (svc, _) = identify_api_key(mongo).unwrap();
+    let (svc, _) = identify_api_key(mongo).expect("should succeed");
     assert_eq!(svc, "mongodb_uri");
 
     let pg = "postgresql://operator:Hunter2!@db.companyacme.com:5432/prod";
-    let (svc, _) = identify_api_key(pg).unwrap();
+    let (svc, _) = identify_api_key(pg).expect("should succeed");
     assert_eq!(svc, "postgres_uri");
 }
 
@@ -1132,7 +1344,7 @@ fn detects_mongodb_and_postgresql_uris() {
 fn detects_slack_webhook_url() {
     let cand =
         "https://hooks.slack.com/services/T01234567/B01234567/abcdefghij1234567890ABCDEFGHIJ";
-    let (svc, _) = identify_api_key(cand).unwrap();
+    let (svc, _) = identify_api_key(cand).expect("should succeed");
     assert_eq!(svc, "slack_webhook_url");
 }
 
@@ -1140,12 +1352,12 @@ fn detects_slack_webhook_url() {
 fn detects_discord_webhook_url_both_hosts() {
     let cand1 =
         "https://discord.com/api/webhooks/1234567890123456789/abcdefghij1234567890ABCDEFGHIJ-_xyz";
-    let (svc, _) = identify_api_key(cand1).unwrap();
+    let (svc, _) = identify_api_key(cand1).expect("should succeed");
     assert_eq!(svc, "discord_webhook_url");
 
     // discordapp.com is the legacy host — both still route.
     let cand2 = "https://discordapp.com/api/webhooks/1234567890123456789/abcdefghij1234567890ABCDEFGHIJ-_xyz";
-    let (svc, _) = identify_api_key(cand2).unwrap();
+    let (svc, _) = identify_api_key(cand2).expect("should succeed");
     assert_eq!(svc, "discord_webhook_url");
 }
 
@@ -1165,50 +1377,50 @@ fn pem_with_header(header: &str) -> String {
 #[test]
 fn detects_rsa_private_key_header() {
     let pem = pem_with_header("-----BEGIN RSA PRIVATE KEY-----");
-    let (svc, _) = identify_api_key(&pem).unwrap();
+    let (svc, _) = identify_api_key(&pem).expect("should succeed");
     assert_eq!(svc, "pem_rsa_private");
 }
 
 #[test]
 fn detects_openssh_private_key_header() {
     let pem = pem_with_header("-----BEGIN OPENSSH PRIVATE KEY-----");
-    let (svc, _) = identify_api_key(&pem).unwrap();
+    let (svc, _) = identify_api_key(&pem).expect("should succeed");
     assert_eq!(svc, "pem_openssh_private");
 }
 
 #[test]
 fn detects_ec_private_key_header() {
     let pem = pem_with_header("-----BEGIN EC PRIVATE KEY-----");
-    let (svc, _) = identify_api_key(&pem).unwrap();
+    let (svc, _) = identify_api_key(&pem).expect("should succeed");
     assert_eq!(svc, "pem_ec_private");
 }
 
 #[test]
 fn detects_dsa_private_key_header() {
     let pem = pem_with_header("-----BEGIN DSA PRIVATE KEY-----");
-    let (svc, _) = identify_api_key(&pem).unwrap();
+    let (svc, _) = identify_api_key(&pem).expect("should succeed");
     assert_eq!(svc, "pem_dsa_private");
 }
 
 #[test]
 fn detects_pkcs8_private_and_encrypted_headers() {
     let plain = pem_with_header("-----BEGIN PRIVATE KEY-----");
-    let (svc, _) = identify_api_key(&plain).unwrap();
+    let (svc, _) = identify_api_key(&plain).expect("should succeed");
     assert_eq!(svc, "pem_pkcs8_private");
 
     let enc = pem_with_header("-----BEGIN ENCRYPTED PRIVATE KEY-----");
-    let (svc, _) = identify_api_key(&enc).unwrap();
+    let (svc, _) = identify_api_key(&enc).expect("should succeed");
     assert_eq!(svc, "pem_pkcs8_encrypted");
 }
 
 #[test]
 fn detects_pgp_private_and_message_blocks() {
     let priv_key = pem_with_header("-----BEGIN PGP PRIVATE KEY BLOCK-----");
-    let (svc, _) = identify_api_key(&priv_key).unwrap();
+    let (svc, _) = identify_api_key(&priv_key).expect("should succeed");
     assert_eq!(svc, "pem_pgp_private");
 
     let msg = pem_with_header("-----BEGIN PGP MESSAGE-----");
-    let (svc, _) = identify_api_key(&msg).unwrap();
+    let (svc, _) = identify_api_key(&msg).expect("should succeed");
     assert_eq!(svc, "pem_pgp_message");
 }
 
@@ -1246,7 +1458,7 @@ fn pem_extracted_from_stealer_app_data_emits_correct_service() {
 #[test]
 fn detects_atlassian_config_token() {
     let cand = "ATCTA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
-    let (svc, _) = identify_api_key(cand).unwrap();
+    let (svc, _) = identify_api_key(cand).expect("should succeed");
     assert_eq!(svc, "atlassian_config");
 }
 
@@ -1258,50 +1470,50 @@ fn detects_dynatrace_token() {
         "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6",
         "Q7r8S9t0U1v2W3x4Y5z6A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6"
     );
-    let (svc, _) = identify_api_key(&cand).unwrap();
+    let (svc, _) = identify_api_key(&cand).expect("should succeed");
     assert_eq!(svc, "dynatrace");
 }
 
 #[test]
 fn detects_frameio_user_token() {
     let cand = "fio-u-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
-    let (svc, _) = identify_api_key(cand).unwrap();
+    let (svc, _) = identify_api_key(cand).expect("should succeed");
     assert_eq!(svc, "frameio");
 }
 
 #[test]
 fn detects_postman_api_key() {
     let cand = "PMAK-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4";
-    let (svc, _) = identify_api_key(cand).unwrap();
+    let (svc, _) = identify_api_key(cand).expect("should succeed");
     assert_eq!(svc, "postman");
 }
 
 #[test]
 fn detects_razorpay_test_and_live() {
     let test = "rzp_test_A1b2C3d4E5f6G7h8I9j0K1l2";
-    let (svc, _) = identify_api_key(test).unwrap();
+    let (svc, _) = identify_api_key(test).expect("should succeed");
     assert_eq!(svc, "razorpay_test");
 
     let live = "rzp_live_A1b2C3d4E5f6G7h8I9j0K1l2";
-    let (svc, _) = identify_api_key(live).unwrap();
+    let (svc, _) = identify_api_key(live).expect("should succeed");
     assert_eq!(svc, "razorpay_live");
 }
 
 #[test]
 fn detects_readme_api_key() {
     let cand = "rdme_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0";
-    let (svc, _) = identify_api_key(cand).unwrap();
+    let (svc, _) = identify_api_key(cand).expect("should succeed");
     assert_eq!(svc, "readme");
 }
 
 #[test]
 fn detects_shippo_test_and_live() {
     let test = "shippo_test_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6";
-    let (svc, _) = identify_api_key(test).unwrap();
+    let (svc, _) = identify_api_key(test).expect("should succeed");
     assert_eq!(svc, "shippo_test");
 
     let live = "shippo_live_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6";
-    let (svc, _) = identify_api_key(live).unwrap();
+    let (svc, _) = identify_api_key(live).expect("should succeed");
     assert_eq!(svc, "shippo_live");
 }
 
@@ -1328,7 +1540,7 @@ fn detects_shopify_partner_custom_app_and_shared_secret() {
 #[test]
 fn detects_newrelic_browser_token() {
     let cand = "NRJS-A1b2C3d4E5f6G7h8I9j0K1l2";
-    let (svc, _) = identify_api_key(cand).unwrap();
+    let (svc, _) = identify_api_key(cand).expect("should succeed");
     assert_eq!(svc, "newrelic_browser");
 }
 
@@ -1336,7 +1548,7 @@ fn detects_newrelic_browser_token() {
 fn detects_dropbox_short_lived_token() {
     // Dropbox SL tokens are `sl.<43+ chars>`.
     let cand = "sl.A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4";
-    let (svc, _) = identify_api_key(cand).unwrap();
+    let (svc, _) = identify_api_key(cand).expect("should succeed");
     assert_eq!(svc, "dropbox_short_lived");
 }
 
@@ -1347,7 +1559,7 @@ fn detects_clojars_deploy_token() {
         "CLOJARS_{}",
         "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6A1b2C3d4"
     );
-    let (svc, _) = identify_api_key(&cand).unwrap();
+    let (svc, _) = identify_api_key(&cand).expect("should succeed");
     assert_eq!(svc, "clojars_deploy");
 }
 
@@ -1393,7 +1605,7 @@ fn b64_urlsafe_nopad(s: &str) -> String {
 fn decode_through_finds_plain_base64_of_openai_key() {
     let plain = "sk-proj-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0";
     let wrapped = b64(plain);
-    let (svc, decoded, depth) = try_decode_through_scan(&wrapped).unwrap();
+    let (svc, decoded, depth) = try_decode_through_scan(&wrapped).expect("should succeed");
     assert_eq!(svc, "openai");
     assert_eq!(decoded, plain);
     assert_eq!(depth, 1);
@@ -1404,7 +1616,7 @@ fn decode_through_finds_nested_double_base64() {
     let plain = "sk-proj-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0";
     let once = b64(plain);
     let twice = b64(&once);
-    let (svc, decoded, depth) = try_decode_through_scan(&twice).unwrap();
+    let (svc, decoded, depth) = try_decode_through_scan(&twice).expect("should succeed");
     assert_eq!(svc, "openai");
     assert_eq!(decoded, plain);
     assert_eq!(depth, 2);
@@ -1423,7 +1635,7 @@ fn decode_through_accepts_url_safe_no_pad_variant() {
     // OAuth callback-style tokens land URL-safe + unpadded.
     let plain = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
     let wrapped = b64_urlsafe_nopad(plain);
-    let (svc, decoded, _) = try_decode_through_scan(&wrapped).unwrap();
+    let (svc, decoded, _) = try_decode_through_scan(&wrapped).expect("should succeed");
     assert_eq!(svc, "github");
     assert_eq!(decoded, plain);
 }

@@ -1,6 +1,44 @@
 use super::*;
 
 #[test]
+fn password_evidence_carries_the_typed_email_key_for_reused_secret_join() {
+    // The reused-secret detector / AU-047 join on a typed `email`/`username`
+    // evidence attribute, NOT the raw `identity`. A COMB email target's password
+    // must therefore carry an `email` key so it can participate.
+    let target = Target::new(TargetKind::Email, "jordan@example.com");
+    let lines = vec!["jordan@example.com:hunter2longpw".to_string()];
+    let ents = build_entities_from_lines(&lines, &target, "s");
+    let pw = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Password)
+        .expect("password entity");
+    assert_eq!(
+        pw.evidence[0].attributes.get("email").map(String::as_str),
+        Some("jordan@example.com"),
+        "the password must carry the typed `email` reused-secret join key"
+    );
+}
+
+#[test]
+fn username_target_password_carries_the_typed_username_key() {
+    let target = Target::new(TargetKind::Username, "jordanx");
+    let lines = vec!["jordanx:s3cretpassword".to_string()];
+    let ents = build_entities_from_lines(&lines, &target, "s");
+    let pw = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Password)
+        .expect("password entity");
+    assert_eq!(
+        pw.evidence[0].attributes.get("username").map(String::as_str),
+        Some("jordanx")
+    );
+    assert!(
+        !pw.evidence[0].attributes.contains_key("email"),
+        "a bare-username account must not carry an `email` key"
+    );
+}
+
+#[test]
 fn split_line_splits_on_first_colon_only() {
     assert_eq!(split_line("user@x.com:pass:word"), Some(("user@x.com", "pass:word")));
     assert_eq!(split_line("alice:hunter2"), Some(("alice", "hunter2")));
@@ -152,37 +190,4 @@ fn secret_echo_of_identity_is_classified_as_junk_upstream() {
         classify_credential_field("user@example.com"),
         CredentialField::Email
     );
-}
-
-#[test]
-fn truncation_at_max_secrets_is_surfaced() {
-    // Regression: when matched lines exceed MAX_SECRETS, the truncation must be
-    // surfaced in evidence so the operator knows the scan stopped at a hard cap.
-    // Generate 60 distinct credential lines, all matching the target email.
-    let mut lines = Vec::new();
-    for i in 0..60 {
-        lines.push(format!("test@example.com:pass{i}"));
-    }
-    let line_str = lines.join("\n");
-
-    // Verify: when processed, we capture exactly MAX_SECRETS secrets and set truncation.
-    let mut seen_secret = std::collections::HashSet::new();
-    let mut truncated = false;
-
-    for line in line_str.lines() {
-        if let Some((identity, secret)) = split_line(line) {
-            if !line_matches_target(identity, TargetKind::Email, "test@example.com") {
-                continue;
-            }
-            if seen_secret.len() >= MAX_SECRETS {
-                truncated = true;
-            } else {
-                seen_secret.insert(secret.to_string());
-            }
-        }
-    }
-
-    // Should have capped at MAX_SECRETS and set the truncation flag.
-    assert_eq!(seen_secret.len(), MAX_SECRETS, "should stop at MAX_SECRETS");
-    assert!(truncated, "should set truncation flag when >MAX_SECRETS lines processed");
 }

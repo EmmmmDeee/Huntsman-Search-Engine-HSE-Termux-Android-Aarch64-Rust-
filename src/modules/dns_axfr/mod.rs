@@ -16,6 +16,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -40,7 +41,7 @@ impl Module for DnsAxfr {
     }
 
     fn description(&self) -> &'static str {
-        "Attempt DNS zone transfer (AXFR) for complete subdomain enumeration"
+        "DNS zone-transfer (AXFR) probe — attempts a full AXFR to enumerate every subdomain in one sweep"
     }
 
     fn priority(&self) -> u8 {
@@ -60,8 +61,10 @@ impl Module for DnsAxfr {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // DNS zone-transfer attempt — ATT&CK DNS (T1590.002).
-        &["T1590.002"]
+        // DNS zone-transfer attempt — ATT&CK DNS (T1590.002). A successful AXFR
+        // dumps every record in the zone, exposing the victim's internal network
+        // layout → T1590.004 Network Topology (beyond the passive DNS lookup).
+        &["T1590.002", "T1590.004"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
@@ -82,7 +85,29 @@ impl Module for DnsAxfr {
         let resolver = crate::util::dns::shared_resolver();
         let ns_records = match resolver.ns_lookup(&domain).await {
             Ok(ns) => ns,
-            Err(_) => return Ok(result),
+            // The zone authoritatively said "no NS records" — NXDOMAIN, or NOERROR with no
+            // answers. There is genuinely nothing to attempt a transfer against, so an empty
+            // result is the true answer. `is_no_records_found()` is exactly this and nothing
+            // more: hickory maps SERVFAIL/REFUSED/FORMERR to `ResponseCode(..)`, never to
+            // `NoRecordsFound`, so a failing resolver cannot slip through dressed as a clean
+            // result (same idiom as `dns_intel::resolve`'s DNSBL sweep).
+            Err(e) if e.is_no_records_found() => return Ok(result),
+            // SERVFAIL, REFUSED, timeout, no route. Nothing was established about this domain.
+            //
+            // This module is an EXPOSURE check — an open AXFR hands an attacker the entire zone —
+            // so the direction of a wrong answer matters more here than almost anywhere else in
+            // the engine. Returning `Ok(empty)` reported "no zone-transfer exposure found" for a
+            // domain whose nameservers were never even enumerated, and the engine reads that as a
+            // clean no-data outcome: the operator sees a negative security finding produced by a
+            // resolver outage. Fail closed so the check is recorded as not performed.
+            Err(e) => {
+                return Err(crate::core::error::Error::module(
+                    SRC,
+                    format!(
+                        "NS lookup for {domain} failed, so no zone transfer was attempted: {e}"
+                    ),
+                ));
+            }
         };
 
         let ns_hosts: Vec<String> = ns_records
@@ -128,7 +153,12 @@ impl Module for DnsAxfr {
             match attempt_axfr(&ns_ip, &domain).await {
                 Ok((records, ancount)) if !records.is_empty() => {
                     result.extend(records.iter().map(|record| {
-                        let mut e = Entity::new(EntityKind::Domain, record, 0.80, &ctx.scan_id);
+                        let mut e = Entity::new(
+                            EntityKind::Domain,
+                            record,
+                            confidence::HIGH_PLUSPLUS,
+                            &ctx.scan_id,
+                        );
                         e.tag("subdomain");
                         e.tag("axfr");
                         e.add_evidence(
@@ -139,7 +169,12 @@ impl Module for DnsAxfr {
                         e
                     }));
 
-                    let mut zone_e = Entity::new(EntityKind::Domain, &domain, 0.95, &ctx.scan_id);
+                    let mut zone_e = Entity::new(
+                        EntityKind::Domain,
+                        &domain,
+                        confidence::VERY_HIGH_PLUSPLUS,
+                        &ctx.scan_id,
+                    );
                     zone_e.tag("axfr-permitted");
                     zone_e.tag(crate::core::tags::VULNERABLE);
                     zone_e.add_evidence(

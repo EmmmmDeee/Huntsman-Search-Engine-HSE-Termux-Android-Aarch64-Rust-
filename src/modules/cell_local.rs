@@ -10,8 +10,9 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -31,8 +32,7 @@ impl Module for CellLocal {
     }
 
     fn description(&self) -> &'static str {
-        "Local OpenCelliD database: query imported cell towers near a coordinate \
-         (no API calls; run hse cells import first)"
+        "Local OpenCelliD recon — queries imported cell towers near a coordinate offline (no API calls; run hse cells import first)"
     }
 
     fn priority(&self) -> u8 {
@@ -65,9 +65,21 @@ impl Module for CellLocal {
 
         let cells = tokio::task::spawn_blocking(move || {
             let conn = match crate::util::cell_db::open_ro() {
-                // DB not yet populated — silent no-op until `hse cells import` is run.
-                Err(_) => return Ok(vec![]),
                 Ok(c) => c,
+                // DB not yet populated — silent no-op until `hse cells import` is run.
+                // That is a real "nothing to search", and the only one: `open_ro`
+                // also returns `Err` when the file IS there but will not open (wrong
+                // permissions, a truncated import, a corrupt header), and folding
+                // that into an empty result would report "no cell towers within
+                // ~556 m of this coordinate" — indistinguishable from a loaded
+                // database with a genuine geographic miss.
+                Err(_) if !crate::util::cell_db::cell_db_path().exists() => return Ok(vec![]),
+                Err(e) => {
+                    return Err(Error::module(
+                        SRC,
+                        format!("cell tower database exists but could not be opened: {e}"),
+                    ));
+                }
             };
             crate::util::cell_db::query_bbox(
                 &conn,
@@ -77,10 +89,10 @@ impl Module for CellLocal {
                 lon + DELTA,
                 200,
             )
-            .map_err(|e| crate::core::error::Error::Other(e.to_string()))
+            .map_err(|e| Error::module(SRC, e.to_string()))
         })
         .await
-        .map_err(|e| crate::core::error::Error::Other(e.to_string()))??;
+        .map_err(|e| Error::module(SRC, e.to_string()))??;
 
         if cells.is_empty() {
             return Ok(ModuleResult::new());
@@ -88,10 +100,15 @@ impl Module for CellLocal {
 
         let mut result = ModuleResult::new();
         for cell in &cells {
-            let tower_id = crate::util::cell::tower_id(cell.mcc, cell.mnc, cell.lac, cell.cid);
+            let tower_id = format!("{}-{}-{}-{}", cell.mcc, cell.mnc, cell.lac, cell.cid);
 
             // ── DeviceId entity ──────────────────────────────────────────────
-            let mut device = Entity::new(EntityKind::DeviceId, &tower_id, 0.78, &ctx.scan_id);
+            let mut device = Entity::new(
+                EntityKind::DeviceId,
+                &tower_id,
+                confidence::STRONG,
+                &ctx.scan_id,
+            );
             device.tag(crate::core::tags::CELL_TOWER);
             device.tag("cell-local");
             device.tag(format!("radio:{}", cell.radio.to_lowercase()));
@@ -112,7 +129,7 @@ impl Module for CellLocal {
             // ── Coordinates entity ────────────────────────────────────────────
             if crate::util::geo::is_valid_coords(cell.lat, cell.lon) {
                 let coords = format!("{:.6},{:.6}", cell.lat, cell.lon);
-                let conf = crate::util::geo::cell_range_to_confidence(cell.range_m as u64);
+                let conf = accuracy_to_confidence(cell.range_m as u64);
                 let mut geo = Entity::new(EntityKind::Coordinates, &coords, conf, &ctx.scan_id);
                 geo.tag("geoint");
                 geo.tag(crate::core::tags::CELL_TOWER);
@@ -130,6 +147,10 @@ impl Module for CellLocal {
         Ok(result)
     }
 }
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+use crate::util::cell_db::accuracy_to_confidence;
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -167,6 +188,18 @@ mod tests {
         assert_eq!(CellLocal.max_timeout_ms(), 5_000);
     }
 
-    // The tower-range → confidence tiers are single-sourced in `util::geo`
-    // (`cell_range_to_confidence`) and tested there (T2.126).
+    #[test]
+    fn accuracy_to_confidence_tiers() {
+        // accuracy_to_confidence delegates to the canonical util::geo ladder
+        // (see its doc comment) — pin the delegation itself, at every tier
+        // boundary, rather than a second hardcoded copy of the thresholds, so
+        // this test can't silently drift from the one canonical scale.
+        for m in [0, 50, 200, 201, 1000, 1001, 5000, 5001, 50_000] {
+            assert_eq!(
+                accuracy_to_confidence(m),
+                crate::util::geo::confidence_for_accuracy_m(Some(m as f64)),
+                "accuracy_to_confidence({m}) must match the canonical geo ladder"
+            );
+        }
+    }
 }

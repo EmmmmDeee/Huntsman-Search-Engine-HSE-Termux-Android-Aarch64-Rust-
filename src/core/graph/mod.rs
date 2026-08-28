@@ -193,7 +193,7 @@ impl Graph {
             while let Some(&(u, parent, ci)) = stack.last() {
                 if ci < self.adj[u].len() {
                     let v = self.adj[u][ci];
-                    stack.last_mut().unwrap().2 = ci + 1; // advance past v
+                    stack.last_mut().expect("should succeed").2 = ci + 1; // advance past v
                     if disc[v] == 0 {
                         // Tree edge u→v: descend.
                         if parent == usize::MAX {

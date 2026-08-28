@@ -1,4 +1,8 @@
 use crate::core::entity::{Entity, EntityKind};
+use crate::core::relation::affiliation::{
+    derive_asset_operator, derive_corporate_control, derive_employment, derive_membership,
+    derive_officership, derive_org_identity,
+};
 use crate::core::relation::social_extract::derive_profile_links;
 use crate::core::relation::types::{Relation, RelationKind, domain_key};
 
@@ -122,6 +126,36 @@ pub fn derive_colocation(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     relations
 }
 
+/// Strip the surrounding punctuation that summary tokenisation leaves attached
+/// (`"example.com,"`, `"(example.com)"`, a full stop after an IP).
+///
+/// `-` and `_` are KEPT because they are valid inside a domain label. Only the
+/// EDGES are trimmed, so interior punctuation survives and `1.2.3.4`,
+/// `192.0.2.0/24` and `AS13335` come through intact.
+///
+/// One cleaner, shared by every builder that mines free-text evidence for a named
+/// endpoint — [`derive_resolution`] (domains named in a DNS record) and
+/// [`derive_asset_operator`] (the network an
+/// organisation is recorded as operating). Both rest on the same module
+/// convention of writing the far endpoint into the summary, so both must agree
+/// on exactly what a token is.
+pub(super) fn clean_token(token: &str) -> &str {
+    token.trim_matches(|c: char| c.is_ascii_punctuation() && c != '-' && c != '_')
+}
+
+/// Every candidate value in ONE evidence record that could name another entity:
+/// each attribute value, plus each whitespace-separated summary token, each
+/// passed through [`clean_token`].
+pub(super) fn evidence_candidates(
+    ev: &crate::core::entity::Evidence,
+) -> impl Iterator<Item = &str> {
+    ev.attributes
+        .values()
+        .map(String::as_str)
+        .chain(ev.summary.split_whitespace())
+        .map(clean_token)
+}
+
 /// Derive `ResolvesTo` edges (Domain → IpAddress) from DNS evidence.
 ///
 /// Robust by design: rather than coupling to a specific module's attribute
@@ -148,17 +182,7 @@ pub fn derive_resolution(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     let mut out = Vec::new();
     for ip in entities.iter().filter(|e| e.kind == EntityKind::IpAddress) {
         for ev in &ip.evidence {
-            let candidates = ev
-                .attributes
-                .values()
-                .map(String::as_str)
-                .chain(ev.summary.split_whitespace());
-            for token in candidates {
-                // Strip surrounding punctuation that summary tokenisation can
-                // leave attached (e.g. "example.com," or "(example.com)"), but
-                // keep '-' / '_' which are valid in domain labels.
-                let cleaned =
-                    token.trim_matches(|c: char| c.is_ascii_punctuation() && c != '-' && c != '_');
+            for cleaned in evidence_candidates(ev) {
                 let norm = crate::core::entity::normalise(&EntityKind::Domain, cleaned);
                 if let Some(dom) = domain_by_value.get(norm.as_str())
                     && seen.insert((dom.uid.clone(), ip.uid.clone()))
@@ -177,18 +201,19 @@ pub fn derive_resolution(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     out
 }
 
-/// Derive `RegisteredBy` edges (Domain → Organisation / Email) from WHOIS
-/// registrant evidence.
+/// Derive `RegisteredBy` edges (Domain → Organisation / Email / Person) from
+/// WHOIS registrant evidence.
 ///
 /// Robust by design, mirroring `derive_resolution`: it matches a Domain
 /// entity's evidence attribute *values* (e.g. `whois`'s `registrant_org` /
-/// `registrant_email` attrs) against present Organisation and Email entities,
-/// rather than coupling to attribute keys. `whois` emits the registrant org
-/// and contact emails as their own entities, so both endpoints are present.
-/// `registrar`-keyed attributes are skipped, so a registrar that happens to be
-/// a present Organisation entity isn't mistaken for the registrant. Org names
-/// are matched as whole trimmed values (not tokenised) since they contain
-/// spaces. One edge per (domain, registrant).
+/// `registrant_email` / `registrant_name` attrs) against present Organisation,
+/// Email and Person entities, rather than coupling to attribute keys. `whois`
+/// emits the registrant org, contact emails and registrant/admin/tech names as
+/// their own entities and folds the name values into the domain evidence, so
+/// every endpoint is present. `registrar`-keyed attributes are skipped, so a
+/// registrar that happens to be a present Organisation entity isn't mistaken
+/// for the registrant. Org/Person names are matched as whole trimmed values
+/// (not tokenised) since they contain spaces. One edge per (domain, registrant).
 pub fn derive_registration(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     use std::collections::{HashMap, HashSet};
 
@@ -202,7 +227,11 @@ pub fn derive_registration(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
         .filter(|e| e.kind == EntityKind::Email)
         .map(|e| (e.value.as_str(), e))
         .collect();
-    if org_by_value.is_empty() && email_by_value.is_empty() {
+    // Registrant/admin/tech NAMES (folded into the domain evidence by `whois`)
+    // resolve to a present Person via this deterministic index, so the human who
+    // registered the domain is linked to it — not just the org/email contacts.
+    let persons = persons_by_name(entities);
+    if org_by_value.is_empty() && email_by_value.is_empty() && persons.is_empty() {
         return Vec::new();
     }
 
@@ -228,6 +257,17 @@ pub fn derive_registration(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
                 // present Organisation entity. ("registrant" does not contain
                 // "registrar", so registrant_* keys are kept.)
                 if k.contains("registrar") {
+                    continue;
+                }
+                // Registrant/admin/tech name → the human registrant Person.
+                // Checked BEFORE org/email so a name value can't be mis-matched
+                // as an org. `*_name` selects exactly registrant_name/admin_name/
+                // tech_name (name_servers ends with "servers", registrar_* is
+                // already skipped).
+                if k.ends_with("_name") {
+                    if let Some(&p) = persons.get(v.trim().to_lowercase().as_str()) {
+                        link(dom, p, &mut out);
+                    }
                     continue;
                 }
                 // Organisation: whole trimmed value (org names contain spaces).
@@ -590,6 +630,20 @@ const AFFILIATION_DAMP: f64 = 0.45;
 /// host — so it links nothing. A genuine owner selector is shared by a few affiliates.
 const AFFILIATION_CROWD_CAP: usize = 6;
 
+/// True for an evidence attribute key that carries a WHOIS registrant/admin
+/// value — the subset of [`AFFILIATION_SELECTOR_ATTRS`] a privacy-proxy
+/// service can populate, and therefore the keys
+/// [`link_by_shared_attribute`] must check against
+/// [`crate::util::domains::is_proxy_registrant`] before treating a shared
+/// value as individuating. `admin_org` is included alongside
+/// `registrant_email`/`registrant_org` because a privacy-proxy WHOIS record
+/// blankets every contact field it populates, not the registrant field alone.
+fn is_whois_registrant_attr(key: &str) -> bool {
+    ["registrant_email", "registrant_org", "admin_org"]
+        .iter()
+        .any(|a| key.eq_ignore_ascii_case(a))
+}
+
 /// Evidence attribute keys whose value names a real person — the owner /
 /// registrant / account holder a module recorded alongside an identifier or a
 /// place. Matched case-insensitively against present Person entities, so an
@@ -619,8 +673,18 @@ fn persona_key(e: &Entity) -> Option<String> {
         return None;
     }
     let key = crate::core::scan::identity_norm(&e.value);
-    // 4 = IDENTITY_OVERLAP_MIN: shorter handles alias too readily.
-    (key.len() >= 4 && !key.bytes().all(|b| b.is_ascii_digit())).then_some(key)
+    // 4 = IDENTITY_OVERLAP_MIN: shorter handles alias too readily. Also reject a
+    // generic role mailbox / placeholder handle (`info`, `support`, `sales`,
+    // `admin`, `noreply`, …) via the canonical `is_generic_handle` taxonomy every
+    // correlator identity rule already applies (AU-034/045/076). Without it
+    // `info@org-a` and `info@org-b` share the key `"info"` and `derive_handles`
+    // draws a full-confidence, undamped `AliasOf` edge that fuses two unrelated
+    // organisations' mailboxes into one identity cluster. `identity_norm` yields
+    // the alphanumeric-folded form `is_generic_handle` expects.
+    (key.len() >= 4
+        && !key.bytes().all(|b| b.is_ascii_digit())
+        && !crate::core::correlator::is_generic_handle(&key))
+    .then_some(key)
 }
 
 /// The folded last whitespace token of a Person value — a family key. `None` when
@@ -631,14 +695,22 @@ fn surname_key(value: &str) -> Option<String> {
     (key.len() >= 4).then_some(key)
 }
 
-/// Index present Person entities by their folded full name, resolving collisions
-/// deterministically (higher confidence, then smaller uid) so the chosen target
-/// never depends on the caller's entity order — the determinism invariant the
-/// whole module holds to.
-fn persons_by_name(entities: &[Entity]) -> std::collections::HashMap<String, &Entity> {
-    let mut persons = std::collections::HashMap::new();
-    for p in entities.iter().filter(|e| e.kind == EntityKind::Person) {
-        persons
+/// Index the present entities of one `kind` by their folded value, resolving
+/// collisions deterministically (higher confidence, then smaller uid) so the
+/// chosen target never depends on the caller's entity order — the determinism
+/// invariant the whole module holds to.
+///
+/// One index for both name-keyed layers: the identity builders look up Persons,
+/// the [affiliation](super::affiliation) builders look up Organisations. Sharing
+/// the resolver means the two can't drift on how a name is folded or how a
+/// collision is broken.
+pub(super) fn by_name<'a>(
+    entities: &'a [Entity],
+    kind: &EntityKind,
+) -> std::collections::HashMap<String, &'a Entity> {
+    let mut index = std::collections::HashMap::new();
+    for p in entities.iter().filter(|e| &e.kind == kind) {
+        index
             .entry(p.value.trim().to_lowercase())
             .and_modify(|cur: &mut &Entity| {
                 if p.confidence > cur.confidence
@@ -649,13 +721,19 @@ fn persons_by_name(entities: &[Entity]) -> std::collections::HashMap<String, &En
             })
             .or_insert(p);
     }
-    persons
+    index
+}
+
+/// Index present Person entities by their folded full name — [`by_name`] over
+/// [`EntityKind::Person`], the lookup the identity builders share.
+fn persons_by_name(entities: &[Entity]) -> std::collections::HashMap<String, &Entity> {
+    by_name(entities, &EntityKind::Person)
 }
 
 /// The subject Person(s): those carrying the engine's seed-anchor tag (`subject`
 /// or `seed`). The fingerprint/`exact-name-match` paths bind only to these, so an
 /// incidental Person never accretes the subject's handles or places.
-fn subject_persons(entities: &[Entity]) -> Vec<&Entity> {
+pub(super) fn subject_persons(entities: &[Entity]) -> Vec<&Entity> {
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::Person && (e.has_tag("subject") || e.has_tag("seed")))
@@ -664,7 +742,7 @@ fn subject_persons(entities: &[Entity]) -> Vec<&Entity> {
 
 /// Stable output order (by endpoints) so a builder whose internal grouping uses a
 /// `HashMap` still returns a deterministic `Vec` — matching the module contract.
-fn sort_edges(edges: &mut [Relation]) {
+pub(super) fn sort_edges(edges: &mut [Relation]) {
     edges.sort_by(|a, b| {
         (a.from_uid.as_str(), a.to_uid.as_str()).cmp(&(b.from_uid.as_str(), b.to_uid.as_str()))
     });
@@ -723,7 +801,7 @@ pub fn derive_handles(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
 /// real edge instead of only reading it off a standalone correlation.
 ///
 /// Delegates to the correlator's own [`crate::core::correlator::Secret`]
-/// classification and [`crate::core::correlator::canonical_handle`]
+/// classification and [`crate::core::entity::canonical_handle`]
 /// handle-folding (Rule 4: one classifier/one folder, so the graph edge and
 /// the correlation can never disagree on which secrets qualify or which
 /// handles are the same account). Emits a full pairwise clique over every
@@ -731,7 +809,8 @@ pub fn derive_handles(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
 /// through one arbitrarily-chosen hub), so `identity_paths`' BFS finds the
 /// direct edge between ANY two accounts a shared secret ties together.
 pub fn derive_reused_secret_link(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
-    use crate::core::correlator::{Secret, canonical_handle};
+    use crate::core::correlator::Secret;
+    use crate::core::entity::canonical_handle;
     use std::collections::BTreeSet;
 
     let secrets: Vec<&Entity> = entities
@@ -756,15 +835,15 @@ pub fn derive_reused_secret_link(entities: &[Entity], scan_id: &str) -> Vec<Rela
         let emails: BTreeSet<String> = secret
             .evidence
             .iter()
-            .filter_map(|ev| ev.attributes.get("email"))
-            .map(|v| v.trim().to_lowercase())
+            .flat_map(|ev| ev.attr_values("email"))
+            .map(str::to_lowercase)
             .filter(|v| v.contains('@'))
             .collect();
         let usernames: BTreeSet<String> = secret
             .evidence
             .iter()
-            .filter_map(|ev| ev.attributes.get("username"))
-            .map(|v| v.trim().to_lowercase())
+            .flat_map(|ev| ev.attr_values("username"))
+            .map(str::to_lowercase)
             .filter(|v| !v.is_empty())
             .collect();
         // Fold to distinct CONTROLLER HANDLES — the same admission gate AU-047
@@ -879,9 +958,17 @@ pub fn derive_identity_ownership(entities: &[Entity], scan_id: &str) -> Vec<Rela
 /// place whose evidence carries an owner/resident attribute ([`PERSON_NAME_ATTRS`])
 /// matching a present Person (`qld_unclaimed`'s `owner = ERIK DIEGMANN`). Failing
 /// that, a place the scan already flagged as the subject's via the geo
-/// correlator's `exact-name-match` tag binds to the subject(s) — reusing that
-/// vetted decision rather than re-deriving it. Deduped per (person, place);
-/// deterministic output order.
+/// correlator's `exact-name-match` tag binds to THE subject — reusing that
+/// vetted decision rather than re-deriving it, but ONLY when exactly one subject
+/// is present. The tag itself carries no record of which person's name earned it,
+/// so with two or more subjects (`hse import <dir>` can merge separate people's
+/// own prior scan exports, each independently subject-tagged, into one entity
+/// set fed here) there is no way to tell WHICH subject a given exact-name-match
+/// place actually belongs to — binding it to every co-present subject fabricates
+/// a home address for whichever of them it does not actually belong to. Binding
+/// none in that ambiguous case is the conservative, correct default: a missed
+/// lead is a far smaller harm than an asserted address for the wrong person.
+/// Deduped per (person, place); deterministic output order.
 pub fn derive_residency(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     use std::collections::HashSet;
 
@@ -898,38 +985,37 @@ pub fn derive_residency(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
         .filter(|e| matches!(e.kind, EntityKind::Address | EntityKind::Coordinates))
     {
         let mut linked = false;
-        for ev in &place.evidence {
-            for (k, v) in &ev.attributes {
-                if !PERSON_NAME_ATTRS.iter().any(|a| k.eq_ignore_ascii_case(a)) {
-                    continue;
-                }
-                if let Some(&p) = person_by_name.get(v.trim().to_lowercase().as_str())
-                    && seen.insert((p.uid.clone(), place.uid.clone()))
-                {
-                    out.push(Relation::new(
-                        p.uid.as_str(),
-                        place.uid.as_str(),
-                        RelationKind::LocatedAt,
-                        p.confidence.min(place.confidence),
-                        scan_id,
-                    ));
-                    linked = true;
-                }
+        // Reuse the shared person-at-place resolver (same evidence order, filter,
+        // lookup and per-place uid dedup); the global `seen` still handles
+        // cross-place dedup and the exact-name fallback below.
+        for p in residents_of(place, &person_by_name) {
+            if seen.insert((p.uid.clone(), place.uid.clone())) {
+                out.push(Relation::new(
+                    p.uid.as_str(),
+                    place.uid.as_str(),
+                    RelationKind::LocatedAt,
+                    p.confidence.min(place.confidence),
+                    scan_id,
+                ));
+                linked = true;
             }
         }
         if linked || !place.has_tag("exact-name-match") {
             continue;
         }
-        for s in &subjects {
-            if seen.insert((s.uid.clone(), place.uid.clone())) {
-                out.push(Relation::new(
-                    s.uid.as_str(),
-                    place.uid.as_str(),
-                    RelationKind::LocatedAt,
-                    s.confidence.min(place.confidence),
-                    scan_id,
-                ));
-            }
+        // Ambiguous with 0 or 2+ subjects present — see the function doc for why
+        // this must bind no one rather than guess.
+        let [s] = subjects.as_slice() else {
+            continue;
+        };
+        if seen.insert((s.uid.clone(), place.uid.clone())) {
+            out.push(Relation::new(
+                s.uid.as_str(),
+                place.uid.as_str(),
+                RelationKind::LocatedAt,
+                s.confidence.min(place.confidence),
+                scan_id,
+            ));
         }
     }
     sort_edges(&mut out);
@@ -1272,6 +1358,30 @@ fn link_by_shared_attribute(
                 if !attrs.iter().any(|a| key.eq_ignore_ascii_case(a)) {
                     continue;
                 }
+                // A WHOIS registrant/admin field populated by a privacy-proxy
+                // service (WhoisGuard, Domains By Proxy, …) is not an
+                // individuating owner selector — it is shared by millions of
+                // unrelated domains. `derive_co_ownership`'s Source A already
+                // excludes exactly this for its own registrant grouping; this
+                // engine pivots on the SAME attribute keys
+                // (`AFFILIATION_SELECTOR_ATTRS`: registrant_email/
+                // registrant_org/admin_org) via `derive_shared_selector`, so it
+                // needs the identical guard or a scan with only a handful of
+                // domains sharing one privacy-proxy service fabricates an
+                // AssociatedWith affiliation between their unrelated owners —
+                // `AFFILIATION_CROWD_CAP` alone does nothing when the crowd
+                // itself is small. Every other selector this engine pivots on
+                // (cert_serial, key_fingerprint, gravatar_hash, and
+                // CO_MENTION_SOURCE_ATTRS' url/source_url/page) is unaffected:
+                // `is_whois_registrant_attr` matches only the three WHOIS keys.
+                if is_whois_registrant_attr(key)
+                    && crate::util::domains::is_proxy_registrant(
+                        val,
+                        key.eq_ignore_ascii_case("registrant_email"),
+                    )
+                {
+                    continue;
+                }
                 let v = val.trim().to_lowercase();
                 if !v.is_empty() && seen_vals.insert(v.clone()) {
                     by_value.entry(v).or_default().push(e);
@@ -1562,6 +1672,25 @@ pub fn derive_all_within(
     budget_spent!(out, "identity_ownership");
     out.extend(derive_residency(entities, scan_id));
     budget_spent!(out, "residency");
+    // ── Affiliation: the person↔organisation layer ───────────────────────
+    // Before the person↔person inference passes below, because an organisation
+    // is a hard, register-published endpoint: an officership or a corporate
+    // parent is the kind of edge a budget cut must NOT drop in favour of a
+    // surname guess. Officership first (the strongest of the three person-side
+    // ties), then employment and membership; org identity/place and the corporate
+    // and asset-operator hierarchies close out the family.
+    out.extend(derive_officership(entities, scan_id));
+    budget_spent!(out, "officership");
+    out.extend(derive_employment(entities, scan_id));
+    budget_spent!(out, "employment");
+    out.extend(derive_membership(entities, scan_id));
+    budget_spent!(out, "membership");
+    out.extend(derive_org_identity(entities, scan_id));
+    budget_spent!(out, "org_identity");
+    out.extend(derive_corporate_control(entities, scan_id));
+    budget_spent!(out, "corporate_control");
+    out.extend(derive_asset_operator(entities, scan_id));
+    budget_spent!(out, "asset_operator");
     out.extend(derive_kinship(entities, scan_id));
     budget_spent!(out, "kinship");
     // Geo-gated kinship: recover the COMMON-surname families derive_kinship drops,

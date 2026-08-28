@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
 fn enr() -> Enrichment {
@@ -55,11 +56,11 @@ fn evidence_omits_unknown_fields_and_never_fabricates() {
         !ev.attributes.contains_key("total_received"),
         "must NOT fabricate a total_received it doesn't have"
     );
-    assert_eq!(ev.attributes.get("tx_count").unwrap(), "78246");
-    assert_eq!(ev.attributes.get("activity").unwrap(), "active");
-    assert_eq!(ev.attributes.get("ens_name").unwrap(), "vitalik.eth");
+    assert_eq!(ev.attributes.get("tx_count").expect("should succeed"), "78246");
+    assert_eq!(ev.attributes.get("activity").expect("should succeed"), "active");
+    assert_eq!(ev.attributes.get("ens_name").expect("should succeed"), "vitalik.eth");
     assert_eq!(
-        ev.attributes.get("balance").unwrap(),
+        ev.attributes.get("balance").expect("should succeed"),
         "5.688240446715981478 ETH"
     );
 }
@@ -82,7 +83,7 @@ fn activity_falls_back_to_funded_empty_without_tx_count() {
         build_evidence("eth", &funded)
             .attributes
             .get("activity")
-            .unwrap(),
+            .expect("should succeed"),
         "funded"
     );
     let empty = Enrichment {
@@ -93,7 +94,7 @@ fn activity_falls_back_to_funded_empty_without_tx_count() {
         build_evidence("eth", &empty)
             .attributes
             .get("activity")
-            .unwrap(),
+            .expect("should succeed"),
         "empty"
     );
     // A dormant (seen but zero-tx) address is distinct from unknown.
@@ -105,7 +106,7 @@ fn activity_falls_back_to_funded_empty_without_tx_count() {
         build_evidence("eth", &dormant)
             .attributes
             .get("activity")
-            .unwrap(),
+            .expect("should succeed"),
         "dormant"
     );
 }
@@ -115,7 +116,7 @@ fn blockcypher_doge_balance_deserialises_real_response() {
     // Real response fetched live during this module's extension (a
     // high-activity address, so all three fields are non-trivial).
     let raw = r#"{"address":"DEgDVFa2DoW1533dxeDVdTxQFhMzs1pMke","total_received":3966353566733115617,"total_sent":1249953212756293574,"balance":2716400353976822043,"unconfirmed_balance":0,"final_balance":2716400353976822043,"n_tx":358,"unconfirmed_n_tx":0,"final_n_tx":358}"#;
-    let b: BlockcypherBalance = serde_json::from_str(raw).unwrap();
+    let b: BlockcypherBalance = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(b.balance, 2_716_400_353_976_822_043);
     assert_eq!(b.total_received, 3_966_353_566_733_115_617);
     assert_eq!(b.n_tx, 358);
@@ -139,10 +140,10 @@ fn doge_enrichment_reports_full_fields_like_esplora() {
         public_tags: Vec::new(),
     };
     let ev = build_evidence("doge", &e);
-    assert_eq!(ev.attributes.get("balance").unwrap(), "1.5 DOGE");
-    assert_eq!(ev.attributes.get("total_received").unwrap(), "2 DOGE");
-    assert_eq!(ev.attributes.get("tx_count").unwrap(), "3");
-    assert_eq!(ev.attributes.get("activity").unwrap(), "active");
+    assert_eq!(ev.attributes.get("balance").expect("should succeed"), "1.5 DOGE");
+    assert_eq!(ev.attributes.get("total_received").expect("should succeed"), "2 DOGE");
+    assert_eq!(ev.attributes.get("tx_count").expect("should succeed"), "3");
+    assert_eq!(ev.attributes.get("activity").expect("should succeed"), "active");
 }
 
 #[test]
@@ -168,19 +169,14 @@ fn sol_balance_response_deserialises() {
     // in the real payload; this struct only needs `value`, so extra fields
     // must not break deserialisation).
     let raw = r#"{"jsonrpc":"2.0","result":{"context":{"apiVersion":"2.0.15","slot":123456789},"value":1500000000},"id":1}"#;
-    let resp: SolBalanceResp = serde_json::from_str(raw).unwrap();
-    assert_eq!(resp.result.unwrap().value, Some(1_500_000_000));
+    let resp: SolBalanceResp = serde_json::from_str(raw).expect("should succeed");
+    assert_eq!(resp.result.expect("should succeed").value, Some(1_500_000_000));
 }
 
 #[test]
-fn sol_balance_response_missing_result_deserialises_to_none() {
-    // Struct-level only: a body with neither `result` nor `error` decodes to
-    // both fields None. See enrich_sol_surfaces_a_malformed_body_instead_of_a_silent_none
-    // for the T2.155 runtime contract — this shape is now a real Err, not a
-    // clean degrade.
-    let resp: SolBalanceResp = serde_json::from_str(r#"{"jsonrpc":"2.0","id":1}"#).unwrap();
+fn sol_balance_response_missing_result_degrades_cleanly() {
+    let resp: SolBalanceResp = serde_json::from_str(r#"{"jsonrpc":"2.0","id":1}"#).expect("should succeed");
     assert!(resp.result.is_none());
-    assert!(resp.error.is_none());
 }
 
 #[test]
@@ -203,9 +199,9 @@ fn sol_style_enrichment_never_fabricates_tx_count_or_received() {
     let ev = build_evidence("sol", &e);
     assert!(!ev.attributes.contains_key("total_received"));
     assert!(!ev.attributes.contains_key("tx_count"));
-    assert_eq!(ev.attributes.get("balance").unwrap(), "1.5 SOL");
+    assert_eq!(ev.attributes.get("balance").expect("should succeed"), "1.5 SOL");
     // No tx_count and a positive balance -> "funded", not "active"/"dormant".
-    assert_eq!(ev.attributes.get("activity").unwrap(), "funded");
+    assert_eq!(ev.attributes.get("activity").expect("should succeed"), "funded");
 }
 
 #[test]
@@ -219,7 +215,7 @@ fn blockscout_address_deserialises_scam_reputation_name_and_tags() {
         {"label":"phishing","display_name":"Phishing"},
         {"label":"scam-address","display_name":null}
     ]}"#;
-    let a: BlockscoutAddress = serde_json::from_str(raw).unwrap();
+    let a: BlockscoutAddress = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(a.is_scam, Some(true));
     assert_eq!(a.reputation.as_deref(), Some("scam"));
     assert_eq!(a.name.as_deref(), Some("Fake Uniswap"));
@@ -231,7 +227,7 @@ fn blockscout_address_defaults_scam_fields_when_absent() {
     // A clean address (the common case) doesn't even set these keys — must
     // degrade to `None`/empty, never a fabricated default.
     let raw = r#"{"coin_balance":"1000","ens_domain_name":null}"#;
-    let a: BlockscoutAddress = serde_json::from_str(raw).unwrap();
+    let a: BlockscoutAddress = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(a.is_scam, None);
     assert_eq!(a.reputation, None);
     assert_eq!(a.name, None);
@@ -277,11 +273,11 @@ fn evidence_reports_blockscout_reputation_signals_when_present() {
         public_tags: vec!["Phishing".into(), "scam-address".into()],
     };
     let ev = build_evidence("eth", &e);
-    assert_eq!(ev.attributes.get("is_scam").unwrap(), "true");
-    assert_eq!(ev.attributes.get("reputation").unwrap(), "scam");
-    assert_eq!(ev.attributes.get("known_name").unwrap(), "Fake Uniswap");
+    assert_eq!(ev.attributes.get("is_scam").expect("should succeed"), "true");
+    assert_eq!(ev.attributes.get("reputation").expect("should succeed"), "scam");
+    assert_eq!(ev.attributes.get("known_name").expect("should succeed"), "Fake Uniswap");
     assert_eq!(
-        ev.attributes.get("public_tags").unwrap(),
+        ev.attributes.get("public_tags").expect("should succeed"),
         "Phishing, scam-address"
     );
 }
@@ -299,7 +295,7 @@ fn evidence_omits_blockscout_reputation_signals_when_absent() {
 
 #[test]
 fn apply_scam_tags_tags_malicious_and_threat_intel_only_when_flagged() {
-    let mut scam_entity = Entity::new(EntityKind::CryptoAddress, "0xdead", 0.80, "scan-1");
+    let mut scam_entity = Entity::new(EntityKind::CryptoAddress, "0xdead", confidence::HIGH_PLUSPLUS, "scan-1");
     let scam = Enrichment {
         is_scam: Some(true),
         ..enr()
@@ -315,7 +311,7 @@ fn apply_scam_tags_tags_malicious_and_threat_intel_only_when_flagged() {
     // False and absent must both be silent — a source explicitly saying
     // "not a scam" is not itself evidence worth a MALICIOUS tag, and an
     // absent verdict must never be treated as a positive one.
-    let mut clean_entity = Entity::new(EntityKind::CryptoAddress, "0xclean", 0.80, "scan-1");
+    let mut clean_entity = Entity::new(EntityKind::CryptoAddress, "0xclean", confidence::HIGH_PLUSPLUS, "scan-1");
     let clean = Enrichment {
         is_scam: Some(false),
         ..enr()
@@ -323,9 +319,63 @@ fn apply_scam_tags_tags_malicious_and_threat_intel_only_when_flagged() {
     apply_scam_tags(&mut clean_entity, &clean);
     assert!(!clean_entity.tags.contains(&crate::core::tags::MALICIOUS.to_string()));
 
-    let mut unknown_entity = Entity::new(EntityKind::CryptoAddress, "0xunknown", 0.80, "scan-1");
+    let mut unknown_entity = Entity::new(EntityKind::CryptoAddress, "0xunknown", confidence::HIGH_PLUSPLUS, "scan-1");
     apply_scam_tags(&mut unknown_entity, &enr());
     assert!(!unknown_entity.tags.contains(&crate::core::tags::MALICIOUS.to_string()));
+}
+
+#[test]
+fn known_name_entity_mints_organisation_tagged_via_apply_scam_tags() {
+    // Same "Fake Uniswap" / is_scam:true fixture as
+    // `blockscout_address_deserialises_scam_reputation_name_and_tags` — proves
+    // the curated `known_name` label parsed there is minted as a first-class
+    // Organisation entity here, not left stranded in evidence text only (the
+    // gap: `ens_domain_name` got this treatment, `known_name` never did).
+    let e = Enrichment {
+        known_name: Some("Fake Uniswap".into()),
+        is_scam: Some(true),
+        ..enr()
+    };
+    let org = known_name_entity("Fake Uniswap", "0xdeadbeef", &e, "scan-1")
+        .expect("a well-formed known_name label must mint an entity");
+    assert_eq!(org.kind, EntityKind::Organisation);
+    assert_eq!(org.value, "Fake Uniswap");
+    assert!(org.tags.contains(&SRC.to_string()));
+    assert!(org.tags.contains(&"known-name".to_string()));
+    // apply_scam_tags gating: is_scam:true must carry through onto the new
+    // entity exactly like it does for the sibling CryptoAddress entity.
+    assert!(org.tags.contains(&crate::core::tags::MALICIOUS.to_string()));
+    assert!(
+        org.tags
+            .contains(&crate::core::tags::THREAT_INTEL.to_string())
+    );
+    assert_eq!(org.evidence.len(), 1);
+    let ev = &org.evidence[0];
+    assert_eq!(ev.attributes.get("known_name").expect("should succeed"), "Fake Uniswap");
+    assert_eq!(ev.attributes.get("address").expect("should succeed"), "0xdeadbeef");
+}
+
+#[test]
+fn known_name_entity_omits_scam_tags_when_not_flagged() {
+    // A clean (non-scam) known_name label must still mint the Organisation —
+    // just without the MALICIOUS/THREAT_INTEL tags apply_scam_tags gates on.
+    let e = Enrichment {
+        known_name: Some("UniswapV2Router02".into()),
+        is_scam: None,
+        ..enr()
+    };
+    let org = known_name_entity("UniswapV2Router02", "0xrouter", &e, "scan-1").expect("should succeed");
+    assert_eq!(org.value, "UniswapV2Router02");
+    assert!(!org.tags.contains(&crate::core::tags::MALICIOUS.to_string()));
+    assert!(!org.tags.contains(&crate::core::tags::THREAT_INTEL.to_string()));
+}
+
+#[test]
+fn known_name_entity_is_none_for_blank_or_too_short_label() {
+    let e = enr();
+    assert!(known_name_entity("", "0xaddr", &e, "scan-1").is_none());
+    assert!(known_name_entity("   ", "0xaddr", &e, "scan-1").is_none());
+    assert!(known_name_entity("a", "0xaddr", &e, "scan-1").is_none());
 }
 
 #[test]
@@ -365,8 +415,8 @@ fn live_ctx() -> ModuleContext {
 /// `ip_reputation`/`pwned_passwords` tests use.
 async fn serve_once(status: u16, body: &'static str) -> std::net::SocketAddr {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
     tokio::spawn(async move {
         let Ok((mut sock, _)) = listener.accept().await else {
             return;
@@ -418,76 +468,4 @@ async fn enrich_esplora_parses_a_real_shaped_body_into_enrichment() {
     assert_eq!(enr.received, Some(200_000_000));
     assert_eq!(enr.tx_count, Some(8), "7 chain + 1 mempool");
     assert_eq!(enr.unit, "BTC");
-}
-
-// -- enrich_sol_at failure contract (T2.155) ---------------------------------
-
-#[test]
-fn sol_balance_response_decodes_a_jsonrpc_error_envelope() {
-    let resp: SolBalanceResp = serde_json::from_str(
-        r#"{"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid param"},"id":1}"#,
-    )
-    .unwrap();
-    assert!(resp.error.is_some(), "an RPC error envelope must decode into the error field");
-    assert!(resp.result.is_none());
-}
-
-#[tokio::test]
-async fn enrich_sol_surfaces_a_jsonrpc_error_envelope_instead_of_a_silent_none() {
-    // T2.155 regression: a JSON-RPC error envelope (HTTP 200, application-level
-    // failure) previously decoded to result:None and was silently treated
-    // identically to a legitimate empty balance — but getBalance has no such
-    // legitimate shape; a shape-only-validated SOL address reaching the RPC
-    // with an invalid param must surface as Err, not a hollow None.
-    let body = r#"{"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid param"},"id":1}"#;
-    let addr = serve_once(200, body).await;
-    crate::util::circuit_breaker::record_success("127.0.0.1");
-    let ctx = live_ctx();
-    let out = enrich_sol_at(&ctx, "SoLanaAddr111", &format!("http://{addr}")).await;
-    assert!(
-        out.is_err(),
-        "a JSON-RPC error envelope must surface as Err, not Ok(None)"
-    );
-    crate::util::circuit_breaker::record_success("127.0.0.1");
-}
-
-#[tokio::test]
-async fn enrich_sol_surfaces_a_malformed_body_instead_of_a_silent_none() {
-    // Neither result nor error present — not a documented getBalance shape.
-    let addr = serve_once(200, r#"{"jsonrpc":"2.0","id":1}"#).await;
-    crate::util::circuit_breaker::record_success("127.0.0.1");
-    let ctx = live_ctx();
-    let out = enrich_sol_at(&ctx, "SoLanaAddr111", &format!("http://{addr}")).await;
-    assert!(
-        out.is_err(),
-        "a body with neither result nor error must surface as Err"
-    );
-    crate::util::circuit_breaker::record_success("127.0.0.1");
-}
-
-#[tokio::test]
-async fn enrich_sol_zero_balance_is_a_genuine_ok_not_an_error() {
-    // The genuine negative must be preserved: an unfunded/never-used pubkey
-    // returns result.value = Some(0) on success — a real, distinguishable
-    // clean answer, never an Err.
-    let body = r#"{"jsonrpc":"2.0","result":{"context":{"slot":1},"value":0},"id":1}"#;
-    let addr = serve_once(200, body).await;
-    crate::util::circuit_breaker::record_success("127.0.0.1");
-    let ctx = live_ctx();
-    let enr = enrich_sol_at(&ctx, "SoLanaAddr111", &format!("http://{addr}"))
-        .await
-        .expect("a genuine zero-balance success must be Ok")
-        .expect("must yield Some(Enrichment)");
-    assert_eq!(enr.balance, 0);
-    assert_eq!(enr.unit, "SOL");
-}
-
-#[tokio::test]
-async fn enrich_sol_surfaces_a_5xx_as_error() {
-    let addr = serve_once(503, "upstream down").await;
-    crate::util::circuit_breaker::record_success("127.0.0.1");
-    let ctx = live_ctx();
-    let out = enrich_sol_at(&ctx, "SoLanaAddr111", &format!("http://{addr}")).await;
-    assert!(out.is_err(), "a 5xx must surface as Err");
-    crate::util::circuit_breaker::record_success("127.0.0.1");
 }

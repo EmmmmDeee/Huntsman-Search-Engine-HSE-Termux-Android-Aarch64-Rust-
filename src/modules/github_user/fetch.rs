@@ -1,4 +1,5 @@
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::{ModuleContext, ModuleResult},
 };
@@ -36,7 +37,12 @@ pub(super) fn ssh_key_entities(keys: &[SshKey], scan_id: &str, login: &str) -> V
     keys.iter()
         .filter_map(|key| {
             let fp = key.key.as_deref().and_then(ssh_fingerprint)?;
-            let mut e = Entity::new(EntityKind::Credential, &fp, 0.85, scan_id);
+            let mut e = Entity::new(
+                EntityKind::Credential,
+                &fp,
+                confidence::HIGH_PLUSPLUS_PLUS,
+                scan_id,
+            );
             e.tag("ssh-key");
             e.tag("public-key");
             e.tag("github");
@@ -61,7 +67,10 @@ pub(super) async fn fetch_ssh_keys(login: &str, ctx: &ModuleContext, result: &mu
         .http
         .get(&url)
         .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header(
+            "X-GitHub-Api-Version",
+            crate::modules::github_api::API_VERSION,
+        )
         .send()
         .await
     {
@@ -123,7 +132,7 @@ pub(super) async fn fetch_orgs(
     if let Some(t) = token {
         req = req.bearer_auth(t);
     }
-    let Ok(resp) = req.send().await else {
+    let Ok(resp) = req.send_tagged(SRC).await else {
         return Vec::new();
     };
     let status = resp.status();
@@ -164,7 +173,7 @@ pub(super) async fn fetch_gists(
     if let Some(t) = token {
         req = req.bearer_auth(t);
     }
-    let Ok(resp) = req.send().await else {
+    let Ok(resp) = req.send_tagged(SRC).await else {
         return Vec::new();
     };
     let status = resp.status();
@@ -214,7 +223,10 @@ pub(super) async fn fetch_gist_content(
             .http
             .get(&url)
             .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header(
+                "X-GitHub-Api-Version",
+                crate::modules::github_api::API_VERSION,
+            )
             .send_tagged(SRC)
             .await
         {
@@ -243,7 +255,7 @@ pub(super) async fn fetch_gist_content(
             let mut e = crate::core::entity::Entity::new(
                 crate::core::entity::EntityKind::Email,
                 &email,
-                0.72,
+                confidence::ATTRIBUTED,
                 &ctx.scan_id,
             );
             e.tag("github");
@@ -316,7 +328,7 @@ pub(super) fn commit_email_entities(events: &[GhEvent], scan_id: &str, login: &s
         .filter_map(usable_commit_email)
         .filter(|email| seen.insert(email.clone()))
         .map(|email| {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.82, scan_id);
+            let mut e = Entity::new(EntityKind::Email, &email, confidence::CORROBORATED, scan_id);
             e.tag("github");
             e.tag("commit-email");
             e.tag("public-profile");
@@ -339,7 +351,10 @@ pub(super) async fn fetch_events(login: &str, ctx: &ModuleContext, result: &mut 
         .http
         .get(&url)
         .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header(
+            "X-GitHub-Api-Version",
+            crate::modules::github_api::API_VERSION,
+        )
         .send()
         .await
     {

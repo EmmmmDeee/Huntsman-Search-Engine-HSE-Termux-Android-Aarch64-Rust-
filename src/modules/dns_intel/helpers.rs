@@ -19,6 +19,8 @@ pub(super) fn reverse_ip(ip: &str) -> Option<String> {
 /// (and the `unescape_dns_label` primitive it builds on) is single-sourced in
 /// `util::dns`; T2.125 folded this module's former private copy into it.
 pub(super) use crate::util::dns::soa_rname_to_email;
+#[cfg(test)]
+pub(super) use crate::util::dns::unescape_dns_label;
 
 /// Domain-ownership verification TXT prefixes → the vendor they prove a
 /// relationship with. A published verification record discloses which SaaS the

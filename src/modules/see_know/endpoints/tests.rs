@@ -38,21 +38,63 @@ use super::*;
     }
 
     #[test]
+    fn every_endpoint_sends_the_query_param_the_seeknow_contract_requires() {
+        // The SeekNow API keys each GET on a specific query-param NAME; a wrong
+        // name means the required argument never reaches the server (400 /
+        // empty). Regression: the public Discord endpoints were sending `id`,
+        // but the contract keys them on `discord_id` (only /enterprise/discord/*
+        // use `id`). Iterates the shared `ALL_ENDPOINT_CALLS` and maps each via
+        // an EXHAUSTIVE match, so adding an `EndpointCall` variant is a compile
+        // error here until its contract param is pinned — coverage can't
+        // silently lapse. SteamProfile maps to `None`: gaming/steam is a
+        // deliberate, in-code speculative endpoint absent from the contract.
+        for call in ALL_ENDPOINT_CALLS {
+            let expected: Option<&str> = match call {
+                EndpointCall::EmailCheck => Some("email"),
+                EndpointCall::SocialAggregate => Some("username"),
+                EndpointCall::GithubProfile => Some("username"),
+                EndpointCall::TwitterProfile => Some("username"),
+                EndpointCall::RedditProfile => Some("username"),
+                EndpointCall::TiktokProfile => Some("username"),
+                EndpointCall::UsernameHistory => Some("username"),
+                EndpointCall::RobloxProfile => Some("username"),
+                EndpointCall::XboxProfile => Some("gamertag"),
+                EndpointCall::MinecraftProfile => Some("username"),
+                EndpointCall::DiscordUser | EndpointCall::DiscordToRoblox => Some("discord_id"),
+                EndpointCall::PhoneInfo => Some("phone"),
+                EndpointCall::IpInfo => Some("ip"),
+                EndpointCall::DomainIntel => Some("domain"),
+                EndpointCall::Whois => Some("domain"),
+                EndpointCall::SteamProfile => None,
+            };
+            if let Some(param) = expected {
+                assert_eq!(
+                    call.spec().2,
+                    param,
+                    "{call:?} must send the documented `{param}` query param"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn endpoint_call_count_matches_the_documented_wired_total() {
-        // `util::see_know::integration_tests`'s endpoint ledger asserts 18
+        // `util::see_know::integration_tests`'s endpoint ledger asserts 19
         // of the 24 documented SeekNow endpoints are actually wired — 17
-        // `EndpointCall` variants plus the separate `/search` universal
-        // call (not an `EndpointCall` variant; dispatched directly by
-        // `modules::see_know::Module::process()`). This is the
-        // architecturally-correct place to pin that number (`util` cannot
-        // depend on `modules`, so the ledger itself can't check this
-        // directly) — if this assertion breaks, update BOTH this count and
-        // `util::see_know::integration_tests`'s ledger together.
+        // `EndpointCall` variants plus the separately-dispatched `/search`
+        // and `/search/deep` universal calls (neither an `EndpointCall`
+        // variant; both dispatched directly by
+        // `modules::see_know::Module::process()`, `/search/deep` as the
+        // fast-miss fallback). This is the architecturally-correct place to
+        // pin that number (`util` cannot depend on `modules`, so the ledger
+        // itself can't check this directly) — if this assertion breaks,
+        // update BOTH this count and `util::see_know::integration_tests`'s
+        // ledger together.
         assert_eq!(
             ALL_ENDPOINT_CALLS.len(),
             17,
-            "17 EndpointCall variants + /search (dispatched separately, not \
-             an EndpointCall) = 18 real wired endpoints"
+            "17 EndpointCall variants + /search + /search/deep (all dispatched \
+             separately, not EndpointCall variants) = 19 real wired endpoints"
         );
     }
 
@@ -104,7 +146,7 @@ use super::*;
         // FREE_COVERED_SINGLE_ORIGIN filter that dropped github/twitter/… has
         // been removed; effective_plan() now returns the complete matrix and
         // relies solely on the budget cap (300/scan) as the rate limiter.
-        let labels: Vec<&str> = effective_plan(TargetKind::Username, "alice")
+        let labels: Vec<&str> = effective_plan(TargetKind::Username, "alice", "test-full-matrix")
             .iter()
             .map(|c| c.label())
             .collect();
@@ -132,10 +174,14 @@ use super::*;
         // Discord/Steam ID resolution is cross-platform identity linkage, NOT
         // single-origin enumeration — it survives the filter even though the
         // paths live under discord/ and gaming/.
-        let labels: Vec<&str> = effective_plan(TargetKind::Username, "359023095012345678")
-            .iter()
-            .map(|c| c.label())
-            .collect();
+        let labels: Vec<&str> = effective_plan(
+            TargetKind::Username,
+            "359023095012345678",
+            "test-id-pivots",
+        )
+        .iter()
+        .map(|c| c.label())
+        .collect();
         assert!(
             labels.contains(&"discord_user") && labels.contains(&"discord_to_roblox"),
             "ID-resolution pivots must survive; got {labels:?}"
@@ -154,6 +200,32 @@ use super::*;
     }
 
     #[test]
+    fn effective_plan_orders_high_value_endpoints_first() {
+        // The live HVQS ordering must place higher value/cost (ROI) endpoints
+        // ahead of low-pivot leaf lookups, while preserving the full set. For a
+        // username, the social aggregate (pivot 70, broad coverage) must rank
+        // ahead of username history and a single-platform gaming leaf.
+        let plan = effective_plan(TargetKind::Username, "alice", "test-roi-order");
+        let labels: Vec<&str> = plan.iter().map(|c| c.label()).collect();
+
+        let idx = |l: &str| labels.iter().position(|x| *x == l);
+        let social = idx("social").expect("social present");
+        let history = idx("username_history").expect("history present");
+        let minecraft = idx("minecraft").expect("minecraft present");
+        assert!(
+            social < history && social < minecraft,
+            "high-value 'social' must precede low-pivot leaves; got {labels:?}"
+        );
+
+        // Set preserved: reordering never drops or adds an endpoint.
+        assert_eq!(
+            plan.len(),
+            plan_endpoints(TargetKind::Username, "alice").len(),
+            "ROI ordering must preserve the endpoint set"
+        );
+    }
+
+    #[test]
     fn plan_domain_covers_intel_and_whois() {
         let plan = plan_endpoints(TargetKind::Domain, "example.com");
         let labels: Vec<&str> = plan.iter().map(|c| c.label()).collect();
@@ -167,8 +239,9 @@ use super::*;
         // short-circuit without any HTTP regardless of budget state.
         // (Per-endpoint budget gating is exercised by the util-level
         // tests in `crate::util::see_know::tests`.)
-        let out = dispatch_plan("key", "alice", &[]).await;
+        let (out, failure) = dispatch_plan("key", "alice", &[]).await;
         assert!(out.is_empty());
+        assert!(failure.is_none(), "no calls made, so no failure to report");
     }
 
     #[test]

@@ -22,10 +22,18 @@ export const API = {
   // SOL-HEALTH-SIGNAL) — the same live dispatch-outcome data `hse doctor` reports.
   // Complements scraperHealth (cross-scan, persisted) rather than replacing it.
   moduleHealth: ()=>API._req('/api/v1/modules/health'),
+  // Proactive live capability probe: fire one bounded request per keyless module
+  // at its real provider and report alive/empty/unreachable/drift per module —
+  // the HTTP twin of `hse doctor --live`. Network-bound, so it is button-
+  // triggered (never in the 30 s auto-refresh) and can take a few seconds.
+  capabilitiesProbe: ()=>API._req('/api/v1/capabilities/probe',{method:'POST'}),
   scans:     ()=>API._req('/api/v1/scans'),
   scan:      id=>API._req('/api/v1/scans/'+encodeURIComponent(id)),
   entities:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/entities'),
   correlations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/correlations'),
+  // The calibrated 0–100 Exposure Index + its per-signal breakdown — the same
+  // headline verdict the CLI dossier and debug bundle open with.
+  exposure:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/exposure'),
   relations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/relations'),
   // Paired stealer-log credential rows (login+password+domain+machine, kept
   // together) — powers the Stealer Logs Viewer sub-tab.
@@ -93,17 +101,20 @@ export const API = {
   reportUrl: (id, includeInfra)=>'/api/v1/scans/'+encodeURIComponent(id)+'/report.json'+(includeInfra?'?include_infra=1':''),
   gexfUrl:   id=>'/api/v1/scans/'+encodeURIComponent(id)+'/graph.gexf',
   debugUrl:  id=>'/api/v1/scans/'+encodeURIComponent(id)+'/debug.txt',
+  eventsLogUrl: id=>'/api/v1/scans/'+encodeURIComponent(id)+'/events.log',
   keysGet:   ()=>API._req('/api/v1/settings/keys'),
   keysPut:   body=>API._req('/api/v1/settings/keys',{method:'PUT',body}),
   // Key POOL (multi-key per service): masked list + revoke-by-non-secret-id.
   // Loopback-only; revoke also needs --allow-key-write. Plaintext never leaves
   // the device — the raw values come from `hse keys export` in the shell.
   poolGet:    ()=>API._req('/api/v1/keys/pool'),
+  poolAdd:    body=>API._req('/api/v1/keys/pool/add',{method:'POST',body}),
   poolRevoke: body=>API._req('/api/v1/keys/pool/revoke',{method:'POST',body}),
   poolRotate: body=>API._req('/api/v1/keys/pool/rotate',{method:'POST',body}),
   // Operator diagnostics: per-service key-pool health/quota + the detector
   // coverage catalogue. Surfaced read-only in Settings (loopback-only).
   keysStatus:   ()=>API._req('/api/v1/keys/status'),
+  keysHealth:   ()=>API._req('/api/v1/keys/health'),
   keysPatterns: ()=>API._req('/api/v1/keys/patterns'),
   // Key Harvest dashboard feed: vault bank + ROI tiering + live SeekNow/
   // OathNet/WiGLE account health. Loopback-only.
@@ -120,15 +131,19 @@ export const API = {
   // scan never runs them. Both take NO input whatsoever.
   //   radarLive():  CONTINUOUS autonomous radar — a zero-input live session that
   //                 re-enumerates the device's passive signals in real time.
-  //   radarSweep(): ONE autonomous sweep (kept for API back-compat; optional seed).
+  //   radarSweep(): ONE autonomous sweep (kept for API back-compat). No inputs.
   radarLive: ()=>API._req('/api/v1/radar/live',{method:'POST'}),
-  radarSweep: seed=>API._req('/api/v1/radar'+(seed?('?seed='+encodeURIComponent(seed)):''),{method:'POST'}),
+  radarSweep: ()=>API._req('/api/v1/radar',{method:'POST'}),
   // Historical review of past radar sweeps — sourced from the persisted scans
   // table, so it survives a server restart (unlike the in-memory live-session
   // list above). This is what makes "what was around me earlier" reviewable.
   radarHistory: limit=>API._req('/api/v1/radar/history'+(limit?('?limit='+encodeURIComponent(limit)):'')),
   selftest:     ()=>API._req('/api/v1/selftest'),
   logsUrl:      ()=>'/api/v1/logs',
+  // Live tail of the verbose debug-log ring (loopback-only): pass the cursor
+  // from the previous response to get only newer lines. Backs the live
+  // Debug Log view (#/debuglog).
+  logsTail:     cursor=>API._req('/api/v1/logs/tail'+(cursor?('?after='+encodeURIComponent(cursor)):'')),
   // One-click consolidated system self-diagnosis bundle (loopback-only):
   // DETECTED ISSUES verdict + environment + self-test + module/engine/scraper
   // health + recent scans + logs + source manifest — everything needed to

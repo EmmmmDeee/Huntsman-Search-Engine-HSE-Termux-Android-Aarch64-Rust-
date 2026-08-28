@@ -21,11 +21,15 @@
 //! corroboration. The Forgejo API is stable, public, and rate-limit-free
 //! for non-authenticated read queries on public data. Official, keyless.
 
+#[cfg(test)]
+mod tests;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -66,7 +70,7 @@ impl Module for CodebergUser {
     }
 
     fn description(&self) -> &'static str {
-        "Codeberg account lookup (name, bio, website, location) via public Forgejo API"
+        "Codeberg account recon — enumerates name, bio, website, and location via the public Forgejo API"
     }
 
     fn priority(&self) -> u8 {
@@ -146,7 +150,12 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
     }
 
     // Confirmed-on-Codeberg username.
-    let mut u = Entity::new(EntityKind::Username, &user.login, 0.88, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        &user.login,
+        confidence::EXPERT,
+        scan_id,
+    );
     u.tag("codeberg");
     u.tag("code");
     u.add_evidence(ev.clone());
@@ -158,7 +167,7 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
     } else {
         format!("https://codeberg.org/{}", user.login)
     };
-    let mut url_e = Entity::new(EntityKind::Url, &purl, 0.78, scan_id);
+    let mut url_e = Entity::new(EntityKind::Url, &purl, confidence::STRONG, scan_id);
     url_e.tag("codeberg");
     url_e.add_evidence(Evidence::new(
         SRC,
@@ -168,7 +177,7 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
 
     // Real name → Person (≥2 tokens, non-placeholder).
     if let Some(name) = user.full_name.as_deref()
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.72, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::ATTRIBUTED, scan_id)
     {
         p.tag("codeberg");
         p.tag("derived");
@@ -189,7 +198,7 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
     if let Some(email) = user.email.as_deref() {
         let email = email.trim();
         if email.contains('@') && !crate::util::domains::is_noreply_email_domain(email) {
-            let mut em = Entity::new(EntityKind::Email, email, 0.78, scan_id);
+            let mut em = Entity::new(EntityKind::Email, email, confidence::STRONG, scan_id);
             em.tag("codeberg");
             em.tag("public-profile");
             em.add_evidence(
@@ -206,7 +215,12 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
     // Personal website URL + Domain. The Url and Domain carry distinct evidence,
     // so the kit's stable [Url, Domain] ordering is decorated per-kind.
     if let Some(site) = user.website.as_deref() {
-        for mut e in profile_kit::website_url_and_domain(site, 0.72, 0.65, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(
+            site,
+            confidence::ATTRIBUTED,
+            confidence::HIGH,
+            scan_id,
+        ) {
             match e.kind {
                 EntityKind::Domain => {
                     e.tag("codeberg");
@@ -270,7 +284,7 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
 
     // Bio/description — extract emails.
     if let Some(bio) = user.description.as_deref() {
-        for mut e in profile_kit::bio_emails(bio, 0.70, scan_id) {
+        for mut e in profile_kit::bio_emails(bio, confidence::HIGH_PLUS, scan_id) {
             e.tag("codeberg");
             e.tag("public-profile");
             e.add_evidence(
@@ -282,155 +296,4 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
     }
 
     result.entities
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_user(
-        login: &str,
-        full_name: Option<&str>,
-        description: Option<&str>,
-        website: Option<&str>,
-        location: Option<&str>,
-    ) -> CbUser {
-        CbUser {
-            login: login.to_string(),
-            full_name: full_name.map(str::to_string),
-            email: None,
-            description: description.map(str::to_string),
-            location: location.map(str::to_string),
-            website: website.map(str::to_string),
-            html_url: Some(format!("https://codeberg.org/{login}")),
-            created: Some("2021-03-15T00:00:00Z".to_string()),
-        }
-    }
-
-    #[test]
-    fn emits_public_email_from_top_level_field() {
-        // The top-level `email` field the sibling gitea_user harvests but this
-        // module used to drop.
-        let mut user = make_user("alice", None, None, None, None);
-        user.email = Some("alice@personal.dev".to_string());
-        let ents = build_entities(user, "scan-cb-email");
-        let em = ents.iter().find(|e| e.kind == EntityKind::Email);
-        assert!(
-            em.is_some(),
-            "must emit Email from the top-level email field"
-        );
-        assert_eq!(em.unwrap().value, "alice@personal.dev");
-        assert!(em.unwrap().has_tag("codeberg"));
-    }
-
-    #[test]
-    fn skips_forge_noreply_masking_email() {
-        // A `@noreply.codeberg.org` masking address is a privacy placeholder,
-        // not a real contact — it must NOT become an Email finding (and both
-        // Forgejo siblings must agree on this).
-        let mut user = make_user("alice", None, None, None, None);
-        user.email = Some("alice@noreply.codeberg.org".to_string());
-        let ents = build_entities(user, "scan-cb-noreply");
-        assert!(
-            ents.iter().all(|e| e.kind != EntityKind::Email),
-            "a forge no-reply masking address must not seed an Email finding"
-        );
-    }
-
-    #[test]
-    fn deserialises_real_codeberg_shape_including_top_level_email() {
-        // Regression for the dropped field: the pre-fix `CbUser` had no `email`,
-        // so a real published address in the top-level field was lost.
-        let body = r#"{
-            "login": "alice",
-            "full_name": "Alice Dev",
-            "email": "alice@alice.dev",
-            "description": "FOSS developer",
-            "website": "https://alice.dev",
-            "html_url": "https://codeberg.org/alice",
-            "created": "2021-03-15T00:00:00Z"
-        }"#;
-        let user: CbUser = serde_json::from_str(body).expect("real codeberg body must deserialise");
-        assert_eq!(user.email.as_deref(), Some("alice@alice.dev"));
-        let ents = build_entities(user, "scan-cb-real");
-        assert!(
-            ents.iter()
-                .any(|e| e.kind == EntityKind::Email && e.value == "alice@alice.dev"),
-            "the real published email must be recovered from the top-level field"
-        );
-    }
-
-    #[test]
-    fn builds_username_entity_confirmed_on_codeberg() {
-        let user = make_user("alice", None, None, None, None);
-        let ents = build_entities(user, "scan-cb-001");
-        let u = ents
-            .iter()
-            .find(|e| e.kind == EntityKind::Username && e.value == "alice");
-        assert!(u.is_some(), "must emit Username entity");
-        assert!((u.unwrap().confidence - 0.88).abs() < 0.01);
-        assert!(u.unwrap().has_tag("codeberg") && u.unwrap().has_tag("code"));
-    }
-
-    #[test]
-    fn emits_person_from_full_name() {
-        let user = make_user("alice", Some("Alice Developer"), None, None, None);
-        let ents = build_entities(user, "scan-cb-002");
-        let p = ents.iter().find(|e| e.kind == EntityKind::Person);
-        assert!(p.is_some(), "must emit Person from multi-word full name");
-        assert_eq!(p.unwrap().value, "Alice Developer");
-    }
-
-    #[test]
-    fn emits_website_url_and_domain() {
-        let user = make_user("alice", None, None, Some("https://alice.dev"), None);
-        let ents = build_entities(user, "scan-cb-003");
-        assert!(
-            ents.iter()
-                .any(|e| e.kind == EntityKind::Url && e.value == "https://alice.dev"),
-            "must emit website URL"
-        );
-        assert!(
-            ents.iter()
-                .any(|e| e.kind == EntityKind::Domain && e.value == "alice.dev"),
-            "must emit domain from website"
-        );
-    }
-
-    #[test]
-    fn emits_address_from_location() {
-        let user = make_user("alice", None, None, None, Some("Berlin, DE"));
-        let ents = build_entities(user, "scan-cb-004");
-        let a = ents.iter().find(|e| e.kind == EntityKind::Address);
-        assert!(a.is_some(), "must emit Address from location");
-        assert_eq!(a.unwrap().value, "Berlin, DE");
-        assert!(a.unwrap().has_tag("self-asserted"));
-    }
-
-    #[test]
-    fn emits_email_from_bio() {
-        let user = make_user(
-            "alice",
-            None,
-            Some("Contact me at alice@example.com"),
-            None,
-            None,
-        );
-        let ents = build_entities(user, "scan-cb-005");
-        assert!(
-            ents.iter()
-                .any(|e| e.kind == EntityKind::Email && e.value == "alice@example.com"),
-            "must extract email from bio"
-        );
-    }
-
-    #[test]
-    fn no_person_from_single_token_name() {
-        let user = make_user("alice", Some("alice"), None, None, None);
-        let ents = build_entities(user, "scan-cb-006");
-        assert!(
-            ents.iter().all(|e| e.kind != EntityKind::Person),
-            "single-token full_name must not emit a Person"
-        );
-    }
 }

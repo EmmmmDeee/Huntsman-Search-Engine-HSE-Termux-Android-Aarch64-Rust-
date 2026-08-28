@@ -85,6 +85,26 @@ use super::*;
     }
 
     #[test]
+    fn role_localpart_does_not_segment_match_ambiguous_personal_names() {
+        // Regression: "nic" is a ubiquitous personal-name token (Nic/Nick/Nicole),
+        // not an unambiguous infra token. It was being segment-matched, so
+        // nic.smith@acme.com.au (a genuine person) was classified infrastructure
+        // and dropped from WHOIS/RIPE/SERP emission. "nic" stays in the whole-string
+        // ROLE list (so bare `nic@registrar` is still caught) but is NOT in the
+        // segment-match list anymore.
+        assert!(!is_role_localpart("nic.smith"));
+        assert!(!is_role_localpart("nic-taylor"));
+        assert!(!is_role_localpart("nic_jones"));
+        // But a bare `nic@` IS still caught by the whole-string match.
+        assert!(is_role_localpart("nic"));
+        // So is_infrastructure_email allows real personal mailboxes through:
+        assert!(!is_infrastructure_email("nic.smith@acme.com.au"));
+        assert!(!is_infrastructure_email("nic.smith@gmail.com"));
+        // But the role mailbox is still gatekept at the domain level or by name.
+        assert!(is_infrastructure_email("nic@isoc.org"));
+    }
+
+    #[test]
     fn freemail_basics() {
         assert!(is_freemail("gmail.com"));
         assert!(is_freemail("bigpond.com"));
@@ -94,6 +114,23 @@ use super::*;
         assert!(is_freemail("iprimus.com.au"));
         assert!(!is_freemail("acme.com.au"));
         assert!(!is_freemail(""));
+    }
+
+    #[test]
+    fn is_proxy_registrant_delegates_to_the_canonical_whois_placeholder_check() {
+        // Consolidation fix: is_proxy_registrant used to maintain its own
+        // separate marker list that had drifted from
+        // core::validation::is_whois_privacy_placeholder (the whois/whoisxml
+        // modules' identical check) in BOTH directions. Now delegates, so
+        // markers either list alone used to carry are recognised by both.
+        // Was only in is_proxy_registrant's old list:
+        assert!(is_proxy_registrant("DomainsByProxy.com", false));
+        assert!(is_proxy_registrant("Domain Protection Services, Inc.", false));
+        // Was only in is_whois_privacy_placeholder's old list:
+        assert!(is_proxy_registrant("Statutory Masking Enabled", false));
+        assert!(is_proxy_registrant("GDPR Masked", false));
+        // A genuine company name must still pass through untouched.
+        assert!(!is_proxy_registrant("Acme Pty Ltd", false));
     }
 
     #[test]

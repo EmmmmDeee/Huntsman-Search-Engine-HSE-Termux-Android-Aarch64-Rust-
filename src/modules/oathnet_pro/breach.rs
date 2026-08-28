@@ -6,7 +6,19 @@
 //! (`push_oathnet_entity`) lives here too. Reaches parent items via `use super::*`.
 
 use super::*;
+use crate::core::confidence;
 use crate::util::extract::CredentialField;
+
+/// True for a value that is really an absence sentinel (`\N`, `NULL`, an empty/
+/// whitespace string, a redaction placeholder), not a datum — the SAME guard
+/// SeekNow/breach_rich already apply (`breach_rich::is_absent_marker`). Gating
+/// an emission on it stops a breach page where many rows carry `\N` employer or
+/// `NULL` country/location from minting one shared node that fuses all those
+/// unrelated strangers together — a false positive, the worst kind for an
+/// evidentiary tool.
+fn is_absent(s: &str) -> bool {
+    crate::util::json::is_null_sentinel(s) || crate::util::extract::is_placeholder_secret(s)
+}
 // ─── Entity extraction ─────────────────────────────────────────────────────
 
 pub(super) fn breach_evidence(item: &Value) -> Evidence {
@@ -177,6 +189,7 @@ pub(super) fn push_oathnet_entity(
 /// whole stranger-laden page) means the dossier reflects the subject's own
 /// records. Attributes are aggregated additively (order-preserving, deduplicated)
 /// so multiple hits and aliases are all retained, never overwritten.
+#[must_use]
 pub(super) fn breach_parent_entity(
     target: &Target,
     scan_id: &str,
@@ -200,7 +213,7 @@ pub(super) fn breach_parent_entity(
         .filter(|h| identify_password_hash(h).is_some_and(|(_, fast)| fast))
         .count();
 
-    let mut parent = target.to_entity(0.85, scan_id);
+    let mut parent = target.to_entity(confidence::HIGH_PLUSPLUS_PLUS, scan_id);
     parent.tag(tags::BREACH);
     parent.tag("oathnet-pro");
     let mut ev = Evidence::new(
@@ -271,7 +284,7 @@ pub(super) fn extract_breach_page(
         // Unconditional — independent of the candidate cap and the target
         // match (see the doc comment), kept after PII extraction to preserve
         // the original per-row ordering.
-        store_api_credential(item, SRC);
+        store_api_credential(item, SRC, scan_id, seen, result);
         extract_api_keys_from_item(item, scan_id, SRC, seen, result);
     }
 }
@@ -316,7 +329,7 @@ pub(super) fn extract_breach_entities_with(
         if looks_like_email(&lower) && seen.insert(lower) {
             push_oathnet_entity(
                 result,
-                Entity::new(EntityKind::Email, &email, 0.70, scan_id),
+                Entity::new(EntityKind::Email, &email, confidence::HIGH_PLUS, scan_id),
                 &ev,
                 &[],
                 is_target_row,
@@ -329,7 +342,7 @@ pub(super) fn extract_breach_entities_with(
         if lower.len() >= 3 && seen.insert(lower) {
             push_oathnet_entity(
                 result,
-                Entity::new(EntityKind::Username, &uname, 0.65, scan_id),
+                Entity::new(EntityKind::Username, &uname, confidence::HIGH, scan_id),
                 &ev,
                 &[],
                 is_target_row,
@@ -343,7 +356,7 @@ pub(super) fn extract_breach_entities_with(
     {
         push_oathnet_entity(
             result,
-            Entity::new(EntityKind::Phone, &ph, 0.70, scan_id),
+            Entity::new(EntityKind::Phone, &ph, confidence::HIGH_PLUS, scan_id),
             &ev,
             &[],
             is_target_row,
@@ -363,11 +376,16 @@ pub(super) fn extract_breach_entities_with(
             && !is_username_derived_name(t)
             && seen.insert(t.to_lowercase())
         {
+            // Parity with SeekNow: stamp the record's demographics (DOB / gender
+            // / age) as normalized first-class tags on the Person, so OathNet's
+            // subject nodes filter/merge on the same signals SeekNow's do.
+            let id_tags = crate::util::identity::identity_tags(item);
+            let id_refs: Vec<&str> = id_tags.iter().map(String::as_str).collect();
             push_oathnet_entity(
                 result,
-                Entity::new(EntityKind::Person, t, 0.70, scan_id),
+                Entity::new(EntityKind::Person, t, confidence::HIGH_PLUS, scan_id),
                 &ev,
-                &[],
+                &id_refs,
                 is_target_row,
             );
         }
@@ -384,7 +402,7 @@ pub(super) fn extract_breach_entities_with(
         {
             push_oathnet_entity(
                 result,
-                Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id),
+                Entity::new(EntityKind::IpAddress, &ip, confidence::MEDIUM_PLUS, scan_id),
                 &ev,
                 &["geolocation-lead"],
                 is_target_row,
@@ -393,11 +411,17 @@ pub(super) fn extract_breach_entities_with(
     }
 
     if let Some(country) = val_str(item, "country")
+        && !is_absent(&country)
         && seen.insert(format!("@country:{country}"))
     {
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(&country) {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::LOW_MEDIUM,
+                scan_id,
+            );
             c.tag("addr-derived");
             c.tag("geoint");
             c.tag("breach");
@@ -410,7 +434,12 @@ pub(super) fn extract_breach_entities_with(
         }
         push_oathnet_entity(
             result,
-            Entity::new(EntityKind::Address, &country, 0.55, scan_id),
+            Entity::new(
+                EntityKind::Address,
+                &country,
+                confidence::MEDIUM_HIGH,
+                scan_id,
+            ),
             &ev,
             &[],
             is_target_row,
@@ -440,14 +469,20 @@ pub(super) fn extract_breach_entities_with(
         // `val_str` rejects empty strings but not whitespace-only ones, so trim
         // each part and drop any that collapse to nothing — otherwise a blank
         // `state`/`postal` would leave a `", ,"` gap or a trailing `", "` in the
-        // composed value and degrade geocoding.
-        .filter(|s| !s.is_empty())
+        // composed value and degrade geocoding. Also drop an absence sentinel
+        // (`\N`/`NULL`/redaction) part so it can't fuse strangers into one address.
+        .filter(|s| !s.is_empty() && !is_absent(s))
         .collect::<Vec<&str>>()
         .join(", ");
         if addr.len() >= 4 && seen.insert(format!("@addr:{}", addr.to_lowercase())) {
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.55, scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::MEDIUM_HIGH,
+                    scan_id,
+                );
                 c.tag("addr-derived");
                 c.tag("geoint");
                 c.tag("breach");
@@ -460,7 +495,7 @@ pub(super) fn extract_breach_entities_with(
             }
             push_oathnet_entity(
                 result,
-                Entity::new(EntityKind::Address, &addr, 0.65, scan_id),
+                Entity::new(EntityKind::Address, &addr, confidence::HIGH, scan_id),
                 &ev,
                 &[],
                 is_target_row,
@@ -474,10 +509,16 @@ pub(super) fn extract_breach_entities_with(
     // "US" that are already captured as the `country` evidence attribute.
     if let Some(loc) = val_str(item, "location") {
         let loc = loc.trim();
-        if loc.len() >= 4 && seen.insert(format!("@loc:{}", loc.to_lowercase())) {
+        if loc.len() >= 4 && !is_absent(loc) && seen.insert(format!("@loc:{}", loc.to_lowercase()))
+        {
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.30, scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::SPECULATIVE,
+                    scan_id,
+                );
                 c.tag("addr-derived");
                 c.tag("geoint");
                 c.tag("breach");
@@ -490,7 +531,7 @@ pub(super) fn extract_breach_entities_with(
             }
             push_oathnet_entity(
                 result,
-                Entity::new(EntityKind::Address, loc, 0.40, scan_id),
+                Entity::new(EntityKind::Address, loc, confidence::LOW, scan_id),
                 &ev,
                 &["geo-hint", "free-text-location"],
                 is_target_row,
@@ -506,11 +547,33 @@ pub(super) fn extract_breach_entities_with(
             Entity::new(
                 EntityKind::Username,
                 format!("discord:{did}"),
-                0.55,
+                confidence::MEDIUM_HIGH,
                 scan_id,
             ),
             &ev,
             &["discord"],
+            is_target_row,
+        );
+    }
+
+    // SteamID64 — parity with SeekNow's identity handling. OathNet shares the
+    // same V2 breach schema, so leaked SteamID64s appear here too; gate them by
+    // the shared strict heuristic and mint the same `steam:<id>` Username pivot
+    // (which feeds the gaming-endpoint expansion) instead of discarding them.
+    if let Some(sid) = val_str_or_coerce(item, &["steam_id", "steamid", "steam_id64"])
+        && crate::util::identity::looks_like_steam_id(&sid)
+        && seen.insert(format!("@steam:{sid}"))
+    {
+        push_oathnet_entity(
+            result,
+            Entity::new(
+                EntityKind::Username,
+                format!("steam:{sid}"),
+                confidence::MEDIUM_PLUS,
+                scan_id,
+            ),
+            &ev,
+            &["steam"],
             is_target_row,
         );
     }
@@ -520,7 +583,7 @@ pub(super) fn extract_breach_entities_with(
     {
         push_oathnet_entity(
             result,
-            Entity::new(EntityKind::Username, &ig, 0.55, scan_id),
+            Entity::new(EntityKind::Username, &ig, confidence::MEDIUM_HIGH, scan_id),
             &ev,
             &["instagram"],
             is_target_row,
@@ -541,7 +604,7 @@ pub(super) fn extract_breach_entities_with(
                 };
                 push_oathnet_entity(
                     result,
-                    Entity::new(EntityKind::Url, &url_val, 0.60, scan_id),
+                    Entity::new(EntityKind::Url, &url_val, confidence::MEDIUM_PLUS, scan_id),
                     &ev,
                     &["linkedin"],
                     is_target_row,
@@ -553,7 +616,7 @@ pub(super) fn extract_breach_entities_with(
                 Entity::new(
                     EntityKind::Username,
                     format!("linkedin:{li}"),
-                    0.55,
+                    confidence::MEDIUM_HIGH,
                     scan_id,
                 ),
                 &ev,
@@ -576,8 +639,12 @@ pub(super) fn extract_breach_entities_with(
     ] {
         if let Some(org) = val_str(item, k) {
             let org = org.trim();
-            if org.len() >= 2 && seen.insert(format!("@org:{}", org.to_ascii_lowercase())) {
-                let mut oe = Entity::new(EntityKind::Organisation, org, 0.50, scan_id);
+            if org.len() >= 2
+                && !is_absent(org)
+                && seen.insert(format!("@org:{}", org.to_ascii_lowercase()))
+            {
+                let mut oe =
+                    Entity::new(EntityKind::Organisation, org, confidence::MEDIUM, scan_id);
                 oe.tag("oathnet");
                 oe.tag("employer-field");
                 push_oathnet_entity(result, oe, &ev, &[], is_target_row);
@@ -596,7 +663,7 @@ pub(super) fn extract_breach_entities_with(
         {
             push_oathnet_entity(
                 result,
-                Entity::new(EntityKind::Domain, &lower, 0.55, scan_id),
+                Entity::new(EntityKind::Domain, &lower, confidence::MEDIUM_HIGH, scan_id),
                 &ev,
                 &["email-domain"],
                 is_target_row,
@@ -654,7 +721,7 @@ pub(super) fn extract_breach_entities_with(
         }
         push_oathnet_entity(
             result,
-            Entity::new(EntityKind::Password, &ph, 0.50, scan_id),
+            Entity::new(EntityKind::Password, &ph, confidence::MEDIUM, scan_id),
             &ev,
             &extra,
             is_target_row,
@@ -665,7 +732,7 @@ pub(super) fn extract_breach_entities_with(
         {
             push_oathnet_entity(
                 result,
-                Entity::new(EntityKind::Password, pt, 0.55, scan_id),
+                Entity::new(EntityKind::Password, pt, confidence::MEDIUM_HIGH, scan_id),
                 &ev,
                 &["cracked", "weak-password", "from-hash"],
                 is_target_row,
@@ -694,7 +761,7 @@ pub(super) fn extract_breach_entities_with(
                 if seen.insert(format!("@pw-email:{lower}")) {
                     push_oathnet_entity(
                         result,
-                        Entity::new(EntityKind::Email, p, 0.45, scan_id),
+                        Entity::new(EntityKind::Email, p, confidence::LOW_MEDIUM, scan_id),
                         &ev,
                         &["recovered-from-password"],
                         is_target_row,
@@ -715,7 +782,7 @@ pub(super) fn extract_breach_entities_with(
                 {
                     push_oathnet_entity(
                         result,
-                        Entity::new(EntityKind::Password, p, 0.55, scan_id),
+                        Entity::new(EntityKind::Password, p, confidence::MEDIUM_HIGH, scan_id),
                         &ev,
                         &["plaintext-password"],
                         is_target_row,
@@ -742,7 +809,7 @@ pub(super) fn extract_breach_entities_with(
             Entity::new(
                 EntityKind::Other("iban".to_string()),
                 iban.trim(),
-                0.70,
+                confidence::HIGH_PLUS,
                 scan_id,
             ),
             &ev,
@@ -772,7 +839,7 @@ pub(super) fn extract_breach_entities_with(
             {
                 push_oathnet_entity(
                     result,
-                    Entity::new(EntityKind::Username, h, 0.55, scan_id),
+                    Entity::new(EntityKind::Username, h, confidence::MEDIUM_HIGH, scan_id),
                     &ev,
                     &[platform],
                     is_target_row,
@@ -791,7 +858,7 @@ pub(super) fn extract_breach_entities_with(
             if seen.insert(email.clone()) {
                 push_oathnet_entity(
                     result,
-                    Entity::new(EntityKind::Email, &email, 0.55, scan_id),
+                    Entity::new(EntityKind::Email, &email, confidence::MEDIUM_HIGH, scan_id),
                     &ev,
                     &["bio-mined"],
                     is_target_row,
@@ -802,7 +869,7 @@ pub(super) fn extract_breach_entities_with(
             if seen.insert(format!("@bio-phone:{phone}")) {
                 push_oathnet_entity(
                     result,
-                    Entity::new(EntityKind::Phone, &phone, 0.50, scan_id),
+                    Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM, scan_id),
                     &ev,
                     &["bio-mined"],
                     is_target_row,

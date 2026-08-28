@@ -8,16 +8,91 @@
  */
 import { esc } from '/static/js/helpers.js';
 
-/* ─── Navbar collapse (mobile hamburger) ─── */
-export function initNavbarToggle(){
-  document.addEventListener('click', e=>{
-    const btn = e.target.closest('.navbar-toggle');
-    if (!btn) return;
-    const target = document.querySelector(btn.dataset.target || btn.getAttribute('href') || '');
-    if (!target) return;
-    const open = target.classList.toggle('in');
+/* ─── "More" sheet (narrow screens; the panel flows inline from 768px up) ───
+ *
+ * Replaces the old hamburger, which collapsed the whole nav behind a tap. The
+ * primary destinations now live permanently in the bottom tab bar, so this only
+ * raises the secondary ones. Closing on outside-tap, Escape and navigation
+ * matters more here than it did for a dropdown: the sheet covers the tab bar it
+ * sits on, so leaving it open would hide the primary navigation behind it. */
+export function initMoreSheet(){
+  const btn   = document.getElementById('more-toggle');
+  const panel = document.getElementById('morepanel');
+  if (!btn || !panel) return;
+
+  const setOpen = open => {
+    panel.classList.toggle('open', open);
+    // Deliberately not `.active`: that marks the destination you are ON, and
+    // the route behind the sheet still owns it. Two accented tabs would say
+    // you are in two places at once.
+    btn.classList.toggle('sheet-open', open);
     btn.setAttribute('aria-expanded', String(open));
+  };
+
+  btn.addEventListener('click', e=>{
+    e.preventDefault();
+    setOpen(!panel.classList.contains('open'));
   });
+  // Picking a destination, tapping elsewhere, or Escape all dismiss it.
+  panel.addEventListener('click', e=>{ if (e.target.closest('.navlink')) setOpen(false); });
+  document.addEventListener('click', e=>{
+    if (!panel.classList.contains('open')) return;
+    if (e.target.closest('#morepanel') || e.target.closest('#more-toggle')) return;
+    setOpen(false);
+  });
+  document.addEventListener('keydown', e=>{ if (e.key === 'Escape') setOpen(false); });
+  // A hash change can also come from a link inside a view, not just the sheet.
+  window.addEventListener('hashchange', ()=>setOpen(false));
+}
+
+/* ─── Responsive tables ───
+ *
+ * A seven-column scan table is 744px wide; a phone gives it 343px. It survived
+ * only because `.table-responsive` scrolls sideways, which means status, entity
+ * count and the row's own action buttons all sat off-screen behind a gesture
+ * nothing advertised.
+ *
+ * Below the layout breakpoint the CSS restacks each row into a labelled card.
+ * That needs every cell to know its column name, and the ~40 view files build
+ * their markup as template strings with no such attribute. Rather than edit all
+ * of them, copy the header text down into `data-label` once per render: the
+ * header is already right there in the same table, and doing it here means any
+ * table added later reflows without its author having to know this exists.
+ *
+ * Header-less tables (used for layout rather than data) are skipped, so they
+ * keep their current behaviour. */
+export function labelTables(root){
+  (root || document).querySelectorAll('.table-responsive table').forEach(table => {
+    const heads = [...table.querySelectorAll('thead th')].map(th => th.textContent.trim());
+    if (!heads.length) return;
+    table.querySelectorAll('tbody tr').forEach(tr => {
+      [...tr.children].forEach((td, i) => {
+        const label = heads[i];
+        if (label && !td.dataset.label) td.dataset.label = label;
+      });
+    });
+  });
+}
+
+/* Label on every paint, not just the router's.
+ *
+ * Tables appear well after a route finishes rendering — scan-info swaps panels
+ * on tab clicks, several views poll and repaint, the live log appends rows —
+ * so hooking the router alone would leave most tables in the app unlabelled and
+ * therefore unlabelled-looking once restacked. Observing the mount point covers
+ * every one of those paths from a single place, and the pass is idempotent
+ * (cells already carrying a label are skipped). */
+export function initTableLabels(){
+  const view = document.getElementById('view');
+  if (!view) return;
+  labelTables(view);
+  let queued = false;
+  new MutationObserver(() => {
+    if (queued) return;
+    queued = true;
+    // Coalesce a burst of DOM writes into one pass at the end of the frame.
+    requestAnimationFrame(() => { queued = false; labelTables(view); });
+  }).observe(view, { childList:true, subtree:true });
 }
 
 /* ─── Modal (About dialog, and any future data-toggle="modal" trigger) ─── */
@@ -88,15 +163,33 @@ function applySort(table, col, heads, forceDir){
   th.classList.add(dir === 'asc' ? 'sort-asc' : 'sort-desc');
   const tbody = table.querySelector('tbody');
   if (!tbody) return;
-  const rows = Array.from(tbody.querySelectorAll('tr'));
-  rows.sort((a, b)=>{
-    const av = cellSortValue(a.children[col] || {});
-    const bv = cellSortValue(b.children[col] || {});
+  // Group each primary row with an immediately-following hidden detail panel
+  // (e.g. scan_info/browse.js's click-to-expand evidence row,
+  // `.entity-detail-row`) and sort/re-append the GROUP as one unit. Sorting
+  // every `<tr>` independently — the previous behaviour — silently splits a
+  // primary row from its detail row (they land in unrelated positions once
+  // reordered by a column the detail row has no cell for), and
+  // `toggleDetail()` locates the panel via `nextElementSibling`, so a split
+  // pair makes the expand/collapse click do nothing. Harmless no-op for
+  // tables with no detail rows (every group is just the row itself).
+  const allRows = Array.from(tbody.querySelectorAll('tr'));
+  const groups = [];
+  for (let i = 0; i < allRows.length; i++){
+    const row = allRows[i];
+    if (row.classList.contains('entity-detail-row')) continue; // consumed below
+    const next = allRows[i + 1];
+    const detail = next && next.classList.contains('entity-detail-row') ? next : null;
+    if (detail) i++;
+    groups.push({ primary: row, detail });
+  }
+  groups.sort((a, b)=>{
+    const av = cellSortValue(a.primary.children[col] || {});
+    const bv = cellSortValue(b.primary.children[col] || {});
     if (av < bv) return dir === 'asc' ? -1 : 1;
     if (av > bv) return dir === 'asc' ? 1 : -1;
     return 0;
   });
-  rows.forEach(r=>tbody.appendChild(r));
+  groups.forEach(g=>{ tbody.appendChild(g.primary); if (g.detail) tbody.appendChild(g.detail); });
 }
 
 /* ─── window.jQuery shim ───

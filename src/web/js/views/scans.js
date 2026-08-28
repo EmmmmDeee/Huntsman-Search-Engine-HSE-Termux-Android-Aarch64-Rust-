@@ -23,7 +23,7 @@ export async function renderScans(v){
     <div class="row">
       <div class="col-sm-3"><div class="stat-card"><div class="lab">Total</div><div class="val">${stats.total}</div></div></div>
       <div class="col-sm-3"><div class="stat-card"><div class="lab">Running</div><div class="val" style="color:${stats.running?'#31708f':'#888'}">${stats.running}</div></div></div>
-      <div class="col-sm-3"><div class="stat-card"><div class="lab">Complete</div><div class="val" style="color:${stats.complete?'#3c763d':'#888'}">${stats.complete}</div></div></div>
+      <div class="col-sm-3"><div class="stat-card"><div class="lab">Complete</div><div class="val" style="color:${stats.complete?'#3c763d':'#888'}">${stats.complete}</div>${(stats.aborted||stats.failed)?`<div class="text-muted" style="font-size:10px">${stats.aborted?`${stats.aborted} aborted`:''}${stats.aborted&&stats.failed?' · ':''}${stats.failed?`${stats.failed} failed`:''}</div>`:''}</div></div>
       <div class="col-sm-3"><div class="stat-card"><div class="lab">Entities found</div><div class="val">${stats.entities}</div></div></div>
     </div>
 
@@ -95,14 +95,18 @@ export function apiBudgetsPanel(s){
   </div>`;
 }
 export function scanStats(scans){
-  let running=0,complete=0,failed=0,entities=0;
+  let running=0,complete=0,aborted=0,failed=0,entities=0;
   for(const s of scans){
     if (s.status==='running'||s.status==='pending') running++;
     else if (s.status==='complete') complete++;
+    // `aborted` is a distinct terminal state (operator-stopped, data kept) —
+    // without its own bucket it matched no branch and vanished from the tallies
+    // while still inflating `total`. `failed` was counted but never rendered.
+    else if (s.status==='aborted') aborted++;
     else if (s.status==='failed') failed++;
     entities += s.entity_count||0;
   }
-  return {total:scans.length,running,complete,failed,entities};
+  return {total:scans.length,running,complete,aborted,failed,entities};
 }
 export function renderScansTable(scans){
   if (!scans.length){
@@ -127,7 +131,8 @@ export function renderScansTable(scans){
         ${(s.status==='running'||s.status==='pending')
           ? `<button class="btn btn-warning btn-xs" data-cancel="${attr(s.id)}" title="Stop scan"><i class="glyphicon glyphicon-stop"></i></button>`
           : `<button class="btn btn-default btn-xs" data-rerun="${attr(s.id)}" title="Rescan"><i class="glyphicon glyphicon-repeat"></i></button>`}
-        <a class="btn btn-default btn-xs" href="${API.csvUrl(s.id)}" title="Export CSV"><i class="glyphicon glyphicon-download-alt"></i></a>
+        <a class="btn btn-default btn-xs" href="${API.csvUrl(s.id)}" data-download title="Export entities as CSV"><i class="glyphicon glyphicon-download-alt"></i></a>
+        <a class="btn btn-default btn-xs" href="${API.eventsLogUrl(s.id)}" download data-download title="Download the scan event log (.log)"><i class="glyphicon glyphicon-align-left"></i></a>
         <button class="btn btn-danger btn-xs" data-delete="${attr(s.id)}" title="Delete"><i class="glyphicon glyphicon-trash"></i></button>
       </td>
     </tr>`;

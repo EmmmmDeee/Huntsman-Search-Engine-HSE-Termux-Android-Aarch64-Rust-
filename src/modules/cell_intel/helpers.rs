@@ -1,8 +1,11 @@
-//! Pure helper functions: entity building, OpenCelliD query, and the MCC
-//! country-centroid table. The cell-tower identity vocabulary (tower-id format,
-//! MCC/MNC coercion, LAC/TAC fallback) is single-sourced in `util::cell`.
+//! Pure helper functions: entity building, OpenCelliD query, confidence
+//! mapping, MCC table, and JSON normalisation.
+
+#[cfg(test)]
+use std::borrow::Cow;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
 };
@@ -17,7 +20,12 @@ use super::types::{Cell, OpenCellidResp, TowerKey};
 /// `parse_cells_survey` test helper so the two can never drift in their tags or
 /// evidence-attribute set (they were previously byte-identical copies).
 pub(super) fn build_tower_device(cell: &Cell, key: &TowerKey, scan_id: &str) -> Entity {
-    let mut e = Entity::new(EntityKind::DeviceId, &key.tower_id, 0.80, scan_id);
+    let mut e = Entity::new(
+        EntityKind::DeviceId,
+        &key.tower_id,
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
     e.tag(crate::core::tags::CELL_TOWER);
     e.tag(format!("radio:{}", key.ctype));
     e.add_evidence(
@@ -43,9 +51,9 @@ pub(super) async fn query_opencellid(
     radio: &str,
 ) -> Option<(f64, f64, u64)> {
     // URL-encode every interpolated value (consistent with censys). mcc/mnc
-    // come from util::cell::mcc_mnc_str of arbitrary cellinfo JSON; a malformed
-    // value with a `&`/space would otherwise corrupt the query string. Numeric
-    // codes (the normal case) pass through unchanged.
+    // come from json_to_str of arbitrary cellinfo JSON; a malformed value with
+    // a `&`/space would otherwise corrupt the query string. Numeric codes
+    // (the normal case) pass through unchanged.
     let url = format!(
         "https://opencellid.org/cell/get?key={}&mcc={}&mnc={}&lac={}&cellid={}&radio={}&format=json",
         urlencode(api_key),
@@ -101,6 +109,20 @@ pub(super) async fn query_opencellid(
     }
 
     Some((lat, lon, data.range.unwrap_or(5000)))
+}
+
+/// Map a cell fix's accuracy radius (metres) to a coordinate confidence.
+/// Delegates to the single authoritative implementation in `cell_db`.
+#[cfg(test)]
+pub(super) use crate::util::cell_db::accuracy_to_confidence;
+
+/// `mcc`/`mnc` come as `"505"` on some Android versions and `505` on others.
+/// Normalise to string; missing -> empty.
+#[cfg(test)]
+pub(super) fn json_to_str(v: &Option<serde_json::Value>) -> Cow<'_, str> {
+    v.as_ref()
+        .and_then(crate::util::json::scalar_str)
+        .unwrap_or(Cow::Borrowed(""))
 }
 
 /// Coarse country fix from a cell's **Mobile Country Code**: `(lat, lon, ISO)` at

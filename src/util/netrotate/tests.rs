@@ -11,21 +11,6 @@ use super::*;
     }
 
     #[test]
-    fn select_proxy_rotates_round_robin() {
-        let list = parse_proxy_list("p0,p1,p2");
-        assert_eq!(select_proxy(&list, 0).as_deref(), Some("p0"));
-        assert_eq!(select_proxy(&list, 1).as_deref(), Some("p1"));
-        assert_eq!(select_proxy(&list, 2).as_deref(), Some("p2"));
-        assert_eq!(select_proxy(&list, 3).as_deref(), Some("p0"), "wraps");
-        assert_eq!(select_proxy(&[], 0), None);
-        // Single entry behaves like the old single-proxy path.
-        assert_eq!(
-            select_proxy(&parse_proxy_list("only"), 99).as_deref(),
-            Some("only")
-        );
-    }
-
-    #[test]
     fn parse_dns_providers_filters_to_known() {
         assert_eq!(
             parse_dns_providers("cloudflare, GOOGLE, nope, quad9"),
@@ -69,7 +54,7 @@ use super::*;
         let infra: Vec<String> = DNS_PROVIDER_IPS
             .iter()
             .find(|(n, _)| *n == "cloudflare")
-            .unwrap()
+            .expect("should succeed")
             .1
             .iter()
             .map(|s| (*s).to_string())

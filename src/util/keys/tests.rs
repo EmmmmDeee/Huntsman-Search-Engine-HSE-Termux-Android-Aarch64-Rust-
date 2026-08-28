@@ -1,29 +1,75 @@
-use super::io::{hardcoded_key_writes, pick_default_seed};
+use super::io::{pick_default_seed, purges_against};
 use super::*;
 use std::collections::BTreeMap;
 use tempfile::tempdir;
 
 #[test]
-fn resolve_or_default_policy() {
-    assert_eq!(resolve_or_default(Some("real-key"), "default"), "real-key");
-    assert_eq!(resolve_or_default(None, "default"), "default");
-    // A present-but-empty value falls back to the default rather than being
-    // used verbatim — the bug the wigle/wifi_intel modules had before
-    // they were routed through this function.
-    assert_eq!(resolve_or_default(Some(""), "default"), "default");
+fn resolve_key_policy() {
+    assert_eq!(resolve_key(Some("real-key")), Some("real-key"));
+    assert_eq!(resolve_key(None), None);
+    // A present-but-empty (or whitespace-only) value is an unconfigured slot,
+    // not a credential: `HUNTSMAN_FOO=` in an env file must read as absent so
+    // the module reports "needs key" instead of authenticating with "".
+    assert_eq!(resolve_key(Some("")), None);
+    assert_eq!(resolve_key(Some("   ")), None);
+    // An unedited template placeholder is an unconfigured slot too. Without
+    // this, `hse provision` followed by no edits would have every keyed module
+    // send `insert_<service>_key_here` upstream and report the 401 as a
+    // rejected key rather than as a slot the operator never filled in.
+    assert_eq!(resolve_key(Some("insert_haveibeenpwned_key_here")), None);
+    assert!(is_template_placeholder("insert_oathnet_pro_key_here"));
+    assert!(!is_template_placeholder("seek-a-real-looking-key"));
+}
+
+/// Every documented key slot in the shipped template must read as unconfigured
+/// until an operator edits it. This walks the real template, so a future entry
+/// written in a shape the placeholder rule does not recognise fails here.
+#[test]
+fn every_template_slot_reads_as_unconfigured() {
+    let template = include_str!("../../cli/env_template.txt");
+    let mut checked = 0usize;
+    for line in template.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || !line.starts_with("HUNTSMAN_") {
+            continue;
+        }
+        let Some((name, raw)) = line.split_once('=') else {
+            continue;
+        };
+        let value = raw.trim().trim_matches('"');
+        assert_eq!(
+            resolve_key(Some(value)),
+            None,
+            "{name}: the shipped template must not look like a configured key"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 20,
+        "expected to check the whole template, saw {checked}"
+    );
 }
 
 #[test]
-fn own_api_keys_includes_embedded_and_splits_csv_rotation_lists() {
-    let own = own_api_keys();
-    assert!(
-        own.contains(SEEKNOW_DEFAULT_KEY),
-        "embedded SeekNow key missing"
-    );
-    assert!(
-        own.contains(OATHNET_DEFAULT_KEY),
-        "embedded OathNet key missing"
-    );
+fn no_credential_is_embedded_in_the_build() {
+    // The whole point of the secret removal: with nothing baked in, the set of
+    // keys HSE authenticates with is exactly what the operator configured. A
+    // future change that re-adds an embedded default fails here.
+    for (env_var, hash) in super::constants::COMPROMISED_EMBEDDED_DIGESTS {
+        assert_eq!(
+            hash.len(),
+            64,
+            "{env_var}: entry must be a hex SHA-256 digest, never a plaintext key"
+        );
+        assert!(
+            hash.chars().all(|c| c.is_ascii_hexdigit()),
+            "{env_var}: entry must be a hex SHA-256 digest, never a plaintext key"
+        );
+    }
+}
+
+#[test]
+fn own_api_keys_splits_csv_rotation_lists() {
     // The CSV-splitting `add` closure must register EACH key of a
     // comma-separated rotation list individually.
     let mut set = std::collections::HashSet::new();
@@ -47,9 +93,9 @@ fn own_api_keys_includes_embedded_and_splits_csv_rotation_lists() {
 
 #[test]
 fn signup_hint_covers_common_free_providers() {
-    let vt = signup_hint("HUNTSMAN_VIRUSTOTAL_KEY").unwrap();
+    let vt = signup_hint("HUNTSMAN_VIRUSTOTAL_KEY").expect("should succeed");
     assert!(vt.contains("virustotal.com"), "{vt}");
-    let abusech = signup_hint("HUNTSMAN_ABUSECH_KEY").unwrap();
+    let abusech = signup_hint("HUNTSMAN_ABUSECH_KEY").expect("should succeed");
     assert!(abusech.contains("auth.abuse.ch"));
     assert_eq!(
         signup_hint("HUNTSMAN_THREATFOX_KEY"),
@@ -63,6 +109,23 @@ fn signup_hint_covers_common_free_providers() {
     }
 }
 
+/// Transparency invariant: EVERY key surfaced in the Settings/`hse doctor` grid
+/// must tell the operator where to obtain it, so an unconfigured module is never
+/// a dead end. A new `KNOWN_KEYS` entry without a `signup_hint` fails here rather
+/// than shipping a hint-less row.
+#[test]
+fn signup_hint_is_defined_for_every_known_key() {
+    let missing: Vec<&str> = KNOWN_KEYS
+        .iter()
+        .copied()
+        .filter(|k| signup_hint(k).is_none())
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these KNOWN_KEYS have no signup_hint (add one to keep the grid self-documenting): {missing:?}"
+    );
+}
+
 fn map_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
     pairs
         .iter()
@@ -72,13 +135,14 @@ fn map_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
 
 #[test]
 fn write_preserves_comments_and_appends_new_keys() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
-    std::fs::write(&path, "# template\n#HUNTSMAN_HIBP_KEY=\n").unwrap();
+    std::fs::write(&path, "# template\n#HUNTSMAN_HIBP_KEY=\n").expect("should succeed");
 
-    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "abc123")]), &[]).unwrap();
+    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "abc123")]), &[])
+        .expect("should succeed");
 
-    let got = std::fs::read_to_string(&path).unwrap();
+    let got = std::fs::read_to_string(&path).expect("should succeed");
     assert!(got.contains("# template"), "comment preserved");
     assert!(
         got.contains("#HUNTSMAN_HIBP_KEY="),
@@ -92,13 +156,14 @@ fn write_preserves_comments_and_appends_new_keys() {
 
 #[test]
 fn write_replaces_existing_key_in_place() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
-    std::fs::write(&path, "HUNTSMAN_OATHNET_KEY=old\nHUNTSMAN_HIBP_KEY=stay\n").unwrap();
+    std::fs::write(&path, "HUNTSMAN_OATHNET_KEY=old\nHUNTSMAN_HIBP_KEY=stay\n")
+        .expect("should succeed");
 
-    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "new")]), &[]).unwrap();
+    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "new")]), &[]).expect("should succeed");
 
-    let got = std::fs::read_to_string(&path).unwrap();
+    let got = std::fs::read_to_string(&path).expect("should succeed");
     assert!(got.contains("HUNTSMAN_OATHNET_KEY=\"new\""));
     assert!(!got.contains("HUNTSMAN_OATHNET_KEY=old"));
     assert!(
@@ -109,7 +174,7 @@ fn write_replaces_existing_key_in_place() {
 
 #[test]
 fn written_values_round_trip_through_dotenvy() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
     let cases = [
         ("HUNTSMAN_PLAIN", "abc123XYZ"),
@@ -117,11 +182,11 @@ fn written_values_round_trip_through_dotenvy() {
         ("HUNTSMAN_WITH_SPACE", "two words"),
         ("HUNTSMAN_EQUALS", "a=b=c"),
     ];
-    write_keys_at(&path, &map_of(&cases), &[]).unwrap();
+    write_keys_at(&path, &map_of(&cases), &[]).expect("should succeed");
 
     let mut got = BTreeMap::new();
-    for item in dotenvy::from_path_iter(&path).unwrap() {
-        let (k, v) = item.unwrap();
+    for item in dotenvy::from_path_iter(&path).expect("should succeed") {
+        let (k, v) = item.expect("should succeed");
         got.insert(k, v);
     }
     for (k, v) in cases {
@@ -135,46 +200,48 @@ fn written_values_round_trip_through_dotenvy() {
 
 #[test]
 fn delete_removes_key_entirely() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
     std::fs::write(
         &path,
         "HUNTSMAN_OATHNET_KEY=goaway\nHUNTSMAN_HIBP_KEY=stay\n",
     )
-    .unwrap();
+    .expect("should succeed");
 
     write_keys_at(
         &path,
         &BTreeMap::new(),
         &["HUNTSMAN_OATHNET_KEY".to_string()],
     )
-    .unwrap();
+    .expect("should succeed");
 
-    let got = std::fs::read_to_string(&path).unwrap();
+    let got = std::fs::read_to_string(&path).expect("should succeed");
     assert!(!got.contains("HUNTSMAN_OATHNET_KEY"));
     assert!(got.contains("HUNTSMAN_HIBP_KEY=stay"));
 }
 
 #[test]
 fn missing_file_is_created_with_appended_keys() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
-    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "seed")]), &[]).unwrap();
-    let got = std::fs::read_to_string(&path).unwrap();
+    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "seed")]), &[])
+        .expect("should succeed");
+    let got = std::fs::read_to_string(&path).expect("should succeed");
     assert!(got.contains("HUNTSMAN_OATHNET_KEY=\"seed\""));
 }
 
 #[test]
 fn rejects_non_huntsman_keys() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
-    let err = write_keys_at(&path, &map_of(&[("PATH", "/etc")]), &[]).unwrap_err();
+    let err =
+        write_keys_at(&path, &map_of(&[("PATH", "/etc")]), &[]).expect_err("should be an error");
     assert!(err.to_string().contains("HUNTSMAN_"));
 }
 
 #[test]
 fn rejects_values_with_control_characters() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
     assert!(
         write_keys_at(
@@ -188,21 +255,21 @@ fn rejects_values_with_control_characters() {
 
 #[test]
 fn rejects_values_with_double_quotes() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
     assert!(write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "ab\"cd")]), &[]).is_err());
 }
 
 #[test]
 fn rejects_values_with_backslash() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
     assert!(write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "ab\\nc")]), &[]).is_err());
 }
 
 #[test]
 fn load_from_file_ignores_comments_and_non_huntsman() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
     std::fs::write(
         &path,
@@ -212,7 +279,7 @@ fn load_from_file_ignores_comments_and_non_huntsman() {
          OTHER=ignored\n\
          HUNTSMAN_HIBP_KEY=def\n",
     )
-    .unwrap();
+    .expect("should succeed");
     let m = load_from_file_only(&path);
     assert_eq!(
         m.get("HUNTSMAN_OATHNET_KEY").map(String::as_str),
@@ -225,19 +292,63 @@ fn load_from_file_ignores_comments_and_non_huntsman() {
 
 #[test]
 fn load_from_file_handles_missing_file() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
     let m = load_from_file_only(&path);
     assert!(m.is_empty());
 }
 
 #[test]
+fn load_from_file_strips_single_quotes() {
+    // A single-quoted value must come back bare, matching what dotenvy's load()
+    // returns — otherwise SUPERSEDED rotation / hardcoded-fill compares a quoted
+    // string against a bare constant and never matches, and the Settings UI shows
+    // the quotes.
+    let dir = tempdir().expect("should succeed");
+    let path = dir.path().join(".huntsman.env");
+    std::fs::write(&path, "HUNTSMAN_OATHNET_KEY='singlequoted'\n").expect("should succeed");
+    let m = load_from_file_only(&path);
+    assert_eq!(
+        m.get("HUNTSMAN_OATHNET_KEY").map(String::as_str),
+        Some("singlequoted")
+    );
+}
+
+#[test]
+fn load_from_file_recovers_keys_after_a_malformed_line() {
+    // The resilient line parser skips ONLY the offending line — this is the basis
+    // for load()'s recovery when dotenvy abandons the rest of the file at the
+    // first bad line. A garbage line between two valid keys must not drop the
+    // second.
+    let dir = tempdir().expect("should succeed");
+    let path = dir.path().join(".huntsman.env");
+    std::fs::write(
+        &path,
+        "HUNTSMAN_OATHNET_KEY=first\n\
+         this is a malformed line with no equals sign\n\
+         HUNTSMAN_HIBP_KEY=second\n",
+    )
+    .expect("should succeed");
+    let m = load_from_file_only(&path);
+    assert_eq!(
+        m.get("HUNTSMAN_OATHNET_KEY").map(String::as_str),
+        Some("first")
+    );
+    assert_eq!(
+        m.get("HUNTSMAN_HIBP_KEY").map(String::as_str),
+        Some("second"),
+        "a malformed earlier line must not drop a later key"
+    );
+}
+
+#[test]
 fn load_from_file_strips_double_quotes_from_written_values() {
     // write_keys_at stores values as KEY="value"; load_from_file_only must
     // return the bare value so SUPERSEDED rotation comparisons work correctly.
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
-    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "mykey123")]), &[]).unwrap();
+    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "mykey123")]), &[])
+        .expect("should succeed");
     let m = load_from_file_only(&path);
     assert_eq!(
         m.get("HUNTSMAN_OATHNET_KEY").map(String::as_str),
@@ -248,10 +359,10 @@ fn load_from_file_strips_double_quotes_from_written_values() {
 
 #[test]
 fn put_then_get_round_trips_through_file() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
 
-    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "v1")]), &[]).unwrap();
+    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "v1")]), &[]).expect("should succeed");
     assert!(load_from_file_only(&path).contains_key("HUNTSMAN_OATHNET_KEY"));
 
     write_keys_at(
@@ -259,13 +370,13 @@ fn put_then_get_round_trips_through_file() {
         &BTreeMap::new(),
         &["HUNTSMAN_OATHNET_KEY".to_string()],
     )
-    .unwrap();
+    .expect("should succeed");
     assert!(!load_from_file_only(&path).contains_key("HUNTSMAN_OATHNET_KEY"));
 }
 
 #[test]
 fn update_matches_key_with_whitespace_around_equals() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
     std::fs::write(
         &path,
@@ -273,7 +384,7 @@ fn update_matches_key_with_whitespace_around_equals() {
          HUNTSMAN_HIBP_KEY= old2\n\
          HUNTSMAN_HUNTER_KEY = old3\n",
     )
-    .unwrap();
+    .expect("should succeed");
 
     write_keys_at(
         &path,
@@ -284,9 +395,9 @@ fn update_matches_key_with_whitespace_around_equals() {
         ]),
         &[],
     )
-    .unwrap();
+    .expect("should succeed");
 
-    let got = std::fs::read_to_string(&path).unwrap();
+    let got = std::fs::read_to_string(&path).expect("should succeed");
     assert!(
         got.contains("HUNTSMAN_OATHNET_KEY=\"new1\""),
         "should update spaced key: {got}"
@@ -306,9 +417,9 @@ fn update_matches_key_with_whitespace_around_equals() {
 
 #[test]
 fn read_error_other_than_not_found_surfaces() {
-    let dir = tempdir().unwrap();
-    let err =
-        write_keys_at(dir.path(), &map_of(&[("HUNTSMAN_OATHNET_KEY", "v")]), &[]).unwrap_err();
+    let dir = tempdir().expect("should succeed");
+    let err = write_keys_at(dir.path(), &map_of(&[("HUNTSMAN_OATHNET_KEY", "v")]), &[])
+        .expect_err("should be an error");
     let msg = err.to_string();
     assert!(
         msg.contains("read ") || msg.contains("open ") || msg.contains("write "),
@@ -316,39 +427,66 @@ fn read_error_other_than_not_found_surfaces() {
     );
 }
 
+/// The purge policy, exercised against a SYNTHETIC digest list.
+///
+/// The production list can only be matched by holding the very plaintext this
+/// change exists to delete, so testing it positively would mean re-committing a
+/// compromised credential. Injecting the list keeps the policy under test while
+/// the real secrets stay gone — see `constants::is_compromised_against`.
 #[test]
-fn hardcoded_key_writes_fills_rotates_and_preserves() {
+fn compromised_values_are_purged_and_operator_keys_preserved() {
     use std::collections::HashMap;
-    const NEW: &str = SEEKNOW_DEFAULT_KEY;
-    const OLD: &str = SEEKNOW_SUPERSEDED_KEY;
+    const SHIPPED: &str = "seek-a-value-this-project-once-embedded";
+    let digests: &[(&str, &str)] = &[("HUNTSMAN_SEEKNOW_KEY", &super::constants::digest(SHIPPED))];
 
-    let w = hardcoded_key_writes(&HashMap::new());
-    assert_eq!(w.get("HUNTSMAN_SEEKNOW_KEY").map(String::as_str), Some(NEW));
-    assert!(w.contains_key("HUNTSMAN_OATHNET_KEY"));
-
+    // A slot still holding a value this project shipped is removed outright.
+    // There is no replacement to rotate to — the credential is public.
     let stale: HashMap<String, String> =
-        [("HUNTSMAN_SEEKNOW_KEY".to_string(), OLD.to_string())].into();
+        [("HUNTSMAN_SEEKNOW_KEY".to_string(), SHIPPED.to_string())].into();
     assert_eq!(
-        hardcoded_key_writes(&stale)
-            .get("HUNTSMAN_SEEKNOW_KEY")
-            .map(String::as_str),
-        Some(NEW),
-        "a superseded embedded key must rotate to the current default"
+        purges_against(digests, &stale),
+        vec!["HUNTSMAN_SEEKNOW_KEY".to_string()],
+        "a compromised embedded value must be purged"
     );
 
+    // The operator's own key for the SAME service must survive untouched.
     let custom: HashMap<String, String> = [(
         "HUNTSMAN_SEEKNOW_KEY".to_string(),
         "seek-my-own-personal-key".to_string(),
     )]
     .into();
     assert!(
-        !hardcoded_key_writes(&custom).contains_key("HUNTSMAN_SEEKNOW_KEY"),
-        "a custom user key must be preserved, not rotated"
+        purges_against(digests, &custom).is_empty(),
+        "an operator-supplied key must never be purged"
     );
 
-    let current: HashMap<String, String> =
-        [("HUNTSMAN_SEEKNOW_KEY".to_string(), NEW.to_string())].into();
-    assert!(!hardcoded_key_writes(&current).contains_key("HUNTSMAN_SEEKNOW_KEY"));
+    // The pairing is (variable, value): the same compromised value parked in a
+    // DIFFERENT variable is not one of ours and is left alone.
+    let wrong_var: HashMap<String, String> =
+        [("HUNTSMAN_HIBP_KEY".to_string(), SHIPPED.to_string())].into();
+    assert!(
+        purges_against(digests, &wrong_var).is_empty(),
+        "purging is scoped to the exact (variable, value) pair that shipped"
+    );
+
+    assert!(purges_against(digests, &HashMap::new()).is_empty());
+}
+
+#[test]
+fn production_purge_list_does_not_match_an_operator_key() {
+    use std::collections::HashMap;
+    let mine: HashMap<String, String> = [
+        ("HUNTSMAN_SEEKNOW_KEY".to_string(), "seek-mine".to_string()),
+        ("HUNTSMAN_HIBP_KEY".to_string(), "hibp-mine".to_string()),
+        ("HUNTSMAN_OATHNET_KEY".to_string(), "oath-mine".to_string()),
+        ("HUNTSMAN_WIGLE_USER".to_string(), "AIDmine".to_string()),
+        ("HUNTSMAN_WIGLE_TOKEN".to_string(), "tok-mine".to_string()),
+    ]
+    .into();
+    assert!(
+        compromised_key_purges(&mine).is_empty(),
+        "the real purge list must not touch operator-configured keys"
+    );
 }
 
 #[test]
@@ -562,9 +700,10 @@ fn concurrent_vault_writes_never_corrupt_or_strand() {
     // makes every write self-contained. Eight writers hammering one vault must
     // always leave a readable file that still holds the key, and no temp
     // straggler. (Mirrors `atomic_file`'s own concurrency property test.)
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
-    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "seed")]), &[]).unwrap();
+    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "seed")]), &[])
+        .expect("should succeed");
 
     let handles: Vec<_> = (0..8)
         .map(|i| {
@@ -579,7 +718,7 @@ fn concurrent_vault_writes_never_corrupt_or_strand() {
         })
         .collect();
     for h in handles {
-        h.join().unwrap();
+        h.join().expect("should succeed");
     }
 
     let content = std::fs::read_to_string(&path).expect("vault still readable");
@@ -588,7 +727,7 @@ fn concurrent_vault_writes_never_corrupt_or_strand() {
         "concurrent writes must never corrupt/empty the vault: {content:?}"
     );
     let strays = std::fs::read_dir(dir.path())
-        .unwrap()
+        .expect("should succeed")
         .filter_map(Result::ok)
         .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
         .count();

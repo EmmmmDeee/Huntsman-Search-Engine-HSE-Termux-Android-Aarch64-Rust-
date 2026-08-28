@@ -9,7 +9,7 @@ use crate::core::{
 
 #[test]
 fn au_cctld_detected() {
-    let geo = infer_geo_from_email_domain("company.com.au").unwrap();
+    let geo = infer_geo_from_email_domain("company.com.au").expect("should succeed");
     assert_eq!(geo.region, "Australia");
 }
 
@@ -20,14 +20,14 @@ fn generic_domain_returns_none() {
 
 #[test]
 fn bigpond_is_australian() {
-    let (provider, region) = detect_corporate_provider("bigpond.com").unwrap();
+    let (provider, region) = detect_corporate_provider("bigpond.com").expect("should succeed");
     assert_eq!(region, "Australia");
     assert!(provider.contains("BigPond"));
 }
 
 #[test]
 fn bt_is_uk() {
-    let (_, region) = detect_corporate_provider("btinternet.com").unwrap();
+    let (_, region) = detect_corporate_provider("btinternet.com").expect("should succeed");
     assert_eq!(region, "United Kingdom");
 }
 
@@ -36,7 +36,7 @@ fn y7mail_is_australian() {
     // Yahoo7 (y7mail.com) is a `.com` AU webmail brand, so — like bigpond.com —
     // it needs an explicit REGIONAL_PROVIDERS entry to carry an Australian geo
     // signal, since the `.com.au` TLD rule can't reach it.
-    let (provider, region) = detect_corporate_provider("y7mail.com").unwrap();
+    let (provider, region) = detect_corporate_provider("y7mail.com").expect("should succeed");
     assert_eq!(region, "Australia");
     assert!(provider.contains("Yahoo7"));
 }
@@ -53,6 +53,45 @@ fn consumer_dot_boundary() {
         }),
         "awesome.com must not match me.com"
     );
+}
+
+#[tokio::test]
+async fn freemail_country_variants_are_skipped_like_the_dot_com_form() {
+    // CONSUMER_PROVIDERS previously listed only the bare `.com` form of
+    // hotmail/live/yahoo, omitting their country-flavoured aliases
+    // (hotmail.co.uk, yahoo.de, …) — the SAME globally-hosted Microsoft/Yahoo
+    // backend under cosmetic per-country branding, not a real regional
+    // signal. These fell through to ccTLD inference and were geolocated as
+    // if the domain carried a real signal, unlike the identical bare `.com`
+    // form. Deliberately narrower than a full `util::domains::is_freemail`
+    // delegation would be: that canonical list also includes GENUINELY
+    // regional ISP webmail brands (bigpond.com/bigpond.net.au — see
+    // `bigpond_email_produces_two_entities` below), which this module must
+    // keep treating as a real AU geo signal via REGIONAL_PROVIDERS.
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = ModuleContext {
+        scan_id: "s".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    for addr in [
+        "alice@hotmail.co.uk",
+        "alice@yahoo.de",
+        "alice@live.fr",
+        "alice@hotmail.com",
+    ] {
+        let result = EmailHeaderGeo
+            .process(&Target::new(TargetKind::Email, addr), &ctx)
+            .await
+            .expect("should succeed");
+        assert!(
+            result.entities.is_empty(),
+            "{addr} is a freemail provider and must carry no geo signal: {:?}",
+            result.entities
+        );
+    }
 }
 
 #[test]
@@ -109,7 +148,7 @@ async fn skips_consumer_providers() {
         keys: Default::default(),
         cancel: Default::default(),
     };
-    let r = m.process(&target, &ctx).await.unwrap();
+    let r = m.process(&target, &ctx).await.expect("should succeed");
     assert!(
         r.is_empty(),
         "consumer emails should produce no geo entities"
@@ -128,7 +167,7 @@ async fn au_email_produces_address() {
         keys: Default::default(),
         cancel: Default::default(),
     };
-    let r = m.process(&target, &ctx).await.unwrap();
+    let r = m.process(&target, &ctx).await.expect("should succeed");
     assert_eq!(r.len(), 1);
     assert_eq!(r.entities[0].kind, EntityKind::Address);
     assert_eq!(r.entities[0].value, "Australia");
@@ -146,7 +185,7 @@ async fn bigpond_email_produces_two_entities() {
         keys: Default::default(),
         cancel: Default::default(),
     };
-    let r = m.process(&target, &ctx).await.unwrap();
+    let r = m.process(&target, &ctx).await.expect("should succeed");
     assert!(!r.is_empty(), "bigpond.com (AU ISP) must geolocate");
     // Every emission is an Address per `produces()` — never some other kind.
     assert!(
@@ -188,6 +227,45 @@ async fn mixed_case_domain_is_detected() {
         keys: Default::default(),
         cancel: Default::default(),
     };
-    let r = m.process(&target, &ctx).await.unwrap();
+    let r = m.process(&target, &ctx).await.expect("should succeed");
     assert!(r.entities.iter().any(|e| e.value == "Australia"));
+}
+
+#[test]
+fn au_family_domains_all_infer_australia() {
+    // Every `.au` shape — direct, net, id, asn — must earn the AU signal, not
+    // just `.com.au`. The catch-all uses the `.au`-suffix 0.52 confidence branch.
+    for d in [
+        "qantas.com.au",
+        "qantas.net.au",
+        "qantas.id.au",
+        "qantas.asn.au",
+        "qantas.au",
+    ] {
+        let g = infer_geo_from_email_domain(d).unwrap_or_else(|| panic!("{d} should infer AU"));
+        assert_eq!(g.region, "Australia", "{d}");
+        assert!(
+            (g.confidence - 0.52).abs() < 1e-9,
+            "{d} confidence {}",
+            g.confidence
+        );
+    }
+}
+
+#[test]
+fn specific_au_tld_still_matches_before_the_catch_all() {
+    assert_eq!(
+        infer_geo_from_email_domain("x.com.au")
+            .expect("com.au")
+            .region,
+        "Australia"
+    );
+    // Non-AU inference is unaffected by the new `.au` catch-all.
+    assert_eq!(
+        infer_geo_from_email_domain("x.co.uk")
+            .expect("co.uk")
+            .region,
+        "United Kingdom"
+    );
+    assert!(infer_geo_from_email_domain("x.com").is_none());
 }

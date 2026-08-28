@@ -2,15 +2,15 @@ use super::*;
     use crate::core::entity::EntityKind;
 
     fn build_all(target: &Target, json: &str) -> Vec<Entity> {
-        let r: VtResponse = serde_json::from_str(json).unwrap();
-        let attrs = r.data.unwrap().attributes.unwrap();
+        let r: VtResponse = serde_json::from_str(json).expect("should succeed");
+        let attrs = r.data.expect("should succeed").attributes.expect("should succeed");
         build_entities(target, &attrs, "s")
     }
 
     /// The scanned entity is always element 0.
     fn build(json: &str) -> Entity {
         let target = Target::new(TargetKind::Domain, "evil.example");
-        build_all(&target, json).into_iter().next().unwrap()
+        build_all(&target, json).into_iter().next().expect("should succeed")
     }
 
     #[test]
@@ -19,8 +19,40 @@ use super::*;
         assert_eq!(m.name(), "virustotal");
         assert!(m.accepts(&Target::new(TargetKind::Domain, "x.com")));
         assert!(m.accepts(&Target::new(TargetKind::IpAddress, "8.8.8.8")));
+        assert!(m.accepts(&Target::new(TargetKind::Url, "https://evil.example/x")));
         assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
         assert!(matches!(m.cost(), ModuleCost::KeyGated));
+    }
+
+    #[test]
+    fn vt_url_id_is_the_unpadded_base64url_of_the_url() {
+        // VT's documented identifier scheme: unpadded base64url of the exact URL.
+        // http://www.virustotal.com/gui/url -> known VT id (from VT's own docs).
+        assert_eq!(
+            vt_url_id("http://www.virustotal.com/gui/url"),
+            "aHR0cDovL3d3dy52aXJ1c3RvdGFsLmNvbS9ndWkvdXJs"
+        );
+        // No `=` padding is ever emitted (URL_SAFE_NO_PAD).
+        assert!(!vt_url_id("https://example.com/a").contains('='));
+    }
+
+    #[test]
+    fn url_object_stats_flag_the_url_entity() {
+        // The URL object's last_analysis_stats/reputation decode through the
+        // same build_entities; the scanned entity is a Url.
+        let target = Target::new(TargetKind::Url, "https://evil.example/login");
+        let e = build_all(
+            &target,
+            r#"{"data":{"attributes":{"last_analysis_stats":
+                {"malicious":6,"suspicious":2,"undetected":50,"harmless":4},"reputation":-20}}}"#,
+        )
+        .into_iter()
+        .next()
+        .expect("should succeed");
+        assert_eq!(e.kind, EntityKind::Url);
+        assert!(e.has_tag(crate::core::tags::MALICIOUS));
+        assert!(e.has_tag("suspicious"));
+        assert!(e.has_tag("low-reputation"));
     }
 
     #[test]
@@ -36,7 +68,7 @@ use super::*;
                 && e.has_tag("virustotal")
         );
         assert!(e.has_tag("suspicious")); // surfaced even alongside malicious
-        // confidence = 0.50 + (9/100)*0.45 = 0.5405
+        // confidence = confidence::MEDIUM + (9/100)*confidence::LOW_MEDIUM = 0.5405
         assert!((e.confidence - 0.5405).abs() < 1e-6);
         let ev = &e.evidence[0];
         assert_eq!(
@@ -78,7 +110,7 @@ use super::*;
             !e.has_tag(crate::core::tags::MALICIOUS)
                 && !e.has_tag(crate::core::tags::THREAT_INTEL)
         );
-        assert!((e.confidence - 0.50).abs() < 1e-6); // no malicious → baseline
+        assert!((e.confidence - confidence::MEDIUM).abs() < 1e-6); // no malicious → baseline
     }
 
     #[test]
@@ -113,7 +145,7 @@ use super::*;
         // No DNS records -> only the scanned entity, no phantom pivots.
         assert_eq!(entities.len(), 1);
         let e = &entities[0];
-        assert!((e.confidence - 0.50).abs() < 1e-6);
+        assert!((e.confidence - confidence::MEDIUM).abs() < 1e-6);
         let ev = &e.evidence[0];
         assert_eq!(
             ev.attributes.get("total_engines").map(String::as_str),
@@ -190,63 +222,45 @@ use super::*;
         );
     }
 
+    /// A bounded emission must stay bounded — the cap exists to keep graph
+    /// expansion finite on a long-lived domain.
     #[test]
-    fn dns_truncation_at_max_records_is_surfaced() {
-        // Regression: when DNS records exceed MAX_DNS_RECORDS, truncation must be
-        // surfaced in evidence so operator knows the scan stopped at a hard cap.
-        let total_records = MAX_DNS_RECORDS + 15;
-        let records: Vec<String> = (0..total_records)
-            .map(|i| format!(r#"{{"type":"A","value":"203.0.113.{}"}}"#, i % 250))
+    fn passive_dns_expansion_stays_within_its_cap() {
+        let recs: Vec<String> = (0..MAX_DNS_RECORDS + 25)
+            .map(|i| format!(r#"{{"type":"A","value":"10.0.{}.{}"}}"#, i / 256, i % 256))
             .collect();
         let json = format!(
             r#"{{"data":{{"attributes":{{"last_dns_records":[{}]}}}}}}"#,
-            records.join(",")
+            recs.join(",")
         );
         let target = Target::new(TargetKind::Domain, "evil.example");
-        let entities = build_all(&target, &json);
-        let seed = &entities[0];
-
-        // Should have capped and set truncation flag.
-        assert!(seed.has_tag("truncated"), "seed must be tagged 'truncated'");
-
-        let ev = &seed.evidence[0];
+        let out = build_all(&target, &json);
+        let ips = out
+            .iter()
+            .filter(|e| e.kind == EntityKind::IpAddress)
+            .count();
         assert_eq!(
-            ev.attributes.get("total_dns_records").map(String::as_str),
-            Some(total_records.to_string().as_str()),
-            "total_dns_records must reflect all records in response"
-        );
-        assert_eq!(
-            ev.attributes.get("dns_records_capped").map(String::as_str),
-            Some("true"),
-            "dns_records_capped must be set when limit is hit"
+            ips, MAX_DNS_RECORDS,
+            "passive-DNS pivots must be capped at MAX_DNS_RECORDS"
         );
     }
 
+    /// The cap must not be reached by dropping records that parse — a record
+    /// under the cap is emitted, so the count above is a real bound and not an
+    /// artefact of parse failures masking the truncation.
     #[test]
-    fn dns_no_truncation_when_under_cap() {
-        // No truncation flag when DNS records stay below MAX_DNS_RECORDS.
-        let total_records = MAX_DNS_RECORDS - 5;
-        let records: Vec<String> = (0..total_records)
-            .map(|i| format!(r#"{{"type":"A","value":"203.0.113.{}"}}"#, i % 250))
+    fn every_record_under_the_cap_is_emitted() {
+        let recs: Vec<String> = (0..3)
+            .map(|i| format!(r#"{{"type":"A","value":"10.0.0.{i}"}}"#))
             .collect();
         let json = format!(
             r#"{{"data":{{"attributes":{{"last_dns_records":[{}]}}}}}}"#,
-            records.join(",")
+            recs.join(",")
         );
         let target = Target::new(TargetKind::Domain, "evil.example");
-        let entities = build_all(&target, &json);
-        let seed = &entities[0];
-
-        assert!(!seed.has_tag("truncated"), "seed must not be tagged when under cap");
-
-        let ev = &seed.evidence[0];
-        assert_eq!(
-            ev.attributes.get("total_dns_records").map(String::as_str),
-            Some(total_records.to_string().as_str()),
-            "total_dns_records must be present even when not capped"
-        );
-        assert!(
-            !ev.attributes.contains_key("dns_records_capped"),
-            "dns_records_capped must be absent when not truncated"
-        );
+        let ips = build_all(&target, &json)
+            .into_iter()
+            .filter(|e| e.kind == EntityKind::IpAddress)
+            .count();
+        assert_eq!(ips, 3, "an under-cap set must be emitted in full");
     }

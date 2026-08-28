@@ -123,13 +123,13 @@ mod tests {
         // A public IP literal on :43 is allowed and pinned to that exact address.
         assert_eq!(
             resolve_public_whois("8.8.8.8:43").await,
-            Some("8.8.8.8:43".parse().unwrap()),
+            Some("8.8.8.8:43".parse().expect("should succeed")),
             "a public :43 referral must be allowed"
         );
         // A bare public literal defaults to :43 and is allowed.
         assert_eq!(
             resolve_public_whois("1.1.1.1").await,
-            Some("1.1.1.1:43".parse().unwrap()),
+            Some("1.1.1.1:43".parse().expect("should succeed")),
             "bare public host defaults to whois/43"
         );
     }

@@ -12,7 +12,9 @@
 //!     binds a SINGLE resolved address, and `localhost` resolving to `::1` while
 //!     Chrome connects to `127.0.0.1` (or vice-versa) is a classic on-device
 //!     "can't connect";
-//!   * binding a NON-loopback address logs a prominent warning (LAN exposure);
+//!   * binding a NON-loopback address requires a bearer token on every request
+//!     (`api::auth`) — minted and printed once at startup unless `--auth-token`
+//!     pins one, or `--allow-unauthenticated` deliberately opens the bind;
 //!   * the startup self-test runs in the BACKGROUND so a slow check never delays
 //!     the bind — the UI is reachable immediately;
 //!   * shutdown-signal handlers degrade gracefully instead of panicking;
@@ -21,22 +23,38 @@
 
 use std::sync::Arc;
 
+/// Loopback detection, taken from `api::routes` rather than reimplemented here.
+///
+/// This module used to carry its own copy and the two had already drifted: on a
+/// bare `::1` (no port) the local copy split at the LAST colon, left the host as
+/// `":"`, and reported the v6 loopback as EXPOSED. That was cosmetic while its
+/// only consumer was a warning string. It stopped being cosmetic once the same
+/// question decides both whether the bearer-token gate is installed
+/// (`api::auth::resolve`, which asks the `routes` copy) and whether the token is
+/// printed at all (`announce_auth`, which asked this one) — two answers to one
+/// security question is how an operator ends up with a server demanding a token
+/// it never showed them. One definition, one answer.
+use crate::api::routes::is_loopback_bind;
 use crate::core::error::{Error, Result};
 use crate::util::http::build_client;
 
-use super::build_runtime;
-
-pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()> {
+pub(super) async fn cmd_serve(
+    bind: String,
+    allow_key_write: bool,
+    auth_token: Option<String>,
+    allow_unauthenticated: bool,
+) -> Result<()> {
     use std::net::SocketAddr;
 
     use crate::api::{AppState, UpdateInfo, UpdatePhase, routes::router};
-    use crate::cli::update::{apply_update, check_updates, self_restart};
+    use crate::app::update::{apply_update, check_updates, self_restart};
     use crate::core::live::LiveScanner;
 
     // Pin `localhost` to the v4 loopback for reliable Chrome-on-device access.
     let bind = normalise_bind(&bind);
 
-    let (store, bus, engine) = build_runtime(1024)?;
+    let crate::app::runtime::ApplicationRuntime { store, bus, engine } =
+        crate::app::runtime::build_runtime(1024)?;
     let http = build_client();
     let live = LiveScanner::new(
         Arc::clone(&engine),
@@ -66,12 +84,19 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
     // value, and shutdown needs the SAME `cancellations`/`live` registries to
     // signal in-flight work to stop before the process exits.
     let state_for_shutdown = Arc::clone(&state);
-    let app = router(state, &bind);
+
+    // Resolve the auth posture BEFORE binding: a misconfigured token (an empty
+    // `HSE_AUTH_TOKEN`) must fail the command outright rather than open a
+    // listener that then rejects every request — or, worse, accepts them.
+    let auth = crate::api::auth::resolve(&bind, auth_token, allow_unauthenticated)?
+        .map(std::sync::Arc::new);
+
+    let app = router(state, &bind, auth.clone());
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .map_err(|e| bind_error(&bind, &e))?;
 
-    warn_if_exposed(&bind);
+    announce_auth(&bind, auth.as_deref(), allow_unauthenticated);
 
     // Search-engine liveness: sweep at startup and on an interval, populating the
     // cache that backs the web liveness panel + `GET /api/v1/engines/health` and
@@ -85,12 +110,71 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
         .unwrap_or(crate::modules::search_engines::health::DEFAULT_REFRESH_SECS);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(health_secs));
+        // Skip missed ticks rather than firing them back-to-back: a slow sweep
+        // (or a stalled runtime) must not queue a burst of catch-up sweeps that
+        // then hammer every search engine in quick succession — one sweep per
+        // interval, drop the backlog. (Same rationale as the housekeeping and
+        // auto-update ticks below.)
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             // First tick fires immediately → a sweep at startup, then every interval.
             tick.tick().await;
             let _ = crate::modules::search_engines::health::refresh_cache().await;
         }
     });
+
+    // Autonomous housekeeping: keep the on-device `~/.huntsman` footprint
+    // bounded and arranged without operator intervention — trim the
+    // regenerable dossier cache, apply the canonical event-log / raw-archive
+    // retention bounds, truncate the WAL, and re-assert the 0700 layout (see
+    // `app::tidy`). This is what keeps a long-lived Termux install tidy: the
+    // per-scan prune only runs when a scan COMPLETES, so a server left running
+    // for weeks without finishing one would otherwise never reclaim anything.
+    // Interval is configurable via `HUNTSMAN_TIDY_INTERVAL_SECS` (default 24 h;
+    // min 1 h). First pass is staggered 5 min so startup stays responsive and
+    // it never contends with the engine-health sweep. `spawn_blocking` — the
+    // pass does blocking filesystem + SQLite work. Detached and best-effort:
+    // it never blocks serving and a failure is logged, not fatal.
+    {
+        let tidy_secs = std::env::var("HUNTSMAN_TIDY_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&n| n >= 3600) // min 1 h
+            .unwrap_or(86_400); // default 24 h
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(tidy_secs));
+            // Skip missed ticks rather than firing them back-to-back: if a pass
+            // (or a stalled runtime) overruns the interval, `Burst` — tokio's
+            // default — would run several housekeeping passes with no gap to
+            // "catch up", exactly the wrong behaviour for expensive filesystem +
+            // SQLite work. `Skip` keeps the original cadence and drops the
+            // backlog.
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                match tokio::task::spawn_blocking(|| crate::app::tidy::run(false)).await {
+                    Ok(Ok(report)) => tracing::info!(
+                        dossiers_removed = report.dossiers_removed,
+                        bytes_reclaimed = report.dossier_bytes_reclaimed,
+                        events_pruned = report.events_pruned,
+                        archive_pruned = report.archive_pruned,
+                        wal_truncated = report.wal_truncated,
+                        "housekeeping pass complete"
+                    ),
+                    Ok(Err(e)) => tracing::warn!(error = %e, "housekeeping pass failed"),
+                    // A `JoinError` is a panic OR a cancellation (the runtime
+                    // shutting down aborts this task). Only the former is a fault
+                    // worth a warning; reporting a normal-shutdown cancel as a
+                    // "panic" is a false alarm in the logs.
+                    Err(e) if e.is_cancelled() => {
+                        tracing::debug!("housekeeping task cancelled (runtime shutting down)");
+                    }
+                    Err(e) => tracing::warn!(error = %e, "housekeeping task panicked"),
+                }
+            }
+        });
+    }
 
     // Autonomous self-update: check for upstream commits on a schedule and apply
     // them automatically when feature.auto_update is ON (the default). The first
@@ -110,6 +194,12 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
             // Stagger first check by 2 min.
             tokio::time::sleep(std::time::Duration::from_secs(120)).await;
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            // Skip missed ticks rather than bursting: applying an update can take
+            // a while (git fetch + rebuild + restart), so a check that overruns
+            // the interval must not immediately trigger another — one check per
+            // interval, drop the backlog. (Same rationale as the health and
+            // housekeeping ticks above.)
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tick.tick().await;
                 if let Ok(mut info) = update_info.lock() {
@@ -130,7 +220,7 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
                 // Share the check timestamp with the CLI auto-update gate so a
                 // recent server-side check throttles the CLI path too (one device,
                 // one cadence) — and vice-versa.
-                crate::cli::update::record_check_stamp(now_secs);
+                crate::app::update::record_check_stamp(now_secs);
                 if behind.unwrap_or(0) > 0
                     && crate::util::settings::get_bool("feature.auto_update", true)
                 {
@@ -264,36 +354,71 @@ fn normalise_bind(bind: &str) -> String {
     }
 }
 
-/// True if `bind`'s host is a loopback address (or `localhost`). Drives the
-/// LAN-exposure warning.
-fn is_loopback_bind(bind: &str) -> bool {
-    // Strip the trailing `:port`, then any IPv6 brackets, to isolate the host.
-    let host = bind.rsplit_once(':').map_or(bind, |(h, _)| h);
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    match host.parse::<std::net::IpAddr>() {
-        Ok(ip) => ip.is_loopback(),
-        Err(_) => host == "localhost",
+/// Report the authentication posture for this bind.
+///
+/// Four cases, and the operator must be able to tell them apart at a glance:
+///
+///  * **loopback, no token** (the default) — nothing to say; only this device
+///    can connect.
+///  * **loopback, token supplied** — say the gate is ON. `resolve` honours an
+///    explicit `--auth-token`/`HSE_AUTH_TOKEN` even on loopback (defence in
+///    depth behind a reverse proxy), and staying silent about that would strand
+///    an operator who left the variable in their shell profile: every request
+///    401s with nothing on screen explaining why. The token itself is not
+///    reprinted — they supplied it.
+///  * **non-loopback, authenticated** — print the token once, with a
+///    ready-to-open URL. This is the sole place the plaintext token is
+///    disclosed; it goes to the operator's own terminal, never to a request
+///    log, an API response, or an export.
+///  * **non-loopback, `--allow-unauthenticated`** — the operator disabled the
+///    gate deliberately, so keep the full-strength warning describing exactly
+///    what they have exposed.
+///
+/// Key-writing stays loopback-only in every case, independent of this.
+fn announce_auth(bind: &str, auth: Option<&crate::api::auth::AuthToken>, opted_out: bool) {
+    if is_loopback_bind(bind) {
+        if auth.is_some() {
+            tracing::info!(
+                "authentication is enabled on this loopback bind (token supplied via \
+                 --auth-token / HSE_AUTH_TOKEN). Every request must carry it: \
+                 `Authorization: Bearer <token>`, or open http://{bind}/?t=<token> once."
+            );
+        }
+        return;
     }
-}
-
-/// Warn loudly when bound to a non-loopback address: the UI and API are then
-/// reachable from the local network with no authentication on most
-/// endpoints — not just read access to results, but the ability to TRIGGER
-/// new scans/live sessions/radar sweeps. The loopback peer-check still
-/// blocks key writes regardless of bind. `127.0.0.1` (the default) is the
-/// localhost-only convention, not an enforced restriction — nothing stops an
-/// operator from binding elsewhere, so this warning is the only safeguard.
-fn warn_if_exposed(bind: &str) {
-    if !is_loopback_bind(bind) {
-        tracing::warn!(
-            "bound to a NON-loopback address ({bind}) — the UI and API are reachable from the \
-             local network with NO AUTHENTICATION on most endpoints. This is not just read \
-             visibility: anyone reachable at this address can TRIGGER new scans, start live \
-             sessions (consuming your API key quota), and run radar (the device's own WiFi/ \
-             Bluetooth/cell/GPS sensor sweep) — not only view existing results. Key-writing \
-             (PUT /settings/keys) is the sole exception and always stays loopback-only \
-             regardless of this bind. Use 127.0.0.1 for the localhost-only default."
-        );
+    match auth {
+        Some(token) => {
+            tracing::info!(
+                "bound to a NON-loopback address ({bind}) — authentication is REQUIRED. Open:"
+            );
+            tracing::info!("    http://{bind}/?t={}", token.reveal());
+            tracing::info!(
+                "  that link sets a session cookie and drops the token from the address bar. \
+                 Scripts send `Authorization: Bearer <token>`. The token is shown ONCE, here — \
+                 it is never written to a log, an API response, or an export. Pass \
+                 --auth-token to pin your own."
+            );
+        }
+        None if opted_out => {
+            tracing::warn!(
+                "bound to a NON-loopback address ({bind}) with --allow-unauthenticated — the UI \
+                 and API are reachable from the local network with NO AUTHENTICATION. This is \
+                 not just read visibility: anyone reachable at this address can TRIGGER new \
+                 scans, start live sessions (consuming your API key quota), and run radar (the \
+                 device's own WiFi/Bluetooth/cell/GPS sensor sweep) — not only view existing \
+                 results. Key-writing (PUT /settings/keys) is the sole exception and always \
+                 stays loopback-only. Drop --allow-unauthenticated to require a token."
+            );
+        }
+        // Unreachable: `auth::resolve` returns `None` for a non-loopback bind
+        // only when `opted_out` is set. Kept as a defensive branch rather than
+        // an `unreachable!()` so a future change to `resolve` degrades into a
+        // warning instead of aborting a running server.
+        None => {
+            tracing::warn!(
+                "bound to a NON-loopback address ({bind}) with no authentication configured."
+            );
+        }
     }
 }
 

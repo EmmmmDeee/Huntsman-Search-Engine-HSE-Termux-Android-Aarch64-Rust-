@@ -23,15 +23,35 @@ use axum::{
     response::IntoResponse,
 };
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::api::{AppState, CellsImportPhase};
-use crate::cli::cells::{
+use crate::app::cells::{
     clear_cells_db, mcc_for_country, opencellid_download_url, opencellid_filename,
 };
 use crate::util::cell_db;
 
-use super::handlers::bad_request;
+use super::handlers::{bad_request, reject_non_loopback};
+
+/// Builds the `last_import` JSON block, including the same `is_stale`
+/// freshness signal `hse doctor` already prints (`cell_db::is_stale`) — until
+/// this was added, a browser-only Termux operator had no way to learn their
+/// local OpenCelliD dataset had gone stale (`STALE_THRESHOLD_DAYS`) without
+/// running the CLI's `doctor` subcommand.
+fn last_import_json(rec: &cell_db::ImportRecord, now: i64) -> serde_json::Value {
+    let stale = cell_db::is_stale(rec.imported_at, now);
+    let age_days = now.saturating_sub(rec.imported_at).max(0) / 86_400;
+    json!({
+        "imported_at": rec.imported_at,
+        "mcc": rec.mcc,
+        "source_file": rec.source_file,
+        "row_count": rec.row_count,
+        "duration_ms": rec.duration_ms,
+        "age_days": age_days,
+        "is_stale": stale,
+        "stale_threshold_days": cell_db::STALE_THRESHOLD_DAYS,
+    })
+}
 
 /// `GET /api/v1/cells/status` — DB stats (total towers, MCC breakdown, last
 /// import) plus whether an import triggered via `POST /cells/import` is
@@ -50,46 +70,50 @@ pub async fn cells_status(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         CellsImportPhase::Error(msg) => ("error", Some(msg)),
     };
 
-    let Ok(conn) = cell_db::open_ro() else {
-        return Json(json!({
+    let path = cell_db::cell_db_path().display().to_string();
+
+    let db = tokio::task::spawn_blocking(|| {
+        let conn = cell_db::open_ro().ok()?;
+        let total = cell_db::total_count(&conn).unwrap_or(0);
+        let by_mcc: Vec<Value> = cell_db::count_by_mcc(&conn)
+            .unwrap_or_default()
+            .into_iter()
+            .take(10)
+            .map(|(mcc, count)| json!({ "mcc": mcc, "count": count }))
+            .collect();
+        let now = crate::core::entity::unix_now() as i64;
+        let last_import = cell_db::last_import(&conn)
+            .ok()
+            .flatten()
+            .map(|rec| last_import_json(&rec, now));
+        Some((total, by_mcc, last_import))
+    })
+    .await
+    .ok()
+    .flatten();
+
+    let response = match db {
+        None => json!({
             "present": false,
             "total": 0,
-            "path": cell_db::cell_db_path().display().to_string(),
+            "path": path,
             "by_mcc": [],
             "last_import": null,
             "import_phase": phase_str,
             "import_error": phase_error,
-        }))
-        .into_response();
+        }),
+        Some((total, by_mcc, last_import)) => json!({
+            "present": true,
+            "total": total,
+            "path": path,
+            "by_mcc": by_mcc,
+            "last_import": last_import,
+            "import_phase": phase_str,
+            "import_error": phase_error,
+        }),
     };
 
-    let total = cell_db::total_count(&conn).unwrap_or(0);
-    let by_mcc: Vec<_> = cell_db::count_by_mcc(&conn)
-        .unwrap_or_default()
-        .into_iter()
-        .take(10)
-        .map(|(mcc, count)| json!({ "mcc": mcc, "count": count }))
-        .collect();
-    let last_import = cell_db::last_import(&conn).ok().flatten().map(|rec| {
-        json!({
-            "imported_at": rec.imported_at,
-            "mcc": rec.mcc,
-            "source_file": rec.source_file,
-            "row_count": rec.row_count,
-            "duration_ms": rec.duration_ms,
-        })
-    });
-
-    Json(json!({
-        "present": true,
-        "total": total,
-        "path": cell_db::cell_db_path().display().to_string(),
-        "by_mcc": by_mcc,
-        "last_import": last_import,
-        "import_phase": phase_str,
-        "import_error": phase_error,
-    }))
-    .into_response()
+    Json(response).into_response()
 }
 
 #[derive(Deserialize)]
@@ -97,20 +121,6 @@ pub struct CellsImportRequest {
     /// Country code ("AU"), "world", or a raw MCC integer string — same
     /// acceptance as `hse cells import --country`.
     pub country: String,
-}
-
-fn reject_non_loopback(peer: &SocketAddr) -> Option<axum::response::Response> {
-    if peer.ip().is_loopback() {
-        None
-    } else {
-        Some(
-            (
-                StatusCode::FORBIDDEN,
-                Json(json!({ "error": "cell DB import is loopback-only" })),
-            )
-                .into_response(),
-        )
-    }
 }
 
 /// Atomically check no import is already running and, if so, claim it —
@@ -141,7 +151,7 @@ pub async fn cells_import(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(req): Json<CellsImportRequest>,
 ) -> impl IntoResponse {
-    if let Some(rejection) = reject_non_loopback(&peer) {
+    if let Some(rejection) = reject_non_loopback(&peer, "cell DB import is loopback-only") {
         return rejection;
     }
     let country = req.country.trim().to_string();
@@ -162,13 +172,15 @@ pub async fn cells_import(
         let mcc = mcc_for_country(&country);
         let filename = opencellid_filename(&country, mcc);
         let url = opencellid_download_url(&filename, &api_key);
-        let result = crate::cli::cells::download_and_import(&url, &filename, mcc).await;
+        let result = crate::app::cells::download_and_import(&url, &filename, mcc).await;
         let mut phase = cells_import_state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *phase = match result {
             Ok(()) => CellsImportPhase::Idle,
-            Err(e) => CellsImportPhase::Error(e.to_string()),
+            Err(e) => {
+                CellsImportPhase::Error(crate::util::http::redact_credentials(&e.to_string()))
+            }
         };
     });
 
@@ -192,14 +204,25 @@ pub async fn cells_clear(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(req): Json<CellsClearRequest>,
 ) -> impl IntoResponse {
-    if let Some(rejection) = reject_non_loopback(&peer) {
+    if let Some(rejection) = reject_non_loopback(&peer, "cell DB import is loopback-only") {
         return rejection;
     }
     if !req.confirm {
         return bad_request("set confirm: true to clear the cell tower database");
     }
     match clear_cells_db() {
-        Ok(()) => Json(json!({ "cleared": true })).into_response(),
+        Ok(report) => (
+            StatusCode::OK,
+            Json(json!({
+                "cleared": true,
+                "rows_deleted": report.rows_deleted,
+                "bytes_before": report.bytes_before,
+                "bytes_after": report.bytes_after,
+                "bytes_reclaimed": report.bytes_reclaimed(),
+                "vacuum_error": report.vacuum_error,
+            })),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
@@ -216,14 +239,6 @@ mod tests {
     use tower::ServiceExt as _;
 
     #[test]
-    fn reject_non_loopback_allows_loopback_and_refuses_lan() {
-        let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
-        let lan: SocketAddr = "192.168.1.50:40000".parse().unwrap();
-        assert!(reject_non_loopback(&loopback).is_none());
-        assert!(reject_non_loopback(&lan).is_some());
-    }
-
-    #[test]
     fn try_start_import_claims_atomically_and_refuses_a_concurrent_second_call() {
         let m = std::sync::Mutex::new(CellsImportPhase::Idle);
         assert!(try_start_import(&m), "first caller must win the claim");
@@ -231,6 +246,38 @@ mod tests {
             !try_start_import(&m),
             "a second call while Running must be refused, not race a duplicate import"
         );
+    }
+
+    #[test]
+    fn last_import_json_flags_a_recent_import_as_fresh() {
+        let rec = cell_db::ImportRecord {
+            imported_at: 1_000_000,
+            mcc: Some(505),
+            source_file: "OCID_cells_mcc505.csv.gz".to_string(),
+            row_count: 42,
+            duration_ms: 10,
+        };
+        // One day later — well under STALE_THRESHOLD_DAYS.
+        let json = last_import_json(&rec, 1_000_000 + 86_400);
+        assert_eq!(json["is_stale"], false);
+        assert_eq!(json["age_days"], 1);
+    }
+
+    #[test]
+    fn last_import_json_flags_an_old_import_as_stale() {
+        let rec = cell_db::ImportRecord {
+            imported_at: 0,
+            mcc: None,
+            source_file: "OCID_cells_full.csv.gz".to_string(),
+            row_count: 1,
+            duration_ms: 1,
+        };
+        // 200 days later — past the 180-day threshold.
+        let now = i64::from(cell_db::STALE_THRESHOLD_DAYS) * 86_400 + 20 * 86_400;
+        let json = last_import_json(&rec, now);
+        assert_eq!(json["is_stale"], true);
+        assert_eq!(json["age_days"], 200);
+        assert_eq!(json["stale_threshold_days"], cell_db::STALE_THRESHOLD_DAYS);
     }
 
     #[test]
@@ -247,7 +294,7 @@ mod tests {
         use std::collections::HashMap;
 
         let store: Arc<dyn crate::core::StoragePort> =
-            Arc::new(crate::storage::Store::open(":memory:").unwrap());
+            Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
         let (bus, _rx) = tokio::sync::broadcast::channel(16);
         let engine = Arc::new(crate::core::engine::ScanEngine::new(
             Vec::new(),
@@ -287,7 +334,7 @@ mod tests {
             .uri(uri)
             .header("content-type", "application/json")
             .body(Body::from(body.to_string()))
-            .unwrap();
+            .expect("should succeed");
         r.extensions_mut().insert(axum::extract::ConnectInfo(peer));
         r
     }
@@ -300,15 +347,15 @@ mod tests {
                 Request::builder()
                     .uri("/api/v1/cells/status")
                     .body(Body::empty())
-                    .unwrap(),
+                    .expect("should succeed"),
             )
             .await
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(resp.status(), 200);
         let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
             .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            .expect("should succeed");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("should succeed");
         assert!(json.get("total").is_some());
         assert!(json.get("path").is_some());
         assert!(json.get("by_mcc").is_some());
@@ -318,16 +365,16 @@ mod tests {
     #[tokio::test]
     async fn cells_import_refuses_a_non_loopback_peer() {
         let app = cells_router();
-        let lan: SocketAddr = "192.168.1.50:40000".parse().unwrap();
+        let lan: SocketAddr = "192.168.1.50:40000".parse().expect("should succeed");
         let req = req_with_peer("POST", "/api/v1/cells/import", r#"{"country":"AU"}"#, lan);
-        let resp = app.oneshot(req).await.unwrap();
+        let resp = app.oneshot(req).await.expect("should succeed");
         assert_eq!(resp.status(), 403);
     }
 
     #[tokio::test]
     async fn cells_import_rejects_an_empty_country() {
         let app = cells_router();
-        let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+        let loopback: SocketAddr = "127.0.0.1:9999".parse().expect("should succeed");
         // No HUNTSMAN_OPENCELLID_KEY needed to reach this check — empty
         // country is rejected before the key is even resolved.
         let req = req_with_peer(
@@ -336,44 +383,52 @@ mod tests {
             r#"{"country":"  "}"#,
             loopback,
         );
-        let resp = app.oneshot(req).await.unwrap();
+        let resp = app.oneshot(req).await.expect("should succeed");
         assert_eq!(resp.status(), 400);
     }
 
     #[tokio::test]
     async fn cells_clear_refuses_a_non_loopback_peer() {
         let app = cells_router();
-        let lan: SocketAddr = "192.168.1.50:40000".parse().unwrap();
+        let lan: SocketAddr = "192.168.1.50:40000".parse().expect("should succeed");
         let req = req_with_peer("POST", "/api/v1/cells/clear", r#"{"confirm":true}"#, lan);
-        let resp = app.oneshot(req).await.unwrap();
+        let resp = app.oneshot(req).await.expect("should succeed");
         assert_eq!(resp.status(), 403);
     }
 
     #[tokio::test]
     async fn cells_clear_requires_explicit_confirm() {
         let app = cells_router();
-        let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+        let loopback: SocketAddr = "127.0.0.1:9999".parse().expect("should succeed");
         let req = req_with_peer(
             "POST",
             "/api/v1/cells/clear",
             r#"{"confirm":false}"#,
             loopback,
         );
-        let resp = app.oneshot(req).await.unwrap();
+        let resp = app.oneshot(req).await.expect("should succeed");
         assert_eq!(resp.status(), 400);
     }
 
     #[tokio::test]
     async fn cells_clear_succeeds_with_confirm_true() {
+        // clear_cells_db() operates on the real cell-tower DB file (not the
+        // test's in-memory store), and fails if it is absent. `open_rw` creates
+        // the file and its schema — and resolves through `paths::data_file`, so
+        // under `cfg(test)` that is the per-process temp root, and the directory
+        // is created 0700 on the way. No manual `create_dir_all` here: that would
+        // create at the ambient umask and bypass that guarantee.
+        let _db = crate::util::cell_db::open_rw().expect("should create cell DB");
+
         let app = cells_router();
-        let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+        let loopback: SocketAddr = "127.0.0.1:9999".parse().expect("should succeed");
         let req = req_with_peer(
             "POST",
             "/api/v1/cells/clear",
             r#"{"confirm":true}"#,
             loopback,
         );
-        let resp = app.oneshot(req).await.unwrap();
+        let resp = app.oneshot(req).await.expect("should succeed");
         assert_eq!(resp.status(), 200);
     }
 }

@@ -1,9 +1,20 @@
-//! API key identification and cataloging module.
+//! API key identification and reporting module.
 //!
 //! Accepts a raw API key as a seed, probes it against all known OSINT
-//! service endpoints in parallel, identifies which service(s) it
-//! belongs to, extracts account metadata (plan, credits, quotas),
-//! and auto-stores valid keys in the key pool for future use.
+//! service endpoints in parallel, identifies which service(s) it belongs
+//! to, and extracts account metadata (plan, credits, quotas) as a
+//! reportable finding.
+//!
+//! This intentionally does NOT auto-enroll a validated key into
+//! [`crate::util::key_pool`] for HSE's own future reuse: a discovered
+//! `ApiKey` target can come from anywhere with no ownership check (a
+//! crawled page, a breach dump, an import), so auto-pooling would mean HSE
+//! authenticates against real third-party services with a credential of
+//! unverified ownership on its own initiative, then keeps using it in
+//! later scans. The full validation result (service, category, plan/quota
+//! metadata) is still reported as an entity below; an operator who reviews
+//! it and wants the key available for future scans can pool it explicitly
+//! (`hse keys add`).
 
 use std::time::Duration;
 
@@ -11,12 +22,12 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::key_pool::{self, KeyEntry, KeyStatus};
 
 const SRC: &str = "api_key_probe";
 
@@ -32,7 +43,7 @@ impl Module for ApiKeyProbe {
     }
 
     fn description(&self) -> &'static str {
-        "Identify, validate, and catalog API keys across OSINT services"
+        "API key probe — identifies and validates API keys against known OSINT services, reporting the match as a finding (never auto-pooled for reuse)"
     }
 
     fn priority(&self) -> u8 {
@@ -95,7 +106,6 @@ impl Module for ApiKeyProbe {
             tasks.spawn(async move { (i, probe_endpoint(&url, &key, &headers).await) });
         }
 
-        let pool = key_pool::global_pool();
         let mut identified = Vec::new();
         // Probes that never got an answer (no network, DNS/TLS failure, timeout)
         // are counted separately from probes that ran and simply didn't match, so
@@ -130,12 +140,6 @@ impl Module for ApiKeyProbe {
 
             let info = (probe.parse_info)(&json);
 
-            let mut entry = KeyEntry::new(key);
-            entry.status = KeyStatus::Active;
-            entry.last_validated = Some(crate::core::entity::unix_now());
-            entry.notes = Some("Auto-identified by api_key_probe".to_string());
-            pool.add(probe.service, entry);
-
             let mut entity = Entity::new(
                 EntityKind::ApiKey,
                 format!(
@@ -143,7 +147,7 @@ impl Module for ApiKeyProbe {
                     probe.service,
                     crate::util::str_util::truncate_safe(key, 12)
                 ),
-                0.95,
+                confidence::VERY_HIGH_PLUSPLUS,
                 &ctx.scan_id,
             );
             entity.tag(format!("service:{}", probe.service));
@@ -189,7 +193,12 @@ impl Module for ApiKeyProbe {
                 _ => None,
             };
             if let Some(domain) = service_domain {
-                let mut d = Entity::new(EntityKind::Domain, domain, 0.60, &ctx.scan_id);
+                let mut d = Entity::new(
+                    EntityKind::Domain,
+                    domain,
+                    confidence::MEDIUM_PLUS,
+                    &ctx.scan_id,
+                );
                 d.tag("api-key-derived");
                 d.tag(format!("service:{}", probe.service));
                 d.add_evidence(Evidence::new(
@@ -215,15 +224,25 @@ impl Module for ApiKeyProbe {
             ));
         }
 
-        if let Err(e) = key_pool::save_pool(&pool) {
-            tracing::warn!("failed to save key pool: {e}");
-        }
+        sort_identified_for_report(&mut identified);
 
         if !identified.is_empty() {
+            // `EntityKind::ApiKey`, not `Other`: `util::redact::is_credential_kind`
+            // gates the export-redaction path (`hse export --redact`, `?redact=1`)
+            // purely on entity KIND, and `Other` matches none of its arms. An
+            // `Other`-kind summary carrying the complete, still-valid key in
+            // `value` survived a redacted export in full plaintext — the exact
+            // credential-disclosure harm that gate exists to prevent — even
+            // though the per-service entity two dozen lines above already does
+            // this correctly. Truncated too, as defense in depth, so the full
+            // secret is never held in an entity value regardless of kind.
             let mut summary = Entity::new(
-                EntityKind::Other("api_key_report".into()),
-                key,
-                0.99,
+                EntityKind::ApiKey,
+                format!(
+                    "api_key_report:{}",
+                    crate::util::str_util::truncate_safe(key, 12)
+                ),
+                confidence::CERTAIN,
                 &ctx.scan_id,
             );
             summary.tag("api-key-probe");
@@ -369,6 +388,23 @@ fn is_error_response(v: &Value) -> bool {
         return true;
     }
     false
+}
+
+/// Put the identified services into a deterministic, reproducible order for the
+/// operator-facing report. **Pure.**
+///
+/// `identified` is filled inside the `join_next` loop, which resolves in
+/// COMPLETION order — network-race order, not spawn order (the `JoinSet`
+/// declaration above already names this). That order reached the operator
+/// verbatim in both the evidence headline and the `services_matched` attribute,
+/// so two runs against the same key and the same services could print them in
+/// different orders, and a diff of two reports showed a change where nothing had
+/// changed.
+///
+/// Sorts by service name. The service strings are unique per probe, so this is a
+/// total order and needs no secondary tie-break.
+fn sort_identified_for_report<C, I>(identified: &mut [(&'static str, C, I)]) {
+    identified.sort_by(|a, b| a.0.cmp(b.0));
 }
 
 #[cfg(test)]

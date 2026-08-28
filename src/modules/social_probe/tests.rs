@@ -131,21 +131,56 @@ fn probe_with_no_hits_does_not_echo_the_seed() {
     // source and inflates the seed to VERIFIED on phantom evidence.
     assert!(!should_echo_target(0));
     let t = Target::new(TargetKind::Username, "haigenb");
-    assert!(build_target_summary(&t, 0, 28, &[], "scan").is_none());
+    assert!(build_target_summary(&t, 0, 0, 28, &[], "scan").is_none());
+}
+
+#[test]
+fn blocked_zero_hit_sweep_is_inconclusive_not_a_confirmed_absence() {
+    // M6: a zero-hit run is only a confirmed absence when the probes actually
+    // answered. When at least half returned no definitive answer (curl code 0 —
+    // blocked / unreachable / no egress), the sweep is inconclusive and must be
+    // surfaced as an error, never as a silent empty "not on any platform".
+    let msg = inconclusive_sweep(0, 28, 28).expect("all-blocked zero-hit run is inconclusive");
+    assert!(
+        msg.contains("28/28") && msg.contains("not a confirmed absence"),
+        "message must quantify the blocked probes and disclaim absence: {msg}"
+    );
+    assert!(
+        inconclusive_sweep(0, 14, 28).is_some(),
+        "exactly half blocked is still inconclusive"
+    );
+
+    // A run whose probes mostly ANSWERED (definitive not-founds) with only a few
+    // blocked IS a genuine absence — not inconclusive.
+    assert!(
+        inconclusive_sweep(0, 3, 28).is_none(),
+        "mostly-definitive not-founds are a real absence, not inconclusive"
+    );
+    // Any confirmed hit means the sweep reached the network — never inconclusive,
+    // even if other probes were blocked.
+    assert!(
+        inconclusive_sweep(2, 26, 28).is_none(),
+        "any hit proves reachability, so the run is never inconclusive"
+    );
+    // A fully cancelled/empty sweep (nothing attempted) is not inconclusive.
+    assert!(
+        inconclusive_sweep(0, 0, 0).is_none(),
+        "no probes attempted is not an inconclusive absence claim"
+    );
 }
 
 #[test]
 fn probe_with_a_hit_echoes_the_seed_as_corroboration() {
     assert!(should_echo_target(1));
     let t = Target::new(TargetKind::Username, "haigenb");
-    let summary = build_target_summary(&t, 1, 28, &["github"], "scan")
+    let summary = build_target_summary(&t, 1, 1, 28, &["github"], "scan")
         .expect("a confirmed profile must echo the seed");
     assert_eq!(summary.value, "haigenb");
     assert!(summary.has_tag("social-probed"));
     assert!(!summary.has_tag("multi-platform"));
     // Three or more confirmed profiles flags the multi-platform footprint.
-    let multi =
-        build_target_summary(&t, 3, 28, &["github", "reddit", "twitch"], "scan").expect("entity");
+    let multi = build_target_summary(&t, 3, 3, 28, &["github", "reddit", "twitch"], "scan")
+        .expect("entity");
     assert!(multi.has_tag("multi-platform"));
 }
 
@@ -163,14 +198,61 @@ fn module_metadata() {
 fn build_target_summary_evidence_lists_confirmed_platforms() {
     let t = Target::new(TargetKind::Username, "testuser");
     let confirmed = &["github", "reddit"];
-    let e = build_target_summary(&t, 2, 30, confirmed, "scan").unwrap();
+    let e = build_target_summary(&t, 2, 2, 30, confirmed, "scan").expect("should succeed");
     let attr = e.evidence[0]
         .attributes
         .get("platforms")
         .map(String::as_str);
     assert!(attr.is_some(), "platforms attribute must be present");
-    let platforms = attr.unwrap();
+    let platforms = attr.expect("should succeed");
     assert!(platforms.contains("github") && platforms.contains("reddit"));
+}
+
+#[test]
+fn build_target_summary_stamps_hits_verified_and_status_only() {
+    // OD-17: AU-035/AU-077's is_verified_discovery reads `hits_verified` on
+    // THIS aggregate evidence record (the per-platform verified/weak split
+    // lives on separate Url entities the rule never scans). An absent
+    // attribute reads as vacuously verified, so an all-status-only sweep
+    // could fabricate a "prediction confirmed" bridge. Must mirror
+    // `username_search`/`streaming_probe`'s existing hits_verified shape.
+    let t = Target::new(TargetKind::Username, "testuser");
+
+    // All hits status-only (weak-detection): 0 verified of 2 found.
+    let weak =
+        build_target_summary(&t, 2, 0, 30, &["reddit", "tumblr"], "scan").expect("should succeed");
+    assert_eq!(
+        weak.evidence[0]
+            .attributes
+            .get("hits_verified")
+            .map(String::as_str),
+        Some("0")
+    );
+    assert_eq!(
+        weak.evidence[0]
+            .attributes
+            .get("hits_status_only")
+            .map(String::as_str),
+        Some("2")
+    );
+
+    // A mixed sweep: 1 body-verified + 2 status-only of 3 found.
+    let mixed = build_target_summary(&t, 3, 1, 30, &["github", "reddit", "tumblr"], "scan")
+        .expect("should succeed");
+    assert_eq!(
+        mixed.evidence[0]
+            .attributes
+            .get("hits_verified")
+            .map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(
+        mixed.evidence[0]
+            .attributes
+            .get("hits_status_only")
+            .map(String::as_str),
+        Some("2")
+    );
 }
 
 #[test]
@@ -185,7 +267,8 @@ fn build_target_summary_stamps_platforms_count_for_au011() {
     // canonical count attribute must now be present and equal the number of
     // confirmed platforms.
     let t = Target::new(TargetKind::Username, "testuser");
-    let e = build_target_summary(&t, 3, 30, &["github", "reddit", "twitch"], "scan").unwrap();
+    let e = build_target_summary(&t, 3, 3, 30, &["github", "reddit", "twitch"], "scan")
+        .expect("should succeed");
     assert_eq!(
         e.evidence[0]
             .attributes
@@ -194,22 +277,4 @@ fn build_target_summary_stamps_platforms_count_for_au011() {
         Some("3"),
         "platforms_count must equal the confirmed-platform count so AU-011 can count it"
     );
-}
-
-// -- all_platforms_failed_transport failure contract (T2.162) ---------------
-
-#[test]
-fn all_platforms_failed_transport_only_on_total_outage_with_no_hits() {
-    // T2.162 regression: every fetch_with_status call collapsing to the
-    // code==0 transport-failure sentinel (curl unreachable/DNS-down/offline)
-    // previously read identically to 34/34 platforms genuinely answering a
-    // real negative (403/404/500/soft-404 body block).
-    assert!(all_platforms_failed_transport(34, 34, 0));
-    // Mixed: some platforms genuinely answered, not a total outage.
-    assert!(!all_platforms_failed_transport(10, 34, 0));
-    // Any real hit, even alongside transport failures, is not an outage.
-    assert!(!all_platforms_failed_transport(33, 34, 1));
-    // The vacuous case (nothing checked, e.g. an empty target) must never be
-    // a false outage.
-    assert!(!all_platforms_failed_transport(0, 0, 0));
 }

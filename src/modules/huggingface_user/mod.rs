@@ -30,6 +30,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -88,21 +89,26 @@ pub(super) fn build_entities(user: HfUser, scan_id: &str) -> Vec<Entity> {
     };
 
     // Confirmed username entity.
-    let mut e = Entity::new(EntityKind::Username, handle, 0.88, scan_id);
+    let mut e = Entity::new(EntityKind::Username, handle, confidence::EXPERT, scan_id);
     e.tag("huggingface");
     e.tag("public-profile");
     e.add_evidence(ev());
     out.push(e);
 
     // Profile URL.
-    let mut u = Entity::new(EntityKind::Url, &profile_url, 0.82, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Url,
+        &profile_url,
+        confidence::CORROBORATED,
+        scan_id,
+    );
     u.tag("huggingface");
     u.add_evidence(ev());
     out.push(u);
 
     // Full name → Person (require at least two tokens to avoid single-word handles).
     if let Some(name) = user.fullname.as_deref()
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.72, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::ATTRIBUTED, scan_id)
     {
         p.tag("huggingface");
         p.add_evidence(ev().with_attr("source_field", "fullname"));
@@ -115,7 +121,12 @@ pub(super) fn build_entities(user: HfUser, scan_id: &str) -> Vec<Entity> {
         if display.trim().is_empty() {
             continue;
         }
-        let mut o = Entity::new(EntityKind::Organisation, display.trim(), 0.55, scan_id);
+        let mut o = Entity::new(
+            EntityKind::Organisation,
+            display.trim(),
+            confidence::MEDIUM_HIGH,
+            scan_id,
+        );
         o.tag("huggingface");
         o.tag("org-member");
         o.add_evidence(ev().with_attr("org_handle", &org.name));
@@ -133,7 +144,7 @@ impl Module for HuggingfaceUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Hugging Face profile: handle, fullname, account-created date, orgs (free)"
+        "Hugging Face profile recon (free) — harvests handle, fullname, account-created date, and org affiliations"
     }
     fn priority(&self) -> u8 {
         52

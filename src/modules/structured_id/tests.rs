@@ -23,7 +23,7 @@ fn uuid_v1_round_trips_time_and_real_mac() {
 fn uuid_v1_random_node_yields_no_mac() {
     // Multicast/local bit set (first octet 0x01) → random node, not a real MAC.
     let u = build_uuid_v1(1_577_836_800, "01a0c91e6bf6");
-    let (_secs, mac) = decode_uuid_v1(&u).unwrap();
+    let (_secs, mac) = decode_uuid_v1(&u).expect("should succeed");
     assert_eq!(mac, None);
 }
 
@@ -64,7 +64,7 @@ fn build_ulid(unix_ms: u64) -> String {
         *slot = CROCKFORD[(ms & 0x1F) as usize];
         ms >>= 5;
     }
-    let mut s = String::from_utf8(ts.to_vec()).unwrap();
+    let mut s = String::from_utf8(ts.to_vec()).expect("should succeed");
     s.push_str("0000000000000000"); // 16 random chars (`0` is valid base32)
     s
 }
@@ -96,7 +96,7 @@ fn build_ksuid(unix_secs: i64) -> String {
     while out.len() < 27 {
         out.insert(0, BASE62[0]);
     }
-    String::from_utf8(out).unwrap()
+    String::from_utf8(out).expect("should succeed")
 }
 
 #[test]
@@ -104,7 +104,7 @@ fn ulid_round_trips_creation_time() {
     let u = build_ulid(1_577_836_800_000); // 2020-01-01 in ms
     assert_eq!(u.len(), 26);
     assert_eq!(decode_ulid(&u), Some(1_577_836_800));
-    assert_eq!(utc_date(decode_ulid(&u).unwrap()), "2020-01-01");
+    assert_eq!(utc_date(decode_ulid(&u).expect("should succeed")), "2020-01-01");
     assert!(decode_ulid("tooshort").is_none());
     assert!(decode_ulid("0000000000000000000000000U").is_none()); // 'U' not base32
 }

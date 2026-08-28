@@ -32,11 +32,14 @@ fn recommend_ranks_untapped_relatives() {
     let leads = recommend(&entities, &relations, 0.50);
     // Two pivotable leads (person, email); the address is not pivotable.
     assert_eq!(leads.len(), 2, "address is not an actionable lead");
-    let erik_lead = leads.iter().find(|l| l.value == "Erik Diegmann").unwrap();
+    let erik_lead = leads
+        .iter()
+        .find(|l| l.value == "Erik Diegmann")
+        .expect("should succeed");
     let email_lead = leads
         .iter()
         .find(|l| l.value == "kyle@example.com")
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(erik_lead.target_kind, "full_name");
     assert_eq!(email_lead.target_kind, "email");
     assert_eq!(erik_lead.action, "scan");
@@ -97,7 +100,10 @@ fn recommend_ranks_geo_corroborated_family_top() {
     );
     // Both are relatives, but the confirmed one scores strictly higher than the
     // unconfirmed guess — reliability is what separates them.
-    let guess_lead = leads.iter().find(|l| l.value == "Curt Diegmann").unwrap();
+    let guess_lead = leads
+        .iter()
+        .find(|l| l.value == "Curt Diegmann")
+        .expect("should succeed");
     assert!(
         top.score > guess_lead.score,
         "confirmed ({}) must outrank unconfirmed ({})",
@@ -141,8 +147,14 @@ fn recommend_demotes_geo_discordant_namesakes() {
     let entities = vec![subject, local.clone(), namesake.clone()];
 
     let leads = recommend(&entities, &relations, 0.50);
-    let local_lead = leads.iter().find(|l| l.value == "Aaron Smith").unwrap();
-    let namesake_lead = leads.iter().find(|l| l.value == "Zane Smith").unwrap();
+    let local_lead = leads
+        .iter()
+        .find(|l| l.value == "Aaron Smith")
+        .expect("should succeed");
+    let namesake_lead = leads
+        .iter()
+        .find(|l| l.value == "Zane Smith")
+        .expect("should succeed");
     assert!(
         local_lead.score > namesake_lead.score,
         "the local candidate ({}) outranks the namesake ({})",
@@ -179,8 +191,14 @@ fn recommend_weights_family_by_surname_distinctiveness() {
     ];
     let leads = recommend(&[subject, rare.clone(), common.clone()], &relations, 0.50);
 
-    let rare_lead = leads.iter().find(|l| l.value == "Alex Bamford").unwrap();
-    let common_lead = leads.iter().find(|l| l.value == "Alex Smith").unwrap();
+    let rare_lead = leads
+        .iter()
+        .find(|l| l.value == "Alex Bamford")
+        .expect("should succeed");
+    let common_lead = leads
+        .iter()
+        .find(|l| l.value == "Alex Smith")
+        .expect("should succeed");
     assert!(
         rare_lead.score > common_lead.score,
         "a distinctive shared surname ({}) outranks a common one ({})",
@@ -237,7 +255,7 @@ fn recommend_flags_cross_scan_bridges() {
     let lead = leads
         .iter()
         .find(|l| l.value == "shared@example.com")
-        .unwrap();
+        .expect("should succeed");
     assert!(
         lead.reason.contains("also in a prior scan"),
         "the cross-scan bridge is surfaced in the reason: {}",
@@ -313,11 +331,14 @@ fn history_bridge_boosts_lead_priority_and_is_flagged() {
 
     let base = leads_for(None);
     let bridged = leads_for(Some("cross-scan-relation"));
-    let base_email = base.iter().find(|l| l.value == "kyle@example.com").unwrap();
+    let base_email = base
+        .iter()
+        .find(|l| l.value == "kyle@example.com")
+        .expect("should succeed");
     let bridged_email = bridged
         .iter()
         .find(|l| l.value == "kyle@example.com")
-        .unwrap();
+        .expect("should succeed");
 
     assert!(!base_email.bridged, "no history tag ⇒ not a bridge");
     assert!(
@@ -361,4 +382,129 @@ fn history_boost_is_graded_and_takes_the_strongest() {
         history_boost(&tag("cross-scan-relation")),
         "strongest prior tie wins, boosts are never summed"
     );
+}
+
+/// `structural_boost` sums the continuous betweenness term and the flat cut-vertex
+/// term, and is zero for a pendant / absent node — the pure-function contract the
+/// synergy rests on.
+#[test]
+fn structural_boost_composes_bridge_and_cut_vertex() {
+    // The signal is the (betweenness, is_cut_vertex) tuple pivot::structural_index
+    // returns per node.
+    assert_eq!(structural_boost(None), 0.0);
+    // Pendant leaf: no betweenness, not a cut vertex → no lift (the common case).
+    assert_eq!(structural_boost(Some(&(0.0, false))), 0.0);
+    // Cut vertex alone earns the flat bonus; a pure bridge earns the full weight;
+    // a node that is both sums them.
+    assert_eq!(
+        structural_boost(Some(&(0.0, true))),
+        STRUCT_CUT_VERTEX_BONUS
+    );
+    assert_eq!(structural_boost(Some(&(1.0, false))), STRUCT_BRIDGE_WEIGHT);
+    assert_eq!(
+        structural_boost(Some(&(1.0, true))),
+        STRUCT_BRIDGE_WEIGHT + STRUCT_CUT_VERTEX_BONUS
+    );
+}
+
+/// The end-to-end synergy: a direct connection that is ALSO a bridging pivot in the
+/// graph (it alone links a pendant cluster onto the subject) outranks an otherwise
+/// identical pendant relative, is flagged `structural`, and says so in its reason —
+/// the graph's own structure prioritising the next recursion. A plain pendant, the
+/// shape of most leads, is untouched.
+#[test]
+fn recommend_lifts_a_lead_that_bridges_the_graph() {
+    let mut subject = ent(EntityKind::Person, "Kyle Diegmann", 0.85);
+    subject.tag("subject");
+    // The bridge: a direct relative who ALSO connects two further relatives that
+    // hang off the subject's footprint only through them (a cut vertex).
+    let mut bridge = ent(EntityKind::Person, "Erik Diegmann", 0.35);
+    bridge.tag("family-candidate");
+    // An otherwise-identical plain pendant relative (same kind/conf/surname/tag),
+    // differing ONLY in graph position — no onward edges.
+    let mut pendant = ent(EntityKind::Person, "Otto Diegmann", 0.35);
+    pendant.tag("family-candidate");
+    // Behind the bridge — NOT direct neighbours of the subject, so never leads,
+    // but they give `bridge` its betweenness / cut-vertex role.
+    let far_a = ent(EntityKind::Person, "Rita Diegmann", 0.35);
+    let far_b = ent(EntityKind::Person, "Sven Diegmann", 0.35);
+
+    let relations = vec![
+        rel(&subject, &bridge, RelationKind::AssociatedWith, 0.5),
+        rel(&subject, &pendant, RelationKind::AssociatedWith, 0.5),
+        rel(&bridge, &far_a, RelationKind::AssociatedWith, 0.5),
+        rel(&bridge, &far_b, RelationKind::AssociatedWith, 0.5),
+    ];
+    let entities = vec![subject, bridge.clone(), pendant.clone(), far_a, far_b];
+
+    let leads = recommend(&entities, &relations, 0.50);
+    // Only the two direct relatives are leads; the far pair are two hops out.
+    let values: std::collections::BTreeSet<&str> = leads.iter().map(|l| l.value.as_str()).collect();
+    assert!(values.contains("Erik Diegmann") && values.contains("Otto Diegmann"));
+    assert!(!values.contains("Rita Diegmann") && !values.contains("Sven Diegmann"));
+
+    let bridge_lead = leads
+        .iter()
+        .find(|l| l.value == "Erik Diegmann")
+        .expect("should succeed");
+    let pendant_lead = leads
+        .iter()
+        .find(|l| l.value == "Otto Diegmann")
+        .expect("should succeed");
+
+    assert!(
+        bridge_lead.structural,
+        "the bridging relative is a structural pivot"
+    );
+    assert!(!pendant_lead.structural, "the plain pendant is not");
+    assert!(
+        bridge_lead.score > pendant_lead.score,
+        "graph structure lifts the bridge above the identical pendant ({} !> {})",
+        bridge_lead.score,
+        pendant_lead.score
+    );
+    assert!(
+        bridge_lead.reason.contains("a bridging pivot in the graph"),
+        "the structural role is named in the reason: {}",
+        bridge_lead.reason
+    );
+    // The lift must not fabricate a structural flag on the plain pendant's reason.
+    assert!(!pendant_lead.reason.contains("bridging pivot"));
+}
+
+/// An affiliation edge to an organisation surfaces as an actionable one-tap
+/// lead: re-scanning the company is the person → company → wider-network pivot,
+/// and it must carry the canonical `organisation` target kind a scan accepts as
+/// a seed. Before the affiliation layer this connection did not exist; before
+/// the `pivot` wiring it existed but generated no lead.
+#[test]
+fn affiliation_to_an_organisation_is_an_actionable_lead() {
+    let mut subject = ent(EntityKind::Person, "Jane Citizen", 0.85);
+    subject.tag("subject");
+    let company = ent(EntityKind::Organisation, "Acme Pty Ltd", 0.6);
+    let acn = ent(EntityKind::AbnAcn, "004085616", 0.6);
+
+    let relations = vec![
+        rel(&subject, &company, RelationKind::OfficerOf, 0.85),
+        rel(&company, &acn, RelationKind::IdentifiedBy, 0.6),
+    ];
+    let entities = vec![subject, company.clone(), acn.clone()];
+
+    let leads = recommend(&entities, &relations, 0.50);
+    let org_lead = leads
+        .iter()
+        .find(|l| l.value == "Acme Pty Ltd")
+        .expect("the affiliated organisation is a lead");
+    assert_eq!(
+        org_lead.target_kind, "organisation",
+        "the lead must carry a target kind a scan can seed with"
+    );
+    assert_eq!(org_lead.action, "scan");
+    assert!(
+        org_lead.reason.contains("affiliated"),
+        "the reason names the affiliation, got: {}",
+        org_lead.reason
+    );
+    // The parser round-trips the emitted kind — the one-tap button actually works.
+    assert!(crate::cli::parse_target_kind(org_lead.target_kind).is_ok());
 }

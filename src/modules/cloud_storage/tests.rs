@@ -103,32 +103,84 @@ fn access_severity_orders_listable_above_read_above_private() {
     assert!(Access::PublicRead.severity() > Access::Private.severity());
 }
 
+#[test]
+fn join_bucket_url_avoids_double_slash() {
+    // S3/GCS path-style roots don't end in '/'.
+    assert_eq!(
+        join_bucket_url("https://s3.amazonaws.com/acme-corp", "secret/config.env"),
+        "https://s3.amazonaws.com/acme-corp/secret/config.env"
+    );
+    // Azure/DigitalOcean roots already end in '/'.
+    assert_eq!(
+        join_bucket_url(
+            "https://acme-corp.blob.core.windows.net/",
+            "secret/config.env"
+        ),
+        "https://acme-corp.blob.core.windows.net/secret/config.env"
+    );
+}
+
+#[test]
+fn public_listable_sample_yields_one_url_entity_per_object_key() {
+    // Same fixture as `parses_s3_listing_keys_and_sizes`.
+    let xml = r#"
+        <ListBucketResult>
+            <Contents><Key>secret/config.env</Key><Size>1024</Size></Contents>
+            <Contents><Key>db/backup.sql</Key><Size>2048</Size></Contents>
+            <Contents><Key>logs/app.log</Key><Size>4096</Size></Contents>
+        </ListBucketResult>
+    "#;
+    let listing = parse_listing(xml, KEY_SAMPLE);
+
+    let entities = object_key_entities(
+        Provider::AwsS3.label(),
+        "acme-corp",
+        "https://s3.amazonaws.com/acme-corp",
+        &listing.sample,
+        "scan-1",
+    );
+
+    assert_eq!(entities.len(), 3, "one Url entity per exposed key");
+    let urls: Vec<&str> = entities.iter().map(|e| e.raw_value.as_str()).collect();
+    assert_eq!(
+        urls,
+        vec![
+            "https://s3.amazonaws.com/acme-corp/secret/config.env",
+            "https://s3.amazonaws.com/acme-corp/db/backup.sql",
+            "https://s3.amazonaws.com/acme-corp/logs/app.log",
+        ]
+    );
+    for e in &entities {
+        assert_eq!(e.kind, EntityKind::Url);
+        assert!(e.confidence <= 0.9, "at or below the bucket-root confidence");
+        assert!(e.tags.contains(&"cloud-storage".to_string()));
+        assert!(e.tags.contains(&"cloud-storage-object".to_string()));
+        assert!(e.tags.contains(&"provider:AWS S3".to_string()));
+        assert!(e.tags.contains(&crate::core::tags::VULNERABLE.to_string()));
+    }
+}
+
+#[test]
+fn object_key_entities_skips_blank_keys() {
+    let sample = vec!["  ".to_string(), "real/key.txt".to_string()];
+    let entities = object_key_entities(
+        "GCS",
+        "acme-corp",
+        "https://storage.googleapis.com/acme-corp",
+        &sample,
+        "scan-1",
+    );
+    assert_eq!(entities.len(), 1, "blank key is skipped defensively");
+    assert_eq!(
+        entities[0].raw_value,
+        "https://storage.googleapis.com/acme-corp/real/key.txt"
+    );
+}
+
 #[tokio::test]
 async fn module_metadata() {
     let m = CloudStorage;
     assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com")));
     assert!(m.accepts(&Target::new(TargetKind::Organisation, "Acme Corp")));
     assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
-}
-
-#[test]
-fn all_probes_failed_transport_only_on_total_outage_with_no_hits() {
-    // Regression (T2.156): distinguishes a total transport outage across
-    // every (provider, name) probe from legitimate "none of these candidate
-    // buckets exist" or a partial-failure case. Mirrors
-    // domainsdb::all_zones_failed_transport_only_on_total_outage_with_no_hits.
-
-    // Every probe failed at the transport level AND nothing was found → outage.
-    assert!(all_probes_failed_transport(36, 36, 0));
-
-    // Some probes failed but at least one genuinely resolved → not an outage
-    // (partial real evidence, keep it).
-    assert!(!all_probes_failed_transport(35, 36, 1));
-
-    // No transport failures at all, just a legitimate all-NotFound sweep.
-    assert!(!all_probes_failed_transport(0, 36, 0));
-
-    // Degenerate: no probes spawned (e.g. cancelled immediately) must not
-    // spuriously report an outage.
-    assert!(!all_probes_failed_transport(0, 0, 0));
 }

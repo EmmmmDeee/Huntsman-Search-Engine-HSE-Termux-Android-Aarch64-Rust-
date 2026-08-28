@@ -20,18 +20,39 @@ use super::*;
             "HUNTSMAN_FOO".to_string(),
             "bar".to_string(),
         )]));
-        let val = ctx.key("HUNTSMAN_FOO").unwrap();
+        let val = ctx.key("HUNTSMAN_FOO").expect("should succeed");
         assert_eq!(val, "bar");
     }
 
     #[test]
     fn key_returns_missing_key_error_when_absent() {
         let ctx = make_ctx(HashMap::new());
-        let err = ctx.key("NO_SUCH_KEY").unwrap_err();
+        let err = ctx.key("NO_SUCH_KEY").expect_err("should be an error");
         assert!(
             matches!(err, Error::MissingKey(ref k) if k == "NO_SUCH_KEY"),
             "expected MissingKey, got: {err:?}",
         );
+    }
+
+    /// A present-but-blank slot is an unconfigured slot, not a credential.
+    ///
+    /// This matters now that no key is embedded in the build: `HUNTSMAN_FOO=` in
+    /// an env file used to resolve to `Some("")`, which a keyed module would
+    /// then send as its credential — spending a request to earn a 401 that reads
+    /// like a revoked key rather than like "you never set this".
+    #[test]
+    fn key_treats_a_blank_value_as_missing() {
+        for blank in ["", "   ", "\t"] {
+            let ctx = make_ctx(HashMap::from([(
+                "HUNTSMAN_FOO".to_string(),
+                blank.to_string(),
+            )]));
+            let err = ctx.key("HUNTSMAN_FOO").expect_err("blank must not resolve");
+            assert!(
+                matches!(err, Error::MissingKey(ref k) if k == "HUNTSMAN_FOO"),
+                "expected MissingKey for {blank:?}, got: {err:?}",
+            );
+        }
     }
 
     // ── ModuleContext::key_opt ───────────────────────────────────────────
@@ -118,7 +139,7 @@ use super::*;
             match cost {
                 ModuleCost::Free | ModuleCost::KeyGated | ModuleCost::Paid => {}
             }
-            let json = serde_json::to_string(&cost).unwrap();
+            let json = serde_json::to_string(&cost).expect("should succeed");
             assert_eq!(
                 json.trim_matches('"'),
                 cost.as_str(),
@@ -130,15 +151,15 @@ use super::*;
     #[test]
     fn module_cost_serializes_to_snake_case() {
         assert_eq!(
-            serde_json::to_string(&ModuleCost::Free).unwrap(),
+            serde_json::to_string(&ModuleCost::Free).expect("should succeed"),
             "\"free\""
         );
         assert_eq!(
-            serde_json::to_string(&ModuleCost::KeyGated).unwrap(),
+            serde_json::to_string(&ModuleCost::KeyGated).expect("should succeed"),
             "\"key_gated\""
         );
         assert_eq!(
-            serde_json::to_string(&ModuleCost::Paid).unwrap(),
+            serde_json::to_string(&ModuleCost::Paid).expect("should succeed"),
             "\"paid\""
         );
     }
@@ -277,7 +298,7 @@ use super::*;
                 | ModuleCategory::Web
                 | ModuleCategory::Other => {}
             }
-            let json = serde_json::to_string(&cat).unwrap();
+            let json = serde_json::to_string(&cat).expect("should succeed");
             // serde-snake_case strips quotes
             let body = json.trim_matches('"');
             assert_eq!(
@@ -286,7 +307,7 @@ use super::*;
                 "{cat:?}: as_str() diverged from its serde snake_case form",
             );
             // Full round-trip: the wire form must deserialize back to `cat`.
-            let back: ModuleCategory = serde_json::from_str(&json).unwrap();
+            let back: ModuleCategory = serde_json::from_str(&json).expect("should succeed");
             assert_eq!(back, cat, "{cat:?} did not round-trip through serde");
         }
     }
@@ -315,7 +336,7 @@ use super::*;
         let empty = ModuleResult::new();
         let out = empty.or_hard_failure(None);
         assert!(out.is_ok(), "a clean negative must stay Ok(empty)");
-        assert!(out.unwrap().is_empty());
+        assert!(out.expect("should succeed").is_empty());
     }
 
     #[test]
@@ -331,5 +352,5 @@ use super::*;
             out.is_ok(),
             "real evidence from one sub-fetch must survive a sibling's failure"
         );
-        assert_eq!(out.unwrap().len(), 1);
+        assert_eq!(out.expect("should succeed").len(), 1);
     }

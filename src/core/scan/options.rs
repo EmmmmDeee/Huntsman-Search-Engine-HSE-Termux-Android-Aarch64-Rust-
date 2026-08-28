@@ -62,7 +62,7 @@ pub struct ScanOptions {
     /// Recursive expansion depth. 0 = no expansion (single round, v0.1 behaviour).
     /// Each round picks high-confidence entities from prior rounds, converts
     /// them to scan targets, and runs all accepting modules on them. Deserialises
-    /// to the product default ([`DEFAULT_SCAN_DEPTH`] = 3) when omitted, so an
+    /// to the product default ([`DEFAULT_SCAN_DEPTH`] = [`MAX_DEPTH`]) when omitted, so an
     /// API/web scan recurses to the comprehensive depth by default just like
     /// `hse scan`.
     #[serde(default = "default_scan_depth")]
@@ -118,10 +118,26 @@ pub struct ScanOptions {
     /// expansion candidates by a convexity premium for heavy-tailed upside
     /// divided by per-kind dispatch cost (see [`crate::core::convex`]), so the
     /// bounded budget favours cheap, high-optionality identity leads over
-    /// expensive, saturated infrastructure. Off by default (the base
-    /// expected-value ranking is unchanged).
-    #[serde(default)]
+    /// expensive, saturated infrastructure. **On by default** for API/web scans
+    /// (see [`default_convex_budget`]) so each query maximises optionality-
+    /// weighted return out of the box; the base expected-value ranking is only
+    /// re-sorted on the uncertain tail and the expensive infrastructure, so the
+    /// confident identity core keeps its order. Opt out with the API field /
+    /// `--no-convex-budget`.
+    #[serde(default = "default_convex_budget")]
     pub convex_budget: bool,
+
+    /// **Capability-aware dispatch:** skip modules whose parser has provably
+    /// gone dead — persistent hard failures or silent zero-yield drift, from the
+    /// cross-scan health signal (see [`crate::util::scraper_health`]) — so their
+    /// dispatch slot goes to a source that still works, maximising the useful
+    /// return of each query. **On by default** for API/web scans (see
+    /// [`default_skip_dead_modules`]). Only culls the automatic comprehensive
+    /// fan-out: a scan with an explicit module allowlist, or `hse scan --full`,
+    /// never quarantines anything. Self-recovering — a module drops out the
+    /// moment it emits one healthy result. Opt out with `--no-skip-dead-modules`.
+    #[serde(default = "default_skip_dead_modules")]
+    pub skip_dead_modules: bool,
 
     /// Australian-focused regional searching. **On by default** — the search
     /// module adds a minimal set of `.au`/AU-directory dorks on top of the
@@ -147,7 +163,7 @@ pub struct ScanOptions {
     pub expansion_strategy: ExpansionStrategy,
 
     // ── SeekNow per-scan budget override (v1.1+) ───────────────────────────
-    /// Per-scan budget cap for SeekNow (`see-know.eu`) API queries.
+    /// Per-scan budget cap for SeekNow (`see-know.ru`) API queries.
     /// `None` falls back to the env-tunable
     /// `HUNTSMAN_SEEKNOW_SCAN_CAP` (default 300 — the `BUDGET` static in
     /// `util::see_know::budget`). Setting this on a
@@ -281,7 +297,7 @@ impl std::str::FromStr for ExpansionStrategy {
 /// Termux device each extra hop fans the frontier out roughly exponentially, so
 /// operator-requested depth is capped here. Change this one constant to raise
 /// or lower the ceiling.
-pub const MAX_DEPTH: u32 = 3;
+pub const MAX_DEPTH: u32 = 5;
 
 /// Hard ceiling on operator-requested module concurrency, applied where
 /// `max_concurrent` is consumed via [`ScanOptions::effective_max_concurrent`].
@@ -316,23 +332,46 @@ pub const THROTTLE_CEILING_MS: u64 = 30_000;
 
 /// Default recursive-expansion depth for the `hse scan` product surface when
 /// the operator gives neither an explicit `--depth` nor `--auto`/`--recursive`.
-/// Defaults to the full [`MAX_DEPTH`] so the standard scan is **comprehensive by
-/// default** — the seed → discovered identifiers → their pivots → infrastructure
-/// chain runs to completion, giving every module a target of a kind it accepts
-/// (e.g. the Email→Domain→IP pipeline only reaches the IP modules at the third
-/// hop). The library [`ScanOptions`] default stays `0` (single round) so
-/// programmatic/API callers and the test suite remain deterministic; this product
-/// default is applied at the CLI boundary in `cli::scan`. Operators who want a
-/// faster, shallower sweep set `--depth` explicitly.
+///
+/// Pinned to the full [`MAX_DEPTH`] so **every seed gets the whole recursion
+/// budget to converge on geolocation**. That is the product decision this
+/// constant encodes, and it is deliberately permanent rather than opt-in: the
+/// default [`ExpansionStrategy::GeoConverge`] weights each round toward the
+/// candidates one hop from an Address/Coordinates, and truncating the recursion
+/// at 3 cut that convergence off before the longest geo chains could close.
+/// Those chains are real and are the ones a GEOINT scan exists to walk — e.g.
+/// `Email → Person → Address → Coordinates`, or `Username → Person → Domain →
+/// IpAddress → Coordinates`: a five-hop path that a depth-3 default could not
+/// reach no matter how strongly the weighting favoured it.
+///
+/// The extra hops are NOT unbounded. Each round is still gated by
+/// `min_expand_confidence`, the per-round ROI top-K + knee cutoff
+/// (`core::roi::effective_cutoff`), the [`DEFAULT_MAX_ENTITIES`] budget and the
+/// wall-time watchdog — so on a low-RAM Termux device the frontier is bounded by
+/// yield and entity count, not by an arbitrary hop ceiling. The honest tradeoff
+/// this accepts: a scan whose leads keep clearing those gates now runs longer and
+/// spends more API calls than it did at depth 3. That is the intended exchange —
+/// reaching the location is the point of the scan.
+///
+/// The library [`ScanOptions`] default stays `0` (single round) so programmatic
+/// callers and the test suite remain deterministic; this product default is
+/// applied at the CLI/API boundary. Operators who want a faster, shallower sweep
+/// set `--depth` explicitly.
 pub const DEFAULT_SCAN_DEPTH: u32 = MAX_DEPTH;
 
 // Compile-time guard: the product default must never exceed the clamp ceiling,
 // or a bare `hse scan` would emit the "clamped to MAX_DEPTH" warning on every run.
 const _: () = assert!(DEFAULT_SCAN_DEPTH <= MAX_DEPTH);
 
+// Compile-time guard on the product promise above: a seed must have the FULL
+// recursion budget available to reach geolocation. If someone lowers the default
+// below the ceiling again, the longest geo chains silently stop closing and no
+// test would necessarily catch it — so pin it here, at the definition.
+const _: () = assert!(DEFAULT_SCAN_DEPTH == MAX_DEPTH);
+
 /// Default hard cap on total entities for the `hse scan` product surface, applied
 /// at the CLI boundary when the operator gives no explicit `--max-entities`. Now
-/// that the default scan is comprehensive (depth [`MAX_DEPTH`], a 0.20 expansion
+/// that the default scan is comprehensive (depth 3, a 0.20 expansion
 /// floor), a common-name seed could otherwise fan the frontier out without bound —
 /// hundreds of breach/permutation identifiers, each re-expanded — and exhaust RAM
 /// on a 4 GB no-root Termux device. This generous ceiling (≈4× a typical scan's
@@ -462,7 +501,17 @@ impl Default for ScanOptions {
             webhook_url: None,
             profile: None,
             max_roi: false,
+            // Library default stays OFF for deterministic unit tests, DECOUPLED
+            // from the serde/product default (`default_convex_budget()` = true):
+            // an API/web/CLI scan gets optionality allocation on out of the box,
+            // while a programmatic `ScanOptions::default()` keeps the plain
+            // expected-value ranking — same split as `min_expand_confidence`.
             convex_budget: false,
+            // Library default OFF (same split + rationale as convex_budget): a
+            // programmatic `ScanOptions::default()` never consults the health DB,
+            // so unit tests stay deterministic; the serde/product default
+            // (`default_skip_dead_modules()` = true) turns it on for real scans.
+            skip_dead_modules: false,
             // AU-focused by default: every scan adds Australian-source dorks
             // (`.au` TLDs, AU directories) on top of the geo-neutral base, so the
             // tool favours Australian results out of the box. Opt out with
@@ -492,7 +541,7 @@ fn default_min_expand_confidence() -> f64 {
 
 /// Serde default for [`ScanOptions::max_entities`] — the comprehensive product
 /// entity cap ([`DEFAULT_MAX_ENTITIES`] = 2500) applied to API/web requests that
-/// omit the field, so the comprehensive depth-3 / floor-0.20 default sweep can't
+/// omit the field, so the comprehensive full-depth / floor-0.20 default sweep can't
 /// run the frontier out without bound on a low-RAM Termux device. DECOUPLED from
 /// [`ScanOptions::default()`], which stays `None` (uncapped) so programmatic
 /// callers manage their own bounds.
@@ -515,6 +564,27 @@ fn default_regional_search() -> bool {
     true
 }
 
+/// Serde default for [`ScanOptions::convex_budget`] — **on by default** so every
+/// API/web scan spends its bounded budget the optionality-maximising way (cheap,
+/// high-upside identity leads over saturated infrastructure; see
+/// [`crate::core::convex`]), matching the CLI `hse scan` default. Opt out with
+/// `--no-convex-budget` / the API field. Kept separate from the library
+/// [`ScanOptions::default`] (which stays `false` for deterministic unit tests),
+/// exactly as [`default_min_expand_confidence`] splits its two defaults.
+fn default_convex_budget() -> bool {
+    true
+}
+
+/// Serde default for [`ScanOptions::skip_dead_modules`] — **on by default** so
+/// every API/web scan stops wasting its bounded budget on modules whose parser
+/// has provably gone dead, matching the CLI `hse scan` default. Opt out with
+/// `--no-skip-dead-modules` / the API field. Kept separate from the library
+/// [`ScanOptions::default`] (which stays `false` for deterministic unit tests),
+/// exactly as [`default_convex_budget`] splits its two defaults.
+fn default_skip_dead_modules() -> bool {
+    true
+}
+
 /// Serde default for [`ScanOptions::depth`] — the product default applied to
 /// API/web requests that omit `depth` (mirrors the CLI's `hse scan` default).
 fn default_scan_depth() -> u32 {
@@ -523,7 +593,7 @@ fn default_scan_depth() -> u32 {
 
 /// Serde default for [`ScanRequest::options`] — used when a request omits the
 /// whole `options` object, so it still gets the **comprehensive** product
-/// defaults (depth [`DEFAULT_SCAN_DEPTH`] = 3, expansion floor
+/// defaults (depth [`DEFAULT_SCAN_DEPTH`] = [`MAX_DEPTH`], expansion floor
 /// [`DEFAULT_MIN_EXPAND_CONFIDENCE`] = 0.20, entity cap
 /// [`DEFAULT_MAX_ENTITIES`] = 2500) — matching `hse scan` — rather than the inert
 /// library `ScanOptions::default()` (depth 0, floor 0.50, uncapped). These three
@@ -536,6 +606,13 @@ pub(crate) fn default_scan_options() -> ScanOptions {
         depth: DEFAULT_SCAN_DEPTH,
         min_expand_confidence: DEFAULT_MIN_EXPAND_CONFIDENCE,
         max_entities: Some(DEFAULT_MAX_ENTITIES),
+        // On in the product path (value-per-query), matching the per-field serde
+        // default so omitting `convex_budget` inside an `options` object behaves
+        // identically to omitting `options` entirely.
+        convex_budget: default_convex_budget(),
+        // Likewise on in the product path: skip provably-dead modules so the
+        // comprehensive fan-out spends its budget on sources that still work.
+        skip_dead_modules: default_skip_dead_modules(),
         ..Default::default()
     }
 }

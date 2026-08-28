@@ -33,13 +33,13 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::RequestBuilderExt;
-use crate::util::http::{handle_keyed_error, urlencode};
+use crate::util::http::urlencode;
 
 const KEY_ENV: &str = "HUNTSMAN_ONYPHE_KEY";
 const SRC: &str = "onyphe";
@@ -73,7 +73,7 @@ impl Module for Onyphe {
     }
 
     fn description(&self) -> &'static str {
-        "ONYPHE cyber-defence search: IP/domain geoloc, ASN, resolutions, threat tags (key-gated)"
+        "ONYPHE cyber-defence sweep — surfaces IP/domain geoloc, ASN, resolutions, and threat tags (key-gated)"
     }
 
     fn priority(&self) -> u8 {
@@ -109,6 +109,7 @@ impl Module for Onyphe {
             EntityKind::Asn,
             EntityKind::Organisation,
             EntityKind::Domain,
+            EntityKind::Cidr,
         ];
         KINDS
     }
@@ -122,7 +123,7 @@ impl Module for Onyphe {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) {
+        let initial_key = match ctx.key_opt(KEY_ENV) {
             Some(v) => v,
             None => return Ok(ModuleResult::new()),
         };
@@ -142,38 +143,39 @@ impl Module for Onyphe {
             urlencode(value)
         );
 
-        let mut retries = 2u8;
-        let body: OnypheResp = loop {
-            if ctx.cancel.is_cancelled() {
-                return Ok(ModuleResult::new());
-            }
-            let resp = ctx
-                .http
-                .get(&url)
-                // ONYPHE documents a lowercase `bearer` scheme.
-                .header("Authorization", format!("bearer {key}"))
-                .header("Accept", "application/json")
-                .send_tagged(SRC)
-                .await?;
-
-            let status = resp.status();
+        // Key cascade: begin on the hot-injected key and, on a terminal
+        // 401/403/429 (or an auth-shaped 400 — ONYPHE answers a missing/
+        // malformed key with `400 Bad Request` + "Invalid API key format", not
+        // 401), rotate to the next usable pooled ONYPHE key and retry, so one
+        // process() call spends every credential the pool holds before it
+        // fails. Delegates to the shared cascade primitive (T2: keyed-API
+        // consolidation) — the retry/rotate/cancel loop is identical to what
+        // `threatfox` and 9 other keyed modules hand-rolled; only the request
+        // shape (bearer auth, GET) and the decode (scan for leaked keys) stay
+        // module-specific.
+        let Some(resp) = crate::util::http::keyed_cascade(
+            ctx,
+            SRC,
+            initial_key,
             // Unknown selector returns 404 — not an error, just no data.
-            if status.as_u16() == 404 {
-                return Ok(ModuleResult::new());
-            }
-            if !status.is_success() {
-                let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
-                    continue;
-                }
-                return Err(crate::util::http::http_status_error(SRC, resp).await);
-            }
-            // json_scanned: onyphe search results may contain leaked credentials —
-            // scan the raw body for embedded API keys.
-            break crate::util::http::json_scanned(resp, SRC)
-                .await
-                .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+            &[404],
+            |key| {
+                ctx.http
+                    .get(&url)
+                    // ONYPHE documents a lowercase `bearer` scheme.
+                    .header("Authorization", format!("bearer {key}"))
+                    .header("Accept", "application/json")
+            },
+        )
+        .await?
+        else {
+            return Ok(ModuleResult::new());
         };
+        // json_scanned: onyphe search results may contain leaked credentials —
+        // scan the raw body for embedded API keys.
+        let body: OnypheResp = crate::util::http::json_scanned(resp, SRC)
+            .await
+            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
 
         check_onyphe_error(&body)?;
         if body.results.is_empty() {
@@ -245,7 +247,8 @@ fn extract_entities(
         if !skip_coords
             && let Some((lat, lon)) = coords(r)
             && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
-            && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, 0.55, scan_id)
+            && let Some(mut ce) =
+                crate::util::geo::coarse_provider_coords(lat, lon, confidence::MEDIUM_HIGH, scan_id)
         {
             if let Some(cc) = vstr(r, "country") {
                 ce.tag(format!("country:{}", cc.to_uppercase()));
@@ -262,7 +265,8 @@ fn extract_entities(
                 None => city,
             };
             if seen.insert(format!("@addr:{}", addr.to_lowercase())) {
-                let mut ae = Entity::new(EntityKind::Address, &addr, 0.55, scan_id);
+                let mut ae =
+                    Entity::new(EntityKind::Address, &addr, confidence::MEDIUM_HIGH, scan_id);
                 ae.tag(crate::core::tags::GEOINT);
                 ae.add_evidence(ev());
                 result.push(ae);
@@ -279,16 +283,34 @@ fn extract_entities(
         }) && asn.len() > 2
             && seen.insert(asn.to_lowercase())
         {
-            let mut ae = Entity::new(EntityKind::Asn, &asn, 0.75, scan_id);
+            let mut ae = Entity::new(EntityKind::Asn, &asn, confidence::VERY_HIGH, scan_id);
             ae.add_evidence(ev());
             result.push(ae);
         }
         if let Some(org) = vstr(r, "organization").filter(|o| o.len() >= 3)
             && seen.insert(format!("@org:{}", org.to_lowercase()))
         {
-            let mut oe = Entity::new(EntityKind::Organisation, &org, 0.55, scan_id);
+            let mut oe = Entity::new(
+                EntityKind::Organisation,
+                &org,
+                confidence::MEDIUM_HIGH,
+                scan_id,
+            );
             oe.add_evidence(ev());
             result.push(oe);
+        }
+
+        // ── Subnet (geoloc CIDR) ─────────────────────────────────────────
+        // ONYPHE's `geoloc` category also carries the covering `subnet` for
+        // the resolved IP. It's a secondary field on a geoloc document, not
+        // an authoritative BGP-sourced prefix (cf. bgpview/ripestat's confidence::HIGH_PLUS-
+        // confidence::HIGH_PLUSPLUS), so confidence is pinned lower in the unverified range.
+        if let Some(subnet) = vstr(r, "subnet").filter(|s| s.contains('/'))
+            && seen.insert(format!("@cidr:{subnet}"))
+        {
+            let mut ne = Entity::new(EntityKind::Cidr, &subnet, confidence::HIGH, scan_id);
+            ne.add_evidence(ev());
+            result.push(ne);
         }
 
         // ── Resolved IPs (domain target) ────────────────────────────────
@@ -297,7 +319,7 @@ fn extract_entities(
             && ip != value
             && seen.insert(ip.clone())
         {
-            let mut ie = Entity::new(EntityKind::IpAddress, &ip, 0.70, scan_id);
+            let mut ie = Entity::new(EntityKind::IpAddress, &ip, confidence::HIGH_PLUS, scan_id);
             ie.add_evidence(ev());
             result.push(ie);
         }
@@ -360,7 +382,7 @@ fn extract_entities(
                 {
                     continue;
                 }
-                let mut de = Entity::new(EntityKind::Domain, &h, 0.65, scan_id);
+                let mut de = Entity::new(EntityKind::Domain, &h, confidence::HIGH, scan_id);
                 de.tag("onyphe");
                 de.add_evidence(ev());
                 result.push(de);

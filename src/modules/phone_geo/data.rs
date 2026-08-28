@@ -12,6 +12,8 @@
 //! caller already holds. The tables, prefixes, confidences and network hints are
 //! preserved verbatim from the two source modules.
 
+use crate::core::confidence;
+
 // ── Area-code geolocation (former `phone_area_geo`) ─────────────────────────
 
 /// A resolved area-code geolocation: the city/region a number's country dialling
@@ -273,7 +275,7 @@ pub(super) fn uk_carrier(prefix_4: &str) -> Option<CarrierInfo> {
     Some(CarrierInfo {
         carrier,
         country: "United Kingdom",
-        confidence: 0.40,
+        confidence: confidence::LOW,
         network_hint: "mobile",
     })
 }

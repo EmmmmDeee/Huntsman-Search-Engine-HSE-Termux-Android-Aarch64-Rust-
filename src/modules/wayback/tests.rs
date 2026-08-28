@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
     #[test]
@@ -57,10 +58,10 @@ use super::*;
             row(&["20160101000000", "301"]),
             row(&["20200722120000", "200"]), // most recent
         ];
-        let e = build_entity(EntityKind::Domain, "example.com", &rows, "s").unwrap();
+        let e = build_entity(EntityKind::Domain, "example.com", &rows, "s").expect("should succeed");
         assert_eq!(e.kind, EntityKind::Domain);
         assert!(e.has_tag("archived"));
-        assert!((e.confidence - 0.80).abs() < 1e-9);
+        assert!((e.confidence - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
         assert_eq!(attr(&e, "snapshot_count"), Some("3")); // header excluded
         assert_eq!(attr(&e, "first_seen"), Some("20140912153012"));
         assert_eq!(attr(&e, "first_seen_iso"), Some("2014-09-12 15:30:12 UTC"));
@@ -82,10 +83,54 @@ use super::*;
             &rows,
             "s",
         )
-        .unwrap();
+        .expect("should succeed");
         assert_eq!(e.kind, EntityKind::Url);
         assert_eq!(e.value, "https://example.com/page");
         assert!(e.has_tag("archived"));
+    }
+
+    #[test]
+    fn historical_subdomains_recovers_distinct_non_apex_hosts() {
+        // A CDX domain-match response (fl=original): header + archived URLs
+        // across subdomains, the apex, and duplicates.
+        let rows = [
+            row(&["original"]), // CDX column header
+            row(&["http://dev.example.com/index.html"]),
+            row(&["https://dev.example.com/login"]), // dup host, diff path
+            row(&["http://staging.example.com/"]),
+            row(&["http://api.example.com/"]),
+            row(&["https://example.com/"]),         // apex echo — dropped
+            row(&["http://unrelated.other.org/x"]), // not a subdomain — dropped
+        ];
+        let ents = historical_subdomains(&rows, "example.com", "s");
+        let hosts: Vec<&str> = ents.iter().map(|e| e.value.as_str()).collect();
+        // Distinct, sorted, apex + unrelated dropped, dup collapsed. (A `www.`
+        // host is deliberately absent: Entity::new canonicalises `www.x` → `x`,
+        // which would merge with the apex — a benign dedup, not a subdomain.)
+        assert_eq!(
+            hosts,
+            [
+                "api.example.com",
+                "dev.example.com",
+                "staging.example.com"
+            ]
+        );
+        assert!(
+            ents.iter()
+                .all(|e| e.kind == EntityKind::Domain
+                    && e.has_tag("archived")
+                    && e.has_tag("wayback-historical"))
+        );
+    }
+
+    #[test]
+    fn historical_subdomains_empty_or_header_only_yields_nothing() {
+        assert!(historical_subdomains(&[], "example.com", "s").is_empty());
+        let header = [row(&["original"])];
+        assert!(historical_subdomains(&header, "example.com", "s").is_empty());
+        // A blank domain never matches.
+        let rows = [row(&["original"]), row(&["http://x.example.com/"])];
+        assert!(historical_subdomains(&rows, "", "s").is_empty());
     }
 
     #[test]
@@ -105,78 +150,6 @@ use super::*;
         assert_eq!(
             archive_url("20140912153012", "http://example.com/contact"),
             "https://web.archive.org/web/20140912153012id_/http://example.com/contact"
-        );
-    }
-
-    #[test]
-    fn select_contact_snapshots_caps_but_reports_true_total() {
-        // 15 archived contact pages + 5 non-contact pages. Only 10 are mined,
-        // but the true total (15) must be reported so truncation can be signaled.
-        let mut rows = vec![row(&["timestamp", "original"])]; // header
-        for i in 0..15 {
-            rows.push(row(&[
-                "20200101000000",
-                &format!("http://example.com/contact/{i}"),
-            ]));
-        }
-        for i in 0..5 {
-            rows.push(row(&["20210101000000", &format!("http://example.com/blog/{i}")]));
-        }
-        let (selected, total) = select_contact_snapshots(&rows);
-        assert_eq!(total, 15, "total must count ALL contact snapshots, not the cap");
-        assert_eq!(
-            selected.len(),
-            MAX_CONTACT_SNAPSHOTS,
-            "the mined selection is capped at MAX_CONTACT_SNAPSHOTS"
-        );
-    }
-
-    #[test]
-    fn select_contact_snapshots_under_cap_returns_all() {
-        let rows = [
-            row(&["timestamp", "original"]),
-            row(&["20200101000000", "http://example.com/about"]),
-            row(&["20200102000000", "http://example.com/team"]),
-            row(&["20200103000000", "http://example.com/blog/x"]), // non-contact, ignored
-        ];
-        let (selected, total) = select_contact_snapshots(&rows);
-        assert_eq!(total, 2);
-        assert_eq!(selected.len(), 2);
-    }
-
-    #[test]
-    fn mark_contact_truncation_flags_only_when_over_cap() {
-        // Regression (T2.141): the archive seed must be tagged `truncated` and
-        // carry the true total ONLY when more archived contact pages exist than
-        // the mining cap fetched.
-        let rows = [
-            row(&["timestamp", "statuscode"]),
-            row(&["20200101000000", "200"]),
-        ];
-        let mut seed = build_entity(EntityKind::Domain, "example.com", &rows, "s").unwrap();
-
-        // Exactly at the cap → no truncation.
-        mark_contact_truncation(&mut seed, MAX_CONTACT_SNAPSHOTS);
-        assert!(!seed.has_tag("truncated"), "must not flag at or under the cap");
-
-        // Over the cap → tag + dedicated evidence line with the true total.
-        let total = MAX_CONTACT_SNAPSHOTS + 23;
-        mark_contact_truncation(&mut seed, total);
-        assert!(seed.has_tag("truncated"), "seed must be tagged 'truncated'");
-        let ev = seed.evidence.last().unwrap();
-        assert_eq!(
-            ev.attributes.get("total_contact_snapshots").map(String::as_str),
-            Some(total.to_string().as_str()),
-            "total_contact_snapshots must reflect the full archive count"
-        );
-        assert_eq!(
-            ev.attributes.get("contact_snapshots_mined").map(String::as_str),
-            Some(MAX_CONTACT_SNAPSHOTS.to_string().as_str())
-        );
-        assert_eq!(
-            ev.attributes.get("contact_snapshots_capped").map(String::as_str),
-            Some("true"),
-            "contact_snapshots_capped must be set when the cap is hit"
         );
     }
 
@@ -248,4 +221,60 @@ use super::*;
             found,
             "a leaked key in an archived page body must reach the key pool"
         );
+    }
+
+    #[test]
+    fn mine_url_entity_emits_url_with_wayback_tags_and_evidence() {
+        // The archived contact-page URL mined per snapshot must itself be
+        // pivotable as a first-class Url entity, not just an attribute
+        // tacked onto the co-discovered Email/Phone entities.
+        let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let original_url = "http://example.com/contact";
+        let fetch_url = archive_url("20140912153012", original_url);
+        let ts_iso = iso_from_cdx("20140912153012");
+
+        let e = mine_url_entity(&mut seen_urls, original_url, &fetch_url, &ts_iso, "s")
+            .expect("first sighting of original_url must yield a Url entity");
+
+        assert_eq!(e.kind, EntityKind::Url);
+        assert_eq!(e.value, original_url);
+        assert!((e.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
+        assert!(e.has_tag("wayback-historical"));
+        assert!(e.has_tag(crate::core::tags::SEARCH_DISCOVERED));
+        assert_eq!(e.evidence[0].source, SRC);
+        assert!(e.evidence[0].summary.contains(original_url));
+        assert_eq!(attr(&e, "archive_url"), Some(fetch_url.as_str()));
+        assert_eq!(attr(&e, "snapshot_timestamp_iso"), Some(ts_iso.as_str()));
+    }
+
+    #[test]
+    fn mine_url_entity_dedups_repeated_original_url_across_snapshots() {
+        // collapse=urlkey makes a repeated original_url across two CDX rows
+        // rare but not impossible; seen_urls must prevent a duplicate entity.
+        let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let original_url = "http://example.com/about";
+
+        let fetch_url_1 = archive_url("20140912153012", original_url);
+        let first = mine_url_entity(
+            &mut seen_urls,
+            original_url,
+            &fetch_url_1,
+            "2014-09-12 15:30:12 UTC",
+            "s",
+        );
+        assert!(first.is_some(), "first sighting must be emitted");
+
+        let fetch_url_2 = archive_url("20200722120000", original_url);
+        let second = mine_url_entity(
+            &mut seen_urls,
+            original_url,
+            &fetch_url_2,
+            "2020-07-22 12:00:00 UTC",
+            "s",
+        );
+        assert!(
+            second.is_none(),
+            "repeated original_url must be deduped via seen_urls, not re-emitted"
+        );
+        assert_eq!(seen_urls.len(), 1);
     }

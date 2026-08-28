@@ -1,7 +1,7 @@
 use super::*;
 
     fn record(json: &str) -> Map<String, Value> {
-        serde_json::from_str(json).unwrap()
+        serde_json::from_str(json).expect("should succeed")
     }
 
     #[test]
@@ -32,13 +32,29 @@ use super::*;
     }
 
     #[test]
+    fn field_filters_the_literal_null_sentinel_that_field_str_does_not() {
+        // Several ASIC registers store an absent value as the literal text
+        // "null" (not JSON null), which `field_str` alone passes through.
+        let rec = record(r#"{"Name":"null","Real":"ACME"}"#);
+        assert_eq!(field(&rec, "Name"), None);
+        assert_eq!(field(&rec, "Real").as_deref(), Some("ACME"));
+    }
+
+    #[test]
+    fn field_is_case_insensitive_and_still_trims_via_field_str() {
+        let rec = record(r#"{"Shout":"NULL","Padded":"  ACME  "}"#);
+        assert_eq!(field(&rec, "Shout"), None);
+        assert_eq!(field(&rec, "Padded").as_deref(), Some("ACME"));
+    }
+
+    #[test]
     fn response_captures_application_error() {
         // HTTP 200 + success=false (bad resource id / portal error) must be
         // visible, with no `result`, so callers can surface it rather than
         // reporting "no findings".
         let err: Response =
             serde_json::from_str(r#"{"success":false,"error":{"message":"Resource not found"}}"#)
-                .unwrap();
+                .expect("should succeed");
         assert_eq!(err.success, Some(false));
         assert!(err.result.is_none());
     }
@@ -51,7 +67,7 @@ use super::*;
                 {"_id":2,"Owner":"B","Amount":4.5}
             ]}}"#,
         )
-        .unwrap();
+        .expect("should succeed");
         assert_eq!(ok.success, Some(true));
         let res = ok.result.expect("result present");
         assert_eq!(res.total, Some(2));
@@ -77,14 +93,60 @@ use super::*;
     }
 
     #[test]
+    fn check_envelope_maps_success_false_to_a_module_error() {
+        // The load-bearing guard: HTTP 200 + success=false is a portal failure,
+        // not an empty answer. It must become a module error naming the caller,
+        // never `Ok(None)` (which reads as a confirmed negative downstream).
+        let resp: Response =
+            serde_json::from_str(r#"{"success":false,"error":{"message":"Resource not found"}}"#)
+                .expect("should succeed");
+        let err = check_envelope(resp, "test_register").expect_err("success=false must be an error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("test_register"),
+            "error must name the calling module: {msg}"
+        );
+        assert!(
+            msg.contains("success=false"),
+            "error must state the CKAN application failure: {msg}"
+        );
+    }
+
+    #[test]
+    fn check_envelope_passes_through_a_real_result_set() {
+        // success=true with a result: the caller gets the records back.
+        let resp: Response = serde_json::from_str(
+            r#"{"success":true,"result":{"total":1,"records":[{"_id":1,"Owner":"A"}]}}"#,
+        )
+        .expect("should succeed");
+        let res = check_envelope(resp, "test_register")
+            .expect("success=true must not error")
+            .expect("a present result set survives");
+        assert_eq!(res.total, Some(1));
+        assert_eq!(res.records.len(), 1);
+    }
+
+    #[test]
+    fn check_envelope_treats_absent_result_as_a_clean_empty() {
+        // A missing `result` (or `success` absent entirely) is the honest empty
+        // answer — Ok(None), NOT an error. This is what lets a genuine "no match"
+        // stay distinct from a portal failure.
+        for body in [r#"{"success":true}"#, "{}"] {
+            let resp: Response = serde_json::from_str(body).expect("should succeed");
+            let out = check_envelope(resp, "test_register").expect("no result is not an error");
+            assert!(out.is_none(), "absent result must be Ok(None) for {body}");
+        }
+    }
+
+    #[test]
     fn response_defaults_are_lenient() {
         // A bare/empty object must deserialize (every field is `#[serde(default)]`)
         // so a truncated or unexpected body degrades to "no findings", not a parse
         // error that masks the miss.
-        let empty: Response = serde_json::from_str("{}").unwrap();
+        let empty: Response = serde_json::from_str("{}").expect("should succeed");
         assert_eq!(empty.success, None);
         assert!(empty.result.is_none());
-        let no_total: ResultSet = serde_json::from_str(r#"{"records":[]}"#).unwrap();
+        let no_total: ResultSet = serde_json::from_str(r#"{"records":[]}"#).expect("should succeed");
         assert_eq!(no_total.total, None);
         assert!(no_total.records.is_empty());
     }

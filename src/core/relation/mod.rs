@@ -16,7 +16,7 @@
 //! (`SubdomainOf`, `BelongsToDomain`, `HostedOn`); `derive_colocation` links
 //! `CoLocatedWith` between nearby Coordinates (Haversine via `util::geohash`);
 //! `derive_resolution` links `ResolvesTo` (Domain → IpAddress) from DNS evidence;
-//! `derive_registration` links `RegisteredBy` (Domain → Org/Email) from WHOIS;
+//! `derive_registration` links `RegisteredBy` (Domain → Org/Email/Person) from WHOIS;
 //! `derive_name_lineage` links `DerivedFrom` for name-permuted handles.
 //!
 //! **Identity** (the person-centric graph — otherwise a person scan has nodes but
@@ -31,11 +31,28 @@
 //!     (`derive_declared_associations`, evidence-grounded). They corroborate, so
 //!     the family graph forms from any seed angle and from any of the signals.
 //!
+//! **Affiliation** (the person↔organisation graph — see [`affiliation`], which
+//! owns the family in full):
+//!   - `OfficerOf`     — Person → Organisation: a registered directorship /
+//!     officeholding a companies register publishes (`derive_officership`)
+//!   - `EmployedBy`    — Person → Organisation: a self-reported or site-published
+//!     working relationship (`derive_employment`)
+//!   - `MemberOf`      — Person → Organisation: a membership / alumnus tie
+//!     (`derive_membership`)
+//!   - `ControlledBy`  — Organisation → Organisation/Person: the corporate
+//!     hierarchy, oriented child → controller (`derive_corporate_control`)
+//!   - `OperatedBy`    — asset → Organisation/Domain: who runs a wallet or a
+//!     published business contact point (`derive_asset_operator`)
+//!   - `IdentifiedBy` / `LocatedAt` from an ORGANISATION — its registry number,
+//!     domain, contact points and registered office (`derive_org_identity`), the
+//!     organisational mirror of the person-side identity builders
+//!
 //! `DerivedFrom` (child → the entity whose expansion surfaced it) is also
 //! **lineage** — recorded by the engine's `run_expansion` (not a post-scan
 //! builder) and persisted alongside the above. `derive_all` runs every post-scan
 //! builder, so the live and import paths produce the identical graph.
 
+pub(crate) mod affiliation;
 pub(crate) mod builders;
 pub mod graph;
 pub(crate) mod social_extract;
@@ -44,6 +61,10 @@ pub(crate) mod types;
 #[cfg(test)]
 mod tests;
 
+pub use affiliation::{
+    derive_asset_operator, derive_corporate_control, derive_employment, derive_membership,
+    derive_officership, derive_org_identity,
+};
 pub use builders::{
     CO_LOCATION_KM, DERIVE_BUDGET, derive_all, derive_all_within, derive_canonical_identities,
     derive_co_mention, derive_co_ownership, derive_co_residence, derive_colocation,
@@ -53,11 +74,11 @@ pub use builders::{
     derive_structural,
 };
 pub use graph::{
-    Adjacency, ConnectionBroker, ConnectionTemplate, IDENTITY_PAIR_PROBE_CAP,
-    IdentityClusterResult, IdentityPath, PathStep, connection_brokers, connection_templates,
-    disjoint_pathways, disjoint_pathways_in, identity_paths, identity_uids, is_identity_kind,
-    reachable_count, resolve_identity_clusters, sorted_confined_adjacency, strongest_path,
-    strongest_path_in, undirected_adjacency,
+    Adjacency, ConnectionBroker, ConnectionTemplate, IDENTITY_LINK_MIN_CONF,
+    IDENTITY_PAIR_PROBE_CAP, IdentityClusterResult, IdentityPath, PathStep, connection_brokers,
+    connection_templates, disjoint_pathways, disjoint_pathways_in, identity_paths, identity_uids,
+    is_identity_kind, provenance_chain, reachable_count, resolve_identity_clusters,
+    sorted_confined_adjacency, strongest_path, strongest_path_in, undirected_adjacency,
 };
 pub use social_extract::derive_profile_links;
 pub use types::{Relation, RelationKind};

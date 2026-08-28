@@ -7,7 +7,7 @@ use axum::{
 use serde_json::json;
 use std::sync::Arc;
 
-use super::super::handlers::{internal_error, not_found, ok_list};
+use super::super::handlers::{not_found, ok_list};
 use crate::api::AppState;
 
 /// `GET /api/v1/scans/{id}/leads` — proactive next-best-action recommendations
@@ -19,24 +19,13 @@ pub async fn scan_leads(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let scan = match s.store.get_scan(&id) {
-        Ok(Some(scan)) => scan,
+    // `scan.options` is needed below, so the record rides along in the same
+    // off-reactor batch as the entity/relation loads (see `scan_with_graph`,
+    // which also folds in the 404 existence probe).
+    let (scan, entities, relations) = match super::scan_with_graph(&s, &id).await {
+        Ok(Some(triple)) => triple,
         Ok(None) => return not_found(),
-        Err(e) => return internal_error(&e),
-    };
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
-            store.entities_for_scan(&id2)?,
-            store.relations_for_scan(&id2)?,
-        ))
-    })
-    .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+        Err(resp) => return resp,
     };
     let leads =
         crate::core::leads::recommend(&entities, &relations, scan.options.min_expand_confidence);
@@ -52,16 +41,12 @@ pub async fn scan_timeline(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await;
-    let entities = match loaded {
-        Ok(Ok(e)) => e,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    let entities = match super::scan_entities_only(&s, &id).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
     let events = crate::core::timeline::reconstruct(&entities);
     // Additive: alongside the event list (unchanged `events` + `count` shape),
@@ -103,22 +88,12 @@ pub async fn scan_communities(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
-            store.entities_for_scan(&id2)?,
-            store.relations_for_scan(&id2)?,
-        ))
-    })
-    .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    let (entities, relations) = match super::entities_and_relations(&s, &id).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
     };
     let communities = crate::core::community::detect(&entities, &relations);
     ok_list("communities", communities)
@@ -134,22 +109,12 @@ pub async fn scan_trust(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
-    let store = std::sync::Arc::clone(&s.store);
-    let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
-            store.entities_for_scan(&id2)?,
-            store.relations_for_scan(&id2)?,
-        ))
-    })
-    .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    let (entities, relations) = match super::entities_and_relations(&s, &id).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
     };
     let scores = crate::core::trust::propagate(&entities, &relations);
     ok_list("trust", scores)
@@ -180,7 +145,7 @@ pub async fn scan_path(
     Path(id): Path<String>,
     Query(q): Query<PathQuery>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
@@ -198,8 +163,8 @@ pub async fn scan_path(
         Vec<crate::core::path::ConnectionPath>,
         serde_json::Map<String, serde_json::Value>,
     );
-    let computed =
-        tokio::task::spawn_blocking(move || -> Result<PathResult, crate::core::error::Error> {
+    let (paths, nodes) =
+        match super::offload_store(move || -> Result<PathResult, crate::core::error::Error> {
             let paths = if cross {
                 crate::core::path::connect_cross_scan(store.as_ref(), &from, &to, max_paths)
             } else {
@@ -229,12 +194,11 @@ pub async fn scan_path(
             }
             Ok((paths, nodes))
         })
-        .await;
-    let (paths, nodes) = match computed {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
-    };
+        .await
+        {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        };
     let connected = !paths.is_empty();
     (
         StatusCode::OK,

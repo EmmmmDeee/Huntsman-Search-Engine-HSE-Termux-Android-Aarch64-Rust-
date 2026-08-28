@@ -41,9 +41,9 @@ use super::*;
             .entities
             .iter()
             .find(|e| e.value.ends_with("abc123"))
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(
-            first.evidence[0].attributes.get("date").unwrap(),
+            first.evidence[0].attributes.get("date").expect("should succeed"),
             "2021-05-01 10:00:00"
         );
     }

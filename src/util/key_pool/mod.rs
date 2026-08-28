@@ -10,7 +10,9 @@ pub mod pool;
 pub mod types;
 pub mod validation;
 
-pub use persistence::{load_pool, pool_path, save_pool, save_pool_best_effort, write_secret_file};
+pub use persistence::{
+    load_pool, persist_off_thread, pool_path, save_pool, save_pool_best_effort, write_secret_file,
+};
 pub use pool::{KeyPool, PoolData, ServiceHealth, StatusBreakdown};
 pub use types::{KeyEntry, KeyStatus, KeyTier, key_id};
 pub use validation::{add_and_validate, merge_pool_into_env, validate_key};

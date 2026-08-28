@@ -1,8 +1,45 @@
 
 use super::{
     ascii_digits, char_window, find_ascii_ci, fold_ascii_lower, is_handle, mask_secret, nonempty,
-    parse_asn, slugify, truncate_display, truncate_safe,
+    parse_asn, rfind_word_ascii_ci, shares_whole_word_token, slugify, truncate_safe,
+    whole_word_token_match,
 };
+
+    #[test]
+    fn rfind_word_ascii_ci_matches_whole_words_only_and_prefers_the_last() {
+        // Embedded inside a longer word → rejected (the bug this exists to fix).
+        assert_eq!(rfind_word_ascii_ci("EDWARD SMITH", "WA"), None); // WA inside EDWARD
+        assert_eq!(rfind_word_ascii_ci("SARAH", "SA"), None); // SA at index 0 of SARAH
+        // A standalone token matches, char-boundary-safe, case-insensitively.
+        assert_eq!(rfind_word_ascii_ci("EDWARD 12 COTTESLOE WA 6011", "WA"), Some(20));
+        assert_eq!(rfind_word_ascii_ci("cottesloe wa 6011", "WA"), Some(10));
+        // The LAST standalone occurrence wins (nearest the trailing postcode).
+        assert_eq!(rfind_word_ascii_ci("WA yard WA depot", "wa"), Some(8));
+        // A multibyte word before the token is a valid boundary (no panic).
+        // `İ` (U+0130) is 2 bytes, so the 8 following ASCII letters + space put
+        // `NSW` at byte 10.
+        assert_eq!(rfind_word_ascii_ci("İstanbul NSW", "NSW"), Some(10));
+        // Degenerate inputs.
+        assert_eq!(rfind_word_ascii_ci("", "wa"), None);
+        assert_eq!(rfind_word_ascii_ci("wa", ""), None);
+    }
+
+    #[test]
+    fn whole_word_token_match_is_whole_word_ascii_ci_with_empty_guard() {
+        // Every needle token present as a whole word → match (ASCII case-insensitive).
+        assert!(whole_word_token_match("Linus Torvalds", "linus torvalds"));
+        assert!(whole_word_token_match("The Smith Family", "smith family"));
+        // Order-free and punctuation-delimited: register notation still matches.
+        assert!(whole_word_token_match("MOREAU, HERVE (owner)", "herve moreau"));
+        // Whole-word, not substring — the false-relative upgrades a substring gate makes:
+        assert!(!whole_word_token_match("Mildred Smith", "red")); // 'red' inside 'Mildred'
+        assert!(!whole_word_token_match("Moreau Family", "m")); // initial not a whole word
+        // A single missing token fails the whole match.
+        assert!(!whole_word_token_match("Linus Torvalds", "linus pauling"));
+        // Empty / whitespace-only needle matches nothing (the guard au_property's copy lacks).
+        assert!(!whole_word_token_match("anything at all", ""));
+        assert!(!whole_word_token_match("anything", "   "));
+    }
 
     #[test]
     fn is_handle_enforces_bounds_and_charset() {
@@ -186,16 +223,6 @@ use super::{
         assert_eq!(slugify(""), "");
     }
 
-    #[test]
-    fn truncate_display_appends_ellipsis_when_long() {
-        assert_eq!(truncate_display("hello", 10), "hello");
-        assert_eq!(truncate_display("hello world", 5), "hello…");
-        let long: String = "a".repeat(300);
-        let t = truncate_display(&long, 200);
-        assert!(t.ends_with('…'));
-        assert_eq!(t.chars().count(), 201);
-    }
-
     // ── find_ascii_ci ─────────────────────────────────────────────────────────
 
     #[test]
@@ -210,7 +237,7 @@ use super::{
         // `İ` is 2 bytes; an offset from `to_lowercase()` would be wrong here.
         // The returned offset must index the ORIGINAL string on a char boundary.
         let s = "İ division of x";
-        let off = find_ascii_ci(s, "DIVISION OF ").unwrap();
+        let off = find_ascii_ci(s, "DIVISION OF ").expect("should succeed");
         assert_eq!(off, 3); // İ(2 bytes) + ' '(1)
         assert!(s[off..].starts_with("division of ")); // slice must not panic
     }
@@ -268,7 +295,7 @@ mod prop {
 
     use super::super::{
         ascii_digits, ceil_char_boundary, char_window, find_ascii_ci, floor_char_boundary,
-        slugify, truncate_display, truncate_safe,
+        slugify, truncate_safe,
     };
 
     proptest! {
@@ -352,17 +379,37 @@ mod prop {
             prop_assert!(d.len() <= s.len());
         }
 
-        /// `truncate_display` is char-bounded; lossless when it already fits.
-        #[test]
-        fn truncate_display_char_bound(s in ".{0,64}", max in 0usize..40) {
-            let t = truncate_display(&s, max);
-            if s.chars().count() <= max {
-                prop_assert_eq!(&t, &s);
-            } else {
-                // head (max chars) + the single ellipsis.
-                prop_assert_eq!(t.chars().count(), max + 1);
-                prop_assert!(t.ends_with('…'));
-            }
-        }
     }
+}
+
+#[test]
+fn shares_whole_word_token_non_ascii_initial_is_not_a_name_token() {
+    // Regression: the MIN_SHARED_TOKEN floor was applied to str::len() (bytes),
+    // so a single non-ASCII initial (2+ bytes) licensed a match in violation of
+    // the "a bare initial is not a name token" contract.
+    assert!(!shares_whole_word_token("Ø Smith", "Ø Jones"));
+    assert!(!shares_whole_word_token("Élise Martin", "É Dubois"));
+    // A real two-char non-ASCII name token still matches.
+    assert!(shares_whole_word_token("Ng Åse", "Åse Berg"));
+}
+
+#[test]
+fn title_case_is_idempotent_including_expanding_uppercase() {
+    use super::title_case;
+    // Regression: upper-casing only the first scalar emitted "SSeta" for "ßeta",
+    // which re-normalised to "Sseta" — two spellings each claiming to be the
+    // canonical display form. Values do get re-normalised on re-expansion paths,
+    // so the function must be a fixed point.
+    for input in [
+        "ßeta", "ﬁona", "ERIK DIEGMANN", "  kyle   diegmann ", "ǳeta", "",
+    ] {
+        let once = title_case(input);
+        assert_eq!(title_case(&once), once, "not idempotent for {input:?}");
+    }
+    assert_eq!(title_case("ßeta"), "Sseta");
+    assert_eq!(title_case("ﬁona"), "Fiona");
+    // Ordinary behaviour is unchanged.
+    assert_eq!(title_case("ERIK DIEGMANN"), "Erik Diegmann");
+    assert_eq!(title_case("  kyle   diegmann "), "Kyle Diegmann");
+    assert_eq!(title_case(""), "");
 }

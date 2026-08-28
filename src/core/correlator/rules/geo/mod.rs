@@ -51,6 +51,26 @@ pub(super) fn coord_state(e: &Entity) -> Option<&'static str> {
         .and_then(|(lat, lon)| crate::util::geo::au_state_for_coords(lat, lon))
 }
 
+/// The AU state a confident, subject-anchoring `Address` names, or `None`. The
+/// address-class analogue of [`coord_state`], and the single canonical extractor
+/// the breach-locality rules share so the address class applies EXACTLY the same
+/// admissibility gate the coordinate class does.
+///
+/// Rejects a low-confidence address and — crucially — an INFRASTRUCTURE address
+/// ([`is_infrastructure_geo`]: a WHOIS `registrant` filing/privacy address or a
+/// `hosting`/CDN location). Without this guard a domain's registrar or web host
+/// (e.g. a registrant `"VIC, Australia"` behind the subject's personal domain)
+/// votes the *subject's* jurisdiction, manufacturing a false AU-092 "breach
+/// locality conflicts with footprint" anomaly or a false AU-098 residency
+/// consensus — the exact failure the coordinate path already prevents, and that
+/// the sibling rules AU-056/AU-085 guard against. Pure.
+pub(super) fn address_state(e: &Entity) -> Option<&'static str> {
+    if e.kind != EntityKind::Address || e.confidence < 0.50 || is_infrastructure_geo(e) {
+        return None;
+    }
+    crate::util::address_au::state_code(&e.value)
+}
+
 /// AU-099 — reverse-geocode the subject's coordinate fix to a human AU locality.
 ///
 /// `coord_state` (and AU-056/098) resolve a coordinate to its *state*; a bare
@@ -62,12 +82,13 @@ pub(super) fn coord_state(e: &Entity) -> Option<&'static str> {
 /// its nearest regional centre. Deduplicated per locality; Medium (a derived,
 /// human-readable label on a coordinate the graph already holds). Offline, pure.
 pub(in crate::core::correlator) fn rule_au_099_coordinate_reverse_geocode(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
     use std::collections::{BTreeMap, BTreeSet};
 
+    let entities = context.entities();
     // locality -> (state, nearest km seen, contributing coordinate uids).
     // Infrastructure coordinates are excluded ([`is_infrastructure_geo`]): a bare
     // IP-geo/hosting fix is the datacentre's position, not the subject's, so it must
@@ -110,6 +131,7 @@ pub(in crate::core::correlator) fn rule_au_099_coordinate_reverse_geocode(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
 
     // ── AU-061 family geo-corroboration ───────────────────────────────────────
 
@@ -117,19 +139,35 @@ mod tests {
     fn au_061_corroborates_only_family_in_the_subjects_area() {
         use crate::core::entity::Evidence;
         // Subject's confirmed GPS fix near Woodford, QLD.
-        let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
+        let mut gps = Entity::new(
+            EntityKind::Coordinates,
+            "-26.815,152.814",
+            confidence::VERY_HIGH_PLUS,
+            "s",
+        );
         gps.tag("geoint");
+        gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
         // Same-surname family, all `family-candidate`, postcode in value or evidence.
         let mut near_addr = Entity::new(EntityKind::Address, "QLD 4518, Australia", 0.32, "s");
         near_addr.tag("family-candidate"); // Beerwah (45xx) — ~40 km
-        let mut near_person = Entity::new(EntityKind::Person, "Stephen Moreau", 0.35, "s");
+        let mut near_person = Entity::new(
+            EntityKind::Person,
+            "Stephen Moreau",
+            confidence::TENTATIVE,
+            "s",
+        );
         near_person.tag("family-candidate");
         near_person
             .add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", "4169"));
         let mut far = Entity::new(EntityKind::Address, "QLD 4870, Australia", 0.32, "s");
         far.tag("family-candidate"); // Cairns (48xx) — ~1000 km, must be excluded
         // Not family-candidate → ignored even though it's in the area.
-        let other = Entity::new(EntityKind::Address, "QLD 4000, Australia", 0.5, "s");
+        let other = Entity::new(
+            EntityKind::Address,
+            "QLD 4000, Australia",
+            confidence::MEDIUM,
+            "s",
+        );
 
         let ents = vec![
             gps.clone(),
@@ -138,7 +176,7 @@ mod tests {
             far.clone(),
             other,
         ];
-        let out = rule_au_061_family_geo_corroboration(&ents, "s", 0);
+        let out = rule_au_061_family_geo_corroboration(&RuleContext::new(&ents), "s", 0);
         assert_eq!(out.len(), 1, "one geo-corroboration correlation");
         let c = &out[0];
         assert_eq!(c.rule_id, "AU-061");
@@ -152,19 +190,37 @@ mod tests {
 
         // No confirmed subject coordinate → nothing fires (no anchor to compare to).
         let no_gps = vec![near_addr];
-        assert!(rule_au_061_family_geo_corroboration(&no_gps, "s", 0).is_empty());
+        assert!(
+            rule_au_061_family_geo_corroboration(&RuleContext::new(&no_gps), "s", 0).is_empty()
+        );
     }
 
     // Build a GPS fix + a named subject + 3 same-surname family-candidates all in
     // the Brisbane catchment (≤150 km), to exercise the 3-candidate escalation.
     fn three_same_surname_in_area(subject_full_name: &str, surname: &str) -> Vec<Entity> {
         use crate::core::entity::Evidence;
-        let mut gps = Entity::new(EntityKind::Coordinates, "-27.47,153.02", 0.9, "s"); // Brisbane
+        let mut gps = Entity::new(
+            EntityKind::Coordinates,
+            "-27.47,153.02",
+            confidence::VERY_HIGH_PLUS,
+            "s",
+        ); // Brisbane
         gps.tag("geoint");
-        let mut subject = Entity::new(EntityKind::Person, subject_full_name, 0.8, "s");
+        gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
+        let mut subject = Entity::new(
+            EntityKind::Person,
+            subject_full_name,
+            confidence::HIGH_PLUSPLUS,
+            "s",
+        );
         subject.tag("subject");
         let cand = |given: &str, pc: &str| {
-            let mut p = Entity::new(EntityKind::Person, format!("{given} {surname}"), 0.35, "s");
+            let mut p = Entity::new(
+                EntityKind::Person,
+                format!("{given} {surname}"),
+                confidence::TENTATIVE,
+                "s",
+            );
             p.tag("family-candidate");
             p.add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", pc));
             p
@@ -183,7 +239,7 @@ mod tests {
         // Three "Smith"s in one metro catchment is coincidence, not a 3-relative
         // household — a COMMON subject surname must not reach Critical.
         let out = rule_au_061_family_geo_corroboration(
-            &three_same_surname_in_area("Dana Smith", "Smith"),
+            &RuleContext::new(&three_same_surname_in_area("Dana Smith", "Smith")),
             "s",
             0,
         );
@@ -200,7 +256,7 @@ mod tests {
     fn au_061_distinctive_surname_reaches_critical_at_three() {
         // A distinctive surname keeps the strong 3-relative Critical signal.
         let out = rule_au_061_family_geo_corroboration(
-            &three_same_surname_in_area("Dana Bamford", "Bamford"),
+            &RuleContext::new(&three_same_surname_in_area("Dana Bamford", "Bamford")),
             "s",
             0,
         );
@@ -219,12 +275,23 @@ mod tests {
         // A see_know-style household member with a DIFFERENT surname is tagged
         // `family-candidate` but is NOT a shared-surname relative — it must not be
         // counted toward AU-061's "shared surname" claim (a false evidentiary basis).
-        let mut gps = Entity::new(EntityKind::Coordinates, "-27.47,153.02", 0.9, "s");
+        let mut gps = Entity::new(
+            EntityKind::Coordinates,
+            "-27.47,153.02",
+            confidence::VERY_HIGH_PLUS,
+            "s",
+        );
         gps.tag("geoint");
-        let mut subject = Entity::new(EntityKind::Person, "Dana Bamford", 0.8, "s");
+        gps.add_evidence(crate::core::entity::Evidence::new("signal_radar", "gps")); // anchoring source
+        let mut subject = Entity::new(
+            EntityKind::Person,
+            "Dana Bamford",
+            confidence::HIGH_PLUSPLUS,
+            "s",
+        );
         subject.tag("subject");
         let cand = |name: &str, pc: &str| {
-            let mut p = Entity::new(EntityKind::Person, name, 0.35, "s");
+            let mut p = Entity::new(EntityKind::Person, name, confidence::TENTATIVE, "s");
             p.tag("family-candidate");
             p.add_evidence(Evidence::new("see_know", "household").with_attr("postcode", pc));
             p
@@ -236,7 +303,7 @@ mod tests {
             cand("Jane Bamford", "4169"),
             cand("Bob Jones", "4101"), // co-resident, DIFFERENT surname → excluded
         ];
-        let out = rule_au_061_family_geo_corroboration(&ents, "s", 0);
+        let out = rule_au_061_family_geo_corroboration(&RuleContext::new(&ents), "s", 0);
         assert_eq!(out.len(), 1);
         assert!(out[0].description.contains("Bamford"));
         assert!(
@@ -254,10 +321,58 @@ mod tests {
         use crate::core::entity::Evidence;
         // A real person-anchored fix (carries an anchoring geo source), so it is
         // not excluded as infrastructure geo.
-        let mut e = Entity::new(EntityKind::Coordinates, "-27.47,153.02", 0.6, "s");
+        let mut e = Entity::new(
+            EntityKind::Coordinates,
+            "-27.47,153.02",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         e.tag("au-state:QLD");
         e.add_evidence(Evidence::new("exif_geo", "photo GPS"));
         assert_eq!(coord_state(&e), Some("QLD"));
+    }
+
+    #[test]
+    fn address_state_excludes_infrastructure_addresses() {
+        use crate::core::entity::Evidence;
+        // A confident subject address resolves to its state.
+        let mut home = Entity::new(
+            EntityKind::Address,
+            "10 Queen St, Brisbane QLD 4000",
+            confidence::MEDIUM,
+            "s",
+        );
+        home.add_evidence(Evidence::new("au_property", "property record"));
+        assert_eq!(address_state(&home), Some("QLD"));
+
+        // Regression: a WHOIS REGISTRANT address (the domain owner's filing/privacy
+        // address) at exactly the 0.50 gate must NOT vote the subject's
+        // jurisdiction — without this guard it manufactured a false AU-092
+        // "breach locality conflicts with footprint" anomaly and a false AU-098
+        // two-class residency consensus.
+        let mut registrant = Entity::new(
+            EntityKind::Address,
+            "VIC, Australia",
+            confidence::MEDIUM,
+            "s",
+        );
+        registrant.tag(crate::core::tags::REGISTRANT);
+        registrant.add_evidence(Evidence::new("whois", "registrant address"));
+        assert_eq!(address_state(&registrant), None);
+
+        // A HOSTING/CDN location is likewise excluded.
+        let mut hosting = Entity::new(
+            EntityKind::Address,
+            "NSW, Australia",
+            confidence::MEDIUM,
+            "s",
+        );
+        hosting.tag(crate::core::tags::HOSTING);
+        assert_eq!(address_state(&hosting), None);
+
+        // Below the 0.50 confidence floor → excluded, same as coord_state.
+        let weak = Entity::new(EntityKind::Address, "Perth WA 6000", 0.40, "s");
+        assert_eq!(address_state(&weak), None);
     }
 
     #[test]
@@ -265,7 +380,12 @@ mod tests {
         use crate::core::entity::Evidence;
         // Brisbane, no tag → derived from the coordinate. A real person-anchored
         // fix (anchoring source present), so not excluded as infrastructure geo.
-        let mut e = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.6, "s");
+        let mut e = Entity::new(
+            EntityKind::Coordinates,
+            "-27.4705,153.0260",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         e.add_evidence(Evidence::new("exif_geo", "photo GPS"));
         assert_eq!(coord_state(&e), Some("QLD"));
     }
@@ -274,7 +394,12 @@ mod tests {
     fn coord_state_none_below_threshold_or_wrong_kind() {
         let weak = Entity::new(EntityKind::Coordinates, "-27.47,153.02", 0.49, "s");
         assert_eq!(coord_state(&weak), None);
-        let email = Entity::new(EntityKind::Email, "a@b.com", 0.9, "s");
+        let email = Entity::new(
+            EntityKind::Email,
+            "a@b.com",
+            confidence::VERY_HIGH_PLUS,
+            "s",
+        );
         assert_eq!(coord_state(&email), None);
     }
 
@@ -284,20 +409,35 @@ mod tests {
     fn infrastructure_geo_excluded_from_address_rollup_rules() {
         use crate::core::entity::Evidence;
         let email = {
-            let mut e = Entity::new(EntityKind::Email, "subject@example.com", 0.8, "s");
+            let mut e = Entity::new(
+                EntityKind::Email,
+                "subject@example.com",
+                confidence::HIGH_PLUSPLUS,
+                "s",
+            );
             e.add_evidence(Evidence::new("hibp", "breach"));
             e
         };
         // A WHOIS registrant filing address and a hosting-country address — both
         // infrastructure geo, not the subject's home.
         let registrant = {
-            let mut a = Entity::new(EntityKind::Address, "California, US", 0.50, "s");
+            let mut a = Entity::new(
+                EntityKind::Address,
+                "California, US",
+                confidence::MEDIUM,
+                "s",
+            );
             a.tag(crate::core::tags::REGISTRANT);
             a.add_evidence(Evidence::new("whois", "Registrant location"));
             a
         };
         let hosting = {
-            let mut a = Entity::new(EntityKind::Address, "Sydney NSW, AU", 0.50, "s");
+            let mut a = Entity::new(
+                EntityKind::Address,
+                "Sydney NSW, AU",
+                confidence::MEDIUM,
+                "s",
+            );
             a.tag(crate::core::tags::HOSTING);
             a.add_evidence(Evidence::new("urlscan", "Hosting country"));
             a
@@ -306,25 +446,30 @@ mod tests {
 
         // AU-018: no genuine subject address → no identity↔location linkage.
         assert!(
-            rule_au_018_email_address_colocation(&infra, "s", 0).is_empty(),
+            rule_au_018_email_address_colocation(&RuleContext::new(&infra), "s", 0).is_empty(),
             "infra geo must not forge an email↔location linkage"
         );
         // AU-030: two infra-geo addresses are not multi-source convergence.
         assert!(
-            rule_au_030_geo_convergence_score(&infra, "s", 0).is_empty(),
+            rule_au_030_geo_convergence_score(&RuleContext::new(&infra), "s", 0).is_empty(),
             "infra geo must not manufacture geo convergence"
         );
 
         // AU-026: an address "validated" only by two IP-geo lookups is the host's
         // location, not a street address — IP-geo is no longer an allowed source.
         let ip_only = {
-            let mut a = Entity::new(EntityKind::Address, "Ashburn, Virginia, US", 0.6, "s");
+            let mut a = Entity::new(
+                EntityKind::Address,
+                "Ashburn, Virginia, US",
+                confidence::MEDIUM_PLUS,
+                "s",
+            );
             a.add_evidence(Evidence::new("ip_geo", "IP city"));
             a.add_evidence(Evidence::new("ipinfo", "IP city"));
             a
         };
         assert!(
-            rule_au_026_validated_address(&[ip_only], "s", 0).is_empty(),
+            rule_au_026_validated_address(&RuleContext::new(&[ip_only]), "s", 0).is_empty(),
             "two IP-geo lookups are not street-address validation"
         );
 
@@ -341,7 +486,8 @@ mod tests {
             a
         };
         assert!(
-            !rule_au_018_email_address_colocation(&[email, home], "s", 0).is_empty(),
+            !rule_au_018_email_address_colocation(&RuleContext::new(&[email, home]), "s", 0)
+                .is_empty(),
             "a real geocoded address still co-locates with the email"
         );
     }
@@ -354,7 +500,12 @@ mod tests {
         // the host, not the subject, so it must NOT assert a jurisdiction — else it
         // manufactures a false AU-056 "coordinate vs address" conflict against a
         // real interstate home address.
-        let mut infra = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.60, "s");
+        let mut infra = Entity::new(
+            EntityKind::Coordinates,
+            "-33.8688,151.2093",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         infra.tag("au-state:NSW");
         infra.add_evidence(Evidence::new(
             "ip_geo",
@@ -368,7 +519,12 @@ mod tests {
 
         // Control: a person-anchored EXIF/GPS fix at the same point STILL asserts
         // NSW — the guard targets infrastructure geo, not real subject fixes.
-        let mut anchored = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.60, "s");
+        let mut anchored = Entity::new(
+            EntityKind::Coordinates,
+            "-33.8688,151.2093",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         anchored.tag("au-state:NSW");
         anchored.add_evidence(Evidence::new("exif_geo", "photo GPS"));
         assert_eq!(coord_state(&anchored), Some("NSW"));
@@ -376,21 +532,36 @@ mod tests {
 
     #[test]
     fn au099_reverse_geocode_excludes_infrastructure_coordinates() {
+        use crate::core::confidence;
         use crate::core::entity::Evidence;
         // A bare IP-geo datacentre coordinate must not be announced as "the
         // subject's coordinate fix" resolving to an AU locality.
-        let mut infra = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.60, "s");
+        let mut infra = Entity::new(
+            EntityKind::Coordinates,
+            "-27.4698,153.0251",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         infra.add_evidence(Evidence::new("ip_geo", "IP city"));
+        let ents_infra = [infra];
+        let context = RuleContext::new(&ents_infra);
         assert!(
-            rule_au_099_coordinate_reverse_geocode(&[infra], "s", 0).is_empty(),
+            rule_au_099_coordinate_reverse_geocode(&context, "s", 0).is_empty(),
             "AU-099 must not reverse-geocode an infrastructure coordinate as the subject's fix"
         );
 
         // Control: a genuine EXIF fix at the same point IS reverse-geocoded.
-        let mut anchored = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.60, "s");
+        let mut anchored = Entity::new(
+            EntityKind::Coordinates,
+            "-27.4698,153.0251",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         anchored.add_evidence(Evidence::new("exif_geo", "photo GPS"));
+        let ents_anchored = [anchored];
+        let context = RuleContext::new(&ents_anchored);
         assert!(
-            !rule_au_099_coordinate_reverse_geocode(&[anchored], "s", 0).is_empty(),
+            !rule_au_099_coordinate_reverse_geocode(&context, "s", 0).is_empty(),
             "AU-099 must still reverse-geocode a real person-anchored coordinate fix"
         );
     }
@@ -430,6 +601,51 @@ mod tests {
         assert_eq!(
             extract_ratemyagent_suburb("https://x/real-estate-agent/john-smith-bris2-abc12/"),
             None
+        );
+    }
+
+    #[test]
+    fn extract_ratemyagent_suburb_recognises_multi_word_au_suburbs() {
+        // Gold Coast, Sunshine Coast and Alice Springs are all prominent
+        // ratemyagent.com.au markets — a two-token suburb must not truncate to
+        // its last word alone ("coast", not "gold coast").
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://www.ratemyagent.com.au/real-estate-agent/john-smith-gold-coast-12345/"
+            ),
+            Some("gold coast".to_string())
+        );
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://www.ratemyagent.com.au/real-estate-agent/jane-doe-sunshine-coast-x9z12/"
+            ),
+            Some("sunshine coast".to_string())
+        );
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://www.ratemyagent.com.au/real-estate-agent/pat-lee-alice-springs-ab123/"
+            ),
+            Some("alice springs".to_string())
+        );
+        // An elastic single-token <name> ahead of a real two-word suburb must
+        // still resolve the full suburb, not just its last word.
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://www.ratemyagent.com.au/real-estate-agent/soloname-port-augusta-z1/"
+            ),
+            Some("port augusta".to_string())
+        );
+        // Port Macquarie is one of the four markets this defect's own
+        // description names, but CITIES' NSW-regional block did not carry it
+        // until this was discovered mid-merge (see
+        // is_tabulated_au_city_recognises_port_macquarie in city_coords) —
+        // without that entry this case silently fell back to the last-token
+        // heuristic ("macquarie", not "port macquarie").
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://www.ratemyagent.com.au/real-estate-agent/jane-smith-port-macquarie-xy12/"
+            ),
+            Some("port macquarie".to_string())
         );
     }
 }

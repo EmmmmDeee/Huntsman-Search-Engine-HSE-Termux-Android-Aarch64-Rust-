@@ -66,19 +66,91 @@ fn scan_evidence<'a>(entities: &'a [Entity], keys: &[&str]) -> Vec<(String, &'a 
     let mut out = Vec::new();
     for e in entities {
         for ev in &e.evidence {
-            for (k, v) in &ev.attributes {
+            for k in ev.attributes.keys() {
                 if keys.iter().any(|key| k.eq_ignore_ascii_case(key)) {
-                    for part in v.split("; ") {
-                        let part = part.trim();
-                        if !part.is_empty() {
-                            out.push((part.to_string(), ev.source.as_str(), e.uid.as_str()));
-                        }
+                    // `attr_values` is the canonical inverse of the `with_attr` /
+                    // `merge_evidence_attrs` "a; b" accumulation, so each
+                    // underlying value is seen individually.
+                    for part in ev.attr_values(k) {
+                        out.push((part.to_string(), ev.source.as_str(), e.uid.as_str()));
                     }
                 }
             }
         }
     }
     out
+}
+
+/// Like [`scan_evidence`], but ALSO yields each evidence record's
+/// [`breach_corpus_key`] alongside its bare module `source` — for rules that
+/// must filter on `is_breach_source(source)` (a MODULE-name predicate) but
+/// count/bucket by DISTINCT BREACH CORPORA, not distinct delivery modules.
+///
+/// `oathnet_pro` and `see_know` stamp ONE constant `source` string across many
+/// rows that carry DIFFERENT `dbname`/`source_db` values per row (confirmed
+/// producers: `oathnet_pro/mod.rs`, `see_know/mod.rs`). A rule that buckets by
+/// raw `ev.source` sees two genuinely distinct corpora delivered through the
+/// same aggregator (e.g. a LinkedIn breach and an Adobe breach, both via
+/// `see_know`) as ONE source, silently discarding real cross-corpus
+/// corroboration — the exact bug AU-105 already hit and fixed for itself
+/// (`au105_reads_the_see_know_source_db_breach_name`); this is that same fix,
+/// generalised for its siblings.
+fn scan_evidence_corpus<'a>(
+    entities: &'a [Entity],
+    keys: &[&str],
+) -> Vec<(String, &'a str, String, &'a str)> {
+    let mut out = Vec::new();
+    for e in entities {
+        for ev in &e.evidence {
+            for k in ev.attributes.keys() {
+                if keys.iter().any(|key| k.eq_ignore_ascii_case(key)) {
+                    let corpus = breach_corpus_key(ev);
+                    for part in ev.attr_values(k) {
+                        out.push((
+                            part.to_string(),
+                            ev.source.as_str(),
+                            corpus.clone(),
+                            e.uid.as_str(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Genuine breach / stealer-log evidence sources: the collection modules that
+/// import **leaked** records carrying structured PII (name, DOB, address,
+/// gov-ID, credentials). A breach-PII rule MUST consult this before counting an
+/// evidence record's `source` as a "breach record source" or labelling a value
+/// breach-sourced.
+///
+/// The geo and AU-registry *enrichment* passes attach the SAME
+/// `state`/`postcode`/`suburb`/`city`/`street` attributes these rules key on — a
+/// reverse geocode (`geocode` / `photon`), and registry enrichers such as
+/// `au_property` / `au_electoral` / `abn_lookup` / `au_people` — so without this
+/// gate a reverse-geocoded or registry-sourced locality was assembled and
+/// mislabelled, e.g. a live phone scan produced "assembled from 1 breach record
+/// source(s) (geocode)" for a bare AU mobile. Allow-list (default-deny) so a
+/// newly added enrichment source can never leak in.
+///
+/// Delegates to the canonical provider-family taxonomy ([`super::source_family`],
+/// which substring-matches the breach/stealer/leak corpora — `hibp`, `dehashed`,
+/// `oathnet*`, `xposed*`, `leakcheck`, `leakix`, `snusbase`, `intelx`, `pwned*`,
+/// `hudsonrock`, and any `*breach*` / `*stealer*` source) so this predicate can
+/// never drift from the rest of the correlator — with ONE correction:
+/// `source_family` files `see_know` (SeekNow, a rich breach source) under
+/// `"presence"` (its name matches a presence needle first), so it is added back
+/// explicitly, or real SeekNow breach localities/addresses would silently
+/// vanish. Every non-breach enricher that leaks the same attributes — `geocode`,
+/// `photon`, `search_engines`, and the AU registries (`au_property`,
+/// `au_electoral`, `abn_lookup`, `au_people`) — is classified non-breach by
+/// `source_family` and so is correctly rejected. Pure.
+pub(in crate::core) fn is_breach_source(name: &str) -> bool {
+    super::source_family(name) == "breach"
+        || name.eq_ignore_ascii_case("see_know")
+        || name.eq_ignore_ascii_case("see-know")
 }
 
 // ── AU-073 — Subject date of birth ───────────────────────────────────────────
@@ -105,7 +177,7 @@ pub(crate) const DOB_KEYS: &[&str] = &[
 /// (the dominant breach format, including ISO date-times like
 /// `1980-11-08T00:00:00`); otherwise return the trimmed value verbatim (a
 /// non-ISO form like `08/11/1980` is left as-is rather than guess DD-vs-MM).
-fn normalise_dob(raw: &str) -> Option<String> {
+pub(crate) fn normalise_dob(raw: &str) -> Option<String> {
     let s = raw.trim();
     let b = s.as_bytes();
     if s.len() >= 10
@@ -118,6 +190,30 @@ fn normalise_dob(raw: &str) -> Option<String> {
         return Some(s[..10].to_string());
     }
     (!s.is_empty()).then(|| s.to_string())
+}
+
+/// The breach **corpus** a record came from — the unit corroboration, reuse, and
+/// cross-corpus contradiction are all measured across. Reads the breach-name
+/// attribute across the spellings providers stamp — `dbname` (OathNet/stealer),
+/// `breach`, and `source_db` (the field the `see_know` extractor renames a
+/// record's raw breach name to, so it can't clobber the provenance `source`) —
+/// and falls back to the provenance `source` when a record carries no breach-name
+/// attribute.
+///
+/// Canonical so AU-105 (reused-secret span) and the breach-consensus audit
+/// (distinct-corpora corroboration count and the cross-corpus contradiction
+/// detector) cannot disagree on what "one corpus" is: two SeekNow breaches under
+/// distinct `source_db` are two corpora, not one collapsed `see_know` — the
+/// distinction that lets the contradiction detector see two aggregated corpora
+/// disagree and the corroboration counter avoid under-crediting a real
+/// cross-corpus confirmation.
+pub(crate) fn breach_corpus_key(ev: &crate::core::entity::Evidence) -> String {
+    ev.attributes
+        .get("dbname")
+        .or_else(|| ev.attributes.get("breach"))
+        .or_else(|| ev.attributes.get("source_db"))
+        .map_or(ev.source.as_str(), String::as_str)
+        .to_string()
 }
 
 /// Derive a person's whole-year age from a canonical `YYYY-MM-DD` date of birth
@@ -153,13 +249,9 @@ pub(in crate::core::correlator) fn age_from_dob(dob: &str, now_unix: u64) -> Opt
     if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
         return None;
     }
-    // days_from_civil (Hinnant): days since the Unix epoch (1970-01-01).
-    let yy = y - i64::from(m <= 2);
-    let era = (if yy >= 0 { yy } else { yy - 399 }) / 400;
-    let yoe = yy - era * 400;
-    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
+    // Days since the Unix epoch via the one canonical Hinnant forward algorithm
+    // (core→core; the same helper `hudsonrock`'s freshness check reuses).
+    let days = crate::core::timeline::days_from_civil(y, m, d);
     let dob_unix = days * 86_400;
     let now = i64::try_from(now_unix).ok()?;
     if now < dob_unix {
@@ -178,18 +270,24 @@ pub(in crate::core::correlator) fn age_from_dob(dob: &str, now_unix: u64) -> Opt
 /// (Medium). Conflicting DOBs each emit their own finding, so a namesake's DOB
 /// is visible as the minority claim rather than silently averaged in.
 pub(in crate::core::correlator) fn rule_au_073_subject_date_of_birth(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // dob → (distinct sources, uids), both ordered for determinism.
     let mut by_dob: BTreeMap<String, SourcesAndUids> = BTreeMap::new();
-    for (raw, source, uid) in scan_evidence(entities, DOB_KEYS) {
+    for (raw, source, corpus, uid) in scan_evidence_corpus(entities, DOB_KEYS) {
+        // Only a genuine breach/stealer record is a "breach record source" for a
+        // DOB (see `is_breach_source`).
+        if !is_breach_source(source) {
+            continue;
+        }
         let Some(dob) = normalise_dob(&raw) else {
             continue;
         };
         let entry = by_dob.entry(dob).or_default();
-        entry.0.insert(source.to_string());
+        entry.0.insert(corpus);
         entry.1.insert(uid.to_string());
     }
 
@@ -210,7 +308,11 @@ pub(in crate::core::correlator) fn rule_au_073_subject_date_of_birth(
                     "Subject date of birth {dob}{} — asserted by {n} independent source(s) \
                      ({}); the strongest disambiguator from same-name namesakes",
                     age_from_dob(&dob, ts).map_or(String::new(), |age| format!(" (age {age})")),
-                    sources.iter().cloned().collect::<Vec<_>>().join(", ")
+                    sources
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 entity_uids: uids.into_iter().collect(),
                 scan_id: scan_id.into(),
@@ -324,15 +426,21 @@ pub(crate) const GOV_IDS: &[GovId] = &[
 /// value is masked in the finding text; the full value remains in the entity's
 /// evidence under the operator full-fidelity policy.
 pub(in crate::core::correlator) fn rule_au_074_au_government_id_exposure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let mut out = Vec::new();
     for gid in GOV_IDS {
         // (masked value, sources, uids) per distinct underlying value.
         let mut found: BTreeMap<String, SourcesAndUids> = BTreeMap::new();
         for (raw, source, uid) in scan_evidence(entities, gid.keys) {
+            // A government ID is a "breach record" disclosure only from a genuine
+            // breach/stealer source (see `is_breach_source`).
+            if !is_breach_source(source) {
+                continue;
+            }
             if gid.validate.is_some_and(|v| !v(&raw)) {
                 continue; // key matched but the value fails its checksum/format
             }
@@ -365,6 +473,19 @@ pub(in crate::core::correlator) fn rule_au_074_au_government_id_exposure(
 // ── AU-075 — Named associate from a breach/stealer record ────────────────────
 
 /// Relationship evidence keys mapped to the relationship they assert.
+///
+/// Deliberately does NOT include a bare `"relationship"` key: unlike every key
+/// here (where the ATTRIBUTE VALUE is the associate's own name, e.g. a breach
+/// record's `spouse` field holding `"Thomas Haynes"`), `see_know`'s associate
+/// extractor (`modules::see_know::extract::associates`) stores the associate's
+/// name as the entity's own `.value` and uses its `relationship` attribute for
+/// the CATEGORY label instead (`"relative"`, `"household"`, `"associate"`,
+/// `"neighbor"`) — the one breach-classified producer of a `relationship`
+/// attribute in this codebase. A `("relationship", "relation")` entry here
+/// would read that category label as if it were a person's name, guaranteed-
+/// misreporting e.g. "Subject linked to 'relative' (relation)" on any SeekNow
+/// relative/household hit — not a rare edge case, but the module's own
+/// documented single highest-value field family for a person-centric scan.
 const ASSOCIATE_KEYS: &[(&str, &str)] = &[
     ("spouse", "spouse"),
     ("partner", "partner"),
@@ -379,7 +500,6 @@ const ASSOCIATE_KEYS: &[(&str, &str)] = &[
     ("parent", "parent"),
     ("guardian", "guardian"),
     ("dependent", "dependent"),
-    ("relationship", "relation"),
     ("owner_name", "stealer-log owner"),
 ];
 
@@ -391,14 +511,22 @@ const ASSOCIATE_KEYS: &[(&str, &str)] = &[
 /// genuine relationship intelligence that the geo/surname family rules
 /// (AU-049/051/061) can't reach because the tie is stated, not inferred.
 pub(in crate::core::correlator) fn rule_au_075_named_associate(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // (name, relationship) → (sources, uids).
     let mut assoc: BTreeMap<(String, &'static str), SourcesAndUids> = BTreeMap::new();
     for &(key, relation) in ASSOCIATE_KEYS {
         for (raw, source, uid) in scan_evidence(entities, &[key]) {
+            // Only a genuine breach/stealer record names an associate; a
+            // search/crawl "parent" (a DOMAIN parent, e.g. "wikipedia.org")
+            // otherwise mislabels an unrelated site as a breached relative (see
+            // `is_breach_source`).
+            if !is_breach_source(source) {
+                continue;
+            }
             // A plausible person name: at least two letters, contains a letter,
             // not a lone token like "self"/"n/a".
             let name = raw.trim();
@@ -475,18 +603,25 @@ const JURISDICTION_KEYS: &[&str] = &[
 /// by mining the structured field directly, reaching state assertions that never
 /// became an `Address` entity. Runs on the confirmed view.
 pub(in crate::core::correlator) fn rule_au_090_au_jurisdiction(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // canonical AU state code → (distinct sources, uids), ordered for determinism.
     let mut by_state: BTreeMap<&'static str, SourcesAndUids> = BTreeMap::new();
-    for (raw, source, uid) in scan_evidence(entities, JURISDICTION_KEYS) {
+    for (raw, source, corpus, uid) in scan_evidence_corpus(entities, JURISDICTION_KEYS) {
+        // Only a genuine breach/stealer record may be counted as a "breach
+        // record source" — a geocode/registry enricher carries the same `state`
+        // attribute but is not a leaked record (see `is_breach_source`).
+        if !is_breach_source(source) {
+            continue;
+        }
         let Some(state) = crate::util::address_au::state_code(&raw) else {
             continue; // not a recognisable Australian state/territory
         };
         let entry = by_state.entry(state).or_default();
-        entry.0.insert(source.to_string());
+        entry.0.insert(corpus);
         entry.1.insert(uid.to_string());
     }
 
@@ -513,7 +648,11 @@ pub(in crate::core::correlator) fn rule_au_090_au_jurisdiction(
                     "Subject's Australian jurisdiction {state} — asserted by {n} breach \
                      record source(s) ({}){note}; a residency/issuing-state geo anchor \
                      that cross-checks the address/coordinate footprint",
-                    sources.iter().cloned().collect::<Vec<_>>().join(", ")
+                    sources
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 entity_uids: uids.into_iter().collect(),
                 scan_id: scan_id.into(),
@@ -586,21 +725,27 @@ fn au_postcode_and_state(raw: &str) -> Option<(String, &'static str)> {
 /// of the AU-focused engine, a 4-digit `postcode` in an assigned AU range is
 /// read as Australian.)
 pub(in crate::core::correlator) fn rule_au_091_au_postcode_locality(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // postcode → (state, distinct sources, uids).
     let mut by_pc: BTreeMap<String, (&'static str, BTreeSet<String>, BTreeSet<String>)> =
         BTreeMap::new();
-    for (raw, source, uid) in scan_evidence(entities, POSTCODE_KEYS) {
+    for (raw, source, corpus, uid) in scan_evidence_corpus(entities, POSTCODE_KEYS) {
+        // Same gate as AU-090: a geocode/registry `postcode` attribute is not a
+        // breach record and must not be counted as one (see `is_breach_source`).
+        if !is_breach_source(source) {
+            continue;
+        }
         let Some((pc, state)) = au_postcode_and_state(&raw) else {
             continue;
         };
         let entry = by_pc
             .entry(pc)
             .or_insert_with(|| (state, BTreeSet::new(), BTreeSet::new()));
-        entry.1.insert(source.to_string());
+        entry.1.insert(corpus);
         entry.2.insert(uid.to_string());
     }
 
@@ -630,7 +775,11 @@ pub(in crate::core::correlator) fn rule_au_091_au_postcode_locality(
                     "Subject's Australian postcode {pc} ({state}){coord} — asserted by {n} \
                      breach record source(s) ({}){note}; a residential locality anchor finer \
                      than the state",
-                    sources.iter().cloned().collect::<Vec<_>>().join(", ")
+                    sources
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 entity_uids: uids.into_iter().collect(),
                 scan_id: scan_id.into(),
@@ -648,12 +797,23 @@ pub(in crate::core::correlator) fn rule_au_091_au_postcode_locality(
 /// map. Pure over the evidence attributes.
 fn breach_field_states(entities: &[Entity]) -> BTreeMap<&'static str, BTreeSet<String>> {
     let mut states: BTreeMap<&'static str, BTreeSet<String>> = BTreeMap::new();
-    for (raw, _source, uid) in scan_evidence(entities, JURISDICTION_KEYS) {
+    // Only genuine breach/stealer records form the "breach record" location
+    // class (AU-092's crosscheck side, AU-098's consensus vote). A geocode /
+    // registry `state`/`postcode` attribute is already represented by the
+    // coordinate/address class and must not double-vote here as breach (see
+    // `is_breach_source`).
+    for (raw, source, uid) in scan_evidence(entities, JURISDICTION_KEYS) {
+        if !is_breach_source(source) {
+            continue;
+        }
         if let Some(state) = crate::util::address_au::state_code(&raw) {
             states.entry(state).or_default().insert(uid.to_string());
         }
     }
-    for (raw, _source, uid) in scan_evidence(entities, POSTCODE_KEYS) {
+    for (raw, source, uid) in scan_evidence(entities, POSTCODE_KEYS) {
+        if !is_breach_source(source) {
+            continue;
+        }
         if let Some((_pc, state)) = au_postcode_and_state(&raw) {
             states.entry(state).or_default().insert(uid.to_string());
         }
@@ -669,10 +829,11 @@ fn footprint_states(entities: &[Entity]) -> BTreeMap<&'static str, BTreeSet<Stri
     for e in entities {
         if let Some(state) = super::geo::coord_state(e) {
             states.entry(state).or_default().insert(e.uid.clone());
-        } else if e.kind == EntityKind::Address
-            && e.confidence >= 0.50
-            && let Some(state) = crate::util::address_au::state_code(&e.value)
-        {
+        } else if let Some(state) = super::geo::address_state(e) {
+            // `address_state` applies the SAME infrastructure guard as
+            // `coord_state` above — a registrant/hosting address must not vote
+            // the subject's footprint (it once let a domain's registrar
+            // manufacture a false jurisdiction conflict).
             states.entry(state).or_default().insert(e.uid.clone());
         }
     }
@@ -702,10 +863,11 @@ fn join_states(set: &BTreeSet<&'static str>) -> String {
 /// Requires at least one state from *each* side; a scan with only breach fields,
 /// or only a geo footprint, yields nothing. Pure over the confirmed entity set.
 pub(in crate::core::correlator) fn rule_au_092_breach_locality_footprint_crosscheck(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let breach = breach_field_states(entities);
     if breach.is_empty() {
         return Vec::new();
@@ -719,6 +881,10 @@ pub(in crate::core::correlator) fn rule_au_092_breach_locality_footprint_crossch
     let fset: BTreeSet<&'static str> = footprint.keys().copied().collect();
     let shared: Vec<&'static str> = bset.intersection(&fset).copied().collect();
 
+    // Full union across every named state on both sides — used only by the
+    // Conflict branch below, where each side genuinely disagrees and every
+    // entity naming ANY of the disputed states is relevant evidence of the
+    // conflict.
     let mut uids: BTreeSet<String> = BTreeSet::new();
     for s in breach.values().chain(footprint.values()) {
         uids.extend(s.iter().cloned());
@@ -732,6 +898,18 @@ pub(in crate::core::correlator) fn rule_au_092_breach_locality_footprint_crossch
         } else {
             Severity::Medium
         };
+        // Contributing entity uids: only the entities that named the AGREEING
+        // state (mirrors AU-098's consensus-only uid scoping). An entity
+        // naming some OTHER, unrelated state on either side (a stale prior
+        // address on a different breach row, say) is not evidence for THIS
+        // agreement and must not be swept in just because it shares a scan.
+        let mut agreeing_uids: BTreeSet<String> = BTreeSet::new();
+        if let Some(s) = breach.get(state) {
+            agreeing_uids.extend(s.iter().cloned());
+        }
+        if let Some(s) = footprint.get(state) {
+            agreeing_uids.extend(s.iter().cloned());
+        }
         Correlation {
             rule_id: "AU-092".into(),
             rule_name: "Breach locality corroborated by footprint".into(),
@@ -749,7 +927,7 @@ pub(in crate::core::correlator) fn rule_au_092_breach_locality_footprint_crossch
                     )
                 }
             ),
-            entity_uids: uids,
+            entity_uids: agreeing_uids.into_iter().collect(),
             scan_id: scan_id.into(),
             ts,
             rank: 0.0,
@@ -795,16 +973,30 @@ const STREET_KEYS: &[&str] = &[
     "home_address",
 ];
 
-/// First non-empty attribute value whose key matches (ASCII case-insensitively)
-/// any of `keys`, within a single evidence record. Trimmed.
+/// First non-empty, UNAMBIGUOUS attribute value whose key matches (ASCII
+/// case-insensitively) any of `keys`, within a single evidence record.
+/// Trimmed.
+///
+/// Refuses a value that is itself an accumulated multi-value string
+/// (`Evidence::with_attr`'s "a; b" join — the same mechanism
+/// `Entity::absorb`'s `merge_evidence_attrs` uses when two breach rows
+/// sharing one (source, summary) fold into one record, e.g. SeeKnow's
+/// per-dbname evidence summary). `merge_evidence_attrs` re-sorts each key's
+/// accumulated values independently (a `BTreeSet` collapse), so an
+/// accumulated suburb value and an accumulated state value carry no
+/// reliable per-row correspondence even when both have the same count —
+/// treating the raw joined string as one atomic value can silently
+/// concatenate two real, distinct suburbs, or pair a suburb with the wrong
+/// state. The only safe answer to an ambiguous record is to skip it, not
+/// assemble a possibly-fabricated address.
 fn record_attr<'a>(attrs: &'a BTreeMap<String, String>, keys: &[&str]) -> Option<&'a str> {
     attrs.iter().find_map(|(k, v)| {
-        if keys.iter().any(|key| k.eq_ignore_ascii_case(key)) {
-            let t = v.trim();
-            (!t.is_empty()).then_some(t)
-        } else {
-            None
+        if !keys.iter().any(|key| k.eq_ignore_ascii_case(key)) {
+            return None;
         }
+        let mut parts = v.split("; ").map(str::trim).filter(|s| !s.is_empty());
+        let first = parts.next()?;
+        parts.next().is_none().then_some(first)
     })
 }
 
@@ -829,14 +1021,24 @@ fn record_attr<'a>(attrs: &'a BTreeMap<String, String>, keys: &[&str]) -> Option
 /// (Per the AU-091 note, a 4-digit postcode in an assigned AU range is read as
 /// Australian; the suburb requirement further constrains the match.)
 pub(in crate::core::correlator) fn rule_au_093_au_address_from_breach(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // assembled address → (has_street, distinct sources, uids).
     let mut by_addr: BTreeMap<String, (bool, BTreeSet<String>, BTreeSet<String>)> = BTreeMap::new();
     for e in entities {
         for ev in &e.evidence {
+            // THE PROVEN DEFECT: a reverse-geocode record (`geocode`/`photon`)
+            // or a registry enricher carries the same suburb/state/postcode
+            // attributes as a real leaked address record. Skip the whole record
+            // unless it is a genuine breach source, so a geocoded suburb is never
+            // assembled and reported as a "dwelling-grade" breach address (see
+            // `is_breach_source`).
+            if !is_breach_source(&ev.source) {
+                continue;
+            }
             let attrs = &ev.attributes;
             let Some(suburb) =
                 record_attr(attrs, SUBURB_KEYS).filter(|s| s.chars().any(char::is_alphabetic))
@@ -901,7 +1103,11 @@ pub(in crate::core::correlator) fn rule_au_093_au_address_from_breach(
                     "Subject's Australian locality {addr}{coord} — assembled from {} breach \
                      record source(s) ({}); {grade}",
                     sources.len(),
-                    sources.iter().cloned().collect::<Vec<_>>().join(", ")
+                    sources
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 entity_uids: uids.into_iter().collect(),
                 scan_id: scan_id.into(),
@@ -940,10 +1146,11 @@ pub(in crate::core::correlator) fn rule_au_093_au_address_from_breach(
 /// VPN/foreign exit. This is the gold-standard geolocation finding: a
 /// jurisdiction asserted by independent corroboration, confidence shown.
 pub(in crate::core::correlator) fn rule_au_098_residency_consensus(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     type StateMap = BTreeMap<&'static str, BTreeSet<String>>;
 
     // Coordinate class.
@@ -955,10 +1162,10 @@ pub(in crate::core::correlator) fn rule_au_098_residency_consensus(
     for e in entities {
         if let Some(state) = super::geo::coord_state(e) {
             coord.entry(state).or_default().insert(e.uid.clone());
-        } else if e.kind == EntityKind::Address
-            && e.confidence >= 0.50
-            && let Some(state) = crate::util::address_au::state_code(&e.value)
-        {
+        } else if let Some(state) = super::geo::address_state(e) {
+            // Same infrastructure guard as the coordinate class — a
+            // registrant/hosting address is not a subject residency signal, so
+            // it must not manufacture a false residency-consensus class.
             addr.entry(state).or_default().insert(e.uid.clone());
         } else if e.kind == EntityKind::Phone
             && let Some((_, _, states)) = crate::util::address_au::au_phone_region(&e.value)
@@ -1132,10 +1339,11 @@ pub(in crate::core::correlator) fn rule_au_098_residency_consensus(
 /// `n ≥ 5` is a High-confidence, cross-facet identity fix — Interpol-grade
 /// subject resolution from the data already collected.
 pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Each facet class -> the entity uids that establish it, so the finding can
     // point at the contributing entities and the class is counted at most once.
     let mut facets: BTreeMap<&'static str, BTreeSet<String>> = BTreeMap::new();
@@ -1143,10 +1351,21 @@ pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
     for e in entities {
         let label = match e.kind {
             EntityKind::Person if e.confidence >= 0.50 => "legal name",
-            EntityKind::Email => "email",
+            // A role/provider mailbox or generic handle (info@, admin, …) is a
+            // shared desk, not the subject's own identifier — sibling identity
+            // rules exclude both after being burned by exactly this in
+            // production (AU-001: "fired CRITICAL on abuse@godaddy.com";
+            // AU-045: "fired on 'from' and 'dns'").
+            EntityKind::Email if !crate::core::validation::is_role_mailbox(&e.value) => "email",
             EntityKind::Phone => "phone",
-            EntityKind::Username => "username",
-            EntityKind::Address if e.confidence >= 0.50 => "physical address",
+            EntityKind::Username if !is_generic_handle(&e.value) => "username",
+            // Exclude an infrastructure address (registrant/hosting) — it is not
+            // the subject's physical address, so it must not inflate the
+            // identity-resolution breadth `n` toward the Medium/High thresholds.
+            // Same guard AU-092/AU-098's address class applies via `address_state`.
+            EntityKind::Address if e.confidence >= 0.50 && !is_infrastructure_geo(e) => {
+                "physical address"
+            }
             EntityKind::AbnAcn => "business identifier",
             _ => continue,
         };
@@ -1155,7 +1374,14 @@ pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
 
     // Date of birth: a breach DOB field whose value normalises (the AU-073
     // detector), counted as one facet regardless of how many records carry it.
-    for (raw, _src, uid) in scan_evidence(entities, DOB_KEYS) {
+    // Gated on is_breach_source like every other attribute scan in this file
+    // (AU-073/074/075/090/091/092/104/105) -- an enrichment-only/derived source
+    // (geo_normalize, name_intel, payid, …) is not an independent observation
+    // and must not fabricate a resolved facet.
+    for (raw, src, uid) in scan_evidence(entities, DOB_KEYS) {
+        if !is_breach_source(src) {
+            continue;
+        }
         if normalise_dob(&raw).is_some() {
             facets
                 .entry("date of birth")
@@ -1166,8 +1392,15 @@ pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
 
     // Government ID: any breach gov-ID field passing its validator (the AU-074
     // detector), counted as a single "government ID" facet across all classes.
+    // Same gate as AU-074: without it, e.g. an ACMA radio-licensee's
+    // `licence_number` attribute (a routine public business fact on an
+    // `Organisation` entity, not a person's identity document) passed the
+    // `drivers_licence` class's key list with no validator to reject it.
     for gid in GOV_IDS {
-        for (raw, _src, uid) in scan_evidence(entities, gid.keys) {
+        for (raw, src, uid) in scan_evidence(entities, gid.keys) {
+            if !is_breach_source(src) {
+                continue;
+            }
             if gid.validate.is_none_or(|v| v(&raw)) {
                 facets
                     .entry("government ID")
@@ -1184,8 +1417,14 @@ pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
     // resolved facet of the subject. Each class is a `BTreeSet` keyed by the
     // facet label, so a subject who has BOTH a Phone entity and a phone attribute
     // still counts "phone" exactly once — no double-count, n stays honest.
+    // Gated on `is_breach_source` like the two facets above: a non-breach
+    // enricher (`pgp`, `hunter_io`, `hlr_cnam`, `ipqs`, `seon`, …) emitting a
+    // bare `email`/`phone` attribute is not a breach-resolved facet.
     const PHONE_ATTR_KEYS: &[&str] = &["phone", "phone_number", "mobile", "cell"];
-    for (raw, _src, uid) in scan_evidence(entities, PHONE_ATTR_KEYS) {
+    for (raw, src, uid) in scan_evidence(entities, PHONE_ATTR_KEYS) {
+        if !is_breach_source(src) {
+            continue;
+        }
         // The same validity gate the phone rules use: ≥8 digits and not a single
         // repeated digit (a placeholder like 0000000000).
         let digits: Vec<char> = raw.chars().filter(char::is_ascii_digit).collect();
@@ -1194,7 +1433,10 @@ pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
         }
     }
     const EMAIL_ATTR_KEYS: &[&str] = &["email", "email_address", "mail"];
-    for (raw, _src, uid) in scan_evidence(entities, EMAIL_ATTR_KEYS) {
+    for (raw, src, uid) in scan_evidence(entities, EMAIL_ATTR_KEYS) {
+        if !is_breach_source(src) {
+            continue;
+        }
         if raw.contains('@') && raw.split('@').nth(1).is_some_and(|d| d.contains('.')) {
             facets.entry("email").or_default().insert(uid.to_string());
         }
@@ -1266,16 +1508,22 @@ pub(crate) const BANK_ACCOUNT_KEYS: &[&str] = &[
 /// BSBs that resolve to a known institution are surfaced (accuracy over
 /// coverage), so the named bank is reliable.
 pub(in crate::core::correlator) fn rule_au_104_bank_account_exposure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // institution -> (distinct sources, uids).
     let mut by_bank: BTreeMap<&'static str, SourcesAndUids> = BTreeMap::new();
-    for (raw, source, uid) in scan_evidence(entities, BSB_KEYS) {
+    for (raw, source, corpus, uid) in scan_evidence_corpus(entities, BSB_KEYS) {
+        // A BSB/account exposure counts only from a genuine breach/stealer
+        // source (see `is_breach_source`).
+        if !is_breach_source(source) {
+            continue;
+        }
         if let Some(bank) = crate::util::bsb::bsb_institution(&raw) {
             let entry = by_bank.entry(bank).or_default();
-            entry.0.insert(source.to_string());
+            entry.0.insert(corpus);
             entry.1.insert(uid.to_string());
         }
     }
@@ -1309,7 +1557,11 @@ pub(in crate::core::correlator) fn rule_au_104_bank_account_exposure(
                 format!(
                     "Subject banks with {bank} — an Australian BSB exposed across {n} source(s) \
                      ({}); {exposure}.",
-                    sources.iter().cloned().collect::<Vec<_>>().join(", ")
+                    sources
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 uids.into_iter().collect(),
                 scan_id,
@@ -1345,10 +1597,11 @@ const HASH_PW_KEYS: &[&str] = &["password_hash", "hashed_password", "hash"];
 /// (immediately exploitable); hash reuse is Medium. Runs on the confirmed view, so
 /// a co-occurrence stranger's reused password never fires it. Deterministic.
 pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // grouping key (`p:`/`h:` namespaced) -> (plaintext?, distinct breaches, uids).
     let mut by_secret: BTreeMap<String, (bool, BTreeSet<String>, BTreeSet<String>)> =
         BTreeMap::new();
@@ -1359,27 +1612,29 @@ pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
     let mut digest_bridge: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
 
-    // The breach a record came from — the unit reuse is measured across. Read
-    // the breach-name attr across the spellings the providers actually stamp:
-    // `dbname` (OathNet/stealer), `breach`, and `source_db` — the key the
-    // `see_know` extractor renames a record's raw `source` breach-name field to
-    // (so it can't clobber the provenance `source` attr). Without `source_db`,
-    // every SeekNow breach collapsed to the bare module name `see_know`, so a
-    // genuine password reused across two SeekNow breaches counted as ONE and
-    // AU-105 stayed silent — an under-count that suppressed the most actionable
-    // people-centric finding on a primary paid breach source.
-    let breach_of = |ev: &crate::core::entity::Evidence| -> String {
-        ev.attributes
-            .get("dbname")
-            .or_else(|| ev.attributes.get("breach"))
-            .or_else(|| ev.attributes.get("source_db"))
-            .map_or(ev.source.as_str(), String::as_str)
-            .to_string()
-    };
+    // The breach a record came from — the unit reuse is measured across. The
+    // canonical `breach_corpus_key` (shared with the breach-consensus audit so
+    // reuse-span, corroboration count, and contradiction detection agree on what
+    // "one corpus" is) reads `dbname`/`breach`/`source_db` and falls back to the
+    // provenance `source`, so two SeekNow breaches under distinct `source_db`
+    // stay two corpora instead of collapsing to the bare module name `see_know`.
+    let breach_of = breach_corpus_key;
 
     // Pass 1 — plaintext secrets, and the digest bridge for the uncommon ones.
     for e in entities {
         for ev in &e.evidence {
+            // A reused secret spans a "breach" only via a genuine breach/stealer
+            // record — one from an allow-listed source, or one carrying an
+            // explicit breach-db name attribute (see `is_breach_source`). This
+            // stops a non-breach source's stray password attribute from being
+            // counted as a distinct breach.
+            if !is_breach_source(&ev.source)
+                && !["dbname", "breach", "source_db"]
+                    .iter()
+                    .any(|k| ev.attributes.contains_key(*k))
+            {
+                continue;
+            }
             let breach = breach_of(ev);
             for k in PLAINTEXT_PW_KEYS {
                 if let Some(v) = ev.attributes.get(*k) {
@@ -1411,6 +1666,18 @@ pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
     // collision and is skipped (offline `crack_common`).
     for e in entities {
         for ev in &e.evidence {
+            // A reused secret spans a "breach" only via a genuine breach/stealer
+            // record — one from an allow-listed source, or one carrying an
+            // explicit breach-db name attribute (see `is_breach_source`). This
+            // stops a non-breach source's stray password attribute from being
+            // counted as a distinct breach.
+            if !is_breach_source(&ev.source)
+                && !["dbname", "breach", "source_db"]
+                    .iter()
+                    .any(|k| ev.attributes.contains_key(*k))
+            {
+                continue;
+            }
             let breach = breach_of(ev);
             for k in HASH_PW_KEYS {
                 if let Some(v) = ev.attributes.get(*k) {
@@ -1463,7 +1730,7 @@ pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
                     "A {kind} is reused across {n} distinct breaches ({}) — the subject reuses \
                      credentials, so one cracked secret opens every account (the credential-stuffing \
                      / account-takeover surface). MITRE T1110.004",
-                    breaches.iter().cloned().collect::<Vec<_>>().join(", ")
+                    breaches.iter().map(String::as_str).collect::<Vec<_>>().join(", ")
                 ),
                 uids.into_iter().collect(),
                 scan_id,

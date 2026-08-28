@@ -18,10 +18,9 @@
 //!
 //! `core/` and `api/` never import `storage::Store` directly —
 //! architecture tests in `tests/architecture.rs` scan the source tree
-//! and fail CI if a direct import is introduced. The only legitimate
-//! `Store::open()` call sites are the CLI composition roots
-//! (`cli/mod.rs`, `cli/provision.rs`) which construct the concrete
-//! instance and immediately upcast to `Arc<dyn StoragePort>`.
+//! and fail CI if a direct import is introduced. Shared runtime construction
+//! belongs to `app::runtime`, which opens the concrete store and immediately
+//! upcasts it to `Arc<dyn StoragePort>` for the CLI and HTTP adapters.
 
 use crate::core::{
     correlator::Correlation, entity::Entity, error::Result, event::Event, relation::Relation,
@@ -72,17 +71,59 @@ pub trait StoragePort: Send + Sync {
     fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>>;
     fn observation_count(&self, entity_uid: &str) -> Result<usize>;
 
+    /// Detach `entity_uids` from `scan_id`'s observation set — the store-side
+    /// half of a finalise-time fold (see
+    /// [`crate::core::engine`]'s address-locality consolidation). The `entities`
+    /// ROW is never deleted: another scan may legitimately observe the same uid,
+    /// and the content-addressed store is shared. Returns the number of
+    /// observation rows removed. Default `Ok(0)` so existing implementors compile
+    /// unchanged; a store that cannot detach simply keeps the duplicate.
+    fn detach_scan_observations(&self, _scan_id: &str, _entity_uids: &[String]) -> Result<usize> {
+        Ok(0)
+    }
+
     // ── Correlations ───────────────────────────────────────────────────────
     fn upsert_correlation(&self, c: &Correlation) -> Result<()>;
     fn correlations_for_scan(&self, scan_id: &str) -> Result<Vec<Correlation>>;
 
     // ── Relations (typed entity-to-entity edges) ────────────────────────────
     fn upsert_relation(&self, r: &Relation) -> Result<()>;
+    /// Persist many relations in a single transaction. The default loops
+    /// [`upsert_relation`](Self::upsert_relation) so in-memory / test impls
+    /// need no change; the SQLite store overrides it to avoid an autocommit
+    /// (BEGIN/COMMIT + fsync) per edge at finalise. Takes a slice so the
+    /// caller can fall back to per-relation persistence if the batch rolls back.
+    fn upsert_relations_batch(&self, rels: &[Relation]) -> Result<usize> {
+        for r in rels {
+            self.upsert_relation(r)?;
+        }
+        Ok(rels.len())
+    }
     fn relations_for_scan(&self, scan_id: &str) -> Result<Vec<Relation>>;
 
     // ── Events ─────────────────────────────────────────────────────────────
     fn insert_event(&self, event: &Event) -> Result<()>;
+    /// Insert many events in a single transaction. The default loops
+    /// [`insert_event`](Self::insert_event); the SQLite store overrides it so
+    /// the db-writer's coalesced ≤64-event drain commits once (one fsync on a
+    /// phone's flash filesystem) instead of once per event. Slice-taking so the
+    /// caller can fall back to per-event insertion on a batch rollback.
+    fn insert_events_batch(&self, events: &[Event]) -> Result<usize> {
+        for e in events {
+            self.insert_event(e)?;
+        }
+        Ok(events.len())
+    }
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>>;
+
+    /// Clear all events for a scan at the start of that scan so event logs don't
+    /// accumulate stale events from abandoned previous runs with the same target
+    /// in long-lived processes (`hse serve`). Default no-op for test doubles;
+    /// the SQLite `Store` deletes from the `events` table. Non-fatal: a failure
+    /// is logged as a warning but doesn't abort the scan.
+    fn delete_events_for_scan(&self, _scan_id: &str) -> Result<()> {
+        Ok(())
+    }
 
     /// Recent `ModuleDone`/`ModuleError` outcome events across ALL scans,
     /// newest-first, bounded to `limit` — the substrate for
@@ -155,6 +196,51 @@ pub trait StoragePort: Send + Sync {
         &self,
         _scan_id: &str,
     ) -> Result<Vec<crate::core::stealer_row::StealerRow>> {
+        Ok(Vec::new())
+    }
+
+    // ── RF sightings (wardriving captures + radar sweeps) ───────────────────
+    /// Persist per-sighting RF observations for one scan/import. Best-effort,
+    /// called from the capture importers and the radar. Default no-op for test
+    /// doubles; the SQLite `Store` persists to `rf_sightings`.
+    fn insert_rf_sightings_batch(
+        &self,
+        _scan_id: &str,
+        _rows: &[crate::core::rf::RfSighting],
+    ) -> Result<usize> {
+        Ok(0)
+    }
+
+    // ── AI-daemon scan analysis (opt-in, isolated from the deterministic core —
+    //    see `src/ai/` and the `Runtime AI-independence` invariant in `src/lib.rs`) ──
+    /// Persist (or overwrite) the AI-daemon's analysis for one scan. A write
+    /// failure here does not corrupt scan data — it only means the analysis
+    /// must be retried. Default no-op for test doubles; the SQLite `Store`
+    /// persists to `scan_analysis`.
+    fn upsert_scan_analysis(
+        &self,
+        _analysis: &crate::core::scan_analysis::ScanAnalysis,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// The persisted AI-daemon analysis for one scan, if any. Default `Ok(None)`
+    /// for test doubles.
+    fn get_scan_analysis(
+        &self,
+        _scan_id: &str,
+    ) -> Result<Option<crate::core::scan_analysis::ScanAnalysis>> {
+        Ok(None)
+    }
+
+    /// Terminal scans (`Complete`/`Aborted` — see [`crate::core::scan::ScanStatus`])
+    /// with no persisted analysis yet, oldest-first, bounded to `limit` — the
+    /// AI daemon's poll query. `Failed`/`Pending`/`Running` scans are excluded:
+    /// a failed scan's entity set is typically empty or partial and a
+    /// pending/running one isn't finished yet. Default empty for test doubles;
+    /// the SQLite `Store` reads `scans` with a `scan_id NOT IN (SELECT ... FROM
+    /// scan_analysis)` anti-join.
+    fn scans_pending_analysis(&self, _limit: usize) -> Result<Vec<String>> {
         Ok(Vec::new())
     }
 

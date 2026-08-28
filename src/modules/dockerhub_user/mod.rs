@@ -17,6 +17,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -56,21 +57,31 @@ pub(super) fn build_entities(user: DhUser, scan_id: &str) -> Vec<Entity> {
     };
 
     // Confirmed username.
-    let mut e = Entity::new(EntityKind::Username, handle, 0.85, scan_id);
+    let mut e = Entity::new(
+        EntityKind::Username,
+        handle,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     e.tag("dockerhub");
     e.tag("public-profile");
     e.add_evidence(ev());
     out.push(e);
 
     // Profile URL.
-    let mut u = Entity::new(EntityKind::Url, &profile_url, 0.80, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Url,
+        &profile_url,
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
     u.tag("dockerhub");
     u.add_evidence(ev());
     out.push(u);
 
     // Full name → Person (multi-word only).
     if let Some(name) = user.full_name.as_deref()
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.70, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::HIGH_PLUS, scan_id)
     {
         p.tag("dockerhub");
         p.add_evidence(ev().with_attr("source_field", "full_name"));
@@ -81,7 +92,12 @@ pub(super) fn build_entities(user: DhUser, scan_id: &str) -> Vec<Entity> {
     if let Some(company) = user.company.as_deref()
         && !company.trim().is_empty()
     {
-        let mut o = Entity::new(EntityKind::Organisation, company.trim(), 0.58, scan_id);
+        let mut o = Entity::new(
+            EntityKind::Organisation,
+            company.trim(),
+            confidence::MEDIUM_SOLID,
+            scan_id,
+        );
         o.tag("dockerhub");
         o.tag("self-asserted");
         o.add_evidence(ev().with_attr("source_field", "company"));
@@ -90,13 +106,13 @@ pub(super) fn build_entities(user: DhUser, scan_id: &str) -> Vec<Entity> {
 
     // Location → Address (self-asserted, low confidence).
     if let Some(loc) = user.location.as_deref()
-        && let Some(mut a) = profile_kit::location_address(loc, 0.35, scan_id)
+        && let Some(mut a) = profile_kit::location_address(loc, confidence::TENTATIVE, scan_id)
     {
         a.tag("dockerhub");
         a.tag("self-asserted");
         a.add_evidence(ev().with_attr("source_field", "location"));
         out.push(a);
-        if let Some(mut c) = profile_kit::location_coordinates(loc, 0.25, scan_id) {
+        if let Some(mut c) = profile_kit::location_coordinates(loc, confidence::VERY_LOW, scan_id) {
             c.tag("dockerhub");
             c.add_evidence(ev().with_attr("source_field", "location"));
             out.push(c);
@@ -105,7 +121,7 @@ pub(super) fn build_entities(user: DhUser, scan_id: &str) -> Vec<Entity> {
 
     // Personal website from profile_url (distinct from the canonical hub.docker.com URL).
     if let Some(site) = user.profile_url.as_deref() {
-        for mut e in profile_kit::website_url_and_domain(site, 0.68, 0.62, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(site, 0.68, confidence::NOTABLE, scan_id) {
             e.tag("dockerhub");
             if e.kind == EntityKind::Domain {
                 e.tag("derived");
@@ -119,7 +135,12 @@ pub(super) fn build_entities(user: DhUser, scan_id: &str) -> Vec<Entity> {
     if let Some(email) = user.gravatar_email.as_deref()
         && email.contains('@')
     {
-        let mut em = Entity::new(EntityKind::Email, email.trim(), 0.72, scan_id);
+        let mut em = Entity::new(
+            EntityKind::Email,
+            email.trim(),
+            confidence::ATTRIBUTED,
+            scan_id,
+        );
         em.tag("dockerhub");
         em.tag("gravatar");
         em.add_evidence(ev().with_attr("source_field", "gravatar_email"));
@@ -137,7 +158,7 @@ impl Module for DockerhubUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Docker Hub profile: fullname, company, location, website, gravatar email (free)"
+        "Docker Hub profile recon — harvests fullname, company, location, website, and gravatar email to pivot a user (free)"
     }
     fn priority(&self) -> u8 {
         50

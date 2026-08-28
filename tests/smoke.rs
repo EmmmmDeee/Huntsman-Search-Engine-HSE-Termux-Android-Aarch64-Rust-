@@ -18,330 +18,11 @@ use huntsman_search_engine::{
     util::{http::build_client, uid::scan_id},
 };
 
-/// Echoes the seed back as an entity of the same kind.
-struct SyntheticModule;
-
-#[async_trait]
-impl Module for SyntheticModule {
-    fn name(&self) -> &'static str {
-        "synthetic"
-    }
-    fn priority(&self) -> u8 {
-        100
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Email)
-    }
-    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut r = ModuleResult::new();
-        let mut e = Entity::new(EntityKind::Email, &target.value, 0.95, &ctx.scan_id);
-        e.tag("synthetic");
-        r.push(e);
-        Ok(r)
-    }
-}
-
-/// Accepts Email, produces ONE Username derived from the local part.
-struct EmailToUsernameSynth;
-
-#[async_trait]
-impl Module for EmailToUsernameSynth {
-    fn name(&self) -> &'static str {
-        "synth_e2u"
-    }
-    fn priority(&self) -> u8 {
-        80
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Email)
-    }
-    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut r = ModuleResult::new();
-        let local = target.value.split('@').next().unwrap_or("anon");
-        // High base confidence so c_effective() ≥ 0.75 expansion threshold.
-        let mut e = Entity::new(EntityKind::Username, local, 0.95, &ctx.scan_id);
-        e.tag("derived");
-        r.push(e);
-        Ok(r)
-    }
-}
-
-/// A keyed module with no key configured: returns `Err(MissingKey)`, which the
-/// engine must treat as a CLEAN SKIP (needs-key notice), not a module error.
-struct NeedsKeyModule;
-
-#[async_trait]
-impl Module for NeedsKeyModule {
-    fn name(&self) -> &'static str {
-        "needs_key"
-    }
-    fn priority(&self) -> u8 {
-        90
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Email)
-    }
-    async fn process(&self, _t: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
-        Err(huntsman_search_engine::core::error::Error::MissingKey(
-            "HUNTSMAN_VIRUSTOTAL_KEY".into(),
-        ))
-    }
-}
-
-/// Accepts Username, produces ONE Phone (synthetic).
-struct UsernameToPhoneSynth;
-
-#[async_trait]
-impl Module for UsernameToPhoneSynth {
-    fn name(&self) -> &'static str {
-        "synth_u2p"
-    }
-    fn priority(&self) -> u8 {
-        70
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Username)
-    }
-    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut r = ModuleResult::new();
-        let phone = format!("+1{:0>10}", target.value.len() * 1111);
-        let mut e = Entity::new(EntityKind::Phone, &phone, 0.95, &ctx.scan_id);
-        e.tag("synthetic");
-        r.push(e);
-        Ok(r)
-    }
-}
-
-/// Adversarial generative module: for an Email target it emits a *brand-new,
-/// never-before-seen* Email each call (local part grows by one char), so the
-/// monotone visited-set can never block it. Left unbounded it would expand
-/// forever — used to prove the recursion HALTS purely on the entity budget.
-struct HydraModule;
-
-#[async_trait]
-impl Module for HydraModule {
-    fn name(&self) -> &'static str {
-        "hydra"
-    }
-    fn priority(&self) -> u8 {
-        100
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Email)
-    }
-    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut r = ModuleResult::new();
-        let local = target.value.split('@').next().unwrap_or("a");
-        // High confidence so it always clears the expansion floor; unique each
-        // round so `visited` never short-circuits it.
-        let next = format!("{local}x@h.test");
-        let mut e = Entity::new(EntityKind::Email, next, 0.95, &ctx.scan_id);
-        e.tag("hydra");
-        r.push(e);
-        Ok(r)
-    }
-}
-
-/// Accepts Email, produces a low-confidence Username — should be ignored
-/// by expansion when min_expand_confidence is 0.75.
-struct LowConfidenceModule;
-
-#[async_trait]
-impl Module for LowConfidenceModule {
-    fn name(&self) -> &'static str {
-        "synth_low"
-    }
-    fn priority(&self) -> u8 {
-        60
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Email)
-    }
-    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut r = ModuleResult::new();
-        let local = target.value.split('@').next().unwrap_or("anon");
-        // Base confidence 0.3 → c_effective 0.3 → below 0.75 threshold.
-        let mut e = Entity::new(EntityKind::Username, local, 0.3, &ctx.scan_id);
-        e.tag("low");
-        r.push(e);
-        Ok(r)
-    }
-}
-
-// ── Key-chaining harness ───────────────────────────────────────────────────
-//
-// These modules simulate the force-multiplication chain:
-//   1. KeyDiscovererModule (high priority) writes a fake key into the
-//      global key pool, mimicking oathnet_pro extracting a Shodan key
-//      from breach data.
-//   2. KeyConsumerModule (low priority) only emits an entity if the
-//      target key is present in ctx.keys.
-//
-// If the hot-inject works, KeyConsumerModule sees the key and the scan
-// produces the consumer's entity. If the hot-inject is broken, the
-// consumer sees a stale ctx clone with no key and emits nothing.
-
-const CHAIN_TEST_SERVICE: &str = "shodan";
-const CHAIN_TEST_ENV: &str = "HUNTSMAN_SHODAN_KEY";
-
-struct KeyDiscovererModule;
-
-#[async_trait]
-impl Module for KeyDiscovererModule {
-    fn name(&self) -> &'static str {
-        "key_discoverer"
-    }
-    fn priority(&self) -> u8 {
-        // Higher than KeyConsumerModule so it runs first.
-        // Also marked Paid so the concurrent dispatcher routes it into
-        // Phase 1 (synchronous) before Phase 2 spawns the consumer.
-        150
-    }
-    fn cost(&self) -> huntsman_search_engine::core::module::ModuleCost {
-        huntsman_search_engine::core::module::ModuleCost::Paid
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Email)
-    }
-    async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        // Simulate oathnet_pro discovering a key in breach data.
-        let pool = huntsman_search_engine::util::key_pool::global_pool();
-        let entry = huntsman_search_engine::util::key_pool::KeyEntry::new(
-            "test-shodan-key-chained-via-hot-inject",
-        );
-        pool.add(CHAIN_TEST_SERVICE, entry);
-
-        // Emit a marker entity proving this module ran.
-        let mut r = ModuleResult::new();
-        let mut e = Entity::new(
-            EntityKind::Email,
-            "discoverer@chainmarker.io",
-            0.95,
-            &ctx.scan_id,
-        );
-        e.tag("key-discoverer-fired");
-        r.push(e);
-        Ok(r)
-    }
-}
-
-struct KeyConsumerModule;
-
-#[async_trait]
-impl Module for KeyConsumerModule {
-    fn name(&self) -> &'static str {
-        "key_consumer"
-    }
-    fn priority(&self) -> u8 {
-        // Lower than discoverer so it runs after the hot-inject fires.
-        50
-    }
-    fn cost(&self) -> huntsman_search_engine::core::module::ModuleCost {
-        huntsman_search_engine::core::module::ModuleCost::KeyGated
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Email)
-    }
-    async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut r = ModuleResult::new();
-        // Only emit if the chained key reached us via hot-inject.
-        if let Some(key) = ctx.key_opt(CHAIN_TEST_ENV)
-            && key == "test-shodan-key-chained-via-hot-inject"
-        {
-            let mut e = Entity::new(
-                EntityKind::Email,
-                "consumer@chainmarker.io",
-                0.95,
-                &ctx.scan_id,
-            );
-            e.tag("key-consumer-saw-key");
-            r.push(e);
-        }
-        Ok(r)
-    }
-}
-
-/// Emits a mega-domain (facebook.com) and a target-specific domain from a
-/// username — to exercise the expansion gate that skips incidentally-discovered
-/// mega-domains. Both are high-confidence + corroborated so they clear the gate.
-struct UsernameToDomainsSynth;
-#[async_trait]
-impl Module for UsernameToDomainsSynth {
-    fn name(&self) -> &'static str {
-        "u2domains"
-    }
-    fn priority(&self) -> u8 {
-        100
-    }
-    fn description(&self) -> &'static str {
-        "test: username → domains"
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Username)
-    }
-    async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut r = ModuleResult::new();
-        for d in ["facebook.com", "johndoe-personal.com"] {
-            let mut e = Entity::new(EntityKind::Domain, d, 0.95, &ctx.scan_id);
-            e.corroboration = 3;
-            r.push(e);
-        }
-        Ok(r)
-    }
-}
-
-/// Records each Domain target it is dispatched on by emitting a marker entity,
-/// so a test can assert which domains the engine chose to expand.
-struct DomainSensor;
-#[async_trait]
-impl Module for DomainSensor {
-    fn name(&self) -> &'static str {
-        "domain_sensor"
-    }
-    fn priority(&self) -> u8 {
-        90
-    }
-    fn description(&self) -> &'static str {
-        "test: marks domains it runs on"
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain)
-    }
-    async fn process(&self, t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut r = ModuleResult::new();
-        let mut e = Entity::new(
-            EntityKind::Url,
-            format!("sensed://{}", t.value),
-            0.95,
-            &ctx.scan_id,
-        );
-        e.tag("domain-sensor");
-        r.push(e);
-        Ok(r)
-    }
-}
-
-/// Clear any pre-existing keys for the chain-test service from the process-
-/// global pool so the key-chaining tests are hermetic. The global pool is a
-/// `OnceLock` seeded from the persisted `~/.huntsman/key_pool.json`, which can
-/// already hold real `shodan` keys (from prior CLI use or scans); those perturb
-/// `next_key("shodan")` selection and make the hot-inject assertion flaky
-/// depending on test order / the developer's local pool. Removal is in-memory
-/// only (never writes the file), so it cannot affect real keys on disk.
-fn reset_chain_pool() {
-    let pool = huntsman_search_engine::util::key_pool::global_pool();
-    let existing: Vec<String> = pool
-        .snapshot()
-        .services
-        .get(CHAIN_TEST_SERVICE)
-        .into_iter()
-        .flatten()
-        .map(|e| e.value.clone())
-        .collect();
-    for value in existing {
-        pool.remove(CHAIN_TEST_SERVICE, &value);
-    }
-}
+use common::{
+    DomainSensor, EmailToUsernameSynth, HydraModule, KeyConsumerModule, KeyDiscovererModule,
+    LowConfidenceModule, NeedsKeyModule, RegionalProbeModule, SyntheticModule,
+    UsernameToDomainsSynth, UsernameToPhoneSynth, reset_chain_pool,
+};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn key_chaining_sequential_dispatch() {
@@ -405,38 +86,6 @@ async fn key_chaining_concurrent_dispatch() {
         "consumer (KeyGated, Phase 2) must see the key via hot-inject — \
          concurrent chain is broken"
     );
-}
-
-/// Tags an entity with the per-scan regional-search ambient it observes —
-/// used to prove `util::regional`'s isolation end-to-end through the real
-/// engine, mirroring `key_chaining_*`'s "prove the wiring, not just the
-/// primitive" style.
-struct RegionalProbeModule;
-
-#[async_trait]
-impl Module for RegionalProbeModule {
-    fn name(&self) -> &'static str {
-        "regional_probe"
-    }
-    fn priority(&self) -> u8 {
-        100
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Email)
-    }
-    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut r = ModuleResult::new();
-        let mut e = Entity::new(EntityKind::Email, &target.value, 0.95, &ctx.scan_id);
-        e.tag(
-            if huntsman_search_engine::util::regional::regional_enabled() {
-                "regional-was-true"
-            } else {
-                "regional-was-false"
-            },
-        );
-        r.push(e);
-        Ok(r)
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1980,6 +1629,86 @@ fn every_registered_module_consumes_at_least_one_kind() {
         "module(s) with empty consumes() — dead at runtime (in no dispatch \
          bucket, so the engine never dispatches them). If accepts() value-gates, \
          override consumes() to declare the kind(s) it accepts: {dead:?}"
+    );
+}
+
+#[test]
+fn platform_static_attack_envelope_is_pinned() {
+    // The recursive MITRE ATT&CK view: union the platform's THREE static
+    // Reconnaissance surfaces — every registered module's attack_techniques(),
+    // every EntityKind's techniques_for_entity_kind(), every RelationKind's
+    // techniques_for_relation_kind() — into the capability envelope: which TA0043
+    // techniques HSE can EVER exercise, and which it structurally never reaches.
+    //
+    // Unlike the per-scan runtime coverage, this is a property of the codebase, so
+    // pinning it turns any change in the platform's ATT&CK reach — a new module,
+    // a new entity/relation mapping that closes a gap, or a regression that opens
+    // one — into a deliberate, reviewed edit rather than a silent drift. This is
+    // the registry-aware half of the guard `core` cannot express (core must not
+    // import the module registry); the pure function is unit-tested in
+    // `core::attack::tests::static_reconnaissance_coverage_is_the_platform_envelope`.
+    use huntsman_search_engine::core::attack;
+
+    let modules = huntsman_search_engine::modules::registry();
+    let module_ids = modules
+        .iter()
+        .flat_map(|m| m.attack_techniques().iter().copied());
+    let cov = attack::static_reconnaissance_coverage(module_ids);
+
+    // Partition invariant: covered + honest gaps == the whole TA0043 tactic.
+    let total = attack::reconnaissance().len();
+    assert_eq!(cov.covered.len() + cov.uncovered.len(), total);
+
+    // The whole platform covers the great majority of Reconnaissance — but never
+    // all of it (the phishing / active-solicitation techniques are honest gaps a
+    // passive collector never performs).
+    // Coarse, human-readable scale check (the exact envelope is pinned below):
+    // HSE structurally reaches ~73% of the Reconnaissance tactic — most of it,
+    // never all of it.
+    assert!(
+        cov.coverage_fraction > 0.65 && cov.coverage_fraction < 0.80,
+        "platform static Reconnaissance coverage {:.3} ({}/{}) left the expected \
+         ~0.73 band; if the registry/entity/relation surfaces changed \
+         intentionally, re-pin this guard and the gap set below",
+        cov.coverage_fraction,
+        cov.covered.len(),
+        total,
+    );
+
+    // Pin the EXACT structural-gap set: the TA0043 techniques NO static surface
+    // maps — HSE's honest "cannot collect" list. A change here is a change in what
+    // the platform claims it can and cannot collect, so it must be acknowledged
+    // explicitly rather than drifting in silently. Two honest families:
+    //   • active-solicitation / closed-source intel a passive OSINT collector
+    //     never performs: the whole T1598 phishing family + T1597 (buying org
+    //     intel from a vendor);
+    //   • parent techniques whose *sub*-techniques HSE does map but the umbrella
+    //     itself is not directly claimed (T1590, T1593), plus specific
+    //     sub-techniques out of scope (network trust deps, business tempo, device
+    //     firmware / client configs).
+    // (Catalogue-sorted, as `uncovered` returns.)
+    let gaps: Vec<&str> = cov.uncovered.iter().map(|t| t.id).collect();
+    let expected_gaps = [
+        "T1590",     // Gather Victim Network Information (parent; subs are mapped)
+        "T1590.003", // Network Trust Dependencies
+        "T1591.003", // Identify Business Tempo
+        "T1592.003", // Firmware
+        "T1592.004", // Client Configurations
+        "T1593",     // Search Open Websites/Domains (parent; subs are mapped)
+        "T1597",     // Acquire Victim Org Information (closed-source vendor intel)
+        "T1598",     // Phishing for Information
+        "T1598.001", // Spearphishing Service
+        "T1598.002", // Spearphishing Attachment
+        "T1598.003", // Spearphishing Link
+        "T1598.004", // Spearphishing Voice
+    ];
+    assert_eq!(
+        gaps,
+        expected_gaps,
+        "platform structural Reconnaissance gaps changed — HSE's claimed \
+         collection envelope shifted; re-pin deliberately (covered {}/{})",
+        cov.covered.len(),
+        total,
     );
 }
 

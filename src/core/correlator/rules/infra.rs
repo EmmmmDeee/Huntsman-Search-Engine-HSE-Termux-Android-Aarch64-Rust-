@@ -4,10 +4,11 @@
 use super::*;
 
 pub(in crate::core::correlator) fn rule_au_004_malicious_infrastructure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     entities
         .iter()
         .filter(|e| {
@@ -18,11 +19,19 @@ pub(in crate::core::correlator) fn rule_au_004_malicious_infrastructure(
         })
         // A GreyNoise RIOT/benign verdict vetoes a `malicious` tag picked up on
         // the same (shared-edge) IP from a weaker source. Require at least two
-        // independent corroborating sources — a single-source `malicious` tag is
+        // independent THREAT sources to agree — a single-source `malicious` tag is
         // insufficient evidence for CRITICAL severity (shared infra like CDN/ESP
         // nodes routinely appear in one blocklist without being subject-owned).
+        // Counts `threat_source_count`, NOT `Entity::source_count`: the latter
+        // counts every corroborating source, so a lone blocklist hit plus routine
+        // geolocation enrichment (`ip_geo`/`ipinfo`, which are not in
+        // `ENRICHMENT_ONLY_SOURCES` and so DO count toward `source_count`) cleared
+        // the bar and fired CRITICAL — geolocation is not a second opinion on
+        // maliciousness.
         .filter(|e| {
-            e.has_tag(crate::core::tags::MALICIOUS) && !is_benign_infra(e) && e.source_count() >= 2
+            e.has_tag(crate::core::tags::MALICIOUS)
+                && !is_benign_infra(e)
+                && threat_source_count(e) >= 2
         })
         .map(|e| Correlation {
             rule_id: "AU-004".into(),
@@ -41,10 +50,11 @@ pub(in crate::core::correlator) fn rule_au_004_malicious_infrastructure(
 }
 
 pub(in crate::core::correlator) fn rule_au_005_anonymous_network(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const ANON_TAGS: &[&str] = &["tor-exit", "tor", "anonymous-network", "anonymous-vpn"];
     entities
         .iter()
@@ -75,10 +85,11 @@ pub(in crate::core::correlator) fn rule_au_005_anonymous_network(
 }
 
 pub(in crate::core::correlator) fn rule_au_006_proxy_vpn(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const ANON_TAGS: &[&str] = &["tor-exit", "tor", "anonymous-network", "anonymous-vpn"];
     entities
         .iter()
@@ -113,10 +124,11 @@ pub(in crate::core::correlator) fn rule_au_006_proxy_vpn(
 }
 
 pub(in crate::core::correlator) fn rule_au_007_high_risk_reputation(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const RISK_TAGS: &[&str] = &[
         "high-risk",
         "high-risk-inbound",
@@ -153,10 +165,11 @@ pub(in crate::core::correlator) fn rule_au_007_high_risk_reputation(
 }
 
 pub(in crate::core::correlator) fn rule_au_008_exposed_service(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const EXPOSURE_TAGS: &[&str] = &[crate::core::tags::VULNERABLE, "ssh-exposed", "leak"];
     entities
         .iter()
@@ -186,10 +199,11 @@ pub(in crate::core::correlator) fn rule_au_008_exposed_service(
 }
 
 pub(in crate::core::correlator) fn rule_au_010_infra_consensus(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let mut out = Vec::new();
     for e in entities
         .iter()
@@ -228,11 +242,11 @@ pub(in crate::core::correlator) fn rule_au_010_infra_consensus(
 }
 
 pub(in crate::core::correlator) fn rule_au_015_threat_intel_hit(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    const TI_SOURCES: &[&str] = &["ip_reputation", "threatfox"];
+    let entities = context.entities();
 
     entities
         .iter()
@@ -240,25 +254,18 @@ pub(in crate::core::correlator) fn rule_au_015_threat_intel_hit(
         // shared-edge false positive — exonerate it.
         .filter(|e| e.has_tag(crate::core::tags::THREAT_INTEL) && !is_benign_infra(e))
         .map(|e| {
+            // Attribution names only the threat sources actually on the entity —
+            // the same canonical set AU-004 counts, so the two rules can't drift.
             let sources: std::collections::BTreeSet<&str> = e
                 .evidence
                 .iter()
                 .map(|ev| ev.source.as_str())
-                .filter(|s| TI_SOURCES.contains(s))
+                .filter(|s| THREAT_INTEL_SOURCES.contains(s))
                 .collect();
             let attribution = if sources.is_empty() {
                 "a curated threat-intel feed".to_string()
             } else {
-                sources
-                    .into_iter()
-                    .enumerate()
-                    .fold(String::new(), |mut acc, (i, s)| {
-                        if i > 0 {
-                            acc.push_str(" + ");
-                        }
-                        acc.push_str(s);
-                        acc
-                    })
+                sources.into_iter().collect::<Vec<_>>().join(" + ")
             };
             let ti_hints: Vec<&str> = e
                 .tags
@@ -285,10 +292,11 @@ pub(in crate::core::correlator) fn rule_au_015_threat_intel_hit(
 }
 
 pub(in crate::core::correlator) fn rule_au_028_subdomain_takeover_risk(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::Domain && e.has_tag("subdomain-takeover"))
@@ -310,10 +318,11 @@ pub(in crate::core::correlator) fn rule_au_028_subdomain_takeover_risk(
 }
 
 pub(in crate::core::correlator) fn rule_au_029_cloud_storage_exposure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let exposed: Vec<&Entity> = entities
         .iter()
         .filter(|e| e.has_tag("cloud-storage") && e.has_tag(crate::core::tags::VULNERABLE))
@@ -355,19 +364,19 @@ pub(in crate::core::correlator) fn rule_au_029_cloud_storage_exposure(
 /// already-flagged nodes are left to AU-004/AU-008/AU-015. Deterministic
 /// (BTreeMap-ordered).
 pub(in crate::core::correlator) fn rule_au_031_malicious_adjacency(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
     use crate::core::relation::RelationKind;
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::BTreeMap;
 
     /// A flagged node with more than this many distinct benign neighbours is
     /// shared hosting/CDN/ESP: emit one aggregate, not one row per neighbour.
     const FANOUT_CAP: usize = 8;
 
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let by_uid = context.by_uid();
     let bad_reason = |e: &Entity| -> Option<&'static str> {
         // Ground-truth veto: a GreyNoise RIOT/benign node is not bad
         // infrastructure even if a scanner also tagged it, so it never anchors an
@@ -479,7 +488,11 @@ use crate::util::address_au::AuNetworkKind;
 pub(in crate::core::correlator) fn au_network_of(
     e: &Entity,
 ) -> Option<(&'static str, AuNetworkKind)> {
-    const KEYS: &[&str] = &[
+    // Structured operator-name fields — trusted for every brand token. `descr`
+    // is deliberately NOT here: it is RIPE/APNIC free-text prose, handled as the
+    // lower-trust tier below so a common-word brand (belong/dodo/tangerine) can't
+    // be fabricated from it (see `au_network_operator_split`).
+    const STRUCTURED_KEYS: &[&str] = &[
         "isp",
         "org",
         "as",
@@ -487,23 +500,29 @@ pub(in crate::core::correlator) fn au_network_of(
         "as_name",
         "asname",
         "as_org",
-        "descr",
         "network",
         "org_name",
         "isp_name",
         "carrier",
         "connection_org",
     ];
-    let mut hay = e.value.clone();
+    let mut structured = e.value.clone();
+    let mut descr = String::new();
     for ev in &e.evidence {
         for (k, v) in &ev.attributes {
-            if KEYS.iter().any(|key| k.eq_ignore_ascii_case(key)) {
-                hay.push(' ');
-                hay.push_str(v);
+            if k.eq_ignore_ascii_case("descr") {
+                descr.push(' ');
+                descr.push_str(v);
+            } else if STRUCTURED_KEYS
+                .iter()
+                .any(|key| k.eq_ignore_ascii_case(key))
+            {
+                structured.push(' ');
+                structured.push_str(v);
             }
         }
     }
-    crate::util::address_au::au_network_operator(&hay)
+    crate::util::address_au::au_network_operator_split(&structured, &descr)
 }
 
 /// AU-097 — Australian ISP / network attribution.
@@ -519,16 +538,26 @@ pub(in crate::core::correlator) fn au_network_of(
 /// One finding per distinct network. Consumer ISP → Medium (residency/connection
 /// signal); AARNet → High (specific affiliation). Pure over the confirmed set.
 pub(in crate::core::correlator) fn rule_au_097_au_isp_network(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::{BTreeMap, BTreeSet};
 
     let mut found: BTreeMap<&'static str, (AuNetworkKind, BTreeSet<String>)> = BTreeMap::new();
     for e in entities
         .iter()
         .filter(|e| matches!(e.kind, EntityKind::IpAddress | EntityKind::Asn))
+        // A hosting/datacentre/platform-infra IP is a resolved SERVER (a mail
+        // host, a CDN edge, the box a linked page resolves to), not the subject's
+        // own access connection — so its AU network operator says nothing about
+        // where the *person* connects from. Attributing residency/affiliation to
+        // it would fabricate a network-layer geo signal from pure infrastructure,
+        // against the "infrastructure must not seed identity pivots" discipline.
+        .filter(|e| {
+            !e.has_tag(crate::core::tags::HOSTING) && !e.has_tag(crate::core::tags::PLATFORM_INFRA)
+        })
     {
         if let Some((name, kind)) = au_network_of(e) {
             found
@@ -555,8 +584,8 @@ pub(in crate::core::correlator) fn rule_au_097_au_isp_network(
                     Severity::Medium,
                     format!(
                         "Subject's IP/ASN belongs to {name}, an Australian consumer ISP — a \
-                         network-layer AU residency/connection signal (a person on a domestic \
-                         network, not foreign or hosting infrastructure)"
+                         network-layer AU residency/connection signal (a domestic consumer \
+                         network; hosting/datacentre-tagged ranges are excluded)"
                     ),
                 ),
             };
@@ -582,13 +611,19 @@ pub(in crate::core::correlator) fn rule_au_097_au_isp_network(
 /// presence as "the DNS record isn't the origin" would be an unsupported
 /// generalisation — precision over recall, matching this codebase's stance
 /// that a false unmasking claim is worse than a missed one.
+// These MUST be the EXACT provider strings `waf_detect` emits — it tags
+// `waf:{provider}` and AU-111 looks up `has_tag("waf:{p}")`, so any spelling
+// that differs from the module's own name silently never matches. `AWS
+// CloudFront` and `Imperva/Incapsula` are `waf_detect`'s names; an earlier
+// `CloudFront`/`Incapsula` here never fired for those two global CDNs, dropping
+// the SPF-origin-leak pivot for every CloudFront- or Incapsula-fronted domain.
 const DNS_FRONTING_CDN_PROVIDERS: &[&str] = &[
     "Cloudflare",
     "Akamai",
     "Fastly",
-    "CloudFront",
+    "AWS CloudFront",
     "Sucuri",
-    "Incapsula",
+    "Imperva/Incapsula",
     "StackPath",
     "KeyCDN",
 ];
@@ -616,10 +651,11 @@ const DNS_FRONTING_CDN_PROVIDERS: &[&str] = &[
 /// even when the other's precondition (an SPF record / a direct-connect
 /// subdomain) doesn't hold.
 pub(in crate::core::correlator) fn rule_au_111_cdn_origin_candidate(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let fronted: Vec<(&Entity, &str)> = entities
         .iter()
         .filter(|e| e.kind == EntityKind::Domain && e.has_tag("waf-detected"))
@@ -636,12 +672,25 @@ pub(in crate::core::correlator) fn rule_au_111_cdn_origin_candidate(
 
     let mut out = Vec::new();
     for (dom, provider) in fronted {
+        // Fold both sides through the same registrable-domain normalisation
+        // AU-118 already applies before comparing domain identity, rather than
+        // a raw string `==`: `waf_detect`'s own Domain value is lowercased
+        // (via `host_from_url`), but the "domain" attribute other modules
+        // stamp is not uniformly normalised (`dns_intel::resolve` sets it
+        // straight from the raw target value, unlike its own srv.rs/dkim.rs
+        // siblings). A mixed-case seed (`Example.com`) previously produced a
+        // silent, error-free non-match — `"Example.com" != "example.com"` —
+        // dropping a genuine origin-unmasking finding with no diagnostic.
+        let dom_reg = crate::util::domains::registrable_domain(&dom.value);
         let candidates = entities.iter().filter(|e| {
             e.kind == EntityKind::IpAddress
                 && e.has_tag("spf")
-                && e.evidence
-                    .iter()
-                    .any(|ev| ev.attributes.get("domain").is_some_and(|d| d == &dom.value))
+                && e.evidence.iter().any(|ev| {
+                    ev.attributes
+                        .get("domain")
+                        .and_then(|d| crate::util::domains::registrable_domain(d))
+                        .is_some_and(|d| Some(d) == dom_reg)
+                })
         });
         for ip in candidates {
             out.push(Correlation::new(
@@ -707,10 +756,11 @@ fn already_linked_to_block(ip_entity: &Entity, block: &str) -> bool {
 /// allocation containing thousands of unrelated customers can't manufacture
 /// noise, and skips pairs [`already_linked_to_block`] already makes explicit.
 pub(in crate::core::correlator) fn rule_au_112_shared_cidr_infrastructure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use crate::util::spf::Ipv4Cidr;
     use crate::util::spf::Ipv6Cidr;
     use std::net::{Ipv4Addr, Ipv6Addr};

@@ -3,6 +3,7 @@
 //! parent items (DetectionConfidence, tags, …) via `use super::*`.
 
 use super::*;
+use crate::core::confidence;
 
 /// Emit a key whose provenance is the schema/shape baseline (the direct
 /// [`identify_api_key`] paths, which carry no corroborating context). Delegates
@@ -39,7 +40,12 @@ pub(super) fn emit_key_with(
     // machinery entirely: it can't authenticate anything.
     if let Some(chain) = service.strip_prefix("crypto_") {
         if seen.insert(format!("@crypto:{key_val}")) {
-            let mut e = Entity::new(EntityKind::CryptoAddress, key_val, 0.80, scan_id);
+            let mut e = Entity::new(
+                EntityKind::CryptoAddress,
+                key_val,
+                confidence::HIGH_PLUSPLUS,
+                scan_id,
+            );
             e.tag("crypto-address");
             e.tag(format!("chain:{chain}"));
             e.add_evidence(
@@ -50,10 +56,14 @@ pub(super) fn emit_key_with(
         }
         return;
     }
-    let dedup = format!(
-        "@apikey:{service}:{}",
-        crate::util::str_util::truncate_safe(key_val, 16)
-    );
+    // Dedup on the FULL key value, not a 16-char prefix: many real credentials
+    // share a long fixed prefix (every HS256 JWT begins with the identical
+    // `eyJhbGciOiJIUzI1…` header; `AKIA…`, `sk-…`, `ghp_…` families likewise), so a
+    // 16-char key collapsed two DISTINCT keys of the same service into one and
+    // silently dropped the second — never emitted, pooled, or vaulted. The value is
+    // bounded (an API key, not a document), so keying on it whole is cheap and
+    // collision-free.
+    let dedup = format!("@apikey:{service}:{key_val}");
     if !seen.insert(dedup) {
         return;
     }
@@ -69,7 +79,12 @@ pub(super) fn emit_key_with(
     } else {
         detection
     };
-    let mut entity = Entity::new(EntityKind::ApiKey, key_val, 0.80, scan_id);
+    let mut entity = Entity::new(
+        EntityKind::ApiKey,
+        key_val,
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
     entity.tag("api-key");
     entity.tag(format!("service:{service}"));
     // Hyphenated form, matching the caller's own entity-tagging convention
@@ -150,28 +165,58 @@ pub(super) fn emit_key_with(
         return;
     }
 
-    // Pool ONLY a recognised keyed provider's key — one the cascade can reuse.
-    // The `generic_hex` catch-all (and `jwt_token`, `crypto_*`, foreign logins)
-    // is surfaced as the ApiKey entity above but is never injected by
-    // `hot_inject_keys`, so pooling it just grew key_pool.json without bound
-    // (a live run accumulated 8668 `generic_hex` blobs → a 4 MB pool).
+    // Pool ONLY a recognised keyed provider's key. The `generic_hex` catch-all
+    // (and `jwt_token`, `crypto_*`, foreign logins) is surfaced as the ApiKey
+    // entity above but is never pooled, so pooling it just grew key_pool.json
+    // without bound (a live run accumulated 8668 `generic_hex` blobs → a 4 MB pool).
     if !crate::util::service_defs::is_poolable_service(service) {
         return;
     }
 
+    // Record the harvested key in the pool as PORTFOLIO INTELLIGENCE only, stamped
+    // with `discovered_by`/`discovered_at` provenance so the auth chokepoint
+    // (`KeyPool::next_key_excluding`) treats it as INELIGIBLE to authenticate HSE's
+    // own requests. Auto-reusing a discovered third-party key for real auth would
+    // let an attacker who plants one on a crawled page hijack the engine's egress
+    // (exposing the investigation's targets); reuse requires a deliberate
+    // `hse keys add`, matching `store_api_credential`'s policy for harvested
+    // breach credentials. (The sibling `http::keys::scan_for_api_keys` path already
+    // stamps this provenance; this keeps both harvest paths consistent.)
     let pool = crate::util::key_pool::global_pool();
     let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+    entry.discovered_by = Some(source.to_string());
+    entry.discovered_at = Some(crate::core::entity::unix_now());
     entry.notes = Some(format!(
         "Auto-discovered {service} key from {source} ({} tier)",
         roi.label()
     ));
     pool.add(service, entry);
-    crate::util::key_pool::save_pool_best_effort(&pool);
+    // Off the async runtime: this runs inside a keyed module's async process()
+    // on a tokio worker shared with every other concurrently-dispatched module.
+    crate::util::key_pool::persist_off_thread(pool);
 }
 
-/// Routes a stealer/breach record to the key pool when the URL matches
-/// a known service domain. See [`emit_key`] for `src`.
-pub fn store_api_credential(item: &Value, src: &str) {
+/// Reports a stealer/breach record's password as a [`EntityKind::Credential`]
+/// finding when its URL matches a known service domain. See [`emit_key`] for
+/// `src`.
+///
+/// This intentionally only REPORTS the discovery — it never auto-pools the
+/// credential into [`crate::util::key_pool`] for HSE's own future live use.
+/// A breach-log password is a third party's captured secret of unverified
+/// ownership, not a key the operator supplied; auto-enrolling it would mean
+/// HSE authenticates against a real third-party service with someone else's
+/// credential on its own initiative. The operator can still check whether it
+/// is live by explicitly adding it (`hse keys add`) after reviewing this
+/// finding — reuse now requires a deliberate operator action, not an
+/// automatic one. The [`is_credential_kind`](crate::util::redact::is_credential_kind)
+/// export-redaction path already treats this entity's value as a secret.
+pub fn store_api_credential(
+    item: &Value,
+    src: &str,
+    scan_id: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
     let url = val_str(item, "url")
         .or_else(|| val_str(item, "url_str"))
         .or_else(|| val_str(item, "domain"))
@@ -213,19 +258,56 @@ pub fn store_api_credential(item: &Value, src: &str) {
         return;
     };
 
-    let pool = crate::util::key_pool::global_pool();
-
-    let mut entry = crate::util::key_pool::KeyEntry::new(&password);
-    entry.notes = Some(format!(
-        "{src} stealer: user={} url={}",
-        crate::util::str_util::truncate_safe(&username, 30),
-        crate::util::str_util::truncate_safe(&url, 60)
-    ));
-    if pool.add(service, entry) {
-        crate::util::key_pool::save_pool_best_effort(&pool);
+    // Hash the password into the dedup key rather than embedding it whole: a
+    // stealer/breach `password` field is an arbitrary-length attacker/victim-
+    // supplied string, unlike `emit_key_with`'s `key_val` (bounded by
+    // `KEY_PATTERNS`'s own regexes) — an unbounded value here would both
+    // allocate unboundedly and retain a second plaintext copy of the secret in
+    // `seen` for the rest of the page's processing.
+    if !seen.insert(format!(
+        "@breach-cred:{service}:{}",
+        crate::util::key_pool::key_id(&password)
+    )) {
+        return;
     }
-
-    let user_entry = crate::util::key_pool::KeyEntry::new(format!("{username}:{password}"));
-    pool.add(&format!("{service}_login"), user_entry);
-    crate::util::key_pool::save_pool_best_effort(&pool);
+    let mut entity = Entity::new(
+        EntityKind::Credential,
+        &password,
+        confidence::MEDIUM_PLUS,
+        scan_id,
+    );
+    entity.tag("stealer-credential");
+    entity.tag(format!("service:{service}"));
+    entity.tag(src.replace('_', "-"));
+    // OSINT-practitioner pivot — identical classification to the ApiKey path
+    // (`emit_key_with`), via the same `osint_providers::osint_category` source of
+    // truth. A leaked *login* to a recon/breach/threat-intel provider is as strong
+    // an operator signal as holding its API key: the record's own URL host already
+    // attributed this credential to the exact provider (`identify_service_from_url`
+    // over the ~100-provider domain table), so a victim caught authenticating to
+    // dehashed.com / maltego.com / shodan.io is flagged an OSINT practitioner and
+    // fed to the correlator (AU-096) rather than filed as an anonymous credential.
+    // Classification only — the credential is never used to authenticate.
+    let osint_category = crate::util::osint_providers::osint_category(service);
+    if let Some(category) = osint_category {
+        entity.tag("osint-practitioner");
+        entity.tag(format!("osint-category:{}", category.slug()));
+    }
+    entity.add_evidence(
+        Evidence::new(
+            src,
+            format!("Possible {service} credential from a breach/stealer record"),
+        )
+        .with_attr("service", service)
+        .with_attr(
+            "osint_category",
+            osint_category.map_or("none", |c| c.slug()),
+        )
+        .with_attr(
+            "username",
+            crate::util::str_util::truncate_safe(&username, 60),
+        )
+        .with_attr("url", crate::util::str_util::truncate_safe(&url, 80)),
+    );
+    result.push(entity);
 }

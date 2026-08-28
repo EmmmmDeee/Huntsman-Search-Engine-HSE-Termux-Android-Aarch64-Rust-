@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -48,7 +49,7 @@ struct Stealer {
 /// (actual malware exfiltration, not compilations), so the baseline is
 /// higher than database breaches. Recent compromises get boosted further
 /// by `freshness_boost`.
-const BASE_CONFIDENCE: f64 = 0.85;
+const BASE_CONFIDENCE: f64 = confidence::HIGH_PLUSPLUS_PLUS;
 
 /// Boost confidence to this value when the compromise date is within
 /// 90 days. Per Recorded Future's 2025 report, 53% of credentials are
@@ -66,7 +67,7 @@ impl Module for HudsonRock {
     }
 
     fn description(&self) -> &'static str {
-        "Free stealer-log lookup via HudsonRock Cavalier"
+        "HudsonRock Cavalier recon (free) — sweeps stealer-log corpora for a target's infostealer exposure"
     }
 
     fn priority(&self) -> u8 {
@@ -186,7 +187,7 @@ fn victim_ip_entities(stealers: &[Stealer], scan_id: &str) -> Vec<Entity> {
             let mut e = Entity::new(
                 crate::core::entity::EntityKind::IpAddress,
                 ip,
-                0.70,
+                confidence::HIGH_PLUS,
                 scan_id,
             );
             e.tag(tags::STEALER_LOG);
@@ -303,6 +304,17 @@ fn build_result(target: &Target, data: &CavalierResp, scan_id: &str) -> ModuleRe
     result
 }
 
+/// Freshness verdict for a stealer set, relative to an explicitly supplied
+/// `now_secs`.
+///
+/// The clock is a parameter rather than an internal `unix_now()` call so the
+/// function is pure and its tests are deterministic. Taking the clock from
+/// inside made the freshness verdict depend on the wall clock at test time:
+/// a test pinning an absolute `date_compromised` and asserting
+/// [`FRESH_CONFIDENCE`] necessarily starts failing once real time drifts past
+/// [`FRESHNESS_WINDOW_DAYS`] from that date — which is exactly what happened
+/// (a fixture dated 2026-05-01 went stale, and CI red, on 2026-07-30). A
+/// caller-supplied clock removes the whole failure class.
 fn compute_confidence(stealers: &[Stealer], now_secs: u64) -> f64 {
     let cutoff = now_secs.saturating_sub(FRESHNESS_WINDOW_DAYS * 86400);
 
@@ -326,7 +338,14 @@ fn parse_iso_epoch(s: &str) -> Option<u64> {
     let year: i64 = parts.next()?.parse().ok()?;
     let month: i64 = parts.next()?.parse().ok()?;
     let day: i64 = parts.next()?.parse().ok()?;
-    if year < 2000 || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    // Year is bounded ABOVE as well as below: `date_compromised` is fully
+    // attacker-influenced (an untrusted breach-API field), and an out-of-range
+    // year overflows `days_from_civil`'s `era * 146097` (i64) and the `days *
+    // 86400` (u64) below — a panic under overflow-checks (debug/CI/fuzz) and a
+    // wrapped garbage epoch (→ a wrong freshness verdict) in the release profile.
+    // 2000..=2100 is the realistic breach-compromise window and mirrors the upper
+    // bound `core::timeline::parse_date` applies.
+    if !(2000..=2100).contains(&year) || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }
     // Exact day count (Howard Hinnant via core::timeline) — the previous

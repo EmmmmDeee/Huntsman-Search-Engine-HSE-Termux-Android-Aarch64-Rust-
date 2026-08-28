@@ -2,7 +2,7 @@
 
 Huntsman Search Engine (HSE) **automatically** uses the SeekNow API for breach + stealer + OSINT intelligence across 212M+ records and 70+ data sources. Just add your API key — HSE handles everything else: endpoint routing, budget management, credit detection, error recovery, request caching, and response archiving.
 
-**Official SeekNow API:** https://see-know.eu/api/v1 (24 endpoints, 99.97% uptime)
+**Official SeekNow API:** https://see-know.ru/api/v1 (24 endpoints, 99.97% uptime)
 
 ---
 
@@ -10,8 +10,8 @@ Huntsman Search Engine (HSE) **automatically** uses the SeekNow API for breach +
 
 ### 1. Get Your SeekNow API Key
 
-1. **Sign up** at [see-know.eu](https://see-know.eu/signup) and verify your account
-2. Go to **Account → API Dashboard**: https://see-know.eu/account/dashboard
+1. **Sign up** at [see-know.ru](https://see-know.ru/signup) and verify your account
+2. Go to **Account → API Dashboard**: https://see-know.ru/account/dashboard
 3. Under **API Key Status**, copy your active key (starts with `seek-`, typically 64+ characters)
 4. Check your **plan tier** (Beginner/Pro/PremiumHQ/Enterprise) and daily credit limit
 
@@ -22,11 +22,11 @@ Huntsman Search Engine (HSE) **automatically** uses the SeekNow API for breach +
 cp .env.example ~/.huntsman.env
 
 # Add just your API key (HSE auto-configures everything else)
-echo 'export HUNTSMAN_SEEKNOW_KEY="seek-your-api-key-here"' >> ~/.huntsman.env
+echo 'HUNTSMAN_SEEKNOW_KEY="seek-your-api-key-here"' >> ~/.huntsman.env
 ```
 
 That's it! HSE **automatically**:
-- Uses the official `https://see-know.eu/api/v1` endpoint
+- Uses the official `https://see-know.ru/api/v1` endpoint
 - Detects your daily credit limit (via `/credits` endpoint — free, no budget consumed)
 - Routes queries to optimal endpoints by target type
 - Caches responses to avoid duplicate lookups
@@ -41,9 +41,10 @@ That's it! HSE **automatically**:
 # HSE reads ~/.huntsman.env automatically on startup
 hse doctor
 
-# Expected output:
-# ✓ SeekNow: key present
-# ✓ SeekNow: quota probe successful — daily limit 15000, scan cap 750
+# Expected output includes a block like:
+# SeekNow account:
+#   api base: https://see-know.ru/api/v1
+#   credits remaining: 4832/5000
 ```
 
 **Done!** Run your first scan:
@@ -56,10 +57,10 @@ hse scan --kind email --value test@example.com --depth 1
 
 ## How SeekNow Works in HSE
 
-### SeekNow Endpoint Coverage: 18 of 24 documented endpoints wired
+### SeekNow Endpoint Coverage: 19 of 24 documented endpoints wired
 
 SeekNow's own published API surface documents 24 endpoints across 6
-categories. HSE actually calls 18 of them — the table below states each
+categories. HSE actually calls 19 of them — the table below states each
 one's real status honestly (verified 2026-07-15 against the actual
 dispatch code, not assumed from the vendor's docs):
 
@@ -68,7 +69,7 @@ dispatch code, not assumed from the vendor's docs):
 | **Search** | `/search` | 1 | **Wired** — the universal call, dispatched for every target kind |
 | **Search** | `/search/deep` | 1 | **Wired** — fallback when fast `/search` draws a blank on a TYPED query (email/username/phone/domain/ip); never called for the auto/name path or after a fast HIT |
 | **Stealer Logs** | `/stealer` | 2 | Removed — live-verified 404 against the real API; its data still arrives via `/search`'s stealer-shaped response instead |
-| **Social/Gaming** | `/username/{github,twitter,tiktok,reddit,social,history}`, `/discord/{user,to-roblox}`, `/gaming/{xbox,roblox,minecraft}` | 1 each | **Wired** (9 endpoints) |
+| **Social/Gaming** | `/username/{github,twitter,tiktok,reddit,social,history}`, `/discord/{user,to-roblox}`, `/gaming/{xbox,roblox,minecraft}` | 1 each | **Wired** (11 endpoints) |
 | **Network** | `/network/{ip,email-check,phone}` | 1 each | **Wired** (3 endpoints) |
 | **Domain** | `/domain/{intel,whois}` | 1 each | **Wired** (2 endpoints) |
 | **Enterprise** | `/enterprise/discord/{history,messages,export}` | 5 each | Not implemented — Enterprise-plan-gated; never built |
@@ -127,7 +128,7 @@ export HUNTSMAN_SEEKNOW_SCAN_CAP=250
 
 ### Automatic Data Extraction & Enrichment
 
-HSE extracts **17 entity types** from SeekNow responses across the 18 wired endpoints:
+HSE extracts **17 entity types** from SeekNow responses across the 19 wired endpoints:
 
 | Entity Type | Sources | Examples |
 |-------------|---------|----------|
@@ -159,7 +160,7 @@ HSE extracts **17 entity types** from SeekNow responses across the 18 wired endp
 
 ```bash
 # Just add your key — HSE configures everything else automatically
-echo 'export HUNTSMAN_SEEKNOW_KEY="seek-your-api-key-here"' >> ~/.huntsman.env
+echo 'HUNTSMAN_SEEKNOW_KEY="seek-your-api-key-here"' >> ~/.huntsman.env
 
 # Verify setup
 hse doctor
@@ -170,22 +171,23 @@ hse doctor
 | Variable | Required | Default | Use Case |
 |----------|----------|---------|----------|
 | `HUNTSMAN_SEEKNOW_KEY` | ✅ Yes | — | Your API key (64+ chars, starts with `seek-`) |
-| `HUNTSMAN_SEEKNOW_BASE` | ❌ No | `https://see-know.eu/api/v1` | Override endpoint (testing, proxy, alternative) |
+| `HUNTSMAN_SEEKNOW_BASE` | ❌ No | `https://see-know.ru/api/v1` | Override endpoint (testing, proxy, alternative) |
 | `HUNTSMAN_SEEKNOW_SCAN_CAP` | ❌ No | Auto-detected | Override per-scan budget (1–2500, useful for testing) |
 
 ### Example ~/.huntsman.env
 
 ```bash
-# Minimal (HSE auto-configures everything)
-export HUNTSMAN_SEEKNOW_KEY="seek-fdc8677a1c480a7bf59b866b81eda1f44b9944caf395c699"
+# Minimal. HSE embeds NO key of its own — this slot is required.
+# Replace the placeholder below with the key from your SeekNow dashboard.
+export HUNTSMAN_SEEKNOW_KEY="seek-REPLACE_WITH_YOUR_OWN_KEY"
 
 # Advanced (override per-scan budget for testing)
-export HUNTSMAN_SEEKNOW_KEY="seek-fdc8677a1c480a7bf59b866b81eda1f44b9944caf395c699"
+export HUNTSMAN_SEEKNOW_KEY="seek-REPLACE_WITH_YOUR_OWN_KEY"
 export HUNTSMAN_SEEKNOW_SCAN_CAP=100  # Limit to 100 credits per scan
 
 # Explicit endpoint (only if self-hosting or using an alternate mirror — rare)
-export HUNTSMAN_SEEKNOW_KEY="seek-fdc8677a1c480a7bf59b866b81eda1f44b9944caf395c699"
-export HUNTSMAN_SEEKNOW_BASE="https://see-know.eu/api/v1"
+export HUNTSMAN_SEEKNOW_KEY="seek-REPLACE_WITH_YOUR_OWN_KEY"
+export HUNTSMAN_SEEKNOW_BASE="https://see-know.ru/api/v1"
 ```
 
 ### File Permissions
@@ -210,7 +212,8 @@ HSE **automatically handles** these scenarios:
 |-------|-------|-----------|
 | **401 Unauthorized** | Invalid/expired API key | Logs "key invalid", disables SeekNow for scan |
 | **403 Forbidden** | Plan doesn't allow endpoint | Skips endpoint, continues with others |
-| **429 Rate Limited** | Quota exhausted or cooldown | Stops SeekNow, other modules continue |
+| **429 Rate Limited** (transient cooldown) | Short-lived rate limit, credits remain | Automatic backoff, request retried (up to 3x) |
+| **429 Quota Exhausted** (`credits_remaining: 0`) | Daily credit limit reached | Module stops for the scan, other modules continue |
 | **500 Server Error** | SeekNow internal error | Automatic retry (up to 3x with backoff) |
 | **Timeout (>78s)** | Slow search/network delay | Graceful degradation, logs timeout, continues |
 | **Connection Error** | Network/DNS/firewall issue | Retries with exponential backoff |
@@ -222,7 +225,7 @@ HSE **automatically handles** these scenarios:
 **Cause:** API key is wrong, expired, or account lacks a paid plan.
 
 **Fix:**
-1. Go to https://see-know.eu/account/dashboard
+1. Go to https://see-know.ru/account/dashboard
 2. Check **API Key Status** — should say "Active"
 3. If disabled/revoked, regenerate and update `~/.huntsman.env`
 4. Verify your plan is **Beginner or higher** (Free tier = dashboard only, no API access)
@@ -230,7 +233,7 @@ HSE **automatically handles** these scenarios:
 
 **Test manually:**
 ```bash
-curl -H "X-API-Key: seek-YOUR_KEY" https://see-know.eu/api/v1/credits
+curl -H "X-API-Key: seek-YOUR_KEY" https://see-know.ru/api/v1/credits
 # Expected: {"success":true,"plan":"premiumhq","credits_remaining":5000,...}
 ```
 
@@ -239,35 +242,38 @@ curl -H "X-API-Key: seek-YOUR_KEY" https://see-know.eu/api/v1/credits
 **Cause:** Daily credit limit reached (resets at midnight UTC).
 
 **Fix:**
-1. Check balance: `curl -H "X-API-Key: seek-..." https://see-know.eu/api/v1/credits`
+1. Check balance: `curl -H "X-API-Key: seek-..." https://see-know.ru/api/v1/credits`
 2. Credits reset **daily at midnight UTC** (shown in response: `resets_at`)
 3. For testing: `export HUNTSMAN_SEEKNOW_SCAN_CAP=50` to limit budget
-4. Upgrade your plan at https://see-know.eu/pricing
+4. Upgrade your plan at https://see-know.ru/pricing
 
-### "SeekNow: timeout" (takes >40s)
+### "SeekNow: timeout"
 
-**Cause:** Deep searches or name auto-detect queries are slow (server cap ~40s).
+**Cause:** two different server-side caps, depending on which endpoint is slow:
+- Name / auto-detect `/search` queries: server cap **~55s**, routinely takes
+  50–60s with real data — this is normal, not a problem.
+- `/search/deep` queries: server cap **~40s**.
 
 **Fix:**
-1. HSE timeout budget: 75s curl + 78s tokio (exceeds server cap)
-2. If search takes >40s, it's the server (not HSE) hitting its limit
-3. Retry the scan (transient slow response)
-4. Use `--depth 1` to reduce query volume
+1. HSE's own timeout budget is well above either cap (75s curl + 78s tokio, 80s
+   module max), so a timeout means the *server* hit its own limit, not HSE's.
+2. Retry the scan (transient slow response)
+3. Use `--depth 1` to reduce query volume
 
 ### "Connection refused" or DNS lookup failed
 
-**Cause:** Network unreachable, firewall blocking `see-know.eu`, or DNS resolver issues.
+**Cause:** Network unreachable, firewall blocking `see-know.ru`, or DNS resolver issues.
 
 **Fix:**
 ```bash
 # Test connectivity
-curl -H "X-API-Key: seek-..." https://see-know.eu/api/v1/status
+curl -H "X-API-Key: seek-..." https://see-know.ru/api/v1/status
 
 # Check DNS
-nslookup see-know.eu
+nslookup see-know.ru
 
 # Check firewall (should respond)
-curl -I https://see-know.eu
+curl -I https://see-know.ru
 ```
 
 ### Service Status
@@ -275,7 +281,7 @@ curl -I https://see-know.eu
 Check upstream data source status anytime:
 
 ```bash
-curl -H "X-API-Key: seek-..." https://see-know.eu/api/v1/status
+curl -H "X-API-Key: seek-..." https://see-know.ru/api/v1/status
 # Response shows: snusbase, leakcheck, intelx, breachhub, etc. status
 ```
 
@@ -331,14 +337,16 @@ HUNTSMAN_SEEKNOW_KEY="seek-test-key-..." hse scan --kind email --value test@ex.c
 hse doctor
 ```
 
-**Expected output:**
+**Expected output** (the "SeekNow account" block in `hse doctor`'s report):
 ```
-✓ SeekNow: key present
-✓ SeekNow: quota probe successful
-✓ Plan: PremiumHQ, daily limit: 5000, scan cap: 250 credits/scan
-✓ Base URL: https://see-know.eu/api/v1
-✓ API Key: see-know.eu:seek-fdc8…c699 (fingerprinted, full secret hidden)
+SeekNow account:
+  api base: https://see-know.ru/api/v1
+  credits remaining: 4832/5000
 ```
+
+If the key is missing/invalid or the API is unreachable, this line instead
+reads `INVALID`, `UNREACHABLE`, or a schema-mismatch note — each with its
+own actionable next step.
 
 ### First Scan
 
@@ -385,9 +393,9 @@ see_know: budget remaining: 249
 Phase 1 (Paid, Sequential Priority)
   255: SeekNow (discovers keys, emails, infrastructure)
    ↓ (discovered keys unlock downstream modules)
-  200: OathNet Pro (overlapping coverage, complementary corpus)
-  190: Shodan (if API key found)
-  180: Censys (if API key found)
+  127: OathNet Pro (overlapping coverage, complementary corpus)
+  105: Shodan (if API key found)
+   78: Censys (if API key found)
    
 Phase 2 (Free Expansion, Unlimited Parallelism)
   ↓ (on every new Domain, Email, IP entity)
@@ -404,7 +412,7 @@ Phase 2 (Free Expansion, Unlimited Parallelism)
 1. Discovers most entity types in one call
 2. Returns potential API keys early
 3. Feeds keys to unlock downstream paid modules
-4. Its 18 wired endpoints give overlapping coverage with OathNet (separate data sources)
+4. Its 19 wired endpoints give overlapping coverage with OathNet (separate data sources)
 
 ### The Force-Multiplication Loop
 
@@ -505,22 +513,26 @@ hse scan --kind email --value admin@mycompany.com --depth 3 --full
 **Q: Can I use SeekNow without OathNet Pro?**
 - Yes, SeekNow is standalone
 - OathNet Pro is optional (overlapping data, separate quota)
-- SeekNow's 18 wired endpoints provide broad coverage alone
+- SeekNow's 19 wired endpoints provide broad coverage alone
 
 **Q: Are my API keys kept secret?**
 - ✅ Keys stored in `~/.huntsman.env` only (local disk)
 - ✅ Never logged to console or scan results
-- ✅ Only transmitted to see-know.eu over HTTPS
+- ✅ Only transmitted to see-know.ru over HTTPS
 - ✅ Key fingerprinting (head…tail) used in results, never full secret
 - ✅ Per-module isolation (each module gets only its own key)
 
-**Q: I've seen both `.eu` and `.icu` mentioned for SeekNow — which should I use?**
-- **Use `.eu`** — it's the vendor's own stated domain (HSE default) and what
-  their live site's own generated exports name as their platform
+**Q: I've seen `.eu`, `.icu`, and `.ru` mentioned for SeekNow — which does HSE use?**
+- **HSE defaults to `.ru`** — `https://see-know.ru/api/v1` is the built-in
+  default (`DEFAULT_BASE` in `src/util/see_know/client.rs`) and what every
+  example in this guide uses; this is what you get unless you override it
+- `.eu` is the vendor's own stated domain and what their live site's own
+  generated exports name as their platform — override with
+  `HUNTSMAN_SEEKNOW_BASE=https://see-know.eu/api/v1` if you have a specific
+  reason to (proxy, testing, or you'd rather use the vendor-stated host)
 - `.icu` has been observed failing to resolve via DNS on some real-world
   networks/carriers (a common failure mode for that TLD's abuse reputation)
-  even when it happens to be reachable from others — prefer `.eu`
-- HSE automatically uses `https://see-know.eu/api/v1`
+  even when it happens to be reachable from others — avoid it
 
 **Q: How do I disable SeekNow temporarily?**
 ```bash

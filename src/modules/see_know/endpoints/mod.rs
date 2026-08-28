@@ -15,7 +15,7 @@
 use futures::future::join_all;
 use serde_json::Value;
 
-use crate::core::error::Result;
+use crate::core::error::{Error, Result};
 use crate::core::scan::TargetKind;
 use crate::util::see_know;
 
@@ -37,6 +37,7 @@ use super::pivots::{looks_like_discord_id, looks_like_steam_id};
 /// (`util::see_know::endpoints::RATE_LIMIT_BACKOFF`) are the rate limiters.
 /// Kept as a named constant for documentation and in case a future env-flag
 /// wants to restore conservative mode.
+#[allow(dead_code)]
 const FREE_COVERED_SINGLE_ORIGIN: &[EndpointCall] = &[
     EndpointCall::GithubProfile,
     EndpointCall::TwitterProfile,
@@ -55,14 +56,94 @@ const FREE_COVERED_SINGLE_ORIGIN: &[EndpointCall] = &[
 /// a single-operator deployment) means every endpoint that adds platform-
 /// specific profile depth or breach context should fire. Budget caps bound
 /// total spend; platform-presence filtering no longer does.
-pub(super) fn effective_plan(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
-    plan_endpoints(kind, value)
+pub(super) fn effective_plan(kind: TargetKind, value: &str, scan_id: &str) -> Vec<EndpointCall> {
+    order_by_roi(plan_endpoints(kind, value), target_type_str(kind), scan_id)
+}
+
+/// Map a target kind to the value scorer's `target_type` discriminator so the
+/// hit-rate/coverage dimensions score against the right column.
+fn target_type_str(kind: TargetKind) -> &'static str {
+    match kind {
+        TargetKind::Email => "email",
+        TargetKind::Username => "username",
+        TargetKind::Phone => "phone",
+        TargetKind::IpAddress => "ip",
+        TargetKind::Domain => "domain",
+        TargetKind::FullName => "name",
+        _ => "",
+    }
+}
+
+/// Order a per-target plan by ROI (value ÷ effective-cost), highest first —
+/// the live realisation of the High-Value Query System. The SET of endpoints is
+/// unchanged (so credit totals and every membership guarantee hold); only the
+/// order changes, which matters solely for budget-cut tiebreaks — high-yield
+/// endpoints now run first automatically instead of by a hand-maintained list.
+///
+/// The data-log feedback loop is closed here: endpoints that have historically
+/// produced data for this operator (`data_log::yield_counts`) get a saturating
+/// boost, so a repeat scan favours what has actually paid off before.
+/// `scan_id` scopes `yield_counts`' per-scan memoization — this runs once per
+/// seed, so without it a scan touching hundreds of seeds would re-read and
+/// re-parse the on-disk log hundreds of times over for the same answer.
+fn order_by_roi(plan: Vec<EndpointCall>, target_type: &str, scan_id: &str) -> Vec<EndpointCall> {
+    if plan.len() < 2 {
+        return plan;
+    }
+    use super::query_optimizer::cost_analyzer::CostAnalyzer;
+    use super::query_optimizer::roi_router::RoiRouter;
+    use super::query_optimizer::value_scorer::ValueScorer;
+
+    let scorer = ValueScorer::new();
+    let coster = CostAnalyzer::new();
+    let router = RoiRouter::new();
+    let yields = see_know::data_log::yield_counts(scan_id);
+
+    // Neutral budget/time: budget-pressure and time-stress are identical for
+    // every endpoint in one plan, so they cannot change RELATIVE order — the
+    // ordering is purely value/cost plus the historical-yield feedback.
+    const NEUTRAL_TIME_SECS: u32 = 3600;
+    const NEUTRAL_BUDGET: u32 = 1000;
+    const PLAN_LATENCY_MS: u32 = 15_000;
+
+    let mut scored: Vec<(EndpointCall, f32)> = plan
+        .into_iter()
+        .map(|call| {
+            let path = call.canonical_path();
+            let value = scorer
+                .calculate_composite_value(&path, target_type, None, 0.8)
+                .composite;
+            let cost = coster
+                .calculate_effective_cost(
+                    &path,
+                    1,
+                    None,
+                    PLAN_LATENCY_MS,
+                    NEUTRAL_TIME_SECS,
+                    NEUTRAL_BUDGET,
+                )
+                .effective_cost;
+            let mut roi = router.calculate_roi(value, cost);
+            // Saturating yield boost (1 prior hit ≈ +7%, 10 ≈ +24%): a
+            // tiebreaker that rewards proven endpoints without letting history
+            // dominate the value/cost signal.
+            if let Some(&hits) = yields.get(path.as_str()) {
+                roi *= 1.0 + (hits as f32).ln_1p() * 0.1;
+            }
+            (call, roi)
+        })
+        .collect();
+
+    // Stable sort: equal-ROI endpoints keep plan_endpoints' order, preserving
+    // the discord/steam ID-resolution prepend for ties.
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.into_iter().map(|(call, _)| call).collect()
 }
 
 /// True if `call` is a platform-presence check that SeekNow covers at
 /// platform-profile depth. Retained for documentation and future policy
 /// control; not used by [`effective_plan`].
-#[allow(dead_code)]
+#[expect(dead_code)]
 fn is_free_covered_single_origin(call: EndpointCall) -> bool {
     FREE_COVERED_SINGLE_ORIGIN.contains(&call)
 }
@@ -119,9 +200,9 @@ fn plan_endpoints(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
     }
 }
 
-/// Dispatch every endpoint in `plan` concurrently. Returns
-/// `(endpoint_name, items)` pairs in plan order so downstream
-/// extractors stay deterministic.
+/// Dispatch every endpoint in `plan` concurrently. Returns one
+/// [`EndpointOutcome`] per call, in plan order so downstream extractors stay
+/// deterministic, plus the first hard failure observed.
 ///
 /// Budget enforcement happens inside each endpoint helper at the
 /// `util::see_know` layer — both the response cache and the
@@ -130,19 +211,88 @@ fn plan_endpoints(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
 /// that suppressed legitimate cached calls when the scan was near
 /// (but not at) its budget. Letting the util layer enforce the
 /// budget restores that free corroboration.
+///
+/// The returned `Option<Error>` feeds [`ModuleResult::or_hard_failure`], this
+/// repo's shared rule for a module with independent concurrent sub-fetches: keep
+/// every entity any sub-fetch produced, but if the plan yielded NOTHING and a
+/// sub-fetch genuinely failed, surface that error rather than a silent empty
+/// success. This previously used `unwrap_or_default()`, which discarded the
+/// typed error entirely — so an endpoint that had exhausted its retries against
+/// a 5xx/429/timeout returned an empty vec indistinguishable from "this endpoint
+/// legitimately had no data", and the caller's `if !items.is_empty()` trace
+/// guard suppressed even a debug line. A per-endpoint warning is emitted too, so
+/// a PARTIAL outage (which `or_hard_failure` deliberately tolerates, because
+/// real evidence arrived from elsewhere) is still diagnosable.
+///
+/// Deliberately does NOT go through the shared [`super::fold_endpoint_result`]
+/// (`(&'static str, Vec<Value>)`, used by `pivots::dispatch_discord_pivots` /
+/// `dispatch_steam_pivots`): those two callers destructure a plain tuple and
+/// changing the shared function's return type would ripple into both,
+/// unrelated to this dispatcher. Each [`EndpointOutcome`] carries its own
+/// `failed` flag so a caller can tell "this endpoint legitimately found
+/// nothing" from "this endpoint's call failed" per-entry — the distinction the
+/// tuple form cannot make, and which [`seeknow_never_answered`] in the parent
+/// module depends on to count exactly how many of the dispatched calls failed.
+///
+/// [`ModuleResult::or_hard_failure`]: crate::core::module::ModuleResult::or_hard_failure
+/// [`seeknow_never_answered`]: super::seeknow_never_answered
 pub(super) async fn dispatch_plan(
     key: &str,
     value: &str,
     plan: &[EndpointCall],
-) -> Vec<(&'static str, Vec<Value>)> {
+) -> (Vec<EndpointOutcome>, Option<Error>) {
     let futures = plan.iter().copied().map(|call| {
         let value_owned = value.to_string();
-        async move {
-            let items = call.invoke(key, &value_owned).await.unwrap_or_default();
-            (call.label(), items)
-        }
+        async move { (call.label(), call.invoke(key, &value_owned).await) }
     });
-    join_all(futures).await
+
+    let mut first_failure = None;
+    let out = join_all(futures)
+        .await
+        .into_iter()
+        .map(|(label, outcome)| match outcome {
+            Ok(items) => EndpointOutcome {
+                label,
+                items,
+                failed: false,
+            },
+            Err(e) => {
+                // Mirrors `fold_endpoint_result`'s diagnostic exactly, so a
+                // partial outage here is just as visible in logs as one going
+                // through the shared pivot dispatchers.
+                tracing::warn!(
+                    endpoint = label,
+                    error = %e,
+                    "see_know endpoint failed — contributed nothing to this seed"
+                );
+                first_failure.get_or_insert(e);
+                EndpointOutcome {
+                    label,
+                    items: Vec::new(),
+                    failed: true,
+                }
+            }
+        })
+        .collect();
+    (out, first_failure)
+}
+
+/// What one dispatched endpoint actually did.
+///
+/// Carrying `failed` alongside the rows is the whole point: `.unwrap_or_default()`
+/// used to collapse a throttled or unreachable endpoint into the same empty
+/// vector a genuinely-empty answer produces, so an 18-endpoint fan-out could be
+/// blanked by a rate-limit burst and still be recorded as a clean, successful
+/// scan that simply found nothing. The upstream layer takes care to distinguish
+/// `RateLimited` from exhausted credits; that classification was being discarded
+/// at this one boundary.
+pub(super) struct EndpointOutcome {
+    /// The endpoint's short label, as used in evidence and tracing.
+    pub(super) label: &'static str,
+    /// The rows it returned. Empty when it failed.
+    pub(super) items: Vec<Value>,
+    /// True when the call itself failed, as opposed to answering with nothing.
+    pub(super) failed: bool,
 }
 
 /// Enum of SeekNow endpoints the module can target. Centralising them
@@ -189,8 +339,12 @@ impl EndpointCall {
             Self::XboxProfile => ("xbox", "gaming/xbox", "gamertag"),
             Self::MinecraftProfile => ("minecraft", "gaming/minecraft", "username"),
             Self::SteamProfile => ("steam", "gaming/steam", "id"),
-            Self::DiscordUser => ("discord_user", "discord/user", "id"),
-            Self::DiscordToRoblox => ("discord_to_roblox", "discord/to-roblox", "id"),
+            // The PUBLIC Discord endpoints take `?discord_id=` per the SeekNow
+            // contract — only the /enterprise/discord/* endpoints use `?id=`.
+            // Sending `id` here left the required param unset, so every lookup
+            // 400'd / returned nothing.
+            Self::DiscordUser => ("discord_user", "discord/user", "discord_id"),
+            Self::DiscordToRoblox => ("discord_to_roblox", "discord/to-roblox", "discord_id"),
             Self::PhoneInfo => ("phone_info", "network/phone", "phone"),
             Self::IpInfo => ("ip_info", "network/ip", "ip"),
             Self::DomainIntel => ("domain_intel", "domain/intel", "domain"),
@@ -202,6 +356,13 @@ impl EndpointCall {
     /// endpoint-specific geo extractors (e.g. WHOIS registrant fields).
     fn label(self) -> &'static str {
         self.spec().0
+    }
+
+    /// Canonical API path (`/{path}`) — the key shared by the value/cost
+    /// registry (`query_optimizer::types`) and the on-device data-log store, so
+    /// ROI ordering and yield feedback line up with what actually gets called.
+    fn canonical_path(self) -> String {
+        format!("/{}", self.spec().1)
     }
 
     async fn invoke(self, key: &str, value: &str) -> Result<Vec<Value>> {

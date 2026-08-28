@@ -52,15 +52,13 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::core::{
-    entity::{Entity, Evidence},
+    confidence,
+    entity::Evidence,
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::http::RequestBuilderExt;
-use crate::util::http::error_snippet;
-
 pub(crate) const KEY_ENV: &str = "HUNTSMAN_INTELX_KEY";
 pub(crate) const BASE: &str = "https://2.intelx.io";
 pub(crate) const MAX_RESULTS: u32 = 50;
@@ -144,6 +142,28 @@ pub(crate) fn bucket_family(bucket: &str) -> &str {
     bucket.split('.').next().unwrap_or(bucket)
 }
 
+/// The earliest date across the **leaks-family** records — the breach's temporal
+/// anchor — or `None` unless `earned_breach` (the search actually earned the
+/// BREACH tag: a leaks-family, non-text-search hit). Kept distinct from the
+/// all-bucket `latest_record`, which includes paste/darknet mentions that are
+/// not the leak itself. **Pure.** ISO-8601 dates sort lexicographically, so the
+/// string `min` is the earliest.
+pub(crate) fn earliest_breach_date(records: &[Record], earned_breach: bool) -> Option<&str> {
+    if !earned_breach {
+        return None;
+    }
+    records
+        .iter()
+        .filter(|r| {
+            r.bucket
+                .as_deref()
+                .is_some_and(|b| bucket_family(b) == "leaks")
+        })
+        .filter_map(|r| r.date.as_deref())
+        .filter(|s| !s.is_empty())
+        .min()
+}
+
 /// The tags a set of bucket source-families warrants for a search, given whether
 /// the search ran as an **unscoped text query**. **Pure**, deterministic (input
 /// is an ordered `BTreeSet`).
@@ -174,29 +194,6 @@ pub(crate) fn exposure_tags(
         }
     }
     out
-}
-
-/// Signal on the seed entity when the accumulated record count hit
-/// [`MAX_RESULTS`] — the server-side cap IntelX enforces via `maxresults` in
-/// the Phase-1 body and `limit` in the Phase-2 result URL. **Pure**. Unlike
-/// the sibling precedent fixes (sanctions_ofac/comb_search/virustotal), the
-/// TRUE total match count is unavailable here: the result URL hard-codes
-/// `statistics=0` and `ResultResp` carries no total field, so the only
-/// available signal is a boolean — the record count reached the ceiling,
-/// meaning surplus matches may exist beyond what was fetched. No-op when the
-/// count is strictly below the cap.
-fn mark_records_truncation(entity: &mut Entity, record_count: usize) {
-    if (record_count as u32) < MAX_RESULTS {
-        return;
-    }
-    entity.tag("truncated");
-    entity.add_evidence(
-        Evidence::new(
-            SRC,
-            format!("IntelX record count reached the {MAX_RESULTS}-result cap"),
-        )
-        .with_attr("records_capped", "true"),
-    );
 }
 
 /// The Intelligence X selector a target kind maps to, or `None` for a kind
@@ -232,13 +229,20 @@ impl Module for IntelX {
         "intelx"
     }
     fn description(&self) -> &'static str {
-        "Intelligence X selector search across breach, paste, and darknet data"
+        "Intelligence X selector search — sweeps breach, paste, and darknet corpora to surface a selector's footprint"
     }
     fn priority(&self) -> u8 {
         116
     }
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid
+    }
+    fn cache_ttl_secs(&self) -> u64 {
+        // IntelX's leak/archive corpus is immutable once indexed — the same
+        // stable-within-24h C9 bracket as the sibling paid modules. Persisting
+        // the derived entities lets a repeat scan replay an already-purchased
+        // selector for FREE instead of re-spending a paid lookup.
+        86_400
     }
     fn accepts(&self, t: &Target) -> bool {
         // Derived from the single-sourced selector map so coverage stays in one
@@ -258,8 +262,9 @@ impl Module for IntelX {
     fn attack_techniques(&self) -> &'static [&'static str] {
         // Breach default covers Credentials (T1589.001) + Email Addresses
         // (T1589.002). IntelX also surfaces real-name Person entities →
-        // T1589.003 Employee Names, which the Breach default omits.
-        &["T1589.001", "T1589.002", "T1589.003"]
+        // T1589.003 Employee Names, which the Breach default omits — and is a
+        // paid, closed intelligence archive → T1597.002 Purchase Technical Data.
+        &["T1589.001", "T1589.002", "T1589.003", "T1597.002"]
     }
 
     fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
@@ -283,7 +288,7 @@ impl Module for IntelX {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) {
+        let initial_key = match ctx.key_opt(KEY_ENV) {
             Some(k) => k,
             None => return Ok(ModuleResult::new()),
         };
@@ -305,35 +310,31 @@ impl Module for IntelX {
             "media": 0,
             "terminate": []
         });
-        let mut retries = 0u32;
-        let start: StartResp = loop {
-            let resp = ctx
-                .http
-                .post(format!("{BASE}/intelligent/search"))
-                .header("x-key", key)
-                .header("Accept", "application/json")
-                .json(&body)
-                .send_tagged(SRC)
-                .await?;
-            let status = resp.status();
-            if status.is_success() {
-                break crate::util::http::json_decode(SRC, resp).await?;
-            }
-            let code = status.as_u16();
-            if code == 429 && retries < 2 {
-                // 15s module budget across search + poll phases: cap each
-                // backoff at 4s so two retries can't exhaust process()'s timeout.
-                let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 4, 4);
-                retries += 1;
-                tokio::time::sleep(Duration::from_secs(retry_secs)).await;
-                continue;
-            }
-            crate::util::http::note_keyed_error(code, SRC, key, ctx);
-            return Err(Error::module(
-                "intelx",
-                format!("HTTP {status} on start: {}", error_snippet(resp).await),
-            ));
+        // Key cascade via the shared primitive (T2: keyed-API consolidation) —
+        // START phase only. A dead/rate-limited key on the search start rotates
+        // to the next usable pooled IntelX key and restarts the search, so one
+        // process() call spends every credential the pool holds before failing.
+        // The cascade CANNOT extend to the poll/terminate phases: the returned
+        // `search_id` is bound to the account that started the search, so those
+        // phases must stay on whichever key won here — `keyed_cascade_with_key`
+        // (not the plain `keyed_cascade`) hands back that winning key for
+        // exactly this reason. `absent_statuses: &[]`: every non-2xx here is
+        // either a retryable 429 (handled inside the primitive, same 2-retry/
+        // 4s-cap budget this loop used before) or a real failure — there is no
+        // "no results" status for a search *start*.
+        let Some((resp, key)) =
+            crate::util::http::keyed_cascade_with_key(ctx, SRC, initial_key, &[], |k| {
+                ctx.http
+                    .post(format!("{BASE}/intelligent/search"))
+                    .header("x-key", k)
+                    .header("Accept", "application/json")
+                    .json(&body)
+            })
+            .await?
+        else {
+            return Ok(ModuleResult::new());
         };
+        let start: StartResp = crate::util::http::json_decode(SRC, resp).await?;
         let search_id = match (start.id, start.status) {
             (Some(id), Some(0) | None) if !id.is_empty() => id,
             (_, Some(1)) => return Ok(ModuleResult::new()), // invalid term
@@ -361,7 +362,7 @@ impl Module for IntelX {
             let resp = match ctx
                 .http
                 .get(&result_url)
-                .header("x-key", key)
+                .header("x-key", &key)
                 .header("Accept", "application/json")
                 .send()
                 .await
@@ -377,7 +378,7 @@ impl Module for IntelX {
                     tokio::time::sleep(Duration::from_secs(retry_secs)).await;
                 }
                 if code != 429 || poll_retries >= 2 {
-                    crate::util::http::note_keyed_error(code, SRC, key, ctx);
+                    crate::util::http::note_keyed_error(code, SRC, &key, ctx);
                 }
                 continue;
             }
@@ -402,12 +403,31 @@ impl Module for IntelX {
                 .get(format!(
                     "{BASE}/intelligent/search/terminate?id={search_id}"
                 ))
-                .header("x-key", key)
+                .header("x-key", &key)
                 .send()
                 .await;
         }
 
         if all_records.is_empty() {
+            // Phase 1 already fails closed on a rejected search. Phase 2 must too:
+            // every arm of the poll loop above `continue`s past its failure, so a dead
+            // key, an exhausted quota or POLL_ATTEMPTS worth of 429s all arrive here
+            // with nothing accumulated and `finished` still false. Returning an empty
+            // result there reads as "no breach, leak, paste or darknet record exists
+            // for this subject" from a keyed breach source — the most consequential
+            // false clean this engine can produce. A terminal state (2 finished, 3
+            // none-available) IS an authoritative empty and stays one.
+            //
+            // Cancellation is excluded: the caller stopped the work and already knows
+            // why, so an error there is noise rather than a finding.
+            if !finished && !ctx.cancel.is_cancelled() {
+                return Err(Error::module(
+                    SRC,
+                    format!(
+                        "search {search_id} never reached a terminal state within {POLL_ATTEMPTS} polls"
+                    ),
+                ));
+            }
             return Ok(ModuleResult::new());
         }
 
@@ -417,7 +437,11 @@ impl Module for IntelX {
         // rides at lead strength and withholds the exposure tags (see
         // `exposure_tags`) rather than asserting a breach at full confidence.
         let is_text_search = intelx_selector(target.kind) == Some("text");
-        let confidence = if is_text_search { 0.55 } else { 0.86 };
+        let confidence = if is_text_search {
+            confidence::MEDIUM_HIGH
+        } else {
+            0.86
+        };
         let mut entity = target.to_entity(confidence, &ctx.scan_id);
         entity.tag("intelx");
         entity.tag(tags::EXTERNAL);
@@ -477,6 +501,14 @@ impl Module for IntelX {
 
         let latest = all_records.iter().filter_map(|r| r.date.as_deref()).max();
 
+        // When this entity actually earned the BREACH tag (a leaks-family,
+        // non-text-search hit), stamp the EARLIEST leaks-family record date as a
+        // dedicated breach_date — a truer temporal anchor for the leak than
+        // latest_record, which spans every bucket (paste/darknet mentions
+        // included).
+        let breach_date =
+            earliest_breach_date(&all_records, entity.has_tag(crate::core::tags::BREACH));
+
         let match_kind = if is_text_search {
             " (unvalidated text match)"
         } else {
@@ -500,12 +532,10 @@ impl Module for IntelX {
         if let Some(d) = latest {
             ev = ev.with_attr("latest_record", d);
         }
+        if let Some(d) = breach_date {
+            ev = ev.with_attr("breach_date", d);
+        }
         entity.add_evidence(ev);
-
-        // IntelX's own hit-count total is unavailable (statistics=0), so a
-        // record count that hit MAX_RESULTS is the only available signal that
-        // surplus matches may exist beyond what was fetched.
-        mark_records_truncation(&mut entity, all_records.len());
 
         let mut result = ModuleResult::new();
         result.push(entity);

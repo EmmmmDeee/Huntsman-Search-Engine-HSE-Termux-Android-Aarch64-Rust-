@@ -333,10 +333,11 @@ fn distinct_sources(secret: &Entity) -> BTreeSet<String> {
 /// a first-class `Password` entity alike, so a leaked plaintext password drives
 /// the link directly; the corroborating unique sources are named in the finding.
 pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Classify every secret up front; bail before any further work if none link.
     let secrets: Vec<(&Entity, Secret)> = entities
         .iter()
@@ -376,15 +377,15 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
         let emails: BTreeSet<String> = secret
             .evidence
             .iter()
-            .filter_map(|ev| ev.attributes.get("email"))
-            .map(|v| v.trim().to_lowercase())
+            .flat_map(|ev| ev.attr_values("email"))
+            .map(str::to_lowercase)
             .filter(|v| v.contains('@'))
             .collect();
         let usernames: BTreeSet<String> = secret
             .evidence
             .iter()
-            .filter_map(|ev| ev.attributes.get("username"))
-            .map(|v| v.trim().to_lowercase())
+            .flat_map(|ev| ev.attr_values("username"))
+            .map(str::to_lowercase)
             .filter(|v| !v.is_empty())
             .collect();
 
@@ -497,10 +498,11 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
 /// its owner knows, a household / shared machine is a real — if rare — confound,
 /// so the link sits one tier below the reused-secret proof.
 pub(in crate::core::correlator) fn rule_au_106_shared_device_identity(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // A fingerprint shorter than this is a short/generic hostname, not a hardware
     // id, and must never link people (hwid/machine_id GUIDs are far longer).
     const MIN_FP_LEN: usize = 12;
@@ -550,15 +552,15 @@ pub(in crate::core::correlator) fn rule_au_106_shared_device_identity(
         let emails: BTreeSet<String> = dev
             .evidence
             .iter()
-            .filter_map(|ev| ev.attributes.get("email"))
-            .map(|v| v.trim().to_lowercase())
+            .flat_map(|ev| ev.attr_values("email"))
+            .map(str::to_lowercase)
             .filter(|v| v.contains('@'))
             .collect();
         let usernames: BTreeSet<String> = dev
             .evidence
             .iter()
-            .filter_map(|ev| ev.attributes.get("username"))
-            .map(|v| v.trim().to_lowercase())
+            .flat_map(|ev| ev.attr_values("username"))
+            .map(str::to_lowercase)
             .filter(|v| !v.is_empty())
             .collect();
         // Distinct controller HANDLES (email local-part or username, separator-
@@ -606,25 +608,11 @@ pub(in crate::core::correlator) fn rule_au_106_shared_device_identity(
 }
 
 pub(in crate::core::correlator) fn rule_au_001_multi_breach(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    const BREACH_SOURCES: &[&str] = &[
-        "hudsonrock",
-        "xposed_or_not",
-        "breach_directory",
-        "dehashed",
-        "hibp",
-        "oathnet_pro",
-        "emailrep",
-        // NOTE: the generic `search_engines` source is deliberately NOT listed.
-        // A web-search hit is not breach corroboration, and counting it would let
-        // one real breach + one search result fire a false Critical. (An earlier
-        // `search_engines:oathnet` entry was dead — the module emits the plain
-        // `search_engines` source — so it was removed rather than "fixed" to
-        // `search_engines`, which would introduce exactly that false positive.)
-    ];
+    let entities = context.entities();
     let mut out = Vec::new();
     for e in entities_of_kind(entities, EntityKind::Email) {
         // A role / provider mailbox (abuse@, noreply@, dns@, …) appears in breach
@@ -636,9 +624,23 @@ pub(in crate::core::correlator) fn rule_au_001_multi_breach(
         if crate::core::validation::is_role_mailbox(&e.value) {
             continue;
         }
-        let sources = tagged_matching_sources(e, BREACH_SOURCES);
-        if sources.len() >= 2 {
-            let mut names: Vec<&str> = sources.into_iter().collect();
+        // Independence-filtered (corroborating_sources, not raw evidence_sources)
+        // sources the canonical `source_family` classifies "breach" — not a
+        // hand-maintained allow-list, which drifted: it never grew to cover
+        // intelx/comb_search/psbdmp/niamonx/osintcat/see_know/pwned_passwords/
+        // leakix even though `source_family` (pinned by its own regression test,
+        // `source_family_covers_every_breach_category_module`) has classified
+        // every one of them "breach" all along, and it carried a dead
+        // `"breach_directory"` literal matching no real module. Deriving from
+        // `source_family` means this can never drift from it again, and
+        // `search_engines` (family "search") stays excluded for free — no
+        // special-case needed.
+        let sources = e
+            .corroborating_sources()
+            .into_iter()
+            .filter(|s| source_family(s) == "breach");
+        let mut names: Vec<&str> = sources.collect();
+        if names.len() >= 2 {
             names.sort_unstable();
             out.push(Correlation::new(
                 "AU-001",
@@ -660,12 +662,23 @@ pub(in crate::core::correlator) fn rule_au_001_multi_breach(
 }
 
 pub(in crate::core::correlator) fn rule_au_009_stealer_log(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    entities_of_kind_with_tag(entities, EntityKind::Email, "stealer-log")
-        .into_iter()
+    let entities = context.entities();
+    entities
+        .iter()
+        // `stealer-log` (niamonx, hudsonrock via tags::STEALER_LOG) and
+        // `stealer` (oathnet_pro::stealer's push_stealer_entity/
+        // push_oathnet_entity, see_know's stealer extraction -- this
+        // codebase's two richest stealer-log extraction paths) are two
+        // distinct literals both meaning "seen in an infostealer log dump".
+        // Checking only the former silently missed both.
+        .filter(|e| {
+            e.kind == EntityKind::Email
+                && (e.has_tag(crate::core::tags::STEALER_LOG) || e.has_tag("stealer"))
+        })
         .map(|e| Correlation {
             rule_id: "AU-009".into(),
             rule_name: "Stealer-log compromise".into(),
@@ -680,16 +693,31 @@ pub(in crate::core::correlator) fn rule_au_009_stealer_log(
 }
 
 pub(in crate::core::correlator) fn rule_au_019_temporal_breach_cluster(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let mut breach_dates: Vec<(&Entity, &str)> = Vec::new();
     for e in entities {
         if !e.has_tag("breach") {
             continue;
         }
         for ev in &e.evidence {
+            // The entity-level `breach` tag is not enough on its own: a domain
+            // genuinely breach-tagged by one source (e.g. `seon`'s
+            // `breach_domain_entity`) can ALSO merge in a Certificate-Transparency
+            // module's evidence (`certspotter`/`crtsh`/`cert_intel`, none of them
+            // breach sources) if the same domain is independently discovered
+            // during the engine's normal pivot expansion. Those CT modules are the
+            // only producers of `not_before` — a routine TLS certificate issuance
+            // date — so without this gate a domain's unrelated cert renewal could
+            // supply a fabricated third member of a "coordinated compromise"
+            // cluster. Mirrors the `is_breach_source` gate every sibling rule in
+            // `breach_pii.rs` applies.
+            if !is_breach_source(&ev.source) {
+                continue;
+            }
             for field in ["breach_date", "not_before", "earliest_record", "date"] {
                 if let Some(d) = ev.attributes.get(field)
                     && let Some(day) = d.get(..10)
@@ -754,10 +782,11 @@ pub(in crate::core::correlator) fn rule_au_019_temporal_breach_cluster(
 }
 
 pub(in crate::core::correlator) fn rule_au_021_api_key_exposure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::ApiKey)
@@ -792,10 +821,11 @@ pub(in crate::core::correlator) fn rule_au_021_api_key_exposure(
 /// rank as `unrated`, still counted. Critical when any high-criticality key is
 /// present, else High. One summary finding per scan.
 pub(in crate::core::correlator) fn rule_au_095_exposed_key_portfolio(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::BTreeMap;
 
     fn tag_suffix<'a>(e: &'a Entity, prefix: &str) -> Option<&'a str> {
@@ -900,33 +930,90 @@ pub(in crate::core::correlator) fn rule_au_095_exposed_key_portfolio(
     )]
 }
 
-/// AU-096 — OSINT practitioner (holds recon/breach/threat-intel API keys).
+/// AU-096 — OSINT practitioner (holds recon/breach/threat-intel provider access).
 ///
-/// A harvested key for an OSINT provider — Shodan, Dehashed, IntelX, Maltego,
-/// Hunter, … — is more than a credential: by possession its owner *runs OSINT*.
-/// The harvester tags such keys `osint-practitioner` + `osint-category:<slug>`
-/// (classified by `util::osint_providers`). This rule reads those tags
-/// and surfaces the attribution: the subject is an OSINT operator, with the
-/// provider list and the tradecraft categories (breach-hunting vs attack-surface
-/// mapping vs people-search …) that the key portfolio reveals.
+/// A harvested credential for an OSINT provider — Shodan, Dehashed, IntelX,
+/// Maltego, Hunter, … — is more than a leaked secret: by possession its owner
+/// *runs OSINT*. The harvester tags such artifacts `osint-practitioner` +
+/// `osint-category:<slug>` (classified by `util::osint_providers`) on **both**
+/// entity kinds that carry provider access — the [`EntityKind::ApiKey`] path
+/// (`emit_key_with`) and the leaked-login [`EntityKind::Credential`] path
+/// (`store_api_credential`). This rule reads those tags across both and surfaces
+/// the attribution: the subject is an OSINT operator, with the provider list and
+/// the tradecraft categories (breach-hunting vs attack-surface mapping vs
+/// people-search …) that the portfolio reveals. A leaked account login to a
+/// provider is as strong an operator signal as an API key for it, so both count.
 ///
-/// This is the pivot the operator asked for — the key's *provider* is the
-/// intelligence, not the secret it contains; the key is never used to
-/// authenticate. Severity High (a strong, specific attribution): a single OSINT
-/// key is a lead, several across categories is a profile. One finding per scan.
+/// This is the pivot the operator asked for — the provider is the intelligence,
+/// not the secret it contains; nothing here is used to authenticate. Severity
+/// High (a strong, specific attribution) requires subject-ownership grounding
+/// (item 25) — [`osint_key_is_subject_grounded`] — since the universal harvester
+/// also mints these artifacts from crawled pages, wayback snapshots, search
+/// results, and public source code that the subject never possessed. An
+/// ungrounded artifact still surfaces as a Medium tradecraft lead rather than
+/// being silently dropped, but is never worded as subject possession.
 pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
+
+    // Both provider-access kinds carry the pivot tags: a harvested ApiKey and a
+    // leaked login Credential for the same provider are equal practitioner
+    // evidence. The `osint-practitioner` tag is only ever stamped on these two
+    // kinds, so the tag filter alone is sufficient — but the kind guard keeps the
+    // intent explicit and pins it if the tag is ever reused elsewhere.
+    let (grounded, ungrounded): (Vec<&Entity>, Vec<&Entity>) = entities
+        .iter()
+        .filter(|e| {
+            matches!(e.kind, EntityKind::ApiKey | EntityKind::Credential)
+                && e.has_tag("osint-practitioner")
+        })
+        .partition(|e| osint_key_is_subject_grounded(e));
+
+    [
+        au096_finding(&grounded, true, scan_id, ts),
+        au096_finding(&ungrounded, false, scan_id, ts),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// Subject-ownership grounding for a harvested OSINT-provider artifact (item
+/// 25), used by [`rule_au_096_osint_practitioner`]. An artifact's mere
+/// presence in a scan is NOT possession: the universal harvester surfaces
+/// keys found in crawled pages, wayback snapshots, search results and public
+/// source code — none of which the subject owns or controls. An artifact is
+/// attributable to the subject only when it was observed in the subject's OWN
+/// compromised data — a breach or stealer-log record — which is exactly the
+/// possession standard AU-037 (leaked passwords/credentials) and AU-009
+/// (stealer-log) already apply. Grounding is: at least one evidence entry
+/// whose source is a breach/stealer source.
+fn osint_key_is_subject_grounded(e: &Entity) -> bool {
+    e.evidence
+        .iter()
+        .any(|ev| super::breach_pii::is_breach_source(&ev.source))
+}
+
+/// Build one AU-096 finding over `keys` — the shared shape
+/// [`rule_au_096_osint_practitioner`] uses for the grounded (subject-
+/// possession) and ungrounded (unassigned-lead) partitions. `None` for an
+/// empty partition.
+fn au096_finding(keys: &[&Entity], grounded: bool, scan_id: &str, ts: u64) -> Option<Correlation> {
     use std::collections::{BTreeMap, BTreeSet};
+
+    if keys.is_empty() {
+        return None;
+    }
 
     let mut providers: BTreeSet<&str> = BTreeSet::new();
     // category slug → distinct providers in it, for a tradecraft breakdown.
     let mut by_category: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     let mut uids: Vec<String> = Vec::new();
 
-    for e in entities_of_kind_with_tag(entities, EntityKind::ApiKey, "osint-practitioner") {
+    for e in keys {
         let provider = e
             .tags
             .iter()
@@ -942,10 +1029,6 @@ pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
         uids.push(e.uid.clone());
     }
 
-    if providers.is_empty() {
-        return Vec::new();
-    }
-
     let tradecraft = by_category
         .iter()
         .map(|(cat, provs)| {
@@ -957,21 +1040,43 @@ pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
         .collect::<Vec<_>>()
         .join("; ");
 
-    vec![Correlation::new(
-        "AU-096",
-        "OSINT practitioner (recon-tool API keys)",
-        Severity::High,
+    let description = if grounded {
         format!(
-            "Subject holds {} OSINT/recon-provider API key(s) across {} provider(s) — by \
-             possession an OSINT practitioner. Tradecraft: {tradecraft}. The provider is the \
-             pivot (tooling, intent); keys are catalogued, not used.",
+            "Subject holds {} OSINT/recon-provider credential(s) (API keys and/or leaked \
+             logins) across {} provider(s), observed in the subject's own breach/stealer data \
+             — by possession an OSINT practitioner. Tradecraft: {tradecraft}. The provider is \
+             the pivot (tooling, intent); artifacts are catalogued, not used.",
             uids.len(),
             providers.len()
-        ),
+        )
+    } else {
+        format!(
+            "{} OSINT/recon-provider credential(s) across {} provider(s) surfaced in this scan \
+             (crawled pages, wayback snapshots, search results, or public source — NOT the \
+             subject's own compromised data), so this is a tradecraft lead pending ownership \
+             grounding, not a subject attribution. Tradecraft: {tradecraft}.",
+            uids.len(),
+            providers.len()
+        )
+    };
+
+    Some(Correlation::new(
+        "AU-096",
+        if grounded {
+            "OSINT practitioner (recon-provider access)"
+        } else {
+            "OSINT recon-tool key (unassigned lead)"
+        },
+        if grounded {
+            Severity::High
+        } else {
+            Severity::Medium
+        },
+        description,
         uids,
         scan_id,
         ts,
-    )]
+    ))
 }
 
 /// AU-037 — Plaintext credential exposure.
@@ -985,10 +1090,11 @@ pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
 /// leaked, and reports only COUNTS — the raw secret values stay in the entities
 /// (full-fidelity policy) and are never copied into correlation text.
 pub(in crate::core::correlator) fn rule_au_037_credential_exposure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // One pass: collect the capped secret uids and tally passwords-vs-credentials
     // together, instead of filtering the whole entity list three times.
     let mut secret_uids: Vec<String> = Vec::new();
@@ -997,6 +1103,11 @@ pub(in crate::core::correlator) fn rule_au_037_credential_exposure(
     for e in entities {
         match e.kind {
             EntityKind::Password => passwords += 1,
+            // A published SSH/PGP public key (github_user/pgp mint these to
+            // feed AU-048's cross-account key-sharing link) is not a breach
+            // secret -- its private half is definitionally not "directly
+            // recoverable". Same exclusion AU-048 itself already applies.
+            EntityKind::Credential if e.has_tag("ssh-key") || e.has_tag("pgp-key") => continue,
             EntityKind::Credential => credentials += 1,
             _ => continue,
         }
@@ -1054,10 +1165,11 @@ pub(in crate::core::correlator) fn rule_au_037_credential_exposure(
 /// a public-exposure signal that corroborates breach findings. `Medium`. One
 /// grouped firing over all paste URLs.
 pub(in crate::core::correlator) fn rule_au_043_paste_exposure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let uids: Vec<String> = entities_of_kind_with_tag(
         entities,
         EntityKind::Url,
@@ -1094,10 +1206,11 @@ pub(in crate::core::correlator) fn rule_au_043_paste_exposure(
 /// names the dual-pathway, giving the operator an unambiguous remediation
 /// directive that AU-021 (single-source) cannot provide.
 pub(in crate::core::correlator) fn rule_au_082_api_key_dual_pathway(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::ApiKey)
@@ -1142,6 +1255,7 @@ pub(in crate::core::correlator) fn rule_au_082_api_key_dual_pathway(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::entity::Evidence;
 
     // ── is_salted_hash ────────────────────────────────────────────────────────
@@ -1224,8 +1338,8 @@ mod tests {
 
     #[test]
     fn classify_admits_wallet_and_api_key_unconditionally() {
-        let wallet = Entity::new(EntityKind::CryptoAddress, "0xabc", 0.5, "s");
-        let api = Entity::new(EntityKind::ApiKey, "sk-xyz", 0.5, "s");
+        let wallet = Entity::new(EntityKind::CryptoAddress, "0xabc", confidence::MEDIUM, "s");
+        let api = Entity::new(EntityKind::ApiKey, "sk-xyz", confidence::MEDIUM, "s");
         assert!(matches!(
             Secret::classify(&wallet),
             Some(Secret::WalletAddress)
@@ -1235,7 +1349,12 @@ mod tests {
 
     #[test]
     fn classify_routes_salted_hash_password_to_salted_hash() {
-        let e = Entity::new(EntityKind::Password, "$2a$10$abcdefghijklmnop", 0.5, "s");
+        let e = Entity::new(
+            EntityKind::Password,
+            "$2a$10$abcdefghijklmnop",
+            confidence::MEDIUM,
+            "s",
+        );
         assert!(matches!(Secret::classify(&e), Some(Secret::SaltedHash)));
     }
 
@@ -1243,7 +1362,7 @@ mod tests {
     fn classify_session_token_requires_tag_and_shape() {
         let token = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6";
         // With the session-token provenance tag → SessionToken.
-        let mut tagged = Entity::new(EntityKind::Credential, token, 0.5, "s");
+        let mut tagged = Entity::new(EntityKind::Credential, token, confidence::MEDIUM, "s");
         tagged.tag("session-token");
         assert!(matches!(
             Secret::classify(&tagged),
@@ -1251,13 +1370,18 @@ mod tests {
         ));
         // Same value, no tag: the hex shape is an unsalted-digest lookalike, so it
         // is NOT admitted as a plaintext password → None.
-        let untagged = Entity::new(EntityKind::Credential, token, 0.5, "s");
+        let untagged = Entity::new(EntityKind::Credential, token, confidence::MEDIUM, "s");
         assert!(Secret::classify(&untagged).is_none());
     }
 
     #[test]
     fn classify_reusable_plaintext_password_is_admitted() {
-        let e = Entity::new(EntityKind::Password, "correcthorse", 0.5, "s");
+        let e = Entity::new(
+            EntityKind::Password,
+            "correcthorse",
+            confidence::MEDIUM,
+            "s",
+        );
         let c = Secret::classify(&e).expect("rare plaintext password links");
         assert!(c.is_plaintext_password());
         assert_eq!(c.label(), "password");
@@ -1265,9 +1389,9 @@ mod tests {
 
     #[test]
     fn classify_rejects_non_credential_kinds_and_weak_passwords() {
-        let email = Entity::new(EntityKind::Email, "a@b.com", 0.5, "s");
+        let email = Entity::new(EntityKind::Email, "a@b.com", confidence::MEDIUM, "s");
         assert!(Secret::classify(&email).is_none());
-        let weak = Entity::new(EntityKind::Password, "123456", 0.5, "s");
+        let weak = Entity::new(EntityKind::Password, "123456", confidence::MEDIUM, "s");
         assert!(Secret::classify(&weak).is_none());
     }
 
@@ -1275,7 +1399,7 @@ mod tests {
 
     #[test]
     fn distinct_sources_unions_attrs_splits_lists_and_drops_sentinels() {
-        let mut e = Entity::new(EntityKind::Password, "$2a$10$x", 0.5, "s");
+        let mut e = Entity::new(EntityKind::Password, "$2a$10$x", confidence::MEDIUM, "s");
         e.add_evidence(Evidence::new("oathnet", "hit").with_attr("dbname", "LinkedIn"));
         e.add_evidence(
             Evidence::new("dehashed", "hit").with_attr("top_databases", "Adobe, MySpace, unknown"),

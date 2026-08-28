@@ -154,3 +154,126 @@ fn the_system_can_find_itself_in_its_own_text() {
         "found its own repo URL"
     );
 }
+
+#[test]
+fn extract_trims_trailing_prose_punctuation_from_urls() {
+    let out = extract(
+        "Contact us at https://example.org/a, or see https://example.org/b. Mirror: https://example.org/c; end.",
+    );
+    let urls: Vec<&str> = out
+        .iter()
+        .filter(|c| c.kind == EntityKind::Url)
+        .map(|c| c.value.as_str())
+        .collect();
+    assert_eq!(
+        urls,
+        vec![
+            "https://example.org/a",
+            "https://example.org/b",
+            "https://example.org/c"
+        ]
+    );
+    assert!(
+        urls.iter()
+            .all(|u| !u.ends_with([',', '.', ';', ':', '!', '?', ')'])),
+        "no trailing prose punctuation: {urls:?}"
+    );
+}
+
+#[test]
+fn trim_url_punctuation_is_idempotent_and_keeps_the_scheme() {
+    for suffix in ["", ".", ",", ";", ":", "!", "?", ").", ",,,"] {
+        let s = format!("https://example.org/path{suffix}");
+        let once = trim_url_punctuation(&s);
+        assert_eq!(trim_url_punctuation(once), once, "idempotent for {s:?}");
+        assert!(once.starts_with("https://"), "scheme kept for {s:?}");
+    }
+}
+
+// ── extract(): span claiming — no seed may be carved out of another value ──────
+
+/// The digits of a hex digest are real; the phone number built from them is not.
+/// `DIGITS_RE` needs only seven digits and cannot see what it is cutting into, so before the
+/// claim mask this text yielded exactly one "entity": the actionable `Phone` 9800998, a value
+/// appearing nowhere in the input — while the hash itself was not extracted at all.
+#[test]
+fn does_not_mine_a_phone_number_out_of_a_hash() {
+    let out = extract("Hash d41d8cd98f00b204e9800998ecf8427e was logged.");
+    assert!(
+        !out.iter().any(|c| c.kind == EntityKind::Phone),
+        "fabricated a phone number from a digest's digits: {out:?}"
+    );
+}
+
+/// An email's LOCAL PART is domain-shaped, so an unguarded `DOMAIN_RE` pass mined
+/// `chloe.clarke` out of `chloe.clarke@example.com` and reported it as a domain.
+#[test]
+fn does_not_mine_a_domain_out_of_an_email_local_part() {
+    let out = extract("Contact chloe.clarke@example.com today.");
+    assert!(
+        out.iter().any(|c| c.kind == EntityKind::Email),
+        "the email itself must still be found: {out:?}"
+    );
+    assert!(
+        !out.iter().any(|c| c.value == "chloe.clarke"),
+        "mined an email local part into a domain: {out:?}"
+    );
+}
+
+/// `IPV4_RE` matches the network part of a CIDR block, silently reporting a /24 as a single
+/// host — a different network object than the one written down.
+#[test]
+fn a_cidr_is_not_re_emitted_as_a_bare_host() {
+    let out = extract("Net 198.51.100.0/24 is allocated.");
+    assert!(
+        out.iter().any(|c| c.kind == EntityKind::Cidr && c.value == "198.51.100.0/24"),
+        "the CIDR must be extracted whole: {out:?}"
+    );
+    assert!(
+        !out.iter().any(|c| c.value == "198.51.100.0"),
+        "re-emitted a CIDR's network part as a bare host: {out:?}"
+    );
+}
+
+/// The claim mask must suppress re-mining without suppressing genuine values: a real phone
+/// number has no letters and is not a fragment of anything.
+#[test]
+fn a_genuine_phone_number_survives_the_claim_guard() {
+    let out = extract("Call +61 2 5550 0143 tomorrow.");
+    assert!(
+        out.iter().any(|c| c.kind == EntityKind::Phone),
+        "the claim guard suppressed a real phone number: {out:?}"
+    );
+}
+
+/// The token pass asks the authoritative detector directly, so shapes no locator has a regex
+/// for — an IPv6 literal, a CIDR, a crypto address, an AS number — stop being invisible.
+#[test]
+fn the_token_pass_finds_shapes_no_locator_covers() {
+    let out = extract(
+        "Server 2001:db8::1, net 198.51.100.0/24, AS15169, \
+         wallet 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa.",
+    );
+    for want in [
+        EntityKind::IpAddress,
+        EntityKind::Cidr,
+        EntityKind::Asn,
+        EntityKind::CryptoAddress,
+    ] {
+        assert!(
+            out.iter().any(|c| c.kind == want),
+            "{want:?} not extracted: {out:?}"
+        );
+    }
+}
+
+/// The token pass must stop at `STRUCTURAL_FLOOR`: run down to the residual floor and every
+/// word of a sentence becomes a `Username` seed.
+#[test]
+fn prose_words_do_not_become_username_seeds() {
+    let out = extract("the quick brown fox jumps over the lazy dog");
+    assert!(
+        out.is_empty(),
+        "ordinary prose minted seeds: {out:?}"
+    );
+}

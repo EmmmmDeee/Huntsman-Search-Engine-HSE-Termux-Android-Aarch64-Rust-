@@ -29,7 +29,7 @@ use super::*;
     #[test]
     fn bare_postcode_resolves() {
         // Capital-city postcodes resolve via the fallback table.
-        let (lat, lon) = city_coords("4000").unwrap();
+        let (lat, lon) = city_coords("4000").expect("should succeed");
         assert!((lat - -27.4698).abs() < 0.01);
         assert!((lon - 153.0251).abs() < 0.01);
         assert!(city_coords("3000").is_some());
@@ -157,7 +157,7 @@ use super::*;
             "7250 resolves to exact Launceston, not the region centroid"
         );
         // And it is meaningfully tighter than the region fallback for 72xx.
-        let (rlat, rlon) = au_postcode_region("7250").unwrap();
+        let (rlat, rlon) = au_postcode_region("7250").expect("should succeed");
         assert!(
             haversine_km(lat, lon, -41.4388, 147.1347)
                 < haversine_km(rlat, rlon, -41.4388, 147.1347),
@@ -305,4 +305,85 @@ use super::*;
         assert!(mentions_non_au_country(
             "10 queen st, smalltown, new zealand 4310"
         ));
+    }
+
+    #[test]
+    fn au_address_never_resolves_to_a_foreign_homonym() {
+        use crate::util::geo::is_in_australia;
+        // liverpool/portland/wellington are tabulated ONLY with their overseas
+        // coordinates; an AU address naming the state + postcode must resolve in
+        // Australia (via the postcode fallback), not to the foreign homonym.
+        for a in [
+            "Liverpool, NSW 2170",
+            "Portland, VIC 3305",
+            "Wellington, NSW 2820",
+        ] {
+            let p = city_coords(a).unwrap_or_else(|| panic!("{a} should resolve"));
+            assert!(is_in_australia(p.0, p.1), "{a} -> {p:?} (expected AU)");
+        }
+        assert_eq!(city_coords("Liverpool, NSW 2170"), city_coords("2170"));
+    }
+
+    #[test]
+    fn bare_nz_city_with_a_four_digit_postcode_stays_in_new_zealand() {
+        use crate::util::geo::is_in_australia;
+        // NZ postcodes are 4 digits and overlap AU numeric ranges (6011 falls in
+        // the WA range, 1010 in NSW, 8011 in VIC). A bare "City NNNN" with NO
+        // country word and NO explicit AU state token must keep its correct
+        // tabulated NZ coordinate — an in-range AU postcode ALONE is not proof of
+        // Australia. Regression: keying `names_au_locality` on the postcode alone
+        // suppressed the NZ homonym and redirected these to AU (WA/NSW/VIC).
+        for (a, want) in [
+            ("Wellington 6011", (-41.2865, 174.7762)),
+            ("Auckland 1010", (-36.8485, 174.7633)),
+            ("Christchurch 8011", (-43.5321, 172.6362)),
+        ] {
+            let p = city_coords(a).unwrap_or_else(|| panic!("{a} should resolve"));
+            assert!(!is_in_australia(p.0, p.1), "{a} -> {p:?} (must stay in NZ)");
+            assert_eq!(p, want, "{a} must resolve to its tabulated NZ coordinate");
+        }
+    }
+
+    #[test]
+    fn foreign_address_with_an_ambiguous_state_code_is_unchanged() {
+        use crate::util::geo::is_in_australia;
+        // WA = Washington State here, not Western Australia: no AU postcode, no
+        // "australia" — the foreign homonym must still win.
+        let p = city_coords("Seattle, WA 98101").expect("seattle resolves");
+        assert!(!is_in_australia(p.0, p.1), "Seattle must stay in the US: {p:?}");
+        assert!(city_coords("London, UK").is_some());
+    }
+
+    #[test]
+    fn tabulated_au_city_still_wins_over_the_postcode_fallback() {
+        // A genuine AU tabulated row must not be gated out by the AU-place check.
+        assert_eq!(city_coords("Newcastle, NSW 2300"), Some((-32.9283, 151.7817)));
+    }
+
+    #[test]
+    fn is_tabulated_au_city_matches_exact_multi_word_names_only() {
+        assert!(is_tabulated_au_city("gold coast"));
+        assert!(is_tabulated_au_city("brisbane"));
+        // Exact-match, case-sensitive by design — callers lowercase first, same
+        // as every other lookup in this module.
+        assert!(!is_tabulated_au_city("Gold Coast"));
+        // Tabulated, but not Australian — CITIES also carries representative
+        // overseas cities for the free-text city_coords() lookup.
+        assert!(!is_tabulated_au_city("new york"));
+        // An arbitrary phrase, and a superset of a real name, must not match.
+        assert!(!is_tabulated_au_city("smith gold coast"));
+        assert!(!is_tabulated_au_city("nowhere special"));
+    }
+
+    #[test]
+    fn is_tabulated_au_city_recognises_port_macquarie() {
+        // Discovered mid-merge (2026-08-26): a concurrent session's own OD-18
+        // fix (correlator::rules::geo::profile::extract_ratemyagent_suburb)
+        // names "Port Macquarie" as one of four target markets the defect
+        // must resolve, and its own provenance notes explicitly recorded this
+        // gap and deliberately deferred it as a separate gazetteer-coverage
+        // question. Closed here instead: a genuinely major NSW mid-north-coast
+        // town (~90k population) is a two-line, zero-risk addition. Added
+        // alongside the other NSW regional entries.
+        assert!(is_tabulated_au_city("port macquarie"));
     }

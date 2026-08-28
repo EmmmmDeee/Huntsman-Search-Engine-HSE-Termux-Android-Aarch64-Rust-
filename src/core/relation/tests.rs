@@ -30,6 +30,11 @@ fn relation_kind_as_str_matches_serde() {
         RelationKind::SameOperator,
         RelationKind::SameIdentity,
         RelationKind::SharesSecretWith,
+        RelationKind::EmployedBy,
+        RelationKind::OfficerOf,
+        RelationKind::MemberOf,
+        RelationKind::ControlledBy,
+        RelationKind::OperatedBy,
     ];
     for &k in EVERY {
         // Compile-time tripwire: NO `_` arm.
@@ -48,16 +53,21 @@ fn relation_kind_as_str_matches_serde() {
             | RelationKind::SameAs
             | RelationKind::SameOperator
             | RelationKind::SameIdentity
-            | RelationKind::SharesSecretWith => {}
+            | RelationKind::SharesSecretWith
+            | RelationKind::EmployedBy
+            | RelationKind::OfficerOf
+            | RelationKind::MemberOf
+            | RelationKind::ControlledBy
+            | RelationKind::OperatedBy => {}
         }
-        let json = serde_json::to_string(&k).unwrap();
+        let json = serde_json::to_string(&k).expect("should succeed");
         let tag = json.trim_matches('"');
         assert_eq!(tag, k.as_str(), "as_str vs serde: {k:?}");
         assert_eq!(k.to_string(), k.as_str(), "Display vs as_str: {k:?}");
-        let back: RelationKind = serde_json::from_str(&json).unwrap();
+        let back: RelationKind = serde_json::from_str(&json).expect("should succeed");
         assert_eq!(back, k, "serde round-trip: {k:?}");
     }
-    assert_eq!(EVERY.len(), 15, "one entry per RelationKind variant");
+    assert_eq!(EVERY.len(), 20, "one entry per RelationKind variant");
 }
 use crate::core::entity::{Entity, EntityKind};
 
@@ -255,19 +265,23 @@ fn entity_with_attr(
 fn shared_selector_links_domains_by_shared_registrant() {
     // The synthetic corporate → hidden-subsidiary archetype: two domains the engine
     // found separately, tied by one registrant email already sitting in their evidence.
+    // A personal-looking local part, deliberately NOT a role mailbox
+    // (admin@/support@/…) — is_proxy_registrant treats those as infrastructure,
+    // not an individuating registrant, which would make this fixture assert
+    // nothing once the proxy/infra-email guard applies here too.
     let a = entity_with_attr(
         EntityKind::Domain,
         "company-a.com",
         0.7,
         "registrant_email",
-        "admin@holdco.com",
+        "jane.doe@holdco.com",
     );
     let b = entity_with_attr(
         EntityKind::Domain,
         "company-b.com",
         0.6,
         "registrant_email",
-        "admin@holdco.com",
+        "jane.doe@holdco.com",
     );
     let edges = derive_shared_selector(&[a, b], "s");
     assert_eq!(edges.len(), 1, "shared registrant ⇒ one affiliation edge");
@@ -327,6 +341,36 @@ fn shared_selector_skips_crowded_privacy_proxy_values() {
     assert!(
         derive_shared_selector(&ents, "s").is_empty(),
         "a crowd-shared registrant proxy mints no edges"
+    );
+}
+
+#[test]
+fn shared_selector_skips_an_uncrowded_privacy_proxy_registrant() {
+    // Regression: the crowd test above only exercises AFFILIATION_CROWD_CAP —
+    // 7 members already exceeds the cap regardless of the org's proxy status.
+    // The narrower, previously-unguarded case: just TWO unrelated domains that
+    // happen to share one privacy-proxy registrant — well under the crowd cap,
+    // so only a dedicated is_proxy_registrant check (the guard
+    // derive_co_ownership's Source A already applies) can catch it.
+    // `derive_shared_selector` must not assert these two domains are
+    // affiliated purely because they share a registration-privacy vendor.
+    let a = entity_with_attr(
+        EntityKind::Domain,
+        "unrelated-a.example",
+        0.6,
+        "registrant_org",
+        "WhoisGuard, Inc.",
+    );
+    let b = entity_with_attr(
+        EntityKind::Domain,
+        "unrelated-b.example",
+        0.6,
+        "registrant_org",
+        "WhoisGuard, Inc.",
+    );
+    assert!(
+        derive_shared_selector(&[a, b], "s").is_empty(),
+        "an uncrowded privacy-proxy registrant must not assert an affiliation"
     );
 }
 
@@ -1030,6 +1074,30 @@ fn registration_dedups_repeated_registrant() {
     );
 }
 
+#[test]
+fn registration_links_domain_to_registrant_person() {
+    use crate::core::entity::Evidence;
+    // whois folds the registrant NAME into the domain evidence and emits the
+    // registrant as a Person entity — the human registrant must be linked to the
+    // domain (RegisteredBy), not left an orphan. No org/email here, so this also
+    // covers the early-return guard now admitting a Person-only registrant.
+    let mut dom = Entity::new(EntityKind::Domain, "example.com", 0.92, "rel-scan");
+    dom.add_evidence(
+        Evidence::new("whois", "WHOIS for example.com")
+            .with_attr("registrant_name", "Jordan Avery")
+            .with_attr("registrar", "MarkMonitor Inc."),
+    );
+    let person = ent(EntityKind::Person, "Jordan Avery", 0.72);
+    let rels = derive_registration(&[dom.clone(), person.clone()], "s");
+    assert_eq!(rels.len(), 1, "domain -> registrant person");
+    assert_eq!(rels[0].kind, RelationKind::RegisteredBy);
+    assert_eq!(rels[0].from_uid, dom.uid, "edge originates at the domain");
+    assert_eq!(
+        rels[0].to_uid, person.uid,
+        "edge targets the registrant person"
+    );
+}
+
 // ── Identity relations ───────────────────────────────────────────────────────
 
 #[test]
@@ -1056,6 +1124,28 @@ fn handles_alias_shared_persona_across_platforms() {
     let ids: Vec<&str> = rels.iter().map(|r| r.id.as_str()).collect();
     let ids2: Vec<&str> = again.iter().map(|r| r.id.as_str()).collect();
     assert_eq!(ids, ids2);
+}
+
+#[test]
+fn role_mailboxes_do_not_alias_across_organisations() {
+    // Regression: role / shared mailboxes (`info`, `support`, …) share a local
+    // part across unrelated orgs but are NOT one persona. `persona_key` rejects
+    // them via the canonical `is_generic_handle`, so `derive_handles` draws no
+    // `AliasOf` edge that would fuse two organisations into one identity cluster.
+    let a = ent(EntityKind::Email, "info@redcross.org.au", 0.7);
+    let b = ent(EntityKind::Email, "info@some-corp.com", 0.7);
+    let c = ent(EntityKind::Email, "support@alpha.com", 0.7);
+    let d = ent(EntityKind::Email, "support@beta.com", 0.7);
+    assert!(
+        derive_handles(&[a, b, c, d], "s").is_empty(),
+        "generic role mailboxes must not alias across unrelated organisations"
+    );
+
+    // A genuine shared handle still aliases — the guard is specific to the
+    // generic-token taxonomy, not a blanket suppression.
+    let g1 = ent(EntityKind::Email, "jsmith@gmail.com", 0.7);
+    let g2 = ent(EntityKind::Email, "jsmith@outlook.com", 0.6);
+    assert_eq!(derive_handles(&[g1, g2], "s").len(), 1);
 }
 
 #[test]
@@ -1092,8 +1182,14 @@ fn identity_ownership_evidence_then_fingerprint() {
             "Person is the `from` (owner) endpoint"
         );
     }
-    let owned_edge = rels.iter().find(|r| r.to_uid == owned.uid).unwrap();
-    let fp_edge = rels.iter().find(|r| r.to_uid == fp.uid).unwrap();
+    let owned_edge = rels
+        .iter()
+        .find(|r| r.to_uid == owned.uid)
+        .expect("should succeed");
+    let fp_edge = rels
+        .iter()
+        .find(|r| r.to_uid == fp.uid)
+        .expect("should succeed");
     // Evidence edge carries full endpoint trust; fingerprint edge is damped.
     assert!((owned_edge.confidence - 0.6_f64.min(0.9)).abs() < 1e-9);
     assert!(
@@ -1223,6 +1319,28 @@ fn residency_links_person_to_place_by_owner_and_tag() {
         rels.iter()
             .any(|r| r.from_uid == subject.uid && r.to_uid == coord.uid),
         "exact-name-match place binds to the subject"
+    );
+}
+
+#[test]
+fn residency_does_not_bind_an_exact_name_match_place_when_two_subjects_are_present() {
+    // Regression: `hse import <dir>` can merge two DIFFERENT people's own prior
+    // scan exports (each independently subject-tagged) into one entity set.
+    // The exact-name-match tag carries no record of WHICH subject's name
+    // earned it, so with two subjects present, binding it to BOTH would
+    // fabricate a home address for whichever one it does not actually belong
+    // to. Alice's own address must not become "Bob's address" too.
+    let mut alice = ent(EntityKind::Person, "Alice Anderson", 0.8);
+    alice.tag("subject");
+    let mut bob = ent(EntityKind::Person, "Bob Baker", 0.8);
+    bob.tag("subject");
+    let mut addr = ent(EntityKind::Address, "1 Example St, QLD 4000", 0.5);
+    addr.tag("exact-name-match");
+
+    let rels = derive_residency(&[alice, bob, addr], "s");
+    assert!(
+        rels.is_empty(),
+        "an ambiguous exact-name-match place (2 subjects present) must bind no one, got: {rels:?}"
     );
 }
 
@@ -1367,7 +1485,10 @@ fn diegmann_family_connects_from_any_seed_angle() {
             adj.entry(&r.from_uid).or_default().push(&r.to_uid);
             adj.entry(&r.to_uid).or_default().push(&r.from_uid);
         }
-        let subject = ents.iter().find(|e| e.value == seed).unwrap();
+        let subject = ents
+            .iter()
+            .find(|e| e.value == seed)
+            .expect("should succeed");
         let mut reached = std::collections::HashSet::new();
         let mut stack = vec![subject.uid.as_str()];
         while let Some(u) = stack.pop() {
@@ -1767,4 +1888,42 @@ fn collapse_to_max_confidence_keeps_the_strongest_of_duplicate_edges() {
     // Deterministic first-occurrence order; the distinct a→c edge is untouched.
     assert_eq!(collapsed[0].to_uid, "b");
     assert_eq!(collapsed[1].to_uid, "c");
+}
+
+// ── provenance_chain (derivation trail) ─────────────────────────────────
+
+#[test]
+fn provenance_chain_walks_derivedfrom_back_to_the_root() {
+    // root ← child ← grand: each DerivedFrom points child → parent.
+    let rels = vec![
+        Relation::new("child", "root", RelationKind::DerivedFrom, 0.9, "s"),
+        Relation::new("grand", "child", RelationKind::DerivedFrom, 0.9, "s"),
+    ];
+    // From the deepest node the trail walks back to the seed root.
+    assert_eq!(
+        provenance_chain("grand", &rels),
+        vec!["grand", "child", "root"]
+    );
+    // A root (no parent edge) is its own single-element chain.
+    assert_eq!(provenance_chain("root", &rels), vec!["root"]);
+    // A non-DerivedFrom edge is ignored by the walk.
+    let noise = vec![Relation::new(
+        "grand",
+        "x",
+        RelationKind::HostedOn,
+        0.9,
+        "s",
+    )];
+    assert_eq!(provenance_chain("grand", &noise), vec!["grand"]);
+}
+
+#[test]
+fn provenance_chain_is_cycle_safe() {
+    // A pathological a↔b DerivedFrom cycle must terminate, not loop forever.
+    let rels = vec![
+        Relation::new("a", "b", RelationKind::DerivedFrom, 0.5, "s"),
+        Relation::new("b", "a", RelationKind::DerivedFrom, 0.5, "s"),
+    ];
+    // a → b → (a already seen → stop).
+    assert_eq!(provenance_chain("a", &rels), vec!["a", "b"]);
 }

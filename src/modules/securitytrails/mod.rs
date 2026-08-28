@@ -11,13 +11,12 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::RequestBuilderExt;
-use crate::util::http::handle_keyed_error;
 
 const KEY_ENV: &str = "HUNTSMAN_SECTRAILS_KEY";
 const SRC: &str = "securitytrails";
@@ -73,7 +72,7 @@ fn build_subdomain_entity(
         return None;
     }
     let host = format!("{sub}.{domain}");
-    let mut e = Entity::new(EntityKind::Domain, &host, 0.88, scan_id);
+    let mut e = Entity::new(EntityKind::Domain, &host, confidence::EXPERT, scan_id);
     e.tag("subdomain");
     e.tag("securitytrails");
     e.add_evidence(
@@ -103,7 +102,12 @@ fn build_associated_entity(
     {
         return None;
     }
-    let mut e = Entity::new(EntityKind::Domain, hostname, 0.82, scan_id);
+    let mut e = Entity::new(
+        EntityKind::Domain,
+        hostname,
+        confidence::CORROBORATED,
+        scan_id,
+    );
     e.tag("securitytrails");
     e.tag("reverse-ip");
     e.add_evidence(
@@ -148,7 +152,7 @@ impl Module for SecurityTrails {
         "securitytrails"
     }
     fn description(&self) -> &'static str {
-        "Subdomain enumeration and reverse IP lookup via SecurityTrails"
+        "SecurityTrails recon — enumerates subdomains and pivots via reverse IP lookup"
     }
     fn priority(&self) -> u8 {
         45
@@ -179,9 +183,8 @@ impl Module for SecurityTrails {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) {
-            Some(k) => k,
-            None => return Ok(ModuleResult::new()),
+        let Some(key) = ctx.key_opt(KEY_ENV) else {
+            return Ok(ModuleResult::new());
         };
 
         match target.kind {
@@ -204,7 +207,12 @@ impl SecurityTrails {
             return Ok(ModuleResult::new());
         }
         let url = format!("https://api.securitytrails.com/v1/domain/{domain}/subdomains");
-        let body: SubdomainResp = self.fetch_keyed(key, &url, ctx).await?;
+        // A 404 here is a genuine failure (the subdomains endpoint answers a
+        // real domain with 200 + an empty array, never a 404), so `absent_statuses`
+        // stays empty — unchanged from before this was migrated to `keyed_cascade`.
+        let Some(body): Option<SubdomainResp> = self.fetch_keyed(key, &url, &[], ctx).await? else {
+            return Ok(ModuleResult::new());
+        };
 
         let total = body.subdomain_count.unwrap_or(body.subdomains.len() as u64);
         let total_str = total.to_string();
@@ -231,12 +239,11 @@ impl SecurityTrails {
             "https://api.securitytrails.com/v1/ips/list?ipAddresses={}",
             crate::util::http::urlencode(ip),
         );
-        let body: AssociatedResp = match self.fetch_keyed(key, &url, ctx).await {
-            Ok(b) => b,
-            // fetch_keyed returns Err on 404 (no records for this IP);
-            // treat as an empty result rather than a module-level error.
-            Err(e) if e.to_string().contains("404") => return Ok(ModuleResult::new()),
-            Err(e) => return Err(e),
+        // A 404 means no associated domains for this IP — a clean absence, not
+        // an error (unlike `subdomain_search`'s endpoint; see `fetch_keyed`'s doc).
+        let Some(body): Option<AssociatedResp> = self.fetch_keyed(key, &url, &[404], ctx).await?
+        else {
+            return Ok(ModuleResult::new());
         };
 
         let mut result = ModuleResult::new();
@@ -249,39 +256,38 @@ impl SecurityTrails {
         Ok(result)
     }
 
+    /// Fetch and decode one SecurityTrails endpoint through the shared cascade
+    /// primitive (T2: keyed-API consolidation) — the retry/rotate/cancel loop
+    /// this used to hand-roll is now identical to what onyphe/threatfox/9+
+    /// other keyed modules share; only the request shape (`APIKEY` header,
+    /// GET) and the decode stay module-specific.
+    ///
+    /// `absent_statuses` differs by caller because the two SecurityTrails
+    /// endpoints disagree on what a 404 means: [`Self::subdomain_search`]
+    /// passes `&[]` (a subdomains 404 is a genuine failure, unchanged from
+    /// before), while [`Self::reverse_ip`] passes `&[404]` (no associated
+    /// domains for this IP is a clean absence, not an error) — see each
+    /// caller's own comment.
     async fn fetch_keyed<T: serde::de::DeserializeOwned>(
         &self,
         key: &str,
         url: &str,
+        absent_statuses: &[u16],
         ctx: &ModuleContext,
-    ) -> Result<T> {
-        let mut retries = 2u8;
-        loop {
-            if ctx.cancel.is_cancelled() {
-                return Err(Error::module(SRC, "cancelled"));
-            }
-            let resp = ctx
-                .http
+    ) -> Result<Option<T>> {
+        let Some(resp) = crate::util::http::keyed_cascade(ctx, SRC, key, absent_statuses, |k| {
+            ctx.http
                 .get(url)
-                .header("APIKEY", key)
+                .header("APIKEY", k)
                 .header("Accept", "application/json")
-                .send_tagged(SRC)
-                .await?;
-            let status = resp.status();
-            if status.as_u16() == 404 {
-                return Err(Error::module(SRC, "404 Not Found"));
-            }
-            if !status.is_success() {
-                let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
-                    continue;
-                }
-                return Err(crate::util::http::http_status_error(SRC, resp).await);
-            }
-            // Capped decode (32 MiB) — a raw `resp.json()` would buffer an
-            // unbounded body on the low-RAM Termux target.
-            return crate::util::http::json_decode(SRC, resp).await;
-        }
+        })
+        .await?
+        else {
+            return Ok(None);
+        };
+        // Capped decode (32 MiB) — a raw `resp.json()` would buffer an
+        // unbounded body on the low-RAM Termux target.
+        Ok(Some(crate::util::http::json_decode(SRC, resp).await?))
     }
 }
 

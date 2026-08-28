@@ -25,7 +25,7 @@ use super::*;
         // over-runs the trailing '.' (callers trim it) and stops at the space.
         let m = URL_RE
             .find("site https://paulgraham.com/bio.html. and more")
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(
             m.as_str().trim_end_matches(['.', ',', ')']),
             "https://paulgraham.com/bio.html"
@@ -142,6 +142,11 @@ use super::*;
             "user@host.c",
             "x@sub..example.com",
             "user@.example.com",
+            // Double-`@`: split_once('@') left `host@evil.com` as the host, whose TLD
+            // check passed — so a non-address was admitted though EMAIL_RE (whose host
+            // class allows no `@`) rejects it. The gate must not be more permissive.
+            "user@host@evil.com",
+            "a@b@c.com",
         ] {
             assert!(!looks_like_email(junk), "{junk:?} must be rejected");
         }

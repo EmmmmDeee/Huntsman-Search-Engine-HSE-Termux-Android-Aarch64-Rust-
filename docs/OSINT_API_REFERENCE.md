@@ -38,7 +38,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **LeakCheck** | breach lookups by email/user/domain | free public API + Pro | 40+ alnum | D |
 | **LeakPeek** | breach credential search | ltd | — | D |
 | **Leak-Lookup** | breach database search | key | 32 alnum | D |
-| **BreachDirectory** | breached account/credential search | ltd (RapidAPI) | RapidAPI key | K D |
+| **BreachDirectory** | breached account/credential search | ltd (RapidAPI) | RapidAPI key | M K D |
 | **Hudson Rock (Cavalier)** | **stealer-log / infostealer** infections by email/domain | free email/domain endpoints | — | M D |
 | **XposedOrNot** | breach exposure (free HIBP-style) | free | — | M D |
 | **Scattered Secrets** | breach + credential monitoring | paid | — | D |
@@ -47,7 +47,9 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **PSBDMP** | pastebin dump search | free/key | — | M D |
 | **GhostProject / Scylla / WeLeakInfo / HackCheck / Scrubd / NuclearLeaks** | breach/credential search (varied availability) | varies | — | D |
 | **OathNet** | unified breach + stealer (HSE multiplier) | keyed plan | login-gated | M K D |
-| **SeekNow (see-know.eu)** | unified breach + stealer + external (HSE multiplier) | keyed plan | login-gated | M K D |
+| **SeekNow (see-know.ru)** | unified breach + stealer + external (HSE multiplier) | keyed plan | login-gated | M K D |
+| **NiamonX** | concurrent PBS v1/v2 breach search + ULP infostealer lookup | keyed | opaque | M K D |
+| **OsintCat** | email footprint (100+ platforms), breach lookup, deep email OSINT | free preflight; paid deep search | `x-api-key` | M K D |
 | **IntelTechniques** | OSINT tooling / search tools | — | — | D |
 
 ## 2. Attack-surface / internet-wide host scanners
@@ -57,11 +59,11 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **Shodan** | host/port/banner/CVE, IoT, internet scan | ltd ($) | 32 alnum | M K D |
 | **Censys** | hosts, certs, services | basic free | API ID (UUID) + secret (32 alnum) / PAT | M K D |
 | **ZoomEye** | host/web fingerprint scan | ltd | 32 alnum / JWT | M K D |
-| **BinaryEdge** | host/port/exposure scan | ltd | UUID | K D |
+| **BinaryEdge** | host/port/exposure scan | ltd | UUID | M K D |
 | **FOFA** | cyberspace asset search | ltd | email + 32-hex key | K D |
 | **Netlas** | attack-surface / host & cert search | ltd | alnum | M K D |
 | **Onyphe** | cyber-defense / exposure data | ltd | UUID/alnum | M K D |
-| **FullHunt** | attack-surface management | ltd | alnum | K D |
+| **FullHunt** | attack-surface management | ltd | alnum | M K D |
 | **Criminal IP** | host/IP/domain attack-surface + risk | ltd | alnum | M K D |
 | **LeakIX** | indexed open services + leaks | free/key | base64url ~40 | M K D |
 | **Spyse** *(defunct→merged)* | host/cert/domain (legacy) | — | — | D |
@@ -76,19 +78,21 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **VirusTotal** | file/URL/domain/IP reputation | free (4/min) | 64 hex | M K D |
 | **AbuseIPDB** | IP abuse reports/score | free (1k/day) | 80 alnum | M K D |
 | **GreyNoise** | internet-scan noise / RIOT benign | community free | UUID / 32 alnum | M K D |
-| **Pulsedive** | indicator/threat enrichment | free | alnum | K D |
+| **Pulsedive** | indicator/threat enrichment | free | alnum | M K D |
 | **ThreatFox (abuse.ch)** | IOCs (malware, C2) | free | abuse.ch key | M K D |
 | **URLhaus (abuse.ch)** | malicious URL feed | free | — | M D |
+| **PhishTank** | phishing-URL verification feed/lookup | free | app key | D C |
 | **MalwareBazaar (abuse.ch)** | malware-sample intel | free | abuse.ch key | D |
+| **MalShare** | malware-sample repository (hash/source/filename search + download) | free (2k/day key) | alnum | D C |
 | **urlscan.io** | URL scan + screenshots + DOM | free | UUID | M K D |
-| **AlienVault OTX** | open threat exchange pulses | free | 64 hex | D C |
+| **AlienVault OTX** | open threat exchange pulses | free (keyless) | 64 hex | M K D |
 | **Hybrid Analysis** | sandbox malware reports | free (vetted) | 64 alnum | D C |
 | **ANY.RUN** | interactive sandbox | ltd | — | D C |
 | **Maltiverse** | IOC intelligence | free/key | JWT/alnum | D C |
 | **IBM X-Force Exchange** | threat intel | ltd | key + password | D C |
 | **PolySwarm** | malware intel marketplace | ltd | 32 hex | D C |
 | **ThreatMiner** | passive threat intel | free | — (no key) | D C |
-| **PassiveTotal (RiskIQ)** | passive DNS, WHOIS, infra intel | ltd | email + key | K D |
+| **PassiveTotal (RiskIQ)** | passive DNS, WHOIS, infra intel | ltd | email + key | M K D |
 
 ## 4. Email / identity / people search
 
@@ -98,8 +102,9 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **EmailRep** | email reputation/profile | free (ltd) | alnum | M K D |
 | **Epieos** | email→linked accounts (Google, etc.) | ltd | alnum | M K D |
 | **FullContact** | person/company enrichment | ltd | 32 alnum | M K D |
-| **Proxycurl** | LinkedIn person/company data | paid | alnum | M K D |
 | **Seon** | fraud/digital-footprint enrichment | trial | alnum | M K D |
+| **OpenSanctions** | sanctions/PEP/watchlist screening (incl. Australia's DFAT list) | free trial/nonprofit | alnum | M K D |
+| **OFAC (US Treasury)** | SDN + Consolidated sanctions-list screening | free | — (no key) | M D |
 | **Snov.io** | email finder/verify, drip | ltd | client id+secret | D C |
 | **Apollo.io** | B2B people/company | free (ltd) | alnum | D C |
 | **RocketReach** | contact lookup | ltd | alnum | D C |
@@ -127,8 +132,8 @@ light up, and (c) compare your own keys against what HSE will recognise.
 
 | Provider | What it gives | Free tier | Key shape | HSE |
 |---|---|---|---|---|
-| **IPinfo** | IP geo/ASN/company/privacy | 50k/mo | hex token | M K D |
-| **IP2Location** | IP geo (API + DB) | ltd | alnum | M K D |
+| **IPinfo** | IP geo/ASN/company/privacy | 50k/mo | hex token | M D |
+| **IP2Location** | IP geo (API + DB) | free (1k/day, keyless) | — | M D |
 | **ipgeolocation.io** | IP geo/timezone/astronomy | 1k/day | alnum | D C |
 | **ipstack** | IP geo | 100/mo | 32 hex | D C |
 | **ipdata** | IP geo + threat | 1.5k/day | alnum | D C |
@@ -146,12 +151,13 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **crt.sh** | certificate-transparency search | free | — | M |
 | **Certspotter / cert_intel** | cert transparency monitor | free/key | — | M |
 | **BuiltWith** | website tech profiling | ltd | alnum | K D |
-| **C99.nl** | multi-tool (subdomain, etc.) | key | alnum | K D |
+| **C99.nl** | multi-tool (subdomain, etc.) | key | alnum | M K D |
 | **Whoxy** | WHOIS + reverse WHOIS history | ltd | alnum | D C |
 | **DomainTools** | Iris WHOIS/DNS/infra | paid | api user + key | D C |
 | **ViewDNS.info** | DNS/WHOIS/reverse tools | ltd | alnum | D C |
-| **DNSDumpster / domainsdb** | subdomain/passive DNS | free | — | M(domainsdb) D |
+| **DNSDumpster / domainsdb** | subdomain/passive DNS | free / key-gated (domainsdb, 2026: anonymous access disabled) | domainsdb: alnum | M(domainsdb) K D |
 | **IP2WHOIS** | WHOIS lookup | free (500/mo) | alnum | D C |
+| **Mnemonic Passive DNS** | historical domain↔IP resolutions (forward + reverse), CNAME/MX/NS graph | free (keyless, TLP:WHITE) | — | M |
 | *(keyless)* **dns_intel / doh_resolver / dns_axfr / rdap_domain / whois** | DNS records, DoH, AXFR, RDAP, WHOIS | free | — | M |
 
 ## 8. Search / SERP / scraping (recon)
@@ -177,7 +183,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | *(keyless)* **social_probe / social_location / profile_kit** | profile presence, geo, dossier | free | — | M |
 | **GitHub / GitLab / Bitbucket / Gitea / Codeberg** | user/commit/code search | free + token | `ghp_`/`glpat-`/… | M K D |
 | **Reddit / Mastodon / Bluesky / Nostr / Fediverse** | social profile/post data | free/token | varies | M |
-| **Steam / gaming_profile / streaming_probe** | gaming & streaming identity | free/key | Steam key 32-hex | M |
+| **Steam / gaming_profile / chess_profile / streaming_probe** | gaming & streaming identity | free/key | Steam key 32-hex | M |
 | **Keybase / Gravatar / WikiData / Hacker News / Lobsters** | identity/avatar/knowledge | free | — | M |
 | **Social Links / Maltego / Lampyre / SpiderFoot HX** | commercial link-analysis platforms | paid | — | D C |
 | **Discord (snowflake) / discord token** | ID→timestamp; token detection | free | `discord` token | M D |
@@ -200,6 +206,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **WiGLE** | wifi/BT/cell wardriving DB | free (ltd) | API name + token | M K D |
 | **OpenCellID** | cell-tower geolocation | free key | alnum | M K D |
 | **Unwired Labs / Mylnikov** | cell/wifi geolocation | ltd/free | alnum | M(mylnikov) D |
+| **macaddress.io** | MAC OUI/vendor lookup, VM-interface detection | free (key) | alnum | D C |
 | **Google/Combain geolocation** | wifi/cell→position | paid | `AIza…`/key | C |
 | *(keyless)* **mls / cell_intel / wifi_intel** | offline cell/wifi context | free | — | M |
 
@@ -221,7 +228,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **ACMA RRL** | radio/spectrum licences | M |
 | **AEC / au_electoral** | electoral roll signals | M |
 | **au_property / qld_cadastre / au_unclaimed** | property, cadastre, unclaimed money | M |
-| **au_geo / au_seifa** | ABS statistical geography, socio-economic index | M |
+| **au_geo** | ABS statistical geography (postcode, suburb, LGA, electorates) | M |
 | **AustLII** | case law / tribunal records | M |
 | **Trove** | National Library archive | M K |
 | *(offline)* **postcode_au / address_au / phone_au** | postcode→coord, address/state parse, line-type | M |
@@ -233,6 +240,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **Gravatar** | email→avatar/profile | free | M |
 | **EmailRep / disposable_check / email_locale / email_header_geo** | email reputation, disposable, locale, header geo | free | M |
 | **Sunrise-Sunset / Overpass (OSM) / Photon / Geocode / Nominatim** | solar position, map features, geocoding | free | M |
+| **Open-Meteo Geocoding** (GeoNames) | place-name→coordinates + timezone, population, place-class, elevation, postcodes | free (keyless) | M |
 | **EXIF geo** | image metadata → coordinates | free (offline) | M |
 | **Wayback Machine / archive.org** | historical snapshots | free | M |
 | **Blockchain OSINT** — Etherscan, BscScan, Blockchair, Bitquery, Chainalysis | wallet/tx intelligence | ltd/key | C |
@@ -244,14 +252,14 @@ light up, and (c) compare your own keys against what HSE will recognise.
 HSE reads keys from `HUNTSMAN_*` env vars (or the UI Settings panel). Recognised
 keyed providers include:
 
-`OATHNET, SEEKNOW, HIBP, DEHASHED, INTELX, HUNTER, EMAILREP, EPIEOS, FULLCONTACT,
-PROXYCURL, SEON, SHODAN, CENSYS (ID+SECRET), ZOOMEYE, BINARYEDGE, FOFA, NETLAS,
-ONYPHE, FULLHUNT, CRIMINALIP, LEAKIX, GREYNOISE, VIRUSTOTAL, ABUSEIPDB, ABUSECH,
-THREATFOX, URLSCAN, PULSEDIVE, PASSIVETOTAL, SECTRAILS, WHOISXML, BUILTWITH, C99,
-BREACHDIR, NUMVERIFY, HLR, OPENCNAM, IPQS, OPENCELLID, WIGLE (USER+TOKEN),
-OPENCORP, TROVE, EXA, ABR_GUID`.
+`OATHNET, NIAMONX, SEEKNOW, HIBP, DEHASHED, INTELX, HUNTER, EMAILREP, EPIEOS,
+FULLCONTACT, SEON, OPENSANCTIONS, OSINTCAT, SHODAN, CENSYS (ID+SECRET),
+ZOOMEYE, BINARYEDGE, FOFA, NETLAS, ONYPHE, FULLHUNT, CRIMINALIP, LEAKIX, GREYNOISE,
+VIRUSTOTAL, ABUSEIPDB, ABUSECH, THREATFOX, ALIENVAULT, URLSCAN, PULSEDIVE,
+PASSIVETOTAL, SECTRAILS, WHOISXML, DOMAINSDB, BUILTWITH, C99, BREACHDIR, NUMVERIFY,
+HLR, OPENCNAM, IPQS, OPENCELLID, WIGLE (USER+TOKEN), OPENCORP, TROVE, EXA, ABR_GUID`.
 
-Most are optional — ~79% of HSE modules need **no** key. Add a key only to escalate
+Most are optional — ~75% of HSE modules need **no** key. Add a key only to escalate
 a specific source; HSE never marks up provider pricing (pay the provider directly,
 usually on a free tier).
 

@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -117,7 +118,7 @@ fn build_threat_entity(
 ) -> Entity {
     use std::collections::{BTreeMap, BTreeSet};
 
-    let mut entity = Entity::new(kind, host, 0.90, scan_id);
+    let mut entity = Entity::new(kind, host, confidence::VERY_HIGH_PLUS, scan_id);
     entity.tag(crate::core::tags::MALICIOUS);
     entity.tag("urlhaus");
 
@@ -195,7 +196,7 @@ impl Module for UrlHaus {
     }
 
     fn description(&self) -> &'static str {
-        "Abuse.ch URLhaus malware URL threat check"
+        "abuse.ch URLhaus recon — probes a URL against the malware-URL threat corpus"
     }
 
     fn priority(&self) -> u8 {
@@ -236,7 +237,7 @@ impl Module for UrlHaus {
             resolve_key(ctx.key_opt(KEY_ENV), ctx.key_opt(KEY_ENV_FALLBACK))
         else {
             tracing::debug!(
-                target: "module.urlhaus",
+                target: "huntsman::urlhaus",
                 "skipped — set HUNTSMAN_ABUSECH_KEY (free at auth.abuse.ch) to enable"
             );
             return Ok(ModuleResult::new());

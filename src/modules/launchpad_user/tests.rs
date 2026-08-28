@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::confidence;
 
 fn make_person(
     name: &str,
@@ -13,7 +14,47 @@ fn make_person(
         web_link: web_link.map(str::to_string),
         description: description.map(str::to_string),
         is_valid,
+        time_zone: None,
     }
+}
+
+#[test]
+fn surfaces_time_zone_and_coarse_au_tag_on_username() {
+    let mut p = make_person("alice", None, None, None, true);
+    p.time_zone = Some("Australia/Brisbane".to_string());
+    let ents = build_entities(p, "scan-lp-tz");
+    let u = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Username)
+        .expect("username");
+    assert_eq!(
+        u.evidence[0]
+            .attributes
+            .get("time_zone")
+            .map(String::as_str),
+        Some("Australia/Brisbane")
+    );
+    assert!(
+        u.has_tag("country:AU"),
+        "an Australia/* zone tags country:AU"
+    );
+
+    // A non-AU zone surfaces the attribute but no country:AU tag.
+    let mut q = make_person("bob", None, None, None, true);
+    q.time_zone = Some("Europe/Berlin".to_string());
+    let ents = build_entities(q, "scan-lp-tz2");
+    let u = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Username)
+        .expect("username");
+    assert_eq!(
+        u.evidence[0]
+            .attributes
+            .get("time_zone")
+            .map(String::as_str),
+        Some("Europe/Berlin")
+    );
+    assert!(!u.has_tag("country:AU"));
 }
 
 #[test]
@@ -37,9 +78,9 @@ fn emits_username_and_profile_url_from_web_link() {
     let u = ents
         .iter()
         .find(|e| e.kind == EntityKind::Username)
-        .unwrap();
+        .expect("should succeed");
     assert!(u.has_tag("launchpad") && u.has_tag("public-profile"));
-    assert!((u.confidence - 0.85).abs() < 0.01);
+    assert!((u.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
 }
 
 #[test]
@@ -61,8 +102,8 @@ fn emits_person_from_multi_word_display_name() {
         pe.is_some(),
         "must emit Person from multi-word display_name"
     );
-    assert_eq!(pe.unwrap().value, "Alice Ubuntu Developer");
-    assert!(pe.unwrap().has_tag("launchpad"));
+    assert_eq!(pe.expect("should succeed").value, "Alice Ubuntu Developer");
+    assert!(pe.expect("should succeed").has_tag("launchpad"));
 }
 
 #[test]
@@ -84,10 +125,10 @@ fn extracts_email_from_bio() {
     let ents = build_entities(p, "scan-lp-005");
     let em = ents.iter().find(|e| e.kind == EntityKind::Email);
     assert!(em.is_some(), "must extract email from bio");
-    assert_eq!(em.unwrap().value, "alice@ubuntu.com");
-    assert!(em.unwrap().has_tag("launchpad"));
+    assert_eq!(em.expect("should succeed").value, "alice@ubuntu.com");
+    assert!(em.expect("should succeed").has_tag("launchpad"));
     let attr = em
-        .unwrap()
+        .expect("should succeed")
         .evidence
         .iter()
         .find_map(|ev| ev.attributes.get("source_field"))

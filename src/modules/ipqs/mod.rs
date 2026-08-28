@@ -13,13 +13,13 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::RequestBuilderExt;
-use crate::util::http::{handle_keyed_error, urlencode};
+use crate::util::http::urlencode;
 
 const KEY_ENV: &str = "HUNTSMAN_IPQS_KEY";
 
@@ -27,6 +27,11 @@ const KEY_ENV: &str = "HUNTSMAN_IPQS_KEY";
 struct Common {
     #[serde(default)]
     success: Option<bool>,
+    /// The human message IPQS returns alongside `success:false` — distinguishes a
+    /// dead/exhausted key ("You have insufficient credits…", "Invalid API key")
+    /// from a genuinely invalid target ("Please enter a valid IP address").
+    #[serde(default)]
+    message: Option<String>,
     #[serde(default)]
     fraud_score: Option<i32>,
     #[serde(default)]
@@ -98,7 +103,7 @@ fn build_reputation_entity(
     body: &Common,
     scan_id: &str,
 ) -> Entity {
-    let mut entity = Entity::new(kind, value, 0.85, scan_id);
+    let mut entity = Entity::new(kind, value, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
     entity.tag("ipqs");
 
     let score = body.fraud_score.unwrap_or(0);
@@ -108,18 +113,18 @@ fn build_reputation_entity(
         entity.tag("elevated-risk");
     }
     // Boolean signal tags — raised only on an explicit `true`.
-    [
-        (body.proxy, "proxy"),
-        (body.vpn, "vpn"),
-        (body.tor, "tor"),
-        (body.is_crawler, "crawler"),
-        (body.disposable, "disposable"),
-        (body.leaked, "leaked"),
-        (body.recent_abuse, "recent-abuse"),
-    ]
-    .into_iter()
-    .filter(|(flag, _)| *flag == Some(true))
-    .for_each(|(_, tag)| entity.tag(tag));
+    crate::util::geo::tag_flags(
+        &mut entity,
+        &[
+            (body.proxy, "proxy"),
+            (body.vpn, "vpn"),
+            (body.tor, "tor"),
+            (body.is_crawler, "crawler"),
+            (body.disposable, "disposable"),
+            (body.leaked, "leaked"),
+            (body.recent_abuse, "recent-abuse"),
+        ],
+    );
     if let Some(c) = body.country_code.as_deref() {
         entity.tag(format!("country:{}", c.to_uppercase()));
     }
@@ -177,7 +182,7 @@ impl Module for IpQs {
         "ipqs"
     }
     fn description(&self) -> &'static str {
-        "IP, email, and phone quality scoring"
+        "IPQS quality scoring — probes an IP, email, and phone for fraud and risk signals"
     }
     fn priority(&self) -> u8 {
         100
@@ -222,7 +227,7 @@ impl Module for IpQs {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) {
+        let initial_key = match ctx.key_opt(KEY_ENV) {
             Some(k) => k,
             None => return Ok(ModuleResult::new()),
         };
@@ -236,33 +241,55 @@ impl Module for IpQs {
         if value.is_empty() {
             return Ok(ModuleResult::new());
         }
-        let url = format!(
-            "https://www.ipqualityscore.com/api/json/{endpoint}/{}/{}",
-            urlencode(key),
-            urlencode(value),
-        );
-        let mut retries = 2u8;
-        let body: Common = loop {
-            if ctx.cancel.is_cancelled() {
-                return Ok(ModuleResult::new());
-            }
-            let resp = ctx.http.get(&url).send_tagged(SRC).await?;
-            let status = resp.status();
-            if status.as_u16() == 404 {
-                return Ok(ModuleResult::new());
-            }
-            if !status.is_success() {
-                let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
-                    continue;
+        // Key cascade: begin on the hot-injected key and, on a terminal key
+        // failure — an HTTP 401/403/429 OR an in-body `success:false` key/quota
+        // message (IPQS reports a dead key that way on an HTTP 200) — rotate to
+        // the next usable pooled key and retry, so one process() call spends every
+        // credential the pool holds before it fails. The key rides in the URL
+        // path, so the URL is rebuilt per cascade iteration. `tried` stops a
+        // burned key being re-handed.
+        // Key cascade via the shared primitive. IPQS embeds the key in the URL
+        // PATH, so the request builder closure re-renders the URL per key —
+        // rotation changes the URL, not just a header. `success: false` is
+        // EITHER a dead/exhausted key OR a genuinely invalid target, so the
+        // body verdict distinguishes them: a key/quota message rotates (and, if
+        // no untried key remains, surfaces an Err so a paid vendor's dead key is
+        // never silently swallowed); a bad-target message is a clean miss.
+        let Some(body): Option<Common> = crate::util::http::keyed_cascade_json(
+            ctx,
+            SRC,
+            initial_key,
+            // 404 = unknown selector, a clean miss rather than a failure.
+            &[404],
+            |key| {
+                let url = format!(
+                    "https://www.ipqualityscore.com/api/json/{endpoint}/{}/{}",
+                    urlencode(key),
+                    urlencode(value),
+                );
+                ctx.http.get(url)
+            },
+            |parsed: &Common| {
+                if parsed.success == Some(false) {
+                    let msg = parsed.message.as_deref().unwrap_or_default();
+                    if crate::util::http::is_key_or_quota_message(msg) {
+                        // Carry IPQS's own message through: it is the only thing
+                        // that distinguishes quota exhaustion from a bad key
+                        // from a plan limit, and the operator needs that to act.
+                        return crate::util::http::BodyVerdict::KeyFailure {
+                            code: 401,
+                            detail: Some(msg.to_string()),
+                        };
+                    }
+                    return crate::util::http::BodyVerdict::Absent;
                 }
-                return Err(crate::util::http::http_status_error("ipqs", resp).await);
-            }
-            break crate::util::http::json_decode(SRC, resp).await?;
-        };
-        if body.success == Some(false) {
+                crate::util::http::BodyVerdict::Accept
+            },
+        )
+        .await?
+        else {
             return Ok(ModuleResult::new());
-        }
+        };
 
         let mut result = ModuleResult::new();
         result.push(build_reputation_entity(
@@ -282,7 +309,12 @@ impl Module for IpQs {
                 .map(|s| s.trim().to_ascii_lowercase())
                 .filter(|s| s.len() >= 2);
             if let Some(org) = body.organization.as_deref().filter(|o| o.len() >= 2) {
-                let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, &ctx.scan_id);
+                let mut oe = Entity::new(
+                    EntityKind::Organisation,
+                    org,
+                    confidence::HIGH,
+                    &ctx.scan_id,
+                );
                 oe.tag("ipqs");
                 oe.add_evidence(
                     Evidence::new(SRC, format!("IP operator for {value} via IPQS"))
@@ -295,7 +327,12 @@ impl Module for IpQs {
             if let Some(isp) = body.isp.as_deref().filter(|i| i.len() >= 2) {
                 let isp_lc = isp.trim().to_ascii_lowercase();
                 if org_lc.as_deref() != Some(&isp_lc) {
-                    let mut ie = Entity::new(EntityKind::Organisation, isp, 0.60, &ctx.scan_id);
+                    let mut ie = Entity::new(
+                        EntityKind::Organisation,
+                        isp,
+                        confidence::MEDIUM_PLUS,
+                        &ctx.scan_id,
+                    );
                     ie.tag("ipqs");
                     ie.tag("isp");
                     ie.add_evidence(
@@ -307,7 +344,12 @@ impl Module for IpQs {
             }
             if let Some(asn_n) = body.asn.filter(|n| *n > 0) {
                 let asn_str = format!("AS{asn_n}");
-                let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, &ctx.scan_id);
+                let mut ae = Entity::new(
+                    EntityKind::Asn,
+                    &asn_str,
+                    confidence::HIGH_PLUSPLUS,
+                    &ctx.scan_id,
+                );
                 ae.tag("ipqs");
                 ae.add_evidence(
                     Evidence::new(SRC, format!("ASN for {value} via IPQS")).with_attr("ip", value),
@@ -323,7 +365,12 @@ impl Module for IpQs {
             && let Some(carrier) = body.carrier.as_deref().filter(|c| c.len() >= 2)
         {
             {
-                let mut ce = Entity::new(EntityKind::Organisation, carrier, 0.60, &ctx.scan_id);
+                let mut ce = Entity::new(
+                    EntityKind::Organisation,
+                    carrier,
+                    confidence::MEDIUM_PLUS,
+                    &ctx.scan_id,
+                );
                 ce.tag("ipqs");
                 ce.tag("carrier");
                 ce.add_evidence(

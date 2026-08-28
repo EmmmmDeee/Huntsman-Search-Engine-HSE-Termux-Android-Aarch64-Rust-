@@ -11,6 +11,7 @@ use regex::Regex;
 use serde_json::{Map, Value};
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     scan::{Target, TargetKind},
 };
@@ -73,18 +74,70 @@ pub(super) fn derive_query(target: &Target) -> &str {
 /// non-alphanumeric boundaries and compares with `eq_ignore_ascii_case` (no
 /// per-token `String` allocation).
 pub(super) fn owner_matches_full_name(owner: &str, seed: &str) -> bool {
-    let owner_words: Vec<&str> = owner
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let tokens: Vec<&str> = seed
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .collect();
-    !tokens.is_empty()
-        && tokens
-            .iter()
-            .all(|tok| owner_words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
+    crate::util::str_util::whole_word_token_match(owner, seed)
+}
+
+/// True if `owner` shares at least one whole-word name token with the string we
+/// actually **queried** CKAN for
+/// ([`shares_whole_word_token`](crate::util::str_util::shares_whole_word_token)).
+///
+/// # Why this gate exists
+/// CKAN's `datastore_search?q=` is a **full-text search across every column**,
+/// not a scoped owner-name lookup ([`query_url`] has no field qualifier). So a
+/// query for `"shop"` also matches rows whose *address* reads
+/// `"Shop 4, 123 Main St"` — an address shape that is ubiquitous in Australian
+/// retail. Those rows come back with an owner who shares nothing at all with the
+/// seed, and the surname-broadening path then emitted each one as a
+/// `family-candidate` Person.
+///
+/// Measured on a real scan (seed `"gift shop"` → derived query `"shop"`): of 85
+/// owner Persons emitted, **60 shared no token with the query** — unrelated
+/// named individuals, most clustered on one postcode, attributed to the subject.
+/// That is both a precision defect and a third-party-PII leak into someone
+/// else's dossier.
+///
+/// This is deliberately a *floor*, not the exactness test: sharing the surname
+/// is exactly what makes a genuine relative a `family-candidate`
+/// ([`owner_matches_full_name`] is the stricter all-tokens check that upgrades a
+/// row to `exact-name-match`). It only drops rows that matched some **other**
+/// column entirely.
+pub(super) fn owner_matches_query(owner: &str, query: &str) -> bool {
+    crate::util::str_util::shares_whole_word_token(owner, query)
+}
+
+/// True if `surname` is the SURNAME position — the last whitespace token — of
+/// `name`, a single string already parsed by [`owner_person_names`] (so it is
+/// in that function's Given-\[Middle\]-Surname normalised order).
+///
+/// # Why this check exists, distinct from [`owner_matches_query`]
+/// `owner_matches_query` is a floor over the RAW owner string: it answers "did
+/// this row match on the owner field at all, rather than some other CKAN
+/// column?" It does not know, and does not try to know, whether the matched
+/// token was a given name or a surname within that field.
+///
+/// For a surname-*broadened* search (`derive_query` extracts the seed's last
+/// token and searches on that alone) a shared token is being read as evidence
+/// of a family relationship — but a name token can be a surname for one person
+/// and a given name for another. Real case, from a live scan of "Onur Ada":
+/// the register row `"ADA DRINKWATER"` parses (via [`owner_person_names`]'s
+/// Given-\[Middle\]-Surname normalisation) to given name "Ada", surname
+/// "Drinkwater". The seed's surname "Ada" shares a token with that row purely
+/// because "Ada" is also a common English given name — Ada Drinkwater's actual
+/// surname has nothing to do with the subject. Tagging her a `family-candidate`
+/// asserts a family link to a genuinely unrelated person and puts her address
+/// and unclaimed-money record into the subject's dossier.
+///
+/// This is the positional counterpart that closes that gap: it requires the
+/// query to match the LAST token of a parsed name, not merely any token in the
+/// raw string, before a non-exact, broadened hit is accepted as a candidate
+/// relative. Whole-token, case-insensitive (not a substring match), for the
+/// same reason [`owner_matches_full_name`] tokenises rather than searching:
+/// a bare `eq_ignore_ascii_case` on the split-off last token already gives
+/// that, with no separate helper needed.
+pub(super) fn ends_with_surname(name: &str, surname: &str) -> bool {
+    name.split_whitespace()
+        .next_back()
+        .is_some_and(|last| last.eq_ignore_ascii_case(surname))
 }
 
 /// Honorific tokens stripped from the FRONT of a parsed owner name, so the real
@@ -243,18 +296,48 @@ pub(super) fn records_to_entities(
     records: &[Map<String, Value>],
     total: u64,
     seed: &str,
+    query: &str,
     broadened: bool,
     scan_id: &str,
 ) -> Vec<Entity> {
     let mut out = Vec::new();
-    for rec in records.iter().take(MAX_RECORDS) {
+    for rec in records {
         let owner = field_str(rec, "Owner").unwrap_or_else(|| "(unknown owner)".to_string());
+        // CKAN full-text-matched this row on SOME column; if it wasn't the owner
+        // name, the row is about an unrelated party and nothing on it — address,
+        // Person, Organisation, or money finding — belongs in this scan. See
+        // [`owner_matches_query`] for the measured impact.
+        if !owner_matches_query(&owner, query) {
+            continue;
+        }
         // The exact-vs-family split only has meaning when the query was
         // surname-*broadened* (a multi-token FullName). For a verbatim search
         // (organisation, single-token name) every row already AND-matched the
         // seed, so they're all direct hits — don't mislabel them as
         // `family-candidate` (which also under-weights them).
         let exact = !broadened || owner_matches_full_name(&owner, seed);
+        // Parsed once and reused below for the per-Person entity pass too.
+        let owner_persons = owner_person_names(&owner);
+        // A surname-broadened, non-exact hit whose owner parses into at least
+        // one named individual additionally needs the shared token to occupy
+        // the SURNAME position — see [`ends_with_surname`] for why: a name
+        // token can be a given name for one person and a surname for another
+        // (real case: "Ada" is both a common English given name and the seed
+        // surname of "Onur Ada"), and only the surname-position reading
+        // licenses a family inference. A company owner has no given/surname
+        // structure to check (`owner_persons` is empty for one — the
+        // Organisation pass owns companies), so it keeps the existing
+        // any-shared-token floor: "MORLEY SQUARE INVESTMENT PTY LTD" sharing
+        // "Morley" with seed "Riley Morley" is the best signal available for a
+        // business name, and this check has nothing positional to test it
+        // against.
+        if broadened
+            && !exact
+            && !owner_persons.is_empty()
+            && !owner_persons.iter().any(|p| ends_with_surname(p, query))
+        {
+            continue;
+        }
         let amount = field_str(rec, "Amount");
         let sender = field_str(rec, "SenderName");
         let date = field_str(rec, "DateRec");
@@ -290,10 +373,14 @@ pub(super) fn records_to_entities(
         // (0.32). The `find_conf` for the non-geo `unclaimed_money` finding /
         // company Organisation keeps its full weight: those are real records,
         // not coarse geo.
-        // Non-exact surname-only matches must stay below the 0.50 expansion
+        // Non-exact surname-only matches must stay below the confidence::MEDIUM expansion
         // floor so unrelated family members (e.g. "MS DAWN BAMFORD") never
         // trigger pivots when scanning a specific individual.
-        let (addr_conf, find_conf) = if exact { (0.38, 0.60) } else { (0.32, 0.35) };
+        let (addr_conf, find_conf) = if exact {
+            (0.38, confidence::MEDIUM_PLUS)
+        } else {
+            (0.32, 0.35)
+        };
 
         // Geo pivot when we have a usable postcode; otherwise a plain finding.
         // Borrow `pc` (don't move it) so the owner-Person pass below can still read
@@ -352,18 +439,23 @@ pub(super) fn records_to_entities(
         // graph has people to connect. The relation layer then binds them: the
         // shared surname links relatives from ANY seed angle (free), and a joint
         // record's co-owners are linked explicitly via the declared `co_owner`
-        // attribute. Family-candidate Persons stay below the 0.50 expansion floor
+        // attribute. Family-candidate Persons stay below the confidence::MEDIUM expansion floor
         // (find_conf 0.35) so a relative is recorded and connected but never
         // pivot-scanned as if they were the subject; an exact register hit on the
         // seed merges with the name_intel subject anchor by its title-cased value.
-        let owner_persons = owner_person_names(&owner);
+        // (`owner_persons` was already parsed above, for the surname-position
+        // gate — reused here rather than re-parsing the same owner string.)
         for (i, person) in owner_persons.iter().enumerate() {
             // Exactness is PER-PERSON, not per-record: on a joint "HAYLEY & CURT"
             // record seeded with "Curt", Curt is the exact subject while Hayley is
             // a surname-only family candidate — so each co-owner is judged on its
-            // own name, and a family candidate stays below the 0.50 pivot floor.
+            // own name, and a family candidate stays below the confidence::MEDIUM pivot floor.
             let person_exact = owner_matches_full_name(person, seed);
-            let pconf = if person_exact { 0.60 } else { 0.35 };
+            let pconf = if person_exact {
+                confidence::MEDIUM_PLUS
+            } else {
+                0.35
+            };
             let mut p = Entity::new(EntityKind::Person, person, pconf, scan_id);
             p.tag(SRC);
             p.tag("unclaimed-money");
@@ -453,7 +545,7 @@ pub(super) fn records_to_entities(
 /// (`"Maleny, QLD 4552, Australia"`). These are *candidate* localities (the
 /// owner is in one of them), so confidence is low and they carry a
 /// `candidate-suburb` tag; the engine surfaces them as enumeration without
-/// auto-expanding (below the 0.50 floor). Pure: takes the already-fetched map.
+/// auto-expanding (below the confidence::MEDIUM floor). Pure: takes the already-fetched map.
 pub(super) fn suburbs_to_entities(
     pc_localities: &[(String, Vec<Locality>)],
     scan_id: &str,
@@ -466,7 +558,12 @@ pub(super) fn suburbs_to_entities(
         let state = crate::util::address_au::state_for_postcode(pc).unwrap_or("QLD");
         if let Some(first) = locs.first() {
             let coords = format!("{:.5},{:.5}", first.lat, first.lon);
-            let mut c = Entity::new(EntityKind::Coordinates, coords, 0.30, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                coords,
+                confidence::SPECULATIVE,
+                scan_id,
+            );
             c.tag(SRC);
             c.tag("country:AU");
             c.tag(format!("au-state:{state}"));
@@ -484,7 +581,7 @@ pub(super) fn suburbs_to_entities(
             let mut a = Entity::new(
                 EntityKind::Address,
                 format!("{}, {state} {pc}, Australia", loc.suburb),
-                0.30,
+                confidence::SPECULATIVE,
                 scan_id,
             );
             a.tag(SRC);

@@ -1,6 +1,9 @@
 //! Parsing helpers: HTML stripping, name matching, record extraction, entity building.
 
-use crate::core::entity::{Entity, EntityKind, Evidence};
+use crate::core::{
+    confidence,
+    entity::{Entity, EntityKind, Evidence},
+};
 
 pub(super) const SRC: &str = "au_property";
 
@@ -35,16 +38,30 @@ pub(crate) struct PropertyRecord {
     pub postcode: Option<String>,
 }
 
-/// Try to match a name token against the subject's full name. Returns true
-/// when the surname and at least one given-name token appear in the text
+/// Try to match the subject's full name against a text window. Returns true when
+/// every token of the full name appears as a WHOLE WORD in the text
 /// (case-insensitive). Pure.
+///
+/// Whole-word, not substring: a substring gate wrongly admits a coincidental
+/// line for AU-common short surnames (Le, Ng, Ha, Vo, Do) — and since a matched
+/// record now stamps an `owner` attribute and an `exact-name-match` tag that the
+/// relation layer turns into a Person→property `LocatedAt` edge, a loose match
+/// would FABRICATE a subject↔property link.
+///
+/// Deliberately NOT the shared [`crate::util::str_util::whole_word_token_match`]
+/// (which folds ASCII-only): AU property registers carry accented owner names
+/// (e.g. `NGUYỄN`, `LÊ`), and an ASCII fold would miss an accented letter in
+/// mismatched case (seed `José` vs register `JOSÉ`). This matcher stays
+/// full-Unicode (`to_lowercase`) on purpose — do not collapse it into the ASCII
+/// helper.
 pub(crate) fn name_matches(text: &str, full_name: &str) -> bool {
     let text_lc = text.to_lowercase();
     let full_lc = full_name.to_lowercase();
-    // Every token of the full name must appear somewhere in the text.
-    full_lc
-        .split_whitespace()
-        .all(|token| text_lc.contains(token))
+    full_lc.split_whitespace().all(|token| {
+        text_lc
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|word| word == token)
+    })
 }
 
 /// Extract AU state abbreviation from a text window. Returns the canonical
@@ -54,21 +71,17 @@ pub(crate) fn extract_state(text: &str) -> Option<&'static str> {
 }
 
 /// Extract a 4-digit AU postcode in range 2000–9999 from a text window. Pure.
+///
+/// The standalone-postcode boundary test is the shared
+/// [`crate::util::address_au::is_standalone_postcode_at`] so this and the
+/// `au_electoral` suburb-hint scan cannot diverge on what a postcode is.
 pub(crate) fn extract_postcode(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     for i in 0..bytes.len().saturating_sub(3) {
-        if bytes[i].is_ascii_digit()
-            && bytes[i + 1].is_ascii_digit()
-            && bytes[i + 2].is_ascii_digit()
-            && bytes[i + 3].is_ascii_digit()
-            // Reject 5+ digit runs (not a standalone 4-digit code).
-            && !bytes.get(i + 4).is_some_and(u8::is_ascii_digit)
-            && (i == 0 || !bytes[i - 1].is_ascii_digit())
-        {
-            let pc: u32 = text[i..i + 4].parse().ok()?;
-            if (2000..=9999).contains(&pc) {
-                return Some(text[i..i + 4].to_string());
-            }
+        if crate::util::address_au::is_standalone_postcode_at(bytes, i) {
+            // The predicate confirmed four ASCII digits, so `i..i + 4` is a
+            // valid char boundary.
+            return Some(text[i..i + 4].to_string());
         }
     }
     None
@@ -78,11 +91,18 @@ pub(crate) fn extract_postcode(text: &str) -> Option<String> {
 /// token. Returns an empty string when no suburb can be identified. Pure.
 fn extract_suburb_from_line(line: &str, state: &str) -> String {
     // Walk backwards from the state code to collect the suburb name. The state
-    // token is ASCII, so an ASCII-case-insensitive search over the original
-    // `line` yields a char-boundary-safe offset — unlike `to_lowercase().find()`,
-    // whose offset can land mid-codepoint in `line` and panic on a multibyte
-    // uppercase char before the state token.
-    if let Some(pos) = crate::util::str_util::find_ascii_ci(line, state) {
+    // token must be located as a WHOLE WORD, not a substring: a plain
+    // case-insensitive substring search matches the two/three-letter code
+    // wherever its letters first appear inside an earlier word — the `WA` inside
+    // `EDWARD`, the `SA` inside `SARAH` — which either walks back from a bogus
+    // mid-name offset (yielding a garbage suburb like `"ED"`) or, when the code
+    // lands at index 0 of the first word, leaves nothing before it and silently
+    // drops a valid record. `rfind_word_ascii_ci` requires non-alphanumeric
+    // boundaries and returns the occurrence nearest the trailing postcode, while
+    // keeping the char-boundary-safe offset into the original `line` that a
+    // `to_lowercase().find()` would forfeit (its offset can land mid-codepoint on
+    // a multibyte uppercase char before the state token and panic).
+    if let Some(pos) = crate::util::str_util::rfind_word_ascii_ci(line, state) {
         // Suburb is the sequence of alpha tokens immediately before the state.
         let before = line[..pos].trim_end();
         let suburb: String = before
@@ -99,7 +119,11 @@ fn extract_suburb_from_line(line: &str, state: &str) -> String {
             .copied()
             .collect::<Vec<_>>()
             .join(" ");
-        if !suburb.is_empty() && suburb.len() <= 30 {
+        // Chars, not bytes: this module is deliberately full-Unicode (see
+        // `name_matches`), and a byte cap silently rejects an accented suburb
+        // well inside the intended 30-character limit — dropping the whole
+        // PropertyRecord, since parse_response requires a non-empty suburb.
+        if !suburb.is_empty() && suburb.chars().count() <= 30 {
             return suburb;
         }
     }
@@ -156,6 +180,10 @@ pub(crate) fn record_to_entities(rec: &PropertyRecord, scan_id: &str) -> Vec<Ent
         SRC,
         format!("Property title owner match: {}", rec.owner_name),
     )
+    // `owner` is a PERSON_NAME_ATTRS key, so `core::relation::derive_residency`
+    // binds this place to the matching subject Person as a LocatedAt edge — the
+    // record is whole-word name-matched by construction (see `name_matches`).
+    .with_attr("owner", &rec.owner_name)
     .with_attr("suburb", &rec.suburb)
     .with_attr("state", rec.state);
 
@@ -164,19 +192,53 @@ pub(crate) fn record_to_entities(rec: &PropertyRecord, scan_id: &str) -> Vec<Ent
     addr.tag(format!("au-state:{}", rec.state));
     addr.tag("country:AU");
     addr.tag("source:property");
+    // Name-matched register hit → geo_family can anchor the precise suburb
+    // Address on the subject (mirrors qld_unclaimed's exact register hits).
+    addr.tag("exact-name-match");
     out.push(addr);
 
-    // Derive coordinates from the suburb centroid via the offline city table.
+    // Derive coordinates by an HONEST precision ladder — a coarse guess must
+    // never masquerade as a name-matched suburb centroid:
+    //   1. suburb centroid (precise, name-matched)        -> MEDIUM_PLUS
+    //   2. the parsed postcode's exact gazetteer centroid -> MEDIUM
+    //   3. the postcode's leading-two-digit region centroid -> LOW_MEDIUM
+    //   4. the state capital, last resort                 -> LOW, coarse
+    // Previously every suburb miss fell straight to the state capital yet was
+    // stamped MEDIUM_PLUS + exact-name-match + derived_from:suburb_centroid, so a
+    // rural owner was pinned to the capital indistinguishably from a real suburb
+    // fix, and the parsed postcode (a finer, honest signal, already in the
+    // Address) was never used to geocode.
     let suburb_lc = rec.suburb.to_lowercase();
-    if let Some((lat, lon)) = crate::util::city_coords::city_coords(&suburb_lc).or_else(|| {
-        // State-capital fallback when suburb not in the offline table.
-        state_capital_coords(rec.state)
-    }) {
+    let coord_fix: Option<((f64, f64), f64, &str, bool)> =
+        crate::util::city_coords::city_coords(&suburb_lc)
+            .map(|c| (c, confidence::MEDIUM_PLUS, "suburb_centroid", true))
+            .or_else(|| {
+                let pc = rec.postcode.as_deref()?;
+                crate::util::city_coords::postcode_coords(pc)
+                    .map(|c| (c, confidence::MEDIUM, "postcode_centroid", false))
+                    .or_else(|| {
+                        crate::util::city_coords::au_postcode_region(pc)
+                            .map(|c| (c, confidence::LOW_MEDIUM, "postcode_region", false))
+                    })
+            })
+            .or_else(|| {
+                state_capital_coords(rec.state)
+                    .map(|c| (c, confidence::LOW, "state_capital_fallback", false))
+            });
+    if let Some(((lat, lon), coord_conf, derived_from, name_matched)) = coord_fix {
         let coord_value = format!("{lat:.4},{lon:.4}");
-        let mut coord = Entity::new(EntityKind::Coordinates, &coord_value, 0.60, scan_id);
-        coord.add_evidence(evid.with_attr("derived_from", "suburb_centroid"));
+        let mut coord = Entity::new(EntityKind::Coordinates, &coord_value, coord_conf, scan_id);
+        coord.add_evidence(evid.with_attr("derived_from", derived_from));
         coord.tag(format!("au-state:{}", rec.state));
         coord.tag("country:AU");
+        // `exact-name-match` (which lets the correlator anchor this as a precise
+        // residence) belongs only to a genuine suburb centroid; every fallback is
+        // region-grain and is tagged `coarse` instead.
+        if name_matched {
+            coord.tag("exact-name-match");
+        } else {
+            coord.tag("coarse");
+        }
         out.push(coord);
     }
 
@@ -234,6 +296,23 @@ mod suburb_line_tests {
     }
 
     #[test]
+    fn accented_suburb_within_the_char_cap_is_kept() {
+        // Regression: the 30-cap was applied to str::len() (BYTES) while the
+        // test name, and this module's doc, speak in characters. This module
+        // deliberately stays full-Unicode because AU registers carry accented
+        // owner and place names, so a suburb of 26 characters that happens to
+        // occupy 33 bytes was silently rejected — and parse_response drops the
+        // whole PropertyRecord when the suburb is empty, so a legitimate
+        // title-register hit produced no Address or Coordinates at all.
+        let suburb = "PHƯỚC THỌ ĐÔNG NAM HEIGHTS"; // 26 chars, 33 bytes
+        assert!(suburb.chars().count() <= 30 && suburb.len() > 30);
+        assert_eq!(
+            extract_suburb_from_line(&format!("12 {suburb} NSW 2000"), "NSW"),
+            suburb
+        );
+    }
+
+    #[test]
     fn returns_empty_when_suburb_exceeds_thirty_chars() {
         assert_eq!(
             extract_suburb_from_line("Supercalifragilisticexpialidocious Township NSW", "NSW"),
@@ -244,6 +323,31 @@ mod suburb_line_tests {
     #[test]
     fn returns_empty_when_nothing_precedes_state() {
         assert_eq!(extract_suburb_from_line("NSW 2000", "NSW"), "");
+    }
+
+    #[test]
+    fn state_code_inside_an_earlier_word_does_not_hijack_the_suburb() {
+        // Regression: the two-letter code `WA` occurs as a substring inside the
+        // owner token `EDWARD`. A plain substring locator anchored there and
+        // walked back to a bogus `"ED"`; the whole-word locator must find the
+        // standalone `WA` after the suburb instead. (The leading street number
+        // `12` bounds the walk-back so only the true suburb is collected.)
+        assert_eq!(
+            extract_suburb_from_line("EDWARD 12 COTTESLOE WA 6011", "WA"),
+            "COTTESLOE"
+        );
+    }
+
+    #[test]
+    fn state_code_at_index_zero_of_a_word_does_not_silently_drop_the_record() {
+        // Regression: `SA` is a substring at index 0 of `SARAH`, so a substring
+        // locator returned offset 0 → empty prefix → empty suburb → the whole
+        // record was dropped. The whole-word locator skips the embedded match and
+        // finds the real trailing `SA`, preserving the suburb.
+        assert_eq!(
+            extract_suburb_from_line("SARAH 5 GLENELG SA 5045", "SA"),
+            "GLENELG"
+        );
     }
 
     #[test]

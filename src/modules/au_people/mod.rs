@@ -33,9 +33,9 @@
 //!   * T1589.003 — Employee Names (confirms legal name, nickname variants)
 //!
 //! Confidence model:
-//!   * Address with suburb + state: 0.55 (single-source, AU register quality)
-//!   * Phone number: 0.50 (listed, unverified)
-//!   * Name variant confirmation: 0.60 (exact match in directory)
+//!   * Address with suburb + state: confidence::MEDIUM_HIGH (single-source, AU register quality)
+//!   * Phone number: confidence::MEDIUM (listed, unverified)
+//!   * Name variant confirmation: confidence::MEDIUM_PLUS (exact match in directory)
 //!
 //! Orthogonal to `au_unclaimed` and `abn_lookup` — those mine business/govt
 //! registers; this mines residential directories. Together they triangulate
@@ -57,6 +57,7 @@ use async_trait::async_trait;
 use regex::Regex;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -109,7 +110,7 @@ pub(super) fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<
                 })
             })
             .map(|line| {
-                let mut ae = Entity::new(EntityKind::Address, line, 0.52, scan_id);
+                let mut ae = Entity::new(EntityKind::Address, line, confidence::MEDIUM_LIGHT, scan_id);
                 ae.tag(SRC);
                 ae.tag("au-directory");
                 ae.tag("tps-au");
@@ -120,11 +121,24 @@ pub(super) fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<
                 ae.add_evidence(
                     Evidence::new(
                         SRC,
-                        format!("True People Search AU address for {full_name}"),
+                        format!(
+                            "Address listed on the True People Search AU results page for {full_name} (attribution unconfirmed)"
+                        ),
                     )
                     .with_attr("line", line)
                     .with_attr("source", "tps_au"),
                 );
+                // A TPS results page lists the subject ALONGSIDE relatives,
+                // associates, and unrelated same-name people, and this line scan
+                // cannot tell whose address a line is. Emitting each as a CONFIRMED
+                // subject Address (0.52, above the 0.50 floor) fabricated a residency
+                // — and an `au-state:` jurisdiction — for strangers, polluting the AU
+                // residency verdict (AU-090/091/092/098). Demote to a candidate lead:
+                // retained for the Network/full views, excluded from the confirmed
+                // graph, correlator, and residency consensus. The subject's real
+                // address is confirmed by the name-matched sources
+                // (au_property/au_unclaimed), not this unattributed line scan.
+                ae.demote_to_candidate();
                 ae
             }),
     );
@@ -142,8 +156,14 @@ pub(super) fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<
             c.tag("country:AU");
             c.add_evidence(Evidence::new(
                 SRC,
-                format!("Geocode of True People Search AU address for {full_name}"),
+                format!(
+                    "Geocode of an address listed on the True People Search AU results page for {full_name} (attribution unconfirmed)"
+                ),
             ));
+            // Derived from an unconfirmed TPS address (see the parse above) — carry
+            // the same candidate quarantine so an unattributed line can't seed a
+            // confirmed coordinate that feeds the geo footprint.
+            c.demote_to_candidate();
             Some(c)
         })
         .collect();
@@ -151,7 +171,7 @@ pub(super) fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<
 
     // Mine emails.
     out.extend(page_emails(&stripped).into_iter().map(|email| {
-        let mut e = Entity::new(EntityKind::Email, &email, 0.45, scan_id);
+        let mut e = Entity::new(EntityKind::Email, &email, confidence::LOW_MEDIUM, scan_id);
         e.tag(SRC);
         e.tag("au-directory");
         e.tag("tps-au");
@@ -183,7 +203,7 @@ static RELATIVES_SECTION_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// keeps only well-formed capitalised name runs **ending in the subject's
 /// surname** — the family the operator is after — which also rejects the page
 /// chrome ("View Profile", "Background Check", suburb names). Each is emitted
-/// below the 0.50 expansion floor (0.45) so a relative is recorded and linked
+/// below the confidence::MEDIUM expansion floor (confidence::LOW_MEDIUM) so a relative is recorded and linked
 /// but never auto-pivoted into its own sub-scan. Pure.
 pub(super) fn parse_relatives(html: &str, full_name: &str, scan_id: &str) -> Vec<Entity> {
     let text = strip_html(html);
@@ -286,7 +306,7 @@ pub(super) fn parse_relatives(html: &str, full_name: &str, scan_id: &str) -> Vec
             if name.len() < 5 || name_lc == subject_lc || !seen.insert(name_lc) {
                 continue;
             }
-            let mut e = Entity::new(EntityKind::Person, &name, 0.45, scan_id);
+            let mut e = Entity::new(EntityKind::Person, &name, confidence::LOW_MEDIUM, scan_id);
             e.tag(SRC);
             e.tag("au-directory");
             e.tag("relatives");
@@ -348,7 +368,7 @@ impl Module for AuPeople {
     }
 
     fn description(&self) -> &'static str {
-        "Australian people-finder — White Pages AU + True People Search AU for residential address, phone and name confirmation"
+        "Australian people-finder — sweeps White Pages AU + True People Search AU to confirm a name against residential address and phone"
     }
 
     fn priority(&self) -> u8 {
@@ -414,24 +434,49 @@ impl Module for AuPeople {
             "https://www.truepeoplesearch.com.au/results?name={}",
             crate::util::http::urlencode(full_name),
         );
-        if let Ok(resp) = ctx
+        // This is the module's ONLY network leg, so every failure here decides the
+        // module's whole answer. The chain that used to wrap it —
+        // `if let Ok(resp) = .. && resp.status().is_success() && let Some(html) = ..`
+        // — put a transport error, a 403 scraper block and an unreadable body on the
+        // same branch as a name the directory genuinely does not list, and the empty
+        // result then suppressed the Person anchor below. That reads as "this name
+        // does not appear in AU residential directories, and has no known relatives"
+        // — a negative claim about a person, produced when nothing was checked.
+        // `au_electoral`, `au_property` and `asic_director` each carry a guard for
+        // exactly this; this leg was missed.
+        let resp = ctx
             .http
             .get(&tps_url)
             .header("Accept", "text/html,application/xhtml+xml")
             .header("User-Agent", crate::util::http::UA_BROWSER)
             .send_tagged(SRC)
-            .await
-            && resp.status().is_success()
-            && let Some(html) = read_body_capped(resp, 1_000_000).await
-        {
-            result.extend(parse_tps_html(&html, full_name, &ctx.scan_id));
-            result.extend(parse_relatives(&html, full_name, &ctx.scan_id));
-        }
+            .await?;
+        // The site answers an unlisted name with 200 and an empty results table, so a
+        // 404 means the results endpoint itself moved — still not a statement about
+        // the person, but it is the one status that could be read as "nothing here".
+        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
+            return Ok(result);
+        };
+        // `None` is a mid-stream transport failure, not an oversized page: the cap is
+        // enforced by truncating and returning `Some`.
+        let Some(html) = read_body_capped(resp, 1_000_000).await else {
+            return Err(crate::core::error::Error::module(
+                SRC,
+                format!("response body for '{full_name}' could not be read"),
+            ));
+        };
+        result.extend(parse_tps_html(&html, full_name, &ctx.scan_id));
+        result.extend(parse_relatives(&html, full_name, &ctx.scan_id));
 
         // Emit a Person anchor for the name if we got any results — confirms
         // the name exists in AU residential directories.
         if !result.entities.is_empty() {
-            let mut person = Entity::new(EntityKind::Person, full_name, 0.62, &ctx.scan_id);
+            let mut person = Entity::new(
+                EntityKind::Person,
+                full_name,
+                confidence::NOTABLE,
+                &ctx.scan_id,
+            );
             person.tag(SRC);
             person.tag("au-directory");
             person.tag("confirmed-in-directory");

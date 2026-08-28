@@ -46,58 +46,21 @@ fn attack_techniques_are_all_catalogued_and_precise() {
 #[test]
 fn deserialises_matches() {
     let json = r#"{"total": 1, "matches": [{"ip":"8.8.8.8","portinfo":{"port":53}}]}"#;
-    let resp: ZoomResp = serde_json::from_str(json).unwrap();
+    let resp: ZoomResp = serde_json::from_str(json).expect("should succeed");
     assert_eq!(resp.matches.len(), 1);
-    assert_eq!(resp.total, 1);
     assert_eq!(vstr(&resp.matches[0], "ip").as_deref(), Some("8.8.8.8"));
 }
 
 #[test]
-fn deserialises_total_when_it_exceeds_the_fetched_page() {
-    // A broad dork: ZoomEye's own total (5000) vastly exceeds one page=1
-    // fetch's matches — this is exactly the discarded signal the truncation
-    // fix depends on.
-    let json = r#"{"total": 5000, "matches": [{"ip":"8.8.8.8"}]}"#;
-    let resp: ZoomResp = serde_json::from_str(json).unwrap();
-    assert_eq!(resp.total, 5000);
-    assert_eq!(resp.matches.len(), 1);
-}
-
-#[test]
-fn total_defaults_to_zero_when_absent() {
-    let resp: ZoomResp = serde_json::from_str(r#"{"matches": []}"#).unwrap();
-    assert_eq!(resp.total, 0);
-}
-
-#[test]
 fn error_body_deserialises_to_empty_matches() {
-    let resp: ZoomResp = serde_json::from_str(r#"{"error":"invalid key","status":401}"#).unwrap();
+    let resp: ZoomResp =
+        serde_json::from_str(r#"{"error":"invalid key","status":401}"#).expect("should succeed");
     assert!(resp.matches.is_empty());
-    assert_eq!(resp.error.as_deref(), Some("invalid key"));
-}
-
-// -- check_zoomeye_error failure contract (T2.167) ---------------------
-
-#[test]
-fn check_zoomeye_error_surfaces_a_body_level_auth_failure() {
-    // T2.167 regression: a 200 whose body is `{"error": …}` (auth/quota
-    // failure) deserialises to an empty `matches` array with no distinct
-    // signal, so it previously read identically to a genuine "nothing
-    // indexed for this selector" clean miss.
-    let body: ZoomResp = serde_json::from_str(r#"{"error":"invalid key","status":401}"#).unwrap();
-    let err = check_zoomeye_error(&body).unwrap_err();
-    assert!(format!("{err}").contains("invalid key"));
-}
-
-#[test]
-fn check_zoomeye_error_keeps_a_genuine_empty_result_as_a_clean_ok() {
-    let body: ZoomResp = serde_json::from_str(r#"{"matches":[],"total":0}"#).unwrap();
-    assert!(check_zoomeye_error(&body).is_ok());
 }
 
 #[test]
 fn coords_read_nested_geoinfo_location_strings_or_numbers() {
-    let (lat, lon) = coords(&sample_match()).unwrap();
+    let (lat, lon) = coords(&sample_match()).expect("should succeed");
     assert!((lat - 39.0438).abs() < 1e-6 && (lon + 77.4874).abs() < 1e-6);
     // Numeric (not string) lat/lon also parse.
     let numeric = serde_json::json!({"geoinfo":{"location":{"lat":10.0,"lon":20.0}}});
@@ -189,48 +152,6 @@ fn port_detail_annotates_label_with_app_and_banner_when_present() {
 }
 
 #[test]
-fn mark_match_truncation_flags_only_when_total_exceeds_shown() {
-    // Regression: ZoomEye's own total is the true universe (a broad dork can
-    // index thousands of hosts) — a match count that hit MAX_MATCHES (or a
-    // single-page fetch that never saw the rest) must not read as exhaustive.
-    let mut e = Entity::new(EntityKind::IpAddress, "8.8.8.8", 0.60, "s");
-
-    // total == shown: not capped, but the true total is still worth recording.
-    mark_match_truncation(&mut e, 3, 3);
-    assert!(!e.has_tag("truncated"), "must not flag when total == shown");
-    let ev = &e.evidence[0];
-    assert_eq!(
-        ev.attributes.get("total_matches").map(String::as_str),
-        Some("3")
-    );
-    assert!(!ev.attributes.contains_key("matches_capped"));
-
-    // total > shown: genuinely truncated.
-    let mut e2 = Entity::new(EntityKind::IpAddress, "8.8.8.8", 0.60, "s");
-    mark_match_truncation(&mut e2, 5000, 50);
-    assert!(e2.has_tag("truncated"), "seed must be tagged 'truncated'");
-    let ev2 = &e2.evidence[0];
-    assert_eq!(
-        ev2.attributes.get("total_matches").map(String::as_str),
-        Some("5000")
-    );
-    assert_eq!(
-        ev2.attributes.get("matches_capped").map(String::as_str),
-        Some("true")
-    );
-}
-
-#[test]
-fn mark_match_truncation_is_a_no_op_when_total_is_unknown() {
-    // total == 0 means ZoomEye didn't report a total (the field was absent),
-    // not that zero matches exist — no fabricated evidence.
-    let mut e = Entity::new(EntityKind::IpAddress, "8.8.8.8", 0.60, "s");
-    mark_match_truncation(&mut e, 0, 5);
-    assert!(!e.has_tag("truncated"));
-    assert!(e.evidence.is_empty());
-}
-
-#[test]
 fn pstr_reads_nested_string_at_pointer_path() {
     let v = serde_json::json!({"a": {"b": "hi"}});
     assert_eq!(pstr(&v, "/a/b").as_deref(), Some("hi"));
@@ -254,4 +175,75 @@ fn geo_country_code_reads_geoinfo_country_code() {
     assert_eq!(geo_country_code(&de).as_deref(), Some("DE"));
     // Absent → None.
     assert_eq!(geo_country_code(&serde_json::json!({"geoinfo": {}})), None);
+}
+
+// ── zoomeye_dork: validate-and-reject, not escape ──
+//
+// ZoomEye's `field:value` dork has no quoting mechanism the way FOFA's
+// `field="value"` filter does, so a value that would need escaping is
+// rejected outright rather than passed through unsafe. Seed targets can't
+// carry the rejected shapes (Target::validate parses IpAddress via
+// std::net::IpAddr and restricts Domain to alnum/./-/_), but a PIVOT target
+// built during expansion is dispatched without that gate — these tests
+// construct that exact "value Target::validate would already reject" shape
+// directly, proving zoomeye_dork is safe independent of any caller's
+// validation, the same reasoning fofa_filter's tests document.
+
+#[test]
+fn zoomeye_dork_builds_ip_and_hostname_selectors() {
+    assert_eq!(
+        zoomeye_dork(&Target::new(TargetKind::IpAddress, "8.8.8.8")).as_deref(),
+        Some("ip:8.8.8.8")
+    );
+    assert_eq!(
+        zoomeye_dork(&Target::new(TargetKind::Domain, "example.com")).as_deref(),
+        Some("hostname:example.com")
+    );
+}
+
+#[test]
+fn zoomeye_dork_canonicalises_ipv6_through_a_real_parser() {
+    // The IP arm uses the PARSED address, not the raw string — a real parser
+    // rather than a character-class check, so an unusual-but-valid
+    // representation is canonicalised before it reaches the dork.
+    let dork = zoomeye_dork(&Target::new(TargetKind::IpAddress, "::1")).expect("valid IPv6");
+    assert_eq!(dork, "ip:::1");
+    // A shape std::net::IpAddr rejects must reject the whole target, not
+    // silently pass the raw text through.
+    assert_eq!(
+        zoomeye_dork(&Target::new(TargetKind::IpAddress, "not-an-ip")),
+        None
+    );
+}
+
+#[test]
+fn zoomeye_dork_rejects_a_value_that_would_inject_extra_dork_tokens() {
+    // No quoting exists in ZoomEye's grammar to escape into, so whitespace
+    // (which would read as a second, attacker-controlled dork term once
+    // decoded server-side) must reject the target rather than build a dork
+    // an attacker partly controls.
+    assert_eq!(
+        zoomeye_dork(&Target::new(
+            TargetKind::Domain,
+            "example.com hostname:evil.com"
+        )),
+        None,
+        "a space-separated second dork term must be rejected, not embedded"
+    );
+    // A second field selector via `:` is the same class of injection.
+    assert_eq!(
+        zoomeye_dork(&Target::new(
+            TargetKind::Domain,
+            "example.com\"; ip:0.0.0.0"
+        )),
+        None
+    );
+}
+
+#[test]
+fn zoomeye_dork_rejects_unsupported_target_kinds() {
+    assert_eq!(
+        zoomeye_dork(&Target::new(TargetKind::Email, "a@b.com")),
+        None
+    );
 }

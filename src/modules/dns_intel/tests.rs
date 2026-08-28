@@ -4,7 +4,11 @@ use crate::core::scan::{Target, TargetKind};
 use super::{
     DnsIntel,
     constants::SUBDOMAINS,
-    helpers::{VERIFICATION_VENDORS, reverse_ip, soa_rname_to_email, verification_vendor},
+    helpers::{
+        VERIFICATION_VENDORS, reverse_ip, soa_rname_to_email, unescape_dns_label,
+        verification_vendor,
+    },
+    resolve::{iodef_entities, tlsrpt_entities},
 };
 
 // -- DnsIntel accepts --------------------------------------------------
@@ -28,12 +32,20 @@ fn rejects_email() {
 }
 
 // -- DNS resolution tests -------------------------------------------------
-//
-// The decoder's own unit tests (standard/subdomain/escaped/decimal/trailing-dot
-// coverage) live with the canonical implementation in `util::dns`; T2.125
-// consolidated the two former per-module copies onto it. What remains here is
-// dns_intel's OWN integration behaviour — that the SOA-derived address is gated
-// through `is_infrastructure_email` before it is emitted as a person.
+
+#[test]
+fn soa_rname_decodes() {
+    assert_eq!(
+        soa_rname_to_email("hostmaster.example.com"),
+        "hostmaster@example.com"
+    );
+    assert_eq!(
+        soa_rname_to_email("admin.sub.example.org"),
+        "admin@sub.example.org"
+    );
+    assert_eq!(soa_rname_to_email(""), "");
+    assert_eq!(soa_rname_to_email("notanemail"), "");
+}
 
 #[test]
 fn soa_admin_role_mailbox_is_gated_as_infrastructure() {
@@ -56,6 +68,133 @@ fn soa_admin_role_mailbox_is_gated_as_infrastructure() {
     assert!(!is_infrastructure_email(&soa_rname_to_email(
         "alice.personaldomain.org"
     )));
+}
+
+#[test]
+fn iodef_mailto_becomes_a_security_contact_email() {
+    use crate::core::entity::EntityKind;
+    let ents = iodef_entities("mailto:security@example.com", "example.com", "scan-iodef");
+    assert_eq!(ents.len(), 1);
+    let e = &ents[0];
+    assert_eq!(e.kind, EntityKind::Email);
+    assert_eq!(e.value, "security@example.com");
+    assert!(e.has_tag("iodef") && e.has_tag("security-contact") && e.has_tag("caa"));
+}
+
+#[test]
+fn iodef_https_endpoint_yields_a_domain_lead() {
+    use crate::core::entity::EntityKind;
+    // The reporting host is a pivotable Domain — but only when it differs from
+    // the target domain (a self-referential iodef adds no new lead).
+    let ents = iodef_entities(
+        "https://iodef.reporter.net/report",
+        "example.com",
+        "scan-iodef",
+    );
+    assert_eq!(ents.len(), 1);
+    assert_eq!(ents[0].kind, EntityKind::Domain);
+    // The full reporting-endpoint host is the lead (the engine's own expansion
+    // derives its registrable domain when it re-dispatches).
+    assert_eq!(ents[0].value, "iodef.reporter.net");
+    assert!(ents[0].has_tag("iodef"));
+
+    // Self-referential host (same registrable domain host) adds no new entity.
+    let self_ref = iodef_entities("https://example.com/report", "example.com", "scan-iodef");
+    assert!(self_ref.is_empty(), "iodef host == target adds no new lead");
+}
+
+#[test]
+fn iodef_rejects_malformed_and_unknown_schemes() {
+    // A malformed mailto (no domain dot, whitespace, or missing @) yields nothing.
+    assert!(iodef_entities("mailto:notanemail", "example.com", "s").is_empty());
+    assert!(iodef_entities("mailto:a@b", "example.com", "s").is_empty());
+    assert!(iodef_entities("mailto:a b@c.com", "example.com", "s").is_empty());
+    // A non-mailto/non-http scheme (or bare URN) yields nothing.
+    assert!(iodef_entities("urn:example:report", "example.com", "s").is_empty());
+    assert!(iodef_entities("", "example.com", "s").is_empty());
+}
+
+#[test]
+fn tlsrpt_mailto_becomes_report_email() {
+    use crate::core::entity::EntityKind;
+    // A non-infra reporting mailbox (real live TLSRPT records like google.com's
+    // `sts-reports@google.com` sit on a provider domain and are correctly gated
+    // by the infra filter below — so exercise the happy path with a corp domain).
+    let ents = tlsrpt_entities(
+        &["v=TLSRPTv1;rua=mailto:tlsrpt@fabrikam.example".to_string()],
+        "fabrikam.example",
+        "s",
+    );
+    let email = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("TLSRPT rua mailto → Email");
+    assert_eq!(email.value, "tlsrpt@fabrikam.example");
+    assert!(email.has_tag("tlsrpt-report") && email.has_tag("dns"));
+}
+
+#[test]
+fn tlsrpt_infrastructure_mailbox_is_gated() {
+    // Parity with DMARC/SOA gating: a provider-domain reporting desk (google.com
+    // is in the curated infra-mail set) must NOT be surfaced as a subject email.
+    let ents = tlsrpt_entities(
+        &["v=TLSRPTv1;rua=mailto:sts-reports@google.com".to_string()],
+        "google.com",
+        "s",
+    );
+    assert!(
+        ents.iter()
+            .all(|e| e.kind != crate::core::entity::EntityKind::Email),
+        "infrastructure reporting mailbox must be gated"
+    );
+}
+
+#[test]
+fn tlsrpt_https_endpoint_becomes_domain_lead() {
+    use crate::core::entity::EntityKind;
+    // Verbatim live shape from microsoft.com's _smtp._tls record.
+    let ents = tlsrpt_entities(
+        &["v=TLSRPTv1; rua=https://tlsrpt.azurewebsites.net/report".to_string()],
+        "microsoft.com",
+        "s",
+    );
+    let dom = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain)
+        .expect("TLSRPT rua https → Domain host");
+    assert_eq!(dom.value, "tlsrpt.azurewebsites.net");
+    assert!(dom.has_tag("tlsrpt-report"));
+}
+
+#[test]
+fn tlsrpt_ignores_non_tlsrpt_and_empty() {
+    assert!(tlsrpt_entities(&["v=spf1 -all".to_string()], "x.com", "s").is_empty());
+    assert!(tlsrpt_entities(&["v=TLSRPTv1;".to_string()], "x.com", "s").is_empty());
+    assert!(tlsrpt_entities(&[], "x.com", "s").is_empty());
+}
+
+#[test]
+fn soa_rname_unescapes_dotted_local_part() {
+    // A literal dot in the mailbox local part is `\.`-escaped in the RNAME;
+    // the split must skip it AND the output must drop the backslash.
+    assert_eq!(
+        soa_rname_to_email(r"hostmaster\.ops.example.com"),
+        "hostmaster.ops@example.com"
+    );
+    // `\DDD` decimal escape (46 = '.') decodes the same way.
+    assert_eq!(
+        soa_rname_to_email(r"first\046last.example.org"),
+        "first.last@example.org"
+    );
+}
+
+#[test]
+fn unescape_dns_label_handles_literal_and_decimal_escapes() {
+    assert_eq!(unescape_dns_label(r"a\.b"), "a.b");
+    assert_eq!(unescape_dns_label(r"a\\b"), r"a\b");
+    assert_eq!(unescape_dns_label(r"x\046y"), "x.y"); // \046 = '.'
+    assert_eq!(unescape_dns_label("plain"), "plain");
+    assert_eq!(unescape_dns_label(r"trailing\"), "trailing"); // lone backslash dropped
 }
 
 #[test]
@@ -246,4 +385,146 @@ fn metadata() {
     assert_eq!(m.name(), "dns_intel");
     assert_eq!(m.priority(), 31);
     assert_eq!(m.max_timeout_ms(), 15_000);
+}
+
+// ─── A DNS outage must not become a clean reputation verdict ──────────────
+
+use super::resolve::BlocklistTally;
+
+/// `blocklist_check` ALWAYS emits an entity, unlike the CAA and PTR lookups in
+/// the same file which emit only on a positive result. That makes this the one
+/// place in the module where a resolver failure did not merely lose data — it
+/// manufactured a finding.
+///
+/// The old loop was `if resolver.lookup_ip(..).await.is_ok() { listed }` with
+/// `checked += 1` every iteration. "Listed" is `Ok`; a genuine NXDOMAIN, a
+/// SERVFAIL and a timeout are all `Err`, so all three read as *not listed*.
+/// With DNS down, eight zones failed, nothing was listed, `checked` reached 8,
+/// and the entity asserted `status: clean`, `checked_count: 8`,
+/// "clean on 8 blocklists" — about an address nothing had been established for.
+#[test]
+fn a_dns_outage_is_not_a_clean_blocklist_verdict() {
+    // Every zone tried, none answered: no reputation statement is supported.
+    assert!(
+        BlocklistTally {
+            attempted: 8,
+            answered: 0,
+            unresolved: 8,
+        }
+        .is_wholly_unresolved()
+    );
+
+    // One zone answered "not listed" and the rest failed. The verdict is
+    // supportable but PARTIAL — it must be emitted, not errored, and the
+    // denominator must be the 1 that answered, never the 8 attempted.
+    let partial = BlocklistTally {
+        attempted: 8,
+        answered: 1,
+        unresolved: 7,
+    };
+    assert!(!partial.is_wholly_unresolved());
+    assert_eq!(partial.answered, 1, "the denominator is what ANSWERED");
+    assert!(
+        partial.unresolved > 0,
+        "partial coverage must be disclosable"
+    );
+
+    // A full, healthy sweep.
+    let full = BlocklistTally {
+        attempted: 8,
+        answered: 8,
+        unresolved: 0,
+    };
+    assert!(!full.is_wholly_unresolved());
+    assert_eq!(full.unresolved, 0, "nothing to disclose on a full sweep");
+
+    // Nothing ran at all — cancelled before the first zone. That is the
+    // operator's own stop, not an outage, and must NOT be reported as one.
+    assert!(!BlocklistTally::default().is_wholly_unresolved());
+    assert!(
+        !BlocklistTally {
+            attempted: 0,
+            answered: 0,
+            unresolved: 0,
+        }
+        .is_wholly_unresolved()
+    );
+
+    // A single zone that answered is enough to keep the module out of the
+    // error path — it proves the resolver path works.
+    assert!(
+        !BlocklistTally {
+            attempted: 1,
+            answered: 1,
+            unresolved: 0,
+        }
+        .is_wholly_unresolved()
+    );
+    // ...and a single zone that did not answer is an outage for that sweep.
+    assert!(
+        BlocklistTally {
+            attempted: 1,
+            answered: 0,
+            unresolved: 1,
+        }
+        .is_wholly_unresolved()
+    );
+}
+
+/// No answers, no verdict — whatever the reason there were none.
+///
+/// `is_wholly_unresolved` decides whether an outage is worth *reporting*, and it
+/// excludes the nothing-ran case on purpose. That is the wrong question for
+/// deciding whether to EMIT: gating only the error on cancellation left a sweep
+/// that was cancelled before any zone answered falling straight through to
+/// `status: clean, checked_count: 0` — "clean on 0 blocklists" — the same
+/// verdict-without-evidence by another route. `supports_a_verdict` is the guard
+/// that closes it, and it asks only whether anything answered.
+#[test]
+fn no_answers_means_no_verdict_however_the_sweep_ended() {
+    // Cancelled before the first zone: nothing ran, nothing to say.
+    assert!(!BlocklistTally::default().supports_a_verdict());
+
+    // Cancelled after some zones failed: still nothing authoritative.
+    assert!(
+        !BlocklistTally {
+            attempted: 3,
+            answered: 0,
+            unresolved: 3,
+        }
+        .supports_a_verdict()
+    );
+
+    // Total outage: also no verdict — this one is additionally an error.
+    let outage = BlocklistTally {
+        attempted: 8,
+        answered: 0,
+        unresolved: 8,
+    };
+    assert!(!outage.supports_a_verdict());
+    assert!(outage.is_wholly_unresolved());
+
+    // One authoritative answer is the whole requirement.
+    assert!(
+        BlocklistTally {
+            attempted: 8,
+            answered: 1,
+            unresolved: 7,
+        }
+        .supports_a_verdict()
+    );
+    assert!(
+        BlocklistTally {
+            attempted: 8,
+            answered: 8,
+            unresolved: 0,
+        }
+        .supports_a_verdict()
+    );
+
+    // The two predicates answer different questions and must not be conflated:
+    // "nothing ran" supports no verdict, yet is NOT an outage to report.
+    let nothing_ran = BlocklistTally::default();
+    assert!(!nothing_ran.supports_a_verdict());
+    assert!(!nothing_ran.is_wholly_unresolved());
 }

@@ -39,14 +39,14 @@ pub fn parse_address(input: &str) -> AddressComponents {
 
     // Scan every part for state codes and postal patterns. A part like
     // "QLD 4000" carries both — split on space and try each token.
+    // State codes: the first classified state wins, so scan FORWARD.
+    // Match a state either as the WHOLE part ("New South Wales", "Queensland")
+    // or as a token within it ("QLD 4000" → "QLD"). The whole-part check is
+    // essential: a multi-word state name is never a single token, so the
+    // previous token-only scan silently dropped every spelled-out multi-word
+    // state ("New South Wales", "Western Australia") while still accepting the
+    // abbreviations and single-word names ("NSW", "Queensland").
     for part in &parts {
-        // Match a state either as the WHOLE part ("New South Wales",
-        // "Queensland") or as a token within it ("QLD 4000" → "QLD"). The
-        // whole-part check is essential: a multi-word state name is never a
-        // single token, so the previous token-only scan silently dropped every
-        // spelled-out multi-word state ("New South Wales", "Western Australia")
-        // while still accepting the abbreviations and single-word names ("NSW",
-        // "Queensland") — an inconsistency a user pasting a full address hits.
         if out.state.is_none() {
             let matched =
                 au_state_norm(part).or_else(|| part.split_whitespace().find_map(au_state_norm));
@@ -58,10 +58,16 @@ pub fn parse_address(input: &str) -> AddressComponents {
                 }
             }
         }
-        // Postal code (bare digits, 4-10 chars). Only the LAST token of a part
-        // is a candidate: a real postcode trails its part ("QLD 4000", "4000"),
-        // whereas a leading digit run like the street number in "1234 Smith St"
-        // is followed by the street name and must NOT be captured as a postcode.
+    }
+
+    // Postal code (bare digits, 4-10 chars). Scan parts in REVERSE so the
+    // address-TRAILING postcode wins over an earlier part whose last token is a
+    // digit run — a PO-box or unit number ("PO Box 4321, …, NSW 2000" must yield
+    // 2000, not 4321). Only the LAST token of a part is a candidate: a real
+    // postcode trails its part ("QLD 4000", "4000"), whereas a leading digit run
+    // like the street number in "1234 Smith St" is followed by the street name
+    // and must NOT be captured.
+    for part in parts.iter().rev() {
         if out.postal_code.is_none()
             && let Some(tok) = part.split_whitespace().last()
             && tok.chars().all(|c| c.is_ascii_digit())

@@ -108,6 +108,63 @@ pub fn dump_with_count() -> (String, usize) {
     (out, n)
 }
 
+/// A window of buffered lines newer than a caller-held cursor, plus the cursor
+/// to resume from — the read primitive behind a *live* log view (as opposed to
+/// [`dump`], which returns the whole ring for a one-shot download).
+///
+/// The ring assigns every committed line an implicit monotonic sequence: the
+/// line at `lines[i]` has sequence `dropped + i`, so `dropped + lines.len()` is
+/// the sequence the next line will take. A caller polls with the `cursor` from
+/// its previous [`tail`] and receives only lines committed since — no full
+/// re-serialise, no per-line id stored.
+pub struct Tail {
+    /// Lines with sequence `>= after`, oldest first. Empty when the caller is
+    /// already current.
+    pub lines: Vec<String>,
+    /// The sequence to pass as `after` on the next call to receive only newer
+    /// lines. Equals the total number of lines ever committed.
+    pub cursor: u64,
+    /// Lines that existed at or after the caller's `after` but were evicted by
+    /// the ring's bound before this read could return them — a real gap in what
+    /// the caller will ever see. `0` in the steady state; non-zero only when a
+    /// burst outran the poll (or on a first read against an already-wrapped
+    /// ring). Surfaced so a live view can show an honest "N lines lost" marker
+    /// rather than silently skipping, mirroring the `dropped=` dump header.
+    pub missed: u64,
+    /// The ring's all-time eviction count (the same figure the download
+    /// header's `dropped=` shows), read under the same lock as `lines`. Distinct
+    /// from `missed`, which is only the gap relative to *this caller's* `after`.
+    pub dropped: u64,
+}
+
+/// Read every buffered line with sequence `>= after` (see [`Tail`]). Pass
+/// `after = 0` for a first read (returns the whole current ring, with `missed`
+/// reporting how many earlier lines were already evicted); thereafter pass the
+/// previous [`Tail::cursor`].
+#[must_use]
+pub fn tail(after: u64) -> Tail {
+    let r = lock();
+    let oldest = r.dropped; // sequence of lines[0]
+    let end = r.dropped + r.lines.len() as u64; // one past the newest
+    let (start_idx, missed) = if after <= oldest {
+        // Caller wants from at/before the oldest retained line: everything we
+        // still hold, and anything between `after` and `oldest` is lost.
+        (0usize, oldest - after)
+    } else if after >= end {
+        // Caller is already current (or ahead, after a clear() reset the ring).
+        (r.lines.len(), 0)
+    } else {
+        ((after - oldest) as usize, 0)
+    };
+    let lines = r.lines.iter().skip(start_idx).cloned().collect();
+    Tail {
+        lines,
+        cursor: end,
+        missed,
+        dropped: r.dropped,
+    }
+}
+
 /// Drop all buffered lines (the Settings "clear" action / tests).
 pub fn clear() {
     let mut r = lock();

@@ -13,7 +13,7 @@ fn cost_is_key_gated() {
 }
 
 fn parse(json: &str) -> Common {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 fn attr<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {
@@ -104,3 +104,8 @@ fn missing_fraud_score_defaults_to_clean_and_omits_optionals() {
     assert_eq!(attr(&e, "isp"), None);
     assert_eq!(attr(&e, "first_seen"), None);
 }
+
+// The key/quota-message classifier this module's verdict closure calls
+// (`crate::util::http::is_key_or_quota_message`) moved to `util::http::fetch`
+// and is unit-tested there — it is a shared primitive with two other callers
+// now (stolen_tax, niamonx), not an ipqs-local concern.

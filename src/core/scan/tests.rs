@@ -64,7 +64,7 @@ fn options_default_is_inert() {
 
 #[test]
 fn clamp_depth_enforces_max_depth() {
-    assert_eq!(MAX_DEPTH, 3);
+    assert_eq!(MAX_DEPTH, 5);
     let over = ScanOptions {
         depth: 99,
         ..Default::default()
@@ -114,9 +114,23 @@ fn optimal_depth_is_differentiated_not_pinned_at_ceiling() {
         depths.contains(&1),
         "some terminal seed must resolve at depth 1"
     );
+    // The auto-selector's own ceiling, which is NOT `MAX_DEPTH`. `MAX_DEPTH` is
+    // the clamp on an operator-requested depth; `optimal_depth` instead walks
+    // the yield curve and stops where marginal yield dies, which for the richest
+    // seed is the third round. The two were the same number until the clamp was
+    // raised to 5 for the live radar — a radio observation starts further from
+    // an identity than a typed seed, so the radar asks for depth explicitly
+    // rather than through this model. Asserting against `MAX_DEPTH` here would
+    // couple the yield model to a limit that is not about yield at all.
+    const AUTO_DEPTH_CEILING: u32 = 3;
+    const _: () = assert!(AUTO_DEPTH_CEILING <= MAX_DEPTH);
     assert!(
-        depths.contains(&MAX_DEPTH),
-        "some rich seed must reach MAX_DEPTH"
+        depths.contains(&AUTO_DEPTH_CEILING),
+        "some rich seed must earn the full auto budget, saw {depths:?}"
+    );
+    assert!(
+        depths.iter().all(|d| *d <= MAX_DEPTH),
+        "auto depth must never exceed the clamp, saw {depths:?}"
     );
 
     // Rich identity seeds with paid keys earn the full budget…
@@ -128,8 +142,8 @@ fn optimal_depth_is_differentiated_not_pinned_at_ceiling() {
     ] {
         assert_eq!(
             optimal_depth(k, true).0,
-            MAX_DEPTH,
-            "{k:?} paid → MAX_DEPTH"
+            AUTO_DEPTH_CEILING,
+            "{k:?} paid → the full auto budget"
         );
         assert_eq!(optimal_depth(k, false).0, 2, "{k:?} keyless → 2");
     }
@@ -335,6 +349,17 @@ fn is_mega_domain_matches_roots_subdomains_and_www() {
         "PINTEREST.COM",
         "api.twitter.com",
         "github.com",
+        // Profile-hosting platforms. A scan may legitimately discover a profile
+        // URL on one of these, but the platform's own estate (its domain, CDN
+        // and subdomains) must never be attributed to the subject.
+        "onlyfans.com",
+        "cdn.onlyfans.com",
+        "fansly.com",
+        "media.fansly.com",
+        "patreon.com",
+        "soundcloud.com",
+        "steamcommunity.com",
+        "vimeo.com",
         // People-search aggregators — the stranger co-occurrence noise this list
         // exists to dampen.
         "fastpeoplesearch.com",
@@ -378,6 +403,16 @@ fn is_infra_domain_matches_shared_providers() {
         "ns2-09.azure-dns.net",
         "ns-cloud-a1.googledomains.com",
         "ns1.cloudns.net",
+        // VPS/cloud hosts' own default nameservers (the exact shape a
+        // domain-scan's own NS lookup surfaces for a subject hosted there —
+        // this flooded `web_crawler` with a bare `ns1.digitalocean.com`
+        // crawl target in a real scan before these were added).
+        "ns1.digitalocean.com",
+        "ns3.digitalocean.com",
+        "ns1.linode.com",
+        "hydrogen.ns.hetzner.com",
+        "helium.ns.hetzner.de",
+        "ns100.ovh.net",
         "myapp.azureedge.net",
         "myservice.cloudapp.net",
         "django-env.elasticbeanstalk.com",
@@ -615,9 +650,9 @@ fn options_round_trip_json() {
         free_only: true,
         ..Default::default()
     };
-    let s = serde_json::to_string(&o).unwrap();
-    let back: ScanOptions = serde_json::from_str(&s).unwrap();
-    assert_eq!(back.modules.as_ref().unwrap().len(), 2);
+    let s = serde_json::to_string(&o).expect("should succeed");
+    let back: ScanOptions = serde_json::from_str(&s).expect("should succeed");
+    assert_eq!(back.modules.as_ref().expect("should succeed").len(), 2);
     assert_eq!(back.throttle_ms, 250);
     assert!(back.free_only);
 }
@@ -629,14 +664,18 @@ fn scan_request_round_trip() {
         value: "x@y.com".into(),
         options: ScanOptions::default(),
     };
-    let s = serde_json::to_string(&req).unwrap();
+    let s = serde_json::to_string(&req).expect("should succeed");
     assert!(s.contains("\"kind\":\"email\""));
 
     // Omitted kind → None → auto-detected; the field is skipped on the wire.
-    let auto: ScanRequest = serde_json::from_str(r#"{"value":"x@y.com"}"#).unwrap();
+    let auto: ScanRequest = serde_json::from_str(r#"{"value":"x@y.com"}"#).expect("should succeed");
     assert_eq!(auto.kind, None);
     assert_eq!(auto.resolved_kind(), TargetKind::Email);
-    assert!(!serde_json::to_string(&auto).unwrap().contains("kind"));
+    assert!(
+        !serde_json::to_string(&auto)
+            .expect("should succeed")
+            .contains("kind")
+    );
 }
 
 // ── TargetKind::detect — unified-scan auto-detection ──────────────────────
@@ -1165,7 +1204,7 @@ fn target_kind_canonical_str_matches_serde() {
     // a future TargetKind rename can't split the hand-written string from the
     // derive. Iterates the canonical list, so a new variant is forced through.
     for &k in crate::core::dependency::ALL_TARGET_KINDS {
-        let json = serde_json::to_string(&k).unwrap();
+        let json = serde_json::to_string(&k).expect("should succeed");
         assert_eq!(json.trim_matches('"'), k.canonical_str(), "{k:?}");
     }
 }
@@ -1173,9 +1212,10 @@ fn target_kind_canonical_str_matches_serde() {
 #[test]
 fn scan_status_as_str_matches_serde() {
     // §3 pin. as_str is the persisted `scans.status` value AND
-    // `latest_completed_scan` hard-codes the string in its SQL
-    // `json_extract(...) = 'complete'` probe — a drift between as_str and the
-    // serde form would silently break that query (no Complete scan found).
+    // `latest_finished_scan` hard-codes these strings in its SQL
+    // `json_extract(...) IN ('complete', 'aborted')` probe — a drift between
+    // as_str and the serde form would silently break that query (no finished
+    // scan found).
     for st in [
         ScanStatus::Pending,
         ScanStatus::Running,
@@ -1183,7 +1223,7 @@ fn scan_status_as_str_matches_serde() {
         ScanStatus::Failed,
         ScanStatus::Aborted,
     ] {
-        let json = serde_json::to_string(&st).unwrap();
+        let json = serde_json::to_string(&st).expect("should succeed");
         assert_eq!(json.trim_matches('"'), st.as_str(), "{st:?}");
     }
 }
@@ -1211,24 +1251,26 @@ fn expansion_strategy_every_variant_round_trips_as_str_serde_and_from_str() {
             | ExpansionStrategy::DepthFirst
             | ExpansionStrategy::RichestFirst => {}
         }
-        let json = serde_json::to_string(&s).unwrap();
+        let json = serde_json::to_string(&s).expect("should succeed");
         assert_eq!(json.trim_matches('"'), s.as_str(), "as_str vs serde: {s:?}");
-        let back: ExpansionStrategy = serde_json::from_str(&json).unwrap();
+        let back: ExpansionStrategy = serde_json::from_str(&json).expect("should succeed");
         assert_eq!(back, s, "serde round-trip: {s:?}");
-        let parsed: ExpansionStrategy = s.as_str().parse().unwrap();
+        let parsed: ExpansionStrategy = s.as_str().parse().expect("should succeed");
         assert_eq!(parsed, s, "FromStr(as_str) round-trip: {s:?}");
     }
 }
 
 #[test]
 fn expansion_strategy_from_str_treats_empty_as_default() {
-    let parsed: ExpansionStrategy = "".parse().unwrap();
+    let parsed: ExpansionStrategy = "".parse().expect("should succeed");
     assert_eq!(parsed, ExpansionStrategy::default());
 }
 
 #[test]
 fn expansion_strategy_from_str_rejects_unknown_with_useful_message() {
-    let err = "wat".parse::<ExpansionStrategy>().unwrap_err();
+    let err = "wat"
+        .parse::<ExpansionStrategy>()
+        .expect_err("should be an error");
     assert!(err.contains("wat"));
     assert!(err.contains("geo_converge"));
     assert!(err.contains("breadth_first"));
@@ -1330,8 +1372,8 @@ fn scan_options_serde_round_trips_expansion_strategy() {
         expansion_strategy: ExpansionStrategy::RichestFirst,
         ..Default::default()
     };
-    let json = serde_json::to_string(&opts).unwrap();
-    let back: ScanOptions = serde_json::from_str(&json).unwrap();
+    let json = serde_json::to_string(&opts).expect("should succeed");
+    let back: ScanOptions = serde_json::from_str(&json).expect("should succeed");
     assert_eq!(back.expansion_strategy, ExpansionStrategy::RichestFirst);
 }
 
@@ -1366,7 +1408,7 @@ fn validate_url() {
 /// request ran at the product default of 2.
 #[test]
 fn empty_options_object_matches_product_defaults() {
-    let from_empty: ScanOptions = serde_json::from_str("{}").unwrap();
+    let from_empty: ScanOptions = serde_json::from_str("{}").expect("should succeed");
     let product = ScanOptions::default();
     assert_eq!(
         from_empty.max_concurrent, product.max_concurrent,
@@ -1382,15 +1424,77 @@ fn empty_options_object_matches_product_defaults() {
     assert!((from_empty.min_expand_confidence - DEFAULT_MIN_EXPAND_CONFIDENCE).abs() < 1e-9);
     assert_eq!(from_empty.max_entities, Some(DEFAULT_MAX_ENTITIES));
     // An explicit 0 is still honoured as fully-sequential.
-    let explicit: ScanOptions = serde_json::from_str(r#"{"max_concurrent":0}"#).unwrap();
+    let explicit: ScanOptions =
+        serde_json::from_str(r#"{"max_concurrent":0}"#).expect("should succeed");
     assert_eq!(explicit.max_concurrent, 0);
+}
+
+/// Every seed must get the FULL recursion budget to converge on geolocation —
+/// permanently, on every product surface, without the operator asking for it.
+///
+/// The default expansion strategy is `GeoConverge`, which weights each round
+/// toward the candidates one hop from an Address/Coordinates. That weighting can
+/// only pay off if the recursion is actually allowed to run far enough for the
+/// longest geo chains to close. `Email → Person → Address → Coordinates` needs
+/// four hops; `Username → Person → Domain → IpAddress → Coordinates` needs five.
+/// While the product default sat at 3 (below the `MAX_DEPTH` ceiling of 5), those
+/// chains were cut off mid-walk no matter how strongly the strategy favoured
+/// them — the scan converged toward a location it was never given the budget to
+/// reach.
+///
+/// This pins the guarantee on the two surfaces that serve real scans — the CLI
+/// product options and an API request that omits `depth` — so a future
+/// "let's make the default cheaper" change has to break a test that states the
+/// cost of doing so, rather than silently shortening every geo chain.
+#[test]
+fn every_seed_gets_the_full_recursion_budget_to_reach_geolocation() {
+    // The product default is the ceiling, not some fraction of it.
+    assert_eq!(
+        DEFAULT_SCAN_DEPTH, MAX_DEPTH,
+        "a seed must be able to walk the full {MAX_DEPTH}-hop chain to a coordinate; \
+         defaulting below the ceiling truncates the longest geo paths"
+    );
+
+    // Surface 1: the CLI/product options bundle.
+    let product = default_scan_options();
+    assert_eq!(
+        product.depth, MAX_DEPTH,
+        "`hse scan` with no --depth must run the full recursion"
+    );
+    assert_eq!(
+        product.expansion_strategy,
+        ExpansionStrategy::GeoConverge,
+        "the depth budget only converges on geo because GeoConverge is the default \
+         weighting — if this ever changes, the depth rationale above no longer holds"
+    );
+
+    // Surface 2: an API/web request that omits `depth` entirely.
+    let from_api: ScanOptions =
+        serde_json::from_str(r#"{}"#).expect("an empty options object must deserialise");
+    assert_eq!(
+        from_api.depth, MAX_DEPTH,
+        "an API scan that omits depth must be as deep as the CLI's — the web UI is \
+         the primary surface and must not silently get a shallower geo walk"
+    );
+
+    // The depth is spendable: the ceiling clamp must not fight the default, or
+    // every single scan would emit the "clamped to MAX_DEPTH" warning.
+    let clamped = ScanOptions {
+        depth: DEFAULT_SCAN_DEPTH,
+        ..ScanOptions::default()
+    }
+    .clamp_depth();
+    assert_eq!(
+        clamped.depth, DEFAULT_SCAN_DEPTH,
+        "the product default must sit AT the ceiling, never above it"
+    );
 }
 
 /// Locks the DECOUPLING of the library default from the serde field defaults.
 /// The library `ScanOptions::default()` — used by programmatic callers and the
 /// test suite — must STAY conservative (depth 0 single-round, expansion floor
 /// 0.50 Probable, uncapped) for determinism, even though the CLI/API/web product
-/// surface now defaults to the comprehensive depth 3 / floor 0.20 / cap 2500.
+/// surface now defaults to the comprehensive full depth / floor 0.20 / cap 2500.
 #[test]
 fn library_default_stays_conservative_and_decoupled_from_serde() {
     let d = ScanOptions::default();
@@ -1409,14 +1513,18 @@ fn library_default_stays_conservative_and_decoupled_from_serde() {
 
 /// A `ScanRequest` deserialised either with the whole `options` object omitted
 /// or with a present-but-empty `options:{}` must yield the SAME comprehensive
-/// product defaults as `hse scan`: depth 3, expansion floor 0.20, entity cap
+/// product defaults as `hse scan`: DEFAULT_SCAN_DEPTH, expansion floor 0.20, entity cap
 /// 2500. This is the API/SPA-thoroughness guarantee.
 #[test]
 fn scan_request_defaults_to_comprehensive_options() {
     for body in [r#"{"value":"x"}"#, r#"{"value":"x","options":{}}"#] {
-        let req: ScanRequest = serde_json::from_str(body).unwrap();
+        let req: ScanRequest = serde_json::from_str(body).expect("should succeed");
         assert_eq!(req.options.depth, DEFAULT_SCAN_DEPTH, "depth for {body}");
-        assert_eq!(req.options.depth, 3, "depth literal for {body}");
+        // Deliberately a LITERAL as well as the symbolic assertion above, so
+        // moving the constant can never silently change the API's behaviour.
+        // 5 = the full `MAX_DEPTH` recursion budget: an API/web scan must get
+        // the same complete geo walk as the CLI, not a truncated one.
+        assert_eq!(req.options.depth, 5, "depth literal for {body}");
         assert!(
             (req.options.min_expand_confidence - DEFAULT_MIN_EXPAND_CONFIDENCE).abs() < 1e-9,
             "expansion floor for {body}"
@@ -1482,5 +1590,213 @@ mod prop {
             let t = Target { kind, value: v };
             let _ = t.validate();
         }
+    }
+}
+
+#[test]
+fn module_accounting_line_discloses_that_a_running_scan_has_no_counters_yet() {
+    // The defect this pins: `modules_*` are written once, in `finalise_scan`.
+    // A dossier or debug bundle exported mid-scan therefore read
+    // "0 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped" — six
+    // zeros that an operator reads as "nothing ran" — for scans whose own
+    // event streams recorded 60 modules done, 9 errored and 11 skipped.
+    let mut scan = Scan::new("scan-live", Target::new(TargetKind::Email, "a@b.com"));
+    scan.status = ScanStatus::Running;
+    let line = scan.module_accounting_line();
+
+    // The counts are still reported verbatim — nothing is invented or hidden.
+    assert!(
+        line.starts_with("0 run, 0 errored, 0 timed out, 0 skipped, 0 cached, 0 deduped"),
+        "the six columns must still be reported as-is: {line}"
+    );
+    // …but they must never stand alone as if they were final.
+    assert!(
+        line.contains("NOT YET FINAL"),
+        "a non-terminal scan must disclose that its counters are unwritten: {line}"
+    );
+    assert!(
+        line.contains("running"),
+        "the disclosure must name the state that makes them unwritten: {line}"
+    );
+
+    // Pending has the same problem — the row exists before dispatch begins.
+    scan.status = ScanStatus::Pending;
+    assert!(scan.module_accounting_line().contains("NOT YET FINAL"));
+}
+
+#[test]
+fn module_accounting_line_is_bare_counts_once_the_scan_is_terminal() {
+    // The disclosure must not leak into the common case: for every terminal
+    // status the counters ARE final, and the sentence stays the canonical
+    // six-count string every renderer has always printed.
+    for status in [
+        ScanStatus::Complete,
+        ScanStatus::Failed,
+        ScanStatus::Aborted,
+    ] {
+        let mut scan = Scan::new("scan-done", Target::new(TargetKind::Email, "a@b.com"));
+        scan.status = status;
+        scan.modules_run = 12;
+        scan.modules_errored = 2;
+        scan.modules_timed_out = 3;
+        scan.modules_skipped = 1;
+        scan.modules_cached = 4;
+        scan.modules_deduped = 5;
+        assert_eq!(
+            scan.module_accounting_line(),
+            "12 run, 2 errored, 3 timed out, 1 skipped, 4 cached, 5 deduped",
+            "terminal status {status:?} must render bare counts with no caveat"
+        );
+    }
+}
+
+#[test]
+fn scan_status_is_terminal_partitions_every_variant() {
+    // Exhaustive: `is_terminal` gates whether the derived columns can be
+    // trusted, so a new variant must be classified deliberately, not defaulted.
+    assert!(!ScanStatus::Pending.is_terminal());
+    assert!(!ScanStatus::Running.is_terminal());
+    assert!(ScanStatus::Complete.is_terminal());
+    assert!(ScanStatus::Failed.is_terminal());
+    assert!(ScanStatus::Aborted.is_terminal());
+}
+
+// ── StopReason / completeness disclosure ───────────────────────────────────
+//
+// The defect these pin: a scan cut short by `max_entities` /
+// `max_wall_time_secs` reaches `ScanStatus::Complete` exactly like one that
+// exhausted its candidates, and the engine used to discard the expansion's
+// `StopReason` entirely (`let _ = self.run_expansion(...)`). Every consumer
+// that reads a finished scan back from the store therefore reported a
+// truncated search as a complete answer — which invites "absent from this
+// scan" to be read as "does not exist", the one claim an intelligence artifact
+// must never make falsely.
+
+fn scan_for(status: ScanStatus, stop_reason: Option<StopReason>) -> Scan {
+    let mut s = Scan::new(
+        "abcdef0123456789",
+        Target {
+            kind: TargetKind::Email,
+            value: "a@b.test".into(),
+        },
+    );
+    s.status = status;
+    s.stop_reason = stop_reason;
+    s
+}
+
+#[test]
+fn stop_reason_truncated_separates_budget_cutoffs_from_exhaustion() {
+    // Exhaustive over the enum: a new variant must be classified deliberately.
+    // The two benign reasons mean the search space really was covered; the two
+    // budget reasons mean it was not.
+    assert!(!StopReason::NoMoreCandidates.truncated());
+    assert!(!StopReason::DepthExhausted.truncated());
+    assert!(StopReason::MaxEntities(500).truncated());
+    assert!(StopReason::MaxWallTime(60).truncated());
+    // Cancelled is surfaced by ScanStatus::Aborted, which every disclosure path
+    // keys off separately — counting it here too would double-warn one event.
+    assert!(!StopReason::Cancelled.truncated());
+}
+
+#[test]
+fn stop_reason_label_names_the_budget_that_cut_the_scan_short() {
+    // The label is single-sourced: it is what the live `ExpansionStop` event,
+    // the persisted record and every renderer all print, so an operator can
+    // match the warning in a dossier to the event in the stream.
+    assert!(StopReason::MaxEntities(500).label().contains("500"));
+    assert!(StopReason::MaxWallTime(60).label().contains("60"));
+    assert!(
+        StopReason::NoMoreCandidates
+            .label()
+            .contains("no more high-confidence candidates")
+    );
+}
+
+#[test]
+fn a_truncated_complete_scan_is_caveated_and_an_exhaustive_one_is_not() {
+    let truncated = scan_for(ScanStatus::Complete, Some(StopReason::MaxEntities(500)));
+    let caveat = truncated
+        .completeness_caveat("this scan")
+        .expect("a budget-truncated scan must never read as a complete answer");
+    assert!(caveat.contains("TRUNCATED"), "{caveat}");
+    assert!(
+        caveat.contains("not evidence"),
+        "the caveat must say absence here is not evidence of absence: {caveat}"
+    );
+    assert!(caveat.contains("500"), "must name the budget: {caveat}");
+
+    // …and the converse: genuinely exhaustive scans must NOT acquire a caveat,
+    // or the warning becomes noise operators learn to ignore.
+    for benign in [StopReason::NoMoreCandidates, StopReason::DepthExhausted] {
+        assert_eq!(
+            scan_for(ScanStatus::Complete, Some(benign)).completeness_caveat("this scan"),
+            None,
+            "{benign:?} is a complete answer"
+        );
+    }
+}
+
+#[test]
+fn completeness_caveat_names_the_subject_it_was_given() {
+    // Callers refer to the scan differently ("scan latest", "scan a1b2", "this
+    // scan"); the single-sourced wording has to open with whichever they pass.
+    let s = scan_for(ScanStatus::Aborted, None);
+    assert!(
+        s.completeness_caveat("scan latest")
+            .expect("aborted is always caveated")
+            .starts_with("scan latest")
+    );
+}
+
+#[test]
+fn a_scan_row_written_before_stop_reason_existed_still_loads_and_stays_silent() {
+    // DATA INTEGRITY / backward compatibility. `Scan` round-trips through the
+    // `scans.data_json` column, so every row already on an operator's device
+    // predates this field. It must deserialise (not error, which would make
+    // existing scans unreadable) AND must not acquire a warning invented from
+    // its absence — `None` means "unknown", never "truncated".
+    let legacy = r#"{
+        "id": "old",
+        "target": {"kind": "email", "value": "a@b.test"},
+        "status": "complete",
+        "started_at": 1,
+        "finished_at": 2,
+        "entity_count": 3,
+        "error": null
+    }"#;
+    let scan: Scan = serde_json::from_str(legacy).expect("legacy scan rows must still deserialise");
+    assert_eq!(scan.stop_reason, None);
+    assert_eq!(scan.entity_count, 3);
+    assert_eq!(
+        scan.completeness_caveat("this scan"),
+        None,
+        "an unknown stop reason must never be reported as a truncation"
+    );
+}
+
+#[test]
+fn stop_reason_survives_the_json_round_trip_the_store_uses() {
+    // `upsert_scan` serialises the whole `Scan` to `data_json` and reads it
+    // back the same way, so the payload carried in that column is exactly this.
+    for reason in [
+        StopReason::NoMoreCandidates,
+        StopReason::DepthExhausted,
+        StopReason::MaxEntities(500),
+        StopReason::MaxWallTime(60),
+        StopReason::Cancelled,
+    ] {
+        let before = scan_for(ScanStatus::Complete, Some(reason));
+        let json = serde_json::to_string(&before).expect("scan serialises");
+        let after: Scan = serde_json::from_str(&json).expect("scan round-trips");
+        assert_eq!(
+            after.stop_reason,
+            Some(reason),
+            "{reason:?} must survive persistence"
+        );
+        assert_eq!(
+            after.completeness_caveat("s"),
+            before.completeness_caveat("s")
+        );
     }
 }

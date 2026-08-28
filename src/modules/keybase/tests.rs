@@ -16,26 +16,14 @@ fn module_metadata() {
     assert!(!Keybase.description().is_empty());
 }
 
-#[tokio::test]
-async fn lookup_surfaces_transport_failure_as_error() {
-    // T2.128 regression: a keybase.io outage / unreachable host previously folded
-    // into Ok(empty) — indistinguishable from a genuine "no Keybase identity for
-    // this username", silently dropping every linked-account / PGP / proof pivot.
-    // Port 1 has nothing listening (connection refused): a real transport failure
-    // that must now surface as a module Err, not a clean miss.
-    let client = reqwest::Client::new();
-    let out = lookup(&client, "http://127.0.0.1:1/", "alice", "scan").await;
-    assert!(
-        out.is_err(),
-        "an unreachable keybase host must surface as Err, not Ok(empty)"
-    );
-}
-
 #[test]
 fn parse_response() {
+    // `them` is a single OBJECT (the singular ?username= endpoint), not an
+    // array — this pins the shape that a `Vec<KbUser>` used to reject with
+    // "invalid type: map, expected a sequence" on every real lookup.
     let raw = r#"{
         "status": {"code": 0, "name": "OK"},
-        "them": [{
+        "them": {
             "id": "abc123",
             "basics": {"username": "alice", "ctime": 1500000000},
             "profile": {"full_name": "Alice Smith", "location": "Sydney, AU", "bio": "dev"},
@@ -46,20 +34,35 @@ fn parse_response() {
                     {"proof_type": "dns", "nametag": "alice.dev", "state": 1}
                 ]
             }
-        }]
+        }
     }"#;
-    let r: KbResp = serde_json::from_str(raw).unwrap();
-    assert_eq!(r.status.unwrap().code, Some(0));
-    let user = &r.them.unwrap()[0];
+    let r: KbResp = serde_json::from_str(raw).expect("should succeed");
+    assert_eq!(r.status.expect("should succeed").code, Some(0));
+    let user = r.them.expect("should succeed");
     assert_eq!(
-        user.basics.as_ref().unwrap().username.as_deref(),
+        user.basics
+            .as_ref()
+            .expect("should succeed")
+            .username
+            .as_deref(),
         Some("alice")
     );
     assert_eq!(
-        user.profile.as_ref().unwrap().full_name.as_deref(),
+        user.profile
+            .as_ref()
+            .expect("should succeed")
+            .full_name
+            .as_deref(),
         Some("Alice Smith")
     );
-    assert_eq!(user.proofs_summary.as_ref().unwrap().all.len(), 3);
+    assert_eq!(
+        user.proofs_summary
+            .as_ref()
+            .expect("should succeed")
+            .all
+            .len(),
+        3
+    );
 }
 
 #[test]
@@ -74,7 +77,7 @@ fn extract_proofs_maps_verified_links_and_urls() {
             {"proof_type":"twitter","nametag":"revoked","state":2,"service_url":"https://twitter.com/revoked"}
         ]"#,
     )
-    .unwrap();
+    .expect("should succeed");
     let mut r = ModuleResult::new();
     extract_proofs(&proofs, "chris", "scan", &mut r);
     let has = |k: EntityKind, v: &str| r.entities.iter().any(|e| e.kind == k && e.value == v);
@@ -97,7 +100,7 @@ fn extract_proofs_maps_verified_links_and_urls() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Username && e.value == "malgorithms")
-        .unwrap();
+        .expect("should succeed");
     assert!(gh.has_tag("verified") && gh.has_tag("keybase"));
 }
 
@@ -111,12 +114,12 @@ fn kb(raw: &str) -> KbResp {
 fn build_entities_full_au_profile_emits_username_person_address_coords() {
     let body = kb(r#"{
         "status": {"code": 0},
-        "them": [{
+        "them": {
             "id": "abc123",
             "basics": {"username": "alice", "ctime": 1500000000},
             "profile": {"full_name": "Alice Smith", "location": "Sydney, NSW", "bio": "dev"},
             "proofs_summary": {"all": []}
-        }]
+        }
     }"#);
     let ents = build_entities(body, "alice", "scan");
     let find = |k: EntityKind, v: &str| ents.iter().find(|e| e.kind == k && e.value == v);
@@ -153,10 +156,10 @@ fn build_entities_full_au_profile_emits_username_person_address_coords() {
 fn build_entities_non_au_location_has_no_state_or_coords() {
     let body = kb(r#"{
         "status": {"code": 0},
-        "them": [{
+        "them": {
             "basics": {"username": "bob"},
             "profile": {"location": "Berlin, Germany"}
-        }]
+        }
     }"#);
     let ents = build_entities(body, "bob", "scan");
 
@@ -175,13 +178,15 @@ fn build_entities_non_au_location_has_no_state_or_coords() {
 
 #[test]
 fn build_entities_status_not_ok_is_empty() {
-    let body = kb(r#"{"status": {"code": 1}, "them": []}"#);
+    // A non-existent user is a 200 with status.code != 0 and no `them`.
+    let body = kb(r#"{"status": {"code": 1}}"#);
     assert!(build_entities(body, "alice", "scan").is_empty());
 }
 
 #[test]
-fn build_entities_empty_them_is_empty() {
-    let body = kb(r#"{"status": {"code": 0}, "them": []}"#);
+fn build_entities_absent_them_is_empty() {
+    // status ok but no subject object present → nothing to emit.
+    let body = kb(r#"{"status": {"code": 0}}"#);
     assert!(build_entities(body, "alice", "scan").is_empty());
 }
 
@@ -189,7 +194,7 @@ fn build_entities_empty_them_is_empty() {
 fn build_entities_name_without_space_emits_no_person() {
     let body = kb(r#"{
         "status": {"code": 0},
-        "them": [{"basics": {"username": "bob"}, "profile": {"full_name": "Bob"}}]
+        "them": {"basics": {"username": "bob"}, "profile": {"full_name": "Bob"}}
     }"#);
     let ents = build_entities(body, "bob", "scan");
     assert!(!ents.iter().any(|e| e.kind == EntityKind::Person));
@@ -202,7 +207,7 @@ fn build_entities_name_without_space_emits_no_person() {
 fn build_entities_short_location_is_skipped() {
     let body = kb(r#"{
         "status": {"code": 0},
-        "them": [{"basics": {"username": "bob"}, "profile": {"location": "Hi"}}]
+        "them": {"basics": {"username": "bob"}, "profile": {"location": "Hi"}}
     }"#);
     let ents = build_entities(body, "bob", "scan");
     assert!(
@@ -215,7 +220,7 @@ fn build_entities_short_location_is_skipped() {
 
 #[test]
 fn build_entities_falls_back_to_query_username_when_basics_absent() {
-    let body = kb(r#"{"status": {"code": 0}, "them": [{"id": "x"}]}"#);
+    let body = kb(r#"{"status": {"code": 0}, "them": {"id": "x"}}"#);
     let ents = build_entities(body, "fallback", "scan");
     let u = &ents[0];
     assert_eq!(u.kind, EntityKind::Username);

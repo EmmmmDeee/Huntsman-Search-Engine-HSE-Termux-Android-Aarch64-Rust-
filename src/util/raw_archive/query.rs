@@ -15,10 +15,9 @@ pub struct ArchivedResponse {
     pub raw: Value,
 }
 
-/// Env-free core for [`crate::util::raw_archive::records_in_window`] /
-/// [`crate::util::raw_archive::records_for_queries`] — the window filter,
-/// optional query-set filter, and parse, so all three are unit-testable against
-/// a temp archive.
+/// Env-free core for [`crate::util::raw_archive::records_for_queries`] — the
+/// window filter, optional query-set filter, and parse, unit-testable against a
+/// temp archive independent of the real on-disk archive dir.
 ///
 /// The archive is append-only and never evicted, so it grows without bound and
 /// the auto-dossier reads it on every scan. To keep that O(matching files) and

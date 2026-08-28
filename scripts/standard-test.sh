@@ -31,13 +31,17 @@ DEPTH="${HSE_DEPTH:-1}"
 TIMEOUT_MS="${HSE_TIMEOUT_MS:-60000}"
 WALL="${HSE_WALL:-240}"
 
-# Locate the binary: explicit override, else release, else debug.
+# Locate the binary: explicit override, else release, else the `fast` profile
+# (Termux's default build profile — see install.sh's HSE_BUILD_PROFILE and
+# docs/INSTALL.md's "Manual build" section, both of which build --profile fast
+# on Termux by default, landing at target/fast/hse), else debug.
 BIN="${HSE_BIN:-}"
 if [ -z "$BIN" ]; then
     if [ -x ./target/release/hse ]; then BIN=./target/release/hse
+    elif [ -x ./target/fast/hse ]; then BIN=./target/fast/hse
     elif [ -x ./target/debug/hse ]; then BIN=./target/debug/hse
     else
-        echo "error: no hse binary found — run 'cargo build --release' first" >&2
+        echo "error: no hse binary found — run 'cargo build --release' (or --profile fast) first" >&2
         exit 1
     fi
 fi

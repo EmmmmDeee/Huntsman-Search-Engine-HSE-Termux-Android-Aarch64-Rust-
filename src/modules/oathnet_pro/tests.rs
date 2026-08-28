@@ -1,4 +1,13 @@
 use super::*;
+use crate::core::confidence;
+
+    #[test]
+    fn cache_ttl_is_24h_so_repeat_scans_dont_re_spend_the_scarce_quota() {
+        // OathNet has the scarcest paid quota and bills per pagination page;
+        // the inter-scan cache is what stops a repeat scan re-spending it. A 0
+        // (trait default) would disable that path, so pin the 24h window.
+        assert_eq!(OathnetPro.cache_ttl_secs(), 86_400);
+    }
 
     #[test]
     fn extract_breach_entities_characterization() {
@@ -186,6 +195,71 @@ use super::*;
     }
 
     #[test]
+    fn person_carries_demographics_and_steam_id_pivots() {
+        use serde_json::json;
+        // Parity with SeekNow: a breach row with a real name + demographics + a
+        // valid SteamID64. Today the Person carries neither demographic tag and
+        // the SteamID64 is discarded entirely.
+        let item = json!({
+            "email": "jane.roe@example.com",
+            "full_name": "Jane Roe",
+            "gender": "female",
+            "date_birth": "1990-01-01",
+            "steam_id": "76561197960287930"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "jane.roe@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+
+        let person = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Person && e.value == "Jane Roe")
+            .expect("Person entity from full_name");
+        assert!(
+            person.has_tag("gender:F"),
+            "gender must be normalized + stamped on the Person"
+        );
+        assert!(
+            person.has_tag("dob:1990-01-01"),
+            "dob must be stamped on the Person"
+        );
+
+        let steam = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Username && e.value == "steam:76561197960287930")
+            .expect("SteamID64 must mint a steam:<id> Username pivot");
+        assert!(steam.has_tag("steam"));
+
+        // A 16-digit (invalid) steam id must NOT pivot — the strict shared gate.
+        let mut seen2 = HashSet::new();
+        let mut result2 = ModuleResult::new();
+        extract_breach_entities(
+            &json!({ "steam_id": "7656119796028793" }),
+            "x",
+            "scan",
+            "oathnet.org:test",
+            &mut seen2,
+            &mut result2,
+        );
+        assert!(
+            !result2
+                .entities
+                .iter()
+                .any(|e| e.value.starts_with("steam:")),
+            "an invalid SteamID64 must not pivot"
+        );
+    }
+
+    #[test]
     fn extract_stealer_entities_characterization() {
         use serde_json::json;
         let item = json!({
@@ -224,6 +298,30 @@ use super::*;
         assert_eq!(
             tags_of(EntityKind::Credential, "loginuser@example.com@"),
             ["oathnet-pro", "stealer"]
+        );
+    }
+
+    #[test]
+    fn stealer_domain_survives_a_bare_key_collision() {
+        use serde_json::json;
+        // The shared `seen` set also carries the breach path's un-namespaced
+        // Username/IP dedup keys. A stealer `domain` whose value coincides with
+        // one of those bare strings must STILL be minted — the dedup key is now
+        // namespaced (`@stealer-domain:`), so it no longer collides. Before the
+        // fix, the bare `seen.insert(domain)` returned false and the real Domain
+        // expansion seed was silently dropped.
+        let item = json!({ "domain": ["testsite.com"] });
+        let mut seen = HashSet::new();
+        // Simulate a breach-side bare key (e.g. a Username equal to the domain).
+        seen.insert("testsite.com".to_string());
+        let mut result = ModuleResult::new();
+        extract_stealer_entities(&item, "scan", "oathnet.org:test", &mut seen, &mut result);
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == "testsite.com"),
+            "a stealer Domain must not be dropped by an un-namespaced dedup collision"
         );
     }
 
@@ -383,6 +481,44 @@ use super::*;
     }
 
     #[test]
+    fn absence_sentinels_do_not_mint_country_employer_or_location_nodes() {
+        use serde_json::json;
+        // A breach page where rows carry the MySQL NULL-export marker `\N` (or a
+        // bracketed redaction) in employer/country/location must NOT mint shared
+        // nodes — else all those unrelated strangers fuse onto one Organisation/
+        // Address, a false positive.
+        let sentinel = json!({
+            "email": "a@example.com",
+            "employer": "\\N",
+            "country": "\\N",
+            "location": "[REDACTED]",
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&sentinel, "a@example.com", "scan", "oathnet.org:t", &mut seen, &mut result);
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Organisation),
+            "a \\N employer must not mint an Organisation node"
+        );
+
+        // Control: a REAL employer still mints the Organisation pivot.
+        let real = json!({ "email": "b@example.com", "employer": "Acme Pty Ltd" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&real, "b@example.com", "scan", "oathnet.org:t", &mut seen, &mut result);
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Organisation && e.value == "Acme Pty Ltd"),
+            "a real employer must still mint the Organisation pivot"
+        );
+    }
+
+    #[test]
     fn extract_breach_entities_non_target_row_tags_candidate() {
         use serde_json::json;
         // A row whose fields do NOT match the target: phone/person/country are
@@ -403,7 +539,7 @@ use super::*;
             .entities
             .iter()
             .find(|e| e.kind == EntityKind::Phone)
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(phone.tags, ["breach", "oathnet-pro", "candidate"]);
         assert!(
             (phone.confidence - 0.25).abs() < 1e-9,
@@ -417,7 +553,7 @@ use super::*;
         // The exact junk pattern from the "Jordan Avery" name scan: a breach
         // row for a stranger (a bank employee) returned by the broad search. The
         // email AND its domain must be demoted to candidate — previously they
-        // were emitted at full 0.70/0.55 confidence with no `candidate` tag,
+        // were emitted at full confidence::HIGH_PLUS/confidence::MEDIUM_HIGH confidence with no `candidate` tag,
         // which is what flooded the result with 88% junk.
         let item = json!({
             "email": "hlaura@blackhawkbank.com",
@@ -533,7 +669,7 @@ use super::*;
     #[test]
     fn breach_parent_is_honest_about_whether_the_subject_appears() {
         use serde_json::json;
-        // A `full_name` page of pure strangers must NOT mint a 0.85
+        // A `full_name` page of pure strangers must NOT mint a confidence::HIGH_PLUSPLUS_PLUS
         // breach-tagged subject node: the engine pre-seeds a subject anchor, so
         // that parent would merge a false "breach hit" — plus a 50-stranger
         // name/country dump — onto it. Zero matching rows => None.
@@ -571,7 +707,7 @@ use super::*;
         let parent = breach_parent_entity(&target, "scan", &matching, page.len())
             .expect("subject present => parent emitted");
         assert_eq!(parent.value, "Ali Kareem");
-        assert!((parent.confidence - 0.85).abs() < 1e-9);
+        assert!((parent.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 1e-9);
         assert!(parent.has_tag("breach") && parent.has_tag("oathnet-pro"));
         let ev = parent.evidence.first().expect("parent evidence");
         assert_eq!(ev.attributes.get("hits").map(String::as_str), Some("1"));
@@ -713,7 +849,7 @@ use super::*;
             "exact name is the target, not a candidate"
         );
         assert!(
-            (d.confidence - 0.70).abs() < 1e-9,
+            (d.confidence - confidence::HIGH_PLUS).abs() < 1e-9,
             "target person at full conf"
         );
     }
@@ -764,6 +900,7 @@ use super::*;
             "T1590.005",
             "T1591.001",
             "T1591.002",
+            "T1597.002",
         ] {
             assert!(t.contains(&id), "oathnet_pro must claim {id}, got {t:?}");
             assert!(attack::technique(id).is_some(), "{id} must be catalogued");
@@ -1314,5 +1451,57 @@ use super::*;
         assert!(
             !r.entities.iter().any(|e| e.kind == EntityKind::Password && e.value.contains('@')),
             "an email must not also be minted as a Password"
+        );
+    }
+
+    #[test]
+    fn stealer_row_mints_a_first_class_password_entity() {
+        use serde_json::json;
+        // The paid stealer corpus must contribute its plaintext secret as a
+        // Password node, or AU-047/105/121 can never fire from it (the breach
+        // path already does this — the stealer path silently didn't).
+        let item = json!({
+            "url": "https://portal.example.org/login",
+            "username": "subject",
+            "password": "Tr0ub4dor&3",
+            "email": ["subject@example.org"],
+        });
+        let mut seen = HashSet::new();
+        let mut r = ModuleResult::new();
+        extract_stealer_entities(&item, "s", "fp", &mut seen, &mut r);
+        let pw: Vec<_> = r
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Password)
+            .collect();
+        assert_eq!(pw.len(), 1, "exactly one Password from the stealer row");
+        assert_eq!(pw[0].value, "Tr0ub4dor&3");
+        assert!(pw[0].has_tag("plaintext-password"));
+    }
+
+    #[test]
+    fn stealer_password_sentinel_and_email_are_not_minted_as_secrets() {
+        use serde_json::json;
+        // A paywall sentinel is not a secret; an email in the password slot is a
+        // lead recovered as an Email, never a Password (which would forge links).
+        let sentinel = json!({"url": "https://x/login", "password": "UPGRADE_TO_SEE_FULL_DATA"});
+        let mut seen = HashSet::new();
+        let mut r = ModuleResult::new();
+        extract_stealer_entities(&sentinel, "s", "fp", &mut seen, &mut r);
+        assert!(!r.entities.iter().any(|e| e.kind == EntityKind::Password));
+
+        let email_slot = json!({"url": "https://x/login", "password": "leaked@example.org"});
+        let mut seen = HashSet::new();
+        let mut r = ModuleResult::new();
+        extract_stealer_entities(&email_slot, "s", "fp", &mut seen, &mut r);
+        assert!(
+            r.entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Email && e.has_tag("recovered-from-password")),
+            "an email in the password slot is recovered as an Email"
+        );
+        assert!(
+            !r.entities.iter().any(|e| e.kind == EntityKind::Password),
+            "…never as a Password"
         );
     }

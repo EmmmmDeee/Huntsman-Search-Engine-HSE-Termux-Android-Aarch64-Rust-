@@ -27,6 +27,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -88,7 +89,7 @@ impl Module for MastodonUser {
     }
 
     fn description(&self) -> &'static str {
-        "Mastodon / Fediverse account lookup across top instances via public v1 API"
+        "Mastodon / Fediverse account recon — sweeps top instances to unmask an account via the public v1 API"
     }
 
     fn priority(&self) -> u8 {
@@ -147,6 +148,13 @@ impl Module for MastodonUser {
         }
 
         let encoded = crate::util::http::urlencode(handle);
+        // How many instances actually answered. `fetch_json_or_404` already maps the
+        // clean miss (404 — no such account) to `Ok(None)`, so the `Err` arm below
+        // catches only real failures: a 429 (which these instances apply hard to
+        // anonymous API calls), a 5xx, a TLS error, a timeout. If every instance
+        // fails, `Ok(empty)` would report "this handle has no Mastodon presence on
+        // any major instance" when zero instances were successfully queried.
+        let mut answered = 0usize;
         for instance in INSTANCES {
             if ctx.cancel.is_cancelled() {
                 break;
@@ -154,7 +162,10 @@ impl Module for MastodonUser {
             let url = format!("https://{instance}/api/v1/accounts/lookup?acct={encoded}");
             let acct: Option<MastodonAccount> = match fetch_json_or_404(&ctx.http, SRC, &url).await
             {
-                Ok(v) => v,
+                Ok(v) => {
+                    answered += 1;
+                    v
+                }
                 Err(_) => continue,
             };
             if let Some(acct) = acct {
@@ -166,6 +177,17 @@ impl Module for MastodonUser {
                 r.entities = build_entities(acct, instance, &ctx.scan_id);
                 return Ok(r);
             }
+        }
+        // Cancellation is excluded: the caller stopped the sweep and already knows
+        // why, so an error there would be noise rather than a finding.
+        if answered == 0 && !ctx.cancel.is_cancelled() {
+            return Err(crate::core::error::Error::module(
+                SRC,
+                format!(
+                    "no Mastodon instance answered for '{handle}' ({} tried)",
+                    INSTANCES.len()
+                ),
+            ));
         }
         Ok(ModuleResult::new())
     }
@@ -192,7 +214,12 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
     }
 
     // Confirmed-on-Mastodon username.
-    let mut u = Entity::new(EntityKind::Username, &acct.username, 0.85, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        &acct.username,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     u.tag("mastodon");
     u.tag("fediverse");
     u.add_evidence(ev.clone());
@@ -200,7 +227,7 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
 
     // Profile URL.
     if !profile_url.is_empty() && profile_url.starts_with("http") {
-        let mut url_e = Entity::new(EntityKind::Url, &profile_url, 0.78, scan_id);
+        let mut url_e = Entity::new(EntityKind::Url, &profile_url, confidence::STRONG, scan_id);
         url_e.tag("mastodon");
         url_e.add_evidence(Evidence::new(
             SRC,
@@ -211,7 +238,7 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
 
     // Real name → Person (≥2 tokens, non-placeholder).
     if let Some(ref name) = acct.display_name
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.60, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::MEDIUM_PLUS, scan_id)
     {
         p.tag("mastodon");
         p.tag("derived");
@@ -231,8 +258,15 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
     // Bio (HTML) — strip tags, then extract emails and URLs.
     if let Some(ref note_html) = acct.note {
         let note_text = crate::util::html::strip_html(note_html);
-        for email in crate::util::extract::emails(&note_text) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.68, scan_id);
+        // Delegates to the shared bio-email extractor every other bio-carrying
+        // profile module already uses (launchpad_user, gitlab_user,
+        // codeberg_user, cpan_user, gitea_user) instead of reimplementing the
+        // identical extract-then-build-Email-entity loop inline — that
+        // helper's own doc records it already had to be patched once (a
+        // `.take(limit)` silently dropped real contact-email pivots past the
+        // 3rd-5th); this module's independent copy would not have inherited
+        // that fix, and would not automatically inherit its next one either.
+        for mut e in profile_kit::bio_emails(&note_text, 0.68, scan_id) {
             e.tag("mastodon");
             e.tag("public-profile");
             e.add_evidence(
@@ -249,7 +283,7 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
             if link.contains(instance) {
                 continue;
             }
-            let mut url_e = Entity::new(EntityKind::Url, link, 0.58, scan_id);
+            let mut url_e = Entity::new(EntityKind::Url, link, confidence::MEDIUM_SOLID, scan_id);
             url_e.tag("mastodon");
             url_e.add_evidence(
                 Evidence::new(
@@ -272,8 +306,12 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
         let verified = field.verified_at.is_some();
         // Field value may be plain text or HTML with an <a href="...">.
         let plain = crate::util::html::strip_html(&field.value);
-        let conf_url = if verified { 0.82 } else { 0.65 };
-        let conf_domain = if verified { 0.80 } else { 0.58 };
+        let conf_url = if verified { 0.82 } else { confidence::HIGH };
+        let conf_domain = if verified {
+            confidence::HIGH_PLUSPLUS
+        } else {
+            0.58
+        };
 
         // Extract href from the raw HTML value for the URL entity.
         let href = extract_href(&field.value);
@@ -402,7 +440,7 @@ fn emit_domain_from_url(
     if !host.contains('.') || host == instance || is_common_platform(&host) {
         return;
     }
-    let mut d = Entity::new(EntityKind::Domain, &host, 0.52, scan_id);
+    let mut d = Entity::new(EntityKind::Domain, &host, confidence::MEDIUM_LIGHT, scan_id);
     d.tag("mastodon");
     d.tag("derived");
     d.add_evidence(
@@ -453,8 +491,13 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "alice");
         assert!(u.is_some(), "must emit Username entity");
-        assert!((u.unwrap().confidence - 0.85).abs() < 0.01);
-        assert!(u.unwrap().has_tag("mastodon") && u.unwrap().has_tag("fediverse"));
+        assert!(
+            (u.expect("should succeed").confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01
+        );
+        assert!(
+            u.expect("should succeed").has_tag("mastodon")
+                && u.expect("should succeed").has_tag("fediverse")
+        );
     }
 
     #[test]
@@ -463,7 +506,7 @@ mod tests {
         let ents = build_entities(acct, "mastodon.social", "scan-mst-002");
         let p = ents.iter().find(|e| e.kind == EntityKind::Person);
         assert!(p.is_some(), "must emit Person from multi-word display name");
-        assert_eq!(p.unwrap().value, "Alice Hacker");
+        assert_eq!(p.expect("should succeed").value, "Alice Hacker");
     }
 
     #[test]
@@ -501,13 +544,13 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Url && e.value.contains("alice.dev"));
         assert!(url_e.is_some(), "must emit URL from verified field");
-        assert!(url_e.unwrap().has_tag("rel-me-verified"));
-        assert!(url_e.unwrap().confidence >= 0.80);
+        assert!(url_e.expect("should succeed").has_tag("rel-me-verified"));
+        assert!(url_e.expect("should succeed").confidence >= confidence::HIGH_PLUSPLUS);
         let dom = ents
             .iter()
             .find(|e| e.kind == EntityKind::Domain && e.value == "alice.dev");
         assert!(dom.is_some(), "must emit Domain from verified field");
-        assert!(dom.unwrap().has_tag("rel-me-verified"));
+        assert!(dom.expect("should succeed").has_tag("rel-me-verified"));
     }
 
     #[test]
@@ -522,7 +565,7 @@ mod tests {
         let ents = build_entities(acct, "mastodon.social", "scan-mst-005");
         let a = ents.iter().find(|e| e.kind == EntityKind::Address);
         assert!(a.is_some(), "must emit Address from location field");
-        assert_eq!(a.unwrap().value, "Berlin, Germany");
+        assert_eq!(a.expect("should succeed").value, "Berlin, Germany");
     }
 
     #[test]
@@ -540,10 +583,10 @@ mod tests {
             .find(|e| e.kind == EntityKind::Url && e.value.contains("alice.dev"));
         assert!(url_e.is_some());
         assert!(
-            url_e.unwrap().confidence < 0.75,
-            "unverified field URL should be below 0.75"
+            url_e.expect("should succeed").confidence < confidence::VERY_HIGH,
+            "unverified field URL should be below confidence::VERY_HIGH"
         );
-        assert!(!url_e.unwrap().has_tag("rel-me-verified"));
+        assert!(!url_e.expect("should succeed").has_tag("rel-me-verified"));
     }
 
     #[test]

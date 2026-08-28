@@ -1,5 +1,6 @@
 use super::{OpenSanctions, entity_builders::build_entities, types::MatchResp};
 use crate::core::{
+    confidence,
     entity::EntityKind,
     module::{Module, ModuleCost},
     scan::{Target, TargetKind},
@@ -83,7 +84,7 @@ const REAL_MATCH_RESPONSE: &str = r#"{
 #[test]
 fn parse_match_response_matches_the_real_api_schema() {
     // Red/green anchor: this must deserialise into real (non-empty) values.
-    let r: MatchResp = serde_json::from_str(REAL_MATCH_RESPONSE).unwrap();
+    let r: MatchResp = serde_json::from_str(REAL_MATCH_RESPONSE).expect("should succeed");
     let results = &r.responses.q.results;
     assert_eq!(results.len(), 1);
     let m = &results[0];
@@ -93,7 +94,7 @@ fn parse_match_response_matches_the_real_api_schema() {
         Some("Alexander Vyacheslavovich ZAKHAROV")
     );
     assert_eq!(m.is_match, Some(true));
-    assert!((m.score.unwrap() - 0.92).abs() < 0.001);
+    assert!((m.score.expect("should succeed") - 0.92).abs() < 0.001);
     assert_eq!(
         m.properties.topics,
         vec!["corp.disqual", "sanction", "debarment"]
@@ -107,7 +108,7 @@ fn parse_match_response_matches_the_real_api_schema() {
 
 // ── Core: entity building against the real schema ────────────────────
 fn matches(json: &str) -> Vec<crate::core::entity::Entity> {
-    let r: MatchResp = serde_json::from_str(json).unwrap();
+    let r: MatchResp = serde_json::from_str(json).expect("should succeed");
     build_entities("Aleksandr Zacharov", &r.responses.q, "s")
 }
 
@@ -118,7 +119,7 @@ fn definitive_match_carries_sanction_and_debarment_tags_and_evidence() {
     let e = &es[0];
     assert_eq!(e.kind, EntityKind::Person);
     assert_eq!(e.value, "Alexander Vyacheslavovich ZAKHAROV");
-    assert!((e.confidence - 0.60).abs() < 1e-9);
+    assert!((e.confidence - confidence::MEDIUM_PLUS).abs() < 1e-9);
     assert!(e.has_tag(crate::core::tags::SANCTIONED));
     assert!(e.has_tag(crate::core::tags::DEBARRED));
     assert!(
@@ -127,7 +128,7 @@ fn definitive_match_carries_sanction_and_debarment_tags_and_evidence() {
     );
     assert!(
         e.has_tag("high-confidence-match"),
-        "0.92 clears the 0.90 bar"
+        "0.92 clears the confidence::VERY_HIGH_PLUS bar"
     );
 
     let ev = &e.evidence[0];
@@ -175,7 +176,7 @@ fn pep_topic_without_sanction_tags_pep_only() {
     assert!(!es[0].has_tag(crate::core::tags::DEBARRED));
     assert!(
         !es[0].has_tag("high-confidence-match"),
-        "0.81 is below the 0.90 bar"
+        "0.81 is below the confidence::VERY_HIGH_PLUS bar"
     );
 }
 

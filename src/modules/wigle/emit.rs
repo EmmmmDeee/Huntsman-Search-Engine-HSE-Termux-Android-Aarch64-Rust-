@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
 };
@@ -39,7 +40,12 @@ pub(super) fn extract_cell_intel(
         let top = mode(&carriers);
         if !top.is_empty() {
             let total = resp.results.len();
-            let mut org = Entity::new(EntityKind::Organisation, top, 0.55, scan_id);
+            let mut org = Entity::new(
+                EntityKind::Organisation,
+                top,
+                confidence::MEDIUM_HIGH,
+                scan_id,
+            );
             org.tag("wigle");
             org.tag("cell-carrier");
             org.add_evidence(
@@ -53,6 +59,80 @@ pub(super) fn extract_cell_intel(
             );
             result.push(org);
         }
+    }
+
+    // ── Address: city/region/country/postalcode consensus ───────────────────
+    // Mirrors the WiFi-geo bbox Address block in mod.rs::process(), but over
+    // cell-tower observations — coarser geolocation than WiFi AP-level, so
+    // confidence stays modest.
+    let cities: Vec<&str> = resp
+        .results
+        .iter()
+        .filter_map(|n| n.city.as_deref())
+        .filter(|c| !c.is_empty())
+        .collect();
+    let regions: Vec<&str> = resp
+        .results
+        .iter()
+        .filter_map(|n| n.region.as_deref())
+        .filter(|r| !r.is_empty())
+        .collect();
+    let countries: Vec<&str> = resp
+        .results
+        .iter()
+        .filter_map(|n| n.country.as_deref())
+        .filter(|c| !c.is_empty())
+        .collect();
+    let postcodes: Vec<&str> = resp
+        .results
+        .iter()
+        .filter_map(|n| n.postalcode.as_deref())
+        .filter(|p| !p.is_empty())
+        .collect();
+
+    let top_city = mode(&cities);
+    let top_region = mode(&regions);
+    let top_country = mode_or(&countries, || {
+        resp.results
+            .iter()
+            .find_map(|n| n.country.as_deref())
+            .unwrap_or("")
+    });
+    let top_postcode = mode(&postcodes);
+
+    let addr_parts: Vec<&str> = [top_city, top_region, top_country]
+        .iter()
+        .copied()
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if addr_parts.len() >= 2 {
+        let mut addr_str = addr_parts.join(", ");
+        if !top_postcode.is_empty() {
+            addr_str = format!("{addr_str} {top_postcode}");
+        }
+        let mut addr = Entity::new(
+            EntityKind::Address,
+            &addr_str,
+            confidence::MEDIUM_HIGH,
+            scan_id,
+        );
+        addr.tag("wigle");
+        addr.tag("cell-derived");
+        addr.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("Address from WiGLE cell tower observation consensus near {target_value}"),
+            )
+            .with_attr("cell_observations", resp.results.len().to_string())
+            .with_attr("city", top_city)
+            .with_attr("region", top_region)
+            .with_attr("country", top_country),
+        );
+        if !top_postcode.is_empty() {
+            addr.tag(format!("postcode:{top_postcode}"));
+        }
+        result.push(addr);
     }
 
     // ── Coordinates: top-3 tower positions (closest to target) ──────────────
@@ -84,7 +164,7 @@ pub(super) fn extract_cell_intel(
 
     for (lat, lon, _) in towers.into_iter().take(3) {
         let coords = format!("{lat:.6},{lon:.6}");
-        let mut geo = Entity::new(EntityKind::Coordinates, &coords, 0.65, scan_id);
+        let mut geo = Entity::new(EntityKind::Coordinates, &coords, confidence::HIGH, scan_id);
         geo.tag("wigle");
         geo.tag(crate::core::tags::CELL_TOWER);
         geo.tag("cell-observed");
@@ -124,7 +204,12 @@ pub(super) fn extract_bluetooth_intel(
         if mac.len() < 12 {
             return None;
         }
-        let mut e = Entity::new(EntityKind::MacAddress, mac, 0.55, scan_id);
+        let mut e = Entity::new(
+            EntityKind::MacAddress,
+            mac,
+            confidence::MEDIUM_HIGH,
+            scan_id,
+        );
         e.tag("wigle");
         e.tag("bluetooth-beacon");
         let mut ev = Evidence::new(
@@ -185,7 +270,12 @@ pub(super) fn emit_bssid_entities(
     .collect();
     if parts.len() >= 2 {
         let addr_str = parts.join(", ");
-        let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.70, scan_id);
+        let mut addr = Entity::new(
+            EntityKind::Address,
+            &addr_str,
+            confidence::HIGH_PLUS,
+            scan_id,
+        );
         addr.tag("wigle");
         addr.tag(observation_tag);
         addr.add_evidence(
@@ -199,7 +289,7 @@ pub(super) fn emit_bssid_entities(
         let mut e = Entity::new(
             EntityKind::Coordinates,
             format!("{lat:.6},{lon:.6}"),
-            0.75,
+            confidence::VERY_HIGH,
             scan_id,
         );
         e.tag("geoint");
@@ -235,6 +325,73 @@ const SSID_RESULT_CAP: usize = super::SSID_UNIQUE_MAX as usize;
 /// log places its owner.
 pub(super) fn emit_ssid_entities(ssid: &str, results: &[Network], scan_id: &str) -> ModuleResult {
     let mut result = ModuleResult::new();
+
+    // ── Address from SSID observation consensus (free geo!) ─────────────────
+    // Mirrors the WiFi-geo bbox Address block in mod.rs::process(): mode()
+    // across ALL matched networks (not per-record), so a single network
+    // observed at many points doesn't mint near-duplicate Address entities.
+    let cities: Vec<&str> = results
+        .iter()
+        .filter_map(|n| n.city.as_deref())
+        .filter(|c| !c.is_empty())
+        .collect();
+    let regions: Vec<&str> = results
+        .iter()
+        .filter_map(|n| n.region.as_deref())
+        .filter(|r| !r.is_empty())
+        .collect();
+    let countries: Vec<&str> = results
+        .iter()
+        .filter_map(|n| n.country.as_deref())
+        .filter(|c| !c.is_empty())
+        .collect();
+    let postcodes: Vec<&str> = results
+        .iter()
+        .filter_map(|n| n.postalcode.as_deref())
+        .filter(|p| !p.is_empty())
+        .collect();
+
+    let top_city = mode(&cities);
+    let top_region = mode(&regions);
+    let top_country = mode_or(&countries, || {
+        results
+            .iter()
+            .find_map(|n| n.country.as_deref())
+            .unwrap_or("")
+    });
+    let top_postcode = mode(&postcodes);
+
+    let addr_parts: Vec<&str> = [top_city, top_region, top_country]
+        .iter()
+        .copied()
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if addr_parts.len() >= 2 {
+        let mut addr_str = addr_parts.join(", ");
+        if !top_postcode.is_empty() {
+            addr_str = format!("{addr_str} {top_postcode}");
+        }
+        let mut addr = Entity::new(EntityKind::Address, &addr_str, confidence::HIGH, scan_id);
+        addr.tag("wigle");
+        addr.tag("ssid-located");
+        addr.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("Address from SSID `{ssid}` observation consensus"),
+            )
+            .with_attr("ssid", ssid)
+            .with_attr("networks_sampled", results.len().to_string())
+            .with_attr("city", top_city)
+            .with_attr("region", top_region)
+            .with_attr("country", top_country),
+        );
+        if !top_postcode.is_empty() {
+            addr.tag(format!("postcode:{top_postcode}"));
+        }
+        result.push(addr);
+    }
+
     for net in results.iter().take(SSID_RESULT_CAP) {
         let (Some(lat), Some(lon)) = (net.trilat, net.trilong) else {
             continue;
@@ -245,7 +402,7 @@ pub(super) fn emit_ssid_entities(ssid: &str, results: &[Network], scan_id: &str)
         let mut e = Entity::new(
             EntityKind::Coordinates,
             format!("{lat:.6},{lon:.6}"),
-            0.72,
+            confidence::ATTRIBUTED,
             scan_id,
         );
         e.tag("geoint");
@@ -264,7 +421,12 @@ pub(super) fn emit_ssid_entities(ssid: &str, results: &[Network], scan_id: &str)
 
         // The matched access point's BSSID — ties the SSID to a concrete AP.
         if let Some(bssid) = net.netid.as_deref().filter(|b| !b.is_empty()) {
-            let mut m = Entity::new(EntityKind::MacAddress, bssid, 0.70, scan_id);
+            let mut m = Entity::new(
+                EntityKind::MacAddress,
+                bssid,
+                confidence::HIGH_PLUS,
+                scan_id,
+            );
             m.tag("wigle");
             m.tag("ssid-match");
             m.add_evidence(

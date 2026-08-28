@@ -14,6 +14,37 @@ pub(super) struct HostResult {
     pub(super) services: Vec<Service>,
     #[serde(default)]
     pub(super) location: Option<Location>,
+    /// The host's announcing AS — the authoritative network-attribution block
+    /// Censys returns but the module discarded, even though every cheaper
+    /// sibling (shodan/criminal_ip/ipqs) extracts the equivalent.
+    #[serde(default)]
+    pub(super) autonomous_system: Option<AutonomousSystem>,
+    #[serde(default)]
+    pub(super) dns: Option<Dns>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct AutonomousSystem {
+    #[serde(default)]
+    pub(super) asn: Option<i64>,
+    #[serde(default)]
+    pub(super) name: Option<String>,
+    #[serde(default)]
+    pub(super) description: Option<String>,
+    #[serde(default)]
+    pub(super) country_code: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct Dns {
+    #[serde(default)]
+    pub(super) reverse_dns: Option<ReverseDns>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct ReverseDns {
+    #[serde(default)]
+    pub(super) names: Vec<String>,
 }
 
 #[derive(Deserialize)]

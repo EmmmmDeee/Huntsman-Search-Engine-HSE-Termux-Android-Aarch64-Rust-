@@ -8,6 +8,7 @@
 //! `use super::*`.
 
 use super::*;
+use crate::core::confidence;
 
 /// Apply the stealer-context tags (`oathnet-pro`, `stealer`, plus any
 /// `extra_tags` in order) and a cloned evidence record to `e`, then push it.
@@ -15,17 +16,11 @@ use super::*;
 /// login/domain/credential context is not leaked PII per se.
 pub(super) fn push_stealer_entity(
     result: &mut ModuleResult,
-    mut e: Entity,
+    e: Entity,
     ev: &Evidence,
     extra_tags: &[&str],
 ) {
-    e.tag("oathnet-pro");
-    e.tag("stealer");
-    for t in extra_tags {
-        e.tag(*t);
-    }
-    e.add_evidence(ev.clone());
-    result.push(e);
+    result.push_with_tags(e, ev, &["oathnet-pro", "stealer"], extra_tags);
 }
 
 /// Expand one OathNet stealer-log record into its actionable leads.
@@ -119,7 +114,7 @@ pub(super) fn extract_stealer_entities(
         {
             push_stealer_entity(
                 result,
-                Entity::new(EntityKind::Url, u, 0.55, scan_id),
+                Entity::new(EntityKind::Url, u, confidence::MEDIUM_HIGH, scan_id),
                 &ev,
                 &["credential-url"],
             );
@@ -133,7 +128,7 @@ pub(super) fn extract_stealer_entities(
                 if looks_like_email(&lower) && seen.insert(lower) {
                     push_oathnet_entity(
                         result,
-                        Entity::new(EntityKind::Email, email, 0.65, scan_id),
+                        Entity::new(EntityKind::Email, email, confidence::HIGH, scan_id),
                         &ev,
                         &["stealer"],
                         // Stealer hits come from a search on the target's own
@@ -153,7 +148,7 @@ pub(super) fn extract_stealer_entities(
         if looks_like_email(&lower) && seen.insert(format!("@stealer-user:{lower}")) {
             push_stealer_entity(
                 result,
-                Entity::new(EntityKind::Email, &uname, 0.60, scan_id),
+                Entity::new(EntityKind::Email, &uname, confidence::MEDIUM_PLUS, scan_id),
                 &Evidence::new(SRC, "Stealer login email (username field)")
                     .with_attr("source", "stealer"),
                 &["stealer-login"],
@@ -170,11 +165,16 @@ pub(super) fn extract_stealer_entities(
                 // Domain sends `dns_intel`/`cert_intel`/`wayback` chasing a
                 // non-host — `looks_like_domain` gates both out in one place.
                 && crate::util::domains::looks_like_domain(dom)
-                && seen.insert(dom.to_lowercase())
+                // Namespace the dedup key like every other kind in this file
+                // (`@stealer-url:`, `@cred:`, `@pw:`, …). A BARE key shares one
+                // flat namespace with the breach-path's un-namespaced Username/IP
+                // keys in the same `seen` set, so a coincidentally-equal earlier
+                // value silently dropped a real Domain expansion seed.
+                && seen.insert(format!("@stealer-domain:{}", dom.to_lowercase()))
             {
                 push_stealer_entity(
                     result,
-                    Entity::new(EntityKind::Domain, dom, 0.50, scan_id),
+                    Entity::new(EntityKind::Domain, dom, confidence::MEDIUM, scan_id),
                     &Evidence::new(SRC, format!("Stealer credential for {dom}"))
                         .with_attr("source", "stealer"),
                     &[],
@@ -190,10 +190,65 @@ pub(super) fn extract_stealer_entities(
         if seen.insert(format!("@cred:{}", cred_val.to_lowercase())) {
             push_stealer_entity(
                 result,
-                Entity::new(EntityKind::Credential, &cred_val, 0.60, scan_id),
+                Entity::new(
+                    EntityKind::Credential,
+                    &cred_val,
+                    confidence::MEDIUM_PLUS,
+                    scan_id,
+                ),
                 &ev,
                 &[],
             );
+        }
+    }
+
+    // The captured secret as a FIRST-CLASS `Password` entity — the node the
+    // reused-secret rules (AU-047/105/121) operate on. It was previously written
+    // only into the `password` evidence attribute, and `breach_rich`'s
+    // `RICH_DETAIL_SKIP` skips that field ("already typed by the primary
+    // extractors" — true on the breach path, not here), so the paid stealer
+    // corpus produced no secret node at all. This applies the identical policy
+    // the sibling breach path already implements (`oathnet_pro::breach.rs`):
+    // sentinels dropped, an email in the password slot recovered as an Email, and
+    // a genuine secret minted with the per-account dedup key so the same secret
+    // under two accounts merges by UID into one entity carrying both accounts'
+    // evidence — exactly the ≥2-account signal AU-047 fires on. The verbatim
+    // value is preserved (no redaction), as the shared evidence attribute is.
+    if let Some(pw) = val_str(item, "password") {
+        let p = pw.trim();
+        match crate::util::extract::classify_credential_field(p) {
+            crate::util::extract::CredentialField::Sentinel => {}
+            crate::util::extract::CredentialField::Email => {
+                let lower = p.to_lowercase();
+                if seen.insert(format!("@pw-email:{lower}")) {
+                    push_stealer_entity(
+                        result,
+                        Entity::new(EntityKind::Email, p, confidence::LOW_MEDIUM, scan_id),
+                        &ev,
+                        &["recovered-from-password"],
+                    );
+                }
+            }
+            crate::util::extract::CredentialField::Secret => {
+                let len = p.chars().count();
+                let first = p.chars().next();
+                let varied = p.chars().any(|c| Some(c) != first);
+                let acct = val_str(item, "email")
+                    .or_else(|| val_str(item, "username"))
+                    .unwrap_or_default()
+                    .to_lowercase();
+                if (6..=128).contains(&len)
+                    && varied
+                    && seen.insert(format!("@pw:{}:{acct}", p.to_lowercase()))
+                {
+                    push_stealer_entity(
+                        result,
+                        Entity::new(EntityKind::Password, p, confidence::MEDIUM_HIGH, scan_id),
+                        &ev,
+                        &["plaintext-password"],
+                    );
+                }
+            }
         }
     }
 

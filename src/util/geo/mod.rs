@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use crate::core::error::{Error, Result};
 
 pub mod coords;
@@ -15,24 +16,18 @@ pub mod coords;
 /// an output-filtering policy for provider responses ([`is_valid_coords`]),
 /// not an input-parsing concern for a seed the operator typed deliberately.
 pub fn parse_coords(value: &str) -> Result<(f64, f64)> {
-    let (a, b) = value
-        .split_once(',')
-        .ok_or_else(|| Error::module("geo", "coordinates must be 'lat,lon'"))?;
-    let lat: f64 = a
-        .trim()
-        .parse()
-        .map_err(|_| Error::module("geo", "invalid latitude"))?;
-    let lon: f64 = b
-        .trim()
-        .parse()
-        .map_err(|_| Error::module("geo", "invalid longitude"))?;
-    if !lat.is_finite() || !(-90.0..=90.0).contains(&lat) {
-        return Err(Error::module("geo", "latitude out of range (-90..=90)"));
-    }
-    if !lon.is_finite() || !(-180.0..=180.0).contains(&lon) {
-        return Err(Error::module("geo", "longitude out of range (-180..=180)"));
-    }
-    Ok((lat, lon))
+    // Single source of truth: delegate to `geohash::parse_coords` (the same
+    // split/trim/parse/range gate) and wrap its `Option` in the module `Result`
+    // this boundary hands to `?`. Previously both functions hand-rolled the same
+    // logic; keeping one implementation guarantees they can never drift about
+    // what a valid coordinate is. Null Island (`0,0`) is intentionally accepted
+    // here — it's a deliberately-typed seed, not a provider sentinel.
+    crate::util::geohash::parse_coords(value).ok_or_else(|| {
+        Error::module(
+            "geo",
+            "coordinates must be 'lat,lon' with lat -90..=90 and lon -180..=180",
+        )
+    })
 }
 
 /// Canonical validity check for a geographic coordinate, shared by every
@@ -451,7 +446,7 @@ pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 /// ```
 /// use huntsman_search_engine::util::geo::nearest_au_locality;
 ///
-/// let (name, state, km) = nearest_au_locality(-27.47, 153.02).unwrap(); // Brisbane CBD
+/// let (name, state, km) = nearest_au_locality(-27.47, 153.02).expect("should succeed"); // Brisbane CBD
 /// assert_eq!((name, state), ("Brisbane", "QLD"));
 /// assert!(km < 5.0);
 /// assert!(nearest_au_locality(40.71, -74.0).is_none()); // New York → not AU
@@ -476,6 +471,70 @@ pub fn tag_au_state(entity: &mut crate::core::entity::Entity, lat: f64, lon: f64
     if let Some(state) = au_state_for_coords(lat, lon) {
         entity.tag(format!("au-state:{state}"));
         entity.tag("country:AU");
+    }
+}
+
+/// Tag `entity` with each label whose flag is `Some(true)`, skipping `None` and
+/// `Some(false)`.
+///
+/// Single-sources the `into_iter().filter(|f| *f == Some(true)).for_each(tag)`
+/// sweep the IP-reputation modules (`ip_geo`, `ipquery`, `ipqs`) each copied to
+/// raise proxy / hosting / vpn / tor / mobile / datacenter tags off a provider's
+/// boolean signals. Crucially it tags **only** on an explicit `true`: a provider
+/// that did not report a signal (`None`) or reported it false never accretes the
+/// tag, so a missing field can't be read as a negative or a positive.
+pub fn tag_flags(entity: &mut crate::core::entity::Entity, flags: &[(Option<bool>, &str)]) {
+    for &(flag, tag) in flags {
+        if flag == Some(true) {
+            entity.tag(tag);
+        }
+    }
+}
+
+/// Score a geolocation fix by the accuracy radius (in metres) its provider
+/// reported: a fix good to a doorway is worth more than one good to a suburb.
+///
+/// Shared by every accuracy-radius-reporting geolocation provider — the
+/// BSSID-based ones (`mylnikov`, `beacondb`) directly, and the cell-tower ones
+/// (`cell_intel`, `cell_local`, `opencellid`) via
+/// [`crate::util::cell_db::accuracy_to_confidence`] — so two answers to the
+/// same question ("how much should this claimed precision be trusted?") are
+/// scored on one scale. A provider-local copy of this ladder would let the
+/// same 150 m fix outrank or undercut its peer purely by which module
+/// happened to return it — the exact defect this crate's `Coordinates`
+/// entities must not have, since the correlator's cross-source location
+/// rules (AU-052/AU-053) weight and admit coordinates by this confidence
+/// regardless of which module produced them.
+///
+/// A missing radius is treated as the wide 5000 m default. Untrusted JSON is
+/// handled up front: a negative, NaN or infinite radius also degrades to that
+/// default, because `f64 as u64` saturates (negative and NaN both land on `0`)
+/// and would otherwise score a malformed value as the *tightest* possible fix.
+///
+/// ```
+/// use huntsman_search_engine::util::geo::confidence_for_accuracy_m;
+/// use huntsman_search_engine::core::confidence;
+///
+/// assert_eq!(confidence_for_accuracy_m(Some(25.0)), confidence::VERY_HIGH);
+/// assert_eq!(confidence_for_accuracy_m(Some(2_000.0)), confidence::MEDIUM);
+/// // A 25 km IP-derived radius is not a wireless fix.
+/// assert_eq!(confidence_for_accuracy_m(Some(25_000.0)), 0.35);
+/// // Malformed input degrades to the wide default, never to a tight fix.
+/// assert_eq!(confidence_for_accuracy_m(Some(-1.0)), confidence_for_accuracy_m(None));
+/// assert_eq!(confidence_for_accuracy_m(Some(f64::NAN)), confidence_for_accuracy_m(None));
+/// ```
+#[must_use]
+pub fn confidence_for_accuracy_m(metres: Option<f64>) -> f64 {
+    use crate::core::confidence;
+    let metres = match metres {
+        Some(m) if m.is_finite() && m >= 0.0 => m,
+        _ => 5000.0,
+    };
+    match metres as u64 {
+        0..=200 => confidence::VERY_HIGH,
+        201..=1000 => confidence::HIGH,
+        1001..=5000 => confidence::MEDIUM,
+        _ => 0.35,
     }
 }
 
@@ -556,14 +615,22 @@ pub fn coarse_provider_coords(
 }
 
 /// Build the `Asn` entity shared verbatim by every IP-geo provider module
-/// (`ip_geo` / `ipinfo` / `ip2location` / `ipquery` / `ip_whois_geo`).
+/// (`ip_geo` / `ipinfo` / `ip2location` / `ipquery` / `ip_whois_geo` /
+/// `criminal_ip` / `shodan`).
 ///
 /// Each of those modules emitted exactly
-/// `Entity::new(EntityKind::Asn, asn, 0.80, scan_id)` carrying a single
+/// `Entity::new(EntityKind::Asn, asn, confidence::HIGH_PLUSPLUS, scan_id)` carrying a single
 /// `Evidence::new(src, format!("ASN for {ip}"))`, then optionally stamped one
-/// provider tag on top. That birth was byte-identical across all five, so it
+/// provider tag on top. That birth was byte-identical across all of them, so it
 /// lives here once: the fixed `0.80` confidence and the `"ASN for {ip}"`
 /// evidence summary can no longer drift between the modules.
+///
+/// `censys` and `ipqs` deliberately do NOT route through here: each attaches a
+/// genuinely distinct evidence summary and an extra attribute the birth this
+/// helper standardises does not carry (`censys` a conditional `country`,
+/// `ipqs` an `ip` attr and its own `… via IPQS` wording). Folding them in would
+/// either drop that data or bloat this deliberately-minimal signature — so they
+/// stay hand-rolled by design, not by drift.
 ///
 /// The two genuine per-module differences are kept at the call site, *not*
 /// pushed into the signature: the caller passes the already-formatted ASN
@@ -586,8 +653,12 @@ pub fn coarse_provider_coords(
 /// ```
 #[must_use]
 pub fn ip_asn_entity(asn: &str, src: &str, ip: &str, scan_id: &str) -> crate::core::entity::Entity {
-    let mut e =
-        crate::core::entity::Entity::new(crate::core::entity::EntityKind::Asn, asn, 0.80, scan_id);
+    let mut e = crate::core::entity::Entity::new(
+        crate::core::entity::EntityKind::Asn,
+        asn,
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
     e.add_evidence(crate::core::entity::Evidence::new(
         src,
         format!("ASN for {ip}"),

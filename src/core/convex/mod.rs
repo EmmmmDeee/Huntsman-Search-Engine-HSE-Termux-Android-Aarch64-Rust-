@@ -24,6 +24,8 @@
 //! Everything here is a pure, deterministic function of scalars; no I/O, no
 //! engine state. Opt-in via [`crate::core::scan::ScanOptions::convex_budget`].
 
+use crate::core::entity::EntityKind;
+use crate::core::module::{ModuleCategory, ModuleCost};
 use crate::core::scan::TargetKind;
 
 /// Strength of the convexity premium. A maximally heavy-tailed lead (`tail = 1`)
@@ -111,6 +113,153 @@ pub fn optionality_multiplier(
 ) -> f64 {
     let premium = CONVEXITY_LAMBDA.mul_add(upside_tail(source_count, c_eff, richness), 1.0);
     premium / dispatch_cost(kind)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Query-level convexity: which *queries* (module dispatches) to fire, and in
+// what order, for a given target.
+//
+// `optionality_multiplier` above ranks which discovered *targets* to pivot on.
+// The complementary lever is which of a target's accepting modules to dispatch
+// FIRST — because a module dispatch **is** a query (a bounded set of outbound
+// HTTP requests that spends the scarce Termux budget: wall-time, battery, and —
+// for paid providers — real API quota). Under any truncation of the dispatch
+// sequence (`max_entities`, `max_wall_time_secs`, an operator cancel, a dying
+// battery) only a *prefix* of that sequence runs, so the ORDER of the queries
+// decides the return per unit of budget.
+//
+// The same barbell shape applies: reward a query's heavy-tailed **optionality**
+// (does firing it unlock NEW options — fresh identities, credentials, keys that
+// cascade into more cheap high-upside queries?) and divide by its **cost** (a
+// keyless local read is ~free; a paid provider burns quota). The left end of
+// the barbell — cheap, keyless, identity-/key-unlocking modules — fires first;
+// the right end — expensive, terminal, one-and-done providers — fires last. So
+// a scan cut short by the phone's budget has already spent it on the queries
+// that compound. This is a pure, deterministic function of module metadata, so
+// the ordering is precomputed once (see [`crate::core::dependency::ModuleGraph`])
+// and is byte-identical run to run.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Relative **dispatch cost** of firing one module — how much of the bounded
+/// budget one query of it consumes. A passive/local-sensor module makes no
+/// network call at all (a device read: GPS, ARP, interface list), so it is the
+/// cheapest query there is; a keyless HTTP module is the "free" unit; a key-gated
+/// provider costs more (a registered credential, still a bounded resource); a
+/// paid provider is dearest because each query burns metered quota that refills
+/// slowly. Always ≥ the passive floor: a query never costs less than a local read.
+fn module_dispatch_cost(cost: ModuleCost, is_passive: bool) -> f64 {
+    if is_passive {
+        // No network, no quota — only battery. The barbell's far-left anchor.
+        return 0.8;
+    }
+    match cost {
+        ModuleCost::Free => 1.0,
+        ModuleCost::KeyGated => 1.5,
+        ModuleCost::Paid => 2.5,
+    }
+}
+
+/// Optionality of **producing** an entity of this kind: how heavy-tailed the new
+/// query surface it opens is. Identity and credential kinds are the barbell's
+/// high-upside end — an email, a username, or a person fans out into many cheap
+/// downstream identity lookups, and a discovered key/credential is a literal
+/// query *multiplier* (it unlocks a whole authenticated provider, i.e. more
+/// queries, mirroring [`crate::util::key_roi::KeyRoi::Multiplier`]). Terminal
+/// GEOINT and scoring kinds (a coordinate, an abuse score) resolve and stop, so
+/// they carry little optionality. In `[0, 1]`.
+fn entity_cascade(kind: &EntityKind) -> f64 {
+    match kind {
+        // Richest identity fan-out — the seed kinds a whole scan is built to chase.
+        EntityKind::Person | EntityKind::Email | EntityKind::Username => 1.0,
+        // A credential/key unlocks an authenticated provider → MORE queries. The
+        // highest-ROI thing a query can surface (KeyRoi::Multiplier).
+        EntityKind::ApiKey | EntityKind::Credential | EntityKind::Password => 1.0,
+        // Identity-adjacent, moderate fan-out.
+        EntityKind::Phone => 0.75,
+        EntityKind::Domain => 0.70,
+        EntityKind::Organisation | EntityKind::AbnAcn => 0.60,
+        // Crawlable — may still surface identities/keys, but noisier.
+        EntityKind::Url => 0.45,
+        // Fans out, but predominantly into more (saturating) infrastructure.
+        EntityKind::IpAddress | EntityKind::Asn | EntityKind::Cidr => 0.40,
+        // Single-hop-to-geo / co-ownership pivots — bounded, near-terminal.
+        EntityKind::MacAddress | EntityKind::DeviceId | EntityKind::Ssid => 0.30,
+        EntityKind::TrackingId | EntityKind::CryptoAddress => 0.30,
+        // Terminal GEOINT — the pipeline's convergence point, no new query surface.
+        EntityKind::Address | EntityKind::Coordinates => 0.20,
+        // Undeclared/other → conservative.
+        EntityKind::Other(_) => 0.20,
+    }
+}
+
+/// Optionality implied by a module's functional **category** — the always-present
+/// fallback signal for a module that has not declared its `produces()` outputs
+/// (the trait default is empty). The category already encodes what class of
+/// collection the module performs, which is a faithful proxy for whether its
+/// output cascades: breach/people/social/email collection surfaces identities and
+/// credentials (high optionality); geo/threat collection is terminal scoring
+/// (low). In `[0, 1]`.
+fn category_cascade(category: ModuleCategory) -> f64 {
+    match category {
+        // Breach corpora / stealer logs → credentials + emails + usernames: the
+        // richest cascade surface a free query has (feeds key_harvest → more keys).
+        ModuleCategory::Breach => 0.95,
+        // People enrichment (proxycurl/epieos/keybase) → emails/usernames/persons.
+        ModuleCategory::People => 0.90,
+        // Username-search across platforms → new personas and handles.
+        ModuleCategory::Social => 0.80,
+        // Email parse/verify → usernames, domains, provider pivots.
+        ModuleCategory::Email => 0.75,
+        // SERP scraping surfaces everything — URLs, emails, domains, docs.
+        ModuleCategory::Search => 0.70,
+        // Company registry → officers (people) and registered domains.
+        ModuleCategory::Corporate => 0.60,
+        // DNS/cert/subdomain → domains and occasional identity leakage.
+        ModuleCategory::DnsRecon => 0.45,
+        // Site/app crawl → can surface keys/identities amid a lot of noise.
+        ModuleCategory::Web => 0.45,
+        // Carrier/area-code metadata → moderate, region-bound.
+        ModuleCategory::Phone => 0.45,
+        // IP/ASN/BGP → mostly more (saturating) infrastructure.
+        ModuleCategory::Infrastructure => 0.40,
+        // Local device sensors — terminal reads, but zero-cost (priced in cost).
+        ModuleCategory::Sensor => 0.25,
+        // Abuse/malware/C2 scoring → terminal verdicts.
+        ModuleCategory::Threat => 0.25,
+        // Geocode/BSSID/address → terminal coordinates.
+        ModuleCategory::Geo => 0.20,
+        // Uncategorised → neutral.
+        ModuleCategory::Other => 0.40,
+    }
+}
+
+/// A module's overall **cascade optionality** in `[0, 1]`: the heavy-tailed upside
+/// of firing one query of it. Takes the MAX of its declared-output optionality
+/// ([`entity_cascade`] over each kind it `produces()`) and its category proxy
+/// ([`category_cascade`]) — the *max*, because optionality is heavy-tailed: a
+/// module that can surface even one identity/key is worth the premium regardless
+/// of what else it emits, and the category floor keeps the estimate faithful for
+/// the many modules that have not yet declared their outputs.
+pub fn module_cascade(produces: &[EntityKind], category: ModuleCategory) -> f64 {
+    let from_outputs = produces.iter().map(entity_cascade).fold(0.0_f64, f64::max);
+    from_outputs.max(category_cascade(category)).clamp(0.0, 1.0)
+}
+
+/// The convex **query value** of dispatching one module — its optionality premium
+/// over its dispatch cost:
+///
+/// `(1 + λ·cascade) / cost(module)`
+///
+/// Higher = fire earlier under a bounded budget. A cheap, keyless,
+/// identity-/key-unlocking module (cascade ≈ 1, cost = 1 → ×2) leads; a terminal
+/// paid provider (cascade ≈ 0.2, cost = 2.5 → ×0.48) trails. Purely a function of
+/// static module metadata (cost, passivity, produced kinds, category), so the
+/// resulting dispatch order is deterministic and can be precomputed once at engine
+/// construction — it never touches per-scan state, and never changes *which*
+/// modules run, only the order in which the budget reaches them.
+pub fn query_value(cost: ModuleCost, is_passive: bool, cascade: f64) -> f64 {
+    let premium = CONVEXITY_LAMBDA.mul_add(cascade.clamp(0.0, 1.0), 1.0);
+    premium / module_dispatch_cost(cost, is_passive)
 }
 
 #[cfg(test)]

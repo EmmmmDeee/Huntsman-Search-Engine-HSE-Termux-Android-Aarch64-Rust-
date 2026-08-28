@@ -10,7 +10,7 @@
 //!     ranked by `P(handle) × P(provider)`, capped so a name never floods the
 //!     graph.
 //!   * **Gravatar avatars** — MD5-over-email primitive.
-//!   * **Search-query pivots** — 30 platforms: Google dorks (web/face/email/
+//!   * **Search-query pivots** — up to [`MAX_PIVOTS`] platforms: Google dorks (web/face/email/
 //!     phone/docs/pastes/public-records), Bing, DuckDuckGo, Yandex, LinkedIn,
 //!     Facebook, X, TikTok, GitHub, Reddit, Pinterest, Webmii plus handle-gated
 //!     Instagram, WhatsMyName, Snapchat, Twitch, YouTube, Telegram, Reddit
@@ -19,12 +19,25 @@
 //!     III, PhD, MD, Esq. removed before handle derivation.
 //!   * **Hyphenated surname** — "Smith-Jones" yields merged and per-part shapes.
 
-use url::form_urlencoded::byte_serialize;
+use crate::core::confidence;
+use crate::util::canonical::GEN_SUFFIXES;
 
 // ── Output caps ──────────────────────────────────────────────────────────────
 pub(super) const MAX_USERNAMES: usize = 48;
 pub(super) const MAX_EMAILS: usize = 20;
-pub(super) const MAX_PIVOTS: usize = 30;
+/// Number of pivots the maximal configuration (handle + email available) emits.
+///
+/// This is an ASSERTED ceiling, not a runtime cap. It was 30 while the code
+/// could only ever produce 26, so `out.truncate(MAX_PIVOTS)` never fired and the
+/// `pv.len() <= MAX_PIVOTS` guard test could not fail — a contributor adding
+/// platforms 27-30 would have seen both agree and neither notice. Worse, had the
+/// truncate been live it would have silently dropped the last pivot pushed (the
+/// email-gated Epieos one) with no test failure at all.
+///
+/// `pivots_emit_exactly_max_pivots_in_the_maximal_configuration` pins the real
+/// number, so adding or removing a platform fails loudly and forces this
+/// constant and the module doc to be updated with it.
+pub(super) const MAX_PIVOTS: usize = 26;
 
 // ── Confidence weights ───────────────────────────────────────────────────────
 const W_PRIMARY: f64 = 0.38;
@@ -35,8 +48,13 @@ const W_YEAR: f64 = 0.30;
 const W_ALIAS: f64 = 0.26;
 
 pub(super) const EMAIL_CONF: f64 = 0.30;
+/// Confidence of the LEAST likely permuted email. Chosen so the whole band sits
+/// above the product's default expansion floor: restoring the ranking must not
+/// quietly stop weaker guesses from being expanded, which would be a recall
+/// change wearing a refactor's clothes.
+pub(super) const EMAIL_CONF_FLOOR: f64 = 0.24;
 pub(super) const PIVOT_CONF: f64 = 0.20;
-pub(super) const SUBJECT_CONF: f64 = 0.60;
+pub(super) const SUBJECT_CONF: f64 = confidence::MEDIUM_PLUS;
 
 // ── Provider set ─────────────────────────────────────────────────────────────
 const DEFAULT_DOMAINS: &[&str] = &[
@@ -93,7 +111,7 @@ fn provider_weight(domain: &str) -> f64 {
         "gmail.com" | "googlemail.com" => 1.0,
         "outlook.com" | "hotmail.com" | "live.com" | "msn.com" => 0.6,
         "yahoo.com" | "ymail.com" => 0.5,
-        "icloud.com" | "me.com" | "mac.com" => 0.45,
+        "icloud.com" | "me.com" | "mac.com" => confidence::LOW_MEDIUM,
         "aol.com" => 0.4,
         "gmx.com" | "gmx.net" | "mail.com" => 0.35,
         "proton.me" | "protonmail.com" | "pm.me" | "tutanota.com" => 0.3,
@@ -128,11 +146,9 @@ const HONORIFICS: &[&str] = &[
     "det", "insp", "cpl",
 ];
 
-/// Trailing generational / professional suffixes stripped from the last token.
-const GEN_SUFFIXES: &[&str] = &[
-    "jr", "sr", "ii", "iii", "iv", "v", "vi", "esq", "phd", "md", "dds", "jd", "mba", "rn", "np",
-    "do", "psyd",
-];
+// Trailing generational / professional suffixes stripped from the last token:
+// see `crate::util::canonical::GEN_SUFFIXES`, shared with `core::resolve` so a
+// name that is "just a suffix" to one is never "a given name" to the other.
 
 // ── Phonetic / nickname alias table ──────────────────────────────────────────
 
@@ -603,9 +619,39 @@ pub fn usernames(p: &ParsedName) -> Vec<ScoredHandle> {
 
 // ── emails() ─────────────────────────────────────────────────────────────────
 
+/// One speculative address and its relative likelihood in `(0, 1]`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoredEmail {
+    pub addr: String,
+    /// `P(handle shape) × P(provider)` — see [`emails`].
+    pub score: f64,
+}
+
+/// Confidence to emit a permuted email at, given its [`ScoredEmail::score`].
+///
+/// The score used to be computed, sorted on, and then thrown away: every
+/// address persisted at a flat [`EMAIL_CONF`], so `first.last@gmail.com`
+/// (1.00 × 1.00) and a tier-4 shape on a niche provider (≈0.10) were
+/// indistinguishable to the engine's expansion ranking, the correlator,
+/// `core::leads::recommend`, and every `ORDER BY confidence DESC` report read.
+/// Derived usernames in this same module already carry their computed rank into
+/// the entity; emails now do too.
+///
+/// The band is deliberately narrow, and anchored so the BEST shape keeps exactly
+/// today's value: this restores ordering without changing which addresses clear
+/// any expansion floor, so it is a pure information gain and not a silent recall
+/// cut. Widening it is a product decision, not a refactor.
+#[must_use]
+pub(super) fn email_confidence(score: f64) -> f64 {
+    EMAIL_CONF_FLOOR + (EMAIL_CONF - EMAIL_CONF_FLOOR) * score.clamp(0.0, 1.0)
+}
+
 /// Generate speculative emails: handle shapes × `domains`, ranked by
 /// P(handle) × P(provider), capped at [`MAX_EMAILS`].
-pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<String> {
+///
+/// Returns the score alongside each address — the caller needs it to set a
+/// confidence that reflects the ranking (see [`email_confidence`]).
+pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<ScoredEmail> {
     if p.first.is_empty() || p.last.is_empty() {
         return Vec::new();
     }
@@ -616,17 +662,17 @@ pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<String> {
 
     let mut logins: Vec<(String, f64)> = vec![
         (format!("{f}.{l}"), 1.00),
-        (format!("{f}{l}"), 0.95),
-        (format!("{fi}{l}"), 0.70),
-        (format!("{f}_{l}"), 0.60),
-        (format!("{f}{li}"), 0.45),
-        (format!("{l}.{f}"), 0.40),
+        (format!("{f}{l}"), confidence::VERY_HIGH_PLUSPLUS),
+        (format!("{fi}{l}"), confidence::HIGH_PLUS),
+        (format!("{f}_{l}"), confidence::MEDIUM_PLUS),
+        (format!("{f}{li}"), confidence::LOW_MEDIUM),
+        (format!("{l}.{f}"), confidence::LOW),
     ];
     if let Some(m) = p.middle.as_deref() {
-        logins.push((format!("{f}{m}{l}"), 0.50));
+        logins.push((format!("{f}{m}{l}"), confidence::MEDIUM));
     }
     if let Some(n) = p.number.as_deref() {
-        logins.push((format!("{f}.{l}{n}"), 0.45));
+        logins.push((format!("{f}.{l}{n}"), confidence::LOW_MEDIUM));
         logins.push((format!("{f}{l}{n}"), 0.42));
     }
 
@@ -640,11 +686,20 @@ pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<String> {
             }
         }
     }
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    // Sort by score descending, then break ties deterministically on the address
+    // (ascending). The `.take(MAX_EMAILS)` cutoff below shapes the scan graph —
+    // surviving speculative emails become new lead targets — so *which* equal-score
+    // addresses survive must not depend on input/insertion order. Matches the
+    // engine's explicit tie-break convention.
+    scored.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.cmp(&b.1))
+    });
     scored
         .into_iter()
         .take(MAX_EMAILS)
-        .map(|(_, addr)| addr)
+        .map(|(score, addr)| ScoredEmail { addr, score })
         .collect()
 }
 
@@ -655,12 +710,14 @@ pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<String> {
 /// 404 (so a probe can tell "no Gravatar" from a default placeholder),
 /// requesting a 200px image.
 pub fn gravatar_url(email: &str) -> String {
-    use md5::{Digest, Md5};
-    let mut h = Md5::new();
-    h.update(email.trim().to_ascii_lowercase().as_bytes());
+    // Reuse the canonical Gravatar request-hash rather than re-deriving it: the
+    // preimage here (MD5 of the trimmed, ASCII-lowercased address) was
+    // byte-identical to `crate::util::gravatar::hash`, which is unit-tested and
+    // already shared by the `gravatar` and `contact_enrich` modules. One fewer
+    // drift-prone copy of the Gravatar identifier contract.
     format!(
         "https://www.gravatar.com/avatar/{}?d=404&s=200",
-        hex::encode(h.finalize())
+        crate::util::gravatar::hash(email)
     )
 }
 
@@ -804,7 +861,17 @@ pub fn pivots(p: &ParsedName, top_email: Option<&str>) -> Vec<Pivot> {
         ));
     }
 
-    out.truncate(MAX_PIVOTS);
+    // Asserted, not truncated. The list is a fixed set of hand-written platforms
+    // gated only by `has_handle`/`top_email`, so its length is a property of this
+    // function rather than of the input — a silent `truncate` would drop a
+    // newly-added platform (the last pushed, i.e. the email-gated Epieos pivot)
+    // with nothing to notice it. Failing loudly is the correct response.
+    debug_assert!(
+        out.len() <= MAX_PIVOTS,
+        "pivots() produced {} > MAX_PIVOTS ({MAX_PIVOTS}) — bump the constant and \
+         the module doc's platform count together",
+        out.len()
+    );
     out
 }
 
@@ -818,8 +885,12 @@ fn initial(s: &str) -> char {
     s.chars().next().unwrap_or('x')
 }
 
+/// Terse local alias for the canonical percent-encoder. The encoding logic
+/// lives in exactly one place ([`crate::util::http::urlencode`]); this keeps the
+/// URL-builder call sites above readable without re-implementing it.
+#[inline]
 fn q(s: &str) -> String {
-    byte_serialize(s.as_bytes()).collect()
+    crate::util::http::urlencode(s)
 }
 
 fn extract_number(raw: &str) -> Option<String> {
@@ -858,11 +929,7 @@ fn clean_display_token(tok: &str) -> Option<String> {
 }
 
 fn titlecase(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
+    crate::util::str_util::upper_first(s)
 }
 
 fn sanitize(s: &str) -> String {

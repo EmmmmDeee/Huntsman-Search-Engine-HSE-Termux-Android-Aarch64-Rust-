@@ -4,7 +4,7 @@ use super::*;
 
 #[test]
 fn classifies_mobile() {
-    let l = classify_au_phone("412345678").unwrap();
+    let l = classify_au_phone("412345678").expect("should succeed");
     assert_eq!(l.line_type, LineType::Mobile);
     assert!(l.region.is_none());
 }
@@ -12,24 +12,24 @@ fn classifies_mobile() {
 #[test]
 fn classifies_fixed_line_regions() {
     // 02 → Central East (NSW, ACT)
-    let nsw = classify_au_phone("298765432").unwrap();
+    let nsw = classify_au_phone("298765432").expect("should succeed");
     assert_eq!(nsw.line_type, LineType::FixedLine);
     assert_eq!(nsw.region, Some("central-east"));
     assert_eq!(nsw.states, Some(&["NSW", "ACT"][..]));
     assert_eq!(nsw.area_code, Some('2'));
 
     // 03 → South East (VIC, TAS)
-    let vic = classify_au_phone("398765432").unwrap();
+    let vic = classify_au_phone("398765432").expect("should succeed");
     assert_eq!(vic.region, Some("south-east"));
     assert_eq!(vic.states, Some(&["VIC", "TAS"][..]));
 
     // 07 → North East (QLD)
-    let qld = classify_au_phone("730001234").unwrap();
+    let qld = classify_au_phone("730001234").expect("should succeed");
     assert_eq!(qld.region, Some("north-east"));
     assert_eq!(qld.states, Some(&["QLD"][..]));
 
     // 08 → Central and West (SA, WA, NT)
-    let saw = classify_au_phone("881234567").unwrap();
+    let saw = classify_au_phone("881234567").expect("should succeed");
     assert_eq!(saw.region, Some("central-west"));
     assert_eq!(saw.states, Some(&["SA", "WA", "NT"][..]));
 }
@@ -38,28 +38,76 @@ fn classifies_fixed_line_regions() {
 fn classifies_service_numbers_with_correct_precedence() {
     // 1800 freephone — must win over the bare `1`/`13` checks.
     assert_eq!(
-        classify_au_phone("1800123456").unwrap().line_type,
+        classify_au_phone("1800123456")
+            .expect("should succeed")
+            .line_type,
         LineType::Freephone
     );
     // 1300 local-rate — must win over the `13` shortcode check.
     assert_eq!(
-        classify_au_phone("1300123456").unwrap().line_type,
+        classify_au_phone("1300123456")
+            .expect("should succeed")
+            .line_type,
         LineType::LocalRate
     );
     // 13 XX XX shortcode local-rate.
     assert_eq!(
-        classify_au_phone("131234").unwrap().line_type,
+        classify_au_phone("131234")
+            .expect("should succeed")
+            .line_type,
         LineType::LocalRate
     );
     // 190x premium.
     assert_eq!(
-        classify_au_phone("1900123456").unwrap().line_type,
+        classify_au_phone("1900123456")
+            .expect("should succeed")
+            .line_type,
         LineType::Premium
     );
     // 05 VoIP/digital.
     assert_eq!(
-        classify_au_phone("512345678").unwrap().line_type,
+        classify_au_phone("512345678")
+            .expect("should succeed")
+            .line_type,
         LineType::Voip
+    );
+}
+
+#[test]
+fn service_prefixes_require_the_exact_acma_length() {
+    // A string that merely BEGINS WITH a service prefix but is the wrong
+    // length is not a real AU service line — e.g. a truncated 7-digit scrape
+    // of a freephone number, or (the higher-stakes case) an 11-digit NANP
+    // number whose `1` country code + area code collides: `+1 800…` reads as
+    // `1800…`, `+1 900…`/`+1 90x…` reads as `190…`. Without the exact-length
+    // gate these were misclassified as AU Freephone/Premium; they must now
+    // classify as Unknown (still AU-shaped by length, just not a recognised
+    // prefix) rather than a confident, fabricated service-line claim.
+    assert_eq!(
+        classify_au_phone("1800555")
+            .expect("should succeed")
+            .line_type,
+        LineType::Unknown,
+        "a 7-digit string starting with 1800 is not a 10-digit AU freephone number"
+    );
+    assert!(
+        classify_au_phone("13001234567").is_none(),
+        "11 digits exceeds the outer AU-national-number bound entirely"
+    );
+    assert_eq!(
+        classify_au_phone("1900555")
+            .expect("should succeed")
+            .line_type,
+        LineType::Unknown,
+        "a 7-digit string starting with 190 is not a 10-digit AU premium number"
+    );
+    // Exactly 10 digits still classifies correctly (regression guard against
+    // an over-corrected off-by-one).
+    assert_eq!(
+        classify_au_phone("1800123456")
+            .expect("should succeed")
+            .line_type,
+        LineType::Freephone
     );
 }
 
@@ -75,7 +123,7 @@ fn rejects_out_of_range_and_non_digit() {
 fn unknown_leading_digit_is_classified_unknown_not_dropped() {
     // A `6…` national number is not a standard AU prefix, but it's still a +61
     // number — keep it as Unknown rather than silently dropping it.
-    let l = classify_au_phone("612345678").unwrap();
+    let l = classify_au_phone("612345678").expect("should succeed");
     assert_eq!(l.line_type, LineType::Unknown);
     assert!(l.region.is_none());
 }
@@ -131,7 +179,10 @@ fn accepts_only_phone() {
 async fn enriches_fixed_line_with_region_tags_and_evidence() {
     let m = PhoneAu;
     let target = Target::new(TargetKind::Phone, "+61 2 9876 5432");
-    let r = m.process(&target, &test_ctx()).await.unwrap();
+    let r = m
+        .process(&target, &test_ctx())
+        .await
+        .expect("should succeed");
     let e = r
         .entities
         .iter()
@@ -159,12 +210,15 @@ async fn enriches_fixed_line_with_region_tags_and_evidence() {
 async fn enriches_mobile_without_region() {
     let m = PhoneAu;
     let target = Target::new(TargetKind::Phone, "0412 345 678");
-    let r = m.process(&target, &test_ctx()).await.unwrap();
+    let r = m
+        .process(&target, &test_ctx())
+        .await
+        .expect("should succeed");
     let e = r
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Phone)
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(e.value, "+61412345678");
     assert!(e.has_tag("line:mobile"));
     assert!(e.has_tag("mobile"));
@@ -177,12 +231,15 @@ async fn enriches_mobile_without_region() {
 async fn flags_freephone_as_non_geographic_org_signal() {
     let m = PhoneAu;
     let target = Target::new(TargetKind::Phone, "+61 1800 123 456");
-    let r = m.process(&target, &test_ctx()).await.unwrap();
+    let r = m
+        .process(&target, &test_ctx())
+        .await
+        .expect("should succeed");
     let e = r
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Phone)
-        .unwrap();
+        .expect("should succeed");
     assert!(e.has_tag("line:freephone"));
     assert!(e.has_tag("non-geographic"));
     assert!(!e.has_tag("geographic"));
@@ -192,7 +249,10 @@ async fn flags_freephone_as_non_geographic_org_signal() {
 async fn non_au_phone_yields_nothing() {
     let m = PhoneAu;
     let target = Target::new(TargetKind::Phone, "+1 555 123 4567");
-    let r = m.process(&target, &test_ctx()).await.unwrap();
+    let r = m
+        .process(&target, &test_ctx())
+        .await
+        .expect("should succeed");
     assert!(
         r.entities.is_empty(),
         "a non-AU number must not be claimed by phone_au"

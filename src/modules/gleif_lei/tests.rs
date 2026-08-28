@@ -5,6 +5,7 @@ use super::{
     types::{GleifAddress, GleifEntity, GleifResp},
 };
 use crate::core::{
+    confidence,
     entity::EntityKind,
     module::{Module, ModuleCategory, ModuleCost},
     scan::{Target, TargetKind},
@@ -30,7 +31,7 @@ fn sample() -> GleifResp {
             }}}
         ]
     }"#;
-    serde_json::from_str(raw).unwrap()
+    serde_json::from_str(raw).expect("should succeed")
 }
 
 #[test]
@@ -72,7 +73,7 @@ fn au_entity_emits_acn_but_foreign_does_not() {
     let gb = ents
         .iter()
         .find(|e| e.value == "BHP Billiton Group Limited")
-        .unwrap();
+        .expect("should succeed");
     assert!(
         gb.evidence[0]
             .attributes
@@ -92,7 +93,7 @@ fn exact_match_fans_out_address_candidate_does_not() {
     let au = ents
         .iter()
         .find(|e| e.kind == EntityKind::Organisation && e.value == "BHP GROUP LIMITED")
-        .unwrap();
+        .expect("should succeed");
     assert!(au.tags.iter().any(|t| t == "exact-name-match"));
     assert!((au.confidence - ORG_EXACT).abs() < f64::EPSILON);
 
@@ -126,7 +127,7 @@ fn loose_candidate_surfaces_with_full_evidence_but_no_pivot() {
     let ents = records_to_entities(&resp, "Rio Tinto", "s"); // matches neither name fully
     // Both rows lack "Rio"/"Tinto" -> both candidates, none exact.
     assert!(ents.iter().all(|e| e.kind == EntityKind::Organisation));
-    assert!(ents.iter().all(|e| e.confidence < 0.50));
+    assert!(ents.iter().all(|e| e.confidence < confidence::MEDIUM));
     assert!(
         ents.iter()
             .all(|e| e.tags.iter().any(|t| t == "name-candidate"))
@@ -138,7 +139,7 @@ fn loose_candidate_surfaces_with_full_evidence_but_no_pivot() {
     let au = ents
         .iter()
         .find(|e| e.value == "BHP GROUP LIMITED")
-        .unwrap();
+        .expect("should succeed");
     assert!(
         au.evidence[0]
             .attributes
@@ -179,7 +180,7 @@ fn non_empty_trims_and_filters_blank() {
 }
 
 fn entity_from_json(json: &str) -> GleifEntity {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 #[test]
@@ -255,6 +256,6 @@ fn record_evidence_omits_absent_optional_attrs() {
 
 #[test]
 fn empty_response_yields_nothing() {
-    let resp: GleifResp = serde_json::from_str(r#"{"data":[]}"#).unwrap();
+    let resp: GleifResp = serde_json::from_str(r#"{"data":[]}"#).expect("should succeed");
     assert!(records_to_entities(&resp, "Nonexistent Org", "s").is_empty());
 }

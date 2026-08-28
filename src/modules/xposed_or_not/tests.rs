@@ -2,6 +2,7 @@ use super::XposedOrNot;
 use super::build::{NOTABLE_BREACHES, build_result, confidence_for_count};
 use super::types::{AnalyticsBreaches, AnalyticsResp, BreachDetail};
 use crate::core::{
+    confidence,
     entity::EntityKind,
     module::Module,
     scan::{Target, TargetKind},
@@ -43,15 +44,21 @@ fn populated_response_yields_breach_tagged_email() {
 
     assert_eq!(e.evidence.len(), 1);
     assert_eq!(e.evidence[0].source, "xposed_or_not");
-    assert_eq!(e.evidence[0].attributes.get("count").unwrap(), "3");
+    assert_eq!(
+        e.evidence[0]
+            .attributes
+            .get("count")
+            .expect("should succeed"),
+        "3"
+    );
 }
 
 #[test]
 fn confidence_scales_with_breach_count() {
-    assert!((confidence_for_count(1) - 0.80).abs() < 1e-9);
-    assert!((confidence_for_count(4) - 0.85).abs() < 1e-9);
+    assert!((confidence_for_count(1) - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
+    assert!((confidence_for_count(4) - confidence::HIGH_PLUSPLUS_PLUS).abs() < 1e-9);
     assert!((confidence_for_count(8) - 0.92).abs() < 1e-9);
-    assert!((confidence_for_count(10) - 0.95).abs() < 1e-9);
+    assert!((confidence_for_count(10) - confidence::VERY_HIGH_PLUSPLUS).abs() < 1e-9);
 }
 
 #[test]
@@ -82,13 +89,19 @@ fn analytics_surfaces_breach_summaries_and_descriptions() {
     let r = build_result(&breaches, Some(&analytics), &target, "s");
 
     let ev = &r.entities[0].evidence[0];
-    let summaries = ev.attributes.get("breach_summaries").unwrap();
+    let summaries = ev
+        .attributes
+        .get("breach_summaries")
+        .expect("should succeed");
     assert!(summaries.contains("LinkedIn"));
     assert!(summaries.contains("2012"));
     assert!(summaries.contains("117M records"));
     assert!(summaries.contains("Emails;Passwords"));
 
-    let descs = ev.attributes.get("breach_descriptions").unwrap();
+    let descs = ev
+        .attributes
+        .get("breach_descriptions")
+        .expect("should succeed");
     assert!(descs.contains("LinkedIn: LinkedIn suffered a data breach in 2012"));
 }
 
@@ -112,10 +125,49 @@ fn analytics_without_desc_omits_descriptions_attr() {
     let r = build_result(&breaches, Some(&analytics), &target, "s");
 
     let ev = &r.entities[0].evidence[0];
-    let summaries = ev.attributes.get("breach_summaries").unwrap();
+    let summaries = ev
+        .attributes
+        .get("breach_summaries")
+        .expect("should succeed");
     assert!(summaries.contains("SomeService"));
     assert!(summaries.contains("500 records"));
     assert!(!ev.attributes.contains_key("breach_descriptions"));
+}
+
+#[test]
+fn analytics_surfaces_the_earliest_full_iso_breach_date() {
+    // Across three breaches the earliest full YYYY-MM-DD date is the subject's
+    // first-known compromise; a bare-year value must not win (it is not a full
+    // date and would sort before any real date).
+    let breaches = vec!["A".into(), "B".into(), "C".into()];
+    let detail = |name: &str, date: Option<&str>| BreachDetail {
+        breach: Some(name.into()),
+        xposed_data: Some("Emails".into()),
+        xposed_records: Some(1000),
+        xposure_desc: None,
+        xposed_date: date.map(String::from),
+        password_risk: None,
+    };
+    let analytics = AnalyticsResp {
+        exposed_breaches: Some(AnalyticsBreaches {
+            breaches_details: Some(vec![
+                detail("A", Some("2015-03-10")),
+                detail("B", Some("2012-06-05")),
+                detail("C", Some("2019")), // bare year — not a full date, ignored
+            ]),
+        }),
+        pastes_summary: None,
+    };
+    let target = Target::new(TargetKind::Email, "a@b.com");
+    let r = build_result(&breaches, Some(&analytics), &target, "s");
+    let ev = &r.entities[0].evidence[0];
+    assert_eq!(
+        ev.attributes
+            .get("earliest_breach_date")
+            .map(String::as_str),
+        Some("2012-06-05"),
+        "the earliest full ISO date wins; a bare year is ignored"
+    );
 }
 
 // Keep NOTABLE_BREACHES referenced so the import is used

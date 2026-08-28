@@ -1,85 +1,38 @@
-use super::{AreaResp, OpenCellId, fetch_opencellid};
-use crate::core::module::{Module, ModuleContext, ModuleCost};
-use crate::core::scan::{Target, TargetKind};
+use super::{AreaResp, KEY_ENV, KEY_REJECTED_MSG, OpenCellId, accuracy_to_confidence};
+use crate::core::{
+    module::{Module, ModuleContext, ModuleCost},
+    scan::{Target, TargetKind},
+};
 
-// -- fetch_opencellid failure contract (T2.132) ----------------------
-
-fn live_ctx() -> ModuleContext {
+/// Regression: an unedited `hse provision` template writes the literal
+/// placeholder string into `~/.huntsman.env` uncommented, and this module
+/// used to read it via bare `ctx.key_opt` — bypassing `resolve_key`'s
+/// blank/placeholder filter — so it would have forwarded
+/// `"insert_opencellid_key_here"` to the live OpenCelliD API as a credential
+/// instead of cleanly skipping. Must behave identically to a missing key.
+#[tokio::test]
+async fn placeholder_key_is_a_clean_skip_not_a_forwarded_credential() {
     let (bus, _rx) = tokio::sync::broadcast::channel(1);
-    ModuleContext {
-        scan_id: "test".into(),
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        KEY_ENV.to_string(),
+        "insert_opencellid_key_here".to_string(),
+    );
+    let ctx = ModuleContext {
+        scan_id: "scan".into(),
         bus,
         http: reqwest::Client::new(),
-        keys: std::collections::HashMap::new(),
+        keys,
         cancel: crate::core::cancel::CancelHandle::new(),
-    }
-}
-
-/// One-shot local HTTP server answering with `status` + `body`. Mirrors the
-/// chain_intel / geocode / sanctions_ofac test pattern.
-async fn serve_once(status: u16, body: &'static str) -> std::net::SocketAddr {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let Ok((mut sock, _)) = listener.accept().await else {
-            return;
-        };
-        let mut buf = vec![0u8; 2048];
-        let _ = sock.read(&mut buf).await;
-        let reason = if status == 200 { "OK" } else { "Error" };
-        let head = format!(
-            "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        );
-        let _ = sock.write_all(head.as_bytes()).await;
-        let _ = sock.write_all(body.as_bytes()).await;
-        let _ = sock.flush().await;
-    });
-    addr
-}
-
-#[tokio::test]
-async fn fetch_opencellid_surfaces_transport_failure_as_error() {
-    // T2.132 regression: both process_area and process_tower previously turned a
-    // .send() transport error into Ok(empty) — indistinguishable from "tower/area
-    // not in the crowdsourced DB", silently reporting "no location found" for this
-    // geoint module. Port 1 has nothing listening (connection refused): a real
-    // transport failure that must now surface as a module Err.
-    let ctx = live_ctx();
-    let out: Result<Option<AreaResp>, _> =
-        fetch_opencellid(&ctx, "test-key", "http://127.0.0.1:1/").await;
+    };
+    let target = Target::new(TargetKind::Coordinates, "-27.47,153.02");
+    let result = OpenCellId
+        .process(&target, &ctx)
+        .await
+        .expect("must not error");
     assert!(
-        out.is_err(),
-        "an unreachable opencellid host must surface as Err, not a swallowed empty result"
-    );
-}
-
-#[tokio::test]
-async fn fetch_opencellid_surfaces_parse_failure_on_a_200_garbage_body() {
-    // A 200 whose body is not the expected JSON is a real anomaly, not "no towers".
-    let addr = serve_once(200, "definitely not json <<<>>>").await;
-    let ctx = live_ctx();
-    let out: Result<Option<AreaResp>, _> =
-        fetch_opencellid(&ctx, "test-key", &format!("http://{addr}/")).await;
-    assert!(
-        out.is_err(),
-        "a 200 with an unparseable body must surface as Err, not a swallowed empty result"
-    );
-}
-
-#[tokio::test]
-async fn fetch_opencellid_maps_non_2xx_to_a_noted_clean_miss() {
-    // The non-2xx path is PRESERVED: the key is reported to the pool inside the
-    // seam and the scan result stays a clean empty (Ok(None)), never an Err — so
-    // a rejected/throttled key surfaces via the pool, not as scan noise.
-    let addr = serve_once(429, "rate limited").await;
-    let ctx = live_ctx();
-    let out: Result<Option<AreaResp>, _> =
-        fetch_opencellid(&ctx, "test-key", &format!("http://{addr}/")).await;
-    assert!(
-        matches!(out, Ok(None)),
-        "a non-2xx must stay a clean Ok(None) (key noted to the pool), not an Err"
+        result.entities.is_empty(),
+        "an unedited template placeholder must be treated as no key configured"
     );
 }
 
@@ -149,7 +102,7 @@ fn parse_full_area_response() {
             }
         ]
     }"#;
-    let resp: AreaResp = serde_json::from_str(raw).unwrap();
+    let resp: AreaResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(resp.cells.len(), 2);
 
     let c0 = &resp.cells[0];
@@ -158,8 +111,8 @@ fn parse_full_area_response() {
     assert_eq!(c0.lac, Some(12345));
     assert_eq!(c0.cid, Some(67890));
     assert_eq!(c0.radio.as_deref(), Some("LTE"));
-    assert!((c0.lat.unwrap() - (-27.476600_f64)).abs() < 1e-6);
-    assert!((c0.lon.unwrap() - 153.016600_f64).abs() < 1e-6);
+    assert!((c0.lat.expect("should succeed") - (-27.476600_f64)).abs() < 1e-6);
+    assert!((c0.lon.expect("should succeed") - 153.016600_f64).abs() < 1e-6);
     assert_eq!(c0.range, Some(500));
     assert_eq!(c0.average_signal, Some(-75));
     assert_eq!(c0.samples, Some(42));
@@ -172,24 +125,39 @@ fn parse_full_area_response() {
 #[test]
 fn parse_empty_cells_array() {
     let raw = r#"{"count": 0, "cells": []}"#;
-    let resp: AreaResp = serde_json::from_str(raw).unwrap();
+    let resp: AreaResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(resp.cells.len(), 0);
 }
 
 #[test]
 fn parse_missing_cells_key_defaults_empty() {
     let raw = r#"{}"#;
-    let resp: AreaResp = serde_json::from_str(raw).unwrap();
+    let resp: AreaResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(resp.cells.len(), 0);
 }
 
-// The tower-range → confidence tiers are single-sourced in `util::geo`
-// (`cell_range_to_confidence`) and exhaustively boundary-tested there (T2.126).
+#[test]
+fn confidence_bands_match_cell_intel_scale() {
+    // accuracy_to_confidence delegates to the canonical util::geo ladder (see
+    // its doc comment) — pin the delegation itself, at every tier boundary,
+    // rather than a second hardcoded copy of the thresholds, so this test
+    // can't silently drift from the one canonical scale shared with
+    // cell_intel/cell_local and the WiFi/beacon providers.
+    for m in [0, 50, 200, 201, 1000, 1001, 5000, 5001, 10001] {
+        assert!(
+            (accuracy_to_confidence(m)
+                - crate::util::geo::confidence_for_accuracy_m(Some(m as f64)))
+            .abs()
+                < 1e-9,
+            "accuracy_to_confidence({m}) must match the canonical geo ladder"
+        );
+    }
+}
 
 #[test]
 fn cell_entry_optional_fields_default_to_none() {
     let raw = r#"{"mcc": 505, "net": 1, "area": 100, "cell": 200}"#;
-    let c: super::CellEntry = serde_json::from_str(raw).unwrap();
+    let c: super::CellEntry = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(c.radio, None);
     assert_eq!(c.lat, None);
     assert_eq!(c.lon, None);
@@ -208,7 +176,7 @@ fn cell_entry_captures_the_real_live_confirmed_bad_key_error_shape() {
     // found" — `process_tower`'s `error.is_some()` check is what tells the
     // two apart and reports the key to the pool.
     let raw = r#"{"error":"API Key not known: garbage00000invalid","code":2}"#;
-    let c: super::CellEntry = serde_json::from_str(raw).unwrap();
+    let c: super::CellEntry = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(
         c.error.as_deref(),
         Some("API Key not known: garbage00000invalid")
@@ -221,10 +189,90 @@ fn area_resp_captures_the_real_live_confirmed_bad_key_error_shape() {
     // Same live-confirmed shape as `cell/get`, for `cell/getInArea` — no
     // "cells" key at all on an error response.
     let raw = r#"{"error":"API Key not known: garbage00000invalid","code":2}"#;
-    let resp: AreaResp = serde_json::from_str(raw).unwrap();
+    let resp: AreaResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(
         resp.error.as_deref(),
         Some("API Key not known: garbage00000invalid")
     );
     assert_eq!(resp.cells.len(), 0);
+}
+
+// The live-confirmed bad-key shape: OpenCelliD answers a plain HTTP 200 whose
+// entire body is an error object, with no `cells` key at all. `CellEntry::error`
+// documents this and exists to DETECT it — but the detection only matters
+// because the module now returns a typed error on it instead of an empty
+// success. Before that, a rejected key was still indistinguishable from "no
+// towers here" as far as the scan was concerned, which is precisely what the
+// doc says the field was added to prevent.
+#[test]
+fn a_two_hundred_with_an_error_body_is_parsed_as_a_key_failure() {
+    let body = r#"{"error":"API Key not known: abc123","code":2}"#;
+    let parsed: AreaResp = serde_json::from_str(body).expect("the bad-key shape must deserialize");
+    assert_eq!(
+        parsed.error.as_deref(),
+        Some("API Key not known: abc123"),
+        "the error field is what distinguishes a rejected key from an empty area"
+    );
+    assert!(
+        parsed.cells.is_empty(),
+        "the bad-key body carries no cells key at all"
+    );
+}
+
+// The converse, so the check above cannot start firing on healthy responses: a
+// genuine empty area is a 200 with `cells: []` and NO error field. Reporting a
+// key failure here would turn every genuinely-empty bounding box into a module
+// error and burn a working key.
+#[test]
+fn a_genuinely_empty_area_is_not_mistaken_for_a_key_failure() {
+    let parsed: AreaResp = serde_json::from_str(r#"{"cells":[]}"#).expect("should deserialize");
+    assert!(
+        parsed.error.is_none(),
+        "no error field on a healthy response"
+    );
+    assert!(parsed.cells.is_empty());
+}
+
+// ── The key must never reach an error surface ───────────────────────────────
+//
+// OpenCelliD echoes the rejected key back inside its own error message. An
+// earlier revision of this module interpolated that message into the returned
+// error, which would have written the key into the verbose log, the SSE stream
+// and the dossier — a credential leak introduced by the very change that made
+// these paths return an error instead of an empty success.
+//
+// The guard is structural: `KEY_REJECTED_MSG` is a `const`, so no
+// provider-controlled bytes can pass through it. This test pins the hazard it
+// exists to prevent, so the constant cannot quietly become a `format!` again.
+#[test]
+fn the_key_rejection_error_never_echoes_the_providers_message() {
+    // The documented bad-key shape, with a recognisable stand-in for the key.
+    let body = r#"{"error":"API Key not known: SUPERSECRETKEY123","code":2}"#;
+    let parsed: AreaResp = serde_json::from_str(body).expect("bad-key shape must deserialize");
+    let provider_msg = parsed
+        .error
+        .as_deref()
+        .expect("error field must be present");
+
+    // First establish that the hazard is real: the provider genuinely hands
+    // back the key. If OpenCelliD ever stops doing this, the assertion below
+    // still holds and this one documents why the constant exists.
+    assert!(
+        provider_msg.contains("SUPERSECRETKEY123"),
+        "the provider echoes the key back — that is the hazard: {provider_msg}"
+    );
+
+    // What the module actually surfaces carries none of it.
+    assert!(
+        !KEY_REJECTED_MSG.contains("SUPERSECRETKEY123"),
+        "the returned error must not carry the key"
+    );
+    assert!(
+        !KEY_REJECTED_MSG.contains(provider_msg),
+        "the returned error must not echo the provider's message verbatim"
+    );
+    assert!(
+        KEY_REJECTED_MSG.contains("rejected the API key"),
+        "it must still say what went wrong, so the operator can act on it"
+    );
 }

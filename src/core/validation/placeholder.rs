@@ -1,5 +1,31 @@
 use crate::core::entity::EntityKind;
 
+/// Case-insensitive ASCII substring test that scans `haystack`'s bytes directly,
+/// without allocating a lowercase copy. `needle` MUST be non-empty (every caller
+/// passes a compile-time constant marker), since `<[u8]>::windows(0)` panics; a
+/// `needle` longer than `haystack` simply yields no windows and returns `false`.
+#[inline]
+fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    let needle = needle.as_bytes();
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
+/// Compare `input`, reduced to its lowercase ASCII-alphanumeric skeleton, against
+/// an already-normalised `expected` token — streaming, so no intermediate
+/// `String` is allocated. `expected` MUST already be lowercase ASCII-alphanumeric
+/// (as every template below is).
+#[inline]
+fn normalized_ascii_alnum_eq(input: &str, expected: &str) -> bool {
+    input
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .eq(expected.chars())
+}
+
 /// True if `host` is a reserved/documentation/placeholder domain that can never
 /// be a real OSINT target: the RFC 2606/6761 reserved names (via
 /// [`is_local_domain`](crate::util::preflight::is_local_domain)) plus the
@@ -31,6 +57,49 @@ pub fn is_placeholder_domain(host: &str) -> bool {
         )
 }
 
+/// True if a WHOIS contact string is a privacy-proxy / redaction placeholder
+/// rather than a real registrant identity — the generic `REDACTED FOR PRIVACY`
+/// masks, GoDaddy's `Registration Private` / `Domains By Proxy, LLC`,
+/// `WhoisGuard, Inc.`, `Contact Privacy Inc`, `Perfect Privacy, LLC`,
+/// `Withheld for Privacy`, the `.au` statutory-masking notice, and the GDPR
+/// family. Privacy protection is the DEFAULT on a large share of registered
+/// domains, and the SAME placeholder brand string recurs verbatim across
+/// thousands of unrelated domains — so emitting one as a Person/Organisation
+/// both fabricates an identity and risks the correlator FALSE-MERGING unrelated
+/// targets onto a single node. Centralised so every WHOIS contact call site
+/// applies the identical, complete guard.
+///
+/// Case-insensitive substring match. Deliberately does NOT match a bare
+/// `private` token: `... Private Limited` (India/Singapore/etc.) is a
+/// legitimate company suffix and must survive.
+#[must_use]
+pub fn is_whois_privacy_placeholder(s: &str) -> bool {
+    // Case-insensitive substring match performed directly over `s`'s bytes, so no
+    // lowercase copy of every WHOIS contact string is allocated.
+    const MARKERS: &[&str] = &[
+        "privacy",  // Contact Privacy, Perfect Privacy, PrivacyProtect, Withheld for Privacy
+        "redacted", // REDACTED FOR PRIVACY, Data Redacted
+        "data protected",
+        "not disclosed",
+        "registration private", // GoDaddy default registrant
+        "private registration", // same notice, the other word order
+        "domains by proxy",     // GoDaddy proxy service
+        "domainsbyproxy",       // same service, concatenated (no spaces)
+        "whoisguard",           // Namecheap proxy service
+        "identity protection",  // Identity Protection Service
+        "statutory masking",    // .au registry redaction notice
+        "gdpr masked",
+        "withheld",                   // Withheld for Privacy
+        "unavailable",                // Name Unavailable / Currently Unavailable
+        "non-public data", // GDPR-era registrar notice, distinct wording from "gdpr masked"
+        "domain protection services", // a US registrar-affiliated proxy brand
+        "protecteddomainservices", // same brand, concatenated
+    ];
+    MARKERS
+        .iter()
+        .any(|marker| contains_ascii_case_insensitive(s, marker))
+}
+
 /// Host of a URL value is a [`is_placeholder_domain`]. Cheap hand-parse (no `url`
 /// crate dependency here): strips scheme, userinfo, port, and path/query/frag.
 pub(super) fn url_host_is_placeholder(u: &str) -> bool {
@@ -56,14 +125,17 @@ pub(super) fn url_host_is_placeholder(u: &str) -> bool {
 ///   (e.g. `"rhino-ryno23"`).  Legitimate hyphenated surnames like
 ///   `"Smith-Jones"` never contain digits.
 pub fn is_username_derived_name(name: &str) -> bool {
-    let parts: Vec<&str> = name.split_whitespace().collect();
-    if parts.len() == 2 && parts[0].eq_ignore_ascii_case(parts[1]) {
+    // Exactly-two-identical-tokens check without collecting a `Vec`: pull the
+    // first three whitespace tokens and require the third to be absent.
+    let mut parts = name.split_whitespace();
+    if let (Some(first), Some(second), None) = (parts.next(), parts.next(), parts.next())
+        && first.eq_ignore_ascii_case(second)
+    {
         return true;
     }
     // Slug token: hyphen + digit in the same word ⟹ almost certainly a username.
-    parts
-        .iter()
-        .any(|t| t.contains('-') && t.chars().any(|c| c.is_ascii_digit()))
+    name.split_whitespace()
+        .any(|token| token.contains('-') && token.bytes().any(|b| b.is_ascii_digit()))
 }
 
 /// Canonical placeholder person names (synthetic "John Doe"-style values that
@@ -97,8 +169,7 @@ pub(super) fn is_placeholder_person(name: &str) -> bool {
 /// `first_last` and `firstlast` all match) — so a real handle like `matt` or a
 /// real `john.smith` is never rejected.
 pub(super) fn is_placeholder_email_local(local: &str) -> bool {
-    let l = local.trim().to_ascii_lowercase();
-    let stripped: String = l.chars().filter(char::is_ascii_alphanumeric).collect();
+    let local = local.trim();
     const TEMPLATE: &[&str] = &[
         "firstname",
         "lastname",
@@ -122,7 +193,12 @@ pub(super) fn is_placeholder_email_local(local: &str) -> bool {
         "redacted",
         "placeholder",
     ];
-    TEMPLATE.contains(&l.as_str()) || TEMPLATE.contains(&stripped.as_str())
+    // Compared both verbatim (case-insensitive) and in separator-stripped,
+    // lowercased form — both streamed over `local`, so neither the lowercase copy
+    // nor the stripped copy is allocated.
+    TEMPLATE.iter().any(|template| {
+        local.eq_ignore_ascii_case(template) || normalized_ascii_alnum_eq(local, template)
+    })
 }
 
 /// True if a discovered entity is a documentation/placeholder artifact that
@@ -259,5 +335,52 @@ pub fn is_fragment_value(kind: &EntityKind, value: &str) -> bool {
                 || (t.len() == 2 && t.bytes().all(|b| b.is_ascii_alphabetic()))
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn username_derived_name_behavior_is_preserved() {
+        assert!(is_username_derived_name("rhino-ryno23 rhino-ryno23"));
+        assert!(is_username_derived_name("rhino-ryno23"));
+        assert!(!is_username_derived_name("Smith-Jones"));
+        assert!(!is_username_derived_name("Alice Smith"));
+    }
+
+    #[test]
+    fn recognises_markers_ported_from_util_domains_is_proxy_registrant() {
+        // Consolidation fix: these markers were only in the sibling
+        // util::domains::is_proxy_registrant's separate list before the two
+        // were unified — a genuine privacy-proxy registrant string in one of
+        // these shapes previously passed the WHOIS modules' check while
+        // failing the correlator/relation-builder's identical check (or vice
+        // versa), purely depending on which code path evaluated it.
+        assert!(is_whois_privacy_placeholder("DomainsByProxy.com"));
+        assert!(is_whois_privacy_placeholder("Private Registration"));
+        assert!(is_whois_privacy_placeholder("Non-Public Data"));
+        assert!(is_whois_privacy_placeholder(
+            "Domain Protection Services, Inc."
+        ));
+        assert!(is_whois_privacy_placeholder("ProtectedDomainServices"));
+    }
+
+    #[test]
+    fn whois_privacy_matching_remains_case_insensitive() {
+        assert!(is_whois_privacy_placeholder("REDACTED FOR PRIVACY"));
+        assert!(is_whois_privacy_placeholder("Domains By Proxy, LLC"));
+        // A legitimate `Private Limited` company suffix must survive — the marker
+        // is `privacy`, never a bare `private`.
+        assert!(!is_whois_privacy_placeholder("Example Private Limited"));
+    }
+
+    #[test]
+    fn placeholder_email_local_normalisation_is_preserved() {
+        assert!(is_placeholder_email_local("First.Name"));
+        assert!(is_placeholder_email_local("YOUR_EMAIL"));
+        assert!(is_placeholder_email_local("redacted"));
+        assert!(!is_placeholder_email_local("alice.smith"));
     }
 }
