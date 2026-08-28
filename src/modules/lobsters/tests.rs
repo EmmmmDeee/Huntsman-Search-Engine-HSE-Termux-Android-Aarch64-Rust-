@@ -104,7 +104,10 @@ fn builds_username_entity_with_correct_confidence() {
         .iter()
         .find(|e| e.kind == EntityKind::Username && e.value == "devuser");
     assert!(u.is_some(), "must emit Username entity for the account");
-    assert!((u.expect("should succeed").confidence - confidence::VERY_HIGH_PLUS).abs() < 0.01);
+    // OD-21: a single-source confirmed-account lookup sits at HIGH_PLUSPLUS_PLUS
+    // (0.85) — the settled tier for this class (matches gitlab/gitea) — not
+    // VERY_HIGH_PLUS (0.90), which the ladder reserves for multi-source.
+    assert!((u.expect("should succeed").confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
 }
 
 #[test]

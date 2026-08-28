@@ -77,6 +77,19 @@ fn is_free_social_module() {
     assert!(m.produces().contains(&EntityKind::Url));
 }
 
+#[test]
+fn roblox_confidence_is_the_single_source_confirmed_account_tier() {
+    // OD-21: a Roblox hit is a single-source, exact-handle platform-existence
+    // lookup — the HIGH_PLUSPLUS_PLUS (0.85) tier this codebase settled on for
+    // that class (matches gitlab/gitea), NOT VERY_HIGH_PLUS (0.90), which the
+    // ladder reserves for "exceeds multi-source threshold". Pins the constant so
+    // it cannot silently drift back up (the drift OD-21 was filed for).
+    assert!((ROBLOX_CONF - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
+    // Roblox and Minecraft share the tier: both are single-source exact-handle
+    // existence facts; their evidence-richness difference is not a base-grade one.
+    assert!((ROBLOX_CONF - MINECRAFT_CONF).abs() < 0.01);
+}
+
 /// Live end-to-end proof against the REAL public Roblox + Mojang APIs — no
 /// mock, no fixture. Ignored by default (network + non-deterministic upstream);
 /// run with
