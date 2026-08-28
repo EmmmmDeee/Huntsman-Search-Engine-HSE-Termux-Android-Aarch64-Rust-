@@ -26,7 +26,8 @@ fn emits_username_and_profile_url() {
         .find(|e| e.kind == EntityKind::Username)
         .expect("should succeed");
     assert!(u.has_tag("codewars") && u.has_tag("public-profile"));
-    assert!((u.confidence - 0.84).abs() < 0.01);
+    // OD-19 cohort canon: single-source confirmed-account lookup = 0.85.
+    assert!((u.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
 }
 
 #[test]

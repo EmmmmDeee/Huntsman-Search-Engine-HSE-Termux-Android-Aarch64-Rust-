@@ -109,8 +109,16 @@ pub(super) fn build_entities(user: SfUser, scan_id: &str) -> Vec<Entity> {
         e
     };
 
-    // Confirmed username on SourceForge.
-    let mut e = Entity::new(EntityKind::Username, handle, 0.86, scan_id);
+    // Confirmed username on SourceForge — a single-source, keyless
+    // account-existence lookup, graded at the cohort canon HIGH_PLUSPLUS_PLUS
+    // (0.85; OD-19, matching gitea_user/gitlab_user). Replaces a bare `0.86`
+    // literal that sat off the ladder for no recorded reason.
+    let mut e = Entity::new(
+        EntityKind::Username,
+        handle,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     e.tag("sourceforge");
     e.tag("public-profile");
     e.add_evidence(ev());

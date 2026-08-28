@@ -310,8 +310,16 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
         }
     }
 
-    // The confirmed-on-npm username, carrying package coverage as evidence.
-    let mut u = Entity::new(EntityKind::Username, handle, confidence::EXPERT, scan_id);
+    // The confirmed-on-npm username — a single-source, keyless account-existence
+    // lookup; package coverage rides as evidence, not a base-confidence premium
+    // (OD-21). Graded at the cohort canon HIGH_PLUSPLUS_PLUS (0.85; OD-19,
+    // matching gitea_user/gitlab_user), not EXPERT (0.88).
+    let mut u = Entity::new(
+        EntityKind::Username,
+        handle,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     u.tag("npm");
     u.tag("code");
     let sample: Vec<&str> = package_names.iter().take(8).map(String::as_str).collect();

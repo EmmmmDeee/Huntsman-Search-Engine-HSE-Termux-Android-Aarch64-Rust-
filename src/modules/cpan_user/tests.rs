@@ -47,7 +47,9 @@ fn emits_username_and_uppercase_profile_url() {
             .any(|e| e.kind == EntityKind::Url && e.value == "https://metacpan.org/author/JOHNDOE")
     );
     assert!(u.has_tag("cpan") && u.has_tag("public-profile"));
-    assert!((u.confidence - 0.87).abs() < 0.01);
+    // OD-19 cohort canon: single-source confirmed-account lookup = 0.85
+    // (named constant, replacing the former off-ladder 0.87 literal).
+    assert!((u.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
 }
 
 #[test]
