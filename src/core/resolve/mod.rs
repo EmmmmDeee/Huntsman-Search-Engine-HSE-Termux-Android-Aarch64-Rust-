@@ -49,24 +49,23 @@
 //! elsewhere (e.g. [`crate::core::geo_family`] for the shared-surname family
 //! angle). When in doubt it suggests nothing.
 //!
-//! Self-contained canonical helpers
+//! Shared canonical helpers
 //! The module layer has a `modules::email_canonical` that does the *enrichment*
-//! side of this (emitting a canonical `Email` entity for one seed). `core` must
-//! not depend on `modules`, so the small canonical-form helpers below
-//! ([`canonical_email`], [`canonical_phone`], [`canonical_name`],
-//! [`canonical_handle`]) are reimplemented here, self-contained and minimal.
-//! Their behaviour is documented per function so the provider-specific stance
-//! (which forms collapse, which are deliberately kept) is auditable in one
-//! place.
+//! side of the email rule (emitting a canonical `Email` entity for one seed),
+//! and `core::correlator`'s AU-081 tokenizes a person name for its own
+//! cross-source match. `core` must not depend on `modules`, so the email rule,
+//! the generational-suffix list, and the name/handle word-tokeniser live in
+//! [`crate::util::canonical`] — the one layer both `core` and `modules` may
+//! call into — and each caller uses the shared definition instead of keeping
+//! its own copy. [`canonical_phone`] has no sibling elsewhere in the tree
+//! today, so it stays local; every helper's behaviour is documented per
+//! function so the provider-specific stance (which forms collapse, which are
+//! deliberately kept) is auditable in one place.
 
 use std::collections::BTreeMap;
 
 use crate::core::entity::{Entity, EntityKind};
-
-/// The two Gmail-family domains that share one mailbox namespace and treat dots
-/// in the local-part as insignificant. `googlemail.com` is a legacy alias of
-/// `gmail.com`, so both canonicalise to `gmail.com` (see [`canonical_email`]).
-const GMAIL_DOMAINS: [&str; 2] = ["gmail.com", "googlemail.com"];
+use crate::util::canonical::{GEN_SUFFIXES, canonical_email_mailbox, name_word_tokens};
 
 /// A suggested SAME-ENTITY group: a set of existing entities that are probably
 /// the one real-world identifier, surfaced because their provider-specific
@@ -107,8 +106,8 @@ pub struct ResolutionGroup {
 ///
 /// # What is grouped
 /// Per kind, via a private canonical function (all documented on the helpers):
-/// * [`EntityKind::Email`] → [`canonical_email`] (Gmail dots/`+tag`; `+tag`
-///   only for other domains, dots kept);
+/// * [`EntityKind::Email`] → [`canonical_email_mailbox`]
+///   (Gmail dots/`+tag`; `+tag` only for other domains, dots kept);
 /// * [`EntityKind::Phone`] → [`canonical_phone`] (digits only, optional
 ///   leading `+`; equality only — never country-code inference);
 /// * [`EntityKind::Username`] → [`canonical_handle`] (case/space/punctuation);
@@ -224,7 +223,7 @@ pub fn suggest_merges(entities: &[Entity]) -> Vec<ResolutionGroup> {
 /// and the per-kind `reason` strings live in one place.
 fn canonicalise(e: &Entity) -> Option<(String, &'static str)> {
     match e.kind {
-        EntityKind::Email => canonical_email(&e.value).map(|c| {
+        EntityKind::Email => canonical_email_mailbox(&e.value).map(|c| {
             (
                 c,
                 "Email canonical mailbox (Gmail dot/+tag-insensitive; +tag stripped)",
@@ -242,49 +241,6 @@ fn canonicalise(e: &Entity) -> Option<(String, &'static str)> {
         }),
         _ => None,
     }
-}
-
-/// Canonical mailbox form of an email address, or `None` when it has no `@`, an
-/// empty local-part or domain, or no canonical local-part survives.
-///
-/// Rules (the equivalences are documented routing behaviour, not guesses):
-/// * lowercase the whole address (the entity normaliser already does this, but
-///   this helper stays correct for any caller / unnormalised input);
-/// * strip a `+tag` suffix from the local-part — plus-addressing routes to the
-///   base mailbox on every major provider (Gmail, Outlook/Microsoft, Fastmail,
-///   Proton, iCloud, …), so it never distinguishes identity;
-/// * for **Gmail only** (`gmail.com` and its legacy alias `googlemail.com`)
-///   additionally drop **all dots** in the local-part and fold the domain to
-///   `gmail.com` — Gmail treats `j.o.h.n` and `john` as one mailbox.
-///
-/// Provider-specific stance: dots are **kept** for every non-Gmail domain.
-/// Most providers treat `a.b@corp.com` and `ab@corp.com` as *different*
-/// mailboxes, so stripping dots universally would be a false merge. This is
-/// deliberately the conservative choice — only the documented Gmail rule drops
-/// dots.
-fn canonical_email(value: &str) -> Option<String> {
-    let lower = value.trim().to_lowercase();
-    let (local, domain) = lower.split_once('@')?;
-    if local.is_empty() || domain.is_empty() {
-        return None;
-    }
-
-    // `+tag` subaddressing: the base mailbox before the first '+' is the
-    // identity. Universally safe — every major provider routes the base.
-    let base = local.split('+').next().unwrap_or(local);
-
-    let (local_canon, domain_canon) = if GMAIL_DOMAINS.contains(&domain) {
-        // Gmail dot-blindness, and googlemail.com == gmail.com.
-        (base.replace('.', ""), "gmail.com")
-    } else {
-        // Non-Gmail: keep dots (significant on most providers), keep the domain.
-        (base.to_string(), domain)
-    };
-
-    if local_canon.is_empty() {
-        return None;
-    }
-    Some(format!("{local_canon}@{domain_canon}"))
 }
 
 /// Canonical digit form of a phone number, or `None` when it contains no
@@ -328,58 +284,131 @@ fn canonical_phone(value: &str) -> Option<String> {
     Some(out)
 }
 
-/// Canonical form of a free-text token string — lowercase, trimmed, with
-/// internal whitespace collapsed to single spaces and surrounding punctuation
-/// stripped. The shared core of [`canonical_handle`] and [`canonical_name`].
-///
-/// Returns `None` when nothing remains after stripping (an empty or
-/// punctuation-only value), since an empty key cannot identify anything.
-fn canonical_tokens(value: &str) -> Option<String> {
-    // Lowercase, then split on any non-alphanumeric boundary so punctuation and
-    // runs of whitespace both act as separators; rejoin tokens with single
-    // spaces. This collapses "  Jane   Citizen  ", "Jane Citizen" and
-    // "Jane.Citizen" to the same "jane citizen", and strips surrounding
-    // punctuation as a side effect of dropping empty split fragments.
-    let lower = value.to_lowercase();
-    let mut canon = String::with_capacity(lower.len());
-    for tok in lower.split(|c: char| !c.is_alphanumeric()) {
-        if tok.is_empty() {
-            continue;
-        }
-        if !canon.is_empty() {
-            canon.push(' ');
-        }
-        canon.push_str(tok);
-    }
-    (!canon.is_empty()).then_some(canon)
-}
-
-/// Canonical form of a username / handle: [`canonical_tokens`] applied to the
-/// value (lowercase, trim, collapse whitespace, strip surrounding punctuation).
+/// Canonical form of a username / handle: [`canonical_word_tokens`] applied to
+/// the value (lowercase, collapse whitespace runs to single spaces, strip each
+/// token's surrounding punctuation — internal punctuation is preserved).
 ///
 /// Order is preserved for handles (unlike [`canonical_name`]): a handle is an
-/// opaque token, so its internal order is significant — only formatting noise is
-/// normalised away.
+/// opaque token, so its internal order is significant — only whitespace
+/// formatting noise is normalised away.
+///
+/// Regression: this used to route through a stricter tokeniser that treated
+/// EVERY non-alphanumeric character — `.`, `_`, `-` alike — as an equivalent
+/// separator, so `"jordan.avery"` and `"jordan_avery"` canonicalised
+/// identically and [`suggest_merges`] fused them into one full-trust `SameAs`
+/// edge via [`crate::core::relation::builders::derive_canonical_identities`].
+/// No platform actually treats those as interchangeable — GitHub handles allow
+/// only hyphens, Twitter/X only underscores, Instagram both dots and
+/// underscores as DISTINCT characters — so a separator difference is exactly
+/// the kind of "provider-specific" guess this module's own doc says it does
+/// not make (unlike Gmail dot-blindness, which IS a documented, provider-wide
+/// equivalence). Two independently-registered accounts that merely happen to
+/// share letters around a different separator are not the mechanically-exact
+/// collision this module requires; preserving the separator (like
+/// [`canonical_name`] already does for a name's internal hyphen/apostrophe)
+/// keeps that false-merge risk closed.
 fn canonical_handle(value: &str) -> Option<String> {
-    canonical_tokens(value)
+    canonical_word_tokens(value)
 }
 
-/// Canonical form of a person's name: [`canonical_tokens`] **plus** an
-/// order-insensitive sort of the resulting tokens, so the FULL name-token
-/// multiset — not its order — is the identity key.
+/// True when `segment` — the side of a comma [`canonical_name`] would
+/// otherwise treat as a given name — reduces entirely to
+/// generational/professional suffix tokens once each token's surrounding
+/// punctuation is trimmed (`"Jr."`, `"Jr"`, `"PhD"`). An empty result (nothing
+/// survives) is NOT suffix-only; that case is handled separately by the
+/// empty-string guard at the call site.
+fn is_generational_suffix_only(segment: &str) -> bool {
+    let tokens: Vec<&str> = segment.split_whitespace().collect();
+    !tokens.is_empty()
+        && tokens.iter().all(|t| {
+            let trimmed = t.trim_matches(|c: char| !c.is_alphanumeric());
+            !trimmed.is_empty() && GEN_SUFFIXES.contains(&trimmed.to_lowercase().as_str())
+        })
+}
+
+/// Canonical form of a person's name: [`canonical_word_tokens`] applied in
+/// NATURAL token order, after folding the comma surname-first form to natural
+/// order.
 ///
-/// This makes `"Jane Citizen"` and `"Citizen, Jane"` (both → `"citizen jane"`)
-/// one identity, while keeping the rule strict: it groups only when the *entire*
-/// token multiset matches. A merely shared surname (`"Jane Citizen"` vs
-/// `"John Citizen"` → `"citizen jane"` vs `"citizen john"`) does **not** match,
-/// so this never fuses two different people on a partial-name overlap — that
-/// weaker shared-surname signal is handled elsewhere (e.g.
-/// [`crate::core::geo_family`]).
+/// A single comma marks the surname-first form (`"Citizen, Jane"`,
+/// `"Citizen, Jane Q"`): the pre-comma surname is moved to the end so it folds to
+/// the same key as the natural-order `"Jane Citizen"` / `"Jane Q Citizen"`. A
+/// value with NO comma keeps its token order.
+///
+/// This makes `"Jane Citizen"` and `"Citizen, Jane"` (both → `"jane citizen"`)
+/// one identity. A merely shared surname (`"Jane Citizen"` vs `"John Citizen"`)
+/// still does **not** match. Crucially, two DISTINCT people whose names are token
+/// permutations of each other (`"Cameron Tyler"` vs `"Tyler Cameron"`, no comma)
+/// also do **not** match: the previous implementation sorted the whole token
+/// multiset, collapsing that pair to one key and fusing two different people via
+/// an undamped `SameAs` merge. The comma is the only reliable surname-first
+/// signal; without it, two orderings are two different names, and a false merge
+/// is worse than a missed one (the weaker shared-surname signal is handled
+/// elsewhere, e.g. [`crate::core::geo_family`]).
+///
+/// One more case the comma does NOT mark: a trailing generational/professional
+/// suffix (`"Smith, Jr."`, `"Smith, PhD"`) — [`is_generational_suffix_only`]
+/// excludes it, so `"John Smith, Jr."` and the equally-standard no-comma
+/// spelling `"John Smith Jr."` both canonicalise to `"john smith jr"` instead
+/// of the comma form wrongly reordering to `"jr john smith"` and permanently
+/// fragmenting one suffixed person's corroboration across two UIDs.
 fn canonical_name(value: &str) -> Option<String> {
-    let canon = canonical_tokens(value)?;
-    let mut tokens: Vec<&str> = canon.split(' ').collect();
-    tokens.sort_unstable();
-    Some(tokens.join(" "))
+    let reordered = match value.split_once(',') {
+        Some((surname, given))
+            if !surname.trim().is_empty()
+                && !given.trim().is_empty()
+                && !is_generational_suffix_only(given) =>
+        {
+            format!("{} {}", given.trim(), surname.trim())
+        }
+        _ => value.to_string(),
+    };
+    canonical_word_tokens(&reordered)
+}
+
+/// Canonical form of a value's whitespace-delimited tokens — lowercase, with
+/// each token's SURROUNDING punctuation stripped but internal punctuation (a
+/// hyphen, an apostrophe, a dot, an underscore) preserved. Shared core of
+/// [`canonical_name`] and [`canonical_handle`].
+///
+/// Deliberately does NOT split on every non-alphanumeric character the way an
+/// earlier version of this helper did — that treated a hyphen/dot/underscore
+/// exactly like the whitespace between distinct tokens, which collapsed two
+/// meaningfully different values onto one canonical key:
+///
+/// * `"Anna Smith-Jones"` (one hyphenated compound surname, three whitespace
+///   tokens: `anna`, `smith-jones`) and `"Anna Smith Jones"` (three genuinely
+///   distinct tokens: `anna`, `smith`, `jones` — a different given/middle
+///   name, or simply a different person with an unhyphenated two-part
+///   surname) both folded to the identical key `"anna smith jones"`.
+/// * `"jordan.avery"` and `"jordan_avery"` (two independently-registered
+///   accounts on platforms that use the separator character itself to
+///   distinguish handles — GitHub hyphens-only, Twitter/X underscores-only,
+///   Instagram dots and underscores as distinct characters) both folded to
+///   `"jordan avery"`.
+///
+/// Either fuses two names/handles that are not reliably the same real-world
+/// thing into one high-trust `SameAs`/`AliasOf` edge
+/// ([`crate::core::relation::builders::derive_canonical_identities`] treats
+/// every [`suggest_merges`] group as an EXACT collision, never a fuzzy guess).
+/// A hyphen/apostrophe/dot/underscore inside a name or handle is not
+/// formatting noise the way case or a run of whitespace is — it typically
+/// joins two components into one meaningful unit (`Smith-Jones`, `O'Brien`,
+/// a platform-specific handle separator) rather than separating them, so
+/// splitting on it turns one token into two and risks exactly the collision
+/// above. Only WHITESPACE separates tokens here; non-alphanumeric characters
+/// at a token's own edges (a stray quote, a trailing comma an earlier pass
+/// missed) are still stripped, matching this module's conservative default —
+/// [when in doubt, this module suggests nothing](self) — of narrowing what
+/// merges rather than widening it.
+///
+/// The tokenising itself is [`crate::util::canonical::name_word_tokens`],
+/// shared with AU-081's cross-source person-name correlation
+/// (`core::correlator::rules::identity::account::platform`) so the two can
+/// never again tokenize a hyphenated/apostrophed name differently.
+fn canonical_word_tokens(value: &str) -> Option<String> {
+    let tokens = name_word_tokens(value);
+    (!tokens.is_empty()).then(|| tokens.join(" "))
 }
 
 #[cfg(test)]

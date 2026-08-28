@@ -1,0 +1,472 @@
+//! AU-121 — Transitive credential-reuse blast radius.
+//!
+//! AU-047 links the accounts a *single* reused secret was seen against. But
+//! secret reuse **chains**: secret A ties accounts {1, 2}, a *different* secret
+//! B ties {2, 3}, so accounts 1 and 3 fall under one controller's takeover
+//! surface even though they share no secret directly — a link no per-secret rule
+//! can express, because no single secret spans the whole set. This rule computes
+//! the **transitive closure** of that reuse graph (a recursive union over
+//! accounts joined by any shared secret) and reports each connected component as
+//! one *credential-reuse blast radius*: the full set of accounts a single
+//! compromised credential in the chain cascades to.
+//!
+//! It reuses the correlator's one secret classifier ([`Secret::classify`], the
+//! same gate AU-047 and the `SharesSecretWith` relation builder fire on) and the
+//! shared [`canonical_handle`] folder, so "which secrets link" and "which
+//! accounts are the same controller" can never drift from the rest of the
+//! engine (Rule 4: delegate, never copy).
+//!
+//! Firing gate — deliberately disjoint from AU-047 so the two never
+//! double-report the same finding:
+//!   * the component spans **≥ 3 distinct account handles** (a real blast
+//!     radius, not a pair), and
+//!   * **no single secret covers the whole component** — i.e. it is genuinely
+//!     transitive. A component that one secret spans end-to-end is exactly an
+//!     AU-047 finding and is left to AU-047.
+//!
+//! Severity: **Critical** only when **every** binding secret is unique by
+//! construction (a salted hash, session token, wallet address, or API key — no
+//! coincidence possible). A single reused **plaintext** password edge anywhere in
+//! the chain caps the whole component at **High**: a shared plaintext carries a
+//! residual coincidence risk (two strangers can pick the same password), and a
+//! transitive blast-radius claim is only as certain as its weakest link (mirrors
+//! AU-047's plaintext tier).
+
+use super::*;
+
+/// AU-121 — Transitive credential-reuse blast radius.
+///
+/// Entity-only: builds a union-find over account handles joined by any shared
+/// secret (drawn from each secret's own breach-record evidence, the same
+/// `email`/`username` attributes AU-047 reads), then emits one correlation per
+/// transitive component of ≥3 handles that no single secret spans. `entity_uids`
+/// carries every binding secret plus every in-scope `Email`/`Username` entity in
+/// the component, in entity order, so the SPA Correlations view can render the
+/// whole chain.
+pub(in crate::core::correlator) fn rule_au_121_credential_reuse_blast_radius(
+    context: &RuleContext,
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let entities = context.entities();
+    /// A component must reach this many distinct handles to count as a blast
+    /// radius (a 2-handle link is a single-secret AU-047 pair's job).
+    const MIN_HANDLES: usize = 3;
+
+    // Every linkable secret and the account handles its evidence ties together.
+    // A secret contributing <2 handles cannot chain anything, so it is dropped
+    // up front — the union graph only needs the edge-bearing secrets.
+    struct SecretGroup<'a> {
+        uid: &'a str,
+        kind: Secret,
+        handles: Vec<String>,
+        // Raw identifiers (emails/usernames as observed) for the human summary.
+        raw: Vec<String>,
+    }
+    let groups: Vec<SecretGroup> = entities
+        .iter()
+        .filter_map(|e| {
+            let kind = Secret::classify(e)?;
+            let mut raw: Vec<String> = Vec::new();
+            let mut handles: Vec<String> = Vec::new();
+            // A handle is only a safe union-find pivot if it is a DISTINCTIVE
+            // identity: not too short, not a generic role handle
+            // (admin/info/support/…), and not an all-numeric id (10001) — any of
+            // which two unrelated people can independently carry. Pivoting on one
+            // fuses strangers into a single reuse component — a false Critical
+            // shared-secret blast radius (this rule's own severity), which is why
+            // the length floor is NOT dropped the way an earlier version of this
+            // comment argued: a short handle like "cj" bridging two independent
+            // breach corpora is exactly the collision `is_anchorable_handle`'s
+            // len>=4 exists to reject, and this rule's blast radius spans
+            // independent secrets (cross-corpus), unlike AU-047/AU-106's
+            // single-secret co-occurrence. Delegates to the canonical guard
+            // (core::relation::builders::persona_key uses the same one) so the
+            // two can't drift; the all-digit check stays explicit since
+            // is_anchorable_handle doesn't apply it ("10001" is length-5,
+            // non-generic, and would otherwise pass).
+            let is_pivotable =
+                |h: &str| is_anchorable_handle(h) && !h.bytes().all(|b| b.is_ascii_digit());
+            // `attr_values` per key, not `attributes.get`: two rows of one breach
+            // corpus fold into a single evidence record whose colliding accounts
+            // accumulate as `"alice; bob_work"`, so reading the value whole
+            // collapses two pivots into one and starves the closure of the very
+            // edges it exists to walk.
+            for ev in &e.evidence {
+                for email in ev.attr_values("email") {
+                    let email = email.to_lowercase();
+                    if email.contains('@') {
+                        let handle = canonical_handle(email.split('@').next().unwrap_or(&email));
+                        if is_pivotable(&handle) && !handles.contains(&handle) {
+                            handles.push(handle);
+                            raw.push(email);
+                        }
+                    }
+                }
+                for username in ev.attr_values("username") {
+                    let username = username.to_lowercase();
+                    if !username.is_empty() {
+                        let handle = canonical_handle(&username);
+                        if is_pivotable(&handle) && !handles.contains(&handle) {
+                            handles.push(handle);
+                            raw.push(username);
+                        }
+                    }
+                }
+            }
+            // Only edge-bearing secrets (≥2 handles) participate in the closure.
+            (handles.len() >= 2).then_some(SecretGroup {
+                uid: &e.uid,
+                kind,
+                handles,
+                raw,
+            })
+        })
+        .collect();
+    if groups.len() < 2 {
+        // A single edge-bearing secret can only produce an AU-047 finding, never
+        // a transitive chain — bail before building the union graph.
+        return Vec::new();
+    }
+
+    // ── Union-find over the distinct handles ──────────────────────────────────
+    let mut index: HashMap<&str, usize> = HashMap::new();
+    let mut handle_list: Vec<&str> = Vec::new();
+    for g in &groups {
+        for h in &g.handles {
+            if !index.contains_key(h.as_str()) {
+                index.insert(h.as_str(), handle_list.len());
+                handle_list.push(h.as_str());
+            }
+        }
+    }
+    let mut uf = crate::util::union_find::UnionFind::new(handle_list.len());
+    for g in &groups {
+        // Union every handle in this secret's set to the first one.
+        let first = index[g.handles[0].as_str()];
+        for h in &g.handles[1..] {
+            uf.union(first, index[h.as_str()]);
+        }
+    }
+
+    // ── Aggregate per component (keyed by canonical root) ─────────────────────
+    // Deterministic: BTreeMap over the component's lexicographically-smallest
+    // handle, and every member set is a BTreeSet, so the output order and content
+    // are input-order-independent.
+    struct Component {
+        handles: BTreeSet<String>,
+        secret_uids: BTreeSet<String>,
+        raw: BTreeSet<String>,
+        // The largest single-secret handle-span in this component — the AU-047
+        // reach. If it equals the component size, one secret covers everything.
+        max_single_span: usize,
+        critical: bool,
+    }
+    let mut comps: HashMap<usize, Component> = HashMap::new();
+    for g in &groups {
+        let root = uf.find(index[g.handles[0].as_str()]);
+        // Every handle in a given secret shares one root (we just unioned them).
+        let comp = comps.entry(root).or_insert_with(|| Component {
+            handles: BTreeSet::new(),
+            secret_uids: BTreeSet::new(),
+            raw: BTreeSet::new(),
+            max_single_span: 0,
+            // Weakest-link: start Critical, cleared by any reused-plaintext edge.
+            critical: true,
+        });
+        for h in &g.handles {
+            comp.handles.insert(h.clone());
+        }
+        for r in &g.raw {
+            comp.raw.insert(r.clone());
+        }
+        comp.secret_uids.insert(g.uid.to_owned());
+        comp.max_single_span = comp.max_single_span.max(g.handles.len());
+        // Weakest-link severity: a transitive blast-radius claim is only as
+        // certain as its least-unique binding secret. A single reused-plaintext
+        // edge (which two strangers could coincidentally share) caps the whole
+        // component at High; Critical requires EVERY secret to be construction-
+        // unique (salted hash / token / wallet / API key).
+        if matches!(g.kind, Secret::PlaintextPassword) {
+            comp.critical = false;
+        }
+    }
+
+    // Pre-index identity entities (Email/Username) by canonical handle so the
+    // component's account entities can be named in `entity_uids`, in entity
+    // order. Built once, not per component.
+    let identities: Vec<(String, &str)> = entities
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::Email | EntityKind::Username))
+        .map(|e| {
+            let raw = e.value.trim().to_lowercase();
+            let base = if e.kind == EntityKind::Email {
+                raw.split('@').next().unwrap_or(&raw).to_string()
+            } else {
+                raw
+            };
+            (canonical_handle(&base), e.uid.as_str())
+        })
+        .collect();
+
+    // Deterministic component order: by smallest handle.
+    let mut ordered: Vec<&Component> = comps.values().collect();
+    ordered.sort_by(|a, b| a.handles.iter().next().cmp(&b.handles.iter().next()));
+
+    let mut out = Vec::new();
+    for comp in ordered {
+        let n = comp.handles.len();
+        // Blast radius AND genuinely transitive (no single secret spans it all —
+        // that case is AU-047's).
+        if n < MIN_HANDLES || comp.max_single_span >= n || comp.secret_uids.len() < 2 {
+            continue;
+        }
+
+        // entity_uids: binding secrets + the account entities present in scope,
+        // in entity order for a stable render.
+        let mut uids: Vec<String> = Vec::new();
+        for e in entities {
+            if comp.secret_uids.contains(&e.uid) {
+                uids.push(e.uid.clone());
+            }
+        }
+        for (handle, uid) in &identities {
+            if comp.handles.contains(handle) && !uids.iter().any(|u| u == uid) {
+                uids.push((*uid).to_owned());
+            }
+        }
+
+        let k = comp.secret_uids.len();
+        let listed = comp
+            .raw
+            .iter()
+            .take(6)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = comp.raw.len().saturating_sub(6);
+        let suffix = if more > 0 {
+            format!(", +{more} more")
+        } else {
+            String::new()
+        };
+        let severity = if comp.critical {
+            Severity::Critical
+        } else {
+            Severity::High
+        };
+
+        out.push(Correlation::new(
+            "AU-121",
+            "Transitive credential-reuse blast radius",
+            severity,
+            format!(
+                "{n} accounts chain into one credential-reuse blast radius via {k} reused \
+                 secrets — no single secret spans them all, so per-secret reuse detection \
+                 misses the full chain; one compromised credential cascades to every linked \
+                 account: {listed}{suffix}",
+            ),
+            uids,
+            scan_id,
+            ts,
+        ));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::entity::Evidence;
+
+    /// A secret entity whose evidence records the accounts it was seen against —
+    /// the exact shape `Secret::classify` + the AU-047 join read.
+    fn secret_with(kind: EntityKind, value: &str, accounts: &[(&str, &str)]) -> Entity {
+        let mut e = Entity::new(kind, value, 0.9, "s");
+        for (attr, who) in accounts {
+            e.add_evidence(Evidence::new("breach", "leaked record").with_attr(*attr, *who));
+        }
+        e
+    }
+
+    // A salted hash — classified as SaltedHash (construction-unique → Critical).
+    const HASH_A: &str = "$2b$12$abcdefghijklmnopqrstuv0123456789ABCDEFGHIJKLMNOPqrst";
+    const HASH_B: &str = "$2b$12$ZYXWVUTSRQPONMLKJIHGFE9876543210zyxwvutsrqponmlkAAAA";
+
+    #[test]
+    fn au114_fires_on_a_transitive_chain_no_single_secret_spans() {
+        // Secret A ties alice+bobby; secret B ties bobby+carol. alice and carol
+        // share no secret, but the chain makes all three one blast radius.
+        let a = secret_with(
+            EntityKind::Password,
+            HASH_A,
+            &[("username", "alice"), ("username", "bobby")],
+        );
+        let b = secret_with(
+            EntityKind::Password,
+            HASH_B,
+            &[("username", "bobby"), ("username", "carol")],
+        );
+        let out = rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a, b]), "s", 0);
+        assert_eq!(out.len(), 1, "the transitive chain must fire once");
+        assert_eq!(out[0].rule_id, "AU-121");
+        assert_eq!(
+            out[0].severity,
+            Severity::Critical,
+            "a salted-hash chain is construction-unique → Critical"
+        );
+    }
+
+    #[test]
+    fn au121_does_not_bridge_two_secrets_on_a_short_handle() {
+        // Same shape as the transitive-chain test above, but the bridging
+        // handle is "cj" (2 chars) instead of "bobby" (5) — short enough that
+        // two unrelated people plausibly picked it independently on unrelated
+        // sites. Must NOT fire: is_pivotable requires is_anchorable_handle's
+        // len>=4 floor, the same guard persona_key applies for identical
+        // reasons, so a coincidental short-handle collision across two
+        // independent secrets no longer fabricates a Critical cross-identity
+        // link between strangers.
+        let a = secret_with(
+            EntityKind::Password,
+            HASH_A,
+            &[("username", "alice"), ("username", "cj")],
+        );
+        let b = secret_with(
+            EntityKind::Password,
+            HASH_B,
+            &[("username", "cj"), ("username", "carol")],
+        );
+        let out = rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a, b]), "s", 0);
+        assert!(
+            out.is_empty(),
+            "a 2-character handle must not bridge two independent secrets"
+        );
+    }
+
+    #[test]
+    fn au121_generic_or_numeric_bridge_does_not_fuse_strangers() {
+        // A generic role handle ("admin") or an all-numeric id ("10001") is not a
+        // distinctive identity — two unrelated people each carry it — so it must
+        // not become a union-find pivot. Otherwise secret A {alice, admin} and
+        // secret B {bob, admin} fuse alice+bob into one false blast radius. After
+        // the pivot filter, each secret keeps only its one real handle and drops
+        // below the >= 2-handle edge threshold, so nothing fires.
+        let a = secret_with(
+            EntityKind::Password,
+            HASH_A,
+            &[("username", "alice"), ("username", "admin")],
+        );
+        let b = secret_with(
+            EntityKind::Password,
+            HASH_B,
+            &[("username", "bob"), ("username", "admin")],
+        );
+        let out = rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a, b]), "s", 0);
+        assert!(
+            out.is_empty(),
+            "a generic 'admin' bridge must not fuse alice and bob: {out:?}"
+        );
+
+        // Same for an all-numeric id.
+        let c = secret_with(
+            EntityKind::Password,
+            HASH_A,
+            &[("username", "alice"), ("username", "10001")],
+        );
+        let d = secret_with(
+            EntityKind::Password,
+            HASH_B,
+            &[("username", "bob"), ("username", "10001")],
+        );
+        let out2 = rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[c, d]), "s", 0);
+        assert!(
+            out2.is_empty(),
+            "an all-numeric '10001' bridge must not fuse alice and bob: {out2:?}"
+        );
+    }
+
+    #[test]
+    fn au114_silent_when_one_secret_spans_the_whole_set() {
+        // A single secret ties all three — that is exactly an AU-047 finding, not
+        // a transitive chain, so AU-121 must stay silent (no double-report).
+        let a = secret_with(
+            EntityKind::Password,
+            HASH_A,
+            &[
+                ("username", "alice"),
+                ("username", "bob"),
+                ("username", "carol"),
+            ],
+        );
+        assert!(
+            rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a]), "s", 0).is_empty(),
+            "a single-secret span is AU-047's job, not AU-121's"
+        );
+    }
+
+    #[test]
+    fn au114_silent_on_a_two_account_chain() {
+        // Two secrets, but only two handles total — below the blast-radius floor.
+        let a = secret_with(
+            EntityKind::Password,
+            HASH_A,
+            &[("username", "alice"), ("username", "bob")],
+        );
+        let b = secret_with(
+            EntityKind::Password,
+            HASH_B,
+            &[("username", "alice"), ("username", "bob")],
+        );
+        assert!(
+            rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a, b]), "s", 0)
+                .is_empty(),
+            "two handles is a pair, not a blast radius"
+        );
+    }
+
+    #[test]
+    fn au114_plaintext_only_chain_is_high_not_critical() {
+        // Reused plaintext passwords (strong, high-entropy) chain three accounts,
+        // but carry a residual coincidence risk → High, mirroring AU-047.
+        let a = secret_with(
+            EntityKind::Password,
+            "Tr0ub4dour&3xtra_L0ng!",
+            &[("username", "alice"), ("username", "bobby")],
+        );
+        let b = secret_with(
+            EntityKind::Password,
+            "c0rrect-h0rse-b4ttery-st4ple-9",
+            &[("username", "bobby"), ("username", "carol")],
+        );
+        let out = rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a, b]), "s", 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn au114_mixed_hash_and_plaintext_chain_is_high_not_critical() {
+        // Weakest-link: a component bound by a salted hash (alice–bobby) AND a
+        // reused plaintext password (bobby–carol) is only as certain as its
+        // plaintext edge, which two strangers could coincidentally share →
+        // High, not Critical. Under the old OR rule the hash alone forced the
+        // whole chain to Critical.
+        let a = secret_with(
+            EntityKind::Password,
+            HASH_A,
+            &[("username", "alice"), ("username", "bobby")],
+        );
+        let b = secret_with(
+            EntityKind::Password,
+            "c0rrect-h0rse-b4ttery-st4ple-9",
+            &[("username", "bobby"), ("username", "carol")],
+        );
+        let out = rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a, b]), "s", 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].severity,
+            Severity::High,
+            "a reused-plaintext edge caps the whole chain at High (weakest-link)"
+        );
+    }
+}

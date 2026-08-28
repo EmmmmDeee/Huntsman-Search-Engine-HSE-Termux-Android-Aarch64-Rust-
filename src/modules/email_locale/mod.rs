@@ -10,6 +10,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -26,7 +27,7 @@ impl Module for EmailLocale {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Infer locale/country from email local-part naming conventions"
+        "Email locale inference — triangulates locale/country from email local-part naming conventions"
     }
     fn priority(&self) -> u8 {
         91
@@ -83,7 +84,7 @@ impl Module for EmailLocale {
             )
             .with_attr("cctld", domain.rsplit('.').next().unwrap_or(""))
             .with_attr("locale", locale_code);
-            let mut ae = Entity::new(EntityKind::Address, country, 0.40, &ctx.scan_id);
+            let mut ae = Entity::new(EntityKind::Address, country, confidence::LOW, &ctx.scan_id);
             ae.tag("geoint");
             ae.tag(crate::core::tags::COARSE);
             ae.tag("cctld-inferred");
@@ -91,7 +92,12 @@ impl Module for EmailLocale {
             result.push(ae);
             if let Some((lat, lon)) = locale_centroid(locale_code) {
                 let coords = format!("{lat},{lon}");
-                let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.30, &ctx.scan_id);
+                let mut ce = Entity::new(
+                    EntityKind::Coordinates,
+                    &coords,
+                    confidence::SPECULATIVE,
+                    &ctx.scan_id,
+                );
                 ce.tag("geoint");
                 ce.tag(crate::core::tags::COARSE);
                 ce.tag("cctld-inferred");
@@ -101,9 +107,26 @@ impl Module for EmailLocale {
         }
 
         if let Some(geo) = detect_locale_from_local_part(local) {
+            // Include the source local-part AND domain in the summary:
+            // `Entity::absorb` dedups evidence by (source, summary), and the
+            // locale-inferred Address entity is keyed by REGION, not by email —
+            // so two genuinely distinct emails independently matching the SAME
+            // locale pattern merge onto the same entity. Without a per-email
+            // distinguisher here, their evidence collided into one entry
+            // (byte-identical summary), and AU-083 — which requires >=2
+            // distinct email_locale evidence entries to corroborate — could
+            // never fire from real scan data. The local part alone is not
+            // enough: two real aliases of the same person sharing a local part
+            // across providers (`erik.johansson@gmail.com` /
+            // `erik.johansson@hotmail.com`, a common OSINT pattern) still
+            // collided on an identical summary; the domain makes every
+            // genuinely distinct email produce a genuinely distinct entry.
             let ev = Evidence::new(
                 SRC,
-                format!("Email local part matches {} naming pattern", geo.locale),
+                format!(
+                    "Email local part '{local}' ({domain}) matches {} naming pattern",
+                    geo.locale
+                ),
             )
             .with_attr("locale", geo.locale)
             .with_attr("pattern", geo.pattern);
@@ -129,7 +152,7 @@ impl Module for EmailLocale {
                 let mut ce = Entity::new(
                     EntityKind::Coordinates,
                     &coords,
-                    geo.confidence - 0.10,
+                    confidence::derived_from(geo.confidence),
                     &ctx.scan_id,
                 );
                 ce.tag("geoint");

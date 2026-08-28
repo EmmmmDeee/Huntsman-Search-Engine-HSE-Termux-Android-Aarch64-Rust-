@@ -59,6 +59,21 @@ fn geo_consistency(entities: &[AuditEntity]) -> (GeoSummary, Option<Finding>) {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut srcs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for e in entities.iter().filter(|e| e.kind == "coordinates") {
+        // The `hse radar` / `POST /api/v1/radar` sweep seeds every run with a
+        // sentinel coordinate (0,0 — "null island") purely so the local-sensor
+        // modules, which gate on target KIND and ignore the value, dispatch. It
+        // is never a real claimed location. Without this guard, every radar
+        // sweep's genuine GPS/Wi-Fi fix was compared against this placeholder
+        // and reported as diverging by thousands of km from "the subject's
+        // location" — a spurious [MEDIUM/HIGH] geo-divergence finding on every
+        // single sweep, dinging the self-audit score for a fixed artifact of
+        // how the sweep is seeded rather than a real source disagreement.
+        if crate::core::scan::is_radar_sentinel(
+            crate::core::scan::TargetKind::Coordinates,
+            &e.value,
+        ) {
+            continue;
+        }
         if let Some((lat, lon)) = crate::util::geohash::parse_coords(&e.value) {
             srcs.extend(e.sources.iter().cloned());
             if seen.insert(e.value.clone()) {
@@ -171,13 +186,19 @@ pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
     let entity_total = entities.len();
 
     // ── Tiers + kind histogram ──────────────────────────────────────────────
+    // Tier boundaries by `c_effective`. Named (not re-typed as literals at each
+    // use) because the noise accounting below keys off the SAME candidate
+    // boundary to avoid double-counting — if the two ever drifted apart, an
+    // entity could be counted as noise twice.
+    const VERIFIED_MIN: f64 = 0.75;
+    const PROBABLE_MIN: f64 = 0.40;
     let mut by_kind_map: BTreeMap<String, usize> = BTreeMap::new();
     let (mut verified, mut probable, mut candidate) = (0usize, 0usize, 0usize);
     for e in entities {
         *by_kind_map.entry(e.kind.clone()).or_default() += 1;
-        if e.c_effective >= 0.75 {
+        if e.c_effective >= VERIFIED_MIN {
             verified += 1;
-        } else if e.c_effective >= 0.40 {
+        } else if e.c_effective >= PROBABLE_MIN {
             probable += 1;
         } else {
             candidate += 1;
@@ -185,11 +206,15 @@ pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
     }
     let mut by_kind: Vec<(String, usize)> = by_kind_map.into_iter().collect();
     by_kind.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    let noise_ratio = if entity_total > 0 {
-        candidate as f64 / entity_total as f64
-    } else {
-        0.0
-    };
+    // `noise_ratio` is an operator-facing QUALITY metric, not merely the share of
+    // low-confidence rows. A scan whose entities are all high-confidence CDN /
+    // provider infrastructure previously reported 0% noise while this same audit
+    // raised a Critical "infrastructure-pollution" finding about those very
+    // entities — the report contradicted itself, and the headline number said the
+    // scan was clean. Count provider infrastructure as noise too, using the same
+    // predicate that emits that finding (computed in the infrastructure-pollution
+    // pass below, which is why the ratio is finalised after it).
+    let mut semantic_noise_count = candidate;
 
     let mut findings: Vec<Finding> = Vec::new();
 
@@ -213,8 +238,27 @@ pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
     let count = |k: &str| entities.iter().filter(|e| e.kind == k).count();
 
     // ── 1. Infrastructure pollution ──────────────────────────────────────────
+    // A domain a DNS-recon module (dns_intel / doh_resolver) already labelled
+    // `ns` / `mx` / `soa` / `nameserver` is a correctly-attributed
+    // infrastructure FACT about the subject's own zone — the module told the
+    // truth about what it found and tagged it accordingly. That is different
+    // from the misattribution this rule exists to catch: a provider's OWN
+    // estate (a CDN edge IP, a registrar's abuse desk, a co-hosted mega-domain)
+    // silently entering the graph as if it were the subject's. Only the
+    // latter is "pollution" — flagging the former as well would tell an
+    // operator to suppress their own scan's nameserver/MX records.
+    const KNOWN_ZONE_RECORD_TAGS: &[&str] = &["ns", "mx", "soa", "nameserver"];
     let mut infra: Vec<String> = Vec::new();
     for e in entities {
+        if e.kind == "domain"
+            && e.tags.iter().any(|t| {
+                KNOWN_ZONE_RECORD_TAGS
+                    .iter()
+                    .any(|k| t.eq_ignore_ascii_case(k))
+            })
+        {
+            continue;
+        }
         let hit = match e.kind.as_str() {
             "ip_address" => crate::core::validation::is_cdn_edge_ip(&e.value),
             "domain" => crate::core::scan::is_noncentral_domain(&e.value),
@@ -225,9 +269,21 @@ pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
             t == "cloudflare" || t == "hosting" || t == "shodan:cdn"
         }) && matches!(e.kind.as_str(), "ip_address" | "domain");
         if hit {
+            // Only the probable/verified tiers are added here: a low-confidence
+            // infrastructure entity is ALREADY inside `candidate`, and counting
+            // it again would let one entity contribute two units of noise (and
+            // push the ratio above 1.0 in an all-infrastructure scan).
+            if e.c_effective >= PROBABLE_MIN {
+                semantic_noise_count += 1;
+            }
             infra.push(format!("{}={}", e.kind, e.value));
         }
     }
+    let noise_ratio = if entity_total > 0 {
+        semantic_noise_count as f64 / entity_total as f64
+    } else {
+        0.0
+    };
     if !infra.is_empty() {
         let n = infra.len();
         findings.push(Finding {
@@ -245,7 +301,9 @@ pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
             examples: examples(infra),
             recommendation: "Exclude these from expansion and correlation \
                 (is_cdn_edge_ip / is_noncentral_domain / is_infrastructure_email already gate \
-                them in the engine — investigate the module that emitted each one)."
+                them in the engine — investigate the module that emitted each one). A domain \
+                already tagged ns/mx/soa/nameserver is excluded from this finding: it is a \
+                correctly-attributed record of the subject's own zone, not a misattribution."
                 .into(),
         });
     }
@@ -354,7 +412,27 @@ pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
 
     // ── 6. Single-source dominance (weak corroboration) ──────────────────────
     if entity_total >= 10 {
-        let single = entities.iter().filter(|e| e.corroboration <= 1).count();
+        // Count DISTINCT corroborating sources, not the `corroboration` field.
+        // That field is the summed per-module observation MAGNITUDE, and
+        // `Entity::source_count`'s doc is explicit that summed within-module
+        // counts "are NOT a count of independent sources" and that using them
+        // "over-credited single-source findings". Using it here understated the
+        // very problem this finding exists to report: a live scan with 14 of 17
+        // entities on a single source was reported as 76% because one of them
+        // carried two records from the same module. Non-corroborating passes
+        // (`seed`, `url_extract`, `geo_normalize`, `name_intel`, …) are excluded
+        // for the same reason they are excluded from `source_count` — they
+        // restate the input rather than independently confirming it.
+        let single = entities
+            .iter()
+            .filter(|e| {
+                e.sources
+                    .iter()
+                    .filter(|s| !crate::core::entity::is_non_corroborating_source(s))
+                    .count()
+                    <= 1
+            })
+            .count();
         let share = single as f64 / entity_total as f64;
         if share >= 0.6 {
             findings.push(Finding {

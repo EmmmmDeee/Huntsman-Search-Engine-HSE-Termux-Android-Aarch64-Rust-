@@ -1,6 +1,6 @@
 [package]
 name        = "huntsman-search-engine"
-version     = "1.13.0"
+version     = "1.40.0"
 edition     = "2024"
 rust-version = "1.88"
 description = "Huntsman Search Engine — comprehensive on-device OSINT/GEOINT & breach-intelligence platform for Termux aarch64 (no root)"
@@ -12,6 +12,55 @@ default-run = "hse"
 [[bin]]
 name = "hse"
 path = "src/main.rs"
+
+# Opt-in AI-daemon background poller (`src/ai/`, `src/bin/hse_ai_daemon/`). A
+# separate binary — not an `hse` subcommand — so it can be started/stopped/
+# supervised independently of `hse serve`/`hse scan`, and so an operator who
+# never installs Ollama never runs any of this code. Deliberately UNGATED (no
+# `required-features`): it needs no dependency `hse` itself doesn't already
+# carry unconditionally (reqwest/serde_json/tokio), so gating it behind an
+# opt-in Cargo feature would only add CI/`--features` friction for zero
+# dependency-weight benefit — there is nothing extra here for a plain
+# `cargo build`/the Termux cross-build to avoid compiling.
+#
+# Before running: arm `hse config feature.ai_daemon on` and set
+# HUNTSMAN_OLLAMA_MODEL (or pass --model) to a model already pulled via
+# `ollama pull <tag>` — see README's "AI-Daemon Scan Analysis" section, or
+# run `hse doctor` to check both preconditions in one place.
+[[bin]]
+name = "hse-ai-daemon"
+path = "src/bin/hse_ai_daemon/main.rs"
+
+# Supply-chain gate: fails when a crates.io dependency in Cargo.lock was
+# published more recently than a configured cooldown window (a compromised
+# publish is most likely to slip through unnoticed in its first few days).
+# Deliberately a separate binary rather than an `hse` subcommand — this is
+# dev/CI tooling over Cargo.lock, unrelated to the OSINT scan engine's
+# runtime surface. See scripts/gate.sh and .github/workflows/audit.yml for
+# how it's wired in, and src/bin/dep_cooldown/main.rs for the rationale.
+#
+# `required-features` gates this out of a plain `cargo build`/`check` with no
+# `--features dep-cooldown`: without it, this binary's `toml`/`time`
+# dependencies (below, both `optional = true`) get compiled by EVERY build of
+# this package regardless of which `[[bin]]` is selected — verified directly
+# (`cargo clean -p toml -p time -p ...transitives... && cargo build --locked
+# --lib --bin hse`, then `nm -D`/`strings` confirmed no symbols are linked
+# into the `hse` binary, but the crates were compiled) — because Cargo
+# resolves one package's full `[dependencies]` graph regardless of which
+# `[[bin]]` target you name, it does not prune per-binary within a single
+# package. That cost lands squarely on the Termux/aarch64 cross-build
+# (`ci.yml`'s `aarch64-android` job, `scripts/gate.sh`'s cross-build step —
+# both `--lib --bin hse` only, no `--features`), which this project is
+# otherwise deliberately careful to keep lean. `check`/`clippy`/`test`/`docs`/
+# MSRV still verify this binary's code — they pass `--features dep-cooldown`
+# explicitly (see ci.yml, scripts/gate.sh) — only the cross-build omits it.
+[[bin]]
+name = "dep-cooldown"
+path = "src/bin/dep_cooldown/main.rs"
+required-features = ["dep-cooldown"]
+
+[features]
+dep-cooldown = ["dep:toml", "dep:time"]
 
 [lib]
 name = "huntsman_search_engine"
@@ -72,7 +121,14 @@ hex                = "0.4"
 # target. The self-contained ring + webpki-roots stack here works identically on
 # Termux/Linux/CI. A 0.13 move must re-create that with `rustls-no-provider` + a
 # hand-built ClientConfig, and be validated on-device first.
-reqwest            = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# `gzip`: request + transparently decompress gzip responses on every reqwest
+# fetch (the free + intel-API cluster). curl's paid-API transport gets the same
+# via `--compressed`. Safe against decompression bombs because the fetch layer
+# streams the DECOMPRESSED body and errors past `JSON_BODY_CAP` (32 MiB) — unlike
+# curl's `--max-filesize`, which bounds the compressed transfer — so the reqwest
+# cap already caps the expanded size. Pulls `async-compression`/`flate2`
+# (flate2 already in-tree via tower-http's `compression-gzip` + `cli::cells`).
+reqwest            = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "gzip"] }
 # Pinned to 0.39 ON PURPOSE — do NOT bump to 0.40 without a toolchain audit.
 # 0.40 pulls `libsqlite3-sys` 0.38, whose build script uses the unstable
 # `cfg_select!` macro (rust-lang/rust#115585). That fails to compile on the
@@ -97,6 +153,17 @@ tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 parking_lot        = "0.12"
 url                = "2"
+# `default-features = false` deliberately excludes `system-config` — hickory's
+# own Android JNI/ConnectivityManager probe (src crate: system_conf::android,
+# cfg-gated on that feature) is correctly compiled OUT of this build. Known,
+# accepted upstream bloat: hickory-proto/hickory-net still declare `jni` (+ its
+# jni-sys/jni-macros/jni-sys-macros transitives) as a MANDATORY, non-optional,
+# non-feature-gated `[target.'cfg(target_os = "android")'.dependencies]` entry
+# in their own manifests — independent of any feature flag HSE sets — purely
+# for one unused ProtoError::Jni(..) error-enum variant nothing here ever
+# constructs. Verified via Cargo.lock (jni v0.22.4 resolved) on this crate's
+# actual Termux/Android target; no HSE-side feature flag or code change can
+# avoid it short of patching/forking hickory's manifest.
 hickory-resolver   = { version = "0.26", default-features = false, features = ["tokio"] }
 dotenvy            = "0.15"
 # v0.3 — HTTP server, SPA, SSE
@@ -121,6 +188,38 @@ base64             = "0.22"
 # Already in the lock file transitively via tower-http compression-gzip;
 # promoted here so `hse cells import` can stream-decompress CSV.GZ files.
 flate2             = "1"
+# Document ingestion: CSV, PDF, image parsing (Phase 1.x)
+csv                = "1"
+# Pure-Rust image processing for OCR preprocessing (resize, denoise).
+# Image decode/analysis (document_parse). Default features are narrowed to drop
+# the AVIF encoder (`ravif` → `rav1e`, hand-written asm) and OpenEXR (`exr`) from
+# the DEFAULT build — i.e. the on-device build install.sh runs and the CI Release
+# binary. Neither is used: AVIF *decode* is not enabled (no `dav1d` in the
+# graph), the code never *encodes* AVIF, and EXR is never read, yet `rav1e`'s asm
+# is one of the heaviest things the aarch64 build compiles and contradicts the
+# pure-Rust goal. Every real decode/encode format an operator might ingest is
+# kept explicitly, so no capability is lost. (These crates remain in Cargo.lock
+# as `image`'s optional deps and are still reachable under `--all-features`, so
+# the cargo-deny exceptions that mention them stay as-is; this change lightens
+# the built artifact, not the lock's audit surface.)
+image              = { version = "0.25", default-features = false, features = [
+    "rayon", "bmp", "dds", "ff", "gif", "hdr", "ico", "jpeg", "png", "pnm",
+    "qoi", "tga", "tiff", "webp",
+] }
+# `dep-cooldown` (src/bin/dep_cooldown/) parses Cargo.lock and dep-cooldown.toml.
+# `parse` + `serde`: Deserialize straight into typed structs rather than
+# hand-walking a generic `toml::Value`. `display` (needed to round-trip a
+# `toml::de::Error` span through `Display`) ships in `parse`'s own dependency
+# chain regardless, so nothing is saved by disabling it — declared anyway so
+# the enabled-feature set here states exactly what this crate uses, not what
+# happened to come along for free. `optional = true` + the `dep-cooldown`
+# feature (see `[[bin]]` above) so this and `time` are NOT compiled into the
+# Termux/aarch64 cross-build, which never enables that feature.
+toml = { version = "1.1.4", default-features = false, features = ["parse", "serde", "display"], optional = true }
+# `dep-cooldown` only needs to parse crates.io's RFC 3339 `created_at` and
+# compare it to `OffsetDateTime::now_utc()` — no formatting/macros/local-offset
+# needed, so those stay off. `optional = true` — see `toml`'s comment above.
+time = { version = "0.3.55", default-features = false, features = ["parsing", "std"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

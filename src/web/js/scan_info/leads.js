@@ -31,10 +31,15 @@ export async function renderLeads(host, id){
       : l.discordant
       ? '<span class="lead-badge namesake" title="Shares the surname but a whole region from the subject — likely a different person">⚠ NAMESAKE?</span>'
       : '';
+    // Graph-structure badge, independent of corroboration — a lead can be both a
+    // confirmed relative AND the bridge whose expansion reaches the most footprint.
+    const pivotBadge = l.structural
+      ? '<span class="lead-badge pivot" title="A bridging pivot in the relationship graph — expanding it reaches the most of the footprint for the least work">⌘ PIVOT</span>'
+      : '';
     const cls = l.confirmed ? ' confirmed' : l.discordant ? ' discordant' : '';
     html += `<div class="lead-card${cls}">
       <div class="lead-main">
-        <div class="lead-val"><i class="glyphicon ${icon}"></i>&nbsp;${esc(l.value)} ${kindPill(l.kind)}${badge}</div>
+        <div class="lead-val"><i class="glyphicon ${icon}"></i>&nbsp;${esc(l.value)} ${kindPill(l.kind)}${badge}${pivotBadge}</div>
         <div class="lead-reason">${esc(l.reason)}</div>
       </div>
       <button class="btn btn-info btn-sm lead-scan" data-kind="${attr(l.target_kind)}" data-value="${attr(l.value)}"

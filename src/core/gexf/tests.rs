@@ -18,6 +18,54 @@ use super::*;
     }
 
     #[test]
+    fn gexf_exports_the_diamond_vertex_per_kind() {
+        // The attribution vertex is a first-class node attribute so Gephi can
+        // partition the whole graph by Diamond role, not just by kind. It must
+        // reflect the per-kind classification, not a single bucket.
+        let email = Entity::new(EntityKind::Email, "alice@example.com", 0.9, "s"); // victim
+        let ip = Entity::new(EntityKind::IpAddress, "203.0.113.7", 0.9, "s"); // infrastructure
+        let pw = Entity::new(EntityKind::Password, "leaked", 0.9, "s"); // capability
+        let xml = entities_to_gexf(&[email, ip, pw], &[], "s");
+        assert!(
+            xml.contains(r#"<attribute id="7" title="diamond_vertex" type="string"/>"#),
+            "the diamond_vertex attribute must be declared: {xml}"
+        );
+        assert!(xml.contains(r#"<attvalue for="7" value="victim"/>"#), "{xml}");
+        assert!(
+            xml.contains(r#"<attvalue for="7" value="infrastructure"/>"#),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(r#"<attvalue for="7" value="capability"/>"#),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn gexf_exports_generation_as_a_node_attribute() {
+        // `generation` (pivot distance from the seed) is a first-class node
+        // attribute so a Gephi analyst can size/colour the graph by expansion
+        // depth — the debug bundle and CSV export already carry it, and GEXF was
+        // the last graph artifact dropping it.
+        let seed = Entity::new(EntityKind::Email, "seed@example.com", 0.9, "s"); // generation 0
+        let mut deep = Entity::new(EntityKind::Username, "farpivot", 0.6, "s");
+        deep.generation = 3;
+        let xml = entities_to_gexf(&[seed, deep], &[], "s");
+        assert!(
+            xml.contains(r#"<attribute id="8" title="generation" type="integer"/>"#),
+            "the generation attribute must be declared: {xml}"
+        );
+        assert!(
+            xml.contains(r#"<attvalue for="8" value="0"/>"#),
+            "the seed's generation (0) must be emitted: {xml}"
+        );
+        assert!(
+            xml.contains(r#"<attvalue for="8" value="3"/>"#),
+            "a pivoted entity's generation must be emitted verbatim: {xml}"
+        );
+    }
+
+    #[test]
     fn gexf_creates_edges_for_a_shared_evidence_record() {
         // Two selectors that appear in the SAME breach record (identical source
         // AND summary) genuinely co-occur → one edge, labelled by the source.
@@ -134,12 +182,12 @@ use super::*;
             xml.contains(r#"label="subdomain_of""#),
             "expected a kind-labelled edge, got:\n{xml}"
         );
-        // …referencing the same truncated node ids the <node> elements use.
-        let src = &child.uid[..12];
-        let tgt = &parent.uid[..12];
+        // …referencing the same (full) node ids the <node> elements use.
+        let src = &child.uid;
+        let tgt = &parent.uid;
         assert!(
             xml.contains(&format!(r#"source="{src}" target="{tgt}""#)),
-            "relation edge must reference existing (truncated) node ids"
+            "relation edge must reference existing node ids"
         );
     }
 
@@ -176,7 +224,7 @@ use super::*;
             "the in-set relation edge must survive: {xml}"
         );
         // …but no edge references the filtered-out candidate node.
-        let cand_id = &candidate.uid[..12];
+        let cand_id = &candidate.uid;
         assert!(
             !xml.contains(&format!(r#"target="{cand_id}""#)),
             "an edge must not reference a node absent from <nodes>: {xml}"
@@ -279,9 +327,11 @@ use super::*;
       <attribute id="4" title="corroboration" type="integer"/>
       <attribute id="5" title="coreness" type="integer"/>
       <attribute id="6" title="tags" type="string"/>
+      <attribute id="7" title="diamond_vertex" type="string"/>
+      <attribute id="8" title="generation" type="integer"/>
     </attributes>
     <nodes>
-      <node id="ed152b32b035" label="example.com">
+      <node id="ed152b32b035d8e873341938ca5f75d242725beae5a202c27e413eb4477f8739" label="example.com">
         <attvalues>
           <attvalue for="0" value="domain"/>
           <attvalue for="1" value="0.900"/>
@@ -290,9 +340,11 @@ use super::*;
           <attvalue for="4" value="1"/>
           <attvalue for="5" value="1"/>
           <attvalue for="6" value="breach|geoint"/>
+          <attvalue for="7" value="infrastructure"/>
+          <attvalue for="8" value="0"/>
         </attvalues>
       </node>
-      <node id="df4bda23ac18" label="blog.example.com">
+      <node id="df4bda23ac181f24c2f80cb94caa9745ce198e6164e5564186c27eeeaf90e273" label="blog.example.com">
         <attvalues>
           <attvalue for="0" value="domain"/>
           <attvalue for="1" value="0.800"/>
@@ -301,12 +353,14 @@ use super::*;
           <attvalue for="4" value="1"/>
           <attvalue for="5" value="1"/>
           <attvalue for="6" value=""/>
+          <attvalue for="7" value="infrastructure"/>
+          <attvalue for="8" value="0"/>
         </attvalues>
       </node>
     </nodes>
     <edges>
-      <edge id="0" source="df4bda23ac18" target="ed152b32b035" weight="0.800" label="subdomain_of"/>
-      <edge id="1" source="ed152b32b035" target="df4bda23ac18" weight="1.0" label="crtsh"/>
+      <edge id="0" source="df4bda23ac181f24c2f80cb94caa9745ce198e6164e5564186c27eeeaf90e273" target="ed152b32b035d8e873341938ca5f75d242725beae5a202c27e413eb4477f8739" weight="0.800" label="subdomain_of"/>
+      <edge id="1" source="ed152b32b035d8e873341938ca5f75d242725beae5a202c27e413eb4477f8739" target="df4bda23ac181f24c2f80cb94caa9745ce198e6164e5564186c27eeeaf90e273" weight="1.0" label="crtsh"/>
     </edges>
   </graph>
 </gexf>
@@ -364,15 +418,33 @@ use super::*;
         );
     }
 
-    // ── short_uid ─────────────────────────────────────────────────────────────
-
+    /// Regression: node ids used to be the uid truncated to 12 hex chars (48
+    /// bits), so two distinct entities whose FULL uids merely agreed on that
+    /// prefix collided onto one `<node id>` — structurally-invalid GEXF (Gephi
+    /// silently keeps only one node's data). These two usernames are a real,
+    /// independently-verified SHA-256 preimage collision on the first 12 hex
+    /// chars of `derive_uid`'s `"username:<value>"` hash (found by an offline
+    /// birthday search — not a contrived string): both start `5ae30bc175a5`
+    /// but diverge immediately after (`c869…` vs `f247…`). Two entities, two
+    /// nodes, two ids.
     #[test]
-    fn short_uid_truncates_to_twelve_chars() {
-        // A long uid is cut to its first 12 chars (matching the node-id form).
-        assert_eq!(short_uid("0123456789abcdef0000"), "0123456789ab");
-        // Exactly 12 is unchanged.
-        assert_eq!(short_uid("0123456789ab"), "0123456789ab");
-        // Shorter than 12 passes through (the `min` guards the slice).
-        assert_eq!(short_uid("abc"), "abc");
-        assert_eq!(short_uid(""), "");
+    fn gexf_node_ids_do_not_collide_on_a_shared_twelve_hex_char_uid_prefix() {
+        let a = Entity::new(EntityKind::Username, "u24143496", 0.5, "s");
+        let b = Entity::new(EntityKind::Username, "u34619274", 0.5, "s");
+        assert_eq!(
+            &a.uid[..12],
+            &b.uid[..12],
+            "test setup: these two values must share a 12-hex-char uid prefix"
+        );
+        assert_ne!(a.uid, b.uid, "test setup: the full uids must still differ");
+
+        let xml = entities_to_gexf(&[a.clone(), b.clone()], &[], "s");
+        let node_count = xml.matches("<node id=").count();
+        assert_eq!(
+            node_count, 2,
+            "two distinct entities must produce two distinct <node> elements, got:\n{xml}"
+        );
+        assert!(xml.contains(&format!(r#"<node id="{}""#, a.uid)));
+        assert!(xml.contains(&format!(r#"<node id="{}""#, b.uid)));
     }
+

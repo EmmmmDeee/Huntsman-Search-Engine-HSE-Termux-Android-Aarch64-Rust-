@@ -58,7 +58,7 @@ pub(super) fn record_failure(name: &'static str) {
 /// One module's tracked health, snapshotted for a report (`hse doctor`).
 /// Re-exported as [`super::ModuleHealth`] — `pub(crate)`, not `pub(super)`:
 /// instances escape `core::engine` entirely via [`super::module_health_report`],
-/// so `cli::doctor` (a sibling module tree) needs crate-wide field access, not
+/// so `app::doctor` (a sibling module tree) needs crate-wide field access, not
 /// just visibility to `health`'s immediate parent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ModuleHealth {

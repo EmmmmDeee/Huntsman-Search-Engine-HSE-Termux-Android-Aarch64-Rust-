@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -27,6 +28,15 @@ use crate::core::{
 };
 
 const SRC: &str = "virustotal";
+
+/// VirusTotal's deterministic URL identifier: the unpadded base64url encoding
+/// of the exact URL string (VT's documented `/urls/{id}` scheme). **Pure**, so
+/// the id derivation is unit-tested without a live API.
+fn vt_url_id(url: &str) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(url.as_bytes())
+}
+
 /// VT's community reputation is a signed vote score; at/below this it is a
 /// negative-reputation signal worth a tag in its own right.
 const LOW_REPUTATION_THRESHOLD: i64 = -10;
@@ -83,8 +93,8 @@ struct VtStats {
 /// entity is always element 0; passive-DNS pivots (`IpAddress`/`Domain`)
 /// follow.
 ///
-/// Confidence scales with the malicious detection ratio (0.50 baseline → 0.95 at
-/// 100% malicious); a thin/empty stats block stays at the 0.50 baseline.
+/// Confidence scales with the malicious detection ratio (confidence::MEDIUM baseline → confidence::VERY_HIGH_PLUSPLUS at
+/// 100% malicious); a thin/empty stats block stays at the confidence::MEDIUM baseline.
 fn build_entities(target: &Target, attrs: &VtAttributes, scan_id: &str) -> Vec<Entity> {
     let stats = attrs.last_analysis_stats.as_ref();
     let malicious = stats.map_or(0, |s| s.malicious);
@@ -94,9 +104,9 @@ fn build_entities(target: &Target, attrs: &VtAttributes, scan_id: &str) -> Vec<E
     });
 
     let confidence = if total > 0 {
-        0.50 + (malicious as f64 / total as f64) * 0.45
+        confidence::MEDIUM + (malicious as f64 / total as f64) * confidence::LOW_MEDIUM
     } else {
-        0.50
+        confidence::MEDIUM
     };
 
     let mut e = Entity::new(
@@ -156,6 +166,24 @@ fn build_entities(target: &Target, attrs: &VtAttributes, scan_id: &str) -> Vec<E
     let mut out = vec![e];
     let label = target.value.as_str();
 
+    // Never drop silently. Unlike `overpass`, whose per-node cap is backed by a
+    // summary entity carrying the true total, nothing here records the records
+    // beyond the cap — so a domain with 200 historical entries would present 30
+    // as though that were all of them. An operator reading a passive-DNS pivot
+    // list must be able to tell "this domain has 30 records" from "30 of 200 are
+    // shown", exactly as `sanctions_ofac` does for its own bounded emission.
+    let dns_total = attrs.last_dns_records.len();
+    if dns_total > MAX_DNS_RECORDS {
+        tracing::warn!(
+            module = SRC,
+            domain = label,
+            total = dns_total,
+            emitted = MAX_DNS_RECORDS,
+            "VirusTotal passive DNS truncated — the remaining records are NOT in this \
+             scan's results"
+        );
+    }
+
     for rec in attrs.last_dns_records.iter().take(MAX_DNS_RECORDS) {
         let Some(rtype) = rec.record_type.as_deref().map(str::trim) else {
             continue;
@@ -171,7 +199,12 @@ fn build_entities(target: &Target, attrs: &VtAttributes, scan_id: &str) -> Vec<E
         match rtype.to_ascii_uppercase().as_str() {
             "A" | "AAAA" => {
                 if value.parse::<std::net::IpAddr>().is_ok() {
-                    let mut ip = Entity::new(EntityKind::IpAddress, value, 0.82, scan_id);
+                    let mut ip = Entity::new(
+                        EntityKind::IpAddress,
+                        value,
+                        confidence::CORROBORATED,
+                        scan_id,
+                    );
                     ip.tag(SRC);
                     ip.tag("resolved");
                     ip.add_evidence(
@@ -190,7 +223,7 @@ fn build_entities(target: &Target, attrs: &VtAttributes, scan_id: &str) -> Vec<E
                     && host.parse::<std::net::IpAddr>().is_err()
                     && !host.contains(char::is_whitespace)
                 {
-                    let mut d = Entity::new(EntityKind::Domain, host, 0.78, scan_id);
+                    let mut d = Entity::new(EntityKind::Domain, host, confidence::STRONG, scan_id);
                     d.tag(SRC);
                     d.tag("passive-dns");
                     d.add_evidence(
@@ -214,7 +247,7 @@ impl Module for VirusTotal {
         SRC
     }
     fn description(&self) -> &'static str {
-        "VirusTotal domain/IP/URL reputation and detection ratios"
+        "VirusTotal recon — correlates domain/IP/URL reputation and engine detection ratios"
     }
     fn priority(&self) -> u8 {
         55
@@ -226,7 +259,10 @@ impl Module for VirusTotal {
         10_000
     }
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress)
+        matches!(
+            t.kind,
+            TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url
+        )
     }
 
     fn category(&self) -> ModuleCategory {
@@ -234,11 +270,10 @@ impl Module for VirusTotal {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        // The scanned entity (Domain or IpAddress), enriched in-place, plus
-        // passive-DNS pivots from last_dns_records: A/AAAA -> IpAddress,
-        // MX/NS/CNAME -> Domain. Both kinds are already covered by the pair
-        // below, so no new entry is needed for the pivots.
-        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::IpAddress];
+        // The scanned entity (Domain, IpAddress, or Url), enriched in-place,
+        // plus passive-DNS pivots from last_dns_records: A/AAAA -> IpAddress,
+        // MX/NS/CNAME -> Domain (the URL object carries no passive DNS).
+        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::IpAddress, EntityKind::Url];
         KINDS
     }
 
@@ -253,6 +288,14 @@ impl Module for VirusTotal {
             TargetKind::IpAddress => format!(
                 "https://www.virustotal.com/api/v3/ip_addresses/{}",
                 crate::util::http::urlencode(&target.value)
+            ),
+            // VT's URL object is addressed by the unpadded base64url of the URL;
+            // its last_analysis_stats/reputation are identical to the domain/IP
+            // objects, so build_entities decodes it unchanged (last_dns_records
+            // is simply absent for this object type).
+            TargetKind::Url => format!(
+                "https://www.virustotal.com/api/v3/urls/{}",
+                vt_url_id(target.value.trim())
             ),
             _ => return Ok(result),
         };

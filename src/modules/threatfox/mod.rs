@@ -15,6 +15,7 @@
 //! and IOC types but never ingest the underlying malware sample hashes,
 //! credentials, or live C2 URLs.
 
+use crate::core::confidence;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
@@ -25,8 +26,6 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::RequestBuilderExt;
-use crate::util::http::handle_keyed_error;
 use crate::util::str_util::nonempty;
 
 const KEY_ENV: &str = "HUNTSMAN_THREATFOX_KEY";
@@ -71,6 +70,7 @@ pub(super) const MAX_IOC_TAGS: usize = 16;
 /// capped, deterministically-ordered (`BTreeSet`) attribute lists, takes the
 /// **max** analyst confidence and the **outer** first/last-seen window across
 /// the batch, and records the hit count. Caller guarantees `iocs` is non-empty.
+#[must_use]
 pub(super) fn build_ioc_entity(
     kind: EntityKind,
     term: &str,
@@ -79,7 +79,7 @@ pub(super) fn build_ioc_entity(
 ) -> Entity {
     use std::collections::BTreeSet;
 
-    let mut entity = Entity::new(kind, term, 0.92, scan_id);
+    let mut entity = Entity::new(kind, term, confidence::AUTHORITATIVE, scan_id);
     entity.tag("threatfox");
     entity.tag(crate::core::tags::THREAT_INTEL);
     entity.tag(crate::core::tags::MALICIOUS);
@@ -212,7 +212,7 @@ impl Module for ThreatFox {
     }
 
     fn description(&self) -> &'static str {
-        "abuse.ch ThreatFox IOC reputation check for domains and IPs"
+        "abuse.ch ThreatFox recon — probes domains and IPs against ThreatFox IOC reputation"
     }
 
     fn priority(&self) -> u8 {
@@ -244,7 +244,7 @@ impl Module for ThreatFox {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) {
+        let initial_key = match ctx.key_opt(KEY_ENV) {
             Some(k) => k,
             None => return Ok(ModuleResult::new()),
         };
@@ -265,29 +265,31 @@ impl Module for ThreatFox {
 
         // ctx.http carries a 3 s default timeout (MODULE_TIMEOUT_MS);
         // override per-request to match this module's declared 12 s.
-        let mut retries = 2u8;
-        let parsed: Resp = loop {
-            if ctx.cancel.is_cancelled() {
-                return Ok(ModuleResult::new());
-            }
-            let resp = ctx
-                .http
+        // Key cascade: begin on the hot-injected key and, on a terminal
+        // 401/403/429, rotate to the next usable pooled ThreatFox key and retry,
+        // so one process() call spends every credential the pool holds before it
+        // fails. (The in-body `rate_limited` status handled below is a transient
+        // per-request signal, not a key-death, so it deliberately does NOT
+        // cascade.) Delegates to the shared cascade primitive (T2: keyed-API
+        // consolidation) — the retry/rotate/cancel loop is identical to what
+        // `onyphe` and 9 other keyed modules hand-rolled; only the request shape
+        // (POST + JSON body, `Auth-Key` header) and the decode stay
+        // module-specific. `absent_statuses: &[]` — unlike ONYPHE, ThreatFox's
+        // fixed POST endpoint never answers a per-query miss with 404 (that's
+        // `query_status: "no_result"` in the body below), so nothing here was
+        // ever treated as absent, and that stays true after the migration.
+        let Some(resp) = crate::util::http::keyed_cascade(ctx, SRC, initial_key, &[], |key| {
+            ctx.http
                 .post("https://threatfox-api.abuse.ch/api/v1/")
                 .header("Auth-Key", key)
                 .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
                 .json(&body)
-                .send_tagged(SRC)
-                .await?;
-            let status = resp.status();
-            if !status.is_success() {
-                let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
-                    continue;
-                }
-                return Err(crate::util::http::http_status_error(SRC, resp).await);
-            }
-            break crate::util::http::json_decode(SRC, resp).await?;
+        })
+        .await?
+        else {
+            return Ok(ModuleResult::new());
         };
+        let parsed: Resp = crate::util::http::json_decode(SRC, resp).await?;
 
         // abuse.ch's anonymous tier returns HTTP 200 + `query_status:
         // "rate_limited"` (or `illegal_search_term` etc.) instead of a

@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::confidence;
 
 fn make_user(
     nickname: &str,
@@ -44,7 +45,7 @@ fn emits_username_and_profile_url_from_links() {
     let u = ents
         .iter()
         .find(|e| e.kind == EntityKind::Username)
-        .unwrap();
+        .expect("should succeed");
     assert!(u.has_tag("bitbucket") && u.has_tag("public-profile"));
     assert!((u.confidence - 0.86).abs() < 0.01);
 }
@@ -72,9 +73,9 @@ fn emits_person_from_multi_word_display_name() {
     let ents = build_entities(user, "scan-bb-003");
     let p = ents.iter().find(|e| e.kind == EntityKind::Person);
     assert!(p.is_some(), "must emit Person from multi-word display_name");
-    assert_eq!(p.unwrap().value, "Jane Developer");
-    assert!(p.unwrap().has_tag("bitbucket"));
-    assert!((p.unwrap().confidence - 0.70).abs() < 0.01);
+    assert_eq!(p.expect("should succeed").value, "Jane Developer");
+    assert!(p.expect("should succeed").has_tag("bitbucket"));
+    assert!((p.expect("should succeed").confidence - confidence::HIGH_PLUS).abs() < 0.01);
 }
 
 #[test]
@@ -118,8 +119,8 @@ fn emits_address_from_location() {
     let ents = build_entities(user, "scan-bb-006");
     let a = ents.iter().find(|e| e.kind == EntityKind::Address);
     assert!(a.is_some(), "must emit Address from location");
-    assert_eq!(a.unwrap().value, "Sydney, Australia");
-    assert!(a.unwrap().has_tag("self-asserted"));
+    assert_eq!(a.expect("should succeed").value, "Sydney, Australia");
+    assert!(a.expect("should succeed").has_tag("self-asserted"));
 }
 
 #[test]

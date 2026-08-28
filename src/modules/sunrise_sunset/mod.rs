@@ -10,12 +10,14 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::http::RequestBuilderExt;
+use crate::util::timefmt::civil_from_days;
 
 const SRC: &str = "sunrise_sunset";
 
@@ -66,7 +68,12 @@ fn build_solar_entity(
     results: &SsResults,
     scan_id: &str,
 ) -> Entity {
-    let mut entity = Entity::new(EntityKind::Coordinates, coord, 0.55, scan_id);
+    let mut entity = Entity::new(
+        EntityKind::Coordinates,
+        coord,
+        confidence::MEDIUM_HIGH,
+        scan_id,
+    );
     entity.tag("sunrise-sunset");
     entity.tag("chronolocation");
     entity.tag("geoint");
@@ -114,11 +121,9 @@ fn build_solar_entity(
     // `day_length` is a number (seconds) on the formatted=0 API but a string on
     // the default endpoint — accept either.
     if let Some(v) = &results.day_length {
-        let dl = match v {
-            serde_json::Value::Number(n) => n.to_string(),
-            serde_json::Value::String(s) => s.clone(),
-            _ => String::new(),
-        };
+        let dl = crate::util::json::scalar_str(v)
+            .map(std::borrow::Cow::into_owned)
+            .unwrap_or_default();
         if !dl.is_empty() {
             ev = ev.with_attr("day_length_s", dl);
         }
@@ -134,7 +139,7 @@ impl Module for SunriseSunset {
         "sunrise_sunset"
     }
     fn description(&self) -> &'static str {
-        "Solar phase timestamps for chronolocation of imagery"
+        "Solar-phase recon — resolves sunrise/sunset timestamps to chronolocate imagery"
     }
     fn priority(&self) -> u8 {
         10
@@ -174,9 +179,9 @@ impl Module for SunriseSunset {
             .send_tagged(SRC)
             .await?;
 
-        if !resp.status().is_success() {
+        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
             return Ok(ModuleResult::new());
-        }
+        };
 
         let body: SsResp = crate::util::http::json_decode(SRC, resp).await?;
 
@@ -208,20 +213,6 @@ fn today_utc() -> String {
     let days = (secs / 86400) as i64;
     let (y, m, d) = civil_from_days(days);
     format!("{y:04}-{m:02}-{d:02}")
-}
-
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719468;
-    let era = z.div_euclid(146097);
-    let doe = z.rem_euclid(146097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
 }
 
 #[cfg(test)]

@@ -20,24 +20,36 @@ jobs:
     name: Check & test (Linux x86_64, stable)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      # Pinned to the SAME literal version as rust-toolchain.toml (not
+      # `@stable`) so this job's clippy/rustfmt can never drift from a
+      # contributor's local pinned toolchain — the exact class of surprise
+      # that twice broke this branch's CI in one session before this pin
+      # existed. Keep both in lockstep when bumping.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
+          toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
 
       - name: Format
         run: cargo fmt --all -- --check
 
+      # `--features dep-cooldown`: the `dep-cooldown` binary's `toml`/`time`
+      # deps are `optional = true` + `required-features` (Cargo.toml) so the
+      # Termux cross-build below (--lib --bin hse only) doesn't compile them.
+      # Without this flag here, `--all-targets` would silently SKIP that
+      # binary rather than error, dropping it out of check/clippy/test/docs
+      # coverage on every ordinary PR.
       - name: Check
-        run: cargo check --all-targets --locked
+        run: cargo check --all-targets --locked --features dep-cooldown
 
       - name: Clippy (warnings = errors)
-        run: cargo clippy --all-targets --locked -- -D warnings
+        run: cargo clippy --all-targets --locked --features dep-cooldown -- -D warnings
 
       - name: Docs (no broken intra-doc links, bare URLs, or stray HTML tags)
         # Guards the maintainer's primary reference against silent rot. Denies the
@@ -46,39 +58,61 @@ jobs:
         # break CI on unchanged code. `--document-private-items` because HSE's lib
         # is read internally, not as a published API (see the crate-root allow of
         # `private_intra_doc_links`).
-        run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::bare_urls -D rustdoc::invalid_html_tags" cargo doc --no-deps --document-private-items --locked
+        run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::bare_urls -D rustdoc::invalid_html_tags" cargo doc --no-deps --document-private-items --locked --features dep-cooldown
+
+      - name: Doc coverage (ratchet, may fall but not rise)
+        # `missing_docs` cannot just be switched on — 1095 externally-public items
+        # were undocumented when this landed, and the clippy step above runs with
+        # `-D warnings`, so a crate-level `#![warn(missing_docs)]` would turn all
+        # of them into build errors at once. This holds the ceiling instead and
+        # lets it be lowered as items get documented.
+        run: scripts/doc_coverage.sh
 
       - name: Test
-        run: cargo test --all --locked
+        run: cargo test --all --locked --features dep-cooldown
 
   msrv:
     name: MSRV (1.88)
     runs-on: ubuntu-latest
+    # CRITICAL: rustup resolves an ambient rust-toolchain.toml (repo root)
+    # ABOVE a plain `rustup default` — which is all `dtolnay/rust-toolchain`
+    # sets — so without this override the repo's new rust-toolchain.toml pin
+    # (1.97.1) would silently hijack every `cargo` invocation below back onto
+    # 1.97.1, defeating the MSRV gate while staying green. RUSTUP_TOOLCHAIN is
+    # rustup's highest-precedence resolution source (above rust-toolchain.toml
+    # AND `rustup default`), so this keeps 1.88 authoritative regardless.
+    env:
+      RUSTUP_TOOLCHAIN: "1.88"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install pinned MSRV toolchain
-        uses: dtolnay/rust-toolchain@1.88
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.88
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
 
       - name: Check (MSRV)
-        run: cargo check --all-targets --locked
+        run: cargo check --all-targets --locked --features dep-cooldown
 
   aarch64-android:
     name: Build (aarch64-linux-android, Termux target)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      # Pinned to the same literal version as rust-toolchain.toml — see the
+      # `check` job's comment above for why `@stable` alone isn't used here.
       - name: Install Rust toolchain + aarch64 Android target
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
+          toolchain: 1.97.1
           targets: aarch64-linux-android
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
 
       # A dependency in the TLS stack (ring) compiles C in its build script,
       # so even `cargo check` for this target needs the Android NDK's
@@ -88,23 +122,30 @@ jobs:
       # minimum) and build the lib for real. This verifies the project's
       # actual deployment target (Termux on Android aarch64) end to end,
       # including the native crates the x86_64 jobs never cross-compile.
+      - name: Setup Android NDK aarch64 cross-compile env
+        uses: ./.github/actions/setup-ndk-aarch64
+
       - name: Build (aarch64-linux-android)
-        env:
-          ANDROID_API: "24"
-        run: |
-          TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          test -x "$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang" \
-            || { echo "NDK aarch64 clang not found under $TOOLCHAIN"; ls "$TOOLCHAIN" | head; exit 1; }
-          export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang"
-          export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
-          cargo build --locked --lib --bin hse --target aarch64-linux-android
+        run: cargo build --locked --lib --bin hse --target aarch64-linux-android
+
+      # Compile-only (never executed — ubuntu-latest is x86_64, so an
+      # aarch64-linux-android test binary can't run here without real device
+      # emulation, which the `hse` binary + Termux itself already stand in
+      # for). This still catches real regressions the x86_64 `check` job
+      # can't: test code gated on `#[cfg(target_arch = "aarch64")]`, or a
+      # dependency whose TEST harness (as opposed to its library code) fails
+      # to cross-compile for this target. Scoped to match the build step
+      # above (lib + the hse binary) plus the tests/ integration suite —
+      # deliberately excludes --benches/--doc, which add cross-compile cost
+      # for artifacts this job has no way to execute anyway.
+      - name: Compile tests (aarch64-linux-android, not executed)
+        run: cargo test --locked --no-run --lib --bin hse --tests --target aarch64-linux-android
 
   install-script:
     name: install.sh syntax (bash + shellcheck)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: bash -n install.sh
       # shellcheck ships preinstalled on ubuntu-latest — call it directly
       # rather than via a third-party action so a master-pinned drift

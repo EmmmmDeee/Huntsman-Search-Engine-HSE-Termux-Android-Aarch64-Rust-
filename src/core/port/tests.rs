@@ -15,7 +15,7 @@ use super::*;
             n
         );
         let _ = std::fs::remove_file(&path);
-        Arc::new(crate::storage::Store::open(&path).unwrap())
+        Arc::new(crate::storage::Store::open(&path).expect("should succeed"))
     }
 
     #[test]
@@ -23,8 +23,8 @@ use super::*;
         let store = tmp_store();
         let target = Target::new(TargetKind::Email, "x@y.com");
         let scan = Scan::new("port-scan-1", target);
-        store.upsert_scan(&scan).unwrap();
-        let got = store.get_scan("port-scan-1").unwrap().unwrap();
+        store.upsert_scan(&scan).expect("should succeed");
+        let got = store.get_scan("port-scan-1").expect("should succeed").expect("should succeed");
         assert_eq!(got.id, "port-scan-1");
     }
 
@@ -33,16 +33,16 @@ use super::*;
         let store = tmp_store();
         let target = Target::new(TargetKind::Email, "x@y.com");
         let scan = Scan::new("port-ent", target);
-        store.upsert_scan(&scan).unwrap();
+        store.upsert_scan(&scan).expect("should succeed");
 
         let e = crate::core::entity::Entity::new(EntityKind::Email, "a@b.com", 0.8, "port-ent");
-        store.upsert_entity(&e).unwrap();
+        store.upsert_entity(&e).expect("should succeed");
 
-        let entities = store.entities_for_scan("port-ent").unwrap();
+        let entities = store.entities_for_scan("port-ent").expect("should succeed");
         assert_eq!(entities.len(), 1);
         assert_eq!(entities[0].value, "a@b.com");
 
-        let got = store.get_entity(&e.uid).unwrap().unwrap();
+        let got = store.get_entity(&e.uid).expect("should succeed").expect("should succeed");
         assert_eq!(got.uid, e.uid);
     }
 
@@ -50,19 +50,19 @@ use super::*;
     fn trait_object_list_and_delete() {
         let store = tmp_store();
         let t = Target::new(TargetKind::Domain, "example.com");
-        store.upsert_scan(&Scan::new("ld-1", t.clone())).unwrap();
-        store.upsert_scan(&Scan::new("ld-2", t)).unwrap();
+        store.upsert_scan(&Scan::new("ld-1", t.clone())).expect("should succeed");
+        store.upsert_scan(&Scan::new("ld-2", t)).expect("should succeed");
 
-        assert_eq!(store.list_scans(10).unwrap().len(), 2);
-        assert!(store.delete_scan("ld-1").unwrap());
-        assert_eq!(store.list_scans(10).unwrap().len(), 1);
+        assert_eq!(store.list_scans(10).expect("should succeed").len(), 2);
+        assert!(store.delete_scan("ld-1").expect("should succeed"));
+        assert_eq!(store.list_scans(10).expect("should succeed").len(), 1);
     }
 
     #[test]
     fn trait_object_events_round_trip() {
         let store = tmp_store();
         let t = Target::new(TargetKind::Email, "x@y.com");
-        store.upsert_scan(&Scan::new("evt-port", t)).unwrap();
+        store.upsert_scan(&Scan::new("evt-port", t)).expect("should succeed");
 
         let event = Event::new(
             "evt-port",
@@ -70,9 +70,9 @@ use super::*;
                 module: "test".into(),
             },
         );
-        store.insert_event(&event).unwrap();
+        store.insert_event(&event).expect("should succeed");
 
-        let events = store.events_for_scan("evt-port").unwrap();
+        let events = store.events_for_scan("evt-port").expect("should succeed");
         assert_eq!(events.len(), 1);
 
         // prune_events via the trait object — the path the engine uses at
@@ -82,15 +82,15 @@ use super::*;
                 crate::core::port::EVENTS_RETENTION_SECS,
                 crate::core::port::EVENTS_MAX_ROWS,
             )
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(pruned, 0);
-        assert_eq!(store.events_for_scan("evt-port").unwrap().len(), 1);
+        assert_eq!(store.events_for_scan("evt-port").expect("should succeed").len(), 1);
         // ...but a zero row-cap prunes it as excess.
         let pruned = store
             .prune_events(crate::core::port::EVENTS_RETENTION_SECS, 0)
-            .unwrap();
+            .expect("should succeed");
         assert!(pruned >= 1);
-        assert!(store.events_for_scan("evt-port").unwrap().is_empty());
+        assert!(store.events_for_scan("evt-port").expect("should succeed").is_empty());
     }
 
     #[test]
@@ -108,37 +108,37 @@ use super::*;
         // Inter-scan entity cache: archive succeeds (best-effort), lookup misses.
         assert!(store.archive_module_result("k", 3600, &[]).is_ok());
         // `Entity` has no `PartialEq`, so assert the miss via `is_none`.
-        assert!(store.lookup_module_result_fresh("k").unwrap().is_none());
+        assert!(store.lookup_module_result_fresh("k").expect("should succeed").is_none());
 
         // Pathway-template learning: record succeeds, count never credits a route.
         assert!(store.record_pathway_template("a>b").is_ok());
-        assert_eq!(store.pathway_template_count("a>b").unwrap(), 0);
+        assert_eq!(store.pathway_template_count("a>b").expect("should succeed"), 0);
 
         // Maintenance: checkpoint is a no-op Ok; both prunes report zero removed.
         assert!(store.checkpoint_truncate().is_ok());
         assert_eq!(
             store
                 .prune_events(EVENTS_RETENTION_SECS, EVENTS_MAX_ROWS)
-                .unwrap(),
+                .expect("should succeed"),
             0
         );
-        assert_eq!(store.prune_raw_archive(RAW_ARCHIVE_MAX_ROWS).unwrap(), 0);
+        assert_eq!(store.prune_raw_archive(RAW_ARCHIVE_MAX_ROWS).expect("should succeed"), 0);
     }
 
     #[test]
     fn trait_object_search_and_facets() {
         let store = tmp_store();
         let t = Target::new(TargetKind::Email, "x@y.com");
-        store.upsert_scan(&Scan::new("sf-scan", t)).unwrap();
+        store.upsert_scan(&Scan::new("sf-scan", t)).expect("should succeed");
 
         let e1 = crate::core::entity::Entity::new(EntityKind::Email, "alice@x.com", 0.9, "sf-scan");
         let e2 = crate::core::entity::Entity::new(EntityKind::Domain, "x.com", 0.8, "sf-scan");
-        store.upsert_entity(&e1).unwrap();
-        store.upsert_entity(&e2).unwrap();
+        store.upsert_entity(&e1).expect("should succeed");
+        store.upsert_entity(&e2).expect("should succeed");
 
-        let results = store.search_entities("alice", 10).unwrap();
+        let results = store.search_entities("alice", 10).expect("should succeed");
         assert_eq!(results.len(), 1);
 
-        let facets = store.entity_facets("sf-scan").unwrap();
+        let facets = store.entity_facets("sf-scan").expect("should succeed");
         assert!(!facets.is_empty());
     }

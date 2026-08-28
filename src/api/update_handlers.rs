@@ -15,8 +15,8 @@ use axum::{
     response::IntoResponse,
 };
 use serde::Serialize;
-use serde_json::json;
 
+use crate::api::handlers::reject_non_loopback;
 use crate::api::{AppState, UpdateInfo, UpdatePhase};
 
 /// Response body for `GET /api/v1/update/status`.
@@ -50,28 +50,6 @@ pub(crate) async fn get_status(State(state): State<Arc<AppState>>) -> impl IntoR
         auto_update: crate::util::settings::get_bool("feature.auto_update", true),
         update_notify: crate::util::settings::get_bool("feature.update_notify", true),
     })
-}
-
-/// Authorization gate for the update-trigger endpoint.
-///
-/// Triggering an update replaces the running binary in place, so it carries the
-/// same loopback-only policy as key writes: only a client connecting from a
-/// loopback address may invoke it. Returns the `403` response to send for a
-/// non-loopback peer, or `None` when the call is allowed.
-///
-/// NB: this trusts the socket peer address. Behind a loopback-bound reverse
-/// proxy every forwarded client appears as loopback — the same limitation the
-/// settings-write handlers carry — so it is a localhost-architecture guard, not
-/// an authenticated-caller check.
-fn reject_non_loopback(peer: &SocketAddr) -> Option<(StatusCode, Json<serde_json::Value>)> {
-    if peer.ip().is_loopback() {
-        None
-    } else {
-        Some((
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "update trigger is loopback-only" })),
-        ))
-    }
 }
 
 /// Atomically check whether an update can be started and, if so, claim it by
@@ -118,8 +96,8 @@ pub(crate) async fn post_trigger(
     State(state): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
 ) -> impl IntoResponse {
-    if let Some(rejection) = reject_non_loopback(&peer) {
-        return rejection.into_response();
+    if let Some(rejection) = reject_non_loopback(&peer, "update trigger is loopback-only") {
+        return rejection;
     }
     // Atomic check-and-claim: only one concurrent caller can win this.
     if !try_start_update(&state.update_info) {
@@ -132,7 +110,7 @@ pub(crate) async fn post_trigger(
     let update_info = Arc::clone(&state.update_info);
     let state_for_restart = Arc::clone(&state);
     tokio::spawn(async move {
-        match crate::cli::update::apply_update(None).await {
+        match crate::app::update::apply_update(None).await {
             Ok(()) => {
                 set_phase(&update_info, UpdatePhase::Restarting);
                 // Brief pause so the SPA can fetch the Restarting status before
@@ -149,7 +127,7 @@ pub(crate) async fn post_trigger(
                     crate::api::SHUTDOWN_DRAIN_GRACE,
                 )
                 .await;
-                crate::cli::update::self_restart();
+                crate::app::update::self_restart();
             }
             Err(e) => {
                 set_phase(&update_info, UpdatePhase::Error(e.to_string()));
@@ -180,7 +158,7 @@ mod tests {
             ..UpdateInfo::default()
         });
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = info.lock().unwrap();
+            let _guard = info.lock().expect("should succeed");
             panic!("simulated panic while holding the update_info lock");
         }));
         assert!(
@@ -218,7 +196,7 @@ mod tests {
              because the claim happens in a separate lock acquisition"
         );
         assert_eq!(
-            info.lock().unwrap().phase,
+            info.lock().expect("should succeed").phase,
             UpdatePhase::Applying,
             "phase must already be Applying by the time try_start_update returns true, \
              not deferred to a later task"
@@ -256,9 +234,12 @@ mod tests {
             IpAddr::V4(Ipv4Addr::UNSPECIFIED), // 0.0.0.0
         ] {
             let peer = SocketAddr::new(ip, 8080);
-            let rejection = reject_non_loopback(&peer);
+            let rejection = reject_non_loopback(&peer, "update trigger is loopback-only");
             assert!(rejection.is_some(), "{ip} must be rejected");
-            assert_eq!(rejection.unwrap().0, StatusCode::FORBIDDEN);
+            assert_eq!(
+                rejection.expect("should succeed").status(),
+                StatusCode::FORBIDDEN
+            );
         }
     }
 
@@ -269,7 +250,10 @@ mod tests {
             IpAddr::V6(Ipv6Addr::LOCALHOST),
         ] {
             let peer = SocketAddr::new(ip, 8080);
-            assert!(reject_non_loopback(&peer).is_none(), "{ip} must be allowed");
+            assert!(
+                reject_non_loopback(&peer, "update trigger is loopback-only").is_none(),
+                "{ip} must be allowed"
+            );
         }
     }
 }

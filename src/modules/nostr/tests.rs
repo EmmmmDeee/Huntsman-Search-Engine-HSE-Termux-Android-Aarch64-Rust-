@@ -17,7 +17,7 @@ fn npub_decodes_to_known_pubkey() {
 fn pubkey_encodes_to_known_npub_and_round_trips() {
     assert_eq!(encode_npub(HEX).as_deref(), Some(NPUB));
     // decode ∘ encode is the identity on a real key.
-    let back = decode_npub(&encode_npub(HEX).unwrap()).unwrap();
+    let back = decode_npub(&encode_npub(HEX).expect("should succeed")).expect("should succeed");
     assert_eq!(back, HEX);
 }
 

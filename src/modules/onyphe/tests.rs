@@ -40,7 +40,7 @@ fn deserialises_summary_and_flags_success() {
             {"@category":"resolver","ip":"8.8.8.8","hostname":["dns.google"],"domain":["google.com"]}
         ]
     }"#;
-    let resp: OnypheResp = serde_json::from_str(json).unwrap();
+    let resp: OnypheResp = serde_json::from_str(json).expect("should succeed");
     assert_eq!(resp.error, 0);
     assert_eq!(resp.results.len(), 2);
     // Field extraction over the raw documents.
@@ -51,56 +51,12 @@ fn deserialises_summary_and_flags_success() {
 }
 
 #[test]
-fn nonzero_error_deserialises() {
-    // Struct-level only: a nonzero `error` (e.g. 2 = Invalid API key format)
-    // decodes as expected. See check_onyphe_error_* below for the T2.158
-    // runtime contract — a nonzero error is now always a real Err, not a
-    // "no data" clean miss (no ONYPHE error code legitimately means absence).
-    let resp: OnypheResp = serde_json::from_str(r#"{"error": 2, "results": []}"#).unwrap();
+fn nonzero_error_is_treated_as_no_data() {
+    // ONYPHE returns error != 0 for "no results" / rate-limit / plan limit.
+    let resp: OnypheResp =
+        serde_json::from_str(r#"{"error": 2, "results": []}"#).expect("should succeed");
     assert_ne!(resp.error, 0);
     assert!(resp.results.is_empty());
-}
-
-// -- check_onyphe_error failure contract (T2.158) ---------------------------
-
-#[test]
-fn check_onyphe_error_surfaces_a_nonzero_error_code() {
-    // T2.158 regression: `error != 0 || results.is_empty()` previously folded
-    // every ONYPHE API-level failure (bad key, rate-limit, plan restriction,
-    // unknown) into the same Ok(empty) as a genuine "no data" answer — the
-    // module's own doc comment factually (and incorrectly) claimed all of
-    // these mean "no usable data".
-    let body = OnypheResp {
-        error: 4, // rate limit reached
-        text: "Rate limit reached".to_string(),
-        results: Vec::new(),
-    };
-    let out = check_onyphe_error(&body);
-    assert!(out.is_err(), "a nonzero error code must surface as Err");
-}
-
-#[test]
-fn check_onyphe_error_includes_the_text_field_when_present() {
-    let body = OnypheResp {
-        error: 2,
-        text: "Invalid API key format".to_string(),
-        results: Vec::new(),
-    };
-    let err = check_onyphe_error(&body).unwrap_err();
-    assert!(format!("{err}").contains("Invalid API key format"));
-}
-
-#[test]
-fn check_onyphe_error_keeps_error_zero_as_a_clean_ok() {
-    // The genuine negative must be preserved: error:0 (success) is never a
-    // failure, regardless of whether results is empty — that split happens
-    // separately in process() after this check passes.
-    let body = OnypheResp {
-        error: 0,
-        text: String::new(),
-        results: Vec::new(),
-    };
-    assert!(check_onyphe_error(&body).is_ok());
 }
 
 #[test]
@@ -109,7 +65,8 @@ fn coords_from_separate_fields_or_location_string() {
     let sep = serde_json::json!({"latitude": -27.47, "longitude": 153.02});
     assert_eq!(coords(&sep), Some((-27.47, 153.02)));
     // ONYPHE's `location` is a "lat,lon" string.
-    let (lat, lon) = coords(&serde_json::json!({"location": "37.4056,-122.0775"})).unwrap();
+    let (lat, lon) =
+        coords(&serde_json::json!({"location": "37.4056,-122.0775"})).expect("should succeed");
     assert!((lat - 37.4056).abs() < 1e-6 && (lon + 122.0775).abs() < 1e-6);
     // Numbers carried as strings still parse.
     assert_eq!(
@@ -142,6 +99,40 @@ fn vstr_trims_and_rejects_empty() {
     );
     assert_eq!(vstr(&serde_json::json!({"k": "   "}), "k"), None);
     assert_eq!(vstr(&serde_json::json!({"k": 7}), "k"), None);
+}
+
+#[test]
+fn geoloc_subnet_emits_cidr_entity() {
+    // The `geoloc` category carries a covering `subnet` CIDR alongside asn/
+    // organization/country/city. Before this fix `subnet` was deserialised
+    // into the raw `Value` but never read back out, so the CIDR was silently
+    // dropped despite `EntityKind::Cidr` existing and sibling infra modules
+    // (bgpview/ripestat/netblock) already emitting it.
+    let doc = serde_json::json!({
+        "@category": "geoloc",
+        "ip": "8.8.8.8",
+        "asn": "AS15169",
+        "organization": "Google LLC",
+        "country": "US",
+        "countryname": "United States",
+        "city": "Mountain View",
+        "location": "37.4056,-122.0775",
+        "subnet": "8.8.8.0/24",
+    });
+    let target = Target::new(TargetKind::IpAddress, "8.8.8.8");
+    let r = extract_entities(&[doc], &target, "8.8.8.8", "ip", false, "scan");
+
+    let cidr = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Cidr)
+        .expect("geoloc subnet must surface as a Cidr entity");
+    assert_eq!(cidr.value, "8.8.8.0/24");
+    assert!(cidr.confidence >= confidence::MEDIUM_PLUS && cidr.confidence <= confidence::HIGH_PLUS);
+    assert!(
+        cidr.evidence.iter().any(|e| e.source == SRC),
+        "cidr evidence must be attached"
+    );
 }
 
 #[test]

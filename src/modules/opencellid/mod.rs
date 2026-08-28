@@ -22,15 +22,30 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::geo::{is_valid_coords, parse_coords};
-use crate::util::http::urlencode;
+use crate::util::http::{RequestBuilderExt, urlencode};
 
 const SRC: &str = "opencellid";
+
+/// The error returned when OpenCelliD rejects the API key in a `200` body.
+///
+/// Deliberately a `const` rather than a `format!`. OpenCelliD's bad-key body
+/// echoes the key back verbatim — `{"error":"API Key not known: <key>",...}` —
+/// so interpolating the provider's own message here would write the key into
+/// every error surface: the verbose log, the SSE stream and the dossier. Making
+/// this a constant means no provider-controlled bytes can reach those surfaces
+/// through this path at all, rather than relying on a reviewer to notice.
+///
+/// The key is still reported to the pool by the `note_keyed_error` call at each
+/// site, so rotation is unaffected — only the message text is generic.
+const KEY_REJECTED_MSG: &str =
+    "OpenCelliD rejected the API key: the 200 body carried an error object instead of results";
 const KEY_ENV: &str = "HUNTSMAN_OPENCELLID_KEY";
 /// Bounding-box half-width in degrees (~556 m at mid-latitudes).
 const BBOX_DELTA: f64 = 0.005;
@@ -96,7 +111,7 @@ impl Module for OpenCellId {
     }
 
     fn description(&self) -> &'static str {
-        "OpenCelliD: enumerate towers near a coordinate (getInArea) or geolocate a tower by ID (cell/get)"
+        "OpenCelliD recon — enumerates towers near a coordinate (getInArea) or geolocates a tower by ID (cell/get)"
     }
 
     fn priority(&self) -> u8 {
@@ -139,7 +154,7 @@ impl Module for OpenCellId {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let api_key = match ctx.key_opt(KEY_ENV) {
+        let api_key = match crate::util::keys::resolve_key(ctx.key_opt(KEY_ENV)) {
             Some(k) => k,
             None => return Ok(ModuleResult::new()),
         };
@@ -167,55 +182,6 @@ fn parse_tower_id(value: &str) -> Option<(i64, i64, i64, i64)> {
     Some((mcc, mnc, lac, cid))
 }
 
-/// Issue one OpenCelliD GET and decode its JSON body as `T`, surfacing a genuine
-/// fetch failure as a module `Err` instead of swallowing it into an empty result
-/// — so a network outage to opencellid.org is told apart from a legitimate
-/// "tower/area not in the crowdsourced database" for this geoint (tower-placement)
-/// module. Shared by both `process_area` and `process_tower`.
-///
-///   * transport failure → `Err` (URL redacted via [`reqwest::Error::without_url`]
-///     — it carries the `key={api_key}` query param);
-///   * a non-2xx status → the key is reported to the pool (`note_keyed_error`) and
-///     `Ok(None)` returned — the pool report IS the operator signal, so this stays
-///     a clean empty scan result, not an error;
-///   * a `200` whose body does not parse → `Err` (a real anomaly, previously
-///     swallowed);
-///   * a `200` that parses → `Ok(Some(data))`.
-///
-/// The body-level OpenCelliD `{"error":...}`-on-`200` bad-key shape is checked by
-/// the caller on the decoded value (its field differs per endpoint). Split out as
-/// a ctx+URL-taking seam so the failure contract is unit-testable against a local
-/// server. `json_scanned` still harvests any leaked API keys from the body
-/// (RULE 3); its `String` parse error (PII-free) is wrapped here.
-async fn fetch_opencellid<T: serde::de::DeserializeOwned>(
-    ctx: &ModuleContext,
-    api_key: &str,
-    url: &str,
-) -> Result<Option<T>> {
-    let resp = ctx
-        .http
-        .get(url)
-        .header("Accept", "application/json")
-        .send()
-        .await
-        .map_err(|e| crate::core::error::Error::module(SRC, e.without_url().to_string()))?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        // A present key that gets rejected/throttled must be reported to the
-        // pool, or a dead/throttled key silently degrades every future scan with
-        // no operator-visible signal and no chance to rotate. The report is the
-        // signal, so the scan result stays a clean empty (Ok(None)), not an Err.
-        crate::util::http::note_keyed_error(status.as_u16(), SRC, api_key, ctx);
-        return Ok(None);
-    }
-
-    crate::util::http::json_scanned(resp, SRC)
-        .await
-        .map(Some)
-        .map_err(|e| crate::core::error::Error::module(SRC, e))
-}
-
 /// Coordinates → towers (getInArea).
 async fn process_area(target: &Target, ctx: &ModuleContext, api_key: &str) -> Result<ModuleResult> {
     let (lat, lon) = parse_coords(&target.value)?;
@@ -233,16 +199,46 @@ async fn process_area(target: &Target, ctx: &ModuleContext, api_key: &str) -> Re
         urlencode(&bbox),
     );
 
-    let Some(data): Option<AreaResp> = fetch_opencellid(ctx, api_key, &url).await? else {
-        // Non-2xx: the key was already reported to the pool inside the seam.
+    // `send_tagged` rather than a bare `send()`: the request URL carries the API
+    // key as its first query parameter, and `reqwest::Error`'s Display embeds
+    // that URL. `send_tagged` is the chokepoint that strips it — see
+    // `http::tests::send_tagged_strips_url_so_secrets_and_pii_dont_leak`.
+    let resp = ctx
+        .http
+        .get(&url)
+        .header("Accept", "application/json")
+        .send_tagged(SRC)
+        .await?;
+
+    // Every one of these paths used to `return Ok(ModuleResult::new())`, which
+    // the engine records as "OpenCelliD found no towers in this bounding box" —
+    // an affirmative GEOINT negative that suppresses downstream geo-convergence.
+    // A throttled key, a WAF interstitial and a schema change all produced that
+    // same answer. The key was at least reported to the pool, so it could still
+    // rotate; the SCAN, however, was told a falsehood.
+    // `keyed_ok_or_404` is the house chokepoint ~10 sibling keyed modules
+    // already route through, and it draws exactly the distinction this needs:
+    // 404 is a genuine "nothing here" and stays an empty success, while
+    // 401/403/429 (and an auth-shaped 400) report the key to the pool AND
+    // return Err. Same pool attribution as the hand-rolled call it replaces —
+    // `SRC` — so key rotation behaviour is unchanged.
+    let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, api_key, ctx, resp).await? else {
         return Ok(ModuleResult::new());
     };
+
+    // A 2xx was already confirmed, so a decode failure here is OpenCelliD
+    // changing its wire format or a captive-portal/WAF page served with 200 —
+    // provider drift, not an empty area.
+    let data: AreaResp = crate::util::http::json_scanned(resp, SRC)
+        .await
+        .map_err(|e| Error::module(SRC, e))?;
     if data.error.is_some() {
-        // See `CellEntry::error`'s doc comment — a body-level key failure
-        // OpenCelliD signals as a plain 200, so this can't be caught by the
-        // status check above.
+        // See `CellEntry::error`'s doc comment — OpenCelliD signals a body-level
+        // key failure as a plain 200, so the status check above cannot catch it.
+        // The key is reported to the pool as before; what changes is that the
+        // scan is no longer additionally told the area holds no towers.
         crate::util::http::note_keyed_error(401, SRC, api_key, ctx);
-        return Ok(ModuleResult::new());
+        return Err(Error::module(SRC, KEY_REJECTED_MSG));
     }
 
     let mut result = ModuleResult::new();
@@ -272,14 +268,30 @@ async fn process_tower(
         cid,
     );
 
-    let Some(cell): Option<CellEntry> = fetch_opencellid(ctx, api_key, &url).await? else {
-        // Non-2xx: the key was already reported to the pool inside the seam.
+    // `send_tagged` rather than a bare `send()`: the request URL carries the API
+    // key as its first query parameter, and `reqwest::Error`'s Display embeds
+    // that URL. `send_tagged` is the chokepoint that strips it — see
+    // `http::tests::send_tagged_strips_url_so_secrets_and_pii_dont_leak`.
+    let resp = ctx
+        .http
+        .get(&url)
+        .header("Accept", "application/json")
+        .send_tagged(SRC)
+        .await?;
+
+    // Same rationale as `process_area` above: a failure here is not "this cell
+    // is not in OpenCelliD", and a 404 — which is exactly that — still is.
+    let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, api_key, ctx, resp).await? else {
         return Ok(ModuleResult::new());
     };
+
+    let cell: CellEntry = crate::util::http::json_scanned(resp, SRC)
+        .await
+        .map_err(|e| Error::module(SRC, e))?;
     if cell.error.is_some() {
         // See `CellEntry::error`'s doc comment.
         crate::util::http::note_keyed_error(401, SRC, api_key, ctx);
-        return Ok(ModuleResult::new());
+        return Err(Error::module(SRC, KEY_REJECTED_MSG));
     }
 
     let mut result = ModuleResult::new();
@@ -296,10 +308,10 @@ fn emit_cell_entities(result: &mut ModuleResult, cell: &CellEntry, scan_id: &str
     let Some(cid) = cell.cid else { return };
 
     let radio = cell.radio.as_deref().unwrap_or("unknown");
-    let tower_id = crate::util::cell::tower_id(mcc, mnc, lac, cid);
+    let tower_id = format!("{mcc}-{mnc}-{lac}-{cid}");
 
     // DeviceId entity
-    let mut device = Entity::new(EntityKind::DeviceId, &tower_id, 0.78, scan_id);
+    let mut device = Entity::new(EntityKind::DeviceId, &tower_id, confidence::STRONG, scan_id);
     device.tag(crate::core::tags::CELL_TOWER);
     device.tag(format!("radio:{}", radio.to_lowercase()));
     let mut ev = Evidence::new(SRC, format!("OpenCelliD tower {tower_id} ({radio})"))
@@ -328,7 +340,7 @@ fn emit_cell_entities(result: &mut ModuleResult, cell: &CellEntry, scan_id: &str
         return;
     }
     let coords = format!("{t_lat:.6},{t_lon:.6}");
-    let confidence = crate::util::geo::cell_range_to_confidence(cell.range.unwrap_or(5000));
+    let confidence = accuracy_to_confidence(cell.range.unwrap_or(5000));
     let mut geo = Entity::new(EntityKind::Coordinates, &coords, confidence, scan_id);
     geo.tag("geoint");
     geo.tag(crate::core::tags::CELL_TOWER);
@@ -343,3 +355,5 @@ fn emit_cell_entities(result: &mut ModuleResult, cell: &CellEntry, scan_id: &str
     );
     result.push(geo);
 }
+
+use crate::util::cell_db::accuracy_to_confidence;

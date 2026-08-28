@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{ModuleContext, ModuleResult},
@@ -30,7 +31,12 @@ pub(super) async fn process_phone_prefix_only(
     if let Some((country, cc, lat, lon)) = phone_prefix_to_country(&phone) {
         let coords = format!("{lat:.4},{lon:.4}");
         if seen.insert(format!("@phone-geo:{coords}")) {
-            let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.52, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Coordinates,
+                &coords,
+                confidence::MEDIUM_LIGHT,
+                &ctx.scan_id,
+            );
             e.tag("geoint");
             e.tag("phone-prefix");
             e.tag(crate::core::tags::COARSE);

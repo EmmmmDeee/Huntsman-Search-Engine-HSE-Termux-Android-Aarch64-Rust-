@@ -12,12 +12,6 @@ use crate::core::entity::Entity;
 use crate::core::graph::Graph;
 use crate::core::relation::Relation;
 
-/// Truncated node id — must match the form used when emitting `<node>`
-/// elements so relation edges reference existing nodes.
-fn short_uid(uid: &str) -> &str {
-    &uid[..uid.len().min(12)]
-}
-
 /// Serialize a scan's entities (nodes) and edges (typed `Relation` edges +
 /// shared-evidence co-occurrence edges) as GEXF for Gephi / Cytoscape.
 ///
@@ -66,11 +60,11 @@ pub fn entities_to_gexf(entities: &[Entity], relations: &[Relation], scan_id: &s
     // (Co-occurrence edges are built only from `entities`, so they are always
     // in-set by construction.)
     let node_ids: std::collections::HashSet<&str> =
-        entities.iter().map(|e| short_uid(&e.uid)).collect();
+        entities.iter().map(|e| e.uid.as_str()).collect();
     let _ = writeln!(xml, r#"    <edges>"#);
     let mut edge_id = 0u64;
     for r in relations {
-        if node_ids.contains(short_uid(&r.from_uid)) && node_ids.contains(short_uid(&r.to_uid)) {
+        if node_ids.contains(r.from_uid.as_str()) && node_ids.contains(r.to_uid.as_str()) {
             write_relation_edge(&mut xml, r, &mut edge_id);
         }
     }
@@ -85,7 +79,8 @@ pub fn entities_to_gexf(entities: &[Entity], relations: &[Relation], scan_id: &s
 
 /// XML header, `<meta>`, the `<graph>` open tag, and the node attribute
 /// declarations (kind / confidence / c_effective / classification /
-/// corroboration). Leaves `xml` positioned to receive `<nodes>`.
+/// corroboration / coreness / tags / diamond_vertex / generation). Leaves `xml`
+/// positioned to receive `<nodes>`.
 fn write_preamble(xml: &mut String, scan_id: &str) {
     let _ = writeln!(xml, r#"<?xml version="1.0" encoding="UTF-8"?>"#);
     let _ = writeln!(xml, r#"<gexf xmlns="http://gexf.net/1.3" version="1.3">"#);
@@ -130,11 +125,39 @@ fn write_preamble(xml: &mut String, scan_id: &str) {
         xml,
         r#"      <attribute id="6" title="tags" type="string"/>"#
     );
+    // Diamond Model attribution vertex (victim / infrastructure / capability) —
+    // the deterministic `core::diamond` classification, exported so a Gephi
+    // analyst can partition or colour the WHOLE entity graph by attribution role
+    // in one click, not just by kind. A fixed lowercase enum string, never
+    // adversary (that role is relational, carried by the edges, not the node).
+    let _ = writeln!(
+        xml,
+        r#"      <attribute id="7" title="diamond_vertex" type="string"/>"#
+    );
+    // `generation` — how many pivots out from the seed this node was found
+    // (0 = the seed itself). Exported so a Gephi analyst can size/colour the
+    // graph by expansion depth and see the pivot frontier at a glance. The
+    // debug bundle and the CSV export already carry it; GEXF was the last graph
+    // artifact dropping it.
+    let _ = writeln!(
+        xml,
+        r#"      <attribute id="8" title="generation" type="integer"/>"#
+    );
     let _ = writeln!(xml, r#"    </attributes>"#);
 }
 
-/// One `<node>` element with its seven `<attvalue>`s. The id is the truncated
-/// uid (see [`short_uid`]) so relation/co-occurrence edges can reference it.
+/// One `<node>` element with its nine `<attvalue>`s. The id is the entity's
+/// full uid (the hex SHA-256 digest — always XML-`ID`-safe, no escaping
+/// needed) so relation/co-occurrence edges can reference it unambiguously.
+/// A PRIOR version truncated this to 12 hex chars (48 bits): two distinct
+/// entities whose full uids merely agreed on that prefix were emitted as two
+/// `<node>` elements sharing one id — structurally-invalid GEXF that Gephi
+/// silently resolves by keeping only one node's data, leaving every edge
+/// referencing that id ambiguous as to which entity it actually connects.
+/// Reachable in practice: a scan ingests attacker-controlled breach/scrape
+/// text, and a 48-bit collision is findable offline well within a motivated
+/// adversary's reach. The full uid eliminates the collision class rather
+/// than shrinking its probability.
 /// `coreness` is the k-core index (0 = isolated periphery, higher = more
 /// deeply embedded in a densely-connected cluster). `tags` is `|`-joined (the
 /// same convention the CSV export's `tags` column uses) so an analyst working
@@ -143,11 +166,7 @@ fn write_preamble(xml: &mut String, scan_id: &str) {
 /// already shows as pills.
 fn write_node(xml: &mut String, e: &Entity, coreness: usize) {
     let label = xml_escape(&e.value);
-    let _ = writeln!(
-        xml,
-        r#"      <node id="{}" label="{label}">"#,
-        short_uid(&e.uid)
-    );
+    let _ = writeln!(xml, r#"      <node id="{}" label="{label}">"#, e.uid);
     let _ = writeln!(xml, r#"        <attvalues>"#);
     // The `kind` attvalue must be escaped: `EntityKind::Other(s)` renders as
     // `other:<s>` where `s` is data-derived and can carry `<`/`&`/`"`, which
@@ -183,6 +202,20 @@ fn write_node(xml: &mut String, e: &Entity, coreness: usize) {
         r#"          <attvalue for="6" value="{}"/>"#,
         xml_escape(&e.tags.join("|"))
     );
+    // Diamond attribution vertex — a fixed lowercase enum string, XML-safe by
+    // construction (no escaping needed), so no scan can ever produce an
+    // unclassified node in the graph view.
+    let _ = writeln!(
+        xml,
+        r#"          <attvalue for="7" value="{}"/>"#,
+        e.diamond_vertex().as_str()
+    );
+    // Expansion depth (hops from the seed) — integer, XML-safe by construction.
+    let _ = writeln!(
+        xml,
+        r#"          <attvalue for="8" value="{}"/>"#,
+        e.generation
+    );
     let _ = writeln!(xml, r#"        </attvalues>"#);
     let _ = writeln!(xml, r#"      </node>"#);
 }
@@ -193,8 +226,8 @@ fn write_relation_edge(xml: &mut String, r: &Relation, edge_id: &mut u64) {
     let _ = writeln!(
         xml,
         r#"      <edge id="{edge_id}" source="{}" target="{}" weight="{:.3}" label="{}"/>"#,
-        short_uid(&r.from_uid),
-        short_uid(&r.to_uid),
+        r.from_uid,
+        r.to_uid,
         r.confidence,
         xml_escape(r.kind.as_str())
     );
@@ -229,12 +262,35 @@ fn write_relation_edge(xml: &mut String, r: &Relation, edge_id: &mut u64) {
 /// shared verbatim, so the true co-occurrence edge survives. Seed-derivation
 /// lineage remains carried, correctly, by the typed `DerivedFrom` relation edges.
 fn write_shared_evidence_edges(xml: &mut String, entities: &[Entity], edge_id: &mut u64) {
+    // Each entity's record set is built ONCE, up front.
+    //
+    // `corroborating_records` is not a getter: it filters the entity's evidence
+    // and collects a fresh `HashSet` on every call. The outer loop hoisted that
+    // for `src`, but the inner loop called it again for every `tgt`, so each
+    // entity's set was rebuilt n-1 times — n(n-1)/2 set allocations to draw the
+    // edges of an n-entity graph, each one re-hashing that entity's whole
+    // evidence list. `entities` here is the complete, uncapped entity list of a
+    // scan (`scan_export`'s `scan.gexf` route and `app::export` both pass it
+    // straight through, filtered only for CANDIDATE), so n grows with scan
+    // breadth and with the size of any imported dump.
+    //
+    // Precomputing makes it n allocations. The pairwise comparison itself stays
+    // O(n^2) — that is inherent to drawing an edge per co-occurring pair — but
+    // the allocation and re-hashing cost drops from quadratic to linear.
+    // `core::coref` and the `identity::account` rule already solve this exact
+    // shape the same way; this was the site that had been missed.
+    //
+    // Output is unchanged: the pair iteration order is identical, and `shared`
+    // is consumed only by `.len()` and by `labels`, which is sorted and deduped
+    // before it is written.
+    let records: Vec<std::collections::HashSet<(&str, &str)>> =
+        entities.iter().map(Entity::corroborating_records).collect();
     for (i, src) in entities.iter().enumerate() {
-        let src_records = src.corroborating_records();
-        for tgt in entities.iter().skip(i + 1) {
-            let tgt_records = tgt.corroborating_records();
+        let src_records = &records[i];
+        for (j, tgt) in entities.iter().enumerate().skip(i + 1) {
+            let tgt_records = &records[j];
             let shared: Vec<(&str, &str)> =
-                src_records.intersection(&tgt_records).copied().collect();
+                src_records.intersection(tgt_records).copied().collect();
             if shared.is_empty() {
                 continue;
             }
@@ -248,8 +304,8 @@ fn write_shared_evidence_edges(xml: &mut String, entities: &[Entity], edge_id: &
             let _ = writeln!(
                 xml,
                 r#"      <edge id="{edge_id}" source="{}" target="{}" weight="{}.0" label="{}"/>"#,
-                short_uid(&src.uid),
-                short_uid(&tgt.uid),
+                src.uid,
+                tgt.uid,
                 shared.len(),
                 xml_escape(&labels.join(", "))
             );
@@ -258,28 +314,12 @@ fn write_shared_evidence_edges(xml: &mut String, entities: &[Entity], edge_id: &
     }
 }
 
-fn xml_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            // XML 1.0 §2.2 forbids the C0 control chars (except tab/LF/CR) and the
-            // noncharacters U+FFFE/U+FFFF — they are illegal even as numeric
-            // references. An entity value carrying a stray control byte (breach
-            // dumps and scraped pages do) would otherwise make the WHOLE .gexf
-            // unparseable, not just that node. Drop them at the serialization
-            // boundary. (C1 controls 0x80–0x9F are valid in XML 1.0 and kept.)
-            '\u{FFFE}' | '\u{FFFF}' => {}
-            c if (c as u32) < 0x20 && !matches!(c, '\t' | '\n' | '\r') => {}
-            c => out.push(c),
-        }
-    }
-    out
-}
+// This module's own hardened escaper, now shared. It was correct here and wrong in
+// `core::snake_graph`, which had a second copy covering only the five metacharacters — the defect
+// was that there were two. Moved to `core::xml` verbatim so both serializers call one
+// implementation and cannot drift again; the rationale for dropping XML-illegal characters rather
+// than escaping them lives there.
+use crate::core::xml::escape as xml_escape;
 
 #[cfg(test)]
 mod tests {

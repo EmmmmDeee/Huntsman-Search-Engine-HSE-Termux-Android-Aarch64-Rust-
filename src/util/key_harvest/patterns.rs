@@ -968,3 +968,47 @@ pub(super) const KEY_PATTERNS: &[KeyPattern] = &[
         min_len: 70,
     },
 ];
+
+/// Structural body check for the few prefixes too short to be self-identifying.
+///
+/// A 2–3 char alphanumeric prefix (`AC`, `SK`, `MT`, `ODk`) matches vastly more
+/// than the vendor's real key: the flat `prefix` + `min_len` table cannot
+/// express the body's shape, so any high-entropy base64 token of the right
+/// length starting with those bytes passed the entropy gate and was misreported
+/// as a leaked credential — a false-positive `ApiKey` exposure carried at
+/// `HIGH_PLUSPLUS` confidence into the operator's revoke-first ordering (AU-095).
+///
+/// Returns `true` (unconstrained) for every prefix NOT listed here, so this only
+/// ever TIGHTENS the handful of generic prefixes and can never reject a key that
+/// a longer, self-identifying prefix already matched. `token` is the full
+/// candidate (prefix included); `prefix` is ASCII, so slicing at its byte length
+/// lands on a char boundary.
+pub(super) fn body_shape_ok(prefix: &str, token: &str) -> bool {
+    match prefix {
+        // Twilio Account SID / API Key SID are `AC`/`SK` + 32 hex chars — the
+        // `SK` entry's own comment documents this. A non-hex body is not a SID.
+        "AC" | "SK" => token[prefix.len()..].bytes().all(|b| b.is_ascii_hexdigit()),
+        // A Discord bot token is `base64url(id).base64url(ts).base64url(hmac)` —
+        // three non-empty dot-separated segments. The dotted structure is
+        // intrinsic (payload.timestamp.hmac), not a versioned detail, so this
+        // rejects a dot-less blob without any risk of dropping a real token.
+        "MT" | "ODk" => is_dotted_token(token),
+        _ => true,
+    }
+}
+
+/// True when `token` is three non-empty `.`-separated base64url segments (the
+/// Discord bot-token / JWT shape). Deliberately loose on segment LENGTHS — only
+/// the separator structure and charset are load-bearing — so it never rejects a
+/// genuine token whose segment sizes vary.
+fn is_dotted_token(token: &str) -> bool {
+    let mut segs = token.split('.');
+    match (segs.next(), segs.next(), segs.next(), segs.next()) {
+        (Some(a), Some(b), Some(c), None) => [a, b, c].iter().all(|s| {
+            !s.is_empty()
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        }),
+        _ => false,
+    }
+}

@@ -25,7 +25,7 @@ use crate::util::geohash::haversine_km;
 ///
 /// // Three tight points plus a far outlier: the median stays with the cluster.
 /// let pts = [(0.0, 0.0), (0.0, 0.01), (0.01, 0.0), (10.0, 10.0)];
-/// let m = geometric_median(&pts).unwrap();
+/// let m = geometric_median(&pts).expect("should succeed");
 /// assert!(m.0.abs() < 1.0 && m.1.abs() < 1.0, "robust to the outlier: {m:?}");
 /// ```
 pub fn geometric_median(points: &[(f64, f64)]) -> Option<(f64, f64)> {
@@ -165,7 +165,7 @@ pub fn median_distance_km(center: (f64, f64), points: &[(f64, f64)]) -> f64 {
 ///
 /// // A high-confidence point and a low-confidence one: the centre sits much
 /// // closer to the trusted sighting than a plain average (0.5) would.
-/// let c = weighted_centroid(&[((0.0, 0.0), 0.9), ((0.0, 1.0), 0.1)]).unwrap();
+/// let c = weighted_centroid(&[((0.0, 0.0), 0.9), ((0.0, 1.0), 0.1)]).expect("should succeed");
 /// assert!(c.1 < 0.2, "weighted toward the high-confidence point");
 /// ```
 pub fn weighted_centroid(points: &[((f64, f64), f64)]) -> Option<(f64, f64)> {

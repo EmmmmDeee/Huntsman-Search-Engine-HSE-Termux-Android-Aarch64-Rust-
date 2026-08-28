@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # HSE diagnostic — run this in Termux, paste the full output back to Claude.
-# Usage: bash diagnose.sh [path/to/HSE.zip]
+# Usage: bash diagnose.sh [path/to/prebuilt hse-aarch64-linux-android binary]
 set -uo pipefail
 
-ZIP_ARG="${1:-}"
+PREBUILT_ARG="${1:-}"
 
 SEP="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 sec()  { echo; echo "$SEP"; echo "  $*"; echo "$SEP"; }
@@ -129,16 +129,20 @@ _probe_dir "downloads symlink" "$HOME/storage/downloads"
 _probe_dir "primary external"  "/storage/emulated/0"
 _probe_dir "Download dir"      "/storage/emulated/0/Download"
 
-# e) Probe any zip candidates
+# e) Probe any prebuilt-binary candidates — mirrors install.sh's real
+# no-build fast path (maybe_use_prebuilt / _validate_prebuilt): a prebuilt
+# `hse-aarch64-linux-android` binary in Downloads, size + ELF-magic + a
+# `.sha256` sidecar. There is no zip-based install path in the current
+# install.sh — this used to probe for one; that flow was removed.
 echo
-echo "  Zip file candidates:"
-FOUND_ZIP=0
+echo "  Prebuilt binary candidates:"
+FOUND_PREBUILT=0
 for CANDIDATE in \
-    "$ZIP_ARG" \
-    "$HOME/storage/downloads/HSE.zip" \
-    "/storage/emulated/0/Download/HSE.zip" \
-    "$HOME/storage/downloads/hse.zip" \
-    "/storage/emulated/0/Download/hse.zip"; do
+    "$PREBUILT_ARG" \
+    "$HOME/storage/downloads/hse-aarch64-linux-android" \
+    "/storage/emulated/0/Download/hse-aarch64-linux-android" \
+    "$HOME/storage/downloads/hse" \
+    "/storage/emulated/0/Download/hse"; do
     [[ -z "$CANDIDATE" ]] && continue
 
     printf "\n  Path: %s\n" "$CANDIDATE"
@@ -150,23 +154,29 @@ for CANDIDATE in \
         fail "    stat()" "does not exist or EACCES on stat"
         continue
     fi
-    FOUND_ZIP=1
+    FOUND_PREBUILT=1
     # open for reading
     if dd if="$CANDIDATE" bs=1 count=4 >/dev/null 2>&1; then
-        ok "    open()+read" "works — cp/unzip will succeed"
+        ok "    open()+read" "works — cp/install will succeed"
     else
         fail "    open()+read" "EACCES — scoped storage blocking read (fix: Settings → Apps → Termux → Permissions → Files and media → Allow management of all files)"
     fi
-    # zip integrity (if unzip available)
-    if command -v unzip >/dev/null 2>&1; then
-        if unzip -t "$CANDIDATE" >/dev/null 2>&1; then
-            ok "    unzip -t"  "zip integrity OK"
-        else
-            fail "    unzip -t" "either corrupt or unreadable"
-        fi
+    # ELF magic (\x7fELF) — the same cheap pre-filter install.sh's
+    # _validate_prebuilt applies before exec-testing.
+    MAGIC=$(od -An -tx1 -N4 "$CANDIDATE" 2>/dev/null | tr -d ' \n')
+    if [[ "$MAGIC" == "7f454c46" ]]; then
+        ok "    ELF magic" "valid (7f454c46)"
+    else
+        fail "    ELF magic" "not an ELF binary (got: ${MAGIC:-?})"
+    fi
+    # .sha256 sidecar — required by install.sh for an auto-discovered binary.
+    if [[ -f "$CANDIDATE.sha256" ]]; then
+        ok "    .sha256 sidecar" "present"
+    else
+        fail "    .sha256 sidecar" "missing — install.sh will skip this candidate unless you set HSE_PREBUILT=$CANDIDATE"
     fi
 done
-[[ "$FOUND_ZIP" -eq 0 ]] && fail "  HSE.zip" "not found in any standard location — download it from the GitHub Releases page in Chrome"
+[[ "$FOUND_PREBUILT" -eq 0 ]] && fail "  prebuilt binary" "not found in any standard location — download hse-aarch64-linux-android (+ its .sha256) from the GitHub Releases page in Chrome, or omit this to build from source"
 
 # ── 6. Disk & memory ────────────────────────────────────────────────────────
 sec "6. DISK & MEMORY"
@@ -251,12 +261,12 @@ IPATH="$REPO_ROOT/install.sh"
 if [[ -f "$IPATH" ]]; then
     ok  "install.sh found" "$IPATH"
     kv  "size"  "$(wc -l < "$IPATH") lines"
-    grep -q 'LOCAL_SRC' "$IPATH" \
-        && ok  "zip-detect logic" "present (LOCAL_SRC)" \
-        || fail "zip-detect logic" "missing — install.sh may be stale"
-    grep -q 'BASH_SOURCE' "$IPATH" \
-        && ok  "BASH_SOURCE ref"  "present" \
-        || fail "BASH_SOURCE ref"  "missing"
+    grep -q 'maybe_use_prebuilt' "$IPATH" \
+        && ok  "prebuilt-scan logic" "present (maybe_use_prebuilt)" \
+        || fail "prebuilt-scan logic" "missing — install.sh may be stale"
+    grep -q 'HSE_PREBUILT_TAG' "$IPATH" \
+        && ok  "release-download logic" "present (HSE_PREBUILT_TAG)" \
+        || fail "release-download logic" "missing"
     grep -q 'hse-bg' "$IPATH" \
         && ok  "hse-bg embed"     "present" \
         || fail "hse-bg embed"    "missing"

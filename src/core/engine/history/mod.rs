@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 
-use crate::core::entity::{CROSS_SCAN_SOURCE, Entity, EntityKind, Evidence};
+use crate::core::entity::{CROSS_SCAN_SOURCE, Entity, EntityKind, Evidence, canonical_handle};
 use crate::core::port::StoragePort;
 use crate::core::relation::RelationKind;
 
@@ -29,10 +29,8 @@ const MAX_PROBES: usize = 48;
 
 /// Prior-scan count threshold at or above which an entity is classified as a
 /// "hub" — a high-leverage identifier that bridges three or more distinct
-/// investigations. Hub entities get the distinguishing `hub-entity` tag so both
-/// operators and the AU-078 correlator rule can prioritise them; the tag (not a
-/// count-bearing evidence summary — see [`recurrence_summary`]) is what carries the
-/// hub signal, so it survives cross-scan merges as a deduped set.
+/// investigations. Hub entities get a distinguishing tag and stronger evidence
+/// summary so both operators and the AU-078 correlator rule can prioritise them.
 const HUB_THRESHOLD: usize = 3;
 
 /// Max point-queries the co-occurrence pass may issue per scan. The pairing pass
@@ -41,6 +39,11 @@ const HUB_THRESHOLD: usize = 3;
 /// its own, tighter budget so the indexed reads stay bounded on a low-RAM Termux
 /// device even when a scan produces many specific identifiers.
 const MAX_COOCCURRENCE_PROBES: usize = 48;
+
+/// Max cross-kind alias point-queries per scan. Tighter than [`MAX_PROBES`]
+/// because each candidate email can spend two probes (punctuated and canonical
+/// handle spellings) and the link it yields is the weakest of the family.
+const MAX_ALIAS_PROBES: usize = 32;
 
 /// Max prior scans examined per current candidate. The candidate's prior-scan ids
 /// are sorted and truncated to this, so a value seen in very many earlier scans
@@ -59,18 +62,6 @@ const MAX_PARTNERS_PER_ENTITY: usize = 8;
 /// the store — distinguishing it from the plain recurrence evidence, which shares
 /// the [`CROSS_SCAN_SOURCE`] source but never contains this phrase.
 const COOCCURRENCE_MARKER: &str = "Co-occurred with `";
-
-/// Strip ASCII handle separators (`.`, `_`, `-`) and lowercase — the canonical
-/// form used for handle comparison across platforms. Duplicated here (rather than
-/// calling into `correlator::rules`) to keep the history module independent of the
-/// correlator's internals.
-fn canonical_username(value: &str) -> String {
-    value
-        .chars()
-        .filter(|&c| c != '.' && c != '_' && c != '-')
-        .flat_map(char::to_lowercase)
-        .collect()
-}
 
 /// True if `e` is a SPECIFIC personal identifier worth checking against history —
 /// the kind of value whose recurrence across scans genuinely bridges two
@@ -99,48 +90,16 @@ pub(super) fn is_cross_scan_candidate(e: &Entity) -> bool {
     }
 }
 
-/// Build the recurrence-evidence summary. Deliberately carries NO prior-scan
-/// count.
-///
-/// The count is a monotonically-rising per-scan snapshot (`1`, then `2`, then `3`…
-/// as the subject is re-scanned). Embedding it in the summary defeated the
-/// `(source, summary)` evidence dedup in
-/// [`Entity::absorb`](crate::core::entity::Entity::absorb): every re-scan produced
-/// a DIFFERENT summary string, so the persist-time merge kept each as a distinct
-/// record and a frequently-scanned identifier accumulated a pile of stale,
-/// mutually-inconsistent snapshots (`…recorded in 1 earlier scan`, `…2…`, `…16…`),
-/// only the largest of which was current — an evidence-integrity regression and a
-/// breach of this module's documented idempotency contract. The durable fact — this
-/// identifier recurs across prior investigations — is what belongs in persisted
-/// evidence; the live magnitude is carried by the `hub-entity` tag (which AU-078
-/// reads and which merges as a deduped set) and by the store-derived
-/// `cross_scan_degree` leverage ranking, NEITHER of which reads this string. A
-/// stable summary ⇒ re-scan snapshots collapse to exactly one record.
-fn recurrence_summary(canonical: Option<&str>) -> String {
-    match canonical {
-        Some(canon) => format!(
-            "Canonical form '{canon}' also recorded in earlier scan(s) in the local \
-             intelligence database — a separator-variant handle that bridges investigations"
-        ),
-        None => "Also recorded in earlier scan(s) in the local intelligence database — this \
-             identifier recurs across investigations and bridges distinct cases"
-            .to_owned(),
-    }
-}
-
 /// Link this scan's findings to the local intelligence history.
 ///
 /// For each [`is_cross_scan_candidate`] identifier, ask the store whether any
 /// EARLIER scan recorded the same value (the entity isn't persisted for this scan
 /// yet, so any hit is genuinely prior). A recurrence earns a `cross-scan` tag and a
-/// count-free [`CROSS_SCAN_SOURCE`] evidence record (see [`recurrence_summary`] for
-/// why the prior-scan count is NOT embedded) — the bridge that turns a pile of
-/// isolated scans into one connected intelligence base. A 3+-prior-scan recurrence
-/// additionally earns the `hub-entity` tag, which is what carries the magnitude to
-/// AU-078 and the UI. Non-corroborating (never inflates confidence), bounded
-/// ([`MAX_PROBES`]), idempotent ACROSS re-scans (the stable summary dedups on merge,
-/// not just within one slice), and store errors are skipped (a history lookup must
-/// never fail a scan). Returns the number of entities bridged.
+/// [`CROSS_SCAN_SOURCE`] evidence record naming how many prior scans share it — the
+/// bridge that turns a pile of isolated scans into one connected intelligence base.
+/// Non-corroborating (never inflates confidence), bounded ([`MAX_PROBES`]),
+/// idempotent, and store errors are skipped (a history lookup must never fail a
+/// scan). Returns the number of entities bridged.
 pub(super) fn link_cross_scan_history(
     store: &dyn StoragePort,
     entities: &mut [Entity],
@@ -163,7 +122,7 @@ pub(super) fn link_cross_scan_history(
             // one canonical form — a prior scan that recorded the canonical variant
             // should still bridge to the current entity.
             if e.kind == EntityKind::Username {
-                let canon = canonical_username(&e.value);
+                let canon = canonical_handle(&e.value);
                 if canon != e.value && canon.len() >= 4 {
                     let canon_uid = crate::core::entity::derive_uid(&EntityKind::Username, &canon);
                     if canon_uid != e.uid {
@@ -176,13 +135,21 @@ pub(super) fn link_cross_scan_history(
                                 canon_ids.iter().filter(|id| id.as_str() != scan_id).count();
                             if prior > 0 {
                                 e.tag("cross-scan");
-                                if prior >= HUB_THRESHOLD {
+                                let summary = if prior >= HUB_THRESHOLD {
                                     e.tag("hub-entity");
-                                }
-                                e.add_evidence(Evidence::new(
-                                    CROSS_SCAN_SOURCE,
-                                    recurrence_summary(Some(&canon)),
-                                ));
+                                    format!(
+                                        "High-leverage hub identifier: canonical form '{canon}' \
+                                         recorded in {prior} earlier investigation(s) — bridges \
+                                         multiple cases across handle-separator variants"
+                                    )
+                                } else {
+                                    format!(
+                                        "Canonical form '{canon}' also recorded in {prior} \
+                                         earlier scan(s) — separator-variant handle bridges \
+                                         investigations"
+                                    )
+                                };
+                                e.add_evidence(Evidence::new(CROSS_SCAN_SOURCE, summary));
                                 linked += 1;
                             }
                         }
@@ -196,7 +163,7 @@ pub(super) fn link_cross_scan_history(
             // For Usernames: attempt canonical probe even when the exact UID has
             // no prior history, for the same separator-variant bridging reason.
             if e.kind == EntityKind::Username && !e.has_tag("cross-scan") {
-                let canon = canonical_username(&e.value);
+                let canon = canonical_handle(&e.value);
                 if canon != e.value && canon.len() >= 4 {
                     let canon_uid = crate::core::entity::derive_uid(&EntityKind::Username, &canon);
                     if canon_uid != e.uid {
@@ -209,13 +176,21 @@ pub(super) fn link_cross_scan_history(
                                 canon_ids.iter().filter(|id| id.as_str() != scan_id).count();
                             if prior_c > 0 {
                                 e.tag("cross-scan");
-                                if prior_c >= HUB_THRESHOLD {
+                                let summary = if prior_c >= HUB_THRESHOLD {
                                     e.tag("hub-entity");
-                                }
-                                e.add_evidence(Evidence::new(
-                                    CROSS_SCAN_SOURCE,
-                                    recurrence_summary(Some(&canon)),
-                                ));
+                                    format!(
+                                        "High-leverage hub identifier: canonical form '{canon}' \
+                                         recorded in {prior_c} earlier investigation(s) — bridges \
+                                         multiple cases across handle-separator variants"
+                                    )
+                                } else {
+                                    format!(
+                                        "Canonical form '{canon}' also recorded in {prior_c} \
+                                         earlier scan(s) — separator-variant handle bridges \
+                                         investigations"
+                                    )
+                                };
+                                e.add_evidence(Evidence::new(CROSS_SCAN_SOURCE, summary));
                                 linked += 1;
                             }
                         }
@@ -226,15 +201,22 @@ pub(super) fn link_cross_scan_history(
         }
         e.tag("cross-scan");
         // Hub detection: an identifier seen in 3+ distinct prior scans bridges
-        // multiple independent investigations. The `hub-entity` TAG (a deduped set
-        // under `Entity::absorb`) — not this evidence summary — carries the
-        // magnitude, so AU-078 and the UI still surface the high-leverage lead
-        // while the summary stays count-free and dedups to a single record across
-        // re-scans (see `recurrence_summary`).
-        if prior >= HUB_THRESHOLD {
+        // multiple independent investigations. Tag it separately so the AU-078
+        // correlator rule and the UI can surface it as a high-leverage lead.
+        let summary = if prior >= HUB_THRESHOLD {
             e.tag("hub-entity");
-        }
-        e.add_evidence(Evidence::new(CROSS_SCAN_SOURCE, recurrence_summary(None)));
+            format!(
+                "High-leverage hub identifier: recorded in {prior} earlier investigations \
+                 in the local intelligence database — bridges multiple distinct cases and \
+                 should be prioritised for cross-investigation attribution"
+            )
+        } else {
+            format!(
+                "Also recorded in {prior} earlier scan(s) in the local intelligence database \
+                 — this identifier bridges investigations"
+            )
+        };
+        e.add_evidence(Evidence::new(CROSS_SCAN_SOURCE, summary));
         linked += 1;
     }
     if linked > 0 {
@@ -246,22 +228,85 @@ pub(super) fn link_cross_scan_history(
     linked
 }
 
-/// Build the co-occurrence message naming `partner`. Deliberately carries NO
-/// prior-scan count: like the recurrence summary (see [`recurrence_summary`]), the
-/// count rises every re-scan the pair recurs in, so embedding it in the summary
-/// produced a fresh `(source, summary)` key each scan and defeated the evidence
-/// dedup in [`Entity::absorb`](crate::core::entity::Entity::absorb) — the pair's
-/// persisted evidence accumulated stale, contradictory snapshots (`across 1 earlier
-/// scan`, `2`, …, capped by [`MAX_PRIOR_SCANS_PER_ENTITY`]). The magnitude is
-/// carried by the `hub-cooccurrence` tag (which drives AU-080's severity and merges
-/// as a deduped set); AU-080 no longer reads a count from this text. Centralised so
-/// the summary written in the mutation phase and the idempotency probe in
-/// [`endpoint_has_cooccurrence`] can't drift; the [`COOCCURRENCE_MARKER`] prefix and
-/// the backtick-delimited partner are what the probe (and AU-080) key on.
-fn cooccurrence_summary(partner: &str) -> String {
+/// Link this scan's emails to usernames recorded under a DIFFERENT kind earlier.
+///
+/// [`link_cross_scan_history`] keys on the UID, which is
+/// `SHA-256(kind + ":" + normalised_value)` — so it can only ever bridge an entity
+/// to a prior sighting of the *same kind*. An address whose local-part is the
+/// handle the same person registered elsewhere is invisible to it. AU-076 makes
+/// exactly that link within a scan; this is its history-facing counterpart, and
+/// the only cross-kind bridge that exists (normalisation is kind-specific, so no
+/// two other kinds can share a normalised value).
+///
+/// Weaker than a same-kind recurrence — a handle collision is suggestive, not
+/// proof — so an entity already bridged by [`link_cross_scan_history`] is skipped
+/// rather than double-tagged, and the evidence says "possible". Same contract as
+/// its siblings: runs before persist, bounded ([`MAX_ALIAS_PROBES`]), idempotent
+/// via the tag, deterministic, and store errors are skipped. Returns the number of
+/// entities bridged.
+pub(super) fn link_cross_scan_kind_aliases(
+    store: &dyn StoragePort,
+    entities: &mut [Entity],
+    scan_id: &str,
+) -> usize {
+    let mut linked = 0usize;
+    let mut probes = 0usize;
+    for e in entities.iter_mut() {
+        if probes >= MAX_ALIAS_PROBES {
+            break;
+        }
+        // A same-kind recurrence is a strictly stronger bridge, and the alias tag
+        // is what makes this pass idempotent.
+        if e.has_tag("cross-scan")
+            || e.has_tag(crate::core::cross_scan::ALIAS_TAG)
+            || !is_cross_scan_candidate(e)
+        {
+            continue;
+        }
+
+        for handle in crate::core::cross_scan::alias_handles(e) {
+            if probes >= MAX_ALIAS_PROBES {
+                break;
+            }
+            probes += 1;
+            let uid = crate::core::entity::uid_for(&EntityKind::Username, &handle);
+            let Ok(ids) = store.scan_ids_for_entity(&uid) else {
+                continue;
+            };
+            let prior = ids.iter().filter(|id| id.as_str() != scan_id).count();
+            if prior == 0 {
+                continue;
+            }
+            e.tag(crate::core::cross_scan::ALIAS_TAG);
+            e.add_evidence(Evidence::new(
+                CROSS_SCAN_SOURCE,
+                format!(
+                    "Local-part matches username `{handle}` recorded in {prior} earlier \
+                     scan(s) — a possible identifier reuse across kinds, not a confirmed \
+                     same-identity match"
+                ),
+            ));
+            linked += 1;
+            break;
+        }
+    }
+    if linked > 0 {
+        tracing::info!(
+            linked,
+            "cross-scan aliases: emails bridged to earlier usernames by local-part"
+        );
+    }
+    linked
+}
+
+/// Build the co-occurrence message naming `partner` and the `shared` prior-scan
+/// count. Centralised so the summary written in the mutation phase and the
+/// idempotency probe in [`endpoint_has_cooccurrence`] can't drift; the
+/// [`COOCCURRENCE_MARKER`] prefix is what the probe keys on.
+fn cooccurrence_summary(partner: &str, shared: usize) -> String {
     format!(
-        "Co-occurred with `{partner}` in earlier scan(s) in the local intelligence \
-         database — a recurring association that bridges investigations"
+        "Co-occurred with `{partner}` across {shared} earlier scan(s) in the local \
+         intelligence database — a recurring association that bridges investigations"
     )
 }
 
@@ -415,7 +460,7 @@ pub(super) fn link_cross_scan_cooccurrence(
         }
         e.add_evidence(Evidence::new(
             CROSS_SCAN_SOURCE,
-            cooccurrence_summary(&partner_value),
+            cooccurrence_summary(&partner_value, shared),
         ));
         if gained_first {
             linked += 1;
@@ -449,10 +494,24 @@ const MAX_RECALLED_RELATIONS_PER_ENTITY: usize = 8;
 
 /// True for the IDENTITY-bearing relation kinds worth recalling across scans — the
 /// edges that connect a person to their identifiers, aliases, addresses, declared
-/// associates, and registrations. Pure-infrastructure edges (subdomain / hosting /
-/// DNS resolution / co-location / lineage) are excluded: recalling that a domain
-/// once resolved to an IP is not the human-network bridge this pass exists to
-/// surface.
+/// associates, affiliations, and registrations. Pure-infrastructure edges
+/// (subdomain / hosting / DNS resolution / co-location / lineage) are excluded:
+/// recalling that a domain once resolved to an IP is not the human-network bridge
+/// this pass exists to surface.
+///
+/// The person↔organisation and corporate-control affiliation edges
+/// (`OfficerOf` / `EmployedBy` / `MemberOf` / `ControlledBy`) qualify for exactly
+/// that reason: "this person was a director of that company in an earlier
+/// investigation" is a human-network bridge of the same class as a declared
+/// association, and often to an organisation not present in the current scan at
+/// all — the case this pass is most valuable in.
+///
+/// [`RelationKind::OperatedBy`] is deliberately NOT recalled, even though it is
+/// an affiliation kind: its subject is an *asset* (an IP / ASN / wallet / domain),
+/// so it is asset→operator attribution, not a person/organisation identity
+/// bridge. It is grouped with the excluded infrastructure edges — alongside its
+/// symmetric cousin [`RelationKind::SameOperator`] — so this pass stays a
+/// human-network recall, not an infrastructure-attribution one.
 fn is_identity_relation(kind: RelationKind) -> bool {
     matches!(
         kind,
@@ -461,24 +520,22 @@ fn is_identity_relation(kind: RelationKind) -> bool {
             | RelationKind::LocatedAt
             | RelationKind::AssociatedWith
             | RelationKind::RegisteredBy
+            | RelationKind::OfficerOf
+            | RelationKind::EmployedBy
+            | RelationKind::MemberOf
+            | RelationKind::ControlledBy
     )
 }
 
-/// Build the relation-recall message naming the prior relationship `kind` and the
-/// `partner` value. Deliberately carries NO prior-scan count: the count rises every
-/// re-scan the link recurs in, so embedding it produced a fresh `(source, summary)`
-/// key each scan and defeated the evidence dedup in
-/// [`Entity::absorb`](crate::core::entity::Entity::absorb), accumulating stale,
-/// contradictory snapshots in the entity's persisted evidence (see
-/// [`recurrence_summary`] and [`cooccurrence_summary`] for the same class). No
-/// consumer parses a count from this text — the `cross-scan-relation` tag is what
-/// the metrics/leads passes read. Centralised so the summary written in the mutation
-/// phase and the idempotency probe in [`endpoint_has_relation_recall`] can't drift;
-/// the [`RELATION_RECALL_MARKER`] prefix plus the kind string is what the probe keys on.
-fn relation_recall_summary(kind: &str, partner: &str) -> String {
+/// Build the relation-recall message naming the prior relationship `kind`, the
+/// `partner` value, and the `shared` prior-scan count. Centralised so the summary
+/// written in the mutation phase and the idempotency probe in
+/// [`endpoint_has_relation_recall`] can't drift; the [`RELATION_RECALL_MARKER`]
+/// prefix plus the kind string is what the probe keys on.
+fn relation_recall_summary(kind: &str, partner: &str, shared: usize) -> String {
     format!(
-        "Previously linked ({kind}) to `{partner}` in earlier scan(s) in the local \
-         intelligence database — a known connection that bridges investigations"
+        "Previously linked ({kind}) to `{partner}` across {shared} earlier scan(s) in the \
+         local intelligence database — a known connection that bridges investigations"
     )
 }
 
@@ -528,12 +585,10 @@ pub(super) fn link_cross_scan_relations(
     scan_id: &str,
 ) -> usize {
     // ── Read phase ───────────────────────────────────────────────────────────
-    // Plan (endpoint_index, kind_str, partner_value). The kind is carried as its
-    // `&'static str` form so nothing borrows the per-iteration relation list and the
-    // plan key is `Hash`/`Eq` without changing `RelationKind`. The shared prior-scan
-    // count is intentionally NOT planned: the recall summary is count-free (see
-    // `relation_recall_summary`) so re-scans dedup to one record.
-    let mut planned: Vec<(usize, &'static str, String)> = Vec::new();
+    // Plan (endpoint_index, kind_str, partner_value, shared_prior_scans). The kind
+    // is carried as its `&'static str` form so nothing borrows the per-iteration
+    // relation list and the plan key is `Hash`/`Eq` without changing `RelationKind`.
+    let mut planned: Vec<(usize, &'static str, String, usize)> = Vec::new();
     let mut probes = 0usize;
 
     for (i, e) in entities.iter().enumerate() {
@@ -594,19 +649,17 @@ pub(super) fn link_cross_scan_relations(
 
         // Deterministic, bounded recall set: tuple-sorted by (kind, partner value),
         // then capped. The key is unique, so the trailing count never affects order.
-        // The count itself is discarded — the recall summary is count-free so re-scans
-        // dedup to one record (the `_shared` binding documents the deliberate drop).
         let mut recall_list: Vec<((&'static str, String), usize)> = recalled.into_iter().collect();
         recall_list.sort();
         recall_list.truncate(MAX_RECALLED_RELATIONS_PER_ENTITY);
-        for ((kind, partner_value), _shared) in recall_list {
-            planned.push((i, kind, partner_value));
+        for ((kind, partner_value), shared) in recall_list {
+            planned.push((i, kind, partner_value, shared));
         }
     }
 
     // ── Mutation phase ───────────────────────────────────────────────────────
     let mut linked = 0usize;
-    for (idx, kind, partner_value) in planned {
+    for (idx, kind, partner_value, shared) in planned {
         let e = &mut entities[idx];
         if endpoint_has_relation_recall(e, kind, &partner_value) {
             continue; // idempotent: already carries this recalled relationship
@@ -615,7 +668,7 @@ pub(super) fn link_cross_scan_relations(
         e.tag("cross-scan-relation");
         e.add_evidence(Evidence::new(
             CROSS_SCAN_SOURCE,
-            relation_recall_summary(kind, &partner_value),
+            relation_recall_summary(kind, &partner_value, shared),
         ));
         if gained_first {
             linked += 1;

@@ -15,7 +15,9 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::oathnet::{self, paths, val_str, val_str_coerce, val_str_or, val_str_or_coerce};
+use crate::util::oathnet::{
+    self, Completeness, paths, val_str, val_str_coerce, val_str_or, val_str_or_coerce,
+};
 // The target-identity matcher is shared with see_know via `util::target_match`
 // (one definition for both breach pools); reached by bare name in `breach.rs`
 // through its `use super::*`. The non-match demotion itself is
@@ -33,6 +35,12 @@ use breach::*;
 /// importing `util::oathnet` directly (which violates the architecture rule).
 pub fn reset_budget() {
     crate::util::oathnet::reset_budget();
+}
+
+/// Re-export the per-scan budget cleanup, same shim rationale as
+/// [`reset_budget`]. Called at scan finalisation.
+pub fn cleanup_scan(scan_id: &str) {
+    crate::util::oathnet::cleanup_scan(scan_id);
 }
 use crate::util::key_harvest::{extract_api_keys_from_item, store_api_credential};
 
@@ -59,7 +67,7 @@ impl Module for OathnetPro {
     }
 
     fn description(&self) -> &'static str {
-        "Full-spectrum breach, stealer & OSINT intelligence via OathNet API"
+        "OathNet API recon — full-spectrum breach, stealer, and OSINT intelligence sweep"
     }
 
     fn priority(&self) -> u8 {
@@ -68,6 +76,18 @@ impl Module for OathnetPro {
 
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid
+    }
+
+    fn cache_ttl_secs(&self) -> u64 {
+        // OathNet has HSE's SCARCEST paid quota (a handful of lookups per scan)
+        // and its cursor-paginated breach search bills one lookup per page, so a
+        // single repeat resolve of a high-hit email can waste several lookups.
+        // Breach corpora are stable within a day, so persisting the derived
+        // entities lets a repeat scan of the same corroborated pivot replay them
+        // for FREE — the same 24h C9 bracket the other paid modules use. No live
+        // call on replay ⇒ no lookup spend (incl. the per-page pagination
+        // charges), which is the largest per-query saving for the scarcest quota.
+        86_400
     }
 
     fn accepts(&self, t: &Target) -> bool {
@@ -110,6 +130,7 @@ impl Module for OathnetPro {
             "T1590.005", // IP Addresses
             "T1591.001", // Determine Physical Locations — street / city / state address
             "T1591.002", // Business Relationships — company / employer / org
+            "T1597.002", // Purchase Technical Data — a paid, closed breach/stealer pool
         ]
     }
 
@@ -136,7 +157,7 @@ impl Module for OathnetPro {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = oathnet::resolve_key(ctx.key_opt(oathnet::KEY_ENV));
+        let key = ctx.key(oathnet::KEY_ENV)?;
         // Origin fingerprint of the exact key in use — stamped on every entity so
         // each finding declares which API key (and provider) returned it.
         let key_fp = oathnet::key_fingerprint(key);
@@ -186,7 +207,7 @@ impl Module for OathnetPro {
         // API's own documented maximum rather than a per-kind guess.
         const BREACH_PAGE_SIZE: u32 = 1000;
         let page_size: u32 = BREACH_PAGE_SIZE;
-        let items = oathnet::search(
+        let found = oathnet::search(
             key,
             paths::BREACH,
             field,
@@ -195,48 +216,67 @@ impl Module for OathnetPro {
             session_id.as_deref(),
         )
         .await?;
-        if items.is_empty() {
-            return Ok(result);
+        let breach_completeness = found.completeness;
+        let items = found.items;
+        // A zero-row BREACH page is a clean negative for THAT corpus only. It is
+        // not a verdict on the STEALER corpus, which is indexed separately and is
+        // the higher-severity of the two: an info-stealer victim absent from
+        // every public breach dump still appears there. Returning early skipped
+        // the stealer query entirely for exactly that subject, and the search
+        // session is already initialised, so the sweep costs the same one lookup
+        // it always did. Only the breach EXTRACTION is skipped on an empty page.
+        if !items.is_empty() {
+            // Everything appended from here came out of THIS enumeration, so its
+            // coverage verdict applies to exactly that slice.
+            let breach_start = result.entities.len();
+
+            // Classify every row against the target identity ONCE. This single
+            // pass drives all three downstream decisions — the honest parent
+            // dossier entity, the per-row `candidate` quarantine, and the
+            // candidate-flood cap — so the match is never recomputed.
+            let match_ctx = TargetMatch::new(&target.value);
+            let row_matches: Vec<bool> = items.iter().map(|i| match_ctx.matches(i)).collect();
+
+            // Parent dossier entity — emitted ONLY when the subject actually
+            // appears in the records. The engine pre-seeds a subject anchor, so a
+            // broad `full_name` search that returns a page of strangers used to
+            // merge a false confidence::HIGH_PLUSPLUS_PLUS `breach` hit — plus an
+            // aggregate dump of 100 strangers' names/countries — straight onto
+            // that anchor. `breach_parent_entity` returns `None` on a zero-match
+            // page and aggregates the subject's attributes over the MATCHING rows.
+            let matching: Vec<Value> = items
+                .iter()
+                .zip(row_matches.iter().copied())
+                .filter(|(_, keep)| *keep)
+                .map(|(i, _)| i.clone())
+                .collect();
+            if let Some(parent) = breach_parent_entity(target, &ctx.scan_id, &matching, items.len())
+            {
+                result.push(parent);
+            }
+
+            // Extract every breach row into entities, applying the
+            // candidate-flood cap (see `extract_breach_page`): target-matching
+            // rows are kept in full while non-matching strangers are only
+            // sampled, so a broad name search can't drown a memory-constrained
+            // device in low-value `candidate` noise. API-key harvesting runs
+            // unconditionally for every row inside the page pass.
+            extract_breach_page(
+                &items,
+                &row_matches,
+                &ctx.scan_id,
+                &key_fp,
+                &mut seen,
+                &mut result,
+            );
+
+            let breach_fetched = items.len();
+            mark_partial_coverage(
+                &mut result.entities[breach_start..],
+                breach_completeness,
+                breach_fetched,
+            );
         }
-
-        // Classify every row against the target identity ONCE. This single pass
-        // drives all three downstream decisions — the honest parent dossier
-        // entity, the per-row `candidate` quarantine, and the candidate-flood
-        // cap — so the match is never recomputed.
-        let match_ctx = TargetMatch::new(&target.value);
-        let row_matches: Vec<bool> = items.iter().map(|i| match_ctx.matches(i)).collect();
-
-        // Parent dossier entity — emitted ONLY when the subject actually appears
-        // in the records. The engine pre-seeds a subject anchor, so a broad
-        // `full_name` search that returns a page of strangers used to merge a
-        // false 0.85 `breach` hit — plus an aggregate dump of 100 strangers'
-        // names/countries — straight onto that anchor. `breach_parent_entity`
-        // returns `None` on a zero-match page and aggregates the subject's
-        // attributes over the MATCHING rows only.
-        let matching: Vec<Value> = items
-            .iter()
-            .zip(row_matches.iter().copied())
-            .filter(|(_, keep)| *keep)
-            .map(|(i, _)| i.clone())
-            .collect();
-        if let Some(parent) = breach_parent_entity(target, &ctx.scan_id, &matching, items.len()) {
-            result.push(parent);
-        }
-
-        // Extract every breach row into entities, applying the candidate-flood
-        // cap (see `extract_breach_page`): target-matching rows are kept in full
-        // while non-matching strangers are only sampled, so a broad name search
-        // can't drown a memory-constrained device in low-value `candidate`
-        // noise. API-key harvesting runs unconditionally for every row inside
-        // the page pass.
-        extract_breach_page(
-            &items,
-            &row_matches,
-            &ctx.scan_id,
-            &key_fp,
-            &mut seen,
-            &mut result,
-        );
 
         // ── Query 2: Stealer search (Email/Username only) ───────────────
         // Stealer logs are indexed by login credentials (username/email +
@@ -250,7 +290,7 @@ impl Module for OathnetPro {
         // more results than one page holds.
         if oathnet::stealer_indexable(field)
             && !ctx.cancel.is_cancelled()
-            && let Ok(stealer_items) = oathnet::search(
+            && let Ok(stealer_found) = oathnet::search(
                 key,
                 paths::STEALER,
                 field,
@@ -260,12 +300,20 @@ impl Module for OathnetPro {
             )
             .await
         {
+            let stealer_completeness = stealer_found.completeness;
+            let stealer_items = stealer_found.items;
+            let stealer_start = result.entities.len();
             result.entities.reserve(stealer_items.len());
             for item in &stealer_items {
                 extract_stealer_entities(item, &ctx.scan_id, &key_fp, &mut seen, &mut result);
-                store_api_credential(item, SRC);
+                store_api_credential(item, SRC, &ctx.scan_id, &mut seen, &mut result);
                 extract_api_keys_from_item(item, &ctx.scan_id, SRC, &mut seen, &mut result);
             }
+            mark_partial_coverage(
+                &mut result.entities[stealer_start..],
+                stealer_completeness,
+                stealer_items.len(),
+            );
         }
 
         // Holehe, Discord, GHunt, IP info, Steam, Xbox, Roblox, and
@@ -289,6 +337,33 @@ use crate::util::preflight::{is_local_domain, is_placeholder_username, is_privat
 // slugged (see `breach.rs`'s Person-creation guard) — both oathnet_pro and
 // see_know extract from the same breach-schema fields, so they share this too.
 use crate::core::validation::is_username_derived_name;
+
+/// Stamp entities produced by an INCOMPLETE enumeration so the coverage limit
+/// travels with the data.
+///
+/// The truncation was previously disclosed only by a `tracing::debug!` inside
+/// `util::oathnet::search`. That line is visible at the default log level, but a
+/// dossier or JSON export read on its own carried nothing — it reported N
+/// findings with no indication more existed. For a tool whose deliverable is an
+/// exported artifact, a disclosure that lives only in an ephemeral log is not
+/// carried with the data.
+///
+/// Applied per sweep, over that sweep's own slice of the result, because the
+/// breach and stealer enumerations can stop for different reasons.
+fn mark_partial_coverage(entities: &mut [Entity], completeness: Completeness, fetched: usize) {
+    let Some(reason) = completeness.reason() else {
+        return;
+    };
+    for e in entities {
+        e.tag("coverage:partial");
+        e.add_evidence(
+            Evidence::new(SRC, format!("enumeration incomplete: {reason}"))
+                .with_attr("coverage", "partial")
+                .with_attr("reason", reason)
+                .with_attr("fetched", fetched.to_string()),
+        );
+    }
+}
 
 /// True for inputs that empirically waste an OathNet lookup for `kind` — junk
 /// the breach/stealer corpora never match: test/example-TLD emails, placeholder

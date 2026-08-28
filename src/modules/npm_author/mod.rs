@@ -24,6 +24,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -93,7 +94,7 @@ impl Module for NpmAuthor {
     }
 
     fn description(&self) -> &'static str {
-        "npm registry author lookup (packages + maintainer email) via the official API"
+        "npm registry author recon — harvests an author's packages and maintainer email via the official API"
     }
 
     fn priority(&self) -> u8 {
@@ -170,6 +171,7 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
     let mut seen_emails: HashSet<String> = HashSet::new();
     let mut seen_urls: HashSet<String> = HashSet::new();
     let mut seen_domains: HashSet<String> = HashSet::new();
+    let mut seen_usernames: HashSet<String> = HashSet::new();
     let mut package_names: Vec<String> = Vec::new();
 
     let push_email =
@@ -231,6 +233,29 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
                 url_e.add_evidence(ev);
                 result.push(url_e);
             }
+
+            // Co-maintainer/co-author handles: every OTHER npm username on the
+            // record (the subject's own is already emitted below), so a
+            // co-maintainer isn't silently dropped the way their email would be.
+            if let Some(u) = person.username.as_deref()
+                && !is_subject
+                && seen_usernames.insert(u.to_lowercase())
+            {
+                let uname = u.to_lowercase();
+                let mut uname_e = Entity::new(
+                    EntityKind::Username,
+                    &uname,
+                    confidence::MEDIUM_HIGH,
+                    scan_id,
+                );
+                uname_e.tag("npm");
+                uname_e.tag("co-maintainer");
+                uname_e.add_evidence(
+                    Evidence::new(SRC, format!("npm co-maintainer of {pkg_name}"))
+                        .with_attr("package", pkg_name),
+                );
+                result.push(uname_e);
+            }
         }
 
         // The package homepage/repository — a personal-site / code link.
@@ -242,7 +267,8 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
                 if (link.starts_with("http://") || link.starts_with("https://"))
                     && seen_urls.insert(link.to_string())
                 {
-                    let mut url_e = Entity::new(EntityKind::Url, link, 0.60, scan_id);
+                    let mut url_e =
+                        Entity::new(EntityKind::Url, link, confidence::MEDIUM_PLUS, scan_id);
                     url_e.tag("npm");
                     url_e.tag("code");
                     let mut ev = Evidence::new(SRC, format!("npm package link ({pkg_name})"));
@@ -264,7 +290,12 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
                                 | "npmjs.org"
                         );
                         if !skip && seen_domains.insert(host.clone()) {
-                            let mut de = Entity::new(EntityKind::Domain, &host, 0.58, scan_id);
+                            let mut de = Entity::new(
+                                EntityKind::Domain,
+                                &host,
+                                confidence::MEDIUM_SOLID,
+                                scan_id,
+                            );
                             de.tag("npm");
                             de.tag("derived");
                             de.add_evidence(
@@ -280,7 +311,7 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
     }
 
     // The confirmed-on-npm username, carrying package coverage as evidence.
-    let mut u = Entity::new(EntityKind::Username, handle, 0.88, scan_id);
+    let mut u = Entity::new(EntityKind::Username, handle, confidence::EXPERT, scan_id);
     u.tag("npm");
     u.tag("code");
     let sample: Vec<&str> = package_names.iter().take(8).map(String::as_str).collect();

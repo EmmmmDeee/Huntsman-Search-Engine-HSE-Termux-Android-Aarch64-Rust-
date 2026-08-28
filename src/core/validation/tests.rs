@@ -492,7 +492,8 @@ fn domain_shape_rejects_invalid() {
 
 mod confusable_tests {
     use super::super::{
-        is_confusable_mixed_script, looks_like_gibberish_name, skeleton, strip_invisible,
+        is_confusable_mixed_script, is_whois_privacy_placeholder, looks_like_gibberish_name,
+        skeleton, strip_invisible,
     };
     use std::borrow::Cow;
 
@@ -550,5 +551,41 @@ mod confusable_tests {
         assert!(!looks_like_gibberish_name("Strzelecki"));
         // A real surname next to a short particle stays safe.
         assert!(!looks_like_gibberish_name("Le Guin"));
+    }
+
+    #[test]
+    fn whois_privacy_placeholder_catches_brands_but_spares_real_registrants() {
+        // The recurring privacy-proxy brand strings that used to slip through the
+        // incomplete "privacy"/"redacted" substring lists and get emitted as real
+        // Person/Organisation identity — the cross-domain false-merge hazard.
+        for p in [
+            "Registration Private",
+            "Domains By Proxy, LLC",
+            "WhoisGuard, Inc.",
+            "Contact Privacy Inc. Customer 0123",
+            "Perfect Privacy, LLC",
+            "Withheld for Privacy ehf",
+            "REDACTED FOR PRIVACY",
+            "Data Protected",
+            "Statutory Masking Enabled",
+            "Name Unavailable",
+        ] {
+            assert!(is_whois_privacy_placeholder(p), "{p} must be a placeholder");
+        }
+        // Real registrants — including the legitimate "Private Limited" company
+        // suffix (India/Singapore) that a bare `private` token match would wrongly
+        // drop — must survive.
+        for r in [
+            "Jordan Avery",
+            "Acme Networks Pty Ltd",
+            "Infosys Private Limited",
+            "Tata Consultancy Services",
+            "Privette Holdings", // contains "priv" but not a placeholder marker
+        ] {
+            assert!(
+                !is_whois_privacy_placeholder(r),
+                "{r} is a real registrant, must not be flagged"
+            );
+        }
     }
 }

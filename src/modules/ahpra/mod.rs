@@ -10,6 +10,7 @@ mod tests;
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -25,43 +26,17 @@ pub struct Ahpra;
 /// `(name, profession, registration_number)` rows.
 ///
 /// A dependency-free `<tr>`/`<td>` walk (no scraper crate, in keeping with the
-/// lean Termux build): each cell's text is taken via [`strip_tags`] and rows
+/// lean Termux build): each cell's text is taken via
+/// [`strip_tags_plain`](crate::util::html::strip_tags_plain) and rows
 /// with at least three cells are kept. The header row (`Name`/`Practitioner`)
 /// and nameless rows are dropped, so the result is data-only. Pure given
 /// `html` — unit-testable against a captured response.
 pub(super) fn parse_ahpra_html(html: &str) -> Vec<(String, String, String)> {
-    // Returns Vec<(name, profession, registration_number)>
-    // Parse simple table rows from AHPRA search results HTML.
+    // Returns Vec<(name, profession, registration_number)>. The `<tr>`/`<td>`
+    // table walk is shared via `util::html::table_rows`; this keeps only the
+    // AHPRA-specific column mapping and header/nameless-row drop.
     let mut results = Vec::new();
-    let mut remaining = html;
-    while let Some(row_start) = remaining.find("<tr") {
-        remaining = &remaining[row_start + 3..];
-        let Some(row_end) = remaining.find("</tr>") else {
-            break;
-        };
-        let row = &remaining[..row_end];
-        remaining = &remaining[row_end + 5..];
-
-        // Extract text from td cells.
-        let cells: Vec<String> = {
-            let mut cells = Vec::new();
-            let mut r = row;
-            while let Some(td_start) = r.find("<td") {
-                r = &r[td_start..];
-                let Some(td_content_start) = r.find('>') else {
-                    break;
-                };
-                r = &r[td_content_start + 1..];
-                let Some(td_end) = r.find("</td>") else { break };
-                let cell = &r[..td_end];
-                // Strip remaining HTML tags.
-                let text = strip_tags(cell);
-                cells.push(text.trim().to_string());
-                r = &r[td_end + 5..];
-            }
-            cells
-        };
-
+    for cells in crate::util::html::table_rows(html) {
         if cells.len() >= 3 {
             let name = cells[0].clone();
             let profession = cells[1].clone();
@@ -77,25 +52,6 @@ pub(super) fn parse_ahpra_html(html: &str) -> Vec<(String, String, String)> {
 /// Remove HTML tags from a table cell, returning its visible text — a
 /// single-pass character filter that drops everything between `<` and `>`.
 /// Sufficient for the flat, well-formed AHPRA cells; the caller trims.
-fn strip_tags(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for c in html.chars() {
-        match c {
-            '<' => {
-                in_tag = true;
-            }
-            '>' => {
-                in_tag = false;
-            }
-            _ if !in_tag => {
-                out.push(c);
-            }
-            _ => {}
-        }
-    }
-    out
-}
 
 #[async_trait]
 impl Module for Ahpra {
@@ -104,7 +60,7 @@ impl Module for Ahpra {
     }
 
     fn description(&self) -> &'static str {
-        "AHPRA practitioner register: registered health practitioners by name or organisation"
+        "AHPRA practitioner-register recon — enumerates registered health practitioners by name or organisation"
     }
 
     fn priority(&self) -> u8 {
@@ -145,9 +101,9 @@ impl Module for Ahpra {
         );
 
         let resp = ctx.http.get(&url).send_tagged(SRC).await?;
-        if !resp.status().is_success() {
+        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
             return Ok(ModuleResult::new());
-        }
+        };
         let html = match crate::util::http::read_body_capped(resp, 512 * 1024).await {
             Some(s) => s,
             None => return Ok(ModuleResult::new()),
@@ -171,7 +127,7 @@ pub(super) fn build_practitioner_entities(
 ) -> Vec<Entity> {
     let mut out = Vec::with_capacity(practitioners.len());
     for (name, profession, reg_no) in practitioners {
-        let mut person = Entity::new(EntityKind::Person, name, 0.70, scan_id);
+        let mut person = Entity::new(EntityKind::Person, name, confidence::HIGH_PLUS, scan_id);
         person.tag("ahpra");
         person.tag("health-practitioner");
         if !profession.is_empty() {

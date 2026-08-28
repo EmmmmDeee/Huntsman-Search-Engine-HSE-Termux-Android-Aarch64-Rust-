@@ -31,8 +31,9 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -71,7 +72,7 @@ const LAYERS: &[LayerSpec] = &[
         kind: "au-postcode",
         attr_key: "au_postcode",
         label: "postcode",
-        conf: 0.90,
+        conf: confidence::VERY_HIGH_PLUS,
     },
     LayerSpec {
         path: "SAL",
@@ -80,7 +81,7 @@ const LAYERS: &[LayerSpec] = &[
         kind: "au-suburb",
         attr_key: "au_suburb",
         label: "suburb/locality",
-        conf: 0.88,
+        conf: confidence::EXPERT,
     },
     LayerSpec {
         path: "LGA",
@@ -89,7 +90,7 @@ const LAYERS: &[LayerSpec] = &[
         kind: "au-lga",
         attr_key: "au_lga",
         label: "local government area",
-        conf: 0.90,
+        conf: confidence::VERY_HIGH_PLUS,
     },
     LayerSpec {
         path: "CED",
@@ -98,7 +99,7 @@ const LAYERS: &[LayerSpec] = &[
         kind: "au-federal-electorate",
         attr_key: "au_federal_electorate",
         label: "federal electoral division",
-        conf: 0.90,
+        conf: confidence::VERY_HIGH_PLUS,
     },
     LayerSpec {
         path: "SED",
@@ -107,7 +108,7 @@ const LAYERS: &[LayerSpec] = &[
         kind: "au-state-electorate",
         attr_key: "au_state_electorate",
         label: "state electoral division",
-        conf: 0.88,
+        conf: confidence::EXPERT,
     },
     LayerSpec {
         path: "RA",
@@ -116,7 +117,7 @@ const LAYERS: &[LayerSpec] = &[
         kind: "au-remoteness",
         attr_key: "au_remoteness",
         label: "remoteness area",
-        conf: 0.88,
+        conf: confidence::EXPERT,
     },
     LayerSpec {
         path: "SA2",
@@ -125,7 +126,7 @@ const LAYERS: &[LayerSpec] = &[
         kind: "au-sa2",
         attr_key: "au_sa2",
         label: "statistical area level 2",
-        conf: 0.85,
+        conf: confidence::HIGH_PLUSPLUS_PLUS,
     },
     LayerSpec {
         path: "SA4",
@@ -134,7 +135,7 @@ const LAYERS: &[LayerSpec] = &[
         kind: "au-sa4",
         attr_key: "au_sa4",
         label: "statistical area level 4",
-        conf: 0.85,
+        conf: confidence::HIGH_PLUSPLUS_PLUS,
     },
     LayerSpec {
         // The finest ASGS unit carries a land-use category (Residential /
@@ -146,7 +147,7 @@ const LAYERS: &[LayerSpec] = &[
         kind: "au-land-use",
         attr_key: "au_land_use",
         label: "mesh-block land use",
-        conf: 0.85,
+        conf: confidence::HIGH_PLUSPLUS_PLUS,
     },
 ];
 
@@ -171,7 +172,7 @@ impl Module for AuGeo {
     }
 
     fn description(&self) -> &'static str {
-        "Australian geography from a coordinate (postcode, suburb, LGA, federal & state electorate) via ABS ASGS"
+        "Australian geolocation recon — resolves a coordinate to postcode, suburb, LGA, and federal & state electorate via ABS ASGS"
     }
 
     fn priority(&self) -> u8 {
@@ -214,50 +215,37 @@ impl Module for AuGeo {
         // ArcGIS points are x,y = lon,lat.
         let geom = urlencode(&format!("{lon},{lat}"));
         // Resolve every layer concurrently (join_all preserves LAYERS order).
-        let outcomes = join_all(LAYERS.iter().map(|spec| query_layer(ctx, &geom, spec))).await;
+        let resolved = join_all(LAYERS.iter().map(|spec| query_layer(ctx, &geom, spec))).await;
 
-        // Transport-level failures (network error, non-2xx, unreadable body) are
-        // tracked separately from a genuine "no covering feature" miss, so an ABS
-        // host outage across every layer can be told apart from legitimate ASGS
-        // non-coverage (mirrors domainsdb::all_zones_failed_transport, T2.134).
-        let transport_failures = outcomes
-            .iter()
-            .filter(|o| matches!(o, LayerOutcome::TransportFailed))
-            .count();
-        let resolved: Vec<Option<(String, String, Option<String>)>> = outcomes
-            .into_iter()
-            .map(|o| match o {
-                LayerOutcome::Found(name, code, state) => Some((name, code, state)),
-                LayerOutcome::Miss | LayerOutcome::TransportFailed => None,
-            })
-            .collect();
+        // A point outside a given layer's coverage is `Ok(None)`; a real ABS
+        // outage (host down, WAF 403, non-2xx) is `Err`. Tolerate partial
+        // failures and genuine misses — but if EVERY layer hard-failed, the ABS
+        // service is down, so surface that instead of silently reporting the
+        // point as having no Australian geography (cf. the total-failure
+        // surfacing in au_unclaimed / api_key_probe).
+        if !resolved.is_empty() && resolved.iter().all(Result::is_err) {
+            return Err(resolved
+                .into_iter()
+                .find_map(Result::err)
+                .expect("all-Err implies at least one Err"));
+        }
+        let resolved: Vec<Option<(String, String, Option<String>)>> =
+            resolved.into_iter().map(|r| r.ok().flatten()).collect();
 
         assemble(&target.value, &resolved, &ctx.scan_id, &mut result);
-
-        if all_layers_failed_transport(transport_failures, LAYERS.len(), result.entities.len()) {
-            return Err(Error::module(
-                SRC,
-                "every ASGS layer query failed at the transport level — cannot determine \
-                 this coordinate's AU administrative geography",
-            ));
-        }
         Ok(result)
     }
 }
 
-/// Outcome of resolving one ASGS layer for a point: a covering feature was
-/// found, the query answered with no covering feature (a genuine clean miss),
-/// or the query never got a real answer at all (transport error, non-2xx,
-/// unreadable body) — kept distinct from a miss so [`all_layers_failed_transport`]
-/// can tell an ABS host outage apart from legitimate ASGS non-coverage.
-enum LayerOutcome {
-    Found(String, String, Option<String>),
-    Miss,
-    TransportFailed,
-}
-
-/// Query one ASGS layer for the polygon containing the point.
-async fn query_layer(ctx: &ModuleContext, geom: &str, spec: &LayerSpec) -> LayerOutcome {
+/// Query one ASGS layer for the polygon containing the point. `Ok(None)` is a
+/// genuine miss (a 200 with no feature covering the point); `Err` is a real ABS
+/// outage (transport failure or non-2xx, incl. the WAF's 403). The caller
+/// tolerates a partial failure but surfaces a total one.
+async fn query_layer(
+    ctx: &ModuleContext,
+    geom: &str,
+    spec: &LayerSpec,
+) -> Result<Option<(String, String, Option<String>)>> {
     let url = format!(
         "{BASE}/{}/MapServer/0/query?geometry={geom}&geometryType=esriGeometryPoint\
          &inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=*&returnGeometry=false&f=json",
@@ -265,41 +253,35 @@ async fn query_layer(ctx: &ModuleContext, geom: &str, spec: &LayerSpec) -> Layer
     );
     // The ABS WAF 403s a request with no User-Agent — present the browser UA the
     // sibling AU registry scrapers use.
-    let resp = match ctx
+    let resp = ctx
         .http
         .get(&url)
         .header("User-Agent", UA_BROWSER)
         .send_tagged(SRC)
-        .await
-    {
-        Ok(r) => r,
-        Err(_) => return LayerOutcome::TransportFailed,
-    };
+        .await?;
     if !resp.status().is_success() {
-        return LayerOutcome::TransportFailed;
+        return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
-    let body = match read_text(SRC, resp).await {
-        Ok(b) => b,
-        Err(_) => return LayerOutcome::TransportFailed,
-    };
-    match parse_feature(&body, spec.name_field, spec.code_field) {
-        Some((name, code, state)) => LayerOutcome::Found(name, code, state),
-        None => LayerOutcome::Miss,
+    let body = read_text(SRC, resp).await?;
+    // ArcGIS/Esri REST characteristically returns errors as HTTP 200 with a
+    // `{"error":{…}}` envelope (a WAF interstitial can too), so a 200 whose body
+    // is not a decodable `QueryResp` is NOT "point not in this layer": collapsing
+    // it to `Ok(None)` fails OPEN — the point reports as having no Australian
+    // geography AND records a circuit-breaker success, so a systematic upstream
+    // 200-error becomes indistinguishable from a genuine miss and never trips
+    // outage detection. Decode FAILURE ⇒ `Err` (fail closed, mirroring `geocode`);
+    // decode-success-but-no-feature stays a real miss (`parse_feature`'s `Ok(None)`).
+    // The serde error is deliberately NOT interpolated: a column number could trip
+    // the engine's `429`/`402` rate-limit text match, and serde quotes offending
+    // values into the unredacted `ModuleError` event.
+    if serde_json::from_str::<QueryResp>(&body).is_err() {
+        return Err(crate::core::error::Error::module(
+            SRC,
+            "ArcGIS layer query returned a success status whose body did not decode \
+             as a feature response (error envelope or WAF page)",
+        ));
     }
-}
-
-/// True when every ASGS layer query failed at the transport level and nothing
-/// was found — the "ABS host unreachable" state that must surface as an `Err`
-/// rather than masquerade as "no AU administrative geography here". A layer
-/// that answered at all (even a genuine miss) reached the server, so any
-/// answer keeps this `false`. Pure — unit-tested off the counters. Mirrors
-/// `domainsdb::all_zones_failed_transport` (T2.134).
-fn all_layers_failed_transport(
-    transport_failures: usize,
-    total_layers: usize,
-    found: usize,
-) -> bool {
-    found == 0 && total_layers > 0 && transport_failures == total_layers
+    Ok(parse_feature(&body, spec.name_field, spec.code_field))
 }
 
 /// Extract `(name, code, state)` from a layer-query response's first feature.
@@ -377,7 +359,12 @@ fn assemble(
     }
     // Enrich the seed coordinate (GREATEST-merge folds this onto the existing
     // Coordinates entity, only ever adding tags/evidence).
-    let mut coord_e = Entity::new(EntityKind::Coordinates, coord, 0.85, scan_id);
+    let mut coord_e = Entity::new(
+        EntityKind::Coordinates,
+        coord,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     coord_e.tag("au");
     coord_e.tag("geoint");
     coord_e.tag("asgs");

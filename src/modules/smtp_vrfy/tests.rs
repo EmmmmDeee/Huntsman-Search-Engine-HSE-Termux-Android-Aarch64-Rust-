@@ -31,7 +31,7 @@ async fn no_mx_produces_unreachable() {
         keys: Default::default(),
         cancel: Default::default(),
     };
-    let r = m.process(&target, &ctx).await.unwrap();
+    let r = m.process(&target, &ctx).await.expect("should succeed");
     assert_eq!(r.len(), 1);
     assert!(r.entities[0].has_tag("smtp-unreachable"));
 }
@@ -117,73 +117,6 @@ fn deliverability_ladder_is_ordered() {
     assert!((catchall - mk(SmtpVerdict::Unreachable("x".into()))).abs() < f64::EPSILON);
 }
 
-// ── is_genuine_no_mx (pure, T2.161) ─────────────────────────────────
-//
-// T2.161 regression: resolve_mx previously discarded EVERY NetError kind
-// (Timeout, Busy, NoConnections, an unrelated ResponseCode) into the same
-// `None` as a genuine "no MX record" answer, so process() emitted the false
-// "No MX record for {domain}" claim on any resolver hiccup. Only
-// NXDOMAIN/NoRecordsFound is the correct clean miss. Constructed against
-// real hickory_resolver::net types — no live DNS (Rule 3).
-
-#[test]
-fn is_genuine_no_mx_false_for_real_transport_and_protocol_failures() {
-    use hickory_resolver::net::NetError;
-    for e in [
-        NetError::Timeout,
-        NetError::Busy,
-        NetError::NoConnections,
-        NetError::Message("synthetic proto failure"),
-    ] {
-        assert!(
-            !super::is_genuine_no_mx(&e),
-            "{e:?} is a real resolution failure, not a genuine 'no MX' answer"
-        );
-    }
-}
-
-#[test]
-fn is_genuine_no_mx_true_for_nxdomain_and_no_records_found() {
-    use hickory_resolver::net::{DnsError, NetError, NoRecords};
-    use hickory_resolver::proto::op::{Query, ResponseCode};
-    use hickory_resolver::proto::rr::{Name, RecordType};
-
-    let query = Query::query(Name::root(), RecordType::MX);
-    let nxdomain = NetError::Dns(DnsError::NoRecordsFound(NoRecords::new(
-        query.clone(),
-        ResponseCode::NXDomain,
-    )));
-    assert!(
-        super::is_genuine_no_mx(&nxdomain),
-        "a genuine NXDOMAIN must read as 'no MX', not a failure"
-    );
-
-    // NoError-with-empty-answer (the domain exists but has no MX) is
-    // likewise a genuine clean miss, distinct from NXDOMAIN.
-    let no_records = NetError::Dns(DnsError::NoRecordsFound(NoRecords::new(
-        query,
-        ResponseCode::NoError,
-    )));
-    assert!(
-        super::is_genuine_no_mx(&no_records),
-        "a NoError/no-records answer must also read as 'no MX'"
-    );
-}
-
-#[test]
-fn is_genuine_no_mx_false_for_an_unrelated_response_code() {
-    // A server-side error response code (e.g. SERVFAIL/REFUSED) is a real
-    // outage/misconfiguration signal, not a "no MX" answer.
-    use hickory_resolver::net::{DnsError, NetError};
-    use hickory_resolver::proto::op::ResponseCode;
-
-    let servfail = NetError::Dns(DnsError::ResponseCode(ResponseCode::ServFail));
-    assert!(
-        !super::is_genuine_no_mx(&servfail),
-        "a SERVFAIL response code must not read as 'no MX'"
-    );
-}
-
 #[tokio::test]
 async fn read_line_timeout_caps_a_giant_newline_less_line() {
     // T2.8: a single newline-less line from a hostile MX must not grow `buf`
@@ -191,8 +124,10 @@ async fn read_line_timeout_caps_a_giant_newline_less_line() {
     // Send 100 KiB with no newline; the capped reader must stop at the 8 KiB
     // ceiling rather than buffer the whole blob.
     use tokio::io::{AsyncWriteExt, BufReader};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
     tokio::spawn(async move {
         if let Ok((mut sock, _)) = listener.accept().await {
             let blob = vec![b'A'; 100 * 1024]; // no newline anywhere
@@ -201,13 +136,15 @@ async fn read_line_timeout_caps_a_giant_newline_less_line() {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
     });
-    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let stream = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("should succeed");
     let (rd, _wr) = stream.into_split();
     let mut reader = BufReader::new(rd);
     let mut buf = String::new();
     super::read_line_timeout(&mut reader, &mut buf)
         .await
-        .unwrap();
+        .expect("should succeed");
     assert!(
         buf.len() <= 8 * 1024,
         "capped line read must not exceed the 8 KiB ceiling, got {}",

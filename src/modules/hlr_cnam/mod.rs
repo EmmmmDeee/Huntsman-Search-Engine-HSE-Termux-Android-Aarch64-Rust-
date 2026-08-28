@@ -3,7 +3,7 @@
 //!
 //! Stage 1: hlrlookup.com — live HLR status, MCC/MNC, ported/roaming flags.
 //! Stage 2: OpenCNAM — CNAM subscriber name registered on the PSTN.
-//! Pivot: CNAM name → Person entity (confidence 0.55).
+//! Pivot: CNAM name → Person entity (confidence confidence::MEDIUM_HIGH).
 
 #[cfg(test)]
 mod tests;
@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -22,6 +23,22 @@ use crate::util::http::RequestBuilderExt;
 const SRC: &str = "hlr_cnam";
 const HLR_KEY_ENV: &str = "HUNTSMAN_HLR_KEY";
 const CNAM_KEY_ENV: &str = "HUNTSMAN_OPENCNAM_KEY";
+
+/// The key pool addresses the HLR provider as `hlrlookups` (its
+/// `ServiceDef.name`), not as the module name — resolved from `HLR_KEY_ENV` so
+/// the two can never drift. Burning the key under the module name `hlr_cnam` was
+/// a silent no-op. See [`crate::util::service_defs::service_for_env`].
+fn hlr_pool_service() -> &'static str {
+    crate::util::service_defs::service_for_env(HLR_KEY_ENV).map_or(SRC, |d| d.name)
+}
+
+/// The key-pool service name for the OpenCNAM key, resolved the same way
+/// [`hlr_pool_service`] resolves the HLR one. Stage 2 needs it so a dead or
+/// throttled OpenCNAM key is reported to the pool and rotated, exactly as
+/// Stage 1 already does for `hlrlookups`.
+fn cnam_pool_service() -> &'static str {
+    crate::util::service_defs::service_for_env(CNAM_KEY_ENV).map_or(SRC, |d| d.name)
+}
 
 pub struct HlrCnam;
 
@@ -53,7 +70,7 @@ impl Module for HlrCnam {
     }
 
     fn description(&self) -> &'static str {
-        "HLR live phone status (ported/roaming/MCC-MNC) + CNAM subscriber name lookup"
+        "HLR live-status probe — resolves a phone's ported/roaming/MCC-MNC state and cross-links CNAM subscriber name"
     }
 
     fn priority(&self) -> u8 {
@@ -108,7 +125,10 @@ impl Module for HlrCnam {
 
         let resp = ctx.http.get(&url).send_tagged(SRC).await?;
         // 401/403/429 → note_keyed_error + Err; 404 → clean miss; other non-2xx → Err.
-        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, hlr_key, ctx, resp).await? else {
+        // Pool is keyed by the canonical service name `hlrlookups`, not the module.
+        let Some(resp) =
+            crate::util::http::keyed_ok_or_404(hlr_pool_service(), hlr_key, ctx, resp).await?
+        else {
             return Ok(ModuleResult::new());
         };
 
@@ -126,12 +146,54 @@ impl Module for HlrCnam {
                 crate::util::http::urlencode(number),
                 crate::util::http::urlencode(cnam_key),
             );
-            if let Ok(cr) = ctx.http.get(&cnam_url).send_tagged(SRC).await
-                && cr.status().is_success()
-                && let Ok(cnam) = crate::util::http::json_decode::<CnamResp>(SRC, cr).await
-                && let Some(person) = build_cnam_person(&cnam, number, &ctx.scan_id)
-            {
-                result.push(person);
+            // Same key policy Stage 1 applies eleven lines above: 401/403/429
+            // (and an auth-shaped 400) burn the key through the pool so it
+            // rotates, and 404 is a clean miss. This stage used to absorb ALL of
+            // those behind `if let Ok(cr) = ... && cr.status().is_success()`, so
+            // a dead OpenCNAM key was never reported to the pool, never rotated,
+            // and the scan recorded "this number has no CNAM subscriber name" —
+            // a substantive intelligence negative — when the truth was that the
+            // key was dead. Two stages of one function applied opposite policies
+            // to the same class of failure.
+            //
+            // The error is LOGGED rather than propagated: Stage 1 already
+            // produced verified HLR entities, and failing the module here to
+            // report an enrichment miss would discard real findings. The key
+            // still gets burned, which is the part that was actually missing.
+            match ctx.http.get(&cnam_url).send_tagged(SRC).await {
+                Ok(cr) => {
+                    match crate::util::http::keyed_ok_or_404(cnam_pool_service(), cnam_key, ctx, cr)
+                        .await
+                    {
+                        Ok(Some(cr)) => {
+                            match crate::util::http::json_decode::<CnamResp>(SRC, cr).await {
+                                Ok(cnam) => {
+                                    if let Some(person) =
+                                        build_cnam_person(&cnam, number, &ctx.scan_id)
+                                    {
+                                        result.push(person);
+                                    }
+                                }
+                                Err(e) => tracing::warn!(
+                                    error = %e,
+                                    "OpenCNAM response did not decode; not \"no subscriber name\""
+                                ),
+                            }
+                        }
+                        // 404: OpenCNAM genuinely holds no record for this
+                        // number. That IS the honest negative.
+                        Ok(None) => {}
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            "OpenCNAM lookup failed (key reported to the pool); \
+                             not \"no subscriber name\""
+                        ),
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "OpenCNAM request failed at the transport level; not \"no subscriber name\""
+                ),
             }
         }
 
@@ -147,7 +209,12 @@ impl Module for HlrCnam {
 fn build_hlr_entities(hlr: &HlrResp, number: &str, scan_id: &str) -> Vec<Entity> {
     let mut out = Vec::new();
 
-    let mut phone = Entity::new(EntityKind::Phone, number, 0.85, scan_id);
+    let mut phone = Entity::new(
+        EntityKind::Phone,
+        number,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     phone.tag("hlr-verified");
     if hlr.ported == Some(true) {
         phone.tag("ported");
@@ -201,7 +268,7 @@ fn build_hlr_entities(hlr: &HlrResp, number: &str, scan_id: &str) -> Vec<Entity>
         .map(str::trim)
         .filter(|n| n.len() >= 2)
     {
-        let mut oe = Entity::new(EntityKind::Organisation, net, 0.62, scan_id);
+        let mut oe = Entity::new(EntityKind::Organisation, net, confidence::NOTABLE, scan_id);
         oe.tag("hlr-cnam");
         oe.tag("carrier");
         oe.add_evidence(
@@ -214,13 +281,60 @@ fn build_hlr_entities(hlr: &HlrResp, number: &str, scan_id: &str) -> Vec<Entity>
     out
 }
 
+/// True if a CNAM "subscriber name" is an OpenCNAM carrier/placeholder value
+/// rather than a real identity — the strings returned for unmatched, prepaid,
+/// VoIP, or toll-free numbers (`WIRELESS CALLER`, `UNAVAILABLE`, `TOLL FREE`,
+/// `PRIVATE`, a `V#######` carrier code) or the queried number echoed back as
+/// the name. Emitting one as a `Person` both fabricates an identity and — since
+/// these strings recur verbatim across every unmatched number — risks
+/// false-merging unrelated phone numbers onto a single bogus person node.
+fn is_cnam_placeholder(name: &str, number: &str) -> bool {
+    let n = name.trim();
+    // The queried number echoed back as the "name" is not an identity: a value
+    // with no alphabetic character (all digits / punctuation), or one whose
+    // digits equal the looked-up number's digits.
+    let name_digits: String = n.chars().filter(char::is_ascii_digit).collect();
+    if !n.chars().any(char::is_alphabetic) && !name_digits.is_empty() {
+        return true;
+    }
+    let num_digits: String = number.chars().filter(char::is_ascii_digit).collect();
+    if name_digits.len() >= 7 && name_digits == num_digits {
+        return true;
+    }
+    let l = n.to_ascii_lowercase();
+    const MARKERS: &[&str] = &[
+        "wireless caller",
+        "unavailable",
+        "toll free",
+        "toll-free",
+        "unknown",
+        "cell phone",
+        "cellular",
+        "no name",
+        "not available",
+        "restricted",
+        "anonymous",
+        "private",
+    ];
+    if MARKERS.iter().any(|m| l.contains(m)) {
+        return true;
+    }
+    // A `V` + all-digits carrier code (e.g. "V1234567").
+    l.strip_prefix('v')
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Map a CNAM response to a PSTN-subscriber `Person`. **Pure** (no network/IO).
-/// Returns `None` when no usable subscriber name is present. The number CNAM
-/// echoed back (`number`) is preserved as evidence so the subscriber name stays
-/// tied to the exact PSTN number the lookup resolved.
+/// Returns `None` when no usable subscriber name is present, or when the name is
+/// an [`is_cnam_placeholder`] carrier string rather than a real identity.
+/// The number CNAM echoed back (`number`) is preserved as evidence so the
+/// subscriber name stays tied to the exact PSTN number the lookup resolved.
 fn build_cnam_person(cnam: &CnamResp, number: &str, scan_id: &str) -> Option<Entity> {
     let name = cnam.name.as_deref().filter(|n| n.len() >= 2)?;
-    let mut person = Entity::new(EntityKind::Person, name, 0.55, scan_id);
+    if is_cnam_placeholder(name, number) {
+        return None;
+    }
+    let mut person = Entity::new(EntityKind::Person, name, confidence::MEDIUM_HIGH, scan_id);
     person.tag("cnam");
     person.tag("pstn-subscriber");
     let mut ev = Evidence::new(SRC, format!("CNAM subscriber name for {number}"))

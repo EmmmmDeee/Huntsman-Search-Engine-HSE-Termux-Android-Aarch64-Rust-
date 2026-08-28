@@ -28,6 +28,40 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use super::{Relation, RelationKind};
 use crate::core::entity::{Entity, EntityKind};
 
+/// The confidence floor below which a signal is too weak to *bind* two
+/// identities together into one conclusion. Two related uses share it:
+///
+/// - **Edge/path binding** — every graph primitive in this module that fuses
+///   entities on the strength of a path between them
+///   ([`resolve_identity_clusters`], [`connection_brokers`], and, since the
+///   audit that added it, [`disjoint_pathways_in`] and [`connection_templates`])
+///   refuses to bind across a link weaker than this.
+/// - **Entity-confidence gate** — a small number of correlator rules
+///   (`identity::cluster` AU-002, `identity::account` AU-080) apply the same
+///   numeric floor directly to an entity's own confidence before folding it
+///   into an identity conclusion, rather than to a path's weakest edge. Same
+///   bar — "trustworthy enough to build an identity conclusion on" — applied
+///   at a different granularity.
+///
+/// Single-sourced here after **ten** call sites across the correlator rules
+/// (and `cli::scan::dossier::analysis`) each independently declared their own
+/// `const MIN_CONF: f64 = 0.50;` — identical in value and purpose, several
+/// explicitly commented as "mirroring AU-067's `MIN_CONF`", but copy-pasted
+/// rather than shared. A future recalibration had to find and change all ten
+/// (or silently miss one); this makes that one constant, not eleven.
+///
+/// Several of those comments additionally called this "the Probable floor" —
+/// which is imprecise and worth correcting here rather than propagating
+/// further: the crate's actual classification-tier boundary,
+/// [`Classification::PROBABLE_MIN`](crate::core::entity::Classification::PROBABLE_MIN),
+/// is `0.40`, not `0.50`. This constant happens to equal
+/// [`crate::core::confidence::MEDIUM`] numerically, but is declared
+/// independently and on purpose: it answers a different question ("is this
+/// link trustworthy enough to fuse two identities?") from either of those,
+/// and a future change to the generic confidence-tier ladder should not
+/// silently move this floor along with it.
+pub const IDENTITY_LINK_MIN_CONF: f64 = 0.50;
+
 /// The relation graph as an undirected adjacency list: each node UID maps to its
 /// incident `(neighbour UID, edge kind, edge confidence)` edges. Borrows from the
 /// `relations`/`entities` it is built from (see [`undirected_adjacency`]).
@@ -55,6 +89,45 @@ pub struct IdentityPath {
     /// Weakest edge confidence along the path — a chain is only as trustworthy
     /// as its weakest link, so this, not the average, is the headline number.
     pub min_confidence: f64,
+}
+
+/// The **derivation trail** of an entity: the chain of `DerivedFrom` pivots
+/// that led from the seed to it — `[entity, its expansion parent, …, root]`,
+/// each element being the entity whose expansion surfaced the next. Follows the
+/// `DerivedFrom` edge direction (`from_uid` = child → `to_uid` = parent) up
+/// toward the seed, stopping at a root (an entity with no parent edge — the seed
+/// or a seed-round find) or if a cycle is ever detected. Deterministic: the
+/// FIRST `DerivedFrom` parent per child is used (relations are built in a
+/// deterministic order), so an entity carrying several derivation edges still
+/// yields a stable chain. Pure — the returned UIDs borrow from `relations`.
+///
+/// A returned chain of length 1 means the entity is a root (seed-round /
+/// generation 0): nothing derived it. Reverse the result for a seed→entity
+/// reading.
+#[must_use]
+pub fn provenance_chain<'a>(uid: &'a str, relations: &'a [Relation]) -> Vec<&'a str> {
+    // child → parent, keeping the FIRST DerivedFrom edge per child so the walk
+    // is stable when an entity has more than one derivation ancestor.
+    let mut parent: HashMap<&str, &str> = HashMap::new();
+    for r in relations
+        .iter()
+        .filter(|r| r.kind == RelationKind::DerivedFrom)
+    {
+        parent
+            .entry(r.from_uid.as_str())
+            .or_insert(r.to_uid.as_str());
+    }
+    let mut chain = vec![uid];
+    let mut seen: HashSet<&str> = HashSet::from([uid]);
+    let mut cur = uid;
+    while let Some(&p) = parent.get(cur) {
+        if !seen.insert(p) {
+            break; // cycle guard — DerivedFrom is acyclic, but never loop
+        }
+        chain.push(p);
+        cur = p;
+    }
+    chain
 }
 
 /// Identity-bearing entity kinds — the nodes a connection path links end to end.
@@ -188,11 +261,21 @@ pub fn identity_paths(
     // Identity endpoints in sorted UID order — each pair is computed once from
     // the smaller UID, fixing both orientation and shortest-path tie-breaks.
     let identity_uids = identity_uids(entities);
-    let identity_set: HashSet<&str> = identity_uids.iter().copied().collect();
 
     let mut out: Vec<IdentityPath> = Vec::new();
 
-    for &start in &identity_uids {
+    // Bound the O(identities²) sweep to a deterministic pair-count prefix, exactly
+    // as the AU-062/AU-063 sibling sweeps do (see [`IDENTITY_PAIR_PROBE_CAP`]). A
+    // permutation-heavy `full_name` scan derives hundreds of name-permutation
+    // identity entities; uncapped this both burns CPU and — via AU-060 (transitive
+    // correlation, which persists one correlation per emitted path) — floods the
+    // result with links. `identity_uids` is sorted, so stopping at the cap yields
+    // a byte-identical deterministic prefix.
+    let mut probes = 0usize;
+    'outer: for (i, &start) in identity_uids.iter().enumerate() {
+        if probes >= IDENTITY_PAIR_PROBE_CAP {
+            break;
+        }
         // BFS from `start`, recording each node's shortest-path predecessor edge.
         let mut dist: HashMap<&str, usize> = HashMap::new();
         let mut prev: HashMap<&str, (&str, RelationKind, f64)> = HashMap::new();
@@ -215,11 +298,14 @@ pub fn identity_paths(
         }
 
         // Emit a path to every identity destination with a *larger* UID (the
-        // canonical pair direction), reachable within the hop budget.
-        for &dest in &identity_uids {
-            if dest <= start || !identity_set.contains(dest) {
-                continue;
+        // canonical pair direction), reachable within the hop budget. The sorted
+        // suffix `[i + 1..]` is exactly the larger-UID identities; counting each
+        // as one probe bounds the inner sweep to the same deterministic cap.
+        for &dest in &identity_uids[i + 1..] {
+            if probes >= IDENTITY_PAIR_PROBE_CAP {
+                break 'outer;
             }
+            probes += 1;
             let Some(&hops) = dist.get(dest) else {
                 continue;
             };
@@ -296,6 +382,15 @@ pub const IDENTITY_PAIR_PROBE_CAP: usize = 6_000;
 /// Deterministic — the adjacency is sorted (fixing each greedy shortest path) and
 /// edges are removed by value. Each pathway is a `Vec<PathStep>` leaving
 /// `from_uid`; the final step's `to_uid` is `to_uid`.
+///
+/// Only edges with confidence `>= min_confidence` may appear in a returned
+/// pathway — pass `0.0` to search over every edge regardless of confidence.
+/// Added alongside [`IDENTITY_LINK_MIN_CONF`] once an audit found this search
+/// had no floor at all: unlike [`resolve_identity_clusters`] and
+/// [`connection_brokers`] (which have always taken an explicit
+/// `min_confidence`), a caller here had no way to exclude the exact class of
+/// damped, low-confidence edge — e.g. a same-surname kinship guess — that
+/// [`identity_paths`]' own weakest-link floor was added to keep out of AU-060.
 pub fn disjoint_pathways(
     entities: &[Entity],
     relations: &[Relation],
@@ -303,12 +398,13 @@ pub fn disjoint_pathways(
     to_uid: &str,
     max_hops: usize,
     max_paths: usize,
+    min_confidence: f64,
 ) -> Vec<Vec<PathStep>> {
     if from_uid == to_uid || max_hops == 0 || max_paths == 0 {
         return Vec::new();
     }
     let adj = sorted_confined_adjacency(entities, relations);
-    disjoint_pathways_in(&adj, from_uid, to_uid, max_hops, max_paths)
+    disjoint_pathways_in(&adj, from_uid, to_uid, max_hops, max_paths, min_confidence)
 }
 
 /// [`disjoint_pathways`] over a **prebuilt** [`sorted_confined_adjacency`] — for a
@@ -324,6 +420,7 @@ pub fn disjoint_pathways_in(
     to_uid: &str,
     max_hops: usize,
     max_paths: usize,
+    min_confidence: f64,
 ) -> Vec<Vec<PathStep>> {
     if from_uid == to_uid || max_hops == 0 || max_paths == 0 {
         return Vec::new();
@@ -331,6 +428,16 @@ pub fn disjoint_pathways_in(
     // A mutable working copy: the greedy search removes each route's edges so the
     // next route must be edge-disjoint.
     let mut adj = adj.clone();
+    // Drop every edge below the floor ONCE, before any route is searched for —
+    // not after. A route built from a sub-floor edge and filtered out afterward
+    // would still have consumed that edge (removed by `remove_pair_edges` on the
+    // way to being discarded), silently starving a later, more valid route of a
+    // connection it could have used. Filtering the adjacency up front means no
+    // returned pathway can ever contain a link below `min_confidence`, matching
+    // the guarantee `resolve_identity_clusters` already makes the same way.
+    for es in adj.values_mut() {
+        es.retain(|&(_, _, c)| c >= min_confidence);
+    }
 
     let mut pathways: Vec<Vec<PathStep>> = Vec::new();
     for _ in 0..max_paths {
@@ -572,10 +679,19 @@ fn render_template(node_kinds: &[String], rel_strs: &[&str]) -> String {
 /// pathway template, grouped with the identity pairs it linked. Deterministic,
 /// sorted by template. The basis for AU-064 (a template repeated *within* a scan)
 /// and the engine's cross-scan template store (repeated *across* scans).
+///
+/// Only paths with weakest-link confidence `>= min_confidence` may contribute
+/// to a template — pass `0.0` to generalise over every path regardless of
+/// confidence. Added alongside [`IDENTITY_LINK_MIN_CONF`]: `path.min_confidence`
+/// was already computed by [`identity_paths`] but went unchecked here, so a
+/// route built entirely from damped, low-confidence edges could be
+/// "generalised" into a proven attribution pattern on the strength of nothing
+/// but repetition — repeating a weak coincidence does not make it strong.
 pub fn connection_templates(
     entities: &[Entity],
     relations: &[Relation],
     max_hops: usize,
+    min_confidence: f64,
 ) -> Vec<ConnectionTemplate> {
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
     let kind_of = |uid: &str| -> String {
@@ -589,6 +705,9 @@ pub fn connection_templates(
     for path in identity_paths(entities, relations, max_hops) {
         if path.hops < 2 {
             continue; // a direct one-hop link is not a multi-step route to generalise
+        }
+        if path.min_confidence < min_confidence {
+            continue; // a weak path repeated is still weak, not a proven pattern
         }
         let mut node_kinds: Vec<String> = Vec::with_capacity(path.hops + 1);
         node_kinds.push(kind_of(&path.from_uid));
@@ -626,7 +745,7 @@ pub struct IdentityClusterResult {
 
 /// Resolve the **transitive identity equivalence classes** of the relation graph:
 /// group every identity entity reachable from another (within `max_hops`) into a
-/// single cluster, via union-find over the [`identity_paths`] link set. Returns
+/// single cluster, via union-find over a set of *identity-binding* links. Returns
 /// only multi-member clusters (`len() >= 2`), each carrying the weakest-link
 /// confidence of the links that bind it, sorted by first member UID.
 ///
@@ -639,11 +758,36 @@ pub struct IdentityClusterResult {
 /// link. Because the floor gates the binding links, every returned cluster's
 /// `min_confidence` is itself `>= min_confidence`.
 ///
+/// A link binds only when EVERY hop's [`RelationKind::binds_identity`] is true —
+/// a chain that passes through even one `AssociatedWith`/`EmployedBy`/`LocatedAt`-
+/// shaped hop relates two DIFFERENT real-world things, not one identity, and must
+/// not fuse them (see that predicate's doc for the full rationale and the false
+/// union — two distinct namesakes sharing an employer — this closed).
+///
+/// Two independent link sources are unioned together, deliberately NOT just the
+/// [`identity_paths`] output:
+/// 1. **Direct edges** — every qualifying [`Relation`] between two identity
+///    entities in `entities`, read straight from `relations` with no cap. This
+///    is what guarantees a real, single-hop link can never silently vanish: an
+///    identity-rich scan's pairwise sweep is capped at [`IDENTITY_PAIR_PROBE_CAP`]
+///    pairs for cost (that cap is correct and necessary for the O(n²) transitive
+///    search below), but a direct edge is an O(1) fact already sitting in
+///    `relations` — there is no reason its visibility here should depend on
+///    which pairs a capped O(n²) sweep happened to reach first. Before this,
+///    a scan with enough identity entities to exceed the cap could lose an
+///    otherwise-isolated direct link entirely, with no warning.
+/// 2. **Transitive paths** — [`identity_paths`]' existing capped, `max_hops`-
+///    bounded pairwise search, for chains of 2+ hops. Its cap/cost tradeoff is
+///    unchanged and remains appropriate here: multi-hop discovery is the
+///    genuinely combinatorial part (a permutation-heavy scan can derive
+///    hundreds of identity entities), while direct edges above are cheap
+///    regardless of entity count.
+///
 /// This is the cluster-level synthesis of the pairwise transitive closure: where
 /// AU-060 reports "A is linked to B", this collapses every such link into "{A, B,
-/// C, …} is one identity". Built on the shared `identity_paths` finder, so a
-/// cluster's membership can never disagree with the pairwise links the dossier
-/// renders (one finder, no drift). Deterministic — members and clusters are
+/// C, …} is one identity". A cluster's membership can never disagree with the
+/// pairwise links the dossier renders for the transitive (2+ hop) case — direct
+/// edges are additionally exhaustive. Deterministic — members and clusters are
 /// sorted, independent of input and hash-iteration order.
 pub fn resolve_identity_clusters(
     entities: &[Entity],
@@ -651,23 +795,54 @@ pub fn resolve_identity_clusters(
     max_hops: usize,
     min_confidence: f64,
 ) -> Vec<IdentityClusterResult> {
-    // Keep only links strong enough to *bind* identities. Filtering here — before
-    // the union — is what stops one weak edge from collapsing strangers together:
-    // a sub-floor link is simply absent from the equivalence relation. Every link
-    // that survives also defines the component's weakest-link confidence below.
-    let paths: Vec<IdentityPath> = identity_paths(entities, relations, max_hops)
-        .into_iter()
-        .filter(|p| p.min_confidence >= min_confidence)
-        .collect();
-    if paths.is_empty() {
+    // One (from_uid, to_uid, weakest_confidence) triple per binding link,
+    // regardless of source (direct edge or transitive path) — the union-find
+    // and per-component confidence below treat them identically.
+    let mut links: Vec<(&str, &str, f64)> = Vec::new();
+
+    // Source 1: direct edges. Uncapped — see the doc comment above for why this
+    // must never be subject to IDENTITY_PAIR_PROBE_CAP. `is_identity_kind` +
+    // `entities` membership mirrors identity_paths'/sorted_confined_adjacency's
+    // own confinement (a dangling/quarantined endpoint is not traversable).
+    let kind_of: HashMap<&str, &EntityKind> =
+        entities.iter().map(|e| (e.uid.as_str(), &e.kind)).collect();
+    for r in relations {
+        if r.confidence < min_confidence || !r.kind.binds_identity() {
+            continue;
+        }
+        let (a, b) = (r.from_uid.as_str(), r.to_uid.as_str());
+        if a == b {
+            continue; // a self-loop binds nothing
+        }
+        let (Some(ka), Some(kb)) = (kind_of.get(a), kind_of.get(b)) else {
+            continue; // endpoint absent from the confirmed entity set
+        };
+        if is_identity_kind(ka) && is_identity_kind(kb) {
+            links.push((a, b, r.confidence));
+        }
+    }
+
+    // Source 2: transitive (2+ hop) paths, capped/bounded exactly as before.
+    // Filtered to links whose EVERY hop binds identity — a chain that passes
+    // through even one non-binding hop (e.g. two people who share an employer,
+    // Person --EmployedBy--> Org <--EmployedBy-- Person) relates two different
+    // people, not one identity.
+    let transitive_paths = identity_paths(entities, relations, max_hops);
+    for p in &transitive_paths {
+        if p.min_confidence >= min_confidence && p.steps.iter().all(|s| s.kind.binds_identity()) {
+            links.push((p.from_uid.as_str(), p.to_uid.as_str(), p.min_confidence));
+        }
+    }
+
+    if links.is_empty() {
         return Vec::new();
     }
 
     // Intern every identity UID that participates in a link.
     let mut index: HashMap<&str, usize> = HashMap::new();
     let mut uids: Vec<&str> = Vec::new();
-    for p in &paths {
-        for u in [p.from_uid.as_str(), p.to_uid.as_str()] {
+    for &(from_uid, to_uid, _) in &links {
+        for u in [from_uid, to_uid] {
             if !index.contains_key(u) {
                 index.insert(u, uids.len());
                 uids.push(u);
@@ -675,36 +850,26 @@ pub fn resolve_identity_clusters(
         }
     }
 
-    // Union-find with iterative path-halving — merge the endpoints of every link.
-    fn find(parent: &mut [usize], mut x: usize) -> usize {
-        while parent[x] != x {
-            parent[x] = parent[parent[x]];
-            x = parent[x];
-        }
-        x
-    }
-    let mut parent: Vec<usize> = (0..uids.len()).collect();
-    for p in &paths {
-        let a = find(&mut parent, index[p.from_uid.as_str()]);
-        let b = find(&mut parent, index[p.to_uid.as_str()]);
-        if a != b {
-            parent[a] = b;
-        }
+    // Union-find over the interned uids — the canonical disjoint-set primitive.
+    // Merge the endpoints of every surviving link.
+    let mut uf = crate::util::union_find::UnionFind::new(uids.len());
+    for &(from_uid, to_uid, _) in &links {
+        uf.union(index[from_uid], index[to_uid]);
     }
 
-    // Weakest-link confidence per component: the minimum link min_confidence
+    // Weakest-link confidence per component: the minimum link confidence
     // among every link whose endpoints landed in that component.
     let mut comp_conf: HashMap<usize, f64> = HashMap::new();
-    for p in &paths {
-        let r = find(&mut parent, index[p.from_uid.as_str()]);
+    for &(from_uid, _, conf) in &links {
+        let r = uf.find(index[from_uid]);
         let e = comp_conf.entry(r).or_insert(f64::INFINITY);
-        *e = e.min(p.min_confidence);
+        *e = e.min(conf);
     }
 
     // Group members by component root.
     let mut groups: HashMap<usize, Vec<&str>> = HashMap::new();
     for (i, &u) in uids.iter().enumerate() {
-        let r = find(&mut parent, i);
+        let r = uf.find(i);
         groups.entry(r).or_default().push(u);
     }
 
@@ -869,6 +1034,7 @@ pub fn connection_brokers<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::relation::Relation;
 
     #[test]
@@ -905,8 +1071,8 @@ mod tests {
 
     #[test]
     fn resolve_identity_clusters_empty_without_links() {
-        let a = Entity::new(EntityKind::Email, "a@x.com", 0.8, "s");
-        let b = Entity::new(EntityKind::Username, "bob", 0.8, "s");
+        let a = Entity::new(EntityKind::Email, "a@x.com", confidence::HIGH_PLUSPLUS, "s");
+        let b = Entity::new(EntityKind::Username, "bob", confidence::HIGH_PLUSPLUS, "s");
         assert!(resolve_identity_clusters(&[a, b], &[], 4, 0.0).is_empty());
     }
 
@@ -971,6 +1137,106 @@ mod tests {
                 "every returned cluster clears the floor it was resolved under"
             );
         }
+    }
+
+    #[test]
+    fn resolve_identity_clusters_does_not_fuse_declared_associates() {
+        // Regression: resolve_identity_clusters used to apply only a confidence
+        // floor, no RelationKind filter, so a full-confidence AssociatedWith edge
+        // between two DISTINCT, differently-named people fused them into one
+        // "identity" — the exact shape derive_declared_associations emits for a
+        // declared co-owner record. Two real, unrelated people must stay two
+        // clusters (in fact: zero clusters here, since AssociatedWith is their
+        // only link).
+        let alice = Entity::new(EntityKind::Person, "Alice Smith", 0.8, "s");
+        let bob = Entity::new(EntityKind::Person, "Bob Jones", 0.8, "s");
+        let rels = [Relation::new(
+            alice.uid.clone(),
+            bob.uid.clone(),
+            RelationKind::AssociatedWith,
+            0.9,
+            "s",
+        )];
+        let clusters = resolve_identity_clusters(&[alice, bob], &rels, 4, 0.0);
+        assert!(
+            clusters.is_empty(),
+            "an AssociatedWith edge must never bind two people into one identity, got: {clusters:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_identity_clusters_does_not_fuse_two_people_via_a_shared_employer() {
+        // Regression: the same false-union class as above, via a 2-hop bridge —
+        // two DIFFERENT people who each declare the same employer
+        // (Person --EmployedBy--> Org <--EmployedBy-- Person) must not become
+        // "one identity" just because they share an employer. The Organisation
+        // itself is not an identity kind, so it never appears as a cluster
+        // member; the two people must simply stay unclustered.
+        let jane = Entity::new(EntityKind::Person, "Jane Citizen", 0.8, "s");
+        let mark = Entity::new(EntityKind::Person, "Mark Roe", 0.8, "s");
+        let acme = Entity::new(EntityKind::Organisation, "Acme Pty Ltd", 0.8, "s");
+        let rels = [
+            Relation::new(
+                jane.uid.clone(),
+                acme.uid.clone(),
+                RelationKind::EmployedBy,
+                0.9,
+                "s",
+            ),
+            Relation::new(
+                mark.uid.clone(),
+                acme.uid.clone(),
+                RelationKind::EmployedBy,
+                0.9,
+                "s",
+            ),
+        ];
+        let clusters = resolve_identity_clusters(&[jane, mark, acme], &rels, 4, 0.0);
+        assert!(
+            clusters.is_empty(),
+            "a shared-employer bridge must never bind two people into one identity, got: {clusters:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_identity_clusters_never_drops_a_direct_edge_to_the_pair_probe_cap() {
+        // Regression: identity_paths' O(n^2) pairwise sweep is capped at
+        // IDENTITY_PAIR_PROBE_CAP total pairs for cost — correct for THAT
+        // best-effort sweep, but resolve_identity_clusters used to derive its
+        // ENTIRE link set from it, so a real, single-hop, high-confidence edge
+        // could be silently invisible to identity resolution whenever the
+        // identity count was large enough that the capped sweep never reached
+        // that specific pair. Direct edges must be found independently of the
+        // pair cap.
+        let n = 400usize;
+        let mut ents: Vec<Entity> = (0..n)
+            .map(|i| Entity::new(EntityKind::Email, format!("id{i}@x.com"), 0.8, "s"))
+            .collect();
+        ents.sort_by(|a, b| a.uid.cmp(&b.uid));
+        let total_pairs = n * (n - 1) / 2;
+        assert!(
+            total_pairs > IDENTITY_PAIR_PROBE_CAP,
+            "test setup must exceed the cap so this actually exercises it"
+        );
+        // The ONLY edge in the whole graph: directly joins the two
+        // largest-UID identities — the very last pair the capped pairwise
+        // sweep would ever enumerate.
+        let a = &ents[n - 2];
+        let b = &ents[n - 1];
+        let rels = [Relation::new(
+            a.uid.clone(),
+            b.uid.clone(),
+            RelationKind::DerivedFrom,
+            0.95,
+            "s",
+        )];
+        let clusters = resolve_identity_clusters(&ents, &rels, 4, 0.0);
+        assert_eq!(
+            clusters.len(),
+            1,
+            "the one real direct edge must still form a 2-member cluster"
+        );
+        assert_eq!(clusters[0].members.len(), 2);
     }
 
     #[test]
@@ -1121,8 +1387,8 @@ mod tests {
 
     #[test]
     fn strongest_path_none_when_unreachable() {
-        let a = Entity::new(EntityKind::Email, "a@x.com", 0.8, "s");
-        let b = Entity::new(EntityKind::Username, "bob", 0.8, "s");
+        let a = Entity::new(EntityKind::Email, "a@x.com", confidence::HIGH_PLUSPLUS, "s");
+        let b = Entity::new(EntityKind::Username, "bob", confidence::HIGH_PLUSPLUS, "s");
         assert!(strongest_path(&[a.clone(), b.clone()], &[], &a.uid, &b.uid, 4).is_none());
     }
 
@@ -1338,11 +1604,11 @@ mod tests {
             rel(&m2, &b, RelationKind::IdentifiedBy, 0.8),
         ];
         let ents = [a.clone(), b.clone(), m1, m2];
-        let paths = disjoint_pathways(&ents, &rels, &a.uid, &b.uid, 4, 4);
+        let paths = disjoint_pathways(&ents, &rels, &a.uid, &b.uid, 4, 4, 0.0);
         assert_eq!(paths.len(), 2, "two independent routes");
         for p in &paths {
             assert_eq!(p.len(), 2);
-            assert_eq!(p.last().unwrap().to_uid, b.uid);
+            assert_eq!(p.last().expect("should succeed").to_uid, b.uid);
         }
         let mids: HashSet<&str> = paths.iter().map(|p| p[0].to_uid.as_str()).collect();
         assert_eq!(mids.len(), 2, "the routes go through different nodes");
@@ -1360,7 +1626,7 @@ mod tests {
         ];
         let ents = [a.clone(), b.clone(), m];
         assert_eq!(
-            disjoint_pathways(&ents, &rels, &a.uid, &b.uid, 4, 4).len(),
+            disjoint_pathways(&ents, &rels, &a.uid, &b.uid, 4, 4, 0.0).len(),
             1
         );
     }
@@ -1378,10 +1644,10 @@ mod tests {
             rel(&m2, &b, RelationKind::IdentifiedBy, 0.8),
         ];
         let ents = [a.clone(), b.clone(), m1, m2];
-        let forward = disjoint_pathways(&ents, &rels, &a.uid, &b.uid, 4, 4);
+        let forward = disjoint_pathways(&ents, &rels, &a.uid, &b.uid, 4, 4, 0.0);
         let mut reversed = rels.clone();
         reversed.reverse();
-        let backward = disjoint_pathways(&ents, &reversed, &a.uid, &b.uid, 4, 4);
+        let backward = disjoint_pathways(&ents, &reversed, &a.uid, &b.uid, 4, 4, 0.0);
         assert_eq!(forward, backward, "pathways independent of edge order");
     }
 
@@ -1400,7 +1666,7 @@ mod tests {
             rel(&e2, &d2, RelationKind::BelongsToDomain, 0.8),
             rel(&d2, &p2, RelationKind::RegisteredBy, 0.8),
         ];
-        let cts = connection_templates(&[e1, d1, p1, e2, d2, p2], &rels, 4);
+        let cts = connection_templates(&[e1, d1, p1, e2, d2, p2], &rels, 4, 0.0);
         assert_eq!(cts.len(), 1, "both pairs share one canonical template");
         assert_eq!(cts[0].pairs.len(), 2);
         assert!(cts[0].template.contains("email") && cts[0].template.contains("person"));
@@ -1496,7 +1762,7 @@ mod tests {
                     prop_assert_eq!(p.steps.len(), p.hops);
                     prop_assert!(p.hops >= 1 && p.hops <= 4);
                     prop_assert!(p.from_uid < p.to_uid);
-                    prop_assert_eq!(&p.steps.last().unwrap().to_uid, &p.to_uid);
+                    prop_assert_eq!(&p.steps.last().expect("should succeed").to_uid, &p.to_uid);
                 }
             }
 
@@ -1519,12 +1785,12 @@ mod tests {
                 if let Some(sp) = shortest {
                     let widest = strongest_path(&ents, &rels, a, b, 4);
                     prop_assert!(widest.is_some(), "reachable shortest ⇒ reachable widest");
-                    let w = widest.unwrap();
+                    let w = widest.expect("should succeed");
                     prop_assert!(w.min_confidence >= sp.min_confidence - 1e-9);
                     // …and it is itself a well-formed, hop-bounded chain.
                     prop_assert_eq!(w.steps.len(), w.hops);
                     prop_assert!(w.hops >= 1 && w.hops <= 4);
-                    prop_assert_eq!(&w.steps.last().unwrap().to_uid, b);
+                    prop_assert_eq!(&w.steps.last().expect("should succeed").to_uid, b);
                 }
             }
 
@@ -1540,6 +1806,155 @@ mod tests {
                     (Some(x), Some(y)) => prop_assert!((x - y).abs() < 1e-9),
                     (None, None) => {}
                     _ => prop_assert!(false, "reachability must be symmetric"),
+                }
+            }
+        }
+
+        /// A graph strategy whose edge confidence spans BOTH sides of an
+        /// arbitrary floor (unlike [`graph`], whose edges are all `>= 0.5` by
+        /// construction) — needed to exercise `disjoint_pathways_in`'s
+        /// `min_confidence` floor, which [`graph`]'s narrower range could never
+        /// falsify (every edge it generates already clears 0.5).
+        /// `(from_index, to_index, kind_selector, confidence_selector)` — raw
+        /// edge tuple shape generated by [`graph_with_wide_confidence`] below,
+        /// factored out so the `prop_map` closure doesn't trip
+        /// `clippy::type_complexity`.
+        type RawEdge = (usize, usize, u8, u8);
+
+        fn graph_with_wide_confidence() -> impl Strategy<Value = (Vec<Entity>, Vec<Relation>)> {
+            let kinds = proptest::collection::vec(0u8..6, 2..6);
+            (
+                kinds,
+                proptest::collection::vec((0usize..6, 0usize..6, 0u8..11, 0u8..10), 0..10),
+            )
+                .prop_map(|(ks, raw_edges): (Vec<u8>, Vec<RawEdge>)| {
+                    let mk = |i: usize, k: u8| {
+                        let kind = match k {
+                            0 => EntityKind::Email,
+                            1 => EntityKind::Username,
+                            2 => EntityKind::Person,
+                            3 => EntityKind::Phone,
+                            4 => EntityKind::Domain,
+                            _ => EntityKind::IpAddress,
+                        };
+                        Entity::new(kind, format!("n{i}"), 0.8, "s")
+                    };
+                    let mut ents: Vec<Entity> = Vec::new();
+                    ents.push(mk(0, 0));
+                    ents.push(mk(1, 1));
+                    for (i, &k) in ks.iter().enumerate() {
+                        ents.push(mk(i + 2, k));
+                    }
+                    let kind_of = |k: usize| match k % 11 {
+                        0 => RelationKind::SubdomainOf,
+                        1 => RelationKind::BelongsToDomain,
+                        2 => RelationKind::HostedOn,
+                        3 => RelationKind::ResolvesTo,
+                        4 => RelationKind::RegisteredBy,
+                        5 => RelationKind::CoLocatedWith,
+                        6 => RelationKind::DerivedFrom,
+                        7 => RelationKind::IdentifiedBy,
+                        8 => RelationKind::AliasOf,
+                        9 => RelationKind::LocatedAt,
+                        _ => RelationKind::AssociatedWith,
+                    };
+                    let n = ents.len();
+                    // Confidence spans 0.05..0.95 — deliberately straddling
+                    // IDENTITY_LINK_MIN_CONF (0.50) on both sides, unlike
+                    // `graph()`'s all-strong 0.5..0.83 range.
+                    let rels = raw_edges
+                        .into_iter()
+                        .filter(|(a, b, _, _)| a != b && *a < n && *b < n)
+                        .map(|(a, b, k, c)| {
+                            rel(
+                                &ents[a],
+                                &ents[b],
+                                kind_of(k as usize),
+                                0.05 + (c as f64) / 11.0,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    (ents, rels)
+                })
+        }
+
+        proptest! {
+            /// The floor invariant `disjoint_pathways_in` exists to guarantee:
+            /// no returned pathway may contain an edge weaker than the
+            /// `min_confidence` it was called with. Checked at three arbitrary
+            /// floors (0.0 — the historical no-floor behaviour; 0.5 —
+            /// `IDENTITY_LINK_MIN_CONF`; 0.9 — a near-total exclusion) over the
+            /// same wide-confidence random graph, so the property holds
+            /// regardless of where the floor is drawn, not just at the one value
+            /// the rules happen to use today.
+            #[test]
+            fn disjoint_pathways_in_never_returns_a_sub_floor_edge(
+                (ents, rels) in graph_with_wide_confidence(),
+                floor in prop::sample::select(vec![0.0f64, 0.5, 0.9]),
+            ) {
+                let (a, b) = (ents[0].uid.clone(), ents[1].uid.clone());
+                let adj = sorted_confined_adjacency(&ents, &rels);
+                // `graph_with_wide_confidence` can generate *parallel* edges — two
+                // relations with the same (from, to, kind) but different
+                // confidence, e.g. HostedOn fired twice at 0.05 and 0.5045. A
+                // `PathStep` records only `{kind, to_uid}`, not which parallel
+                // edge was actually traversed, so this can't check "the edge this
+                // step used clears the floor" by picking any one matching edge
+                // (an ascending-sorted `.find()` would always surface the
+                // *weakest* duplicate and falsely fail even when the search
+                // genuinely walked the strong one). The property this can
+                // actually verify — and the one `disjoint_pathways_in`'s
+                // filter-before-search actually guarantees — is weaker but
+                // sound: for every step, *some* real edge for that (from, to,
+                // kind) clears the floor.
+                let has_floor_clearing_edge = |from: &str, to: &str, kind: RelationKind| -> bool {
+                    adj.get(from)
+                        .into_iter()
+                        .flatten()
+                        .any(|&(nbr, k, c)| nbr == to && k == kind && c >= floor - 1e-9)
+                };
+                for pathway in disjoint_pathways_in(&adj, &a, &b, 4, 4, floor) {
+                    let mut cur = a.as_str();
+                    for step in &pathway {
+                        prop_assert!(
+                            has_floor_clearing_edge(cur, &step.to_uid, step.kind),
+                            "pathway stepped {cur} -> {} ({:?}) but no real edge for \
+                             that hop clears the floor {floor}",
+                            step.to_uid,
+                            step.kind
+                        );
+                        cur = &step.to_uid;
+                    }
+                }
+            }
+
+            /// The same guarantee for [`connection_templates`]: no generalised
+            /// template may be built from a path whose weakest edge is below the
+            /// floor it was called with.
+            #[test]
+            fn connection_templates_never_generalises_a_sub_floor_path(
+                (ents, rels) in graph_with_wide_confidence(),
+                floor in prop::sample::select(vec![0.0f64, 0.5, 0.9]),
+            ) {
+                // Reconstruct, per pair the templates report, whether a path at
+                // or above the floor actually exists — connection_templates must
+                // never report a pair unless identity_paths independently agrees
+                // a strong-enough path connects it.
+                for ct in connection_templates(&ents, &rels, 4, floor) {
+                    for (from_uid, to_uid) in &ct.pairs {
+                        let strong_path_exists = identity_paths(&ents, &rels, 4).into_iter().any(
+                            |p| {
+                                &p.from_uid == from_uid
+                                    && &p.to_uid == to_uid
+                                    && p.min_confidence >= floor - 1e-9
+                            },
+                        );
+                        prop_assert!(
+                            strong_path_exists,
+                            "template reported pair ({from_uid}, {to_uid}) with no \
+                             path clearing the floor {floor}"
+                        );
+                    }
                 }
             }
         }

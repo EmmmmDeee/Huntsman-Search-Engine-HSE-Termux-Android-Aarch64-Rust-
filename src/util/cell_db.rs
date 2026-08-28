@@ -10,17 +10,12 @@ use rusqlite::{Connection, params};
 // ── Public path helper ──────────────────────────────────────────────────────
 
 /// Path to the cell towers DB file: `$HOME/.huntsman/cell_towers.db`.
-/// Falls back to `./cell_towers.db` when `$HOME` is unset.
+/// Falls back to `./.huntsman/cell_towers.db` when `$HOME` is unset (see
+/// [`crate::util::paths::huntsman_dir`] — the layout stays together under
+/// `.huntsman` rather than scattering a bare file into the CWD).
 #[must_use]
 pub fn cell_db_path() -> PathBuf {
-    std::env::var("HOME").map_or_else(
-        |_| PathBuf::from("cell_towers.db"),
-        |home| {
-            let dir = PathBuf::from(&home).join(".huntsman");
-            let _ = std::fs::create_dir_all(&dir);
-            dir.join("cell_towers.db")
-        },
-    )
+    crate::util::paths::data_file("cell_towers.db")
 }
 
 // ── Connection helpers ──────────────────────────────────────────────────────
@@ -206,6 +201,25 @@ pub fn count_by_mcc(conn: &Connection) -> rusqlite::Result<Vec<(i64, u64)>> {
         Ok((mcc, cnt as u64))
     })?;
     rows.collect()
+}
+
+/// Map a cell tower's reported accuracy radius (metres) to a coordinate
+/// confidence score: a tight urban small-cell is highly trusted; a rural
+/// macro-cell (multi-km centroid) is only loosely trusted.
+///
+/// Delegates to the single canonical ladder,
+/// [`crate::util::geo::confidence_for_accuracy_m`], so the two can't drift —
+/// that function's own doc explains why a provider-local copy is a defect,
+/// not a convenience: it lets an identically-precise fix outrank or undercut
+/// its peer purely by which module happened to report it. `cell_intel`,
+/// `cell_local` and `opencellid` all use the same [`CellRow::range_m`] field
+/// and now score it on the exact scale the WiFi/beacon providers
+/// (`mylnikov`, `beacondb`) already share, so a `Coordinates` entity's
+/// confidence reflects claimed precision, never its source module — the
+/// property the correlator's cross-source location rules (AU-052/AU-053) and
+/// their shared `>= 0.50` admissibility floor depend on.
+pub fn accuracy_to_confidence(range_m: u64) -> f64 {
+    crate::util::geo::confidence_for_accuracy_m(Some(range_m as f64))
 }
 
 // ── Import history ─────────────────────────────────────────────────────────────

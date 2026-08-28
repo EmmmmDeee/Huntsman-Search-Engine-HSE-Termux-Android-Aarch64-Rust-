@@ -1,6 +1,17 @@
 import { API } from '/static/js/api.js';
-import { $, attr, attrText, classify, effC, esc, extLink, fmtDate, kindPill } from '/static/js/helpers.js';
+import { $, ENRICHMENT_SOURCES, attr, attrText, classify, effC, esc, extLink, fmtDate, kindPill, sourceCount } from '/static/js/helpers.js';
 import { S } from '/static/js/state.js';
+
+// A large scan can produce thousands of entities; rendering each as two <tr>s
+// with its full (hidden) evidence detail, and re-running that + re-initialising
+// tablesorter on every filter keystroke, is heavy on a Termux phone. Cap what
+// is rendered (the count label still reports the full match total) and debounce
+// the filter. Entities arrive confidence-ranked, so the top slice is shown.
+const BROWSE_ROW_CAP = 500;
+function debounce(fn, ms) {
+  let t;
+  return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
 
 /* ── Browse tab ── */
 export function renderBrowse(host){
@@ -68,13 +79,20 @@ export function renderBrowse(host){
       (e.value||'').toLowerCase().includes(q)
       || (e.tags||[]).some(t=>t.toLowerCase().includes(q))
       || (e.evidence||[]).some(ev=>(ev.summary||'').toLowerCase().includes(q) || (ev.source||'').toLowerCase().includes(q)));
-    $('#b-ct').textContent = `${rows.length} of ${S.entities.length}`;
-    $('#b-table-host').innerHTML = renderBrowseTable(rows);
-    if (window.jQuery && jQuery.fn.tablesorter && rows.length){
+    const loaded = S.entities.length;
+    const scanTotal = S.entitiesTotal ?? loaded;
+    // When the server truncated the fetch (scan has more entities than the
+    // page limit), say so — otherwise "N of loaded" reads as "N of all".
+    $('#b-ct').textContent = scanTotal > loaded
+      ? `${rows.length} of ${loaded} loaded · ${scanTotal} in scan`
+      : `${rows.length} of ${loaded}`;
+    const shown = rows.length > BROWSE_ROW_CAP ? rows.slice(0, BROWSE_ROW_CAP) : rows;
+    $('#b-table-host').innerHTML = renderBrowseTable(shown, rows.length);
+    if (window.jQuery && jQuery.fn.tablesorter && shown.length){
       try { jQuery('#browse-table').tablesorter({sortList:[[2,1]]}); } catch {}
     }
   }
-  $('#b-q').addEventListener('input', refresh);
+  $('#b-q').addEventListener('input', debounce(refresh, 180));
   $('#b-cls').addEventListener('change', refresh);
   // Sidebar: click a row to filter by kind (toggle off if already active)
   host.querySelectorAll('.rollup-row').forEach(tr=>tr.addEventListener('click', ()=>{
@@ -90,29 +108,48 @@ export function renderBrowse(host){
   if (S.route.query.q){ $('#b-q').value = S.route.query.q; }
   refresh();
 }
-export function renderBrowseTable(rows){
+export function renderBrowseTable(rows, total){
+  // Server-fetch truncation (distinct from the client render cap below): the
+  // scan holds more entities than the page fetched, so counts/filters here
+  // cover only the loaded slice. Shown even when the current filter matches
+  // nothing loaded, since the sought entity may be in the unfetched remainder.
+  const fetchNote = (S.entitiesTotal != null && S.entitiesTotal > S.entities.length)
+    ? `<div class="text-warning" style="font-size:11px;margin-bottom:6px">This scan has ${S.entitiesTotal} entities; the browser loaded the confidence-ranked top ${S.entities.length}. Counts and filters below apply to the loaded slice — export CSV/JSON for the complete set.</div>`
+    : '';
   if (!rows.length){
-    return '<div class="empty-state"><h3>No entities match</h3><p>Adjust the filter, or check the Scan Log if the scan is still running.</p></div>';
+    return `${fetchNote}<div class="empty-state"><h3>No entities match</h3><p>Adjust the filter, or check the Scan Log if the scan is still running.</p></div>`;
   }
+  const capNote = (total != null && total > rows.length)
+    ? `<div class="text-muted" style="font-size:11px;margin-bottom:6px">Showing the top ${rows.length} of ${total} matching entities (confidence-ranked) — filter by type or search to narrow, or export CSV/JSON for the full set.</div>`
+    : '';
   const body = rows.map((e,idx)=>{
-    const eff = effC(e), tier = classify(eff);
+    const eff = effC(e), tier = classify(eff), srcN = sourceCount(e);
     const sources = Array.from(new Set((e.evidence||[]).map(ev=>ev.source))).sort();
     const evDetail = (e.evidence||[]).map(ev=>{
       const attrs = Object.entries(ev.attributes||{}).map(([k,v])=>`<span class="ev-attr"><span class="ak">${esc(k)}:</span> ${extLink(attrText(v),90)}</span>`).join('');
-      return `<div class="ev-block"><span class="ev-src">${esc(ev.source)}</span><div class="ev-sum">${esc(ev.summary)}</div>${attrs?`<div class="ev-attrs">${attrs}</div>`:''}</div>`;
+      // Mirrors the CLI dossier's "(non-corroborating: …)" marker (see
+      // `is_non_corroborating_source` in core::entity) so the web UI stops
+      // implying every listed source independently boosted C_eff when some
+      // are self-enrichment/recall/cross-scan passes that don't.
+      const nonCorrob = ev.source && ENRICHMENT_SOURCES.has(ev.source);
+      const marker = nonCorrob ? ' <span class="text-muted" style="font-size:10px">(non-corroborating: enrichment/recall/cross-scan)</span>' : '';
+      return `<div class="ev-block"><span class="ev-src">${esc(ev.source)}</span>${marker}<span class="text-muted pull-right" style="font-size:10px">${esc(fmtDate(ev.recorded_at))}</span><div class="ev-sum">${esc(ev.summary)}</div>${attrs?`<div class="ev-attrs">${attrs}</div>`:''}</div>`;
     }).join('');
     return `<tr onclick="toggleDetail(this)" data-idx="${idx}">
       <td>${kindPill(e.kind)}</td>
       <td style="word-break:break-word"><code>${extLink(e.raw_value||e.value)}</code></td>
       <td class="text-right"><code>${eff.toFixed(3)}</code></td>
+      <td class="text-right"><code>${(e.confidence??0).toFixed(3)}</code></td>
       <td class="text-right">${e.corroboration||1}</td>
+      <td class="text-right" title="Distinct corroborating sources (excludes enrichment/recall/cross-scan)">${srcN}</td>
       <td><span class="cls c-${attr(tier)}">${tier}</span></td>
       <td>${(e.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</td>
       <td>${sources.map(s=>`<span class="src-pill">${esc(s)}</span>`).join('')}</td>
       <td><span class="text-muted" style="font-family:monospace;font-size:11px">${esc(fmtDate(e.observed_at))}</span></td>
     </tr>
-    <tr class="entity-detail-row" style="display:none"><td colspan="8"><div class="entity-detail">
+    <tr class="entity-detail-row" style="display:none"><td colspan="10"><div class="entity-detail">
       <div style="margin-bottom:4px"><b>UID:</b> <code style="font-size:10px">${esc(e.uid||'')}</code>
+        <span style="margin-left:10px"><b>Generation:</b> ${e.generation??0} hop${(e.generation===1)?'':'s'} from seed</span>
         <button class="btn btn-default btn-xs" style="margin-left:8px" data-uid="${attr(e.uid||'')}" onclick="event.stopPropagation();entityPivot(this.dataset.uid,this)"
                 title="Find every scan this exact identifier appears in"><i class="glyphicon glyphicon-globe"></i>&nbsp;Seen across scans</button>
         <span class="pivot-out" style="margin-left:8px"></span></div>
@@ -120,10 +157,10 @@ export function renderBrowseTable(rows){
       ${evDetail || '<span class="text-muted">No evidence attached</span>'}
     </div></td></tr>`;
   }).join('');
-  return `<div class="table-responsive"><table class="table table-striped table-condensed tablesorter" id="browse-table">
+  return `${fetchNote}${capNote}<div class="table-responsive"><table class="table table-striped table-condensed tablesorter" id="browse-table">
     <thead><tr>
-      <th>Type</th><th>Value</th><th class="text-right">C_eff</th>
-      <th class="text-right">Corr</th><th>Tier</th>
+      <th>Type</th><th>Value</th><th class="text-right">C_eff</th><th class="text-right" title="Base confidence, before corroboration boost">Conf</th>
+      <th class="text-right">Corr</th><th class="text-right" title="Distinct corroborating sources">Src</th><th>Tier</th>
       <th class="sorter-false">Tags</th><th class="sorter-false">Sources</th><th>Observed</th>
     </tr></thead><tbody>${body}</tbody></table></div>`;
 }

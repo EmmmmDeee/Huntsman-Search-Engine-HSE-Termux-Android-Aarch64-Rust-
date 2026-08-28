@@ -137,6 +137,61 @@ fn infrastructure_pollution_is_flagged_critical() {
         "infra pollution must hurt the score, got {}",
         r.score
     );
+    // Every one of these five actionable entities is provider infrastructure,
+    // and every one is high-confidence (c_effective 1.0), so the candidate tier
+    // is empty. The headline noise figure must NOT read 0% while this very
+    // report raises a Critical infrastructure-pollution finding about the same
+    // rows — that self-contradiction told operators a pure-CDN scan was clean.
+    assert!(
+        (r.noise_ratio - 1.0).abs() < 1e-9,
+        "all five actionable entities are provider infrastructure, so noise must be 100%, got {}",
+        r.noise_ratio
+    );
+}
+
+#[test]
+fn infrastructure_noise_does_not_double_count_low_confidence_candidates() {
+    // A LOW-confidence infrastructure entity is already inside the candidate
+    // tier. Counting it again as infrastructure noise would make one entity
+    // contribute two units and could drive the ratio past 1.0.
+    let ents = vec![
+        ent("ip_address", "172.66.147.185", 0.30, 1, &["cloudflare"]),
+        ent("person", "Subject Name", 0.90, 3, &[]),
+    ];
+    let r = audit(&ents, LogSignals::default());
+    assert!(
+        (r.noise_ratio - 0.5).abs() < 1e-9,
+        "the low-confidence infrastructure entity is one noisy entity, not candidate + infra twice: {}",
+        r.noise_ratio
+    );
+}
+
+#[test]
+fn ns_mx_soa_tagged_domains_are_not_infrastructure_pollution() {
+    // A domain a DNS-recon module already labelled ns/mx/soa/nameserver is a
+    // correctly-attributed record of the subject's OWN zone — not a
+    // provider's estate silently entering the graph. Flagging it as
+    // "pollution" told the operator to suppress their own scan's DNS recon.
+    let ents = vec![
+        ent("email", "jordanavery@gmail.com", 1.0, 4, &[]),
+        ent("username", "jordanavery", 1.0, 3, &[]),
+        ent("domain", "ns7-66.akam.net", 0.9, 1, &["dns", "ns"]),
+        ent("domain", "aspmx.l.google.com", 0.95, 1, &["dns", "mx"]),
+        ent(
+            "domain",
+            "ns1.example.com",
+            0.9,
+            1,
+            &["dns", "soa", "nameserver"],
+        ),
+    ];
+    let r = audit(&ents, LogSignals::default());
+    assert!(
+        !r.findings
+            .iter()
+            .any(|f| f.category == "infrastructure-pollution"),
+        "ns/mx/soa-tagged domains must not be counted as infrastructure pollution"
+    );
 }
 
 #[test]
@@ -215,22 +270,28 @@ fn missed_pii_when_email_but_no_person() {
 #[test]
 fn to_json_is_stable_and_complete() {
     let ents = vec![ent("email", "dns@cloudflare.com", 1.0, 1, &[])];
-    let j = audit(&ents, LogSignals::default()).to_json();
+    let mut log = LogSignals::default();
+    log.module_timeouts.insert("slow_mod".into(), 3);
+    let j = audit(&ents, log).to_json();
     assert!(j["score"].as_u64().is_some());
     assert!(
         j["grade"]
             .as_str()
-            .unwrap()
+            .expect("should succeed")
             .starts_with(|c: char| c.is_ascii_uppercase())
     );
     assert!(
         j["findings"]
             .as_array()
-            .unwrap()
+            .expect("should succeed")
             .iter()
             .any(|f| { f["category"] == "role-mailbox-as-pii" })
     );
     assert!(j["source_health"]["engines_down"].is_array());
+    // The per-module timeout tally is surfaced beside its sibling module_errors,
+    // not silently dropped — it is the constrained-Termux signal an operator
+    // reads from `hse audit --json` and the web audit endpoint alike.
+    assert_eq!(j["source_health"]["module_timeouts"]["slow_mod"], 3);
 }
 
 #[test]
@@ -287,6 +348,82 @@ fn geo_consensus_produces_no_finding() {
     assert!(r.geo.max_spread_km < 50.0);
 }
 
+/// Regression: `hse radar` / `POST /api/v1/radar` seeds every sweep with a
+/// sentinel coordinate (0,0 — "null island") purely so the local-sensor
+/// modules, which gate on target KIND and ignore the value, dispatch. Before
+/// this fix, `geo_consistency` treated that sentinel as a real competing
+/// location claim, so a real GPS/Wi-Fi fix anywhere on Earth (thousands of km
+/// from 0,0) triggered a spurious geo-divergence finding on EVERY single
+/// radar sweep — dinging the self-audit score for a fixed artifact of how the
+/// sweep is seeded, not a genuine source disagreement. This exact shape
+/// (one real fix + the `seed`-tagged sentinel) is reproduced from a live
+/// scan's debug bundle (scan cdaf0195…), which showed `0.000000,0.000000
+/// [seed] — 15802 km from consensus` as a [MEDIUM] finding despite there
+/// being only ONE genuine coordinate source.
+#[test]
+fn radar_sentinel_seed_does_not_trigger_geo_divergence() {
+    let ents = vec![
+        ent(
+            "coordinates",
+            "0.000000,0.000000",
+            0.9,
+            50,
+            &["seed", "subject"],
+        ),
+        ent("coordinates", "-27.587302,152.926999", 0.9, 2, &[]),
+        ent("coordinates", "-27.587396,152.926844", 0.9, 2, &[]),
+    ];
+    let r = audit(&ents, LogSignals::default());
+    assert!(
+        !r.findings.iter().any(|f| f.category == "geo-divergence"),
+        "the radar sentinel must never be compared against real fixes as a \
+         location claim: findings = {:?}",
+        r.findings
+    );
+    // The sentinel is excluded entirely — only the 2 real fixes count.
+    assert_eq!(r.geo.coord_count, 2);
+    assert!(
+        r.geo.max_spread_km < 1.0,
+        "the 2 real fixes are metres apart"
+    );
+
+    // The raw sentinel form (pre-normalisation, "0,0") must be excluded too —
+    // `is_radar_sentinel` recognises both the raw and normalised spellings.
+    let ents_raw = vec![
+        ent("coordinates", "0,0", 0.9, 50, &["seed", "subject"]),
+        ent("coordinates", "-27.587302,152.926999", 0.9, 2, &[]),
+    ];
+    let r_raw = audit(&ents_raw, LogSignals::default());
+    assert_eq!(
+        r_raw.geo.coord_count, 1,
+        "the raw-form sentinel is excluded too"
+    );
+
+    // A GENUINE (0,0)-seeded scan is not the radar's use case, but a real
+    // subject coordinate anywhere else must still be cross-validated normally
+    // — this guard is scoped to the exact sentinel spellings, not "any
+    // near-origin value" or "any seed-tagged coordinate".
+    let ents_real_seed = vec![
+        ent(
+            "coordinates",
+            "35.4137,-114.1762",
+            0.9,
+            5,
+            &["seed", "subject"],
+        ),
+        ent("coordinates", "45.5019,-73.5674", 0.4, 1, &[]), // genuine outlier
+    ];
+    let r_real = audit(&ents_real_seed, LogSignals::default());
+    assert!(
+        r_real
+            .findings
+            .iter()
+            .any(|f| f.category == "geo-divergence"),
+        "a genuine seed coordinate must still be cross-validated against \
+         other fixes — only the exact radar sentinel is exempt"
+    );
+}
+
 #[test]
 fn noise_ratio_and_tiers_are_computed() {
     let ents = vec![
@@ -297,4 +434,74 @@ fn noise_ratio_and_tiers_are_computed() {
     let r = audit(&ents, LogSignals::default());
     assert_eq!(r.tiers, (1, 0, 2));
     assert!((r.noise_ratio - 2.0 / 3.0).abs() < 1e-9);
+}
+
+#[test]
+fn weak_corroboration_counts_distinct_sources_not_observation_magnitude() {
+    // Regression (live andersonbushikai.com scan, debug bundle 6b2d34664852…):
+    // the audit reported "76% of entities have a single source" when 14 of the
+    // 17 entities carried source_count=1 — 82%. It filtered on `corroboration`,
+    // the summed per-module observation MAGNITUDE, rather than the count of
+    // distinct sources. `Entity::source_count`'s own doc warns about exactly
+    // this: summed within-module counts "are NOT a count of independent
+    // sources", and using them "over-credited single-source findings".
+    //
+    // The bundle's shape: `mail.andersonbushikai.com` had one source
+    // (`dns_intel`) but corroboration=2 — two records from the SAME module — so
+    // it was scored as corroborated and the single-source share was understated.
+    let mut entities: Vec<AuditEntity> = Vec::new();
+    for i in 0..13 {
+        let mut e = ent("domain", &format!("single{i}.example.com"), 0.8, 1, &[]);
+        e.sources = vec!["dns_intel".into()];
+        entities.push(e);
+    }
+    // One source, but two same-module records — the entity the old check missed.
+    let mut magnitude_only = ent("domain", "mail.example.com", 0.8, 2, &[]);
+    magnitude_only.sources = vec!["dns_intel".into()];
+    entities.push(magnitude_only);
+    // Genuinely corroborated: three distinct sources.
+    for i in 0..3 {
+        let mut e = ent("domain", &format!("multi{i}.example.com"), 0.9, 3, &[]);
+        e.sources = vec!["dns_intel".into(), "doh_resolver".into(), "crtsh".into()];
+        entities.push(e);
+    }
+    assert_eq!(entities.len(), 17);
+
+    let r = audit(&entities, LogSignals::default());
+    let f = r
+        .findings
+        .iter()
+        .find(|f| f.category == "weak-corroboration")
+        .expect("14 of 17 single-source must raise the finding");
+    assert!(
+        f.message.starts_with("82%"),
+        "must report the distinct-source share (14/17 = 82%), got {:?}",
+        f.message
+    );
+}
+
+#[test]
+fn weak_corroboration_ignores_non_corroborating_sources() {
+    // A `seed` or `url_extract` record is the operator's own input restated, not
+    // an independent sighting, so an entity backed only by one real lookup plus
+    // one of those is still single-source for this finding — the same rule
+    // `Entity::source_count` applies.
+    let mut entities: Vec<AuditEntity> = Vec::new();
+    for i in 0..14 {
+        let mut e = ent("domain", &format!("d{i}.example.com"), 0.8, 1, &[]);
+        e.sources = vec!["dns_intel".into(), "seed".into(), "url_extract".into()];
+        entities.push(e);
+    }
+    for i in 0..3 {
+        let mut e = ent("domain", &format!("m{i}.example.com"), 0.9, 2, &[]);
+        e.sources = vec!["dns_intel".into(), "doh_resolver".into()];
+        entities.push(e);
+    }
+    let r = audit(&entities, LogSignals::default());
+    let f = r
+        .findings
+        .iter()
+        .find(|f| f.category == "weak-corroboration")
+        .expect("seed/url_extract must not mask single-source dominance");
+    assert!(f.message.starts_with("82%"), "got {:?}", f.message);
 }

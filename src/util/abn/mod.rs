@@ -122,7 +122,7 @@ pub fn derive_acn(s: &str) -> Option<String> {
     }
     // `is_valid_abn` guarantees exactly 11 decimal digits, so the trailing nine
     // are well defined.
-    let digits: String = s.chars().filter(char::is_ascii_digit).collect();
+    let digits = crate::util::str_util::ascii_digits(s);
     let acn = &digits[digits.len() - 9..];
     is_valid_acn(acn).then(|| acn.to_string())
 }

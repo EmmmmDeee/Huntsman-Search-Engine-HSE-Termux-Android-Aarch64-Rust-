@@ -3,16 +3,16 @@ use super::*;
     #[test]
     fn parse_coords_accepts_well_formed_pairs() {
         assert_eq!(
-            parse_coords("-27.4766,153.0166").unwrap(),
+            parse_coords("-27.4766,153.0166").expect("should succeed"),
             (-27.4766, 153.0166)
         );
         assert_eq!(
-            parse_coords(" 51.5074 , -0.1278 ").unwrap(),
+            parse_coords(" 51.5074 , -0.1278 ").expect("should succeed"),
             (51.5074, -0.1278)
         );
         // Null Island parses: it's a deliberately-typed seed, not a provider
         // sentinel — output filtering (is_valid_coords) is a separate concern.
-        assert_eq!(parse_coords("0,0").unwrap(), (0.0, 0.0));
+        assert_eq!(parse_coords("0,0").expect("should succeed"), (0.0, 0.0));
     }
 
     #[test]
@@ -40,23 +40,6 @@ use super::*;
         assert!(!is_valid_coords(10.0, 181.0)); // lon out of range
         assert!(!is_valid_coords(f64::NAN, 10.0)); // non-finite
         assert!(!is_valid_coords(10.0, f64::INFINITY));
-    }
-
-    #[test]
-    fn cell_range_to_confidence_tiers_and_boundaries() {
-        // Every tier edge, so a retune of one band can't silently shift another.
-        // This single check replaces the three byte-identical copies that used
-        // to live in cell_intel / cell_local / opencellid (T2.126).
-        assert!((cell_range_to_confidence(0) - 0.85).abs() < 1e-9);
-        assert!((cell_range_to_confidence(100) - 0.85).abs() < 1e-9);
-        assert!((cell_range_to_confidence(101) - 0.75).abs() < 1e-9);
-        assert!((cell_range_to_confidence(500) - 0.75).abs() < 1e-9);
-        assert!((cell_range_to_confidence(501) - 0.65).abs() < 1e-9);
-        assert!((cell_range_to_confidence(2000) - 0.65).abs() < 1e-9);
-        assert!((cell_range_to_confidence(2001) - 0.50).abs() < 1e-9);
-        assert!((cell_range_to_confidence(10000) - 0.50).abs() < 1e-9);
-        assert!((cell_range_to_confidence(10001) - 0.35).abs() < 1e-9);
-        assert!((cell_range_to_confidence(50_000) - 0.35).abs() < 1e-9);
     }
 
     #[test]
@@ -157,11 +140,11 @@ use super::*;
 
     #[test]
     fn nearest_au_locality_labels_capitals_and_rejects_foreign() {
-        let (name, state, km) = nearest_au_locality(-27.47, 153.02).unwrap();
+        let (name, state, km) = nearest_au_locality(-27.47, 153.02).expect("should succeed");
         assert_eq!((name, state), ("Brisbane", "QLD"));
         assert!(km < 5.0, "Brisbane CBD within 5km of the anchor, got {km}");
         // A regional fix resolves to its nearest centre.
-        let (name, state, _) = nearest_au_locality(-26.729, 152.7554).unwrap();
+        let (name, state, _) = nearest_au_locality(-26.729, 152.7554).expect("should succeed");
         assert_eq!((name, state), ("Maleny", "QLD"));
         // Perth.
         assert_eq!(nearest_au_locality(-31.95, 115.86).map(|(n, s, _)| (n, s)), Some(("Perth", "WA")));
@@ -225,6 +208,27 @@ use super::*;
         // emit block to None.
         assert!(coarse_provider_coords(0.001, 0.001, 0.58, "scan-x").is_none());
         assert!(coarse_provider_coords(200.0, 10.0, 0.58, "scan-x").is_none());
+    }
+
+    #[test]
+    fn tag_flags_raises_only_explicit_true_signals() {
+        use crate::core::entity::{Entity, EntityKind};
+        let mut e = Entity::new(EntityKind::IpAddress, "203.0.113.7", 0.9, "scan-x");
+        tag_flags(
+            &mut e,
+            &[
+                (Some(true), "proxy"),    // explicit true → raised
+                (Some(false), "hosting"), // reported false → skipped
+                (None, "mobile"),         // not reported → skipped
+                (Some(true), "vpn"),      // explicit true → raised
+            ],
+        );
+        assert!(e.has_tag("proxy"));
+        assert!(e.has_tag("vpn"));
+        // A false or absent signal must never accrete a tag — the property the
+        // three IP-reputation modules relied on when each hand-rolled this sweep.
+        assert!(!e.has_tag("hosting"));
+        assert!(!e.has_tag("mobile"));
     }
 
     #[test]

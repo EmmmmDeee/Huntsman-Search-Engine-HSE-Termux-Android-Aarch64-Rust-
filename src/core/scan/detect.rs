@@ -142,7 +142,7 @@ pub(super) fn is_address_shaped(v: &str) -> bool {
 ///
 /// Matches:
 /// - Universal Analytics: `UA-XXXXXXX-X` (UA- + 4–10 digits + dash + 1–4 digits)
-/// - GA4:                  `G-XXXXXXXXXX` (G- + 2–12 alphanumeric)
+/// - GA4:                  `G-XXXXXXXXXX` (G- + exactly 10 alphanumeric, ≥1 digit)
 /// - Google Tag Manager:   `GTM-XXXXXXX`  (GTM- + 4–10 alphanumeric)
 /// - Google Ads:           `AW-XXXXXXXXX` (AW- + 9–12 digits)
 pub(super) fn is_tracking_id_shaped(v: &str) -> bool {
@@ -160,11 +160,16 @@ pub(super) fn is_tracking_id_shaped(v: &str) -> bool {
                 && b.chars().all(|c| c.is_ascii_digit());
         }
     }
-    // G-XXXXXXXXXX (GA4)
+    // G-XXXXXXXXXX (GA4). A real GA4 measurement ID is `G-` + exactly 10
+    // alphanumeric characters and always carries digits. The old `2..=12`
+    // alphanumeric window was permissive enough to swallow short pure-letter
+    // stage names — `G-Eazy`, `G-Unit`, `G-Dragon` — as tracking IDs. Pin the
+    // canonical length AND require at least one digit so a hyphenated name can
+    // never masquerade as a GA4 tag.
     if let Some(rest) = u.strip_prefix("G-") {
-        return rest.len() >= 2
-            && rest.len() <= 12
-            && rest.chars().all(|c| c.is_ascii_alphanumeric());
+        return rest.len() == 10
+            && rest.chars().all(|c| c.is_ascii_alphanumeric())
+            && rest.chars().any(|c| c.is_ascii_digit());
     }
     // GTM-XXXXXXX
     if let Some(rest) = u.strip_prefix("GTM-") {
@@ -177,4 +182,56 @@ pub(super) fn is_tracking_id_shaped(v: &str) -> bool {
         return rest.len() >= 9 && rest.len() <= 12 && rest.chars().all(|c| c.is_ascii_digit());
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracking_id_shape_accepts_every_real_google_form() {
+        for id in [
+            "UA-1234567-1", // Universal Analytics
+            "UA-12345678-12",
+            "G-ABCDE12345", // GA4: 10 alphanumeric with digits
+            "G-1234567890",
+            "GTM-XYZ12",    // Tag Manager
+            "AW-123456789", // Google Ads
+        ] {
+            assert!(is_tracking_id_shaped(id), "{id} must read as a tracking id");
+        }
+    }
+
+    #[test]
+    fn tracking_id_shape_rejects_hyphenated_names_and_malformed_ids() {
+        // Regression: the GA4 arm accepted `G-` + 2..=12 alphanumeric, so short
+        // pure-letter stage names were misclassified as tracking IDs. A GA4 id
+        // is exactly 10 alphanumeric with at least one digit.
+        for not_id in [
+            "G-Eazy",       // stage name — 4 letters, no digit
+            "G-Unit",       // 4 letters
+            "G-Dragon",     // 6 letters
+            "G-1",          // too short
+            "G-ABCDEFGHIJ", // 10 letters but no digit → not a GA4 id
+            "UA-12-1",      // UA left part too short
+            "AW-12345",     // Google Ads too short
+            "plainword",
+        ] {
+            assert!(
+                !is_tracking_id_shaped(not_id),
+                "{not_id} must NOT read as a tracking id"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_maps_a_real_ga4_id_to_tracking_id_but_not_a_name() {
+        use crate::core::scan::TargetKind;
+        assert_eq!(TargetKind::detect("G-ABCDE12345"), TargetKind::TrackingId);
+        assert_ne!(
+            TargetKind::detect("G-Eazy"),
+            TargetKind::TrackingId,
+            "a hyphenated name must not be detected as a tracking id"
+        );
+    }
 }

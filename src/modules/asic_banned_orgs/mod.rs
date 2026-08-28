@@ -16,13 +16,13 @@ use serde_json::{Map, Value};
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::ckan::{Response as CkanResp, datastore_search_url, field_str};
-use crate::util::http::fetch_json;
+use crate::util::ckan::{self, datastore_search_url};
 
 const SRC: &str = "asic_banned_orgs";
 /// data.gov.au CKAN action base — `datastore_search` is appended by
@@ -44,7 +44,7 @@ impl Module for AsicBannedOrgs {
     }
 
     fn description(&self) -> &'static str {
-        "ASIC Banned & Disqualified Organisations register (keyless) — org name → ban status, ACN, period"
+        "ASIC Banned & Disqualified Organisations recon (keyless) — pivots an org name to ban status, ACN, and period"
     }
 
     fn priority(&self) -> u8 {
@@ -104,7 +104,12 @@ impl Module for AsicBannedOrgs {
             .count();
         let matches_capped = total_matches > MAX_HITS;
 
-        let mut seed = Entity::new(EntityKind::Organisation, name, 0.55, &ctx.scan_id);
+        let mut seed = Entity::new(
+            EntityKind::Organisation,
+            name,
+            confidence::MEDIUM_HIGH,
+            &ctx.scan_id,
+        );
         seed.tag("asic");
         seed.tag("search-result");
         let mut ev = Evidence::new(
@@ -125,25 +130,22 @@ impl Module for AsicBannedOrgs {
 }
 
 /// Query the Banned & Disqualified Organisations datastore by free-text name,
-/// via the shared CKAN envelope (T2.118). Unlike the previous hand-rolled fetch
+/// via the shared CKAN helper (T2.118). Unlike the previous hand-rolled fetch
 /// — which collapsed a transport error, a non-2xx status, a body-read failure,
 /// AND a CKAN application error (`success: false`, returned with HTTP 200) all
 /// into an empty `Vec` indistinguishable from a genuine "no banned org by this
-/// name" — every real failure now surfaces: `fetch_json` propagates transport/
+/// name" — every real failure now surfaces through
+/// [`crate::util::ckan::validated_result`]: `fetch_json` propagates transport/
 /// status/parse failures via `?`, and a `success == Some(false)` envelope
 /// (bad resource id / datastore offline / rate-limit) becomes an explicit
 /// `Error::module`. A genuine empty result set (no `result`, or an empty
 /// `records`) is still the honest clean miss.
 async fn ckan_query(ctx: &ModuleContext, name: &str) -> Result<Vec<Map<String, Value>>> {
     let url = datastore_search_url(CKAN_BASE, RES, name, MAX_HITS);
-    let resp: CkanResp = fetch_json(&ctx.http, SRC, &url).await?;
-    if resp.success == Some(false) {
-        return Err(Error::module(
-            SRC,
-            "CKAN datastore_search returned success=false (bad resource id or portal error)",
-        ));
-    }
-    Ok(resp.result.map(|r| r.records).unwrap_or_default())
+    Ok(crate::util::ckan::validated_result(&ctx.http, SRC, &url)
+        .await?
+        .map(|r| r.records)
+        .unwrap_or_default())
 }
 
 fn name_tokens(name: &str) -> Vec<String> {
@@ -187,7 +189,12 @@ fn emit_banned_org(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleR
         }
     }
 
-    let mut org = Entity::new(EntityKind::Organisation, &org_name, 0.60, scan_id);
+    let mut org = Entity::new(
+        EntityKind::Organisation,
+        &org_name,
+        confidence::MEDIUM_PLUS,
+        scan_id,
+    );
     org.tag("au");
     org.tag("asic");
     org.tag("asic-banned");
@@ -195,11 +202,10 @@ fn emit_banned_org(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleR
     org.add_evidence(ev.clone());
     result.push(org);
 
-    // The ACN (9 digits) — a pivot into the company register.
-    if let Some(acn) =
-        field(rec, "BD_ORG_ACN").filter(|a| a.chars().filter(char::is_ascii_digit).count() == 9)
-    {
-        let mut e = Entity::new(EntityKind::AbnAcn, &acn, 0.62, scan_id);
+    // The ACN — a pivot into the company register, kept only when it is a
+    // genuinely checksum-valid ACN rather than merely 9 digits.
+    if let Some(acn) = field(rec, "BD_ORG_ACN").filter(|a| crate::util::abn::is_valid_acn(a)) {
+        let mut e = Entity::new(EntityKind::AbnAcn, &acn, confidence::NOTABLE, scan_id);
         e.tag("au");
         e.tag("asic");
         e.tag("asic-banned");
@@ -212,14 +218,13 @@ fn emit_banned_org(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleR
     }
 }
 
-/// A usable ASIC field value: the shared CKAN [`field_str`] stringification
-/// (CONVENTIONS §4 — one stringifier, not a per-module copy) with this
-/// register's dataset-specific sentinel filter on top. ASIC stores an absent
-/// value as the literal `"null"` or `"Not available"` text, which `field_str`
-/// (which only drops JSON null / empty) would otherwise surface as a real value.
+/// A usable ASIC field value: the shared [`ckan::field`] (null-filtered
+/// stringification) with this register's own extra sentinel on top — ASIC
+/// stores an absent value here as the literal `"null"` **or** `"Not
+/// available"` text, and only the former is a generic-enough CKAN quirk to
+/// live in the shared helper.
 fn field(rec: &Map<String, Value>, key: &str) -> Option<String> {
-    field_str(rec, key)
-        .filter(|s| !s.eq_ignore_ascii_case("null") && !s.eq_ignore_ascii_case("Not available"))
+    ckan::field(rec, key).filter(|s| !s.eq_ignore_ascii_case("Not available"))
 }
 
 #[cfg(test)]

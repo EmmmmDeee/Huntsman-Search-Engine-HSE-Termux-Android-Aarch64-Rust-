@@ -10,6 +10,7 @@ mod tests;
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -26,39 +27,17 @@ pub struct AcmaRrl;
 ///
 /// A deliberately dependency-free HTML walk (no scraper/html5ever crate, in
 /// keeping with the lean Termux build): it splits on `<tr>`/`</tr>`, pulls each
-/// `<td>` via [`strip_html_tags`], and keeps rows with at least three cells.
+/// `<td>` via [`strip_tags_plain`](crate::util::html::strip_tags_plain), and
+/// keeps rows with at least three cells.
 /// The header row (`Licensee`) and rows missing a name or licence number are
 /// dropped, so the result is data-only. Pure given `html` — unit-testable
 /// against a captured response without a network round-trip.
 pub(super) fn parse_acma_html(html: &str) -> Vec<(String, String, String)> {
-    // Returns Vec<(licensee_name, licence_number, service)>
+    // Returns Vec<(licensee_name, licence_number, service)>. The `<tr>`/`<td>`
+    // table walk is shared via `util::html::table_rows`; this keeps only the
+    // ACMA-specific column mapping and header/empty-row drop.
     let mut results = Vec::new();
-    let mut remaining = html;
-    while let Some(row_start) = remaining.find("<tr") {
-        remaining = &remaining[row_start + 3..];
-        let Some(row_end) = remaining.find("</tr>") else {
-            break;
-        };
-        let row = &remaining[..row_end];
-        remaining = &remaining[row_end + 5..];
-
-        let cells: Vec<String> = {
-            let mut cells = Vec::new();
-            let mut r = row;
-            while let Some(td_start) = r.find("<td") {
-                r = &r[td_start..];
-                let Some(td_content_start) = r.find('>') else {
-                    break;
-                };
-                r = &r[td_content_start + 1..];
-                let Some(td_end) = r.find("</td>") else { break };
-                let cell = &r[..td_end];
-                cells.push(strip_html_tags(cell).trim().to_string());
-                r = &r[td_end + 5..];
-            }
-            cells
-        };
-
+    for cells in crate::util::html::table_rows(html) {
         if cells.len() >= 3 {
             let name = cells[0].clone();
             let lic_no = cells[1].clone();
@@ -82,7 +61,7 @@ pub(super) fn build_licensee_entities(
 ) -> Vec<Entity> {
     let mut out = Vec::with_capacity(licences.len());
     for (name, lic_no, service) in licences {
-        let mut org = Entity::new(EntityKind::Organisation, name, 0.65, scan_id);
+        let mut org = Entity::new(EntityKind::Organisation, name, confidence::HIGH, scan_id);
         org.tag("acma");
         org.tag("radiocommunications-licensee");
         if !service.is_empty() {
@@ -124,25 +103,6 @@ pub(super) fn extract_abn_from_html(html: &str) -> Option<String> {
 /// A single-pass character filter that drops everything between `<` and `>`.
 /// Sufficient for the flat, well-formed RRL cells (no nested-bracket or
 /// entity-decoding concerns here); the caller trims the result.
-fn strip_html_tags(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for c in html.chars() {
-        match c {
-            '<' => {
-                in_tag = true;
-            }
-            '>' => {
-                in_tag = false;
-            }
-            _ if !in_tag => {
-                out.push(c);
-            }
-            _ => {}
-        }
-    }
-    out
-}
 
 #[async_trait]
 impl Module for AcmaRrl {
@@ -151,7 +111,7 @@ impl Module for AcmaRrl {
     }
 
     fn description(&self) -> &'static str {
-        "ACMA Radiocommunications Register: licence holders by organisation name, ABN, or coordinates"
+        "ACMA Radiocommunications Register recon — enumerates licence holders by organisation name, ABN, or coordinates"
     }
 
     fn priority(&self) -> u8 {
@@ -211,9 +171,9 @@ impl Module for AcmaRrl {
             .send_tagged(SRC)
             .await?;
 
-        if !resp.status().is_success() {
+        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
             return Ok(ModuleResult::new());
-        }
+        };
         let html = match crate::util::http::read_body_capped(resp, 512 * 1024).await {
             Some(s) => s,
             None => return Ok(ModuleResult::new()),
@@ -232,7 +192,12 @@ impl Module for AcmaRrl {
         if !licences.is_empty()
             && let Some(abn) = extract_abn_from_html(&html)
         {
-            let mut abn_entity = Entity::new(EntityKind::AbnAcn, &abn, 0.70, &ctx.scan_id);
+            let mut abn_entity = Entity::new(
+                EntityKind::AbnAcn,
+                &abn,
+                confidence::HIGH_PLUS,
+                &ctx.scan_id,
+            );
             abn_entity.tag("acma");
             let note = if licences.len() == 1 {
                 format!("ABN for {} from ACMA RRL", licences[0].0)

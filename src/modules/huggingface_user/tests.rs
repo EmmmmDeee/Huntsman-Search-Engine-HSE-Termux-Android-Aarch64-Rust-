@@ -40,8 +40,8 @@ fn emits_person_from_multi_word_fullname() {
     let ents = build_entities(user, "scan-hf-002");
     let p = ents.iter().find(|e| e.kind == EntityKind::Person);
     assert!(p.is_some(), "must emit Person from two-word fullname");
-    assert_eq!(p.unwrap().value, "Alice Smith");
-    assert!(p.unwrap().has_tag("huggingface"));
+    assert_eq!(p.expect("should succeed").value, "Alice Smith");
+    assert!(p.expect("should succeed").has_tag("huggingface"));
 }
 
 #[test]
@@ -81,8 +81,8 @@ fn emits_org_using_fullname_when_available() {
     let ents = build_entities(user, "scan-hf-005");
     let org = ents.iter().find(|e| e.kind == EntityKind::Organisation);
     assert!(org.is_some(), "must emit Organisation for org membership");
-    assert_eq!(org.unwrap().value, "Hugging Face Inc.");
-    assert!(org.unwrap().has_tag("org-member"));
+    assert_eq!(org.expect("should succeed").value, "Hugging Face Inc.");
+    assert!(org.expect("should succeed").has_tag("org-member"));
 }
 
 #[test]

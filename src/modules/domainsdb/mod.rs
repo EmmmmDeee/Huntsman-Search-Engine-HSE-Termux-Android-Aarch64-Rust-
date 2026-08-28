@@ -30,8 +30,9 @@ use serde::Deserialize;
 use std::collections::HashSet;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -42,11 +43,6 @@ use crate::core::{
 const KEY_ENV: &str = "HUNTSMAN_DOMAINSDB_KEY";
 
 const SRC: &str = "domainsdb";
-
-/// TLD zones the look-alike search fans across. A countable list (not an inline
-/// array literal) so the "every zone failed at the transport level" outage check
-/// can compare against its length — see [`all_zones_failed_transport`].
-const ZONES: &[&str] = &["com", "net", "org", "io", "com.au", "co.uk"];
 
 /// A keyword matching more than this many domains in a single TLD is generic;
 /// its hits are keyword coincidences, not target-specific, so they are tagged
@@ -87,9 +83,13 @@ fn build_domain_entity(entry: &DomainEntry, broad_match: bool, scan_id: &str) ->
         return None;
     }
     let is_dead = entry.is_dead.as_deref() == Some("True");
-    // Live domain 0.55, dead 0.35; a broad keyword match is weakly related to
+    // Live domain confidence::MEDIUM_HIGH, dead 0.35; a broad keyword match is weakly related to
     // the target, so dampen it (0.7×).
-    let mut conf = if is_dead { 0.35 } else { 0.55 };
+    let mut conf = if is_dead {
+        0.35
+    } else {
+        confidence::MEDIUM_HIGH
+    };
     if broad_match {
         conf *= 0.7;
     }
@@ -124,7 +124,7 @@ impl Module for DomainsDb {
         "domainsdb"
     }
     fn description(&self) -> &'static str {
-        "Domain registration search via domainsdb.info (free, no key)"
+        "Domain-registration recon via domainsdb.info — sweeps registered domains for infrastructure pivots (free, no key)"
     }
     fn priority(&self) -> u8 {
         19
@@ -197,88 +197,108 @@ impl Module for DomainsDb {
             _ => return Ok(ModuleResult::new()),
         };
 
-        let mut result = ModuleResult::new();
-        let mut seen: HashSet<String> = HashSet::new();
-        // Count zones whose request never got an answer (transport-level failure),
-        // kept separate from zones that answered with no match, so a total network
-        // outage is told apart from a genuine "no look-alike domains" (mirrors
-        // api_key_probe's all_probes_failed_to_execute, T2.123).
-        let mut transport_failures = 0usize;
-
-        for zone in ZONES {
-            if ctx.cancel.is_cancelled() {
-                break;
-            }
-            let url = format!(
-                "https://api.domainsdb.info/v1/domains/search?domain={}&zone={zone}&limit=20",
-                crate::util::http::urlencode(&query)
-            );
-            let resp = ctx
-                .http
-                .get(&url)
-                .header("Authorization", format!("Bearer {key}"))
-                .timeout(std::time::Duration::from_secs(8))
-                .send()
-                .await;
-            let Ok(r) = resp else {
-                transport_failures += 1;
-                continue;
-            };
-            let status = r.status().as_u16();
-            // An auth failure on a configured key is retry-futile for every
-            // remaining zone (same key, same rejection), and it must not be
-            // swallowed the way the pre-fix loop swallowed the anonymous 401:
-            // report the key to the pool so a later scan rotates to another,
-            // then stop — the surfaced error is the operator's signal that the
-            // configured domainsdb key is bad/expired, not that the subject has
-            // no look-alike domains.
-            if status == 401 || status == 403 {
-                ctx.report_key_exhausted(SRC, key, status);
-                break;
-            }
-            if !r.status().is_success() {
-                continue;
-            }
-            let Ok(data) = crate::util::http::json_scanned::<DbResp>(r, SRC).await else {
-                continue;
-            };
-
-            let broad_match = data.total.is_some_and(|t| t > BROAD_MATCH_THRESHOLD);
-            result.extend(data.domains.iter().filter_map(|entry| {
-                if !seen.insert(entry.domain.trim().to_lowercase()) {
-                    return None;
-                }
-                build_domain_entity(entry, broad_match, &ctx.scan_id)
-            }));
+        // `report_key_exhausted` needs the context, so `collect_zones` records
+        // the rejecting status instead of touching the pool itself — that keeps
+        // it free of `ModuleContext` (and therefore of the pool's `$HOME` write)
+        // so the rejected-key contract below is testable against a loopback
+        // listener. The key is still reported on BOTH the error and the
+        // partial-success path, so rotation happens either way.
+        let mut auth_rejected = None;
+        let out = collect_zones(
+            &ctx.http,
+            BASE_URL,
+            key,
+            &query,
+            &ctx.scan_id,
+            &ctx.cancel,
+            &mut auth_rejected,
+        )
+        .await;
+        if let Some(status) = auth_rejected {
+            ctx.report_key_exhausted(SRC, key, status);
         }
-
-        // If EVERY zone query failed at the transport level and nothing was found,
-        // the lookup could not execute — surface it rather than return the empty
-        // result an operator can't tell from "the subject has no look-alike
-        // domains". A zone that answered (200-empty, a non-2xx, a 401/403 break,
-        // or an early cancel) keeps the counter below the zone count and stays a
-        // clean Ok-empty. (T2.123 api_key_probe pattern.)
-        if all_zones_failed_transport(transport_failures, ZONES.len(), result.entities.len()) {
-            return Err(Error::module(
-                SRC,
-                "every domainsdb zone query failed at the transport level (no network \
-                 reachable?) — cannot determine whether the subject has look-alike domains"
-                    .to_string(),
-            ));
-        }
-        Ok(result)
+        out
     }
 }
 
-/// True when every zone query failed at the transport level and nothing was
-/// found — the "no network reachable" state that must surface as an `Err` rather
-/// than masquerade as "no look-alike domains". A zone that answered at all (even
-/// with no match, a non-2xx, or a key rejection) reached the server, so any
-/// response keeps this `false`; an early cancel (fewer zones attempted) likewise
-/// leaves `transport_failures` below `total_zones`. Pure — unit-testable off the
-/// counters. Mirrors `api_key_probe::all_probes_failed_to_execute`.
-fn all_zones_failed_transport(transport_failures: usize, total_zones: usize, found: usize) -> bool {
-    found == 0 && total_zones > 0 && transport_failures == total_zones
+/// Endpoint the zone sweep queries. Parameterised at [`collect_zones`] rather
+/// than inlined so the rejected-key path can be driven from a loopback test.
+pub(super) const BASE_URL: &str = "https://api.domainsdb.info/v1/domains/search";
+
+/// Env-free core of [`DomainsDb::process`]: query every zone against `base`.
+///
+/// On a 401/403 the rejecting status is written to `auth_rejected` (the caller
+/// owns the pool report — this fn does no pool IO) and the sweep stops, since
+/// the same key earns the same rejection from every remaining zone.
+///
+/// If nothing at all was collected, that rejection is returned as an `Err`
+/// rather than an empty `Ok`. A dead key must never be indistinguishable from
+/// "this subject has no look-alike domains" — the invariant
+/// [`ModuleResult::or_hard_failure`] exists to enforce, and which the sibling
+/// keyed modules in this house style (`hunter_io`, `whoisxml`) already honour.
+/// Because `or_hard_failure` only errors when the result is empty, findings
+/// collected from earlier zones are never discarded by a later zone's rejection.
+async fn collect_zones(
+    http: &reqwest::Client,
+    base: &str,
+    key: &str,
+    query: &str,
+    scan_id: &str,
+    cancel: &crate::core::cancel::CancelHandle,
+    auth_rejected: &mut Option<u16>,
+) -> Result<ModuleResult> {
+    let mut result = ModuleResult::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for zone in &["com", "net", "org", "io", "com.au", "co.uk"] {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let url = format!(
+            "{base}?domain={}&zone={zone}&limit=20",
+            crate::util::http::urlencode(query)
+        );
+        let resp = http
+            .get(&url)
+            .header("Authorization", format!("Bearer {key}"))
+            .timeout(std::time::Duration::from_secs(8))
+            .send()
+            .await;
+        let Ok(r) = resp else { continue };
+        let status = r.status().as_u16();
+        // An auth failure on a configured key is retry-futile for every
+        // remaining zone (same key, same rejection), and it must not be
+        // swallowed the way the pre-fix loop swallowed the anonymous 401:
+        // record it so the caller reports the key to the pool (a later scan
+        // rotates to another), then stop — the surfaced error is the operator's
+        // signal that the configured domainsdb key is bad/expired, not that the
+        // subject has no look-alike domains.
+        if status == 401 || status == 403 {
+            *auth_rejected = Some(status);
+            break;
+        }
+        if !r.status().is_success() {
+            continue;
+        }
+        let Ok(data) = crate::util::http::json_scanned::<DbResp>(r, SRC).await else {
+            continue;
+        };
+
+        let broad_match = data.total.is_some_and(|t| t > BROAD_MATCH_THRESHOLD);
+        result.extend(data.domains.iter().filter_map(|entry| {
+            if !seen.insert(entry.domain.trim().to_lowercase()) {
+                return None;
+            }
+            build_domain_entity(entry, broad_match, scan_id)
+        }));
+    }
+
+    result.or_hard_failure(auth_rejected.map(|s| {
+        crate::core::error::Error::module(
+            SRC,
+            format!("HTTP {s} — the configured domainsdb key was rejected"),
+        )
+    }))
 }
 
 #[cfg(test)]

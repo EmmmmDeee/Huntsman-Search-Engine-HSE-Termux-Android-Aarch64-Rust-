@@ -23,20 +23,22 @@ pub(super) const TERMUX_MODULE_TIMEOUT_CAP_MS: u64 = 45_000;
 
 pub(super) fn resolve_timeout(opts: &ScanOptions, module: &dyn Module) -> u64 {
     let user_set = opts.module_timeout_ms;
-    let is_termux = crate::is_termux();
+    // Capability, not identity: a small container is as constrained as a
+    // phone and must get the same trimmed budget (see core::platform).
+    let constrained = crate::core::platform::is_resource_constrained();
     // On Termux, consult the module's Termux-specific budget (defaults to
     // max_timeout_ms, so most modules are unaffected) so phone-pathological
     // modules self-trim; off Termux, the full desktop budget. A user-pinned
     // --module-timeout replaces both and is honoured verbatim by the cap.
     let base = match user_set {
         Some(ms) => ms,
-        None if is_termux => module.termux_timeout_ms(),
+        None if constrained => module.termux_timeout_ms(),
         None => module.max_timeout_ms(),
     };
     apply_termux_cap(
         base,
         user_set.is_some(),
-        is_termux,
+        constrained,
         module.termux_timeout_cap_exempt(),
     )
 }

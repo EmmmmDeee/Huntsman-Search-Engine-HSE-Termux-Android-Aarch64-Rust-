@@ -1,28 +1,37 @@
 //! GitLab user lookup. Free, no key — the official public REST API.
 //!
 //! Endpoint: `GET https://gitlab.com/api/v4/users?username={username}`
-//! Returns a JSON array (0 or 1 element for an exact username query):
+//! Returns a JSON array (0 or 1 element for an exact username query). The
+//! UNAUTHENTICATED response is the basic public view (confirmed live):
 //!
 //! ```json
-//! [{"id":1,"username":"alice","name":"Alice Smith",
-//!   "bio":"…","website_url":"https://alice.dev",
-//!   "location":"Sydney, AU","organization":"Acme Corp",
-//!   "twitter":"alicetw","linkedin":"aliceli"}]
+//! [{"id":1,"username":"alice","name":"Alice Smith","state":"active",
+//!   "avatar_url":"https://…","web_url":"https://gitlab.com/alice",
+//!   "public_email":"alice@example.com"}]
 //! ```
+//!
+//! The richer fields (`bio`, `location`, `organization`, `twitter`, `linkedin`,
+//! `website_url`, `created_at`) are NOT returned without an authentication token
+//! — the struct keeps them (`#[serde(default)]`) so a keyed deployment still
+//! populates them, but a keyless scan realistically gets username + name +
+//! `public_email`. That public email is the high-value pivot this module now
+//! surfaces (it was previously dropped).
 //!
 //! Why it earns a place in the keyless-API set: GitLab is a major code-hosting
 //! platform independent of GitHub — a confirmed account here is in the **code**
-//! source family (separate from GitHub, npmjs, crates.io) so it adds genuine
+//! source family (separate from GitHub, npmjs, crates.io), adding genuine
 //! cross-service diversity to AU-045 multi-service identity confirmation and the
-//! AU-062 multi-pathway corroboration rule. The profile exposes `twitter`,
-//! `linkedin`, `website_url`, `location`, and `organization` for direct
-//! cross-platform pivoting. Official, stable, keyless for public profiles.
+//! AU-062 multi-pathway corroboration rule. Official, stable, keyless.
+
+#[cfg(test)]
+mod tests;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -39,6 +48,11 @@ pub(super) struct GlUser {
     pub(super) username: String,
     #[serde(default)]
     pub(super) name: Option<String>,
+    /// The account's PUBLIC email — the one rich field the unauthenticated
+    /// `/users?username=` endpoint actually returns (confirmed live), and a
+    /// direct, high-confidence contact pivot the module previously dropped.
+    #[serde(default)]
+    pub(super) public_email: Option<String>,
     #[serde(default)]
     pub(super) bio: Option<String>,
     #[serde(default)]
@@ -62,7 +76,7 @@ impl Module for GitlabUser {
     }
 
     fn description(&self) -> &'static str {
-        "GitLab account lookup (name, bio, Twitter/LinkedIn pivots, org, location) via public API"
+        "GitLab account recon (public API) — harvests name, bio, org, location, and Twitter/LinkedIn pivots"
     }
 
     fn priority(&self) -> u8 {
@@ -137,8 +151,23 @@ impl Module for GitlabUser {
 pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
-    // Confirmed-on-GitLab username.
-    let mut u = Entity::new(EntityKind::Username, &user.username, 0.90, scan_id);
+    // Confirmed-on-GitLab username — a direct, successful, unauthenticated
+    // API lookup with no further corroboration, the same evidence class as
+    // gitea_user's "Confirmed username on Gitea.com" (src/modules/gitea_user/
+    // mod.rs). HIGH_PLUSPLUS_PLUS matches that module and is the dominant
+    // tier across single-service confirmed-account modules generally (10 of
+    // ~20 surveyed: bluesky_user, chess_profile, dockerhub_user, gitea_user,
+    // launchpad_user, mastodon_user, plc_directory, pypi_user, rubygems_user,
+    // gaming_profile's Minecraft check) — VERY_HIGH_PLUS was a minority
+    // outlier (OD-19, .agent/state.json) with no documented reason for
+    // ranking a confirmed GitLab account above the equivalent signal
+    // elsewhere.
+    let mut u = Entity::new(
+        EntityKind::Username,
+        &user.username,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     u.tag("gitlab");
     u.tag("code");
     let mut ev = Evidence::new(SRC, format!("GitLab account '{}'", user.username)).with_attr(
@@ -151,9 +180,37 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
     u.add_evidence(ev);
     result.push(u);
 
+    // Public email — the account owner's self-published contact address (the one
+    // rich field the keyless endpoint returns). A confirmed, directly-pivotable
+    // Email, so it carries high confidence.
+    if let Some(email) = user
+        .public_email
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| e.contains('@') && e.len() >= 5)
+    {
+        let mut em = Entity::new(
+            EntityKind::Email,
+            email,
+            confidence::HIGH_PLUSPLUS_PLUS,
+            scan_id,
+        );
+        em.tag("gitlab");
+        em.tag("public-profile");
+        em.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("Public email from GitLab profile of '{}'", user.username),
+            )
+            .with_attr("source_field", "public_email")
+            .with_attr("gitlab_user", &user.username),
+        );
+        result.push(em);
+    }
+
     // Real name → Person (non-placeholder, ≥ 2 tokens).
     if let Some(name) = user.name.as_deref()
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.72, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::ATTRIBUTED, scan_id)
     {
         p.tag("gitlab");
         p.tag("derived");
@@ -172,7 +229,12 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
         && !org.trim().is_empty()
         && org.len() <= 200
     {
-        let mut o = Entity::new(EntityKind::Organisation, org.trim(), 0.45, scan_id);
+        let mut o = Entity::new(
+            EntityKind::Organisation,
+            org.trim(),
+            confidence::LOW_MEDIUM,
+            scan_id,
+        );
         o.tag("gitlab");
         o.tag("self-asserted");
         o.add_evidence(
@@ -192,7 +254,12 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
     {
         let tw_clean = tw.trim_start_matches('@');
         if !tw_clean.is_empty() {
-            let mut t = Entity::new(EntityKind::Username, tw_clean, 0.80, scan_id);
+            let mut t = Entity::new(
+                EntityKind::Username,
+                tw_clean,
+                confidence::HIGH_PLUSPLUS,
+                scan_id,
+            );
             t.tag("twitter");
             t.tag("gitlab-pivot");
             t.add_evidence(
@@ -221,7 +288,7 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
                 crate::util::http::urlencode(li_val)
             )
         };
-        let mut url_e = Entity::new(EntityKind::Url, &li_url, 0.70, scan_id);
+        let mut url_e = Entity::new(EntityKind::Url, &li_url, confidence::HIGH_PLUS, scan_id);
         url_e.tag("linkedin");
         url_e.tag("gitlab-pivot");
         url_e.add_evidence(
@@ -238,7 +305,12 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
     // Website URL + Domain. The Url and Domain carry distinct evidence, so the
     // kit's stable [Url, Domain] ordering is decorated per-kind.
     if let Some(site) = user.website_url.as_deref() {
-        for mut e in profile_kit::website_url_and_domain(site, 0.72, 0.65, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(
+            site,
+            confidence::ATTRIBUTED,
+            confidence::HIGH,
+            scan_id,
+        ) {
             match e.kind {
                 EntityKind::Domain => {
                     e.tag("gitlab");
@@ -302,7 +374,7 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
 
     // Bio: extract emails.
     if let Some(bio) = user.bio.as_deref() {
-        for mut e in profile_kit::bio_emails(bio, 0.72, scan_id) {
+        for mut e in profile_kit::bio_emails(bio, confidence::ATTRIBUTED, scan_id) {
             e.tag("gitlab");
             e.tag("public-profile");
             e.add_evidence(
@@ -314,102 +386,4 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
     }
 
     result.entities
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_user(
-        username: &str,
-        name: Option<&str>,
-        twitter: Option<&str>,
-        website: Option<&str>,
-        location: Option<&str>,
-        org: Option<&str>,
-    ) -> GlUser {
-        GlUser {
-            username: username.to_string(),
-            name: name.map(str::to_string),
-            bio: None,
-            website_url: website.map(str::to_string),
-            location: location.map(str::to_string),
-            organization: org.map(str::to_string),
-            twitter: twitter.map(str::to_string),
-            linkedin: None,
-            created_at: Some("2019-01-01T00:00:00Z".to_string()),
-        }
-    }
-
-    #[test]
-    fn builds_username_entity_confirmed_on_gitlab() {
-        let user = make_user("gluser", None, None, None, None, None);
-        let ents = build_entities(user, "scan-gl-001");
-        let u = ents
-            .iter()
-            .find(|e| e.kind == EntityKind::Username && e.value == "gluser");
-        assert!(u.is_some(), "must emit Username entity");
-        assert!((u.unwrap().confidence - 0.90).abs() < 0.01);
-        assert!(u.unwrap().has_tag("gitlab") && u.unwrap().has_tag("code"));
-    }
-
-    #[test]
-    fn emits_person_from_full_name() {
-        let user = make_user("gluser", Some("Alice Coder"), None, None, None, None);
-        let ents = build_entities(user, "scan-gl-002");
-        let p = ents.iter().find(|e| e.kind == EntityKind::Person);
-        assert!(p.is_some(), "must emit Person from multi-word name");
-        assert_eq!(p.unwrap().value, "Alice Coder");
-    }
-
-    #[test]
-    fn emits_twitter_pivot_stripping_at() {
-        let user = make_user("gluser", None, Some("@alicetw"), None, None, None);
-        let ents = build_entities(user, "scan-gl-003");
-        let tw = ents
-            .iter()
-            .find(|e| e.kind == EntityKind::Username && e.has_tag("twitter"));
-        assert_eq!(tw.map(|e| e.value.as_str()), Some("alicetw"));
-    }
-
-    #[test]
-    fn emits_website_url_and_domain() {
-        let user = make_user("gluser", None, None, Some("https://alice.dev"), None, None);
-        let ents = build_entities(user, "scan-gl-004");
-        assert!(
-            ents.iter()
-                .any(|e| e.kind == EntityKind::Url && e.value == "https://alice.dev")
-        );
-        assert!(
-            ents.iter()
-                .any(|e| e.kind == EntityKind::Domain && e.value == "alice.dev")
-        );
-    }
-
-    #[test]
-    fn emits_address_from_location() {
-        let user = make_user("gluser", None, None, None, Some("Berlin, DE"), None);
-        let ents = build_entities(user, "scan-gl-005");
-        let a = ents.iter().find(|e| e.kind == EntityKind::Address);
-        assert!(a.is_some());
-        assert_eq!(a.unwrap().value, "Berlin, DE");
-        assert!(a.unwrap().has_tag("self-asserted"));
-    }
-
-    #[test]
-    fn emits_organisation_from_org_field() {
-        let user = make_user("gluser", None, None, None, None, Some("Acme Corp"));
-        let ents = build_entities(user, "scan-gl-006");
-        let o = ents.iter().find(|e| e.kind == EntityKind::Organisation);
-        assert!(o.is_some(), "must emit Organisation from org field");
-        assert_eq!(o.unwrap().value, "Acme Corp");
-    }
-
-    #[test]
-    fn no_entities_for_absent_optional_fields() {
-        let user = make_user("quietuser", None, None, None, None, None);
-        let ents = build_entities(user, "scan-gl-007");
-        assert_eq!(ents.len(), 1, "only Username when no optional fields");
-        assert_eq!(ents[0].kind, EntityKind::Username);
-    }
 }

@@ -28,6 +28,141 @@ pub fn strip_html(html: &str) -> String {
     decode_entities(&no_tags)
 }
 
+/// Strip HTML **tags only** — drop every `<…>` span and keep the text between,
+/// with no entity decoding and no `<script>`/`<style>` special-casing. A single
+/// left-to-right character scan (an `in_tag` toggle), so it never allocates a
+/// regex and is safe on arbitrary bytes.
+///
+/// This is the deliberately-minimal counterpart to [`strip_html`]: use it for a
+/// well-formed table cell whose text is already entity-free (the ACMA register
+/// and AHPRA practitioner ArcGIS/HTML tables), where decoding entities or
+/// excising script blocks would be wasted work. Reach for [`strip_html`] instead
+/// on a full page body that may carry entities or embedded script/style. One
+/// definition so the modules that each hand-rolled this exact `in_tag` loop stay
+/// in agreement.
+///
+/// ```
+/// use huntsman_search_engine::util::html::strip_tags_plain;
+///
+/// assert_eq!(strip_tags_plain("<td>Jane <b>Doe</b></td>"), "Jane Doe");
+/// assert_eq!(strip_tags_plain("no tags"), "no tags");
+/// ```
+#[must_use]
+pub fn strip_tags_plain(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Split an HTML fragment into table rows of trimmed, tag-stripped `<td>` cell
+/// text — one inner `Vec` per `<tr>`, in document order.
+///
+/// A deliberately small, dependency-free scanner (no HTML crate) for the simple
+/// server-rendered result tables the AU-register scrapers consume: it walks
+/// `<tr>…</tr>` spans and, within each, `<td …>…</td>` spans, running each cell
+/// through [`strip_tags_plain`] and trimming. Rows are returned verbatim,
+/// including short (`< N` cell) and header rows — each caller applies its own
+/// column count and header-drop policy, since those differ per register. `<th>`
+/// header cells are intentionally not collected, so a header row yields an empty
+/// (dropped-by-the-caller) cell vector, exactly as the hand-rolled copies did.
+///
+/// One definition so the modules that each hand-rolled this identical `<tr>`/
+/// `<td>` walk (`acma_rrl`, `ahpra`) stay in agreement.
+///
+/// ```
+/// use huntsman_search_engine::util::html::table_rows;
+///
+/// let html = "<table><tr><td>Jane <b>Doe</b></td><td> 42 </td></tr></table>";
+/// assert_eq!(table_rows(html), vec![vec!["Jane Doe".to_string(), "42".to_string()]]);
+/// ```
+#[must_use]
+pub fn table_rows(html: &str) -> Vec<Vec<String>> {
+    let mut rows = Vec::new();
+    let mut remaining = html;
+    while let Some(row_start) = remaining.find("<tr") {
+        remaining = &remaining[row_start + 3..];
+        let Some(row_end) = remaining.find("</tr>") else {
+            break;
+        };
+        let row = &remaining[..row_end];
+        remaining = &remaining[row_end + 5..];
+
+        let mut cells = Vec::new();
+        let mut r = row;
+        while let Some(td_start) = r.find("<td") {
+            r = &r[td_start..];
+            let Some(td_content_start) = r.find('>') else {
+                break;
+            };
+            r = &r[td_content_start + 1..];
+            let Some(td_end) = r.find("</td>") else { break };
+            let cell = &r[..td_end];
+            cells.push(strip_tags_plain(cell).trim().to_string());
+            r = &r[td_end + 5..];
+        }
+        rows.push(cells);
+    }
+    rows
+}
+
+/// True when `html` looks like an HTML document rather than a JSON/text payload.
+///
+/// Deliberately conservative — it requires an actual document opener at the very
+/// start (`<!doctype …` or `<html …`), not merely an angle bracket somewhere.
+/// A JSON error body that happens to quote markup in a message field must keep
+/// its verbatim treatment, so "contains `<html`" would be the wrong test.
+#[must_use]
+pub fn looks_like_document(html: &str) -> bool {
+    // `find_ascii_ci(…) == Some(0)` rather than `to_lowercase().starts_with(…)`:
+    // allocation-free, and it keeps every offset in this module derived from the
+    // original string (see [`title`] for why that matters).
+    use crate::util::str_util::find_ascii_ci;
+    let head = html.trim_start();
+    find_ascii_ci(head, "<!doctype html") == Some(0) || find_ascii_ci(head, "<html") == Some(0)
+}
+
+/// The document's `<title>` text — decoded and whitespace-collapsed — or `None`
+/// when there is no non-empty title.
+///
+/// For a CDN/WAF/origin error page the title is by far the most informative
+/// line in the document: Cloudflare answers an unreachable origin with
+/// `<title>example.com | 523: Origin is unreachable</title>` while the first
+/// several hundred characters of the same page are doctype and IE conditional
+/// comments carrying no diagnostic content at all.
+#[must_use]
+pub fn title(html: &str) -> Option<String> {
+    // `find_ascii_ci`, NOT `to_lowercase().find(…)`: `to_lowercase` is not
+    // byte-length-preserving (`İ` → `i̇`, `ẞ` → `ß`), so an offset taken from a
+    // lowercased copy can land mid-codepoint when used to slice the original and
+    // panic. Error bodies are fully upstream-controlled, so that input is
+    // reachable by anything an upstream chooses to return. See the helper's own
+    // docs — it exists for exactly this panic class.
+    use crate::util::str_util::find_ascii_ci;
+    let open = find_ascii_ci(html, "<title")?;
+    // Skip any attributes on the tag itself.
+    let after_open = open + html[open..].find('>')? + 1;
+    let close = after_open + find_ascii_ci(&html[after_open..], "</title>")?;
+    let text = collapse_whitespace(&decode_entities(&html[after_open..close]));
+    (!text.is_empty()).then_some(text)
+}
+
+/// Collapse every run of ASCII whitespace to a single space and trim the ends.
+///
+/// Tag-stripped markup is mostly inter-element whitespace, so the raw output of
+/// [`strip_html`] is unusable in a one-line message without this.
+#[must_use]
+pub fn collapse_whitespace(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Decode HTML entities in a single left-to-right pass: the named entities real
 /// markup uses (`&amp; &lt; &gt; &quot; &apos; &nbsp;`, plus the common
 /// typography/symbol set — see [`decode_one_entity`]) and ANY numeric character
@@ -37,6 +172,13 @@ pub fn strip_html(html: &str) -> String {
 /// bare/unknown/malformed `&…;` is emitted verbatim. The single, shared decoder
 /// for the whole codebase — `search_engines` delegates here so a title decoded in
 /// a module matches one decoded in core/util.
+/// The longest entity body this decoder will accept, in bytes — the text between
+/// `&` and `;`. The longest thing [`decode_one_entity`] recognises is a numeric
+/// character reference (`#x1F600`), and every named entity in its table is
+/// shorter. It bounds the `;` SEARCH, not just the result, which is what keeps
+/// the pass linear; see the comment in [`decode_entities`].
+const MAX_ENTITY_BODY: usize = 10;
+
 pub fn decode_entities(s: &str) -> String {
     if memchr(b'&', s.as_bytes()).is_none() {
         return s.to_string();
@@ -46,9 +188,32 @@ pub fn decode_entities(s: &str) -> String {
     while let Some(amp) = memchr(b'&', rest.as_bytes()) {
         out.push_str(&rest[..amp]);
         let inner = &rest[amp + 1..]; // text after the '&'
+        // Look for the terminating `;` ONLY within the longest body that could
+        // possibly be accepted.
+        //
+        // Scanning the whole remainder and rejecting afterwards — which is what
+        // `memchr(b';', inner.as_bytes()) && semi <= MAX_ENTITY_BODY` did — made
+        // this QUADRATIC in the number of ampersands. On a `&` with no `;` after
+        // it, memchr walked every remaining byte, the length test then rejected
+        // the hit, and the cursor advanced a single byte to do it all again. A
+        // body of N bare ampersands cost N scans of O(N).
+        //
+        // That is reachable from untrusted input on the primary target: the
+        // sitemap module hands this the whole `<loc>` span of a document the scan
+        // target serves, and `fetch_capped` admits 5 MiB. `tokio::time::timeout`
+        // does not bound it either — this is a synchronous CPU-bound call with no
+        // await point to cancel at, so the per-module budget cannot interrupt it.
+        // Measured on the equivalent transformation: 128 KB of `&` took 3.85 s
+        // before and 1.53 ms after, with time quadrupling per doubling of input.
+        //
+        // Bounding the SEARCH instead of the RESULT is exactly equivalent: the
+        // old code accepted a hit only when the first `;` was within
+        // `MAX_ENTITY_BODY`, and a window of that size finds precisely those
+        // hits. Every `&` now costs at most a `MAX_ENTITY_BODY + 1` byte scan, so
+        // the pass is linear.
+        let window = inner.len().min(MAX_ENTITY_BODY + 1);
         // `&` and `;` are single-byte ASCII so their byte offsets are valid char boundaries.
-        if let Some(semi) = memchr(b';', inner.as_bytes())
-            && semi <= 10
+        if let Some(semi) = memchr(b';', &inner.as_bytes()[..window])
             && let Some(ch) = decode_one_entity(&inner[..semi])
         {
             out.push(ch);

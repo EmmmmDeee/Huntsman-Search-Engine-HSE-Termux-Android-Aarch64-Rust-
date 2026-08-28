@@ -43,8 +43,7 @@ impl Module for NameIntel {
         SRC
     }
     fn description(&self) -> &'static str {
-        "NAMINT-style name intelligence: derive usernames, emails, Gravatars and \
-         platform search pivots from a full name (offline)"
+        "NAMINT-style name intelligence — derives usernames, emails, Gravatars, and platform search pivots from a full name (offline)"
     }
     fn priority(&self) -> u8 {
         97
@@ -160,8 +159,17 @@ impl Module for NameIntel {
         } else {
             Vec::new()
         };
-        for addr in &emails {
-            let mut e = Entity::new(EntityKind::Email, addr, permute::EMAIL_CONF, sid);
+        for se in &emails {
+            let addr = &se.addr;
+            // Confidence tracks the permutation's own P(handle)×P(provider)
+            // ranking rather than a flat floor, so downstream consumers can tell
+            // `first.last@gmail.com` from a tier-4 shape on a niche provider.
+            let mut e = Entity::new(
+                EntityKind::Email,
+                addr,
+                permute::email_confidence(se.score),
+                sid,
+            );
             e.tag("derived");
             e.tag("name-derived");
             e.tag("permuted");
@@ -177,7 +185,7 @@ impl Module for NameIntel {
         }
 
         // ── Search-query / people-search pivots ─────────────────────────────
-        for piv in permute::pivots(&name, emails.first().map(String::as_str)) {
+        for piv in permute::pivots(&name, emails.first().map(|se| se.addr.as_str())) {
             let mut e = Entity::new(EntityKind::Url, &piv.url, permute::PIVOT_CONF, sid);
             e.tag("search-pivot");
             e.tag("name-intel");

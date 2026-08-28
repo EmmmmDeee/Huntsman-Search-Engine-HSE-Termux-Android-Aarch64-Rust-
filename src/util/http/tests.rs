@@ -1,7 +1,8 @@
 use super::client::{build_client, build_client_with_trace};
 use super::fetch::{
     JSON_BODY_CAP, fetch_json, fetch_json_or_404, fetch_json_or_absent, fetch_json_probe,
-    is_keyed_error_status, key_tail, keyed_ok_or_404, parse_retry_after_secs, retry_after_secs,
+    is_keyed_error_status, key_tail, keyed_cascade, keyed_cascade_json, keyed_ok_or_404,
+    ok_or_absent, parse_retry_after_secs, retry_after_secs,
 };
 use super::redact::{redact_credentials, redact_literal_secrets};
 use super::ssrf::{filter_public, redirect_to_private_ip};
@@ -19,6 +20,56 @@ fn keyed_error_status_classification() {
     }
 }
 
+/// The fail-closed contract this helper exists to enforce: only a status the caller
+/// declared as absence becomes `Ok(None)`. The refusal statuses that the modules used
+/// to fold into an empty result — 403 scraper block, 429 throttle, 5xx outage — must
+/// come back as `Err`, naming the module, so a refusal can never be read as a negative
+/// claim about the subject.
+#[tokio::test]
+async fn ok_or_absent_separates_declared_absence_from_refusal() {
+    let resp = |code: u16| {
+        reqwest::Response::from(
+            http::Response::builder()
+                .status(code)
+                .body(String::new())
+                .expect("should succeed"),
+        )
+    };
+
+    assert!(
+        ok_or_absent("test_mod", resp(200), &[404])
+            .await
+            .expect("2xx is not an error")
+            .is_some(),
+        "a 2xx must be handed back for the caller to read"
+    );
+
+    assert!(
+        ok_or_absent("test_mod", resp(404), &[404])
+            .await
+            .expect("a declared absent status is not an error")
+            .is_none(),
+        "a declared absent status must be a clean miss"
+    );
+
+    // The regression this helper was added for.
+    for code in [403, 429, 500, 502, 503] {
+        let err = ok_or_absent("test_mod", resp(code), &[404])
+            .await
+            .expect_err("a refusal must not be reported as absence");
+        assert!(
+            err.to_string().contains("test_mod"),
+            "the error must name the module: {err}"
+        );
+    }
+
+    // `&[]` — the endpoint signals a miss inside a 200 body, so even 404 is a failure.
+    assert!(
+        ok_or_absent("test_mod", resp(404), &[]).await.is_err(),
+        "with no declared absent status, 404 is a failure like any other non-2xx"
+    );
+}
+
 #[tokio::test]
 async fn json_decode_parses_ok_and_tags_decode_errors_with_module() {
     use serde::Deserialize;
@@ -32,9 +83,9 @@ async fn json_decode_parses_ok_and_tags_decode_errors_with_module() {
         http::Response::builder()
             .status(200)
             .body(r#"{"a":7,"b":"x"}"#.to_string())
-            .unwrap(),
+            .expect("should succeed"),
     );
-    let v: V = json_decode("test_mod", ok).await.unwrap();
+    let v: V = json_decode("test_mod", ok).await.expect("should succeed");
     assert_eq!(
         v,
         V {
@@ -47,9 +98,11 @@ async fn json_decode_parses_ok_and_tags_decode_errors_with_module() {
         http::Response::builder()
             .status(200)
             .body("not json".to_string())
-            .unwrap(),
+            .expect("should succeed"),
     );
-    let err = json_decode::<V>("test_mod", bad).await.unwrap_err();
+    let err = json_decode::<V>("test_mod", bad)
+        .await
+        .expect_err("should be an error");
     assert!(
         err.to_string().contains("test_mod"),
         "decode error must name the module: {err}"
@@ -62,7 +115,7 @@ async fn send_tagged_maps_transport_errors_to_the_module() {
         .get("ftp://example.invalid/")
         .send_tagged("test_mod")
         .await
-        .unwrap_err();
+        .expect_err("should be an error");
     assert!(
         err.to_string().contains("test_mod"),
         "transport error must name the module: {err}"
@@ -100,7 +153,7 @@ async fn send_tagged_strips_url_so_secrets_and_pii_dont_leak() {
         .get("ftp://example.invalid/v1/lookup?apikey=SECRETKEY123&q=target@example.com")
         .send_tagged("test_mod")
         .await
-        .unwrap_err();
+        .expect_err("should be an error");
     let msg = err.to_string();
     assert!(
         !msg.contains("SECRETKEY123"),
@@ -132,26 +185,97 @@ async fn keyed_ok_or_404_classifies_miss_success_and_error() {
             http::Response::builder()
                 .status(code)
                 .body(String::new())
-                .unwrap(),
+                .expect("should succeed"),
         )
     };
 
     let miss = keyed_ok_or_404("test_mod", "k", &ctx, resp(404))
         .await
-        .unwrap();
+        .expect("should succeed");
     assert!(miss.is_none(), "404 must classify as a miss");
 
     let ok = keyed_ok_or_404("test_mod", "k", &ctx, resp(200))
         .await
-        .unwrap();
+        .expect("should succeed");
     assert!(ok.is_some(), "2xx must hand back the response");
 
     let err = keyed_ok_or_404("test_mod", "k", &ctx, resp(500))
         .await
-        .unwrap_err();
+        .expect_err("should be an error");
     assert!(
         err.to_string().contains("test_mod"),
         "non-2xx error must name the module: {err}"
+    );
+}
+
+#[tokio::test]
+async fn fetch_keyed_json_retries_once_on_a_transient_timeout() {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::AsyncWriteExt;
+
+    // A server whose FIRST connection is held open without replying (so the
+    // client times out — a transient error) and whose SECOND connection is
+    // answered immediately with a 200 JSON body. Each connection is handled in
+    // its own task, so conn2 is served while conn1 is still being held — no
+    // head-of-line blocking, so the timing margin is generous (not flaky).
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
+    let count = Arc::new(AtomicUsize::new(0));
+    let count_srv = count.clone();
+    tokio::spawn(async move {
+        loop {
+            let (mut sock, _) = listener.accept().await.expect("should succeed");
+            let n = count_srv.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                if n == 0 {
+                    // Hold the first connection open past the client timeout,
+                    // then let it drop — the client sees a timeout, not a reply.
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    let _ = sock.shutdown().await;
+                } else {
+                    let body = r#"{"ok":true}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                }
+            });
+        }
+    });
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = crate::core::module::ModuleContext {
+        scan_id: "test".into(),
+        bus,
+        http: reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_millis(400))
+            .build()
+            .expect("should succeed"),
+        keys: HashMap::from([("HUNTSMAN_TEST_KEY".to_string(), "k".to_string())]),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+
+    let body: Option<serde_json::Value> = super::fetch::fetch_keyed_json(
+        &ctx,
+        "test_mod",
+        &format!("http://{addr}/"),
+        "HUNTSMAN_TEST_KEY",
+        "x-api-key",
+    )
+    .await
+    .expect("the retry must recover the transient first-attempt timeout");
+    assert_eq!(body, Some(serde_json::json!({ "ok": true })));
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        2,
+        "exactly two connections: the timed-out first attempt + the retry"
     );
 }
 
@@ -169,12 +293,14 @@ fn curl_download_cap_mirrors_the_json_body_cap() {
 #[tokio::test]
 async fn traced_client_sends_x_huntsman_trace_header() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
     let server = tokio::spawn(async move {
-        let (mut sock, _) = listener.accept().await.unwrap();
+        let (mut sock, _) = listener.accept().await.expect("should succeed");
         let mut buf = vec![0u8; 4096];
-        let n = sock.read(&mut buf).await.unwrap();
+        let n = sock.read(&mut buf).await.expect("should succeed");
         let req = String::from_utf8_lossy(&buf[..n]).to_string();
         let _ = sock
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
@@ -183,11 +309,61 @@ async fn traced_client_sends_x_huntsman_trace_header() {
     });
     let client = build_client_with_trace("scan-abc123");
     let _ = client.get(format!("http://{addr}/")).send().await;
-    let req = server.await.unwrap().to_lowercase();
+    let req = server.await.expect("should succeed").to_lowercase();
     assert!(
         req.contains("x-huntsman-trace: scan-abc123"),
         "trace header missing; raw request was:\n{req}"
     );
+}
+
+#[tokio::test]
+async fn client_transparently_decompresses_a_gzip_encoded_response() {
+    use std::io::Write as _;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // What the client must read back AFTER reqwest decompresses the body. If gzip
+    // auto-decoding is off (the `gzip` feature or `.gzip(true)` missing), the
+    // client would try to JSON-parse the raw gzip bytes and this fails.
+    let json = r#"{"marker":"gzip-decoded-ok","n":42}"#;
+    // gzip-compress it — flate2 is already a direct dependency (see `cli::cells`).
+    let gz = {
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(json.as_bytes()).expect("should succeed");
+        e.finish().expect("should succeed")
+    };
+    assert!(
+        gz != json.as_bytes(),
+        "sanity: the served body is actually compressed"
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.expect("should succeed");
+        let mut buf = vec![0u8; 2048];
+        let _ = sock.read(&mut buf).await;
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+            gz.len()
+        );
+        let _ = sock.write_all(head.as_bytes()).await;
+        let _ = sock.write_all(&gz).await;
+        let _ = sock.flush().await;
+    });
+
+    let client = build_client();
+    crate::util::circuit_breaker::record_success("127.0.0.1"); // isolate from parallel breaker state
+    let v: serde_json::Value = fetch_json(&client, "test_gzip", &format!("http://{addr}/"))
+        .await
+        .expect("fetch_json must transparently decode a Content-Encoding: gzip body");
+    assert_eq!(
+        v["marker"], "gzip-decoded-ok",
+        "reqwest must decompress the gzip response body before parsing"
+    );
+    assert_eq!(v["n"], 42);
+    crate::util::circuit_breaker::record_success("127.0.0.1");
 }
 
 #[tokio::test]
@@ -196,10 +372,12 @@ async fn fetch_json_or_absent_maps_400_to_none_while_or_404_still_errors() {
 
     // A one-shot local server that answers with HTTP 400 + a Bluesky-shaped body.
     async fn serve_one_400() -> std::net::SocketAddr {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("should succeed");
+        let addr = listener.local_addr().expect("should succeed");
         tokio::spawn(async move {
-            let (mut sock, _) = listener.accept().await.unwrap();
+            let (mut sock, _) = listener.accept().await.expect("should succeed");
             let mut buf = vec![0u8; 2048];
             let _ = sock.read(&mut buf).await;
             let body = br#"{"error":"InvalidRequest","message":"Profile not found"}"#;
@@ -251,10 +429,12 @@ async fn fetch_json_propagates_a_non_2xx_status_as_err_not_a_silent_default() {
     // on the strength of this contract). A genuine fetch/status failure must
     // surface as `Err`, never be silently indistinguishable from a real
     // "nothing found" result.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
     tokio::spawn(async move {
-        let (mut sock, _) = listener.accept().await.unwrap();
+        let (mut sock, _) = listener.accept().await.expect("should succeed");
         let mut buf = vec![0u8; 2048];
         let _ = sock.read(&mut buf).await;
         let body = b"{}";
@@ -297,10 +477,12 @@ async fn fetch_json_or_404_maps_404_to_none_but_propagates_5xx_as_err() {
     // above, which pins the no-absent-list `fetch_json` variant for the T2.115
     // (psbdmp) case; this one pins the 404-is-absent `fetch_json_or_404` variant.
     async fn serve_once(status: u16, reason: &'static str) -> std::net::SocketAddr {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("should succeed");
+        let addr = listener.local_addr().expect("should succeed");
         tokio::spawn(async move {
-            let (mut sock, _) = listener.accept().await.unwrap();
+            let (mut sock, _) = listener.accept().await.expect("should succeed");
             let mut buf = vec![0u8; 2048];
             let _ = sock.read(&mut buf).await;
             let body = b"{}";
@@ -358,7 +540,7 @@ fn ssrf_dns_filter_drops_private_and_metadata() {
         "[2606:4700:4700::1111]:443",
     ]
     .iter()
-    .map(|x| x.parse().unwrap())
+    .map(|x| x.parse().expect("should succeed"))
     .collect();
     let kept: Vec<String> = filter_public(addrs.into_iter())
         .iter()
@@ -482,7 +664,7 @@ fn urlencode_slashes_and_ampersands() {
 fn hdrs(retry_after: Option<&str>) -> reqwest::header::HeaderMap {
     let mut h = reqwest::header::HeaderMap::new();
     if let Some(v) = retry_after {
-        h.insert("retry-after", v.parse().unwrap());
+        h.insert("retry-after", v.parse().expect("should succeed"));
     }
     h
 }
@@ -643,8 +825,428 @@ async fn read_text_reads_body_with_module_tagged_errors() {
         http::Response::builder()
             .status(200)
             .body("plain text body".to_string())
-            .unwrap(),
+            .expect("should succeed"),
     );
-    let body = super::fetch::read_text("test_mod", ok).await.unwrap();
+    let body = super::fetch::read_text("test_mod", ok)
+        .await
+        .expect("should succeed");
     assert_eq!(body, "plain text body");
+}
+
+// ── keyed_cascade — the general-request-shape cascade `onyphe`/`threatfox`
+// migrated onto in place of their own hand-rolled 'cascade loop. ──────────
+
+fn cascade_ctx(http: reqwest::Client) -> crate::core::module::ModuleContext {
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    crate::core::module::ModuleContext {
+        scan_id: "test".into(),
+        bus,
+        http,
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    }
+}
+
+#[tokio::test]
+async fn keyed_cascade_returns_the_response_on_success() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.expect("should succeed");
+        let mut buf = vec![0u8; 2048];
+        let _ = sock.read(&mut buf).await;
+        let body = b"{\"ok\":true}";
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let _ = sock.write_all(head.as_bytes()).await;
+        let _ = sock.write_all(body).await;
+        let _ = sock.flush().await;
+    });
+
+    let ctx = cascade_ctx(build_client());
+    let url = format!("http://{addr}/");
+    let resp = keyed_cascade(&ctx, "test_cascade_ok", "k1", &[], |key| {
+        ctx.http.get(&url).header("X-Key", key)
+    })
+    .await
+    .expect("must not error")
+    .expect("a 2xx response must come back Some");
+    assert!(resp.status().is_success());
+}
+
+#[tokio::test]
+async fn keyed_cascade_maps_a_listed_status_to_absent_but_errors_on_an_unlisted_one() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    async fn serve_404() -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("should succeed");
+        let addr = listener.local_addr().expect("should succeed");
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("should succeed");
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                .await;
+            let _ = sock.flush().await;
+        });
+        addr
+    }
+
+    // `absent_statuses` names 404 — ONYPHE's shape — so it maps to Ok(None),
+    // not an error, exactly as ONYPHE's own migrated call site now relies on.
+    let ctx = cascade_ctx(build_client());
+    let addr = serve_404().await;
+    let url = format!("http://{addr}/");
+    let absent = keyed_cascade(&ctx, "test_cascade_absent", "k1", &[404], |key| {
+        ctx.http.get(&url).header("X-Key", key)
+    })
+    .await
+    .expect("a listed absent status must not be an error");
+    assert!(absent.is_none(), "404 in absent_statuses must map to None");
+
+    // The identical 404, with an EMPTY absent_statuses list — ThreatFox's
+    // shape, which never special-cased 404 before this consolidation — must
+    // still be a hard error, not silently swallowed into None.
+    let addr2 = serve_404().await;
+    let url2 = format!("http://{addr2}/");
+    let errored = keyed_cascade(&ctx, "test_cascade_no_absent", "k1", &[], |key| {
+        ctx.http.get(&url2).header("X-Key", key)
+    })
+    .await;
+    assert!(
+        errored.is_err(),
+        "404 not in absent_statuses must remain an Err, matching threatfox's pre-migration behaviour: {errored:?}"
+    );
+}
+
+#[tokio::test]
+async fn keyed_cascade_gives_up_cleanly_on_401_with_no_extra_pooled_key() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let hits_srv = hits.clone();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.expect("should succeed");
+        let mut buf = vec![0u8; 2048];
+        let _ = sock.read(&mut buf).await;
+        hits_srv.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let _ = sock
+            .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
+            .await;
+        let _ = sock.flush().await;
+    });
+
+    // A fresh, never-`pool.add()`-ed service name: the global key pool holds
+    // nothing for it, so `next_pooled_key` returns None on the first burn —
+    // the documented single-key-service behaviour every hand-rolled cascade
+    // (and now this primitive) falls back to.
+    let ctx = cascade_ctx(build_client());
+    let url = format!("http://{addr}/");
+    let result = keyed_cascade(&ctx, "test_cascade_401_noextra", "only-key", &[], |key| {
+        ctx.http.get(&url).header("X-Key", key)
+    })
+    .await;
+    assert!(
+        result.is_err(),
+        "a terminal 401 with no rotation target must be Err"
+    );
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "401 is not retried in place — exactly one request"
+    );
+}
+
+#[tokio::test]
+async fn keyed_cascade_retries_the_same_key_once_on_429_before_succeeding() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let hits_srv = hits.clone();
+    tokio::spawn(async move {
+        for _ in 0..2 {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let n = hits_srv.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                let body = b"{}";
+                // Retry-After: 0 — a real header the retry path still parses
+                // and honours, just without paying an actual wall-clock
+                // second in the test suite for it.
+                let head = format!(
+                    "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(body).await;
+            } else {
+                let body = b"{\"ok\":true}";
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(body).await;
+            }
+            let _ = sock.flush().await;
+        }
+    });
+
+    let ctx = cascade_ctx(build_client());
+    let url = format!("http://{addr}/");
+    let resp = keyed_cascade(&ctx, "test_cascade_429_retry", "same-key", &[], |key| {
+        ctx.http.get(&url).header("X-Key", key)
+    })
+    .await
+    .expect("must recover on the in-place retry")
+    .expect("the retried request must succeed");
+    assert!(resp.status().is_success());
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "exactly two attempts: the 429 + the retry that recovers, both on the same key"
+    );
+}
+
+#[tokio::test]
+async fn keyed_cascade_stops_before_any_request_when_already_cancelled() {
+    // Point at a port nothing listens on: if the cancellation check didn't
+    // fire first, this would be a connection-refused Err, not Ok(None) — the
+    // two outcomes are distinguishable, so this proves the check runs before
+    // the network attempt rather than merely happening to return early.
+    let ctx = cascade_ctx(build_client());
+    ctx.cancel.cancel();
+    let result = keyed_cascade(&ctx, "test_cascade_cancelled", "k1", &[], |key| {
+        ctx.http.get("http://127.0.0.1:1/").header("X-Key", key)
+    })
+    .await
+    .expect("a cancelled scan must not surface as an error");
+    assert!(result.is_none(), "cancellation must short-circuit to None");
+}
+
+#[tokio::test]
+async fn keyed_cascade_json_reads_the_verdict_from_a_200_body() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // Serve a 200 whose BODY carries the provider's own status — the shape
+    // criminal_ip and ipqs use to report a dead key. A status-only cascade
+    // cannot see this, which is the whole reason keyed_cascade_json exists.
+    async fn serve_200(body: &'static str) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("should succeed");
+        let addr = listener.local_addr().expect("should succeed");
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("should succeed");
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(body.as_bytes()).await;
+            let _ = sock.flush().await;
+        });
+        addr
+    }
+
+    #[derive(serde::Deserialize, Debug)]
+    struct Body {
+        status: Option<i64>,
+    }
+
+    let ctx = cascade_ctx(build_client());
+
+    // Accept: the body reports success, so the decoded value comes back.
+    let addr = serve_200(r#"{"status":200}"#).await;
+    let url = format!("http://{addr}/");
+    let out: Option<Body> = keyed_cascade_json(
+        &ctx,
+        "test_verdict_accept",
+        "k1",
+        &[],
+        |key| ctx.http.get(&url).header("X-Key", key),
+        |b: &Body| match b.status {
+            Some(200) => super::fetch::BodyVerdict::Accept,
+            Some(401) => super::fetch::BodyVerdict::KeyFailure {
+                code: 401,
+                detail: Some("quota exceeded for this plan".to_string()),
+            },
+            _ => super::fetch::BodyVerdict::Absent,
+        },
+    )
+    .await
+    .expect("a 200 body verdicted Accept must not error");
+    assert_eq!(out.map(|b| b.status), Some(Some(200)));
+
+    // KeyFailure on a 200: no untried pooled key exists for this fresh service
+    // name, so it must surface as Err rather than being mistaken for a clean
+    // empty result — the exact regression this primitive prevents.
+    let addr = serve_200(r#"{"status":401}"#).await;
+    let url = format!("http://{addr}/");
+    let failed: Result<Option<Body>, _> = keyed_cascade_json(
+        &ctx,
+        "test_verdict_keyfail",
+        "k1",
+        &[],
+        |key| ctx.http.get(&url).header("X-Key", key),
+        |b: &Body| match b.status {
+            Some(200) => super::fetch::BodyVerdict::Accept,
+            Some(401) => super::fetch::BodyVerdict::KeyFailure {
+                code: 401,
+                detail: Some("quota exceeded for this plan".to_string()),
+            },
+            _ => super::fetch::BodyVerdict::Absent,
+        },
+    )
+    .await;
+    let err = failed
+        .expect_err("an in-body key failure with no rotation target must be Err, not empty Ok");
+    // The provider's OWN words must survive to the terminal error: the status
+    // code alone cannot distinguish quota from auth from plan limit, so
+    // summarising the detail away would leave the operator unable to act.
+    assert!(
+        err.to_string().contains("quota exceeded for this plan"),
+        "the provider's message must reach the error verbatim, got: {err}"
+    );
+
+    // Absent: a genuine per-query miss reported in-body is Ok(None), NOT an error.
+    let addr = serve_200(r#"{"status":404}"#).await;
+    let url = format!("http://{addr}/");
+    let absent: Option<Body> = keyed_cascade_json(
+        &ctx,
+        "test_verdict_absent",
+        "k1",
+        &[],
+        |key| ctx.http.get(&url).header("X-Key", key),
+        |b: &Body| match b.status {
+            Some(200) => super::fetch::BodyVerdict::Accept,
+            Some(401) => super::fetch::BodyVerdict::KeyFailure {
+                code: 401,
+                detail: Some("quota exceeded for this plan".to_string()),
+            },
+            _ => super::fetch::BodyVerdict::Absent,
+        },
+    )
+    .await
+    .expect("a genuine in-body miss must not error");
+    assert!(absent.is_none(), "Absent verdict must yield Ok(None)");
+}
+
+// ── Error-message quality: what the operator and the DB actually receive ─────
+// Both cases below were observed verbatim in a production `hse doctor` report,
+// where they made the scraper-health section unreadable.
+
+/// A CDN error page must be reduced to the line that names the failure, not
+/// echoed as 200 characters of doctype and IE conditional comments.
+#[tokio::test]
+async fn error_snippet_summarises_an_html_error_page() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut s, _) = listener.accept().await.unwrap();
+        let body = concat!(
+            "<!DOCTYPE html>\n",
+            "<!--[if lt IE 7]> <html class=\"no-js ie6 oldie\" lang=\"en-US\"> <![endif]-->\n",
+            "<!--[if IE 7]>    <html class=\"no-js ie7 oldie\" lang=\"en-US\"> <![endif]-->\n",
+            "<head><title>psbdmp.ws | 523: Origin is unreachable</title></head>\n",
+            "<body><h1>Error 523</h1></body></html>",
+        );
+        let resp = format!(
+            "HTTP/1.1 523 \r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        use tokio::io::AsyncWriteExt as _;
+        let _ = s.write_all(resp.as_bytes()).await;
+    });
+
+    let client = build_client();
+    let resp = client
+        .get(format!("http://{addr}/"))
+        .send()
+        .await
+        .expect("local server responds");
+    let snippet = super::fetch::error_snippet(resp).await;
+
+    assert_eq!(
+        snippet, "psbdmp.ws | 523: Origin is unreachable",
+        "the snippet must be the diagnostic line, not page boilerplate"
+    );
+    assert!(
+        !snippet.contains("DOCTYPE") && !snippet.contains("[if lt IE"),
+        "no markup boilerplate may survive: {snippet}"
+    );
+}
+
+/// A JSON error payload must be left exactly as the upstream sent it — the HTML
+/// summarisation must not reach a body that merely mentions markup.
+#[tokio::test]
+async fn error_snippet_leaves_a_json_payload_verbatim() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut s, _) = listener.accept().await.unwrap();
+        let body = r#"{"error":"Invalid API key","tag":"INVALID_API_KEY"}"#;
+        let resp = format!(
+            "HTTP/1.1 401 Unauthorized\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        use tokio::io::AsyncWriteExt as _;
+        let _ = s.write_all(resp.as_bytes()).await;
+    });
+
+    let client = build_client();
+    let resp = client
+        .get(format!("http://{addr}/"))
+        .send()
+        .await
+        .expect("local server responds");
+    let snippet = super::fetch::error_snippet(resp).await;
+    assert_eq!(
+        snippet, r#"{"error":"Invalid API key","tag":"INVALID_API_KEY"}"#,
+        "a JSON error body carries the real message and must survive untouched"
+    );
+}
+
+/// The transport+fallback message must name the URL once, not twice.
+#[test]
+fn transport_failure_names_the_url_exactly_once() {
+    let url = "https://psbdmp.ws/api/v3/search/ukchemist%40gmail.com";
+    // reqwest's own Display for a send failure already embeds the URL.
+    let reqwest_shaped = format!("error sending request for url ({url})");
+
+    let msg = super::fetch::transport_and_fallback_failed(&reqwest_shaped, url);
+    assert_eq!(
+        msg.matches(url).count(),
+        1,
+        "the URL (which carries the scan target) must appear once: {msg}"
+    );
+    assert!(msg.contains("curl fallback also failed"));
+
+    // A transport error that does NOT name the URL must still identify the
+    // request — dropping it unconditionally would lose that.
+    let bare = super::fetch::transport_and_fallback_failed("connection closed before message", url);
+    assert_eq!(
+        bare.matches(url).count(),
+        1,
+        "an error without the URL must have it appended: {bare}"
+    );
+    assert!(bare.contains("curl fallback failed for"));
 }

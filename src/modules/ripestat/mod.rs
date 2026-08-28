@@ -6,6 +6,7 @@
 //!
 //!   * `network-info`         IP  → announcing ASN(s) + covering prefix
 //!   * `as-overview`          ASN → holder (the org that operates the network)
+//!   * `announced-prefixes`   ASN → every prefix the ASN announces (scannable CIDRs)
 //!   * `abuse-contact-finder` IP/ASN → the registered **abuse-contact email**
 //!
 //! The abuse contact is the standout: it turns an IP or ASN into an *email*, a
@@ -19,8 +20,9 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -56,6 +58,18 @@ struct AbuseContact {
     abuse_contacts: Vec<String>,
 }
 
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct AnnouncedPrefixes {
+    prefixes: Vec<AnnouncedPrefix>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct AnnouncedPrefix {
+    prefix: Option<String>,
+}
+
 #[async_trait]
 impl Module for RipeStat {
     fn name(&self) -> &'static str {
@@ -63,7 +77,7 @@ impl Module for RipeStat {
     }
 
     fn description(&self) -> &'static str {
-        "RIPEstat IP/ASN intelligence — ASN, network holder & abuse-contact email (free)"
+        "RIPEstat IP/ASN recon — resolves ASN, network holder, and abuse-contact email (free)"
     }
 
     fn priority(&self) -> u8 {
@@ -104,62 +118,55 @@ impl Module for RipeStat {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
-        let mut hard_failure: Option<Error> = None;
         let resource = target.value.trim();
 
         match target.kind {
-            TargetKind::IpAddress => match stat::<NetworkInfo>(ctx, "network-info", resource).await
-            {
-                Ok(ni) => result.entities.extend(build_asns(&ni, &ctx.scan_id)),
-                Err(e) => hard_failure = Some(e),
-            },
-            TargetKind::Asn => match stat::<AsOverview>(ctx, "as-overview", resource).await {
-                Ok(ao) => result.entities.extend(build_org(&ao, &ctx.scan_id)),
-                Err(e) => hard_failure = Some(e),
-            },
+            TargetKind::IpAddress => {
+                if let Some(ni) = stat::<NetworkInfo>(ctx, "network-info", resource).await {
+                    result.entities.extend(build_asns(&ni, &ctx.scan_id));
+                }
+            }
+            TargetKind::Asn => {
+                if let Some(ao) = stat::<AsOverview>(ctx, "as-overview", resource).await {
+                    result.entities.extend(build_org(&ao, &ctx.scan_id));
+                }
+                // The prefixes the ASN actually announces — each a scannable
+                // CIDR the graph can expand into constituent host IPs, the same
+                // way `network-info`'s covering prefix is surfaced for an IP.
+                if let Some(ap) =
+                    stat::<AnnouncedPrefixes>(ctx, "announced-prefixes", resource).await
+                {
+                    result
+                        .entities
+                        .extend(build_announced_prefixes(&ap, &ctx.scan_id));
+                }
+            }
             _ => return Ok(result),
         }
 
-        match stat::<AbuseContact>(ctx, "abuse-contact-finder", resource).await {
-            Ok(ac) => result
+        if let Some(ac) = stat::<AbuseContact>(ctx, "abuse-contact-finder", resource).await {
+            result
                 .entities
-                .extend(build_abuse(&ac.abuse_contacts, &ctx.scan_id)),
-            Err(e) => {
-                hard_failure.get_or_insert(e);
-            }
+                .extend(build_abuse(&ac.abuse_contacts, &ctx.scan_id));
         }
-        result.or_hard_failure(hard_failure)
+        Ok(result)
     }
 }
 
-/// Fetch + unwrap a RIPEstat endpoint's `data` object against the real
-/// `stat.ripe.net` API.
+/// Fetch + unwrap a RIPEstat endpoint's `data` object. `None` on any transport
+/// or parse failure — best-effort, never fatal.
 async fn stat<T: DeserializeOwned + Default>(
     ctx: &ModuleContext,
     endpoint: &str,
     resource: &str,
-) -> Result<T> {
-    stat_at(ctx, endpoint, resource, "https://stat.ripe.net").await
-}
-
-/// Fetch + unwrap a RIPEstat endpoint's `data` object. A genuine empty answer
-/// (e.g. an unannounced IP's empty `asns`) decodes cleanly via `StatResp`'s
-/// `Default`; `Err` propagates any real transport, non-2xx, or parse failure
-/// so the caller can distinguish an outage from a real negative. `base` is
-/// URL-injectable so tests can exercise the failure contract against a local
-/// server instead of the live API.
-async fn stat_at<T: DeserializeOwned + Default>(
-    ctx: &ModuleContext,
-    endpoint: &str,
-    resource: &str,
-    base: &str,
-) -> Result<T> {
+) -> Option<T> {
     let url = format!(
-        "{base}/data/{endpoint}/data.json?resource={}",
+        "https://stat.ripe.net/data/{endpoint}/data.json?resource={}",
         urlencode(resource)
     );
     fetch_json::<StatResp<T>>(&ctx.http, SRC, &url)
         .await
+        .ok()
         .map(|r| r.data)
 }
 
@@ -170,7 +177,12 @@ fn build_asns(ni: &NetworkInfo, scan_id: &str) -> Vec<Entity> {
         .iter()
         .filter(|a| a.chars().all(|c| c.is_ascii_digit()) && !a.is_empty())
         .map(|a| {
-            let mut e = Entity::new(EntityKind::Asn, format!("AS{a}"), 0.75, scan_id);
+            let mut e = Entity::new(
+                EntityKind::Asn,
+                format!("AS{a}"),
+                confidence::VERY_HIGH,
+                scan_id,
+            );
             e.tag(SRC);
             let mut ev = Evidence::new(SRC, "Announcing ASN (RIPEstat network-info)");
             if let Some(p) = &ni.prefix {
@@ -188,7 +200,7 @@ fn build_asns(ni: &NetworkInfo, scan_id: &str) -> Vec<Entity> {
         .map(str::trim)
         .filter(|p| p.contains('/'))
     {
-        let mut ce = Entity::new(EntityKind::Cidr, prefix, 0.70, scan_id);
+        let mut ce = Entity::new(EntityKind::Cidr, prefix, confidence::HIGH_PLUS, scan_id);
         ce.tag(SRC);
         ce.tag("network-prefix");
         let mut ev = Evidence::new(SRC, "Covering prefix (RIPEstat network-info)");
@@ -220,11 +232,43 @@ fn build_org(ao: &AsOverview, scan_id: &str) -> Option<Entity> {
         .as_deref()
         .map(str::trim)
         .filter(|h| h.len() >= 2)?;
-    let mut e = Entity::new(EntityKind::Organisation, holder, 0.70, scan_id);
+    let mut e = Entity::new(
+        EntityKind::Organisation,
+        holder,
+        confidence::HIGH_PLUS,
+        scan_id,
+    );
     e.tag(SRC);
     e.tag("network-holder");
     e.add_evidence(Evidence::new(SRC, "Network holder (RIPEstat as-overview)"));
     Some(e)
+}
+
+/// Announced prefixes for an ASN → scannable `Cidr` entities. **Pure.**
+/// Deduplicated and emitted in a deterministic (sorted) order so the output
+/// never leaks the API's array ordering. Only well-formed `/`-bearing prefixes
+/// are kept — a malformed entry is dropped rather than becoming a junk CIDR.
+fn build_announced_prefixes(ap: &AnnouncedPrefixes, scan_id: &str) -> Vec<Entity> {
+    let prefixes: std::collections::BTreeSet<&str> = ap
+        .prefixes
+        .iter()
+        .filter_map(|p| p.prefix.as_deref())
+        .map(str::trim)
+        .filter(|p| p.contains('/'))
+        .collect();
+    prefixes
+        .into_iter()
+        .map(|prefix| {
+            let mut e = Entity::new(EntityKind::Cidr, prefix, confidence::HIGH_PLUS, scan_id);
+            e.tag(SRC);
+            e.tag("network-prefix");
+            e.add_evidence(Evidence::new(
+                SRC,
+                "Announced prefix (RIPEstat announced-prefixes)",
+            ));
+            e
+        })
+        .collect()
 }
 
 /// Abuse-contact emails — an org-level infrastructure→identity edge, tagged so
@@ -239,7 +283,7 @@ fn build_abuse(contacts: &[String], scan_id: &str) -> Vec<Entity> {
         // suppress it so it can't pollute the identity cluster.
         .filter(|c| !crate::util::domains::is_infrastructure_email(c))
         .map(|c| {
-            let mut e = Entity::new(EntityKind::Email, c, 0.50, scan_id);
+            let mut e = Entity::new(EntityKind::Email, c, confidence::MEDIUM, scan_id);
             e.tag(SRC);
             e.tag("abuse-contact");
             e.add_evidence(Evidence::new(SRC, "Registered abuse contact (RIPEstat)"));

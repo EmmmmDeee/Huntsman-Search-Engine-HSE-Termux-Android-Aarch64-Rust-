@@ -30,6 +30,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -105,15 +106,22 @@ pub(super) fn build_entities(user: HexUser, scan_id: &str) -> Vec<Entity> {
         e
     };
 
-    // Confirmed username on hex.pm.
-    let mut e = Entity::new(EntityKind::Username, handle, 0.87, scan_id);
+    // Confirmed username on hex.pm — EXPERT matches the identical
+    // confirmed-registry-username claim its structural siblings use
+    // (npm_author, huggingface_user).
+    let mut e = Entity::new(EntityKind::Username, handle, confidence::EXPERT, scan_id);
     e.tag("hexpm");
     e.tag("public-profile");
     e.add_evidence(ev());
     out.push(e);
 
     // Profile URL.
-    let mut u = Entity::new(EntityKind::Url, &profile_url, 0.80, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Url,
+        &profile_url,
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
     u.tag("hexpm");
     u.add_evidence(ev());
     out.push(u);
@@ -123,7 +131,7 @@ pub(super) fn build_entities(user: HexUser, scan_id: &str) -> Vec<Entity> {
     if let Some(email) = user.email.as_deref() {
         let email = email.trim();
         if email.contains('@') {
-            let mut em = Entity::new(EntityKind::Email, email, 0.82, scan_id);
+            let mut em = Entity::new(EntityKind::Email, email, confidence::CORROBORATED, scan_id);
             em.tag("hexpm");
             em.tag("public-profile");
             em.add_evidence(ev().with_attr("source_field", "email"));
@@ -133,7 +141,7 @@ pub(super) fn build_entities(user: HexUser, scan_id: &str) -> Vec<Entity> {
 
     // Full name → Person (multi-word only).
     if let Some(name) = user.full_name.as_deref()
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.72, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::ATTRIBUTED, scan_id)
     {
         p.tag("hexpm");
         p.add_evidence(ev().with_attr("source_field", "full_name"));
@@ -173,7 +181,7 @@ impl Module for HexpmUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "hex.pm profile: email, fullname, account age, GitHub/X handles via Elixir/Erlang registry (free)"
+        "hex.pm profile recon (free) — surfaces email, fullname, account age, and GitHub/X handles from the Elixir/Erlang registry"
     }
     fn priority(&self) -> u8 {
         51

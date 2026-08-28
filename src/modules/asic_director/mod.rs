@@ -16,15 +16,27 @@
 //!   * T1591.001 — Determine Physical Locations (registered office address)
 //!
 //! Confidence model:
-//!   * Exact name match in ASIC register: 0.80 (official govt source)
+//!   * Exact name match in ASIC register: confidence::HIGH_PLUSPLUS (official govt source)
 //!   * ACN emitted for downstream abn_lookup: 0.82
 //!   * Address from registered office: 0.72
 //!
-//! Note: ASIC Connect Online is rate-limited by IP. This module uses a light
-//! scraping strategy with a single polite request per scan. The ABN/ACN pivot
-//! via `abn_lookup` then enriches the full company record including HQ address
-//! and geolocation — making this the highest-confidence AU geo pivot after a
-//! FullName seed.
+//! **Live status (2026-08-04):** a direct request to the endpoint above
+//! returns `403` — including with a full browser `User-Agent` header — which
+//! is an anti-bot/WAF (or JS-challenge) block, NOT the plain IP rate-limiting
+//! this doc previously assumed. A rate limit would show as an eventual `429`
+//! or a delayed `200`; an immediate, UA-independent `403` on every request
+//! means no plain HTTP client (this module's `reqwest`/`curl` transport
+//! included) can currently pass it without a headless-browser-class
+//! workaround. Confirmed live from a non-residential IP; not yet confirmed
+//! whether a Termux/mobile-carrier IP fares differently. No fix attempted
+//! here — this is the module's next candidate work, the same
+//! "confirmed-dead-endpoint, no rewrite yet" pattern already documented for
+//! `au_property`'s three legs.
+//!
+//! This module uses a light scraping strategy with a single polite request
+//! per scan. The ABN/ACN pivot via `abn_lookup` then enriches the full
+//! company record including HQ address and geolocation — making this the
+//! highest-confidence AU geo pivot after a FullName seed, when reachable.
 //!
 //! `process()` distinguishes "the request never actually got a readable
 //! response" (a real `Error::module` failure, surfaced to the operator and to
@@ -35,6 +47,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -46,45 +59,35 @@ const SRC: &str = "asic_director";
 
 pub struct AsicDirector;
 
-/// Strip HTML tags and decode basic HTML entities. Pure.
+/// Strip HTML tags and decode entities, via the crate's shared helpers. Pure.
+///
+/// Was a hand-rolled `in_tag` loop with inline entity decoding, carrying two
+/// defects the shared pair does not.
+///
+/// **It was quadratic.** Every `&` rebuilt the entire remainder of the document
+/// into a fresh `String` purely to test it with `starts_with`, so cost grew with
+/// (ampersand count x document length) — and an ASIC result table carries one
+/// `&amp;` per company row, the worst case for exactly this shape. Measured on a
+/// synthetic table of that shape: 8 KB took 1.59 ms and 128 KB took 395 ms, time
+/// quadrupling per doubling, against 239 us for a linear scan of the same 128 KB.
+/// On the Termux aarch64 target that is a module that returns nothing because it
+/// spent its time budget parsing rather than fetching.
+///
+/// **It decoded four entities.** `&amp;`, `&lt;`, `&gt;` and `&nbsp;` only — so a
+/// director named `O&#39;Brien`, a numeric reference and an unremarkable
+/// Australian surname, reached the graph with the escape still in it, as did
+/// every `&quot;`. [`crate::util::html::decode_entities`] covers the full named
+/// set plus every decimal and hex character reference.
+///
+/// Deliberately [`strip_tags_plain`](crate::util::html::strip_tags_plain) rather
+/// than [`strip_html`](crate::util::html::strip_html): `strip_html` substitutes a
+/// space for each tag, and this output is consumed line-by-line by
+/// [`extract_company_name`], so that would push a space into the middle of
+/// extracted company names. Dropping tags outright preserves the previous
+/// behaviour exactly. Tags come off before entities are decoded, so a decoded
+/// `<` can never be re-read as the start of a tag.
 fn clean_html(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut in_tag = false;
-    let chars: Vec<char> = s.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        match chars[i] {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            '&' if !in_tag => {
-                // Decode &amp; &lt; &gt; &nbsp;
-                let rest: String = chars[i..].iter().collect();
-                if rest.starts_with("&amp;") {
-                    out.push('&');
-                    i += 5;
-                    continue;
-                } else if rest.starts_with("&lt;") {
-                    out.push('<');
-                    i += 4;
-                    continue;
-                } else if rest.starts_with("&gt;") {
-                    out.push('>');
-                    i += 4;
-                    continue;
-                } else if rest.starts_with("&nbsp;") {
-                    out.push(' ');
-                    i += 6;
-                    continue;
-                } else {
-                    out.push('&');
-                }
-            }
-            c if !in_tag => out.push(c),
-            _ => {}
-        }
-        i += 1;
-    }
-    out
+    crate::util::html::decode_entities(&crate::util::html::strip_tags_plain(s))
 }
 
 /// Entities built from a single ASIC search result block. Pure.
@@ -109,7 +112,12 @@ fn build_director_entities(
     .with_attr("register", "ASIC");
 
     // Organisation entity.
-    let mut org = Entity::new(EntityKind::Organisation, company_name, 0.80, scan_id);
+    let mut org = Entity::new(
+        EntityKind::Organisation,
+        company_name,
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
     org.tag(SRC);
     org.tag("asic");
     org.tag("au-company");
@@ -124,8 +132,25 @@ fn build_director_entities(
     // ACN entity → feeds abn_lookup for full address/coords.
     if !acn.is_empty() {
         let acn_clean: String = acn.chars().filter(char::is_ascii_digit).collect();
-        if acn_clean.len() == 9 {
-            let mut acn_e = Entity::new(EntityKind::AbnAcn, &acn_clean, 0.82, scan_id);
+        // Checksum-validate before trusting it, exactly like every other
+        // caller in this codebase that mints an ACN-shaped value
+        // (au_business_id, the search_engines extractor,
+        // core::correlator::rules::org, core::scan's TargetKind inference).
+        // extract_acn() collects every digit anywhere in the row rather than
+        // a run anchored on the "ACN" label, so a company name that itself
+        // contains digits ("7-Eleven Stores Pty Ltd", "1300 Smiles Limited")
+        // glues those leading digits onto the real ACN's stream, producing a
+        // fabricated 9-digit value. Length alone can't catch that — the
+        // corruption preserves the count — but the checksum almost always
+        // will, so this is the honest floor against shipping a corrupted
+        // value to the live ASIC ABN Lookup API as a "confirmed" pivot.
+        if acn_clean.len() == 9 && crate::util::abn::is_valid_acn(&acn_clean) {
+            let mut acn_e = Entity::new(
+                EntityKind::AbnAcn,
+                &acn_clean,
+                confidence::CORROBORATED,
+                scan_id,
+            );
             acn_e.tag(SRC);
             acn_e.tag("asic");
             acn_e.tag("acn");
@@ -142,7 +167,7 @@ fn build_director_entities(
 
     // Address from registered office.
     if let Some(addr) = address.filter(|s| !s.trim().is_empty()) {
-        let mut ae = Entity::new(EntityKind::Address, addr, 0.72, scan_id);
+        let mut ae = Entity::new(EntityKind::Address, addr, confidence::ATTRIBUTED, scan_id);
         ae.tag(SRC);
         ae.tag("asic");
         ae.tag("registered-office");
@@ -154,7 +179,12 @@ fn build_director_entities(
         out.push(ae);
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(addr) {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.62, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::NOTABLE,
+                scan_id,
+            );
             c.tag(SRC);
             c.tag("addr-derived");
             c.tag("geoint");
@@ -248,7 +278,7 @@ impl Module for AsicDirector {
     }
 
     fn description(&self) -> &'static str {
-        "ASIC company directors register — find director appointments for a full name and pivot to company ACN/address"
+        "ASIC company-directors recon — surfaces director appointments for a full name and pivots to company ACN/address"
     }
 
     fn priority(&self) -> u8 {

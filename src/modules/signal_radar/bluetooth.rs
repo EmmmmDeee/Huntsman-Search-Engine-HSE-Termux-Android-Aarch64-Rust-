@@ -11,10 +11,11 @@
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
+    error::Result,
     module::ModuleResult,
 };
-use crate::util::termux::termux_cmd;
 
 use super::SRC;
 
@@ -29,11 +30,12 @@ pub(super) struct BtDevice {
 }
 
 /// Parse the JSON array from `termux-bluetooth-scaninfo`.
-pub(super) fn parse_bt_json(stdout: &[u8], scan_id: &str) -> ModuleResult {
-    let devices: Vec<BtDevice> = match serde_json::from_slice(stdout) {
-        Ok(v) => v,
-        Err(_) => return ModuleResult::new(),
-    };
+pub(super) fn parse_bt_json(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
+    if super::is_blank(stdout) {
+        return Ok(ModuleResult::new());
+    }
+    let devices: Vec<BtDevice> = serde_json::from_slice(stdout)
+        .map_err(|e| super::unparseable(super::Sensor::BluetoothScan, &e))?;
 
     let mut result = ModuleResult::with_capacity(devices.len());
 
@@ -46,30 +48,52 @@ pub(super) fn parse_bt_json(stdout: &[u8], scan_id: &str) -> ModuleResult {
         let bt_type = dev.bt_type.as_deref().unwrap_or("unknown");
         let bond_state = dev.bond_state.as_deref().unwrap_or("unknown");
 
-        let mut e = Entity::new(EntityKind::MacAddress, &dev.address, 0.80, scan_id);
+        let mut e = Entity::new(
+            EntityKind::MacAddress,
+            &dev.address,
+            confidence::HIGH_PLUSPLUS,
+            scan_id,
+        );
         e.tag("bluetooth");
         e.tag(format!("bt-{}", bt_type.to_lowercase()));
         e.tag(format!("bond:{}", bond_state.to_lowercase()));
 
-        e.add_evidence(
-            Evidence::new(SRC, format!("Bluetooth device: {name}"))
-                .with_attr("name", name)
-                .with_attr("address", &dev.address)
-                .with_attr("type", bt_type)
-                .with_attr("bond_state", bond_state),
-        );
+        let mut ev = Evidence::new(SRC, format!("Bluetooth device: {name}"))
+            .with_attr("name", name)
+            .with_attr("address", &dev.address)
+            .with_attr("type", bt_type)
+            .with_attr("bond_state", bond_state);
+
+        // OUI classification — the same primitive the WiGLE path applies, so a
+        // radar pin carries the vendor + device class where the address is real
+        // hardware, and is flagged `randomized` (not attributed to any vendor)
+        // where it is a locally-administered privacy address. This is the signal
+        // AU-122 partitions on: a randomized MAC is a rotating throwaway, not a
+        // followable device, and must never be plotted as one.
+        if let Some(oui) = crate::util::oui::classify_mac(&dev.address) {
+            e.tag(format!("vendor:{}", oui.vendor));
+            e.tag(format!("device:{}", oui.class.as_str()));
+            let trackable = crate::util::oui::is_locally_administered(&dev.address) == Some(false);
+            e.tag(if trackable { "trackable" } else { "randomized" });
+            ev = ev
+                .with_attr("vendor", oui.vendor)
+                .with_attr("device_class", oui.class.as_str())
+                .with_attr("trackable", trackable.to_string());
+        }
+
+        e.add_evidence(ev);
 
         result.push(e);
     }
 
-    result
+    Ok(result)
 }
 
 /// Run bluetooth scan via `termux-bluetooth-scaninfo` (the Termux:API BLE/BT
 /// scan shim — no root, no raw socket).
-pub(super) async fn scan_bluetooth(scan_id: &str) -> ModuleResult {
-    match termux_cmd("termux-bluetooth-scaninfo", &[], 10_000).await {
-        Some(stdout) => parse_bt_json(&stdout, scan_id),
-        None => ModuleResult::new(),
-    }
+pub(super) async fn scan_bluetooth(scan_id: &str) -> Result<ModuleResult> {
+    crate::modules::termux_sensor::read_and_parse(super::Sensor::BluetoothScan, |stdout| {
+        parse_bt_json(stdout, scan_id)
+    })
+    .await
 }

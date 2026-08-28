@@ -16,6 +16,7 @@ use futures::future::join_all;
 use serde_json::Value;
 
 use crate::core::entity::EntityKind;
+use crate::core::error::Error;
 use crate::core::module::ModuleResult;
 use crate::util::see_know;
 
@@ -34,18 +35,20 @@ pub(super) fn discover_steam_pivots(result: &ModuleResult) -> Vec<String> {
 
 /// Generalised prefix-based ID collector. Iterates extracted Username
 /// entities, strips the prefix, validates the rest with `validator`,
-/// and dedupes preserving first-seen order.
+/// and dedupes preserving first-seen order using O(1) HashSet lookup.
 fn discover_prefixed_ids(
     result: &ModuleResult,
     prefix: &str,
     validator: fn(&str) -> bool,
 ) -> Vec<String> {
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
     let mut ids: Vec<String> = Vec::new();
     for e in &result.entities {
         if matches!(e.kind, EntityKind::Username)
             && let Some(rest) = e.value.strip_prefix(prefix)
             && validator(rest)
-            && !ids.iter().any(|x| x == rest)
+            && seen.insert(rest)
         {
             ids.push(rest.to_string());
         }
@@ -104,10 +107,10 @@ pub(super) fn steam_attempt_slice(ids: &[String], budget: usize) -> &[String] {
 pub(super) async fn dispatch_discord_pivots(
     key: &str,
     ids: Vec<String>,
-) -> (Vec<(&'static str, Vec<Value>)>, Vec<String>) {
+) -> (Vec<(&'static str, Vec<Value>)>, Vec<String>, Option<Error>) {
     let budget = see_know::scan_budget_remaining() as usize;
     if budget == 0 || ids.is_empty() {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), None);
     }
     let attempted = discord_attempt_slice(&ids, budget).to_vec();
     let mut user_futures = Vec::new();
@@ -116,10 +119,10 @@ pub(super) async fn dispatch_discord_pivots(
     for id in &attempted {
         let id_for_user = id.clone();
         user_futures.push(async move {
-            let items = see_know::discord_user(key, &id_for_user)
-                .await
-                .unwrap_or_default();
-            ("discord_user", items)
+            (
+                "discord_user",
+                see_know::discord_user(key, &id_for_user).await,
+            )
         });
         used += 1;
         if used >= budget {
@@ -127,17 +130,22 @@ pub(super) async fn dispatch_discord_pivots(
         }
         let id_for_roblox = id.clone();
         roblox_futures.push(async move {
-            let items = see_know::discord_to_roblox(key, &id_for_roblox)
-                .await
-                .unwrap_or_default();
-            ("discord_to_roblox", items)
+            (
+                "discord_to_roblox",
+                see_know::discord_to_roblox(key, &id_for_roblox).await,
+            )
         });
         used += 1;
     }
-    let (mut user_results, roblox_results) =
-        tokio::join!(join_all(user_futures), join_all(roblox_futures));
-    user_results.extend(roblox_results);
-    (user_results, attempted)
+    let (user_raw, roblox_raw) = tokio::join!(join_all(user_futures), join_all(roblox_futures));
+
+    let mut first_failure = None;
+    let results = user_raw
+        .into_iter()
+        .chain(roblox_raw)
+        .map(|(label, outcome)| super::fold_endpoint_result(label, outcome, &mut first_failure))
+        .collect();
+    (results, attempted, first_failure)
 }
 
 /// Concurrent gaming/steam dispatch for every discovered Steam ID. Mirrors
@@ -147,23 +155,27 @@ pub(super) async fn dispatch_discord_pivots(
 pub(super) async fn dispatch_steam_pivots(
     key: &str,
     ids: Vec<String>,
-) -> (Vec<(&'static str, Vec<Value>)>, Vec<String>) {
+) -> (Vec<(&'static str, Vec<Value>)>, Vec<String>, Option<Error>) {
     let budget = see_know::scan_budget_remaining() as usize;
     if budget == 0 || ids.is_empty() {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), None);
     }
     let attempted = steam_attempt_slice(&ids, budget).to_vec();
     let futures: Vec<_> = attempted
         .iter()
         .map(|id| {
             let id = id.clone();
-            async move {
-                let items = see_know::steam_profile(key, &id).await.unwrap_or_default();
-                ("steam", items)
-            }
+            async move { ("steam", see_know::steam_profile(key, &id).await) }
         })
         .collect();
-    (join_all(futures).await, attempted)
+
+    let mut first_failure = None;
+    let results = join_all(futures)
+        .await
+        .into_iter()
+        .map(|(label, outcome)| super::fold_endpoint_result(label, outcome, &mut first_failure))
+        .collect();
+    (results, attempted, first_failure)
 }
 
 /// Discord snowflake heuristic — 17 to 20 decimal digits, no leading
@@ -174,15 +186,11 @@ pub(super) fn looks_like_discord_id(s: &str) -> bool {
     (17..=20).contains(&len) && s.chars().all(|c| c.is_ascii_digit()) && !s.starts_with('0')
 }
 
-/// Steam ID64 heuristic — exactly 17 decimal digits, the public
-/// account universe always starts with "765611979..." (steamID64
-/// base = 76561197960265728). We don't enforce that prefix here so
-/// edge-case accounts still pivot, but the length + no-leading-zero
-/// pair is enough to reject usernames that happen to be 16-digit
-/// breach IDs.
-pub(super) fn looks_like_steam_id(s: &str) -> bool {
-    s.len() == 17 && s.chars().all(|c| c.is_ascii_digit()) && !s.starts_with('0')
-}
+/// Steam ID64 heuristic — exactly 17 decimal digits, no leading zero (the
+/// public account universe starts at steamID64 base 76561197960265728). Now a
+/// re-export of the shared [`crate::util::identity::looks_like_steam_id`] so
+/// SeekNow and OathNet gate their `steam:<id>` pivots by one identical rule.
+pub(super) use crate::util::identity::looks_like_steam_id;
 
 #[cfg(test)]
 mod tests {

@@ -3,7 +3,7 @@
 //! `/api/v1/modules` shape so the CLI output can be `jq`-ed exactly like the
 //! HTTP endpoint.
 
-use super::cost_label;
+use crate::app::export::cost_label;
 use crate::core::error::{Error, Result};
 use crate::core::scan::{Target, TargetKind};
 use crate::modules::registry;

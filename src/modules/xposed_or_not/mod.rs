@@ -45,7 +45,7 @@ impl Module for XposedOrNot {
     }
 
     fn description(&self) -> &'static str {
-        "Email breach lookup with analytics enrichment"
+        "Email breach recon — surfaces an address's exposure with analytics enrichment"
     }
 
     fn priority(&self) -> u8 {

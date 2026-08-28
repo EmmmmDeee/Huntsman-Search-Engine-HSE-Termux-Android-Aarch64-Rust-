@@ -12,11 +12,14 @@
 //! phone, in CI, or against a live server without touching the network or the
 //! operator's data.
 
+pub mod capability_probe;
+
 use std::sync::Arc;
 use std::time::Instant;
 
 use serde::Serialize;
 
+use crate::core::confidence;
 use crate::core::{
     StoragePort,
     correlator::Correlator,
@@ -37,7 +40,15 @@ pub enum Status {
 
 impl Status {
     /// ASCII marker (no non-ASCII glyphs — Termux terminal-safe).
-    fn marker(self) -> &'static str {
+    /// The rendered status marker: `[ok]`, `[warn]`, `[FAIL]`.
+    ///
+    /// Public so consumers — including the integration tests that assert which
+    /// STREAM the report lands on — read these strings from here instead of
+    /// copying them. A hand-written copy in `tests/cli_seed_validation.rs`
+    /// carried `[fail]` in lowercase, which could never match the rendered
+    /// `[FAIL]` and silently weakened the assertion it appeared in.
+    #[must_use]
+    pub fn marker(self) -> &'static str {
         match self {
             Status::Pass => "[ok]",
             Status::Warn => "[warn]",
@@ -132,15 +143,62 @@ pub async fn run() -> Report {
     let checks = vec![
         check_module_registry(),
         check_dispatch_graph(),
+        check_module_reachability(),
         check_consumes_accepts(),
         check_module_probes(),
         check_core_math(),
+        check_attack_coverage(),
         check_keys(),
         check_storage_and_correlator().await,
         check_log_capture(),
         check_termux_env().await,
     ];
     Report::build(checks, started)
+}
+
+/// The platform's static MITRE ATT&CK **Reconnaissance** envelope: unioning every
+/// registered module's declared techniques with the entity- and relation-surface
+/// mappings, how much of TA0043 HSE can *structurally* ever exercise, and how many
+/// honest gaps remain. Operational telemetry — an operator reads the coverage
+/// fraction and gap count here without running a scan. The exact envelope (which
+/// specific techniques are gaps) is pinned by the
+/// `platform_static_attack_envelope_is_pinned` regression guard; this surfaces the
+/// live number so a build-level ATT&CK regression is visible from `hse selftest`.
+fn check_attack_coverage() -> Check {
+    use crate::core::attack;
+    let modules = crate::modules::registry();
+    let ids = modules
+        .iter()
+        .flat_map(|m| m.attack_techniques().iter().copied());
+    let cov = attack::static_reconnaissance_coverage(ids);
+    let total = attack::reconnaissance().len();
+    if cov.covered.len() + cov.uncovered.len() != total {
+        return check(
+            "attack.coverage",
+            Status::Fail,
+            format!(
+                "coverage partition broken: {} covered + {} gaps != {total} TA0043 techniques",
+                cov.covered.len(),
+                cov.uncovered.len(),
+            ),
+        );
+    }
+    let detail = format!(
+        "{}/{} TA0043 Reconnaissance techniques structurally covered ({:.0}%); {} honest gap(s)",
+        cov.covered.len(),
+        total,
+        cov.coverage_fraction * 100.0,
+        cov.uncovered.len(),
+    );
+    // Reaching under half the tactic would mean a technique surface likely got
+    // disconnected (a category / entity / relation map emptied) — a warn, not a
+    // hard fail, since low coverage is a capability signal, not broken wiring.
+    let status = if cov.coverage_fraction < 0.5 {
+        Status::Warn
+    } else {
+        Status::Pass
+    };
+    check("attack.coverage", status, detail)
 }
 
 /// Every registered module has a unique, non-empty name and a description.
@@ -222,6 +280,32 @@ fn check_dispatch_graph() -> Check {
         Status::Pass,
         "every accepting module is in its kind's dispatch bucket",
     )
+}
+
+/// End-to-end wiring: from EVERY realistic seed kind, the transitive
+/// producer/consumer closure must reach every registered module — the
+/// "100% of modules run during a scan" guarantee. A module accepting a kind that
+/// a seed can no longer produce would be named here (dead end-to-end wiring that
+/// `check_dispatch_graph`'s single-hop view cannot see).
+fn check_module_reachability() -> Check {
+    let modules = crate::modules::registry();
+    let graph = ModuleGraph::build(&modules);
+    match crate::core::dependency::reachability::fully_wired(&graph, &modules) {
+        Ok(n) => check(
+            "modules.reachability",
+            Status::Pass,
+            format!("all {n} modules reachable from every realistic seed kind (100% wired)"),
+        ),
+        Err((seed, dead)) => check(
+            "modules.reachability",
+            Status::Fail,
+            format!(
+                "from a {seed:?} seed, {} module(s) can never be dispatched end-to-end: {}",
+                dead.len(),
+                dead.join(", ")
+            ),
+        ),
+    }
 }
 
 /// Every module's declared `consumes()` covers each kind its `accepts()`
@@ -323,7 +407,12 @@ fn check_core_math() -> Check {
             }
         }
     }
-    let mut e = Entity::new(EntityKind::Email, "selftest@example.com", 0.80, "st");
+    let mut e = Entity::new(
+        EntityKind::Email,
+        "selftest@example.com",
+        confidence::HIGH_PLUSPLUS,
+        "st",
+    );
     let base = e.c_effective();
     e.add_evidence(Evidence::new("src-a", "x"));
     e.add_evidence(Evidence::new("src-b", "y"));
@@ -377,7 +466,7 @@ async fn check_storage_and_correlator() -> Check {
             .map_err(|e| format!("upsert_scan: {e}"))?;
 
         let mk = |k, v: &str, srcs: &[&str]| -> Entity {
-            let mut x = Entity::new(k, v, 0.85, scan_id);
+            let mut x = Entity::new(k, v, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
             for s in srcs {
                 x.add_evidence(Evidence::new(*s, "selftest"));
             }

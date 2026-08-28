@@ -2,21 +2,21 @@ use super::*;
 
     #[test]
     fn classify_apple_phone_mac_returns_vendor_and_class() {
-        let info = classify_mac("3C:07:54:AB:CD:EF").unwrap();
+        let info = classify_mac("3C:07:54:AB:CD:EF").expect("should succeed");
         assert_eq!(info.vendor, "Apple");
         assert_eq!(info.class, DeviceClass::Phone);
     }
 
     #[test]
     fn classify_apple_airtag() {
-        let info = classify_mac("F8:B6:E9:00:11:22").unwrap();
+        let info = classify_mac("F8:B6:E9:00:11:22").expect("should succeed");
         assert_eq!(info.vendor, "Apple AirTag");
         assert_eq!(info.class, DeviceClass::Beacon);
     }
 
     #[test]
     fn classify_tesla_vehicle() {
-        let info = classify_mac("4C:FC:AA:11:22:33").unwrap();
+        let info = classify_mac("4C:FC:AA:11:22:33").expect("should succeed");
         assert_eq!(info.vendor, "Tesla");
         assert_eq!(info.class, DeviceClass::Vehicle);
     }
@@ -26,36 +26,58 @@ use super::*;
         // Regression: this OUI was mis-entered as a 7-char "DC44271", which could
         // never equal classify_mac's 6-hex extract, so a Tesla on the DC:44:27
         // prefix classified as Unregistered. The corrected "DC4427" resolves.
-        let info = classify_mac("DC:44:27:AA:BB:CC").unwrap();
+        let info = classify_mac("DC:44:27:AA:BB:CC").expect("should succeed");
         assert_eq!(info.vendor, "Tesla");
         assert_eq!(info.class, DeviceClass::Vehicle);
     }
 
     #[test]
     fn classify_hikvision_camera() {
-        let info = classify_mac("4C-71-DD-AB-CD-EF").unwrap();
+        let info = classify_mac("4C-71-DD-AB-CD-EF").expect("should succeed");
         assert_eq!(info.vendor, "Hikvision");
         assert_eq!(info.class, DeviceClass::Camera);
     }
 
     #[test]
     fn classify_no_separator_format() {
-        let info = classify_mac("e0cb1dabcdef").unwrap();
+        let info = classify_mac("e0cb1dabcdef").expect("should succeed");
         assert_eq!(info.vendor, "Apple AirPods");
         assert_eq!(info.class, DeviceClass::Headphones);
     }
 
     #[test]
     fn classify_lowercase_input() {
-        let info = classify_mac("3c:5a:b4:00:11:22").unwrap();
+        let info = classify_mac("3c:5a:b4:00:11:22").expect("should succeed");
         assert_eq!(info.vendor, "Google Pixel");
     }
 
     #[test]
     fn classify_unknown_oui_returns_unregistered() {
-        let info = classify_mac("00:11:22:33:44:55").unwrap();
+        // `10:10:10` is universally administered, individual, and assigned by
+        // NEITHER the curated table NOR any IEEE registry (MA-L/MA-M/MA-S), so
+        // it is the honest "we have never heard of this" case.
+        //
+        // This test previously used `00:11:22`, which is a genuine IEEE
+        // allocation. Once the registry tier landed it correctly resolved to a
+        // real vendor, so the old fixture was asserting that real hardware is
+        // unregistered — the very gap the tier fixes.
+        let info = classify_mac("10:10:10:33:44:55").expect("should succeed");
         assert_eq!(info.vendor, "Unknown");
         assert_eq!(info.class, DeviceClass::Unregistered);
+    }
+
+    #[test]
+    fn a_registered_but_uncurated_oui_names_its_vendor_without_inventing_a_class() {
+        // The two-tier contract. `00:11:22` is a real IEEE allocation that the
+        // curated table does not list: the vendor must come back named, and the
+        // class must stay Unknown, because IEEE registers organisations and not
+        // product categories — a class here would be invention.
+        let info = classify_mac("00:11:22:33:44:55").expect("should succeed");
+        assert_ne!(
+            info.vendor, "Unknown",
+            "a registered allocation must be named, not reported as unknown"
+        );
+        assert_eq!(info.class, DeviceClass::Unknown);
     }
 
     #[test]
@@ -101,7 +123,7 @@ use super::*;
         // criterion that split a real BLE scan's recurring devices into
         // 20 randomized vs the fixed home devices.)
         for m in ["02:00:00:00:00:01", "06:11:22:33:44:55", "DA:A1:19:AB:CD:EF"] {
-            let info = classify_mac(m).unwrap();
+            let info = classify_mac(m).expect("should succeed");
             assert_eq!(info.class, DeviceClass::Randomized, "{m} must be Randomized");
             assert_eq!(info.vendor, "Randomized (private)", "{m}");
         }
@@ -111,12 +133,15 @@ use super::*;
     fn universally_administered_mac_still_classifies_normally() {
         // Control: a real IEEE OUI (U/L bit clear) is unaffected by the
         // randomized-address guard and still resolves to its vendor.
-        let info = classify_mac("3C:07:54:AB:CD:EF").unwrap();
+        let info = classify_mac("3C:07:54:AB:CD:EF").expect("should succeed");
         assert_eq!(info.vendor, "Apple");
         assert_eq!(info.class, DeviceClass::Phone);
-        // A universally-administered but uncurated prefix stays Unregistered
-        // (NOT Randomized) — the distinction matters: unknown-vendor vs privacy.
-        let unk = classify_mac("00:11:22:33:44:55").unwrap();
+        // A universally-administered but wholly unknown prefix stays
+        // Unregistered (NOT Randomized) — the distinction matters:
+        // unknown-vendor vs privacy address. `10:10:10` is in no registry;
+        // `00:11:22` was swapped out because it IS a real allocation and now
+        // resolves through the IEEE tier.
+        let unk = classify_mac("10:10:10:33:44:55").expect("should succeed");
         assert_eq!(unk.class, DeviceClass::Unregistered);
     }
 
@@ -131,8 +156,8 @@ use super::*;
         assert_eq!(is_locally_administered("zz"), None);
         // The helper and the classifier must never disagree on the L/A verdict.
         for m in ["02:00:00:00:00:01", "3C:07:54:00:00:00", "F8:B6:E9:00:11:22"] {
-            let random_by_helper = is_locally_administered(m).unwrap();
-            let random_by_class = classify_mac(m).unwrap().class == DeviceClass::Randomized;
+            let random_by_helper = is_locally_administered(m).expect("should succeed");
+            let random_by_class = classify_mac(m).expect("should succeed").class == DeviceClass::Randomized;
             assert_eq!(random_by_helper, random_by_class, "disagreement on {m}");
         }
     }
@@ -140,8 +165,8 @@ use super::*;
     #[test]
     fn classify_handles_six_char_prefix_only() {
         // Trailing chars beyond the 6-hex OUI must not affect lookup.
-        let a = classify_mac("3C0754000000").unwrap();
-        let b = classify_mac("3C:07:54:FF:FF:FF").unwrap();
+        let a = classify_mac("3C0754000000").expect("should succeed");
+        let b = classify_mac("3C:07:54:FF:FF:FF").expect("should succeed");
         assert_eq!(a.vendor, b.vendor);
         assert_eq!(a.class, b.class);
     }
@@ -183,3 +208,45 @@ use super::*;
             );
         }
     }
+
+#[test]
+fn is_multicast_reads_the_ig_bit_independently_of_the_ul_bit() {
+    // Group addresses — I/G set.
+    for mac in [
+        "01:00:5e:00:00:fb", // IPv4 multicast (mDNS): 0x01
+        "33:33:00:00:00:01", // IPv6 all-nodes multicast: 0x33
+        "ff:ff:ff:ff:ff:ff", // broadcast: 0xff
+    ] {
+        assert_eq!(is_multicast(mac), Some(true), "{mac} is a group address");
+    }
+
+    // The load-bearing case for testing BOTH bits: IPv4 multicast is
+    // universally administered (0x01 & 0x02 == 0), so the U/L test alone
+    // reports it as a perfectly good IEEE-assigned address and lets it through.
+    // Only the I/G bit rejects it.
+    assert_eq!(
+        is_locally_administered("01:00:5e:00:00:fb"),
+        Some(false),
+        "IPv4 multicast is universally administered — the U/L bit does NOT catch it,          which is exactly why the seeding gate must test I/G as well"
+    );
+    // The other two happen to set U/L too (0x33 and 0xff both have 0x02 set), so
+    // those two alone would have been caught anyway — recorded here so the
+    // distinction above isn't mistaken for a property of all group addresses.
+    assert_eq!(is_locally_administered("33:33:00:00:00:01"), Some(true));
+    assert_eq!(is_locally_administered("ff:ff:ff:ff:ff:ff"), Some(true));
+
+    // A real individual BSSID: both bits clear.
+    assert_eq!(is_multicast("3c:5a:b4:11:22:33"), Some(false));
+    assert_eq!(is_locally_administered("3c:5a:b4:11:22:33"), Some(false));
+
+    // The two bits are orthogonal: a randomised privacy address is individual
+    // (I/G clear) but locally administered (U/L set).
+    assert_eq!(is_multicast("aa:bb:cc:dd:ee:ff"), Some(false));
+    assert_eq!(is_locally_administered("aa:bb:cc:dd:ee:ff"), Some(true));
+
+    // Formatting-agnostic, and unparseable input is None on both.
+    assert_eq!(is_multicast("01005e0000fb"), Some(true));
+    assert_eq!(is_multicast("01-00-5e-00-00-fb"), Some(true));
+    assert_eq!(is_multicast("zz"), None);
+    assert_eq!(is_multicast(""), None);
+}

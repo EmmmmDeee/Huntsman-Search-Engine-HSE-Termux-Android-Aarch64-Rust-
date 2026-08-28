@@ -12,6 +12,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -29,7 +30,7 @@ impl Module for SocialLocation {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Extract self-reported location from social profile pages (GitHub, etc.)"
+        "Social geolocation recon — surfaces self-reported location from social profile pages (GitHub, etc.)"
     }
     fn priority(&self) -> u8 {
         15
@@ -89,12 +90,16 @@ impl Module for SocialLocation {
             let trimmed = loc.trim();
             if !trimmed.is_empty() && trimmed.len() <= 200 {
                 // Professional portals carry verified workplace addresses.
-                // Self-reported bio fields are raised to 0.52 (above the 0.50
+                // Self-reported bio fields are raised to 0.52 (above the confidence::MEDIUM
                 // expansion floor) so they feed the geo-correlation chain
                 // (AU-052/AU-053) after the address→coordinates enrichment pass.
-                // Professional portals are set to 0.55 — the same tier as a
+                // Professional portals are set to confidence::MEDIUM_HIGH — the same tier as a
                 // search-discovered postcode-qualified address.
-                let conf = if is_professional { 0.55 } else { 0.52 };
+                let conf = if is_professional {
+                    confidence::MEDIUM_HIGH
+                } else {
+                    0.52
+                };
                 let mut e = Entity::new(EntityKind::Address, trimmed, conf, &ctx.scan_id);
                 e.tag("geoint");
                 if is_professional {
@@ -128,7 +133,7 @@ impl Module for SocialLocation {
                     let mut c = Entity::new(
                         EntityKind::Coordinates,
                         &coord_val,
-                        conf - 0.10,
+                        confidence::derived_from(conf),
                         &ctx.scan_id,
                     );
                     c.tag("addr-derived");
@@ -188,12 +193,15 @@ fn extract_github_location(html: &str) -> Option<String> {
     let start = after.find('>')? + 1;
     let end = after[start..].find('<')? + start;
     let text = &after[start..end];
-    let decoded = text
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&#39;", "'")
-        .replace("&quot;", "\"");
+    // The crate's single shared decoder, not a local `.replace()` chain. A chain
+    // feeds each replacement the *previous one's output*, so an `&amp;` decoding
+    // to `&` can pair with the text after it into an entity a later link decodes
+    // again: a profile location containing the literal `&lt;` (served as
+    // `&amp;lt;`) was recorded as `<`. `decode_entities` consumes each `&…;`
+    // exactly once, and also resolves `&nbsp;` and the numeric character
+    // references a GitHub location routinely carries (`S&#227;o Paulo`), which
+    // the chain left raw in the stored value.
+    let decoded = crate::util::html::decode_entities(text);
     let trimmed = decoded.trim().to_string();
     if trimmed.is_empty() {
         None

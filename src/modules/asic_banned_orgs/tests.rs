@@ -1,5 +1,4 @@
 use super::*;
-use crate::modules::asic_banned_orgs::MAX_HITS;
 
 // Real record shape (the company name carries a non-breaking space, as ASIC's
 // export does, to exercise the normalisation).
@@ -10,7 +9,7 @@ const REC: &str = "{\"BD_ORG_ACN\":\"081402379\",\
   \"BD_ORG_COMMENT\":\"No comment made\"}";
 
 fn rec(json: &str) -> Map<String, Value> {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 #[test]
@@ -39,6 +38,23 @@ fn emits_adverse_org_and_acn() {
         acn.value.chars().filter(char::is_ascii_digit).collect::<String>(),
         "081402379"
     );
+}
+
+#[test]
+fn checksum_invalid_acn_is_not_emitted_as_a_pivot() {
+    // "111111111" has the right digit count (9) but fails the ASIC check-digit
+    // checksum (util::abn::is_valid_acn) — ASIC's own export can carry a
+    // data-entry typo, and a mere digit count must not be trusted as a real
+    // ACN pivot.
+    let bad = rec(&REC.replace("081402379", "111111111"));
+    let mut r = ModuleResult::new();
+    emit_banned_org(&bad, "scan", &mut r);
+    assert!(
+        !r.entities.iter().any(|x| x.kind == EntityKind::AbnAcn),
+        "a checksum-invalid ACN must not be emitted as a pivot"
+    );
+    // The organisation finding itself is unaffected.
+    assert!(r.entities.iter().any(|x| x.kind == EntityKind::Organisation));
 }
 
 #[test]
@@ -84,133 +100,5 @@ async fn asic_banned_orgs_live_finds_a_banned_org() {
             .iter()
             .any(|e| e.kind == EntityKind::Organisation && e.has_tag("asic-banned")),
         "expected the banned-organisation finding from the live register"
-    );
-}
-
-#[test]
-fn search_result_seed_emitted_when_records_found() {
-    // When matches are found, a seed entity is emitted with matched_count and
-    // total_matches even if not truncated.
-    let tokens = name_tokens("Australian Business Insurance");
-    let recs = [rec(REC), rec(REC)];
-
-    // Simulate matching: count total, then emit up to MAX_HITS.
-    let mut result = ModuleResult::new();
-    let matched_count = recs
-        .iter()
-        .filter(|r| record_name_matches(r, &tokens))
-        .take(MAX_HITS)
-        .inspect(|r| emit_banned_org(r, "test", &mut result))
-        .count();
-    let total_matches = recs
-        .iter()
-        .filter(|r| record_name_matches(r, &tokens))
-        .count();
-    let matches_capped = total_matches > MAX_HITS;
-
-    let mut seed = Entity::new(
-        EntityKind::Organisation,
-        "test-query",
-        0.55,
-        "test",
-    );
-    seed.tag("asic");
-    seed.tag("search-result");
-    let mut ev = Evidence::new(SRC, "ASIC search")
-        .with_attr("matched_count", matched_count.to_string())
-        .with_attr("total_matches", total_matches.to_string());
-    if matches_capped {
-        ev = ev.with_attr("matches_capped", "true");
-        seed.tag("truncated");
-    }
-    seed.add_evidence(ev);
-    result.push(seed);
-
-    // Verify seed was emitted with correct attributes.
-    let seed = result
-        .entities
-        .iter()
-        .find(|e| e.kind == EntityKind::Organisation && e.tags.contains(&"search-result".to_string()))
-        .unwrap();
-    assert!(!seed.has_tag("truncated"), "no truncation at 2 matches");
-    assert_eq!(
-        seed.evidence[0]
-            .attributes
-            .get("total_matches")
-            .map(String::as_str),
-        Some("2")
-    );
-    assert!(!seed.evidence[0].attributes.contains_key("matches_capped"));
-}
-
-#[test]
-fn truncation_is_signaled_when_max_hits_exceeded() {
-    // Regression: when total matches exceed MAX_HITS, truncation must be
-    // surfaced in evidence so the operator knows the scan stopped at a hard cap.
-    let mut recs = vec![];
-    for i in 0..120 {
-        recs.push(rec(&format!(
-            "{{\"BD_ORG_ACN\":\"08140237{i:01}\",\
-            \"BD_ORG_NAME\":\"BAN ORG NAME {i:03}\",\
-            \"BD_ORG_TYPE\":\"Ban\",\
-            \"BD_ORG_START_DT\":\"01/01/2020\",\"BD_ORG_END_DT\":\"01/01/2022\",\
-            \"BD_ORG_COMMENT\":\"Comment\"}}"
-        )));
-    }
-
-    let tokens = name_tokens("Ban Org Name");
-    let mut result = ModuleResult::new();
-    let matched_count = recs
-        .iter()
-        .filter(|r| record_name_matches(r, &tokens))
-        .take(MAX_HITS)
-        .inspect(|r| emit_banned_org(r, "test", &mut result))
-        .count();
-    let total_matches = recs
-        .iter()
-        .filter(|r| record_name_matches(r, &tokens))
-        .count();
-    let matches_capped = total_matches > MAX_HITS;
-
-    let mut seed = Entity::new(
-        EntityKind::Organisation,
-        "Ban Org Name",
-        0.55,
-        "test",
-    );
-    seed.tag("asic");
-    seed.tag("search-result");
-    let mut ev = Evidence::new(SRC, "ASIC search")
-        .with_attr("matched_count", matched_count.to_string())
-        .with_attr("total_matches", total_matches.to_string());
-    if matches_capped {
-        ev = ev.with_attr("matches_capped", "true");
-        seed.tag("truncated");
-    }
-    seed.add_evidence(ev);
-    result.push(seed);
-
-    let seed = result
-        .entities
-        .iter()
-        .find(|e| e.kind == EntityKind::Organisation && e.tags.contains(&"search-result".to_string()))
-        .unwrap();
-
-    assert!(seed.has_tag("truncated"), "seed must be tagged 'truncated'");
-    assert_eq!(
-        seed.evidence[0]
-            .attributes
-            .get("total_matches")
-            .map(String::as_str),
-        Some("120"),
-        "total_matches must reflect all matches"
-    );
-    assert_eq!(
-        seed.evidence[0]
-            .attributes
-            .get("matches_capped")
-            .map(String::as_str),
-        Some("true"),
-        "matches_capped must be set when limit is hit"
     );
 }

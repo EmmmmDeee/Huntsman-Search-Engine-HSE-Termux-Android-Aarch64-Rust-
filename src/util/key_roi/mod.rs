@@ -107,6 +107,35 @@ pub fn classify(service: &str) -> KeyRoi {
     }
 }
 
+/// Unset `HUNTSMAN_*` keys, highest acquisition-ROI first (Multiplier, then
+/// Expansion, then Terminal), ties broken by env-var name. `is_present(env_var)`
+/// reports which keys are already configured. This is the single source of truth
+/// for the convex "register the highest-leverage free keys first" ranking —
+/// consumed by both `hse doctor`'s terminal listing and the web Settings page's
+/// acquisition guidance, so the two can never drift.
+pub fn rank_unset_keys(is_present: impl Fn(&str) -> bool) -> Vec<(&'static str, KeyRoi)> {
+    // Map env var → canonical service name for tiering; an env var with no
+    // service_defs entry classifies via its own string, which `classify` defaults
+    // to the middle (Expansion) tier — never silently dropped from the ranking.
+    let env_to_service: std::collections::HashMap<&str, &str> =
+        crate::util::service_defs::service_defs()
+            .iter()
+            .map(|d| (d.env_var, d.name))
+            .collect();
+    let mut missing: Vec<(&'static str, KeyRoi)> = crate::util::keys::KNOWN_KEYS
+        .iter()
+        .copied()
+        .filter(|k| !is_present(k))
+        .map(|k| {
+            let svc = env_to_service.get(k).copied().unwrap_or(k);
+            (k, classify(svc))
+        })
+        .collect();
+    // Highest ROI first (Terminal < Expansion < Multiplier), ties broken by name.
+    missing.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    missing
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

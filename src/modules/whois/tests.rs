@@ -3,6 +3,7 @@ use crate::core::scan::{Target, TargetKind};
 use super::Whois;
 use super::client::find_referral;
 use super::parse::{all_fields, field, parse_whois, starts_with_ascii_ci};
+use super::registrant_location_parts;
 use super::vcard_field;
 use crate::core::module::Module;
 
@@ -130,4 +131,24 @@ fn vcard_field_returns_none_for_malformed_input() {
     assert!(vcard_field(&not_a_vcard, "fn").is_none());
     let empty_array = serde_json::json!([]);
     assert!(vcard_field(&empty_array, "fn").is_none());
+}
+
+#[test]
+fn registrant_location_parts_drops_privacy_proxy_placeholders_via_shared_guard() {
+    // Real values pass straight through, preserving order (state, country).
+    assert_eq!(
+        registrant_location_parts(Some("NV"), "US"),
+        vec!["NV", "US"]
+    );
+    // "Data Protected" and "Withheld" contain neither "redacted" nor "privacy",
+    // so the previous inline substring check let them become a fake registrant
+    // Address; the shared whois guard rejects them. A real value in the same
+    // record still survives.
+    assert_eq!(
+        registrant_location_parts(Some("Data Protected"), "Australia"),
+        vec!["Australia"]
+    );
+    assert!(registrant_location_parts(Some("Redacted For Privacy"), "Withheld").is_empty());
+    // Empty parts are dropped.
+    assert_eq!(registrant_location_parts(Some(""), "US"), vec!["US"]);
 }

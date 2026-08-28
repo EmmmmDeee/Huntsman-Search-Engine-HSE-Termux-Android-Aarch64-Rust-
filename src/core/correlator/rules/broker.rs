@@ -13,7 +13,7 @@
 //! drift). Fires only for a broker of ≥3 identities — a 2-identity split is a single
 //! fragile pair, already AU-063's job.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use super::*;
 use crate::core::relation::{connection_brokers, identity_uids, sorted_confined_adjacency};
@@ -25,20 +25,21 @@ use crate::core::relation::{connection_brokers, identity_uids, sorted_confined_a
 /// of identities the broker holds together (a larger fan-out is a more critical
 /// single point of failure).
 pub(in crate::core::correlator) fn rule_au_070_connection_broker(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // A 2-identity split is a fragile *pair* (AU-063); a broker is a genuine ≥3-way
     // linchpin.
     const MIN_BROKERED: usize = 3;
     // Only links at or above the Probable tier may *bind* identities — the same
     // floor AU-067 resolves under. Without it a single weak edge makes a common-name
     // node look like the linchpin of dozens of unrelated namesakes.
-    const MIN_CONF: f64 = 0.50;
+    const MIN_CONF: f64 = crate::core::relation::IDENTITY_LINK_MIN_CONF;
 
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let by_uid = context.by_uid();
     let ids = identity_uids(entities);
     // Build the traversal graph ONCE and reuse it across the articulation search.
     let adj = sorted_confined_adjacency(entities, relations);
@@ -125,11 +126,50 @@ mod tests {
         let rels = [edge(&email, &hub), edge(&uname, &hub), edge(&person, &hub)];
         let ents = [hub.clone(), email.clone(), uname.clone(), person.clone()];
 
-        let out = rule_au_070_connection_broker(&ents, &rels, "s", 0);
+        let ctx = RuleContext::new(&ents);
+        let out = rule_au_070_connection_broker(&ctx, &rels, "s", 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rule_id, "AU-070");
         // The finding references the broker and every brokered identity.
         for uid in [&hub.uid, &email.uid, &uname.uid, &person.uid] {
+            assert!(out[0].entity_uids.contains(uid));
+        }
+    }
+
+    #[test]
+    fn au070_escalates_to_high_brokering_five_identities() {
+        // A domain hub is the sole link binding FIVE identities → severity
+        // escalates Medium→High (n = broker.brokered.len() >= 5). The
+        // three-identity sibling above covers the base Medium arm. Identity
+        // kinds span Person/Email/Phone/Username, so a second Email reaches five.
+        let hub = mk(EntityKind::Domain, "x.com");
+        let email = mk(EntityKind::Email, "a@x.com");
+        let uname = mk(EntityKind::Username, "alice");
+        let person = mk(EntityKind::Person, "Bob");
+        let phone = mk(EntityKind::Phone, "+61400000000");
+        let email2 = mk(EntityKind::Email, "c@x.com");
+        let rels = [
+            edge(&email, &hub),
+            edge(&uname, &hub),
+            edge(&person, &hub),
+            edge(&phone, &hub),
+            edge(&email2, &hub),
+        ];
+        let ents = [
+            hub.clone(),
+            email.clone(),
+            uname.clone(),
+            person.clone(),
+            phone.clone(),
+            email2.clone(),
+        ];
+
+        let ctx = RuleContext::new(&ents);
+        let out = rule_au_070_connection_broker(&ctx, &rels, "s", 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rule_id, "AU-070");
+        assert_eq!(out[0].severity, Severity::High);
+        for uid in [&email.uid, &uname.uid, &person.uid, &phone.uid, &email2.uid] {
             assert!(out[0].entity_uids.contains(uid));
         }
     }
@@ -142,8 +182,10 @@ mod tests {
         let email = mk(EntityKind::Email, "a@x.com");
         let uname = mk(EntityKind::Username, "alice");
         let rels = [edge(&email, &hub), edge(&uname, &hub)];
+        let ents = [hub, email, uname];
+        let ctx = RuleContext::new(&ents);
         assert!(
-            rule_au_070_connection_broker(&[hub, email, uname], &rels, "s", 0).is_empty(),
+            rule_au_070_connection_broker(&ctx, &rels, "s", 0).is_empty(),
             "a 2-identity bridge is not a broker"
         );
     }
@@ -155,6 +197,8 @@ mod tests {
         let b = mk(EntityKind::Username, "alice");
         let c = mk(EntityKind::Phone, "+61400000000");
         let rels = [edge(&a, &b), edge(&b, &c), edge(&a, &c)];
-        assert!(rule_au_070_connection_broker(&[a, b, c], &rels, "s", 0).is_empty());
+        let ents = [a, b, c];
+        let ctx = RuleContext::new(&ents);
+        assert!(rule_au_070_connection_broker(&ctx, &rels, "s", 0).is_empty());
     }
 }

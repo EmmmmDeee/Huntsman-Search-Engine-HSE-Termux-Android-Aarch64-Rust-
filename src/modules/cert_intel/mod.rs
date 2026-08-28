@@ -14,13 +14,14 @@ use serde::Deserialize;
 use std::collections::HashSet;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::http::fetch_json;
+use crate::util::http::{RequestBuilderExt, fetch_json};
 
 // ── crt.sh response types ──────────────────────────────────────────
 
@@ -46,7 +47,7 @@ impl Module for CertIntel {
     }
 
     fn description(&self) -> &'static str {
-        "Certificate intelligence: CT log search and live TLS probe"
+        "Certificate intelligence — sweeps CT logs and fingerprints a host via live TLS probe"
     }
 
     fn priority(&self) -> u8 {
@@ -71,7 +72,9 @@ impl Module for CertIntel {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Domain];
+        // Domain from dNSName SANs / CT-log names; Email from rfc822Name SANs
+        // (S/MIME and client-auth certificates) and CT-log email entries.
+        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::Email];
         KINDS
     }
 
@@ -83,99 +86,209 @@ impl Module for CertIntel {
 
         let mut result = ModuleResult::new();
         let mut seen_subs: HashSet<String> = HashSet::new();
+        // Which certificate sources were actually asked, and how many of those
+        // came back a failure rather than an answer. Tracked by NAME, not just
+        // by count, so the fail-closed diagnostic can say what was really tried:
+        // an IP target never attempts the CT leg, and an error claiming the CT
+        // log failed would itself be the kind of falsehood this module is being
+        // fixed to stop reporting.
+        let mut attempted: Vec<&str> = Vec::new();
+        let mut legs_failed = 0usize;
         let parent = domain.to_lowercase();
 
         // CT-log search only works for domain targets (indexed by name).
         // IP targets skip straight to the live TLS probe.
         if target.kind == TargetKind::Domain {
             let ct_url = format!("https://crt.sh/?q=%.{domain}&output=json");
-            if let Ok(entries) = fetch_json::<Vec<CrtEntry>>(&ctx.http, SRC, &ct_url).await {
-                result.extend(ct_log_entities(
+            attempted.push("crt.sh CT log");
+            match fetch_json::<Vec<CrtEntry>>(&ctx.http, SRC, &ct_url).await {
+                Ok(entries) => result.extend(ct_log_entities(
                     &entries,
                     &parent,
                     &ctx.scan_id,
                     &mut seen_subs,
-                ));
+                )),
+                Err(e) => {
+                    // crt.sh answers 502/503/429 often enough that swallowing it
+                    // was load-bearing: the whole CT-log corpus would vanish
+                    // from the scan and the subject would look like it had no
+                    // certificate history at all.
+                    legs_failed += 1;
+                    tracing::warn!(
+                        module = SRC,
+                        error = %e,
+                        "crt.sh CT-log search failed; recorded as a failure, not as \"no certificates\""
+                    );
+                }
             }
         } // end CT-log search (domain-only)
 
         // ── 2. Live TLS certificate probe (works for both Domain and IP) ──
         let url = format!("https://{domain}/");
-        if let Ok(resp) = ctx
-            .http
-            .head(&url)
-            .send()
-            .await
-            .map_err(|e| Error::module(SRC, format!("TLS connect: {e}")))
-        {
-            let mut entity = target.to_entity(0.88, &ctx.scan_id);
-            entity.tag("tls");
+        attempted.push("live TLS probe");
+        // This `map_err` used to build an `Error::module` that the `if let Ok`
+        // immediately discarded — the error was constructed and thrown away on
+        // the same expression. `send_tagged` yields the typed error directly,
+        // and the failure is now counted rather than dropped. A `match` rather
+        // than `if let ... else if let`: the Result is consumed exactly once and
+        // both outcomes are visibly handled in one place.
+        match ctx.http.head(&url).send_tagged(SRC).await {
+            Ok(resp) => {
+                let mut entity = target.to_entity(confidence::EXPERT, &ctx.scan_id);
+                entity.tag("tls");
 
-            let mut ev = Evidence::new(SRC, format!("TLS certificate for {domain}"))
-                .with_attr("port", "443");
+                let mut ev = Evidence::new(SRC, format!("TLS certificate for {domain}"))
+                    .with_attr("port", "443");
 
-            let tls_info = resp.extensions().get::<reqwest::tls::TlsInfo>();
-            if let Some(info) = tls_info
-                && let Some(der) = info.peer_certificate()
-            {
-                parse_certificate(
-                    der,
-                    domain,
-                    &ctx.scan_id,
-                    &mut entity,
-                    &mut ev,
-                    &mut result,
-                    &mut seen_subs,
+                let tls_info = resp.extensions().get::<reqwest::tls::TlsInfo>();
+                if let Some(info) = tls_info
+                    && let Some(der) = info.peer_certificate()
+                {
+                    parse_certificate(
+                        der,
+                        domain,
+                        &ctx.scan_id,
+                        &mut entity,
+                        &mut ev,
+                        &mut result,
+                        &mut seen_subs,
+                    );
+                }
+
+                let status = resp.status();
+                ev = ev.with_attr("http_status", status.as_u16().to_string());
+
+                if let Some(hsts) = resp.headers().get("strict-transport-security")
+                    && let Ok(v) = hsts.to_str()
+                {
+                    ev = ev.with_attr("hsts", v);
+                    entity.tag("hsts");
+                }
+
+                entity.add_evidence(ev);
+                result.push(entity);
+            }
+            Err(e) => {
+                legs_failed += 1;
+                tracing::warn!(
+                    module = SRC,
+                    error = %e,
+                    "live TLS probe failed; recorded as a failure, not as \"no certificate\""
                 );
             }
+        }
 
-            let status = resp.status();
-            ev = ev.with_attr("http_status", status.as_u16().to_string());
-
-            if let Some(hsts) = resp.headers().get("strict-transport-security")
-                && let Ok(v) = hsts.to_str()
-            {
-                ev = ev.with_attr("hsts", v);
-                entity.tag("hsts");
-            }
-
-            entity.add_evidence(ev);
-            result.push(entity);
+        // Fail closed only when NOTHING answered. A partial result is still real
+        // intelligence — an IP target never attempts the CT leg at all, and a
+        // domain whose crt.sh query failed but whose TLS probe succeeded has a
+        // genuine live certificate to report.
+        if never_answered(attempted.len(), legs_failed, !result.is_empty()) {
+            return Err(Error::module(SRC, all_sources_failed_msg(&attempted)));
         }
 
         Ok(result)
     }
 }
 
+/// The fail-closed diagnostic, naming ONLY the sources actually attempted.
+///
+/// Split out so the wording is unit-testable. An earlier revision hard-coded
+/// "neither the CT log nor the live TLS probe answered", which is false for an
+/// IP target: the CT leg is never attempted there, because crt.sh is indexed by
+/// name. An error message that names a source it never tried is precisely the
+/// class of falsehood this module is being changed to stop reporting, so it
+/// would be a poor thing to ship in the fix for it.
+fn all_sources_failed_msg(attempted: &[&str]) -> String {
+    format!(
+        "every certificate source attempted for this target failed: {}",
+        attempted.join(", ")
+    )
+}
+
+/// Whether cert_intel genuinely never got an answer, as opposed to getting a
+/// truthful empty one.
+///
+/// The same shape as `see_know::seeknow_never_answered` and
+/// `au_property::all_legs_unreachable`, and deliberately so — this is the third
+/// module in the codebase to need it. Pure, so the policy is unit-testable
+/// without a live crt.sh or a TLS handshake.
+///
+/// An error only when EVERY attempted source failed and nothing was found:
+/// * nothing attempted -> not a failure; nothing was asked.
+/// * anything found -> not a failure, even if a source did fail; discarding
+///   real certificates to report a partial outage loses intelligence.
+/// * some sources answered -> not a failure; a domain whose crt.sh query broke
+///   but whose live probe succeeded still has a genuine certificate.
+fn never_answered(attempted: usize, failed: usize, found_any: bool) -> bool {
+    attempted > 0 && failed == attempted && !found_any
+}
+
 /// Map crt.sh CT-log entries to Domain entities, discriminating confidence by the
 /// subdomain relationship. A `%.domain` CT query returns the WHOLE matched
 /// certificate's SAN list, which on a shared-hosting cert includes unrelated
 /// co-tenant domains — so a proper subdomain of `parent` is a confirmed asset
-/// (0.88, tagged [`tags::SUBDOMAIN`]) while a co-listed non-subdomain is only a
-/// weak co-hosting lead (0.45, tagged `co-hosted`): they must NOT carry identical
+/// (confidence::VERY_HIGH, tagged [`tags::SUBDOMAIN`]) while a co-listed non-subdomain is only a
+/// weak co-hosting lead (confidence::LOW_MEDIUM, tagged `co-hosted`): they must NOT carry identical
 /// high confidence, or an unrelated co-tenant is over-attributed to the subject.
-/// Matches the discrimination the TLS-SAN path and the sibling `crtsh` module
-/// already apply. Dedups across both cert paths via `seen_subs`.
+/// `VERY_HIGH` matches the sibling `crtsh`/`certspotter`/`hackertarget` modules'
+/// identical "confirmed subdomain via a recon aggregator" claim, so a real
+/// subdomain independently hit by more than one of these siblings in the same
+/// scan gets one consistent confidence rather than one that depends on which
+/// subset of redundant modules happened to succeed. Lower than the TLS-SAN
+/// path's `HIGH_PLUSPLUS_PLUS` below — a live handshake is stronger evidence
+/// than a historical CT-log record. Dedups across both cert paths via
+/// `seen_subs`.
 fn ct_log_entities(
     entries: &[CrtEntry],
     parent: &str,
     scan_id: &str,
     seen_subs: &mut HashSet<String>,
 ) -> Vec<Entity> {
+    let cert_ev = |entry: &CrtEntry, msg: String| {
+        Evidence::new(SRC, msg)
+            .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or("-"))
+            .with_attr("not_before", entry.not_before.as_deref().unwrap_or("-"))
+            .with_attr("not_after", entry.not_after.as_deref().unwrap_or("-"))
+            .with_attr(
+                "serial_number",
+                entry.serial_number.as_deref().unwrap_or("-"),
+            )
+            .with_attr("parent_domain", parent)
+    };
     entries
         .iter()
         .flat_map(|entry| entry.name_value.split('\n').map(move |name| (entry, name)))
         .filter_map(|(entry, name)| {
             let name = name.trim().trim_start_matches("*.").to_lowercase();
-            if name.is_empty()
-                || !name.contains('.')
-                || name == parent
-                || !seen_subs.insert(name.clone())
-            {
+            if name.is_empty() || name == parent || !seen_subs.insert(name.clone()) {
+                return None;
+            }
+            // An rfc822Name SAN — crt.sh returns these inline in `name_value` — is
+            // an email address, not a hostname. Emit it as an Email pivot rather
+            // than a bogus Domain like `admin@example.com` (which `.contains('.')`
+            // alone would have admitted); parity with the sibling crtsh module.
+            if crate::util::extract::looks_like_email(&name) {
+                // CT-log SAN emails skew heavily toward automated cert-admin
+                // desks (`hostmaster@`, `admin@`) rather than the subject's own
+                // mail — the same false-positive class `whois`/`dns_intel`
+                // already gate on. Parity with those modules.
+                if crate::util::domains::is_infrastructure_email(&name) {
+                    return None;
+                }
+                let mut e = Entity::new(EntityKind::Email, &name, confidence::HIGH_PLUS, scan_id);
+                e.tag(tags::CT_LOG);
+                e.add_evidence(cert_ev(entry, format!("Email in certificate SAN: {name}")));
+                return Some(e);
+            }
+            if !name.contains('.') {
                 return None;
             }
             let is_sub = crate::util::domains::is_proper_subdomain_of(&name, parent);
-            let conf = if is_sub { 0.88 } else { 0.45 };
+            let conf = if is_sub {
+                confidence::VERY_HIGH
+            } else {
+                confidence::LOW_MEDIUM
+            };
             let mut e = Entity::new(EntityKind::Domain, &name, conf, scan_id);
             e.tag(tags::CT_LOG);
             if is_sub {
@@ -183,17 +296,7 @@ fn ct_log_entities(
             } else {
                 e.tag("co-hosted");
             }
-            e.add_evidence(
-                Evidence::new(SRC, format!("Certificate transparency: {name}"))
-                    .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or("-"))
-                    .with_attr("not_before", entry.not_before.as_deref().unwrap_or("-"))
-                    .with_attr("not_after", entry.not_after.as_deref().unwrap_or("-"))
-                    .with_attr(
-                        "serial_number",
-                        entry.serial_number.as_deref().unwrap_or("-"),
-                    )
-                    .with_attr("parent_domain", parent),
-            );
+            e.add_evidence(cert_ev(entry, format!("Certificate transparency: {name}")));
             Some(e)
         })
         .collect()
@@ -210,7 +313,10 @@ fn parse_certificate(
     result: &mut ModuleResult,
     seen_subs: &mut HashSet<String>,
 ) {
-    let sans = extract_sans_from_der(der);
+    let CertSans {
+        domains: sans,
+        emails: email_sans,
+    } = extract_sans_from_der(der);
 
     if !sans.is_empty() {
         let san_count = sans.len();
@@ -227,7 +333,12 @@ fn parse_certificate(
             if !is_sub || !seen_subs.insert(san_lower.clone()) {
                 return None;
             }
-            let mut sub = Entity::new(EntityKind::Domain, &san_lower, 0.85, scan_id);
+            let mut sub = Entity::new(
+                EntityKind::Domain,
+                &san_lower,
+                confidence::HIGH_PLUSPLUS_PLUS,
+                scan_id,
+            );
             sub.tag(tags::SUBDOMAIN);
             sub.tag("tls-san");
             sub.add_evidence(
@@ -243,6 +354,23 @@ fn parse_certificate(
         if san_count > 10 {
             entity.tag("multi-san");
         }
+    }
+
+    // rfc822Name SANs (S/MIME and client-auth certificates carry these) → Email
+    // pivots. Deduped across both cert paths via `seen_subs`; an email string can
+    // never collide with the hostnames the set also holds.
+    for email in &email_sans {
+        if !seen_subs.insert(email.clone()) || crate::util::domains::is_infrastructure_email(email)
+        {
+            continue;
+        }
+        let mut e = Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
+        e.tag("tls-san");
+        e.add_evidence(
+            Evidence::new(SRC, format!("Email SAN on {target_domain} certificate"))
+                .with_attr("parent_domain", target_domain),
+        );
+        result.push(e);
     }
 
     if let Some(issuer) = extract_field_from_der(der, &[0x55, 0x04, 0x03], true) {
@@ -282,8 +410,19 @@ fn der_tlv_len(der: &[u8], pos: usize) -> Option<(usize, usize)> {
     Some((2 + n, len))
 }
 
-fn extract_sans_from_der(der: &[u8]) -> Vec<String> {
-    let mut sans = Vec::new();
+/// The Subject Alternative Names a leaf certificate carries, split by
+/// GeneralName kind: dNSName (tag 2) hostnames and rfc822Name (tag 1) email
+/// addresses. Each is a distinct pivot type (Domain vs Email), so they are kept
+/// apart rather than flattened into one hostname list — a rfc822Name emitted as
+/// a Domain (`admin@example.com`) is a false attribution.
+#[derive(Default)]
+struct CertSans {
+    domains: Vec<String>,
+    emails: Vec<String>,
+}
+
+fn extract_sans_from_der(der: &[u8]) -> CertSans {
+    let mut out = CertSans::default();
     let san_oid: &[u8] = &[0x55, 0x1D, 0x11];
 
     for i in 0..der.len().saturating_sub(san_oid.len()) {
@@ -310,9 +449,11 @@ fn extract_sans_from_der(der: &[u8]) -> Vec<String> {
         let end = (pos + 4096).min(der.len());
         while pos + 2 <= end {
             let tag = der[pos];
-            // Only the two GeneralName tags the module cares about advance the
+            // Only the GeneralName tags the module cares about advance the
             // cursor; anything else ends the sequence (we've left the SAN value).
-            if tag != 0x82 && tag != 0x87 {
+            // rfc822Name [1] (0x81) is now consumed too — previously it broke the
+            // loop, silently dropping every SAN that followed an email entry.
+            if tag != 0x81 && tag != 0x82 && tag != 0x87 {
                 break;
             }
             let Some((hdr, len)) = der_tlv_len(der, pos) else {
@@ -322,22 +463,29 @@ fn extract_sans_from_der(der: &[u8]) -> Vec<String> {
             if len == 0 || value_end > end {
                 break;
             }
-            // dNSName [2] (0x82) → a Domain SAN; iPAddress [7] (0x87) is skipped.
-            if tag == 0x82
-                && let Ok(name) = std::str::from_utf8(&der[pos + hdr..value_end])
+            // dNSName [2] (0x82) → Domain; rfc822Name [1] (0x81) → Email;
+            // iPAddress [7] (0x87) is consumed but not surfaced.
+            if (tag == 0x82 || tag == 0x81)
+                && let Ok(value) = std::str::from_utf8(&der[pos + hdr..value_end])
             {
-                let name = name.trim();
-                if name.contains('.') && name.len() > 3 && name.len() <= 253 {
-                    sans.push(name.to_lowercase());
+                let value = value.trim().to_lowercase();
+                if tag == 0x82 {
+                    if value.contains('.') && value.len() > 3 && value.len() <= 253 {
+                        out.domains.push(value);
+                    }
+                } else if crate::util::extract::looks_like_email(&value) {
+                    out.emails.push(value);
                 }
             }
             pos = value_end;
         }
         break;
     }
-    sans.sort_unstable();
-    sans.dedup();
-    sans
+    out.domains.sort_unstable();
+    out.domains.dedup();
+    out.emails.sort_unstable();
+    out.emails.dedup();
+    out
 }
 
 fn extract_field_from_der(der: &[u8], oid: &[u8], first: bool) -> Option<String> {
@@ -425,8 +573,8 @@ fn extract_serial_hex(der: &[u8]) -> String {
         .join(":")
 }
 
-/// `cargo-fuzz` harness entry point (F.3, the standing "proof & measurement
-/// infrastructure" foundation — `docs/PROBLEM_TREE.md` §3.F). `der` is a
+/// `cargo-fuzz` harness entry point (the standing "proof & measurement
+/// infrastructure" foundation). `der` is a
 /// leaf certificate's raw DER bytes read straight off a live TLS socket
 /// (`process()`'s live-probe path) — fully attacker-controlled, arbitrary
 /// bytes that need not even be valid X.509. This hand-rolled scanner already

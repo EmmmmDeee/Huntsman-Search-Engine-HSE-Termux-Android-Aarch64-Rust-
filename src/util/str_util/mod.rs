@@ -15,14 +15,24 @@ pub fn nonempty(o: &Option<String>) -> Option<&str> {
     o.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
 
-/// Title-case a personal name into a canonical, merge-stable `Person` value:
-/// each whitespace token is lower-cased then its first character upper-cased,
-/// and runs of whitespace collapse to one space. `Person` values are NOT
-/// case-folded at UID normalisation, so a register's `ERIK DIEGMANN`, a scraped
-/// `erik diegmann`, and `name_intel`'s parsed anchor would otherwise fragment
-/// into three separate people; routing every module-minted name through this
-/// converges them onto one node (matching `name_intel`'s own lower-then-cap
-/// casing, so the subject anchor and discovered relatives share UIDs).
+/// Title-case a personal name into a canonical, merge-stable **display**
+/// spelling: each whitespace token has its first character upper-cased and the
+/// rest lower-cased, and runs of whitespace collapse to one space.
+///
+/// This is a *display* canonicaliser, not the identity key. `Entity`'s
+/// `identity_fold` lower-cases and whitespace-collapses `Person`/`Organisation`
+/// before hashing, so a register's `ERIK DIEGMANN` and a scraped `erik diegmann`
+/// already share a UID whether or not they pass through here. What routing
+/// module-minted names through this buys is a single agreed spelling for the
+/// `value` those same-UID entities display (and for canonical-spelling ranking),
+/// matching `name_intel`'s own lower-then-cap casing.
+///
+/// # Idempotence
+/// `title_case(title_case(x)) == title_case(x)` for all inputs. That requires
+/// care because a few scalars *expand* when upper-cased (`ß` → `SS`,
+/// `ﬁ` → `FI`): upper-casing the first character alone would emit `"SSeta"`,
+/// which re-normalises to `"Sseta"` — two spellings claiming to be canonical.
+/// Only the first scalar of the expansion is therefore kept upper-case.
 ///
 /// ```
 /// use huntsman_search_engine::util::str_util::title_case;
@@ -30,6 +40,9 @@ pub fn nonempty(o: &Option<String>) -> Option<&str> {
 /// assert_eq!(title_case("ERIK DIEGMANN"), "Erik Diegmann");
 /// assert_eq!(title_case("  kyle   diegmann "), "Kyle Diegmann");
 /// assert_eq!(title_case(""), "");
+/// // Expanding upper-case stays stable under re-normalisation.
+/// assert_eq!(title_case("ßeta"), "Sseta");
+/// assert_eq!(title_case(&title_case("ßeta")), title_case("ßeta"));
 /// ```
 #[must_use]
 pub fn title_case(s: &str) -> String {
@@ -40,13 +53,54 @@ pub fn title_case(s: &str) -> String {
         }
         let mut chars = word.chars();
         if let Some(first) = chars.next() {
-            out.extend(first.to_uppercase());
+            // Keep only the FIRST scalar of the upper-casing upper-cased; a
+            // multi-scalar expansion's tail is lower-cased like any other
+            // non-initial character, which is what makes the result a fixed
+            // point of this function.
+            let mut upper = first.to_uppercase();
+            if let Some(lead) = upper.next() {
+                out.push(lead);
+                for c in upper {
+                    out.extend(c.to_lowercase());
+                }
+            }
             for c in chars {
                 out.extend(c.to_lowercase());
             }
         }
     }
     out
+}
+
+/// Upper-case only the **first** character of `s`, leaving the rest of the
+/// string exactly as-is. Empty input yields `""`. Character-safe: the first
+/// scalar's full Unicode upper-casing is applied (so `ß` → `SS`) and the tail
+/// is appended untouched, never byte-sliced.
+///
+/// This is deliberately **not** [`title_case`]: it preserves the remaining
+/// characters' original casing rather than lower-casing them, so an
+/// intentionally-cased tail survives — `"mcDonald"` → `"McDonald"`, never
+/// `"Mcdonald"`. Used to display a lowercased email local-part token or a
+/// permuted name component as a leading-capital word without flattening a
+/// mixed-case surname. One definition so the three modules that each hand-rolled
+/// this `chars().next()` capitaliser share identical semantics.
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::upper_first;
+///
+/// assert_eq!(upper_first("jane"), "Jane");
+/// assert_eq!(upper_first("jane doe"), "Jane doe"); // only the first char
+/// assert_eq!(upper_first("mcDonald"), "McDonald"); // tail casing preserved
+/// assert_eq!(upper_first("ñoño"), "Ñoño"); // multibyte-safe
+/// assert_eq!(upper_first(""), "");
+/// ```
+#[must_use]
+pub fn upper_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+    }
 }
 
 /// The ASCII digits of `s`, in order, with every other character dropped.
@@ -211,10 +265,11 @@ pub fn truncate_safe(s: &str, max: usize) -> &str {
 /// *arithmetic* offsets like `pos ± N` (a postcode position widened by 60, an
 /// HTML marker offset widened by 300). Real web pages routinely carry multibyte
 /// bytes (accented names, typographic quotes, NBSP), so such offsets land
-/// mid-character. This clamps both ends to the nearest valid char boundary
-/// (rounding inward), bounded by `s.len()`, and guarantees `start <= end` — so
-/// the worst case is a window a byte or two narrower than requested, never a
-/// panic.
+/// mid-character. This clamps **both** ends *up* to the next valid char
+/// boundary, bounded by `s.len()`, and guarantees `start <= end` — so a window
+/// shifts by at most a character rather than panicking. (Rounding both ends the
+/// same way, rather than inward, is what keeps the window non-empty when a
+/// short span falls inside one multibyte character.)
 ///
 /// ```
 /// use huntsman_search_engine::util::str_util::char_window;
@@ -348,27 +403,6 @@ pub fn slugify(s: &str) -> String {
     slug
 }
 
-/// Char-boundary-safe truncation that appends `…` when the string exceeds
-/// `max_chars`. Uses char count, not byte length, so multibyte characters
-/// are never split.
-///
-/// ```
-/// use huntsman_search_engine::util::str_util::truncate_display;
-///
-/// assert_eq!(truncate_display("hello", 10), "hello");
-/// assert_eq!(truncate_display("hello world", 5), "hello…");
-/// ```
-#[must_use]
-pub fn truncate_display(s: &str, max_chars: usize) -> String {
-    let mut chars = s.chars();
-    let head: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{head}…")
-    } else {
-        head
-    }
-}
-
 /// Mask a secret (API key, token, password) for display: a 4+4 head/tail hint
 /// for a value long enough that 8 exposed characters are a small fraction,
 /// full masking otherwise. The single-sourced policy for every UI that shows a
@@ -427,6 +461,137 @@ pub fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
         // ASCII letter: match either case of the first byte in a single pass.
         memchr::memchr2_iter(lo, hi, search).find(|&i| verify(i))
     }
+}
+
+/// Byte offset of the **last** whole-word ASCII-case-insensitive occurrence of
+/// `needle` in `haystack`, or `None`. "Whole word" means the match is bounded on
+/// both sides by a non-ASCII-alphanumeric byte (or a string edge), so a needle
+/// embedded inside a longer word never matches: the `WA` inside `EDWARD`, the
+/// `SA` inside `SARAH`. The offset indexes the **original** `haystack` and always
+/// lands on a `char` boundary (both the ASCII needle bytes and the single-byte
+/// boundary tests can only fall on ASCII positions).
+///
+/// This is the whole-word counterpart to [`find_ascii_ci`], which returns the
+/// first *substring* match. Use it when a short ASCII token (an AU state code, a
+/// unit abbreviation) must be located as a standalone word rather than wherever
+/// its letters first appear inside another word. The **last** occurrence is
+/// returned so an address scan anchors on the state token nearest the trailing
+/// postcode instead of a coincidental earlier one (an owner name that happens to
+/// contain the code as a whole word).
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::rfind_word_ascii_ci;
+///
+/// // Embedded-in-a-word matches are rejected; the standalone token wins.
+/// assert_eq!(rfind_word_ascii_ci("EDWARD COTTESLOE WA 6011", "WA"), Some(17));
+/// // No standalone occurrence → None (only the `SA` inside `SARAH`).
+/// assert_eq!(rfind_word_ascii_ci("SARAH SMITH", "SA"), None);
+/// // Case-insensitive, and the LAST standalone token is returned.
+/// assert_eq!(rfind_word_ascii_ci("wa depot WA", "wa"), Some(9));
+/// assert_eq!(rfind_word_ascii_ci("", "wa"), None);
+/// ```
+#[must_use]
+pub fn rfind_word_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
+    let (hb, nb) = (haystack.as_bytes(), needle.as_bytes());
+    if nb.is_empty() || hb.len() < nb.len() {
+        return None;
+    }
+    let is_word = u8::is_ascii_alphanumeric;
+    (0..=hb.len() - nb.len()).rev().find(|&i| {
+        hb[i..i + nb.len()].eq_ignore_ascii_case(nb)
+            && (i == 0 || !is_word(&hb[i - 1]))
+            && (i + nb.len() == hb.len() || !is_word(&hb[i + nb.len()]))
+    })
+}
+
+/// True when **every** alphanumeric token of `needle` appears as a WHOLE WORD
+/// in `haystack`, compared ASCII-case-insensitively. Both sides tokenise on
+/// non-alphanumeric boundaries; an empty `needle` (no tokens) matches nothing.
+///
+/// Whole-word — not substring — is the whole point: it stops a short query token
+/// like `"red"` matching inside `"Mildred"`, or a seed initial `"M"` matching
+/// inside `"SMITH"` — the false "this relative is the subject" upgrades a
+/// substring gate produces. Allocation-free per token (`eq_ignore_ascii_case`,
+/// no lower-cased copies). Single-sourced so every register/name matcher
+/// (`au_unclaimed`, `wikidata`, `acnc_charities`, `gleif_lei`) shares one
+/// definition instead of four hand-rolled copies drifting apart.
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::whole_word_token_match;
+///
+/// assert!(whole_word_token_match("Linus Torvalds", "linus torvalds"));
+/// assert!(whole_word_token_match("The Smith Family", "smith family"));
+/// assert!(!whole_word_token_match("Mildred Smith", "red")); // not a whole word
+/// assert!(!whole_word_token_match("Linus Torvalds", "linus pauling")); // missing token
+/// assert!(!whole_word_token_match("anything at all", "")); // empty needle matches nothing
+/// ```
+#[must_use]
+pub fn whole_word_token_match(haystack: &str, needle: &str) -> bool {
+    let words: Vec<&str> = haystack
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let tokens: Vec<&str> = needle
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect();
+    !tokens.is_empty()
+        && tokens
+            .iter()
+            .all(|tok| words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
+}
+
+/// Minimum token length [`shares_whole_word_token`] considers a *name* rather
+/// than a bare initial: `"M"` in `"M MCLOUGHLIN"` must not license a match
+/// against an unrelated `"M SMITH"`.
+pub const MIN_SHARED_TOKEN: usize = 2;
+
+/// True when **at least one** alphanumeric token of `needle` (of at least
+/// [`MIN_SHARED_TOKEN`] chars) appears as a WHOLE WORD in `haystack`.
+///
+/// The permissive counterpart to [`whole_word_token_match`]: that one answers
+/// *"is this row the seeded subject?"* (every token must land), this one answers
+/// *"did this row match on the field we meant at all?"* (any real token will do).
+///
+/// # Why a floor gate exists at all
+/// CKAN's `datastore_search?q=` — behind every `util::ckan` register lookup — is
+/// a **full-text search across every column**, not a scoped name lookup. A query
+/// for `"shop"` also returns rows whose *address* reads `"Shop 4, 123 Main St"`
+/// (ubiquitous in Australian retail), and a query containing `"Sydney"` matches
+/// every row whose `Town_City` is Sydney. Those rows come back with a name that
+/// shares nothing with the seed, so emitting them attributes unrelated real
+/// parties — and their PII — to the subject. Callers use this to drop rows that
+/// matched some *other* column, while still keeping genuine partial name matches
+/// (a surname-only relative, a charity sharing one name word) that the stricter
+/// all-tokens predicate would wrongly reject.
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::shares_whole_word_token;
+///
+/// // Genuine partial name matches survive.
+/// assert!(shares_whole_word_token("Marshall Family Foundation", "smith family"));
+/// assert!(shares_whole_word_token("JUNES CARD & GIFT SHOP", "shop"));
+/// // A row that matched on some other column shares nothing.
+/// assert!(!shares_whole_word_token("Gavin Williams", "shop"));
+/// // Whole word, not substring.
+/// assert!(!shares_whole_word_token("Mildred Trust", "red"));
+/// // A bare initial is not a name token.
+/// assert!(!shares_whole_word_token("M Smith", "M Mcloughlin"));
+/// // An empty or initials-only needle matches nothing.
+/// assert!(!shares_whole_word_token("anything at all", ""));
+/// ```
+#[must_use]
+pub fn shares_whole_word_token(haystack: &str, needle: &str) -> bool {
+    let words: Vec<&str> = haystack
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect();
+    needle
+        .split(|c: char| !c.is_alphanumeric())
+        // Chars, not bytes: a single non-ASCII initial is 2+ bytes and would
+        // otherwise pass the floor meant to exclude bare initials.
+        .filter(|t| t.chars().count() >= MIN_SHARED_TOKEN)
+        .any(|tok| words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
 }
 
 #[cfg(test)]

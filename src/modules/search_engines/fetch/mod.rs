@@ -116,28 +116,20 @@ pub(super) async fn try_fetch(
     post_body: Option<&str>,
     timeout_ms: u64,
 ) -> FetchOutcome {
+    // `fetch_with_ua`/`fetch_post_with_ua` already route through `curl_exec`,
+    // which tries the validated, health-ranked `crate::util::egress` proxy pool
+    // (fed by HUNTSMAN_SEARCH_PROXY, correctly parsed as the comma-separated
+    // list it's documented to be) with its own per-request failover BEFORE ever
+    // considering a direct connection. There is deliberately no second ad hoc
+    // proxy retry here: an earlier version reused this same `timeout_ms` for a
+    // second full curl call (doubling one request's worst-case wall time past
+    // the deadline this function exists to respect — see `fetch_timeout_ms`'s
+    // doc comment) and handed the raw, possibly multi-entry env value straight
+    // to curl's single-proxy `-x` flag. The pool already does this correctly.
     let body = if let Some(data) = post_body {
         crate::util::curl::fetch_post_with_ua(url, data, timeout_ms, ua).await
     } else {
         crate::util::curl::fetch_with_ua(url, timeout_ms, ua).await
-    };
-
-    // If direct fetch failed, retry once through the operator-configured
-    // HUNTSMAN_SEARCH_PROXY (a single upstream proxy), when set.
-    let body = match body {
-        Some(b) if b.len() >= 500 => Some(b),
-        _ => {
-            if let Ok(proxy) = std::env::var("HUNTSMAN_SEARCH_PROXY")
-                && !proxy.is_empty()
-            {
-                return match crate::util::curl::fetch_via_proxy(url, timeout_ms, ua, &proxy).await {
-                    Some(b) if b.len() >= 500 && !is_captcha_page(&b) => FetchOutcome::Body(b),
-                    Some(_) => FetchOutcome::Blocked,
-                    None => FetchOutcome::Unreachable,
-                };
-            }
-            body
-        }
     };
 
     let body = match body {

@@ -33,15 +33,45 @@ fn extract_acn_finds_nine_digits() {
 fn extract_au_address_finds_state_postcode() {
     let addr = extract_au_address("Level 5 Collins St Melbourne VIC 3000 Australia");
     assert!(addr.is_some());
-    let a = addr.unwrap();
+    let a = addr.expect("should succeed");
     assert!(a.contains("VIC") && a.contains("3000"));
+}
+
+#[test]
+fn build_director_entities_rejects_a_checksum_invalid_acn() {
+    // Regression (critical audit): extract_acn() (called by parse_asic_html,
+    // not exercised directly here) collects every ASCII digit anywhere in the
+    // row and takes the first 9 -- not a contiguous run anchored on an "ACN"
+    // label. A real AU company whose registered NAME itself contains digits
+    // ("7-Eleven Stores Pty Ltd", "1300 Smiles Limited") has those leading
+    // digits glued onto the front of the real ACN's digit stream, producing a
+    // fabricated 9-digit value. Unlike every OTHER caller in this codebase
+    // that trusts an ACN-shaped string (au_business_id, the search_engines
+    // extractor, core::correlator::rules::org, core::scan's TargetKind
+    // inference), build_director_entities only checked digit COUNT, never the
+    // checksum -- so a corrupted value sailed through as a
+    // confidence::CORROBORATED AbnAcn entity and would be shipped to the live
+    // ASIC ABN Lookup API as a "confirmed" pivot.
+    //
+    // "712345678" is exactly what extract_acn("... ACN 123456789 ...") would
+    // return for a row whose company name contributes one leading digit
+    // (e.g. "7-Eleven ..."): the real ACN's first 8 digits shifted by one,
+    // with a checksum that no longer validates.
+    let ents = build_director_entities("7-Eleven Stores Pty Ltd", "712345678", "Test Name", None, "s");
+    assert!(
+        !ents.iter().any(|e| e.kind == EntityKind::AbnAcn),
+        "a checksum-invalid (corrupted) ACN must not be minted as a corroborated entity"
+    );
+    // The Organisation entity is unaffected -- the company name itself was
+    // extracted correctly; only the corrupted ACN is withheld.
+    assert!(ents.iter().any(|e| e.kind == EntityKind::Organisation));
 }
 
 #[test]
 fn build_director_entities_emits_org_acn_address() {
     let ents = build_director_entities(
         "Bamford Holdings Pty Ltd",
-        "123456789",
+        "004085616", // ASIC worked-example ACN -- checksum-valid
         "Haigen Bamford",
         Some("Level 1, 100 Collins St, Melbourne VIC 3000"),
         "s",
@@ -50,7 +80,7 @@ fn build_director_entities_emits_org_acn_address() {
     assert!(ents.iter().any(|e| e.kind == EntityKind::AbnAcn));
     let addr = ents.iter().find(|e| e.kind == EntityKind::Address);
     assert!(addr.is_some());
-    assert!(addr.unwrap().has_tag("registered-office"));
+    assert!(addr.expect("should succeed").has_tag("registered-office"));
 }
 
 #[test]
@@ -126,4 +156,52 @@ fn request_failed_false_when_entities_were_found() {
     // report a hard failure over a real result.
     assert!(!request_failed(false, true));
     assert!(!request_failed(true, true));
+}
+
+#[test]
+fn clean_html_decodes_numeric_character_references() {
+    // Regression: the hand-rolled decoder knew four named entities and nothing
+    // else, so an ordinary Australian surname published as a numeric reference
+    // carried its escape all the way into the stored director name.
+    assert_eq!(clean_html("<td>Daniel O&#39;Brien</td>"), "Daniel O'Brien");
+    assert_eq!(clean_html("<td>ACME &quot;Group&quot;</td>"), "ACME \"Group\"");
+    assert_eq!(clean_html("<td>Ren&#xE9;e Dubois</td>"), "Renée Dubois");
+}
+
+// Timing ratios are a property of how the scheduler treated two microsecond-scale
+// samples, not a property of the code, so this does NOT belong in the gated run:
+// an adversarial audit reproduced it failing roughly one run in ten under 4x CPU
+// oversubscription, which would redden `main` for reasons unrelated to any diff.
+// `#[ignore]`d to match the house convention for the other perf baselines
+// (`core::correlator::perf`, the engine throughput test, `util::found_keys`).
+// The quadratic regression it guards is documented with real measurements in the
+// commit that removed it; run this by hand to re-confirm.
+#[test]
+#[ignore = "timing ratio; run with --ignored --nocapture"]
+fn clean_html_is_linear_in_ampersand_count() {
+    // Regression: every `&` rebuilt the whole remaining document into a String to
+    // run `starts_with` against it, making the scan quadratic. This asserts the
+    // shape rather than a wall-clock number: 8x the input must not cost ~64x the
+    // time. The old implementation missed that by a wide margin (8 KB 1.59 ms ->
+    // 64 KB 100 ms, a 63x rise); a linear scan lands near 8x.
+    let row = "<tr><td>ACME &amp; SONS PTY LTD</td></tr>";
+    let small = row.repeat(200);
+    let large = row.repeat(1600);
+
+    let t0 = std::time::Instant::now();
+    let a = clean_html(&small);
+    let small_ns = t0.elapsed().as_nanos().max(1);
+    let t1 = std::time::Instant::now();
+    let b = clean_html(&large);
+    let large_ns = t1.elapsed().as_nanos().max(1);
+
+    assert!(a.contains("ACME & SONS PTY LTD"));
+    assert!(b.contains("ACME & SONS PTY LTD"));
+    // Generous ceiling so a loaded CI runner cannot flake this, while a return to
+    // quadratic behaviour still fails it decisively.
+    let ratio = large_ns as f64 / small_ns as f64;
+    assert!(
+        ratio < 24.0,
+        "8x the input cost {ratio:.1}x the time; expected roughly linear (<24x)"
+    );
 }

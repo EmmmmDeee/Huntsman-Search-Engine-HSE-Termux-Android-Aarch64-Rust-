@@ -6,8 +6,8 @@
 //! `Address` entities) into one module that calls the Termux API **once**,
 //! halving the radio scan overhead on-device.
 //!
-//! Auth: HTTP Basic — `HUNTSMAN_WIGLE_USER` / `HUNTSMAN_WIGLE_TOKEN` with
-//! hardcoded fallback, same as the `wigle` module.
+//! Auth: HTTP Basic — `HUNTSMAN_WIGLE_USER` / `HUNTSMAN_WIGLE_TOKEN`, both
+//! required, same as the `wigle` module. No credential is embedded in the build.
 
 mod types;
 mod wigle;
@@ -18,18 +18,20 @@ mod tests;
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::modules::termux_sensor;
 use crate::util::geo::is_valid_coords;
-use crate::util::termux::termux_cmd;
 
 // ── WiGLE credentials ──────────────────────────────────────────────────
 
-// Env names + embedded fallbacks are resolved by the single-sourced
-// `crate::util::keys::wigle_credentials` (shared with the `wigle` module).
+// Env names are resolved by the single-sourced
+// `crate::util::keys::wigle_credentials` (shared with the `wigle` module),
+// which yields `None` unless the operator configured BOTH halves of the pair.
 
 /// How many of the strongest APs to query WiGLE for.
 const MAX_BSSIDS: usize = 5;
@@ -48,7 +50,7 @@ impl Module for WifiIntel {
     }
 
     fn description(&self) -> &'static str {
-        "WiFi AP survey and BSSID geolocation via Termux + WiGLE"
+        "WiFi AP survey — sweeps nearby access points via Termux and geolocates each BSSID through WiGLE"
     }
 
     fn priority(&self) -> u8 {
@@ -64,7 +66,7 @@ impl Module for WifiIntel {
         // CAN still egress for geolocation. This is intentional (it lives in
         // engine::LOCAL_PASSIVE_MODULES as a seed-round sensor); a strict
         // no-egress guarantee would require gating the WiGLE step on a
-        // passive flag. Documented in docs/MODULES.md.
+        // passive flag. Surfaced by `hse modules`.
         true
     }
 
@@ -102,17 +104,28 @@ impl Module for WifiIntel {
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let (user, token) = crate::util::keys::wigle_credentials(ctx);
+        // See `wigle`: the API-name/token pair is required, and no credential is
+        // embedded in the build.
+        let (user, token) = crate::util::keys::wigle_credentials(ctx)
+            .ok_or_else(|| Error::MissingKey("HUNTSMAN_WIGLE_TOKEN".into()))?;
 
         // ── Single termux-wifi-scaninfo call ────────────────────────────
-        let Some(stdout) = termux_cmd("termux-wifi-scaninfo", &[], 5000).await else {
+        let Some(stdout) = termux_sensor::Sensor::WifiScan.read().await else {
             return Ok(ModuleResult::new());
         };
 
-        let mut aps: Vec<types::Ap> = match serde_json::from_slice(&stdout) {
-            Ok(v) => v,
-            Err(_) => return Ok(ModuleResult::new()),
-        };
+        // Blank output means the tool exited 0 with nothing to report — an
+        // honest empty answer. Non-blank output that will not parse means the
+        // tool answered with something broken, which is a malfunction and must
+        // surface as a real error: reporting it as zero access points would be
+        // indistinguishable from "no Wi-Fi in range". Mirrors
+        // `signal_radar::wifi::parse_scan`, which shares this tool.
+        if termux_sensor::is_blank(&stdout) {
+            return Ok(ModuleResult::new());
+        }
+        let mut aps: Vec<types::Ap> = serde_json::from_slice(&stdout).map_err(|e| {
+            termux_sensor::unparseable_for(SOURCE, termux_sensor::Sensor::WifiScan, &e)
+        })?;
 
         if aps.is_empty() {
             return Ok(ModuleResult::new());
@@ -128,7 +141,12 @@ impl Module for WifiIntel {
         // ── Phase 1: MacAddress entities for ALL APs ────────────────────
         result.extend(aps.iter().map(|ap| {
             let ssid = ap.ssid.as_deref().unwrap_or("<hidden>");
-            let mut e = Entity::new(EntityKind::MacAddress, &ap.bssid, 0.95, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::MacAddress,
+                &ap.bssid,
+                confidence::VERY_HIGH_PLUSPLUS,
+                &ctx.scan_id,
+            );
             e.tag(crate::core::tags::WIFI_AP);
             e.add_evidence(
                 Evidence::new(SOURCE, format!("Wi-Fi AP: {ssid}"))
@@ -151,8 +169,34 @@ impl Module for WifiIntel {
                 continue;
             }
 
-            if let Ok(Some(detail)) =
-                wigle::query_wigle_detail(&ctx.http, user, token, &ap.bssid).await
+            // These are WiGLE `/detail` lookups on the operator's own credentials
+            // and daily allowance — the same endpoint and the same quota the
+            // `wigle` module meters as BSSID_BUDGET. Drawing on that shared
+            // budget rather than none is what keeps the accounting true: this
+            // loop could otherwise spend five requests per dispatch, invisibly,
+            // and radar now pivots without a depth restriction.
+            if !crate::modules::wigle::BSSID_BUDGET.try_increment() {
+                break;
+            }
+
+            // A refusal is about the ACCOUNT, not this BSSID: a 429 (or an auth
+            // failure) will refuse the next four APs identically. Continuing
+            // used to spend a shared BSSID_BUDGET unit per remaining AP on
+            // requests that could not succeed — a live radar sweep was observed
+            // burning all five on one rate-limited dispatch. A miss (`Ok(None)`)
+            // is per-BSSID and does keep the loop going.
+            let detail = match wigle::query_wigle_detail(&ctx.http, user, token, &ap.bssid).await {
+                Ok(found) => found,
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        "wifi_intel: WiGLE refused — stopping this dispatch's BSSID lookups"
+                    );
+                    break;
+                }
+            };
+
+            if let Some(detail) = detail
                 && let (Some(lat), Some(lon)) = (detail.trilat, detail.trilong)
             {
                 // Shared validator: Null Island + out-of-range + non-finite.
@@ -167,7 +211,12 @@ impl Module for WifiIntel {
                     .or(ap.ssid.as_deref())
                     .unwrap_or("<hidden>");
 
-                let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.80, &ctx.scan_id);
+                let mut e = Entity::new(
+                    EntityKind::Coordinates,
+                    &coords,
+                    confidence::HIGH_PLUSPLUS,
+                    &ctx.scan_id,
+                );
                 e.tag("geoint");
                 e.tag(crate::core::tags::WIFI_AP);
                 e.tag("bssid-located");
@@ -225,7 +274,12 @@ impl Module for WifiIntel {
                     {
                         addr_str = format!("{addr_str} {p}");
                     }
-                    let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.60, &ctx.scan_id);
+                    let mut addr = Entity::new(
+                        EntityKind::Address,
+                        &addr_str,
+                        confidence::MEDIUM_PLUS,
+                        &ctx.scan_id,
+                    );
                     addr.tag("geoint");
                     addr.tag("bssid-derived");
                     addr.add_evidence(
@@ -241,19 +295,31 @@ impl Module for WifiIntel {
     }
 }
 
-// ── Standalone AP parser (used by tests, mirrors old wifi_scan logic) ──
+// ── Standalone AP parser ───────────────────────────────────────────────
+//
+// A test-only shadow of the AP-parsing half of `process()`, which cannot be
+// unit-tested directly because it needs a live `termux-wifi-scaninfo` and a
+// `ModuleContext`. It must therefore keep the SAME blank/unparseable contract
+// as `process()`: a shadow that silently diverges would let its tests report
+// coverage of behaviour the production path no longer has.
 
 #[cfg(test)]
-fn parse_aps(stdout: &[u8], scan_id: &str) -> ModuleResult {
-    let aps: Vec<types::Ap> = match serde_json::from_slice(stdout) {
-        Ok(v) => v,
-        Err(_) => return ModuleResult::new(),
-    };
+fn parse_aps(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
+    if termux_sensor::is_blank(stdout) {
+        return Ok(ModuleResult::new());
+    }
+    let aps: Vec<types::Ap> = serde_json::from_slice(stdout)
+        .map_err(|e| termux_sensor::unparseable_for(SOURCE, termux_sensor::Sensor::WifiScan, &e))?;
 
     let mut result = ModuleResult::with_capacity(aps.len());
     for ap in aps {
         let ssid = ap.ssid.as_deref().unwrap_or("<hidden>");
-        let mut e = Entity::new(EntityKind::MacAddress, &ap.bssid, 0.95, scan_id);
+        let mut e = Entity::new(
+            EntityKind::MacAddress,
+            &ap.bssid,
+            confidence::VERY_HIGH_PLUSPLUS,
+            scan_id,
+        );
         e.tag(crate::core::tags::WIFI_AP);
         e.add_evidence(
             Evidence::new(SOURCE, format!("Wi-Fi AP: {ssid}"))
@@ -265,5 +331,5 @@ fn parse_aps(stdout: &[u8], scan_id: &str) -> ModuleResult {
         );
         result.push(e);
     }
-    result
+    Ok(result)
 }

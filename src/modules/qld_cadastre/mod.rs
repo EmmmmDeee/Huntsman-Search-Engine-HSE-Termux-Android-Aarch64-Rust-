@@ -21,6 +21,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -29,12 +30,6 @@ use crate::core::{
 use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "qld_cadastre";
-
-/// Cap on cadastral parcels turned into entities per query point. A point at
-/// a boundary or on strata/stacked cadastre can intersect many polygons; this
-/// bounds graph growth on a pathological hit while [`mark_feature_truncation`]
-/// signals when the true feature count exceeded it.
-const MAX_FEATURES: usize = 8;
 
 /// Queensland Globe / QSpatial ArcGIS REST — DCDB "Cadastral parcels" layer (id 4).
 const LAYER_QUERY_BASE: &str = "https://spatial-gis.information.qld.gov.au/arcgis/rest/services/PlanningCadastre/LandParcelPropertyFramework/MapServer/4/query";
@@ -45,13 +40,6 @@ pub struct QldCadastre;
 struct QueryResp {
     #[serde(default)]
     features: Vec<Feature>,
-    /// ArcGIS's own server-side truncation flag: the query hit the service's
-    /// `maxRecordCount` before returning every intersecting feature. Distinct
-    /// from the client-side [`MAX_FEATURES`] cap — this one fires even when
-    /// fewer than `MAX_FEATURES` features come back, because the SERVER
-    /// dropped features before this module ever saw them.
-    #[serde(default, rename = "exceededTransferLimit")]
-    exceeded_transfer_limit: bool,
 }
 
 #[derive(Deserialize)]
@@ -112,7 +100,7 @@ fn build_entities(coord: &str, attrs: &HashMap<String, Value>, scan_id: &str) ->
 
     let mut out = Vec::new();
 
-    let mut coords = Entity::new(EntityKind::Coordinates, coord, 0.78, scan_id);
+    let mut coords = Entity::new(EntityKind::Coordinates, coord, confidence::STRONG, scan_id);
     coords.tag(SRC);
     coords.tag("geoint");
     coords.tag("country:AU");
@@ -140,7 +128,12 @@ fn build_entities(coord: &str, attrs: &HashMap<String, Value>, scan_id: &str) ->
 
     if let Some(loc) = &locality {
         let addr_value = format!("{loc}, Queensland");
-        let mut addr = Entity::new(EntityKind::Address, &addr_value, 0.55, scan_id);
+        let mut addr = Entity::new(
+            EntityKind::Address,
+            &addr_value,
+            confidence::MEDIUM_HIGH,
+            scan_id,
+        );
         addr.tag(SRC);
         addr.tag("cadastre-derived");
         addr.tag("country:AU");
@@ -166,7 +159,7 @@ impl Module for QldCadastre {
         "qld_cadastre"
     }
     fn description(&self) -> &'static str {
-        "Queensland DCDB cadastre — lot/plan, locality and tenure for coordinates inside QLD"
+        "Queensland DCDB cadastre recon — resolves coordinates inside QLD to lot/plan, locality, and tenure"
     }
     fn priority(&self) -> u8 {
         18
@@ -223,7 +216,7 @@ impl Module for QldCadastre {
 
         let status = resp.status();
         if !status.is_success() {
-            return Err(Error::module(SRC, format!("HTTP {status}")));
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
         let body: QueryResp = crate::util::http::json_scanned(resp, SRC)
@@ -231,12 +224,7 @@ impl Module for QldCadastre {
             .map_err(|e| Error::module(SRC, e))?;
 
         let mut result = ModuleResult::new();
-        result.entities = build_all_features(
-            &target.value,
-            &body.features,
-            body.exceeded_transfer_limit,
-            &ctx.scan_id,
-        );
+        result.entities = build_all_features(&target.value, &body.features, &ctx.scan_id);
         Ok(result)
     }
 }
@@ -253,52 +241,13 @@ impl Module for QldCadastre {
 /// values into one entity while UNIONing those per-parcel tags, so every parcel's
 /// lot/plan survives — whereas a value-dedup here would silently drop all but the
 /// first parcel's lotplan. Pure, bounded (`MAX_FEATURES`), deterministic.
-///
-/// A strata/stacked-cadastre point can intersect more than `MAX_FEATURES`
-/// polygons; when that happens the first emitted `Coordinates` entity is
-/// signaled via [`mark_feature_truncation`] so the operator knows parcels
-/// were dropped rather than reading a short list as exhaustive.
-fn build_all_features(
-    coord: &str,
-    features: &[Feature],
-    exceeded_transfer_limit: bool,
-    scan_id: &str,
-) -> Vec<Entity> {
-    let total = features.len();
-    let mut out: Vec<Entity> = features
+fn build_all_features(coord: &str, features: &[Feature], scan_id: &str) -> Vec<Entity> {
+    const MAX_FEATURES: usize = 8;
+    features
         .iter()
         .take(MAX_FEATURES)
         .flat_map(|feature| build_entities(coord, &feature.attributes, scan_id))
-        .collect();
-    if let Some(seed) = out.iter_mut().find(|e| e.kind == EntityKind::Coordinates) {
-        mark_feature_truncation(seed, total, exceeded_transfer_limit);
-    }
-    out
-}
-
-/// Signal on the primary `Coordinates` entity when the query returned more
-/// parcel features than [`MAX_FEATURES`] captured, OR when ArcGIS's own
-/// `exceededTransferLimit` fired (the server dropped features before this
-/// module ever saw them — possible even when `total <= MAX_FEATURES`).
-/// **Pure**. No-op when neither condition holds.
-fn mark_feature_truncation(seed: &mut Entity, total: usize, exceeded_transfer_limit: bool) {
-    let client_capped = total > MAX_FEATURES;
-    if !client_capped && !exceeded_transfer_limit {
-        return;
-    }
-    seed.tag("truncated");
-    let mut ev = Evidence::new(
-        SRC,
-        format!("QLD DCDB parcel query returned {total} intersecting feature(s)"),
-    )
-    .with_attr("total_features", total.to_string());
-    if client_capped {
-        ev = ev.with_attr("features_capped", "true");
-    }
-    if exceeded_transfer_limit {
-        ev = ev.with_attr("arcgis_exceeded_transfer_limit", "true");
-    }
-    seed.add_evidence(ev);
+        .collect()
 }
 
 #[cfg(test)]

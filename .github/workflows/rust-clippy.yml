@@ -1,0 +1,81 @@
+# Clippy → SARIF → GitHub code scanning. This is the ADVISORY companion to
+# ci.yml's BLOCKING `cargo clippy --all-targets --locked -- -D warnings` gate:
+# it runs the SAME lint pass but, instead of failing the build, publishes the
+# findings to the Security tab / PR annotations via CodeQL's SARIF upload.
+# ci.yml stays the authority on green/red; this job's contract is to always
+# reach the upload so those annotations appear.
+#
+# Uses third-party actions (dtolnay/rust-toolchain, Swatinem/rust-cache,
+# clippy-sarif/sarif-fmt) governed by their own terms. rust-clippy itself:
+# https://github.com/rust-lang/rust-clippy
+
+name: rust-clippy analyze
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    # The branches below must be a subset of the branches above
+    branches: [ "main" ]
+  schedule:
+    - cron: '42 18 * * 3'
+
+# Match ci.yml/audit.yml/fuzz.yml: cancel a superseded run on the same ref so a
+# burst of pushes can't pile up redundant, overlapping SARIF analyses.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-clippy-analyze:
+    name: Run rust-clippy analyzing
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read # only required for a private repository by github/codeql-action/upload-sarif to get the Action run status
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Pinned to the SAME literal version as rust-toolchain.toml / ci.yml (not
+      # `@stable`) so the annotations published here reflect the exact clippy
+      # ci.yml gates on — a floating `stable` would report lints the blocking
+      # gate never enforces, or miss ones it does, which is the toolchain drift
+      # rust-toolchain.toml exists to kill. Replaces the archived, Node 12
+      # actions-rs/toolchain the rest of CI already migrated off.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.97.1
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
+
+      # Installed directly with --locked, mirroring ci.yml/audit.yml/fuzz.yml's
+      # tool installs, so the SARIF converters resolve from the locked graph
+      # rather than a floating one.
+      - name: Install required cargo
+        run: |
+          cargo install clippy-sarif --version 0.8.0 --locked
+          cargo install sarif-fmt --version 0.8.0 --locked
+
+      # SAME invocation as ci.yml's blocking clippy (`--all-targets --locked`),
+      # so the reported findings are exactly the gate's — only `-D warnings` is
+      # dropped, since that governs the exit code and this pass reports rather
+      # than gates. continue-on-error keeps a lint finding from failing THIS
+      # job; the upload step below must still run.
+      - name: Run rust-clippy
+        run:
+          cargo clippy
+          --all-targets
+          --locked
+          --message-format=json | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
+        continue-on-error: true
+
+      - name: Upload analysis results to GitHub
+        uses: github/codeql-action/upload-sarif@c4dd10e44af883a891fe31ced449bcb4a6728b9b # v3
+        with:
+          sarif_file: rust-clippy-results.sarif
+          wait-for-processing: true

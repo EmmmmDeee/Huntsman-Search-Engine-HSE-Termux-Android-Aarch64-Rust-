@@ -1,7 +1,8 @@
 import { API } from '/static/js/api.js';
-import { $, $$, attr, esc, fmtDate, toast } from '/static/js/helpers.js';
+import { $, $$, attr, esc, fmtDate, healthCell, toast } from '/static/js/helpers.js';
 import { S } from '/static/js/state.js';
 import { render } from '/static/js/main.js';
+import { pageHidden } from '/static/js/timers.js';
 
 /* ═══════════ Page: OPTS / Settings (#/opts) ═══════════ */
 export async function renderOpts(v){
@@ -12,9 +13,12 @@ export async function renderOpts(v){
   let pool = null;
   try { pool = await API.poolGet(); } catch { pool = null; }
   // Best-effort operator diagnostics (loopback-only; never block Settings).
-  let kstatus = null, kpatterns = null;
+  let kstatus = null, kpatterns = null, khealth = null;
   try { kstatus = await API.keysStatus(); } catch { kstatus = null; }
   try { kpatterns = await API.keysPatterns(); } catch { kpatterns = null; }
+  // Observed dead-key diagnosis (configured keys the upstream is rejecting).
+  // Best-effort + loopback-only, like the sibling diagnostics — never blocks Settings.
+  try { khealth = await API.keysHealth(); } catch { khealth = null; }
   // Cell-tower DB status is ungated but still best-effort — a corrupt/locked
   // DB file must never block the rest of Settings from rendering.
   let cells = null;
@@ -50,6 +54,8 @@ export async function renderOpts(v){
       </div>
     </div>
 
+    ${deadKeysPanel(khealth)}
+    ${acquisitionPanel(data.acquisition)}
     ${poolPanel(pool, data.write_enabled)}
     ${keysDiagPanel(kstatus, kpatterns)}
 
@@ -92,11 +98,11 @@ export async function renderOpts(v){
           contains scan targets); secret-free (key names only, never values).
         </p>
         <p>
-          <a class="btn btn-primary btn-sm" href="${API.debugBundleUrl()}" download>Download full diagnostic bundle</a>
+          <a class="btn btn-primary btn-sm" href="${API.debugBundleUrl()}" download data-download data-download-name="hse-diagnostic-bundle.txt">Download full diagnostic bundle</a>
           &nbsp;
           <button id="st-run" class="btn btn-default btn-sm">Run self-test</button>
           &nbsp;
-          <a class="btn btn-link btn-sm" href="${API.logsUrl()}" download title="Just the raw TRACE log ring (a subset of the full bundle)">logs only</a>
+          <a class="btn btn-link btn-sm" href="${API.logsUrl()}" download data-download data-download-name="hse-debug.log" title="Just the raw TRACE log ring (a subset of the full bundle)">logs only</a>
           &nbsp;<span id="st-summary" class="text-muted" style="font-size:12px"></span>
         </p>
         <div id="st-results" style="margin-top:8px"></div>
@@ -138,6 +144,29 @@ export async function renderOpts(v){
   `;
 
   if (data.write_enabled) wireKeyEditor();
+  // Key-pool "Add" — previously CLI-only (`hse keys add`); the primary
+  // HUNTSMAN_*_KEY env var is editable above, this is the separate rotation
+  // POOL's own add, for a backup/second key per service.
+  const poolAddBtn = $('#pool-add-btn');
+  if (poolAddBtn) poolAddBtn.addEventListener('click', async()=>{
+    const service = ($('#pool-add-service').value||'').trim();
+    const key = ($('#pool-add-key').value||'').trim();
+    const notes = ($('#pool-add-notes').value||'').trim();
+    const msgEl = $('#pool-add-msg');
+    if (!service || !key){ alertify.error('Service and key value are required'); return; }
+    poolAddBtn.disabled = true;
+    msgEl.textContent = 'Adding…';
+    try {
+      const r = await API.poolAdd({service, key, notes: notes||undefined});
+      toast(r.status==='duplicate' ? 'Key already in pool' : `Key added to '${service}' pool`);
+      renderOpts($('#view'));
+    } catch(e){
+      alertify.error(e.message);
+      msgEl.textContent = '';
+    } finally {
+      poolAddBtn.disabled = false;
+    }
+  });
   // Key-pool revoke/rotate buttons (reference keys by non-secret id).
   $$('button[data-revoke]').forEach(b=>b.addEventListener('click', ()=>{
     const service = b.dataset.revoke, id = b.dataset.revokeId;
@@ -315,13 +344,20 @@ export function wireUpdate(){
     }
   }
 
-  let poller = null;
+  // Stored in shared state (not a closure local) so render()'s clearOptsTimers()
+  // tears it down on navigation — otherwise navigating away mid-update leaks the
+  // interval and re-entering #/opts spawns a duplicate.
   function startPoll(){
-    if (poller) return;
-    poller = setInterval(async()=>{
+    if (S.optsUpdateTimer) return;
+    S.optsUpdateTimer = setInterval(async()=>{
+      // Skip the fetch + status-panel rebuild while nobody is looking; see
+      // `pageHidden`. The schedule is kept (this tick still fires and
+      // re-checks next time), so a self-update finishing while the tab is
+      // backgrounded is still caught on the next visible tick.
+      if (pageHidden()) return;
       const s = await refreshStatus();
       if (!s || ['idle','error'].includes(s.phase||'idle')){
-        clearInterval(poller); poller = null;
+        clearInterval(S.optsUpdateTimer); S.optsUpdateTimer = null;
       }
     }, 2500);
   }
@@ -363,6 +399,11 @@ export function showRestartOverlay(){
     '<div class="progress-bar progress-bar-striped active" style="width:100%"></div></div></div>';
   document.body.appendChild(overlay);
   const poll = setInterval(async()=>{
+    // Skip the health probe while hidden; see `pageHidden`. Nobody is
+    // watching the overlay either, so delaying detection until the tab is
+    // visible again costs nothing — the very next tick after it becomes
+    // visible reloads as soon as the server responds.
+    if (pageHidden()) return;
     try { await API.health(); clearInterval(poll); location.reload(); } catch {}
   }, 2500);
 }
@@ -399,7 +440,10 @@ export function cellsPanel(status){
           ? `<b>${status.total}</b> towers${byMcc?` &nbsp; ${byMcc}`:''}<br>
              ${li
                ? `<span class="text-muted" style="font-size:11px">Last import: <code>${esc(li.source_file)}</code> — ${li.row_count} rows, ${esc(fmtDate(li.imported_at))}</span>`
-               : '<span class="text-muted" style="font-size:11px">No import history.</span>'}`
+               : '<span class="text-muted" style="font-size:11px">No import history.</span>'}
+             ${li && li.is_stale
+               ? `<br><span class="label label-warning" style="white-space:normal">STALE — ${li.age_days}d since last import (&ge; ${li.stale_threshold_days}d). GEOINT cell-tower correlation is working from data that old; refresh below.</span>`
+               : ''}`
           : '<span class="text-muted">Not populated — import below to get started.</span>'}
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -424,17 +468,22 @@ export function wireCells(){
   const PHASE_LABEL = {running:'importing…', error:'last import failed'};
   const PHASE_CLS   = {running:'label-warning', error:'label-danger'};
 
-  let poller = null;
+  // Shared-state timer (see the update poller above) so render()'s
+  // clearOptsTimers() reaps it on navigation instead of leaking a duplicate.
   function startPoll(){
-    if (poller) return;
-    poller = setInterval(async()=>{
+    if (S.optsCellsTimer) return;
+    S.optsCellsTimer = setInterval(async()=>{
+      // Skip while hidden; see `pageHidden`. The import keeps running
+      // server-side regardless — this only defers the browser noticing it
+      // finished until the tab is visible again.
+      if (pageHidden()) return;
       try {
         const s = await API.cellsStatus();
         const p = s.import_phase || 'idle';
         phaseEl.innerHTML = p !== 'idle'
           ? `<span class="label ${PHASE_CLS[p]||'label-default'}">${esc(PHASE_LABEL[p]||p)}</span>` : '';
         if (p !== 'running'){
-          clearInterval(poller); poller = null;
+          clearInterval(S.optsCellsTimer); S.optsCellsTimer = null;
           if (p === 'error'){
             alertify.error('Cell DB import failed: '+(s.import_error||'unknown error'));
           } else {
@@ -442,7 +491,7 @@ export function wireCells(){
           }
           renderOpts($('#view'));
         }
-      } catch { clearInterval(poller); poller = null; }
+      } catch { clearInterval(S.optsCellsTimer); S.optsCellsTimer = null; }
     }, 2500);
   }
 
@@ -504,14 +553,107 @@ export function keyRow(k, writeEnabled){
     ` : ''}
   </div>`;
 }
+/* Tier badge for the acquisition guidance. Multiplier keys are the highest-
+   leverage (they discover infrastructure/identities that unlock MORE sources),
+   so they get the most prominent colour. */
+function acqTierBadge(tier){
+  const m = {
+    multiplier: ['label-success', 'multiplier — highest leverage'],
+    expansion:  ['label-info',    'expansion'],
+    terminal:   ['label-default', 'terminal'],
+  };
+  const [cls, txt] = m[tier] || ['label-default', tier || 'unranked'];
+  return `<span class="label ${cls}">${esc(txt)}</span>`;
+}
+/* Turn the first URL inside a signup hint into a real (new-tab, no-opener) link,
+   escaping the surrounding text. Everything is escaped — the hint strings are
+   server-owned constants, but this stays XSS-safe regardless. */
+function linkifyHint(hint){
+  if (!hint) return '<span class="text-muted">no public signup page</span>';
+  const m = hint.match(/https?:\/\/\S+/);
+  if (!m) return esc(hint);
+  const url = m[0];
+  return `${esc(hint.slice(0, m.index))}<a href="${attr(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>${esc(hint.slice(m.index + url.length))}`;
+}
+/* Convex acquisition guidance: the unset keys the backend ranked highest-leverage
+   first (multiplier > expansion > terminal), each with a free-signup link — the
+   same ranking `hse doctor` prints, brought to the web UI so a Termux operator
+   with no shell access can register the highest-value free keys directly. */
+function acquisitionPanel(list){
+  if (!Array.isArray(list) || !list.length) return '';
+  const mult = list.filter(k=>k.tier==='multiplier').length;
+  const rows = list.map(k=>`
+    <tr>
+      <td style="white-space:nowrap">${acqTierBadge(k.tier)}</td>
+      <td><code>${esc(k.name)}</code></td>
+      <td class="text-muted" style="font-size:12px">${linkifyHint(k.hint)}</td>
+    </tr>`).join('');
+  return `
+    <div class="panel panel-default">
+      <div class="panel-heading"><b>Acquire keys — ranked by leverage</b>
+        <span class="text-muted pull-right" style="font-size:12px">${list.length} unset · ${mult} multiplier-tier</span>
+      </div>
+      <div class="panel-body">
+        <p class="text-muted" style="font-size:12px">
+          The single highest-value action for every future query is registering the
+          free <b>multiplier-tier</b> keys first — each one multiplies coverage
+          across all subsequent scans (they discover infrastructure and identities
+          that unlock more sources), for a one-time near-zero cost. A module needing
+          an unset key skips cleanly — it is never an error.
+        </p>
+        <div style="overflow-x:auto">
+          <table class="table table-condensed" style="margin-bottom:0">
+            <thead><tr><th>Tier</th><th>Key</th><th>Where to get it (mostly free)</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>`;
+}
+/* Dead-key panel: CONFIGURED keys the upstream is actively REJECTING, observed
+   from real scan outcomes (GET /api/v1/keys/health). Shown ABOVE acquisition
+   because renewing a rejected key you already registered is more urgent than
+   getting a new one — a dead key silently wastes every query that touches it.
+   Empty/absent → renders nothing (no false alarm). */
+function deadKeysPanel(khealth){
+  const rejected = (khealth && Array.isArray(khealth.rejected)) ? khealth.rejected : [];
+  if (!rejected.length) return '';
+  const rows = rejected.map(k=>`
+    <tr>
+      <td><code>${esc(k.env_var || k.module || '?')}</code></td>
+      <td class="text-muted" style="font-size:12px">${esc(String(k.detail || '').slice(0, 200))}</td>
+      <td class="text-muted" style="font-size:12px">${k.hint ? linkifyHint(k.hint) : '<span class="text-muted">—</span>'}</td>
+    </tr>`).join('');
+  return `
+    <div class="panel panel-danger">
+      <div class="panel-heading"><b>⚠ Configured keys being rejected</b>
+        <span class="pull-right" style="font-size:12px">${rejected.length} dead</span>
+      </div>
+      <div class="panel-body">
+        <p class="text-muted" style="font-size:12px">
+          These keys ARE configured but the provider is rejecting them (bad,
+          expired, or malformed credential) — every scan that touches them wastes
+          the call and yields nothing. This is observed from real scan outcomes,
+          not a synthetic test, so it won't flag a working key. Renew each below
+          (edit it in <b>Module API keys</b> above), then re-run a scan to clear it.
+        </p>
+        <div style="overflow-x:auto">
+          <table class="table table-condensed" style="margin-bottom:0">
+            <thead><tr><th>Key</th><th>Upstream rejection</th><th>Renew at</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>`;
+}
 /* Key-pool panel: multi-key-per-service entries (discovered keys, imported pools)
    shown MASKED with status/environment, and a Revoke button per usable key. The
    plaintext never reaches the browser — keys are referenced by a non-secret id.
    Import/export and rotation live in the `hse keys` CLI (shell-access-gated). */
 export function poolPanel(pool, writeEnabled){
-  if (!pool || !(pool.services||[]).length) return '';
+  const hasKeys = pool && (pool.services||[]).length;
   const tierBadge = s => `<span class="status-pill s-${s==='revoked'?'failed':(s==='active'?'complete':'pending')}">${esc(s)}</span>`;
-  const rows = pool.services.map(svc=>`
+  const rows = hasKeys ? pool.services.map(svc=>`
     <tr><td colspan="5" class="grp-row" style="font-weight:600">${esc(svc.service)}</td></tr>
     ${svc.keys.map(k=>`<tr data-svc="${attr(svc.service)}" data-id="${attr(k.id)}">
       <td><code>${esc(k.masked)}</code></td>
@@ -521,18 +663,28 @@ export function poolPanel(pool, writeEnabled){
       <td class="text-right">${(writeEnabled && k.status!=='revoked')
         ? `<button class="btn btn-default btn-xs" data-rotate="${attr(svc.service)}" data-rotate-id="${attr(k.id)}">Rotate</button>
            <button class="btn btn-danger btn-xs" data-revoke="${attr(svc.service)}" data-revoke-id="${attr(k.id)}">Revoke</button>` : ''}</td>
-    </tr>`).join('')}`).join('');
+    </tr>`).join('')}`).join('') : '';
   return `
     <div class="panel panel-default">
       <div class="panel-heading"><b>Key pool</b>
         <span class="text-muted pull-right" style="font-size:12px">multi-key per service · masked · loopback-only</span>
       </div>
       <div class="panel-body">
-        <p class="text-muted" style="font-size:12px">Keys discovered during scans or imported via <code>hse keys import-json</code>, grouped by service and environment. Revoke a compromised key here (retained for audit, never used again); raw values, import/export and rotation are in the <code>hse keys</code> CLI.</p>
-        <div class="table-responsive"><table class="table table-condensed">
-          <thead><tr><th>Key</th><th>Status</th><th>Env</th><th class="text-right">Usage</th><th></th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table></div>
+        <p class="text-muted" style="font-size:12px">Keys discovered during scans, added below, or imported via <code>hse keys import-json</code>, grouped by service and environment. Add a backup key for a service to rotate across when one hits a quota limit; revoke a compromised key (retained for audit, never used again). Raw-value export/import (<code>hse keys export</code>/<code>import-json</code>/<code>import-tsv</code>) stays CLI-only — it round-trips plaintext to a file.</p>
+        ${writeEnabled ? `
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+          <input id="pool-add-service" type="text" class="form-control input-sm" style="max-width:160px" placeholder="service (e.g. shodan)" autocomplete="off">
+          <input id="pool-add-key" type="password" class="form-control input-sm" style="max-width:260px" placeholder="key value" autocomplete="off">
+          <input id="pool-add-notes" type="text" class="form-control input-sm" style="max-width:160px" placeholder="notes (optional)" autocomplete="off">
+          <button id="pool-add-btn" class="btn btn-primary btn-sm">Add key</button>
+          <span id="pool-add-msg" class="text-muted" style="font-size:12px"></span>
+        </div>` : ''}
+        ${hasKeys
+          ? `<div class="table-responsive"><table class="table table-condensed">
+               <thead><tr><th>Key</th><th>Status</th><th>Env</th><th class="text-right">Usage</th><th></th></tr></thead>
+               <tbody>${rows}</tbody>
+             </table></div>`
+          : '<p class="text-muted" style="font-size:12px">No keys in the pool yet.</p>'}
       </div>
     </div>`;
 }
@@ -548,7 +700,7 @@ export function keysDiagPanel(status, patterns){
       <td class="text-right">${s.invalid}</td><td class="text-right">${s.untested}</td>
       <td class="text-right">${s.revoked}</td><td class="text-right">${s.uses}</td>
       <td class="text-right">${s.errors}</td>
-      <td class="text-right">${Math.round((s.avg_health||0)*100)}%</td>
+      <td class="text-right">${healthCell(s)}</td>
     </tr>`).join('');
   const cov = patterns
     ? `<p class="text-muted" style="font-size:12px">Detector coverage: <b>${esc(patterns.count)}</b> key-shape patterns across <b>${esc(patterns.unique_services)}</b> services.</p>`

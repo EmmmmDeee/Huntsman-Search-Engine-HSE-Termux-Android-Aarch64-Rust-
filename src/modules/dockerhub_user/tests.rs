@@ -33,7 +33,7 @@ fn emits_username_and_profile_url() {
     let uname = ents
         .iter()
         .find(|e| e.kind == EntityKind::Username)
-        .unwrap();
+        .expect("should succeed");
     assert!(uname.has_tag("dockerhub") && uname.has_tag("public-profile"));
 }
 
@@ -43,7 +43,7 @@ fn emits_person_from_multi_word_name() {
     let ents = build_entities(user, "scan-dh-002");
     let p = ents.iter().find(|e| e.kind == EntityKind::Person);
     assert!(p.is_some(), "must emit Person from multi-word full_name");
-    assert_eq!(p.unwrap().value, "Bob Smith");
+    assert_eq!(p.expect("should succeed").value, "Bob Smith");
 }
 
 #[test]
@@ -59,8 +59,8 @@ fn emits_organisation_from_company() {
     let ents = build_entities(user, "scan-dh-004");
     let o = ents.iter().find(|e| e.kind == EntityKind::Organisation);
     assert!(o.is_some(), "must emit Organisation from company field");
-    assert_eq!(o.unwrap().value, "Acme Corp");
-    assert!(o.unwrap().has_tag("self-asserted"));
+    assert_eq!(o.expect("should succeed").value, "Acme Corp");
+    assert!(o.expect("should succeed").has_tag("self-asserted"));
 }
 
 #[test]
@@ -69,7 +69,7 @@ fn emits_address_from_location() {
     let ents = build_entities(user, "scan-dh-005");
     let a = ents.iter().find(|e| e.kind == EntityKind::Address);
     assert!(a.is_some(), "must emit Address from location field");
-    assert_eq!(a.unwrap().value, "San Francisco, CA");
+    assert_eq!(a.expect("should succeed").value, "San Francisco, CA");
 }
 
 #[test]
@@ -92,8 +92,8 @@ fn emits_email_from_gravatar_email_when_present() {
     let ents = build_entities(user, "scan-dh-007");
     let em = ents.iter().find(|e| e.kind == EntityKind::Email);
     assert!(em.is_some(), "must emit Email when gravatar_email is set");
-    assert_eq!(em.unwrap().value, "bob@example.com");
-    assert!(em.unwrap().has_tag("gravatar"));
+    assert_eq!(em.expect("should succeed").value, "bob@example.com");
+    assert!(em.expect("should succeed").has_tag("gravatar"));
 }
 
 #[test]

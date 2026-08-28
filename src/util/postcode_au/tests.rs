@@ -33,7 +33,7 @@ use super::*;
         assert!(locs.iter().any(|l| l.suburb == "Booroobin"));
         assert!(locs.iter().any(|l| l.suburb == "Conondale"));
         // Centroids match the online Zippopotam values (offline == online).
-        let maleny = locs.iter().find(|l| l.suburb == "Maleny").unwrap();
+        let maleny = locs.iter().find(|l| l.suburb == "Maleny").expect("should succeed");
         assert!((maleny.lat - -26.729).abs() < 1e-6 && (maleny.lon - 152.7554).abs() < 1e-6);
         // Capital city postcodes now resolve offline.
         assert!(!offline_fallback("2000").is_empty());
@@ -110,5 +110,26 @@ use super::*;
         ]}"#;
         let locs = parse(mixed);
         assert_eq!(locs.len(), 1);
+        assert_eq!(locs[0].suburb, "Good");
+    }
+
+    #[test]
+    fn rejects_numerically_valid_but_geographically_nonsensical_coords() {
+        // Regression guard: "-27.5"/"153.0" parse fine as f64s, but a
+        // null-island default (Zippopotam's own placeholder for a place it
+        // couldn't geocode) or an out-of-range value parses JUST as cleanly —
+        // neither was caught before, since only string-parse failure was
+        // checked. Both must be skipped like any other unparseable entry.
+        let mixed = r#"{"places":[
+            {"place name":"NullIsland","latitude":"0","longitude":"0"},
+            {"place name":"OutOfRange","latitude":"200","longitude":"-999"},
+            {"place name":"Good","latitude":"-27.5","longitude":"153.0"}
+        ]}"#;
+        let locs = parse(mixed);
+        assert_eq!(
+            locs.len(),
+            1,
+            "only the geographically valid locality should survive, got {locs:?}"
+        );
         assert_eq!(locs[0].suburb, "Good");
     }

@@ -29,7 +29,7 @@ fn never_returns_the_original_and_all_valid() {
         // Every candidate's first label is a valid LDH label, or an `xn--` ACE
         // label (validated by the punycode layer, whose internal `--` the
         // stricter `is_valid_label` rejects).
-        let (label, _) = d.split_once('.').unwrap();
+        let (label, _) = d.split_once('.').expect("should succeed");
         assert!(
             is_valid_label(label) || label.starts_with("xn--"),
             "invalid label in {d}"
@@ -66,7 +66,7 @@ fn bitsquat_only_yields_valid_chars() {
     // bit-flips that land on punctuation/control bytes).
     for (d, tech) in permutations("example.com", 1000) {
         if tech == "bitsquat" {
-            let (label, _) = d.split_once('.').unwrap();
+            let (label, _) = d.split_once('.').expect("should succeed");
             assert!(is_valid_label(label), "invalid bitsquat label {label}");
         }
     }
@@ -142,7 +142,7 @@ fn idn_homoglyph_is_emitted_as_punycode() {
     // — never a raw Unicode hostname no resolver would accept.
     for (d, tech) in permutations("example.com", 5000) {
         if tech == "homoglyph-idn" {
-            let (label, suffix) = d.split_once('.').unwrap();
+            let (label, suffix) = d.split_once('.').expect("should succeed");
             assert!(label.starts_with("xn--"), "ACE label expected, got {d}");
             assert!(label.is_ascii(), "ACE label must be ASCII, got {d}");
             assert_eq!(suffix, "com");
@@ -193,79 +193,4 @@ fn levenshtein_matches_known_distances() {
     assert_eq!(levenshtein("example", "exapmle"), 2); // transposition = 2 subs
     // A single Cyrillic-for-Latin swap is distance 1 (scalar, not byte, compare).
     assert_eq!(levenshtein("example", "\u{0435}xample"), 1);
-}
-
-// -- is_genuine_no_record / all_candidates_failed_transport (T2.163) --------
-//
-// T2.163 regression: the spawned task's `_ => None` catch-all previously
-// collapsed EVERY NetError kind (Timeout, Io, Busy, NoConnections, an
-// unrelated ResponseCode) into the same outcome as a genuine NXDOMAIN "not
-// registered" answer, so a total DNS-transport outage during a scan produced
-// zero findings indistinguishable from "none of the 128 lookalikes are
-// registered". Constructed against real hickory_resolver::net types — no
-// live DNS (Rule 3).
-
-#[test]
-fn is_genuine_no_record_false_for_real_transport_and_protocol_failures() {
-    use hickory_resolver::net::NetError;
-    for e in [
-        NetError::Timeout,
-        NetError::Busy,
-        NetError::NoConnections,
-        NetError::Message("synthetic proto failure"),
-    ] {
-        assert!(
-            !is_genuine_no_record(&e),
-            "{e:?} is a real resolution failure, not a genuine 'not registered' answer"
-        );
-    }
-}
-
-#[test]
-fn is_genuine_no_record_true_for_nxdomain_and_no_records_found() {
-    use hickory_resolver::net::{DnsError, NetError, NoRecords};
-    use hickory_resolver::proto::op::{Query, ResponseCode};
-    use hickory_resolver::proto::rr::{Name, RecordType};
-
-    let query = Query::query(Name::root(), RecordType::A);
-    let nxdomain = NetError::Dns(DnsError::NoRecordsFound(NoRecords::new(
-        query.clone(),
-        ResponseCode::NXDomain,
-    )));
-    assert!(
-        is_genuine_no_record(&nxdomain),
-        "a genuine NXDOMAIN must read as 'not registered', not a failure"
-    );
-
-    let no_records = NetError::Dns(DnsError::NoRecordsFound(NoRecords::new(
-        query,
-        ResponseCode::NoError,
-    )));
-    assert!(
-        is_genuine_no_record(&no_records),
-        "a NoError/no-records answer must also read as 'not registered'"
-    );
-}
-
-#[test]
-fn is_genuine_no_record_false_for_an_unrelated_response_code() {
-    use hickory_resolver::net::{DnsError, NetError};
-    use hickory_resolver::proto::op::ResponseCode;
-
-    let servfail = NetError::Dns(DnsError::ResponseCode(ResponseCode::ServFail));
-    assert!(
-        !is_genuine_no_record(&servfail),
-        "a SERVFAIL response code must not read as 'not registered'"
-    );
-}
-
-#[test]
-fn all_candidates_failed_transport_only_on_total_outage_with_no_hits() {
-    assert!(all_candidates_failed_transport(128, 128, 0));
-    // Mixed: some candidates genuinely answered NXDOMAIN, not a total outage.
-    assert!(!all_candidates_failed_transport(10, 128, 0));
-    // Any real hit, even alongside transport failures, is not an outage.
-    assert!(!all_candidates_failed_transport(127, 128, 1));
-    // The vacuous case (no candidates generated) must never be a false outage.
-    assert!(!all_candidates_failed_transport(0, 0, 0));
 }

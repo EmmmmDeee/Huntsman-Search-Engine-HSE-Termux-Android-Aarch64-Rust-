@@ -1,4 +1,4 @@
-//! Public API endpoint functions for the SeekNow (see-know.eu) service.
+//! Public API endpoint functions for the SeekNow (see-know.ru) service.
 
 use serde_json::Value;
 
@@ -7,11 +7,12 @@ use crate::util::backoff::BackoffPolicy;
 
 use super::budget::{budget_try_increment, is_key_invalid, mark_key_invalid};
 use super::client::{
-    base_url, cache_get, cache_put, get_json, is_auth_error, post_json, typed_cache_key,
+    cache_get, cache_put, get_json_with_fallback, get_raw_with_fallback, is_auth_error,
+    post_json_with_fallback, typed_cache_key,
 };
 use super::enterprise_config::ENTERPRISE;
 
-/// Retry pacing for a transient see-know.eu rate-limit response
+/// Retry pacing for a transient see-know.ru rate-limit response
 /// (`Error::RateLimited`, distinct from true quota exhaustion — see
 /// `client::Terminal::RateLimited`'s doc comment). [`ENTERPRISE`]`.max_retries`
 /// attempts (the initial call plus 2 retries), doubling 2s → 4s, capped at
@@ -23,13 +24,13 @@ use super::enterprise_config::ENTERPRISE;
 const RATE_LIMIT_BACKOFF: BackoffPolicy =
     BackoffPolicy::new(ENTERPRISE.max_retries, 2_000, 8_000, true);
 
-/// Max records per the see-know.eu Universal Search spec (`limit`, default 100,
+/// Max records per the see-know.ru Universal Search spec (`limit`, default 100,
 /// **max 500**). Requested in full — the standing directive is to use
-/// see-know.eu maximally, and one richer response costs the same budget slot as
+/// see-know.ru maximally, and one richer response costs the same budget slot as
 /// a thin one.
 pub(super) const SEARCH_LIMIT: u32 = 500;
 
-/// Build the `POST /api/v1/search` request body per the see-know.eu spec:
+/// Build the `POST /api/v1/search` request body per the see-know.ru spec:
 /// `{"query": <q>, "type": <t>?, "limit": <n>}`. An empty `query_type` omits
 /// `type` so the server auto-detects. Pure (JSON-escapes `query`) so it is
 /// unit-tested.
@@ -40,7 +41,7 @@ pub(super) fn build_search_body(query: &str, query_type: &str, limit: u32) -> St
         format!(
             r#"{{"query":"{}","type":"{}","limit":{}}}"#,
             escape_json(query),
-            query_type,
+            escape_json(query_type),
             limit
         )
     }
@@ -64,7 +65,6 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
     if is_key_invalid() || !budget_try_increment() {
         return Ok(Vec::new());
     }
-    let url = format!("{}/search", base_url());
     let body = build_search_body(query, query_type, SEARCH_LIMIT);
     // Human archive label: `search` (auto-detect) or `search-<type>` (typed),
     // with the actual looked-up value — so the saved filename names exactly what
@@ -85,13 +85,16 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
     //    immediately, which is what happened before this was diagnosed: a
     //    burst throttle used to latch the shared budget and silently abandon
     //    SeekNow for the rest of the scan.
+    //  - connection/network errors → retried via domain fallback
+    //    (`post_json_with_fallback` tries all known domains before returning error)
     const EMPTY_RETRY_ATTEMPTS: u32 = 2;
     let mut attempt = 0u32;
     loop {
-        match post_json(&url, key, &body, &archive_endpoint, query).await {
+        match post_json_with_fallback("/search", key, &body, &archive_endpoint, query).await {
             Ok(resp) => {
                 let items = extract_items(&resp);
                 if !items.is_empty() {
+                    super::data_log::log_search("/search", query, query_type, &items);
                     cache_put(ck, items.clone());
                     return Ok(items);
                 }
@@ -163,7 +166,6 @@ pub async fn search_deep(key: &str, query: &str, query_type: &str) -> Result<Vec
     if is_key_invalid() || !budget_try_increment() {
         return Ok(Vec::new());
     }
-    let url = format!("{}/search/deep", base_url());
     let body = build_search_body(query, query_type, SEARCH_LIMIT);
     let archive_endpoint = if query_type.is_empty() {
         "search-deep".to_string()
@@ -177,14 +179,16 @@ pub async fn search_deep(key: &str, query: &str, query_type: &str) -> Result<Vec
     // already-~40s call would double the worst-case latency for no evidenced
     // benefit. Transport errors and rate-limits ARE still retried/backed-off
     // (mirrors `get_path`'s resilience contract for flaky mobile networks —
-    // every other endpoint gets the same protection).
+    // every other endpoint gets the same protection). Connection errors also
+    // trigger domain fallback retries.
     const TRANSPORT_RETRY_ATTEMPTS: u32 = 2;
     let mut attempt = 0u32;
     loop {
-        match post_json(&url, key, &body, &archive_endpoint, query).await {
+        match post_json_with_fallback("/search/deep", key, &body, &archive_endpoint, query).await {
             Ok(resp) => {
                 let items = extract_items(&resp);
                 if !items.is_empty() {
+                    super::data_log::log_search("/search/deep", query, query_type, &items);
                     cache_put(ck, items.clone());
                 }
                 return Ok(items);
@@ -239,14 +243,15 @@ pub async fn steam_profile(key: &str, steam_id: &str) -> Result<Vec<Value>> {
 // through the endpoint planner.
 
 /// Discord user info — captures region/timezone/connected-accounts via
-/// `GET /api/v1/discord/user?id=<value>`
+/// `GET /api/v1/discord/user?discord_id=<value>`. The public Discord endpoints
+/// key on `discord_id`; only /enterprise/discord/* use `id`.
 pub async fn discord_user(key: &str, discord_id: &str) -> Result<Vec<Value>> {
-    get_path(key, "discord/user", &[("id", discord_id)]).await
+    get_path(key, "discord/user", &[("discord_id", discord_id)]).await
 }
 
-/// Discord → Roblox linkage via `GET /api/v1/discord/to-roblox?id=<value>`
+/// Discord → Roblox linkage via `GET /api/v1/discord/to-roblox?discord_id=<value>`.
 pub async fn discord_to_roblox(key: &str, discord_id: &str) -> Result<Vec<Value>> {
-    get_path(key, "discord/to-roblox", &[("id", discord_id)]).await
+    get_path(key, "discord/to-roblox", &[("discord_id", discord_id)]).await
 }
 
 /// Shared single-parameter GET dispatcher for the typed SeekNow endpoints.
@@ -268,7 +273,7 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
     if is_key_invalid() || !budget_try_increment() {
         return Ok(Vec::new());
     }
-    let url = format!("{}/{path}?{qs}", base_url());
+    let endpoint_path = format!("/{path}");
     // Human archive label: the endpoint path (e.g. `stealer`,
     // `breachhub/search`) and the actual looked-up value (first query param),
     // so the saved filename names exactly what was queried.
@@ -287,16 +292,21 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
     // RateLimited`): previously this response was classified identically to
     // exhausted credits, latching the shared budget and silently abandoning
     // SeekNow for every remaining endpoint call in the scan with zero
-    // backoff or retry.
-    const TRANSPORT_RETRY_ATTEMPTS: u32 = 2;
+    // backoff or retry. Connection errors also trigger domain fallback retries.
     let mut attempt = 0u32;
     loop {
-        match get_json(&url, key, path, archive_query).await {
+        match get_json_with_fallback(&endpoint_path, key, &qs, path, archive_query).await {
             Ok(resp) => {
                 let items = extract_items(&resp);
+                super::data_log::log_search(&endpoint_path, archive_query, "", &items);
                 cache_put(ck.clone(), items.clone());
                 return Ok(items);
             }
+            // Both transient classes — a burst rate-limit AND a 5xx/no-response
+            // (now surfaced as `RateLimited` by `client::classify_status`) — pace
+            // through the SAME `RATE_LIMIT_BACKOFF` (bounded by
+            // `ENTERPRISE.max_retries`), so the whole retry budget lives in one
+            // place instead of the old split policy.
             Err(Error::RateLimited(msg)) => {
                 if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
                     return Err(Error::RateLimited(msg));
@@ -306,17 +316,27 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
                     path,
                     attempt = attempt + 1,
                     delay_ms = delay.as_millis() as u64,
-                    "see_know GET rate-limited — backing off"
+                    "see_know GET transient (rate-limit/5xx) — backing off"
                 );
                 tokio::time::sleep(delay).await;
                 attempt += 1;
             }
+            // A plain transport error (connection drop on a flaky mobile link)
+            // now ALSO backs off on that shared budget rather than the old
+            // zero-delay double-shot — a genuine drop recovers on a paced retry.
             Err(e) => {
-                attempt += 1;
-                if attempt >= TRANSPORT_RETRY_ATTEMPTS {
+                if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
                     return Err(e);
                 }
-                tracing::debug!(path, attempt, "see_know GET errored — retrying once");
+                let delay = RATE_LIMIT_BACKOFF.delay(attempt);
+                tracing::debug!(
+                    path,
+                    attempt = attempt + 1,
+                    delay_ms = delay.as_millis() as u64,
+                    "see_know GET transport error — backing off"
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
             }
         }
     }
@@ -414,24 +434,93 @@ fn flatten_victims(victims: &[Value]) -> Vec<Value> {
 /// {"credits": {"remaining": 4200, "daily": 5000}}
 /// ```
 pub async fn query_credits(key: &str) -> Option<(u32, Option<u32>)> {
-    let url = format!("{}/credits", base_url());
-    // Direct HTTP call — no budget gate, no archive (meta-query, not paid data).
-    let body = super::client::CLIENT.get(&url, key).await.ok()?;
+    match credits_probe(key).await {
+        CreditsProbe::Ok {
+            remaining,
+            daily_limit,
+        } => Some((remaining, daily_limit)),
+        _ => None,
+    }
+}
+
+/// The distinguishable outcomes of the `/credits` diagnostic probe, for
+/// `hse doctor`'s SeekNow section. `query_credits` collapses this to `Option`
+/// for the budget-scaling / key-harvest callers that only need the number, but
+/// a human diagnosing "why is SeekNow returning nothing?" needs the *class* of
+/// failure — an unreachable API host (DNS/connect/timeout) is a completely
+/// different fix from a rejected key, which is different again from a reachable
+/// host returning an unrecognised body. A live Termux scan surfaced exactly
+/// this ambiguity: every `see_know` call failed with `[seek_now] curl exited 6`
+/// (curl's "could not resolve host"), then the circuit breaker cooled the
+/// module down — but `query_credits`'s `.ok()?` discarded the curl detail, so
+/// `hse doctor` could only report the catch-all "could not reach SeekNow",
+/// giving the operator no signal that the real cause was DNS-level host
+/// resolution (commonly carrier/ISP filtering of the domain), not a bad key or
+/// an exhausted plan.
+#[derive(Debug)]
+pub enum CreditsProbe {
+    /// The key works and the account has quota.
+    Ok {
+        remaining: u32,
+        daily_limit: Option<u32>,
+    },
+    /// A classified auth/plan rejection (`invalid_api_key` / `plan_required`).
+    /// [`mark_key_invalid`] has been latched.
+    InvalidKey,
+    /// The API host could not be reached at all — DNS resolution, connection,
+    /// or timeout failure. Carries curl's own one-line diagnostic (e.g.
+    /// `curl exited 6: curl: (6) Could not resolve host: see-know.eu`) so the
+    /// operator sees WHICH host failed and WHY. NOT a dead key — never latches
+    /// [`mark_key_invalid`].
+    Unreachable(String),
+    /// The host answered but the body carried no recognised `credits` field
+    /// (schema drift, or a plan whose `/credits` shape this parser doesn't
+    /// know). Reachable, so also not a confirmed dead key.
+    Unparseable,
+}
+
+/// Diagnostic probe of `GET /api/v1/credits`, classifying the outcome for
+/// `hse doctor`. Does NOT consume a budget slot. See [`CreditsProbe`] for why
+/// the transport-failure case is kept distinct from an auth rejection.
+pub async fn credits_probe(key: &str) -> CreditsProbe {
+    // Direct HTTP call with multi-domain fallback — no budget gate, no archive
+    // (meta-query, not paid data). Tries all known SeekNow domains (the service
+    // intentionally rotates domains) before giving up. The transport error is
+    // stringified and handed to the pure classifier so the Unreachable / auth /
+    // schema branches are all unit-testable without a live round-trip.
+    let result = get_raw_with_fallback("/credits", key)
+        .await
+        .map_err(|e| e.to_string());
+    classify_credits_probe(result)
+}
+
+/// Pure classification of a `/credits` fetch result into a [`CreditsProbe`].
+/// Split from the network call so every branch is unit-tested directly. The
+/// auth branch is the only one with a side effect — it latches
+/// [`mark_key_invalid`], matching the data-bearing `search`/`get_path` paths —
+/// so a confirmed-dead key is caught even when this probe is the first-ever
+/// call a process makes (`hse doctor`). Transport failures and unparseable
+/// bodies are NOT confirmed dead keys and never latch it.
+pub(super) fn classify_credits_probe(result: std::result::Result<String, String>) -> CreditsProbe {
+    let body = match result {
+        Ok(b) => b,
+        // Transport failure (curl non-zero exit): keep the detail so doctor can
+        // tell the operator it was DNS / connect / timeout, not a key problem.
+        Err(detail) => return CreditsProbe::Unreachable(detail),
+    };
     match parse_credits_body(&body) {
         CreditsOutcome::Data {
             remaining,
             daily_limit,
-        } => Some((remaining, daily_limit)),
-        // A genuine, classified auth rejection — latch it so `is_key_invalid()`
-        // reflects reality even when `query_credits` (not a data-bearing
-        // `search`/`get_path` call) is the first-ever call this process made.
+        } => CreditsProbe::Ok {
+            remaining,
+            daily_limit,
+        },
         CreditsOutcome::AuthError => {
             mark_key_invalid(&body);
-            None
+            CreditsProbe::InvalidKey
         }
-        // Network noise / an unrecognised schema — NOT a confirmed dead key,
-        // so this must never latch `mark_key_invalid`.
-        CreditsOutcome::Unparseable => None,
+        CreditsOutcome::Unparseable => CreditsProbe::Unparseable,
     }
 }
 
@@ -486,14 +575,8 @@ pub(super) fn parse_credits_body(body: &str) -> CreditsOutcome {
     }
 }
 
-/// Escape `s` for embedding inside a JSON string literal — the two body-builder
-/// call sites add the surrounding quotes, so this returns the interior only.
-/// Delegates to `serde_json` so backslash, quote AND the control bytes (`\n`,
-/// `\r`, `\t`, other `< 0x20`) that are illegal raw in a JSON string are all
-/// escaped; the hand-rolled version escaped only `\` and `"`, so a query
-/// carrying a newline/tab produced invalid JSON. `to_string()` on a JSON string
-/// `Value` yields `"…"`; strip the wrapping ASCII quotes to keep the contract.
-pub(super) fn escape_json(s: &str) -> String {
-    let quoted = serde_json::Value::String(s.to_owned()).to_string();
-    quoted[1..quoted.len() - 1].to_owned()
-}
+// This module's own fix, now shared. It was correct here and hand-rolled (backslash + quote only,
+// dropping the illegal control bytes) in `modules::fullcontact` — the defect was that there were
+// two. Moved verbatim to `crate::util::json::escape_string_interior` so both body builders call one
+// implementation and cannot drift again; the rationale lives there.
+pub(super) use crate::util::json::escape_string_interior as escape_json;

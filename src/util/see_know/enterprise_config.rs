@@ -45,6 +45,17 @@ pub struct EnterprisePlan {
     /// fires before tokio aborts the process mid-flight. Read by
     /// `super::client::CLIENT`'s construction.
     pub tokio_timeout_millis: u64,
+    /// curl timeout, seconds, for the FAST single-parameter GET endpoints
+    /// (network/*, gaming/*, username/*, domain/*, discord/*). Those respond in
+    /// ~2–5 s, so they must NOT inherit `curl_timeout_secs`'s wide ceiling (sized
+    /// for the ~55 s `/search` name path): a single hung GET would otherwise
+    /// waste up to 75 s of the module's per-scan timeout budget before failing.
+    /// Read by `super::client::CLIENT_FAST`'s construction.
+    pub get_timeout_secs: u64,
+    /// Outer tokio timeout wrapping a `CLIENT_FAST` GET, milliseconds — same
+    /// `> get_timeout_secs * 1000` headroom rule as `tokio_timeout_millis`. Read
+    /// by `super::client::CLIENT_FAST`'s construction.
+    pub get_tokio_timeout_millis: u64,
 }
 
 /// The live SeekNow integration configuration — every field consumed by a
@@ -57,4 +68,6 @@ pub const ENTERPRISE: EnterprisePlan = EnterprisePlan {
     max_retries: 3,
     curl_timeout_secs: 75,        // above /search's documented ~55s worst case
     tokio_timeout_millis: 78_000, // curl_timeout_secs * 1000 + headroom
+    get_timeout_secs: 30,         // fast GETs answer in ~2-5s; fail a hung one early
+    get_tokio_timeout_millis: 33_000, // get_timeout_secs * 1000 + headroom
 };

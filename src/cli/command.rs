@@ -9,13 +9,69 @@ use clap::{Parser, Subcommand};
 
 use super::keys_cmd::KeysAction;
 
+/// Parse a `--min-confidence` argument, rejecting anything that is not a usable
+/// threshold.
+///
+/// `f64::from_str` accepts `nan` and `inf`, and clap's default `f64` parser
+/// takes them verbatim. A NaN floor makes the extractor's
+/// `confidence >= min_confidence` filter false for every entity, so the command
+/// used to exit 0 having silently discarded its entire result set — the failure
+/// mode this crate treats as its cardinal sin. Rejecting at the argument
+/// boundary turns that into a clap usage error, before any work is done, and
+/// finally enforces the `(0.0-1.0)` range the flag's own help text has always
+/// advertised.
+pub(crate) fn confidence_floor(s: &str) -> Result<f64, String> {
+    let v: f64 = s
+        .parse()
+        .map_err(|_| format!("`{s}` is not a number (expected 0.0-1.0)"))?;
+    if !v.is_finite() {
+        return Err(format!("`{s}` is not a finite number (expected 0.0-1.0)"));
+    }
+    if !(0.0..=1.0).contains(&v) {
+        return Err(format!("`{s}` is outside the range 0.0-1.0"));
+    }
+    Ok(v)
+}
+
+/// Parser for a floor that is a **rate**, not a probability: finite and
+/// non-negative, with no upper bound.
+///
+/// `--min-marginal-yield` is "entities discovered per dispatched target"
+/// (default 0.75), so a value above 1.0 is meaningful — a demanding operator can
+/// legitimately require 2 entities per target before continuing to recurse.
+/// Clamping it to `0.0..=1.0` like a confidence would reject valid input, which
+/// is why this is a separate parser rather than a reuse of
+/// [`confidence_floor`]. Non-finite and negative are still rejected: a negative
+/// yield floor is unsatisfiable in the wrong direction (every round "passes"),
+/// and NaN inverts the comparison exactly as it does for a confidence.
+pub(crate) fn non_negative_rate(s: &str) -> Result<f64, String> {
+    let v: f64 = s
+        .parse()
+        .map_err(|_| format!("`{s}` is not a number (expected 0.0 or greater)"))?;
+    if !v.is_finite() {
+        return Err(format!(
+            "`{s}` is not a finite number (expected 0.0 or greater)"
+        ));
+    }
+    if v < 0.0 {
+        return Err(format!("`{s}` is negative (expected 0.0 or greater)"));
+    }
+    Ok(v)
+}
+
 #[derive(Parser)]
 #[command(
     name = "hse",
-    version = crate::VERSION,
-    about = "Huntsman Search Engine — Termux aarch64 OSINT / GEOINT prototype",
-    long_about = "Pure-Rust OSINT scaffold for Termux on Android aarch64.\n\
-                  80+ modules (most free, no key), autonomous depth-bounded expansion.\n\
+    // Version AND commit: two binaries built from different `main` commits
+    // between version bumps otherwise report an identical `--version`, which is
+    // exactly how a stale install passed for an up-to-date one. `hse build-sha`
+    // is the machine-readable form the installer compares against.
+    version = crate::build_id(),
+    about = "Huntsman Search Engine (HSE) — GhostSec-tradition all-source OSINT / GEOINT recon for Termux aarch64",
+    long_about = "Huntsman Search Engine (HSE) — an all-source OSINT / GEOINT / NETINT reconnaissance\n\
+                  engine in the GhostSec tradition: SpiderFoot-inspired breadth without the daemon or the\n\
+                  footprint. Pure-Rust, keyless-first, autonomous depth-bounded expansion, forged to run\n\
+                  entirely inside Termux on Android aarch64 — single binary, zero native dependencies.\n\
                   Docs: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-"
 )]
 pub struct Cli {
@@ -43,6 +99,12 @@ pub enum Command {
         // the value, not parsed by clap as an unknown short flag.
         #[arg(short, long, allow_hyphen_values = true)]
         value: Option<String>,
+        /// Batch mode: path to a file of seeds, one target per line (blank lines
+        /// and `#` comments ignored). Runs the SAME scan for every listed seed —
+        /// bulk-scan an IP / domain / email / username list. When set, `--value`
+        /// is ignored; each seed's findings are stored and exportable per scan_id.
+        #[arg(long, value_name = "PATH")]
+        input_file: Option<String>,
         /// Comma-separated allowlist of module names.
         #[arg(short, long)]
         modules: Option<String>,
@@ -55,7 +117,7 @@ pub enum Command {
         #[arg(short, long, default_value_t = 250)]
         throttle: u64,
         /// Drop entities whose base confidence is below this.
-        #[arg(long)]
+        #[arg(long, value_parser = confidence_floor)]
         min_confidence: Option<f64>,
         /// Skip key-gated and paid modules.
         #[arg(long)]
@@ -68,20 +130,21 @@ pub enum Command {
         timeout: Option<u64>,
         /// Recursive expansion depth. 0 = single round; 1+ auto-feeds discovered
         /// entities back as new scan targets, up to N rounds deep. Omit to use
-        /// the comprehensive product default (MAX_DEPTH = 3); `--auto` overrides an
+        /// the comprehensive product default (`DEFAULT_SCAN_DEPTH`, the full
+        /// `MAX_DEPTH`); `--auto` overrides an
         /// omitted value.
         #[arg(short, long)]
         depth: Option<u32>,
-        /// Shorthand for deep recursive expansion: pins depth to MAX_DEPTH (3) and
+        /// Shorthand for deep recursive expansion: pins depth to `MAX_DEPTH` and
         /// clamps the expansion floor to ≤0.40. With the comprehensive default
-        /// (depth 3, floor 0.20) this now matches the default; kept for explicitness
+        /// (full depth, floor 0.20) this now matches the default; kept for explicitness
         /// and for use alongside a raised `--min-expand-confidence`. Overridden by
         /// an explicit --depth.
         #[arg(short = 'R', long)]
         recursive: bool,
         /// COMPLETE scan — the no-compromise preset. Auto-detects the seed kind,
         /// runs EVERY module (overrides --free-only/--passive-only/--modules),
-        /// expands to MAX_DEPTH (3) at the Probable floor, and disables ROI
+        /// expands to `MAX_DEPTH` at the Probable floor, and disables ROI
         /// pruning so nothing is skipped. The single "get everything" option.
         #[arg(
             short = 'F',
@@ -104,11 +167,11 @@ pub enum Command {
         /// applies its own strict floors, so recall is wide while the resolved
         /// findings stay precise. Raise it (e.g. 0.50 Probable, 0.75 Verified-only),
         /// or pass `--gate-speculative`, for a tighter, faster sweep.
-        #[arg(long, default_value_t = crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE)]
+        #[arg(long, default_value_t = crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE, value_parser = confidence_floor)]
         min_expand_confidence: f64,
         /// Hard cap on total entities; stops expansion when reached. Omitted ⇒ the
         /// product default (2500) — a generous Termux on-device safety bound for the
-        /// comprehensive depth-3 default sweep. Pass a larger value (or use a
+        /// comprehensive full-depth default sweep. Pass a larger value (or use a
         /// profile) to go further.
         #[arg(long)]
         max_entities: Option<usize>,
@@ -132,12 +195,23 @@ pub enum Command {
         /// (default 0.75 new entities per dispatched target).
         #[arg(long)]
         max_roi: bool,
-        /// Convex (optionality / barbell) budget allocation: re-weight expansion
-        /// candidates by a convexity premium for heavy-tailed upside over
-        /// per-kind dispatch cost, so the bounded budget favours cheap,
-        /// high-optionality identity leads over saturated infrastructure.
-        #[arg(long)]
-        convex_budget: bool,
+        /// Convex (optionality / barbell) budget allocation is ON by default:
+        /// expansion candidates are re-weighted by a convexity premium for
+        /// heavy-tailed upside over per-kind dispatch cost, so the bounded budget
+        /// favours cheap, high-optionality identity leads over saturated
+        /// infrastructure — maximising the value of each scan. Pass
+        /// `--no-convex-budget` for the plain expected-value ranking.
+        #[arg(long = "no-convex-budget", action = clap::ArgAction::SetTrue)]
+        no_convex_budget: bool,
+        /// Capability-aware dispatch is ON by default: modules whose parser has
+        /// provably gone dead across recent scans (persistent failures or silent
+        /// zero-yield drift) are skipped so their dispatch slot goes to a source
+        /// that still works — maximising each scan's useful return. Only culls
+        /// the automatic comprehensive fan-out; an explicit `--modules` set or
+        /// `--full` always runs everything. Pass `--no-skip-dead-modules` to run
+        /// every module regardless of health.
+        #[arg(long = "no-skip-dead-modules", action = clap::ArgAction::SetTrue)]
+        no_skip_dead_modules: bool,
         /// Australian-focused regional searching is ON by default: the search
         /// module adds minimal `.au` / AU-directory dorks on top of the
         /// geolocation-neutral base (a seed with no region signal defaults to
@@ -146,14 +220,14 @@ pub enum Command {
         no_regional: bool,
         /// When `--max-roi` is set, override the default marginal-yield
         /// floor (0.75). Lower = recurse further before giving up.
-        #[arg(long)]
+        #[arg(long, value_parser = non_negative_rate)]
         min_marginal_yield: Option<f64>,
         /// Expansion ordering strategy: `geo_converge` (default; legacy),
         /// `breadth_first`, `depth_first`, `richest_first`. Changes how
         /// the engine prioritises expansion candidates each round.
         #[arg(long, default_value = "geo_converge")]
         expansion_strategy: String,
-        /// Per-scan SeekNow (see-know.eu) budget override. Caps the
+        /// Per-scan SeekNow (see-know.ru) budget override. Caps the
         /// number of SeekNow API queries this scan may dispatch.
         /// Default (None) falls back to HUNTSMAN_SEEKNOW_SCAN_CAP env
         /// (160). Hard-clamped at 200 to preserve the daily session
@@ -207,6 +281,20 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Print the git commit this binary was built from (40-char hex), for
+    /// scripting. Exits non-zero when the build carries no verifiable revision —
+    /// a dirty tree, or a build with no `.git` and no `HSE_BUILD_SHA`.
+    ///
+    /// `install.sh` and `hse update` use this to decide whether a candidate
+    /// binary IS the revision they were asked to install. A non-zero exit means
+    /// "cannot prove it", which callers must treat as a mismatch and build from
+    /// source rather than trust.
+    #[command(hide = true, name = "build-sha")]
+    BuildSha {
+        /// Emit `sha`, `dirty` and `version` as JSON instead of the bare SHA.
+        #[arg(long)]
+        json: bool,
+    },
     /// Liveness panel: probe every free search engine and report up/blocked/down
     /// + latency. Subsumed by `hse diagnostics`; kept for scripting.
     #[command(hide = true)]
@@ -214,6 +302,38 @@ pub enum Command {
         /// Output as JSON instead of the status table.
         #[arg(long)]
         json: bool,
+    },
+    /// General web search: run an everyday free-text query across every free
+    /// search engine and print ranked results.
+    ///
+    /// Unlike `hse search`, which treats its input as an OSINT target
+    /// (email / username / domain / …) and wraps it in `site:`/`intext:` dorks,
+    /// `query` searches the text verbatim — e.g.
+    /// `hse query "buy panadeine forte online"` — and returns the raw web
+    /// results, deduplicated across engines and ranked by how many independent
+    /// engines surfaced each URL.
+    Query {
+        /// The free-text search query. Quote multi-word queries.
+        #[arg(allow_hyphen_values = true)]
+        query: String,
+        /// Maximum results to print (0 = no limit).
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+        /// Dark-web EXPOSURE search: query Ahmia's onion index over clearnet
+        /// (no Tor required) to find hidden-service pages that mention the
+        /// search term — e.g. your own domain or brand appearing in a leak
+        /// listing. Reports where a mention exists; HSE never fetches the
+        /// onion addresses it reports.
+        #[arg(long)]
+        dark: bool,
+        /// Overall time budget in seconds (clamped to 3–60). Bounds the whole
+        /// command: every engine request self-clamps to it on the default path,
+        /// and it caps the single Ahmia request under `--dark`.
+        #[arg(long)]
+        timeout: Option<u64>,
+        /// Output format: `table` (default) or `json`.
+        #[arg(short, long, default_value = "table")]
+        output: String,
     },
     /// View or set persistent capability toggles (universal toggleability,
     /// SpiderFoot-style). No args lists all toggles; `hse config <key> <on|off>`
@@ -276,10 +396,42 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// AI-daemon scan analysis: prompt a locally-run Ollama instance for a
+    /// plain-language summary and ranked findings on an already-completed
+    /// scan's discovered entities. Opt-in (`hse config feature.ai_daemon on`)
+    /// and requires Ollama to be installed, running, and reachable — never
+    /// runs as part of `hse scan`/`hse serve`/`hse live`. See `src/ai/`. Also
+    /// reads `HUNTSMAN_OLLAMA_TIMEOUT_MS` (generation timeout in
+    /// milliseconds; default 120000, floor 1000) — no `--timeout` flag exists
+    /// for it, since a single analysis call has no other caller-tunable knob
+    /// to group it with.
+    Analyze {
+        /// Stored scan id to analyse (`latest` for the most recent completed scan).
+        #[arg(long)]
+        scan_id: Option<String>,
+        /// Emit the machine-readable JSON report instead of the text summary.
+        #[arg(long)]
+        json: bool,
+        /// Ollama base URL (default `http://127.0.0.1:11434`, or
+        /// `HUNTSMAN_OLLAMA_URL`).
+        #[arg(long, env = "HUNTSMAN_OLLAMA_URL")]
+        ollama_url: Option<String>,
+        /// Ollama model tag to use (or `HUNTSMAN_OLLAMA_MODEL`); required —
+        /// there is no default model, since a default would silently invoke
+        /// whatever an operator happens to have pulled.
+        #[arg(long, env = "HUNTSMAN_OLLAMA_MODEL")]
+        model: Option<String>,
+    },
     /// Verify environment: DB path, key file, Termux detection, module counts.
     /// (Subsumed by `hse diagnostics`; kept for scripting and the API/UI.)
     #[command(hide = true)]
-    Doctor,
+    Doctor {
+        /// Also run a live capability preflight: probe every keyless module
+        /// against its real provider and report alive/empty/unreachable per
+        /// module. Opt-in and network-bound — the default run stays offline.
+        #[arg(long)]
+        live: bool,
+    },
     /// Validate every module and core feature, then exit (non-zero on any
     /// failure). (Subsumed by `hse diagnostics`; kept for scripting and the Web UI.)
     #[command(hide = true)]
@@ -310,6 +462,14 @@ pub enum Command {
         /// Show the merged env content without writing to disk.
         #[arg(long)]
         dry_run: bool,
+        /// Autonomously discover HUNTSMAN_* API keys already present in the
+        /// process environment (exported in a shell rc, CI, or passed inline)
+        /// that the env file doesn't yet carry, and pre-configure them into
+        /// `~/.huntsman.env`. Turns any key the operator already has into a
+        /// persisted, active one with zero manual `keys set`. No-op under
+        /// `--verify-only` (which never touches the env file).
+        #[arg(long)]
+        discover: bool,
     },
 
     /// Write a single `HUNTSMAN_*` key to `$HOME/.huntsman.env`.
@@ -331,6 +491,63 @@ pub enum Command {
         #[arg(short, long, default_value = "table")]
         output: String,
     },
+    /// Parse documents (image/PDF/CSV/JSON/JSONL/text), extract entities (email, IPv4, IPv6, domain, URL, social handle, MD5/SHA hashes),
+    /// classify by kind, assign confidence scores, and output as HSE-ready batch queries (JSONL/JSON/CSV/table).
+    Ingest {
+        /// Input file path (image, PDF, CSV, JSON, JSONL, text).
+        #[arg(short, long, value_name = "PATH")]
+        file: String,
+        /// Output format: jsonl (default), json, csv, table, or hse
+        /// (full core::entity::Entity records ready for the scan pipeline).
+        ///
+        /// Short flag is `-F`: `-f` is the input file and `-o` the output
+        /// file, and clap panics at startup on a duplicate short name.
+        #[arg(short = 'F', long, default_value = "jsonl")]
+        output_format: String,
+        /// Minimum confidence threshold (0.0-1.0, default 0.30).
+        #[arg(long, default_value = "0.30", value_parser = confidence_floor)]
+        min_confidence: f64,
+        /// Also persist the extracted entities as a completed, correlated scan
+        /// (offline — no module dispatch, no network), so they show in `hse
+        /// list` and every view/export. The output is still written as usual.
+        #[arg(long)]
+        auto_scan: bool,
+        /// Output file (default: stdout).
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Extract EXIF geolocation from images.
+        #[arg(long)]
+        extract_geolocation: bool,
+        /// Generate reverse image search variants for detected images.
+        #[arg(long)]
+        generate_reverse_search_variants: bool,
+        /// Output directory for reverse image search variants.
+        #[arg(long, value_name = "DIR")]
+        image_variant_output_dir: Option<String>,
+    },
+    /// Extract OSINT entities (email, phone, IP, domain, username, name, ...)
+    /// mentioned in a free-text investigative prompt — the kind of question
+    /// you'd type to an AI research assistant, e.g. "find what's linked to
+    /// alice@example.com". Uses HSE's own deterministic, offline pattern
+    /// extractor (the same one `hse ingest` runs on document text); no text is
+    /// ever sent to an external LLM.
+    Investigate {
+        /// The investigative prompt. Omit to read from stdin, so a long prompt
+        /// doesn't need shell quoting.
+        #[arg(allow_hyphen_values = true)]
+        text: Option<String>,
+        /// Also persist the extracted entities as a completed, correlated scan
+        /// (offline — no module dispatch, no network), so they show in `hse
+        /// list` and every view/export.
+        #[arg(long)]
+        auto_scan: bool,
+        /// Minimum confidence threshold (0.0-1.0, default 0.30).
+        #[arg(long, default_value = "0.30", value_parser = confidence_floor)]
+        min_confidence: f64,
+        /// Emit machine-readable JSON instead of a human-readable table.
+        #[arg(long)]
+        json: bool,
+    },
     /// Start the HTTP server + SPA (browse to http://127.0.0.1:8080 from Chrome).
     Serve {
         /// Bind address. Localhost-only by default — change at your own risk.
@@ -345,6 +562,19 @@ pub enum Command {
         /// deployments.
         #[arg(long)]
         no_key_write: bool,
+        /// Bearer token required on every request when the bind is NOT
+        /// loopback. Omit and HSE mints a 256-bit one and prints it (with a
+        /// ready-to-open URL) at startup. Ignored for the loopback default
+        /// unless you pass one deliberately.
+        #[arg(long, env = "HSE_AUTH_TOKEN")]
+        auth_token: Option<String>,
+        /// Expose a non-loopback bind with NO authentication — the pre-1.41
+        /// behaviour. Anyone who can reach the address can read every scan
+        /// result, dispatch quota-burning scans, and trigger the device's own
+        /// WiFi/Bluetooth/cell/GPS radar sweep. Only for a deliberately public
+        /// deployment on a network you control.
+        #[arg(long)]
+        allow_unauthenticated: bool,
     },
     /// Manage the multi-key pool (add, list, validate, remove, status).
     Keys {
@@ -390,10 +620,10 @@ pub enum Command {
         #[arg(long, default_value_t = 0)]
         throttle: u64,
         /// Same as `scan --min-confidence`.
-        #[arg(long)]
+        #[arg(long, value_parser = confidence_floor)]
         min_confidence: Option<f64>,
         /// Same as `scan --min-expand-confidence`.
-        #[arg(long, default_value_t = crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE)]
+        #[arg(long, default_value_t = crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE, value_parser = confidence_floor)]
         min_expand_confidence: f64,
         /// Same as `scan --max-entities` — applies per iteration. Omitted ⇒ the
         /// product default (2500), matching `hse scan` and the API's live/scan
@@ -409,14 +639,18 @@ pub enum Command {
         /// Same as `scan --max-roi`.
         #[arg(long)]
         max_roi: bool,
-        /// Same as `scan --convex-budget`.
-        #[arg(long)]
-        convex_budget: bool,
+        /// Same as `scan --no-convex-budget` (convex allocation is on by default).
+        #[arg(long = "no-convex-budget", action = clap::ArgAction::SetTrue)]
+        no_convex_budget: bool,
+        /// Same as `scan --no-skip-dead-modules` (capability-aware dispatch is on
+        /// by default).
+        #[arg(long = "no-skip-dead-modules", action = clap::ArgAction::SetTrue)]
+        no_skip_dead_modules: bool,
         /// Same as `scan --no-regional`.
         #[arg(long = "no-regional", action = clap::ArgAction::SetTrue)]
         no_regional: bool,
         /// Same as `scan --min-marginal-yield`.
-        #[arg(long)]
+        #[arg(long, value_parser = non_negative_rate)]
         min_marginal_yield: Option<f64>,
         /// Same as `scan --expansion-strategy`.
         #[arg(long, default_value = "geo_converge")]
@@ -452,20 +686,11 @@ pub enum Command {
     ///
     /// Think of it as an intermittent radar that detects signals and
     /// automatically enriches them through all available modules.
-    Radar {
-        /// Seconds between sensor sweeps. Default 10.
-        #[arg(short, long, default_value_t = 10)]
-        interval: u64,
-        /// Expansion depth for each discovered entity. Default 2.
-        #[arg(short, long, default_value_t = 2)]
-        depth: u32,
-        /// Stop after this many sweeps. Omit for infinite (Ctrl-C to stop).
-        #[arg(long)]
-        sweeps: Option<u32>,
-        /// Skip paid modules when pivoting.
-        #[arg(long)]
-        free_only: bool,
-    },
+    ///
+    /// Takes no options: it is either running or stopped. Start it with
+    /// `hse radar`, stop it with Ctrl-C. Everything it needs it reads from this
+    /// device's own radios.
+    Radar {},
     /// Export a previous scan's entities to JSON / CSV / GEXF / JSON-report / full.
     ///
     /// JSON           — `[{ kind, value, ... }, ...]` flat entity list
@@ -500,6 +725,12 @@ pub enum Command {
         /// format but scoped only to the infra filter.
         #[arg(long, default_value_t = false)]
         include_infra: bool,
+        /// Redact subject PII for a shareable export: mask credential-class
+        /// values (passwords, credentials, harvested API keys) and coarsen
+        /// precise coordinates to ~11 km. Applies to json / csv / gexf only —
+        /// the full/debug dossiers are unredacted by contract.
+        #[arg(long, default_value_t = false)]
+        redact: bool,
     },
 
     /// Compare two completed scans: entities added / removed / re-scored.
@@ -543,6 +774,15 @@ pub enum Command {
         /// providers). Explosive — off by default.
         #[arg(long)]
         synthesize_emails: bool,
+        /// Recursively re-expand derived query values this many extra levels: a
+        /// derived username re-derives its own handles / candidate emails, a
+        /// derived domain its role emails, a synthesised email its own local-part
+        /// username + domain, and so on. Bounded and cycle-safe (a value is never
+        /// expanded twice), so it always terminates; `0` (default) keeps the
+        /// precise single-level plan. Compounds with `--synthesize-emails`, so use
+        /// `--max` to cap the result.
+        #[arg(long, default_value_t = 0)]
+        recurse_depth: u32,
         /// Cap the number of queries (after de-duplication). 0 = no cap.
         #[arg(long, default_value_t = 0)]
         max: usize,
@@ -568,7 +808,69 @@ pub enum Command {
     /// `hse cells clear [--yes]` — truncate the cells table.
     Cells {
         #[command(subcommand)]
-        action: super::cells::CellsAction,
+        action: crate::app::cells::CellsAction,
+    },
+
+    /// Query the RF sighting database — every Wi-Fi, Bluetooth/BLE and cellular
+    /// observation a wardriving import or radar sweep recorded.
+    ///
+    /// This reads `rf_sightings`, which is kept alongside the entity graph
+    /// rather than instead of it. The graph records which devices exist; this
+    /// records every time each was heard, from where and how loudly — the
+    /// per-sighting detail the graph's flattening dissolves.
+    ///
+    /// With no flags, prints the scan's summary. `--devices` lists one row per
+    /// device, strongest first. `--track <ID>` prints one device's full sighting
+    /// history, which is the movement record.
+    Signal {
+        /// Scan to read. Defaults to the most recent import/sweep that produced
+        /// sightings, so the common case needs no id.
+        #[arg(long)]
+        scan_id: Option<String>,
+        /// One row per device, strongest signal first.
+        #[arg(long)]
+        devices: bool,
+        /// Only devices with a fixed hardware address — the ones whose
+        /// recurrence across sightings actually means something. A randomised
+        /// address rotates, so seeing it twice is not seeing one device twice.
+        #[arg(long)]
+        trackable: bool,
+        /// Network names carried by more than one radio (mesh deployments and
+        /// 2.4/5 GHz pairs), largest installation first.
+        #[arg(long)]
+        names: bool,
+        /// Every sighting of one device, oldest first.
+        #[arg(long, value_name = "NETWORK_ID")]
+        track: Option<String>,
+        /// Cap on rows printed by the list views.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Emit JSON instead of the text table.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Housekeeping: keep the on-device `~/.huntsman` footprint bounded and
+    /// arranged.
+    ///
+    /// Trims the rendered-dossier cache to its newest 500 files (each is a
+    /// regenerable render of a stored scan — `hse export --format full`
+    /// recreates any of them, so nothing unrecoverable is removed), applies the
+    /// canonical event-log / raw-archive retention bounds as a safety net for an
+    /// install that runs `serve` for weeks without completing a scan, truncates
+    /// the SQLite WAL, and re-asserts the data directory's `0700` layout.
+    ///
+    /// The scan database, key pool, key vault and harvested credentials are
+    /// never touched. Runs automatically on the `serve` maintenance tick; this
+    /// command is the on-demand form.
+    #[command(visible_alias = "clean")]
+    Tidy {
+        /// Report what would be reclaimed without changing anything on disk.
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit the machine-readable JSON report instead of the text summary.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Upgrade hse in place: `git pull` + rebuild + atomic binary swap.
@@ -587,4 +889,121 @@ pub enum Command {
         #[arg(long, value_name = "REF")]
         r#ref: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// Validate the whole command tree at test time.
+    ///
+    /// clap's consistency checks (duplicate short flags, conflicting IDs,
+    /// malformed defaults) run inside a `debug_assert` on first parse — so a
+    /// broken definition does not fail the build, it panics at startup on
+    /// every invocation of the affected subcommand. `hse ingest` shipped that
+    /// way: `-o` was claimed by both `--output-format` and `--output`, and the
+    /// command aborted before doing any work. Asserting here turns that class
+    /// of defect into a failing test instead of a runtime crash.
+    #[test]
+    fn cli_definition_is_internally_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    /// `hse tidy`'s help text quotes the dossier-cache cap as a literal, because
+    /// clap renders doc comments verbatim to the operator and a rustdoc
+    /// intra-doc link would leak as raw `[`crate::…`]` markup in `--help`. A
+    /// literal can drift from the constant it describes, so assert the two
+    /// agree: change `DOSSIER_MAX_FILES` and this fails until the help text is
+    /// updated with it.
+    #[test]
+    fn tidy_help_quotes_the_real_dossier_cap() {
+        let cap = crate::app::tidy::DOSSIER_MAX_FILES;
+        let tidy = Cli::command()
+            .get_subcommands()
+            .find(|c| c.get_name() == "tidy")
+            .expect("tidy subcommand is registered")
+            .clone();
+        let help = tidy
+            .get_long_about()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(
+            help.contains(&format!("newest {cap} files")),
+            "tidy --help must quote DOSSIER_MAX_FILES ({cap}); help was: {help}"
+        );
+    }
+
+    #[test]
+    fn confidence_floor_accepts_the_documented_range_inclusive() {
+        for s in ["0.0", "0.30", "0.5", "1.0"] {
+            assert!(
+                confidence_floor(s).is_ok(),
+                "{s} is inside the advertised 0.0-1.0 range"
+            );
+        }
+    }
+
+    #[test]
+    fn confidence_floor_rejects_non_finite_values() {
+        // Regression: `f64::from_str` accepts these, and clap's stock f64
+        // parser passed them straight through. A NaN floor made the extractor's
+        // `confidence >= floor` filter false for EVERY entity, so
+        // `hse ingest --min-confidence nan` exited 0 having emitted nothing at
+        // all — silent total data loss, no error, no warning.
+        for s in ["nan", "NaN", "inf", "-inf", "infinity"] {
+            let err = confidence_floor(s).expect_err("{s} must be rejected");
+            assert!(
+                err.contains("finite"),
+                "the message must name the reason, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn confidence_floor_rejects_values_outside_zero_to_one() {
+        for s in ["1.0001", "5.0", "-0.5", "1e9"] {
+            let err = confidence_floor(s).expect_err("{s} must be rejected");
+            assert!(
+                err.contains("0.0-1.0"),
+                "the message must name the range, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_negative_rate_accepts_values_above_one() {
+        // The distinguishing property vs `confidence_floor`: `--min-marginal-yield`
+        // is entities-per-target, so "require 2 entities per dispatched target"
+        // is a legitimate demand, not out-of-range input.
+        for s in ["0.0", "0.75", "1.0", "2.0", "1000.0"] {
+            assert!(
+                non_negative_rate(s).is_ok(),
+                "{s} is a valid marginal-yield floor"
+            );
+        }
+    }
+
+    #[test]
+    fn non_negative_rate_rejects_non_finite_and_negative() {
+        for s in ["nan", "NaN", "inf", "-inf"] {
+            assert!(
+                non_negative_rate(s).is_err(),
+                "{s} must be rejected: NaN inverts the comparison and inf is unsatisfiable"
+            );
+        }
+        for s in ["-0.1", "-1.0", "-1000.0"] {
+            assert!(
+                non_negative_rate(s).is_err(),
+                "{s} must be rejected: a negative yield floor passes every round"
+            );
+        }
+        assert!(non_negative_rate("banana").is_err());
+    }
+
+    #[test]
+    fn confidence_floor_rejects_non_numeric_input() {
+        let err = confidence_floor("high").expect_err("non-numeric must be rejected");
+        assert!(err.contains("not a number"), "got: {err}");
+    }
 }

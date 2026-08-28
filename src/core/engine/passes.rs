@@ -31,7 +31,7 @@ use crate::core::relation::Relation;
 /// form), with a lexicographic tie-break for determinism; only addresses sharing
 /// a [`crate::util::address_au::locality_key`] are merged, so a street address is
 /// never folded into a bare suburb.
-pub(super) fn consolidate_address_localities(entities: &mut Vec<Entity>) {
+pub(super) fn consolidate_address_localities(entities: &mut Vec<Entity>) -> Vec<(String, String)> {
     let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
     for (i, e) in entities.iter().enumerate() {
         if e.kind == EntityKind::Address {
@@ -60,6 +60,23 @@ pub(super) fn consolidate_address_localities(entities: &mut Vec<Entity>) {
                     .then_with(|| entities[b].value.cmp(&entities[a].value))
             })
             .expect("group is non-empty");
+        // The survivor is chosen by value SPECIFICITY, not discovery order, so
+        // it is not necessarily the earliest-discovered member —
+        // `Entity::absorb` deliberately leaves `generation` untouched on the
+        // precondition (its own doc comment) that `self` is always the
+        // pre-existing, earlier-or-equal entity. A more specific spelling
+        // (e.g. a postcode added by a later-round geocode lookup) is commonly
+        // discovered AFTER the bare form a seed-round search already found,
+        // so without this the fold would silently advance a directly-observed
+        // seed-round locality to a later, wrong generation. Restore the
+        // invariant explicitly: the fold keeps the group's EARLIEST true
+        // discovery generation, independent of which member's value won.
+        let earliest_generation = idxs
+            .iter()
+            .map(|&i| entities[i].generation)
+            .min()
+            .expect("group is non-empty");
+        entities[survivor].generation = earliest_generation;
         for &victim in idxs {
             if victim != survivor {
                 folds.push((survivor, entities[victim].clone()));
@@ -68,8 +85,16 @@ pub(super) fn consolidate_address_localities(entities: &mut Vec<Entity>) {
         }
     }
     if folds.is_empty() {
-        return;
+        return Vec::new();
     }
+    // (victim_uid, survivor_uid) for each fold — the caller detaches the victim's
+    // per-scan observation row (the fold only removes it from THIS Vec; the
+    // checkpoint path already made it a durable observation) and re-points any
+    // lineage edge that named a victim at its survivor.
+    let folded: Vec<(String, String)> = folds
+        .iter()
+        .map(|(s, v)| (v.uid.clone(), entities[*s].uid.clone()))
+        .collect();
     for (survivor, victim) in folds {
         entities[survivor].absorb(victim);
     }
@@ -79,6 +104,7 @@ pub(super) fn consolidate_address_localities(entities: &mut Vec<Entity>) {
         idx += 1;
         keep
     });
+    folded
 }
 
 /// Promote geo-corroborated family (free, offline, per scan).
@@ -112,7 +138,7 @@ pub(super) fn promote_geo_corroborated_family(entities: &mut [Entity]) -> usize 
         let km = distance_to_subject(e, &subject).unwrap_or_default();
         e.tag("geo-corroborated");
         e.add_evidence(Evidence::new(
-            "geo_corroboration",
+            crate::core::entity::GEO_CORROBORATION_SOURCE,
             format!(
                 "Shared-surname relative ~{km:.0} km from the subject's confirmed location — \
                  geo and surname independently corroborate the relationship"
@@ -187,7 +213,7 @@ pub(super) fn promote_breach_candidate_geo_corroborated(entities: &mut [Entity])
         e.tag("breach-corroborated");
         e.confidence = e.confidence.max(0.50);
         e.add_evidence(Evidence::new(
-            "geo_corroboration",
+            crate::core::entity::GEO_CORROBORATION_SOURCE,
             format!(
                 "Same-name breach record ~{km:.0} km from the subject's confirmed location \
                  (within {BREACH_GEO_KM:.0} km) — same name AND same locality confirm this is the \
@@ -229,13 +255,14 @@ pub(super) fn promote_multipath_corroborated(
     entities: &mut [Entity],
     relations: &[Relation],
 ) -> usize {
-    use crate::core::correlator::multipath_corroborated_links;
+    use crate::core::correlator::{RuleContext, multipath_corroborated_links};
     use crate::core::entity::Evidence;
 
     // Resolve the corroborated endpoints (and the reason for each) up front, so
     // the immutable borrow the detector takes on `entities` is released before
     // the mutable promotion walk below.
-    let links = multipath_corroborated_links(entities, relations);
+    let context = RuleContext::new(entities);
+    let links = multipath_corroborated_links(&context, relations);
     if links.is_empty() {
         return 0;
     }
@@ -265,7 +292,10 @@ pub(super) fn promote_multipath_corroborated(
         }
         if let Some(reason) = reason_by_uid.get(&e.uid) {
             e.tag("multipath-corroborated");
-            e.add_evidence(Evidence::new("multipath_corroboration", reason.clone()));
+            e.add_evidence(Evidence::new(
+                crate::core::entity::MULTIPATH_CORROBORATION_SOURCE,
+                reason.clone(),
+            ));
             promoted += 1;
         }
     }
@@ -312,7 +342,10 @@ pub(super) fn promote_cross_scan_corroborated(
         }
         if let Some(reason) = boost.get(&e.uid) {
             e.tag("cross-scan-corroborated");
-            e.add_evidence(Evidence::new("cross_scan_corroboration", reason.clone()));
+            e.add_evidence(Evidence::new(
+                crate::core::entity::CROSS_SCAN_CORROBORATION_SOURCE,
+                reason.clone(),
+            ));
             promoted += 1;
         }
     }

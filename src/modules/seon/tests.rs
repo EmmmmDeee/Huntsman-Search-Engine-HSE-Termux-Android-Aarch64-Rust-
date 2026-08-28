@@ -4,6 +4,7 @@ use super::{
     types::{SeonEmailResp, SeonPhoneResp},
 };
 use crate::core::{
+    confidence,
     entity::EntityKind,
     module::{Module, ModuleCost},
     scan::{Target, TargetKind},
@@ -136,18 +137,35 @@ fn parse_email_response_matches_the_real_v3_schema() {
     // Red/green anchor for the whole fix: this MUST deserialize into real
     // (non-None) values, unlike the pre-fix structs which silently matched
     // nothing in this shape.
-    let r: SeonEmailResp = serde_json::from_str(REAL_EMAIL_RESPONSE).unwrap();
+    let r: SeonEmailResp = serde_json::from_str(REAL_EMAIL_RESPONSE).expect("should succeed");
     assert_eq!(r.success, Some(true));
-    let data = r.data.unwrap();
-    assert!((data.risk_scores.unwrap().global_network_score.unwrap() - 11.26).abs() < 0.01);
-    assert_eq!(data.email_domain_details.unwrap().disposable, Some(false));
+    let data = r.data.expect("should succeed");
+    assert!(
+        (data
+            .risk_scores
+            .expect("should succeed")
+            .global_network_score
+            .expect("should succeed")
+            - 11.26)
+            .abs()
+            < 0.01
+    );
     assert_eq!(
-        data.breach_details.unwrap().breaches.len(),
+        data.email_domain_details
+            .expect("should succeed")
+            .disposable,
+        Some(false)
+    );
+    assert_eq!(
+        data.breach_details.expect("should succeed").breaches.len(),
         2,
         "breach_details.breaches must deserialize — it didn't exist in the pre-fix struct at all"
     );
     assert_eq!(
-        data.associated_domain_registrations.unwrap().domains.len(),
+        data.associated_domain_registrations
+            .expect("should succeed")
+            .domains
+            .len(),
         1,
         "associated_domain_registrations must deserialize — genuinely new signal this fix recovers"
     );
@@ -155,10 +173,10 @@ fn parse_email_response_matches_the_real_v3_schema() {
 
 // ── Core: email entity building against the real schema ─────────────
 fn email(json: &str) -> Vec<crate::core::entity::Entity> {
-    let r: SeonEmailResp = serde_json::from_str(json).unwrap();
+    let r: SeonEmailResp = serde_json::from_str(json).expect("should succeed");
     build_email_entities(
         &Target::new(TargetKind::Email, "jane@acme.com"),
-        &r.data.unwrap(),
+        &r.data.expect("should succeed"),
         "s",
     )
 }
@@ -224,7 +242,10 @@ fn email_emits_a_domain_per_breach_with_breach_date_stamped() {
         .filter(|e| e.kind == EntityKind::Domain && e.has_tag(crate::core::tags::BREACH))
         .collect();
     assert_eq!(domains.len(), 2, "one Domain per breach entry");
-    let apollo = domains.iter().find(|d| d.value == "apollo.io").unwrap();
+    let apollo = domains
+        .iter()
+        .find(|d| d.value == "apollo.io")
+        .expect("should succeed");
     assert!(apollo.has_tag(crate::core::tags::BREACH_DERIVED));
     assert_eq!(
         apollo.evidence[0]
@@ -296,6 +317,28 @@ fn email_registrant_pii_skips_redacted_privacy_placeholders() {
 }
 
 #[test]
+fn email_registrant_pii_skips_godaddy_privacy_proxy_placeholders() {
+    // GoDaddy's default masked registrant ("Registration Private") and its proxy
+    // brand ("Domains By Proxy, LLC") contain none of the old local markers
+    // (privacy/redacted/data protected) — the too-narrow local guard let them
+    // through as a fabricated Person/Organisation. The shared whois guard lists
+    // both, so delegating to it rejects them while the real domain still surfaces.
+    let es = email(
+        r#"{"data":{"associated_domain_registrations":{"domains":[{
+            "domain_name":"masked2.example",
+            "full_name":"Registration Private",
+            "company_name":"Domains By Proxy, LLC"
+        }]}}}"#,
+    );
+    assert!(es.iter().all(|e| e.kind != EntityKind::Person));
+    assert!(es.iter().all(|e| e.kind != EntityKind::Organisation));
+    assert!(
+        es.iter()
+            .any(|e| e.kind == EntityKind::Domain && e.value == "masked2.example")
+    );
+}
+
+#[test]
 fn email_registrant_name_requires_a_real_full_name_not_a_handle() {
     // A single-token "name" (no space) is not admitted as a Person, mirroring
     // whois's own registrant-name guard.
@@ -306,6 +349,55 @@ fn email_registrant_name_requires_a_real_full_name_not_a_handle() {
         }]}}}"#,
     );
     assert!(es.iter().all(|e| e.kind != EntityKind::Person));
+}
+
+#[test]
+fn email_emits_its_own_domain_as_a_pivot() {
+    // `email_domain_details.domain` was previously only ever attached as an
+    // evidence attribute on the Email entity — this fix mints it as a
+    // first-class Domain entity too. The fixture's domain has custom:true,
+    // free:false, disposable:false, so it must pass the freemail/disposable
+    // guard.
+    let es = email(REAL_EMAIL_RESPONSE);
+    let domain = es
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain && e.value == "example.com")
+        .expect("email's own domain entity");
+    assert!(domain.has_tag("seon"));
+    let ev = &domain.evidence[0];
+    assert_eq!(
+        ev.attributes.get("registrar_name").map(String::as_str),
+        Some("NameCheap, Inc.")
+    );
+    assert_eq!(
+        ev.attributes.get("registered").map(String::as_str),
+        Some("true")
+    );
+}
+
+#[test]
+fn email_own_domain_pivot_skips_freemail_and_disposable() {
+    let es = email(
+        r#"{"data":{"email_domain_details":{
+            "domain":"gmail.com","free":true,"registered":true
+        }}}"#,
+    );
+    assert!(
+        es.iter()
+            .all(|e| !(e.kind == EntityKind::Domain && e.value == "gmail.com")),
+        "freemail domains must not be minted as a Domain pivot"
+    );
+
+    let es = email(
+        r#"{"data":{"email_domain_details":{
+            "domain":"tempmail.example","disposable":true,"registered":true
+        }}}"#,
+    );
+    assert!(
+        es.iter()
+            .all(|e| !(e.kind == EntityKind::Domain && e.value == "tempmail.example")),
+        "disposable domains must not be minted as a Domain pivot"
+    );
 }
 
 #[test]
@@ -383,31 +475,40 @@ fn parse_phone_response_matches_the_real_v2_schema() {
     // Red/green anchor for the phone-path leg of this fix: this MUST
     // deserialize into real (non-None) values, unlike the pre-fix structs
     // which silently matched nothing in this shape.
-    let r: SeonPhoneResp = serde_json::from_str(REAL_PHONE_RESPONSE).unwrap();
+    let r: SeonPhoneResp = serde_json::from_str(REAL_PHONE_RESPONSE).expect("should succeed");
     assert_eq!(r.success, Some(true));
-    let data = r.data.unwrap();
-    assert!((data.risk_scores.unwrap().global_network_score.unwrap() - 5.0).abs() < 0.01);
-    let pcd = data.provider_carrier_details.unwrap();
+    let data = r.data.expect("should succeed");
+    assert!(
+        (data
+            .risk_scores
+            .expect("should succeed")
+            .global_network_score
+            .expect("should succeed")
+            - 5.0)
+            .abs()
+            < 0.01
+    );
+    let pcd = data.provider_carrier_details.expect("should succeed");
     assert_eq!(pcd.carrier.as_deref(), Some("Telstra"));
     assert_eq!(pcd.phone_is_valid, Some(true));
-    let hlr = data.hlr_details.unwrap();
+    let hlr = data.hlr_details.expect("should succeed");
     assert_eq!(
         hlr.imsi.as_deref(),
         Some("505013873220912"),
         "hlr_details must deserialize — it didn't exist in the pre-fix struct at all"
     );
     assert_eq!(
-        data.cnam_details.unwrap().name.as_deref(),
+        data.cnam_details.expect("should succeed").name.as_deref(),
         Some("Jordan Avery"),
         "cnam_details must deserialize — genuinely new signal this fix recovers"
     );
 }
 
 fn phone(json: &str) -> Vec<crate::core::entity::Entity> {
-    let r: SeonPhoneResp = serde_json::from_str(json).unwrap();
+    let r: SeonPhoneResp = serde_json::from_str(json).expect("should succeed");
     build_phone_entities(
         &Target::new(TargetKind::Phone, "+61400000000"),
-        &r.data.unwrap(),
+        &r.data.expect("should succeed"),
         "s",
     )
 }
@@ -472,6 +573,27 @@ fn phone_emits_a_carrier_organisation_pivot() {
 }
 
 #[test]
+fn phone_emits_a_ported_carrier_organisation_pivot() {
+    // hlr_details.ported_carrier was previously only surfaced as evidence
+    // text — this fix routes it through the same carrier_entity() helper
+    // used for provider_carrier_details.carrier, so a number ported to a
+    // new network mints a second, distinguishable Organisation pivot.
+    let es = phone(REAL_PHONE_RESPONSE);
+    let orgs: Vec<&crate::core::entity::Entity> = es
+        .iter()
+        .filter(|e| e.kind == EntityKind::Organisation)
+        .collect();
+    assert_eq!(orgs[0].value, "Telstra", "provider carrier must stay first");
+    let ported = orgs
+        .iter()
+        .find(|e| e.value == "Optus")
+        .expect("ported-carrier Organisation entity");
+    assert!(ported.has_tag("carrier"));
+    assert!(ported.has_tag("ported-carrier"));
+    assert!((ported.confidence - 0.62).abs() < 1e-9);
+}
+
+#[test]
 fn phone_emits_a_cnam_person_pivot() {
     let es = phone(REAL_PHONE_RESPONSE);
     let person = es
@@ -481,7 +603,7 @@ fn phone_emits_a_cnam_person_pivot() {
     assert_eq!(person.value, "Jordan Avery");
     assert!(person.has_tag("cnam"));
     assert!(person.has_tag("pstn-subscriber"));
-    assert!((person.confidence - 0.55).abs() < 1e-9);
+    assert!((person.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
 }
 
 #[test]

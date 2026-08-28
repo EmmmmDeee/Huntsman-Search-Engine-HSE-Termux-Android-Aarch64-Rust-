@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
     #[test]
@@ -16,7 +17,7 @@ use super::*;
         assert_eq!(m.priority(), 30);
         assert_eq!(
             m.description(),
-            "GreyNoise IP reputation: internet noise and RIOT classification (paid v3/ip lookup when keyed)"
+            "GreyNoise IP reputation — classifies internet noise and RIOT status (paid v3/ip lookup when keyed)"
         );
         // Free by default (Community tier); a configured key upgrades to the
         // paid v3/ip lookup instead of gating the module off entirely.
@@ -34,7 +35,7 @@ use super::*;
             "link": "https://viz.greynoise.io/ip/8.8.8.8",
             "message": "Success"
         }"#;
-        let resp: CommunityResp = serde_json::from_str(json).unwrap();
+        let resp: CommunityResp = serde_json::from_str(json).expect("should succeed");
         assert!(resp.noise);
         assert!(resp.riot);
         assert_eq!(resp.classification.as_deref(), Some("benign"));
@@ -55,7 +56,7 @@ use super::*;
             "riot": false,
             "message": "IP not observed scanning the internet or contained in RIOT data set."
         }"#;
-        let resp: CommunityResp = serde_json::from_str(json).unwrap();
+        let resp: CommunityResp = serde_json::from_str(json).expect("should succeed");
         assert!(!resp.noise);
         assert!(!resp.riot);
         assert!(resp.classification.is_none());
@@ -73,7 +74,7 @@ use super::*;
             "name": "unknown",
             "link": "https://viz.greynoise.io/ip/71.6.135.131"
         }"#;
-        let resp: CommunityResp = serde_json::from_str(json).unwrap();
+        let resp: CommunityResp = serde_json::from_str(json).expect("should succeed");
         assert!(resp.noise);
         assert!(!resp.riot);
         assert_eq!(resp.classification.as_deref(), Some("malicious"));
@@ -102,8 +103,8 @@ use super::*;
         assert_eq!(ents.len(), 2);
 
         let subject = of_kind(&ents, EntityKind::IpAddress).expect("subject IP entity");
-        // benign → 0.70
-        assert!((subject.confidence - 0.70).abs() < 1e-9);
+        // benign → confidence::HIGH_PLUS
+        assert!((subject.confidence - confidence::HIGH_PLUS).abs() < 1e-9);
         assert!(subject.has_tag("greynoise-noise"));
         assert!(subject.has_tag("greynoise-riot"));
         assert!(subject.has_tag("greynoise-benign"));
@@ -133,8 +134,8 @@ use super::*;
             r#"{ "noise": true, "riot": false, "classification": "malicious" }"#,
         );
         let subject = build_entities(&body, "71.6.135.131", "s").remove(0);
-        // malicious → 0.80
-        assert!((subject.confidence - 0.80).abs() < 1e-9);
+        // malicious → confidence::HIGH_PLUSPLUS
+        assert!((subject.confidence - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
         assert!(subject.has_tag(crate::core::tags::MALICIOUS));
         assert!(subject.has_tag("greynoise-malicious"));
         assert!(subject.has_tag("greynoise-noise"));
@@ -155,8 +156,8 @@ use super::*;
     fn noise_only_without_classification_is_unknown_band() {
         let body = resp(r#"{ "noise": true, "riot": false }"#);
         let subject = build_entities(&body, "1.2.3.4", "s").remove(0);
-        // No classification → 0.55 and the unknown tag.
-        assert!((subject.confidence - 0.55).abs() < 1e-9);
+        // No classification → confidence::MEDIUM_HIGH and the unknown tag.
+        assert!((subject.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
         assert!(subject.has_tag("greynoise-noise"));
         assert!(subject.has_tag("greynoise-unknown"));
         // Evidence falls back to the literal "unknown" classification.
@@ -226,7 +227,7 @@ use super::*;
             "name": "unknown",
             "link": "https://viz.greynoise.io/ip/71.6.135.131"
         }"#;
-        let resp: PaidResp = serde_json::from_str(json).unwrap();
+        let resp: PaidResp = serde_json::from_str(json).expect("should succeed");
         assert!(resp.seen);
         assert!(resp.noise);
         assert!(!resp.riot);
@@ -243,7 +244,7 @@ use super::*;
             r#"{ "seen": true, "noise": true, "riot": false, "classification": "malicious" }"#,
         );
         let subject = build_paid_entities(&body, "71.6.135.131", "s").remove(0);
-        assert!((subject.confidence - 0.80).abs() < 1e-9);
+        assert!((subject.confidence - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
         assert!(subject.has_tag("greynoise-seen"));
         assert!(subject.has_tag("greynoise-malicious"));
         assert!(subject.has_tag(crate::core::tags::MALICIOUS));
@@ -258,8 +259,8 @@ use super::*;
         let ents = build_paid_entities(&body, "9.9.9.9", "s");
         assert_eq!(ents.len(), 1, "a seen-only record must still surface: {ents:?}");
         let subject = &ents[0];
-        // No classification → 0.55 unknown band, same as the community path.
-        assert!((subject.confidence - 0.55).abs() < 1e-9);
+        // No classification → confidence::MEDIUM_HIGH unknown band, same as the community path.
+        assert!((subject.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
         assert!(subject.has_tag("greynoise-seen"));
         assert!(subject.has_tag("greynoise-unknown"));
     }
@@ -283,3 +284,24 @@ use super::*;
             .expect("operator Organisation");
         assert_eq!(org.value, "Google Public DNS");
     }
+
+#[test]
+fn last_seen_recency_flows_into_evidence() {
+    let body = resp(
+        r#"{
+            "ip": "9.9.9.9",
+            "noise": true,
+            "riot": false,
+            "classification": "malicious",
+            "last_seen": "2026-01-02"
+        }"#,
+    );
+    let ents = build_entities(&body, "9.9.9.9", "s");
+    let subject = of_kind(&ents, EntityKind::IpAddress).expect("subject IP entity");
+    let ev = &subject.evidence[0];
+    assert_eq!(
+        ev.attributes.get("last_seen").map(String::as_str),
+        Some("2026-01-02"),
+        "GreyNoise last_seen recency must surface in evidence"
+    );
+}

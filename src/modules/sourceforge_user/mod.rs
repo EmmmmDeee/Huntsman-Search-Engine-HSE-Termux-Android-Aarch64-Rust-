@@ -32,6 +32,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -128,7 +129,7 @@ pub(super) fn build_entities(user: SfUser, scan_id: &str) -> Vec<Entity> {
         .iter()
         .find(|d| d.username.eq_ignore_ascii_case(handle))
         .map(|d| d.name.as_str())
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.70, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::HIGH_PLUS, scan_id)
     {
         p.tag("sourceforge");
         p.tag("derived");
@@ -146,7 +147,8 @@ pub(super) fn build_entities(user: SfUser, scan_id: &str) -> Vec<Entity> {
     if let Some(site) = user.external_homepage.as_deref()
         && !site.trim().is_empty()
     {
-        for mut e in profile_kit::website_url_and_domain(site, 0.70, 0.63, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(site, confidence::HIGH_PLUS, 0.63, scan_id)
+        {
             e.tag("sourceforge");
             if e.kind == EntityKind::Domain {
                 e.tag("derived");
@@ -162,7 +164,7 @@ pub(super) fn build_entities(user: SfUser, scan_id: &str) -> Vec<Entity> {
         if account.is_empty() || !account.starts_with("http") {
             continue;
         }
-        let mut s = Entity::new(EntityKind::Url, account, 0.62, scan_id);
+        let mut s = Entity::new(EntityKind::Url, account, confidence::NOTABLE, scan_id);
         s.tag("sourceforge");
         s.tag("social-link");
         let network = social.socialnetwork.trim();
@@ -188,7 +190,7 @@ impl Module for SourceforgeUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "SourceForge profile: real name, homepage, social links, account age via SF REST API (free)"
+        "SourceForge profile recon — harvests real name, homepage, social links, and account age via SF REST API (free)"
     }
     fn priority(&self) -> u8 {
         94

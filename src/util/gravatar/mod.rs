@@ -59,6 +59,41 @@ pub struct Entry {
     pub urls: Vec<UrlEntry>,
     #[serde(default)]
     pub photos: Vec<PhotoEntry>,
+    /// Additional owner-published email addresses (distinct from the hashed
+    /// lookup email) — direct contact pivots the struct previously dropped.
+    #[serde(default)]
+    pub emails: Vec<GravatarEmail>,
+    /// Employer, as self-reported (`"Automattic"`) — an Organisation pivot.
+    #[serde(default)]
+    pub company: Option<String>,
+    /// Job title / role (`"Lead, WooCommerce"`). NB: snake_case in the live JSON.
+    #[serde(default, rename = "job_title")]
+    pub job_title: Option<String>,
+    /// Owner-listed contact channels (`{type:"contactform", value:"https://…"}`,
+    /// phone, …).
+    #[serde(default, rename = "contactInfo")]
+    pub contact_info: Vec<ContactItem>,
+    /// Self-published pronouns (`"he/him"`).
+    #[serde(default)]
+    pub pronouns: Option<String>,
+}
+
+/// An owner-published email address on the profile.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct GravatarEmail {
+    pub value: Option<String>,
+    /// Gravatar ships this as the STRING `"true"`/`"false"`.
+    pub primary: Option<String>,
+}
+
+/// A contact channel the owner listed (`type` is `contactform`, `phone`, …).
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct ContactItem {
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    pub value: Option<String>,
 }
 
 /// The profile owner's name, in the several shapes Gravatar exposes.

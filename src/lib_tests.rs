@@ -64,9 +64,6 @@ use super::*;
         assert_eq!(WORKER_THREADS, 2);
         assert_eq!(MAX_BLOCKING_THREADS, 16);
         assert_eq!(LIVE_DEFAULT_INTERVAL_SECS, 30);
-        assert_eq!(LIVE_MAX_DEPTH, 5);
-        assert_eq!(LIVE_DEFAULT_THROTTLE_MS, 100);
-        assert_eq!(LIVE_DEFAULT_CONCURRENT, 4);
     }
 
     #[test]

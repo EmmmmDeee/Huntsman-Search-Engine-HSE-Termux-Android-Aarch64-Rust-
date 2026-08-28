@@ -52,7 +52,7 @@ impl Module for PayId {
     }
 
     fn description(&self) -> &'static str {
-        "Recognise PayID-eligible identifiers (email/phone/ABN) as NPP confirm-payee name pivots; the ABN PayID resolves to a name via the public register"
+        "PayID recon — flags PayID-eligible identifiers (email/phone/ABN) as NPP confirm-payee name pivots; the ABN PayID resolves to a name via the public register"
     }
 
     fn priority(&self) -> u8 {

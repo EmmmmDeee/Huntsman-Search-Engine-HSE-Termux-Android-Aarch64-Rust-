@@ -30,11 +30,99 @@ use huntsman_search_engine::{
         engine::ScanEngine,
         entity::{Entity, EntityKind},
         error::Result,
+        event::{Event, EventKind},
         module::{Module, ModuleContext, ModuleResult},
         scan::{Scan, ScanOptions, ScanStatus, Target, TargetKind},
     },
     storage::Store,
 };
+
+/// A minimal named mock: emits one entity on every dispatch so a *run* is
+/// observable (a `ModuleDone`), and `accepts` everything. Used by the
+/// capability-aware-dispatch proof to distinguish a module that ran from one
+/// that was quarantined.
+struct NamedMock(&'static str);
+
+#[async_trait]
+impl Module for NamedMock {
+    fn name(&self) -> &'static str {
+        self.0
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, _t: &Target) -> bool {
+        true
+    }
+    async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        // A terminal Username entity: at depth 0 it never expands, so the graph
+        // stays trivial and the proof is about dispatch, not closure.
+        r.push(Entity::new(
+            EntityKind::Username,
+            format!("{}_ran", self.0),
+            0.5,
+            &ctx.scan_id,
+        ));
+        Ok(r)
+    }
+}
+
+/// Seed the persisted health log so `module` reads as **yield-drifted**: one
+/// real yield (proving it was ever capable) followed by `YIELD_DRIFT_THRESHOLD`
+/// trailing zero-yield completions (the silent-parser-break signature). Inserted
+/// oldest→newest so the newest-first health aggregation sees the zero streak.
+fn seed_yield_drift(store: &Store, module: &str) {
+    let evs = vec![
+        Event::new(
+            "prior",
+            EventKind::ModuleDone {
+                module: module.to_string(),
+                found: 5,
+            },
+        ),
+        Event::new(
+            "prior",
+            EventKind::ModuleDone {
+                module: module.to_string(),
+                found: 0,
+            },
+        ),
+        Event::new(
+            "prior",
+            EventKind::ModuleDone {
+                module: module.to_string(),
+                found: 0,
+            },
+        ),
+        Event::new(
+            "prior",
+            EventKind::ModuleDone {
+                module: module.to_string(),
+                found: 0,
+            },
+        ),
+    ];
+    store.insert_events_batch(&evs).unwrap();
+}
+
+/// Names of the modules a scan actually dispatched (`ModuleStart`), and the
+/// reason each skipped module was skipped (`ModuleSkipped`).
+fn dispatch_outcome(store: &Store, sid: &str) -> (Vec<String>, Vec<(String, String)>) {
+    let events = store.events_for_scan(sid).unwrap();
+    let mut started = Vec::new();
+    let mut skipped = Vec::new();
+    for e in &events {
+        match &e.kind {
+            EventKind::ModuleStart { module } => started.push(module.clone()),
+            EventKind::ModuleSkipped { module, reason } => {
+                skipped.push((module.clone(), reason.clone()));
+            }
+            _ => {}
+        }
+    }
+    (started, skipped)
+}
 
 /// A deterministic mock module: when dispatched on a target whose value is a
 /// key in `edges`, it emits exactly the listed entities. Offline, synchronous,
@@ -312,5 +400,89 @@ async fn wall_time_budget_stops_promptly_and_preserves_findings() {
     assert!(
         !store.entities_for_scan(&sid).unwrap().is_empty(),
         "findings collected before the deadline must be persisted, not lost"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capability_aware_dispatch_quarantines_a_dead_module_and_runs_the_healthy_one() {
+    // Two modules that both accept the seed. `dead_mod` reads as yield-drifted
+    // from the persisted health log (a broken parser); `live_mod` has a clean
+    // history. A comprehensive scan with `skip_dead_modules` on must skip
+    // `dead_mod` at the dispatch gate and run `live_mod` — spending the slot on
+    // the source that still works.
+    let (engine, store, sid, target, ctx) = setup(
+        vec![
+            Arc::new(NamedMock("dead_mod")),
+            Arc::new(NamedMock("live_mod")),
+        ],
+        "quarantine",
+        TargetKind::Username,
+        "testsubject",
+    );
+    seed_yield_drift(&store, "dead_mod");
+
+    // Comprehensive (no allowlist), depth 0 (seed round only — the proof is
+    // about dispatch, not expansion), capability-aware dispatch ON (the library
+    // Default is off, so set it explicitly, as the API/CLI product path does).
+    let opts = ScanOptions {
+        depth: 0,
+        max_concurrent: 0,
+        skip_dead_modules: true,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    let result = engine.run(scan, target, ctx).await.unwrap();
+    assert_eq!(result.status, ScanStatus::Complete);
+
+    let (started, skipped) = dispatch_outcome(&store, &sid);
+    assert!(
+        started.iter().any(|m| m == "live_mod"),
+        "the healthy module must run; started = {started:?}"
+    );
+    assert!(
+        !started.iter().any(|m| m == "dead_mod"),
+        "the drifted module must NOT run; started = {started:?}"
+    );
+    let dead_skip = skipped.iter().find(|(m, _)| m == "dead_mod");
+    let (_, reason) = dead_skip.expect("dead_mod must be skipped with a reason");
+    assert!(
+        reason.contains("capability-quarantined"),
+        "dead_mod must be skipped for capability quarantine, got: {reason}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capability_aware_dispatch_off_runs_every_module_even_a_drifted_one() {
+    // The opt-out proof: with `skip_dead_modules` off (the library Default, and
+    // what `--no-skip-dead-modules` / `--full` produce), a drifted module is NOT
+    // quarantined — the operator gets every module regardless of health.
+    let (engine, store, sid, target, ctx) = setup(
+        vec![
+            Arc::new(NamedMock("dead_mod")),
+            Arc::new(NamedMock("live_mod")),
+        ],
+        "no-quarantine",
+        TargetKind::Username,
+        "testsubject",
+    );
+    seed_yield_drift(&store, "dead_mod");
+
+    let opts = ScanOptions {
+        depth: 0,
+        max_concurrent: 0,
+        skip_dead_modules: false,
+        ..Default::default()
+    };
+    let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
+    engine.run(scan, target, ctx).await.unwrap();
+
+    let (started, _skipped) = dispatch_outcome(&store, &sid);
+    assert!(
+        started.iter().any(|m| m == "dead_mod"),
+        "with the flag off, even a drifted module must run; started = {started:?}"
+    );
+    assert!(
+        started.iter().any(|m| m == "live_mod"),
+        "the healthy module must run too; started = {started:?}"
     );
 }

@@ -1,23 +1,40 @@
-//! Huntsman Search Engine (HSE) — prototype.
+//! Huntsman Search Engine (HSE) — an all-source OSINT / GEOINT / NETINT
+//! reconnaissance engine in the GhostSec tradition: SpiderFoot-inspired breadth
+//! without the daemon or the footprint.
 //!
-//! Lightweight pure-Rust OSINT/GEOINT scaffold designed to run inside Termux
-//! on aarch64 Android with no root. Boots either as a CLI (`hse scan|live|
-//! modules|doctor`) or as `hse serve` — an axum HTTP server with a minimal
-//! hand-rolled SPA bound to `127.0.0.1` for use from Chrome / Firefox on
-//! the device.
+//! Pure-Rust and keyless-first, forged to run entirely inside Termux on aarch64
+//! Android with no root. Boots either as a CLI (`hse scan|live|modules|doctor`)
+//! or as `hse serve` — an axum HTTP server with a minimal hand-rolled SPA bound
+//! to `127.0.0.1` for use from Chrome / Firefox on the device.
 //!
 //! Architecture invariants (do not change):
 //!   - `#![forbid(unsafe_code)]`
 //!   - No native-TLS or C-linked deps (rustls + bundled-sqlite only)
 //!   - GREATEST-semantics entity merge
 //!   - SHA-256 deterministic entity UIDs
-//!   - Runtime AI-independence: NO AI / ML / LLM / cloud-inference / agent /
-//!     vector-DB / embedding dependency is compiled in. Every runtime capability
-//!     is deterministic, documented Rust, so findings reproduce identically on
-//!     Termux aarch64 (no root), Linux, and CI with no AI or network-inference
-//!     available. AI is a development-time accelerator only. Enforced by the
-//!     `runtime_carries_no_ai_ml_inference_dependency` guard in
-//!     `tests/architecture.rs`; full charter in `docs/RUNTIME_INDEPENDENCE.md`.
+//!   - Runtime AI-independence (deterministic core): the BFS scan engine, module
+//!     dispatch, correlator, and exporters — everything that determines what a
+//!     scan finds and how it is scored — carry NO AI / ML / LLM / cloud-inference
+//!     / agent / vector-DB / embedding dependency and never call one. A scan's
+//!     findings reproduce identically on Termux aarch64 (no root), Linux, and CI
+//!     with no AI or network-inference available, and no ML/LLM SDK crate ever
+//!     enters the dependency graph — enforced by
+//!     `runtime_carries_no_ai_ml_inference_dependency` in `tests/architecture.rs`.
+//!     `src/ai/` (the `hse analyze` subcommand and the separate `hse-ai-daemon`
+//!     binary) is a deliberate, narrow, fully opt-in exception to the letter of
+//!     that principle, not a silent violation of it: it calls an operator-run
+//!     local Ollama instance over plain HTTP (no new dependency — reqwest/serde
+//!     are already unconditional deps) to add a downstream natural-language
+//!     enrichment to an ALREADY-COMPLETED scan. It never runs during a scan,
+//!     never feeds back into entity/correlation/export output, and does nothing
+//!     unless both explicitly armed (`feature.ai_daemon`, off by default) and
+//!     Ollama is actually reachable — an unreachable/misconfigured Ollama is a
+//!     surfaced `Err`, never a silent no-op or a fabricated result.
+//!     `core_does_not_import_ai` in `tests/architecture.rs` mechanically
+//!     enforces that `src/core/*` (engine, scan dispatch, correlator, module
+//!     registry, storage port) never references `src/ai`, so this exception is
+//!     structurally incapable of spreading into the deterministic core. Both
+//!     guards together are the authoritative statement of the rule.
 
 #![forbid(unsafe_code)]
 // HSE is an *application* crate: its library is read by the maintainer with
@@ -30,6 +47,52 @@
 #![allow(rustdoc::private_intra_doc_links)]
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The exact git commit this binary was built from, or `"unknown"` when the
+/// build had no `.git` and no `HSE_BUILD_SHA` override (see `build.rs`).
+///
+/// [`VERSION`] cannot identify a build: `Cargo.toml`'s version changes only on a
+/// deliberate bump, so every commit merged between two bumps reports the same
+/// version as the release. `install.sh` and `hse update` compare THIS against the
+/// revision they were asked to install, which is what makes "install the latest
+/// main" mean the latest main commit rather than the latest release tag.
+pub const BUILD_SHA: &str = env!("HSE_GIT_SHA");
+
+/// Whether the working tree carried uncommitted tracked changes at build time:
+/// `"0"` clean, `"1"` dirty, `"unknown"` when it could not be determined.
+///
+/// A dirty build is NOT the revision [`BUILD_SHA`] names, so the updater treats
+/// it as unverifiable rather than as a match.
+pub const BUILD_DIRTY: &str = env!("HSE_GIT_DIRTY");
+
+/// Whether [`BUILD_SHA`] is a usable commit identifier — i.e. resolved, and from
+/// a clean tree. A dirty or unknown build cannot be matched against a requested
+/// revision, so callers must fall back to building from source.
+#[must_use]
+pub fn build_sha_is_verifiable() -> bool {
+    BUILD_SHA.len() == 40 && BUILD_SHA.chars().all(|c| c.is_ascii_hexdigit()) && BUILD_DIRTY == "0"
+}
+
+/// Human-readable build identity: `"1.40.0 (b6389ba)"`, with `-dirty` appended
+/// for a modified tree and the SHA omitted entirely when unknown.
+///
+/// Single-sourced so `hse --version`, `/api/v1/version`, the diagnostics bundle
+/// and the installer's verification step all describe a build the same way.
+/// Returns `&'static str` (computed once) because clap's `version =` needs a
+/// borrow that outlives the parser.
+#[must_use]
+pub fn build_id() -> &'static str {
+    static BUILD_ID: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        let short = &BUILD_SHA[..7.min(BUILD_SHA.len())];
+        match (BUILD_SHA, BUILD_DIRTY) {
+            ("unknown", _) => VERSION.to_string(),
+            (_, "1") => format!("{VERSION} ({short}-dirty)"),
+            (_, "0") => format!("{VERSION} ({short})"),
+            _ => format!("{VERSION} ({short}-unverified)"),
+        }
+    });
+    &BUILD_ID
+}
 
 /// Compile-time inventory of every Rust source file in `src/` — generated by
 /// `build.rs` (sorted, deterministic). Lets the debug bundle report the complete
@@ -56,13 +119,17 @@ pub const WORKER_THREADS: usize = 2;
 /// realistic workload. Applied in `main` via a hand-built runtime.
 pub const MAX_BLOCKING_THREADS: usize = 16;
 
-// Live-mode tuning constants (used from v0.5+):
+/// Default seconds between `hse live` iterations (the `--interval` default and
+/// the API's live-request fallback). The only live-mode tuning constant that is
+/// actually wired: `--depth`/`--throttle` default to 0 (seed-only, un-throttled)
+/// per iteration by design, and there is no concurrency knob — the former
+/// `LIVE_MAX_DEPTH`/`LIVE_DEFAULT_THROTTLE_MS`/`LIVE_DEFAULT_CONCURRENT` were
+/// aspirational values that never matched a real default and never had a reader.
 pub const LIVE_DEFAULT_INTERVAL_SECS: u64 = 30;
-pub const LIVE_MAX_DEPTH: u32 = 5;
-pub const LIVE_DEFAULT_THROTTLE_MS: u64 = 100;
-pub const LIVE_DEFAULT_CONCURRENT: usize = 4;
 
+pub mod ai;
 pub mod api;
+pub mod app;
 pub mod audit;
 pub mod cli;
 pub mod core;
@@ -80,18 +147,15 @@ pub fn is_termux() -> bool {
 /// Resolve the default database path, creating the parent directory if needed.
 ///
 /// Termux: `$HOME/.huntsman/huntsman.db` (typically under `/data/data/com.termux/files/home`).
-/// Falls back to `./huntsman.db` if `$HOME` is unset.
+/// Falls back to `./.huntsman/huntsman.db` if `$HOME` is unset (see
+/// [`crate::util::paths::huntsman_dir`] — the layout stays together under
+/// `.huntsman` rather than scattering a bare file into the CWD).
 pub fn default_db_path() -> String {
-    std::env::var("HOME").map_or_else(
-        |_| "huntsman.db".to_string(),
-        |home| {
-            let dir = std::path::Path::new(&home).join(".huntsman");
-            // 0700 so the store + dossiers + key pool under ~/.huntsman aren't
-            // world-listable on a shared host (PROBLEM_TREE §7 S3).
-            let _ = crate::util::atomic_file::create_dir_private(&dir);
-            dir.join("huntsman.db").to_string_lossy().into_owned()
-        },
-    )
+    // `~/.huntsman` created 0700 (owner-only) by `paths::data_file` so the store +
+    // dossiers + key pool under it aren't world-listable (PROBLEM_TREE §7 S3).
+    crate::util::paths::data_file("huntsman.db")
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[cfg(test)]

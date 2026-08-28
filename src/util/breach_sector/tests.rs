@@ -84,6 +84,21 @@ fn maps_known_brands_from_the_real_corpus_by_bare_domain_or_tag() {
 }
 
 #[test]
+fn resolves_brands_with_a_glued_breach_descriptor() {
+    // Suffix glued: brand + descriptor without separator.
+    assert_eq!(source_sector("linkedinscrape-2021"), Some("tech"));
+    assert_eq!(source_sector("adobedump"), Some("tech"));
+    assert_eq!(source_sector("tumblrleak"), Some("social"));
+    // Prefix glued: descriptor + brand without separator.
+    assert_eq!(source_sector("combolinkedin"), Some("tech"));
+    // No-bleed: descriptor must account for the ENTIRE non-needle suffix.
+    assert_eq!(source_sector("zyngamania.com"), None); // "mania" not a descriptor
+    assert_eq!(source_sector("flingster.com"), None); // "ster" not a descriptor
+    // Real corpus miss that motivated this fix (B2B data broker, not a brand).
+    assert_eq!(source_sector("pureincubation.com"), None);
+}
+
+#[test]
 fn maps_other_structured_categories() {
     assert_eq!(
         source_sector("9001_ACME_COM_10M_FINANCE_012020"),

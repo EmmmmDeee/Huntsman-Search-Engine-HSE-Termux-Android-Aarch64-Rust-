@@ -1,7 +1,7 @@
 //! Wayback Machine CDX API — historical snapshots of a domain, plus
 //! historical contact extraction from archived pages.
 //!
-//! Free, no key. Two CDX queries are issued:
+//! Free, no key. Three CDX queries are issued:
 //!
 //! 1. **Snapshot summary** (`fl=timestamp,statuscode`, `collapse=urlkey`,
 //!    `limit=1000`) — records the archived-URL count and the
@@ -21,11 +21,18 @@
 //!    Wirecard, OCCRP shell companies) where the current site shows
 //!    different or no contacts but earlier versions are preserved in
 //!    the archive, applied here to credentials instead of just contacts.
+//!
+//! 3. **Historical subdomain recovery** (`url=*.{domain}`, `fl=original`,
+//!    `collapse=urlkey`) — the CDX domain-match pass. Reduces every archived
+//!    URL to its host and emits the distinct DECOMMISSIONED subdomains no live
+//!    CT/DNS source will ever return (they no longer resolve) as `Domain`
+//!    pivots tagged `archived`/`wayback-historical`. No page fetches.
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -40,6 +47,11 @@ const SRC: &str = "wayback";
 /// Maximum archived contact-page snapshots to fetch per scan.
 /// Each fetch is one network round-trip to archive.org.
 const MAX_CONTACT_SNAPSHOTS: usize = 10;
+
+/// Cap on historical subdomains surfaced from the CDX domain-match pass. A
+/// long-lived domain can accrue hundreds of archived hostnames; this bounds
+/// graph expansion while still recovering the salient decommissioned names.
+const MAX_HISTORICAL_SUBDOMAINS: usize = 60;
 
 /// Body read cap per snapshot fetch. 32 KB is more than enough for a
 /// contact page; anything larger is almost certainly a binary or video.
@@ -98,8 +110,6 @@ fn build_entity(kind: EntityKind, value: &str, rows: &[Row], scan_id: &str) -> O
         10,
     );
 
-    let mut entity = Entity::new(kind, value, 0.80, scan_id);
-    entity.tag("archived");
     let mut ev = Evidence::new(
         SRC,
         format!("Wayback Machine: {count} archived snapshot(s)"),
@@ -119,8 +129,54 @@ fn build_entity(kind: EntityKind, value: &str, rows: &[Row], scan_id: &str) -> O
     if !status_dist.is_empty() {
         ev = ev.with_attr("status_distribution", &status_dist);
     }
-    entity.add_evidence(ev);
-    Some(entity)
+    Some(
+        Entity::builder(kind, value, confidence::HIGH_PLUSPLUS, scan_id)
+            .tag("archived")
+            .evidence(ev)
+            .build(),
+    )
+}
+
+/// Recover historical subdomains of `domain` from a CDX domain-match response
+/// (`fl=original`). **Pure** (no network/IO): each row's original URL is reduced
+/// to its host, kept only when it is a real subdomain of `domain` (the apex echo
+/// is dropped), then deduplicated and sorted (BTreeSet) so the output is stable
+/// across runs, and capped at [`MAX_HISTORICAL_SUBDOMAINS`].
+///
+/// Live CT/DNS sources only return names that still resolve; the Wayback
+/// domain-match is the canonical way to recover DECOMMISSIONED subdomains no
+/// live source will ever surface — sourced from real archived hostnames, never
+/// synthesised. The first row is the CDX column header and is skipped.
+fn historical_subdomains(rows: &[Row], domain: &str, scan_id: &str) -> Vec<Entity> {
+    let domain = domain.trim().to_lowercase();
+    if domain.is_empty() {
+        return Vec::new();
+    }
+    let suffix = format!(".{domain}");
+    let hosts: std::collections::BTreeSet<String> = rows
+        .iter()
+        .skip(1) // CDX column header
+        .filter_map(|r| r.0.first())
+        .filter_map(|orig| crate::util::url_util::host_from_url(orig))
+        // A real subdomain of the seed — never the apex echo, never an
+        // unrelated host the query might return.
+        .filter(|h| h != &domain && h.ends_with(&suffix))
+        .collect();
+
+    hosts
+        .into_iter()
+        .take(MAX_HISTORICAL_SUBDOMAINS)
+        .map(|host| {
+            let mut e = Entity::new(EntityKind::Domain, &host, confidence::MEDIUM_HIGH, scan_id);
+            e.tag("archived");
+            e.tag("wayback-historical");
+            e.add_evidence(Evidence::new(
+                SRC,
+                format!("Historical subdomain of {domain} recovered from the Wayback CDX archive"),
+            ));
+            e
+        })
+        .collect()
 }
 
 /// True when `url` contains a path keyword associated with contact / team
@@ -141,55 +197,6 @@ fn is_contact_path(url: &str) -> bool {
 /// response without banner injection or URL rewriting.
 fn archive_url(timestamp: &str, original: &str) -> String {
     format!("https://web.archive.org/web/{timestamp}id_/{original}")
-}
-
-/// Select the contact-adjacent snapshots to mine from CDX rows, returning the
-/// capped `(timestamp, original_url)` selection **and** the total number of
-/// contact-adjacent snapshots the archive actually holds (before the
-/// [`MAX_CONTACT_SNAPSHOTS`] cap). **Pure** (no network/IO). The first CDX row
-/// is the column header and is skipped. The total lets the caller signal
-/// truncation when more archived contact pages exist than were mined — each
-/// un-mined page is potential email/phone/leaked-key evidence never surfaced.
-fn select_contact_snapshots(rows: &[Row]) -> (Vec<(String, String)>, usize) {
-    let all: Vec<(String, String)> = rows
-        .iter()
-        .skip(1)
-        .filter_map(|r| {
-            let ts = r.0.first()?.clone();
-            let orig = r.0.get(1)?.clone();
-            is_contact_path(&orig).then_some((ts, orig))
-        })
-        .collect();
-    let total = all.len();
-    let selected = all.into_iter().take(MAX_CONTACT_SNAPSHOTS).collect();
-    (selected, total)
-}
-
-/// Mark contact-mining truncation on the archive seed entity. **Pure** (no IO):
-/// when the archive holds more contact-adjacent snapshots than the
-/// [`MAX_CONTACT_SNAPSHOTS`] mining cap, tag the seed `truncated` and record the
-/// true total in a dedicated evidence line, so the operator knows more archived
-/// contact pages exist than were mined for emails/phones/leaked keys. A no-op
-/// when the total is within the cap.
-fn mark_contact_truncation(seed: &mut Entity, total_contact_snapshots: usize) {
-    if total_contact_snapshots <= MAX_CONTACT_SNAPSHOTS {
-        return;
-    }
-    seed.tag("truncated");
-    seed.add_evidence(
-        Evidence::new(
-            SRC,
-            format!(
-                "Wayback contact mining capped: {total_contact_snapshots} archived contact page(s) available, mined {MAX_CONTACT_SNAPSHOTS}"
-            ),
-        )
-        .with_attr(
-            "total_contact_snapshots",
-            total_contact_snapshots.to_string(),
-        )
-        .with_attr("contact_snapshots_mined", MAX_CONTACT_SNAPSHOTS.to_string())
-        .with_attr("contact_snapshots_capped", "true"),
-    );
 }
 
 /// Scan an already-fetched archived-page body for a leaked API key via the
@@ -226,6 +233,42 @@ fn mine_keys_from_body(
     }
 }
 
+/// Build the `Url` entity for a freshly-discovered archived contact-adjacent
+/// page, or `None` when `original_url` was already emitted this scan
+/// (dedup tracked via `seen_urls`). Confidence is modest (confidence::MEDIUM_HIGH) — this only
+/// proves the page was once archived, not that it is live today. **Pure**
+/// (no network/IO), so — like `mine_keys_from_body` — it is exercised
+/// directly by tests without mocking HTTP.
+fn mine_url_entity(
+    seen_urls: &mut std::collections::HashSet<String>,
+    original_url: &str,
+    fetch_url: &str,
+    ts_iso: &str,
+    scan_id: &str,
+) -> Option<Entity> {
+    if !seen_urls.insert(original_url.to_string()) {
+        return None;
+    }
+    let mut u = Entity::new(
+        EntityKind::Url,
+        original_url,
+        confidence::MEDIUM_HIGH,
+        scan_id,
+    );
+    u.tag("wayback-historical");
+    u.tag(crate::core::tags::SEARCH_DISCOVERED);
+    let ev = Evidence::new(
+        SRC,
+        format!(
+            "[wayback] contact-adjacent page discovered via archived snapshot — {original_url}"
+        ),
+    )
+    .with_attr("archive_url", fetch_url)
+    .with_attr("snapshot_timestamp_iso", ts_iso);
+    u.add_evidence(ev);
+    Some(u)
+}
+
 /// Fetch archived contact-adjacent pages for `domain` and extract
 /// historical email addresses and phone numbers with temporal metadata.
 /// Also runs every fetched body through the universal key-harvest
@@ -233,9 +276,12 @@ fn mine_keys_from_body(
 /// `key_pool` (no separate entity/fetch; matches the `web_crawler`/
 /// `username_search` treatment of their own fetched bodies).
 ///
-/// Returns an empty vec when the CDX query fails or no contact pages
-/// are archived — failures here must not abort the main snapshot query.
-async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> (Vec<Entity>, usize) {
+/// Returns an empty vec both when the CDX query fails and when no contact
+/// pages are archived — failures here must not abort the main snapshot query,
+/// which has already produced its own evidence by this point. The two cases
+/// share a return value by design, so the failing one is logged to keep them
+/// distinguishable in diagnostics.
+async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> Vec<Entity> {
     let cdx_url = format!(
         "https://web.archive.org/cdx/search/cdx?url={}/*&output=json\
          &fl=timestamp,original&filter=statuscode:200\
@@ -245,20 +291,45 @@ async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> (Vec
 
     let rows: Vec<Row> = match fetch_json(&ctx.http, SRC, &cdx_url).await {
         Ok(r) => r,
-        Err(_) => return (Vec::new(), 0),
+        // Deliberately still an empty vec — see the doc above; a failure here
+        // must not discard the primary snapshot findings. But it is logged so
+        // an outage stays distinguishable from "no contact pages archived",
+        // which is the same empty return value.
+        Err(e) => {
+            tracing::debug!(
+                module = SRC,
+                domain,
+                error = %e,
+                "wayback: contact-mining CDX query failed; continuing without contact enrichment"
+            );
+            return Vec::new();
+        }
     };
 
-    // Skip header row, filter to contact-adjacent paths, cap the fetch set —
-    // but keep the true total so the caller can signal truncation.
-    let (contact_snapshots, total_contact_snapshots) = select_contact_snapshots(&rows);
+    // Skip header row, filter to contact-adjacent paths, take the cap.
+    let contact_snapshots: Vec<(String, String)> = rows
+        .iter()
+        .skip(1)
+        .filter_map(|r| {
+            let ts = r.0.first()?.clone();
+            let orig = r.0.get(1)?.clone();
+            if is_contact_path(&orig) {
+                Some((ts, orig))
+            } else {
+                None
+            }
+        })
+        .take(MAX_CONTACT_SNAPSHOTS)
+        .collect();
 
     if contact_snapshots.is_empty() {
-        return (Vec::new(), total_contact_snapshots);
+        return Vec::new();
     }
 
     let mut entities: Vec<Entity> = Vec::new();
     let mut seen_emails: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_phones: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
     let key_pool = crate::util::key_pool::global_pool();
 
     for (timestamp, original_url) in &contact_snapshots {
@@ -285,12 +356,17 @@ async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> (Vec
 
         let ts_iso = iso_from_cdx(timestamp);
 
+        if let Some(u) = mine_url_entity(&mut seen_urls, original_url, &fetch_url, &ts_iso, scan_id)
+        {
+            entities.push(u);
+        }
+
         for email in crate::util::extract::page_emails(&body) {
             if crate::util::domains::is_infrastructure_email(&email) {
                 continue;
             }
             if seen_emails.insert(email.clone()) {
-                let mut e = Entity::new(EntityKind::Email, &email, 0.70, scan_id);
+                let mut e = Entity::new(EntityKind::Email, &email, confidence::HIGH_PLUS, scan_id);
                 e.tag("wayback-historical");
                 e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 let ev = Evidence::new(
@@ -307,7 +383,7 @@ async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> (Vec
 
         for phone in crate::util::extract::phones(&body) {
             if seen_phones.insert(phone.clone()) {
-                let mut e = Entity::new(EntityKind::Phone, &phone, 0.65, scan_id);
+                let mut e = Entity::new(EntityKind::Phone, &phone, confidence::HIGH, scan_id);
                 e.tag("wayback-historical");
                 e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 let ev = Evidence::new(
@@ -331,7 +407,7 @@ async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> (Vec
         tokio::time::sleep(std::time::Duration::from_millis(INTER_SNAPSHOT_MS)).await;
     }
 
-    (entities, total_contact_snapshots)
+    entities
 }
 
 #[async_trait]
@@ -341,7 +417,7 @@ impl Module for Wayback {
     }
 
     fn description(&self) -> &'static str {
-        "Internet Archive Wayback Machine: history lookup + historical contact extraction"
+        "Internet Archive Wayback Machine recon — enumerates snapshot history and extracts historical contact intel"
     }
 
     fn priority(&self) -> u8 {
@@ -376,9 +452,11 @@ impl Module for Wayback {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        // Two CDX queries + up to MAX_CONTACT_SNAPSHOTS page fetches with
-        // INTER_SNAPSHOT_MS gaps: conservatively 10 × (300ms + 2s latency) = 23s.
-        // 30s gives headroom for slow archive responses.
+        // Three CDX queries (snapshot summary, contact mining, subdomain
+        // domain-match) + up to MAX_CONTACT_SNAPSHOTS page fetches with
+        // INTER_SNAPSHOT_MS gaps: conservatively 10 × (300ms + 2s latency) = 23s
+        // plus the extra fetch-free CDX GET. 30s gives headroom for slow archive
+        // responses.
         30_000
     }
 
@@ -407,16 +485,41 @@ impl Module for Wayback {
 
         // ── Pass 2: mine historical contacts from archived pages ──────────────
         if !ctx.cancel.is_cancelled() {
-            let (contact_entities, total_contact_snapshots) =
-                mine_contacts(&domain, &ctx.scan_id, ctx).await;
-            // Signal on the archive seed when more archived contact pages exist
-            // than the mining cap fetched — the un-mined pages are potential
-            // email/phone/leaked-key evidence the operator should know about.
-            if let Some(seed) = result.entities.first_mut() {
-                mark_contact_truncation(seed, total_contact_snapshots);
-            }
-            for e in contact_entities {
+            for e in mine_contacts(&domain, &ctx.scan_id, ctx).await {
                 result.push(e);
+            }
+        }
+
+        // ── Pass 3: recover DECOMMISSIONED subdomains via CDX domain-match ─────
+        // `url=*.{domain}` triggers CDX matchType=domain (the domain + every
+        // archived subdomain). No page fetches — just the archived hostname list
+        // — so this is the cheap, high-value attack-surface pass that live CT/DNS
+        // sources structurally cannot provide.
+        if !ctx.cancel.is_cancelled() {
+            let sub_url = format!(
+                "https://web.archive.org/cdx/search/cdx?url=*.{}&output=json&fl=original&collapse=urlkey&limit=5000",
+                urlencode(&domain)
+            );
+            match fetch_json::<Vec<Row>>(&ctx.http, SRC, &sub_url).await {
+                Ok(sub_rows) => {
+                    for e in historical_subdomains(&sub_rows, &domain, &ctx.scan_id) {
+                        result.push(e);
+                    }
+                }
+                Err(e) => {
+                    // Deliberately NOT fatal: the primary CDX pass above has
+                    // already produced real results, and discarding them to
+                    // report a secondary outage would lose more than it reports.
+                    // But it was previously not recorded at all, so the entire
+                    // archived-subdomain corpus could vanish from a scan with
+                    // nothing anywhere saying it had been asked for.
+                    tracing::warn!(
+                        module = SRC,
+                        error = %e,
+                        "wayback historical-subdomain sweep failed; the primary results stand, \
+                         but no archived subdomains were collected"
+                    );
+                }
             }
         }
 

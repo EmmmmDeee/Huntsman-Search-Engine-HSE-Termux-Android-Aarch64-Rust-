@@ -111,7 +111,7 @@ fn package_coverage_reports_the_true_total_not_a_capped_count() {
     let u = ents
         .iter()
         .find(|e| e.kind == EntityKind::Username && e.value == "prolific")
-        .unwrap();
+        .expect("should succeed");
     assert!(
         u.evidence.iter().any(|ev| ev
             .attributes
@@ -128,7 +128,7 @@ fn emits_email_from_author_email_field() {
     let ents = build_entities("alice", &pkgs, Some(&info), "scan-pypi-002");
     let em = ents.iter().find(|e| e.kind == EntityKind::Email);
     assert!(em.is_some(), "must emit Email");
-    assert_eq!(em.unwrap().value, "alice@example.com");
+    assert_eq!(em.expect("should succeed").value, "alice@example.com");
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn emits_person_from_rfc5322_name() {
     let ents = build_entities("alice", &pkgs, Some(&info), "scan-pypi-003");
     let p = ents.iter().find(|e| e.kind == EntityKind::Person);
     assert!(p.is_some(), "must emit Person from RFC5322 name");
-    assert_eq!(p.unwrap().value, "Alice Smith");
+    assert_eq!(p.expect("should succeed").value, "Alice Smith");
 }
 
 #[test]

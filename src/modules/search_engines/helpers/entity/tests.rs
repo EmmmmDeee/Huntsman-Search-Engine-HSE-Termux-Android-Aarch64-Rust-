@@ -121,12 +121,12 @@ use super::*;
 
     #[test]
     fn score_username_term_overlap_gives_probable_confidence() {
-        // "jordan" appears in the username → Signal 1 fires (+3) → score ≥ 3 → 0.55
+        // "jordan" appears in the username → Signal 1 fires (+3) → score ≥ 3 → confidence::MEDIUM_HIGH
         let r = sr("Jordan Meyers profile", "some text", "https://x.com/jordanm", "jordan meyers");
         let terms = vec!["jordan".to_string(), "meyers".to_string()];
         let (score, conf) = score_username("jordanmeyers", "x.com", &terms, &r);
         assert!(score >= 3, "term overlap must reach probable threshold: {score}");
-        assert_eq!(conf, 0.55);
+        assert_eq!(conf, confidence::MEDIUM_HIGH);
     }
 
     #[test]
@@ -185,7 +185,7 @@ use super::*;
         );
         let (score, conf) = score_username("jmeyers", "x.com", &terms, &subject);
         assert!(score >= 3, "surname-anchored handle must reach PROBABLE: {score}");
-        assert_eq!(conf, 0.55);
+        assert_eq!(conf, confidence::MEDIUM_HIGH);
     }
 
     #[test]
@@ -204,7 +204,7 @@ use super::*;
         let r = sr("", "", "https://whitepages.com/bob", "bob smith");
         let terms = vec!["bob".to_string()];
         let (_score, conf) = score_username("randomhandle", "whitepages.com", &terms, &r);
-        assert_eq!(conf, 0.55, "people-search host must yield probable confidence");
+        assert_eq!(conf, confidence::MEDIUM_HIGH, "people-search host must yield probable confidence");
     }
 
     #[test]
@@ -231,7 +231,7 @@ use super::*;
         let r = sr("", "", "https://records.whitepages.com/alice", "alice");
         let terms = vec!["alice".to_string()];
         let (_score, conf) = score_username("anyhandle", "records.whitepages.com", &terms, &r);
-        assert_eq!(conf, 0.55);
+        assert_eq!(conf, confidence::MEDIUM_HIGH);
     }
 
     #[test]
@@ -271,7 +271,7 @@ use super::*;
             score >= 3,
             "a genuine firstname_lastname handle must still reach PROBABLE: {score}"
         );
-        assert_eq!(conf, 0.55);
+        assert_eq!(conf, confidence::MEDIUM_HIGH);
     }
 
     // ── normalise_address_key ────────────────────────────────────────────────

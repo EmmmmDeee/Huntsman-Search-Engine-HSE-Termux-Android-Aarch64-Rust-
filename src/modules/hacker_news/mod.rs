@@ -27,6 +27,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -59,7 +60,7 @@ impl Module for HackerNews {
     }
 
     fn description(&self) -> &'static str {
-        "Hacker News account lookup (karma, created, bio) via the official public API"
+        "Hacker News account recon — resolves a handle to karma, created date, and bio via the official public API"
     }
 
     fn priority(&self) -> u8 {
@@ -134,7 +135,19 @@ pub(super) fn build_entities(
 ) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
-    let mut u = Entity::new(EntityKind::Username, &user.id, 0.90, scan_id);
+    // Confirmed HN account from a single successful public-API lookup — the
+    // HIGH_PLUSPLUS_PLUS single-source "confirmed account" tier (OD-19 in
+    // .agent/state.json; gitlab_user/gitea_user stamp the identical class), not
+    // VERY_HIGH_PLUS (0.90), which the ladder reserves for "exceeds multi-source
+    // threshold". The rich account metadata below is one source's word, and
+    // cross-service agreement is the correlator's job (AU-045), not this
+    // entity's base grade.
+    let mut u = Entity::new(
+        EntityKind::Username,
+        &user.id,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     u.tag("hacker-news");
     let submissions = user.submitted.as_ref().map_or(0, Vec::len);
     let ev = [
@@ -167,7 +180,7 @@ pub(super) fn build_entities(
         // Extract ALL emails and URLs from the bio (HN bios are HTML-escaped
         // free text; both often appear multiple times in developer profiles).
         for email in crate::util::extract::emails(about) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.78, scan_id);
+            let mut e = Entity::new(EntityKind::Email, &email, confidence::STRONG, scan_id);
             e.tag("hacker-news");
             e.tag("public-profile");
             e.add_evidence(
@@ -178,11 +191,11 @@ pub(super) fn build_entities(
         }
         let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
         for m in URL_RE.find_iter(about) {
-            let link = m.as_str().trim_end_matches(['.', ',', ')']);
+            let link = crate::core::classifier::trim_url_punctuation(m.as_str());
             if !seen_urls.insert(link.to_string()) {
                 continue;
             }
-            let mut url_e = Entity::new(EntityKind::Url, link, 0.72, scan_id);
+            let mut url_e = Entity::new(EntityKind::Url, link, confidence::ATTRIBUTED, scan_id);
             url_e.tag("hacker-news");
             url_e.tag("personal-site");
             url_e.add_evidence(
@@ -195,7 +208,7 @@ pub(super) fn build_entities(
                 && host != "ycombinator.com"
                 && host != "news.ycombinator.com"
             {
-                let mut d = Entity::new(EntityKind::Domain, &host, 0.65, scan_id);
+                let mut d = Entity::new(EntityKind::Domain, &host, confidence::HIGH, scan_id);
                 d.tag("hacker-news");
                 d.tag("derived");
                 d.add_evidence(
@@ -307,7 +320,7 @@ fn algolia_domain_entities(body: &str, username: &str, scan_id: &str) -> Vec<Ent
     domains
         .into_iter()
         .map(|dom| {
-            let mut d = Entity::new(EntityKind::Domain, &dom, 0.50, scan_id);
+            let mut d = Entity::new(EntityKind::Domain, &dom, confidence::MEDIUM, scan_id);
             d.tag("hn-submission");
             d.add_evidence(
                 Evidence::new(
@@ -321,20 +334,33 @@ fn algolia_domain_entities(body: &str, username: &str, scan_id: &str) -> Vec<Ent
         .collect()
 }
 
+/// The submitted link's host, as a domain — via the shared
+/// [`crate::util::url_util::host_from_url`] every other module uses.
+///
+/// This used to be hand-rolled here, and the copy did NOT lowercase: two HN
+/// submissions differing only in case (`Example.com` vs `example.com`) produced
+/// two distinct `Domain` entities that the caller's case-sensitive
+/// `sort_unstable()` + `dedup()` could not collapse. The shared helper
+/// lowercases (and handles case-insensitive schemes, ports, IPv6 literals, and
+/// query/fragment cuts) in one tested place.
 fn extract_domain_from_url(url: &str) -> Option<String> {
-    let without_scheme = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))?;
-    let domain = without_scheme.split('/').next()?;
-    let domain = domain.split('?').next()?;
-    let domain = domain.split('#').next()?;
-    // Remove port
-    let domain = domain.split(':').next()?;
-    if domain.contains('.') && domain.len() >= 4 {
-        Some(domain.to_string())
-    } else {
-        None
+    // The shared helper accepts a scheme-less authority too; HN's `url` field is
+    // always an absolute submission link, so requiring the scheme here keeps the
+    // previous behaviour of ignoring anything that is not one.
+    //
+    // Matched case-INSENSITIVELY: a scheme is case-insensitive per RFC 3986
+    // §3.1 (`HTTPS://` is valid), and the helper this delegates to already
+    // treats it that way — a case-sensitive guard here would reject an absolute
+    // URL the helper would happily parse, contradicting the very consolidation
+    // this function exists to perform.
+    let scheme_ok = ["http://", "https://"].iter().any(|s| {
+        url.get(..s.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(s))
+    });
+    if !scheme_ok {
+        return None;
     }
+    crate::util::url_util::host_from_url(url).filter(|d| d.len() >= 4)
 }
 
 #[cfg(test)]

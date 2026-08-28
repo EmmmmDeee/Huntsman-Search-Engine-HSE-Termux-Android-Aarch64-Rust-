@@ -1,18 +1,9 @@
 use super::*;
+use crate::core::confidence;
 
-    #[test]
-    fn zero_hits_is_inconclusive_only_when_mostly_blocked() {
-        // M6 policy: a zero-hit run is "inconclusive" (→ surfaced as an error,
-        // not a confirmed absence) only when most probes were blocked.
-        assert!(inconclusive(0, 334, 334), "all blocked → inconclusive");
-        assert!(inconclusive(0, 167, 334), "half blocked → inconclusive");
-        assert!(
-            !inconclusive(0, 10, 334),
-            "mostly definitive not-found → genuine absence"
-        );
-        assert!(!inconclusive(3, 300, 334), "any hit → never inconclusive");
-        assert!(!inconclusive(0, 0, 0), "no probes → not inconclusive");
-    }
+    // The M6 zero-hit disambiguation (`inconclusive`) and the browser-UA shape
+    // guard now live with their single-sourced implementations in
+    // `util::probe::tests`; this file keeps the username_search-specific coverage.
 
     #[test]
     fn accepts_only_username() {
@@ -124,10 +115,10 @@ use super::*;
             c_status < c_body,
             "status-only confidence {c_status} must rank below body-marker {c_body}"
         );
-        // …but still above the engine's 0.50 expand floor so it remains pivotable.
+        // …but still above the engine's confidence::MEDIUM expand floor so it remains pivotable.
         assert!(
-            c_status > 0.50,
-            "status-only hit {c_status} must stay above the 0.50 expand floor"
+            c_status > confidence::MEDIUM,
+            "status-only hit {c_status} must stay above the confidence::MEDIUM expand floor"
         );
     }
 
@@ -154,13 +145,3 @@ use super::*;
         }
     }
 
-    #[test]
-    fn browser_ua_is_chrome_shaped() {
-        // Regression guard: if a contributor reverts to the tool UA
-        // (`huntsman-search-engine/...`), Cloudflare-fronted sites
-        // will 403 ~30% of the table again. Lock in the shape so
-        // anyone changing it has to update this test too.
-        assert!(BROWSER_UA.contains("Mozilla/5.0"));
-        assert!(BROWSER_UA.contains("Chrome/"));
-        assert!(!BROWSER_UA.contains("huntsman-search-engine"));
-    }

@@ -22,6 +22,17 @@ pub(super) struct GleifPagination {
     pub(super) total: Option<u64>,
 }
 
+/// A JSON:API response carrying exactly ONE record.
+///
+/// GLEIF's single-valued Level-2 links (`/direct-parent`, `/ultimate-parent`)
+/// return `data` as an object, whereas a search or `/direct-children` returns it
+/// as an array — the same field, two shapes, so they need two types.
+#[derive(Deserialize)]
+pub(super) struct GleifOneResp {
+    #[serde(default)]
+    pub(super) data: Option<GleifRecord>,
+}
+
 #[derive(Deserialize)]
 pub(super) struct GleifRecord {
     #[serde(default)]

@@ -35,6 +35,7 @@ mod tests;
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -143,18 +144,27 @@ pub fn classify_au_phone(national: &str) -> Option<AuLine> {
         return None;
     }
 
-    // Non-geographic service prefixes (longest first).
-    if national.starts_with("1800") {
+    // Non-geographic service prefixes (longest first). 1800/1300/190x are
+    // EXACTLY 10 national digits (the `13xxxx` shortcode is the sole 6-digit
+    // exception) — the same exact-length gate `util::address_au::
+    // au_phone_line_type` enforces. A LONGER number that merely BEGINS with
+    // these digits is not an AU service line: an 11-digit NANP number's `1`
+    // country code + area code collides (`+1 800…` reads as `1800…`,
+    // `+1 900…`/`+1 90x…` reads as `190…`), and without this exact-length
+    // check those were misclassified as AU Freephone/Premium instead of
+    // Unknown/rejected — the same false-positive class `au_phone_line_type`
+    // was hardened against (AU-050).
+    if national.len() == 10 && national.starts_with("1800") {
         return Some(AuLine::simple(LineType::Freephone));
     }
-    if national.starts_with("1300") {
+    if national.len() == 10 && national.starts_with("1300") {
         return Some(AuLine::simple(LineType::LocalRate));
     }
-    if national.starts_with("190") {
+    if national.len() == 10 && national.starts_with("190") {
         // 1900/1901/1902… premium rate.
         return Some(AuLine::simple(LineType::Premium));
     }
-    if national.starts_with("13") {
+    if national.len() == 6 && national.starts_with("13") {
         // 13 XX XX local-rate shortcode (6 digits).
         return Some(AuLine::simple(LineType::LocalRate));
     }
@@ -208,7 +218,7 @@ impl Module for PhoneAu {
     }
 
     fn description(&self) -> &'static str {
-        "Offline Australian phone line-type & geographic-region classifier"
+        "Offline Australian phone classifier — resolves line type and geographic region"
     }
 
     fn priority(&self) -> u8 {
@@ -248,7 +258,12 @@ impl Module for PhoneAu {
         // Re-emit the canonical +61 E.164 phone so this enrichment merges onto
         // the same Phone uid `phone_intl` produces.
         let canonical = format!("+61{national}");
-        let mut entity = Entity::new(EntityKind::Phone, &canonical, 0.80, &ctx.scan_id);
+        let mut entity = Entity::new(
+            EntityKind::Phone,
+            &canonical,
+            confidence::HIGH_PLUSPLUS,
+            &ctx.scan_id,
+        );
         entity.tag("au-phone");
         entity.tag(format!("line:{}", line.line_type.slug()));
 

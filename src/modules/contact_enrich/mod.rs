@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -90,7 +91,7 @@ impl Module for ContactEnrich {
     }
 
     fn description(&self) -> &'static str {
-        "Contact validation: phone via Numverify, email via Gravatar"
+        "Contact validation recon — verifies phone via Numverify and email via Gravatar"
     }
 
     fn priority(&self) -> u8 {
@@ -234,7 +235,12 @@ pub(super) fn build_phone_entities(
         return Vec::new();
     }
 
-    let mut entity = target.to_entity(0.92, scan_id);
+    // EXPERT matches this same file's Gravatar path below, and the crate-wide
+    // convention for "a third-party API confirmed the target is valid"
+    // (emailrep/epieos/whois/see_know/oathnet_pro use HIGH_PLUSPLUS_PLUS;
+    // criminal_ip also uses EXPERT) — a bare 0.92 scored the identical claim a
+    // full tier above every sibling for no documented reason.
+    let mut entity = target.to_entity(confidence::EXPERT, scan_id);
     entity.tag("numverify");
     entity.tag("validated");
     entity.tag(format!("transport:{transport}"));
@@ -272,7 +278,48 @@ pub(super) fn build_phone_entities(
     );
     entity.add_evidence(ev);
 
-    vec![entity]
+    let mut result = vec![entity];
+
+    // A Numverify `location` reflects the phone's registration/porting
+    // record, not necessarily the subject's current physical location —
+    // tagged distinctly and at a lower confidence than the Gravatar
+    // `current_location` -> Address promotion below.
+    if let Some(loc) = body.location.as_deref()
+        && loc.trim().len() >= 3
+    {
+        let mut ae = Entity::new(EntityKind::Address, loc, confidence::LOW, scan_id);
+        ae.tag("numverify");
+        ae.tag("geoint");
+        ae.tag("phone-registration");
+        if let Some(sc) = crate::util::address_au::single_state_code(loc) {
+            ae.tag(format!("au-state:{sc}"));
+            ae.tag("country:AU");
+        }
+        ae.add_evidence(Evidence::new(
+            SRC,
+            format!("Numverify location for {}", target.value),
+        ));
+        if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::TENTATIVE,
+                scan_id,
+            );
+            c.tag("numverify");
+            c.tag("addr-derived");
+            c.tag("geoint");
+            c.add_evidence(Evidence::new(
+                SRC,
+                format!("Geocode of Numverify location for {}", target.value),
+            ));
+            result.push(c);
+        }
+        result.push(ae);
+    }
+
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -291,10 +338,16 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     let hash = gravatar_hash(&normalised);
     let url = format!("https://www.gravatar.com/{hash}.json");
 
-    // Intentionally manual rather than using `util::http::fetch_json_or_404`:
-    // Gravatar's placeholder profiles return 200 + non-JSON body, and
-    // the helper would surface that as a `module_error`. The
-    // silent-treat-as-empty behaviour below is the documented contract.
+    // Manual rather than `util::http::fetch_json_or_404` so the 404 arm can be spelled out:
+    // Gravatar answers a plain 404 (`"User not found"`) for an address with no public profile,
+    // which is the common case and a real absence, not a failure.
+    //
+    // This previously carried a second rationale — that Gravatar's "placeholder profiles return
+    // 200 + non-JSON body" — used to justify swallowing a JSON decode failure. Probing the live
+    // endpoint could not reproduce it: every response observed was `application/json`, either a
+    // 200 profile document or a 404 `"User not found"`. Note `www.gravatar.com` answers 302 to a
+    // localized host; our client follows redirects (see `util::http::ssrf::client_builder`), so
+    // the final response is what reaches the decode below.
     let resp = ctx.http.get(&url).send_tagged(SRC).await?;
 
     let status = resp.status();
@@ -306,11 +359,14 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         return Err(crate::util::http::http_status_error("contact_enrich", resp).await);
     }
 
-    let data: ProfileResp = match crate::util::http::json_scanned(resp, SRC).await {
-        Ok(d) => d,
-        // Placeholder profile -> no findings (not a module error).
-        Err(_) => return Ok(ModuleResult::new()),
-    };
+    // Fail closed on a body that does not decode. A 2xx from a JSON API that is not JSON is
+    // anomalous — schema drift, a truncated body, an interstitial — not an absence of profile
+    // data, and the absence case already returned above on the 404. This was the ONLY one of the
+    // ~20 `json_scanned` call sites in `src/modules/` that swallowed the decode error into an
+    // empty result; every other propagates it.
+    let data: ProfileResp = crate::util::http::json_scanned(resp, SRC)
+        .await
+        .map_err(|e| crate::core::error::Error::module(SRC, e))?;
 
     let Some(entry) = data.entry.into_iter().next() else {
         return Ok(ModuleResult::new());
@@ -337,7 +393,7 @@ pub(super) fn build_email_entities(
     hash: &str,
     scan_id: &str,
 ) -> Vec<Entity> {
-    let mut entity = target.to_entity(0.88, scan_id);
+    let mut entity = target.to_entity(confidence::EXPERT, scan_id);
     entity.tag("gravatar");
     let mut ev = Evidence::new(SRC, format!("Gravatar profile for {normalised}"))
         .with_attr("md5", hash)
@@ -396,7 +452,7 @@ pub(super) fn build_email_entities(
         && name.len() >= 3
         && name.contains(' ')
     {
-        let mut pe = Entity::new(EntityKind::Person, name, 0.75, scan_id);
+        let mut pe = Entity::new(EntityKind::Person, name, confidence::VERY_HIGH, scan_id);
         pe.tag("gravatar");
         pe.add_evidence(Evidence::new(
             SRC,
@@ -407,7 +463,12 @@ pub(super) fn build_email_entities(
     if let Some(username) = entry.preferred_username.as_deref()
         && username.len() >= 3
     {
-        let mut ue = Entity::new(EntityKind::Username, username, 0.70, scan_id);
+        let mut ue = Entity::new(
+            EntityKind::Username,
+            username,
+            confidence::HIGH_PLUS,
+            scan_id,
+        );
         ue.tag("gravatar");
         ue.add_evidence(Evidence::new(
             SRC,
@@ -418,10 +479,10 @@ pub(super) fn build_email_entities(
     if let Some(loc) = entry.current_location.as_deref()
         && loc.len() >= 3
     {
-        let mut ae = Entity::new(EntityKind::Address, loc, 0.55, scan_id);
+        let mut ae = Entity::new(EntityKind::Address, loc, confidence::MEDIUM_HIGH, scan_id);
         ae.tag("gravatar");
         ae.tag("geoint");
-        if let Some(sc) = crate::util::address_au::state_code(loc) {
+        if let Some(sc) = crate::util::address_au::single_state_code(loc) {
             ae.tag(format!("au-state:{sc}"));
             ae.tag("country:AU");
         }
@@ -431,7 +492,12 @@ pub(super) fn build_email_entities(
         ));
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::LOW_MEDIUM,
+                scan_id,
+            );
             c.tag("gravatar");
             c.tag("addr-derived");
             c.tag("geoint");
@@ -448,7 +514,7 @@ pub(super) fn build_email_entities(
         if !url.starts_with("http") {
             return None;
         }
-        let mut ue = Entity::new(EntityKind::Url, url, 0.60, scan_id);
+        let mut ue = Entity::new(EntityKind::Url, url, confidence::MEDIUM_PLUS, scan_id);
         ue.tag("gravatar");
         ue.add_evidence(Evidence::new(
             SRC,

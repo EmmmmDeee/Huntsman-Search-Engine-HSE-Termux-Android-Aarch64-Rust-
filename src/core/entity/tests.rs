@@ -26,6 +26,67 @@ fn uid_differs_across_kinds() {
     assert_ne!(e.uid, d.uid);
 }
 
+// ── EntityBuilder equivalence ─────────────────────────────────────────────
+
+#[test]
+fn builder_produces_the_same_entity_as_the_hand_rolled_sequence() {
+    // Hand-rolled: the exact new + tag + tag + add_evidence sequence copied
+    // across the module fleet.
+    let mut hand = Entity::new(EntityKind::Domain, "Example.COM", 0.83, "scan-1");
+    hand.tag("archived");
+    hand.tag("web");
+    hand.add_evidence(
+        Evidence::new("wayback", "3 snapshots")
+            .with_attr("snapshot_count", "3")
+            .with_attr("first_seen", "2020"),
+    );
+
+    // Builder: same inputs, same order.
+    let built = Entity::builder(EntityKind::Domain, "Example.COM", 0.83, "scan-1")
+        .tag("archived")
+        .tag("web")
+        .evidence(
+            Evidence::new("wayback", "3 snapshots")
+                .with_attr("snapshot_count", "3")
+                .with_attr("first_seen", "2020"),
+        )
+        .build();
+
+    // Byte-identical in every observable field (observed_at is a timestamp set
+    // by the constructor in both, so compare the fields the builder governs).
+    assert_eq!(built.uid, hand.uid);
+    assert_eq!(built.kind, hand.kind);
+    assert_eq!(built.value, hand.value); // normalisation preserved
+    assert_eq!(built.raw_value, hand.raw_value);
+    assert!((built.confidence - hand.confidence).abs() < f64::EPSILON);
+    assert_eq!(built.tags, hand.tags); // order + de-dupe preserved
+    assert_eq!(built.evidence.len(), hand.evidence.len());
+    assert_eq!(built.evidence[0].source, hand.evidence[0].source);
+    assert_eq!(built.evidence[0].summary, hand.evidence[0].summary);
+    assert_eq!(built.evidence[0].attributes, hand.evidence[0].attributes);
+}
+
+#[test]
+fn builder_tags_dedupe_and_tags_iter_helper_works() {
+    let e = Entity::builder(EntityKind::Email, "a@b.com", 0.5, "s")
+        .tag("dup")
+        .tags(["dup", "fresh", "fresh"]) // both de-dupe against prior + each other
+        .build();
+    assert_eq!(e.tags, vec!["dup".to_string(), "fresh".to_string()]);
+}
+
+#[test]
+fn builder_push_to_emits_into_module_result() {
+    use crate::core::module::ModuleResult;
+    let mut result = ModuleResult::new();
+    Entity::builder(EntityKind::IpAddress, "1.2.3.4", 0.9, "s")
+        .tag("infra")
+        .push_to(&mut result);
+    assert_eq!(result.entities.len(), 1);
+    assert_eq!(result.entities[0].kind, EntityKind::IpAddress);
+    assert!(result.entities[0].has_tag("infra"));
+}
+
 #[test]
 fn demote_to_candidate_caps_confidence_tags_and_is_idempotent() {
     let mut e = Entity::new(EntityKind::Email, "stranger@example.com", 0.70, "s");
@@ -382,6 +443,201 @@ fn source_count_ignores_stored_field_when_all_evidence_is_noncorroborating() {
 }
 
 #[test]
+fn merging_in_a_derived_duplicate_does_not_drop_an_already_grounded_tier() {
+    // Regression (critical audit): the promotion-source GROUNDING GATE in
+    // source_count() reads `self.has_tag("derived")` fresh on every call, but
+    // that tag is unioned wholesale into `self` by absorb()'s generic tag-merge
+    // loop whenever ANY merged-in duplicate happened to carry it -- regardless
+    // of whether that duplicate contributed anything to REAL evidence. Many
+    // modules (name_intel, url_extract, email_parse, ...) tag their output
+    // "derived" while using an otherwise-weak or non-corroborating source.
+    //
+    // Before this fix: an entity genuinely grounded by ONE independent real
+    // source (crtsh) plus a legitimate multipath_corroboration promotion
+    // record (source_count()==2, C_eff lifted to Verified) could be merged
+    // with an unrelated, same-UID "derived" duplicate carrying only
+    // non-corroborating evidence (name_intel). After the merge, `self`
+    // acquires the "derived" tag, so the gate silently tightens from
+    // real>=1 to real>=2; real is still 1, so grounded flips false and the
+    // promotion evidence stops counting -- source_count() drops from 2 to 1
+    // and the entity's classification falls from Verified to Probable,
+    // directly contradicting Entity::classify's own doc ("a tier can only
+    // ever rise as merges add corroboration") and the "GREATEST-semantics
+    // merge (confidence, corroboration only ever increase)" architecture
+    // invariant.
+    let mut a = Entity::new(EntityKind::Domain, "example.com", 0.65, "scan");
+    a.add_evidence(Evidence::new("crtsh", "cert SAN"));
+    a.add_evidence(Evidence::new(
+        MULTIPATH_CORROBORATION_SOURCE,
+        "linked via 2 pathways",
+    ));
+    assert_eq!(
+        a.source_count(),
+        2,
+        "grounded by crtsh + a legitimate promotion"
+    );
+    assert_eq!(a.classify(), Classification::Verified);
+
+    let mut b = Entity::new(EntityKind::Domain, "example.com", 0.30, "scan");
+    b.tag("derived");
+    b.add_evidence(Evidence::new("name_intel", "Speculative domain guess"));
+    a.merge(b);
+
+    assert_eq!(
+        a.confidence, 0.65,
+        "GREATEST: confidence unaffected (max(0.65,0.30))"
+    );
+    assert_eq!(
+        a.source_count(),
+        2,
+        "merging in a low-value derived duplicate must not un-ground an          already-grounded entity"
+    );
+    assert_eq!(
+        a.classify(),
+        Classification::Verified,
+        "tier must not drop from merging in MORE evidence"
+    );
+}
+
+#[test]
+fn a_genuinely_independent_merge_graduates_a_derived_entity() {
+    // Symmetric case: an entity that started as a pure derivation guess
+    // (real=0, so grounded is false regardless of the gate) is later merged
+    // with a genuinely independently-OBSERVED duplicate of the same value.
+    // The merged entity should graduate out of the stricter "derived" gate —
+    // matching the "candidate" tag's own symmetric promotion rule just above
+    // this code in absorb().
+    let mut guess = Entity::new(EntityKind::Domain, "example.org", 0.30, "scan");
+    guess.tag("derived");
+    guess.add_evidence(Evidence::new("name_intel", "Speculative domain guess"));
+    assert_eq!(
+        guess.source_count(),
+        1,
+        "no real evidence yet, floored at 1"
+    );
+
+    let mut observed = Entity::new(EntityKind::Domain, "example.org", 0.7, "scan");
+    observed.add_evidence(Evidence::new("crtsh", "cert SAN"));
+    observed.add_evidence(Evidence::new(
+        MULTIPATH_CORROBORATION_SOURCE,
+        "linked via 2 pathways",
+    ));
+    guess.merge(observed);
+
+    assert!(
+        !guess.has_tag("derived"),
+        "a genuinely independent merge must graduate the entity out of the          derived gate, exactly as a non-candidate merge clears quarantine"
+    );
+    assert_eq!(
+        guess.source_count(),
+        2,
+        "now real>=1 suffices (non-derived), so the promotion source counts"
+    );
+}
+
+#[test]
+fn promotion_source_alone_does_not_ground_entity() {
+    // A multipath_corroboration evidence item with no real source underneath
+    // must NOT push source_count above 1 — the grounding gate is the guard.
+    let mut e = Entity::new(EntityKind::Email, "x@example.com", 0.55, "s");
+    e.add_evidence(Evidence::new(
+        MULTIPATH_CORROBORATION_SOURCE,
+        "Seen on two graph paths",
+    ));
+    assert_eq!(
+        e.source_count(),
+        1,
+        "promotion source alone: no real source → gate blocks it, falls to fallback=1"
+    );
+}
+
+#[test]
+fn promotion_source_amplifies_grounded_entity() {
+    // One real source grounds the entity; a multipath_corroboration on top
+    // must count as a second distinct source (the gate is satisfied).
+    let mut e = Entity::new(EntityKind::Email, "x@example.com", 0.55, "s");
+    e.add_evidence(Evidence::new("haveibeenpwned", "Found in breach dataset"));
+    e.add_evidence(Evidence::new(
+        MULTIPATH_CORROBORATION_SOURCE,
+        "Seen on two graph paths",
+    ));
+    assert_eq!(
+        e.source_count(),
+        2,
+        "real_src=1 satisfies the gate → promotion source counts"
+    );
+}
+
+#[test]
+fn cross_scan_corroboration_gated_same_as_multipath() {
+    // CROSS_SCAN_CORROBORATION_SOURCE is the same tier as multipath — it is a
+    // promotion source and must be gated identically.
+    let mut solo = Entity::new(EntityKind::Email, "y@example.com", 0.55, "s");
+    solo.add_evidence(Evidence::new(
+        CROSS_SCAN_CORROBORATION_SOURCE,
+        "Matched across scan boundary",
+    ));
+    assert_eq!(
+        solo.source_count(),
+        1,
+        "no real source → gate blocks cross_scan"
+    );
+
+    let mut grounded = Entity::new(EntityKind::Email, "y@example.com", 0.55, "s");
+    grounded.add_evidence(Evidence::new("snusbase", "Found in leak"));
+    grounded.add_evidence(Evidence::new(
+        CROSS_SCAN_CORROBORATION_SOURCE,
+        "Matched across scan boundary",
+    ));
+    assert_eq!(
+        grounded.source_count(),
+        2,
+        "grounded entity → cross_scan counts"
+    );
+}
+
+#[test]
+fn derived_entity_needs_two_real_sources_for_promotion_to_count() {
+    // A `derived` entity (e.g. a name→email permutation) whose generator is a
+    // non-corroborating source (here: `name_intel`) contributes real=0.
+    // The derived gate requires real≥2, so promotion is blocked even when a
+    // promotion pass has also fired. Two independent corroborating sources are
+    // needed before promotion is allowed to amplify the count.
+    let mut one_real = Entity::new(EntityKind::Email, "guess@example.com", 0.55, "s");
+    one_real.tag("derived");
+    one_real.add_evidence(Evidence::new("name_intel", "Permuted from name")); // non-corroborating
+    one_real.add_evidence(Evidence::new(
+        MULTIPATH_CORROBORATION_SOURCE,
+        "Seen on two graph paths",
+    ));
+    // name_intel is non-corroborating, so real=0, gate(derived)=false → promotion blocked
+    assert_eq!(
+        one_real.source_count(),
+        1,
+        "derived with 1 non-corroborating source + promotion: gate still blocks"
+    );
+
+    // Now add a genuine real source — that satisfies the derived gate (real >= 2
+    // counting only corroborating; name_intel is non-corroborating so a real
+    // observed source is the second corroborating one).
+    let mut two_real = Entity::new(EntityKind::Email, "guess@example.com", 0.55, "s");
+    two_real.tag("derived");
+    two_real.add_evidence(Evidence::new("name_intel", "Permuted from name")); // non-corroborating
+    two_real.add_evidence(Evidence::new("haveibeenpwned", "Confirmed in breach")); // real
+    two_real.add_evidence(Evidence::new("snusbase", "Confirmed in second breach")); // real
+    two_real.add_evidence(Evidence::new(
+        MULTIPATH_CORROBORATION_SOURCE,
+        "Seen on two graph paths",
+    ));
+    // real=2 (hibp + snusbase), derived gate: real >= 2 → grounded → promo counts
+    assert_eq!(
+        two_real.source_count(),
+        3,
+        "derived with 2 real sources satisfies the gate → promotion also counts"
+    );
+}
+
+#[test]
 fn c_eff_clamped_to_one() {
     let mut e = email("a@b.com");
     e.confidence = 0.99;
@@ -524,6 +780,68 @@ fn merge_corroboration_accumulates() {
     b.corroboration = 3;
     a.merge(b);
     assert_eq!(a.corroboration, 4); // 1 + 3
+}
+
+/// `candidate` is a confidence-TIER quarantine (see [`Entity::demote_to_candidate`]),
+/// not an accumulating multi-source label like an ordinary tag — every default
+/// view filters entities purely on this tag (`api::scan_export`,
+/// `api::scan_handlers::analysis`). A stranger's non-matching, low-confidence
+/// observation of the SAME uid (a breach row `TargetMatch` classified as a
+/// non-match, tagged `candidate` by `demote_to_candidate`) must not poison an
+/// otherwise-verified entity — confidence already resolves to the max of the
+/// two sides, so tag status must track that: a single non-candidate
+/// corroboration promotes the merged entity out of quarantine for good.
+#[test]
+fn merge_does_not_let_a_candidate_duplicate_poison_a_verified_entity() {
+    let mut verified = email("x@y.com");
+    verified.confidence = 0.9;
+    verified.tag("subject");
+
+    let mut stray_candidate = email("x@y.com");
+    stray_candidate.demote_to_candidate();
+
+    verified.merge(stray_candidate);
+
+    assert!(
+        !verified.has_tag(crate::core::tags::CANDIDATE),
+        "a verified entity must not be quarantined by a merged-in candidate duplicate"
+    );
+    assert!((verified.confidence - 0.9).abs() < 1e-9);
+    assert!(verified.has_tag("subject"));
+}
+
+/// Symmetric case: a genuinely candidate entity gets corroborated later by a
+/// trusted, non-candidate observation of the same uid — it must be promoted
+/// OUT of the candidate tier (not stay hidden from default views forever).
+#[test]
+fn merge_promotes_a_candidate_entity_once_a_verified_duplicate_lands() {
+    let mut candidate = email("x@y.com");
+    candidate.demote_to_candidate();
+    assert!(candidate.has_tag(crate::core::tags::CANDIDATE));
+
+    let mut verified = email("x@y.com");
+    verified.confidence = 0.9;
+
+    candidate.merge(verified);
+
+    assert!(
+        !candidate.has_tag(crate::core::tags::CANDIDATE),
+        "a non-candidate corroboration must promote the entity out of quarantine"
+    );
+}
+
+/// Two candidate-only observations of the same uid must remain quarantined —
+/// there is no genuine corroboration to promote on.
+#[test]
+fn merge_keeps_two_candidate_duplicates_quarantined() {
+    let mut a = email("x@y.com");
+    a.demote_to_candidate();
+    let mut b = email("x@y.com");
+    b.demote_to_candidate();
+
+    a.merge(b);
+
+    assert!(a.has_tag(crate::core::tags::CANDIDATE));
 }
 
 // ── Decay ────────────────────────────────────────────────────────────────
@@ -871,8 +1189,8 @@ fn evidence_with_attr_chaining() {
         .with_attr("key1", "val1")
         .with_attr("key2", "val2");
     assert_eq!(ev.attributes.len(), 2);
-    assert_eq!(ev.attributes.get("key1").unwrap(), "val1");
-    assert_eq!(ev.attributes.get("key2").unwrap(), "val2");
+    assert_eq!(ev.attributes.get("key1").expect("should succeed"), "val1");
+    assert_eq!(ev.attributes.get("key2").expect("should succeed"), "val2");
 }
 
 #[test]
@@ -884,7 +1202,7 @@ fn evidence_attributes_serialize_in_stable_sorted_order() {
         .with_attr("alpha", "2")
         .with_attr("mike", "3");
     assert_eq!(
-        serde_json::to_string(&ev.attributes).unwrap(),
+        serde_json::to_string(&ev.attributes).expect("should succeed"),
         r#"{"alpha":"2","mike":"3","zulu":"1"}"#
     );
 }
@@ -1002,6 +1320,92 @@ fn merge_observed_at_takes_max() {
     assert_eq!(c.observed_at, 5000);
 }
 
+// ── Entity generation (expansion generation) ─────────────────────────────────
+
+#[test]
+fn expansion_timeline_counts_entities_per_generation_in_order() {
+    let mut ents = vec![
+        email("a@x.com"),
+        email("b@x.com"),
+        email("c@x.com"),
+        email("d@x.com"),
+    ];
+    ents[0].generation = 0;
+    ents[1].generation = 0;
+    ents[2].generation = 2; // note: skips generation 1
+    ents[3].generation = 2;
+    let timeline = crate::core::entity::expansion_timeline(&ents);
+    // BTreeMap keeps generations ordered; only populated generations appear.
+    let pairs: Vec<(u32, usize)> = timeline.into_iter().collect();
+    assert_eq!(pairs, vec![(0, 2), (2, 2)]);
+}
+
+#[test]
+fn depth_decay_discounts_c_effective_by_generation() {
+    let mut e = email("x@y.com");
+    let base_c = e.c_effective(); // single source ⇒ c_effective == confidence
+
+    // base^0 = 1: a seed-round (generation 0) entity is never discounted.
+    e.generation = 0;
+    assert!((e.c_effective_depth_decayed(0.9) - base_c).abs() < 1e-9);
+
+    // Each generation multiplies by `base`: generation 2 ⇒ ×base².
+    e.generation = 2;
+    assert!((e.c_effective_depth_decayed(0.9) - base_c * 0.9 * 0.9).abs() < 1e-9);
+
+    // base = 1.0 is a total no-op at any depth (the default-off behaviour).
+    e.generation = 5;
+    assert!((e.c_effective_depth_decayed(1.0) - base_c).abs() < 1e-9);
+
+    // The result stays clamped to [0, 1].
+    assert!((0.0..=1.0).contains(&e.c_effective_depth_decayed(0.5)));
+}
+
+#[test]
+fn new_entity_starts_at_generation_zero() {
+    // Modules never know their round, so every freshly-built entity is generation 0.
+    assert_eq!(email("x@y.com").generation, 0);
+}
+
+#[test]
+fn merge_preserves_the_earliest_generation() {
+    // The load-bearing invariant: an entity first surfaced deep in expansion
+    // (engine-stamped, here generation 3) must NOT be reset to the seed generation
+    // when a later round re-emits it via a module (which always carries the
+    // default generation 0). merge folds `other` INTO the pre-existing entity,
+    // so `self`'s generation is kept.
+    let mut deep = email("x@y.com");
+    deep.generation = 3;
+    let reemit = email("x@y.com"); // module default: generation 0
+    deep.merge(reemit);
+    assert_eq!(
+        deep.generation, 3,
+        "re-emission must not reset the generation"
+    );
+}
+
+#[test]
+fn generation_serde_round_trips_and_defaults_for_legacy_rows() {
+    // New rows carry the generation through data_json.
+    let mut e = email("x@y.com");
+    e.generation = 2;
+    let json = serde_json::to_string(&e).expect("should succeed");
+    let back: Entity = serde_json::from_str(&json).expect("should succeed");
+    assert_eq!(back.generation, 2);
+
+    // A legacy row persisted before the field existed has no `generation` key;
+    // #[serde(default)] must decode it to 0 (no storage migration needed).
+    let legacy = serde_json::to_value(&e).expect("should succeed");
+    let mut obj = legacy.as_object().expect("should succeed").clone();
+    obj.remove("generation");
+    let recovered: Entity =
+        serde_json::from_value(serde_json::Value::Object(obj)).expect("should succeed");
+    assert_eq!(
+        recovered.generation, 0,
+        "legacy rows default to generation 0"
+    );
+}
+
 #[test]
 fn merge_raw_value_is_order_independent() {
     // Same UID (case-insensitive email), differing only in display spelling.
@@ -1042,6 +1446,23 @@ fn merge_uid_mismatch_is_noop() {
 fn entity_kind_other_display() {
     let kind = EntityKind::Other("foo".to_string());
     assert_eq!(kind.to_string(), "other:foo");
+}
+
+/// `derive_uid` hashes `Display(kind) + ":" + normalised_value`, and
+/// `Other(s)` displays as `"other:{s}"` — so the FULL preimage for an
+/// `Other` entity is `"other:" + s + ":" + value` with no escaping between
+/// the field-name segment and the value segment. Two semantically DISTINCT
+/// (field_name, value) pairs — a scraped breach-JSON key/value, per
+/// `modules::breach_rich`'s catch-all loop — must never collide onto the
+/// same uid just because a `:` moved from one segment to the other.
+#[test]
+fn other_kind_uid_does_not_collide_when_the_delimiter_shifts_between_name_and_value() {
+    let a = Entity::new(EntityKind::Other("a".to_string()), "b:c", 0.5, "s");
+    let b = Entity::new(EntityKind::Other("a:b".to_string()), "c", 0.5, "s");
+    assert_ne!(
+        a.uid, b.uid,
+        "Other(\"a\")+\"b:c\" and Other(\"a:b\")+\"c\" must not share a uid"
+    );
 }
 
 // ── EntityRef from Entity ───────────────────────────────────────────────
@@ -1339,6 +1760,47 @@ fn normalise_domain_is_idempotent_when_a_bom_shields_a_control_byte() {
     );
 }
 
+#[test]
+fn normalise_domain_is_idempotent_when_www_label_exposes_whitespace() {
+    // Regression: stripping a `www.` label that is immediately followed by
+    // whitespace must re-trim the leading edge, or the whitespace survives to
+    // the result but a re-normalise (no `www.` left to strip) would trim it —
+    // forking one host into two UIDs.
+    assert_eq!(normalise(&EntityKind::Domain, "www. foo.com"), "foo.com");
+    let once = normalise(&EntityKind::Domain, "www. foo.com");
+    let twice = normalise(&EntityKind::Domain, &once);
+    assert_eq!(once, twice, "normalise must be a fixed point");
+    assert_eq!(
+        once, "foo.com",
+        "whitespace exposed by www. strip is trimmed"
+    );
+}
+
+#[test]
+fn normalise_email_is_idempotent_when_a_bom_shields_whitespace() {
+    // Regression: a leading BOM/zero-width is not whitespace, so `value.trim()`
+    // stops at it and leaves whitespace behind it. Stripping the BOM exposes the
+    // whitespace at the edge — it must be re-trimmed in the SAME pass, or the
+    // result truncates at the space (cut finds `is_whitespace()`) and a second
+    // pass trims it first. This forked one address across two UIDs and truncated
+    // to empty string in the worst case.
+    let once = normalise(&EntityKind::Email, "\u{feff} alice@example.com");
+    let twice = normalise(&EntityKind::Email, &once);
+    assert_eq!(
+        once, twice,
+        "normalise must be idempotent (found '{once}' then '{twice}')"
+    );
+    assert_eq!(
+        once, "alice@example.com",
+        "whitespace exposed by BOM strip is trimmed"
+    );
+    // Extreme case: zero-width char + space. After stripping the zero-width,
+    // the re-trim removes the space, resulting in empty. This is correct —
+    // space-only (or zero-width + space) is not a valid email address.
+    let just_space = normalise(&EntityKind::Email, "\u{200b} ");
+    assert_eq!(just_space, "", "space-only input trims to empty");
+}
+
 // ── Classification::as_str round-trips ──────────────────────────────────
 
 #[test]
@@ -1617,9 +2079,11 @@ fn absorb_dedups_identically_on_both_branches() {
     // 1 shared + 2 a-rows + 2 b-rows = 5.
     assert_eq!(small_a.evidence.len(), 5);
 
-    // Large inputs → HashSet branch (1+16)*(1+16) = 289 > 256.
+    // Large inputs → fingerprint-index branch (1+16)*(1+16) = 289 > 256.
     let mut big_a = build(16, "a");
-    big_a.absorb(build(16, "b"));
+    let mut big_b = build(16, "b");
+    big_b.add_evidence(Evidence::new("shared", "s").with_attr("new", "value"));
+    big_a.absorb(big_b);
     // 1 shared + 16 a-rows + 16 b-rows = 33; the shared row folded once.
     assert_eq!(big_a.evidence.len(), 33);
     assert_eq!(
@@ -1629,8 +2093,93 @@ fn absorb_dedups_identically_on_both_branches() {
             .filter(|e| e.source == "shared")
             .count(),
         1,
-        "the shared (source,summary) row must be folded to one on the HashSet branch"
+        "the shared (source,summary) row must be folded to one on the indexed branch"
     );
+    let shared = big_a
+        .evidence
+        .iter()
+        .find(|e| e.source == "shared" && e.summary == "s")
+        .expect("shared evidence must remain present");
+    assert_eq!(
+        shared.attributes.get("new").map(String::as_str),
+        Some("value"),
+        "duplicates within the incoming batch must merge their attributes"
+    );
+}
+
+#[test]
+fn derived_entity_promotion_source_is_not_an_independent_source() {
+    // A `derived` entity whose only real source is its own generator
+    // (`email_parse`) must NOT be lifted to two-source agreement by a promotion
+    // pass. `source_count` already gated this; `corroborating_sources` did not,
+    // so ~20 correlator gates counted it as two independent sources.
+    let mut e = Entity::new(EntityKind::Username, "example-user", 0.55, "s");
+    e.tag("derived");
+    e.add_evidence(Evidence::new(
+        "email_parse",
+        "Derived from example-user@protonmail.com",
+    ));
+    e.add_evidence(Evidence::new(
+        "multipath_corroboration",
+        "Linked across 3 independent pathways",
+    ));
+    assert_eq!(e.corroborating_sources().len(), 1);
+    assert!(e.corroborating_sources().contains("email_parse"));
+    assert!(
+        !e.corroborating_sources()
+            .contains("multipath_corroboration")
+    );
+    // The SET and the COUNT must agree.
+    assert_eq!(e.corroborating_sources().len() as u32, e.source_count());
+}
+
+#[test]
+fn grounded_entity_still_counts_its_promotion_source() {
+    // A non-derived entity with one real source IS grounded, so a promotion
+    // pass legitimately adds breadth: two distinct corroborating sources.
+    let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.5, "s");
+    e.add_evidence(Evidence::new("hibp", "breach"));
+    e.add_evidence(Evidence::new("multipath_corroboration", "linked"));
+    assert_eq!(e.corroborating_sources().len(), 2);
+    assert_eq!(e.corroborating_sources().len() as u32, e.source_count());
+}
+
+#[test]
+fn corroborating_sources_len_equals_source_count_across_shapes() {
+    // The SET and the grounded COUNT agree for every combination of derived-ness
+    // and source mix — the invariant that keeps the confidence model and the
+    // rule gates from disagreeing.
+    let sources = [
+        "email_parse",
+        "hibp",
+        "crtsh",
+        "geo_normalize",
+        "recall",
+        "multipath_corroboration",
+        "cross_scan_corroboration",
+    ];
+    for mask in 0u32..(1 << sources.len()) {
+        for derived in [false, true] {
+            let mut e = Entity::new(EntityKind::Username, "x", 0.4, "s");
+            if derived {
+                e.tag("derived");
+            }
+            for (i, s) in sources.iter().enumerate() {
+                if mask & (1 << i) != 0 {
+                    e.add_evidence(Evidence::new(*s, "ev"));
+                }
+            }
+            let set = e.corroborating_sources();
+            if !set.is_empty() {
+                assert_eq!(
+                    set.len() as u32,
+                    e.source_count(),
+                    "mask={mask} derived={derived}"
+                );
+            }
+            assert!(set.is_subset(&e.evidence_sources()));
+        }
+    }
 }
 
 // ── Property tests (proptest) ──────────────────────────────────────────────
@@ -1707,21 +2256,46 @@ mod prop {
         /// `merge` is **order-independent** on the persisted signal — the property
         /// that makes concurrent dispatch deterministic. Two raw spellings that
         /// share a UID (case variants), merged in either order, yield the same
-        /// canonical `raw_value` (lexicographic min), confidence, and corroboration,
-        /// so the dossier never leaks task-completion order.
+        /// canonical `raw_value` (lexicographic min), `value`, confidence, and
+        /// corroboration, so the dossier never leaks task-completion order.
+        ///
+        /// Runs over `Person` as well as `Username`, and generates whitespace-run
+        /// variants: `Username` normalises to lowercase, so its same-UID entities
+        /// always share one `value` and the `value` limb of this property is
+        /// vacuous for it. `Person` is case- and whitespace-FOLDED at UID
+        /// derivation only, so it is the kind that can actually break the law —
+        /// while this property covered `Username` alone it was structurally blind
+        /// to the one case that failed.
         #[test]
         fn merge_is_order_independent(
             v in "[a-z]{1,8}", upper in any::<bool>(),
+            person in any::<bool>(), double_space in any::<bool>(),
             ca in 0.0f64..=1.0, cb in 0.0f64..=1.0,
             cra in 1u32..100_000, crb in 1u32..100_000,
         ) {
-            let raw_b = if upper { v.to_uppercase() } else { v.clone() };
-            let mut ab = mk(&v, ca, cra);
-            ab.merge(mk(&raw_b, cb, crb));
-            let mut ba = mk(&raw_b, cb, crb);
-            ba.merge(mk(&v, ca, cra));
+            let kind = if person { EntityKind::Person } else { EntityKind::Username };
+            let mk2 = |raw: &str, conf: f64, corr: u32| {
+                let mut e = Entity::new(kind.clone(), raw, conf, "scan");
+                e.corroboration = corr;
+                e
+            };
+            // For Person, a spacing variant still folds to one UID — the exact
+            // shape ("Jeremy  Stewart" vs "Jeremy Stewart") that used to persist
+            // whichever spelling merged first.
+            let raw_a = if person && double_space { format!("{v}  {v}") } else { v.clone() };
+            let base_b = if person && double_space { format!("{v} {v}") } else { v.clone() };
+            let raw_b = if upper { base_b.to_uppercase() } else { base_b };
+
+            let mut ab = mk2(&raw_a, ca, cra);
+            ab.merge(mk2(&raw_b, cb, crb));
+            ab.canonicalize_order();
+            let mut ba = mk2(&raw_b, cb, crb);
+            ba.merge(mk2(&raw_a, ca, cra));
+            ba.canonicalize_order();
+
             prop_assert_eq!(&ab.uid, &ba.uid);
             prop_assert_eq!(&ab.raw_value, &ba.raw_value);
+            prop_assert_eq!(&ab.value, &ba.value);
             prop_assert!((ab.confidence - ba.confidence).abs() < 1e-12);
             prop_assert_eq!(ab.corroboration, ba.corroboration);
         }
@@ -1753,4 +2327,200 @@ mod prop {
             prop_assert!(c_n1 + 1e-12 >= c_n, "c_eff not monotonic: {} -> {}", c_n, c_n1);
         }
     }
+}
+
+// ── Identity vs display: one person, one node ───────────────────────────────
+
+/// The observed fragmentation, pinned. One person spelled three ways by three
+/// sources produced three UIDs — and therefore three graph nodes, each holding
+/// only its own source's evidence.
+#[test]
+fn person_case_and_spacing_variants_resolve_to_one_identity() {
+    let variants = [
+        "Jeremy Stewart",
+        "jeremy stewart",
+        "JEREMY STEWART",
+        "Jeremy  Stewart",
+        "  Jeremy Stewart  ",
+    ];
+    let uids: std::collections::BTreeSet<String> = variants
+        .iter()
+        .map(|v| Entity::new(EntityKind::Person, *v, 0.7, "s").uid)
+        .collect();
+    assert_eq!(
+        uids.len(),
+        1,
+        "one person must be one node; got {} distinct UIDs from {variants:?}",
+        uids.len()
+    );
+}
+
+/// Identity folding must not cost display quality: the dossier still shows the
+/// name as the source spelled it. This is the reason the fold lives in
+/// `derive_uid` rather than in `normalise`, whose output IS the display value.
+#[test]
+fn folding_identity_does_not_downcase_the_displayed_name() {
+    let e = Entity::new(EntityKind::Person, "Jeremy Stewart", 0.7, "s");
+    assert_eq!(e.value, "Jeremy Stewart", "display value is preserved");
+    assert_eq!(e.raw_value, "Jeremy Stewart");
+}
+
+/// The symptom this actually cures. The engine derives the SEED's UID from the
+/// operator's target string via `derive_uid`, while modules derive theirs from
+/// whatever spelling they emit. When those disagree the seed is an isolated node
+/// and every derived edge attaches to a twin it cannot reach — "the subject has
+/// no derived connections yet", on a graph holding thousands of edges.
+#[test]
+fn a_seed_and_the_entity_its_modules_emit_are_the_same_node() {
+    // Exactly what `core::engine` does for the seed.
+    let typed = "Jeremy Stewart";
+    let seed_uid = derive_uid(&EntityKind::Person, &normalise(&EntityKind::Person, typed));
+    // What a module emits after a breach source lower-cased it.
+    let emitted = Entity::new(EntityKind::Person, "jeremy stewart", 0.7, "s");
+    assert_eq!(
+        seed_uid, emitted.uid,
+        "the seed must BE the node its own modules populate"
+    );
+}
+
+/// Organisations carry the same free-text spelling variance as people.
+#[test]
+fn organisation_case_variants_resolve_to_one_identity() {
+    let a = Entity::new(EntityKind::Organisation, "Acme Corp", 0.7, "s");
+    let b = Entity::new(EntityKind::Organisation, "ACME  CORP", 0.7, "s");
+    assert_eq!(a.uid, b.uid);
+    assert_eq!(
+        a.value, "Acme Corp",
+        "display is still the original spelling"
+    );
+}
+
+/// `merge` must canonicalise the DISPLAY value, not just `raw_value`.
+///
+/// `identity_fold` deliberately makes `uid` insensitive to case and whitespace
+/// runs for `Person`/`Organisation` while `normalise` leaves `value` untouched —
+/// so these are the only two kinds where same-UID entities can hold *different*
+/// `value` strings. `merge` canonicalised `raw_value` (citing the Determinism
+/// Requirement) but never `value`, so the surviving display spelling was decided
+/// by module completion order: two runs of one scan produced diffing dossiers.
+///
+/// The pre-existing `merge_is_order_independent` property could not catch this —
+/// its `mk` helper builds a `Username`, whose `normalise` lowercases, so its
+/// same-UID entities always share one `value`. The property was structurally
+/// blind to the only kinds that can fail it.
+#[test]
+fn merge_canonicalises_the_display_value_not_just_raw_value() {
+    // Two real sources: a registry that shouts, and a scraper that title-cases.
+    let a = Entity::new(EntityKind::Person, "JEREMY STEWART", 0.6, "scan");
+    let b = Entity::new(EntityKind::Person, "Jeremy Stewart", 0.6, "scan");
+    assert_eq!(a.uid, b.uid, "precondition: one person, one node");
+
+    let mut ab = a.clone();
+    ab.merge(b.clone());
+    ab.canonicalize_order();
+    let mut ba = b.clone();
+    ba.merge(a.clone());
+    ba.canonicalize_order();
+
+    assert_eq!(
+        ab.raw_value, ba.raw_value,
+        "raw_value was already canonical"
+    );
+    assert_eq!(
+        ab.value, ba.value,
+        "display value must not depend on merge order"
+    );
+
+    // Organisation folds identically, and adds the whitespace-run case: the
+    // surviving spelling must not be the double-spaced one.
+    let x = Entity::new(EntityKind::Organisation, "ACME  CORP", 0.6, "scan");
+    let y = Entity::new(EntityKind::Organisation, "Acme Corp", 0.6, "scan");
+    assert_eq!(x.uid, y.uid);
+    let mut xy = x.clone();
+    xy.merge(y.clone());
+    let mut yx = y.clone();
+    yx.merge(x.clone());
+    assert_eq!(xy.value, yx.value, "org display value must be order-free");
+}
+
+/// SSIDs are case-SENSITIVE by IEEE 802.11 — folding them would merge two
+/// genuinely different networks, which for a geolocation tool is a false
+/// identity claim about a physical place.
+#[test]
+fn ssids_are_never_folded_because_case_is_significant() {
+    let a = Entity::new(EntityKind::Ssid, "HomeNet", 0.7, "s");
+    let b = Entity::new(EntityKind::Ssid, "homenet", 0.7, "s");
+    assert_ne!(a.uid, b.uid, "two distinct networks must stay distinct");
+}
+
+/// Every kind that already canonicalises in `normalise` must hash exactly as it
+/// did before the fold existed — the change is scoped to free-text name kinds,
+/// and a silent UID shift elsewhere would strand persisted entities.
+#[test]
+fn identifier_kinds_keep_their_pre_existing_uids() {
+    for (kind, value) in [
+        (EntityKind::Email, "Alice@Example.COM"),
+        (EntityKind::Username, "@Alice"),
+        (EntityKind::Domain, "Example.com."),
+        (EntityKind::IpAddress, "1.1.1.1"),
+        (EntityKind::Url, "https://example.com/a"),
+    ] {
+        let normalised = normalise(&kind, value);
+        // The fold must be a no-op for these: UID == hash of the normalised
+        // value with no further transformation.
+        assert_eq!(
+            Entity::new(kind.clone(), value, 0.7, "s").uid,
+            derive_uid(&kind, &normalised),
+            "{kind} UID must be unchanged by identity folding"
+        );
+    }
+}
+
+#[test]
+fn seed_and_url_extract_do_not_corroborate_the_operators_own_input() {
+    // Regression (live andersonbushikai.com URL scan, debug bundle
+    // 6b2d34664852…): the operator's own seed was counted as an independent
+    // corroborating source of itself. The seed URL entity carried exactly two
+    // evidence records — `[search_engines]` and `[seed] Scan seed —
+    // operator-provided target` — and reported `source_count=2`, `c_eff=0.99`,
+    // class VERIFIED. One real observation was presented as two.
+    let mut url = Entity::new(EntityKind::Url, "https://example.com/locations", 0.90, "s");
+    url.add_evidence(Evidence::new(
+        "seed",
+        "Scan seed — operator-provided target (subject anchor)",
+    ));
+    url.add_evidence(Evidence::new(
+        "search_engines",
+        "Search returned 18 results",
+    ));
+    assert_eq!(
+        url.source_count(),
+        1,
+        "the seed is the operator's input, not an independent sighting of it"
+    );
+
+    // Same class of defect for `url_extract`: its own module doc states it is
+    // "pure offline, zero network" and derives the host from a URL already in
+    // the graph. In the same scan it was one of the five "independent sources"
+    // AU-003 reported for andersonbushikai.com, and one of the five
+    // "infrastructure sources" AU-010 listed.
+    let mut dom = Entity::new(EntityKind::Domain, "example.com", 0.92, "s");
+    dom.add_evidence(Evidence::new("url_extract", "Host extracted from URL seed"));
+    dom.add_evidence(Evidence::new("dns_intel", "SOA record"));
+    dom.add_evidence(Evidence::new("doh_resolver", "A record"));
+    assert_eq!(
+        dom.source_count(),
+        2,
+        "url_extract restates a URL already known; only the two live lookups corroborate"
+    );
+
+    // A seed-only entity still reports one source, not zero: with no
+    // corroborating evidence the stored magnitude is honoured, exactly as for
+    // any other evidence-less entity.
+    let mut seed_only = Entity::new(EntityKind::Url, "https://example.com/", 0.90, "s");
+    seed_only.add_evidence(Evidence::new(
+        "seed",
+        "Scan seed — operator-provided target",
+    ));
+    assert_eq!(seed_only.source_count(), 1);
 }

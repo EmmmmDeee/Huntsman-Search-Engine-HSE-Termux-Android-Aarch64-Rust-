@@ -1,6 +1,44 @@
 use super::*;
 
     #[test]
+    fn table_rows_extracts_trimmed_stripped_cells_per_row() {
+        // Two data rows with nested tags + whitespace, plus a `<th>` header row
+        // that yields no `<td>` cells (an empty row the caller drops).
+        let html = "<table>\
+            <tr><th>Name</th><th>No</th></tr>\
+            <tr><td> Jane <b>Doe</b> </td><td>RN123</td><td>Nurse</td></tr>\
+            <tr><td>Bob</td><td> 42 </td><td></td></tr>\
+            </table>";
+        let rows = table_rows(html);
+        assert_eq!(
+            rows,
+            vec![
+                vec![],
+                vec!["Jane Doe".to_string(), "RN123".to_string(), "Nurse".to_string()],
+                vec!["Bob".to_string(), "42".to_string(), String::new()],
+            ]
+        );
+    }
+
+    #[test]
+    fn table_rows_is_total_on_unterminated_markup() {
+        // A `<tr>` with no closing `</tr>` yields nothing (the row is incomplete);
+        // a closed row with an unterminated `<td>` drops that cell. Neither
+        // panics or loops.
+        assert!(table_rows("<tr><td>x").is_empty(), "no </tr> → no row");
+        assert_eq!(
+            table_rows("<tr><td>x</td></tr>"),
+            vec![vec!["x".to_string()]]
+        );
+        assert_eq!(
+            table_rows("<tr><td>ok</td><td>trunc"),
+            Vec::<Vec<String>>::new(),
+            "row without </tr> is not emitted"
+        );
+        assert!(table_rows("no table here").is_empty());
+    }
+
+    #[test]
     fn strips_scripts_styles_and_tags() {
         let html = "<html><script>alert(1)</script><style>.x{}</style>\
                     <body>Hello <b>world</b>!</body></html>";
@@ -88,6 +126,124 @@ use super::*;
         assert_eq!(decode_entities("&café"), "&café");
     }
 
+    /// The exact shape a CDN returns when an origin is unreachable — the first
+    /// 200 characters are doctype and IE conditional comments, and the title is
+    /// the only line that names the failure.
+    const CLOUDFLARE_523: &str = concat!(
+        "<!DOCTYPE html>\n",
+        "<!--[if lt IE 7]> <html class=\"no-js ie6 oldie\" lang=\"en-US\"> <![endif]-->\n",
+        "<!--[if IE 7]>    <html class=\"no-js ie7 oldie\" lang=\"en-US\"> <![endif]-->\n",
+        "<!--[if IE 8]>    <html class=\"no-js ie8 oldie\" lang=\"en-US\"> <![endif]-->\n",
+        "<head>\n<title>psbdmp.ws | 523: Origin is unreachable</title>\n",
+        "<style>.x{color:red}</style>\n</head>\n",
+        "<body><h1>Error 523</h1><p>Origin is unreachable</p></body></html>",
+    );
+
+    #[test]
+    fn title_of_an_error_page_names_the_failure() {
+        assert_eq!(
+            title(CLOUDFLARE_523).as_deref(),
+            Some("psbdmp.ws | 523: Origin is unreachable"),
+            "the title is the whole diagnostic value of a CDN error page"
+        );
+    }
+
+    #[test]
+    fn title_decodes_entities_and_collapses_whitespace() {
+        assert_eq!(
+            title("<html><title>\n  Bad\n  &amp;  broken\n</title>").as_deref(),
+            Some("Bad & broken")
+        );
+    }
+
+    #[test]
+    fn title_tolerates_attributes_and_reports_absence() {
+        assert_eq!(
+            title("<title lang=\"en\">Gateway Time-out</title>").as_deref(),
+            Some("Gateway Time-out")
+        );
+        assert_eq!(title("<html><body>no title here</body></html>"), None);
+        assert_eq!(title("<title></title>"), None, "an empty title is no title");
+        assert_eq!(title("<title>unterminated"), None);
+    }
+
+    #[test]
+    fn looks_like_document_requires_an_opener_not_a_stray_bracket() {
+        assert!(looks_like_document(CLOUDFLARE_523));
+        assert!(looks_like_document("  \n<html lang=\"en\">"));
+        assert!(looks_like_document("<!doctype HTML PUBLIC ..."));
+
+        // The case that must NOT be treated as a document: a JSON error payload
+        // that merely quotes markup. Rewriting it would destroy the real message.
+        assert!(!looks_like_document(
+            r#"{"error":"unexpected <html> in response"}"#
+        ));
+        assert!(!looks_like_document("plain text failure"));
+        assert!(!looks_like_document(""));
+        assert!(
+            !looks_like_document("<result><html>x</html></result>"),
+            "an XML payload whose first element is not <html> is not a document"
+        );
+    }
+
+    /// The panic class `find_ascii_ci` exists to prevent, exercised on the
+    /// characters that actually trigger it.
+    ///
+    /// `to_lowercase()` is not byte-length-preserving — `İ` (U+0130, 2 bytes)
+    /// lowercases to `i̇` (3 bytes) and `ẞ` to `ß` — so an offset taken from a
+    /// lowercased copy and used to slice the ORIGINAL can land mid-codepoint and
+    /// panic. Error bodies are entirely upstream-controlled, so this input is
+    /// reachable by anything a server chooses to return.
+    #[test]
+    fn title_and_document_detection_survive_length_changing_lowercase() {
+        // `İ`/`ẞ` BEFORE the tag, so a lowercased-copy offset would be shifted
+        // past a char boundary in the original.
+        let html = "İİİẞ<html><head><title>İstanbul ẞ Error</title></head>";
+        assert_eq!(title(html).as_deref(), Some("İstanbul ẞ Error"));
+
+        // Same characters inside the title text itself.
+        assert_eq!(
+            title("<title>İ ẞ İ</title>").as_deref(),
+            Some("İ ẞ İ"),
+            "title text must round-trip unchanged"
+        );
+
+        // And in a document that must still be detected.
+        assert!(looks_like_document("<HTML lang=\"tr\">İ"));
+        assert!(!looks_like_document("İ<html>"), "not at position 0");
+
+        // The two concrete failures of the `to_lowercase()`-offset shape, both
+        // reproduced against it before this fix:
+        //   * silent corruption — it returned "日本語<", trailing garbage from a
+        //     close offset shifted 2 bytes by `İ` (2 bytes → 3);
+        //   * an outright panic — `ẞ` (3 bytes) → `ß` (2) shifts the offset
+        //     backwards into the middle of an emoji.
+        assert_eq!(title("İ<title>日本語</title>").as_deref(), Some("日本語"));
+        assert_eq!(title("ẞ<title>😀😀</title>").as_deref(), Some("😀😀"));
+
+        // Total over arbitrary placements: must never panic.
+        for filler in ["İ", "ẞ", "İẞ", "e\u{301}", "😀"] {
+            for tpl in [
+                "{f}<title>x</title>",
+                "<title>{f}</title>",
+                "<title{f}>x</title>",
+                "<html>{f}<title>{f}x{f}</title>{f}",
+                "{f}",
+                "<title>{f}",
+            ] {
+                let s = tpl.replace("{f}", filler);
+                let _ = title(&s);
+                let _ = looks_like_document(&s);
+            }
+        }
+    }
+
+    #[test]
+    fn collapse_whitespace_flattens_stripped_markup() {
+        assert_eq!(collapse_whitespace("  a\n\n\tb   c \r\n"), "a b c");
+        assert_eq!(collapse_whitespace("   "), "");
+    }
+
 // ── Property tests: the HTML helpers never panic on hostile bytes ───────────
 // strip_html / decode_entities run on every scraped page — fully attacker-
 // controlled. The doc claims the `&…;` slice "can never split a codepoint";
@@ -137,3 +293,59 @@ mod prop {
         }
     }
 }
+
+    // Regression: the `;` search used to scan the WHOLE remainder and only then
+    // reject a hit past `MAX_ENTITY_BODY`, so a run of bare ampersands cost one
+    // full scan each — quadratic. The property tests above cap at 64-128 chars,
+    // far too short to show it, which is why it survived. This asserts the
+    // OUTPUT at a size where the old behaviour was already seconds of CPU.
+    #[test]
+    fn decode_entities_is_correct_on_an_ampersand_storm() {
+        // 64 KiB of bare `&`, the worst case: every one starts a search that
+        // finds no `;` at all.
+        let storm = "&".repeat(64 * 1024);
+        assert_eq!(
+            decode_entities(&storm),
+            storm,
+            "a bare `&` is not an entity and must survive verbatim"
+        );
+
+        // A `;` sitting far beyond any legal entity body must NOT be treated as a
+        // terminator, and must not be searched for either.
+        let far = format!("&{}re;", "x".repeat(4096));
+        assert_eq!(decode_entities(&far), far, "a distant `;` terminates nothing");
+
+        // The bound is on the BODY, so a legal entity still decodes when it sits
+        // immediately after a storm.
+        let mixed = format!("{}&amp;", "&".repeat(4096));
+        assert_eq!(decode_entities(&mixed), format!("{}&", "&".repeat(4096)));
+
+        // Exactly at and one past the accepted body length.
+        assert_eq!(decode_entities("&#x1F600;"), "\u{1F600}");
+        assert_eq!(decode_entities("&0123456789012;"), "&0123456789012;");
+    }
+
+    // Timing ratios are a property of the scheduler, not of the code, so this is
+    // `#[ignore]`d to match the house convention for perf baselines rather than
+    // reddening the gate on a loaded runner. Run it by hand to re-confirm the
+    // bound: before it was bounded, 128 KB of `&` took 3.85 s against 1.53 ms
+    // after, with time quadrupling per doubling of input.
+    #[test]
+    #[ignore = "timing ratio; run with --ignored --nocapture"]
+    fn decode_entities_is_linear_in_ampersand_count() {
+        let small = "&".repeat(16 * 1024);
+        let large = "&".repeat(128 * 1024); // 8x
+
+        let t = std::time::Instant::now();
+        let a = decode_entities(&small);
+        let small_ns = t.elapsed().as_nanos().max(1);
+        let t = std::time::Instant::now();
+        let b = decode_entities(&large);
+        let large_ns = t.elapsed().as_nanos().max(1);
+
+        assert_eq!(a, small);
+        assert_eq!(b, large);
+        let ratio = large_ns as f64 / small_ns as f64;
+        println!("8x input -> {ratio:.1}x time (quadratic would be ~64x)");
+        assert!(ratio < 24.0, "8x the input cost {ratio:.1}x the time");
+    }

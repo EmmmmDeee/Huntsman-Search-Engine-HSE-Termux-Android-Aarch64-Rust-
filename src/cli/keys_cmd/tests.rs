@@ -1,5 +1,5 @@
 
-use super::{bank_row, char_prefix, mask_key, run_tsv_import};
+use super::{bank_row, char_prefix, mask_key, run_prune, run_tsv_import, validation_label};
 
     fn vault_entry(service: &str, key: &str, count: u32) -> crate::util::key_vault::VaultEntry {
         crate::util::key_vault::VaultEntry {
@@ -137,4 +137,47 @@ use super::{bank_row, char_prefix, mask_key, run_tsv_import};
         // Sanity: both keys really are in the pool now (2 total), proving the
         // scoping is about what's *reported*, not what's *persisted*.
         assert_eq!(pool.total_keys(), 2);
+    }
+
+    #[test]
+    fn run_prune_previews_without_mutating_then_applies() {
+        use crate::util::key_pool::{KeyEntry, KeyPool};
+        let pool = KeyPool::new();
+        // Degraded Basic key (default tier): 100 uses, 90 errors -> 10% success.
+        let mut bad = KeyEntry::new("bad");
+        bad.use_count = 100;
+        bad.error_count = 90;
+        // Healthy key: 100 uses, 5 errors -> 95% success.
+        let mut good = KeyEntry::new("good");
+        good.use_count = 100;
+        good.error_count = 5;
+        pool.add("shodan", bad);
+        pool.add("shodan", good);
+
+        // Preview (no --apply): reports the count but must NOT mutate the pool.
+        assert_eq!(run_prune(&pool, 0.5, 10, false), 1);
+        assert_eq!(pool.total_keys(), 2, "dry-run must not mutate the pool");
+
+        // Apply: actually prunes the degraded key; the healthy one survives.
+        assert_eq!(run_prune(&pool, 0.5, 10, true), 1);
+        assert_eq!(pool.total_keys(), 1, "--apply prunes the degraded key");
+        assert_eq!(pool.next_key("shodan").as_deref(), Some("good"));
+    }
+
+    #[test]
+    fn validation_label_distinguishes_inconclusive_from_missing_validator() {
+        // A definitive verdict is unambiguous.
+        assert_eq!(validation_label(true, Some(true)), "ACTIVE");
+        assert_eq!(validation_label(true, Some(false)), "INVALID");
+        // None on a KNOWN service (e.g. see_know behind a blocked egress → the
+        // probe times out / 5xx) must NOT read as "no validator" — it is
+        // inconclusive, and the stored status is left unchanged.
+        let known = validation_label(true, None);
+        assert!(known.contains("inconclusive"), "got: {known}");
+        assert!(!known.contains("no validator"), "got: {known}");
+        // None on an UNKNOWN service genuinely has no validator.
+        assert_eq!(
+            validation_label(false, None),
+            "UNKNOWN (no validator for service)"
+        );
     }

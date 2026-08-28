@@ -64,8 +64,8 @@ fn connect_values_links_two_people_by_name() {
     );
     assert!(!paths.is_empty(), "the two named people are connected");
     assert_eq!(paths[0].hops, 2);
-    assert_eq!(paths[0].nodes.first().unwrap(), &kyle.uid);
-    assert_eq!(paths[0].nodes.last().unwrap(), &erik.uid);
+    assert_eq!(paths[0].nodes.first().expect("should succeed"), &kyle.uid);
+    assert_eq!(paths[0].nodes.last().expect("should succeed"), &erik.uid);
     // Unknown value ⇒ no path, no panic.
     assert!(
         connect_values(
@@ -148,9 +148,9 @@ fn connect_cross_scan_bridges_two_separate_investigations() {
     let from_e = Entity::new(EntityKind::Email, "from@example.com", 0.7, "scan-a");
     let bridge = Entity::new(EntityKind::Domain, "bridge.example", 0.6, "scan-a");
     let to_e = Entity::new(EntityKind::Email, "to@example.com", 0.7, "scan-b");
-    store.upsert_entity(&from_e).unwrap();
-    store.upsert_entity(&bridge).unwrap();
-    store.upsert_entity(&to_e).unwrap();
+    store.upsert_entity(&from_e).expect("should succeed");
+    store.upsert_entity(&bridge).expect("should succeed");
+    store.upsert_entity(&to_e).expect("should succeed");
     store
         .upsert_relation(&Relation::new(
             from_e.uid.as_str(),
@@ -159,7 +159,7 @@ fn connect_cross_scan_bridges_two_separate_investigations() {
             0.6,
             "scan-a",
         ))
-        .unwrap();
+        .expect("should succeed");
     store
         .upsert_relation(&Relation::new(
             to_e.uid.as_str(),
@@ -168,7 +168,7 @@ fn connect_cross_scan_bridges_two_separate_investigations() {
             0.6,
             "scan-b",
         ))
-        .unwrap();
+        .expect("should succeed");
 
     let paths = connect_cross_scan(&store, "from@example.com", "to@example.com", 3);
     assert!(
@@ -176,8 +176,8 @@ fn connect_cross_scan_bridges_two_separate_investigations() {
         "the two emails connect through the shared bridge across scans"
     );
     assert_eq!(paths[0].hops, 2);
-    assert_eq!(paths[0].nodes.first().unwrap(), &from_e.uid);
-    assert_eq!(paths[0].nodes.last().unwrap(), &to_e.uid);
+    assert_eq!(paths[0].nodes.first().expect("should succeed"), &from_e.uid);
+    assert_eq!(paths[0].nodes.last().expect("should succeed"), &to_e.uid);
     assert!(
         paths[0].nodes.contains(&bridge.uid),
         "the route passes through the cross-scan bridge"
@@ -195,7 +195,7 @@ fn connect_cross_scan_is_empty_without_a_bridge_or_endpoint() {
             0.7,
             "scan-a",
         ))
-        .unwrap();
+        .expect("should succeed");
     store
         .upsert_entity(&Entity::new(
             EntityKind::Email,
@@ -203,7 +203,7 @@ fn connect_cross_scan_is_empty_without_a_bridge_or_endpoint() {
             0.7,
             "scan-b",
         ))
-        .unwrap();
+        .expect("should succeed");
     // No shared bridge ⇒ no connection.
     assert!(
         connect_cross_scan(&store, "lonely-a@example.com", "lonely-b@example.com", 3).is_empty()

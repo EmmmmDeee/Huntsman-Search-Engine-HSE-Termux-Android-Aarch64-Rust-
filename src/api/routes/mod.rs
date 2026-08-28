@@ -2,47 +2,98 @@
 //!
 //! Endpoint surface:
 //!
-//! | Method | Path                              | Handler                  |
-//! |--------|-----------------------------------|--------------------------|
-//! | GET    | `/api/v1/health`                  | `health`                 |
-//! | GET    | `/api/v1/version`                 | `version`                |
-//! | GET    | `/api/v1/modules`                 | `modules_list`           |
-//! | GET    | `/api/v1/modules/graph`           | `modules_graph` (v1.1+)  |
-//! | GET    | `/api/v1/modules/health`          | `modules_health`         |
-//! | GET    | `/api/v1/engines/health`          | `engines_health` (v1.3+) |
-//! | GET    | `/api/v1/health/scrapers`         | `scraper_health` (v1.13+) |
-//! | GET    | `/api/v1/keys/patterns`           | `keys_patterns` (v1.4+)  |
-//! | GET    | `/api/v1/keys/harvest`            | `keys_harvest`           |
-//! | POST   | `/api/v1/scans`                   | `scan_create`            |
-//! | GET    | `/api/v1/scans`                   | `scan_list`              |
-//! | GET    | `/api/v1/scans/{id}`              | `scan_get`               |
-//! | DELETE | `/api/v1/scans/{id}`              | `scan_delete`            |
-//! | POST   | `/api/v1/scans/{id}/rerun`        | `scan_rerun`             |
-//! | GET    | `/api/v1/scans/{id}/entities`     | `scan_entities`          |
-//! | GET    | `/api/v1/scans/{id}/entities.csv` | `scan_entities_csv`      |
-//! | GET    | `/api/v1/scans/{id}/correlations` | `scan_correlations` (v0.4+) |
-//! | GET    | `/api/v1/scans/{id}/relations`    | `scan_relations`         |
-//! | GET    | `/api/v1/scans/{id}/stealer-rows` | `scan_stealer_rows` (v1.13+) |
-//! | GET    | `/api/v1/scans/{id}/audit`        | `scan_audit` (v1.3+)     |
-//! | GET    | `/api/v1/scans/{id}/events`       | `scan_events_sse` (SSE)  |
-//! | POST   | `/api/v1/live`                    | `live_create` (v0.5+)    |
-//! | GET    | `/api/v1/live`                    | `live_list`              |
-//! | GET    | `/api/v1/live/{id}`               | `live_get`               |
-//! | DELETE | `/api/v1/live/{id}`               | `live_stop`              |
-//! | GET    | `/api/v1/live/{id}/events`        | `live_events_sse` (SSE)  |
-//! | GET    | `/api/v1/settings/keys`           | `settings_keys_get` (v0.10+) |
-//! | PUT    | `/api/v1/settings/keys`           | `settings_keys_put`      |
-//! | GET    | `/api/v1/settings/toggles`        | `settings_toggles_get` (v1.4+) |
-//! | PUT    | `/api/v1/settings/toggles`        | `settings_toggles_put`   |
-//! | GET    | `/api/v1/update/status`           | `get_status` (v1.5+)     |
-//! | POST   | `/api/v1/update/trigger`          | `post_trigger` (v1.5+)   |
-//! | GET    | `/api/v1/cells/status`            | `cells_status` (v1.13+)  |
-//! | POST   | `/api/v1/cells/import`            | `cells_import` (v1.13+)  |
-//! | POST   | `/api/v1/cells/clear`             | `cells_clear` (v1.13+)   |
-//! | GET    | `/api/v1/scan/profiles`           | `scan_profiles` (v1.13+) |
-//! | *      | `/api/*` (unmatched)              | `api_not_found` (JSON 404) |
-//! | GET    | `/static/{*file}`                 | `vendor_handler`         |
-//! | GET    | `/*` (fallback)                   | `spa_handler` (static)   |
+//! | Method | Path                                     | Handler                        |
+//! |--------|------------------------------------------|--------------------------------|
+//! | GET    | `/api/v1/health`                         | `health`                       |
+//! | GET    | `/api/v1/version`                        | `version`                      |
+//! | GET    | `/api/v1/stats`                          | `stats`                        |
+//! | GET    | `/api/v1/modules`                        | `modules_list`                 |
+//! | GET    | `/api/v1/modules/graph`                  | `modules_graph` (v1.1+)        |
+//! | GET    | `/api/v1/modules/health`                 | `modules_health`               |
+//! | POST   | `/api/v1/capabilities/probe`             | `capabilities_probe` (v1.14+)  |
+//! | GET    | `/api/v1/engines/health`                 | `engines_health` (v1.3+)       |
+//! | GET    | `/api/v1/health/scrapers`                | `scraper_health` (v1.13+)      |
+//! | GET    | `/api/v1/selftest`                       | `selftest_run`                 |
+//! | GET    | `/api/v1/logs`                           | `logs_download`                |
+//! | GET    | `/api/v1/logs/tail`                      | `logs_tail`                    |
+//! | GET    | `/api/v1/debug/bundle`                   | `system_debug_bundle`          |
+//! | GET    | `/api/v1/keys/patterns`                  | `keys_patterns` (v1.4+)        |
+//! | GET    | `/api/v1/keys/status`                    | `keys_status` (v1.17+)         |
+//! | GET    | `/api/v1/keys/health`                    | `keys_health` (v1.17+)         |
+//! | GET    | `/api/v1/keys/harvest`                   | `keys_harvest`                 |
+//! | GET    | `/api/v1/keys/pool`                      | `keys_pool_get`                |
+//! | POST   | `/api/v1/keys/pool/add`                  | `keys_pool_add`                |
+//! | POST   | `/api/v1/keys/pool/revoke`               | `keys_pool_revoke`             |
+//! | POST   | `/api/v1/keys/pool/rotate`               | `keys_pool_rotate`             |
+//! | POST   | `/api/v1/scans`                          | `scan_create`                  |
+//! | GET    | `/api/v1/scans`                          | `scan_list`                    |
+//! | POST   | `/api/v1/scans/batch`                    | `scan_batch`                   |
+//! | POST   | `/api/v1/scans/import`                   | `scan_import` (16 MB body cap) |
+//! | GET    | `/api/v1/scans/{id}`                     | `scan_get`                     |
+//! | DELETE | `/api/v1/scans/{id}`                     | `scan_delete`                  |
+//! | POST   | `/api/v1/scans/{id}/rerun`               | `scan_rerun`                   |
+//! | POST   | `/api/v1/scans/{id}/cancel`              | `scan_cancel`                  |
+//! | GET    | `/api/v1/scans/{id}/entities`            | `scan_entities` (paginated)    |
+//! | GET    | `/api/v1/scans/{id}/entities/filter`     | `scan_entities_filter`         |
+//! | GET    | `/api/v1/scans/{id}/entities/facets`     | `scan_entities_facets`         |
+//! | GET    | `/api/v1/scans/{id}/diamond`             | `scan_diamond`                 |
+//! | GET    | `/api/v1/scans/{id}/exposure`            | `scan_exposure`                |
+//! | GET    | `/api/v1/scans/{id}/attack`              | `scan_attack` (v1.13+)         |
+//! | GET    | `/api/v1/scans/{id}/entities.csv`        | `scan_entities_csv`            |
+//! | GET    | `/api/v1/scans/{id}/report.json`         | `scan_report_json`             |
+//! | GET    | `/api/v1/scans/{id}/graph.gexf`          | `scan_export_gexf`             |
+//! | GET    | `/api/v1/scans/{id}/debug.txt`           | `scan_debug_bundle`            |
+//! | GET    | `/api/v1/scans/{id}/events.log`          | `scan_events_log` (download)   |
+//! | GET    | `/api/v1/scans/{id}/correlations`        | `scan_correlations` (v0.4+)    |
+//! | GET    | `/api/v1/scans/{id}/relations`           | `scan_relations`               |
+//! | GET    | `/api/v1/scans/{id}/network`             | `scan_network`                 |
+//! | GET    | `/api/v1/scans/{id}/cross-scan`          | `scan_cross_scan` (v1.35+)     |
+//! | GET    | `/api/v1/scans/{id}/snake.svg`           | `scan_snake_svg` (v1.35+)      |
+//! | GET    | `/api/v1/scans/{id}/stealer-rows`        | `scan_stealer_rows` (v1.13+)   |
+//! | GET    | `/api/v1/scans/{id}/identities`          | `scan_identities`              |
+//! | GET    | `/api/v1/scans/{id}/leads`               | `scan_leads`                   |
+//! | GET    | `/api/v1/scans/{id}/timeline`            | `scan_timeline`                |
+//! | GET    | `/api/v1/scans/{id}/communities`         | `scan_communities`             |
+//! | GET    | `/api/v1/scans/{id}/trust`               | `scan_trust`                   |
+//! | GET    | `/api/v1/scans/{id}/path`                | `scan_path`                    |
+//! | GET    | `/api/v1/scans/{id}/metrics`             | `scan_metrics`                 |
+//! | GET    | `/api/v1/scans/{id}/duplicates`          | `scan_duplicates`              |
+//! | GET    | `/api/v1/scans/{id}/pivots`              | `scan_pivots`                  |
+//! | GET    | `/api/v1/scans/{id}/gaps`                | `scan_gaps`                    |
+//! | GET    | `/api/v1/scans/{id}/location`            | `scan_location`                |
+//! | GET    | `/api/v1/scans/{id}/benchmark`           | `scan_benchmark`               |
+//! | GET    | `/api/v1/scans/{id}/audit`               | `scan_audit` (v1.3+)           |
+//! | GET    | `/api/v1/scans/{a}/diff/{b}`             | `scan_diff`                    |
+//! | GET    | `/api/v1/scans/{id}/events`              | `scan_events_sse` (SSE)        |
+//! | GET    | `/api/v1/scans/{id}/events.history`      | `scan_events_history`          |
+//! | GET    | `/api/v1/scan/profiles`                  | `scan_profiles` (v1.13+)       |
+//! | POST   | `/api/v1/scan/auto`                      | `scan_auto`                    |
+//! | GET    | `/api/v1/scan/auto/plan`                 | `scan_auto_plan`               |
+//! | POST   | `/api/v1/scan/auto/sweep`                | `scan_auto_sweep`              |
+//! | GET    | `/api/v1/plan`                           | `plan_preview`                 |
+//! | POST   | `/api/v1/radar`                          | `radar_sweep`                  |
+//! | POST   | `/api/v1/radar/live`                     | `radar_live`                   |
+//! | GET    | `/api/v1/radar/history`                  | `radar_history`                |
+//! | GET    | `/api/v1/radar/recurring`                | `radar_recurring`              |
+//! | POST   | `/api/v1/live`                           | `live_create` (v0.5+)          |
+//! | GET    | `/api/v1/live`                           | `live_list`                    |
+//! | GET    | `/api/v1/live/{id}`                      | `live_get`                     |
+//! | DELETE | `/api/v1/live/{id}`                      | `live_stop`                    |
+//! | GET    | `/api/v1/live/{id}/events`               | `live_events_sse` (SSE)        |
+//! | GET    | `/api/v1/entities/{uid}`                 | `entity_get`                   |
+//! | GET    | `/api/v1/search`                         | `search_entities`              |
+//! | GET    | `/api/v1/settings/keys`                  | `settings_keys_get` (v0.10+)   |
+//! | PUT    | `/api/v1/settings/keys`                  | `settings_keys_put`            |
+//! | GET    | `/api/v1/settings/toggles`               | `settings_toggles_get` (v1.4+) |
+//! | PUT    | `/api/v1/settings/toggles`               | `settings_toggles_put`         |
+//! | GET    | `/api/v1/update/status`                  | `get_status` (v1.5+)           |
+//! | POST   | `/api/v1/update/trigger`                 | `post_trigger` (v1.5+)         |
+//! | GET    | `/api/v1/cells/status`                   | `cells_status` (v1.13+)        |
+//! | POST   | `/api/v1/cells/import`                   | `cells_import` (v1.13+)        |
+//! | POST   | `/api/v1/cells/clear`                    | `cells_clear` (v1.13+)         |
+//! | *      | `/api/*` (unmatched)                     | `api_not_found` (JSON 404)     |
+//! | GET    | `/static/{*file}`                        | `vendor_handler`               |
+//! | GET    | `/*` (fallback)                          | `spa_handler` (static)         |
 
 use std::sync::Arc;
 
@@ -67,30 +118,32 @@ use super::{
 /// so the release artefact is still a single file.
 const SPA_HTML: &str = include_str!("../../web/spa.html");
 
-/// Vendor bundle — now just D3 v3, the force-directed graph rendering
-/// engine. Bootstrap, jQuery, tablesorter, and alertify (SpiderFoot's
-/// original UI-framework stack) were dropped entirely in favour of a
+/// Vendor bundle — now **empty**. Bootstrap, jQuery, tablesorter, and alertify
+/// (SpiderFoot's original UI-framework stack) were dropped in favour of a
 /// from-scratch design system (`src/web/css/app.css`) plus small vanilla-JS
-/// replacements (`src/web/js/ui.js`) for the handful of interactive
-/// behaviours those libraries provided (navbar collapse, the About modal,
-/// sortable tables, toast/confirm/prompt dialogs) — see `ui.js`'s own doc
-/// comment. D3 stays vendored because it is a rendering engine, not a
-/// look-and-feel dependency: every visual property of the graph (node
-/// colours, sizes, the canvas background) is already this project's own
-/// code. Dropping the vendored alertify build also happens to close a
-/// standing licensing question noted in `docs/PROBLEM_TREE.md` §7
-/// (Deferred — Privacy/Legal/Licensing): alertify was GPL-licensed with no
-/// accompanying `NOTICE`.
+/// replacements (`src/web/js/ui.js`) for the interactive behaviours those
+/// libraries provided (navbar collapse, the About modal, sortable tables,
+/// toast/confirm/prompt dialogs) — see `ui.js`'s own doc comment. Dropping the
+/// vendored alertify build also closed a standing licensing question: alertify
+/// was GPL-licensed with no accompanying `NOTICE`.
 ///
-/// Embedded at compile time so the release artefact is still a single
-/// binary. Served from `/static/{*file}`, alongside [`APP_FILES`], with a
-/// one-hour `Cache-Control: must-revalidate` header — see
+/// D3 v3 was the last one out. It was kept while it was a *rendering engine*
+/// rather than a look-and-feel dependency, but on this crate's actual target —
+/// Termux/Android aarch64, no root — its force simulation was the most
+/// expensive thing the UI did, and it cost 151 KB in a binary whose whole
+/// selling point is that it is one file you can carry. The graph is now a
+/// deterministic concentric SVG layout drawn against the DOM directly
+/// (`src/web/js/scan_info/graph.js`), with no feature removed.
+///
+/// The constant stays (rather than being deleted) because it is the seam where
+/// a future vendored asset would land, and [`vendor_handler`] already chains it
+/// with [`APP_FILES`]; an empty slice simply contributes nothing.
+///
+/// Anything listed here is embedded at compile time so the release artefact is
+/// still a single binary, and served from `/static/{*file}` alongside
+/// [`APP_FILES`] with a one-hour `Cache-Control: must-revalidate` header — see
 /// [`vendor_handler`]'s ETag/conditional-GET handling for why.
-const VENDOR_FILES: &[(&str, &str, &[u8])] = &[(
-    "d3.min.js",
-    "application/javascript",
-    include_bytes!("../../web/vendor/d3.min.js"),
-)];
+const VENDOR_FILES: &[(&str, &str, &[u8])] = &[];
 
 /// First-party SPA modules (split from the former monolithic `spa.html` for
 /// maintainability — see each module's own doc comment in `src/web/js/`).
@@ -181,6 +234,11 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         include_bytes!("../../web/js/scan_info/info.js"),
     ),
     (
+        "js/scan_info/insights.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/insights.js"),
+    ),
+    (
         "js/scan_info/leads.js",
         "application/javascript",
         include_bytes!("../../web/js/scan_info/leads.js"),
@@ -216,19 +274,9 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         include_bytes!("../../web/js/scan_info/pivots.js"),
     ),
     (
-        "js/scan_info/relations.js",
-        "application/javascript",
-        include_bytes!("../../web/js/scan_info/relations.js"),
-    ),
-    (
         "js/scan_info/report.js",
         "application/javascript",
         include_bytes!("../../web/js/scan_info/report.js"),
-    ),
-    (
-        "js/scan_info/status.js",
-        "application/javascript",
-        include_bytes!("../../web/js/scan_info/status.js"),
     ),
     (
         "js/scan_info/stealer.js",
@@ -291,6 +339,11 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         include_bytes!("../../web/js/views/live.js"),
     ),
     (
+        "js/views/debug_log.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/debug_log.js"),
+    ),
+    (
         "js/views/new_scan.js",
         "application/javascript",
         include_bytes!("../../web/js/views/new_scan.js"),
@@ -313,7 +366,7 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
 ];
 
 /// Build the full router. `bind` is the host:port the server will listen on;
-/// used **only** to decide the CORS policy:
+/// used to decide the CORS policy and the Host allowlist:
 ///
 /// * loopback bind (`127.0.0.1`, `::1`, `localhost`) → permissive CORS, so any
 ///   browser tab on the same device can talk to the API.
@@ -321,7 +374,18 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
 ///   allows the matching `http://<bind>` origin. Prevents arbitrary websites
 ///   from issuing cross-origin requests when the user has exposed HSE on a
 ///   non-loopback interface.
-pub fn router(state: Arc<AppState>, bind: &str) -> Router {
+///
+/// `auth` is the bearer token resolved by [`crate::api::auth::resolve`]:
+/// `Some` for a non-loopback bind (unless the operator passed
+/// `--allow-unauthenticated`), `None` for the loopback default. When present,
+/// [`crate::api::auth::enforce_auth`] runs **before every other layer**, so an
+/// unauthenticated LAN peer cannot reach a handler, the SPA, or the static
+/// bundle.
+pub fn router(
+    state: Arc<AppState>,
+    bind: &str,
+    auth: Option<Arc<crate::api::auth::AuthToken>>,
+) -> Router {
     let cors = build_cors_layer(bind);
 
     // /api/v1 — explicit, versioned API surface. Inner fallback emits a
@@ -337,10 +401,17 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/modules/health", get(handlers::modules_health))
         .route("/engines/health", get(handlers::engines_health))
         .route("/health/scrapers", get(handlers::scraper_health))
+        // POST, not GET: a live probe fires a real network request per keyless
+        // module, so it is an explicit action — never something a prefetch or a
+        // stray GET can trigger.
+        .route("/capabilities/probe", post(handlers::capabilities_probe))
         .route("/stats", get(handlers::stats))
         // ── diagnostics: self-test + downloadable verbose logs ──
         .route("/selftest", get(handlers::selftest_run))
         .route("/logs", get(handlers::logs_download))
+        // Live tail of the same ring, as JSON, for the Web UI's debug-log view
+        // (loopback-only, like the download above).
+        .route("/logs/tail", get(handlers::logs_tail))
         // One-click consolidated system self-diagnosis bundle (loopback-only):
         // DETECTED ISSUES verdict + environment + self-test + module/engine/
         // scraper health + recent scans + logs + source manifest, in one file.
@@ -348,8 +419,10 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // ── key-detector catalogue (v1.4+) ──
         .route("/keys/patterns", get(settings_handlers::keys_patterns))
         .route("/keys/status", get(settings_handlers::keys_status))
+        .route("/keys/health", get(settings_handlers::keys_health))
         .route("/keys/harvest", get(key_harvest_handlers::keys_harvest))
         .route("/keys/pool", get(settings_handlers::keys_pool_get))
+        .route("/keys/pool/add", post(settings_handlers::keys_pool_add))
         .route(
             "/keys/pool/revoke",
             post(settings_handlers::keys_pool_revoke),
@@ -388,6 +461,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // `hse serve` restart, so "what was around me earlier" doesn't
         // require remembering a session id.
         .route("/radar/history", get(scan_handlers::radar_history))
+        .route("/radar/recurring", get(scan_handlers::radar_recurring))
         .route(
             "/scans/import",
             // Raise this route's body cap from axum's 2 MB default to the import
@@ -413,6 +487,9 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             "/scans/{id}/entities/facets",
             get(scan_handlers::scan_entities_facets),
         )
+        .route("/scans/{id}/diamond", get(scan_handlers::scan_diamond))
+        .route("/scans/{id}/exposure", get(scan_handlers::scan_exposure))
+        .route("/scans/{id}/attack", get(scan_handlers::scan_attack))
         .route(
             "/scans/{id}/entities.csv",
             get(scan_export::scan_entities_csv),
@@ -423,6 +500,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         )
         .route("/scans/{id}/graph.gexf", get(scan_export::scan_export_gexf))
         .route("/scans/{id}/debug.txt", get(scan_export::scan_debug_bundle))
+        .route("/scans/{id}/events.log", get(scan_export::scan_events_log))
         .route(
             "/scans/{id}/correlations",
             get(scan_handlers::scan_correlations),
@@ -436,6 +514,14 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         )
         // Subject-centric relationship synthesis — powers the web UI Network view.
         .route("/scans/{id}/network", get(scan_handlers::scan_network))
+        // Entities this scan shares with earlier investigations, ranked by bridge
+        // strength and carrying the prior scan ids each one expands into.
+        .route(
+            "/scans/{id}/cross-scan",
+            get(scan_handlers::scan_cross_scan),
+        )
+        // Simplified concentric-ring projection of the relation graph, as SVG.
+        .route("/scans/{id}/snake.svg", get(scan_handlers::scan_snake_svg))
         // People-centric co-reference resolution — scores which selectors name the
         // same individual (cross-identifier record linkage).
         .route(
@@ -568,9 +654,26 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         None => app,
     };
 
+    // Bearer-token gate (non-loopback binds only) — the control that stops an
+    // arbitrary LAN peer from reading the subject's scan results, dispatching
+    // quota-burning scans, or triggering the device's own radar sensor sweep.
+    // Layered OUTSIDE everything above so an unauthenticated request never
+    // reaches a handler, the SPA, or the static bundle; `host_allowlist` is
+    // `None` on exactly the binds where this is `Some`, so the two never stack.
+    // See `crate::api::auth` for why CSRF/CORS/the per-handler loopback checks
+    // do not already cover this.
+    let app = match auth {
+        Some(token) => app.layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                crate::api::auth::enforce_auth(Arc::clone(&token), req, next)
+            },
+        )),
+        None => app,
+    };
+
     // Security headers on every response (outermost, so it also covers CORS
-    // preflight, the SPA, static, the API, and the Host-guard 403). See
-    // `set_security_headers`.
+    // preflight, the SPA, static, the API, the Host-guard 403, and the auth
+    // gate's 401). See `set_security_headers`.
     app.layer(axum::middleware::map_response(set_security_headers))
 }
 
@@ -760,13 +863,13 @@ async fn favicon_handler() -> Response {
 const MANIFEST_JSON: &str = r##"{
   "name": "Huntsman Search Engine",
   "short_name": "Huntsman",
-  "description": "OSINT/GEOINT platform — runs entirely in Termux on Android, no root.",
+  "description": "All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition — SpiderFoot-inspired breadth, runs entirely in Termux on Android, no root.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#222222",
-  "theme_color": "#222222",
+  "background_color": "#0a0d11",
+  "theme_color": "#0a0d11",
   "icons": [
     { "src": "/favicon.ico", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
   ]
@@ -824,7 +927,7 @@ async fn vendor_handler(Path(file): Path<String>, headers: HeaderMap) -> Respons
             // ETag is the crate version (which uniquely identifies the
             // embedded bytes — the bundle ships in-binary). We deliberately
             // do NOT use `Cache-Control: immutable` because the URL
-            // (`/static/d3.min.js`) is stable across upgrades;
+            // (e.g. `/static/js/main.js`) is stable across upgrades;
             // pairing immutable with a stable URL leaves the browser stuck
             // on old bytes after a binary upgrade. Instead `must-revalidate`
             // plus the conditional-request handling below lets the browser
@@ -884,7 +987,7 @@ fn if_none_match_hit(if_none_match: &str, etag: &str) -> bool {
 ///
 /// Anything that doesn't parse as a loopback IP — and isn't literally
 /// `localhost` — is treated as a network-exposed interface.
-fn is_loopback_bind(bind: &str) -> bool {
+pub(crate) fn is_loopback_bind(bind: &str) -> bool {
     use std::net::{IpAddr, SocketAddr};
 
     if let Ok(sa) = bind.parse::<SocketAddr>() {

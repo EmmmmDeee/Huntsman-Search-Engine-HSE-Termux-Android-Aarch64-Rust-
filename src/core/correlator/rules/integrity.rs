@@ -10,25 +10,24 @@
 //! route you can trust at every hop. The three are complementary lenses on a
 //! discovered connection's quality.
 
-use std::collections::HashMap;
-
 use super::*;
 use crate::core::relation::{identity_uids, sorted_confined_adjacency, strongest_path_in};
 
 /// AU-069 — High-integrity connection.
 pub(in crate::core::correlator) fn rule_au_069_high_integrity_connection(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const MAX_HOPS: usize = 5;
     // Every link on the strongest route must clear this floor for the connection
     // to count as reliable end to end.
     const STRONG: f64 = 0.70;
     const VERY_STRONG: f64 = 0.85;
 
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let by_uid = context.by_uid();
     let ids = identity_uids(entities);
     // Build the traversal graph ONCE and reuse it for every pair's widest-path
     // search (vs rebuilding + re-sorting it per `strongest_path` call).
@@ -111,13 +110,50 @@ mod tests {
         let mid = mk(EntityKind::Person, "Alice");
         let b = mk(EntityKind::Username, "alice");
         let rels = [edge(&a, &mid, 0.9), edge(&mid, &b, 0.9)];
-        let out =
-            rule_au_069_high_integrity_connection(&[a.clone(), mid, b.clone()], &rels, "s", 0);
+        let out = rule_au_069_high_integrity_connection(
+            &RuleContext::new(&[a.clone(), mid, b.clone()]),
+            &rels,
+            "s",
+            0,
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rule_id, "AU-069");
         assert_eq!(out[0].severity, Severity::High);
         assert!(out[0].entity_uids.contains(&a.uid));
         assert!(out[0].entity_uids.contains(&b.uid));
+    }
+
+    #[test]
+    fn au069_medium_band_route_and_boundary_pins() {
+        // email —c— person —0.9— username; c is the weakest link, so
+        // path.min_confidence == c. The High (>= VERY_STRONG 0.85) arm is
+        // already covered by au069_fires_on_an_end_to_end_strong_route (0.9);
+        // this pins the Medium base band (0.70 <= min < 0.85) and both const
+        // boundaries. There are only two rungs — Medium and High, no Critical.
+        let build = |c: f64| {
+            let a = mk(EntityKind::Email, "a@x.com");
+            let mid = mk(EntityKind::Person, "Alice");
+            let b = mk(EntityKind::Username, "alice");
+            let rels = [edge(&a, &mid, c), edge(&mid, &b, 0.9)];
+            rule_au_069_high_integrity_connection(&RuleContext::new(&[a, mid, b]), &rels, "s", 0)
+        };
+
+        // ~0.75: inside the medium band 0.70 <= min < 0.85 → Medium.
+        let mid_out = build(0.75);
+        assert_eq!(mid_out.len(), 1);
+        assert_eq!(mid_out[0].rule_id, "AU-069");
+        assert_eq!(mid_out[0].severity, Severity::Medium);
+
+        // Exactly 0.85 (VERY_STRONG): the `>=` boundary is inclusive → High.
+        let hi = build(0.85);
+        assert_eq!(hi.len(), 1);
+        assert_eq!(hi[0].severity, Severity::High);
+
+        // Exactly 0.70 (STRONG): the `< STRONG` suppression is exclusive, so the
+        // route is NOT suppressed and lands in the medium band → Medium.
+        let lo = build(0.70);
+        assert_eq!(lo.len(), 1);
+        assert_eq!(lo[0].severity, Severity::Medium);
     }
 
     #[test]
@@ -127,7 +163,10 @@ mod tests {
         let mid = mk(EntityKind::Person, "Alice");
         let b = mk(EntityKind::Username, "alice");
         let rels = [edge(&a, &mid, 0.9), edge(&mid, &b, 0.3)];
-        assert!(rule_au_069_high_integrity_connection(&[a, mid, b], &rels, "s", 0).is_empty());
+        assert!(
+            rule_au_069_high_integrity_connection(&RuleContext::new(&[a, mid, b]), &rels, "s", 0)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -136,6 +175,9 @@ mod tests {
         let a = mk(EntityKind::Email, "a@x.com");
         let b = mk(EntityKind::Username, "alice");
         let rels = [edge(&a, &b, 0.95)];
-        assert!(rule_au_069_high_integrity_connection(&[a, b], &rels, "s", 0).is_empty());
+        assert!(
+            rule_au_069_high_integrity_connection(&RuleContext::new(&[a, b]), &rels, "s", 0)
+                .is_empty()
+        );
     }
 }

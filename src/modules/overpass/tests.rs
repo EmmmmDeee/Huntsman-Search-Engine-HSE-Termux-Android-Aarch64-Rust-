@@ -51,11 +51,11 @@ fn accepts_coordinates_only() {
                 }
             ]
         }"#;
-        let r: OverpassResp = serde_json::from_str(raw).unwrap();
+        let r: OverpassResp = serde_json::from_str(raw).expect("should succeed");
         assert_eq!(r.elements.len(), 1);
         let e = &r.elements[0];
         assert_eq!(e.id, Some(12345));
-        assert_eq!(e.tags.as_ref().unwrap().get("operator").unwrap(), "Telstra");
+        assert_eq!(e.tags.as_ref().expect("should succeed").get("operator").expect("should succeed"), "Telstra");
     }
 
     fn tags(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
@@ -96,7 +96,7 @@ fn accepts_coordinates_only() {
     }
 
     fn elements(json: &str) -> Vec<OsmElement> {
-        serde_json::from_str(json).unwrap()
+        serde_json::from_str(json).expect("should succeed")
     }
 
     #[test]

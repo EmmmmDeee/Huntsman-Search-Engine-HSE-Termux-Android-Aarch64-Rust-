@@ -10,6 +10,7 @@ pub mod abuseipdb;
 pub mod acma_rrl;
 pub mod acnc_charities;
 pub mod ahpra;
+pub mod anubis;
 pub mod api_key_probe;
 pub mod app_links;
 pub mod asic_banned_orgs;
@@ -21,12 +22,17 @@ pub mod au_electoral;
 pub mod au_geo;
 pub mod au_people;
 pub mod au_property;
-pub mod au_seifa;
+pub mod au_rdap;
 pub mod au_unclaimed;
+pub mod auspost;
 pub mod austlii;
+pub mod beacondb;
 pub mod bgpview;
+pub mod binaryedge;
 pub mod bitbucket_user;
+pub mod bitcoin;
 pub mod bluesky_user;
+pub mod builtwith;
 // Shared "maximum raw data" breach/stealer extractor — a `pub(crate)` HELPER
 // (no `Module` impl), consumed by see_know / oathnet_pro / dehashed via
 // `crate::modules::breach_rich::extract_rich_detail`, not a registered module.
@@ -35,22 +41,35 @@ pub mod bluesky_user;
 // `pub mod` as dead-at-runtime.
 pub(crate) mod breach_rich;
 pub mod breach_timezone;
+pub mod breachdirectory;
+pub mod c99;
 pub mod cell_intel;
 pub mod cell_local;
 pub mod censys;
 pub mod cert_intel;
+pub mod certspotter;
 pub mod chain_intel;
+pub mod chess_profile;
 pub mod cloud_storage;
 pub mod codeberg_user;
 pub mod codewars_user;
 pub mod comb_search;
+pub mod commoncrawl;
 pub mod contact_enrich;
 pub mod cpan_user;
 pub mod crates_io;
 pub mod criminal_ip;
+pub mod crossref_search;
 pub mod crtsh;
+pub mod data_gov_au;
 pub mod dehashed;
 pub mod device_sensors;
+// Shared Termux `termux-location` fix primitives (the `Fix` shape +
+// confidence ladder) — a `pub(crate)` HELPER (no `Module` impl), consumed by
+// device_sensors and signal_radar so the on-device fix logic lives once.
+// `pub(crate)` (like `breach_rich`) keeps it out of the
+// `every_declared_module_is_registered` guard.
+pub(crate) mod device_fix;
 pub mod devto;
 pub mod discord_snowflake;
 pub mod disposable_check;
@@ -66,15 +85,23 @@ pub mod email_parse;
 pub mod emailrep;
 pub mod employer_pivot;
 pub mod epieos;
+pub mod europepmc_search;
 pub mod exa_search;
 pub mod exif_geo;
 pub mod fediverse;
+pub mod fofa;
 pub mod fullcontact;
+pub mod fullhunt;
 pub mod gaming_profile;
 pub mod geo_domain_classifier;
 pub mod geo_intel;
 pub mod geocode;
 pub mod gitea_user;
+// Shared GitHub REST API binding (the pinned API version) — a `pub(crate)`
+// HELPER (no `Module` impl), consumed by the three github_* modules so a
+// version bump is one edit, not seven. `pub(crate)` (like `breach_rich`) keeps
+// it out of the `every_declared_module_is_registered` guard.
+pub(crate) mod github_api;
 pub mod github_code_search;
 pub mod github_commits;
 pub mod github_user;
@@ -105,6 +132,7 @@ pub mod leakix;
 pub mod lobsters;
 pub mod local_net;
 pub mod mastodon_user;
+pub mod mnemonic_pdns;
 pub mod mylnikov;
 pub mod name_intel;
 pub mod netblock;
@@ -115,24 +143,30 @@ pub mod npm_author;
 pub mod numverify;
 pub mod oathnet_pro;
 pub mod onyphe;
+pub mod open_meteo_geo;
 pub mod opencellid;
 pub mod opencorporates;
 pub mod opensanctions;
 pub mod osintcat;
 pub mod overpass;
+pub mod passivetotal;
 pub mod payid;
 pub mod pgp;
 pub mod phone_au;
 pub mod phone_geo;
 pub mod phone_intl;
 pub mod photon;
+pub mod plc_directory;
 pub mod portscan;
+pub mod wiki_geosearch;
+pub mod wikidata_geo;
 // Shared entity-construction toolkit for developer-profile modules — a helper,
 // not a registered `Module`, so it is `pub(crate)` (the registry guard only
 // inspects `pub mod` declarations).
 pub(crate) mod profile_kit;
 pub mod proxycurl;
 pub mod psbdmp;
+pub mod pulsedive;
 pub mod pwned_passwords;
 pub mod pypi_user;
 pub mod qld_cadastre;
@@ -147,16 +181,26 @@ pub mod see_know;
 pub mod seon;
 pub mod shodan;
 pub mod signal_radar;
+pub mod sitemap;
 pub mod smtp_vrfy;
 pub mod social_location;
 pub mod social_probe;
 pub mod sourceforge_user;
 pub mod stackoverflow_user;
 pub mod steam_profile;
+pub mod stolen_tax;
 pub mod streaming_probe;
 pub mod structured_id;
+pub mod subdomain_center;
 pub mod subdomain_takeover;
 pub mod sunrise_sunset;
+// Shared Termux sensor-tool output contract (blank vs unparseable) — a
+// `pub(crate)` HELPER (no `Module` impl), consumed by signal_radar,
+// device_sensors, wifi_intel and cell_intel so the rule distinguishing "the
+// tool answered with nothing" from "the tool is broken" lives once.
+// `pub(crate)` (like `breach_rich`) keeps it out of the
+// `every_declared_module_is_registered` guard.
+pub(crate) mod termux_sensor;
 pub mod threatfox;
 pub mod trove_au;
 pub mod typosquat;
@@ -180,8 +224,11 @@ pub mod zoomeye;
 
 use std::sync::Arc;
 
-use crate::core::entity::{Entity, EntityKind, Evidence};
-use crate::core::module::Module;
+use crate::core::{
+    confidence,
+    entity::{Entity, EntityKind, Evidence},
+    module::Module,
+};
 
 /// Reset the foreign-API-key sink at scan start. Re-exported here so
 /// `core/engine` can drive it without importing `util` directly — the same
@@ -210,7 +257,12 @@ pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
             // high-entropy tokens) but is a distinct artifact — emit it as a
             // chain-tagged CryptoAddress, never a foreign API key.
             if let Some(chain) = fk.service.strip_prefix("crypto_") {
-                let mut e = Entity::new(EntityKind::CryptoAddress, &fk.key, 0.80, scan_id);
+                let mut e = Entity::new(
+                    EntityKind::CryptoAddress,
+                    &fk.key,
+                    confidence::HIGH_PLUSPLUS,
+                    scan_id,
+                );
                 e.tag("crypto-address");
                 e.tag("retrieved");
                 e.tag(format!("chain:{chain}"));
@@ -260,28 +312,41 @@ pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
         .collect()
 }
 
-/// Built-in module set. The engine sorts by priority — order here is irrelevant.
-/// Install the cross-cutting module hooks into `core` (per-scan budget resets,
-/// the found-key sink, and the vendor-key matcher). Idempotent; called from
-/// [`registry`] so the engine — always built from `registry()` — has the
-/// hooks before it runs. This is the single place the `modules → core` hook
-/// edge is wired; `core` never imports `modules`. The regional-search flag is
-/// NOT a hook — it's a pure per-scan ambient the engine sets directly via
-/// `util::regional::with_regional` (see `core::hooks`'s module doc).
-fn install_core_hooks() {
-    crate::core::hooks::install(crate::core::hooks::ModuleHooks {
-        reset_per_scan: |scan_id| {
-            oathnet_pro::reset_budget();
-            see_know::reset_budget();
-            wigle::reset_budget();
-            typosquat::reset_seen();
-            search_engines::reset_session_liveness();
-            reset_found_keys(scan_id);
-        },
-        refresh_round_budget: see_know::refresh_round_budget,
-        identify_api_key: crate::util::key_harvest::identify_api_key,
-        drain_found_keys: drain_found_key_entities,
-    });
+/// Built-in implementation of the engine's module-layer runtime contract.
+struct BuiltinModuleRuntime;
+
+impl crate::core::module_runtime::ModuleRuntime for BuiltinModuleRuntime {
+    fn reset_per_scan(&self, scan_id: &str) {
+        oathnet_pro::reset_budget();
+        see_know::reset_budget();
+        wigle::reset_budget();
+        typosquat::reset_seen();
+        search_engines::reset_session_liveness(scan_id);
+        reset_found_keys(scan_id);
+    }
+
+    fn refresh_round_budget(&self) {
+        see_know::refresh_round_budget();
+    }
+
+    fn identify_api_key<'a>(&self, value: &'a str) -> Option<(&'static str, &'a str)> {
+        crate::util::key_harvest::identify_api_key(value)
+    }
+
+    fn drain_found_keys(&self, scan_id: &str) -> Vec<crate::core::entity::Entity> {
+        drain_found_key_entities(scan_id)
+    }
+
+    fn cleanup_scan_budgets(&self, scan_id: &str) {
+        oathnet_pro::cleanup_scan(scan_id);
+        see_know::cleanup_scan(scan_id);
+        wigle::cleanup_scan(scan_id);
+    }
+}
+
+/// Runtime effects paired with the built-in module registry.
+pub fn module_runtime() -> std::sync::Arc<dyn crate::core::module_runtime::ModuleRuntime> {
+    std::sync::Arc::new(BuiltinModuleRuntime)
 }
 
 /// The built-in module list, built exactly once. `registry()` is called from
@@ -303,6 +368,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(hudsonrock::HudsonRock),
             Arc::new(comb_search::CombSearch),
             Arc::new(xposed_or_not::XposedOrNot),
+            Arc::new(stolen_tax::StolenTax),
             Arc::new(osintcat::OsintCat),
             Arc::new(niamonx::NiamonX),
             Arc::new(pwned_passwords::PwnedPasswords),
@@ -315,20 +381,31 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(censys::Censys),
             Arc::new(greynoise::GreyNoise),
             Arc::new(dehashed::DeHashed),
+            Arc::new(breachdirectory::BreachDirectory),
             Arc::new(intelx::IntelX),
             Arc::new(securitytrails::SecurityTrails),
             Arc::new(leakix::LeakIx),
             Arc::new(criminal_ip::CriminalIp),
             Arc::new(onyphe::Onyphe),
             Arc::new(zoomeye::ZoomEye),
+            Arc::new(fofa::Fofa),
+            Arc::new(builtwith::BuiltWith),
+            Arc::new(binaryedge::BinaryEdge),
+            Arc::new(c99::C99),
+            Arc::new(fullhunt::FullHunt),
+            Arc::new(pulsedive::Pulsedive),
+            Arc::new(passivetotal::PassiveTotal),
             Arc::new(ipqs::IpQs),
             Arc::new(contact_enrich::ContactEnrich),
             Arc::new(hunter_io::HunterIo),
+            Arc::new(proxycurl::Proxycurl),
             Arc::new(disposable_check::DisposableCheck),
             Arc::new(discord_snowflake::DiscordSnowflake),
             Arc::new(wigle::Wigle),
             Arc::new(cert_intel::CertIntel),
             Arc::new(crtsh::CrtSh),
+            Arc::new(certspotter::CertSpotter),
+            Arc::new(anubis::Anubis),
             Arc::new(dns_intel::DnsIntel),
             Arc::new(dns_axfr::DnsAxfr),
             Arc::new(smtp_vrfy::SmtpVrfy),
@@ -345,8 +422,18 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(geo_intel::GeoIntel),
             Arc::new(geocode::Geocode),
             Arc::new(hackertarget::HackerTarget),
+            // Keyless historical passive DNS (domain↔IP over time) — the reverse
+            // and historical view the live resolvers above can't give.
+            Arc::new(mnemonic_pdns::MnemonicPdns),
+            // Keyless subdomain enumeration from an aggregated CT/passive corpus,
+            // distinct from crtsh/certspotter/anubis — more independent coverage.
+            Arc::new(subdomain_center::SubdomainCenter),
             Arc::new(threatfox::ThreatFox),
             Arc::new(rdap_domain::RdapDomain),
+            // AU-specific RDAP (auDA) sibling of the generic `rdap_domain`
+            // above — discloses registrant identity a generic RDAP client
+            // can't reach for a .au domain, so it dispatches right after it.
+            Arc::new(au_rdap::AuRdap),
             Arc::new(ripestat::RipeStat),
             Arc::new(search_engines::SearchEngines),
             Arc::new(webserver_banner::WebserverBanner),
@@ -364,6 +451,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(github_user::GithubUser),
             Arc::new(github_code_search::GithubCodeSearch),
             Arc::new(github_commits::GithubCommits),
+            Arc::new(chess_profile::ChessProfile),
             Arc::new(gaming_profile::GamingProfile),
             Arc::new(steam_profile::SteamProfile),
             Arc::new(structured_id::StructuredId),
@@ -372,7 +460,9 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(devto::DevTo),
             Arc::new(stackoverflow_user::StackoverflowUser),
             Arc::new(bluesky_user::BlueskyUser),
+            Arc::new(plc_directory::PlcDirectory),
             Arc::new(mastodon_user::MastodonUser),
+            Arc::new(bitcoin::Bitcoin),
             Arc::new(gitlab_user::GitlabUser),
             Arc::new(gitea_user::GiteaUser),
             Arc::new(sourceforge_user::SourceforgeUser),
@@ -398,6 +488,10 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(phone_intl::PhoneIntl),
             Arc::new(phone_au::PhoneAu),
             Arc::new(wayback::Wayback),
+            // Common Crawl's own independent web-crawl index for a domain's
+            // URLs — a separate corpus from the Wayback CDX lookup above.
+            Arc::new(commoncrawl::CommonCrawl),
+            Arc::new(sitemap::Sitemap),
             Arc::new(device_sensors::DeviceSensors),
             Arc::new(cell_intel::CellIntel),
             Arc::new(cell_local::CellLocal),
@@ -414,14 +508,26 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(keybase::Keybase),
             Arc::new(emailrep::EmailRep),
             Arc::new(epieos::Epieos),
-            Arc::new(proxycurl::Proxycurl),
             Arc::new(fullcontact::FullContact),
             Arc::new(numverify::NumVerify),
             Arc::new(photon::Photon),
+            // Third keyless forward geocoder alongside `geocode` (Nominatim) and
+            // `photon` (Komoot): resolves self-reported place-names to coordinates
+            // and adds timezone/population/place-class the others don't return.
+            Arc::new(open_meteo_geo::OpenMeteoGeo),
             Arc::new(mylnikov::Mylnikov),
+            // Keyless BSSID geolocation alongside `mylnikov`: two independent
+            // free corpora answering the same question, so an outage or a miss
+            // in one still leaves the radar a way to locate an observed AP.
+            Arc::new(beacondb::BeaconDb),
             Arc::new(exif_geo::ExifGeo),
             Arc::new(overpass::Overpass),
+            Arc::new(wiki_geosearch::WikiGeoSearch),
+            Arc::new(wikidata_geo::WikidataGeo),
             Arc::new(qld_cadastre::QldCadastre),
+            // Coordinates -> Address reverse lookup against Australia Post,
+            // alongside the other AU-specific geo sources above.
+            Arc::new(auspost::AusPost),
             Arc::new(sunrise_sunset::SunriseSunset),
             // Geolocation enrichment (passive, zero-API)
             Arc::new(geo_domain_classifier::GeoDomainClassifier),
@@ -443,8 +549,13 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(name_intel::NameIntel),
             Arc::new(social_location::SocialLocation),
             Arc::new(wikidata::Wikidata),
+            // Academic-literature search by name, two independent corpora
+            // (kept adjacent: same target kinds, same search shape).
+            Arc::new(crossref_search::CrossrefSearch),
+            Arc::new(europepmc_search::EuropePmcSearch),
             // Australian + global public-records / corporate registries
             Arc::new(opencorporates::OpenCorporates),
+            Arc::new(data_gov_au::DataGovAu),
             Arc::new(au_unclaimed::AuUnclaimed),
             Arc::new(au_people::AuPeople),
             Arc::new(asic_director::AsicDirector),
@@ -455,7 +566,6 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(au_electoral::AuElectoral),
             Arc::new(au_property::AuProperty),
             Arc::new(au_geo::AuGeo),
-            Arc::new(au_seifa::AuSeifa),
             Arc::new(acnc_charities::AcncCharities),
             Arc::new(gleif_lei::GleifLei),
             Arc::new(sanctions_ofac::SanctionsOfac),
@@ -469,7 +579,6 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
     });
 
 pub fn registry() -> Vec<Arc<dyn Module>> {
-    install_core_hooks();
     MODULE_REGISTRY.clone()
 }
 

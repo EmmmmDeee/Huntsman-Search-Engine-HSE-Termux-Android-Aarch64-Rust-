@@ -15,12 +15,13 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{http_status_error, read_body_capped, urldecode, urlencode};
+use crate::util::http::{RequestBuilderExt, read_body_capped, urldecode, urlencode};
 
 const SRC: &str = "pgp";
 
@@ -37,7 +38,7 @@ impl Module for Pgp {
     }
 
     fn description(&self) -> &'static str {
-        "PGP keyserver lookup (email → owner name + alternate emails via HKP index)"
+        "PGP keyserver recon — pivots an email to owner name and alternate emails via the HKP index"
     }
 
     fn priority(&self) -> u8 {
@@ -77,69 +78,35 @@ impl Module for Pgp {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut result = ModuleResult::new();
         let email = target.value.trim();
         if !email.contains('@') {
-            return Ok(ModuleResult::new());
+            return Ok(result);
         }
         let url = format!(
             "https://keyserver.ubuntu.com/pks/lookup?op=index&options=mr&exact=on&search={}",
             urlencode(email)
         );
-        lookup(&ctx.http, &url, email, &ctx.scan_id).await
-    }
-}
+        let resp = ctx.http.get(&url).send_tagged(SRC).await?;
+        // 404 is the keyserver's clean "no PGP key for this email" signal — keep
+        // it as an empty result. But a transport error (propagated above) or any
+        // OTHER non-2xx (5xx outage, 429 throttle, proxy error page) is a real
+        // keyserver failure, not an absence of keys: surfacing it instead of a
+        // silent empty stops a keyserver outage from masquerading as "this email
+        // has no PGP key."
+        if resp.status().as_u16() == 404 {
+            return Ok(result);
+        }
+        if !resp.status().is_success() {
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
+        }
+        let Some(body) = read_body_capped(resp, BODY_CAP).await else {
+            return Ok(result);
+        };
 
-/// Query the HKP index and map it to entities, surfacing a genuine lookup failure
-/// as a module `Err` instead of swallowing it into an empty result. Split from
-/// [`Pgp::process`] as a client+URL-taking seam so the failure contract is
-/// unit-testable against a local server.
-///
-/// keyserver.ubuntu.com answers a genuine "no key for this email" with **HTTP
-/// 404** (live-confirmed) and a found key with `200`, so:
-///   * a `404` stays the clean "no PGP key" negative (`Ok`, empty);
-///   * a transport failure (connection refused / DNS / timeout) → `Err` (URL
-///     redacted via [`reqwest::Error::without_url`] — it carries the searched
-///     email in its query string);
-///   * any other non-2xx (5xx / 429 / 403) → `Err`;
-///   * a mid-stream body-read failure → `Err`.
-///
-/// Because most emails legitimately have no PGP key, "empty" is the common
-/// outcome — which is exactly why a masked keyserver outage was indistinguishable
-/// from an honest miss and silently dropped the owner-name / alternate-email /
-/// key-fingerprint pivots. A `200` whose body names no keys stays a clean empty
-/// naturally via [`extract`].
-async fn lookup(
-    client: &reqwest::Client,
-    url: &str,
-    email: &str,
-    scan_id: &str,
-) -> Result<ModuleResult> {
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| Error::module(SRC, e.without_url().to_string()))?;
-
-    let status = resp.status();
-    // 404 is the keyserver's genuine "no key for this email" — the clean miss.
-    if status.as_u16() == 404 {
-        return Ok(ModuleResult::new());
+        extract(&body, email, &ctx.scan_id, &mut result);
+        Ok(result)
     }
-    // Every OTHER non-2xx (5xx / 429 / 403) is a real outage/throttle, not a
-    // negative answer — surface it instead of masking it as "no PGP key".
-    if !status.is_success() {
-        return Err(http_status_error(SRC, resp).await);
-    }
-    let Some(body) = read_body_capped(resp, BODY_CAP).await else {
-        return Err(Error::module(
-            SRC,
-            "transport error reading keyserver index body".to_string(),
-        ));
-    };
-
-    let mut result = ModuleResult::new();
-    extract(&body, email, scan_id, &mut result);
-    Ok(result)
 }
 
 /// Parse an HKP machine-readable index body into entities. Pure of I/O so it is
@@ -184,7 +151,7 @@ fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResu
             && name.trim().contains(' ')
             && seen_person.insert(name.to_lowercase())
         {
-            let mut e = Entity::new(EntityKind::Person, name.trim(), 0.65, scan_id);
+            let mut e = Entity::new(EntityKind::Person, name.trim(), confidence::HIGH, scan_id);
             e.tag(SRC);
             e.add_evidence(ev());
             result.push(e);
@@ -202,7 +169,7 @@ fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResu
             // Alternate emails bound to the same key are the high-value pivot;
             // the queried email itself adds nothing new as a standalone entity.
             if lower.contains('@') && lower != query_lower && seen_email.insert(lower) {
-                let mut e = Entity::new(EntityKind::Email, email, 0.70, scan_id);
+                let mut e = Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
                 e.tag(SRC);
                 e.tag("pgp-linked");
                 e.add_evidence(ev());
@@ -222,7 +189,12 @@ fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResu
             continue;
         }
         let value = format!("pgp:{}", fp.to_lowercase());
-        let mut cred = Entity::new(EntityKind::Credential, &value, 0.85, scan_id);
+        let mut cred = Entity::new(
+            EntityKind::Credential,
+            &value,
+            confidence::HIGH_PLUSPLUS_PLUS,
+            scan_id,
+        );
         cred.tag("pgp-key");
         cred.tag("public-key");
         cred.tag(SRC);

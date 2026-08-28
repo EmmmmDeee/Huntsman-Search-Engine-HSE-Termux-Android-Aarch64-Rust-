@@ -31,10 +31,45 @@
 //! of one scan, so a 429 seen by scan A should back scan B off the same provider
 //! too. Synthetic/offline modules never fail, so the breaker stays closed and has
 //! zero effect on deterministic test scans.
+//!
+//! ## Why cooldown deadlines are `SystemTime`, not `Instant`
+//!
+//! `Instant` is monotonic — on Linux/Android, `CLOCK_MONOTONIC` — and that clock
+//! **stops while the device is suspended**. On the primary target that is not an
+//! edge case: an Android phone dozes whenever the screen is off and no wakelock
+//! is held. A deadline built from `Instant::now() + cooldown` therefore stays in
+//! the future across a doze by nearly its full remaining span, so a provider
+//! benched for [`RATE_LIMIT_COOLDOWN`] (600 s) stays benched for far longer than
+//! 600 *real* seconds. The harm runs in the over-benching direction — every
+//! finding that provider would have returned is silently dropped, the same cost
+//! [`is_rate_limited`] is hardened against causing by false positive.
+//!
+//! `CLOCK_BOOTTIME` is the primitive that actually wants using here (monotonic
+//! *and* suspend-inclusive), but reaching it means `libc::clock_gettime`, and
+//! this crate is `#![forbid(unsafe_code)]`. So the deadlines are wall-clock
+//! [`SystemTime`], whose own exposure is a clock step: backwards lengthens a
+//! cooldown, forwards ends one early. Both are bounded and rare, and both beat a
+//! clock that is frozen for the whole sleep.
+//!
+//! ## Determinism
+//!
+//! Every decision this module makes is a pure function of a `now: SystemTime`
+//! that is passed in, exactly as the per-host breaker
+//! ([`crate::util::circuit_breaker`]) passes an epoch second. The `pub(super)`
+//! entry points are thin wrappers that pin `now` to [`SystemTime::now()`]; the
+//! `*_at` functions beneath them take it explicitly, so the tests advance time
+//! by *passing a later value* rather than sleeping.
+//!
+//! That is what makes the paragraph above testable rather than merely argued:
+//! a suspend is indistinguishable, from this module's side, from the wall clock
+//! jumping forward while no code of ours ran — which is precisely what a test
+//! can hand it. What the tests establish is that expiry tracks the wall clock
+//! it is given; that `SystemTime` itself keeps advancing across an Android
+//! suspend is a property of the OS, not of this code, and is not asserted here.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime};
 
 /// Cooldown for a rate-limit/quota/payment trip. Long enough to outlast a typical
 /// scan (so the provider isn't re-hit per target) and the common reset windows
@@ -49,10 +84,10 @@ const SOFT_TRIP_THRESHOLD: u32 = 3;
 const SOFT_COOLDOWN: Duration = Duration::from_secs(120);
 
 struct Trip {
-    /// `Some(t)` ⇒ the module is tripped and skipped while `Instant::now() < t`.
+    /// `Some(t)` ⇒ the module is tripped and skipped while `SystemTime::now() < t`.
     /// `None` ⇒ the entry only tracks a soft-failure streak that hasn't yet
     /// reached the trip threshold (so it must NOT be treated as expired/pruned).
-    open_until: Option<Instant>,
+    open_until: Option<SystemTime>,
     /// Consecutive soft failures since the last success (drives the soft trip).
     fail_streak: u32,
     /// Stable label for logs/telemetry; the operator-facing skip reason is a
@@ -63,6 +98,18 @@ struct Trip {
 fn state() -> &'static Mutex<HashMap<&'static str, Trip>> {
     static STATE: OnceLock<Mutex<HashMap<&'static str, Trip>>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// `now + cooldown`, or `None` if that overflows `SystemTime`.
+///
+/// `None` reads as "no trip deadline" at every call site, i.e. the breaker fails
+/// **open** and the module is dispatched. That is the safe direction: the cost is
+/// one wasted retry against a rate-limited endpoint, where failing closed would
+/// bench a provider on an arithmetic edge case. Unreachable with the cooldowns
+/// defined above (600 s / 120 s) — this exists so there is no panicking `+` on a
+/// path the dispatch loop takes for every module error.
+fn deadline(now: SystemTime, cooldown: Duration) -> Option<SystemTime> {
+    now.checked_add(cooldown)
 }
 
 /// Rate-limit/quota/payment prose distinctive enough to match as a plain
@@ -120,12 +167,17 @@ fn is_rate_limited(msg: &str) -> bool {
 /// dispatch gate before a module runs. Expired trips are pruned lazily here so a
 /// recovered provider is retried without a background sweeper.
 pub(super) fn is_open(name: &str) -> bool {
+    is_open_at(name, SystemTime::now())
+}
+
+/// [`is_open`] against an explicit `now` — see the module's *Determinism* note.
+fn is_open_at(name: &str, now: SystemTime) -> bool {
     let mut g = state()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     match g.get(name) {
         // Tripped and still cooling down.
-        Some(t) if t.open_until.is_some_and(|u| Instant::now() < u) => true,
+        Some(t) if t.open_until.is_some_and(|u| now < u) => true,
         // Tripped but the cooldown elapsed: clear the entry so a recovered
         // provider is retried (a fresh failure starts a new streak).
         Some(t) if t.open_until.is_some() => {
@@ -141,12 +193,22 @@ pub(super) fn is_open(name: &str) -> bool {
 /// Record that `name` just hit a rate-limit/quota/payment wall → trip now for
 /// [`RATE_LIMIT_COOLDOWN`].
 pub(super) fn record_rate_limit(name: &'static str) {
-    trip(name, RATE_LIMIT_COOLDOWN, "rate-limit/quota");
+    record_rate_limit_at(name, SystemTime::now());
+}
+
+/// [`record_rate_limit`] against an explicit `now` — see *Determinism*.
+fn record_rate_limit_at(name: &'static str, now: SystemTime) {
+    trip(name, now, RATE_LIMIT_COOLDOWN, "rate-limit/quota");
 }
 
 /// Record a hard transport error or timeout. Trips only once the failure streak
 /// reaches [`SOFT_TRIP_THRESHOLD`], for [`SOFT_COOLDOWN`].
 pub(super) fn record_soft_failure(name: &'static str) {
+    record_soft_failure_at(name, SystemTime::now());
+}
+
+/// [`record_soft_failure`] against an explicit `now` — see *Determinism*.
+fn record_soft_failure_at(name: &'static str, now: SystemTime) {
     let mut g = state()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -157,7 +219,7 @@ pub(super) fn record_soft_failure(name: &'static str) {
     });
     entry.fail_streak = entry.fail_streak.saturating_add(1);
     if entry.fail_streak >= SOFT_TRIP_THRESHOLD {
-        entry.open_until = Some(Instant::now() + SOFT_COOLDOWN);
+        entry.open_until = deadline(now, SOFT_COOLDOWN);
         entry.reason = "repeated failure/timeout";
     }
 }
@@ -176,14 +238,19 @@ pub(super) fn record_success(name: &str) {
 /// soft failure. (Timeouts are recorded by the caller via `record_soft_failure`,
 /// since they carry no message to classify.)
 pub(super) fn record_error(name: &'static str, msg: &str) {
+    record_error_at(name, msg, SystemTime::now());
+}
+
+/// [`record_error`] against an explicit `now` — see *Determinism*.
+fn record_error_at(name: &'static str, msg: &str, now: SystemTime) {
     if is_rate_limited(msg) {
-        record_rate_limit(name);
+        record_rate_limit_at(name, now);
     } else {
-        record_soft_failure(name);
+        record_soft_failure_at(name, now);
     }
 }
 
-fn trip(name: &'static str, cooldown: Duration, reason: &'static str) {
+fn trip(name: &'static str, now: SystemTime, cooldown: Duration, reason: &'static str) {
     let mut g = state()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -192,7 +259,7 @@ fn trip(name: &'static str, cooldown: Duration, reason: &'static str) {
         fail_streak: 0,
         reason,
     });
-    entry.open_until = Some(Instant::now() + cooldown);
+    entry.open_until = deadline(now, cooldown);
     entry.fail_streak = entry.fail_streak.saturating_add(1);
     entry.reason = reason;
 }

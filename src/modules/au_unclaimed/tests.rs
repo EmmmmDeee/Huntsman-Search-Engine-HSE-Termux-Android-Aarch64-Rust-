@@ -82,7 +82,7 @@ mod qld {
                 ]
             }
         }"#;
-        serde_json::from_str(raw).unwrap()
+        serde_json::from_str(raw).expect("should succeed")
     }
 
     #[test]
@@ -100,8 +100,8 @@ mod qld {
 
     #[test]
     fn classifies_exact_person_vs_surname_only_family() {
-        let recs = sample().result.unwrap().records;
-        let curt = records_to_entities(&recs, 3, "Curt Avery", true, "s");
+        let recs = sample().result.expect("should succeed").records;
+        let curt = records_to_entities(&recs, 3, "Curt Avery", "Avery", true, "s");
         let exact = |e: &Entity| e.tags.iter().any(|t| t.as_str() == "exact-name-match");
         let addrs: Vec<&Entity> = curt
             .iter()
@@ -118,31 +118,34 @@ mod qld {
                 .find(|e| e.kind == EntityKind::Person && e.value == v)
         };
         assert!(person("Curt Avery").is_some_and(exact));
-        assert!(person("Erik Avery").is_some_and(|e| !exact(e) && e.confidence < 0.50));
+        assert!(person("Erik Avery").is_some_and(|e| !exact(e) && e.confidence < crate::core::confidence::MEDIUM));
     }
 
     #[test]
     fn per_record_address_tags_are_correct_before_any_merge() {
         // Real-scan reproduction (a "Riley Morley" scan): two records at the SAME
-        // postcode (4001), NEITHER owner matching the seed — "ANN SQUARE
-        // INVESTMENT PTY LTD" (a company, no person name at all) and "FLANNAN
-        // MORLEY & GERALDINE F MORLEY" (surname-only family). Per
-        // `records_to_entities`'s own contract, EVERY Address it returns for
-        // these two records must be tagged `family-candidate`, never
-        // `exact-name-match` — confirms the per-record classification itself is
-        // sound before any entity-merge step (which happens downstream, outside
-        // this function) has a chance to union tags across postcode-sharing
-        // records.
+        // postcode (4001), NEITHER owner matching the seed IN FULL — "MORLEY
+        // SQUARE INVESTMENT PTY LTD" (a company, no person name at all) and
+        // "FLANNAN MORLEY & GERALDINE F MORLEY" (surname-only family). Both share
+        // the queried surname, so both clear the `owner_matches_query` gate and
+        // reach the classifier (see
+        // `cross_field_ckan_matches_are_dropped_not_attributed` for the rows that
+        // do NOT clear it). Per `records_to_entities`'s own contract, EVERY
+        // Address it returns for these two records must be tagged
+        // `family-candidate`, never `exact-name-match` — confirms the per-record
+        // classification itself is sound before any entity-merge step (which
+        // happens downstream, outside this function) has a chance to union tags
+        // across postcode-sharing records.
         let raw = r#"{"result":{"total":2,"records":[
-            {"_id":100,"Owner":"ANN SQUARE INVESTMENT PTY LTD","Amount":"714.65","SenderName":"OFFICE OF INDUSTRIAL RELATIONS","DateRec":"2024-10-31","PCode":"4001"},
+            {"_id":100,"Owner":"MORLEY SQUARE INVESTMENT PTY LTD","Amount":"714.65","SenderName":"OFFICE OF INDUSTRIAL RELATIONS","DateRec":"2024-10-31","PCode":"4001"},
             {"_id":101,"Owner":"FLANNAN MORLEY & GERALDINE F MORLEY","Amount":"55.65","PCode":"4001"}
         ]}}"#;
         let recs = serde_json::from_str::<CkanResp>(raw)
-            .unwrap()
+            .expect("should succeed")
             .result
-            .unwrap()
+            .expect("should succeed")
             .records;
-        let ents = records_to_entities(&recs, 2, "Riley Morley", true, "s");
+        let ents = records_to_entities(&recs, 2, "Riley Morley", "Morley", true, "s");
         let addrs: Vec<&Entity> = ents
             .iter()
             .filter(|e| e.kind == EntityKind::Address)
@@ -163,16 +166,132 @@ mod qld {
     }
 
     #[test]
+    fn cross_field_ckan_matches_are_dropped_not_attributed() {
+        // Real-scan reproduction (seed "gift shop" → derived query "shop"):
+        // CKAN's `datastore_search?q=` is full-text across EVERY column, so a
+        // query for "shop" also returns rows whose *address* is "Shop 4, ..." —
+        // ubiquitous in Australian retail. Their owners share nothing with the
+        // seed, yet all of them were being emitted as `family-candidate` Persons
+        // attributed to the subject: 60 of 85 owner Persons in the measured scan,
+        // real named third parties clustered on one postcode.
+        //
+        // Rows whose OWNER matches the query survive (that is what makes a real
+        // relative a family-candidate); rows that matched some other column are
+        // dropped entirely — no Address, Person, Organisation, or money finding.
+        let raw = r#"{"result":{"total":3,"records":[
+            {"_id":1,"Owner":"JUNES CARD & GIFT SHOP","Amount":"75.00","PCode":"4106"},
+            {"_id":2,"Owner":"Gavin Williams","Amount":"12.00","PCode":"4350"},
+            {"_id":3,"Owner":"Malcolm Naismith","Amount":"31.00","PCode":"4350"}
+        ]}}"#;
+        let recs = serde_json::from_str::<CkanResp>(raw)
+            .expect("should succeed")
+            .result
+            .expect("should succeed")
+            .records;
+        let ents = records_to_entities(&recs, 3, "gift shop", "shop", true, "s");
+
+        // The owner that genuinely contains the queried token survives.
+        assert!(
+            ents.iter().any(|e| e.value.to_uppercase().contains("GIFT SHOP")),
+            "an owner containing the queried token must still be emitted"
+        );
+        // The two unrelated individuals must not appear as ANY entity kind.
+        for unrelated in ["Gavin Williams", "Malcolm Naismith"] {
+            assert!(
+                !ents.iter().any(|e| e.value.contains(unrelated)),
+                "{unrelated} matched on a non-owner column and must not be \
+                 attributed to this subject: {:?}",
+                ents.iter().map(|e| &e.value).collect::<Vec<_>>()
+            );
+        }
+        // Their postcode-only Address must not leak either — 4350 belongs to the
+        // dropped rows alone.
+        assert!(
+            !ents.iter().any(|e| e.value.contains("4350")),
+            "a dropped row must contribute no Address"
+        );
+    }
+
+    #[test]
+    fn given_name_surname_collision_is_not_a_family_candidate() {
+        // Real-scan reproduction (seed "Onur Ada" → derived surname query
+        // "Ada"): "ADA DRINKWATER" clears `owner_matches_query` (it shares the
+        // token "Ada") and is not `exact` (it has no "Onur"), so — before this
+        // fix — it was tagged `family-candidate` and Ada Drinkwater's address
+        // and unclaimed-money record entered the subject's dossier. But
+        // `owner_person_names` parses "ADA DRINKWATER" to given name "Ada",
+        // surname "Drinkwater" — the shared token is in the GIVEN-name
+        // position, not the surname position, so no family relationship is
+        // actually indicated. "Ada" happens to be both a common English given
+        // name and the seed's (Turkish) surname.
+        //
+        // A genuine relative — "FLANNAN DRINKWATER" — still survives: the
+        // query "Ada" would not match him at all here, so pair him with a
+        // second record whose owner's surname genuinely is "Ada" to confirm
+        // the positive path stays intact alongside the negative one.
+        let raw = r#"{"result":{"total":2,"records":[
+            {"_id":1,"Owner":"ADA DRINKWATER","Amount":"419.70","PCode":"2903"},
+            {"_id":2,"Owner":"MEHMET ADA","Amount":"88.10","PCode":"2000"}
+        ]}}"#;
+        let recs = serde_json::from_str::<CkanResp>(raw)
+            .expect("should succeed")
+            .result
+            .expect("should succeed")
+            .records;
+        let ents = records_to_entities(&recs, 2, "Onur Ada", "Ada", true, "s");
+
+        assert!(
+            !ents.iter().any(|e| e.value.contains("Drinkwater")),
+            "a given-name/surname token collision must not attribute an \
+             unrelated person's address or record: {:?}",
+            ents.iter().map(|e| &e.value).collect::<Vec<_>>()
+        );
+        assert!(
+            !ents.iter().any(|e| e.value.contains("2903")),
+            "Ada Drinkwater's postcode must not leak into the dossier either"
+        );
+        assert!(
+            ents.iter().any(|e| e.value.contains("Mehmet Ada")
+                || e.value.to_uppercase().contains("MEHMET ADA")),
+            "a genuine surname match (Ada is the SURNAME position here) must \
+             still be emitted: {:?}",
+            ents.iter().map(|e| &e.value).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn bare_initial_does_not_license_an_unrelated_owner_match() {
+        // A single-letter token ("M") must not match an unrelated "M Smith" —
+        // MIN_QUERY_TOKEN keeps initials from re-opening the cross-field hole.
+        let raw = r#"{"result":{"total":1,"records":[
+            {"_id":1,"Owner":"M Smith","Amount":"10.00","PCode":"4000"}
+        ]}}"#;
+        let recs = serde_json::from_str::<CkanResp>(raw)
+            .expect("should succeed")
+            .result
+            .expect("should succeed")
+            .records;
+        // Query "M Mcloughlin": "M" is a bare initial (ignored), "Mcloughlin"
+        // does not appear in "M Smith" → the row is dropped.
+        let ents = records_to_entities(&recs, 1, "M Mcloughlin", "M Mcloughlin", false, "s");
+        assert!(
+            ents.is_empty(),
+            "a bare initial must not license the match: {:?}",
+            ents.iter().map(|e| &e.value).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn company_owner_emits_organisation_for_abn_pivot() {
         let raw = r#"{"result":{"total":1,"records":[
             {"_id":7,"Owner":"ACME WIDGETS PTY LTD","Amount":"1200.00","SenderName":"ASX","PCode":"4000"}
         ]}}"#;
         let recs = serde_json::from_str::<CkanResp>(raw)
-            .unwrap()
+            .expect("should succeed")
             .result
-            .unwrap()
+            .expect("should succeed")
             .records;
-        let ents = records_to_entities(&recs, 1, "ACME Widgets", true, "s");
+        let ents = records_to_entities(&recs, 1, "ACME Widgets", "Widgets", true, "s");
         let org = ents
             .iter()
             .find(|e| e.kind == EntityKind::Organisation)
@@ -190,11 +309,11 @@ mod qld {
             {"_id":8,"Owner":"Jane Citizen","Amount":"500.00","SenderName":"GLOBEX EMPLOYMENT PTY LTD","PCode":"4000"}
         ]}}"#;
         let recs = serde_json::from_str::<CkanResp>(raw)
-            .unwrap()
+            .expect("should succeed")
             .result
-            .unwrap()
+            .expect("should succeed")
             .records;
-        let ents = records_to_entities(&recs, 1, "Jane Citizen", true, "s");
+        let ents = records_to_entities(&recs, 1, "Jane Citizen", "Citizen", true, "s");
         let sender = ents
             .iter()
             .find(|e| {
@@ -213,10 +332,11 @@ mod qld {
     #[test]
     fn parses_records_into_geo_addresses_tagged_qld_source() {
         let resp = sample();
-        let result = resp.result.unwrap();
+        let result = resp.result.expect("should succeed");
         let ents = records_to_entities(
             &result.records,
-            result.total.unwrap(),
+            result.total.expect("should succeed"),
+            "Avery",
             "Avery",
             true,
             "scan-1",
@@ -275,6 +395,6 @@ mod qld {
                 "Conondale, QLD 4552, Australia",
             ]
         );
-        assert!(ents.iter().all(|e| e.confidence < 0.50));
+        assert!(ents.iter().all(|e| e.confidence < crate::core::confidence::MEDIUM));
     }
 }

@@ -5,6 +5,7 @@
 
 use super::queries::{Region, build_queries_fullname, regional_dorks};
 use super::*;
+use crate::core::confidence;
 
 #[test]
 fn primary_engine_order_floats_reliable_and_proven_engines_first() {
@@ -37,7 +38,12 @@ fn primary_engine_order_floats_reliable_and_proven_engines_first() {
             seen_back = true;
         }
     }
-    let pos = |name: &str| ordered.iter().position(|e| e.name == name).unwrap();
+    let pos = |name: &str| {
+        ordered
+            .iter()
+            .position(|e| e.name == name)
+            .expect("should succeed")
+    };
     // The key win: a reliable engine declared late (swisscows) now precedes an
     // unproven engine declared early (bing).
     assert!(pos("swisscows") < pos("bing"));
@@ -677,6 +683,28 @@ fn phone_extraction_international() {
 }
 
 #[test]
+fn phone_extraction_recovers_au_domestic_formats_from_a_snippet() {
+    // Regression: a SERP snippet carrying an AU DOMESTIC number (no +NN prefix)
+    // used to be dropped entirely, because canonical E.164 mining rejects a bare
+    // `04xx`/`0x`/`1300`. The address_au union recovers them so an AU subject's
+    // phone in a result snippet becomes a Phone entity.
+    let mobile = extract_phones_from_text("Contact Jordan on 0410 959 140 anytime");
+    assert!(
+        mobile.iter().any(|p| p.ends_with("410959140")),
+        "AU mobile 0410 959 140 must be recovered, got {mobile:?}"
+    );
+    let service = extract_phones_from_text("Support line 1300 975 707 (business hours)");
+    assert!(
+        !service.is_empty(),
+        "AU 1300 service number must be recovered, got {service:?}"
+    );
+    // A foreign +NN number in the same text is still extracted (E.164 first).
+    let mixed = extract_phones_from_text("AU 0410 959 140 or UK +44 20 7946 0958");
+    assert!(mixed.iter().any(|p| p.starts_with("+44")));
+    assert!(mixed.iter().any(|p| p.ends_with("410959140")));
+}
+
+#[test]
 fn tracking_url_detection() {
     assert!(is_tracking_url("https://r.search.yahoo.com/cbcl/something"));
     assert!(is_tracking_url("https://r.bing.com/rb/something"));
@@ -714,8 +742,8 @@ fn resolve_href_decodes_yandex_clck() {
 }
 
 #[test]
-fn engine_count_is_seventeen() {
-    assert_eq!(ENGINES.len(), 17);
+fn engine_count_is_sixteen() {
+    assert_eq!(ENGINES.len(), 16);
 }
 
 #[test]
@@ -744,7 +772,6 @@ fn new_engines_present() {
         "qwant",
         "dogpile",
         "swisscows",
-        "you",
         "presearch",
         "metager",
         "searx",
@@ -755,9 +782,12 @@ fn new_engines_present() {
 
 #[test]
 fn startpage_uses_post() {
-    let sp = ENGINES.iter().find(|e| e.name == "startpage").unwrap();
+    let sp = ENGINES
+        .iter()
+        .find(|e| e.name == "startpage")
+        .expect("should succeed");
     assert!(sp.build_post.is_some());
-    let body = (sp.build_post.unwrap())("test query");
+    let body = (sp.build_post.expect("should succeed"))("test query");
     assert!(body.contains("query=test+query"));
     assert!(body.contains("cat=web"));
 }
@@ -1028,7 +1058,7 @@ fn address_corroboration_cannot_reach_verified_on_a_surname_placename_collision(
     // real scan. All evidence on this path shares one literal source string
     // ("search_engines"), so `source_count()` is always 1 and `c_effective()`
     // equals the raw (capped) `confidence` — repetition alone must never be
-    // able to cross `Classification::VERIFIED_MIN` (0.75).
+    // able to cross `Classification::VERIFIED_MIN` (confidence::VERY_HIGH).
     let target = Target::new(TargetKind::FullName, "Brett Lawnton");
     let mk = |n: usize| SearchResult {
         url: format!("https://view.com.au/property/qld/lawnton-4501/listing-{n}/"),
@@ -1231,7 +1261,7 @@ fn username_scoring_term_overlap() {
     };
     let (score, conf) = score_username("jerome-despal", "soundcloud.com", &terms, &r);
     assert!(score >= 3);
-    assert!((conf - 0.55).abs() < 0.01);
+    assert!((conf - confidence::MEDIUM_HIGH).abs() < 0.01);
 }
 
 #[test]
@@ -1545,8 +1575,8 @@ fn score_username_promotes_seed_variant_over_cooccurrence() {
     let (s_variant, c_variant) = score_username("kylocool630", "x.com", &terms, &res);
     let (s_noise, c_noise) = score_username("khloekardashian", "x.com", &terms, &res);
     assert!(
-        s_variant >= 3 && (c_variant - 0.55).abs() < 1e-9,
-        "seed-variant handle should reach PROBABLE (0.55), got score={s_variant} conf={c_variant}"
+        s_variant >= 3 && (c_variant - confidence::MEDIUM_HIGH).abs() < 1e-9,
+        "seed-variant handle should reach PROBABLE (confidence::MEDIUM_HIGH), got score={s_variant} conf={c_variant}"
     );
     assert!(
         s_noise < 3 && (c_noise - 0.30).abs() < 1e-9,
@@ -1597,7 +1627,7 @@ fn confirmed_profile_corroborated_by_engines_reaches_verified() {
         "all 3 engines must be credited even though dedup kept one result"
     );
     assert!(
-        prof.c_effective() >= 0.75,
+        prof.c_effective() >= confidence::VERY_HIGH,
         "3-engine confirmed profile must be Verified, got c_eff={}",
         prof.c_effective()
     );
@@ -1780,8 +1810,8 @@ fn email_seed_emits_no_bare_external_domains() {
 #[test]
 fn build_entities_classifies_subdomain_vs_external_with_engine_corroboration() {
     // The domain branch of `build_entities` has three couplings worth pinning:
-    // a host under the target domain is a SUBDOMAIN (conf 0.70); any other
-    // registrable domain is EXTERNAL (conf 0.45); and each carries the count
+    // a host under the target domain is a SUBDOMAIN (conf confidence::HIGH_PLUS); any other
+    // registrable domain is EXTERNAL (conf confidence::LOW_MEDIUM); and each carries the count
     // of *distinct engines* that returned its URL (cross-engine corroboration,
     // the same signal the profile-URL path uses). Uses a `.com.au` target so
     // the multi-label-suffix registrable logic is exercised too.
@@ -1817,8 +1847,8 @@ fn build_entities_classifies_subdomain_vs_external_with_engine_corroboration() {
         "host under target → SUBDOMAIN tag"
     );
     assert!(
-        (sub.confidence - 0.70).abs() < 1e-9,
-        "subdomain base conf 0.70"
+        (sub.confidence - confidence::HIGH_PLUS).abs() < 1e-9,
+        "subdomain base conf confidence::HIGH_PLUS"
     );
     assert_eq!(
         sub.corroboration, 2,
@@ -1835,8 +1865,8 @@ fn build_entities_classifies_subdomain_vs_external_with_engine_corroboration() {
         "unrelated registrable → EXTERNAL tag"
     );
     assert!(
-        (ext.confidence - 0.45).abs() < 1e-9,
-        "external base conf 0.45"
+        (ext.confidence - confidence::LOW_MEDIUM).abs() < 1e-9,
+        "external base conf confidence::LOW_MEDIUM"
     );
     assert_eq!(ext.corroboration, 1, "one engine returned the external URL");
 
@@ -1883,9 +1913,9 @@ fn offtarget_repo_url_detects_project_named_after_a_term() {
 fn url_from_a_location_seed_is_quarantined_as_generic_location() {
     // Regression from a live "Haigen Bamford" scan: recursion fed the suburb
     // "Regents Park, QLD" back as an Address seed, so every suburb / real-estate
-    // page matched the place term and flooded the results at 0.50. A URL found
+    // page matched the place term and flooded the results at confidence::MEDIUM. A URL found
     // while the seed is itself a location is generic location content, not the
-    // subject's PII — it must be a quarantined candidate (0.30), below the 0.50
+    // subject's PII — it must be a quarantined candidate (0.30), below the confidence::MEDIUM
     // expansion floor, so it neither inflates results nor recurses further.
     let mk = |url: &str| SearchResult {
         url: url.to_string(),
@@ -1917,14 +1947,14 @@ fn url_from_a_location_seed_is_quarantined_as_generic_location() {
     assert!(u.has_tag("generic-location"));
     assert!(u.has_tag("candidate"));
 
-    // The SAME URL from a person seed keeps the normal 0.50 (terms would have to
+    // The SAME URL from a person seed keeps the normal confidence::MEDIUM (terms would have to
     // match; here the path contains no person term, so it simply isn't emitted —
-    // assert it is never a 0.50 PROBABLE from the location seed).
+    // assert it is never a confidence::MEDIUM PROBABLE from the location seed).
     assert!(
         !loc.entities
             .iter()
-            .any(|e| e.kind == EntityKind::Url && (e.confidence - 0.50).abs() < 1e-9),
-        "a location-seed URL must never reach the 0.50 person-PII tier"
+            .any(|e| e.kind == EntityKind::Url && (e.confidence - confidence::MEDIUM).abs() < 1e-9),
+        "a location-seed URL must never reach the confidence::MEDIUM person-PII tier"
     );
 }
 
@@ -1934,7 +1964,7 @@ fn email_and_phone_extraction_requires_the_surname_in_the_result() {
     // instagram.com/rileyj/ (an unrelated account — first name "Riley" only, no
     // "Morley" anywhere in the bio) whose snippet happened to contain
     // "pr@rileyjorja.com", and the unfixed code minted that as a PROBABLE
-    // (0.60+) email attributed to the subject with zero check that the result
+    // (confidence::MEDIUM_PLUS+) email attributed to the subject with zero check that the result
     // actually names them — the same first-name-collision shape the address
     // extractor was already gated against (`result_names_the_subject`, née
     // `location_on_subject`), just never extended to email/phone.
@@ -2179,7 +2209,7 @@ fn address_normalise_strips_punctuation() {
 fn known_city_coords_gatton() {
     let coords = known_city_coords("Gatton, QLD");
     assert!(coords.is_some(), "Gatton should have known coordinates");
-    let (lat, lon) = coords.unwrap();
+    let (lat, lon) = coords.expect("should succeed");
     assert!((lat - (-27.5567)).abs() < 0.01);
     assert!((lon - 152.2767).abs() < 0.01);
 }
@@ -2352,34 +2382,42 @@ fn html_entity_decoding_apostrophes() {
 
 #[test]
 fn session_dead_threshold_fires_after_n_consecutive_empties() {
-    // Use a fake engine name so this test is isolated from other tests
-    // that may have touched the real engine names.
+    // Use a fake engine name and scan ID so this test is isolated from other tests.
+    const SCAN_ID: &str = "__test_session_dead_scan__";
     const FAKE: &str = "__test_session_dead__";
+
     // Reset any leftover state from prior runs of this test.
-    SESSION_EMPTY_COUNTS
+    let mut map = SESSION_EMPTY_COUNTS
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(FAKE);
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    map.retain(|(sid, _), _| sid != SCAN_ID);
+    drop(map);
 
     assert!(
-        !is_session_dead(FAKE),
+        !is_session_dead(SCAN_ID, FAKE),
         "should not be dead before threshold"
     );
     // An UNPROVEN engine (never produced a result) dies fast — google/you/etc.
     for i in 0..SESSION_DEAD_THRESHOLD {
-        record_empty(FAKE);
+        record_empty(SCAN_ID, FAKE);
         if i + 1 < SESSION_DEAD_THRESHOLD {
-            assert!(!is_session_dead(FAKE), "dead before threshold at i={i}");
+            assert!(
+                !is_session_dead(SCAN_ID, FAKE),
+                "dead before threshold at i={i}"
+            );
         }
     }
     assert!(
-        is_session_dead(FAKE),
+        is_session_dead(SCAN_ID, FAKE),
         "must be session-dead after threshold"
     );
 
     // record_hit resets the streak — engine is live again.
-    record_hit(FAKE);
-    assert!(!is_session_dead(FAKE), "hit must un-dead the engine");
+    record_hit(SCAN_ID, FAKE);
+    assert!(
+        !is_session_dead(SCAN_ID, FAKE),
+        "hit must un-dead the engine"
+    );
 }
 
 #[test]
@@ -2388,76 +2426,99 @@ fn proven_engine_tolerates_long_block_streaks() {
     // 3-block streaks that intermittently-blocked engines (bing ~48% block,
     // ecosia ~78%) routinely hit BETWEEN real results. The old flat threshold of
     // 3 permanently silenced them mid-scan and discarded their later results.
+    const SCAN_ID: &str = "__test_proven_engine_scan__";
     const FAKE: &str = "__test_proven_engine__";
-    SESSION_EMPTY_COUNTS
+
+    // Reset any leftover state from prior runs of this test.
+    let mut map = SESSION_EMPTY_COUNTS
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(FAKE);
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    map.retain(|(sid, _), _| sid != SCAN_ID);
+    drop(map);
 
     // Prove it live, then feed it the streak that WOULD have killed it before.
-    record_hit(FAKE);
+    record_hit(SCAN_ID, FAKE);
     for _ in 0..SESSION_DEAD_THRESHOLD {
-        record_empty(FAKE);
+        record_empty(SCAN_ID, FAKE);
     }
     assert!(
-        !is_session_dead(FAKE),
+        !is_session_dead(SCAN_ID, FAKE),
         "a proven engine must survive an unproven-length empty streak"
     );
 
     // It still dies if the host genuinely goes down for the full tolerant run.
     for _ in SESSION_DEAD_THRESHOLD..SESSION_DEAD_THRESHOLD_PROVEN {
-        record_empty(FAKE);
+        record_empty(SCAN_ID, FAKE);
     }
     assert!(
-        is_session_dead(FAKE),
+        is_session_dead(SCAN_ID, FAKE),
         "a proven engine still dies after the tolerant threshold"
     );
 
     // A fresh hit revives it AND resets the streak.
-    record_hit(FAKE);
+    record_hit(SCAN_ID, FAKE);
     assert!(
-        !is_session_dead(FAKE),
+        !is_session_dead(SCAN_ID, FAKE),
         "a later hit revives a silenced engine"
     );
 }
 
 #[test]
 fn reset_session_liveness_clears_silenced_and_proven_state_across_scans() {
-    // Regression: SESSION_EMPTY_COUNTS is process-global (shared across every
-    // scan in one `hse serve`/`hse live` process), so a fresh scan against a
-    // DIFFERENT target must not inherit a prior scan's block-streak silencing
-    // or "proven live" exemptions. Before `reset_session_liveness` was wired
-    // into `modules::install_core_hooks`'s `reset_per_scan`, an engine
-    // silenced (or proven) in scan A stayed that way for every later scan in
-    // the same process, even though a fresh scan has no basis to assume the
-    // same engine will behave the same way against a new target.
+    // Regression: SESSION_EMPTY_COUNTS is now scoped per scan (via scan_id keys)
+    // to prevent concurrent scans from poisoning each other's liveness state.
+    // A fresh scan must start with a clean slate for its namespaced state,
+    // exactly like the paid-API response caches.
+    const SCAN_ID_A: &str = "__test_scan_a__";
+    const SCAN_ID_B: &str = "__test_scan_b__";
     const FAKE: &str = "__test_reset_session_liveness__";
-    SESSION_EMPTY_COUNTS
+
+    // Clear any prior test state
+    let mut map = SESSION_EMPTY_COUNTS
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(FAKE);
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    map.retain(|(sid, _), _| sid != SCAN_ID_A && sid != SCAN_ID_B);
+    drop(map);
 
-    // Silence it via the unproven threshold (as scan A's block streak would).
+    // Scan A: Silence an engine via the unproven threshold
     for _ in 0..SESSION_DEAD_THRESHOLD {
-        record_empty(FAKE);
+        record_empty(SCAN_ID_A, FAKE);
     }
-    assert!(is_session_dead(FAKE), "setup: engine must be silenced");
+    assert!(
+        is_session_dead(SCAN_ID_A, FAKE),
+        "setup: engine must be silenced in scan A"
+    );
 
-    reset_session_liveness();
+    // Scan B starts before A's state is reset: should NOT see A's silencing
+    assert!(
+        !is_session_dead(SCAN_ID_B, FAKE),
+        "scan B should have independent liveness state"
+    );
+
+    // Populate scan B with its own liveness state
+    record_hit(SCAN_ID_B, FAKE);
+
+    // Reset scan A's state
+    reset_session_liveness(SCAN_ID_A);
 
     assert!(
-        !is_session_dead(FAKE),
-        "a per-scan reset must clear a prior scan's silencing"
+        !is_session_dead(SCAN_ID_A, FAKE),
+        "reset must clear scan A's silencing"
     );
+    // Scan B's state should be unaffected by scan A's reset
     assert!(
-        SESSION_EMPTY_COUNTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_empty(),
-        "reset must clear the ENTIRE map, not just the one test engine \
-         (a real scan boundary has no way to enumerate every engine name \
-         some earlier scan may have touched)"
+        !is_session_dead(SCAN_ID_B, FAKE),
+        "scan B's state is unaffected by scan A's reset (scan B is proven live)"
     );
+
+    // Verify only scan A's entries are cleared, scan B's remain
+    let map = SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let has_scan_a = map.keys().any(|(sid, _)| sid == SCAN_ID_A);
+    let has_scan_b = map.keys().any(|(sid, _)| sid == SCAN_ID_B);
+    assert!(!has_scan_a, "reset must clear all entries for scan A");
+    assert!(has_scan_b, "reset must NOT clear entries for scan B");
 }
 
 #[test]
@@ -2509,5 +2570,70 @@ fn pivot_engine_set_unions_reliable_core_with_proven_and_is_deterministic() {
     assert_eq!(
         only_core, expect,
         "an unknown proven name resolves to just the reliable core"
+    );
+}
+
+#[test]
+fn extract_path_username_strips_the_at_prefix() {
+    // @handle profile roots must yield the real handle, not None.
+    assert_eq!(
+        extract_path_username("https://www.tiktok.com/@realhandle").as_deref(),
+        Some("realhandle")
+    );
+    assert_eq!(
+        extract_path_username("https://www.youtube.com/@RealHandle").as_deref(),
+        Some("RealHandle")
+    );
+    assert_eq!(
+        extract_path_username("https://mastodon.social/@jane").as_deref(),
+        Some("jane")
+    );
+    // A bare `@` is not a handle.
+    assert!(extract_path_username("https://x.com/@").is_none());
+    // Never leaks the `@` into the value.
+    assert!(
+        extract_path_username("https://medium.com/@writer")
+            .as_deref()
+            .is_none_or(|h| !h.contains('@'))
+    );
+}
+
+#[test]
+fn is_navigation_path_rejects_platform_route_words() {
+    for w in [
+        "channel",
+        "profile",
+        "orgs",
+        "gists",
+        "collections",
+        "sponsors",
+    ] {
+        assert!(is_navigation_path(w), "{w} must be a navigation path");
+    }
+    for w in ["torvalds", "jordanmeyers", "realhandle"] {
+        assert!(!is_navigation_path(w), "{w} must remain a handle");
+    }
+}
+
+#[test]
+fn youtube_channel_url_yields_no_username_entity() {
+    let target = Target::new(TargetKind::Email, "example-user@protonmail.com");
+    let results = vec![SearchResult {
+        url: "https://www.youtube.com/channel/example-user".to_string(),
+        title: "Example - YouTube".to_string(),
+        snippet: "a youtube channel".to_string(),
+        engine: "bing",
+        query: "\"example-user@protonmail.com\"".to_string(),
+    }];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        !res.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Username && e.value == "channel"),
+        "the route word `channel` must not become a username"
+    );
+    assert!(
+        res.entities.iter().any(|e| e.kind == EntityKind::Url),
+        "the URL itself is still emitted"
     );
 }

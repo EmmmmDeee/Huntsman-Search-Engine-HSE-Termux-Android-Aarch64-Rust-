@@ -1,6 +1,7 @@
 use hickory_resolver::proto::rr::{RData, RecordType};
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::ModuleContext,
@@ -11,6 +12,20 @@ use crate::util::dns::shared_resolver;
 use super::SRC;
 use super::helpers::{soa_rname_to_email, verification_vendor};
 
+/// Whether a lookup outcome *established* something about the zone.
+///
+/// `Ok` did. So did an `Err` that `is_no_records_found()`: hickory maps NXDOMAIN and
+/// NOERROR-with-no-answers there and routes SERVFAIL/REFUSED/FORMERR/timeout to other
+/// variants instead, so a failing resolver cannot reach this arm dressed as a clean
+/// negative. The DNSBL sweep further down this file relies on exactly that property.
+/// Every other `Err` means the resolver answered nothing at all.
+fn answered<T>(outcome: &std::result::Result<T, hickory_resolver::net::NetError>) -> bool {
+    match outcome {
+        Ok(_) => true,
+        Err(e) => e.is_no_records_found(),
+    }
+}
+
 /// A / AAAA / MX / NS / SOA / TXT / DMARC — run concurrently via `tokio::join!`.
 ///
 /// DMARC records are published at `_dmarc.{domain}` (RFC 7489 §6.6.3), never at
@@ -20,16 +35,45 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
     let resolver = shared_resolver();
     let domain = target.value.as_str();
     let dmarc_name = format!("_dmarc.{domain}");
+    // TLSRPT (RFC 8460) lives at `_smtp._tls.{domain}`, like DMARC at `_dmarc.`.
+    let tlsrpt_name = format!("_smtp._tls.{domain}");
     let mut entities: Vec<Entity> = Vec::new();
 
-    let (ips, mxs, nss, soa, txts, dmarc_txts) = tokio::join!(
+    let (ips, mxs, nss, soa, txts, dmarc_txts, tlsrpt_txts) = tokio::join!(
         resolver.lookup_ip(domain),
         resolver.mx_lookup(domain),
         resolver.ns_lookup(domain),
         resolver.soa_lookup(domain),
         resolver.txt_lookup(domain),
         resolver.txt_lookup(dmarc_name.as_str()),
+        resolver.txt_lookup(tlsrpt_name.as_str()),
     );
+
+    // Fail closed when the resolver established nothing at all. Each `if let Ok(..)`
+    // below discards its own lookup's error, which is right for one record type that
+    // genuinely has none — but if EVERY lookup failed for a non-NXDOMAIN reason
+    // (SERVFAIL, REFUSED, timeout, no route: a captive portal, a VPN transition, a
+    // resolver that is simply down) then `Ok(entities)` returns empty and the caller
+    // cannot distinguish that from a domain that is genuinely parked. DNS seeds most
+    // of this engine's downstream pivots, so that silent empty also truncates the
+    // whole BFS branch rather than just losing one source.
+    if ![
+        answered(&ips),
+        answered(&mxs),
+        answered(&nss),
+        answered(&soa),
+        answered(&txts),
+        answered(&dmarc_txts),
+        answered(&tlsrpt_txts),
+    ]
+    .iter()
+    .any(|a| *a)
+    {
+        return Err(crate::core::error::Error::module(
+            SRC,
+            format!("resolver established nothing for {domain}: every lookup failed"),
+        ));
+    }
 
     // A + AAAA
     if let Ok(lookup) = ips {
@@ -39,7 +83,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                 RData::AAAA(aaaa) => (aaaa.0.to_string(), "AAAA", "6"),
                 _ => return None,
             };
-            let mut e = Entity::new(EntityKind::IpAddress, &ip_str, 0.95, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::IpAddress,
+                &ip_str,
+                confidence::VERY_HIGH_PLUSPLUS,
+                &ctx.scan_id,
+            );
             e.tag(if record_type == "A" { "ipv4" } else { "ipv6" });
             e.add_evidence(
                 Evidence::new(SRC, format!("{record_type} record for {domain}"))
@@ -63,7 +112,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
             if host.is_empty() {
                 return None;
             }
-            let mut e = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Domain,
+                &host,
+                confidence::HIGH_PLUSPLUS_PLUS,
+                &ctx.scan_id,
+            );
             e.tag("mx");
             e.add_evidence(
                 Evidence::new(SRC, format!("MX record for {domain}"))
@@ -87,7 +141,7 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
             if host.is_empty() {
                 return None;
             }
-            let mut e = Entity::new(EntityKind::Domain, &host, 0.88, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Domain, &host, confidence::EXPERT, &ctx.scan_id);
             e.tag("ns");
             e.add_evidence(
                 Evidence::new(SRC, format!("NS record for {domain}"))
@@ -111,7 +165,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
         let rname_raw = soa_data.rname.to_ascii();
         let admin_email = soa_rname_to_email(rname_raw.trim_end_matches('.'));
 
-        let mut e = Entity::new(EntityKind::Domain, domain, 0.92, &ctx.scan_id);
+        let mut e = Entity::new(
+            EntityKind::Domain,
+            domain,
+            confidence::AUTHORITATIVE,
+            &ctx.scan_id,
+        );
         e.tag("soa");
         let mut ev = Evidence::new(SRC, format!("SOA record for {domain}"))
             .with_attr("record_type", "SOA")
@@ -138,7 +197,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
         // still kept.
         if admin_email.contains('@') && !crate::util::domains::is_infrastructure_email(&admin_email)
         {
-            let mut em = Entity::new(EntityKind::Email, &admin_email, 0.70, &ctx.scan_id);
+            let mut em = Entity::new(
+                EntityKind::Email,
+                &admin_email,
+                confidence::HIGH_PLUS,
+                &ctx.scan_id,
+            );
             em.tag("dns-admin");
             em.add_evidence(
                 Evidence::new(SRC, format!("Zone admin for {domain}"))
@@ -164,7 +228,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
             })
             .collect();
         if !txts.is_empty() {
-            let mut dom = Entity::new(EntityKind::Domain, domain, 0.90, &ctx.scan_id);
+            let mut dom = Entity::new(
+                EntityKind::Domain,
+                domain,
+                confidence::VERY_HIGH_PLUS,
+                &ctx.scan_id,
+            );
             for t in &txts {
                 let t = t.trim_matches('"');
                 let b = t.as_bytes();
@@ -199,8 +268,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                     for member in crate::util::spf::members(t) {
                         match member {
                             crate::util::spf::Member::Ip(ip) => {
-                                let mut ie =
-                                    Entity::new(EntityKind::IpAddress, ip, 0.75, &ctx.scan_id);
+                                let mut ie = Entity::new(
+                                    EntityKind::IpAddress,
+                                    ip,
+                                    confidence::VERY_HIGH,
+                                    &ctx.scan_id,
+                                );
                                 ie.tag("dns");
                                 ie.tag("spf");
                                 ie.add_evidence(
@@ -216,8 +289,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                                 entities.push(ie);
                             }
                             crate::util::spf::Member::Include(inc) => {
-                                let mut de =
-                                    Entity::new(EntityKind::Domain, inc, 0.65, &ctx.scan_id);
+                                let mut de = Entity::new(
+                                    EntityKind::Domain,
+                                    inc,
+                                    confidence::HIGH,
+                                    &ctx.scan_id,
+                                );
                                 de.tag("dns");
                                 de.tag("spf-include");
                                 de.add_evidence(Evidence::new(
@@ -227,8 +304,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                                 entities.push(de);
                             }
                             crate::util::spf::Member::Redirect(red) => {
-                                let mut de =
-                                    Entity::new(EntityKind::Domain, red, 0.65, &ctx.scan_id);
+                                let mut de = Entity::new(
+                                    EntityKind::Domain,
+                                    red,
+                                    confidence::HIGH,
+                                    &ctx.scan_id,
+                                );
                                 de.tag("dns");
                                 de.tag("spf-redirect");
                                 de.add_evidence(Evidence::new(
@@ -238,8 +319,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                                 entities.push(de);
                             }
                             crate::util::spf::Member::A(a_dom) => {
-                                let mut de =
-                                    Entity::new(EntityKind::Domain, a_dom, 0.65, &ctx.scan_id);
+                                let mut de = Entity::new(
+                                    EntityKind::Domain,
+                                    a_dom,
+                                    confidence::HIGH,
+                                    &ctx.scan_id,
+                                );
                                 de.tag("dns");
                                 de.tag("spf-a");
                                 de.add_evidence(Evidence::new(
@@ -249,8 +334,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                                 entities.push(de);
                             }
                             crate::util::spf::Member::Mx(mx_dom) => {
-                                let mut de =
-                                    Entity::new(EntityKind::Domain, mx_dom, 0.65, &ctx.scan_id);
+                                let mut de = Entity::new(
+                                    EntityKind::Domain,
+                                    mx_dom,
+                                    confidence::HIGH,
+                                    &ctx.scan_id,
+                                );
                                 de.tag("dns");
                                 de.tag("spf-mx");
                                 de.add_evidence(Evidence::new(
@@ -304,7 +393,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
             };
 
             // Tag the domain entity with the DMARC policy and any issues.
-            let mut dom = Entity::new(EntityKind::Domain, domain, 0.90, &ctx.scan_id);
+            let mut dom = Entity::new(
+                EntityKind::Domain,
+                domain,
+                confidence::VERY_HIGH_PLUS,
+                &ctx.scan_id,
+            );
             dom.tag("dmarc");
             if let Some(p) = dmarc.policy {
                 dom.tag(p.tag());
@@ -373,7 +467,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                 if crate::util::domains::is_infrastructure_email(addr) {
                     continue;
                 }
-                let mut ee = Entity::new(EntityKind::Email, addr, 0.72, &ctx.scan_id);
+                let mut ee = Entity::new(
+                    EntityKind::Email,
+                    addr,
+                    confidence::ATTRIBUTED,
+                    &ctx.scan_id,
+                );
                 ee.tag("dmarc-report");
                 ee.tag("dns");
                 ee.add_evidence(
@@ -388,7 +487,44 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
         }
     }
 
+    // TLSRPT (RFC 8460) at `_smtp._tls.{domain}` — its `rua=` names a published
+    // mail-security reporting contact (Email or https endpoint), the same class
+    // of OSINT pivot as DMARC `rua`.
+    if let Ok(lookup) = tlsrpt_txts {
+        let txts: Vec<String> = lookup
+            .answers()
+            .iter()
+            .filter_map(|record| match &record.data {
+                RData::TXT(txt_data) => Some(txt_data.to_string()),
+                _ => None,
+            })
+            .collect();
+        entities.extend(tlsrpt_entities(&txts, domain, &ctx.scan_id));
+    }
+
     Ok(entities)
+}
+
+/// Map `_smtp._tls` TXT record strings into TLSRPT reporting-contact entities.
+/// `mailto:` destinations become `Email` entities tagged `tlsrpt-report`;
+/// `http(s)://` collection endpoints become `Domain` leads for their host. A
+/// domain has at most one valid TLSRPT record (first `v=TLSRPTv1` wins).
+///
+/// Shares the pure [`crate::util::tlsrpt`] parser with `doh_resolver` (one
+/// definition, no drift) AND the same `is_infrastructure_email` gate, so both
+/// DNS transports surface the identical contact set — a provider desk
+/// (`sts-reports@google.com`) is dropped rather than clustered as the subject,
+/// matching how this module already gates its DMARC/SOA email emission.
+/// **Pure** (no network/IO), unit-tested directly.
+pub(super) fn tlsrpt_entities(txts: &[String], domain: &str, scan_id: &str) -> Vec<Entity> {
+    // hickory hands back each TXT string with its surrounding quotes; strip them
+    // per record, then delegate to the shared builder so this transport and
+    // `doh_resolver` emit an identical entity set (confidence, tags, gating).
+    let unquoted: Vec<String> = txts
+        .iter()
+        .map(|raw| raw.trim_matches('"').to_string())
+        .collect();
+    crate::util::tlsrpt::report_entities(&unquoted, domain, scan_id, SRC)
 }
 
 /// CAA record inspection (RFC 8659).
@@ -401,7 +537,16 @@ pub(super) async fn lookup_caa(target: &Target, ctx: &ModuleContext) -> Result<V
 
     let lookup = match resolver.lookup(domain, RecordType::CAA).await {
         Ok(l) => l,
-        Err(_) => return Ok(Vec::new()),
+        // "No CAA records" is a real answer about the zone — most domains publish
+        // none — so it stays an empty result. A resolver that established nothing
+        // must not report the same thing.
+        Err(e) if e.is_no_records_found() => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(crate::core::error::Error::module(
+                SRC,
+                format!("CAA lookup failed for {domain}: {e}"),
+            ));
+        }
     };
 
     let mut issuers: Vec<String> = Vec::new();
@@ -425,7 +570,12 @@ pub(super) async fn lookup_caa(target: &Target, ctx: &ModuleContext) -> Result<V
         return Ok(Vec::new());
     }
 
-    let mut entity = Entity::new(EntityKind::Domain, domain, 0.85, &ctx.scan_id);
+    let mut entity = Entity::new(
+        EntityKind::Domain,
+        domain,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        &ctx.scan_id,
+    );
     entity.tag("caa");
     let mut ev = Evidence::new(
         SRC,
@@ -446,7 +596,75 @@ pub(super) async fn lookup_caa(target: &Target, ctx: &ModuleContext) -> Result<V
     }
     entity.add_evidence(ev);
 
-    Ok(vec![entity])
+    // The `iodef` values (RFC 8659 §4.4) name WHERE certificate-issuance
+    // violations for this domain should be reported — a `mailto:` address or an
+    // `https://`/`http://` endpoint. That address is a real, published
+    // security/abuse contact the domain operator controls; surface it as a
+    // pivotable Email (and the reporting URL's host as a Domain lead) rather than
+    // burying it in a joined-string attribute the recursion can't traverse.
+    let mut out = vec![entity];
+    for value in &iodefs {
+        out.extend(iodef_entities(value, domain, &ctx.scan_id));
+    }
+    Ok(out)
+}
+
+/// Parse a CAA `iodef` property value into pivotable entities. `mailto:addr`
+/// yields an Email (the domain's designated cert-violation-reporting contact);
+/// an `http(s)://` value yields a Domain for the reporting endpoint's host (a
+/// recursable lead — the raw URL itself is retained on the CAA entity's
+/// evidence). Anything else (a bare URN, malformed value) yields nothing.
+/// **Pure** — no I/O, independently unit-tested.
+///
+/// `pub(crate)` so the DoH resolver (`doh_resolver`) — the PRIMARY DNS transport
+/// on Termux, where hickory's port-53 lookups are frequently blocked and this
+/// module never runs — reuses the exact same iodef→entity mapping rather than
+/// duplicating it, keeping CAA/iodef enumeration identical across both transports.
+pub(crate) fn iodef_entities(value: &str, domain: &str, scan_id: &str) -> Vec<Entity> {
+    let value = value.trim();
+    if let Some(addr) = value.strip_prefix("mailto:") {
+        let addr = addr.trim();
+        // Minimal sanity: a single `@`, a dot in the domain part, no whitespace —
+        // enough to reject a malformed value without duplicating a full validator.
+        let looks_like_email = addr.split('@').count() == 2
+            && !addr.chars().any(char::is_whitespace)
+            && addr.rsplit('@').next().is_some_and(|d| d.contains('.'));
+        if !looks_like_email {
+            return Vec::new();
+        }
+        let mut e = Entity::new(EntityKind::Email, addr, confidence::VERY_HIGH, scan_id);
+        e.tag("caa");
+        e.tag("iodef");
+        e.tag("security-contact");
+        e.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("CAA iodef reporting contact for {domain} (RFC 8659)"),
+            )
+            .with_attr("iodef", value)
+            .with_attr("role", "cert-issuance-violation-report"),
+        );
+        return vec![e];
+    }
+    if (value.starts_with("https://") || value.starts_with("http://"))
+        && let Some(host) = crate::util::url_util::host_from_url(value)
+        && host.contains('.')
+        && host != domain
+    {
+        let mut d = Entity::new(EntityKind::Domain, &host, confidence::MEDIUM_PLUS, scan_id);
+        d.tag("caa");
+        d.tag("iodef");
+        d.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("CAA iodef reporting endpoint host for {domain} (RFC 8659)"),
+            )
+            .with_attr("iodef", value)
+            .with_attr("role", "cert-issuance-violation-report"),
+        );
+        return vec![d];
+    }
+    Vec::new()
 }
 
 /// PTR record lookup for IP → hostname mapping.
@@ -461,7 +679,15 @@ pub(super) async fn reverse_lookup(target: &Target, ctx: &ModuleContext) -> Resu
     let resolver = shared_resolver();
     let lookup = match resolver.reverse_lookup(ip).await {
         Ok(l) => l,
-        Err(_) => return Ok(Vec::new()),
+        // No PTR record is the normal case for most of the address space, and is a
+        // real answer. A SERVFAIL/timeout is not.
+        Err(e) if e.is_no_records_found() => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(crate::core::error::Error::module(
+                SRC,
+                format!("reverse lookup failed for {ip}: {e}"),
+            ));
+        }
     };
 
     let entities: Vec<Entity> = lookup
@@ -476,7 +702,12 @@ pub(super) async fn reverse_lookup(target: &Target, ctx: &ModuleContext) -> Resu
             if host.is_empty() {
                 return None;
             }
-            let mut e = Entity::new(EntityKind::Domain, host, 0.85, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Domain,
+                host,
+                confidence::HIGH_PLUSPLUS_PLUS,
+                &ctx.scan_id,
+            );
             e.tag(crate::core::tags::PTR);
             e.add_evidence(
                 Evidence::new(SRC, format!("PTR record for {ip}"))
@@ -488,6 +719,59 @@ pub(super) async fn reverse_lookup(target: &Target, ctx: &ModuleContext) -> Resu
         })
         .collect();
     Ok(entities)
+}
+
+/// How a DNSBL sweep actually went, as opposed to how many zones we tried.
+///
+/// The old code kept a single `checked` counter incremented once per zone
+/// regardless of outcome, and treated `lookup_ip(..).is_ok()` as the only
+/// signal. "Listed" is `Ok`; **everything else** — a genuine NXDOMAIN *and* a
+/// SERVFAIL *and* a timeout — was `Err` and therefore silently "not listed".
+/// With DNS down, all eight zones failed, `listed_on` stayed empty, `checked`
+/// reached 8, and the module emitted `status: clean`, `checked_count: 8`,
+/// "clean on 8 blocklists". That is not a missing result; it is a fabricated
+/// positive reputation verdict about an address.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct BlocklistTally {
+    /// Zones queried before cancellation.
+    pub(super) attempted: u32,
+    /// Zones that actually answered — listed, or authoritatively not listed.
+    /// This, not `attempted`, is the honest denominator for a verdict.
+    pub(super) answered: u32,
+    /// Zones that established nothing (SERVFAIL, REFUSED, timeout, no route).
+    pub(super) unresolved: u32,
+}
+
+impl BlocklistTally {
+    /// True when zones were tried and **none** answered, so no reputation
+    /// statement of any kind is supported.
+    ///
+    /// Pure, so the decision that turns a sweep into a `ModuleError` is
+    /// unit-testable without eight live blocklist zones. Requires
+    /// `attempted > 0`: a sweep where nothing ran (cancelled before the first
+    /// zone) established nothing either, but that is the operator's doing and
+    /// is not an outage to report.
+    ///
+    /// A single answering zone is enough to keep the verdict honest — it proves
+    /// the resolver path works, so the silence from the others is a real
+    /// negative for those zones and is disclosed as partial coverage rather
+    /// than counted as a pass.
+    pub(super) fn is_wholly_unresolved(&self) -> bool {
+        self.attempted > 0 && self.answered == 0
+    }
+
+    /// True when at least one zone answered, so a reputation verdict is
+    /// supported at all.
+    ///
+    /// This is the emission guard, and it is deliberately blind to *why* there
+    /// were no answers. Gating only the outage ERROR on cancellation was not
+    /// enough: a sweep cancelled before any zone answered then fell past the
+    /// error and emitted `status: clean, checked_count: 0` — "clean on 0
+    /// blocklists" — which is the same verdict-without-evidence reached by
+    /// another route. No answers, no verdict, whatever the cause.
+    pub(super) fn supports_a_verdict(&self) -> bool {
+        self.answered > 0
+    }
 }
 
 /// DNSBL reputation check against 8 blocklists.
@@ -507,49 +791,117 @@ pub(super) async fn blocklist_check(target: &Target, ctx: &ModuleContext) -> Res
 
     let resolver = shared_resolver();
     let mut listed_on: Vec<&str> = Vec::new();
-    let mut checked = 0u32;
+    let mut tally = BlocklistTally::default();
 
     for (zone, label) in BLOCKLISTS {
         if ctx.cancel.is_cancelled() {
             break;
         }
+        tally.attempted += 1;
         let query = format!("{reversed}.{zone}");
-        if resolver.lookup_ip(query.as_str()).await.is_ok() {
-            listed_on.push(label);
+        match resolver.lookup_ip(query.as_str()).await {
+            // A DNSBL publishes an A record (127.0.0.x) for a listed address.
+            Ok(_) => {
+                listed_on.push(label);
+                tally.answered += 1;
+            }
+            // The zone authoritatively said "no such record" — NXDOMAIN, or
+            // NOERROR with no answers. That is the DNSBL saying *not listed*,
+            // and it is a real check.
+            //
+            // `is_no_records_found()` is exactly this and nothing more:
+            // hickory maps SERVFAIL/REFUSED/FORMERR and friends to
+            // `ResponseCode(..)`, never to `NoRecordsFound`, so a failing
+            // resolver cannot slip through here dressed as a clean result.
+            Err(e) if e.is_no_records_found() => tally.answered += 1,
+            // SERVFAIL, REFUSED, timeout, no route. The zone established
+            // nothing, so it must not be counted as a check that passed.
+            Err(_) => tally.unresolved += 1,
         }
-        checked += 1;
     }
 
-    let mut entity = Entity::new(EntityKind::IpAddress, ip, 0.90, &ctx.scan_id);
+    // No zone answered, so nothing supports a verdict. Two ways to get here and
+    // they are not the same thing:
+    //
+    //   * zones were tried and every one failed — a DNS outage, worth reporting;
+    //   * the sweep was cancelled (before the first zone, or after some failed)
+    //     — the operator's own stop, which is not the network's fault and is not
+    //     an error.
+    //
+    // Both must skip the entity entirely. Gating only the ERROR on cancellation
+    // was not enough: the cancelled path then fell through and emitted
+    // `status: clean`, `checked_count: 0` — "clean on 0 blocklists" — which is
+    // the very verdict-without-evidence this change exists to stop, just reached
+    // by a different route.
+    if !tally.supports_a_verdict() {
+        if !ctx.cancel.is_cancelled() && tally.is_wholly_unresolved() {
+            return Err(crate::core::error::Error::module(
+                SRC,
+                format!(
+                    "no DNSBL answered for {ip}: all {} blocklist zones failed to resolve. \
+                     Reporting this as 'clean' would be a reputation verdict nothing \
+                     established.",
+                    tally.attempted
+                ),
+            ));
+        }
+        return Ok(Vec::new());
+    }
+    let checked = tally.answered;
+
+    let mut entity = Entity::new(
+        EntityKind::IpAddress,
+        ip,
+        confidence::VERY_HIGH_PLUS,
+        &ctx.scan_id,
+    );
     entity.tag("dnsbl-checked");
 
     if listed_on.is_empty() {
-        entity.add_evidence(
-            Evidence::new(SRC, format!("{ip} clean on {checked} blocklists"))
-                .with_attr("listed_count", "0")
-                .with_attr("checked_count", checked.to_string())
-                .with_attr("status", "clean"),
-        );
+        // `checked` is now the count that ANSWERED, not the count attempted, so
+        // "clean on N" is a claim each of those N zones actually made. Any zone
+        // that failed to resolve is disclosed rather than folded into N — an
+        // undisclosed partial sweep reads as full coverage.
+        let mut ev = Evidence::new(SRC, format!("{ip} clean on {checked} blocklists"))
+            .with_attr("listed_count", "0")
+            .with_attr("checked_count", checked.to_string())
+            .with_attr("status", "clean");
+        if tally.unresolved > 0 {
+            ev = ev
+                .with_attr("unresolved_count", tally.unresolved.to_string())
+                .with_attr("attempted_count", tally.attempted.to_string())
+                .with_attr("coverage", "partial");
+        }
+        entity.add_evidence(ev);
     } else {
         entity.tag("blocklisted");
         if listed_on.len() >= 3 {
             entity.tag("high-risk");
         }
         listed_on.sort_unstable();
-        entity.add_evidence(
-            Evidence::new(
-                SRC,
-                format!(
-                    "{ip} listed on {} of {} blocklists",
-                    listed_on.len(),
-                    checked
-                ),
-            )
-            .with_attr("listed_count", listed_on.len().to_string())
-            .with_attr("checked_count", checked.to_string())
-            .with_attr("listed_on", listed_on.join(", "))
-            .with_attr("status", "listed"),
-        );
+        // Same disclosure as the clean branch: "listed on 1 of 3" must not hide
+        // that five more zones were asked and never answered. A listing is a
+        // positive finding and stands on its own, but the DENOMINATOR is a
+        // coverage claim, and an undisclosed partial denominator overstates it.
+        let mut ev = Evidence::new(
+            SRC,
+            format!(
+                "{ip} listed on {} of {} blocklists",
+                listed_on.len(),
+                checked
+            ),
+        )
+        .with_attr("listed_count", listed_on.len().to_string())
+        .with_attr("checked_count", checked.to_string())
+        .with_attr("listed_on", listed_on.join(", "))
+        .with_attr("status", "listed");
+        if tally.unresolved > 0 {
+            ev = ev
+                .with_attr("unresolved_count", tally.unresolved.to_string())
+                .with_attr("attempted_count", tally.attempted.to_string())
+                .with_attr("coverage", "partial");
+        }
+        entity.add_evidence(ev);
     }
 
     Ok(vec![entity])

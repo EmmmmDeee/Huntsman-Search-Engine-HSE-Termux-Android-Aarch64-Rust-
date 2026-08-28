@@ -38,6 +38,15 @@ pub fn compact_utc(unix_secs: u64) -> String {
     format!("{year:04}{m:02}{d:02}T{hh:02}{mi:02}{ss:02}Z")
 }
 
+/// `HH:MM:SS` (UTC time-of-day) for `unix_secs` — the per-line stamp in the
+/// human-readable scan event log. Date-independent (pair it with a single date
+/// shown in the log header); deterministic, so the rendered log is byte-stable.
+#[must_use]
+pub fn hms_utc(unix_secs: u64) -> String {
+    let rem = unix_secs % 86_400;
+    format!("{:02}:{:02}:{:02}", rem / 3600, (rem % 3600) / 60, rem % 60)
+}
+
 /// `YYYY-MM-DD` (UTC date) for `unix_secs`, for human-legible account/creation
 /// dates surfaced as evidence. Returns `None` for a non-positive epoch — a
 /// missing or zero timestamp is not a real date and must never surface as

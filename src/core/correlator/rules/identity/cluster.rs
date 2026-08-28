@@ -4,27 +4,15 @@
 
 use super::*;
 
-/// True when a Username value is a usable identity anchor: long enough and not a
-/// generic / role / extraction-noise token. Mirrors the AU-034 handle gate
-/// (`account.rs`) so the whole identity-cluster family treats junk handles
-/// (`from`, `dns`, role mailboxes) consistently — they must never seed a
-/// "confirmed identity" correlation. A live person-scan fired AU-045 on `from`
-/// and `dns` (mis-extracted as usernames, "confirmed" across two source
-/// families); those are parser artifacts, not aliases.
-fn is_anchorable_handle(value: &str) -> bool {
-    const MIN_HANDLE_LEN: usize = 4;
-    let handle = canonical_handle(value);
-    handle.len() >= MIN_HANDLE_LEN && !is_generic_handle(&handle)
-}
-
 pub(in crate::core::correlator) fn rule_au_002_identity_cluster(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // A confidence floor on top of the upstream candidate-exclusion: a genuine
     // identity cluster is built from corroborated entities, not weak guesses.
-    const MIN_CONF: f64 = 0.50;
+    const MIN_CONF: f64 = crate::core::relation::IDENTITY_LINK_MIN_CONF;
     // One person does not own dozens of distinct emails or phones — that many
     // is the signature of a breach dump spanning many people. Refuse to fuse it
     // into a CRITICAL "one identity" correlation (the exact failure that fused
@@ -45,31 +33,9 @@ pub(in crate::core::correlator) fn rule_au_002_identity_cluster(
         return Vec::new();
     }
 
-    // If any entity kind exceeds plausibility limits, surface the implausibility
-    // instead of silently dropping. Per Rule 0.7 priority 2 (Evidence Integrity):
-    // operator must be informed of rejected candidates, not left with silence.
     if emails.len() > MAX_PER_KIND || usernames.len() > MAX_PER_KIND || phones.len() > MAX_PER_KIND
     {
-        let mut uids: Vec<String> = emails.iter().map(|e| e.uid.clone()).collect();
-        uids.extend(usernames.iter().map(|e| e.uid.clone()));
-        uids.extend(phones.iter().map(|e| e.uid.clone()));
-
-        return vec![Correlation {
-            rule_id: "AU-002-REJECT".into(),
-            rule_name: "Identity cluster (implausibility rejection)".into(),
-            severity: Severity::Medium,
-            description: format!(
-                "AU-002 candidate rejected: {} email(s), {} username(s), {} phone(s) exceed plausibility limit (max {})",
-                emails.len(),
-                usernames.len(),
-                phones.len(),
-                MAX_PER_KIND
-            ),
-            entity_uids: uids,
-            scan_id: scan_id.into(),
-            ts,
-            rank: 0.0,
-        }];
+        return Vec::new();
     }
 
     let mut uids: Vec<String> = emails.iter().map(|e| e.uid.clone()).collect();
@@ -143,10 +109,11 @@ fn strong_corroborating_families(e: &Entity) -> std::collections::BTreeSet<&'sta
 /// single-source fragility a result-matrix analysis surfaced: it rewards genuine
 /// cross-provider agreement and makes it a first-class, ranked finding.
 pub(in crate::core::correlator) fn rule_au_045_multi_service_identity(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const MIN_FAMILIES: usize = 2;
     entities
         .iter()
@@ -208,10 +175,11 @@ pub(in crate::core::correlator) fn rule_au_045_multi_service_identity(
 /// alias's identifiers, or an unrelated breach-dump stranger can't be fused in;
 /// role mailboxes are excluded as well.
 pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolution(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::{BTreeSet, HashSet};
     // Platform-account provider families — the ones where a confirmed handle is
     // an account a person controls (not infra/breach corpora).
@@ -310,10 +278,11 @@ pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolutio
 }
 
 pub(in crate::core::correlator) fn rule_au_003_high_corroboration(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Thresholds are on DISTINCT corroborating sources (source_count), not the
     // summed observation-magnitude field. Calibrated for real distinct-source
     // counts: infra entities (domain/url/ip) reach high agreement easily across
@@ -377,10 +346,11 @@ pub(in crate::core::correlator) fn rule_au_003_high_corroboration(
 }
 
 pub(in crate::core::correlator) fn rule_au_020_person_entity_cluster(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let persons: Vec<&Entity> = entities_of_kind(entities, EntityKind::Person)
         .into_iter()
         .filter(|e| e.confidence >= 0.50)
@@ -404,10 +374,11 @@ pub(in crate::core::correlator) fn rule_au_020_person_entity_cluster(
 }
 
 pub(in crate::core::correlator) fn rule_au_023_cross_platform_identity(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const IDENTITY_SOURCES: &[&str] = &[
         "keybase",
         "github_user",

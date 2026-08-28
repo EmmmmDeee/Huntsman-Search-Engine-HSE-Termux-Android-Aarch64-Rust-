@@ -2,6 +2,26 @@
 //! (see_know, oathnet, …). Single definition so the extraction semantics
 //! (treat empty strings as absent) can't drift between providers.
 use serde_json::Value;
+use std::borrow::Cow;
+
+/// A JSON **scalar** — a `string` or a `number` — rendered as text: the string
+/// borrowed in place, a number in its canonical string form. Any other node
+/// (`bool` / `null` / array / object) yields `None`.
+///
+/// This is the single definition of "accept a field that arrives as either
+/// `"505"` or `505`", shared by the keyed [`val_str_coerce`] here and the
+/// module-local `json_to_str` coercers (cell / radar / sunrise-sunset APIs that
+/// vary the encoding between endpoints). It does **not** apply the empty-string
+/// policy: a `""` yields `Some(Cow::Borrowed(""))`, leaving each caller free to
+/// treat empty as absent (as `val_str_coerce` does) or as a literal empty value.
+#[must_use]
+pub fn scalar_str(v: &Value) -> Option<Cow<'_, str>> {
+    match v {
+        Value::String(s) => Some(Cow::Borrowed(s)),
+        Value::Number(n) => Some(Cow::Owned(n.to_string())),
+        _ => None,
+    }
+}
 
 /// The value at `key` as an owned non-empty string, else `None`. An empty
 /// string is treated as absent.
@@ -42,11 +62,10 @@ pub fn is_null_sentinel(s: &str) -> bool {
 /// an empty string is still treated as absent.
 #[must_use]
 pub fn val_str_coerce(item: &Value, key: &str) -> Option<String> {
-    match item.get(key) {
-        Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
-        Some(Value::Number(n)) => Some(n.to_string()),
-        _ => None,
-    }
+    item.get(key)
+        .and_then(scalar_str)
+        .filter(|s| !s.is_empty())
+        .map(Cow::into_owned)
 }
 
 /// The first present value among `keys`, coercing numbers like [`val_str_coerce`].
@@ -90,10 +109,77 @@ pub fn scan_string_field(body: &str, key: &str) -> Vec<String> {
     out
 }
 
+/// Escape `s` for embedding **inside** a JSON string literal — the caller supplies the
+/// surrounding quotes, so this returns the interior only.
+///
+/// Delegates to `serde_json` rather than hand-rolling the escape, because hand-rolling it is a
+/// mistake this crate has already made and paid for. A `replace('\\', …).replace('"', …)` chain
+/// covers backslash and quote but leaves the control bytes (`\n`, `\r`, `\t`, anything `< 0x20`)
+/// that are ILLEGAL raw inside a JSON string — so a value carrying a newline or tab produced an
+/// invalid request body. `util::see_know` hit exactly that and fixed its copy; `modules::fullcontact`
+/// carried the unfixed twin. One definition now, so a third caller cannot inherit the broken shape
+/// and the two cannot drift apart again.
+///
+/// `Value::String(_).to_string()` yields `"…"`; the wrapping ASCII quotes are stripped to honour
+/// the interior-only contract. Those quotes are always exactly one byte each, so the slice is
+/// char-boundary safe for any input. Pure and total.
+pub fn escape_string_interior(s: &str) -> String {
+    let quoted = serde_json::Value::String(s.to_owned()).to_string();
+    quoted[1..quoted.len() - 1].to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn escape_string_interior_escapes_quote_and_backslash() {
+        assert_eq!(escape_string_interior(r#"a"b"#), r#"a\"b"#);
+        assert_eq!(escape_string_interior(r"a\b"), r"a\\b");
+        assert_eq!(escape_string_interior("plain"), "plain");
+        assert_eq!(escape_string_interior(""), "");
+    }
+
+    #[test]
+    fn escape_string_interior_escapes_the_control_bytes_a_replace_chain_misses() {
+        // The regression the hand-rolled twin carried: `\n`/`\r`/`\t` and other `< 0x20` bytes are
+        // ILLEGAL raw inside a JSON string, so a `.replace('\\',…).replace('"',…)` chain emitted a
+        // body no parser would accept. Each must come out as a valid escape.
+        assert_eq!(escape_string_interior("a\nb"), r"a\nb");
+        assert_eq!(escape_string_interior("a\rb"), r"a\rb");
+        assert_eq!(escape_string_interior("a\tb"), r"a\tb");
+        // Note the contrast with XML (`core::xml`), where an illegal control character is
+        // DROPPED because it cannot be represented at all: JSON *can* represent every control
+        // byte, as a `\u00XX` escape, so the correct handling here is to escape rather than
+        // discard — the value survives intact and the body stays parseable.
+        assert_eq!(escape_string_interior("a\u{1}b"), r"a\u0001b");
+        assert_eq!(escape_string_interior("\u{0}"), r"\u0000");
+    }
+
+    #[test]
+    fn escaped_interior_always_builds_parseable_json() {
+        // The property that actually matters: whatever the value, wrapping the result in quotes
+        // must yield a body `serde_json` can parse back to the original string. A hand-rolled
+        // escape fails this for any control byte.
+        for raw in [
+            "plain",
+            "quote\" and \\ backslash",
+            "newline\nand\ttab",
+            "\u{0}\u{1f}",
+            "unicode: Ana Cañas — 東京",
+            "\"}{\"injected\":\"x",
+        ] {
+            let body = format!(r#"{{"q":"{}"}}"#, escape_string_interior(raw));
+            let parsed: serde_json::Value = serde_json::from_str(&body)
+                .unwrap_or_else(|e| panic!("{raw:?} produced unparseable JSON: {e} -- {body}"));
+            assert_eq!(
+                parsed["q"].as_str(),
+                Some(raw),
+                "value must round-trip unchanged"
+            );
+        }
+    }
 
     #[test]
     fn val_str_returns_value_for_present_key() {
@@ -156,6 +242,23 @@ mod tests {
             val_str_or_coerce(&v, &["absent", "postal_code"]).as_deref(),
             Some("23666")
         );
+    }
+
+    #[test]
+    fn scalar_str_coerces_string_and_number_but_not_bool_or_null() {
+        // String borrows in place; number renders canonically.
+        assert_eq!(scalar_str(&json!("505")).as_deref(), Some("505"));
+        assert!(matches!(scalar_str(&json!("505")), Some(Cow::Borrowed(_))));
+        assert_eq!(scalar_str(&json!(505)).as_deref(), Some("505"));
+        assert!(matches!(scalar_str(&json!(505)), Some(Cow::Owned(_))));
+        // Unlike `val_str_coerce`, the empty string is NOT filtered here — the
+        // empty policy belongs to the caller.
+        assert_eq!(scalar_str(&json!("")).as_deref(), Some(""));
+        // Everything else is absent.
+        assert!(scalar_str(&json!(true)).is_none());
+        assert!(scalar_str(&json!(null)).is_none());
+        assert!(scalar_str(&json!([1, 2])).is_none());
+        assert!(scalar_str(&json!({"k": "v"})).is_none());
     }
 
     #[test]

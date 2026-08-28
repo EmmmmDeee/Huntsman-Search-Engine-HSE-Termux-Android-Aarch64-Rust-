@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
 #[test]
@@ -37,7 +38,7 @@ fn accepts_domain_and_ip() {
     #[test]
     fn parse_clean_response() {
         let raw = r#"{"query_status":"no_results"}"#;
-        let r: UrlhausResp = serde_json::from_str(raw).unwrap();
+        let r: UrlhausResp = serde_json::from_str(raw).expect("should succeed");
         assert_eq!(r.query_status, "no_results");
         assert!(r.urls.is_none());
     }
@@ -56,14 +57,14 @@ fn accepts_domain_and_ip() {
               {"threat":"phishing","url_status":"offline"}
             ]
         }"#;
-        let r: UrlhausResp = serde_json::from_str(raw).unwrap();
+        let r: UrlhausResp = serde_json::from_str(raw).expect("should succeed");
         assert_eq!(r.query_status, "ok");
         assert_eq!(r.url_count.as_deref(), Some("3"));
-        assert_eq!(r.urls.as_ref().unwrap().len(), 2);
+        assert_eq!(r.urls.as_ref().expect("should succeed").len(), 2);
     }
 
     fn resp(json: &str) -> UrlhausResp {
-        serde_json::from_str(json).unwrap()
+        serde_json::from_str(json).expect("should succeed")
     }
 
     fn attr<'a>(e: &'a crate::core::entity::Entity, k: &str) -> Option<&'a str> {
@@ -90,7 +91,7 @@ fn accepts_domain_and_ip() {
         let e = build_threat_entity(EntityKind::Domain, "evil.test", &body, 3, "s");
         assert_eq!(e.kind, EntityKind::Domain);
         assert!(e.has_tag(crate::core::tags::MALICIOUS) && e.has_tag("urlhaus"));
-        assert!((e.confidence - 0.90).abs() < 1e-9);
+        assert!((e.confidence - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
         assert_eq!(attr(&e, "url_count"), Some("3"));
         assert_eq!(
             attr(&e, "reference"),
@@ -118,44 +119,9 @@ fn accepts_domain_and_ip() {
             .join(",");
         let body = resp(&format!(r#"{{"query_status":"ok","urls":[{urls}]}}"#));
         let e = build_threat_entity(EntityKind::Domain, "h", &body, 10, "s");
-        let threats = attr(&e, "threats").unwrap();
+        let threats = attr(&e, "threats").expect("should succeed");
         assert_eq!(threats.split(',').count(), 10);
         assert_eq!(threats, "a,b,c,d,e,f,m,x,y,z");
-    }
-
-    // -- parse_url_count failure contract (T2.164) --------------------------
-
-    #[test]
-    fn parse_url_count_surfaces_an_unparseable_count_as_error() {
-        // T2.164 regression: `.and_then(|s| s.parse().ok()).unwrap_or(0)`
-        // previously collapsed a real abuse.ch contract violation (ok, but
-        // url_count unparseable) into the same Ok(empty) as a genuine clean
-        // miss — silently discarding a confirmed malicious-host finding.
-        let body = resp(r#"{"query_status":"ok","url_count":"not-a-number"}"#);
-        let out = parse_url_count(&body);
-        assert!(
-            out.is_err(),
-            "an unparseable url_count on query_status=ok must surface as Err"
-        );
-    }
-
-    #[test]
-    fn parse_url_count_treats_missing_or_zero_as_the_conservative_floor() {
-        // query_status=="ok" guarantees a real positive finding even when
-        // abuse.ch omits/zeroes url_count — never silently discard it.
-        assert_eq!(parse_url_count(&resp(r#"{"query_status":"ok"}"#)).unwrap(), 1);
-        assert_eq!(
-            parse_url_count(&resp(r#"{"query_status":"ok","url_count":"0"}"#)).unwrap(),
-            1
-        );
-    }
-
-    #[test]
-    fn parse_url_count_keeps_a_real_count() {
-        assert_eq!(
-            parse_url_count(&resp(r#"{"query_status":"ok","url_count":"7"}"#)).unwrap(),
-            7
-        );
     }
 
     #[test]

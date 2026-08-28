@@ -15,11 +15,13 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "webserver_banner";
 
@@ -50,7 +52,7 @@ impl Module for WebserverBanner {
     }
 
     fn description(&self) -> &'static str {
-        "HTTP header fingerprinting and tech stack detection"
+        "HTTP header fingerprinting — probes response banners to unmask the web server and detect the underlying tech stack"
     }
 
     fn priority(&self) -> u8 {
@@ -88,11 +90,9 @@ impl Module for WebserverBanner {
         };
 
         let port_suffix = port.map_or(String::new(), |p| format!(":{p}"));
-        let mut transport_failures = 0usize;
         for scheme in ["https", "http"] {
             let url = format!("{scheme}://{host}{port_suffix}/");
-            let Ok(resp) = ctx.http.head(&url).send().await else {
-                transport_failures += 1;
+            let Ok(resp) = ctx.http.head(&url).send_tagged(SRC).await else {
                 continue;
             };
             let status = resp.status();
@@ -109,7 +109,8 @@ impl Module for WebserverBanner {
                 continue;
             }
 
-            let mut entity = banner_entity(target, &host, 0.85, &ctx.scan_id);
+            let mut entity =
+                banner_entity(target, &host, confidence::HIGH_PLUSPLUS_PLUS, &ctx.scan_id);
             entity.tag(crate::core::tags::WEB);
             apply_stack_tags(&mut entity, &captured);
 
@@ -130,12 +131,6 @@ impl Module for WebserverBanner {
             let mut result = ModuleResult::new();
             result.push(entity);
             return Ok(result);
-        }
-        if transport_failures == 2 {
-            return Err(Error::module(
-                SRC,
-                "both https and http HEAD requests failed at the transport level — cannot determine whether this host has a fingerprintable banner",
-            ));
         }
         Ok(ModuleResult::new())
     }

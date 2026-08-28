@@ -14,12 +14,13 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{fetch_json, urlencode};
+use crate::util::http::urlencode;
 
 pub(super) const SRC: &str = "keybase";
 
@@ -29,8 +30,14 @@ pub struct Keybase;
 pub(super) struct KbResp {
     #[serde(default)]
     pub(super) status: Option<KbStatus>,
+    /// The subject profile. The singular `?username=` endpoint returns `them`
+    /// as a **single object** (not an array — arrays only come from the plural
+    /// `?usernames=a,b` form this module never uses), so this must be a bare
+    /// `Option<KbUser>`. It was previously `Option<Vec<KbUser>>`, which made
+    /// serde fail every real lookup with "invalid type: map, expected a
+    /// sequence" — the module yielded nothing for all inputs.
     #[serde(default)]
-    pub(super) them: Option<Vec<KbUser>>,
+    pub(super) them: Option<KbUser>,
 }
 
 #[derive(Deserialize)]
@@ -93,7 +100,7 @@ impl Module for Keybase {
         "keybase"
     }
     fn description(&self) -> &'static str {
-        "Keybase identity graph — linked accounts, PGP keys, and cryptographic proofs"
+        "Keybase identity-graph recon — cross-links linked accounts, PGP keys, and cryptographic proofs"
     }
     fn priority(&self) -> u8 {
         100
@@ -141,32 +148,21 @@ impl Module for Keybase {
             urlencode(username)
         );
 
+        // A genuine "no such user" is a 200 body carrying `status.code != 0`
+        // (Keybase never 404s a `user/lookup`), which `build_entities` already
+        // maps to an empty result. So every failure `fetch_json` surfaces —
+        // transport error, non-2xx status, or malformed JSON — is a real source
+        // outage, not a clean miss. Propagate it via `?` instead of collapsing
+        // all three into the same silent empty result a real "user absent"
+        // produces, matching how sibling single-fetch modules (`urlscan`,
+        // `npm_author`, …) already handle the primitive. Contract pinned by
+        // `util::http::tests::fetch_json_propagates_a_non_2xx_status_as_err_not_a_silent_default`.
+        let body: KbResp = crate::util::http::fetch_json(&ctx.http, SRC, &url).await?;
+
         let mut result = ModuleResult::new();
-        result.entities = lookup(&ctx.http, &url, username, &ctx.scan_id).await?;
+        result.entities = build_entities(body, username, &ctx.scan_id);
         Ok(result)
     }
-}
-
-/// Fetch a Keybase `user/lookup` response and map it to entities. Split from
-/// [`Keybase::process`] as a URL-taking seam so the transport-failure contract is
-/// unit-testable against an unreachable host.
-///
-/// A transport failure, a non-2xx, or a JSON parse error surfaces as a real
-/// module `Err` (via [`fetch_json`], which also harvests any leaked API keys from
-/// the body) — never `Ok(empty)`. keybase.io answers a known user with HTTP 200
-/// and signals an *unknown* user with a non-zero `status.code`, which
-/// [`build_entities`] maps to a clean empty result. So an unreachable host or a
-/// non-2xx is a genuine outage the operator must be able to tell apart from "no
-/// Keybase identity for this username" — previously all three failure modes were
-/// swallowed into that same empty result, hiding an outage as an honest miss.
-async fn lookup(
-    client: &reqwest::Client,
-    url: &str,
-    username: &str,
-    scan_id: &str,
-) -> Result<Vec<Entity>> {
-    let body: KbResp = fetch_json(client, SRC, url).await?;
-    Ok(build_entities(body, username, scan_id))
 }
 
 /// Pure profile→entity mapping for a Keybase `user/lookup` response. Owns the
@@ -181,7 +177,7 @@ pub(super) fn build_entities(body: KbResp, query_username: &str, scan_id: &str) 
     if body.status.as_ref().and_then(|s| s.code) != Some(0) {
         return Vec::new();
     }
-    let Some(user) = body.them.unwrap_or_default().into_iter().next() else {
+    let Some(user) = body.them else {
         return Vec::new();
     };
 
@@ -193,7 +189,12 @@ pub(super) fn build_entities(body: KbResp, query_username: &str, scan_id: &str) 
         .and_then(|b| b.username.as_deref())
         .unwrap_or(query_username);
 
-    let mut entity = Entity::new(EntityKind::Username, kb_username, 0.90, scan_id);
+    let mut entity = Entity::new(
+        EntityKind::Username,
+        kb_username,
+        confidence::VERY_HIGH_PLUS,
+        scan_id,
+    );
     entity.tag("keybase");
 
     let proof_count = user.proofs_summary.as_ref().map_or(0, |p| p.all.len());
@@ -228,7 +229,7 @@ pub(super) fn build_entities(body: KbResp, query_username: &str, scan_id: &str) 
             && name.len() >= 3
             && name.contains(' ')
         {
-            let mut pe = Entity::new(EntityKind::Person, name, 0.75, scan_id);
+            let mut pe = Entity::new(EntityKind::Person, name, confidence::VERY_HIGH, scan_id);
             pe.tag("keybase");
             pe.add_evidence(Evidence::new(
                 SRC,
@@ -240,7 +241,7 @@ pub(super) fn build_entities(body: KbResp, query_username: &str, scan_id: &str) 
         if let Some(loc) = profile.location.as_deref()
             && loc.len() >= 3
         {
-            let mut ae = Entity::new(EntityKind::Address, loc, 0.52, scan_id);
+            let mut ae = Entity::new(EntityKind::Address, loc, confidence::MEDIUM_LIGHT, scan_id);
             ae.tag("keybase");
             ae.tag("geoint");
             ae.tag("self-reported");
@@ -256,7 +257,12 @@ pub(super) fn build_entities(body: KbResp, query_username: &str, scan_id: &str) 
 
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.50, scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::MEDIUM,
+                    scan_id,
+                );
                 c.tag("addr-derived");
                 c.tag("geoint");
                 c.tag("keybase");
@@ -294,7 +300,7 @@ pub(super) fn extract_proofs(
     // Emit the verified profile URL a proof points at (when present + http).
     let push_service_url = |result: &mut ModuleResult, ptype: &str, url: Option<&str>| {
         if let Some(u) = url.filter(|u| u.starts_with("http")) {
-            let mut ue = Entity::new(EntityKind::Url, u, 0.85, scan_id);
+            let mut ue = Entity::new(EntityKind::Url, u, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
             ue.tag("keybase");
             ue.tag("social-profile");
             ue.tag("verified");
@@ -326,7 +332,12 @@ pub(super) fn extract_proofs(
         match ptype {
             "twitter" | "github" | "reddit" | "hackernews" | "gitlab" | "mastodon" | "facebook"
             | "twitch" => {
-                let mut ue = Entity::new(EntityKind::Username, nametag, 0.80, scan_id);
+                let mut ue = Entity::new(
+                    EntityKind::Username,
+                    nametag,
+                    confidence::HIGH_PLUSPLUS,
+                    scan_id,
+                );
                 ue.tag("keybase");
                 ue.tag("verified");
                 ue.tag(format!("platform:{ptype}"));
@@ -351,7 +362,8 @@ pub(super) fn extract_proofs(
                     .split('/')
                     .next()
                     .unwrap_or(nametag);
-                let mut de = Entity::new(EntityKind::Domain, domain, 0.75, scan_id);
+                let mut de =
+                    Entity::new(EntityKind::Domain, domain, confidence::VERY_HIGH, scan_id);
                 de.tag("keybase");
                 de.tag("verified");
                 de.tag("personal-site");
@@ -365,7 +377,8 @@ pub(super) fn extract_proofs(
                 result.push(de);
             }
             _ if nametag.contains('@') && nametag.contains('.') => {
-                let mut ee = Entity::new(EntityKind::Email, nametag, 0.70, scan_id);
+                let mut ee =
+                    Entity::new(EntityKind::Email, nametag, confidence::HIGH_PLUS, scan_id);
                 ee.tag("keybase");
                 ee.tag(format!("proof:{ptype}"));
                 ee.add_evidence(

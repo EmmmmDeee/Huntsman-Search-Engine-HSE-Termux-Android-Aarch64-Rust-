@@ -17,9 +17,9 @@ use super::*;
     #[test]
     fn deser() {
         let j = r#"{"ip":"8.8.8.8","isp":{"asn":"AS15169","org":"Google LLC","isp":"Google LLC"},"location":{"country":"United States","country_code":"US","city":"Mountain View","state":"California","latitude":37.41,"longitude":-122.11},"risk":{"is_mobile":false,"is_vpn":false,"is_tor":false,"is_proxy":false,"is_datacenter":true,"risk_score":0}}"#;
-        let r: Resp = serde_json::from_str(j).unwrap();
-        assert_eq!(r.risk.unwrap().risk_score, Some(0));
-        assert_eq!(r.location.unwrap().city.as_deref(), Some("Mountain View"));
+        let r: Resp = serde_json::from_str(j).expect("should succeed");
+        assert_eq!(r.risk.expect("should succeed").risk_score, Some(0));
+        assert_eq!(r.location.expect("should succeed").city.as_deref(), Some("Mountain View"));
     }
 
     fn resp(json: &str) -> Resp {
@@ -72,6 +72,37 @@ use super::*;
         let addr = es.iter().find(|e| e.kind == EntityKind::Address).expect("address");
         assert!(addr.tags.iter().any(|t| t == "country:AU"));
         assert_eq!(addr.value, "Gatton, Queensland, Australia");
+    }
+
+    #[test]
+    fn build_surfaces_the_ip_postcode_as_network_derived_postal_on_both_geo_entities() {
+        // The `zipcode` field is a finer geo grain than city/state and surfaces on
+        // both the Coordinates and the Address (both fold in the shared geo_ev()).
+        // It is an IP-geolocation postcode — a network-derived locator, NOT the
+        // subject's residence — so it is stamped under the network-derived `postal`
+        // key, deliberately EXCLUDED from the residential POSTCODE_KEYS that
+        // AU-091/AU-093 read, so an IP's postcode can never occupy the residential
+        // rung (item 24). The canonical `postcode` key must be absent.
+        let d = resp(
+            r#"{"location":{"country":"Australia","country_code":"AU","city":"Gatton","state":"Queensland","zipcode":"4343","latitude":-27.55,"longitude":152.27},"risk":{"is_datacenter":false}}"#,
+        );
+        let es = build_geo_isp_entities("203.0.113.9", &d, "t");
+        for kind in [EntityKind::Coordinates, EntityKind::Address] {
+            let e = es
+                .iter()
+                .find(|e| e.kind == kind)
+                .unwrap_or_else(|| panic!("missing {kind:?}"));
+            assert_eq!(
+                e.evidence[0].attributes.get("postal").map(String::as_str),
+                Some("4343"),
+                "{kind:?}: IP postcode must surface under the network-derived `postal` key"
+            );
+            assert_eq!(
+                e.evidence[0].attributes.get("postcode"),
+                None,
+                "{kind:?}: an IP postcode must never occupy the residential `postcode` key"
+            );
+        }
     }
 
     #[test]

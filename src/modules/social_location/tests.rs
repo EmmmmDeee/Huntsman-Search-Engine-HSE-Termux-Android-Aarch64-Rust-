@@ -3,7 +3,7 @@ use super::*;
     #[test]
     fn extract_github_location_from_html() {
         let html = r#"<li itemprop="homeLocation"><svg></svg><span class="p-label">Brisbane, Australia</span></li>"#;
-        let loc = extract_github_location(html).unwrap();
+        let loc = extract_github_location(html).expect("should succeed");
         assert_eq!(loc, "Brisbane, Australia");
     }
 
@@ -15,7 +15,7 @@ use super::*;
     #[test]
     fn extract_meta_geo_placename() {
         let html = r#"<meta name="geo.placename" content="Sydney, NSW">"#;
-        let loc = extract_meta_location(html).unwrap();
+        let loc = extract_meta_location(html).expect("should succeed");
         assert_eq!(loc, "Sydney, NSW");
     }
 
@@ -25,7 +25,7 @@ use super::*;
         // forward-only scan from the name attr missed this. Bounding the whole
         // element finds it in either order.
         let html = r#"<meta content="Brisbane, QLD" property="og:region">"#;
-        assert_eq!(extract_meta_location(html).unwrap(), "Brisbane, QLD");
+        assert_eq!(extract_meta_location(html).expect("should succeed"), "Brisbane, QLD");
     }
 
     #[test]
@@ -34,7 +34,7 @@ use super::*;
         // slice, and an unterminated content="… must be skipped, not coerced
         // to an empty string.
         let ok = r#"<meta name="og:locality" content="Café Nundah">"#;
-        assert_eq!(extract_meta_location(ok).unwrap(), "Café Nundah");
+        assert_eq!(extract_meta_location(ok).expect("should succeed"), "Café Nundah");
         let unterminated = r#"<meta name="og:locality" content="Nundah"#;
         assert!(extract_meta_location(unterminated).is_none());
     }
@@ -71,4 +71,31 @@ use super::*;
         assert!(is_professional_host("linkedin.com"));
         assert!(!is_professional_host("github.com"));
         assert!(!is_professional_host("reddit.com"));
+    }
+
+    #[test]
+    fn github_location_entities_decode_exactly_once() {
+        // Regression: the local `.replace()` chain fed each replacement the
+        // previous one's output, so an `&amp;` decoding to `&` paired with the
+        // text after it into an entity the next link decoded again. A location
+        // holding the literal text `&lt;` (served as `&amp;lt;`) was recorded
+        // as `<`.
+        let html = r#"<span class="p-label">a &amp;lt;b&amp;gt; c</span>"#;
+        assert_eq!(
+            extract_github_location(html).as_deref(),
+            Some("a &lt;b&gt; c"),
+            "each &…; is consumed exactly once; no double-decode"
+        );
+    }
+
+    #[test]
+    fn github_location_decodes_numeric_character_references() {
+        // The old chain covered five named entities only, so a non-ASCII place
+        // name served as a numeric reference was stored raw as "S&#227;o Paulo".
+        let html = r#"<span class="p-label">S&#227;o Paulo, Brazil</span>"#;
+        assert_eq!(
+            extract_github_location(html).as_deref(),
+            Some("São Paulo, Brazil"),
+            "decimal character references resolve"
+        );
     }

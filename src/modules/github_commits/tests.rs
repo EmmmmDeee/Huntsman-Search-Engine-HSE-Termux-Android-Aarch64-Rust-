@@ -16,7 +16,7 @@ const FIXTURE: &str = r#"{
 
 #[test]
 fn extract_pulls_identity_and_filters_noise() {
-    let resp: CommitSearchResp = serde_json::from_str(FIXTURE).unwrap();
+    let resp: CommitSearchResp = serde_json::from_str(FIXTURE).expect("should succeed");
     let out = extract(&resp.items, "torvalds@linux-foundation.org", "scan");
     // The verified GitHub account + its profile URL.
     assert!(
@@ -69,7 +69,7 @@ fn shared_email_emits_every_distinct_name_and_login() {
           "author": { "login": "dijkstra", "html_url": "https://github.com/dijkstra" } }
       ]
     }"#;
-    let resp: CommitSearchResp = serde_json::from_str(SHARED).unwrap();
+    let resp: CommitSearchResp = serde_json::from_str(SHARED).expect("should succeed");
     let out = extract(&resp.items, "dev@company.com", "scan");
 
     let names: Vec<&str> = out

@@ -31,13 +31,12 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::EntityKind,
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::ckan::Response as CkanResp;
-use crate::util::http::fetch_json;
 
 mod entity;
 #[cfg(test)]
@@ -64,14 +63,14 @@ pub(super) const MAX_RECORDS: usize = 100;
 pub(super) const MAX_TRADING_NAMES: usize = 25;
 
 // Confidence tiers. Exact hits (name contains every seed token) are authoritative
-// federal-registry matches and sit above the 0.50 expansion floor so they pivot;
+// federal-registry matches and sit above the confidence::MEDIUM expansion floor so they pivot;
 // candidates (loose full-text hits) stay below it so they're surfaced but inert.
-pub(super) const ORG_EXACT: f64 = 0.85;
-pub(super) const ORG_CANDIDATE: f64 = 0.45;
-pub(super) const ABN_CONF: f64 = 0.90;
-pub(super) const TRADING_NAME_CONF: f64 = 0.70;
-pub(super) const ADDR_CONF: f64 = 0.60;
-pub(super) const DOMAIN_CONF: f64 = 0.55;
+pub(super) const ORG_EXACT: f64 = confidence::HIGH_PLUSPLUS_PLUS;
+pub(super) const ORG_CANDIDATE: f64 = confidence::LOW_MEDIUM;
+pub(super) const ABN_CONF: f64 = confidence::VERY_HIGH_PLUS;
+pub(super) const TRADING_NAME_CONF: f64 = confidence::HIGH_PLUS;
+pub(super) const ADDR_CONF: f64 = confidence::MEDIUM_PLUS;
+pub(super) const DOMAIN_CONF: f64 = confidence::MEDIUM_HIGH;
 
 pub struct AcncCharities;
 
@@ -82,7 +81,7 @@ impl Module for AcncCharities {
     }
 
     fn description(&self) -> &'static str {
-        "Australian Charities & Not-for-profits Commission register lookup (free, keyless)"
+        "ACNC charities recon — sweeps the Australian Charities & Not-for-profits Commission register for an entity (free, keyless)"
     }
 
     fn priority(&self) -> u8 {
@@ -143,16 +142,13 @@ impl Module for AcncCharities {
             return Ok(ModuleResult::new());
         }
 
-        let resp: CkanResp = fetch_json(&ctx.http, SRC, &entity::query_url(query)).await?;
-        // Surface an application-level CKAN failure (success=false) as a module
-        // error rather than masquerading as "no findings".
-        if resp.success == Some(false) {
-            return Err(crate::core::error::Error::module(
-                SRC,
-                "CKAN datastore_search returned success=false (bad resource id or portal error)",
-            ));
-        }
-        let Some(res) = resp.result else {
+        // The shared helper folds the fetch and the CKAN application-error check
+        // (`success=false` returned with HTTP 200) into one step, so a portal
+        // failure surfaces as a module error rather than masquerading as "no
+        // findings"; `None` is the genuine empty answer.
+        let Some(res) =
+            crate::util::ckan::validated_result(&ctx.http, SRC, &entity::query_url(query)).await?
+        else {
             return Ok(ModuleResult::new());
         };
         let total = res.total.unwrap_or(res.records.len() as u64);

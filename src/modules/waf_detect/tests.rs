@@ -6,8 +6,8 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
     let mut h = HeaderMap::new();
     for (k, v) in pairs {
-        let name = HeaderName::from_bytes(k.as_bytes()).unwrap();
-        h.append(name, HeaderValue::from_str(v).unwrap());
+        let name = HeaderName::from_bytes(k.as_bytes()).expect("should succeed");
+        h.append(name, HeaderValue::from_str(v).expect("should succeed"));
     }
     h
 }
@@ -50,8 +50,8 @@ fn detects_layered_stack_ranked_high_confidence_first() {
     assert!(names.contains(&"Cloudflare"));
     assert!(names.contains(&"Fastly"));
     // Confidence-first ordering: the High match precedes the Medium one.
-    let cf = dets.iter().position(|d| d.provider == "Cloudflare").unwrap();
-    let fa = dets.iter().position(|d| d.provider == "Fastly").unwrap();
+    let cf = dets.iter().position(|d| d.provider == "Cloudflare").expect("should succeed");
+    let fa = dets.iter().position(|d| d.provider == "Fastly").expect("should succeed");
     assert!(cf < fa, "High-confidence Cloudflare must rank before Medium Fastly");
 }
 

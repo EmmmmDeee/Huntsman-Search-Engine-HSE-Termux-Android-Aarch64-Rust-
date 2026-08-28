@@ -1,8 +1,11 @@
 //! Offline city→coordinate lookup used for inline geocoding of address strings
 //! without a network call. Covers AU capitals, major regional centres, NT/SA/
 //! WA/TAS hubs, key QLD suburbs (Lockyer Valley corridor, inner Brisbane, Gold
-//! Coast strip), plus representative US/UK/NZ cities. Returns the first match
-//! whose name is contained in the lowercased input.
+//! Coast strip), plus representative US/UK/NZ cities.
+//!
+//! Matching is whole-token and longest-name-wins, and an address that names a
+//! non-Australian place cannot resolve to an Australian entry — see
+//! [`match_tabulated_city`] for why each of those three rules is load-bearing.
 
 /// Look up approximate `(lat, lon)` for the city/suburb named in `addr`.
 /// Returns `None` when no entry matches — callers should treat a miss as
@@ -14,10 +17,8 @@
 pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
     let trimmed = addr.trim();
     let lower = trimmed.to_lowercase();
-    for &(city, lat, lon) in CITIES {
-        if lower.contains(city) {
-            return Some((lat, lon));
-        }
+    if let Some(hit) = match_tabulated_city(&lower) {
+        return Some(hit);
     }
     // Last-resort: treat a bare 4-digit string as a postcode — the exact suburb
     // centroid when tabulated, else the region centroid by leading digits so the
@@ -45,6 +46,80 @@ pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
     None
 }
 
+/// Split an already-lowercased address into whole alphanumeric tokens.
+fn address_tokens(lower: &str) -> Vec<&str> {
+    lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+/// True when `name` — one or more space-separated words — occurs in `tokens` as
+/// a consecutive run of WHOLE tokens.
+///
+/// Whole-token, not substring: `"hamilton"` must not match the tabulated
+/// Brisbane suburb `"milton"`, and `"seattle"` must not match `"att"`.
+fn phrase_in_tokens(tokens: &[&str], name: &str) -> bool {
+    let want: Vec<&str> = name.split(' ').filter(|w| !w.is_empty()).collect();
+    if want.is_empty() || want.len() > tokens.len() {
+        return false;
+    }
+    tokens.windows(want.len()).any(|w| w == want.as_slice())
+}
+
+/// Resolve an address against the tabulated gazetteer.
+///
+/// Three rules, each fixing a way the previous `lower.contains(city)` scan
+/// invented Australian locations for places that were not in Australia:
+///
+/// * **Whole-token matching** — `"Hamilton, NZ"` contained the substring
+///   `"milton"` and resolved to Milton, Brisbane.
+/// * **Longest match wins** — the old loop returned the first table entry that
+///   matched, so the answer depended on declaration order: `"Albany, New York"`
+///   hit the AU-first `"albany"` row before ever reaching `"new york"`.
+/// * **Country gate** — [`mentions_non_au_country`] already existed in this
+///   file, correctly whole-token matched, but was consulted only on the
+///   postcode fallback below. `"Perth, Scotland"` therefore resolved to Perth,
+///   WA. When the address names a non-Australian place, Australian entries are
+///   skipped entirely; a foreign city we do not tabulate must earn no
+///   coordinate rather than borrow an Australian one.
+///
+/// Australian-ness is read from each entry's own coordinates, so the table
+/// needs no per-row country column to stay in step.
+fn match_tabulated_city(lower: &str) -> Option<(f64, f64)> {
+    let tokens = address_tokens(lower);
+    if tokens.is_empty() {
+        return None;
+    }
+    let names_foreign_place = mentions_non_au_country(lower);
+    // Converse gate: an address that unambiguously names an AUSTRALIAN locality
+    // must never resolve to a tabulated overseas HOMONYM. `liverpool`,
+    // `portland` and `wellington` are tabulated only with their overseas
+    // coordinates, so without this "Liverpool, NSW 2170" resolved to Liverpool,
+    // England (17,000 km off) instead of falling through to the AU-postcode
+    // branch that already gives the right answer.
+    let names_au_place = !names_foreign_place && names_au_locality(lower);
+
+    let mut best: Option<(usize, f64, f64)> = None;
+    for &(city, lat, lon) in CITIES {
+        if names_foreign_place && crate::util::geo::is_in_australia(lat, lon) {
+            continue;
+        }
+        if names_au_place && !crate::util::geo::is_in_australia(lat, lon) {
+            continue;
+        }
+        if !phrase_in_tokens(&tokens, city) {
+            continue;
+        }
+        let specificity = city.split(' ').filter(|w| !w.is_empty()).count();
+        // Ties keep the earlier (AU-first) row, preserving the table's intent.
+        if best.is_none_or(|(best_words, _, _)| specificity > best_words) {
+            best = Some((specificity, lat, lon));
+        }
+    }
+    best.map(|(_, lat, lon)| (lat, lon))
+}
+
 /// Whether `lower` (an already-lowercased address/location string) explicitly
 /// names a country or nation that is definitively NOT Australia.
 ///
@@ -55,19 +130,179 @@ pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
 /// they cannot fire inside an ordinary word. Australia and its state names are
 /// never listed, so a genuine AU address is never gated. Pure; no I/O.
 fn mentions_non_au_country(lower: &str) -> bool {
-    const PHRASES: &[&str] = &["united states", "united kingdom", "new zealand"];
+    const PHRASES: &[&str] = &[
+        "united states",
+        "united kingdom",
+        "new zealand",
+        "south africa",
+        "hong kong",
+        "sri lanka",
+        "papua new guinea",
+        "north carolina",
+        "south carolina",
+        "north dakota",
+        "south dakota",
+        "new jersey",
+        "new mexico",
+        "new hampshire",
+        "rhode island",
+        "west virginia",
+        "british columbia",
+    ];
     if PHRASES.iter().any(|p| lower.contains(p)) {
         return true;
     }
-    // Whole-token codes/names. "wales" is deliberately absent — it is a substring
+    // Whole-token codes/names. "wales" is deliberately absent — it is a token
     // of "New South Wales" and would gate legitimate NSW addresses.
     const TOKENS: &[&str] = &[
-        "usa", "us", "uk", "gb", "nz", "canada", "england", "scotland", "ireland", "germany",
+        "usa",
+        "us",
+        "uk",
+        "gb",
+        "nz",
+        "canada",
+        "england",
+        "scotland",
+        "ireland",
+        "germany",
         "france",
+        // More nations, so a foreign address cannot borrow an AU coordinate.
+        "india",
+        "china",
+        "japan",
+        "singapore",
+        "philippines",
+        "indonesia",
+        "malaysia",
+        "thailand",
+        "vietnam",
+        "netherlands",
+        "spain",
+        "italy",
+        "brazil",
+        "mexico",
+        "russia",
+        "poland",
+        "sweden",
+        "norway",
+        "denmark",
+        "finland",
+        "switzerland",
+        "austria",
+        "belgium",
+        "portugal",
+        "greece",
+        "turkey",
+        "israel",
+        "pakistan",
+        "bangladesh",
+        "nigeria",
+        "kenya",
+        "egypt",
+        // US states. A US state name is as strong a "not Australia" signal as a
+        // country: `Cleveland, Ohio` and `Springfield, Illinois` both resolved
+        // to Queensland suburbs before this gate existed. Only names with no
+        // Australian counterpart are listed — `victoria`, `wales` and
+        // `washington` are deliberately absent (AU state, NSW token, and a
+        // common AU street/suburb name respectively).
+        "ohio",
+        "texas",
+        "california",
+        "florida",
+        "illinois",
+        "pennsylvania",
+        "michigan",
+        "georgia",
+        "virginia",
+        "massachusetts",
+        "arizona",
+        "indiana",
+        "tennessee",
+        "missouri",
+        "maryland",
+        "wisconsin",
+        "minnesota",
+        "colorado",
+        "alabama",
+        "louisiana",
+        "kentucky",
+        "oregon",
+        "oklahoma",
+        "connecticut",
+        "iowa",
+        "arkansas",
+        "mississippi",
+        "kansas",
+        "nevada",
+        "nebraska",
+        "idaho",
+        "hawaii",
+        "alaska",
+        "utah",
+        "vermont",
+        "wyoming",
+        "montana",
+        "delaware",
+        "maine",
+        // Canadian provinces with no AU counterpart.
+        "ontario",
+        "quebec",
+        "alberta",
+        "saskatchewan",
+        "manitoba",
     ];
-    lower
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .any(|tok| TOKENS.contains(&tok))
+    address_tokens(lower).iter().any(|tok| TOKENS.contains(tok))
+}
+
+/// True when `lower` (an already-lowercased address) explicitly asserts an
+/// AUSTRALIAN locality — it names the country, or it carries BOTH an assigned
+/// 4-digit AU postcode as its trailing digit run ([`au_postcode_in`]) AND an
+/// explicit AU state token/name ([`crate::util::address_au::single_state_code`]).
+///
+/// The converse of [`mentions_non_au_country`], and load-bearing for the same
+/// reason: the tabulated city list holds AU/foreign homonyms (`liverpool`,
+/// `portland`, `wellington` are tabulated ONLY with their overseas coordinates),
+/// so without it `"Liverpool, NSW 2170"` resolved to Liverpool, England — the
+/// wrong hemisphere, at PROBABLE confidence, from an address that names both the
+/// state and the postcode.
+///
+/// An AU postcode ALONE is deliberately NOT sufficient, because **New Zealand
+/// shares the 4-digit postcode format in overlapping numeric ranges** (NZ
+/// `6011`→AU WA range, `1010`→NSW, `8011`→VIC). Keying solely on the postcode
+/// made a bare `"Wellington 6011"` (no country word — common in raw records)
+/// suppress its correct tabulated NZ coordinate and get redirected to an
+/// Australian one: a fabricated trans-Tasman sighting. Requiring an explicit AU
+/// state *in addition to* the postcode disambiguates: `"Liverpool, NSW 2170"`
+/// still redirects to AU, while `"Wellington 6011"` keeps resolving to NZ.
+///
+/// [`single_state_code`](crate::util::address_au::single_state_code), NOT
+/// `state_code`, is the right discriminator: `state_code` falls back to the
+/// trailing postcode when no state token is present, which for `"Wellington
+/// 6011"` would resolve `6011`→WA and defeat the whole guard. `single_state_code`
+/// requires an EXPLICIT state mention and has no postcode fallback.
+///
+/// A state abbreviation is not read from a bare postcode either: `WA` is Western
+/// Australia and Washington State alike, so `"Seattle, WA 98101"` keeps resolving
+/// to Seattle — its 5-digit ZIP leaves no 4-digit trailing run, so
+/// `au_postcode_in` returns `None` and this stays false. Pure; no I/O.
+fn names_au_locality(lower: &str) -> bool {
+    lower.contains("australia")
+        || (au_postcode_in(lower).is_some()
+            && crate::util::address_au::single_state_code(lower).is_some())
+}
+
+/// True when `name` (already lowercased, space-separated words) EXACTLY
+/// matches a tabulated Australian locality's canonical name in [`CITIES`] —
+/// e.g. `"gold coast"` or `"brisbane"`. Unlike [`city_coords`]'s free-text
+/// phrase search, this takes one already-segmented candidate phrase and asks
+/// only "is this exact name a known AU suburb?" — for a caller that has
+/// already split its own text into candidate words (e.g. hyphenated URL slug
+/// tokens) and needs to disambiguate which word-count window is the real
+/// suburb, not geocode an address. Pure; no I/O.
+pub(crate) fn is_tabulated_au_city(name: &str) -> bool {
+    CITIES
+        .iter()
+        .any(|&(city, lat, lon)| city == name && crate::util::geo::is_in_australia(lat, lon))
 }
 
 /// Resolve a bare 4-digit AU postcode to an approximate `(lat, lon)`.
@@ -337,6 +572,7 @@ const CITIES: &[(&str, f64, f64)] = &[
     ("newcastle", -32.9283, 151.7817),
     ("wollongong", -34.4278, 150.8931),
     ("central coast", -33.3000, 151.3500),
+    ("port macquarie", -31.4333, 152.9000),
     ("tamworth", -31.0833, 150.9167),
     ("wagga wagga", -35.1083, 147.3598),
     ("albury", -36.0737, 146.9135),
@@ -391,4 +627,100 @@ const CITIES: &[(&str, f64, f64)] = &[
 #[cfg(test)]
 mod tests {
     include!("tests.rs");
+}
+
+#[cfg(test)]
+mod geocode_precision_tests {
+    use super::*;
+
+    fn is_au(c: (f64, f64)) -> bool {
+        crate::util::geo::is_in_australia(c.0, c.1)
+    }
+
+    /// The gazetteer scan used to be `lower.contains(city)` over an AU-first
+    /// table, returning the FIRST hit. Every string below therefore resolved to
+    /// an Australian coordinate for a place that is not in Australia — and
+    /// because ~50 call sites feed the result in as a person-anchored
+    /// `Coordinates`, a foreign profile location became an AU sighting that
+    /// pulled the subject's fused location estimate across the planet.
+    #[test]
+    fn foreign_places_never_resolve_into_australia() {
+        for addr in [
+            "Cleveland, Ohio",
+            "Springfield, Illinois",
+            "Albany, New York",
+            "Orange County, California",
+            "Perth, Scotland",
+            "Newcastle, UK",
+            "Ipswich, England",
+            "Richmond, Virginia",
+            "Melbourne, Florida",
+            "Brisbane, California",
+        ] {
+            if let Some(c) = city_coords(addr) {
+                assert!(
+                    !is_au(c),
+                    "{addr} resolved to the Australian coordinate {c:?}"
+                );
+            }
+        }
+    }
+
+    /// `"hamilton"` contains the substring `"milton"` — a tabulated Brisbane
+    /// suburb — so a whole-token match is required, not `contains`.
+    #[test]
+    fn substring_of_a_tabulated_suburb_is_not_a_match() {
+        assert_eq!(
+            city_coords("Hamilton, New Zealand"),
+            None,
+            "Hamilton must not borrow Milton's Brisbane coordinate"
+        );
+    }
+
+    /// The old first-match-wins scan depended on table declaration order.
+    /// The most specific (longest) name must win instead.
+    #[test]
+    fn longest_name_wins_over_declaration_order() {
+        let gold_coast = city_coords("Gold Coast QLD").expect("tabulated");
+        assert!((gold_coast.0 - -28.0167).abs() < 0.01, "got {gold_coast:?}");
+        let sunshine = city_coords("Sunshine Coast, Queensland").expect("tabulated");
+        assert!((sunshine.0 - -26.65).abs() < 0.01, "got {sunshine:?}");
+    }
+
+    /// Australian addresses must keep resolving exactly as before.
+    #[test]
+    fn australian_addresses_still_resolve() {
+        for addr in [
+            "Brisbane, QLD",
+            "12 Smith St, Milton QLD 4064",
+            "Sydney NSW 2000",
+            "Perth, WA",
+            "New South Wales",
+        ] {
+            let c = city_coords(addr);
+            if let Some(c) = c {
+                assert!(is_au(c), "{addr} must stay in Australia, got {c:?}");
+            }
+        }
+        assert!(city_coords("Brisbane, QLD").is_some());
+        assert!(city_coords("Sydney NSW 2000").is_some());
+    }
+
+    /// The embedded-postcode fallback must still work for a real AU address
+    /// whose suburb is not tabulated.
+    #[test]
+    fn embedded_au_postcode_fallback_survives() {
+        assert!(
+            city_coords("12 Example St, Untabulated QLD 4552").is_some(),
+            "an AU postcode must still resolve when the suburb is untabulated"
+        );
+    }
+
+    /// `New South Wales` contains the token `wales`; gating on it would break
+    /// every legitimate NSW address.
+    #[test]
+    fn new_south_wales_is_not_treated_as_foreign() {
+        assert!(!mentions_non_au_country("sydney, new south wales"));
+        assert!(mentions_non_au_country("cardiff, wales, uk"));
+    }
 }

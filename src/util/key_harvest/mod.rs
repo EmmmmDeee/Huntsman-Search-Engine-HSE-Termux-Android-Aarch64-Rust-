@@ -377,7 +377,12 @@ pub fn identify_vendor_api_key(value: &str) -> Option<(&'static str, &str)> {
         if let Some(group) = PREFIX_GROUPS.get(matched_prefix) {
             for &idx in group {
                 let pat = &KEY_PATTERNS[idx];
-                if trimmed.len() >= pat.min_len {
+                // A short/generic prefix (`AC`, `SK`, `MT`, `ODk`) additionally
+                // requires its body to match the vendor's real shape — Twilio's
+                // hex SID, Discord's dotted token. A body-shape miss is treated
+                // exactly like a min_len miss: skip this entry rather than
+                // misattribute a high-entropy non-key to the service.
+                if trimmed.len() >= pat.min_len && patterns::body_shape_ok(pat.prefix, trimmed) {
                     if !is_likely_real_key(trimmed) {
                         return None;
                     }

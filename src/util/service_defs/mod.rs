@@ -121,6 +121,21 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         rate_limit_reset_secs: 60,
         probe_parser: Some(|_v| vec![("status".into(), "authenticated".into())]),
     },
+    // KNOWN LIMITATION: IPQS embeds the key as a URL PATH segment —
+    // `https://www.ipqualityscore.com/api/json/{endpoint}/{key}/{value}`
+    // (`modules/ipqs/mod.rs`'s own request builder; corroborated by
+    // `util/raw_archive/url.rs`'s and its tests' identical documented shape).
+    // No existing `KeyPlacement` variant can express "append the key to the
+    // path with no query string" — `QueryParam` always inserts `?param=` or
+    // `&param=`, so this probe's actual request
+    // (`https://ipqualityscore.com/api/json/account/?key=<key>`) is
+    // structurally wrong regardless of the key's validity, and IPQS's real
+    // `/account/` endpoint additionally answers any request with `HTTP 200`
+    // (auth failure is only in the JSON body), so even a correctly-placed
+    // key couldn't be classified `Valid`/`Rejected` under the current
+    // status-code-only probe. A real fix needs a path-segment `KeyPlacement`
+    // variant (same class of gap as `wigle`'s paired-credential one above)
+    // plus a body-aware verdict; deliberately out of scope here.
     ServiceDef {
         name: "ipqs",
         env_var: "HUNTSMAN_IPQS_KEY",
@@ -143,8 +158,19 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         name: "numverify",
         env_var: "HUNTSMAN_NUMVERIFY_KEY",
         category: "identity",
-        test_url: "https://apilayer.net/api/validate?number=14158586273&access_key=",
-        key_header: KeyPlacement::QueryParam("access_key"),
+        // `apilayer.net`/`access_key` is the legacy direct API. The module
+        // migrated to the unified APILayer gateway (`modules/numverify/mod.rs`'s
+        // own doc comment + its real `api.apilayer.com` GET with an `apikey`
+        // header) but this def was never updated to match — the legacy host
+        // answers ANY key, even garbage, with `HTTP 200` (`{"success":false,
+        // "error":{"code":101,...}}`), which this probe's status-only check
+        // reads as unconditionally `Valid`. The real host correctly 401s a
+        // bad/missing key. The number is the NANP block reserved for
+        // fictional use (same convention as the `hlrlookups`/`opencnam`
+        // probes below) — this only exercises the auth header, never a real
+        // subscriber.
+        test_url: "https://api.apilayer.com/number_verification/validate?number=15555550100",
+        key_header: KeyPlacement::Header("apikey"),
         rate_limit_reset_secs: 60,
         probe_parser: Some(|v| {
             let mut out = Vec::new();
@@ -252,18 +278,22 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         rate_limit_reset_secs: 6,
         probe_parser: Some(|_v| vec![("status".into(), "authenticated".into())]),
     },
-    // NOTE: DeHashed is intentionally absent. Its v2 API is POST-only
-    // (`POST /v2/search` with a `Dehashed-Api-Key` header), which the
-    // GET-based key validator here cannot probe without spending a paid
-    // search credit — and the legacy v1 `GET /search` URL it used now 404s.
-    // The `dehashed` module reads HUNTSMAN_DEHASHED_KEY from the env directly,
-    // so a validator def would only ever mis-report a valid key as invalid.
+    // NOTE: DeHashed has no keyless/GET account-status endpoint to probe (its
+    // v2 API is POST-only) — see the `dehashed` def below (search "name:
+    // \"dehashed\"") for how it is registered anyway (`probe_parser: None`,
+    // pool/dashboard integration only).
     ServiceDef {
         name: "threatfox",
         env_var: "HUNTSMAN_THREATFOX_KEY",
         category: "threat_intel",
         test_url: "https://threatfox-api.abuse.ch/api/v1/",
-        key_header: KeyPlacement::Header("API-KEY"),
+        // abuse.ch's real header is `Auth-Key` (modules/threatfox/mod.rs's own
+        // doc comment and `.header("Auth-Key", key)` call; the sibling
+        // `urlhaus` entry below — same abuse.ch account, same key — already
+        // has this right). `API-KEY` sent no header abuse.ch actually checks,
+        // so this probe 401ed every genuinely valid key — same class of bug
+        // as the `see_know`/`netlas` header mismatches the tests below guard.
+        key_header: KeyPlacement::Header("Auth-Key"),
         rate_limit_reset_secs: 60,
         probe_parser: None,
     },
@@ -305,7 +335,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         name: "zoomeye",
         env_var: "HUNTSMAN_ZOOMEYE_KEY",
         category: "infrastructure",
-        test_url: "https://api.zoomeye.org/resources-info",
+        test_url: "https://api.zoomeye.ai/resources-info",
         key_header: KeyPlacement::Header("API-KEY"),
         rate_limit_reset_secs: 60,
         probe_parser: Some(|v| {
@@ -475,7 +505,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         probe_parser: None,
     },
     // (DeHashed v2 is key-only; the former `dehashed_user` account-email def
-    // is obsolete — see the note where the `dehashed` def used to live.)
+    // is obsolete — see the `dehashed` def below for the current entry.)
     ServiceDef {
         name: "binaryedge",
         env_var: "HUNTSMAN_BINARYEDGE_KEY",
@@ -586,15 +616,6 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         probe_parser: None,
     },
     ServiceDef {
-        name: "proxycurl",
-        env_var: "HUNTSMAN_PROXYCURL_KEY",
-        category: "identity",
-        test_url: "https://nubela.co/proxycurl/api/v2/linkedin",
-        key_header: KeyPlacement::BearerAuth,
-        rate_limit_reset_secs: 12,
-        probe_parser: None,
-    },
-    ServiceDef {
         name: "opencorporates",
         env_var: "HUNTSMAN_OPENCORP_KEY",
         category: "identity",
@@ -616,17 +637,20 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         rate_limit_reset_secs: 60,
         probe_parser: None,
     },
-    // SeekNow (see-know.eu) — direct OathNet competitor with 5000 daily
+    // SeekNow (see-know.ru) — direct OathNet competitor with 5000 daily
     // lookups on premiumhq tier. Auth: `X-API-Key: <key>` — the server REJECTS
     // `Authorization: Bearer` with "Missing API key. Use X-API-Key" (see
     // see_know/client.rs, which authenticates with AuthScheme::XApiKey), so the
     // validation probe must send the same header or it mis-reports a valid key
     // as invalid. /credits is a free introspection endpoint for validation.
+    // `.ru` matches `client::base_url()`'s primary domain (promoted 2026-07-29;
+    // `.xyz`/`.eu`/`.icu` remain fallback there) so a validated key is probed
+    // against the same host the live search calls actually hit.
     ServiceDef {
         name: "see_know",
         env_var: "HUNTSMAN_SEEKNOW_KEY",
         category: "breach",
-        test_url: "https://see-know.eu/api/v1/credits",
+        test_url: "https://see-know.ru/api/v1/credits",
         key_header: KeyPlacement::Header("X-API-Key"),
         rate_limit_reset_secs: 17,
         probe_parser: None,
@@ -674,8 +698,8 @@ static SERVICE_DEFS: &[ServiceDef] = &[
     // `Auth-Key` header → 401; a present-but-wrong `Auth-Key` → 404 (its real
     // endpoints are POST-only, so this GET path doesn't cleanly echo the
     // auth verdict a valid key would get). Either way the probe lands
-    // `Indeterminate`, never a false `Invalid` — the same safe trade-off
-    // `dehashed`'s omission note above documents for a POST-only API.
+    // `Indeterminate`, never a false `Invalid` — the same safe trade-off the
+    // `dehashed` def below documents for its own POST-only API.
     // abuse.ch's 2024 auth rollout unified URLhaus/ThreatFox/MalwareBazaar
     // under one Auth-Key, which is why `urlhaus`'s own code falls back to
     // `HUNTSMAN_THREATFOX_KEY` when no dedicated key is set — registered here
@@ -725,6 +749,28 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         // newspaper search), minimised to `n=1` — a genuine, cheap live query.
         test_url: "https://api.trove.nla.gov.au/v3/result?q=test&zone=newspaper&encoding=json&n=1&reclevel=brief",
         key_header: KeyPlacement::Header("X-API-KEY"),
+        rate_limit_reset_secs: 60,
+        probe_parser: None,
+    },
+    ServiceDef {
+        name: "dehashed",
+        env_var: "HUNTSMAN_DEHASHED_KEY",
+        category: "breach",
+        // DeHashed v2's only endpoint is `POST /v2/search` with a required JSON
+        // body (`modules/dehashed/mod.rs`) — no keyless/GET account-status
+        // endpoint is documented. Same reasoning as `urlhaus`/`niamonx` below: a
+        // GET-based probe against the real endpoint safely lands `Indeterminate`
+        // (never a false `Invalid`, since only a 401/403 or an auth-shaped 400
+        // body — neither plausible from a request the server can't even parse —
+        // flips the verdict) rather than fabricating an unverified alternate
+        // endpoint. It still confirms the pool integration (rotation, dashboard
+        // visibility, real `report_key_exhausted` effect) works, and — unlike no
+        // entry at all — lets `key_health::likely_env_var` resolve this module's
+        // env var so a live auth failure (observed: `HTTP 403 Forbidden:
+        // {"error": "Issue with API Key"}`) surfaces in `hse doctor`'s
+        // "CONFIGURED KEY(S) REJECTED" report instead of being silently dropped.
+        test_url: "https://api.dehashed.com/v2/search",
+        key_header: KeyPlacement::Header("Dehashed-Api-Key"),
         rate_limit_reset_secs: 60,
         probe_parser: None,
     },
@@ -807,6 +853,21 @@ pub fn find_service(name: &str) -> Option<&'static ServiceDef> {
     SERVICE_DEFS.iter().find(|s| s.name == lower)
 }
 
+/// The canonical [`ServiceDef`] whose `env_var` is `env_var`
+/// (ASCII-case-insensitive). The counterpart to [`find_service`] for the one
+/// thing a keyed MODULE always knows about itself: the env var its key arrives
+/// in. A module's own name is NOT a reliable pool key — `hunter_io` pools under
+/// `hunter`, `exa_search` under `exa`, `hlr_cnam` under `hlrlookups` — and
+/// addressing the pool by module name makes every key burn a silent no-op
+/// ([`crate::util::key_pool`]'s `record_error`/`mark_status` skip an unknown
+/// service) and every cascade lookup return `None`.
+#[must_use]
+pub fn service_for_env(env_var: &str) -> Option<&'static ServiceDef> {
+    SERVICE_DEFS
+        .iter()
+        .find(|d| d.env_var.eq_ignore_ascii_case(env_var))
+}
+
 /// True if `service` is a recognised keyed provider whose key the engine's
 /// key-cascade can actually **reuse** — i.e. it appears in [`service_defs`], so
 /// `hot_inject_keys` (which iterates `service_defs`) will pull a pooled key for
@@ -821,6 +882,40 @@ pub fn find_service(name: &str) -> Option<&'static ServiceDef> {
 #[must_use]
 pub fn is_poolable_service(service: &str) -> bool {
     find_service(service).is_some()
+}
+
+/// True when `service`'s HTTP-200 response BODY actually signals a
+/// rejected/dead key — a status-only classifier (`key_pool::validation`'s
+/// probe) can't see this on its own, since a 2xx normally means the request
+/// succeeded. A separate function rather than a `ServiceDef` field (unlike
+/// [`ServiceDef::probe_parser`]) so adding a new entry never touches the other
+/// 48+ existing literals — this is checked for exactly one service today.
+///
+/// Currently only **Criminal IP** is covered: `modules::criminal_ip`'s own
+/// live-scan cascade (`keyed_cascade_json`'s verdict closure) already proved
+/// its in-body `status` field reports `401`/`402`/`429` for a dead/exhausted
+/// key on an HTTP 200 — this mirrors that exact, already-shipped logic rather
+/// than inventing new classification.
+///
+/// Deliberately does **not** yet cover FOFA or BuiltWith, which have the
+/// identical always-200 shape (`error`/`Errors` fields) — their in-body error
+/// field can ALSO fire for a non-key reason: FOFA's own test suite documents
+/// an `errmsg: "Invalid query"` case, and BuiltWith's `Errors[].Message` has
+/// no confirmed complete vocabulary either. Guessing a phrase broad enough to
+/// catch "key is dead" but narrow enough to spare "your query is malformed"
+/// requires live verification this environment cannot perform (both
+/// providers' docs are unreachable — bot-gated, same as this session hit for
+/// DeHashed). Extend this match arm, not its call sites, once that phrase is
+/// confirmed — never with an unverified guess.
+#[must_use]
+pub fn body_rejects_key(service: &str, body: &Value) -> bool {
+    match service {
+        "criminal_ip" => matches!(
+            body.get("status").and_then(Value::as_i64),
+            Some(401 | 402 | 429)
+        ),
+        _ => false,
+    }
 }
 
 #[cfg(test)]

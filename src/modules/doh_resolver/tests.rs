@@ -17,7 +17,7 @@ fn cost_is_free() {
 #[test]
 fn doh_resp_deser() {
     let json = r#"{"Status":0,"Answer":[{"name":"example.com.","type":1,"data":"93.184.216.34"}]}"#;
-    let resp: DohResp = serde_json::from_str(json).unwrap();
+    let resp: DohResp = serde_json::from_str(json).expect("should succeed");
     assert_eq!(resp.answer.len(), 1);
     assert_eq!(resp.answer[0].data, "93.184.216.34");
 }
@@ -101,9 +101,12 @@ fn spf_txt_extracts_ip4_ip6_and_includes_others_ignored() {
     let first_ip = out
         .iter()
         .find(|e| e.kind == EntityKind::IpAddress)
-        .unwrap();
+        .expect("should succeed");
     assert!(first_ip.has_tag("spf"));
-    let inc = out.iter().find(|e| e.kind == EntityKind::Domain).unwrap();
+    let inc = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain)
+        .expect("should succeed");
     assert_eq!(inc.value, "_spf.google.com");
     assert!(inc.has_tag("spf-include"));
 }
@@ -124,6 +127,70 @@ fn unquote_txt_reconstructs_single_and_chunked_records() {
     assert_eq!(unquote_txt(r#""inclu" "de:x.com""#), "include:x.com");
     // Escaped quote inside a chunk is decoded to a literal.
     assert_eq!(unquote_txt(r#""a\"b""#), "a\"b");
+}
+
+#[test]
+fn svcb_hints_from_friendly_presentation_string() {
+    // dns.google's form.
+    let out = parse_svcb_hints(
+        "1 . alpn=h3,h2 ipv4hint=104.16.132.229,104.16.133.229 ipv6hint=2606:4700::6810:84e5",
+    );
+    assert_eq!(
+        out,
+        vec![
+            "104.16.132.229".to_string(),
+            "104.16.133.229".to_string(),
+            "2606:4700::6810:84e5".to_string(),
+        ]
+    );
+    // No hints present → empty.
+    assert!(parse_svcb_hints("1 . alpn=h2").is_empty());
+}
+
+#[test]
+fn svcb_hints_from_raw_rfc3597_wire_form() {
+    // The EXACT bytes cloudflare-dns returned for cloudflare.com's HTTPS record
+    // (captured live): priority 1, root target, alpn h3/h2, then ipv4hint (key 4)
+    // = 104.16.132.229 / 104.16.133.229 and ipv6hint (key 6) = two v6 addresses.
+    let data = r"\# 61 00 01 00 00 01 00 06 02 68 33 02 68 32 00 04 00 08 68 10 84 e5 68 10 85 e5 00 06 00 20 26 06 47 00 00 00 00 00 00 00 00 00 68 10 84 e5 26 06 47 00 00 00 00 00 00 00 00 00 68 10 85 e5";
+    let out = parse_svcb_hints(data);
+    assert!(
+        out.contains(&"104.16.132.229".to_string()) && out.contains(&"104.16.133.229".to_string()),
+        "ipv4hint addresses must decode from the wire form: {out:?}"
+    );
+    assert!(
+        out.iter().any(|ip| ip.starts_with("2606:4700")),
+        "ipv6hint addresses must decode too: {out:?}"
+    );
+}
+
+#[test]
+fn svcb_wire_parser_is_panic_free_on_malformed_input() {
+    // Truncated, non-hex, empty, and over-length-claimed inputs must all just
+    // yield what parsed cleanly (or nothing) — never panic on the no-root target.
+    assert!(parse_svcb_hints(r"\# 4 00 01").is_empty()); // priority only, no params
+    assert!(parse_svcb_hints(r"\# 2 zz zz").is_empty()); // non-hex octets
+    assert!(parse_svcb_hints(r"\#").is_empty()); // empty body
+    assert!(parse_svcb_hints(r"\# 8 00 01 00 00 04 00 08 68").is_empty()); // vlen claims 8, only 1 byte
+}
+
+#[test]
+fn https_record_emits_hint_ip_entities() {
+    use crate::core::entity::EntityKind;
+    let out = run(
+        "HTTPS",
+        &["1 . alpn=h3,h2 ipv4hint=198.51.100.7 ipv6hint=2001:db8::1"],
+    );
+    let v4 = out
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress && e.value == "198.51.100.7")
+        .expect("ipv4hint → IpAddress entity");
+    assert!(v4.has_tag("https-hint") && v4.has_tag("svcb") && v4.has_tag("ipv4"));
+    let v6 = out
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress && e.value == "2001:db8::1")
+        .expect("ipv6hint → IpAddress entity");
+    assert!(v6.has_tag("https-hint") && v6.has_tag("ipv6"));
 }
 
 #[test]
@@ -148,7 +215,10 @@ fn chunked_spf_record_parses_into_members() {
 #[test]
 fn spf_redirect_surfaces_target_as_domain() {
     let out = run("TXT", &["v=spf1 redirect=_spf.example.net"]);
-    let red = out.iter().find(|e| e.kind == EntityKind::Domain).unwrap();
+    let red = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain)
+        .expect("should succeed");
     assert_eq!(red.value, "_spf.example.net");
     assert!(red.has_tag("spf-redirect"));
 }
@@ -215,6 +285,8 @@ fn rtype_name_maps_handled_types() {
     assert_eq!(rtype_name(15), Some("MX"));
     assert_eq!(rtype_name(16), Some("TXT"));
     assert_eq!(rtype_name(2), Some("NS"));
+    assert_eq!(rtype_name(65), Some("HTTPS"));
+    assert_eq!(rtype_name(257), Some("CAA"));
     assert_eq!(rtype_name(99), None); // unmapped → caller falls back to queried type
 }
 
@@ -236,7 +308,10 @@ fn answer_classified_by_actual_record_type_not_queried_type() {
             .any(|e| e.kind == EntityKind::IpAddress && e.value == "1.2.3.4")
     );
     // The owner name is surfaced as evidence on the CNAME finding.
-    let cn = out.iter().find(|e| e.has_tag("cname")).unwrap();
+    let cn = out
+        .iter()
+        .find(|e| e.has_tag("cname"))
+        .expect("should succeed");
     assert_eq!(
         cn.evidence[0]
             .attributes
@@ -268,7 +343,7 @@ fn rtype_name_includes_soa() {
 fn soa_rname_standard_hostmaster() {
     assert_eq!(
         soa_rname_to_email("hostmaster.example.com"),
-        "hostmaster@example.com"
+        Some("hostmaster@example.com".to_string())
     );
 }
 
@@ -277,7 +352,7 @@ fn soa_rname_trailing_dot_stripped() {
     // Wire-format RNAME commonly carries a trailing dot.
     assert_eq!(
         soa_rname_to_email("hostmaster.example.com."),
-        "hostmaster@example.com"
+        Some("hostmaster@example.com".to_string())
     );
 }
 
@@ -286,20 +361,23 @@ fn soa_rname_escaped_dot_in_local_part() {
     // `john\.doe.example.com` → local-part is `john.doe`, domain is `example.com`.
     assert_eq!(
         soa_rname_to_email("john\\.doe.example.com"),
-        "john.doe@example.com"
+        Some("john.doe@example.com".to_string())
     );
 }
 
 #[test]
-fn soa_rname_single_label_returns_empty() {
-    // No boundary dot found → domain part is absent → empty string.
-    assert_eq!(soa_rname_to_email("hostmaster"), "");
+fn soa_rname_single_label_returns_none() {
+    // No boundary dot found → domain part is absent → None.
+    assert_eq!(soa_rname_to_email("hostmaster"), None);
 }
 
 #[test]
 fn soa_record_extracts_primary_ns_and_zone_admin_email() {
-    // SOA RDATA: `mname rname serial refresh retry expire minimum`
-    let data = "ns1.example.com. hostmaster.example.com. 2024010101 3600 900 604800 300";
+    // SOA RDATA: `mname rname serial refresh retry expire minimum`.
+    // Non-role rname deliberately — "hostmaster" (RFC 1035 §3.3.13's own
+    // convention) is a role local-part and would now be suppressed; see
+    // `soa_suppresses_role_local_part_zone_admin_email` below.
+    let data = "ns1.example.com. dnsops.example.com. 2024010101 3600 900 604800 300";
     let records = vec![rec_typed(6, "example.com.", data)];
     let mut seen = HashSet::new();
     let out = records_for_type("SOA", &records, "example.com", &mut seen, "s");
@@ -308,12 +386,39 @@ fn soa_record_extracts_primary_ns_and_zone_admin_email() {
         2,
         "SOA must emit nameserver domain + zone-admin email"
     );
-    let ns = out.iter().find(|e| e.kind == EntityKind::Domain).unwrap();
+    let ns = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain)
+        .expect("should succeed");
     assert_eq!(ns.value, "ns1.example.com");
     assert!(ns.has_tag("soa") && ns.has_tag("nameserver"));
-    let email = out.iter().find(|e| e.kind == EntityKind::Email).unwrap();
-    assert_eq!(email.value, "hostmaster@example.com");
+    let email = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("should succeed");
+    assert_eq!(email.value, "dnsops@example.com");
     assert!(email.has_tag("soa") && email.has_tag("zone-admin"));
+}
+
+#[test]
+fn soa_suppresses_role_local_part_zone_admin_email() {
+    // Regression test for the audit finding (role-mailbox-as-pii): a SOA
+    // RNAME using the RFC 1035 §3.3.13 `hostmaster.` convention is
+    // infrastructure contact, not the subject's own mail — the same gate
+    // dns_intel's parallel (non-DoH) SOA handler already applies.
+    let data = "ns1.example.com. hostmaster.example.com. 2024010101 3600 900 604800 300";
+    let records = vec![rec_typed(6, "example.com.", data)];
+    let mut seen = HashSet::new();
+    let out = records_for_type("SOA", &records, "example.com", &mut seen, "s");
+    assert!(
+        !out.iter().any(|e| e.kind == EntityKind::Email),
+        "a role-local-part SOA RNAME must not surface as an Email entity"
+    );
+    assert!(
+        out.iter()
+            .any(|e| e.kind == EntityKind::Domain && e.value == "ns1.example.com"),
+        "the primary nameserver is unaffected"
+    );
 }
 
 #[test]
@@ -335,5 +440,293 @@ fn dmarc_txt_extracts_rua_and_ruf_reporting_addresses() {
     );
     for e in out.iter().filter(|e| e.kind == EntityKind::Email) {
         assert!(e.has_tag("dmarc-reporting"));
+    }
+}
+
+#[test]
+fn dmarc_suppresses_role_local_part_reporting_address() {
+    // Regression test for the audit finding (role-mailbox-as-pii): a DMARC
+    // rua/ruf reporting address on a role local-part (`hostmaster@`) or an
+    // INFRA_MAIL-listed domain (google.com) is infrastructure contact, not
+    // the subject's own mail — the same gate dns_intel's parallel (non-DoH)
+    // DMARC parser already applies via `dmarc.report_addresses()`.
+    let txt =
+        "v=DMARC1; p=reject; rua=mailto:hostmaster@example.com; ruf=mailto:reports@google.com";
+    let out = run("TXT", &[txt]);
+    assert!(
+        !out.iter().any(|e| e.kind == EntityKind::Email),
+        "role-local-part / infra-mail-domain DMARC reporting addresses must not surface"
+    );
+}
+
+// ── CAA (RFC 8659, type 257) ────────────────────────────────────────────────
+// The wire strings below are verbatim live captures: cloudflare-dns returns the
+// raw RFC 3597 generic form, dns.google the presentation form.
+
+#[test]
+fn caa_parse_cloudflare_rfc3597_hex_issue_and_iodef() {
+    // `\# 22 00 05 issue letsencrypt.org` — flags=00, taglen=05, tag="issue".
+    let (tag, val) =
+        parse_caa_rdata(r"\# 22 00 05 69 73 73 75 65 6c 65 74 73 65 6e 63 72 79 70 74 2e 6f 72 67")
+            .expect("valid issue record");
+    assert_eq!(tag, "issue");
+    assert_eq!(val, "letsencrypt.org");
+
+    // `\# 38 00 05 iodef mailto:tls-abuse@cloudflare.com`.
+    let (tag, val) = parse_caa_rdata(
+        r"\# 38 00 05 69 6f 64 65 66 6d 61 69 6c 74 6f 3a 74 6c 73 2d 61 62 75 73 65 40 63 6c 6f 75 64 66 6c 61 72 65 2e 63 6f 6d",
+    )
+    .expect("valid iodef record");
+    assert_eq!(tag, "iodef");
+    assert_eq!(val, "mailto:tls-abuse@cloudflare.com");
+}
+
+#[test]
+fn caa_parse_google_presentation_form() {
+    assert_eq!(
+        parse_caa_rdata(r#"0 issue "letsencrypt.org""#),
+        Some(("issue".to_string(), "letsencrypt.org".to_string()))
+    );
+    assert_eq!(
+        parse_caa_rdata(r#"0 iodef "mailto:tls-abuse@cloudflare.com""#),
+        Some((
+            "iodef".to_string(),
+            "mailto:tls-abuse@cloudflare.com".to_string()
+        ))
+    );
+    // Issuer parameters after `;` are retained in the value (parity with dns_intel).
+    assert_eq!(
+        parse_caa_rdata(r#"0 issue "digicert.com; cansignhttpexchanges=yes""#),
+        Some((
+            "issue".to_string(),
+            "digicert.com; cansignhttpexchanges=yes".to_string()
+        ))
+    );
+}
+
+#[test]
+fn caa_parse_rejects_malformed_and_non_caa() {
+    assert_eq!(parse_caa_rdata(""), None);
+    assert_eq!(parse_caa_rdata("0 issue"), None); // no value token
+    assert_eq!(parse_caa_rdata("cdn.example.net."), None); // a stray CNAME answer
+    assert_eq!(parse_caa_rdata(r"\# 1 00"), None); // truncated: taglen missing
+    assert_eq!(parse_caa_rdata(r"\# 4 00 05 69 73"), None); // taglen 5 > available
+}
+
+#[test]
+fn caa_entities_aggregate_policy_and_surface_iodef_security_contact() {
+    // Mixed set across both wire forms — issue, issuewild, and an iodef mailto.
+    let records = vec![
+        rec(r#"0 issue "letsencrypt.org""#),
+        rec(r#"0 issuewild "digicert.com""#),
+        rec(
+            r"\# 38 00 05 69 6f 64 65 66 6d 61 69 6c 74 6f 3a 74 6c 73 2d 61 62 75 73 65 40 63 6c 6f 75 64 66 6c 61 72 65 2e 63 6f 6d",
+        ),
+    ];
+    let out = caa_entities(&records, "example.com", "s");
+
+    // One aggregated CAA policy Domain entity for the queried domain.
+    let policy = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain && e.value == "example.com")
+        .expect("CAA policy entity");
+    assert!(policy.has_tag("caa"));
+    let a = &policy.evidence[0].attributes;
+    assert_eq!(a.get("issue").map(String::as_str), Some("letsencrypt.org"));
+    assert_eq!(a.get("issuewild").map(String::as_str), Some("digicert.com"));
+    assert_eq!(
+        a.get("iodef").map(String::as_str),
+        Some("mailto:tls-abuse@cloudflare.com")
+    );
+
+    // The iodef mailto becomes a pivotable security-contact Email — the key
+    // Termux-parity win (routed via the shared dns_intel extractor).
+    let email = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("iodef security-contact email");
+    assert_eq!(email.value, "tls-abuse@cloudflare.com");
+    assert!(email.has_tag("security-contact"));
+    assert!(email.has_tag("iodef"));
+}
+
+#[test]
+fn caa_entities_empty_when_no_caa_records() {
+    assert!(caa_entities(&[], "example.com", "s").is_empty());
+    // Only unparseable answers → no policy entity fabricated.
+    assert!(caa_entities(&[rec("cdn.example.net.")], "example.com", "s").is_empty());
+}
+
+// ── TLSRPT (RFC 8460, _smtp._tls.{domain} TXT) ──────────────────────────────
+
+#[test]
+fn tlsrpt_mailto_becomes_report_email() {
+    // A non-infra reporting mailbox surfaces (real live records like google.com's
+    // `sts-reports@google.com` sit on a provider domain and are gated below).
+    let out = tlsrpt_entities(
+        &[rec("v=TLSRPTv1;rua=mailto:tlsrpt@fabrikam.example")],
+        "fabrikam.example",
+        "s",
+    );
+    let email = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("TLSRPT rua mailto → Email");
+    assert_eq!(email.value, "tlsrpt@fabrikam.example");
+    assert!(email.has_tag("tlsrpt-report") && email.has_tag("dns"));
+    // Confidence parity with the dns_intel transport: the SAME published TLSRPT
+    // address must score the same regardless of which DNS transport observed it.
+    // This path used to stamp a bare `0.68`; both now share `ATTRIBUTED` via the
+    // single `util::tlsrpt::report_entities` builder.
+    assert!(
+        (email.confidence - crate::core::confidence::ATTRIBUTED).abs() < 1e-9,
+        "TLSRPT report address must carry confidence::ATTRIBUTED, got {}",
+        email.confidence
+    );
+}
+
+#[test]
+fn tlsrpt_infrastructure_mailbox_is_gated() {
+    // Parity with the dns_intel transport: a provider-domain reporting desk is
+    // filtered so the two DNS paths surface the identical contact set.
+    let out = tlsrpt_entities(
+        &[rec("v=TLSRPTv1;rua=mailto:sts-reports@google.com")],
+        "google.com",
+        "s",
+    );
+    assert!(out.iter().all(|e| e.kind != EntityKind::Email));
+}
+
+#[test]
+fn tlsrpt_https_endpoint_becomes_domain_lead() {
+    // Verbatim live shape from microsoft.com's _smtp._tls record.
+    let out = tlsrpt_entities(
+        &[rec(
+            "v=TLSRPTv1; rua=https://tlsrpt.azurewebsites.net/report",
+        )],
+        "microsoft.com",
+        "s",
+    );
+    let dom = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain)
+        .expect("TLSRPT rua https → Domain host");
+    assert_eq!(dom.value, "tlsrpt.azurewebsites.net");
+    assert!(dom.has_tag("tlsrpt-report"));
+}
+
+#[test]
+fn tlsrpt_ignores_non_tlsrpt_and_empty() {
+    assert!(tlsrpt_entities(&[rec("v=spf1 -all")], "x.com", "s").is_empty());
+    assert!(tlsrpt_entities(&[rec("v=TLSRPTv1;")], "x.com", "s").is_empty());
+    assert!(tlsrpt_entities(&[], "x.com", "s").is_empty());
+}
+
+/// A DoH outage must not be reportable as "this domain has no such record".
+///
+/// `query_doh` previously returned a bare `Vec<DohRecord>`, so four different
+/// outcomes collapsed onto the same empty vec: both providers unreachable, both
+/// returning a non-zero DNS status, an undecodable reply, and a domain that
+/// genuinely has no record of that type. On Termux the DoH path is the PRIMARY
+/// transport — the system resolver is routinely blocked — so the outage case is
+/// common, and an operator reading "no MX records" could not tell whether the
+/// domain has none or whether DNS never answered.
+///
+/// `dns_wholly_unreachable` is the predicate that turns the all-unreachable case
+/// into a `ModuleError`. It is pure, so this is hermetic — no live resolver.
+#[test]
+fn an_unreachable_resolver_is_not_the_same_as_a_domain_with_no_records() {
+    use super::{DohOutcome, dns_wholly_unreachable};
+
+    // Every query failed to reach a resolver: nothing was established.
+    assert!(
+        dns_wholly_unreachable(&[DohOutcome::Unreachable, DohOutcome::Unreachable]),
+        "all-unreachable must be reported, not rendered as an empty success"
+    );
+
+    // A resolver that ANSWERED with zero records is a real negative — the domain
+    // genuinely has no record of that type. That must NOT be an error.
+    assert!(
+        !dns_wholly_unreachable(&[DohOutcome::Answered(Vec::new())]),
+        "an empty ANSWER is a real negative, not an outage"
+    );
+
+    // One provider answering rescues the whole query set: DNS demonstrably works,
+    // so the empties are genuine negatives.
+    assert!(
+        !dns_wholly_unreachable(&[
+            DohOutcome::Unreachable,
+            DohOutcome::Answered(Vec::new()),
+            DohOutcome::Unreachable,
+        ]),
+        "a single successful answer proves DNS worked"
+    );
+
+    // No queries ran at all (cancellation) — that is its own condition and must
+    // not be misreported as a DNS outage.
+    assert!(
+        !dns_wholly_unreachable(&[]),
+        "zero queries is cancellation, not an outage"
+    );
+
+    // `records()` must expose Unreachable as carrying nothing, so entity
+    // extension can treat both arms alike while the aggregate check still sees
+    // the difference.
+    assert!(DohOutcome::Unreachable.records().is_empty());
+    assert!(DohOutcome::Answered(Vec::new()).records().is_empty());
+}
+
+/// A resolver FAILING to answer is not a domain having no records — and it must
+/// still fail over to the second provider.
+///
+/// Both findings came from the review on #316, and the second exposed a
+/// regression introduced by the first version of that PR. Before it, the guard
+/// was `... && data.status == 0`, so a SERVFAIL from Cloudflare fell through to
+/// Google. Moving that check inside the return made ANY decodable reply
+/// short-circuit, so a single SERVFAIL silently disabled the Google fallback —
+/// removing exactly the redundancy this module exists to provide on Termux,
+/// where the port-53 transport is frequently blocked.
+///
+/// `classify_status` restores it: only a resolved reply short-circuits.
+#[test]
+fn a_resolver_failure_is_not_a_negative_and_must_fail_over() {
+    use super::classify_status;
+
+    let rec = || super::DohRecord {
+        name: "example.com".to_string(),
+        rtype: 1,
+        data: "93.184.216.34".to_string(),
+    };
+
+    // NOERROR carries the answer through.
+    let got = classify_status(0, vec![rec()]).expect("NOERROR resolves");
+    assert_eq!(got.len(), 1, "NOERROR must carry its records");
+
+    // NOERROR with no answer is a real negative: the type has no records.
+    assert!(
+        classify_status(0, Vec::new())
+            .expect("NOERROR resolves")
+            .is_empty(),
+        "NOERROR with no answer is a genuine empty result"
+    );
+
+    // NXDOMAIN is an AUTHORITATIVE negative — the name does not exist. It
+    // resolves, with zero records, and needs no failover.
+    assert!(
+        classify_status(3, Vec::new())
+            .expect("NXDOMAIN resolves")
+            .is_empty(),
+        "NXDOMAIN is a negative existence proof, not a resolver failure"
+    );
+
+    // SERVFAIL / REFUSED / FORMERR are the resolver failing to answer. They are
+    // NOT proof of absence and MUST fall through to the other provider — `None`
+    // is what makes the `&& let Some(..)` guard continue to the Google arm.
+    for status in [1, 2, 5, 9, 16] {
+        assert!(
+            classify_status(status, Vec::new()).is_none(),
+            "DNS status {status} is a resolver failure and must fail over, \
+             not be reported as 'no records'"
+        );
     }
 }

@@ -100,15 +100,18 @@ fn parse_response() {
             "total_count": 1
         }
     }"#;
-    let r: OcResp = serde_json::from_str(raw).unwrap();
-    let results = r.results.unwrap();
-    let co = results.companies[0].company.as_ref().unwrap();
+    let r: OcResp = serde_json::from_str(raw).expect("should succeed");
+    let results = r.results.expect("should succeed");
+    let co = results.companies[0]
+        .company
+        .as_ref()
+        .expect("should succeed");
     assert_eq!(co.name.as_deref(), Some("ATLASSIAN PTY LTD"));
     assert_eq!(co.jurisdiction_code.as_deref(), Some("au"));
 }
 
 fn company(json: &str) -> OcCompany {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 fn org_attr<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {
@@ -127,10 +130,10 @@ fn au_company_yields_org_address_and_company_number() {
         }"#,
     );
     let ents = build_company_entities(&co, 7, "s");
-    // Org + Address + optional Coordinates (Sydney matches city_coords) + AbnAcn.
+    // Org + Address + optional Coordinates (Sydney matches city_coords) + Url + AbnAcn.
     assert!(
-        ents.len() >= 3,
-        "expected at least 3 entities, got {}",
+        ents.len() >= 4,
+        "expected at least 4 entities, got {}",
         ents.len()
     );
 
@@ -145,9 +148,36 @@ fn au_company_yields_org_address_and_company_number() {
         && e.has_tag("registered-address")
         && e.has_tag("validated")));
 
+    assert!(ents.iter().any(|e| e.kind == EntityKind::Url
+        && e.has_tag("profile-url")
+        && e.value == "https://opencorporates.com/companies/au/111222333"));
+
     assert!(ents.iter().any(|e| e.kind == EntityKind::AbnAcn
         && e.has_tag("company-number")
         && e.value == "111222333"));
+}
+
+#[test]
+fn au_company_opencorporates_url_becomes_pivotable_url_entity() {
+    // The company's own OpenCorporates profile URL must be emitted as a
+    // pivotable `Url` entity, not just stashed as Organisation evidence.
+    let co = company(
+        r#"{
+            "name":"ATLASSIAN PTY LTD","company_number":"111222333",
+            "jurisdiction_code":"au",
+            "opencorporates_url":"https://opencorporates.com/companies/au/111222333"
+        }"#,
+    );
+    let ents = build_company_entities(&co, 1, "s");
+    let url_ent = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Url)
+        .expect("opencorporates_url must yield a Url entity");
+    assert_eq!(
+        url_ent.value,
+        "https://opencorporates.com/companies/au/111222333"
+    );
+    assert!(url_ent.has_tag("opencorporates") && url_ent.has_tag("profile-url"));
 }
 
 #[test]
@@ -197,7 +227,7 @@ fn blank_name_yields_nothing() {
 }
 
 fn officer(json: &str) -> OcOfficer {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 #[test]

@@ -5,9 +5,21 @@
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
 
-Pure-Rust OSINT / GEOINT platform with **162 modules** that runs entirely
+**All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
+SpiderFoot-inspired breadth without the daemon or the footprint.**
+
+Pure-Rust OSINT / GEOINT platform with **188 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
-dark-console Web UI, zero native dependencies.
+dark-console Web UI, zero native dependencies, keyless-first.
+
+### Application architecture
+
+`src/app` is the public application/composition layer shared by the CLI and
+HTTP adapters. It exclusively owns concrete SQLite and engine construction,
+including shared runtime assembly and store-backed audit, benchmark, diff,
+doctor, and gap workflows; `app::update` owns the update lifecycle. CLI and API
+code provide transport and presentation only, and architecture tests prevent
+presentation code from importing CLI internals or concrete storage.
 
 ---
 
@@ -71,11 +83,62 @@ so keys never leave the device).
 > That's the whole install: **one command, then `hse serve`, then open
 > `http://127.0.0.1:8080` in Chrome.** Everything below is reference detail.
 
+> **On Termux aarch64 the installer also sets up on-device AI.** It installs
+> Ollama from the official Termux package, pulls a Qwen model sized to the
+> device's RAM, and arms `hse analyze` — so a scan can be summarised on the
+> phone with nothing leaving it. Opt out with `HSE_WITH_AI=0`; see
+> [AI-Daemon Scan Analysis](#ai-daemon-scan-analysis-opt-in). No 32-bit `arm`
+> ollama package exists, so armv7 devices skip this step with a message and
+> everything else works unchanged.
+
 > **Web & API scans are as thorough as the CLI.** A scan launched from the
 > Chrome SPA's **New Scan** wizard, or via `POST /api/v1/scans` with `options`
-> omitted, uses the same comprehensive defaults as `hse scan` — depth 3,
+> omitted, uses the same comprehensive defaults as `hse scan` — full depth,
 > expansion floor 0.20, entity cap 2500 — so you get the full seed → identifiers
 > → pivots → infrastructure sweep without tuning anything.
+
+> **Value-per-query is maximised by default (v1.14+).** Every scan — CLI, API,
+> and Web wizard — now runs with **convex (optionality / barbell) budget
+> allocation** on: under the device's bounded budget it spends on cheap,
+> high-upside identity leads (an email, a username) before expensive, already-
+> saturated infrastructure fan-out, so a phone scan returns more of what matters
+> per unit of work. The confident identity core keeps its order — only the
+> uncertain tail and the pricey infrastructure are re-sorted. Opt out with
+> `hse scan --no-convex-budget` or `"convex_budget": false` in the API `options`.
+>
+> **Convex ordering now reaches the queries themselves (v1.19+).** The same
+> barbell logic that ranks *which lead to pivot on* now also orders *which
+> modules fire first for a target* — because a module dispatch **is** a query
+> (bounded HTTP, wall-time, battery, and for paid providers real quota). Under
+> the convex flag the engine dispatches by **query value = optionality ÷ cost**:
+> cheap, keyless, identity-/key-unlocking modules run before expensive, terminal
+> ones, so a scan cut short by the phone's budget (an entity cap, a wall-clock
+> limit, a cancel, a dying battery) has already spent it on the queries that
+> compound. Membership is unchanged — every accepting module still runs when the
+> budget allows — only the order differs, and it is precomputed once so the hot
+> path pays nothing. Preview it per seed at **New Scan → Preview plan** (chips
+> ordered by query value, badged high/moderate/terminal) or
+> `GET /api/v1/plan?value=…`.
+
+> **Capability-aware dispatch (v1.18+) — no budget wasted on dead sources.**
+> The same scans also skip any module whose parser has **provably gone dead**
+> across recent runs — persistent failures or silent zero-yield drift, from the
+> cross-scan health signal — so its dispatch slot goes to a source that still
+> works. It only culls the automatic comprehensive fan-out: an explicit
+> `--modules` set or `hse scan --full` still runs everything, and a quarantined
+> module recovers automatically the moment it returns one healthy result. Opt
+> out with `--no-skip-dead-modules` / `"skip_dead_modules": false`. Together with
+> the live capability probe below, HSE now both *sees* a dead capability and
+> *routes around it* — the durability loop, closed.
+
+> **Live capability probe (v1.14+) — know a source works before you rely on it.**
+> A third-party provider can silently change its response shape and a module's
+> parser goes quiet while its unit tests stay green. **Engines → Run live
+> capability probe** (in the Web UI), `hse doctor --live` (CLI), or
+> `GET /api/v1/capabilities/probe` fires one bounded request per keyless module
+> at its real endpoint and reports **alive / empty / unreachable / drift** per
+> module — the proactive complement to the cross-scan *Scraper health* panel.
+> Loopback-only and bounded, so it is Termux-safe.
 
 > **Termux battery & background (required for long scans):** Android → Settings → Apps → Termux → Battery → set to **Unrestricted** and enable "Allow background data". Without this Android kills Termux mid-scan.
 
@@ -105,15 +168,49 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 > pkg install -y git rust binutils clang openssh && git clone --depth 1 git@github.com:EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git ~/hse && cd ~/hse && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
 > ```
 
+> **Seeing "crate `std` required to be available in rlib format, but was not
+> found in this form" (or the same for `core`/`alloc`/…)?** A broken/partial
+> Termux `rust` package shipped libstd as a dynamic library only, missing the
+> static `.rlib` every build script and proc-macro needs to link against —
+> library crates still compile, so only the build step fails. Not an HSE bug.
+> Fix:
+> ```bash
+> pkg reinstall rust
+> ```
+> then retry the build above. The one-line installer already detects and
+> self-heals this automatically before it starts building.
+
+---
+
+## Deploy (Railway)
+
+```sh
+railway up
+```
+
+Railway builds the repo's `Dockerfile` automatically. Before your first
+deploy: attach a **Volume at `/data`** (state doesn't survive a redeploy
+without one) and set `HSE_AUTH_TOKEN` (Railway binds a public, non-loopback
+address, which HSE gates behind a bearer token). See
+[`docs/RAILWAY.md`](docs/RAILWAY.md) for the full walkthrough, what's already
+wired up (health check, `$PORT` binding, volume-ownership handling), and the
+single-instance constraint (local SQLite — do not scale replicas above 1).
+
 ---
 
 ## Quick Start
 
+> **Want the complete setup with Ollama LLM analysis, SeekNow integration, and Web UI all at once?** See [`docs/ALL_IN_ONE_SETUP.md`](docs/ALL_IN_ONE_SETUP.md) for step-by-step guidance including prerequisites, Ollama installation, model selection, and troubleshooting — **this is the recommended path for new users.**
+
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 162 modules
+hse modules                                                 # list all 188 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
+hse keys status                                             # multi-key pool: what's loaded, per source
+hse-ai status                                               # local model server (Termux aarch64)
+hse query "melbourne coworking spaces"                      # general web search across the free engines
+hse query "acme.example" --dark                             # dark-web EXPOSURE: onion pages mentioning an asset
 hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
 hse scan --kind domain --value example.com --depth 2        # domain recon
 hse scan --kind email --value user@example.com --free-only  # email pivot (free only)
@@ -133,6 +230,24 @@ never touches your keys/config:
 scripts/standard-test.sh             # canonical seed (Kylo4kylo)
 scripts/standard-test.sh "<seed>"    # any handle/username
 ```
+
+### General & dark-web-exposure search — `hse query`
+
+Distinct from the entity-oriented `hse scan`, `hse query` runs an everyday
+free-text search across the free keyless engines and returns ranked web results
+— corroboration-weighted (how many independent engines surfaced each URL) and
+deduplicated:
+
+```bash
+hse query "who owns example.com"                    # general web search, table output
+hse query "site:gov.au grant register" --output json
+hse query "acme.example" --dark                     # dark-web exposure via Ahmia (clearnet)
+```
+
+`--dark` answers a **defensive** question — *is an asset you control (a domain,
+brand, or email) mentioned on Tor-indexed onion pages?* — by querying Ahmia's
+clearnet index. It reports the mention as evidence of exposure and never fetches
+the onion address itself.
 
 ---
 
@@ -159,9 +274,9 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ---
 
-## Module Overview (162 modules — 128 free, 34 key-gated/paid)
+## Module Overview (188 modules — 142 free, 46 key-gated/paid)
 
-> Grouped highlights below (all 159). The complete, always-current catalogue
+> A curated highlight of the modules below (not the full list). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run
 > `hse modules` or open the web UI's module wizard — never a static doc that
 > can drift from the registry.
@@ -170,37 +285,47 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 - **Breach/identity**: `psbdmp`, `pwned_passwords`, `xposed_or_not`
 - **Social**: `crates_io`, `github_code_search`, `github_user`, `hacker_news`, `keybase`, `npm_author`, `reddit_user`, `social_probe`, `streaming_probe`, `username_search`, `username_variants`
 - **People**: `ahpra`, `au_electoral`, `au_people`, `au_property`, `contact_enrich`, `employer_pivot`, `gravatar`, `name_intel`, `payid`, `pgp`, `wikidata`
-- **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `domainsdb`, `hackertarget`, `rdap_domain`, `subdomain_takeover`, `typosquat`, `whois`
+- **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `domainsdb`, `hackertarget`, `mnemonic_pdns`, `rdap_domain`, `subdomain_center`, `subdomain_takeover`, `typosquat`, `whois`
 - **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipinfo`, `ipquery`, `netblock`, `portscan`, `ripestat`, `shodan`, `urlscan`
-- **Geolocation**: `breach_timezone`, `cell_local`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mls`, `mylnikov`, `overpass`, `phone_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
+- **Geolocation**: `beacondb`, `breach_timezone`, `cell_local`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mls`, `mylnikov`, `open_meteo_geo`, `overpass`, `phone_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
 - **Threat intel**: `urlhaus`
 - **Email**: `disposable_check`, `email_canonical`, `email_parse`, `smtp_vrfy`
 - **Phone**: `phone_au`, `phone_intl`
 - **Corporate**: `acma_rrl`, `acnc_charities`, `asic_director`, `au_unclaimed`, `austlii`, `gleif_lei`, `opencorporates`
 - **Search**: `search_engines`
-- **Web analysis**: `cloud_storage`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
+- **Web analysis**: `cloud_storage`, `sitemap`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
 - **Termux sensors**: `cell_intel`, `device_sensors`, `local_net`, `signal_radar`
 - **Other**: `api_key_probe`, `chain_intel`
 
-**Key-gated / Paid — 33 (28 key-gated · 5 paid):**
+**Key-gated / Paid — 32 (28 key-gated · 4 paid):**
 - `abn_lookup`, `abuseipdb`, `censys`, `criminal_ip`, `dehashed`, `emailrep`
 - `epieos`, `exa_search`, `fullcontact`, `hibp`, `hlr_cnam`, `hunter_io`, `intelx`, `ipqs`
-- `leakix`, `netlas`, `niamonx`, `numverify`, `oathnet_pro`, `onyphe`, `opencellid`, `osintcat`, `proxycurl`
+- `leakix`, `netlas`, `niamonx`, `numverify`, `oathnet_pro`, `onyphe`, `opencellid`, `osintcat`
 - `securitytrails`, `see_know`, `seon`, `threatfox`, `trove_au`, `virustotal`, `whoisxml`
 - `wifi_intel`, `wigle`, `zoomeye`
 
 ### MITRE ATT&CK alignment (in the data, not a side report)
 
-Every module is mapped to the MITRE ATT&CK **Reconnaissance** tactic (TA0043)
-technique(s) it implements. That mapping is **woven into every scan**: as each
-finding is admitted, the engine stamps it inline with its producing module's
-technique(s) as `attack:<TECHNIQUE_ID>` tags (e.g. `attack:T1589.002` "Email
-Addresses"). So the technique that collected a datum travels with the datum —
-visible in the entity's `tags` in JSON output, on each entity in the full
-dossier (`hse export <id> --format full`) and `hse scan --output dossier`, and
-in the database — with no separate coverage report to reconcile. A finding
-corroborated by several modules carries all of their techniques (merges union
-the tags).
+The tool carries the **complete** MITRE ATT&CK Enterprise matrix as reference
+vocabulary — all 14 tactics and every current technique/sub-technique (v17.1),
+as pure static data (`src/core/attack/`), so any `Tnnnn[.nnn]` id the tool emits
+resolves to its canonical name and owning tactic. But HSE only *claims coverage*
+of the one tactic it actually performs: **Reconnaissance** (TA0043). Holding the
+whole framework while claiming one tactic is the invariant, not a contradiction —
+reference vocabulary is never a coverage assertion, so the per-scan coverage /
+gap report is computed against Reconnaissance alone and a technique HSE performs
+no collection for (e.g. `T1598` Phishing for Information) surfaces as a real,
+named gap.
+
+Every module is mapped to the Reconnaissance technique(s) it implements, and that
+mapping is **woven into every scan**: as each finding is admitted, the engine
+stamps it inline with its producing module's technique(s) as
+`attack:<TECHNIQUE_ID>` tags (e.g. `attack:T1589.002` "Email Addresses"). So the
+technique that collected a datum travels with the datum — visible in the entity's
+`tags` in JSON output, on each entity in the full dossier
+(`hse export <id> --format full`) and `hse scan --output dossier`, and in the
+database — with no separate coverage report to reconcile. A finding corroborated
+by several modules carries all of their techniques (merges union the tags).
 
 
 ## Web UI (dark-console, zero vendored UI framework)
@@ -221,18 +346,33 @@ design and every dependency underneath it are HSE's own:
   controls + use-case presets
 - **Scan Results** — tabbed: Status, Browse (sortable entity table with
   inline expand), D3 Force Graph (entity relationship visualization, incl.
-  typed relation edges — subdomain/lineage/co-location — dashed, kind on hover),
+  typed relation edges — infrastructure/identity/affiliation — dashed, kind on
+  hover),
   Correlations (severity-tagged), Event Log (real-time SSE), Info
 - **Settings** — API key management with validation
 - **Dark mode** by default, light mode opt-out toggle
 
-Binds to `127.0.0.1:8080` by default — no LAN exposure. This is the
-operator-followed default, not an enforced restriction: `--bind`/`HSE_BIND`
-accept any address, and binding non-loopback exposes scan/live/radar
-**triggering** (not just viewing results) to anyone who can reach that
-address, with no authentication — only key-writing (`PUT /settings/keys`)
-stays loopback-only regardless of bind. Use 127.0.0.1 unless you specifically
-need LAN access and understand that trade-off.
+Binds to `127.0.0.1:8080` by default — no LAN exposure, and no authentication
+to configure, since only this device can connect.
+
+`--bind`/`HSE_BIND` accept any address. Binding a **non-loopback** address
+would otherwise expose scan/live/radar **triggering** (not just viewing
+results) to anyone who can reach it, so HSE requires a bearer token on every
+request for such a bind. Supply one with `--auth-token`/`HSE_AUTH_TOKEN`, or
+let HSE mint a 256-bit token and print it once at startup with a
+ready-to-open URL:
+
+```
+hse serve --bind 0.0.0.0:8080
+#   http://0.0.0.0:8080/?t=<token>
+```
+
+Opening that link sets an `HttpOnly; SameSite=Strict` session cookie and drops
+the token from the address bar; scripts send `Authorization: Bearer <token>`
+instead. The token is disclosed only on that startup line — never in a log, an
+API response, or an export. `--allow-unauthenticated` restores the old
+open-LAN behaviour for a deliberately public deployment. Key-writing
+(`PUT /settings/keys`) stays loopback-only regardless of bind, as before.
 
 ---
 
@@ -331,6 +471,140 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 
 ---
 
+## AI-Daemon Scan Analysis (opt-in)
+
+HSE's scan engine, correlator, and exports are fully deterministic and carry
+no AI/ML/LLM dependency — see [Architecture](#architecture) below. Separately,
+HSE ships an explicitly **opt-in** downstream enrichment layer that prompts a
+**locally-run [Ollama](https://ollama.com)** instance for a plain-language
+summary and ranked findings on an *already-completed* scan. It never runs as
+part of `hse scan`/`hse serve`/`hse live`, never affects a scan's entities,
+correlation scores, or exports, and does nothing at all unless both armed and
+Ollama is actually reachable — an unreachable/misconfigured Ollama is a clear
+error, never a silent no-op.
+
+> **Complete integration guide:** See [`docs/ALL_IN_ONE_SETUP.md`](docs/ALL_IN_ONE_SETUP.md) for an end-to-end walkthrough combining HSE installation, SeekNow authentication, Ollama setup across all platforms (Linux/Termux/macOS/Docker), model selection, and Web UI launch — with comprehensive troubleshooting for all common issues.
+
+### Installed for you on Termux aarch64
+
+`install.sh` now sets this up end to end: it installs Ollama from the official
+Termux package (`pkg install ollama` — an **aarch64-only** package; there is no
+32-bit `arm` build), picks a model sized to the device's RAM, pulls it, and
+arms `feature.ai_daemon`. Nothing leaves the phone.
+
+| Device RAM | Model pulled | On-disk |
+|---|---|---|
+| ≥ 7.5 GB | `qwen2.5:7b` | ~5.2 GB |
+| ≥ 4.5 GB | `qwen2.5:3b` | ~2.2 GB |
+| ≥ 2.8 GB | `qwen2.5:1.5b` | ~1.2 GB |
+| below that | *skipped, with a message* | — |
+
+Sizing is deliberate: a model too large for the device does not merely run
+slowly, it gets killed by Android's low-memory killer, which looks to you like
+Ollama randomly dying. Override with `HSE_AI_MODEL=…`, or opt out entirely with
+`HSE_WITH_AI=0`.
+
+```bash
+hse-ai status          # is the model server up? which model?
+hse-ai start           # start it, holding the same wake-lock as hse-bg
+hse-ai pull qwen2.5:3b # fetch a different model
+hse-ai stop            # free the RAM
+
+hse scan -k name -v "Jane Roe"
+hse analyze --scan-id latest        # model comes from ~/.huntsman.env
+```
+
+`hse-ai` shares the refcounted wake-lock with `hse-bg`, because Android kills
+the model server the moment the screen turns off and a half-killed server is
+indistinguishable from a hung one.
+
+### Manual setup (other platforms)
+
+```bash
+ollama pull qwen2.5:7b              # install Ollama yourself
+hse config feature.ai_daemon on     # arm the feature (off by default)
+hse analyze --scan-id latest --model qwen2.5:7b
+
+# Or the background poller, which analyzes newly-completed scans on an
+# interval (HUNTSMAN_AI_POLL_INTERVAL_SECS, default 60s, floor 15s):
+HUNTSMAN_OLLAMA_MODEL=qwen2.5:7b hse-ai-daemon
+```
+
+### What the model is and is not allowed to assert
+
+A local model is a fallible narrator, so its output is checked rather than
+trusted:
+
+- **Every finding must cite the entities it rests on.** Citations are resolved
+  against the scan's actual entities; a finding citing anything that does not
+  resolve is discarded whole — a claim citing one real and one invented entity
+  is not partly true. If a model returns findings and *none* ground, that is a
+  surfaced error, never a silently empty "clean scan".
+- **Severity is capped by the evidence under it.** A finding can never be
+  scored more severe than its strongest cited entity is confident. This can
+  only lower a score.
+- **Identity expansion defaults to exclusion.** Before a discovered username or
+  email is expanded as "also the subject", it is triaged; only an affirmative,
+  grounded, high-confidence verdict earns expansion. A wrong exclusion costs
+  one lead — a wrong inclusion spends a scan round collecting an uninvolved
+  person's data.
+- **What can be decided exactly is never asked of a model.** An entity whose
+  value matches the subject's own name is settled by string comparison.
+
+This matters concretely: probed before these checks existed, a well-formed
+model response asserting a home address and a cleartext credential — neither
+present anywhere in the scan — parsed cleanly and would have been stored as
+critical exposure. For people-centric OSINT the subject is a real person, so a
+fabricated address is a physical-safety claim.
+
+> **Scope note.** These checks were validated against `qwen2.5:3b` on x86_64.
+> The Termux/Android path is wired up but has not been run on-device here; a
+> 3B model was also observed making poor identity judgements, which is why the
+> most important case is decided without a model at all.
+
+`HUNTSMAN_OLLAMA_URL` (default `http://127.0.0.1:11434`) and
+`HUNTSMAN_OLLAMA_TIMEOUT_MS` (default 120000, floor 1000) tune both entry
+points. See `src/ai/` for the implementation and `src/lib.rs`'s `Runtime
+AI-independence` invariant for why this layer exists as a narrow, isolated
+exception rather than a change to the deterministic core.
+
+Skipping the arming step or omitting a model produces a clear startup error
+(`feature.ai_daemon is off` / `no Ollama model configured`), never a silent
+no-op — and `hse doctor` reports both preconditions (armed? model reachable
+and pulled?) in one place before you run either entry point for the first
+time.
+
+Want better severity calibration or shape-adherence than a stock model gives
+you? [`docs/OSINT_MODEL_FINE_TUNING.md`](docs/OSINT_MODEL_FINE_TUNING.md) is a
+LoRA/QLoRA fine-tuning recipe for this exact prompt/response contract, run on
+your own GPU hardware — the finished model is just another Ollama tag, nothing
+about it touches this crate's build.
+
+### Running `hse-ai-daemon` persistently (Termux)
+
+`hse-ai-daemon` is a long-lived foreground process — it does not daemonize or
+background itself. To keep it running across a Termux session
+restart/reboot, use `termux-services` (`pkg install termux-services`) rather
+than a systemd unit (Termux has no systemd):
+
+```bash
+mkdir -p $PREFIX/var/service/hse-ai-daemon
+cat > $PREFIX/var/service/hse-ai-daemon/run <<'EOF'
+#!/data/data/com.termux/files/usr/bin/sh
+export HUNTSMAN_OLLAMA_MODEL=qwen2.5:7b
+exec hse-ai-daemon
+EOF
+chmod +x $PREFIX/var/service/hse-ai-daemon/run
+sv-enable hse-ai-daemon
+```
+
+`sv-enable` starts it now and on every future Termux boot-services start;
+`sv down hse-ai-daemon` / `sv up hse-ai-daemon` stop/restart it, and its
+`current/logs` (or `sv status`) shows the same stdout/stderr lines you'd see
+running it in the foreground.
+
+---
+
 ## Architecture
 
 - `#![forbid(unsafe_code)]` — entire codebase
@@ -338,8 +612,21 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 - rustls + bundled-sqlite only — no OpenSSL, no native TLS, no C deps
 - `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
 - 4,300+ tests (unit + API integration + architecture boundary enforcement)
-- Deterministic correlator: 111 rules (98 entity + 13 graph-aware relation), no LLM/fuzzy matching
-- 111 correlator rules (AU-001 through AU-113, with some IDs reserved for engine-emitted cross-scan findings such as AU-065/AU-066), incl. graph-aware edge, transitive, multi-pathway corroboration, gap-analysis, jurisdiction cross-check (coordinate / address / phone-region), prediction-confirmed identity bridges (name-derived username AU-077 / email AU-086), pathway-template, resolved-identity-cluster, anonymous-SIM, high-integrity-connection (max-bottleneck route), connection-broker (identity articulation-point), and robustly-corroborated-identity-cluster (no-single-point-of-failure k-redundant cluster) rules — deterministic, no LLM/fuzzy matching
+- Deterministic correlator: 121 rules (107 entity + 14 graph-aware relation), no LLM/fuzzy matching
+- Typed relation graph — 20 edge kinds across five families, every one derived by
+  pure, reproducible math (no LLM, no free inference) from normalised entity
+  values and recorded evidence:
+  - **infrastructure** — `subdomain_of`, `belongs_to_domain`, `hosted_on`,
+    `resolves_to`, `registered_by`, `same_operator`
+  - **identity** — `identified_by`, `alias_of`, `same_as`, `same_identity`,
+    `shares_secret_with`
+  - **place & people** — `located_at`, `co_located_with`, `associated_with`
+  - **affiliation** — `officer_of` (a companies register's filed directorship),
+    `employed_by`, `member_of`, `controlled_by` (the corporate hierarchy, oriented
+    child → controller), `operated_by` (who runs a wallet or a published business
+    contact point)
+  - **lineage** — `derived_from`
+- 121 correlator rules (AU-001 through AU-123, with some IDs reserved for engine-emitted cross-scan findings such as AU-065/AU-066), incl. graph-aware edge, transitive, multi-pathway corroboration, gap-analysis, jurisdiction cross-check (coordinate / address / phone-region), prediction-confirmed identity bridges (name-derived username AU-077 / email AU-086), sanctions/debarment/PEP screening (AU-114), personal-WiFi geolocation (AU-115), pathway-template, resolved-identity-cluster, anonymous-SIM, high-integrity-connection (max-bottleneck route), connection-broker (identity articulation-point), robustly-corroborated-identity-cluster (no-single-point-of-failure k-redundant cluster), transitive-infrastructure-closure (AU-116 — a multi-server hosting footprint chained across IPs no single-hop rule sees), paired-hardware-constellation (AU-117 — the operator's own bonded Bluetooth kit as a self-carried tracking fingerprint), look-alike-domain-impersonation (AU-118 — homoglyph/typo phishing domains flagged across every discovered domain, dnstwist at the correlation layer), dating-platform-exposure (AU-119 — a subject's confirmed dating-app profiles surfaced as a location-bearing personal-exposure surface), monetized-creator-exposure (AU-120 — confirmed subscription-creator/webcam/adult profiles as an identity-linked payment/KYC surface), transitive credential-reuse blast-radius (AU-121 — the reuse-chain closure no single secret spans), trackable-RF-device (AU-122 — persistent hardware MACs separated from randomized privacy addresses in a radar/WiGLE sweep), and numeric-variant-handle-persona (AU-123 — links base-handle-plus-number username variants like `jdiegmann`/`jdiegmann92` across ≥2 sources into one persona, the digit-suffix reuse the exact-match handle rules never join) rules — deterministic, no LLM/fuzzy matching
 - 2 tokio worker threads (tuned for Termux low-power devices)
 - Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)
 
@@ -352,13 +639,29 @@ diagnostic bundle") for the complete engine state in one file.
 
 ## Documentation
 
+### 🚀 All-In-One Guides (Start Here)
+
+**New to HSE?** Start with these comprehensive integration guides:
+
+- **[`docs/ALL_IN_ONE_SETUP.md`](docs/ALL_IN_ONE_SETUP.md)** — **Complete end-to-end setup** combining HSE, SeekNow authentication (API key or manual browser login), Ollama LLM integration, and Web UI. Includes prerequisites, one-line installation, Ollama model selection, background service setup for Termux, and troubleshooting for all common issues. **This is the recommended starting point.**
+
+- **[`docs/ADVANCED_TECHNIQUES.md`](docs/ADVANCED_TECHNIQUES.md)** — **SeekNow credential & session hygiene** — token rotation, multi-device session isolation, and API key segmentation for your own account.
+
+### Core Reference
+
 | Document | Content |
 |----------|---------|
-| [`docs/INSTALL.md`](docs/INSTALL.md) | All install paths + Termux quirks |
-| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Common install/runtime errors + fixes |
+| [`docs/INSTALL.md`](docs/INSTALL.md) | All install paths + Termux quirks + install/runtime troubleshooting |
+| [`docs/RAILWAY.md`](docs/RAILWAY.md) | Deploying to Railway — Volume setup, `HSE_AUTH_TOKEN`, health check, single-instance constraint |
+| [`docs/AUTONOMY.md`](docs/AUTONOMY.md) | Running HSE unattended: `hse-bg`/`hse-watch`, boot persistence, scheduled sweeps |
+| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | SeekNow API error troubleshooting (connectivity, auth, budget, rate limits) — for install/runtime issues see `docs/INSTALL.md`'s own Troubleshooting section instead |
 | [`docs/OSINT_API_REFERENCE.md`](docs/OSINT_API_REFERENCE.md) | External OSINT-provider API reference (free tiers, key shapes, integration status) |
-| [`docs/SEEKNOW_SETUP.md`](docs/SEEKNOW_SETUP.md) | SeekNow (see-know.eu) API setup + full endpoint reference |
+| [`docs/SEEKNOW_SETUP.md`](docs/SEEKNOW_SETUP.md) | SeekNow (see-know.ru) API setup + full endpoint reference |
+| [`docs/SEEKNOW_WEB_AUTOMATION.md`](docs/SEEKNOW_WEB_AUTOMATION.md) | SeekNow web automation, Turnstile analysis, manual login workflow, browser automation framework evaluation |
 | [`docs/OATHNET_API_GUIDE.txt`](docs/OATHNET_API_GUIDE.txt) | OathNet API contract reference |
+| [`docs/OPERATIONAL_CONSTITUTION.md`](docs/OPERATIONAL_CONSTITUTION.md) | Reasoning, evidence, and analysis standards governing HSE work |
+| [`docs/PERSISTENT_INTELLIGENCE.md`](docs/PERSISTENT_INTELLIGENCE.md) | How understanding accumulates across reasoning cycles (constitution companion) |
+| [`docs/OSINT_MODEL_FINE_TUNING.md`](docs/OSINT_MODEL_FINE_TUNING.md) | LoRA/QLoRA fine-tuning recipe for the `hse analyze`/`hse-ai-daemon` prompt/response contract, run on your own GPU hardware |
 
 For everything else — module catalogue, CLI reference, architecture — the
 running software is the source of truth: `hse --help`, `hse modules`, the web
@@ -389,5 +692,4 @@ for every scan. Do **not** use it to harass, stalk, or surveil individuals, or
 to process personal data without a lawful basis under the applicable privacy law
 (e.g. the Australian *Privacy Act 1988*, the EU GDPR, or your local equivalent).
 The software is provided for legitimate use; the maintainers disclaim
-responsibility for misuse. See [`SECURITY.md`](SECURITY.md) for vulnerability
-disclosure.
+responsibility for misuse.

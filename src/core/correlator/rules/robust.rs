@@ -15,7 +15,7 @@
 //! exactly "an AU-067 cluster that no AU-070 broker splits", with no drift between
 //! the three rules.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 use super::*;
 use crate::core::relation::{
@@ -29,16 +29,17 @@ use crate::core::relation::{
 /// identities mutually reachable. Always High severity: a redundantly-bound
 /// cluster is the strongest single-identity finding the graph can produce.
 pub(in crate::core::correlator) fn rule_au_071_robust_identity_cluster(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const MAX_HOPS: usize = 4;
     const MIN_MEMBERS: usize = 3;
     // The same Probable floor AU-067/AU-070 resolve under, so the cluster set and
     // the broker set are computed over the identical binding-link graph.
-    const MIN_CONF: f64 = 0.50;
+    const MIN_CONF: f64 = crate::core::relation::IDENTITY_LINK_MIN_CONF;
 
     let clusters = resolve_identity_clusters(entities, relations, MAX_HOPS, MIN_CONF);
     if clusters.is_empty() {
@@ -49,7 +50,7 @@ pub(in crate::core::correlator) fn rule_au_071_robust_identity_cluster(
     // mutual reachability depends on it. A cluster is FRAGILE if some broker holds
     // together ≥2 of its members (removing that broker would split them), ROBUST if
     // none does.
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let by_uid = context.by_uid();
     let ids = identity_uids(entities);
     let adj = sorted_confined_adjacency(entities, relations);
     let brokers = connection_brokers(&adj, &ids, MIN_CONF);
@@ -142,7 +143,7 @@ mod tests {
         ];
         let ents = [email.clone(), uname.clone(), person.clone(), d1, d2];
 
-        let out = rule_au_071_robust_identity_cluster(&ents, &rels, "s", 0);
+        let out = rule_au_071_robust_identity_cluster(&RuleContext::new(&ents), &rels, "s", 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rule_id, "AU-071");
         assert_eq!(out[0].severity, Severity::High);
@@ -161,8 +162,13 @@ mod tests {
         let hub = mk(EntityKind::Domain, "x.com");
         let rels = [rel(&email, &hub), rel(&uname, &hub), rel(&person, &hub)];
         assert!(
-            rule_au_071_robust_identity_cluster(&[email, uname, person, hub], &rels, "s", 0)
-                .is_empty(),
+            rule_au_071_robust_identity_cluster(
+                &RuleContext::new(&[email, uname, person, hub]),
+                &rels,
+                "s",
+                0
+            )
+            .is_empty(),
             "a star cluster hangs on one broker — not robust"
         );
     }

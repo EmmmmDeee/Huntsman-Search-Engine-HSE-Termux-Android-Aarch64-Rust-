@@ -12,12 +12,7 @@ use crate::core::entity::Entity;
 /// Read the cross-scan ledger and produce per-module routing recommendations.
 pub fn read_adaptive_routing() -> AdaptiveRouting {
     use super::types::ModuleLedger;
-    let path = {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        std::path::PathBuf::from(home)
-            .join(".huntsman")
-            .join("module_stats.json")
-    };
+    let path = crate::util::paths::data_file("module_stats.json");
     let Ok(text) = std::fs::read_to_string(&path) else {
         return AdaptiveRouting::default();
     };

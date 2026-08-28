@@ -20,12 +20,20 @@ use std::collections::HashSet;
 use serde_json::Value;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
     tags,
 };
 use crate::util::extract::is_placeholder_secret;
 use crate::util::json::{is_null_sentinel, val_str};
+
+/// Maximum length of an IEEE 802.11 SSID, in octets. A value in an `ssid` field
+/// longer than this is not a network name (a truncated blob, a joined list), so
+/// it must not be typed as one — see the saved-Wi-Fi pass in
+/// [`extract_rich_detail`], which still surfaces such a value rather than
+/// dropping it.
+const MAX_SSID_OCTETS: usize = 32;
 
 /// A value that is an *absence/redaction marker*, not real data: a SQL NULL
 /// sentinel (`\N`, written for an empty column in dumped exports) or a provider
@@ -129,6 +137,13 @@ const RICH_DETAIL_SKIP: &[&str] = &[
     "mac",
     "mac_address",
     "bssid",
+    // Saved Wi-Fi network names — typed as `Ssid` (or, when over the 802.11
+    // length limit, surfaced as `Other` by that same pass), so the catch-all must
+    // not also mint a duplicate node from the `@other:` namespace.
+    "ssid",
+    "wifi_ssid",
+    "wifi_name",
+    "network_name",
     "hwid",
     "machine_id",
     "device_id",
@@ -149,6 +164,11 @@ const RICH_DETAIL_SKIP: &[&str] = &[
     "linkedin",
     "vk",
     "snapchat",
+    "github",
+    "tiktok",
+    "reddit",
+    // Mined for alternate emails/phones in the rich pass, not emitted verbatim.
+    "bio",
     "city",
     "state",
     "region",
@@ -178,6 +198,11 @@ const RICH_DETAIL_SKIP: &[&str] = &[
     "log_id",
     "log",
     "salt",
+    // Validated + typed by each provider's own IBAN branch (OathNet's breach
+    // path, SeekNow's extract path) — the mod-97 check-digit gate there refuses a
+    // bad/redacted value. Skipped here so the UNVALIDATED catch-all can't also
+    // mint an `Other("iban")` financial artifact for any string.
+    "iban",
     "response_time_ms",
     "type",
     "success",
@@ -219,18 +244,12 @@ static RICH_DETAIL_SKIP_SET: std::sync::LazyLock<HashSet<&'static str>> =
 /// applied universally at engine admission, so it is not done per-module.)
 fn push_breach_entity(
     result: &mut ModuleResult,
-    mut e: Entity,
+    e: Entity,
     ev: &Evidence,
     source: &str,
     extra_tags: &[&str],
 ) {
-    e.tag(tags::BREACH);
-    e.tag(source);
-    for t in extra_tags {
-        e.tag(*t);
-    }
-    e.add_evidence(ev.clone());
-    result.push(e);
+    result.push_with_tags(e, ev, &[tags::BREACH, source], extra_tags);
 }
 
 /// Push a stealer/infrastructure-CONTEXT entity: tags the provider `source` plus
@@ -283,11 +302,14 @@ pub fn extract_rich_detail(
         if full.len() >= 3
             && !is_absent_marker(f)
             && !is_absent_marker(l)
+            // Breach dumps store `full_name = "{username} {username}"` when only a
+            // handle is known; a doubled/slug username is not a real person.
+            && !crate::core::validation::is_username_derived_name(&full)
             && seen.insert(format!("@person:{}", full.to_lowercase()))
         {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Person, &full, 0.60, scan_id),
+                Entity::new(EntityKind::Person, &full, confidence::MEDIUM_PLUS, scan_id),
                 ev,
                 source,
                 &[],
@@ -304,7 +326,7 @@ pub fn extract_rich_detail(
         {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Organisation, &o, 0.50, scan_id),
+                Entity::new(EntityKind::Organisation, &o, confidence::MEDIUM, scan_id),
                 ev,
                 source,
                 &[],
@@ -322,12 +344,58 @@ pub fn extract_rich_detail(
         {
             push_context_entity(
                 result,
-                Entity::new(EntityKind::MacAddress, &m, 0.60, scan_id),
+                Entity::new(EntityKind::MacAddress, &m, confidence::MEDIUM_PLUS, scan_id),
                 ev,
                 source,
                 &["device"],
             );
         }
+    }
+    // ── Saved Wi-Fi network names — the geolocation pivot a stealer log buries. ──
+    //
+    // An SSID is a *locatable* identifier, not just a label: `TargetKind::Ssid` is
+    // accepted by [`crate::modules::wigle`], whose `ssid_search` resolves a
+    // sufficiently unique name to every GPS point WiGLE has ever observed it at.
+    // Untyped, this value reached the catch-all below as an `Other("ssid")` node —
+    // a dead end the expansion loop cannot walk, since only a typed kind maps to a
+    // `TargetKind`. Typing it opens the edge from "this machine had this network
+    // saved" to "here is where that network physically is", which places the
+    // machine's owner. It pairs with the `bssid` handled just above: the BSSID
+    // geolocates via `mylnikov`, the SSID via `wigle`, and a record carrying both
+    // yields two independent fixes on the same access point.
+    //
+    // Generic/default names (`NETGEAR`, `Free Public WiFi`) are emitted too. They
+    // are real recorded data, and `wigle::ssid_search` applies its OWN uniqueness
+    // gate before geolocating, so a default name cannot manufacture a false fix —
+    // filtering here would discard a true observation to prevent a failure that
+    // the consumer already prevents.
+    for k in ["ssid", "wifi_ssid", "wifi_name", "network_name"] {
+        let Some(s) = val_str(item, k) else { continue };
+        if is_absent_marker(&s) {
+            continue;
+        }
+        // Case-SENSITIVE dedup key. IEEE 802.11 SSIDs are case-sensitive, and
+        // `core::entity` deliberately excludes `Ssid` from identity folding for
+        // exactly that reason; lowercasing here would collapse two genuinely
+        // different networks into one node.
+        if !seen.insert(format!("@ssid:{s}")) {
+            continue;
+        }
+        // A value longer than the 802.11 limit is not an SSID, so it must not be
+        // typed as one — but it is still real recorded data, so it is surfaced as
+        // an `Other(k)` node rather than dropped. These keys sit in
+        // `RICH_DETAIL_SKIP`, so the catch-all will not surface them for us.
+        let entity = if s.len() <= MAX_SSID_OCTETS {
+            Entity::new(EntityKind::Ssid, &s, confidence::MEDIUM_PLUS, scan_id)
+        } else {
+            Entity::new(
+                EntityKind::Other(k.to_string()),
+                &s,
+                confidence::LOW,
+                scan_id,
+            )
+        };
+        push_context_entity(result, entity, ev, source, &["wifi-network", "stealer"]);
     }
     for k in [
         "hwid",
@@ -356,7 +424,7 @@ pub fn extract_rich_detail(
         {
             push_context_entity(
                 result,
-                Entity::new(EntityKind::DeviceId, &d, 0.55, scan_id),
+                Entity::new(EntityKind::DeviceId, &d, confidence::MEDIUM_HIGH, scan_id),
                 ev,
                 source,
                 &["device", "stealer"],
@@ -374,6 +442,14 @@ pub fn extract_rich_detail(
         ("linkedin", "linkedin"),
         ("vk", "vk"),
         ("snapchat", "snapchat"),
+        // github/tiktok/reddit are real handle columns in both providers' breach
+        // records; without these they fell to the catch-all as opaque
+        // `Other("github")` junk nodes instead of first-class Username pivots the
+        // github_user/reddit_user/etc. modules can resolve. Runs for SeekNow
+        // (every record) and OathNet's stealer path at zero extra API cost.
+        ("github", "github"),
+        ("tiktok", "tiktok"),
+        ("reddit", "reddit"),
     ] {
         if let Some(h) = val_str(item, k)
             && h.len() >= 2
@@ -382,11 +458,49 @@ pub fn extract_rich_detail(
         {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Username, format!("{plat}:{h}"), 0.55, scan_id),
+                Entity::new(
+                    EntityKind::Username,
+                    format!("{plat}:{h}"),
+                    confidence::MEDIUM_HIGH,
+                    scan_id,
+                ),
                 ev,
                 source,
                 &[plat],
             );
+        }
+    }
+
+    // ── Free-text `bio` mining → alternate contact leads. ──
+    // A profile bio routinely carries an alternate email or phone the structured
+    // columns miss — a genuine new pivot (unlocks HIBP/emailrep/phone modules).
+    // Reuse the canonical scanner-grade extractors so "what an email/phone looks
+    // like in free text" has one definition engine-wide. Lower confidence than a
+    // structured field (inferred from prose). Shared here so BOTH breach providers
+    // gain it on every record routed through the rich pass; OathNet's own breach
+    // path mines bio separately, and the shared `seen` set dedups any overlap.
+    if let Some(bio) = val_str(item, "bio") {
+        for email in crate::util::extract::emails(&bio) {
+            if seen.insert(email.clone()) {
+                push_breach_entity(
+                    result,
+                    Entity::new(EntityKind::Email, &email, confidence::MEDIUM, scan_id),
+                    ev,
+                    source,
+                    &["bio-mined"],
+                );
+            }
+        }
+        for phone in crate::util::extract::phones(&bio) {
+            if seen.insert(format!("@bio-phone:{phone}")) {
+                push_breach_entity(
+                    result,
+                    Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM, scan_id),
+                    ev,
+                    source,
+                    &["bio-mined"],
+                );
+            }
         }
     }
 
@@ -414,7 +528,7 @@ pub fn extract_rich_detail(
             if seen.insert(format!("@addr-part:{k}:{}", p.to_lowercase())) {
                 push_breach_entity(
                     result,
-                    Entity::new(EntityKind::Address, &p, 0.45, scan_id),
+                    Entity::new(EntityKind::Address, &p, confidence::LOW_MEDIUM, scan_id),
                     ev,
                     source,
                     &["geo-hint"],
@@ -433,7 +547,12 @@ pub fn extract_rich_detail(
         if seen.insert(format!("@addr:{}", composed.to_lowercase())) {
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(&composed) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::LOW_MEDIUM,
+                    scan_id,
+                );
                 c.tag("addr-derived");
                 c.tag("geoint");
                 c.tag(tags::BREACH);
@@ -443,7 +562,12 @@ pub fn extract_rich_detail(
             }
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Address, &composed, 0.55, scan_id),
+                Entity::new(
+                    EntityKind::Address,
+                    &composed,
+                    confidence::MEDIUM_HIGH,
+                    scan_id,
+                ),
                 ev,
                 source,
                 &["geo-hint", "composed-address"],
@@ -481,7 +605,7 @@ pub fn extract_rich_detail(
         if seen.insert(format!("@other:{k}:{}", val.to_lowercase())) {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Other(k.clone()), &val, 0.40, scan_id),
+                Entity::new(EntityKind::Other(k.clone()), &val, confidence::LOW, scan_id),
                 ev,
                 source,
                 &["raw-field"],

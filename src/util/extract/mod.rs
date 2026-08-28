@@ -71,7 +71,7 @@ pub fn urls(text: &str) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for m in URL_RE.find_iter(text) {
-        let link = m.as_str().trim_end_matches(['.', ',', ')']);
+        let link = crate::core::classifier::trim_url_punctuation(m.as_str());
         if !link.is_empty() && seen.insert(link.to_string()) {
             out.push(link.to_string());
         }
@@ -380,6 +380,14 @@ pub fn looks_like_email(s: &str) -> bool {
 /// (`user@host.c`) or a double-dot host (`x@sub..example.com`) minted a bogus `Email`
 /// entity that then poisoned correlation. Pure.
 pub fn host_has_alpha_tld(host: &str) -> bool {
+    // A second `@` in the host means the value is a double-`@` non-address
+    // (`user@host@evil.com`) that `looks_like_email`/`page_emails` reach via a
+    // first-`@` split; the canonical [`EMAIL_RE`] host class (`[A-Za-z0-9.-]+`)
+    // admits no `@`, so rejecting it here keeps the non-regex paths from being
+    // MORE permissive than the free-text scanner (the stated invariant).
+    if host.contains('@') {
+        return false;
+    }
     if !host.contains('.') || host.split('.').any(str::is_empty) {
         return false;
     }

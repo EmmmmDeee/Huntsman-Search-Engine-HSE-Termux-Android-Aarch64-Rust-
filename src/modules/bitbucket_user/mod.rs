@@ -19,6 +19,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -97,14 +98,19 @@ pub(super) fn build_entities(user: BbUser, scan_id: &str) -> Vec<Entity> {
     out.push(e);
 
     // Profile URL.
-    let mut u = Entity::new(EntityKind::Url, &profile_url, 0.80, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Url,
+        &profile_url,
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
     u.tag("bitbucket");
     u.add_evidence(ev());
     out.push(u);
 
     // Display name → Person (multi-word only; single-token is likely a handle).
     if let Some(name) = user.display_name.as_deref()
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.70, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::HIGH_PLUS, scan_id)
     {
         p.tag("bitbucket");
         p.add_evidence(ev().with_attr("source_field", "display_name"));
@@ -113,7 +119,8 @@ pub(super) fn build_entities(user: BbUser, scan_id: &str) -> Vec<Entity> {
 
     // Personal website URL and derived domain.
     if let Some(site) = user.website.as_deref() {
-        for mut e in profile_kit::website_url_and_domain(site, 0.70, 0.63, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(site, confidence::HIGH_PLUS, 0.63, scan_id)
+        {
             e.tag("bitbucket");
             if e.kind == EntityKind::Domain {
                 e.tag("derived");
@@ -149,7 +156,7 @@ impl Module for BitbucketUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Bitbucket Cloud profile: display name, website, location via public API v2 (free)"
+        "Bitbucket Cloud profile recon — harvests display name, website, and location via public API v2 (free)"
     }
     fn priority(&self) -> u8 {
         97

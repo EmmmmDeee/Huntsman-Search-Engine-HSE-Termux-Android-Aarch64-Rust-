@@ -136,6 +136,80 @@ fn gen_domain(out: &mut Vec<BatchQuery>, opts: &BatchOptions, native: &'static s
     }
 }
 
+/// One value's single-level fan-out: append every query the seed of kind `kind`
+/// with `value` (and native selector `native`) generates. This is the unit the
+/// recursive [`generate`] re-applies to each derived pivot value, so the
+/// per-kind logic lives in exactly one place.
+fn expand_kind(
+    out: &mut Vec<BatchQuery>,
+    kind: TargetKind,
+    opts: &BatchOptions,
+    native: &'static str,
+    v: &str,
+) {
+    match kind {
+        TargetKind::Email => gen_email(out, opts, native, v),
+        TargetKind::Username => gen_username(out, opts, native, v),
+        TargetKind::FullName => gen_name(out, opts, native, v),
+        TargetKind::Phone => {
+            for (fmt, origin) in phone_formats(v) {
+                add_breach(out, native, &fmt, origin);
+            }
+        }
+        TargetKind::IpAddress => add_breach(out, native, v, Origin::Seed),
+        TargetKind::Domain => gen_domain(out, opts, native, v),
+        // `native` is `Some` only for the kinds above, so reaching here means
+        // `selector_field` learned a kind `generate` hasn't — a single-source
+        // drift. Surface it in tests/debug; no-op (drop the kind) in release.
+        _ => debug_assert!(
+            false,
+            "oathnet::selector_field returned Some for {kind:?} but \
+             oathnet_batch::expand_kind does not handle it",
+        ),
+    }
+}
+
+/// The pivotable [`TargetKind`] a generated query's selector `field` can be
+/// **recursively** re-expanded as, or `None` when the field is a terminal pivot.
+///
+/// Only `email` / `username` / `domain` recurse — they are the fields whose
+/// per-kind fan-out DERIVES further cross-field queries (an email → its local
+/// part + domain, a username → handle permutations + candidate emails, a domain →
+/// role emails). `phone` and `ip` derive nothing new (a phone only reformats
+/// itself; an ip is a bare lookup) and free-text `q` is already the broadest
+/// search, so recursing them would only re-tread the same values — they are
+/// deliberately terminal.
+fn pivot_kind_for_field(field: &str) -> Option<TargetKind> {
+    Some(match field {
+        FIELD_EMAIL => TargetKind::Email,
+        FIELD_USERNAME => TargetKind::Username,
+        FIELD_DOMAIN => TargetKind::Domain,
+        _ => return None,
+    })
+}
+
+/// The next recursion level's worklist: from the queries produced by the current
+/// level, every derived pivot value not yet expanded — keyed on
+/// `(pivot kind, lowercased value)` in `expanded`, which this updates so a value
+/// is expanded at most once across the whole run (the cycle guard that
+/// guarantees termination). Queries are scanned in plan order and each new pivot
+/// is emitted at first sight, so the worklist is deterministic.
+fn pivot_worklist(
+    queries: &[BatchQuery],
+    expanded: &mut HashSet<(TargetKind, String)>,
+) -> Vec<(TargetKind, String)> {
+    let mut work = Vec::new();
+    for q in queries {
+        if let Some(pk) = pivot_kind_for_field(q.field) {
+            let lc = q.value.to_ascii_lowercase();
+            if expanded.insert((pk, lc)) {
+                work.push((pk, q.value.clone()));
+            }
+        }
+    }
+    work
+}
+
 /// Generate the full, de-duplicated batch of OathNet queries for `value`
 /// interpreted as `kind`.
 ///
@@ -185,29 +259,47 @@ pub fn generate(kind: TargetKind, value: &str, opts: &BatchOptions) -> Vec<Batch
     let Some(native) = oathnet::selector_field(kind) else {
         return out;
     };
-    match kind {
-        TargetKind::Email => gen_email(&mut out, opts, native, v),
-        TargetKind::Username => gen_username(&mut out, opts, native, v),
-        TargetKind::FullName => gen_name(&mut out, opts, native, v),
-        TargetKind::Phone => {
-            for (fmt, origin) in phone_formats(v) {
-                add_breach(&mut out, native, &fmt, origin);
+
+    // Level 0: the seed's own single-level fan-out (the precise default plan).
+    expand_kind(&mut out, kind, opts, native, v);
+
+    // Bounded recursive expansion (opt-in via `recurse_depth`). The
+    // objectively-best recursion shape: a breadth-first worklist with a
+    // visited-set cycle guard keyed on (pivot kind, lowercased value), so a value
+    // is expanded at most once and generation ALWAYS terminates; each level feeds
+    // the previous level's derived, pivotable query values back through the SAME
+    // per-kind fan-out (`expand_kind`), appending only genuinely-new deeper
+    // queries after the base plan. `recurse_depth == 0` skips this entirely,
+    // leaving the single-level plan — and every guarantee the suite locks —
+    // byte-for-byte unchanged.
+    if opts.recurse_depth > 0 {
+        let mut expanded: HashSet<(TargetKind, String)> = HashSet::new();
+        expanded.insert((kind, v.to_ascii_lowercase()));
+        let mut frontier = pivot_worklist(&out, &mut expanded);
+        for _ in 0..opts.recurse_depth {
+            if frontier.is_empty() {
+                break;
             }
+            let level_start = out.len();
+            for (pk, pv) in &frontier {
+                // `pivot_worklist` only emits kinds OathNet indexes, so
+                // `selector_field` is always `Some` here.
+                if let Some(pnative) = oathnet::selector_field(*pk) {
+                    expand_kind(&mut out, *pk, opts, pnative, pv);
+                }
+            }
+            // Next frontier from ONLY this level's appended queries. Cloning the
+            // new tail keeps the mutable-borrow of `out` and the read of the new
+            // queries cleanly separated; the tail is small relative to the plan.
+            let new_level: Vec<BatchQuery> = out[level_start..].to_vec();
+            frontier = pivot_worklist(&new_level, &mut expanded);
         }
-        TargetKind::IpAddress => add_breach(&mut out, native, v, Origin::Seed),
-        TargetKind::Domain => gen_domain(&mut out, opts, native, v),
-        // `native` is `Some` only for the kinds above, so reaching here means
-        // `selector_field` learned a kind `generate` hasn't — a single-source
-        // drift. Surface it in tests/debug; no-op (drop the kind) in release.
-        _ => debug_assert!(
-            false,
-            "oathnet::selector_field returned Some for {kind:?} but \
-             oathnet_batch::generate does not handle it",
-        ),
     }
 
     // Collapse exact (surface, field, lowercased-value) duplicates, keeping the
-    // first (highest-priority) occurrence.
+    // first (highest-priority) occurrence. This also absorbs the re-emitted native
+    // query every recursive `expand_kind` produces for a value already in the
+    // plan, so a derived value contributes only its genuinely-new deeper queries.
     let mut seen = HashSet::new();
     out.retain(|q| seen.insert((q.surface, q.field, q.value.to_lowercase())));
 

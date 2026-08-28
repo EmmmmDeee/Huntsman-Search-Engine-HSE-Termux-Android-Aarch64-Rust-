@@ -1,6 +1,35 @@
 use super::*;
 
     #[test]
+    fn body_rejects_key_flags_only_criminal_ips_dead_key_statuses() {
+        // Mirrors modules/criminal_ip/mod.rs's own live-scan `keyed_cascade_json`
+        // verdict exactly: 401/402/429 in the body means the key is dead, any
+        // other in-body status (including a real success) does not.
+        for status in [401, 402, 429] {
+            assert!(body_rejects_key(
+                "criminal_ip",
+                &serde_json::json!({ "status": status })
+            ));
+        }
+        assert!(!body_rejects_key(
+            "criminal_ip",
+            &serde_json::json!({ "status": 200 })
+        ));
+        assert!(!body_rejects_key("criminal_ip", &serde_json::json!({})));
+    }
+
+    #[test]
+    fn body_rejects_key_is_false_for_every_other_service() {
+        // Deliberately opt-in per service (see the function's own doc for why
+        // FOFA/BuiltWith aren't covered yet) — an identical-looking body must
+        // never flip a service this function has no entry for.
+        let suspicious = serde_json::json!({ "status": 401 });
+        for service in ["fofa", "builtwith", "shodan", "unknown_service"] {
+            assert!(!body_rejects_key(service, &suspicious));
+        }
+    }
+
+    #[test]
     fn poolable_only_for_recognised_providers() {
         // Recognised keyed providers (in SERVICE_DEFS) are poolable...
         assert!(is_poolable_service("shodan"));
@@ -55,6 +84,40 @@ use super::*;
         match &def.key_header {
             KeyPlacement::Header(h) => assert_eq!(*h, "X-API-Key"),
             other => panic!("see_know must authenticate with X-API-Key, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn threatfox_validation_probe_uses_auth_key_not_api_key() {
+        // modules/threatfox/mod.rs sends `Auth-Key: <key>` (the shared
+        // abuse.ch scheme also used by `urlhaus`, confirmed by that sibling's
+        // ServiceDef and by both modules' own doc comments) — a probe sending
+        // `API-KEY` instead hits no header abuse.ch actually checks, so a
+        // valid key would always be misclassified `Invalid`.
+        let def = find_service("threatfox").expect("threatfox service def present");
+        match &def.key_header {
+            KeyPlacement::Header(h) => assert_eq!(*h, "Auth-Key"),
+            other => panic!("threatfox must authenticate with Auth-Key, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn numverify_validation_probe_uses_the_current_apilayer_gateway() {
+        // modules/numverify/mod.rs migrated to the unified `api.apilayer.com`
+        // gateway with an `apikey` header; this def was left pointing at the
+        // legacy `apilayer.net` host with the key as an `access_key` query
+        // param — a scheme the module no longer uses, and one the legacy
+        // host answers with a false HTTP 200 for ANY key (garbage included).
+        let def = find_service("numverify").expect("numverify service def present");
+        assert!(
+            def.test_url.starts_with("https://api.apilayer.com/"),
+            "numverify must probe the current api.apilayer.com gateway, not the \
+             legacy apilayer.net host, got: {}",
+            def.test_url
+        );
+        match &def.key_header {
+            KeyPlacement::Header(h) => assert_eq!(*h, "apikey"),
+            other => panic!("numverify must authenticate with an apikey header, got {other:?}"),
         }
     }
 
@@ -214,5 +277,62 @@ use super::*;
             "osintcat",
         ] {
             assert!(is_poolable_service(name), "{name} must be poolable");
+        }
+    }
+
+    // `dehashed` was missing its own `ServiceDef` entirely — not one of the
+    // "nine" above, but the exact same bug class: `fullcontact`'s own comment
+    // ("same reasoning as `urlhaus`/`dehashed` above") already claimed a
+    // `dehashed` entry sits above it in this file, yet `find_service("dehashed")`
+    // returned `None` — no pool integration, invisible to
+    // `key_health::likely_env_var`, and every `add_and_validate("dehashed", ..)`
+    // call silently no-op'd (`validate_key` returns `None` the instant
+    // `find_service` does, before ever reaching the network).
+    #[test]
+    fn dehashed_is_poolable_and_uses_dehashed_api_key_header() {
+        // modules/dehashed/mod.rs sends `Dehashed-Api-Key: <key>` (v2, POST-only).
+        assert!(is_poolable_service("dehashed"));
+        let def = find_service("dehashed").expect("dehashed service def present");
+        assert_eq!(def.env_var, "HUNTSMAN_DEHASHED_KEY");
+        match &def.key_header {
+            KeyPlacement::Header(h) => assert_eq!(*h, "Dehashed-Api-Key"),
+            other => panic!("dehashed must authenticate with Dehashed-Api-Key, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn service_for_env_resolves_the_canonical_pool_name() {
+        assert_eq!(
+            service_for_env("HUNTSMAN_HUNTER_KEY").map(|d| d.name),
+            Some("hunter")
+        );
+        assert_eq!(service_for_env("HUNTSMAN_EXA_KEY").map(|d| d.name), Some("exa"));
+        assert_eq!(
+            service_for_env("HUNTSMAN_HLR_KEY").map(|d| d.name),
+            Some("hlrlookups")
+        );
+        assert!(service_for_env("HUNTSMAN_NOT_A_KEY").is_none());
+    }
+
+    /// Every keyed module whose SRC differs from its pool `ServiceDef.name` must
+    /// resolve to a registered pool service via its own KEY_ENV, or every key
+    /// burn is a silent no-op. The table below is the authoritative assertion
+    /// set. Also asserts every service is resolvable by its own name.
+    #[test]
+    fn keyed_module_pool_services_are_registered() {
+        for (env, svc) in [
+            ("HUNTSMAN_HUNTER_KEY", "hunter"),
+            ("HUNTSMAN_EXA_KEY", "exa"),
+            ("HUNTSMAN_HLR_KEY", "hlrlookups"),
+            ("HUNTSMAN_WHOISXML_KEY", "whoisxml"),
+        ] {
+            assert_eq!(service_for_env(env).map(|d| d.name), Some(svc), "{env}");
+        }
+        for d in service_defs() {
+            assert!(
+                find_service(d.name).is_some(),
+                "{} must be resolvable by name",
+                d.name
+            );
         }
     }

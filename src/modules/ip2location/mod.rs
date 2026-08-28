@@ -11,13 +11,13 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "ip2location";
 
@@ -55,7 +55,7 @@ impl Module for Ip2Location {
         "ip2location"
     }
     fn description(&self) -> &'static str {
-        "Suburb-precision IP geolocation via ip2location.io (free, 1K/day)"
+        "ip2location.io geolocation recon (free, 1K/day) — geolocates an IP to suburb precision"
     }
     fn priority(&self) -> u8 {
         26
@@ -99,18 +99,16 @@ impl Module for Ip2Location {
         let ip = target.value.trim();
 
         let url = format!("https://api.ip2location.io/?ip={ip}");
-        let resp = ctx
-            .http
-            .get(&url)
-            .timeout(std::time::Duration::from_secs(6))
-            .send_tagged(SRC)
-            .await?;
-
-        if !resp.status().is_success() {
+        let Some(data): Option<Resp> = crate::util::http::fetch_json_or_404_with_timeout(
+            &ctx.http,
+            SRC,
+            &url,
+            std::time::Duration::from_secs(6),
+        )
+        .await?
+        else {
             return Ok(ModuleResult::new());
-        }
-
-        let data: Resp = crate::util::http::json_decode(SRC, resp).await?;
+        };
 
         // The shared trust gate: an IP whose geolocation is infrastructure (a
         // CDN/anycast edge) is not the subject's location, so its
@@ -162,7 +160,8 @@ fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<E
     // stays slightly above ipinfo.
     if let (Some(lat), Some(lon)) = (data.latitude, data.longitude)
         && !skip_geo
-        && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, 0.62, scan_id)
+        && let Some(mut ce) =
+            crate::util::geo::coarse_provider_coords(lat, lon, confidence::NOTABLE, scan_id)
     {
         ce.tag("ip2location");
         if data.is_proxy == Some(true) {
@@ -173,7 +172,14 @@ fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<E
             ("city", (!city.is_empty()).then_some(city)),
             ("region", (!region.is_empty()).then_some(region)),
             ("country", (!country.is_empty()).then_some(country)),
-            ("postcode", (!zip.is_empty()).then_some(zip)),
+            // An IP-geolocation postcode locates the IP's network, NOT the
+            // subject's residence, so it is stamped under the network-derived
+            // `postal` key — excluded from the residential POSTCODE_KEYS the
+            // AU-091/AU-093 residential-locality rules read — rather than the
+            // canonical `postcode` key that would let it masquerade as the
+            // subject's home postcode (item 24). The coarse IP location still
+            // flows through this Coordinates entity's confidence-capped fix.
+            ("postal", (!zip.is_empty()).then_some(zip)),
             ("country_iso", (!cc.is_empty()).then_some(cc)),
             ("timezone", (!tz.is_empty()).then_some(tz)),
         ]
@@ -192,9 +198,14 @@ fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<E
     }
 
     if !skip_geo && !city.is_empty() && !country.is_empty() {
-        let addr = if !region.is_empty() && !zip.is_empty() {
-            format!("{city}, {region} {zip}, {country}")
-        } else if !region.is_empty() {
+        // An IP-geolocation address is a COARSE network locator, not the subject's
+        // residence, so its postcode must NOT be embedded in the Address value:
+        // `au_postcode` reads an Address value's trailing 4-digit run, which would
+        // let the IP's postcode occupy the residential "breach/register postcode"
+        // location rung (item 24). The postcode is retained as the network-derived
+        // `postal` attribute on the Coordinates above; the Address keeps
+        // suburb/state grain. (ipquery already composes its address this way.)
+        let addr = if !region.is_empty() {
             format!("{city}, {region}, {country}")
         } else {
             format!("{city}, {country}")
@@ -202,6 +213,12 @@ fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<E
         let mut ae = Entity::new(EntityKind::Address, &addr, 0.68, scan_id);
         ae.tag("ip2location");
         ae.tag(tags::GEOINT);
+        // An anonymiser/VPN exit's city is not the subject's location — tag it so
+        // it is filterable, exactly as the Coordinates above already are (the
+        // Address previously emitted the proxy-exit address untagged).
+        if data.is_proxy == Some(true) {
+            ae.tag(tags::PROXY);
+        }
         if is_au {
             ae.tag("country:AU");
         }
@@ -228,7 +245,7 @@ fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<E
     if let Some(as_name) = &data.as_name
         && !as_name.is_empty()
     {
-        let mut oe = Entity::new(EntityKind::Organisation, as_name, 0.65, scan_id);
+        let mut oe = Entity::new(EntityKind::Organisation, as_name, confidence::HIGH, scan_id);
         oe.tag("ip2location");
         oe.add_evidence(Evidence::new(SRC, format!("ISP for {ip}")));
         out.push(oe);

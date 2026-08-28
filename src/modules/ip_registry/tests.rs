@@ -42,7 +42,7 @@ fn parse_arin_rdap_response() {
         {"eventAction":"registration","eventDate":"2014-03-14T16:52:05-04:00"}
       ]
     }"#;
-    let r: RdapResp = serde_json::from_str(raw).unwrap();
+    let r: RdapResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(r.handle.as_deref(), Some("NET-8-8-8-0-1"));
     assert_eq!(r.country.as_deref(), Some("US"));
     assert_eq!(r.cidr0_cidrs.len(), 1);
@@ -63,9 +63,9 @@ fn parse_bgpview_asn_response() {
         "website": "https://about.google"
       }
     }"#;
-    let r: AsnResp = serde_json::from_str(raw).unwrap();
+    let r: AsnResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(r.status, "ok");
-    let data = r.data.unwrap();
+    let data = r.data.expect("should succeed");
     assert_eq!(data.name.as_deref(), Some("GOOGLE"));
     assert_eq!(data.country_code.as_deref(), Some("US"));
 }
@@ -121,6 +121,145 @@ fn rdap_blank_country_adds_no_tag_or_attr() {
     assert!(!e.evidence[0].attributes.contains_key("country"));
 }
 
+#[test]
+fn rdap_no_contacts_yields_only_the_ip_entity() {
+    // A record with no `entities` array must still produce exactly the one
+    // IpAddress entity — the nested-contact mining is purely additive.
+    let body = rdap(r#"{ "handle":"NET-1", "country":"US" }"#);
+    let ents = build_rdap_entities(&body, "1.2.3.4", "s");
+    assert_eq!(ents.len(), 1);
+    assert_eq!(ents[0].kind, EntityKind::IpAddress);
+}
+
+// A trimmed ARIN-shaped record: a registrant (org kind) that itself nests an
+// abuse contact and a technical/administrative contact — the real RDAP shape.
+// Deliberately NOT google.com: that domain is in `INFRA_MAIL` by design (see
+// `rdap_suppresses_infra_mail_domain_abuse_email`), which would suppress every
+// contact regardless of local-part and defeat the point of this fixture —
+// exercising the nested-entity walk itself.
+const RDAP_WITH_CONTACTS: &str = r#"{
+  "handle":"NET-8-8-8-0-2", "name":"ACME", "country":"US", "ipVersion":"v4",
+  "cidr0_cidrs":[{"v4prefix":"8.8.8.0","length":24}],
+  "entities":[{
+    "handle":"ACME", "roles":["registrant"],
+    "vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Acme Hosting LLC"],["kind",{},"text","org"]]],
+    "entities":[
+      {"handle":"ABUSE5250-ARIN","roles":["abuse"],
+       "vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Abuse"],["kind",{},"text","group"],["email",{},"text","netops-desk@acmehosting.example"]]]},
+      {"handle":"ZG39-ARIN","roles":["technical","administrative"],
+       "vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Acme Hosting LLC"],["kind",{},"text","group"],["email",{},"text","arin-contact@acmehosting.example"]]]}
+    ]
+  }]
+}"#;
+
+#[test]
+fn rdap_mines_registrant_org_and_nested_abuse_email() {
+    let ents = build_rdap_entities(&rdap(RDAP_WITH_CONTACTS), "8.8.8.8", "s");
+    // IpAddress + registrant Organisation + abuse Email.
+    assert_eq!(ents.len(), 3);
+
+    let org = of_kind(&ents, EntityKind::Organisation).expect("registrant org");
+    assert_eq!(org.value, "Acme Hosting LLC");
+    assert!(org.has_tag("ip-registrant") && org.has_tag("rdap"));
+    assert_eq!(
+        org.evidence[0].attributes.get("ip").map(String::as_str),
+        Some("8.8.8.8")
+    );
+
+    // The abuse contact is nested one level under the registrant — the walk
+    // must recurse to reach it.
+    let email = of_kind(&ents, EntityKind::Email).expect("abuse email");
+    assert_eq!(email.value, "netops-desk@acmehosting.example");
+    assert!(email.has_tag("role:abuse") && email.has_tag("rdap-contact"));
+    assert_eq!(
+        email.evidence[0]
+            .attributes
+            .get("contact_role")
+            .map(String::as_str),
+        Some("abuse")
+    );
+
+    // Technical/administrative contact emails are deliberately NOT surfaced —
+    // only the abuse role, which is never GDPR-redacted for IP allocations.
+    assert!(
+        !ents
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "arin-contact@acmehosting.example"),
+        "only the abuse-role email is emitted"
+    );
+}
+
+#[test]
+fn rdap_suppresses_role_local_part_abuse_email() {
+    // A registrar/provider abuse desk (`abuse@`) is infrastructure contact,
+    // not the subject's own mail — the same false-positive class
+    // `whois`/`dns_intel` already gate on via `is_infrastructure_email`.
+    // Regression test for the audit finding (role-mailbox-as-pii) that RDAP
+    // abuse contacts previously bypassed that gate entirely.
+    let body = rdap(
+        r#"{ "handle":"NET-8-8-8-0-2", "entities":[{
+            "handle":"ABUSE5250-ARIN","roles":["abuse"],
+            "vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Abuse"],["kind",{},"text","group"],["email",{},"text","abuse@acmehosting.example"]]]
+        }] }"#,
+    );
+    let ents = build_rdap_entities(&body, "8.8.8.8", "s");
+    assert!(
+        !ents.iter().any(|e| e.kind == EntityKind::Email),
+        "a role-local-part abuse contact must not surface as an Email entity"
+    );
+}
+
+#[test]
+fn rdap_suppresses_infra_mail_domain_abuse_email() {
+    // google.com is in `INFRA_MAIL` by design — its abuse desk is provider
+    // infrastructure regardless of local-part. A non-role local-part
+    // (`network-ops`, not `abuse`) confirms the domain match alone is
+    // sufficient to gate it.
+    let body = rdap(
+        r#"{ "handle":"NET-8-8-8-0-2", "entities":[{
+            "handle":"ABUSE5250-ARIN","roles":["abuse"],
+            "vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Abuse"],["kind",{},"text","group"],["email",{},"text","network-ops@google.com"]]]
+        }] }"#,
+    );
+    let ents = build_rdap_entities(&body, "8.8.8.8", "s");
+    assert!(
+        !ents.iter().any(|e| e.kind == EntityKind::Email),
+        "a contact on an INFRA_MAIL-listed domain must not surface as an Email entity, \
+         regardless of local-part"
+    );
+}
+
+#[test]
+fn rdap_individual_registrant_is_not_emitted_as_org() {
+    // A natural-person registrant (vCard kind=individual) must never surface as
+    // an Organisation, even though IP blocks are normally operator-held.
+    let body = rdap(
+        r#"{ "handle":"NET-X", "entities":[{
+            "roles":["registrant"],
+            "vcardArray":["vcard",[["fn",{},"text","Jane Q Public"],["kind",{},"text","individual"]]]
+        }] }"#,
+    );
+    let ents = build_rdap_entities(&body, "1.2.3.4", "s");
+    assert!(
+        of_kind(&ents, EntityKind::Organisation).is_none(),
+        "individual-kind registrant is not an Organisation"
+    );
+    assert_eq!(ents.len(), 1, "only the IpAddress entity remains");
+}
+
+#[test]
+fn rdap_abuse_contact_with_non_email_vcard_yields_no_email() {
+    // An abuse contact whose vCard email field is malformed is dropped.
+    let body = rdap(
+        r#"{ "entities":[{
+            "roles":["abuse"],
+            "vcardArray":["vcard",[["email",{},"text","not-an-email"]]]
+        }] }"#,
+    );
+    let ents = build_rdap_entities(&body, "1.2.3.4", "s");
+    assert!(of_kind(&ents, EntityKind::Email).is_none());
+}
+
 // ── build_bgp_ip_entities (pure) ────────────────────────────────────
 
 fn ip_resp(json: &str) -> IpResp {
@@ -165,38 +304,94 @@ fn asn_resp(json: &str) -> AsnResp {
 
 #[test]
 fn asn_record_yields_registry_contacts_and_website() {
+    // Deliberately NOT google.com: that domain is in `INFRA_MAIL` by design
+    // and would suppress every contact regardless of local-part (see
+    // `asn_suppresses_infra_mail_domain_contacts`), defeating the point of
+    // this fixture — exercising the ASN-contact parsing itself.
+    // "abuse@acmenet.example" is deliberately excluded from this fixture's
+    // survival assertions — a role-local-part contact is infrastructure, not
+    // the subject's own mail; see `asn_suppresses_role_local_part_abuse_email`.
     let body = asn_resp(
         r#"{ "status":"ok", "data": {
-            "name":"GOOGLE", "description_short":"Google LLC", "country_code":"US",
+            "name":"ACME", "description_short":"Acme Networks LLC", "country_code":"US",
             "rir_allocation": {"rir_name":"ARIN", "date_allocated":"2000-03-30"},
-            "email_contacts": ["noc@google.com"],
-            "abuse_contacts": ["abuse@google.com"],
-            "website": "https://about.google" } }"#,
+            "email_contacts": ["noc@acmenet.example"],
+            "abuse_contacts": ["abuse@acmenet.example"],
+            "website": "https://acmenet.example" } }"#,
     );
     let ents = build_asn_entities(&body, 15169, "s");
-    // registry ASN + admin email + abuse email + website URL
+    // registry ASN + operator org + admin email + website URL (the role-local
+    // -part abuse contact is suppressed at the source).
     assert_eq!(ents.len(), 4);
 
-    let asn = of_kind(&ents, EntityKind::Asn).unwrap();
+    let asn = of_kind(&ents, EntityKind::Asn).expect("should succeed");
     assert_eq!(asn.value, "AS15169");
     assert!(asn.has_tag("registered"));
     let attr = |k: &str| asn.evidence[0].attributes.get(k).map(String::as_str);
-    assert_eq!(attr("handle"), Some("GOOGLE"));
-    assert_eq!(attr("name"), Some("Google LLC"));
+    assert_eq!(attr("handle"), Some("ACME"));
+    assert_eq!(attr("name"), Some("Acme Networks LLC"));
     assert_eq!(attr("rir"), Some("ARIN"));
     assert_eq!(attr("allocated"), Some("2000-03-30"));
+
+    let org = of_kind(&ents, EntityKind::Organisation).expect("should succeed");
+    assert_eq!(org.value, "Acme Networks LLC");
+    assert!(org.has_tag("bgpview"));
+    assert!(org.has_tag("asn-operator"));
 
     let emails: Vec<&str> = ents
         .iter()
         .filter(|e| e.kind == EntityKind::Email)
         .map(|e| e.value.as_str())
         .collect();
-    assert_eq!(emails.len(), 2);
-    assert!(emails.contains(&"noc@google.com") && emails.contains(&"abuse@google.com"));
+    assert_eq!(emails, vec!["noc@acmenet.example"]);
+    assert!(
+        !emails.contains(&"abuse@acmenet.example"),
+        "role-local-part abuse contact must not surface as an Email entity"
+    );
 
-    let url = of_kind(&ents, EntityKind::Url).unwrap();
-    assert_eq!(url.value, "https://about.google");
+    let url = of_kind(&ents, EntityKind::Url).expect("should succeed");
+    assert_eq!(url.value, "https://acmenet.example");
     assert!(url.has_tag("asn-website"));
+}
+
+#[test]
+fn asn_suppresses_role_local_part_abuse_email() {
+    // Regression test for the audit finding (role-mailbox-as-pii) that ASN
+    // abuse/admin contacts previously bypassed `is_infrastructure_email`
+    // entirely. `noc@` is not a role token and must still surface. Domain
+    // deliberately not google.com — see `asn_suppresses_infra_mail_domain_contacts`
+    // for the domain-match case.
+    let body = asn_resp(
+        r#"{ "status":"ok", "data": {
+            "email_contacts": ["noc@acmenet.example"],
+            "abuse_contacts": ["abuse@acmenet.example", "hostmaster@acmenet.example"] } }"#,
+    );
+    let ents = build_asn_entities(&body, 15169, "s");
+    let emails: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert_eq!(emails, vec!["noc@acmenet.example"]);
+}
+
+#[test]
+fn asn_suppresses_infra_mail_domain_contacts() {
+    // google.com is in `INFRA_MAIL` by design — its NOC/abuse desks are
+    // provider infrastructure regardless of local-part. Non-role local-parts
+    // (`network-ops`, not `noc`/`abuse`) confirm the domain match alone is
+    // sufficient to gate it.
+    let body = asn_resp(
+        r#"{ "status":"ok", "data": {
+            "email_contacts": ["network-ops@google.com"],
+            "abuse_contacts": ["security-desk@google.com"] } }"#,
+    );
+    let ents = build_asn_entities(&body, 15169, "s");
+    assert!(
+        !ents.iter().any(|e| e.kind == EntityKind::Email),
+        "contacts on an INFRA_MAIL-listed domain must not surface as Email entities, \
+         regardless of local-part"
+    );
 }
 
 #[test]
@@ -214,7 +409,7 @@ fn asn_non_http_website_yields_no_url_entity() {
         "a non-http(s) website must not become a Url entity"
     );
     // ...but it is still recorded as an attribute on the ASN evidence.
-    let asn = of_kind(&ents, EntityKind::Asn).unwrap();
+    let asn = of_kind(&ents, EntityKind::Asn).expect("should succeed");
     assert_eq!(
         asn.evidence[0]
             .attributes

@@ -28,8 +28,9 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
     tags,
@@ -38,16 +39,26 @@ use crate::util::http::{RequestBuilderExt, fetch_json, fetch_json_or_404, json_d
 
 const SRC: &str = "gaming_profile";
 
-/// Confidence for a Roblox account that resolves EXACTLY from the target
-/// handle. A unique-handle platform match with a live public profile — on par
-/// with `github_user`'s profile confidence, a notch below it because gaming
-/// handles collide across people more often than dev handles.
-const ROBLOX_CONF: f64 = 0.90;
+/// Confidence for a Roblox account that resolves EXACTLY from the target handle
+/// — a single-source, exact-handle platform-existence lookup with a live public
+/// profile. HIGH_PLUSPLUS_PLUS is this codebase's settled tier for that evidence
+/// class (OD-19 in .agent/state.json; gitea_user/gitlab_user stamp the identical
+/// class), with the richer Roblox profile (creation date, description, verified
+/// badge) riding as evidence rather than a base-confidence premium — exactly how
+/// gitea/gitlab carry profile metadata at 0.85. NOT VERY_HIGH_PLUS (0.90): the
+/// ladder reserves that for "exceeds multi-source threshold", which one platform
+/// lookup cannot meet however rich its payload. (github_user grades its own
+/// confirmed username higher, at VERY_HIGH_PLUSPLUS = 0.95 — a separate flagship
+/// tier, not a peer this constant tracks; an earlier comment here cited it as
+/// "on par", which was stale.)
+const ROBLOX_CONF: f64 = confidence::HIGH_PLUSPLUS_PLUS;
 
 /// Confidence for a Minecraft (Java) account that resolves EXACTLY from the
-/// target handle. Slightly below Roblox: Mojang confirms only existence + UUID,
-/// not a rich profile, though a Java account being paid makes the hit solid.
-const MINECRAFT_CONF: f64 = 0.85;
+/// target handle. Same HIGH_PLUSPLUS_PLUS single-source exact-handle-existence
+/// tier as Roblox above: Mojang confirms existence + UUID (a paid Java account,
+/// so a solid hit) while Roblox additionally returns a profile — a difference in
+/// evidence richness carried in the evidence payload, not in the base grade.
+const MINECRAFT_CONF: f64 = confidence::HIGH_PLUSPLUS_PLUS;
 
 /// Max characters of a Roblox bio carried as evidence — bounds graph/log size
 /// while preserving the lead.
@@ -99,7 +110,7 @@ impl Module for GamingProfile {
     }
 
     fn description(&self) -> &'static str {
-        "Free gaming-platform profile lookup (Roblox, Minecraft) via each platform's public API"
+        "Gaming-platform profile recon (free) — enumerates Roblox and Minecraft accounts via each platform's public API"
     }
 
     fn priority(&self) -> u8 {
@@ -149,41 +160,19 @@ impl Module for GamingProfile {
         }
 
         // Two platforms queried concurrently; each is best-effort — a failure
-        // or miss on one never sinks the other or the module. A hard failure
-        // on the SOLE gate of a platform (the exact-username resolve) is
-        // tracked separately from a genuine "no such account", so a total
-        // outage on both platforms doesn't masquerade as a clean negative
-        // (mirrors ip_reputation/niamonx's or_hard_failure fold).
+        // or miss on one never sinks the other or the module.
         let (roblox, minecraft) = tokio::join!(roblox_lookup(ctx, v), minecraft_lookup(ctx, v));
-        let (roblox_entities, roblox_failure) = roblox;
-        let (minecraft_entities, minecraft_failure) = minecraft;
-        result.extend(roblox_entities);
-        result.extend(minecraft_entities);
+        result.extend(roblox);
+        result.extend(minecraft);
 
-        result.or_hard_failure(roblox_failure.or(minecraft_failure))
+        Ok(result)
     }
 }
 
 /// Resolve a Roblox account for `username` and, on a hit, mint its profile
-/// Username + profile-URL entities.
-async fn roblox_lookup(ctx: &ModuleContext, username: &str) -> (Vec<Entity>, Option<Error>) {
-    roblox_lookup_at(ctx, username, "https://users.roblox.com").await
-}
-
-/// `roblox_lookup`'s implementation, parameterized on the Roblox API base so a
-/// local server can exercise the primary resolve's failure contract in tests
-/// (mirrors `pgp::lookup`/`chain_intel::enrich_sol_at`). The primary
-/// exact-username resolve's transport/status/parse failure is returned as
-/// `Some(Error)` (distinct from a genuine "no such handle") so the caller can
-/// tell a real outage apart from a clean negative; the second-stage
-/// full-profile fetch stays genuinely-optional (degrades to stub-only, no
-/// failure reported) and is not parameterized since its failure is
-/// intentionally swallowed.
-async fn roblox_lookup_at(
-    ctx: &ModuleContext,
-    username: &str,
-    base: &str,
-) -> (Vec<Entity>, Option<Error>) {
+/// Username + profile-URL entities. Best-effort: any transport/parse failure
+/// yields an empty batch rather than erroring the whole module.
+async fn roblox_lookup(ctx: &ModuleContext, username: &str) -> Vec<Entity> {
     let mut out = Vec::new();
 
     // 1. Exact username → user id. This batch resolver returns `{"data":[]}`
@@ -191,37 +180,30 @@ async fn roblox_lookup_at(
     let req = serde_json::json!({ "usernames": [username], "excludeBannedUsers": false });
     let resp = match ctx
         .http
-        .post(format!("{base}/v1/usernames/users"))
+        .post("https://users.roblox.com/v1/usernames/users")
         .json(&req)
         .send_tagged(SRC)
         .await
     {
         Ok(r) if r.status().is_success() => r,
         Ok(r) => {
-            let status = r.status();
-            tracing::debug!(status = %status, "roblox username resolve non-success");
-            return (
-                out,
-                Some(Error::module(
-                    SRC,
-                    format!("roblox username resolve: HTTP {status}"),
-                )),
-            );
+            tracing::debug!(status = %r.status(), "roblox username resolve non-success");
+            return out;
         }
         Err(e) => {
             tracing::debug!(error = %e, "roblox username resolve failed");
-            return (out, Some(e));
+            return out;
         }
     };
     let batch: RobloxUsernameResp = match json_decode(SRC, resp).await {
         Ok(b) => b,
         Err(e) => {
             tracing::debug!(error = %e, "roblox username resolve decode failed");
-            return (out, Some(e));
+            return out;
         }
     };
     let Some(stub) = pick_exact_roblox(&batch.data, username) else {
-        return (out, None); // no Roblox account owns this exact handle
+        return out; // no Roblox account owns this exact handle
     };
     let roblox_id = stub.id;
     let canonical = stub.name.clone();
@@ -229,7 +211,7 @@ async fn roblox_lookup_at(
     // 2. Full public profile. A real id is always 200, so `fetch_json` (which
     //    also carries the per-host circuit breaker); degrade to stub-only on
     //    any failure rather than dropping the confirmed account.
-    let profile_url = format!("{base}/v1/users/{roblox_id}");
+    let profile_url = format!("https://users.roblox.com/v1/users/{roblox_id}");
     let profile: Option<RobloxProfile> = fetch_json::<RobloxProfile>(&ctx.http, SRC, &profile_url)
         .await
         .ok();
@@ -297,41 +279,31 @@ async fn roblox_lookup_at(
     );
     out.push(url_e);
 
-    (out, None)
+    out
 }
 
-/// Resolve a Minecraft (Java) account for `username`.
-async fn minecraft_lookup(ctx: &ModuleContext, username: &str) -> (Vec<Entity>, Option<Error>) {
-    minecraft_lookup_at(ctx, username, "https://api.mojang.com").await
-}
-
-/// `minecraft_lookup`'s implementation, parameterized on the Mojang API base
-/// so a local server can exercise the failure contract in tests. Mojang
-/// returns 404 for a non-existent handle (mapped to `None`, the genuine clean
-/// miss); every other failure (5xx, 429, transport, parse) is returned as
-/// `Some(Error)` so the caller can tell a real outage apart from a confirmed
-/// absence.
-async fn minecraft_lookup_at(
-    ctx: &ModuleContext,
-    username: &str,
-    base: &str,
-) -> (Vec<Entity>, Option<Error>) {
+/// Resolve a Minecraft (Java) account for `username`. Mojang returns 404 for a
+/// non-existent handle (mapped to `None`); a hit yields the account UUID.
+async fn minecraft_lookup(ctx: &ModuleContext, username: &str) -> Vec<Entity> {
     let mut out = Vec::new();
-    let url = format!("{base}/users/profiles/minecraft/{}", urlencode(username));
+    let url = format!(
+        "https://api.mojang.com/users/profiles/minecraft/{}",
+        urlencode(username)
+    );
     let profile = match fetch_json_or_404::<MojangProfile>(&ctx.http, SRC, &url).await {
         Ok(p) => p,
         Err(e) => {
             tracing::debug!(error = %e, "mojang lookup failed");
-            return (out, Some(e));
+            return out;
         }
     };
     let Some(profile) = profile else {
-        return (out, None); // no such Java account
+        return out; // no such Java account
     };
     // Mojang returns only the EXACT player and a 32-hex UUID; reject anything
     // that doesn't satisfy both (defends against an unexpected upstream shape).
     if !profile.name.eq_ignore_ascii_case(username) || profile.id.len() != 32 {
-        return (out, None);
+        return out;
     }
     let uuid = dash_uuid(&profile.id).unwrap_or_else(|| profile.id.clone());
 
@@ -353,7 +325,7 @@ async fn minecraft_lookup_at(
         .with_attr("source", "mojang-api"),
     );
     out.push(u);
-    (out, None)
+    out
 }
 
 /// Value-level admission: a gaming handle is 3–20 chars, ASCII alphanumeric or

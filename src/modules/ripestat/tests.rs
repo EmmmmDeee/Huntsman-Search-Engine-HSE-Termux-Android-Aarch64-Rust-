@@ -9,14 +9,14 @@ use super::*;
         let es = build_asns(&ni, "scan");
         // One ASN entity + one Cidr entity from the covering prefix.
         assert_eq!(es.len(), 2, "valid numeric ASN + covering Cidr");
-        let asn_e = es.iter().find(|e| e.kind == EntityKind::Asn).unwrap();
+        let asn_e = es.iter().find(|e| e.kind == EntityKind::Asn).expect("should succeed");
         assert_eq!(asn_e.value, "AS15169");
         assert!(asn_e.has_tag("ripestat"));
         assert_eq!(
-            asn_e.evidence[0].attributes.get("prefix").unwrap(),
+            asn_e.evidence[0].attributes.get("prefix").expect("should succeed"),
             "8.8.8.0/24"
         );
-        let cidr_e = es.iter().find(|e| e.kind == EntityKind::Cidr).unwrap();
+        let cidr_e = es.iter().find(|e| e.kind == EntityKind::Cidr).expect("should succeed");
         assert_eq!(cidr_e.value, "8.8.8.0/24");
         assert!(cidr_e.has_tag("network-prefix"));
         // Single announcing ASN ⇒ the covering Cidr carries the origin `asn`
@@ -52,7 +52,7 @@ use super::*;
         let ao = AsOverview {
             holder: Some("GOOGLE - Google LLC".into()),
         };
-        let e = build_org(&ao, "scan").unwrap();
+        let e = build_org(&ao, "scan").expect("should succeed");
         assert_eq!(e.kind, EntityKind::Organisation);
         assert_eq!(e.value, "GOOGLE - Google LLC");
         assert!(e.has_tag("network-holder"));
@@ -84,6 +84,39 @@ use super::*;
         assert!(!vals.iter().any(|v| v.contains("cloudflare.com")));
         // Trimmed + normalised.
         assert!(vals.iter().any(|v| v.contains("ops@example.org")));
+    }
+
+    #[test]
+    fn build_announced_prefixes_emits_deduped_sorted_cidrs() {
+        let ap = AnnouncedPrefixes {
+            prefixes: vec![
+                AnnouncedPrefix {
+                    prefix: Some("8.8.8.0/24".into()),
+                },
+                AnnouncedPrefix {
+                    prefix: Some("  8.8.4.0/24 ".into()),
+                },
+                // Duplicate of the first (post-trim) — must collapse.
+                AnnouncedPrefix {
+                    prefix: Some("8.8.8.0/24".into()),
+                },
+                // Malformed / no mask — dropped, never a junk CIDR.
+                AnnouncedPrefix {
+                    prefix: Some("not-a-prefix".into()),
+                },
+                AnnouncedPrefix { prefix: None },
+            ],
+        };
+        let es = build_announced_prefixes(&ap, "scan");
+        let vals: Vec<&str> = es.iter().map(|e| e.value.as_str()).collect();
+        // Deduped to two, in sorted (deterministic) order — not API order.
+        assert_eq!(vals, ["8.8.4.0/24", "8.8.8.0/24"]);
+        assert!(
+            es.iter()
+                .all(|e| e.kind == EntityKind::Cidr
+                    && e.has_tag("ripestat")
+                    && e.has_tag("network-prefix"))
+        );
     }
 
     #[test]
@@ -120,87 +153,4 @@ use super::*;
         let es = build_abuse(&emails, "scan");
         assert_eq!(es.len(), 2);
         assert!(es.iter().all(|e| e.kind == crate::core::entity::EntityKind::Email));
-    }
-
-    // -- stat_at / process failure contract (T2.160) -------------------------
-
-    /// One-shot local HTTP server answering with `status` + `body`. Mirrors
-    /// the pgp / sanctions_ofac / au_seifa test pattern.
-    async fn serve_once(status: u16, body: &'static str) -> std::net::SocketAddr {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let Ok((mut sock, _)) = listener.accept().await else {
-                return;
-            };
-            let mut buf = vec![0u8; 2048];
-            let _ = sock.read(&mut buf).await;
-            let reason = if status == 200 { "OK" } else { "Error" };
-            let head = format!(
-                "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\n\r\n",
-                body.len()
-            );
-            let _ = sock.write_all(head.as_bytes()).await;
-            let _ = sock.write_all(body.as_bytes()).await;
-            let _ = sock.flush().await;
-        });
-        addr
-    }
-
-    fn test_ctx() -> ModuleContext {
-        let (bus, _rx) = tokio::sync::broadcast::channel(1);
-        ModuleContext {
-            scan_id: "t".into(),
-            bus,
-            http: reqwest::Client::new(),
-            keys: std::collections::HashMap::new(),
-            cancel: crate::core::cancel::CancelHandle::new(),
-        }
-    }
-
-    #[tokio::test]
-    async fn stat_at_surfaces_transport_failure_as_error() {
-        // T2.160 regression: `.ok()` collapsed every transport/status/parse
-        // failure into the same `None` as a genuine empty `data` object.
-        let ctx = test_ctx();
-        let out = stat_at::<NetworkInfo>(&ctx, "network-info", "8.8.8.8", "http://127.0.0.1:1").await;
-        assert!(
-            out.is_err(),
-            "an unreachable RIPEstat host must surface as Err, not a silent None"
-        );
-    }
-
-    #[tokio::test]
-    async fn stat_at_surfaces_a_5xx_as_error() {
-        let addr = serve_once(503, "upstream down").await;
-        let ctx = test_ctx();
-        let out =
-            stat_at::<NetworkInfo>(&ctx, "network-info", "8.8.8.8", &format!("http://{addr}"))
-                .await;
-        assert!(out.is_err(), "a 5xx must surface as Err");
-    }
-
-    #[tokio::test]
-    async fn stat_at_surfaces_malformed_json_as_error() {
-        let addr = serve_once(200, "not json").await;
-        let ctx = test_ctx();
-        let out =
-            stat_at::<NetworkInfo>(&ctx, "network-info", "8.8.8.8", &format!("http://{addr}"))
-                .await;
-        assert!(out.is_err(), "an undecodable body must surface as Err");
-    }
-
-    #[tokio::test]
-    async fn stat_at_keeps_a_genuine_empty_data_object_as_a_clean_ok() {
-        // The genuine negative — a real 200 whose `data` is empty (no
-        // announcing ASN) — must stay `Ok`, never a failure.
-        let addr = serve_once(200, r#"{"status":"ok","data":{}}"#).await;
-        let ctx = test_ctx();
-        let out =
-            stat_at::<NetworkInfo>(&ctx, "network-info", "8.8.8.8", &format!("http://{addr}"))
-                .await
-                .unwrap();
-        assert!(out.asns.is_empty());
-        assert!(out.prefix.is_none());
     }

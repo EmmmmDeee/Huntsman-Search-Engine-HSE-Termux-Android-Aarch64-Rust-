@@ -10,12 +10,6 @@ use crate::util::response_cache::ResponseCache;
 use super::budget::{mark_key_invalid, mark_quota_exhausted};
 use super::enterprise_config::ENTERPRISE;
 
-// Embedded fallback: the single-source-of-truth default lives in `util::keys`.
-const HARDCODED_KEY: &str = crate::util::keys::SEEKNOW_DEFAULT_KEY;
-
-// Module name for error reporting — must match modules::see_know's registered name.
-const MODULE_NAME: &str = "see_know";
-
 /// Per-process response cache backed by the shared
 /// [`ResponseCache`] primitive (cap [`ENTERPRISE`]`.cache_size` — sized to
 /// comfortably hold every distinct endpoint × query a single scan
@@ -34,10 +28,23 @@ pub(super) static RESPONSE_CACHE: ResponseCache<Vec<Value>> =
 // 78s outer (curl < outer so curl's own exit code is observed), paired with an
 // 80s module max_timeout in `modules::see_know`.
 pub(super) static CLIENT: CurlClient = CurlClient::new(
-    MODULE_NAME,
+    "seek_now",
     AuthScheme::XApiKey,
     ENTERPRISE.curl_timeout_secs,
     ENTERPRISE.tokio_timeout_millis,
+);
+
+/// Tighter-budgeted client for the FAST single-parameter GET endpoints
+/// (`network/*`, `gaming/*`, `username/*`, `domain/*`, `discord/*`) — used by
+/// [`get_json_with_fallback`]. Those answer in ~2–5 s, so they must not inherit [`CLIENT`]'s
+/// wide 75 s ceiling (sized for the slow `/search` name path): a single hung GET
+/// would otherwise burn up to 75 s of the module's per-scan timeout budget before
+/// failing. `POST /search`/`/search/deep` keep the wide [`CLIENT`].
+pub(super) static CLIENT_FAST: CurlClient = CurlClient::new(
+    "seek_now",
+    AuthScheme::XApiKey,
+    ENTERPRISE.get_timeout_secs,
+    ENTERPRISE.get_tokio_timeout_millis,
 );
 
 /// Cache key combining endpoint path, normalised query, and query
@@ -72,30 +79,76 @@ pub(super) fn cache_put(key: String, items: Vec<Value>) {
     RESPONSE_CACHE.put(key, items);
 }
 
-pub(super) fn base_url() -> String {
-    // Default corrected (2026-07-14) from `.icu` back to the vendor's own stated
-    // domain, `.eu` — every other reference to SeekNow in this codebase (module
-    // docs, error strings, `key_harvest::service_domains`, `service_defs`, the
-    // operator-facing setup guide) already names `.eu`, and a real operator's
-    // freshly-generated SeekNow export footer states the platform's own domain as
-    // `https://see-know.eu`. `.icu` had been sandbox-confirmed reachable
-    // (T2.83, 2026-07-13) and was promoted to default on that basis, but a real
-    // device's own DNS resolver failed to resolve `.icu` at all (`curl exited 6`)
-    // in the same scan where a different provider's host on the same client
-    // machinery succeeded — `.icu`-TLD domains are commonly caught by carrier/ISP
-    // DNS-level abuse filtering, a real-world failure mode a sandboxed reachability
-    // probe cannot see. Vet the operator's override: refuse non-https /
-    // private-host redirects and WARN on a divergent host, so a key-bearing
-    // request can't be silently redirected to a look-alike or an internal address.
-    crate::util::endpoint_override::resolve("HUNTSMAN_SEEKNOW_BASE", "https://see-know.eu/api/v1")
+/// The built-in primary endpoint absent any `HUNTSMAN_SEEKNOW_BASE` override.
+/// Shared with [`all_base_urls`] so its "is an override actually active" check
+/// can never drift from the literal `base_url` resolves against.
+const DEFAULT_BASE: &str = "https://see-know.ru/api/v1";
+
+/// The API base URL in force: the operator's override when one is set and vetted,
+/// otherwise [`DEFAULT_BASE`].
+pub fn base_url() -> String {
+    // Default promoted (2026-07-29) to `.ru` — the operator-designated primary
+    // endpoint SeekNow is currently using. Prior history: default started on
+    // `.icu` (sandbox-confirmed reachable T2.83, 2026-07-13), was corrected to
+    // `.eu` (2026-07-14) after a real device's DNS resolver failed to resolve
+    // `.icu` (`curl exited 6`) while `.eu` succeeded, then to `.xyz`
+    // (2026-07-21). `.xyz`, `.eu` and `.icu` remain fallbacks in
+    // [`all_base_urls`] so a transient `.ru` outage still exhausts every known
+    // domain before the scan surfaces a connection error — UNLESS the operator
+    // has set an override, see that function's doc.
+    // Vet the operator's override: refuse non-https / private-host redirects and
+    // WARN on a divergent host, so a key-bearing request can't be silently
+    // redirected to a look-alike or an internal address.
+    crate::util::endpoint_override::resolve("HUNTSMAN_SEEKNOW_BASE", DEFAULT_BASE)
 }
 
-/// The SeekNow API key to use for a request: the per-scan context key `ctx_key`
-/// when the operator supplied one, otherwise the built-in default
-/// ([`crate::util::keys::resolve_or_default`]). Mirrors `oathnet::resolve_key`.
-#[must_use]
-pub fn resolve_key(ctx_key: Option<&str>) -> &str {
-    crate::util::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
+/// All SeekNow base URLs to try, in order. The service intentionally rotates
+/// domains, so with NO operator override active, fallback attempts exhaustively
+/// try all known public domains before surfacing a network/connection error,
+/// letting the scan continue despite transient domain availability. Auth errors
+/// (invalid key, plan required) are NOT retried across domains — if the key is
+/// invalid on one, it's invalid on all.
+///
+/// An ACCEPTED `HUNTSMAN_SEEKNOW_BASE` override — [`base_url`] resolving to
+/// anything other than [`DEFAULT_BASE`] — takes exclusive effect instead:
+/// no public-domain fallback is appended. Previously every fallback attempt
+/// still ran even with an override set, so a transient hiccup on the
+/// operator's chosen endpoint silently sent the same key-bearing,
+/// PII-bearing request on to see-know.eu/.icu/.ru — hosts the operator did not
+/// choose, defeating the override's own purpose (see `endpoint_override`'s
+/// doc comment on why a redirect must never be silent). It also actively
+/// worked against the override's most-recommended use: `hse doctor` tells an
+/// operator on a carrier that DNS-filters the public domains to point this
+/// override at a reachable proxy — falling back to the direct domains from
+/// there just reproduces the exact resolution failure the override exists
+/// to route around. A rejected/unsafe override (`endpoint_override::resolve`
+/// already WARNs and substitutes [`DEFAULT_BASE`]) is indistinguishable here
+/// from no override at all, so it correctly still gets full rotation.
+pub(super) fn all_base_urls() -> Vec<String> {
+    base_urls_for(base_url())
+}
+
+/// [`all_base_urls`] split on the already-resolved primary URL, so the
+/// override-exclusivity policy is unit-testable against a literal instead of
+/// the real `HUNTSMAN_SEEKNOW_BASE` environment variable (which tests must
+/// not mutate — `std::env::set_var` is `unsafe`, denied crate-wide).
+pub(super) fn base_urls_for(primary: String) -> Vec<String> {
+    if primary != DEFAULT_BASE {
+        return vec![primary];
+    }
+
+    let mut urls = vec![primary];
+    let fallbacks = [
+        "https://see-know.xyz/api/v1",
+        "https://see-know.eu/api/v1",
+        "https://see-know.icu/api/v1",
+    ];
+    for fallback in &fallbacks {
+        if !urls.contains(&fallback.to_string()) {
+            urls.push(fallback.to_string());
+        }
+    }
+    urls
 }
 
 /// A stable, human-identifiable fingerprint of the SeekNow API key used for a
@@ -104,22 +157,17 @@ pub fn resolve_key(ctx_key: Option<&str>) -> &str {
 /// operator running several keys can tell which one produced a finding) without
 /// scattering the full secret across the persisted entity store. Pure, so the
 /// format is unit-testable.
+///
+/// The prefix is the domain-agnostic `"see-know"` label, not any one of the
+/// three rotating domains ([`all_base_urls`]) — a request served by a fallback
+/// domain still carries the same fingerprint, and the label never goes stale
+/// when the primary domain changes (see the `provider` evidence attribute
+/// fix this mirrors, in `see_know::extract`).
 #[must_use]
 pub fn key_fingerprint(key: &str) -> String {
-    let k = key.trim();
-    if k.is_empty() {
-        return "see-know.eu:(no key)".to_string();
-    }
-    if k.len() <= 18 {
-        return format!("see-know.eu:{k}");
-    }
-    let head: String = k.chars().take(13).collect();
-    let tail: String = {
-        let mut t: Vec<char> = k.chars().rev().take(6).collect();
-        t.reverse();
-        t.into_iter().collect()
-    };
-    format!("see-know.eu:{head}\u{2026}{tail}")
+    // Shared implementation in `util::key_fingerprint`; this fixes see-know's
+    // label and truncation widths (show ≤18-byte keys whole, else 13…6).
+    crate::util::key_fingerprint::fingerprint("see-know", key, 18, 13, 6)
 }
 
 /// Body signature of a key that cannot retrieve data — so the whole scan should
@@ -158,9 +206,22 @@ enum Terminal {
     RateLimited,
 }
 
-/// True if either `credits_remaining` meter (top-level, or nested under `data`)
-/// reads exactly 0 — the JSON-scoped quota signal.
+/// True when a body signals true daily-quota exhaustion: a zero
+/// `credits_remaining` meter (top-level, or nested under `data`) on a body that
+/// is NOT a success. A `success:true` body is excluded even at zero credits —
+/// it still carries the data of the paid call that spent the last credit, so it
+/// must be returned rather than dropped (see the body comment).
 fn credits_exhausted(v: &Value) -> bool {
+    // A SUCCESSFUL body that merely spent its last credit still carries its
+    // data (`success:true, results:[...], credits_remaining:0`). Treating that
+    // as exhaustion returned `Ok(Value::Null)` from `parse_response`, silently
+    // dropping the results of a paid call — the final successful lookup before
+    // the quota ran out lost its answer. True exhaustion is a NON-success body
+    // (the 429 / error envelope) reporting zero credits, so only classify the
+    // zero-credit meter as terminal when the body is not a success.
+    if v.get("success").and_then(Value::as_bool) == Some(true) {
+        return false;
+    }
     let zero = |o: &Value| o.get("credits_remaining").and_then(Value::as_i64) == Some(0);
     zero(v) || v.get("data").is_some_and(zero)
 }
@@ -209,8 +270,14 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
         if is_auth_error(body) {
             mark_key_invalid(body);
         } else if !trimmed.is_empty() {
+            // Redact BEFORE truncating: slicing first could cut a credential in
+            // half and emit the surviving prefix verbatim. This is the same
+            // discipline `util::http::error_snippet` applies to every body it
+            // embeds — see_know's two body previews were the only ones that
+            // bypassed it.
+            let redacted = crate::util::http::redact_credentials(body);
             tracing::debug!(
-                preview = %body.chars().take(60).collect::<String>(),
+                preview = %redacted.chars().take(60).collect::<String>(),
                 "see_know: non-JSON response body treated as no results"
             );
         }
@@ -221,7 +288,7 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
     // auth/quota marker cannot disable the provider for the whole scan. A body that
     // looks like JSON but won't parse is genuine schema drift → surfaced as an error.
     let value: Value =
-        serde_json::from_str(body).map_err(|e| Error::module(MODULE_NAME, e.to_string()))?;
+        serde_json::from_str(body).map_err(|e| Error::module("seek_now", e.to_string()))?;
     match classify_terminal(&value) {
         Some(Terminal::Auth) => {
             mark_key_invalid(body);
@@ -235,38 +302,330 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
         // `endpoints.rs` can distinguish "back off and retry" from a normal
         // empty result — see `Terminal::RateLimited`'s doc comment for why
         // this must NOT latch `mark_quota_exhausted()`.
+        // Redacted before truncation for the same reason as the preview above:
+        // `Error::RateLimited`'s Display reaches operator-facing sinks, so a
+        // credential echoed in a provider error body must never ride along.
         Some(Terminal::RateLimited) => Err(Error::RateLimited(format!(
-            "{}: {}",
-            MODULE_NAME,
-            body.chars().take(120).collect::<String>()
+            "seek_now: {}",
+            crate::util::http::redact_credentials(body)
+                .chars()
+                .take(120)
+                .collect::<String>()
         ))),
         None => Ok(value),
     }
 }
 
-pub(super) async fn get_json(url: &str, key: &str, endpoint: &str, query: &str) -> Result<Value> {
-    let body = CLIENT.get(url, key).await?;
-    // Retain the paid response verbatim BEFORE parsing/extraction — operator
-    // policy: purchased data is kept in absolute completeness until manually
-    // deleted (see `util::raw_archive`). `endpoint`/`query` name the saved file
-    // so it's obvious what was looked up. Empty bodies are skipped by the archive.
-    crate::util::raw_archive::record("see-know", endpoint, query, &body);
-    parse_response(&body)
+/// Route a raw see-know `(body, status)` to either a retryable-transient error
+/// or the normal body parse. A 5xx (a one-off gateway/CDN 502/503) or status `0`
+/// (curl saw no HTTP response) is returned as [`Error::RateLimited`] so the
+/// endpoint retry loops back off and retry it — see-know.eu is the operator's
+/// highest-priority paid source, and a one-off upstream 5xx was previously
+/// indistinguishable from "no results" (the HTML error page parsed to an empty
+/// [`Value::Null`]) and silently lost. A 2xx-empty result and a 4xx JSON body
+/// (including the `invalid_api_key`/`plan_required` auth latch) keep their exact
+/// [`parse_response`] classification — only the transient class is diverted.
+/// True when a TRANSPORT-layer error string names a terminal auth failure, so
+/// the multi-domain fallback stops instead of re-asking every alternate domain
+/// with the same rejected key.
+///
+/// One named predicate rather than the identical condition inlined at each of
+/// the three fallback loops (POST / GET / raw-GET), which is both a drift risk
+/// and — as a bare expression — untestable.
+///
+/// Deliberately narrow: this is the curl-transport path, where an HTTP 401
+/// normally arrives as `Ok((body, 401))` and is classified by `parse_response`.
+/// It stays as a guard for the case where a proxy or DoH layer surfaces the
+/// rejection as an error string instead.
+pub(super) fn transport_err_is_terminal_auth(err_str: &str) -> bool {
+    // Single case-normalised pass, matching the exact substrings `is_auth_error`
+    // recognises on the body-classification path. A prior version checked
+    // `"invalid"` against the original-case string while lower-casing only the
+    // "key" half, so a proxy/DoH-surfaced message like "Invalid API key" (the
+    // capitalised form `is_auth_error` explicitly anticipates) never matched —
+    // the fallback loop kept retrying every alternate domain with the same
+    // rejected key instead of failing fast.
+    //
+    // "401" is checked separately, via `contains_401_as_a_status_code` rather
+    // than a bare substring match, for an unrelated reason: see that
+    // function's own doc for why a plain `contains("401")` misclassifies an
+    // ordinary timeout whose elapsed-ms duration happens to embed those
+    // digits.
+    let lower = err_str.to_lowercase();
+    contains_401_as_a_status_code(err_str)
+        || lower.contains("unauthorized")
+        || lower.contains("invalid_api_key")
+        || lower.contains("invalid api key")
+        || lower.contains("plan_required")
 }
 
-pub(super) async fn post_json(
-    url: &str,
+/// True if `s` contains "401" as an isolated token, not merely as three
+/// consecutive digits inside a longer number. A curl transport-level failure
+/// (this function's only caller is the pre-response, connection/DNS/timeout
+/// path) commonly reports an elapsed duration — libcurl's own timeout message
+/// is literally "Operation timed out after {ms} milliseconds..." — so a bare
+/// `contains("401")` matched an elapsed time landing anywhere in
+/// 401/4010-4019/40100-40199/… milliseconds, wrongly classifying an ordinary
+/// timeout as a rejected key and aborting the whole multi-domain fallback
+/// instead of trying the next domain. The existing test suite already asserts
+/// `"connection timed out"` must NEVER be terminal — this closes the same gap
+/// for a differently-worded timeout that happens to embed those digits.
+fn contains_401_as_a_status_code(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    s.match_indices("401").any(|(i, _)| {
+        let before_is_digit = i > 0 && bytes[i - 1].is_ascii_digit();
+        let after_is_digit = bytes.get(i + 3).is_some_and(u8::is_ascii_digit);
+        !before_is_digit && !after_is_digit
+    })
+}
+
+pub(super) fn classify_status(body: &str, status: u16) -> Result<Value> {
+    if status == 0 || (500..600).contains(&status) {
+        // A 5xx is usually a genuine transient gateway/CDN failure (the
+        // common case: an HTML error page, no JSON body) — but a
+        // misconfigured upstream or WAF can also wrap a genuine auth/quota
+        // rejection in a 5xx. Peek at the body with the SAME narrow
+        // top-level `error`/`message` envelope check `parse_response`'s JSON
+        // path already trusts (never a raw substring scan of the whole
+        // payload — see `classify_terminal`'s doc comment for why that
+        // matters) before defaulting to transient, so a permanently-bad key
+        // still latches instead of retrying every fallback domain for the
+        // rest of the scan.
+        if let Ok(value) = serde_json::from_str::<Value>(body) {
+            match classify_terminal(&value) {
+                Some(Terminal::Auth) => {
+                    mark_key_invalid(body);
+                    return Ok(Value::Null);
+                }
+                Some(Terminal::Quota) => {
+                    mark_quota_exhausted();
+                    return Ok(Value::Null);
+                }
+                _ => {}
+            }
+        }
+        return Err(Error::RateLimited(format!(
+            "seek_now: HTTP {status} transient upstream failure"
+        )));
+    }
+    // HTTP 401 is unambiguous per both HTTP semantics and SeekNow's own
+    // documented mapping (docs/SEEKNOW_SETUP.md: "401 Unauthorized — Invalid/
+    // expired API key"): the whole key is bad, independent of how the JSON
+    // body happens to word it. Without this status-code check, a 401 body that
+    // didn't use one of the three exact substrings `is_auth_error` checks (e.g.
+    // `{"error":"unauthorized"}`) fell through to `parse_response`, which found
+    // no recognised error/quota envelope in a well-formed JSON object and
+    // returned it as an ordinary — silently EMPTY — success: the scan then
+    // burned through every remaining lookup against a key the server had
+    // already and definitively rejected, and `hse doctor`'s "key invalid"
+    // diagnostic never latched.
+    if status == 401 {
+        mark_key_invalid(body);
+        return Ok(Value::Null);
+    }
+    // HTTP 403 is documented DIFFERENTLY: "Plan doesn't allow endpoint — skips
+    // endpoint, continues with others" — a PER-ENDPOINT restriction, not a
+    // key-wide rejection. It must NEVER call `mark_key_invalid`: that disables
+    // SeekNow for the rest of the scan ACROSS EVERY ENDPOINT, so one
+    // plan-gated endpoint's 403 would wrongly silence every other,
+    // currently-working endpoint too — a false-positive lockout worse than the
+    // gap this is fixing. Surfacing it as a typed `Err` (rather than falling
+    // through to the same silent `Ok(empty)` success as the 401 case used to)
+    // is enough: `fold_endpoint_result` (every SeekNow dispatcher's shared
+    // fold) warns and skips just this one endpoint, and
+    // `ModuleResult::or_hard_failure` escalates it only if the WHOLE seed still
+    // ends up with zero entities. Excluded when the body already carries a
+    // known auth/plan marker (`plan_required` in particular is the ACCOUNT
+    // having no paid plan at all, a genuinely key-wide issue) — that case falls
+    // through to the existing, already-tested body-based latch below.
+    if status == 403 && !is_auth_error(body) {
+        return Err(Error::module(
+            "seek_now",
+            "HTTP 403 (endpoint not covered by the account's plan)",
+        ));
+    }
+    // A CDN/gateway 429 "Too Many Requests" is commonly served as an HTML or
+    // plain-text interstitial, NOT the API's JSON `{"error":"rate_limit"}`
+    // envelope. Such a body hits `parse_response`'s non-JSON branch and becomes
+    // an empty `Ok(Value::Null)` — a silent miss with NO backoff, the exact
+    // "throttled call silently abandoned" failure `Error::RateLimited` exists to
+    // prevent (symmetric with the 5xx divert above). Divert ONLY a non-JSON,
+    // non-auth 429: a JSON 429 keeps its precise `parse_response`/`classify_terminal`
+    // classification (`rate_limit`→retry, `quota_exceeded`/`invalid_api_key`→latch),
+    // and a plaintext auth rejection still latches the key via `parse_response`.
+    if status == 429 {
+        let trimmed = body.trim_start();
+        if !trimmed.starts_with('{') && !trimmed.starts_with('[') && !is_auth_error(body) {
+            return Err(Error::RateLimited(
+                "seek_now: HTTP 429 rate limited (non-JSON body)".into(),
+            ));
+        }
+    }
+    parse_response(body)
+}
+
+/// POST with multi-domain fallback. Tries the primary domain first, then falls back
+/// to alternate domains on connection/network errors (not auth errors). Auth errors
+/// (invalid key, plan required) are NOT retried across domains — if the key is invalid,
+/// no domain will help, so we fail fast and avoid wasting domains.
+pub(super) async fn post_json_with_fallback(
+    endpoint_path: &str,
     key: &str,
     body: &str,
     endpoint: &str,
     query: &str,
 ) -> Result<Value> {
-    let resp = CLIENT.post_json(url, key, body).await?;
-    // Archive the raw paid response verbatim, filed under the queried value.
-    crate::util::raw_archive::record("see-know", endpoint, query, &resp);
-    parse_response(&resp)
+    let urls = all_base_urls();
+    let mut last_error = None;
+
+    for (idx, base) in urls.iter().enumerate() {
+        let url = format!("{base}{endpoint_path}");
+        // Route the (body, status) through `classify_status` so a 5xx / status-0
+        // transient upstream failure surfaces as `RateLimited` instead of being
+        // parsed as an empty "no results" body and silently lost.
+        match CLIENT.post_json_with_status(&url, key, body).await {
+            Ok((resp, status)) => match classify_status(&resp, status) {
+                Ok(value) => {
+                    crate::util::raw_archive::record("see-know", endpoint, query, &resp);
+                    return Ok(value);
+                }
+                // Transient upstream failure — a rotated domain may answer.
+                Err(e @ Error::RateLimited(_)) => {
+                    if idx < urls.len() - 1 {
+                        tracing::debug!(
+                            domain = base,
+                            endpoint = endpoint_path,
+                            "see_know POST transient (5xx/rate-limit) — trying next domain"
+                        );
+                    }
+                    last_error = Some(e);
+                }
+                // Auth / body classification is identical on every domain — terminal.
+                Err(e) => return Err(e),
+            },
+            Err(e) => {
+                // Auth errors are terminal — no point trying other domains.
+                if transport_err_is_terminal_auth(&e.to_string()) {
+                    return Err(e);
+                }
+                // For other errors (connection, DNS, timeout), try the next domain.
+                if idx < urls.len() - 1 {
+                    tracing::debug!(
+                        domain = base,
+                        endpoint = endpoint_path,
+                        "see_know POST failed — trying next domain"
+                    );
+                }
+                last_error = Some(e);
+            }
+        }
+    }
+
+    // Exhausted all domains; return the last error.
+    Err(last_error.unwrap_or_else(|| Error::module("see_know", "all domains exhausted")))
 }
 
-/// Expose the hardcoded default key so tests can assert on it.
-#[cfg(test)]
-pub(super) const HARDCODED_KEY_FOR_TESTS: &str = HARDCODED_KEY;
+/// GET with multi-domain fallback. Tries the primary domain first, then falls back
+/// to alternate domains on connection/network errors (not auth errors).
+pub(super) async fn get_json_with_fallback(
+    endpoint_path: &str,
+    key: &str,
+    query_str: &str,
+    endpoint: &str,
+    query_value: &str,
+) -> Result<Value> {
+    let urls = all_base_urls();
+    let mut last_error = None;
+
+    for (idx, base) in urls.iter().enumerate() {
+        let url = format!("{base}{endpoint_path}?{query_str}");
+        // The fast GET endpoints use the tighter-budgeted CLIENT_FAST (see its
+        // doc), and route the (body, status) through `classify_status` so a 5xx
+        // / status-0 transient upstream failure is surfaced as `RateLimited`
+        // rather than parsed as an empty "no results" body.
+        match CLIENT_FAST.get_with_status(&url, key).await {
+            Ok((body, status)) => match classify_status(&body, status) {
+                Ok(value) => {
+                    crate::util::raw_archive::record("see-know", endpoint, query_value, &body);
+                    return Ok(value);
+                }
+                // A 5xx / status-0 / upstream rate-limit is transient — the
+                // service rotates domains, so a rotated host may still answer.
+                // Remember it and try the next domain; if all are exhausted the
+                // caller's backoff loop retries the whole fallback.
+                Err(e @ Error::RateLimited(_)) => {
+                    if idx < urls.len() - 1 {
+                        tracing::debug!(
+                            domain = base,
+                            endpoint = endpoint_path,
+                            "see_know GET transient (5xx/rate-limit) — trying next domain"
+                        );
+                    }
+                    last_error = Some(e);
+                }
+                // Auth / body classification (invalid key, plan required) is
+                // identical on every domain — terminal, don't waste the rotation.
+                Err(e) => return Err(e),
+            },
+            Err(e) => {
+                // Auth errors are terminal — no point trying other domains.
+                if transport_err_is_terminal_auth(&e.to_string()) {
+                    return Err(e);
+                }
+                // For other errors (connection, DNS, timeout), try the next domain.
+                if idx < urls.len() - 1 {
+                    tracing::debug!(
+                        domain = base,
+                        endpoint = endpoint_path,
+                        "see_know GET failed — trying next domain"
+                    );
+                }
+                last_error = Some(e);
+            }
+        }
+    }
+
+    // Exhausted all domains; return the last error.
+    Err(last_error.unwrap_or_else(|| Error::module("see_know", "all domains exhausted")))
+}
+
+/// Raw GET with multi-domain fallback (no parsing/archiving). Used for meta-queries
+/// like `/credits` that don't consume budget and shouldn't be archived.
+///
+/// Routes through [`CLIENT_FAST`], not the wide `/search`-sized [`CLIENT`]: its
+/// only caller (`credits_probe`) is a parameter-free metadata GET answering in
+/// low single-digit seconds, same shape as the other [`CLIENT_FAST`] endpoints
+/// — not the ~55s-worst-case name search [`CLIENT`] is budgeted for. Before this
+/// fix a single unreachable domain could burn the full 78s `CLIENT` outer
+/// timeout (curl's own 75s `--max-time` plus headroom — see [`CLIENT`]'s doc)
+/// per domain: up to ~234s across all 3 fallback domains before `hse doctor`
+/// or scan-start's budget-scaling probe got an answer.
+pub(super) async fn get_raw_with_fallback(endpoint_path: &str, key: &str) -> Result<String> {
+    let urls = all_base_urls();
+    let mut last_error = None;
+
+    for (idx, base) in urls.iter().enumerate() {
+        let url = format!("{base}{endpoint_path}");
+        match CLIENT_FAST.get(&url, key).await {
+            Ok(body) => return Ok(body),
+            Err(e) => {
+                // Auth errors are terminal — no point trying other domains.
+                if transport_err_is_terminal_auth(&e.to_string()) {
+                    return Err(e);
+                }
+                // For other errors (connection, DNS, timeout), try the next domain.
+                if idx < urls.len() - 1 {
+                    tracing::debug!(
+                        domain = base,
+                        endpoint = endpoint_path,
+                        "see_know raw GET failed — trying next domain"
+                    );
+                }
+                last_error = Some(e);
+            }
+        }
+    }
+
+    // Exhausted all domains; return the last error.
+    Err(last_error.unwrap_or_else(|| Error::module("see_know", "all domains exhausted")))
+}

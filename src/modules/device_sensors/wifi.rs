@@ -1,7 +1,9 @@
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
+    error::Result,
     module::ModuleResult,
 };
 
@@ -32,14 +34,18 @@ pub(super) fn wifi_band(freq_mhz: Option<i64>) -> Option<&'static str> {
 
 /// Parse `termux-wifi-connectioninfo`'s JSON into the connected access point's
 /// entities (BSSID / SSID / frequency band) — the Wi-Fi the device is on, a
-/// strong co-location signal (a BSSID geolocates via wardriving databases). Empty
-/// result on unparseable JSON (tool absent / Wi-Fi off), so absence degrades to
-/// "no signal". Pure given `stdout` — unit-testable without a device.
-pub(super) fn parse_conn(stdout: &[u8], scan_id: &str) -> ModuleResult {
-    let info: ConnInfo = match serde_json::from_slice(stdout) {
-        Ok(v) => v,
-        Err(_) => return ModuleResult::new(),
-    };
+/// strong co-location signal (a BSSID geolocates via wardriving databases).
+///
+/// Blank output from a tool that exited 0 is an honest empty `Ok` (Wi-Fi off,
+/// nothing to report). Non-blank output that will not parse is a malfunction
+/// and surfaces as an `Err`, so a broken tool is never reported as "not
+/// connected". Pure given `stdout` — unit-testable without a device.
+pub(super) fn parse_conn(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
+    if super::is_blank(stdout) {
+        return Ok(ModuleResult::new());
+    }
+    let info: ConnInfo = serde_json::from_slice(stdout)
+        .map_err(|e| super::unparseable(super::Sensor::WifiConnection, &e))?;
 
     let mut result = ModuleResult::new();
     let ssid = info.ssid.as_deref().unwrap_or("<hidden>");
@@ -49,7 +55,12 @@ pub(super) fn parse_conn(stdout: &[u8], scan_id: &str) -> ModuleResult {
         && bssid != "00:00:00:00:00:00"
         && bssid != "02:00:00:00:00:00"
     {
-        let mut e = Entity::new(EntityKind::MacAddress, bssid.as_str(), 0.95, scan_id);
+        let mut e = Entity::new(
+            EntityKind::MacAddress,
+            bssid.as_str(),
+            confidence::VERY_HIGH_PLUSPLUS,
+            scan_id,
+        );
         e.tag("wifi-connected");
         e.tag("geolocatable");
         let mut bssid_ev = Evidence::new(SRC, format!("Connected to: {ssid}"))
@@ -76,7 +87,12 @@ pub(super) fn parse_conn(stdout: &[u8], scan_id: &str) -> ModuleResult {
         && !ip.is_empty()
         && ip != "0.0.0.0"
     {
-        let mut e = Entity::new(EntityKind::IpAddress, ip.as_str(), 0.90, scan_id);
+        let mut e = Entity::new(
+            EntityKind::IpAddress,
+            ip.as_str(),
+            confidence::VERY_HIGH_PLUS,
+            scan_id,
+        );
         e.tag("local-wifi");
         let mut ip_ev = Evidence::new(SRC, format!("Local IP on {ssid}")).with_attr("ssid", ssid);
         if let Some(ref bssid) = info.bssid {
@@ -97,5 +113,5 @@ pub(super) fn parse_conn(stdout: &[u8], scan_id: &str) -> ModuleResult {
         result.push(e);
     }
 
-    result
+    Ok(result)
 }

@@ -1,10 +1,11 @@
 use super::*;
 
 pub(in crate::core::correlator) fn rule_au_018_email_address_colocation(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Single pass partitions the two member classes instead of filtering the
     // entity list twice (once for emails, once for addresses/coordinates).
     let mut emails: Vec<&Entity> = Vec::new();
@@ -44,20 +45,19 @@ pub(in crate::core::correlator) fn rule_au_018_email_address_colocation(
     // ("co-located with 6" and "with 9") for one scan.
     let mut uids: Vec<String> = emails.iter().map(|e| e.uid.clone()).collect();
     uids.extend(addresses.iter().map(|e| e.uid.clone()));
-    vec![Correlation {
-        rule_id: "AU-018".into(),
-        rule_name: "Email + physical location co-located".into(),
-        severity: Severity::High,
-        description: format!(
+    vec![Correlation::new(
+        "AU-018",
+        "Email + physical location co-located",
+        Severity::High,
+        format!(
             "{} email(s) co-located with {} address/coordinate(s) — identity-location linkage",
             emails.len(),
             addresses.len()
         ),
-        entity_uids: uids,
-        scan_id: scan_id.into(),
+        uids,
+        scan_id,
         ts,
-        rank: 0.0,
-    }]
+    )]
 }
 
 /// AU-058 — Professional profile geographic signal (T1591.002).
@@ -68,10 +68,11 @@ pub(in crate::core::correlator) fn rule_au_018_email_address_colocation(
 /// surfaced as a geographic signal aligned with MITRE T1591.002 (Business
 /// Relationships — physical location inferred from professional context).
 pub(in crate::core::correlator) fn rule_au_058_professional_profile_geo(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const PROF_HOSTS: &[&str] = &["ratemyagent.com.au", "homely.com.au", "soho.com.au"];
 
     let mut out = Vec::new();
@@ -112,10 +113,17 @@ pub(in crate::core::correlator) fn rule_au_058_professional_profile_geo(
     out
 }
 
-/// Extract the suburb token from a ratemyagent.com.au agent URL slug.
+/// Extract the suburb token(s) from a ratemyagent.com.au agent URL slug.
 ///
-/// Pattern: `/real-estate-agent/<name>-<suburb>-<id>/`
-/// The trailing ID is stripped; the preceding token is the suburb.
+/// Pattern: `/real-estate-agent/<name>-<suburb>-<id>/`, where `<name>` is an
+/// elastic run of one or more hyphenated tokens and `<suburb>` itself may be
+/// multiple words (Gold Coast, Sunshine Coast and Alice Springs are all
+/// prominent ratemyagent.com.au markets) — hyphen-splitting alone cannot say
+/// where the elastic `<name>` ends and a multi-word `<suburb>` begins. Tries
+/// the longest window (up to `MAX_SUBURB_WORDS` tokens) ending right before
+/// the id that exactly matches a tabulated Australian locality first, falling
+/// back to the single trailing token when nothing tabulated matches — an
+/// untabulated suburb still resolves, just at one-word grain, as before.
 pub(super) fn extract_ratemyagent_suburb(url: &str) -> Option<String> {
     let path_start = url.find("/real-estate-agent/")?;
     let slug_area = &url[path_start + "/real-estate-agent/".len()..];
@@ -132,7 +140,26 @@ pub(super) fn extract_ratemyagent_suburb(url: &str) -> Option<String> {
     if !id.chars().all(|c| c.is_ascii_alphanumeric()) || id.len() < 2 {
         return None;
     }
-    let suburb = parts[parts.len() - 2];
+    let before_id = &parts[..parts.len() - 1];
+    const MAX_SUBURB_WORDS: usize = 3;
+    for window in (2..=MAX_SUBURB_WORDS.min(before_id.len())).rev() {
+        let candidate = &before_id[before_id.len() - window..];
+        if !candidate
+            .iter()
+            .all(|t| t.len() >= 2 && t.chars().all(|c| c.is_ascii_alphabetic()))
+        {
+            continue;
+        }
+        let joined_lower = candidate
+            .iter()
+            .map(|t| t.to_lowercase())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if crate::util::city_coords::is_tabulated_au_city(&joined_lower) {
+            return Some(candidate.join(" "));
+        }
+    }
+    let suburb = *before_id.last()?;
     if suburb.len() >= 4 && suburb.chars().all(|c| c.is_ascii_alphabetic()) {
         Some(suburb.to_string())
     } else {
@@ -152,10 +179,11 @@ pub(super) fn extract_ratemyagent_suburb(url: &str) -> Option<String> {
 /// turning a lone candidate into a reliable relative. Nothing fires without both
 /// a confirmed subject coordinate and ≥1 in-area family-candidate.
 pub(in crate::core::correlator) fn rule_au_061_family_geo_corroboration(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use crate::core::geo_family::{FAMILY_GEO_KM, distance_to_subject, subject_fixes};
 
     // The subject's confirmed location(s) — the one shared anchor (a GPS fix OR
@@ -347,10 +375,11 @@ fn cell_country_note(fix_in_au: bool, cells: &[&Entity]) -> String {
 /// on-device sensor tags, so it concerns only the operator's own device and
 /// never a remote subject. Pure over the confirmed set.
 pub(in crate::core::correlator) fn rule_au_103_device_self_location(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Best passive on-device location fix.
     let mut best: Option<SelfFix> = None;
     let mut fix_uids: Vec<String> = Vec::new();

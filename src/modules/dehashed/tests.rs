@@ -2,6 +2,7 @@ use super::DeHashed;
 use super::build::{balance_str, build_breach_entity, db_names, extract_records, selector_for};
 use super::types::DehashedResp;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind},
     module::{Module, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
@@ -29,6 +30,14 @@ fn has(result: &ModuleResult, kind: EntityKind, value: &str) -> bool {
         .entities
         .iter()
         .any(|e| e.kind == kind && e.value == value)
+}
+
+#[test]
+fn cache_ttl_is_24h_so_repeat_scans_dont_re_spend_a_paid_lookup() {
+    use crate::core::module::Module;
+    // Immutable breach dumps ⇒ the inter-scan cache serves a repeat scan for
+    // free; a 0 (trait default) would disable it, so pin the window.
+    assert_eq!(DeHashed.cache_ttl_secs(), 86_400);
 }
 
 #[test]
@@ -69,6 +78,7 @@ fn attack_techniques_reflect_the_full_shared_breach_rich_extraction() {
         "T1591.002",
         "T1592",
         "T1593.001",
+        "T1597.002",
     ] {
         assert!(t.contains(&id), "dehashed must claim {id}, got {t:?}");
         assert!(attack::technique(id).is_some(), "{id} must be catalogued");
@@ -125,14 +135,14 @@ fn aggregates_hits_top_databases_and_balance_from_v2_arrays() {
         "a@b.com",
         "email",
         &entries,
-        900,
+        Some(900),
         Some("498"),
         "s",
     )
     .expect("exact `email` selector with a positive total emits a headline");
     assert_eq!(e.kind, EntityKind::Email);
     assert!(e.has_tag(tags::BREACH) && e.has_tag("dehashed"));
-    assert!((e.confidence - 0.88).abs() < 1e-9);
+    assert!((e.confidence - confidence::EXPERT).abs() < 1e-9);
     assert_eq!(attr(&e, "hits"), Some("900")); // server total, not len
     assert_eq!(attr(&e, "returned"), Some("3"));
     assert_eq!(attr(&e, "selector"), Some("email"));
@@ -147,18 +157,91 @@ fn aggregates_hits_top_databases_and_balance_from_v2_arrays() {
 fn count_only_response_omits_optional_aggregates() {
     // `domain` is identity-exact, so a count-only response (server total, no rows)
     // is a genuine signal for that exact value and still emits the headline.
-    let e = build_breach_entity(EntityKind::Domain, "x.com", "domain", &[], 42, None, "s")
-        .expect("exact `domain` selector with a positive count emits a headline");
+    let e = build_breach_entity(
+        EntityKind::Domain,
+        "x.com",
+        "domain",
+        &[],
+        Some(42),
+        None,
+        "s",
+    )
+    .expect("exact `domain` selector with a positive count emits a headline");
     assert!(e.has_tag(tags::BREACH));
     assert_eq!(attr(&e, "hits"), Some("42"));
     assert_eq!(attr(&e, "returned"), Some("0"));
+    // A provider-supplied total is exact, not a floor.
+    assert_eq!(attr(&e, "total_source"), Some("provider"));
+    assert_eq!(attr(&e, "coverage"), None);
     assert_eq!(attr(&e, "top_databases"), None);
     assert_eq!(attr(&e, "credit_balance"), None);
 }
 
 #[test]
+fn omitted_total_on_a_full_page_is_a_floor_not_an_exact_count() {
+    // Item 21: when DeHashed omits `total`, HSE must not pass `entries.len()` off
+    // as an exact count. A FULL page (>= PAGE_SIZE) means later pages this
+    // single-page query never fetched could hold more, so the count is a floor.
+    let entries: Vec<_> = (0..super::PAGE_SIZE)
+        .map(|_| entry(json!("Collection#1")))
+        .collect();
+    let e = build_breach_entity(
+        EntityKind::Email,
+        "a@b.com",
+        "email",
+        &entries,
+        None,
+        None,
+        "s",
+    )
+    .expect("a full page with matches emits a headline");
+    let n = super::PAGE_SIZE.to_string();
+    assert_eq!(attr(&e, "hits"), Some(n.as_str()));
+    // The summary and coverage say "at least N", never an exact N.
+    assert!(
+        e.evidence[0].summary.contains(&format!("{n}+")),
+        "floor must render as N+, got: {}",
+        e.evidence[0].summary
+    );
+    assert_eq!(attr(&e, "coverage"), Some("partial"));
+    assert_eq!(attr(&e, "count_is_floor"), Some("true"));
+    assert_eq!(attr(&e, "total_source"), Some("observed"));
+}
+
+#[test]
+fn omitted_total_on_a_short_page_is_complete_not_a_floor() {
+    // The other half of item 21: an omitted total on a SHORT page is NOT a floor
+    // — a page below the request limit means every matching row was returned, so
+    // the observed count is itself the complete, exact answer.
+    let entries = [entry(json!("Collection#1")), entry(json!("LinkedIn"))];
+    let e = build_breach_entity(
+        EntityKind::Email,
+        "a@b.com",
+        "email",
+        &entries,
+        None,
+        None,
+        "s",
+    )
+    .expect("a short page with matches emits a headline");
+    assert_eq!(attr(&e, "hits"), Some("2"));
+    assert!(
+        !e.evidence[0].summary.contains('+'),
+        "a complete short page must not render as a floor: {}",
+        e.evidence[0].summary
+    );
+    assert_eq!(
+        attr(&e, "coverage"),
+        None,
+        "short page is complete, not partial"
+    );
+    assert_eq!(attr(&e, "count_is_floor"), None);
+    assert_eq!(attr(&e, "total_source"), Some("observed"));
+}
+
+#[test]
 fn name_headline_is_gated_on_a_real_subject_match() {
-    // A broad `name:` search returns same-name STRANGERS. The 0.88 breach-presence
+    // A broad `name:` search returns same-name STRANGERS. The confidence::EXPERT breach-presence
     // headline merges onto the engine's pre-seeded subject anchor, so it must NOT
     // be minted off a page that contains no record actually matching the subject
     // — nor off a bare count with no rows to verify (`oathnet_pro`'s gate). The
@@ -174,7 +257,7 @@ fn name_headline_is_gated_on_a_real_subject_match() {
             "Jane Doe",
             "name",
             &strangers,
-            500,
+            Some(500),
             None,
             "s",
         )
@@ -183,7 +266,16 @@ fn name_headline_is_gated_on_a_real_subject_match() {
     );
     // Count-only name response (no rows to verify) is unattributable → None.
     assert!(
-        build_breach_entity(EntityKind::Person, "Jane Doe", "name", &[], 500, None, "s").is_none(),
+        build_breach_entity(
+            EntityKind::Person,
+            "Jane Doe",
+            "name",
+            &[],
+            Some(500),
+            None,
+            "s"
+        )
+        .is_none(),
         "a bare `name:` count with no rows must not mint a headline"
     );
 
@@ -199,7 +291,7 @@ fn name_headline_is_gated_on_a_real_subject_match() {
         "Jane Doe",
         "name",
         &mixed,
-        500,
+        Some(500),
         None,
         "s",
     )
@@ -236,8 +328,8 @@ fn v2_record_surfaces_identity_and_hash_for_entity_linking() {
             }
         ]
     }"#;
-    let r: DehashedResp = serde_json::from_str(raw).unwrap();
-    let entries = r.entries.unwrap();
+    let r: DehashedResp = serde_json::from_str(raw).expect("should succeed");
+    let entries = r.entries.expect("should succeed");
     assert_eq!(entries.len(), 1);
     assert_eq!(db_names(&entries[0]["database_name"]), vec!["Collection#1"]);
 
@@ -268,7 +360,7 @@ fn v2_record_surfaces_identity_and_hash_for_entity_linking() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Password && e.value.starts_with("5f4"))
-        .unwrap();
+        .expect("should succeed");
     assert!(hash_ent.has_tag("password-hash"));
     assert!(result.entities.iter().all(|e| !e.has_tag(tags::CANDIDATE)));
 
@@ -279,7 +371,7 @@ fn v2_record_surfaces_identity_and_hash_for_entity_linking() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Email)
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(
         attr(email_ent, "hashed_password"),
         Some("5f4dcc3b5aa765d61d8327deb882cf99")
@@ -304,8 +396,8 @@ fn email_in_the_password_slot_is_recovered_as_an_email_lead() {
             }
         ]
     }"#;
-    let r: DehashedResp = serde_json::from_str(raw).unwrap();
-    let entries = r.entries.unwrap();
+    let r: DehashedResp = serde_json::from_str(raw).expect("should succeed");
+    let entries = r.entries.expect("should succeed");
     let mut seen = HashSet::new();
     let mut result = ModuleResult::new();
     extract_records(
@@ -330,7 +422,7 @@ fn email_in_the_password_slot_is_recovered_as_an_email_lead() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Email && e.value == "leaked@corp.com")
-        .unwrap();
+        .expect("should succeed");
     assert!(recovered.has_tag("recovered-from-password"));
 }
 
@@ -411,7 +503,7 @@ fn weak_hash_is_cracked_offline_to_its_plaintext() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Password && e.value == "5f4dcc3b5aa765d61d8327deb882cf99")
-        .unwrap();
+        .expect("should succeed");
     assert!(hash_ent.has_tag("cracked"));
     assert!(hash_ent.has_tag("hash:md5"));
     assert!(hash_ent.has_tag("crackable:fast"));
@@ -433,4 +525,30 @@ fn multi_value_fields_surface_every_value() {
     assert!(has(&result, EntityKind::Email, "a.b@work.com"));
     assert!(has(&result, EntityKind::Password, "hunter2"));
     assert!(has(&result, EntityKind::Password, "letmein99"));
+}
+
+#[test]
+fn username_derived_name_is_not_minted_as_person() {
+    // A DeHashed record whose `name` is a doubled username
+    // ("rhino-ryno23 rhino-ryno23") clears the space + non-sentinel checks yet is
+    // a fabricated Person — the same pattern guarded for oathnet_pro/see_know. It
+    // must never be minted as an EntityKind::Person.
+    let entries = vec![entry_named(
+        "rhino-ryno23 rhino-ryno23",
+        json!("Collection#1"),
+    )];
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_records(
+        &entries,
+        "rhino-ryno23 rhino-ryno23",
+        "fp",
+        "s",
+        &mut seen,
+        &mut result,
+    );
+    assert!(
+        !has(&result, EntityKind::Person, "rhino-ryno23 rhino-ryno23"),
+        "a username-derived name must never be minted as a Person"
+    );
 }

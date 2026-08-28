@@ -29,9 +29,9 @@ fn build_indexes_all_entities_and_collapses_parallel_self_edges() {
     ];
     let g = Graph::build(&[a.clone(), b.clone(), c.clone()], &relations);
     assert_eq!(g.node_count(), 3, "every entity is a node, including the isolated one");
-    let ai = g.index_of(&a.uid).unwrap();
-    let bi = g.index_of(&b.uid).unwrap();
-    let ci = g.index_of(&c.uid).unwrap();
+    let ai = g.index_of(&a.uid).expect("should succeed");
+    let bi = g.index_of(&b.uid).expect("should succeed");
+    let ci = g.index_of(&c.uid).expect("should succeed");
     assert_eq!(g.degree(ai), 1, "parallel edges collapse to one neighbour");
     assert_eq!(g.degree(bi), 1, "the self-loop is dropped");
     assert_eq!(g.degree(ci), 0, "an isolated entity has degree 0");
@@ -48,13 +48,13 @@ fn bfs_levels_are_cycle_safe_and_report_unreachable() {
     let d = ent("d");
     let relations = vec![rel(&a, &b), rel(&b, &c), rel(&a, &c)];
     let g = Graph::build(&[a.clone(), b.clone(), c.clone(), d.clone()], &relations);
-    let src = g.index_of(&a.uid).unwrap();
+    let src = g.index_of(&a.uid).expect("should succeed");
     let dist = g.bfs_levels(src);
     assert_eq!(dist[src], 0);
-    assert_eq!(dist[g.index_of(&b.uid).unwrap()], 1);
-    assert_eq!(dist[g.index_of(&c.uid).unwrap()], 1, "the cycle does not inflate the distance");
+    assert_eq!(dist[g.index_of(&b.uid).expect("should succeed")], 1);
+    assert_eq!(dist[g.index_of(&c.uid).expect("should succeed")], 1, "the cycle does not inflate the distance");
     assert_eq!(
-        dist[g.index_of(&d.uid).unwrap()],
+        dist[g.index_of(&d.uid).expect("should succeed")],
         UNREACHABLE,
         "a different component is unreachable"
     );

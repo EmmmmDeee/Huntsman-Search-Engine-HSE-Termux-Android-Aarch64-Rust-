@@ -33,15 +33,25 @@ pub fn validate_phone_e164(s: &str) -> ValidationReport {
 
 /// Normalise an Australian — or already-international — phone number to E.164
 /// (`+61…`). Recovers the AU local forms that breach/scrape data carries —
-/// `0412 345 678`, `(02) 9876 5432`, `61412345678` — which the strict
-/// [`validate_phone_e164`] gate would otherwise drop, and canonicalises them to
-/// the same `+61…` an already-international form yields so the two never
-/// fragment into separate entities.
+/// `0412 345 678`, `(02) 9876 5432`, `61412345678`, `1300 846 637` — which the
+/// strict [`validate_phone_e164`] gate would otherwise drop, and canonicalises
+/// them to the same `+61…` an already-international form yields so the two
+/// never fragment into separate entities.
 ///
 /// Returns `None` for anything that is neither a valid AU number nor a valid
 /// foreign E.164 number. A bare local number of unknown country (a 10-digit US
 /// string with no `+`/`61`/leading-`0`) is intentionally left out rather than
 /// guessed — fabricating a country code would invent a wrong identity.
+///
+/// Every non-`+`-prefixed AU-local-form recovery is delegated to
+/// [`crate::util::address_au::normalise_phone`] — the two used to be
+/// independently-maintained copies that recognised different, non-overlapping
+/// AU phone shapes (this function alone recognised a bare `61`-prefixed
+/// number; that function alone recognised a bare `1300`/`1800`/`0061` form),
+/// so a real AU number's recognition silently depended on which of the two
+/// ingestion paths it happened to take. Delegating makes this a strict
+/// pass-through for anything already `+`-prefixed (any country, kept
+/// verbatim) plus the one canonical AU recovery set for everything else.
 pub fn to_e164_au(s: &str) -> Option<String> {
     // Keep only `+` and digits (drops spaces, dashes, dots, parentheses).
     let compact: String = s
@@ -54,41 +64,7 @@ pub fn to_e164_au(s: &str) -> Option<String> {
         return validate_phone_e164(&compact).valid.then_some(compact);
     }
 
-    // AU international without the `+`: `61` + a 9-digit national number. The first
-    // national digit must be a real ACMA AU national-significant-number lead
-    // (2/3/4/5/7/8) — the SAME gate the local branch below applies. The old
-    // `!starts_with('0')` check only excluded a leading 0, so `61` + a foreign
-    // 9-digit national number whose lead is 1/6/9 (e.g. an Irish "61" + a mobile
-    // "8xxxxxxxx"… or any non-AU lead) was re-typed as a fabricated `+61` AU number.
-    if let Some(nat) = compact.strip_prefix("61")
-        && nat.len() == 9
-        && matches!(nat.as_bytes()[0], b'2' | b'3' | b'4' | b'5' | b'7' | b'8')
-    {
-        let e164 = format!("+61{nat}");
-        return validate_phone_e164(&e164).valid.then_some(e164);
-    }
-
-    // AU local: a leading-`0` national number (`0` + 9 digits = 10). The
-    // second digit must be a real ACMA AU national-significant-number lead
-    // (2/3/4/5/7/8 — geographic fixed-line, mobile, or VoIP; see
-    // `modules::phone_au::classify_au_phone`, the canonical AU line-type
-    // classifier this admission gate feeds). Without this check, ANY 10-digit
-    // string starting with `0` — e.g. an Irish local mobile "087 123 4567" —
-    // was silently re-typed as a fully-formed Australian number by prepending
-    // `+61`, fabricating a non-existent AU phone (and its derived
-    // mobile/fixed-line/jurisdiction classification) from a foreign one.
-    if compact.len() == 10
-        && compact.starts_with('0')
-        && matches!(
-            compact.as_bytes()[1],
-            b'2' | b'3' | b'4' | b'5' | b'7' | b'8'
-        )
-    {
-        let e164 = format!("+61{}", &compact[1..]);
-        return validate_phone_e164(&e164).valid.then_some(e164);
-    }
-
-    None
+    crate::util::address_au::normalise_phone(&compact)
 }
 
 #[cfg(test)]
@@ -195,5 +171,24 @@ mod e164_au_tests {
                 "a real AU number in bare-61 form (lead {lead}) must canonicalise: {intl}"
             );
         }
+    }
+
+    #[test]
+    fn now_delegates_to_normalise_phone_for_the_forms_it_previously_missed() {
+        // Consolidation fix: to_e164_au and util::address_au::normalise_phone
+        // used to be independently-maintained copies recognising different,
+        // non-overlapping AU phone shapes. to_e164_au previously had no
+        // branch for a bare "1300"/"1800" business number or a bare "0061"
+        // IDD-prefixed number — both of which normalise_phone already
+        // recognised — so a dossier import of an ordinary AU business number
+        // in either shape silently dropped the phone entirely. Now delegates
+        // to normalise_phone for all non-'+'-prefixed recognition, inheriting
+        // both.
+        assert_eq!(to_e164_au("1300 846 637").as_deref(), Some("+611300846637"));
+        assert_eq!(to_e164_au("1800 123 456").as_deref(), Some("+611800123456"));
+        assert_eq!(
+            to_e164_au("0061 412 345 678").as_deref(),
+            Some("+61412345678")
+        );
     }
 }

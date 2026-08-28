@@ -1,6 +1,18 @@
 use super::*;
     use crate::core::entity::{Entity, EntityKind, Evidence};
 
+    #[test]
+    fn utc_date_known_and_edge_instants() {
+        // The canonical epoch->civil inverse shared by structured_id /
+        // discord_snowflake. Cover the Unix epoch, the Discord epoch, a leap
+        // day, and a pre-1970 negative (exercising the div_euclid floor).
+        assert_eq!(utc_date(0), "1970-01-01");
+        assert_eq!(utc_date(1_420_070_400), "2015-01-01");
+        assert_eq!(utc_date(1_577_836_800), "2020-01-01");
+        assert_eq!(utc_date(951_782_400), "2000-02-29");
+        assert_eq!(utc_date(-1), "1969-12-31");
+    }
+
     fn entity_with_attrs(
         kind: EntityKind,
         value: &str,
@@ -18,28 +30,28 @@ use super::*;
 
     #[test]
     fn parses_epoch_seconds() {
-        let (ts, iso) = parse_date("1262304000").unwrap();
+        let (ts, iso) = parse_date("1262304000").expect("should succeed");
         assert_eq!(ts, 1_262_304_000);
         assert_eq!(iso, "2010-01-01");
     }
 
     #[test]
     fn parses_epoch_millis() {
-        let (ts, _) = parse_date("1262304000000").unwrap();
+        let (ts, _) = parse_date("1262304000000").expect("should succeed");
         assert_eq!(ts, 1_262_304_000);
     }
 
     #[test]
     fn parses_iso_date_and_datetime() {
-        assert_eq!(parse_date("2019-03-15").unwrap().1, "2019-03-15");
-        let (_, iso) = parse_date("2019-03-15T08:30:00Z").unwrap();
+        assert_eq!(parse_date("2019-03-15").expect("should succeed").1, "2019-03-15");
+        let (_, iso) = parse_date("2019-03-15T08:30:00Z").expect("should succeed");
         assert_eq!(iso, "2019-03-15T08:30:00Z");
-        assert_eq!(parse_date("2019/03/15").unwrap().1, "2019-03-15");
+        assert_eq!(parse_date("2019/03/15").expect("should succeed").1, "2019-03-15");
     }
 
     #[test]
     fn parses_bare_year() {
-        assert_eq!(parse_date("1998").unwrap().1, "1998-01-01");
+        assert_eq!(parse_date("1998").expect("should succeed").1, "1998-01-01");
     }
 
     #[test]
@@ -53,16 +65,16 @@ use super::*;
         assert!(parse_date("2019-03-15T25:00:00").is_none());
         // Hour- and minute-only times remain valid (trailing parts default 0).
         assert_eq!(
-            parse_date("2019-03-15T08").unwrap().1,
+            parse_date("2019-03-15T08").expect("should succeed").1,
             "2019-03-15T08:00:00Z"
         );
         assert_eq!(
-            parse_date("2019-03-15T08:30").unwrap().1,
+            parse_date("2019-03-15T08:30").expect("should succeed").1,
             "2019-03-15T08:30:00Z"
         );
         // Seconds stay lenient so a timezone offset (split onto the seconds
         // token by ':') doesn't reject an otherwise-valid timestamp.
-        let (_, iso) = parse_date("2019-03-15T08:30:00+05:00").unwrap();
+        let (_, iso) = parse_date("2019-03-15T08:30:00+05:00").expect("should succeed");
         assert_eq!(iso, "2019-03-15T08:30:00Z");
     }
 
@@ -78,7 +90,7 @@ use super::*;
     #[test]
     fn epoch_roundtrips_through_civil() {
         // A known instant: 2021-06-15 -> seconds -> back to same ISO.
-        let (ts, _) = parse_date("2021-06-15").unwrap();
+        let (ts, _) = parse_date("2021-06-15").expect("should succeed");
         assert_eq!(from_unix(ts).1, "2021-06-15");
     }
 
@@ -113,7 +125,7 @@ use super::*;
         // Regression: a pre-1970 calendar date must yield a *negative* Unix
         // timestamp, not clamp to 0. Otherwise reconstruct()'s oldest-first
         // sort places, e.g., a 1965 date of birth *after* every 1970+ event.
-        let (ts, iso) = parse_date("1965-03-10").unwrap();
+        let (ts, iso) = parse_date("1965-03-10").expect("should succeed");
         assert!(ts < 0, "pre-1970 date must be negative, got {ts}");
         assert_eq!(iso, "1965-03-10");
         // The display string round-trips through the signed inverse too.
@@ -285,7 +297,7 @@ use super::*;
         assert_eq!(iso, "2019-03-15T08:30:00Z");
         assert!(ts > 0);
         // The date-only EXIF form (no time component) is also valid.
-        assert_eq!(parse_date("2019:03:15").unwrap().1, "2019-03-15");
+        assert_eq!(parse_date("2019:03:15").expect("should succeed").1, "2019-03-15");
     }
 
     #[test]
@@ -422,7 +434,7 @@ use super::*;
             &[("date_of_birth", "1980-01-01"), ("breach_date", "2015-06-01")],
         );
         let events = reconstruct(&[p]);
-        let t = online_tenure(&events).unwrap();
+        let t = online_tenure(&events).expect("should succeed");
         assert!(
             t.earliest_iso.starts_with("2015"),
             "DOB 1980 excluded; earliest is the 2015 breach"

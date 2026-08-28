@@ -26,6 +26,45 @@ use super::*;
     }
 
     #[test]
+    fn base_handle_recovery_strips_trailing_digits() {
+        // A numbered handle must yield the bare base handle — the highest-yield
+        // cross-platform pivot, and the inverse of the digit-append variants.
+        let v = generate_username_variants("jsmith88");
+        assert!(
+            v.contains(&"jsmith".to_string()),
+            "base handle `jsmith` must be recovered from `jsmith88`: {v:?}"
+        );
+        // A dangling separator before the digits is stripped too.
+        let v = generate_username_variants("agent_007");
+        assert!(
+            v.contains(&"agent".to_string()),
+            "separator before the digit run must be stripped: {v:?}"
+        );
+    }
+
+    #[test]
+    fn base_handle_recovery_rejects_too_short_stubs_and_pure_numbers() {
+        // `x99` → base `x` is a 1-char stub — too weak to search, must be dropped.
+        let v = generate_username_variants("x99");
+        assert!(!v.contains(&"x".to_string()), "1-char stub must be rejected: {v:?}");
+        // A pure-numeric seed has no alphabetic base to recover.
+        let v = generate_username_variants("007");
+        assert!(v.iter().all(|s| !s.is_empty()), "no empty base emitted: {v:?}");
+    }
+
+    #[test]
+    fn non_digit_terminated_handle_yields_no_base_recovery() {
+        // A handle that does not end in a digit has no numbered suffix to strip;
+        // the digit-append + truncation variants still apply, but no bare-base
+        // recovery fires (nothing to recover).
+        let v = generate_username_variants("jsmith");
+        // Adds digits and truncation, but `jsmith` itself is never a "recovered
+        // base" of itself (guarded by `base_handle != lower`).
+        assert!(v.contains(&"jsmith1".to_string()));
+        assert!(v.iter().all(|s| s != "jsmith"), "seed must not appear as its own variant: {v:?}");
+    }
+
+    #[test]
     fn multibyte_handle_truncates_by_char_without_panicking() {
         // Regression: a handle ending in a multi-byte codepoint must not panic
         // on the truncation slice, and must drop a whole char.
@@ -51,8 +90,8 @@ use super::*;
         // Strongest base query first, then AU dorks, then the rest.
         assert_eq!(q, ["base0", "au0", "au1", "base1", "base2"]);
         // AU dorks land before the tail base queries (won't be starved).
-        let au_pos = q.iter().position(|x| x == "au0").unwrap();
-        let tail_pos = q.iter().position(|x| x == "base1").unwrap();
+        let au_pos = q.iter().position(|x| x == "au0").expect("should succeed");
+        let tail_pos = q.iter().position(|x| x == "base1").expect("should succeed");
         assert!(au_pos < tail_pos);
         // Degenerate inputs.
         assert_eq!(interleave_regional(vec![], vec!["a".into()]), ["a"]);
@@ -162,6 +201,24 @@ use super::*;
                 .any(|s| s == &format!("\"alice@acme.com\" {pivot}")),
             "custom-domain email must emit the social-pivot dork: {custom:?}"
         );
+    }
+
+    #[test]
+    fn build_queries_base_email_recognises_freemail_providers_beyond_the_big_four() {
+        use crate::core::scan::Target;
+        // Consolidation fix: the exclusion previously hardcoded only
+        // gmail/yahoo/hotmail/outlook, missing the 40+ other providers (and
+        // country variants) the canonical `util::domains::is_freemail` list
+        // already recognises — so e.g. an iCloud or UK-Yahoo address still
+        // spent a query-budget slot on the noisy employer-signal dork.
+        let pivot = "site:linkedin.com OR site:github.com OR site:facebook.com";
+        for addr in ["alice@icloud.com", "alice@yahoo.co.uk", "alice@protonmail.com"] {
+            let q = build_queries_base(&Target::new(TargetKind::Email, addr));
+            assert!(
+                !q.iter().any(|s| s == &format!("\"{addr}\" {pivot}")),
+                "canonical freemail provider {addr} must not emit the social-pivot dork: {q:?}"
+            );
+        }
     }
 
     #[test]
