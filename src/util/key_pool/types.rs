@@ -150,7 +150,7 @@ impl KeyEntry {
     /// attributing the operator's traffic to a stranger's account. This mirrors
     /// [`crate::util::key_harvest::store_api_credential`]'s "reuse requires a
     /// deliberate operator action" policy; the auth chokepoint that enforces it
-    /// is [`KeyPool::next_key_excluding`].
+    /// is [`crate::util::key_pool::KeyPool::next_key_excluding`].
     #[must_use]
     pub fn is_harvested(&self) -> bool {
         self.discovered_by.is_some()
