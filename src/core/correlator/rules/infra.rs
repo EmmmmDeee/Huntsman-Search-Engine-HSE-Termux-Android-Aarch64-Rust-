@@ -379,8 +379,6 @@ pub(in crate::core::correlator) fn rule_au_031_malicious_adjacency(
     /// A flagged node with more than this many distinct benign neighbours is
     /// shared hosting/CDN/ESP: emit one aggregate, not one row per neighbour.
     const FANOUT_CAP: usize = 8;
-    /// Benign uids to carry on an aggregate finding (the full count is in text).
-    const AGG_SAMPLE: usize = 12;
 
     let by_uid = context.by_uid();
     let bad_reason = |e: &Entity| -> Option<&'static str> {
@@ -456,9 +454,11 @@ pub(in crate::core::correlator) fn rule_au_031_malicious_adjacency(
             } else {
                 Severity::Medium
             };
+            // Include ALL neighbours in entity_uids per evidence integrity (Rule 0.7
+            // priority 2). The description shows the full count; the entity_uids
+            // must also be complete so operators can follow up on all linked entities.
             let mut uids: Vec<String> = neighbours
                 .keys()
-                .take(AGG_SAMPLE)
                 .map(std::string::ToString::to_string)
                 .collect();
             uids.push(bad.uid.clone());
@@ -676,12 +676,25 @@ pub(in crate::core::correlator) fn rule_au_111_cdn_origin_candidate(
 
     let mut out = Vec::new();
     for (dom, provider) in fronted {
+        // Fold both sides through the same registrable-domain normalisation
+        // AU-118 already applies before comparing domain identity, rather than
+        // a raw string `==`: `waf_detect`'s own Domain value is lowercased
+        // (via `host_from_url`), but the "domain" attribute other modules
+        // stamp is not uniformly normalised (`dns_intel::resolve` sets it
+        // straight from the raw target value, unlike its own srv.rs/dkim.rs
+        // siblings). A mixed-case seed (`Example.com`) previously produced a
+        // silent, error-free non-match — `"Example.com" != "example.com"` —
+        // dropping a genuine origin-unmasking finding with no diagnostic.
+        let dom_reg = crate::util::domains::registrable_domain(&dom.value);
         let candidates = entities.iter().filter(|e| {
             e.kind == EntityKind::IpAddress
                 && e.has_tag("spf")
-                && e.evidence
-                    .iter()
-                    .any(|ev| ev.attributes.get("domain").is_some_and(|d| d == &dom.value))
+                && e.evidence.iter().any(|ev| {
+                    ev.attributes
+                        .get("domain")
+                        .and_then(|d| crate::util::domains::registrable_domain(d))
+                        .is_some_and(|d| Some(d) == dom_reg)
+                })
         });
         for ip in candidates {
             out.push(Correlation::new(

@@ -38,10 +38,40 @@ fn extract_au_address_finds_state_postcode() {
 }
 
 #[test]
+fn build_director_entities_rejects_a_checksum_invalid_acn() {
+    // Regression (critical audit): extract_acn() (called by parse_asic_html,
+    // not exercised directly here) collects every ASCII digit anywhere in the
+    // row and takes the first 9 -- not a contiguous run anchored on an "ACN"
+    // label. A real AU company whose registered NAME itself contains digits
+    // ("7-Eleven Stores Pty Ltd", "1300 Smiles Limited") has those leading
+    // digits glued onto the front of the real ACN's digit stream, producing a
+    // fabricated 9-digit value. Unlike every OTHER caller in this codebase
+    // that trusts an ACN-shaped string (au_business_id, the search_engines
+    // extractor, core::correlator::rules::org, core::scan's TargetKind
+    // inference), build_director_entities only checked digit COUNT, never the
+    // checksum -- so a corrupted value sailed through as a
+    // confidence::CORROBORATED AbnAcn entity and would be shipped to the live
+    // ASIC ABN Lookup API as a "confirmed" pivot.
+    //
+    // "712345678" is exactly what extract_acn("... ACN 123456789 ...") would
+    // return for a row whose company name contributes one leading digit
+    // (e.g. "7-Eleven ..."): the real ACN's first 8 digits shifted by one,
+    // with a checksum that no longer validates.
+    let ents = build_director_entities("7-Eleven Stores Pty Ltd", "712345678", "Test Name", None, "s");
+    assert!(
+        !ents.iter().any(|e| e.kind == EntityKind::AbnAcn),
+        "a checksum-invalid (corrupted) ACN must not be minted as a corroborated entity"
+    );
+    // The Organisation entity is unaffected -- the company name itself was
+    // extracted correctly; only the corrupted ACN is withheld.
+    assert!(ents.iter().any(|e| e.kind == EntityKind::Organisation));
+}
+
+#[test]
 fn build_director_entities_emits_org_acn_address() {
     let ents = build_director_entities(
         "Bamford Holdings Pty Ltd",
-        "123456789",
+        "004085616", // ASIC worked-example ACN -- checksum-valid
         "Haigen Bamford",
         Some("Level 1, 100 Collins St, Melbourne VIC 3000"),
         "s",

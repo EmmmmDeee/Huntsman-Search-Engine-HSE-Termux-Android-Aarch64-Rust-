@@ -93,6 +93,7 @@ use super::*;
         assert!(m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
         assert!(m.accepts(&Target::new(TargetKind::Phone, "+61400000000")));
         assert!(!m.accepts(&Target::new(TargetKind::Domain, "x.com")));
+        assert_eq!(m.cache_ttl_secs(), 86_400);
     }
 
     #[test]

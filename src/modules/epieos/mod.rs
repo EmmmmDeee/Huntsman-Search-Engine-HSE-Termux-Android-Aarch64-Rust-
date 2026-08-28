@@ -314,6 +314,14 @@ impl Module for Epieos {
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }
+    fn cache_ttl_secs(&self) -> u64 {
+        // A Google/Maps/Skype account's linkage to an email is stable within a
+        // day — the same paid-lookup convention dehashed/hibp/niamonx/fofa
+        // already apply, so a repeat scan of the same address replays for
+        // free within the window instead of re-spending this module's paid
+        // quota.
+        86_400
+    }
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email)
     }

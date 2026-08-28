@@ -62,21 +62,36 @@ pub fn results_dir_is_shared_storage() -> bool {
 /// (used only when the `see_know` module's API key — `HUNTSMAN_SEEKNOW_KEY`
 /// — is not configured), read from `HUNTSMAN_SEEKNOW_EMAIL`. Never hardcode
 /// a real address here: this file is committed to source control.
+///
+/// Filters an unedited provisioning-template placeholder the same way
+/// [`crate::util::keys::resolve_key`] does for every pooled API key, so an
+/// operator who never fills this slot in gets a clean "not configured"
+/// rather than a browser-automation login attempt with the literal
+/// placeholder string as a password. See [`resolve_credential_slot`] for the
+/// pure, unit-testable filter logic.
 #[must_use]
 pub fn seeknow_email() -> Option<String> {
-    std::env::var("HUNTSMAN_SEEKNOW_EMAIL")
-        .ok()
-        .filter(|s| !s.is_empty())
+    resolve_credential_slot(std::env::var("HUNTSMAN_SEEKNOW_EMAIL").ok())
 }
 
 /// SeekNow authentication password for the web-automation fallback login
 /// path, read from `HUNTSMAN_SEEKNOW_PASSWORD`. Never hardcode a real
 /// password here: this file is committed to source control.
+///
+/// Same placeholder filter as [`seeknow_email`] — see its doc comment.
 #[must_use]
 pub fn seeknow_password() -> Option<String> {
-    std::env::var("HUNTSMAN_SEEKNOW_PASSWORD")
-        .ok()
-        .filter(|s| !s.is_empty())
+    resolve_credential_slot(std::env::var("HUNTSMAN_SEEKNOW_PASSWORD").ok())
+}
+
+/// The pure blank/placeholder filter behind [`seeknow_email`] and
+/// [`seeknow_password`], split out so it's unit-testable without mutating
+/// process-wide environment state — this crate is `#![forbid(unsafe_code)]`
+/// and `std::env::set_var` is `unsafe` as of the 2024 edition, so a test
+/// cannot exercise the placeholder-rejection path by actually setting an env
+/// var.
+fn resolve_credential_slot(raw: Option<String>) -> Option<String> {
+    raw.filter(|s| !s.is_empty() && !crate::util::keys::is_template_placeholder(s))
 }
 
 /// Value scoring weights — the single source of truth consumed by
@@ -143,6 +158,25 @@ mod tests {
             existed,
             "get_results_dir_path must not create {}",
             dir.display()
+        );
+    }
+
+    /// Regression: documenting `HUNTSMAN_SEEKNOW_EMAIL`/`_PASSWORD` in the
+    /// provisioning template (retention-manifest audit finding) means an
+    /// unedited `hse provision` run now writes the literal placeholder
+    /// string into these slots — `resolve_credential_slot` must treat that,
+    /// and a blank value, identically to the slot being entirely unset.
+    #[test]
+    fn resolve_credential_slot_rejects_blank_and_placeholder() {
+        assert_eq!(resolve_credential_slot(None), None);
+        assert_eq!(resolve_credential_slot(Some(String::new())), None);
+        assert_eq!(
+            resolve_credential_slot(Some("insert_seeknow_email_here".to_string())),
+            None
+        );
+        assert_eq!(
+            resolve_credential_slot(Some("real@example.com".to_string())),
+            Some("real@example.com".to_string())
         );
     }
 

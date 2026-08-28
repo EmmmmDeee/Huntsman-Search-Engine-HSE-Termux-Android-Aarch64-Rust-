@@ -328,14 +328,24 @@ pub fn parse_feed_body(body: &str) -> Vec<String> {
 
 fn normalise_feed_line(line: &str) -> Option<String> {
     let line = line.split_whitespace().next()?; // first token only
-    if line.contains("://") {
-        return Some(line.to_string());
-    }
-    let (host, port) = line.rsplit_once(':')?;
-    if host.is_empty() || port.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
+    let spec = if line.contains("://") {
+        line.to_string()
+    } else {
+        let (host, port) = line.rsplit_once(':')?;
+        if host.is_empty() || port.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        format!("http://{host}:{port}")
+    };
+    // Reject a fed proxy whose host is private / reserved / loopback / link-local.
+    // A hostile or MITM'd feed must never be able to make HSE probe (and later
+    // route through) an internal address: that is both a blind internal-port-connect
+    // primitive driven by feed content and an SSRF into the operator's own network.
+    // Mirrors the engine's target-side `url_host_is_private` gate.
+    if crate::util::preflight::url_host_is_private(&spec) {
         return None;
     }
-    Some(format!("http://{host}:{port}"))
+    Some(spec)
 }
 
 #[cfg(test)]

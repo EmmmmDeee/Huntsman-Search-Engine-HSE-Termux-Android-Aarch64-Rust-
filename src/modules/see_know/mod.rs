@@ -138,6 +138,10 @@ pub fn refresh_round_budget() {
     crate::util::see_know::refresh_round_budget();
 }
 
+/// The SeekNow breach/stealer provider module.
+///
+/// Highest-priority provider (`u8::MAX`): its paid endpoint matrix is dispatched
+/// ahead of the free stack for every seed it accepts.
 pub struct SeekNow;
 
 #[async_trait]

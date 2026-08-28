@@ -21,24 +21,11 @@ This single command installs HSE, pulls dependencies, builds the binary, and ver
 curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh | bash
 ```
 
-**What it does:**
-- Installs Rust toolchain (1.97.1), clang, binutils, git
-- Clones/updates HSE repository
-- Builds release binary (with retries on flaky networks)
-- Installs `hse` to `$PREFIX/bin`
-- Writes configuration template to `~/.huntsman.env`
-- Runs `hse doctor` to verify everything works
-
-**Re-run anytime to upgrade** — idempotent, preserves your keys.
-
-### No-build fast path (precompiled binary)
-If you have a prebuilt aarch64 binary:
-
-```bash
-# Place binary in Downloads or specify path
-export HSE_PREBUILT=/path/to/hse
-curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh | bash
-```
+**Re-run anytime to upgrade** — idempotent, preserves your keys. For exactly
+what this does, the no-build prebuilt-binary fast path, private-repo auth,
+environment knobs, and troubleshooting, see [`docs/INSTALL.md`](INSTALL.md)
+— this guide picks up from there with the SeekNow/Ollama/Web-UI setup
+`INSTALL.md` doesn't cover.
 
 ---
 
@@ -63,6 +50,11 @@ hse doctor
 ```
 
 ### Option B: SeekNow Web Login + Session Reuse (No API Key Required)
+
+> **⚠️ Not currently wired into a scan** — the code exists
+> (`web_client_advanced.rs`/`web_dispatcher.rs`) but nothing in
+> `src/modules/see_know/` calls it yet, so a saved session token below is
+> not read by HSE today. Full detail: `docs/SEEKNOW_WEB_AUTOMATION.md`.
 
 **Problem:** Cloudflare Turnstile blocks all HTTP-only login attempts.
 
@@ -102,13 +94,11 @@ echo "YOUR_TOKEN_HERE" > ~/.huntsman/seeknow_session.txt
 cat ~/.huntsman/seeknow_session.txt
 ```
 
-**That's it!** HSE will automatically load and reuse this token for all searches.
-
-**Verify it works:**
-```bash
-hse doctor
-# Expected: SeekNow shows as available with your account info
-```
+**Saved — but see the warning above.** HSE does not yet load or reuse this
+token for any search; `hse doctor` will still report SeekNow unavailable
+until it's wired in. See `docs/SEEKNOW_WEB_AUTOMATION.md` for the current
+state and what's blocking it. If you need SeekNow working today, use
+Option A (API key) instead.
 
 ---
 
@@ -209,16 +199,13 @@ hse serve
 
 ```bash
 # Search an email
-hse scan user@example.com
+hse scan --kind email --value user@example.com
 
 # Search a username
-hse scan octocat
+hse scan --kind username --value octocat
 
 # Search a domain
-hse scan example.com
-
-# Batch scan
-hse scan user1@example.com user2@example.com octocat
+hse scan --kind domain --value example.com
 ```
 
 ### Via API
@@ -303,19 +290,10 @@ sv up ollama
 sv status ollama
 ```
 
-Similarly for HSE AI daemon:
-
-```bash
-mkdir -p $PREFIX/var/service/hse-ai-daemon
-cat > $PREFIX/var/service/hse-ai-daemon/run <<'EOF'
-#!/data/data/com.termux/files/usr/bin/sh
-export HUNTSMAN_OLLAMA_MODEL=qwen2.5:7b
-exec hse-ai-daemon
-EOF
-
-chmod +x $PREFIX/var/service/hse-ai-daemon/run
-sv-enable hse-ai-daemon
-```
+Similarly for the HSE AI daemon — see the README's
+["Running `hse-ai-daemon` persistently (Termux)"](../README.md#running-hse-ai-daemon-persistently-termux)
+for the same `termux-services` setup plus what `sv-enable`/`sv down`/`sv up`
+do once it's running.
 
 ---
 
@@ -323,13 +301,9 @@ sv-enable hse-ai-daemon
 
 ### "SeekNow: All authentication methods failed"
 
-**Problem:** Token file doesn't exist or session expired.
-
-**Solution:**
-1. Re-login via browser to https://see-know.ru
-2. Extract fresh token from DevTools
-3. Save to `~/.huntsman/seeknow_session.txt`
-4. Retry scan
+See `docs/SEEKNOW_WEB_AUTOMATION.md`'s Troubleshooting section ("All SeekNow
+authentication methods failed") — same fix (re-login, re-extract the token,
+re-save it to `~/.huntsman/seeknow_session.txt`), kept in one place.
 
 ### "Ollama connection refused"
 
@@ -389,7 +363,7 @@ hse serve  # Watch Live tab for events
 
 1. **Run several scans** to populate history and test results
 2. **Fine-tune Ollama model** for your analysis needs — see `docs/OSINT_MODEL_FINE_TUNING.md`
-3. **Explore advanced modules** — `hse selftest` shows all 174 available modules
+3. **Explore advanced modules** — `hse selftest` shows all 181 available modules
 4. **Set up CI/automation** — webhook integrations, scheduled scans, etc.
 5. **Share scans** — Export to JSON/CSV from Web UI or API
 
@@ -397,7 +371,6 @@ hse serve  # Watch Live tab for events
 
 ## 🔗 Additional Resources
 
-- **Quick start:** `docs/SEEKNOW_QUICK_START.md`
 - **SeekNow integration:** `docs/SEEKNOW_SETUP.md`
 - **Turnstile workaround:** `docs/SEEKNOW_WEB_AUTOMATION.md`
 - **Ollama fine-tuning:** `docs/OSINT_MODEL_FINE_TUNING.md`

@@ -77,11 +77,15 @@ impl Module for SmtpVrfy {
         );
 
         let (mx_host, verdict) = match mx_result {
-            None => (None, SmtpVerdict::NoMx),
-            Some(host) => {
+            Ok(None) => (None, SmtpVerdict::NoMx),
+            Ok(Some(host)) => {
                 let v = smtp_rcpt_check(&host, &email).await;
                 (Some(host), v)
             }
+            Err(reason) => (
+                None,
+                SmtpVerdict::Unreachable(format!("MX lookup failed: {reason}")),
+            ),
         };
 
         let mut entity = build_entity(&email, domain, mx_host.as_deref(), &verdict, &ctx.scan_id);
@@ -172,8 +176,6 @@ pub(super) fn build_entity(
         ),
     };
 
-    let mut e = Entity::new(EntityKind::Email, email, conf, scan_id);
-    e.tag(tag);
     let mut ev = Evidence::new(SRC, summary);
     if let Some(host) = mx_host {
         ev = ev.with_attr("mx_host", host);
@@ -181,8 +183,10 @@ pub(super) fn build_entity(
     if let Some(c) = code {
         ev = ev.with_attr("smtp_code", c);
     }
-    e.add_evidence(ev);
-    e
+    Entity::builder(EntityKind::Email, email, conf, scan_id)
+        .tag(tag)
+        .evidence(ev)
+        .build()
 }
 
 async fn resolve_spf(domain: &str) -> Option<String> {
@@ -230,13 +234,28 @@ async fn resolve_dmarc(domain: &str) -> Option<String> {
         .next()
 }
 
-async fn resolve_mx(domain: &str) -> Option<String> {
+/// True only for a genuine "no MX records" answer (NXDOMAIN / no-answer) —
+/// distinct from a transport/protocol-level DNS failure (busy, timeout, I/O,
+/// no connections, a server error response code).
+fn is_genuine_no_mx(e: &hickory_resolver::net::NetError) -> bool {
+    e.is_nx_domain() || e.is_no_records_found()
+}
+
+/// Resolve the lowest-preference MX host for `domain`. `Ok(None)` is the
+/// genuine "this domain publishes no MX record" negative; `Err` propagates a
+/// real transport/DNS-protocol failure so the caller can route it into the
+/// module's `Unreachable` verdict instead of the false "No MX record" claim.
+async fn resolve_mx(domain: &str) -> std::result::Result<Option<String>, String> {
     use hickory_resolver::proto::rr::RData;
     let resolver = crate::util::dns::shared_resolver();
-    let response = resolver.mx_lookup(domain).await.ok()?;
+    let response = match resolver.mx_lookup(domain).await {
+        Ok(r) => r,
+        Err(e) if is_genuine_no_mx(&e) => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
     // Lowest-preference MX wins; min_by_key returns the first among equal
     // minima, matching the original strict-`<` update.
-    response
+    Ok(response
         .answers()
         .iter()
         .filter_map(|record| {
@@ -248,7 +267,7 @@ async fn resolve_mx(domain: &str) -> Option<String> {
             }
         })
         .min_by_key(|(pref, _)| *pref)
-        .map(|(_, h)| h)
+        .map(|(_, h)| h))
 }
 
 async fn smtp_rcpt_check(mx_host: &str, email: &str) -> SmtpVerdict {

@@ -9,40 +9,48 @@ see [`docs/SEEKNOW_WEB_AUTOMATION.md`](SEEKNOW_WEB_AUTOMATION.md) for the
 supported, ToS-compliant authentication paths (API key, or manual browser
 login with local session persistence).
 
+> **⚠️ §1 and §3 below describe mechanisms HSE does not have**, verified
+> against current `src/`: no `--verbose` flag exists on `hse doctor` (its
+> only flag is `--live`), so it cannot show a session-age line; more
+> fundamentally, per `SEEKNOW_WEB_AUTOMATION.md`'s own warning, nothing in
+> `src/modules/see_know/` reads `~/.huntsman/seeknow_session.txt` at all yet
+> — there is no session to refresh or force-expire. §3's
+> `HUNTSMAN_SEEKNOW_KEY_EMAIL`/`_USERNAME`/`_INFRASTRUCTURE` env vars and
+> "hierarchical key selection" don't exist in source either — HSE reads one
+> `HUNTSMAN_SEEKNOW_KEY`, not a per-scan-kind set (`--kind`/`--value`
+> themselves ARE real flags; it's the per-kind key routing that isn't). The
+> shell snippets below will run without erroring — they just don't do what
+> the surrounding prose claims.
+
 ---
 
 ## 1. Credential Rotation & Expiration Management
 
-**HSE's built-in session management:**
+**Checking account/key health:**
 
 ```bash
-# Check token age
-hse doctor --verbose
-# Shows: "SeekNow session last refreshed: 2h ago"
-
-# Force token refresh
-rm ~/.huntsman/seeknow_session.txt
-# HSE will re-authenticate on next scan
-
-# Implement 30-day rotation cron job (Linux/Termux)
-cat > ~/.huntsman/rotate-tokens.sh <<'EOF'
-#!/bin/bash
-# Rotate SeekNow token monthly
-COOKIE_FILE="$HOME/.huntsman/seeknow_session.txt"
-if [ -f "$COOKIE_FILE" ]; then
-    AGE_DAYS=$(( ($(date +%s) - $(stat -c %Y "$COOKIE_FILE")) / 86400 ))
-    if [ $AGE_DAYS -gt 30 ]; then
-        echo "Token expired, manual re-login required at https://see-know.ru"
-        rm "$COOKIE_FILE"
-    fi
-fi
-EOF
-
-chmod +x ~/.huntsman/rotate-tokens.sh
-
-# Run daily
-echo "0 0 * * * $HOME/.huntsman/rotate-tokens.sh" | crontab -
+# hse doctor probes /credits live and prints a "SeekNow account" section
+# (plan tier, remaining credits, whether the configured key is being rejected)
+hse doctor
 ```
+
+**Rotating your key:**
+
+HSE reads a single `HUNTSMAN_SEEKNOW_KEY` from `~/.huntsman.env` — there is
+no automatic token refresh or expiry tracking on HSE's side. To rotate:
+
+```bash
+# 1. Generate a new key at https://see-know.ru (account dashboard)
+# 2. Replace the value in ~/.huntsman.env
+hse set-key HUNTSMAN_SEEKNOW_KEY <new-key>
+# 3. Revoke the old key from the SeekNow dashboard once confirmed working
+hse doctor
+```
+
+If you use the web-automation login path instead of an API key, see
+[`docs/SEEKNOW_WEB_AUTOMATION.md`](SEEKNOW_WEB_AUTOMATION.md) — re-running
+that login flow is currently a manual step, not something HSE triggers
+automatically on a schedule.
 
 ## 2. Multi-Device Session Isolation
 
@@ -62,21 +70,14 @@ rm -r ~/.huntsman/sessions
 
 ## 3. API Key Segmentation
 
-**If using API keys, segment by scan type so a leaked key has a bounded blast radius:**
+HSE currently reads exactly one SeekNow key (`HUNTSMAN_SEEKNOW_KEY`) — there
+is no built-in per-scan-type key selection to segment blast radius within a
+single install. If you want that isolation, it has to be done at the install
+level: run separate HSE configs (separate `HUNTSMAN_INSTALL_DIR`/env files),
+each with its own SeekNow key, and route different scan types to whichever
+instance holds the appropriate key.
 
-```bash
-# Different keys for different operations
-export HUNTSMAN_SEEKNOW_KEY_EMAIL="seek-key-for-email-scans"
-export HUNTSMAN_SEEKNOW_KEY_USERNAME="seek-key-for-username-scans"
-export HUNTSMAN_SEEKNOW_KEY_INFRASTRUCTURE="seek-key-for-domain-scans"
-
-# HSE respects hierarchical key selection
-hse scan --kind email --value user@example.com  # Uses _EMAIL key
-hse scan --kind username --value octocat        # Uses _USERNAME key
-```
-
-If a single key is leaked, revoke and rotate just that key — the others keep
-working.
+If a key is leaked, revoke and rotate it — see §1 above.
 
 ## 4. Never Commit Credentials
 

@@ -312,6 +312,44 @@ use super::*;
     }
 
     #[test]
+    fn normalise_phone_recognises_bare_61_prefix() {
+        // Consolidation fix: normalise_phone previously had no branch for a
+        // bare (no `+`) `61`-prefixed international form — a common breach-
+        // dump style — even though the sibling `to_e164_au` recognised it.
+        // Gated on the same ACMA trunk-lead set as every other branch.
+        assert_eq!(
+            normalise_phone("61412345678").as_deref(),
+            Some("+61412345678")
+        );
+        for lead in ['1', '6', '9'] {
+            let bare = format!("61{lead}12345678");
+            assert_eq!(
+                normalise_phone(&bare),
+                None,
+                "bare-61 lead digit {lead} is not a real AU trunk code: {bare}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalise_phone_service_numbers_require_the_exact_acma_length() {
+        // Consolidation fix: the 1300/1800 branch previously had no length
+        // gate beyond the generic E.164 10-15-digit floor, so a malformed
+        // value merely STARTING WITH "1300"/"1800" (e.g. an 11-digit garbage
+        // string) still cleared that floor once "+61" was prepended,
+        // fabricating a non-existent AU service number instead of correctly
+        // refusing to normalise it. AU freephone/local-rate numbers are
+        // EXACTLY 10 national digits.
+        assert_eq!(normalise_phone("18005551234"), None); // 11 digits
+        assert_eq!(normalise_phone("1800555"), None); // 7 digits
+        // Exactly 10 digits still normalises correctly.
+        assert_eq!(
+            normalise_phone("1800123456").as_deref(),
+            Some("+611800123456")
+        );
+    }
+
+    #[test]
     fn au_phone_region_maps_geographic_area_codes() {
         // The four geographic area codes → region + member states.
         assert_eq!(

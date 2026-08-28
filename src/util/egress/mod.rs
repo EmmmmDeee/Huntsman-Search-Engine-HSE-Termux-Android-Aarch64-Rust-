@@ -216,8 +216,18 @@ pub async fn refresh_pool() -> (usize, usize) {
 /// Fetch a feed URL's body with a bounded timeout via `curl` (no proxy — the
 /// feed host is a plain HTTPS endpoint the operator chose). `None` on any error.
 async fn fetch_feed(url: &str) -> Option<String> {
+    // Require HTTPS. A plaintext `http://` feed URL is trivially MITM-able, letting
+    // a network attacker rewrite the published proxy list and thereby capture the
+    // engine's OSINT egress (the fed proxies join the same pool `curl_exec` routes
+    // real traffic through). The doc above already assumes an HTTPS endpoint; this
+    // enforces it rather than trusting it.
+    if !url.starts_with("https://") {
+        return None;
+    }
     let out = tokio::process::Command::new("curl")
-        .args(["-s", "--max-time", "15", "-A", "hse-egress/1", url])
+        // `--` terminates option parsing so a feed URL beginning with `-` can never
+        // be read as a curl flag.
+        .args(["-s", "--max-time", "15", "-A", "hse-egress/1", "--", url])
         .output()
         .await
         .ok()?;

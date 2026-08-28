@@ -49,24 +49,23 @@
 //! elsewhere (e.g. [`crate::core::geo_family`] for the shared-surname family
 //! angle). When in doubt it suggests nothing.
 //!
-//! Self-contained canonical helpers
+//! Shared canonical helpers
 //! The module layer has a `modules::email_canonical` that does the *enrichment*
-//! side of this (emitting a canonical `Email` entity for one seed). `core` must
-//! not depend on `modules`, so the small canonical-form helpers below
-//! ([`canonical_email`], [`canonical_phone`], [`canonical_name`],
-//! [`canonical_handle`]) are reimplemented here, self-contained and minimal.
-//! Their behaviour is documented per function so the provider-specific stance
-//! (which forms collapse, which are deliberately kept) is auditable in one
-//! place.
+//! side of the email rule (emitting a canonical `Email` entity for one seed),
+//! and `core::correlator`'s AU-081 tokenizes a person name for its own
+//! cross-source match. `core` must not depend on `modules`, so the email rule,
+//! the generational-suffix list, and the name/handle word-tokeniser live in
+//! [`crate::util::canonical`] — the one layer both `core` and `modules` may
+//! call into — and each caller uses the shared definition instead of keeping
+//! its own copy. [`canonical_phone`] has no sibling elsewhere in the tree
+//! today, so it stays local; every helper's behaviour is documented per
+//! function so the provider-specific stance (which forms collapse, which are
+//! deliberately kept) is auditable in one place.
 
 use std::collections::BTreeMap;
 
 use crate::core::entity::{Entity, EntityKind};
-
-/// The two Gmail-family domains that share one mailbox namespace and treat dots
-/// in the local-part as insignificant. `googlemail.com` is a legacy alias of
-/// `gmail.com`, so both canonicalise to `gmail.com` (see [`canonical_email`]).
-const GMAIL_DOMAINS: [&str; 2] = ["gmail.com", "googlemail.com"];
+use crate::util::canonical::{GEN_SUFFIXES, canonical_email_mailbox, name_word_tokens};
 
 /// A suggested SAME-ENTITY group: a set of existing entities that are probably
 /// the one real-world identifier, surfaced because their provider-specific
@@ -107,8 +106,8 @@ pub struct ResolutionGroup {
 ///
 /// # What is grouped
 /// Per kind, via a private canonical function (all documented on the helpers):
-/// * [`EntityKind::Email`] → [`canonical_email`] (Gmail dots/`+tag`; `+tag`
-///   only for other domains, dots kept);
+/// * [`EntityKind::Email`] → [`canonical_email_mailbox`]
+///   (Gmail dots/`+tag`; `+tag` only for other domains, dots kept);
 /// * [`EntityKind::Phone`] → [`canonical_phone`] (digits only, optional
 ///   leading `+`; equality only — never country-code inference);
 /// * [`EntityKind::Username`] → [`canonical_handle`] (case/space/punctuation);
@@ -224,7 +223,7 @@ pub fn suggest_merges(entities: &[Entity]) -> Vec<ResolutionGroup> {
 /// and the per-kind `reason` strings live in one place.
 fn canonicalise(e: &Entity) -> Option<(String, &'static str)> {
     match e.kind {
-        EntityKind::Email => canonical_email(&e.value).map(|c| {
+        EntityKind::Email => canonical_email_mailbox(&e.value).map(|c| {
             (
                 c,
                 "Email canonical mailbox (Gmail dot/+tag-insensitive; +tag stripped)",
@@ -242,49 +241,6 @@ fn canonicalise(e: &Entity) -> Option<(String, &'static str)> {
         }),
         _ => None,
     }
-}
-
-/// Canonical mailbox form of an email address, or `None` when it has no `@`, an
-/// empty local-part or domain, or no canonical local-part survives.
-///
-/// Rules (the equivalences are documented routing behaviour, not guesses):
-/// * lowercase the whole address (the entity normaliser already does this, but
-///   this helper stays correct for any caller / unnormalised input);
-/// * strip a `+tag` suffix from the local-part — plus-addressing routes to the
-///   base mailbox on every major provider (Gmail, Outlook/Microsoft, Fastmail,
-///   Proton, iCloud, …), so it never distinguishes identity;
-/// * for **Gmail only** (`gmail.com` and its legacy alias `googlemail.com`)
-///   additionally drop **all dots** in the local-part and fold the domain to
-///   `gmail.com` — Gmail treats `j.o.h.n` and `john` as one mailbox.
-///
-/// Provider-specific stance: dots are **kept** for every non-Gmail domain.
-/// Most providers treat `a.b@corp.com` and `ab@corp.com` as *different*
-/// mailboxes, so stripping dots universally would be a false merge. This is
-/// deliberately the conservative choice — only the documented Gmail rule drops
-/// dots.
-fn canonical_email(value: &str) -> Option<String> {
-    let lower = value.trim().to_lowercase();
-    let (local, domain) = lower.split_once('@')?;
-    if local.is_empty() || domain.is_empty() {
-        return None;
-    }
-
-    // `+tag` subaddressing: the base mailbox before the first '+' is the
-    // identity. Universally safe — every major provider routes the base.
-    let base = local.split('+').next().unwrap_or(local);
-
-    let (local_canon, domain_canon) = if GMAIL_DOMAINS.contains(&domain) {
-        // Gmail dot-blindness, and googlemail.com == gmail.com.
-        (base.replace('.', ""), "gmail.com")
-    } else {
-        // Non-Gmail: keep dots (significant on most providers), keep the domain.
-        (base.to_string(), domain)
-    };
-
-    if local_canon.is_empty() {
-        return None;
-    }
-    Some(format!("{local_canon}@{domain_canon}"))
 }
 
 /// Canonical digit form of a phone number, or `None` when it contains no
@@ -354,17 +310,6 @@ fn canonical_phone(value: &str) -> Option<String> {
 fn canonical_handle(value: &str) -> Option<String> {
     canonical_word_tokens(value)
 }
-
-/// Generational/professional suffix tokens that follow a comma WITHOUT making
-/// it a surname-first separator (`"Smith, Jr."`, `"Smith, PhD"`) — mirrors
-/// `modules::name_intel::permute`'s identical `GEN_SUFFIXES` list.
-/// `core` must not depend on `modules` (see this module's own doc comment), so
-/// this is a small, self-contained duplicate scoped to exactly the check
-/// [`canonical_name`] needs, not a shared import.
-const GEN_SUFFIXES: &[&str] = &[
-    "jr", "sr", "ii", "iii", "iv", "v", "vi", "esq", "phd", "md", "dds", "jd", "mba", "rn", "np",
-    "do", "psyd",
-];
 
 /// True when `segment` — the side of a comma [`canonical_name`] would
 /// otherwise treat as a given name — reduces entirely to
@@ -456,20 +401,14 @@ fn canonical_name(value: &str) -> Option<String> {
 /// missed) are still stripped, matching this module's conservative default —
 /// [when in doubt, this module suggests nothing](self) — of narrowing what
 /// merges rather than widening it.
+///
+/// The tokenising itself is [`crate::util::canonical::name_word_tokens`],
+/// shared with AU-081's cross-source person-name correlation
+/// (`core::correlator::rules::identity::account::platform`) so the two can
+/// never again tokenize a hyphenated/apostrophed name differently.
 fn canonical_word_tokens(value: &str) -> Option<String> {
-    let lower = value.to_lowercase();
-    let mut canon = String::with_capacity(lower.len());
-    for tok in lower.split_whitespace() {
-        let trimmed = tok.trim_matches(|c: char| !c.is_alphanumeric());
-        if trimmed.is_empty() {
-            continue;
-        }
-        if !canon.is_empty() {
-            canon.push(' ');
-        }
-        canon.push_str(trimmed);
-    }
-    (!canon.is_empty()).then_some(canon)
+    let tokens = name_word_tokens(value);
+    (!tokens.is_empty()).then(|| tokens.join(" "))
 }
 
 #[cfg(test)]

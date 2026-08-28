@@ -67,6 +67,8 @@ mod tests {
             Command::Serve {
                 bind: "127.0.0.1:8080".into(),
                 no_key_write: false,
+                auth_token: None,
+                allow_unauthenticated: false,
             },
             Command::Serve { .. } | Command::Update { .. }
         ));

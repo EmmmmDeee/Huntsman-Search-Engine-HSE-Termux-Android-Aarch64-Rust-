@@ -105,6 +105,41 @@ pub(super) fn owner_matches_query(owner: &str, query: &str) -> bool {
     crate::util::str_util::shares_whole_word_token(owner, query)
 }
 
+/// True if `surname` is the SURNAME position — the last whitespace token — of
+/// `name`, a single string already parsed by [`owner_person_names`] (so it is
+/// in that function's Given-\[Middle\]-Surname normalised order).
+///
+/// # Why this check exists, distinct from [`owner_matches_query`]
+/// `owner_matches_query` is a floor over the RAW owner string: it answers "did
+/// this row match on the owner field at all, rather than some other CKAN
+/// column?" It does not know, and does not try to know, whether the matched
+/// token was a given name or a surname within that field.
+///
+/// For a surname-*broadened* search (`derive_query` extracts the seed's last
+/// token and searches on that alone) a shared token is being read as evidence
+/// of a family relationship — but a name token can be a surname for one person
+/// and a given name for another. Real case, from a live scan of "Onur Ada":
+/// the register row `"ADA DRINKWATER"` parses (via [`owner_person_names`]'s
+/// Given-\[Middle\]-Surname normalisation) to given name "Ada", surname
+/// "Drinkwater". The seed's surname "Ada" shares a token with that row purely
+/// because "Ada" is also a common English given name — Ada Drinkwater's actual
+/// surname has nothing to do with the subject. Tagging her a `family-candidate`
+/// asserts a family link to a genuinely unrelated person and puts her address
+/// and unclaimed-money record into the subject's dossier.
+///
+/// This is the positional counterpart that closes that gap: it requires the
+/// query to match the LAST token of a parsed name, not merely any token in the
+/// raw string, before a non-exact, broadened hit is accepted as a candidate
+/// relative. Whole-token, case-insensitive (not a substring match), for the
+/// same reason [`owner_matches_full_name`] tokenises rather than searching:
+/// a bare `eq_ignore_ascii_case` on the split-off last token already gives
+/// that, with no separate helper needed.
+pub(super) fn ends_with_surname(name: &str, surname: &str) -> bool {
+    name.split_whitespace()
+        .next_back()
+        .is_some_and(|last| last.eq_ignore_ascii_case(surname))
+}
+
 /// Honorific tokens stripped from the FRONT of a parsed owner name, so the real
 /// register's `"MR HERVE MOREAU"` yields the person "Herve Moreau", not the
 /// title-polluted "Mr Herve Moreau" (which fragments his identity and breaks the
@@ -281,6 +316,28 @@ pub(super) fn records_to_entities(
         // seed, so they're all direct hits — don't mislabel them as
         // `family-candidate` (which also under-weights them).
         let exact = !broadened || owner_matches_full_name(&owner, seed);
+        // Parsed once and reused below for the per-Person entity pass too.
+        let owner_persons = owner_person_names(&owner);
+        // A surname-broadened, non-exact hit whose owner parses into at least
+        // one named individual additionally needs the shared token to occupy
+        // the SURNAME position — see [`ends_with_surname`] for why: a name
+        // token can be a given name for one person and a surname for another
+        // (real case: "Ada" is both a common English given name and the seed
+        // surname of "Onur Ada"), and only the surname-position reading
+        // licenses a family inference. A company owner has no given/surname
+        // structure to check (`owner_persons` is empty for one — the
+        // Organisation pass owns companies), so it keeps the existing
+        // any-shared-token floor: "MORLEY SQUARE INVESTMENT PTY LTD" sharing
+        // "Morley" with seed "Riley Morley" is the best signal available for a
+        // business name, and this check has nothing positional to test it
+        // against.
+        if broadened
+            && !exact
+            && !owner_persons.is_empty()
+            && !owner_persons.iter().any(|p| ends_with_surname(p, query))
+        {
+            continue;
+        }
         let amount = field_str(rec, "Amount");
         let sender = field_str(rec, "SenderName");
         let date = field_str(rec, "DateRec");
@@ -386,7 +443,8 @@ pub(super) fn records_to_entities(
         // (find_conf 0.35) so a relative is recorded and connected but never
         // pivot-scanned as if they were the subject; an exact register hit on the
         // seed merges with the name_intel subject anchor by its title-cased value.
-        let owner_persons = owner_person_names(&owner);
+        // (`owner_persons` was already parsed above, for the surname-position
+        // gate — reused here rather than re-parsing the same owner string.)
         for (i, person) in owner_persons.iter().enumerate() {
             // Exactness is PER-PERSON, not per-record: on a joint "HAYLEY & CURT"
             // record seeded with "Curt", Curt is the exact subject while Hayley is

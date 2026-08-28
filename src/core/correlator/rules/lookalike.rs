@@ -34,8 +34,18 @@ use crate::util::domains::registrable_domain;
 /// also surfaced (crt.sh, a crawl, breach evidence) is a genuine discovery and
 /// stays in scope, so the test is "typosquat is the ONLY evidence source", not
 /// "carries the typosquat tag".
+///
+/// Uses [`Entity::corroborating_sources`], not the raw [`Entity::evidence_sources`]:
+/// a re-scan of the same seed recalls this exact generated domain from the local
+/// database ([`crate::core::entity::RECALL_SOURCE`]) and unconditionally stamps a
+/// `"recall"` evidence record on it regardless of entity kind. `evidence_sources`
+/// would then read `{"typosquat", "recall"}`, `all(|s| *s == "typosquat")` would
+/// go false, and a ROUTINE RE-SCAN would silently defeat this exclusion —
+/// `corroborating_sources` strips `recall` (provenance, not an independent
+/// observation — [`crate::core::entity::is_non_corroborating_source`]) so the
+/// check still reads "typosquat is the only REAL source" after a recall.
 fn is_generated_permutation(e: &Entity) -> bool {
-    e.has_tag("typosquat") && e.evidence_sources().iter().all(|s| *s == "typosquat")
+    e.has_tag("typosquat") && e.corroborating_sources().iter().all(|s| *s == "typosquat")
 }
 
 /// AU-118 — Look-alike domain impersonation.
@@ -199,6 +209,46 @@ mod tests {
         let out =
             rule_au_118_lookalike_domain_impersonation(&RuleContext::new(&[a, b, seed]), "s", 0);
         assert!(out.is_empty(), "typosquat siblings must not pair: {out:?}");
+    }
+
+    /// The recall-bypass regression: a routine RE-SCAN of the same seed recalls
+    /// each generated sibling from the local database and stamps a `"recall"`
+    /// evidence record on top of its original `"typosquat"` evidence (every
+    /// recalled entity gets one, regardless of kind — see
+    /// `Engine::recall_prior_entities`). Before this fix, `is_generated_permutation`
+    /// read the raw `evidence_sources()` set (`{"typosquat", "recall"}`), so
+    /// `all(|s| *s == "typosquat")` went false and a SECOND scan of the exact same
+    /// seed silently defeated the exclusion this test's sibling
+    /// (`au118_ignores_typosquat_generated_sibling_pairs`) already covers for a
+    /// first scan.
+    #[test]
+    fn au118_ignores_typosquat_generated_sibling_pairs_after_recall() {
+        use crate::core::entity::Evidence;
+        let mut a = dom("iqana.org");
+        a.tag("typosquat");
+        a.add_evidence(Evidence::new(
+            "typosquat",
+            "Registered lookalike via insertion",
+        ));
+        a.add_evidence(Evidence::new(
+            "recall",
+            "Recalled from the local intelligence database (prior scan)",
+        ));
+        let mut b = dom("izana.org");
+        b.tag("typosquat");
+        b.add_evidence(Evidence::new(
+            "typosquat",
+            "Registered lookalike via insertion",
+        ));
+        b.add_evidence(Evidence::new(
+            "recall",
+            "Recalled from the local intelligence database (prior scan)",
+        ));
+        let out = rule_au_118_lookalike_domain_impersonation(&RuleContext::new(&[a, b]), "s", 0);
+        assert!(
+            out.is_empty(),
+            "a recalled typosquat sibling pair must still not pair: {out:?}"
+        );
     }
 
     /// A permutation a SECOND, independent source also surfaced is a genuine

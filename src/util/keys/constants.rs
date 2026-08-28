@@ -9,6 +9,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_NIAMONX_KEY",
     "HUNTSMAN_OSINTCAT_KEY",
     "HUNTSMAN_HIBP_KEY",
+    "HUNTSMAN_STOLEN_TAX_KEY",
     "HUNTSMAN_DEHASHED_KEY",
     "HUNTSMAN_HUNTER_KEY",
     "HUNTSMAN_PROXYCURL_KEY",
@@ -51,6 +52,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_WIGLE_USER",
     "HUNTSMAN_WIGLE_TOKEN",
     "HUNTSMAN_ABR_GUID",
+    "HUNTSMAN_AUSPOST_KEY",
     "HUNTSMAN_OPENCELLID_KEY",
     // Australian archives
     "HUNTSMAN_TROVE_KEY",
@@ -133,6 +135,9 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
         }
         // Paid-only / invite providers.
         "HUNTSMAN_HIBP_KEY" => "Have I Been Pwned — paid key at https://haveibeenpwned.com/API/Key",
+        "HUNTSMAN_STOLEN_TAX_KEY" => {
+            "Stolen.tax — paid; https://stolen.tax (dashboard: https://stolen.tax/api-dashboard)"
+        }
         "HUNTSMAN_DEHASHED_KEY" => {
             "DeHashed — paid (v2 API, key-only); needs an active search subscription at https://dehashed.com"
         }
@@ -150,6 +155,9 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
         // test enforces that this stays exhaustive.
         "HUNTSMAN_ABR_GUID" => {
             "Australian Business Register — free key at https://abr.business.gov.au/Tools/WebServices"
+        }
+        "HUNTSMAN_AUSPOST_KEY" => {
+            "Australia Post Postcode API — free key at https://developers.auspost.com.au"
         }
         "HUNTSMAN_BINARYEDGE_KEY" => "BinaryEdge — paid; https://www.binaryedge.io",
         "HUNTSMAN_BREACHDIR_KEY" => {

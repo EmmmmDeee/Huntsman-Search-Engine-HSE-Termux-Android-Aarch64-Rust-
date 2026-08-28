@@ -10,6 +10,10 @@ fn accepts_only_ip() {
 fn cost_is_key_gated() {
     assert!(matches!(CriminalIp.cost(), ModuleCost::KeyGated));
 }
+#[test]
+fn caches_for_a_day_like_the_other_paid_ip_intel_modules() {
+    assert_eq!(CriminalIp.cache_ttl_secs(), 86_400);
+}
 
 // ── build_entities (pure extraction) ───────────────────────────────
 

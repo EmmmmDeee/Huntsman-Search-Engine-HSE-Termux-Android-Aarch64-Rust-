@@ -22,7 +22,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::ckan::{datastore_search_url, field_str};
+use crate::util::ckan::{datastore_search_url, field};
 
 const SRC: &str = "asic_business_names";
 /// data.gov.au CKAN action base — `datastore_search` is appended by
@@ -90,13 +90,47 @@ impl Module for AsicBusinessNames {
 
         let records = ckan_query(ctx, name).await?;
         let mut seen = std::collections::HashSet::new();
+        let mut matched_count = 0usize;
         for rec in records
             .iter()
             .filter(|r| record_name_matches(r, &tokens))
             .take(MAX_HITS)
         {
+            matched_count += 1;
             emit_business_name(rec, &ctx.scan_id, &mut seen, &mut result);
         }
+
+        if matched_count == 0 {
+            return Ok(result);
+        }
+
+        // Signal if the matched set was truncated at the hard cap, so the
+        // operator knows whether these are ALL registrations for the name or
+        // just the first MAX_HITS (T2.140 — truncation-signaling pattern).
+        let total_matches = records
+            .iter()
+            .filter(|r| record_name_matches(r, &tokens))
+            .count();
+        let matches_capped = total_matches > MAX_HITS;
+
+        let mut seed = Entity::new(
+            EntityKind::Organisation,
+            name,
+            confidence::MEDIUM_HIGH,
+            &ctx.scan_id,
+        );
+        seed.tag("au");
+        seed.tag("asic");
+        seed.tag("search-result");
+        let mut ev = Evidence::new(SRC, format!("ASIC Business Names search for `{name}`"))
+            .with_attr("matched_count", matched_count.to_string())
+            .with_attr("total_matches", total_matches.to_string());
+        if matches_capped {
+            ev = ev.with_attr("matches_capped", "true");
+            seed.tag("truncated");
+        }
+        seed.add_evidence(ev);
+        result.push(seed);
 
         Ok(result)
     }
@@ -178,9 +212,10 @@ fn emit_business_name(
     org.add_evidence(ev.clone());
     result.push(org);
 
-    // The ABN of the entity holding the name — a keyless pivot into the ABR.
-    if let Some(abn) =
-        field(rec, "BN_ABN").filter(|a| a.chars().filter(char::is_ascii_digit).count() == 11)
+    // The ABN of the entity holding the name — a keyless pivot into the ABR,
+    // kept only when it is a genuinely checksum-valid ABN rather than merely
+    // 11 digits.
+    if let Some(abn) = field(rec, "BN_ABN").filter(|a| crate::util::abn::is_valid_abn(a))
         && seen_abn.insert(abn.clone())
     {
         let mut e = Entity::new(EntityKind::AbnAcn, &abn, confidence::NOTABLE, scan_id);
@@ -220,14 +255,6 @@ fn emit_business_name(
         );
         result.push(addr);
     }
-}
-
-/// A usable ASIC field value: the shared CKAN [`field_str`] stringification
-/// (CONVENTIONS §4 — one stringifier, not a per-module copy) with this
-/// register's `"null"` sentinel filter on top (`field_str` only drops JSON
-/// null / empty, so the literal string `"null"` would otherwise pass through).
-fn field(rec: &Map<String, Value>, key: &str) -> Option<String> {
-    field_str(rec, key).filter(|s| !s.eq_ignore_ascii_case("null"))
 }
 
 #[cfg(test)]

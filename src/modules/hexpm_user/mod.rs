@@ -106,8 +106,10 @@ pub(super) fn build_entities(user: HexUser, scan_id: &str) -> Vec<Entity> {
         e
     };
 
-    // Confirmed username on hex.pm.
-    let mut e = Entity::new(EntityKind::Username, handle, 0.87, scan_id);
+    // Confirmed username on hex.pm — EXPERT matches the identical
+    // confirmed-registry-username claim its structural siblings use
+    // (npm_author, huggingface_user).
+    let mut e = Entity::new(EntityKind::Username, handle, confidence::EXPERT, scan_id);
     e.tag("hexpm");
     e.tag("public-profile");
     e.add_evidence(ev());

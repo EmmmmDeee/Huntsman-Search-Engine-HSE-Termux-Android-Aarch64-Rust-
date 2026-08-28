@@ -182,12 +182,12 @@ use super::*;
             xml.contains(r#"label="subdomain_of""#),
             "expected a kind-labelled edge, got:\n{xml}"
         );
-        // …referencing the same truncated node ids the <node> elements use.
-        let src = &child.uid[..12];
-        let tgt = &parent.uid[..12];
+        // …referencing the same (full) node ids the <node> elements use.
+        let src = &child.uid;
+        let tgt = &parent.uid;
         assert!(
             xml.contains(&format!(r#"source="{src}" target="{tgt}""#)),
-            "relation edge must reference existing (truncated) node ids"
+            "relation edge must reference existing node ids"
         );
     }
 
@@ -224,7 +224,7 @@ use super::*;
             "the in-set relation edge must survive: {xml}"
         );
         // …but no edge references the filtered-out candidate node.
-        let cand_id = &candidate.uid[..12];
+        let cand_id = &candidate.uid;
         assert!(
             !xml.contains(&format!(r#"target="{cand_id}""#)),
             "an edge must not reference a node absent from <nodes>: {xml}"
@@ -331,7 +331,7 @@ use super::*;
       <attribute id="8" title="generation" type="integer"/>
     </attributes>
     <nodes>
-      <node id="ed152b32b035" label="example.com">
+      <node id="ed152b32b035d8e873341938ca5f75d242725beae5a202c27e413eb4477f8739" label="example.com">
         <attvalues>
           <attvalue for="0" value="domain"/>
           <attvalue for="1" value="0.900"/>
@@ -344,7 +344,7 @@ use super::*;
           <attvalue for="8" value="0"/>
         </attvalues>
       </node>
-      <node id="df4bda23ac18" label="blog.example.com">
+      <node id="df4bda23ac181f24c2f80cb94caa9745ce198e6164e5564186c27eeeaf90e273" label="blog.example.com">
         <attvalues>
           <attvalue for="0" value="domain"/>
           <attvalue for="1" value="0.800"/>
@@ -359,8 +359,8 @@ use super::*;
       </node>
     </nodes>
     <edges>
-      <edge id="0" source="df4bda23ac18" target="ed152b32b035" weight="0.800" label="subdomain_of"/>
-      <edge id="1" source="ed152b32b035" target="df4bda23ac18" weight="1.0" label="crtsh"/>
+      <edge id="0" source="df4bda23ac181f24c2f80cb94caa9745ce198e6164e5564186c27eeeaf90e273" target="ed152b32b035d8e873341938ca5f75d242725beae5a202c27e413eb4477f8739" weight="0.800" label="subdomain_of"/>
+      <edge id="1" source="ed152b32b035d8e873341938ca5f75d242725beae5a202c27e413eb4477f8739" target="df4bda23ac181f24c2f80cb94caa9745ce198e6164e5564186c27eeeaf90e273" weight="1.0" label="crtsh"/>
     </edges>
   </graph>
 </gexf>
@@ -418,15 +418,33 @@ use super::*;
         );
     }
 
-    // ── short_uid ─────────────────────────────────────────────────────────────
-
+    /// Regression: node ids used to be the uid truncated to 12 hex chars (48
+    /// bits), so two distinct entities whose FULL uids merely agreed on that
+    /// prefix collided onto one `<node id>` — structurally-invalid GEXF (Gephi
+    /// silently keeps only one node's data). These two usernames are a real,
+    /// independently-verified SHA-256 preimage collision on the first 12 hex
+    /// chars of `derive_uid`'s `"username:<value>"` hash (found by an offline
+    /// birthday search — not a contrived string): both start `5ae30bc175a5`
+    /// but diverge immediately after (`c869…` vs `f247…`). Two entities, two
+    /// nodes, two ids.
     #[test]
-    fn short_uid_truncates_to_twelve_chars() {
-        // A long uid is cut to its first 12 chars (matching the node-id form).
-        assert_eq!(short_uid("0123456789abcdef0000"), "0123456789ab");
-        // Exactly 12 is unchanged.
-        assert_eq!(short_uid("0123456789ab"), "0123456789ab");
-        // Shorter than 12 passes through (the `min` guards the slice).
-        assert_eq!(short_uid("abc"), "abc");
-        assert_eq!(short_uid(""), "");
+    fn gexf_node_ids_do_not_collide_on_a_shared_twelve_hex_char_uid_prefix() {
+        let a = Entity::new(EntityKind::Username, "u24143496", 0.5, "s");
+        let b = Entity::new(EntityKind::Username, "u34619274", 0.5, "s");
+        assert_eq!(
+            &a.uid[..12],
+            &b.uid[..12],
+            "test setup: these two values must share a 12-hex-char uid prefix"
+        );
+        assert_ne!(a.uid, b.uid, "test setup: the full uids must still differ");
+
+        let xml = entities_to_gexf(&[a.clone(), b.clone()], &[], "s");
+        let node_count = xml.matches("<node id=").count();
+        assert_eq!(
+            node_count, 2,
+            "two distinct entities must produce two distinct <node> elements, got:\n{xml}"
+        );
+        assert!(xml.contains(&format!(r#"<node id="{}""#, a.uid)));
+        assert!(xml.contains(&format!(r#"<node id="{}""#, b.uid)));
     }
+

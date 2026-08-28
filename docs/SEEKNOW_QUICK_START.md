@@ -1,6 +1,20 @@
 # SeekNow Integration Quick Start (15,000 searches/day)
 
-## Status: Production-Ready
+## Status: Superseded — see `docs/SEEKNOW_SETUP.md`
+
+> **⚠️ Known-stale, use [`SEEKNOW_SETUP.md`](SEEKNOW_SETUP.md) instead.**
+> This guide duplicates SEEKNOW_SETUP.md's setup walkthrough, and several of
+> its specifics are verified wrong against current source: it references a
+> non-existent `hse stats` subcommand and `--dry-run`/`--verbose` flags on
+> commands that don't have them (the real `Command` enum in
+> `src/cli/command.rs` has neither), names an `ENTERPRISE` constant that
+> `src/util/see_know/enterprise_config.rs` doesn't define (deliberately —
+> see that file's own doc comment), quotes OathNet Pro's priority as 200
+> where the code (`src/modules/oathnet_pro/mod.rs`) sets 127, and claims a
+> fixed 15,000 credits/day where SEEKNOW_SETUP.md correctly says
+> "Unlimited*" (the actual limit is only knowable via the live `/credits`
+> endpoint). Kept in-tree rather than deleted so no inbound link 404s;
+> treat everything below as unverified.
 
 SeekNow is fully integrated into HSE with 19 working endpoints. Despite the public API being disabled, your **logged-in Enterprise account maintains full 15,000 daily quota** access.
 

@@ -474,7 +474,7 @@ fn format_output(
         // `csv_escape`: that also RFC-4180-quotes, which would double-quote
         // everything `csv::Writer` is about to quote itself.
         "csv" => {
-            use crate::api::scan_export::formula_guard;
+            use crate::app::export::formula_guard;
             let mut wtr = csv::Writer::from_writer(Vec::new());
             wtr.write_record(["kind", "value", "confidence", "source_pattern"])?;
             for e in entities {

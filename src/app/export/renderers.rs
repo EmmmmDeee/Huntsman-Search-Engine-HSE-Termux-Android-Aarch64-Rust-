@@ -1,6 +1,7 @@
 //! Format renderers — JSON, CSV, GEXF, report, full dossier, debug bundle.
 
 use crate::core::error::{Error, Result};
+use crate::core::scan::Scan;
 use crate::storage::Store;
 
 /// A scan's entities with the quarantined `candidate` rows removed — the
@@ -16,8 +17,8 @@ fn confirmed_entities(store: &Store, sid: &str) -> Result<Vec<crate::core::entit
     Ok(entities)
 }
 
-/// Why an export of a scan in this state is only a PARTIAL view, or `None`
-/// when the scan genuinely ran to completion.
+/// Why an export of this scan is only a PARTIAL view, or `None` when the scan
+/// genuinely ran to completion.
 ///
 /// Single source of truth for the completeness decision, so the dossier header
 /// and the debug-bundle header can never disagree about whether an artifact is
@@ -26,10 +27,23 @@ fn confirmed_entities(store: &Store, sid: &str) -> Result<Vec<crate::core::entit
 /// produced before the stop, so branding it "complete" tells the operator the
 /// absence of a finding is a real negative when it may just be work that never
 /// happened — the one claim an evidentiary artifact must never make falsely.
-fn partial_export_reason(status: crate::core::scan::ScanStatus) -> Option<&'static str> {
+///
+/// A budget-truncated scan is exactly that case, and used to slip through: it
+/// reaches [`ScanStatus::Complete`](crate::core::scan::ScanStatus::Complete) like any other, so classifying on status
+/// alone branded it "complete" while its expansion had stopped with candidates
+/// still queued. Taking the whole [`Scan`] closes that hole — see
+/// [`StopReason`](crate::core::scan::StopReason).
+///
+/// Determinism: every input here is immutable once the scan is terminal
+/// (`status` and `stop_reason` are both written once, at finalise), so this
+/// keeps the debug bundle's byte-identical-across-exports contract.
+fn partial_export_reason(scan: &Scan) -> Option<&'static str> {
     use crate::core::scan::ScanStatus;
-    match status {
-        ScanStatus::Complete => None,
+    match scan.status {
+        ScanStatus::Complete => scan
+            .stop_reason
+            .is_some_and(|r| r.truncated())
+            .then_some("budget-truncated"),
         ScanStatus::Aborted => Some("aborted"),
         ScanStatus::Failed => Some("failed"),
         // A snapshot taken mid-flight is partial by construction: more findings
@@ -53,6 +67,16 @@ pub(super) fn render_json(store: &Store, sid: &str, redact: bool) -> Result<Stri
             let mut v = serde_json::to_value(e)
                 .map_err(|err| Error::Other(format!("entity serialise: {err}")))?;
             if let serde_json::Value::Object(ref mut m) = v {
+                // Normalise `kind` to a plain string. serde's default
+                // externally-tagged representation renders EntityKind's unit
+                // variants as a bare string ("email") but the Other(String)
+                // catch-all as {"other":"iban"} -- a JSON TYPE that silently
+                // depends on which kind the entity happens to be. Other is
+                // the real representation for IBANs, DIDs, nostr keys, and
+                // more, so this is not an edge case. `to_string()` (the
+                // Display impl) always yields a plain string ("other:iban")
+                // and matches what CSV/GEXF already emit for the same field.
+                m.insert("kind".into(), serde_json::json!(e.kind.to_string()));
                 m.insert("c_effective".into(), serde_json::json!(e.c_effective()));
                 m.insert("source_count".into(), serde_json::json!(e.source_count()));
                 m.insert(
@@ -72,7 +96,164 @@ pub(super) fn render_csv(store: &Store, sid: &str, redact: bool) -> Result<Strin
     if redact {
         crate::util::redact::redact_entities(&mut entities);
     }
-    Ok(crate::api::scan_export::entities_to_csv(&entities))
+    Ok(entities_to_csv(&entities))
+}
+
+/// Canonical CSV rendering for a scan's entities. Shared by the HTTP
+/// endpoint `/api/v1/scans/{id}/entities.csv` and the `hse export
+/// --format csv` CLI subcommand so both produce byte-identical
+/// output — operators piping the two interchangeably can rely on
+/// the column shape staying in sync.
+pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> String {
+    use std::fmt::Write as _;
+    let mut body = String::with_capacity(192 + entities.len() * 192);
+    // `evidence_urls` + `evidence` make every row self-verifiable: the operator
+    // can follow the source links and read each module's finding without
+    // reconstructing anything from the value alone. `source_count` +
+    // `corroborating_sources` sit next to `corroboration` + `sources` for the
+    // same reason: `corroboration` is a raw per-module observation magnitude
+    // (summed on merge, never deduplicated) that does NOT drive `c_effective`
+    // — `source_count` (distinct corroborating sources) does. Without both
+    // numbers side by side, a reader has no way to tell from the CSV alone
+    // whether a high `corroboration` reflects genuine independent agreement.
+    // `uid` and `generation` are APPENDED (never inserted) so the header still
+    // begins with the exact prefix `looks_like_hse_csv` sniffs for and every
+    // by-name column lookup — the import and audit parsers both resolve columns
+    // by header name — keeps working on older and newer files alike.
+    // `uid` is the join key: it is what the JSON export, the debug bundle, the
+    // Browse pane and the /entities/{uid} pivot endpoint all identify a finding
+    // by, so without it a CSV row could only be matched back to the other
+    // artifacts by string-matching kind+value. `generation` (hops from the seed)
+    // travels with it for the same reason it was added to the bundle — it
+    // separates a seed-adjacent finding from one three pivots out.
+    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags,uid,generation\n");
+    for e in entities {
+        let eff = e.c_effective();
+        let source_count = e.source_count();
+        let tier = e.classify().to_string();
+        let mut sources: Vec<&str> = e.evidence_sources().into_iter().collect();
+        sources.sort_unstable();
+        let sources = sources.join("|");
+        let mut corroborating: Vec<&str> = e.corroborating_sources().into_iter().collect();
+        corroborating.sort_unstable();
+        let corroborating_sources = corroborating.join("|");
+        let tags = e.tags.join("|");
+
+        // Distinct full URLs across all evidence (the verifiable links), and a
+        // per-source summary trail of what each module actually found.
+        let mut urls: Vec<&str> = Vec::new();
+        for ev in &e.evidence {
+            for key in ["url", "source_url", "profile_url", "permalink"] {
+                if let Some(u) = ev.attributes.get(key)
+                    && !u.is_empty()
+                    && !urls.contains(&u.as_str())
+                {
+                    urls.push(u.as_str());
+                }
+            }
+        }
+        let evidence_urls = urls.join(" | ");
+        // Append each evidence's full attribute record (the same `k = v` detail
+        // the dossier renderer prints per evidence row) after its summary, so
+        // the CSV's own self-verifiable promise holds for hard evidentiary
+        // fields (a leaked DOB, a password hash, …) that a module recorded as
+        // structured `attributes` rather than folding into prose. `BTreeMap`
+        // iteration is already key-sorted, so output stays deterministic
+        // without an extra sort.
+        let evidence = e
+            .evidence
+            .iter()
+            .map(|ev| {
+                let attrs: Vec<String> = ev
+                    .attributes
+                    .iter()
+                    .filter(|(_, v)| !v.is_empty())
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect();
+                if attrs.is_empty() {
+                    format!("[{}] {}", ev.source, ev.summary)
+                } else {
+                    format!("[{}] {} ({})", ev.source, ev.summary, attrs.join("; "))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" || ");
+
+        let _ = writeln!(
+            body,
+            "{},{},{},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{},{}",
+            csv_escape(&e.kind.to_string()),
+            csv_escape(&e.value),
+            csv_escape(&e.raw_value),
+            e.confidence,
+            eff,
+            e.corroboration,
+            source_count,
+            tier,
+            e.observed_at,
+            csv_escape(&sources),
+            csv_escape(&corroborating_sources),
+            csv_escape(&evidence_urls),
+            csv_escape(&evidence),
+            csv_escape(&tags),
+            csv_escape(&e.uid),
+            e.generation,
+        );
+    }
+    body
+}
+
+/// RFC-4180 CSV field escaping with **formula-injection defanging**: a field
+/// whose first byte is `= + - @ TAB CR` — or `'` itself, which is guarded too so
+/// the escape stays invertible, see [`formula_guard`] — is prefixed with a `'`
+/// so Excel / LibreOffice don't execute it as a formula on open (OWASP
+/// CSV-injection), then any field containing `, " \n \r` is double-quoted with
+/// embedded quotes doubled. Every cell in an exported scan CSV passes through
+/// this.
+pub(crate) fn csv_escape(s: &str) -> String {
+    let body = formula_guard(s);
+    if body.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", body.replace('"', "\"\""))
+    } else {
+        body.into_owned()
+    }
+}
+
+/// Neutralise a spreadsheet formula trigger at the start of a CSV field,
+/// **without** applying RFC-4180 quoting.
+///
+/// A leading `=`/`+`/`-`/`@`/CR/TAB causes Excel and LibreOffice to interpret
+/// the cell as a formula on file open — a hostile API response with
+/// `first_name = "=cmd|'/c calc'!A1"` could otherwise turn an exported CSV into
+/// RCE on the operator's workstation. Prepend a single quote to defang, per
+/// OWASP guidance.
+///
+/// A leading apostrophe is ALSO guarded (doubled). Without that the escape
+/// isn't invertible: a genuine value like `'=hunter` would export unchanged as
+/// `'=hunter`, indistinguishable from a guarded `=hunter`, and the import
+/// reverse (`app::import::csv`'s `strip_csv_formula_guard`) would strip
+/// its real apostrophe. By escaping any leading `'` too, this is a clean
+/// bijection — export prepends `'` iff the first byte is a trigger OR `'`, and
+/// import strips exactly one leading `'` — so every value round-trips
+/// byte-for-byte at any nesting.
+///
+/// Split out of [`csv_escape`] so the two CSV writers in this crate can share
+/// **one** guard while differing on who does the quoting. [`csv_escape`] quotes
+/// by hand for the scan export; `cli::ingest` hands its fields to `csv::Writer`,
+/// which RFC-4180-quotes them itself — passing them through `csv_escape` first
+/// would double-quote. Returns [`std::borrow::Cow::Borrowed`] when no guard is
+/// needed, which is the overwhelmingly common case (emails, IPs, domains,
+/// hashes), so the shared guard costs no allocation on the hot path.
+pub(crate) fn formula_guard(s: &str) -> std::borrow::Cow<'_, str> {
+    let needs_guard = s
+        .as_bytes()
+        .first()
+        .is_some_and(|b| matches!(*b, b'=' | b'+' | b'-' | b'@' | b'\t' | b'\r' | b'\''));
+    if needs_guard {
+        std::borrow::Cow::Owned(format!("'{s}"))
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
 }
 
 pub(super) fn render_gexf(store: &Store, sid: &str, redact: bool) -> Result<String> {
@@ -129,17 +310,31 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
             if let Some(k) = ev.attributes.get("api_key_origin") {
                 key_origins.insert(k.clone());
             }
+            let mut named_a_site = false;
             for sk in ["source", "source_db", "dbname"] {
                 if let Some(v) = ev.attributes.get(sk).filter(|v| !v.is_empty()) {
                     sources.insert(v.clone());
+                    named_a_site = true;
                 }
+            }
+            // Fall back to the MODULE that produced the record. `provider`,
+            // `source`, `source_db` and `dbname` are optional attributes only
+            // the paid providers set, so a scan served entirely by free modules
+            // rendered all three provenance lines as "(none)" — a section whose
+            // whole job is to say where the data came from asserting that
+            // nothing was known, while the evidence tree printed every module
+            // by name a few lines below. `Evidence::source` is documented as
+            // "Module that produced this evidence" and is always populated, so
+            // it is the honest floor for this roll-up.
+            if !named_a_site && !ev.source.is_empty() {
+                sources.insert(ev.source.clone());
             }
         }
     }
 
     let mut s = String::new();
     let _ = writeln!(s, "═══════════════════════════════════════════════════════");
-    let dossier_state = match partial_export_reason(scan.status) {
+    let dossier_state = match partial_export_reason(&scan) {
         None => "complete, unredacted".to_string(),
         Some(reason) => format!("partial, {reason}, unredacted"),
     };
@@ -153,6 +348,11 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
         scan.target.value
     );
     let _ = writeln!(s, "status     : {:?}", scan.status);
+    // WHY the expansion stopped, not just that the scan ended. Immutable once
+    // terminal, so the bundle stays byte-identical across exports.
+    if let Some(r) = scan.stop_reason {
+        let _ = writeln!(s, "stopped    : {}", r.label());
+    }
     let _ = writeln!(s, "entities   : {}", entities.len());
     let _ = writeln!(s, "relations  : {}", relations.len());
     // Full module accounting — including the timed-out/skipped/cached counts the
@@ -492,7 +692,7 @@ pub(crate) fn render_debug_bundle(
     let scan = store
         .get_scan(sid)?
         .ok_or_else(|| Error::Other(format!("scan {sid} not found")))?;
-    let snapshot_state = match partial_export_reason(scan.status) {
+    let snapshot_state = match partial_export_reason(&scan) {
         None => "complete scan snapshot".to_string(),
         Some(reason) => format!("partial {reason} scan snapshot"),
     };
@@ -581,7 +781,7 @@ pub(crate) fn render_debug_bundle(
     // rule ran on — candidates quarantined), not parsed from the finding prose.
     let mut fix_entities = store.entities_for_scan(sid)?;
     fix_entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
-    let fix = crate::api::scan_export::extract_au_location_fix(&correlations, &fix_entities);
+    let fix = extract_au_location_fix(&correlations, &fix_entities);
     if fix != serde_json::Value::Null {
         let lat = fix["lat"].as_f64().unwrap_or(0.0);
         let lon = fix["lon"].as_f64().unwrap_or(0.0);
@@ -774,7 +974,7 @@ pub(crate) struct IssueInputs<'a> {
     /// because a stale build may be reproducing already-fixed bugs.
     pub update_commits_behind: Option<u64>,
     /// `(service, total_keys)` for each configured service whose pooled keys are
-    /// ALL non-active — its keyed modules silently return nothing.
+    /// ALL non-active — its keyed modules return nothing silently.
     pub dead_key_services: Vec<(&'a str, usize)>,
     /// the first `PRAGMA integrity_check` problem row when the on-disk DB is
     /// corrupt (`None` ⇒ healthy `["ok"]`).
@@ -1511,15 +1711,186 @@ pub(super) fn render_report(store: &Store, sid: &str, include_infra: bool) -> Re
     // Default dossier hides quarantined `candidate` entities (non-target
     // breach-dump rows) — the confirmed-footprint view. They remain available
     // over HTTP via `report.json?include_candidates=1`.
-    let report = crate::api::scan_export::build_scan_report(store as _, sid, false, include_infra)?
+    let report = build_scan_report(store as _, sid, false, include_infra)?
         .ok_or_else(|| Error::Other(format!("scan {sid} not found")))?;
     serde_json::to_string_pretty(&report)
         .map_err(|e| Error::Other(format!("report serialise: {e}")))
 }
 
+/// Canonical scan-report JSON envelope. Shared by the HTTP endpoint
+/// `/api/v1/scans/{id}/report.json` and the `hse export --format
+/// report` CLI subcommand so the on-device and over-the-wire
+/// dossiers stay byte-equivalent.
+///
+/// Generic over the storage handle: the HTTP layer hands in an
+/// `Arc<dyn StoragePort>` (via `&*s.store`), the CLI hands in a
+/// `&Store` directly. Both expose `get_scan / entities_for_scan /
+/// correlations_for_scan` with matching signatures.
+///
+/// Returns `Ok(None)` when no scan with that id exists, so callers
+/// can map straight to a 404. Bubbles storage errors otherwise.
+pub(crate) fn build_scan_report(
+    store: &dyn crate::core::port::StoragePort,
+    scan_id: &str,
+    include_candidates: bool,
+    include_infra: bool,
+) -> crate::core::error::Result<Option<serde_json::Value>> {
+    let Some(scan) = store.get_scan(scan_id)? else {
+        return Ok(None);
+    };
+    let mut entities = store.entities_for_scan(scan_id)?;
+    // Quarantine in the dossier too: speculative `candidate` entities (the
+    // non-target breach-dump rows) are hidden by default so the report reads
+    // as the target's confirmed footprint. `include_candidates=true` returns
+    // the full set for investigation.
+    if !include_candidates {
+        entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+    }
+    // Strip platform/shared-infrastructure entities (cloud buckets, CDN IPs,
+    // analytics IDs sourced from third-party platform pages) from default
+    // output. They inflate the count and obscure subject-owned entities.
+    // `include_infra=true` (via `--include-infra` or `--output full`) restores
+    // them.
+    if !include_infra {
+        // The operator-provided seed is the subject — it must ALWAYS appear in
+        // its own report, even when it is itself infrastructure (e.g. a scan
+        // seeded with a datacenter/CDN IP that an IP module re-emits as
+        // `hosting`, which then merges `platform-infra` onto the seed anchor).
+        entities.retain(|e| !e.has_tag(crate::core::tags::PLATFORM_INFRA) || e.has_tag("seed"));
+    }
+    let correlations = store.correlations_for_scan(scan_id)?;
+    let best_location = extract_au_location_fix(&correlations, &entities);
+    // The calibrated 0–100 Exposure Index — the SAME headline verdict the CLI
+    // `print_dossier` and the debug bundle both open with. This envelope is the
+    // canonical over-the-wire/on-device dossier (shared by GET report.json and
+    // `hse export --format report`), yet it was the one dossier rendering that
+    // omitted the summary score, so a consumer reading report.json alone could
+    // not tell a MINIMAL scan from a HIGH one without recomputing it. `assess`
+    // is pure and excludes candidate/sub-floor rows internally, so the score is
+    // identical whether or not this envelope filtered candidates above, and the
+    // determinism audit still holds (nothing here varies but `exported_at`).
+    let exposure = crate::core::exposure::assess(&entities, &correlations);
+    Ok(Some(serde_json::json!({
+        "scan": scan,
+        "entities": entities,
+        "entity_count": entities.len(),
+        "correlations": correlations,
+        "correlation_count": correlations.len(),
+        "exposure": exposure,
+        // Best AU geolocation fix synthesised by AU-059 cross-seed geo synergy.
+        // `null` when no AU-059 fired; present with full structured fields when
+        // ≥2 orthogonal AU source classes converged on a location.
+        "best_location": best_location,
+        // DETERMINISM: `exported_at` is the SOLE intentional source of
+        // non-determinism in any export. It is meaningful here — report.json is a
+        // point-in-time snapshot whose "when was this pulled" is part of its
+        // value — and is the documented exception to byte-reproducibility. The
+        // diffable/reproducible artifacts are the debug bundle (no timestamp,
+        // proven byte-stable) and entity-level `scan_diff`. The
+        // `export_formats_determinism_audit` test pins that NO OTHER field of the
+        // report varies across renders, so any newly-introduced non-determinism
+        // fails CI rather than silently breaking reproducibility.
+        "exported_at": crate::core::entity::unix_now(),
+    })))
+}
+
+/// Parse the structured geo-fix fields that AU-059 embeds in its description.
+///
+/// AU-059 description format:
+/// `"N AU coordinate(s) from M orthogonal source class(es) [C1, C2] converge on
+///  LAT,LON (geohash=GH, state=STATE); synergy confidence SC — MITRE T1591.001"`
+///
+/// Returns a JSON object `{lat, lon, geohash, state, synergy_confidence,
+/// source_count, class_count, severity}` from the highest-rank AU-059 firing,
+/// or `serde_json::Value::Null` when no AU-059 correlation exists for the scan.
+/// The AU-059 `best_location` for the export, read **structurally** from the
+/// scan entities rather than by parsing the finding prose. It is present iff
+/// AU-059 actually fired this scan (the gated, ranked finding); the geo fields
+/// come from the one canonical [`crate::core::correlator::au059_synergy_fix`]
+/// computation the rule itself uses, so the structured export and the finding
+/// can never drift (they did, by construction, when this re-parsed the prose).
+/// Severity and the post-hoc `rank` are taken from the emitted correlation.
+pub(crate) fn extract_au_location_fix(
+    correlations: &[crate::core::correlator::Correlation],
+    entities: &[crate::core::entity::Entity],
+) -> serde_json::Value {
+    // Independent-source corroboration (computed regardless of which headline fix
+    // wins): how many DISTINCT methods agree on a locality, folding in the
+    // postcode-grain signals the synergy fix can't see. Attached to whichever fix
+    // is returned so the JSON surface always reports the corroboration strength.
+    let corroboration = crate::core::correlator::au_location_corroboration(entities).map(|c| {
+        serde_json::json!({
+            "lat": c.lat,
+            "lon": c.lon,
+            "radius_km": c.radius_km,
+            "state": c.state,
+            "locality": c.locality,
+            "independent_classes": c.independent_classes,
+            "signal_count": c.signal_count,
+            "classes": c.class_names,
+            "confidence": c.confidence,
+        })
+    });
+
+    // Primary: the AU-059 multi-source cross-class synergy fix (strongest). The
+    // structured fields are recomputed from the entities, never parsed from prose.
+    let best = correlations
+        .iter()
+        .filter(|c| c.rule_id == "AU-059")
+        .max_by(|a, b| {
+            a.rank
+                .partial_cmp(&b.rank)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    let mut fix = if let Some(c) = best
+        && let Some(synergy) = crate::core::correlator::au059_synergy_fix(entities)
+    {
+        serde_json::json!({
+            "lat": synergy.lat,
+            "lon": synergy.lon,
+            "radius_km": synergy.radius_km,
+            "geohash": synergy.geohash,
+            "state": synergy.state,
+            "synergy_confidence": synergy.synergy_confidence,
+            "severity": c.severity.as_canonical(),
+            "rank": c.rank,
+            "source_count": synergy.count,
+            "class_count": synergy.class_names.len(),
+            "rule_id": "AU-059",
+        })
+    } else {
+        // Fallback: the single-signal best-location estimate, so the web/JSON
+        // surface carries a headline fix whenever ANY AU location signal exists —
+        // not only the ≥2-class synergy case. Carries the precision radius, nearest
+        // locality, and the basis it was derived from. `Null` only when there is no
+        // AU location at all.
+        match crate::core::correlator::best_au_location_estimate(entities) {
+            Some(est) => serde_json::json!({
+                "lat": est.lat,
+                "lon": est.lon,
+                "radius_km": est.radius_km,
+                "geohash": est.geohash,
+                "state": est.state,
+                "locality": est.locality,
+                "confidence": est.confidence,
+                "basis": est.basis,
+                "source": "single-signal",
+            }),
+            None => serde_json::Value::Null,
+        }
+    };
+
+    if let Some(obj) = fix.as_object_mut()
+        && let Some(corr) = corroboration
+    {
+        obj.insert("corroboration".to_string(), corr);
+    }
+    fix
+}
+
 #[cfg(test)]
 mod tests {
-    use super::render_raw_response_body;
+    use super::{partial_export_reason, render_raw_response_body};
 
     #[test]
     fn raw_response_body_masks_an_echoed_api_key_but_keeps_the_rest() {
@@ -1546,5 +1917,78 @@ mod tests {
             rendered.contains("\"result\": \"ok\""),
             "unrelated fields must survive untouched: {rendered}"
         );
+    }
+
+    /// The defect this pins: `partial_export_reason` classified on
+    /// `ScanStatus` alone, and a budget-truncated scan reaches
+    /// `ScanStatus::Complete` like any other. So the dossier header read
+    /// "complete, unredacted" and the debug bundle read "complete scan
+    /// snapshot" for a scan whose expansion had stopped with candidates still
+    /// queued — precisely the false claim this function's own doc says an
+    /// evidentiary artifact must never make.
+    #[test]
+    fn a_budget_truncated_scan_is_not_branded_a_complete_export() {
+        use crate::core::scan::{Scan, ScanStatus, StopReason, Target, TargetKind};
+
+        let mk = |stop: Option<StopReason>| {
+            let mut sc = Scan::new(
+                "s1",
+                Target {
+                    kind: TargetKind::Email,
+                    value: "a@b.test".into(),
+                },
+            );
+            sc.status = ScanStatus::Complete;
+            sc.stop_reason = stop;
+            sc
+        };
+
+        for stop in [StopReason::MaxEntities(500), StopReason::MaxWallTime(60)] {
+            assert_eq!(
+                partial_export_reason(&mk(Some(stop))),
+                Some("budget-truncated"),
+                "{stop:?} must mark the export partial"
+            );
+        }
+
+        // …and the converse, so the "partial" brand keeps its meaning: a scan
+        // that genuinely ran out of candidates, one that ran every requested
+        // depth round, and a row written before `stop_reason` existed are all
+        // complete exports.
+        for stop in [
+            None,
+            Some(StopReason::NoMoreCandidates),
+            Some(StopReason::DepthExhausted),
+        ] {
+            assert_eq!(
+                partial_export_reason(&mk(stop)),
+                None,
+                "{stop:?} is a complete export"
+            );
+        }
+    }
+
+    /// The pre-existing classifications must survive unchanged — this function
+    /// is the single source both artifact headers share.
+    #[test]
+    fn non_complete_statuses_keep_their_partial_reasons() {
+        use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
+
+        for (status, want) in [
+            (ScanStatus::Aborted, "aborted"),
+            (ScanStatus::Failed, "failed"),
+            (ScanStatus::Pending, "live"),
+            (ScanStatus::Running, "live"),
+        ] {
+            let mut sc = Scan::new(
+                "s1",
+                Target {
+                    kind: TargetKind::Email,
+                    value: "a@b.test".into(),
+                },
+            );
+            sc.status = status;
+            assert_eq!(partial_export_reason(&sc), Some(want), "{status:?}");
+        }
     }
 }

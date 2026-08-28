@@ -165,17 +165,27 @@ pub(super) fn emit_key_with(
         return;
     }
 
-    // Pool ONLY a recognised keyed provider's key — one the cascade can reuse.
-    // The `generic_hex` catch-all (and `jwt_token`, `crypto_*`, foreign logins)
-    // is surfaced as the ApiKey entity above but is never injected by
-    // `hot_inject_keys`, so pooling it just grew key_pool.json without bound
-    // (a live run accumulated 8668 `generic_hex` blobs → a 4 MB pool).
+    // Pool ONLY a recognised keyed provider's key. The `generic_hex` catch-all
+    // (and `jwt_token`, `crypto_*`, foreign logins) is surfaced as the ApiKey
+    // entity above but is never pooled, so pooling it just grew key_pool.json
+    // without bound (a live run accumulated 8668 `generic_hex` blobs → a 4 MB pool).
     if !crate::util::service_defs::is_poolable_service(service) {
         return;
     }
 
+    // Record the harvested key in the pool as PORTFOLIO INTELLIGENCE only, stamped
+    // with `discovered_by`/`discovered_at` provenance so the auth chokepoint
+    // (`KeyPool::next_key_excluding`) treats it as INELIGIBLE to authenticate HSE's
+    // own requests. Auto-reusing a discovered third-party key for real auth would
+    // let an attacker who plants one on a crawled page hijack the engine's egress
+    // (exposing the investigation's targets); reuse requires a deliberate
+    // `hse keys add`, matching `store_api_credential`'s policy for harvested
+    // breach credentials. (The sibling `http::keys::scan_for_api_keys` path already
+    // stamps this provenance; this keeps both harvest paths consistent.)
     let pool = crate::util::key_pool::global_pool();
     let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+    entry.discovered_by = Some(source.to_string());
+    entry.discovered_at = Some(crate::core::entity::unix_now());
     entry.notes = Some(format!(
         "Auto-discovered {service} key from {source} ({} tier)",
         roi.label()

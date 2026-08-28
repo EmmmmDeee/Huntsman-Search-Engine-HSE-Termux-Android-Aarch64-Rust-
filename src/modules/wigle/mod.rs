@@ -768,21 +768,26 @@ impl Wigle {
         // One unit per kind actually probed, not one per dispatch: a BSSID absent
         // from the WiFi and cell corpora costs three requests before the
         // Bluetooth probe answers, and the caller used to be billed for one.
+        let mut last_error = None;
         for kind in [NetworkKind::Wifi, NetworkKind::Cell, NetworkKind::Bluetooth] {
             if !BSSID_BUDGET.try_increment() {
                 break;
             }
-            if let Some(body) = fetch_detail(&ctx.http, user, token, bssid, kind).await
-                && body.success == Some(true)
-                && !body.results.is_empty()
-            {
-                return Ok(emit_bssid_entities(
-                    bssid,
-                    kind,
-                    &body.results,
-                    &ctx.scan_id,
-                ));
+            match fetch_detail(&ctx.http, user, token, bssid, kind).await {
+                Ok(Some(body)) if body.success == Some(true) && !body.results.is_empty() => {
+                    return Ok(emit_bssid_entities(
+                        bssid,
+                        kind,
+                        &body.results,
+                        &ctx.scan_id,
+                    ));
+                }
+                Ok(_) => {}
+                Err(e) => last_error = Some(e),
             }
+        }
+        if let Some(e) = last_error {
+            return Err(e);
         }
         Ok(ModuleResult::new())
     }

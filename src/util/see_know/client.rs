@@ -84,6 +84,8 @@ pub(super) fn cache_put(key: String, items: Vec<Value>) {
 /// can never drift from the literal `base_url` resolves against.
 const DEFAULT_BASE: &str = "https://see-know.ru/api/v1";
 
+/// The API base URL in force: the operator's override when one is set and vetted,
+/// otherwise [`DEFAULT_BASE`].
 pub fn base_url() -> String {
     // Default promoted (2026-07-29) to `.ru` — the operator-designated primary
     // endpoint SeekNow is currently using. Prior history: default started on

@@ -553,7 +553,8 @@ impl Module for SearchEngines {
         // Match the engine's actual deadline so the budget checks below fire
         // BEFORE the hard timeout, letting the module finalise partial results.
         // On Termux that's the trimmed budget; off Termux the full desktop one.
-        let budget_ms = if crate::is_termux() {
+        // Capability, not identity — same reasoning as core::engine::timeout.
+        let budget_ms = if crate::core::platform::is_resource_constrained() {
             self.termux_timeout_ms()
         } else {
             self.max_timeout_ms()

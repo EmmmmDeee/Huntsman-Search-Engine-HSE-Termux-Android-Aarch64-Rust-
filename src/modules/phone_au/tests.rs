@@ -74,6 +74,44 @@ fn classifies_service_numbers_with_correct_precedence() {
 }
 
 #[test]
+fn service_prefixes_require_the_exact_acma_length() {
+    // A string that merely BEGINS WITH a service prefix but is the wrong
+    // length is not a real AU service line — e.g. a truncated 7-digit scrape
+    // of a freephone number, or (the higher-stakes case) an 11-digit NANP
+    // number whose `1` country code + area code collides: `+1 800…` reads as
+    // `1800…`, `+1 900…`/`+1 90x…` reads as `190…`. Without the exact-length
+    // gate these were misclassified as AU Freephone/Premium; they must now
+    // classify as Unknown (still AU-shaped by length, just not a recognised
+    // prefix) rather than a confident, fabricated service-line claim.
+    assert_eq!(
+        classify_au_phone("1800555")
+            .expect("should succeed")
+            .line_type,
+        LineType::Unknown,
+        "a 7-digit string starting with 1800 is not a 10-digit AU freephone number"
+    );
+    assert!(
+        classify_au_phone("13001234567").is_none(),
+        "11 digits exceeds the outer AU-national-number bound entirely"
+    );
+    assert_eq!(
+        classify_au_phone("1900555")
+            .expect("should succeed")
+            .line_type,
+        LineType::Unknown,
+        "a 7-digit string starting with 190 is not a 10-digit AU premium number"
+    );
+    // Exactly 10 digits still classifies correctly (regression guard against
+    // an over-corrected off-by-one).
+    assert_eq!(
+        classify_au_phone("1800123456")
+            .expect("should succeed")
+            .line_type,
+        LineType::Freephone
+    );
+}
+
+#[test]
 fn rejects_out_of_range_and_non_digit() {
     assert!(classify_au_phone("12345").is_none()); // too short
     assert!(classify_au_phone("12345678901").is_none()); // too long

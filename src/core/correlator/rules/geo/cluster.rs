@@ -44,7 +44,6 @@ pub(in crate::core::correlator) fn rule_au_014_geo_cluster(
     ts: u64,
 ) -> Vec<Correlation> {
     let entities = context.entities();
-    const GEO_TAGS: &[&str] = &["geoint", "wifi-observed"];
     entities_of_kind(entities, EntityKind::Coordinates)
         .into_iter()
         // Mirror AU-017: a coordinate must clear a confidence floor AND not be
@@ -54,12 +53,20 @@ pub(in crate::core::correlator) fn rule_au_014_geo_cluster(
         // confirmed personal geo lead.
         .filter(|e| e.confidence >= 0.50 && !is_infrastructure_geo(e))
         .filter_map(|e| {
-            let hits: Vec<&str> = GEO_TAGS.iter().copied().filter(|t| e.has_tag(t)).collect();
             // Corroborating sources only: the deterministic `geo_normalize`
             // enrichment pass is not an independent geo observation, so a lone
-            // postcode-centroid it touched must not look like a "cluster".
+            // postcode-centroid it touched must not look like a "cluster". This
+            // used to also accept >=2 co-occurring GEO_TAGS ("geoint",
+            // "wifi-observed") as an alternate signal, but `wifi-observed` is
+            // applied nowhere except `wigle::wifi_ap_entities`, which tags every
+            // WiGLE-trilaterated AP's Coordinates with BOTH tags from ONE
+            // evidence record — so that branch fired "confirmed by 2 geo
+            // source(s)" from a single, uncorroborated database lookup. A
+            // legitimate multi-module merge that lands two tags on one entity
+            // also brings >=2 real evidence sources along, which this check
+            // already catches, so nothing is lost by requiring it alone.
             let sources = e.corroborating_sources();
-            if hits.len() >= 2 || sources.len() >= 2 {
+            if sources.len() >= 2 {
                 Some(Correlation {
                     rule_id: "AU-014".into(),
                     rule_name: "Geolocation cluster".into(),
@@ -67,7 +74,7 @@ pub(in crate::core::correlator) fn rule_au_014_geo_cluster(
                     description: format!(
                         "Coordinates '{}' confirmed by {} geo source(s)",
                         e.value,
-                        sources.len().max(hits.len())
+                        sources.len()
                     ),
                     entity_uids: vec![e.uid.clone()],
                     scan_id: scan_id.into(),

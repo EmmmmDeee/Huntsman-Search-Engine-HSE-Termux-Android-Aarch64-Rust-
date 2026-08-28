@@ -227,9 +227,21 @@ impl Module for ApiKeyProbe {
         sort_identified_for_report(&mut identified);
 
         if !identified.is_empty() {
+            // `EntityKind::ApiKey`, not `Other`: `util::redact::is_credential_kind`
+            // gates the export-redaction path (`hse export --redact`, `?redact=1`)
+            // purely on entity KIND, and `Other` matches none of its arms. An
+            // `Other`-kind summary carrying the complete, still-valid key in
+            // `value` survived a redacted export in full plaintext — the exact
+            // credential-disclosure harm that gate exists to prevent — even
+            // though the per-service entity two dozen lines above already does
+            // this correctly. Truncated too, as defense in depth, so the full
+            // secret is never held in an entity value regardless of kind.
             let mut summary = Entity::new(
-                EntityKind::Other("api_key_report".into()),
-                key,
+                EntityKind::ApiKey,
+                format!(
+                    "api_key_report:{}",
+                    crate::util::str_util::truncate_safe(key, 12)
+                ),
                 confidence::CERTAIN,
                 &ctx.scan_id,
             );

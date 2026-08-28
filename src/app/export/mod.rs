@@ -17,9 +17,17 @@ mod tests;
 
 pub(crate) use dossier::{dossier_dir, dossier_dir_path, write_full_dossier};
 pub(crate) use renderers::{
-    KeyPoolSummary, SystemDebugInputs, render_debug_bundle, render_event_log, render_full,
-    render_system_debug_bundle,
+    KeyPoolSummary, SystemDebugInputs, build_scan_report, entities_to_csv, extract_au_location_fix,
+    formula_guard, render_debug_bundle, render_event_log, render_full, render_system_debug_bundle,
 };
+// `csv_escape` has no production caller outside `renderers.rs` itself (only
+// `formula_guard` is shared with `cli::ingest`'s CSV writer) — its cross-module
+// re-export exists solely so `api::handlers::tests` and `app::import::csv`'s
+// test module can exercise the same escaping the scan-export path uses,
+// without duplicating the function. Test-only, so a normal `cargo check`
+// build never sees an unused-re-export warning for it.
+#[cfg(test)]
+pub(crate) use renderers::csv_escape;
 
 use crate::core::error::{Error, Result};
 use crate::default_db_path;
@@ -64,7 +72,7 @@ pub async fn cmd_export(
     // rejected for `full`/`debug` (whose contract is total unredacted
     // transparency for a local interpreter) and for `report` (its nested
     // scan-report shape embeds the full `Entity` list — see
-    // `api::scan_export::build_scan_report`'s `"entities": entities` — but does
+    // `build_scan_report`'s `"entities": entities` — but does
     // not route it through the entity redaction pass, so `--redact` cannot be
     // honoured there today), so a caller is never lulled into thinking a
     // still-sensitive artifact was scrubbed. `events` genuinely carries no
@@ -92,15 +100,19 @@ pub async fn cmd_export(
             )));
         }
     };
-    // `full` / `debug` embed full PII *and* the raw API corpus — including any
-    // third-party keys harvested during the scan — which is why the auto-saved
-    // dossier writes them 0600 + atomically (`export/dossier.rs`). An explicit
-    // `--out` for those formats must get the identical private guarantee, or it
-    // silently drops the same secrets into a world-readable, umask-default file
-    // (a real exposure on a shared Android device). The shareable scan exports
-    // (json/csv/gexf/report) keep the plain write so an operator can hand them
-    // off without first having to loosen 0600 perms.
-    let sensitive = matches!(fmt.as_str(), "full" | "debug");
+    // A `--out` file gets 0600 (atomic, private) iff it MAY carry unredacted
+    // secrets — harvested third-party API keys, breach passwords, credential-class
+    // entity values — otherwise a plain umask-default write silently drops them
+    // into a world-readable file (a real exposure on a shared Android device, the
+    // same secrets the auto-saved dossier writes 0600 via `export/dossier.rs`).
+    // `full`/`debug` embed the full PII + raw API corpus by contract; `report`
+    // embeds the full `Entity` list and CANNOT be `--redact`ed (see above), so it
+    // always carries them too; json/csv/gexf carry them only when the operator did
+    // NOT pass `--redact`. A redacted shareable export (json/csv/gexf) and the
+    // value-free `events` log stay world-readable so an operator can still hand
+    // them off without first loosening perms.
+    let sensitive = matches!(fmt.as_str(), "full" | "debug" | "report")
+        || (matches!(fmt.as_str(), "json" | "csv" | "gexf") && !redact);
     match out {
         Some(path) => {
             if sensitive {
