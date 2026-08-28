@@ -72,8 +72,6 @@ const MAX_WALK_DEPTH: usize = 64;
 /// two-letter locale codes, etc. can never be a real entity and would just add
 /// noise to the (already precise) locator scan in `extract`.
 const MIN_LEAF_LEN: usize = 4;
-const MAX_STRING_LEAVES: usize = 4096;
-
 /// Upper bound on collected string leaves from one hydration payload. This
 /// keeps work in `classifier::extract` bounded even for dense JSON blobs.
 const MAX_STRING_LEAVES: usize = 1024;
