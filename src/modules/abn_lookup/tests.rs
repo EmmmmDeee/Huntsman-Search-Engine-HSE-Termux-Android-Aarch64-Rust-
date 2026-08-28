@@ -33,6 +33,46 @@ async fn placeholder_key_is_a_clean_skip_not_a_forwarded_credential() {
     );
 }
 
+/// Regression (silent-failure-swallow audit): a TOTAL transport failure of the
+/// module's SOLE ABR source must surface as an `Err`, not collapse into the
+/// `Ok(None)` "no record" answer. Previously `fetch_jsonp`'s two
+/// `None => return Ok(None)` arms mapped a curl spawn error / connection
+/// failure / timeout (no HTTP status ever returned) to the same value as a
+/// genuine miss, so a dead ABR endpoint showed the operator a false "no ABN
+/// found". This asserts the fixed contract — matching the sibling AU scrapers
+/// (au_seifa/au_geo/asic_*) and this function's own 429-after-retry error path.
+///
+/// A closed loopback port makes curl's connect fail fast and deterministically;
+/// if `curl` is unavailable in the test environment the spawn fails, which is
+/// the same transport-failure class and yields the same `Err`.
+#[tokio::test]
+async fn transport_failure_surfaces_as_error_not_a_false_no_match() {
+    // Bind then immediately drop a loopback socket to obtain a port with no
+    // listener behind it.
+    let dead_port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let url =
+        format!("http://127.0.0.1:{dead_port}/AbnDetails.aspx?abn=19415776361&callback=cb&guid=x");
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = ModuleContext {
+        scan_id: "scan".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+
+    let result = super::fetch::fetch_jsonp(&ctx, "x", &url).await;
+    assert!(
+        result.is_err(),
+        "a total transport failure of the sole ABR source must be Err, not Ok(None): got {result:?}"
+    );
+}
+
 #[test]
 fn accepts_org_and_abn() {
     let m = AbnLookup;
