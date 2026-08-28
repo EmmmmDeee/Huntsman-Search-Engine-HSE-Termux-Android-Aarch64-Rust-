@@ -47,7 +47,9 @@ fn emits_username_and_profile_url_from_links() {
         .find(|e| e.kind == EntityKind::Username)
         .expect("should succeed");
     assert!(u.has_tag("bitbucket") && u.has_tag("public-profile"));
-    assert!((u.confidence - 0.86).abs() < 0.01);
+    // OD-19 cohort canon: single-source confirmed-account lookup = 0.85
+    // (named constant, replacing the former off-ladder 0.86 literal).
+    assert!((u.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
 }
 
 #[test]

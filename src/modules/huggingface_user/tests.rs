@@ -32,6 +32,12 @@ fn emits_username_and_profile_url() {
         ents.iter()
             .any(|e| e.kind == EntityKind::Url && e.value == "https://huggingface.co/alice")
     );
+    // OD-19 cohort canon: single-source confirmed-account lookup = 0.85.
+    let u = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Username && e.value == "alice")
+        .expect("username entity");
+    assert!((u.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
 }
 
 #[test]

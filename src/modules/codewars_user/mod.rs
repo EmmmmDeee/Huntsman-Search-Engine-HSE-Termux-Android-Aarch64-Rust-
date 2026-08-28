@@ -56,8 +56,16 @@ pub(super) fn build_entities(user: CwUser, scan_id: &str) -> Vec<Entity> {
             .with_attr("profile_url", &profile_url)
     };
 
-    // Confirmed username on Codewars.
-    let mut e = Entity::new(EntityKind::Username, handle, 0.84, scan_id);
+    // Confirmed username on Codewars — a single-source, keyless
+    // account-existence lookup, graded at the cohort canon HIGH_PLUSPLUS_PLUS
+    // (0.85; OD-19, matching gitea_user/gitlab_user). Replaces a bare `0.84`
+    // literal that sat off the ladder for no recorded reason.
+    let mut e = Entity::new(
+        EntityKind::Username,
+        handle,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     e.tag("codewars");
     e.tag("public-profile");
     e.add_evidence(ev());
