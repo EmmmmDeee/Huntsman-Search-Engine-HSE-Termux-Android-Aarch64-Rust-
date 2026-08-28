@@ -146,7 +146,7 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
             "OpenSanctions — free trial/nonprofit key at https://www.opensanctions.org/api/"
         }
         "HUNTSMAN_EPIEOS_KEY" => "Epieos — https://epieos.com",
-        "HUNTSMAN_SEEKNOW_KEY" => "SeekNow (see-know.eu) — https://see-know.eu",
+        "HUNTSMAN_SEEKNOW_KEY" => "SeekNow (see-know.ru) — https://see-know.ru",
         "HUNTSMAN_OATHNET_KEY" => "OathNet — https://oathnet.org",
         // Grid-completeness: every `KNOWN_KEYS` entry names where to get a key so
         // `hse doctor`, the Settings UI, and the "module skipped — needs key"
