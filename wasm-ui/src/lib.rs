@@ -4,6 +4,8 @@
 //!
 //! Modules ported so far:
 //! - [`theme`] — `src/web/js/theme.js`
+//! - [`confidence`] — the `ENRICHMENT_SOURCES`/`sourceCount`/`effC`/`classify`
+//!   cluster in `src/web/js/helpers.js`
 //!
 //! The compiled output is checked into `pkg/` and embedded into
 //! `src/api/routes/mod.rs`'s `APP_FILES` the same way every hand-written JS
@@ -15,6 +17,7 @@
 //!     --out-name hse_wasm_ui wasm-ui/target/wasm32-unknown-unknown/release/hse_wasm_ui.wasm
 //! ```
 
+pub mod confidence;
 pub mod theme;
 
 use wasm_bindgen::prelude::*;

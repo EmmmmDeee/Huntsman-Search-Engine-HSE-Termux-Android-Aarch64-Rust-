@@ -1,5 +1,6 @@
 import { API } from '/static/js/api.js';
-import { $, ENRICHMENT_SOURCES, attr, attrText, classify, effC, esc, extLink, fmtDate, kindPill, sourceCount } from '/static/js/helpers.js';
+import { $, attr, attrText, esc, extLink, fmtDate, kindPill } from '/static/js/helpers.js';
+import { classify, effC, sourceCount } from '/static/hse_wasm_ui.js';
 import { S } from '/static/js/state.js';
 
 // A large scan can produce thousands of entities; rendering each as two <tr>s
