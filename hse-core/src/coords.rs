@@ -61,7 +61,7 @@ impl CoordFormat {
     /// self-evident: they are accepted only when the operator has already
     /// declared the target a coordinate (`--kind coordinates`). Plain comma
     /// decimals are still auto-detected by the classifier's existing
-    /// [`crate::util::geohash::parse_coords`] gate, unchanged.
+    /// `util::geohash::parse_coords` gate, unchanged.
     #[must_use]
     pub fn is_self_evident(self) -> bool {
         matches!(
@@ -87,7 +87,7 @@ impl LatLon {
     /// The single validity gate every parse path funnels through: finite and in
     /// range, else `None`. (`0,0` is intentionally *kept* here — Null-Island
     /// filtering is an output-policy concern for provider responses
-    /// [`crate::util::geo::is_valid_coords`], not an input-parsing one, matching
+    /// `util::geo::is_valid_coords`, not an input-parsing one, matching
     /// the existing `geo`/`geohash` seed parsers.)
     fn checked(lat: f64, lon: f64, format: CoordFormat) -> Option<Self> {
         (lat.is_finite()
@@ -104,7 +104,7 @@ impl LatLon {
 /// matches or the value is out of range.
 ///
 /// ```
-/// use huntsman_search_engine::util::geo::coords::{parse, CoordFormat};
+/// use hse_core::coords::{parse, CoordFormat};
 ///
 /// let p = parse("27°28'35.8\"S 153°00'59.8\"E").expect("should succeed");
 /// assert!((p.lat - -27.476611).abs() < 1e-5);

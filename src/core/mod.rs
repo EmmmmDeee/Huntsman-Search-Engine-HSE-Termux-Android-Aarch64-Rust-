@@ -23,7 +23,17 @@ pub mod diamond;
 pub mod diff;
 pub mod engine;
 pub mod engine_host;
-pub mod entity;
+/// Re-export of the `hse-core` crate under its original module path so all
+/// existing `crate::core::entity::*` call sites keep resolving unchanged.
+/// Extracted to a standalone, minimal-deps crate (see hse-core/Cargo.toml)
+/// so it can be shared, unmodified, with a wasm32-unknown-unknown browser
+/// build of the web UI — the concrete motivation being the confidence-tier
+/// math (`Entity::c_effective`/`source_count`), whose JS reimplementation in
+/// `src/web/js/helpers.js` had already drifted out of sync with the real
+/// grounding logic once (see `ENRICHMENT_SOURCES`/`is_non_corroborating_source`
+/// history). A WASM build calling these methods directly closes that class of
+/// bug permanently instead of just re-guarding against it.
+pub use hse_core as entity;
 pub mod error;
 pub mod event;
 pub mod exposure;
@@ -52,7 +62,10 @@ pub mod scan;
 pub mod scan_analysis;
 pub mod snake_graph;
 pub mod stealer_row;
-pub mod tags;
+/// Re-export of `hse-core`'s `tags` module (moved alongside `core::entity` —
+/// see that re-export's comment above) so `crate::core::tags::*` call sites
+/// keep resolving unchanged.
+pub use hse_core::tags;
 #[cfg(test)]
 pub mod test_support;
 pub mod timeline;

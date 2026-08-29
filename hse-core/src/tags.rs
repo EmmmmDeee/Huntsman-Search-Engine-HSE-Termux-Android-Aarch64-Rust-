@@ -9,7 +9,7 @@
 /// The value came out of a **breach corpus** — a compromised-credential dump or
 /// a breach-search provider's index.
 ///
-/// Read in three places: [`crate::core::engine`]'s enrichment gates
+/// Read in three places: `core::engine`'s enrichment gates
 /// `tag_breach_sector` on it (a non-breach entity has no breach sector to
 /// classify), the AU-061 geo-corroboration pass requires it before it will
 /// promote a [`CANDIDATE`], and lead triage counts it alongside [`STEALER_LOG`]
@@ -71,7 +71,7 @@ pub const MISSING_SECURITY_HEADERS: &str = "missing-security-headers";
 /// inferred from the entity's own text.
 ///
 /// Used as a quality signal by the address→coordinates enrichment in
-/// [`crate::core::engine`]: a `geoint` address that is also a professional or
+/// `core::engine`: a `geoint` address that is also a professional or
 /// [`SOCIAL_PROFILE`] address counts as externally validated, which lowers its
 /// confidence gate from 0.45 to 0.40 so conservatively-scored but real addresses
 /// still reach the footprint.
@@ -100,10 +100,10 @@ pub const COARSE: &str = "coarse";
 pub const HOSTING: &str = "hosting";
 /// Shared / third-party **platform infrastructure** — cloud-storage buckets,
 /// datacenter/CDN hosting endpoints, and third-party analytics IDs. Not
-/// subject-owned, so the default report ([`crate::api::scan_export`]) suppresses
+/// subject-owned, so the default report (`api::scan_export`) suppresses
 /// it (restorable via `--include-infra` / `--output full`) and the location
 /// rules keep it out of the subject's physical footprint. Stamped by the
-/// `tag_platform_infra` enrichment pass in [`crate::core::engine`].
+/// `tag_platform_infra` enrichment pass in `core::engine`.
 pub const PLATFORM_INFRA: &str = "platform-infra";
 /// A WHOIS/RDAP **registrant** location — the domain owner's filing or privacy
 /// address (often a registrar's privacy service), not the scan subject's home.
@@ -179,7 +179,7 @@ pub const DEBARRED: &str = "debarred";
 /// The entity is a **social-media or community profile** — a platform account
 /// page, or a URL that resolves to one.
 ///
-/// [`crate::core::engine`] reads it twice: a `Url` target carrying it is handled
+/// `core::engine` reads it twice: a `Url` target carrying it is handled
 /// as a profile rather than as an arbitrary page, and an address published on a
 /// profile counts toward the externally-validated gate described on [`GEOINT`].
 pub const SOCIAL_PROFILE: &str = "social-profile";
@@ -189,7 +189,7 @@ pub const SOCIAL_PROFILE: &str = "social-profile";
 ///
 /// The most consequential tag in this file, and the only one with a lifecycle.
 /// It is enforced, not advisory: a quarantined entity is held out of every
-/// shareable export ([`crate::api::scan_export`], the CLI exporters and `diff`),
+/// shareable export (`api::scan_export`, the CLI exporters and `diff`),
 /// out of the timeline, out of cross-scan bridging, out of exposure scoring, and
 /// out of the correlator's rule inputs. The audit counts it as quarantined and
 /// the live event stream renders it marked as such.

@@ -128,8 +128,8 @@ credential, even transiently, on disk or in a training log.
 **2. Synthetic entity lists, for coverage.** Real scans skew toward whatever
 entity kinds your own OSINT footprint happens to produce. Generate synthetic
 `(kind, value, confidence)` tuples spanning every `EntityKind` this crate
-defines (`src/core/entity/mod.rs`) so the fine-tuned model has seen more than
-just email/domain/URL-heavy examples.
+defines (`hse-core/src/lib.rs`, re-exported at `core::entity::EntityKind`) so
+the fine-tuned model has seen more than just email/domain/URL-heavy examples.
 
 A minimal data-prep script that turns exported scans into the training JSONL
 format below — pure data transformation, no GPU needed, runs anywhere:

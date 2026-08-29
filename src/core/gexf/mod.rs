@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
+use crate::core::diamond::ClassifyDiamondVertex;
 use crate::core::entity::Entity;
 use crate::core::graph::Graph;
 use crate::core::relation::Relation;
