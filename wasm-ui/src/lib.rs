@@ -16,7 +16,21 @@
 //! cargo build --manifest-path wasm-ui/Cargo.toml --target wasm32-unknown-unknown --release
 //! wasm-bindgen --target web --no-typescript --out-dir wasm-ui/pkg \
 //!     --out-name hse_wasm_ui wasm-ui/target/wasm32-unknown-unknown/release/hse_wasm_ui.wasm
+//! # Optional but recommended (needs `binaryen`'s wasm-opt; skip if unavailable
+//! # — the Cargo.toml release profile alone already does most of the work):
+//! wasm-opt -Os --enable-sign-ext --enable-bulk-memory --enable-mutable-globals \
+//!     --enable-nontrapping-float-to-int \
+//!     -o wasm-ui/pkg/hse_wasm_ui_bg.wasm wasm-ui/pkg/hse_wasm_ui_bg.wasm
 //! ```
+//! The `wasm-opt` feature flags are pinned to exactly what this toolchain's
+//! `wasm32-unknown-unknown` output actually uses (found by starting from none
+//! and adding only what `wasm-opt`'s own validator complained was missing) —
+//! deliberately not `--all-features` (nor no flags/MVP-only), either of which
+//! is wrong for this crate's purpose: MVP-only fails validation outright (the
+//! input already uses these features), while `--all-features` risks `wasm-opt`
+//! leaning on much newer features (SIMD, GC, threads, …) than this input
+//! actually needs, for a measured ~120 B difference — a bad trade when the
+//! entire point is a `.wasm` an older Android WebView can still load.
 
 pub mod confidence;
 pub mod html;

@@ -58,3 +58,27 @@ features = [
     "Document", "DomTokenList", "Element", "Event", "EventTarget",
     "HtmlElement", "MouseEvent", "Storage", "Window",
 ]
+
+# This crate's own release profile — NOT inherited from the root Cargo.toml's
+# `[profile.release]` (this is a separate, non-workspace-member manifest; see
+# the note above). The size-driven settings mirror the root profile's own
+# rationale exactly: the compiled .wasm is checked into `pkg/` and embedded
+# byte-for-byte into the main crate's binary via `include_bytes!`
+# (src/api/routes/mod.rs's APP_FILES), so every KB shaved here shrinks the
+# final `hse` binary a Termux-on-Android-aarch64 (no root, often
+# storage/RAM-constrained) user downloads or builds on-device, and every
+# instantiation cycle shaved speeds up loading the web UI in their phone's
+# browser. `panic = "abort"` diverges from the root profile's documented
+# `"unwind"` choice deliberately: that choice is justified there by a
+# long-lived server process wanting to contain a panicking module at a
+# dispatch boundary instead of aborting the whole process — an architecture
+# this browser-side crate does not have (no unsafe_code, no module dispatch).
+# `"abort"` is the standard choice for wasm32-unknown-unknown: it avoids
+# generating unwind-table code the wasm runtime spends nothing on unwinding
+# through anyway, for a real, free size win.
+[profile.release]
+opt-level     = "s"
+lto           = true
+codegen-units = 1
+strip         = true
+panic         = "abort"
