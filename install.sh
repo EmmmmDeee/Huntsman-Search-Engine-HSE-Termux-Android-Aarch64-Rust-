@@ -1048,6 +1048,31 @@ if ! echo ":$PATH:" | grep -q ":$HSE_BIN_DIR:"; then
             break
         fi
     done
+    # None of .bashrc/.zshrc/.profile existed above for the loop to patch —
+    # the common case on a genuinely fresh account/container, exactly where
+    # a curl-pipe install lands. Without this, PATH was silently never
+    # persisted anywhere and `hse` stayed unreachable in any new shell with
+    # nothing but the warning above to go on.
+    PATH_TAGGED=0
+    for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+        [[ -f "$rc" ]] && grep -qF "$PATH_TAG" "$rc" && PATH_TAGGED=1
+    done
+    if [[ $PATH_TAGGED -eq 0 ]]; then
+        # `${SHELL:-}` (not a bare `$SHELL`) so a genuinely unset $SHELL —
+        # realistic in a bare/minimal container — falls through to .profile
+        # instead of aborting the whole install under `set -u` on an
+        # unbound-variable error.
+        case "${SHELL:-}" in
+            */bash | bash) rc="$HOME/.bashrc" ;;
+            */zsh | zsh) rc="$HOME/.zshrc" ;;
+            *) rc="$HOME/.profile" ;;
+        esac
+        if printf '%s\n%s\n' "$PATH_TAG" "$PATH_LINE" > "$rc" 2>/dev/null; then
+            ok "Created $rc with PATH — restart shell or: source $rc"
+        else
+            log_warn "could not persist PATH automatically — add this to your shell's startup file: $PATH_LINE"
+        fi
+    fi
 fi
 
 # ─── Termux-native setup (no-op on other Unix) ───────────────────────────────
