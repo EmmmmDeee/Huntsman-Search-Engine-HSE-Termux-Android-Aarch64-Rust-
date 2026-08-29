@@ -13,13 +13,14 @@
 //! as a second `JsValue`, deserialized straight into real `hse_core::Entity`
 //! values (the same wire format `S.entities` already holds) rather than a
 //! bespoke lookup-only struct — reusing the real type instead of re-guessing
-//! which of its fields this view happens to need.
-
-use std::collections::HashMap;
+//! which of its fields this view happens to need. The UID-to-display-value
+//! lookup itself lives in [`crate::entity_lookup`], shared with every later
+//! port needing the same thing.
 
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
+use crate::entity_lookup::EntityLookup;
 use crate::html::escape_html;
 use crate::to_js_error;
 
@@ -48,11 +49,8 @@ fn kind_pill(kind: &str) -> String {
 /// Builds the "Likely duplicates" panel fragment for a `/scans/{id}/duplicates`
 /// response, or `""` when there are no suggested groups.
 ///
-/// `entities_js` is `S.entities` as the browser already holds it (an array of
-/// the same JSON `hse_core::Entity` serializes to server-side) — used only to
-/// resolve a member UID to a display value; a UID absent from it (should not
-/// happen in practice, but the JS original tolerated it) falls back to its
-/// own first 12 characters plus an ellipsis.
+/// `entities_js` is `S.entities` as the browser already holds it — see
+/// [`crate::entity_lookup`] for how a member UID resolves to a display value.
 #[wasm_bindgen(js_name = renderDuplicatesHtml)]
 pub fn render_duplicates_html(data: JsValue, entities_js: JsValue) -> Result<String, JsValue> {
     let data: DuplicatesResponse = serde_wasm_bindgen::from_value(data).map_err(to_js_error)?;
@@ -61,19 +59,7 @@ pub fn render_duplicates_html(data: JsValue, entities_js: JsValue) -> Result<Str
     }
     let entities: Vec<hse_core::Entity> =
         serde_wasm_bindgen::from_value(entities_js).map_err(to_js_error)?;
-    let by_uid: HashMap<&str, &hse_core::Entity> =
-        entities.iter().map(|e| (e.uid.as_str(), e)).collect();
-
-    let val = |uid: &str| -> String {
-        match by_uid.get(uid) {
-            Some(e) if !e.raw_value.is_empty() => escape_html(&e.raw_value),
-            Some(e) => escape_html(&e.value),
-            None => format!(
-                "{}\u{2026}",
-                escape_html(&uid.chars().take(12).collect::<String>())
-            ),
-        }
-    };
+    let lookup = EntityLookup::new(&entities);
 
     let n = data.duplicates.len();
     let mut html = format!(
@@ -86,7 +72,7 @@ pub fn render_duplicates_html(data: JsValue, entities_js: JsValue) -> Result<Str
         let members: String = g
             .members
             .iter()
-            .map(|u| format!("<code>{}</code>", val(u)))
+            .map(|u| format!("<code>{}</code>", lookup.display(u)))
             .collect::<Vec<_>>()
             .join(" ");
         html.push_str(&format!(
