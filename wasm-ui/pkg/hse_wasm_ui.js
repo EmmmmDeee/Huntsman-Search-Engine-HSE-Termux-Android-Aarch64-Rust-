@@ -1,5 +1,3 @@
-/* @ts-self-types="./hse_wasm_ui.d.ts" */
-
 /**
  * Re-reads the persisted theme choice and applies it: toggles `<body
  * class="light-theme">` and updates `#theme-label`'s text. Called once at
@@ -508,6 +506,45 @@ export function renderNetworkHtml(data, id) {
 }
 
 /**
+ * Ports the result half of `path.js`'s `run()`: given the already-fetched
+ * `/scans/{id}/path` response and the two entity values the caller searched
+ * for (`from`/`to`, needed only for the not-found message), builds either
+ * the "no connection found" notice or the ranked list of routes.
+ * @param {any} data
+ * @param {string} from
+ * @param {string} to
+ * @returns {string}
+ */
+export function renderPathResultHtml(data, from, to) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passStringToWasm0(from, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(to, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len1 = WASM_VECTOR_LEN;
+        wasm.renderPathResultHtml(retptr, addHeapObject(data), ptr0, len0, ptr1, len1);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        var ptr3 = r0;
+        var len3 = r1;
+        if (r3) {
+            ptr3 = 0; len3 = 0;
+            throw takeObject(r2);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export5(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * Builds the "Pivot nodes" panel fragment for a `/scans/{id}/pivots`
  * response, or `""` when there are neither pivots nor bridges.
  * @param {any} data
@@ -943,7 +980,7 @@ function __wbg_get_imports() {
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 16, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
-            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_248);
+            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_264);
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000002: function(arg0) {
@@ -975,8 +1012,8 @@ function __wbg_get_imports() {
     };
 }
 
-function __wasm_bindgen_func_elem_248(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_248(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_264(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_264(arg0, arg1, addHeapObject(arg2));
 }
 
 function addHeapObject(obj) {

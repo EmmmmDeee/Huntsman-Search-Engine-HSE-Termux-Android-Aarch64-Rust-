@@ -63,8 +63,12 @@
 <p id="settings-proof">scan settings render not yet run</p>
 <div id="settings-empty-host">(empty-case host not yet populated)</div>
 <div id="settings-full-host">(full-case host not yet populated)</div>
+<p id="path-proof">path render not yet run</p>
+<div id="path-notfound-host">(not-found-case host not yet populated)</div>
+<div id="path-solo-host">(solo-case host not yet populated)</div>
+<div id="path-multi-host">(multi-case host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml, renderCorrCardHtml, renderCorrMembersHtml, renderExposureHtml, renderScanSettingsHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml, renderCorrCardHtml, renderCorrMembersHtml, renderExposureHtml, renderScanSettingsHtml, renderPathResultHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -857,6 +861,74 @@
     && !settingsFullHtml.includes('<b>bold');
   document.getElementById('settings-proof').textContent =
     `empty=${settingsEmptyOk}, full=${settingsFullOk}`;
+
+  // Exercises scan_info::path::render_path_result_html against the real
+  // /scans/{id}/path envelope (core::path::ConnectionPath, whose `nodes` map
+  // entries are pre-resolved server-side by the scan_path handler -- the
+  // node's `value` is already raw_value-preferring, so no further
+  // EntityLookup-style resolution happens client-side). Covers: the
+  // no-connection-found notice with HTML-escaping on both search terms, a
+  // trivial zero-hop self-path (singular "route" text but JS's exact
+  // hops===1-only singular rule, so a zero-hop path still reads "0 hops",
+  // and no chain markup at all since there are no edges), and a two-route
+  // multi-hop case proving the first-route-vs-rest border-color alternation,
+  // the em-dash + arrow chain separator between hops, and the
+  // 12-char-truncated-plus-ellipsis fallback (unconditional, unlike
+  // helpers.js's own trunc()) for a uid absent from the `nodes` map.
+  const pathNotFoundHtml = renderPathResultHtml(
+    { paths: [], nodes: {} }, "Alice", "<script>evil<\/script>");
+  document.getElementById('path-notfound-host').innerHTML = pathNotFoundHtml;
+  const pathNotFoundOk = pathNotFoundHtml.includes('No connection found')
+    && pathNotFoundHtml.includes('<code>Alice</code>')
+    && pathNotFoundHtml.includes('&lt;script&gt;evil&lt;/script&gt;')
+    && !pathNotFoundHtml.includes('<script>evil')
+    && pathNotFoundHtml.includes('within 6 hops');
+
+  const pathSoloHtml = renderPathResultHtml({
+    paths: [{ nodes: ["u1"], edges: [], hops: 0, strength: 1.0 }],
+    nodes: { u1: { kind: "person", value: "Solo Node" } },
+  }, "Solo Node", "Solo Node");
+  document.getElementById('path-solo-host').innerHTML = pathSoloHtml;
+  const pathSoloOk = pathSoloHtml.includes('<b>1</b> route ')
+    && !pathSoloHtml.includes('routes found')
+    && pathSoloHtml.includes('0 hops</span>')
+    && pathSoloHtml.includes('strength 1.00')
+    && pathSoloHtml.includes('k-person')
+    && pathSoloHtml.includes('<code>Solo Node</code>')
+    && !pathSoloHtml.includes('text-muted">—');
+
+  const pathMultiHtml = renderPathResultHtml({
+    paths: [
+      { nodes: ["u1", "u2"], edges: [{ kind: "parent_of" }], hops: 1, strength: 0.9 },
+      { nodes: ["u1", "u3", "unknown-uid-that-is-quite-long"],
+        edges: [{ kind: "friend_of" }, { kind: "co_worker" }], hops: 2, strength: 0.42 },
+    ],
+    nodes: {
+      u1: { kind: "person", value: "Alice <b>Smith<\/b>" },
+      u2: { kind: "email", value: "bob@example.com" },
+      u3: { kind: "person", value: "Carol" },
+    },
+  }, "Alice", "Bob");
+  document.getElementById('path-multi-host').innerHTML = pathMultiHtml;
+  const pathMultiOk = pathMultiHtml.includes('<b>2</b> routes found')
+    && pathMultiHtml.includes('solid #5cb85c')
+    && pathMultiHtml.includes('solid #5bc0de')
+    && pathMultiHtml.includes('1 hop</span>')
+    && pathMultiHtml.includes('2 hops</span>')
+    && pathMultiHtml.includes('strength 0.90')
+    && pathMultiHtml.includes('strength 0.42')
+    && pathMultiHtml.includes('k-email')
+    && pathMultiHtml.includes('<code>bob@example.com</code>')
+    && pathMultiHtml.includes('Alice &lt;b&gt;Smith&lt;/b&gt;')
+    && !pathMultiHtml.includes('<b>Smith')
+    && pathMultiHtml.includes('—<span class="tag" style="margin:0 3px">parent_of</span>→')
+    && pathMultiHtml.includes('—<span class="tag" style="margin:0 3px">friend_of</span>→')
+    && pathMultiHtml.includes('—<span class="tag" style="margin:0 3px">co_worker</span>→')
+    && pathMultiHtml.includes('unknown-uid-…')
+    && !pathMultiHtml.includes('unknown-uid-that')
+    && !pathMultiHtml.includes('unknown-uid-t…');
+  document.getElementById('path-proof').textContent =
+    `notFound=${pathNotFoundOk}, solo=${pathSoloOk}, multi=${pathMultiOk}`;
 </script>
 </body>
 </html>
