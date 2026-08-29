@@ -26,7 +26,7 @@ use crate::core::{
 use crate::util::http::RequestBuilderExt;
 use crate::util::http::urlencode;
 
-// ── Nominatim response types (forward) ──────────────────────────────
+// ── Nominatim response types (forward) ────────────────────────
 
 #[derive(Deserialize)]
 pub(super) struct NominatimResult {
@@ -45,7 +45,7 @@ pub(super) struct NominatimResult {
     pub(super) address: Option<NominatimAddr>,
 }
 
-// ── Nominatim response types (reverse) ──────────────────────────────
+// ── Nominatim response types (reverse) ────────────────────────
 
 #[derive(Deserialize)]
 pub(super) struct NominatimResp {
@@ -106,6 +106,14 @@ impl Module for Geocode {
     }
 
     fn category(&self) -> ModuleCategory {
+        // The module does exactly one thing bidirectionally: resolve
+        // Address↔Coordinates via OSM Nominatim, producing Coordinates/Address
+        // entities with street/suburb/city/state/postcode/country evidence — a
+        // direct, tight fit for "Determine Physical Locations." It touches no
+        // DNS/WHOIS/certificate/CDN/scan database (Nominatim is a geocoding
+        // lookup, not one of the T1596 technical-database subtypes), no
+        // identity/employee/network data, so no additional technique is
+        // implicated.
         ModuleCategory::Geo
     }
 
@@ -128,7 +136,7 @@ impl Module for Geocode {
 }
 
 impl Geocode {
-    // ── Forward geocode: Address → Coordinates ──────────────────────
+    // ── Forward geocode: Address → Coordinates ──────────────────
 
     async fn forward(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let addr = target.value.trim();
@@ -236,7 +244,7 @@ impl Geocode {
         Ok(result)
     }
 
-    // ── Reverse geocode: Coordinates → Address ──────────────────────
+    // ── Reverse geocode: Coordinates → Address ──────────────────
 
     async fn reverse(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;

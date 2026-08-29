@@ -37,7 +37,7 @@ const SRC: &str = "hibp";
 const KEY_ENV: &str = "HUNTSMAN_HIBP_KEY";
 const BASE_URL: &str = "https://haveibeenpwned.com/api/v3";
 
-// ── API response types ──────────────────────────────────────────────
+// ── API response types ────────────────────────────────
 
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -287,7 +287,7 @@ fn tag_breach_quality(e: &mut Entity, breach: &Breach) {
     }
 }
 
-// ── Module impl ─────────────────────────────────────────────────────
+// ── Module impl ───────────────────────────────────────
 
 pub struct Hibp;
 
@@ -324,6 +324,16 @@ impl Module for Hibp {
 
     fn category(&self) -> ModuleCategory {
         ModuleCategory::Breach
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Breach default's T1589.001 (breach/stealer-log exposure, tags-only)
+        // and T1589.002 (email-oracle) are tight — HIBP mints no Person/
+        // IpAddress/Organisation entities, and phone/physical flags are just
+        // tags off data-class strings, not extracted values. But HIBP has no
+        // free tier (paid-only, like dehashed/oathnet_pro/see_know/intelx) —
+        // add their T1597.002 (Purchase Technical Data); the default under-claims.
+        &["T1589.001", "T1589.002", "T1597.002"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
