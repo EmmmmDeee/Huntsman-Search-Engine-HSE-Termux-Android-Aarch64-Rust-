@@ -606,7 +606,7 @@ pub fn router(
 
     let app = Router::new()
         .nest("/api", api)
-        // ── static bundle (D3 vendored + first-party app.css/js modules) ──
+        // ── static assets (first-party app.css/js modules) ──
         // `{*file}` (wildcard, not `{file}`) so nested first-party module paths
         // (`js/scan_info/browse.js`) match, not just a single flat segment.
         .route("/static/{*file}", get(vendor_handler))
@@ -623,8 +623,8 @@ pub fn router(
         //    `/static`; serves the embedded SPA for client-side routing.
         .fallback(spa_handler)
         .with_state(state)
-        // gzip every compressible response (the ~118 KB SPA, the ~528 KB vendor
-        // bundle, and large scan-result JSON) so a phone's mobile link carries
+        // gzip every compressible response (the ~118 KB SPA and large scan-result
+        // JSON) so a phone's mobile link carries
         // ~4x less. `CompressionLayer`'s default predicate skips already-small
         // bodies and `text/event-stream`, so the SSE live-scan stream is never
         // buffered. Inner of CORS/security headers so those still apply to the
@@ -938,7 +938,7 @@ async fn vendor_handler(Path(file): Path<String>, headers: HeaderMap) -> Respons
 
             // Conditional GET: if the client already holds these exact bytes
             // (`If-None-Match` == our ETag) reply 304 and skip re-sending the
-            // ~510 KB bundle — a real saving on a metered mobile link, and the
+            // asset bytes — a real saving on a metered mobile link, and the
             // half that made the ETag worth setting (the handler previously
             // always re-sent 200, so the ETag never did anything).
             if headers
