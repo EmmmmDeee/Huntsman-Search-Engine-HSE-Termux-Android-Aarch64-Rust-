@@ -160,6 +160,16 @@ impl Module for WebCrawler {
         ModuleCategory::Web
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // The category default only covers the BFS site-crawl (T1594) and
+        // framework fingerprinting (T1592.002), but probe_config_leaks() also
+        // actively probes known credential/secret-leak paths for VERY_HIGH_PLUS
+        // ApiKey entities (T1589.001), and extract_emails() harvests page-body
+        // addresses into first-class Email entities (T1589.002). Superset of
+        // the category default, so coverage never regresses.
+        &["T1594", "T1592.002", "T1589.001", "T1589.002"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::Email,
