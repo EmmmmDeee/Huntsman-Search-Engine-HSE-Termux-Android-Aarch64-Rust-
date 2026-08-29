@@ -37,7 +37,7 @@ const SRC: &str = "hibp";
 const KEY_ENV: &str = "HUNTSMAN_HIBP_KEY";
 const BASE_URL: &str = "https://haveibeenpwned.com/api/v3";
 
-// ── API response types ────────────────────────────────
+// ── API response types ──────────────────────────────────────────────
 
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -287,7 +287,7 @@ fn tag_breach_quality(e: &mut Entity, breach: &Breach) {
     }
 }
 
-// ── Module impl ───────────────────────────────────────
+// ── Module impl ─────────────────────────────────────────────────────
 
 pub struct Hibp;
 
