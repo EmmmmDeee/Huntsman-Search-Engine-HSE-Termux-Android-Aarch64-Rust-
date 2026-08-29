@@ -432,6 +432,40 @@ export function renderPivotsHtml(data, entities_js) {
 }
 
 /**
+ * Builds the "Footprint timeline" (+ optional "Movement path") panel
+ * fragment for a `/scans/{id}/timeline` response, or the guided empty-state
+ * block (a full block, not `""` — the same choice
+ * [`crate::scan_info::trust`]/[`crate::scan_info::communities`] made) when
+ * there are no dated events.
+ * @param {any} data
+ * @returns {string}
+ */
+export function renderTimelineHtml(data) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.renderTimelineHtml(retptr, addHeapObject(data));
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        var ptr1 = r0;
+        var len1 = r1;
+        if (r3) {
+            ptr1 = 0; len1 = 0;
+            throw takeObject(r2);
+        }
+        deferred2_0 = ptr1;
+        deferred2_1 = len1;
+        return getStringFromWasm0(ptr1, len1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export5(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * Builds the "Network trust" panel fragment for a `/scans/{id}/trust`
  * response — the guided `EMPTY_STATE` block when there are no scores, or the
  * top 12 ranked entities (the backend already sorts most-trusted first)
@@ -742,7 +776,7 @@ function __wbg_get_imports() {
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 14, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
-            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_213);
+            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_224);
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
@@ -769,8 +803,8 @@ function __wbg_get_imports() {
     };
 }
 
-function __wasm_bindgen_func_elem_213(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_213(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_224(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_224(arg0, arg1, addHeapObject(arg2));
 }
 
 function addHeapObject(obj) {

@@ -49,8 +49,12 @@
 <p id="leads-proof">leads render not yet run</p>
 <div id="leads-empty-host">(empty-case host not yet populated)</div>
 <div id="leads-host">(leads host not yet populated)</div>
+<p id="timeline-proof">timeline render not yet run</p>
+<div id="timeline-empty-host">(empty-case host not yet populated)</div>
+<div id="timeline-plain-host">(plain-case host not yet populated)</div>
+<div id="timeline-host">(timeline host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -602,6 +606,60 @@
     && !leadsSingularHtml.includes('corroborated');
   document.getElementById('leads-proof').textContent =
     `empty=${leadsEmptyOk}, leads=${leadsOk}, singular=${leadsSingularOk}`;
+
+  // Exercises scan_info::timeline::render_timeline_html against the real
+  // /scans/{id}/timeline envelope (core::timeline::{TimelineEvent,
+  // OnlineTenure, FootprintRecency, Movement}). Covers: the no-events empty
+  // state, a plain case with tenure/recency/movement all null and a single
+  // event (proving the singular "event" text and the absent tenure-line/
+  // movement-section/span), and a full case with 2 events (a known kind AND
+  // an unrecognized one, proving the TL_KIND fallback), tenure+recency
+  // present, a movement leg, and HTML-escaping on a scan-derived value.
+  const timelineEmptyHtml = renderTimelineHtml({ events: [], tenure: null, recency: null, movement: null });
+  document.getElementById('timeline-empty-host').innerHTML = timelineEmptyHtml;
+
+  const timelinePlainHtml = renderTimelineHtml({
+      events: [
+        { iso: "2015-03-03", kind: "registered", entity_value: "example.com", entity_kind: "domain", source: "whois" },
+      ],
+      tenure: null, recency: null, movement: null,
+    });
+  document.getElementById('timeline-plain-host').innerHTML = timelinePlainHtml;
+
+  const timelineHtml = renderTimelineHtml({
+      events: [
+        { iso: "2010-05-15", kind: "breach_exposure", entity_value: "user@example.com", entity_kind: "email", source: "breach_db" },
+        { iso: "2020-01-01T00:00:00Z", kind: "unknown_future_kind", entity_value: "<script>evil<\/script>", entity_kind: "username", source: "some_module" },
+      ],
+      tenure: { earliest_iso: "2010-05-15", span_years: 14, breach_count: 2 },
+      recency: { status: "aging" },
+      movement: { legs: [
+          { from_iso: "2019-01-01", from_coords: "1.0000, 2.0000", to_iso: "2019-06-01", to_coords: "3.0000, 4.0000", distance_km: 45.67 },
+        ], total_km: 45.67, locations_visited: 2 },
+    });
+  document.getElementById('timeline-host').innerHTML = timelineHtml;
+
+  const timelineEmptyOk = timelineEmptyHtml.includes('No dated events');
+  const timelinePlainOk = timelinePlainHtml.includes('<b>1</b> dated event,')
+    && !timelinePlainHtml.includes('dated events')
+    && !timelinePlainHtml.includes('Online since')
+    && !timelinePlainHtml.includes('Movement path')
+    && !timelinePlainHtml.includes('·');
+  const timelineOk = timelineHtml.includes('<b>2</b> dated events')
+    && timelineHtml.includes('· 2010-05-15 → 2020-01-01')
+    && timelineHtml.includes('Online since <b>2010-05-15</b> — 14y span, 2 breach exposures, footprint <b>aging</b>.')
+    && timelineHtml.includes('glyphicon-alert') && timelineHtml.includes('&nbsp;Breach</span>')
+    && timelineHtml.includes('glyphicon-calendar') && timelineHtml.includes('&nbsp;Event</span>')
+    && timelineHtml.includes('k-email') && timelineHtml.includes('k-username')
+    && timelineHtml.includes('&lt;script&gt;evil&lt;/script&gt;')
+    && !timelineHtml.includes('<script>evil')
+    && timelineHtml.includes('Movement path')
+    && timelineHtml.includes('<b>2</b>')
+    && timelineHtml.includes('dated location fixes')
+    && timelineHtml.includes('45.7 km')
+    && timelineHtml.includes('1.0000, 2.0000 → 3.0000, 4.0000');
+  document.getElementById('timeline-proof').textContent =
+    `empty=${timelineEmptyOk}, plain=${timelinePlainOk}, full=${timelineOk}`;
 </script>
 </body>
 </html>
