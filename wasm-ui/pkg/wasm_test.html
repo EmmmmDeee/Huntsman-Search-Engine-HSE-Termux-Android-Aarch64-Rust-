@@ -60,8 +60,11 @@
 <p id="exposure-proof">exposure render not yet run</p>
 <div id="exposure-host">(exposure host not yet populated)</div>
 <div id="exposure-minimal-host">(minimal-case host not yet populated)</div>
+<p id="settings-proof">scan settings render not yet run</p>
+<div id="settings-empty-host">(empty-case host not yet populated)</div>
+<div id="settings-full-host">(full-case host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml, renderCorrCardHtml, renderCorrMembersHtml, renderExposureHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml, renderCorrCardHtml, renderCorrMembersHtml, renderExposureHtml, renderScanSettingsHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -776,6 +779,84 @@
     && exposureMinimalHtml.includes('>MINIMAL<');
   document.getElementById('exposure-proof').textContent =
     `full=${exposureOk}, critical=${exposureCriticalOk}, minimal=${exposureMinimalOk}`;
+
+  // Exercises scan_info::info::render_scan_settings_html -- uniquely among
+  // scan_info ports, this is called with a POSSIBLY-FULLY-ABSENT client-state
+  // object (scan || S.scan || {}), so covers a bare {} (every one of its ~20
+  // rows' own fallback: unknown kind pill, pending status pill, em-dash
+  // dates, "all (default)"/"none"/"unlimited"/"module default"/"no filter"
+  // placeholders, false/0/0.2 numeric defaults) and a fully-populated scan
+  // (real values in every row, a real Unix timestamp formatted via
+  // js_sys::Date -- the test's own timezoneId is pinned to UTC so this is
+  // deterministic regardless of the host machine's local timezone -- and
+  // HTML-escaping on scan-derived error/notes strings).
+  const settingsEmptyHtml = renderScanSettingsHtml({});
+  document.getElementById('settings-empty-host').innerHTML = settingsEmptyHtml;
+  const settingsFullHtml = renderScanSettingsHtml({
+    id: "scan-abc123",
+    target: { kind: "full_name", value: "Jane Doe" },
+    status: "running",
+    started_at: 1700000000,
+    finished_at: 0,
+    entity_count: 42,
+    error: "Module X <script>evil<\/script> crashed",
+    options: {
+      modules: ["shodan", "censys"],
+      exclude_modules: [],
+      free_only: true,
+      passive_only: false,
+      throttle_ms: 500,
+      module_timeout_ms: 30000,
+      max_concurrent: 4,
+      min_confidence: 0.55,
+      depth: 3,
+      min_expand_confidence: 0.35,
+      max_entities: 1000,
+      max_wall_time_secs: 3600,
+      scan_tags: ["q2-audit", "apt-29"],
+      notes: "Investigation notes <b>bold<\/b>",
+    },
+  });
+  document.getElementById('settings-full-host').innerHTML = settingsFullHtml;
+
+  const settingsEmptyOk = settingsEmptyHtml.includes('k-unknown') && settingsEmptyHtml.includes('>unknown<')
+    && settingsEmptyHtml.includes('s-pending') && settingsEmptyHtml.includes('>pending<')
+    && (settingsEmptyHtml.match(/<td>—<\/td>/g) || []).length === 2
+    && settingsEmptyHtml.includes('>0</td>')
+    && (settingsEmptyHtml.match(/none<\/span>/g) || []).length === 3
+    && (settingsEmptyHtml.match(/all \(default\)/g) || []).length === 2
+    && (settingsEmptyHtml.match(/>false<\/td>/g) || []).length === 2
+    && settingsEmptyHtml.includes('module default')
+    && settingsEmptyHtml.includes('no filter')
+    && (settingsEmptyHtml.match(/unlimited/g) || []).length === 2
+    && settingsEmptyHtml.includes('0.2</td>');
+  const settingsFullOk = settingsFullHtml.includes('<code>scan-abc123</code>')
+    && settingsFullHtml.includes('k-full_name') && settingsFullHtml.includes('>full_name<')
+    && settingsFullHtml.includes('<code>Jane Doe</code>')
+    && settingsFullHtml.includes('s-running') && settingsFullHtml.includes('>running<')
+    && settingsFullHtml.includes('<td>2023-11-14 22:13:20</td>')
+    && settingsFullHtml.includes('<td>—</td>')
+    && settingsFullHtml.includes('>42</td>')
+    && settingsFullHtml.includes('class="scan-error"')
+    && settingsFullHtml.includes('&lt;script&gt;evil&lt;/script&gt;')
+    && !settingsFullHtml.includes('<script>evil')
+    && settingsFullHtml.includes('<code>shodan</code>') && settingsFullHtml.includes('<code>censys</code>')
+    && settingsFullHtml.includes('all (default)')
+    && settingsFullHtml.includes('>true</td>') && settingsFullHtml.includes('>false</td>')
+    && settingsFullHtml.includes('>500</td>')
+    && settingsFullHtml.includes('>30000</td>')
+    && settingsFullHtml.includes('>4</td>')
+    && settingsFullHtml.includes('0.55</td>')
+    && settingsFullHtml.includes('>3</td>')
+    && settingsFullHtml.includes('0.35</td>')
+    && settingsFullHtml.includes('>1000</td>')
+    && settingsFullHtml.includes('>3600</td>')
+    && settingsFullHtml.includes('<span class="tag">q2-audit</span>')
+    && settingsFullHtml.includes('<span class="tag">apt-29</span>')
+    && settingsFullHtml.includes('&lt;b&gt;bold&lt;/b&gt;')
+    && !settingsFullHtml.includes('<b>bold');
+  document.getElementById('settings-proof').textContent =
+    `empty=${settingsEmptyOk}, full=${settingsFullOk}`;
 </script>
 </body>
 </html>

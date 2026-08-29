@@ -42,6 +42,14 @@ unnested_or_patterns = "deny"
 [dependencies]
 hse-core            = { path = "../hse-core" }
 wasm-bindgen        = "0.2.127"
+# Only for js_sys::Date in scan_info::info::render_scan_settings_html:
+# helpers.js's fmtDate() formats via the JS Date object's LOCAL-timezone
+# getters (getFullYear/getHours/...), which Rust's own std::time has no
+# equivalent for — js_sys::Date calls the browser's real Date object through
+# the same FFI wasm-bindgen itself is built on, so the formatted string is
+# byte-identical to the JS original's (same timezone, same everything)
+# without reimplementing timezone logic in Rust at all.
+js-sys              = "0.3"
 # Deserializes a JS entity object (the browser's own JSON from the API — the
 # same wire format hse_core::Entity serializes to server-side) straight into
 # a real hse_core::Entity, so the confidence-tier math calls the authoritative

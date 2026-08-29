@@ -540,6 +540,37 @@ export function renderPivotsHtml(data, entities_js) {
 }
 
 /**
+ * Builds the "Scan settings" panel fragment. `scan_js` is the JS side's
+ * already-resolved `scan || S.scan || {}` — see the module doc comment.
+ * @param {any} scan_js
+ * @returns {string}
+ */
+export function renderScanSettingsHtml(scan_js) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.renderScanSettingsHtml(retptr, addHeapObject(scan_js));
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        var ptr1 = r0;
+        var len1 = r1;
+        if (r3) {
+            ptr1 = 0; len1 = 0;
+            throw takeObject(r2);
+        }
+        deferred2_0 = ptr1;
+        deferred2_1 = len1;
+        return getStringFromWasm0(ptr1, len1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export5(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * Builds the "Footprint timeline" (+ optional "Movement path") panel
  * fragment for a `/scans/{id}/timeline` response, or the guided empty-state
  * block (a full block, not `""` — the same choice
@@ -749,9 +780,21 @@ function __wbg_get_imports() {
             const ret = Object.entries(getObject(arg0));
             return addHeapObject(ret);
         },
+        __wbg_getDate_b0ac858991e80b2e: function(arg0) {
+            const ret = getObject(arg0).getDate();
+            return ret;
+        },
         __wbg_getElementById_1637d6969b003cda: function(arg0, arg1, arg2) {
             const ret = getObject(arg0).getElementById(getStringFromWasm0(arg1, arg2));
             return isLikeNone(ret) ? 0 : addHeapObject(ret);
+        },
+        __wbg_getFullYear_d2ecaf3ecbfaddf9: function(arg0) {
+            const ret = getObject(arg0).getFullYear();
+            return ret;
+        },
+        __wbg_getHours_521ab343a38cb962: function(arg0) {
+            const ret = getObject(arg0).getHours();
+            return ret;
         },
         __wbg_getItem_eb388fb8c39edb35: function() { return handleError(function (arg0, arg1, arg2, arg3) {
             const ret = getObject(arg1).getItem(getStringFromWasm0(arg2, arg3));
@@ -760,6 +803,18 @@ function __wbg_get_imports() {
             getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
             getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
         }, arguments); },
+        __wbg_getMinutes_27257e5640ea2e7c: function(arg0) {
+            const ret = getObject(arg0).getMinutes();
+            return ret;
+        },
+        __wbg_getMonth_9f2f20dab3150834: function(arg0) {
+            const ret = getObject(arg0).getMonth();
+            return ret;
+        },
+        __wbg_getSeconds_0071b90906b363f2: function(arg0) {
+            const ret = getObject(arg0).getSeconds();
+            return ret;
+        },
         __wbg_get_c0c8f8d7da0c03dd: function(arg0, arg1) {
             const ret = getObject(arg0)[arg1 >>> 0];
             return addHeapObject(ret);
@@ -834,6 +889,10 @@ function __wbg_get_imports() {
             const ret = new Uint8Array(getObject(arg0));
             return addHeapObject(ret);
         },
+        __wbg_new_f9d6489212f3b2b3: function(arg0) {
+            const ret = new Date(getObject(arg0));
+            return addHeapObject(ret);
+        },
         __wbg_next_42cf16ee0dafc9e2: function() { return handleError(function (arg0) {
             const ret = getObject(arg0).next();
             return addHeapObject(ret);
@@ -883,16 +942,21 @@ function __wbg_get_imports() {
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 15, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
-            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_233);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 16, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
+            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_248);
             return addHeapObject(ret);
         },
-        __wbindgen_cast_0000000000000002: function(arg0, arg1) {
+        __wbindgen_cast_0000000000000002: function(arg0) {
+            // Cast intrinsic for `F64 -> Externref`.
+            const ret = arg0;
+            return addHeapObject(ret);
+        },
+        __wbindgen_cast_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Ref(String) -> Externref`.
             const ret = getStringFromWasm0(arg0, arg1);
             return addHeapObject(ret);
         },
-        __wbindgen_cast_0000000000000003: function(arg0) {
+        __wbindgen_cast_0000000000000004: function(arg0) {
             // Cast intrinsic for `U64 -> Externref`.
             const ret = BigInt.asUintN(64, arg0);
             return addHeapObject(ret);
@@ -911,8 +975,8 @@ function __wbg_get_imports() {
     };
 }
 
-function __wasm_bindgen_func_elem_233(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_233(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_248(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_248(arg0, arg1, addHeapObject(arg2));
 }
 
 function addHeapObject(obj) {

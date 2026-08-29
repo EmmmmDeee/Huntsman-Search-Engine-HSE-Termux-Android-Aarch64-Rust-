@@ -103,6 +103,7 @@ name = "hse-wasm-ui"
 version = "0.1.0"
 dependencies = [
  "hse-core",
+ "js-sys",
  "serde",
  "serde-wasm-bindgen",
  "wasm-bindgen",
