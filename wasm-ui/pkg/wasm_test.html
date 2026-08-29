@@ -20,8 +20,11 @@
 <div id="identities-host">(non-empty-case host not yet populated)</div>
 <p id="benchmark-proof">benchmark render not yet run</p>
 <div id="benchmark-host">(benchmark host not yet populated)</div>
+<p id="location-proof">location render not yet run</p>
+<div id="location-synergy-host">(synergy-case host not yet populated)</div>
+<div id="location-fallback-host">(fallback-case host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -115,6 +118,47 @@
   const benchPctOk = benchmarkHtml.includes('>81%</td>') && benchmarkHtml.includes('>50%</td>');
   document.getElementById('benchmark-proof').textContent =
     `rows=${benchRowsOk}, percents=${benchPctOk}`;
+
+  // Exercises scan_info::location::render_location_html against BOTH real
+  // shapes extract_au_location_fix (src/app/export/renderers.rs) can send --
+  // the AU-059 synergy fix (no `locality`, uses `synergy_confidence`) and the
+  // single-signal fallback (`locality`+`confidence`+`basis`+`source`) -- plus
+  // the null case and (synthetically, since neither real branch currently
+  // populates it) the `classes` pills + escaping, so that dormant-but-real
+  // JS-contract code path is still proven correct rather than untested.
+  const nullLocHtml = renderLocationHtml({ best_location: null });
+  const synergyHtml = renderLocationHtml({
+    best_location: {
+      lat: -33.8688, lon: 151.2093, state: "NSW",
+      synergy_confidence: 0.912, radius_km: 0.6, rule_id: "AU-059",
+    },
+  });
+  document.getElementById('location-synergy-host').innerHTML = synergyHtml;
+  const fallbackHtml = renderLocationHtml({
+    best_location: {
+      lat: -27.4698, lon: 153.0251, locality: "Brisbane", state: "QLD",
+      confidence: 0.61, basis: "<b>exif</b> geotag", source: "single-signal",
+      classes: ["exif_geo", "abn_lookup"],
+    },
+  });
+  document.getElementById('location-fallback-host').innerHTML = fallbackHtml;
+
+  const nullOk = nullLocHtml === '';
+  const synergyOk = synergyHtml.includes('NSW</b>')
+    && synergyHtml.includes('-33.8688, 151.2093')
+    && synergyHtml.includes('±0.6 km')
+    && synergyHtml.includes('confidence 0.91')
+    && synergyHtml.includes('AU-059')
+    && synergyHtml.includes('mlat=-33.8688&amp;mlon=151.2093');
+  const fallbackOk = fallbackHtml.includes('Brisbane, QLD</b>')
+    && fallbackHtml.includes('confidence 0.61')
+    && fallbackHtml.includes('single-signal')
+    && fallbackHtml.includes('&lt;b&gt;exif&lt;/b&gt; geotag')
+    && !fallbackHtml.includes('<b>exif</b>')
+    && fallbackHtml.includes('label-info">exif_geo<')
+    && fallbackHtml.includes('label-info">abn_lookup<');
+  document.getElementById('location-proof').textContent =
+    `null=${nullOk}, synergy=${synergyOk}, fallback=${fallbackOk}`;
 </script>
 </body>
 </html>
