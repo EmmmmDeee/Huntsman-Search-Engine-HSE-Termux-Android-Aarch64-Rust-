@@ -4,3 +4,4 @@
 
 pub mod benchmark;
 pub mod identities;
+pub mod location;
