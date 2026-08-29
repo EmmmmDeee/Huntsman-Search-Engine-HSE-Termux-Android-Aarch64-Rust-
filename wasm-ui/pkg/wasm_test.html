@@ -23,8 +23,11 @@
 <p id="location-proof">location render not yet run</p>
 <div id="location-synergy-host">(synergy-case host not yet populated)</div>
 <div id="location-fallback-host">(fallback-case host not yet populated)</div>
+<p id="gaps-proof">gaps render not yet run</p>
+<div id="gaps-linked-host">(all-linked-case host not yet populated)</div>
+<div id="gaps-orphans-host">(orphans-case host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -159,6 +162,49 @@
     && fallbackHtml.includes('label-info">abn_lookup<');
   document.getElementById('location-proof').textContent =
     `null=${nullOk}, synergy=${synergyOk}, fallback=${fallbackOk}`;
+
+  // Exercises scan_info::gaps::render_gaps_html against the real
+  // /scans/{id}/gaps envelope (core::gap::GapReport + the handler's own
+  // corrective_modules addition, src/api/scan_handlers/diagnostics.rs).
+  // Covers: null_state, the "every seed linked" (empty orphans) case, and a
+  // populated case exercising the terminal/non-terminal split, the >6
+  // corrective_modules ellipsis, an empty corrective_modules list, and
+  // escaping on a scan-derived value.
+  const gapsNullHtml = renderGapsHtml({ null_state: true, total_seeds: 0, linked_seeds: 0, linked_fraction: 0, orphans: [] });
+  const gapsLinkedHtml = renderGapsHtml({ null_state: false, total_seeds: 5, linked_seeds: 5, linked_fraction: 1.0, orphans: [] });
+  document.getElementById('gaps-linked-host').innerHTML = gapsLinkedHtml;
+  const gapsOrphansHtml = renderGapsHtml({
+    null_state: false, total_seeds: 20, linked_seeds: 15, linked_fraction: 0.75,
+    orphans: [
+      {
+        uid: "u1", kind: "domain", value: "<script>evil<\/script>.example",
+        isolation: "unexpanded", action: "re-inject and run modules",
+        corrective_modules: ["m1","m2","m3","m4","m5","m6","m7","m8"],
+      },
+      {
+        uid: "u2", kind: "email", value: "",
+        isolation: "below_expand_floor", action: "corroborate to raise confidence",
+        corrective_modules: [],
+      },
+      { uid: "u3", kind: "password", value: "", isolation: "terminal", action: "terminal leaf", corrective_modules: [] },
+      { uid: "u4", kind: "tracking_id", value: "", isolation: "terminal", action: "terminal leaf", corrective_modules: [] },
+    ],
+  });
+  document.getElementById('gaps-orphans-host').innerHTML = gapsOrphansHtml;
+
+  const gapsNullOk = gapsNullHtml === '';
+  const gapsLinkedOk = gapsLinkedHtml.includes('Every validated seed is linked');
+  const gapsOrphansOk = gapsOrphansHtml.includes('15/20 seeds linked (75%)')
+    && gapsOrphansHtml.includes('&lt;script&gt;evil&lt;/script&gt;.example')
+    && !gapsOrphansHtml.includes('<script>evil')
+    && gapsOrphansHtml.includes('run: m1, m2, m3, m4, m5, m6…')
+    && gapsOrphansHtml.includes('label-warning">unexpanded<')
+    && gapsOrphansHtml.includes('label-default">below expand floor<')
+    && gapsOrphansHtml.includes('<code>u2</code>')
+    && gapsOrphansHtml.includes('+ 2 terminal leaf/leaves')
+    && !gapsOrphansHtml.includes('label-info');
+  document.getElementById('gaps-proof').textContent =
+    `null=${gapsNullOk}, allLinked=${gapsLinkedOk}, orphans=${gapsOrphansOk}`;
 </script>
 </body>
 </html>
