@@ -3,6 +3,7 @@
 //! trees stays obvious as more are ported.
 
 pub mod benchmark;
+pub mod duplicates;
 pub mod gaps;
 pub mod identities;
 pub mod location;
