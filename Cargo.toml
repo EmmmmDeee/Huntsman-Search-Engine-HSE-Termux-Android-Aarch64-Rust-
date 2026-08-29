@@ -62,6 +62,17 @@ path = "src/bin/gen_oui/main.rs"
 name = "architecture-audit"
 path = "src/bin/architecture_audit/main.rs"
 
+# Dev-time repo packer: serialises every git-tracked file into one
+# topologically ordered, loss-less monolith text file (and unpacks it back),
+# for whole-repo ingestion by an LLM agent. Not scan engine code; the same
+# "separate binary, not an `hse` subcommand" reasoning as the tools above.
+# Replaces the former `scripts/pack_monolith.py`, closing that accepted
+# non-Rust exception. Ungated: it needs only sha2/base64/hex/clap, each already
+# unconditional for the `hse` binary itself.
+[[bin]]
+name = "pack-monolith"
+path = "src/bin/pack_monolith/main.rs"
+
 # Supply-chain gate: fails when a crates.io dependency in Cargo.lock was
 # published more recently than a configured cooldown window (a compromised
 # publish is most likely to slip through unnoticed in its first few days).
