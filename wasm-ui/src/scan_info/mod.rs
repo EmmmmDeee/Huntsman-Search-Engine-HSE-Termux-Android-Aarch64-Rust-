@@ -8,6 +8,7 @@ pub mod communities;
 pub mod duplicates;
 pub mod gaps;
 pub mod identities;
+pub mod leads;
 pub mod location;
 pub mod metrics;
 pub mod network;

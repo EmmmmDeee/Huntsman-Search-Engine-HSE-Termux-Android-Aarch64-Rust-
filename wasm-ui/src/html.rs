@@ -37,6 +37,29 @@ pub fn kind_pill(kind: &str) -> String {
     )
 }
 
+/// `helpers.js`'s `NET_GROUP_ICON` map: the glyphicon for one of
+/// `crate::core::network::GROUPS`'s six keys (`people`, `identifiers`,
+/// `aliases`, `affiliations`, `locations`, `infrastructure`) — a closed set
+/// server-side (`group_for` is an exhaustive match over `RelationKind`), but
+/// `crate::core::leads::Lead::group` carries the same keys as a plain
+/// `&'static str` too, so both
+/// [`crate::scan_info::network`] and [`crate::scan_info::leads`] need this
+/// lookup. Returns `None` for an unrecognized key rather than baking in a
+/// fallback: the two JS callers each chose a different one
+/// (`glyphicon-link` vs. `glyphicon-flag`), so the fallback stays the
+/// caller's choice.
+pub fn group_icon(key: &str) -> Option<&'static str> {
+    match key {
+        "people" => Some("glyphicon-user"),
+        "identifiers" => Some("glyphicon-envelope"),
+        "aliases" => Some("glyphicon-random"),
+        "affiliations" => Some("glyphicon-briefcase"),
+        "locations" => Some("glyphicon-map-marker"),
+        "infrastructure" => Some("glyphicon-cloud"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
