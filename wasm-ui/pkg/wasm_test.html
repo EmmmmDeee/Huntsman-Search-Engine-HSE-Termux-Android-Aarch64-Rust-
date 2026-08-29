@@ -31,8 +31,11 @@
 <div id="metrics-full-host">(full-case host not yet populated)</div>
 <p id="duplicates-proof">duplicates render not yet run</p>
 <div id="duplicates-host">(duplicates host not yet populated)</div>
+<p id="communities-proof">communities render not yet run</p>
+<div id="communities-empty-host">(empty-case host not yet populated)</div>
+<div id="communities-host">(communities host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -295,6 +298,40 @@
     && duplicatesHtml.includes('&lt;b&gt;match&lt;/b&gt;')
     && !duplicatesHtml.includes('<b>match</b>');
   document.getElementById('duplicates-proof').textContent = `groups=${duplicatesOk}`;
+
+  // Exercises scan_info::communities::render_communities_html -- and, via the
+  // shared crate::entity_lookup it now shares with duplicates.rs, the same
+  // uid-lookup fallback path reused across a second view. Covers: the
+  // zero-communities guided empty state (a full block, not "" like every
+  // other scan_info port), a small cluster (known entities via
+  // dupEntities, label escaping), and a >8-member cluster (unknown uids,
+  // the "+N more" truncation, pluralization).
+  const communitiesEmptyHtml = renderCommunitiesHtml({ communities: [] }, []);
+  document.getElementById('communities-empty-host').innerHTML = communitiesEmptyHtml;
+  const bigUids = Array.from({length: 10}, (_, i) => `u${i+1}`);
+  const communitiesHtml = renderCommunitiesHtml(
+    { communities: [
+        { id: 0, uids: ["aaa111", "bbb222"], size: 2, label: "Family cluster <b>Smith</b>" },
+        { id: 1, uids: bigUids, size: 10, label: "Infra estate" },
+      ] },
+    dupEntities,
+  );
+  document.getElementById('communities-host').innerHTML = communitiesHtml;
+
+  const communitiesEmptyOk = communitiesEmptyHtml.includes('No communities yet');
+  const communitiesOk = communitiesHtml.includes('<b>2</b> sub-clusters')
+    && communitiesHtml.includes('<code>John Smith</code>')
+    && communitiesHtml.includes('<code>j.smith@gmail.com</code>')
+    && communitiesHtml.includes('&lt;b&gt;Smith&lt;/b&gt;')
+    && !communitiesHtml.includes('<b>Smith</b>')
+    && communitiesHtml.includes('2 members')
+    && communitiesHtml.includes('10 members')
+    && communitiesHtml.includes('<code>u1…</code>')
+    && communitiesHtml.includes('<code>u8…</code>')
+    && !communitiesHtml.includes('<code>u9…</code>')
+    && communitiesHtml.includes('+2 more');
+  document.getElementById('communities-proof').textContent =
+    `empty=${communitiesEmptyOk}, clusters=${communitiesOk}`;
 </script>
 </body>
 </html>

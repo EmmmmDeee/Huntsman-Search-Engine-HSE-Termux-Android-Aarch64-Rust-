@@ -33,6 +33,7 @@
 //! entire point is a `.wasm` an older Android WebView can still load.
 
 pub mod confidence;
+pub mod entity_lookup;
 pub mod html;
 pub mod scan_info;
 pub mod theme;
