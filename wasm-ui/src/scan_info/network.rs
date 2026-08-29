@@ -8,7 +8,7 @@
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
-use crate::html::{escape_html, kind_pill};
+use crate::html::{escape_html, group_icon, kind_pill};
 use crate::to_js_error;
 
 /// The subset of `crate::core::network::Connection`'s fields this view
@@ -49,24 +49,6 @@ struct SubjectNetwork {
     direct_count: usize,
     reachable_count: usize,
     edge_count: usize,
-}
-
-/// `helpers.js`'s `NET_GROUP_ICON` map — every key `core::network::GROUPS`
-/// can ever emit (an exhaustive match over `RelationKind`, so this is a
-/// closed set server-side) has an entry; the fallback only guards the
-/// deserialized string, which loses that compile-time closure at the JSON
-/// boundary — the same reasoning `sev_badge` in
-/// [`crate::scan_info::audit`] applies to its own deserialized severity.
-fn group_icon(key: &str) -> &'static str {
-    match key {
-        "people" => "glyphicon-user",
-        "identifiers" => "glyphicon-envelope",
-        "aliases" => "glyphicon-random",
-        "affiliations" => "glyphicon-briefcase",
-        "locations" => "glyphicon-map-marker",
-        "infrastructure" => "glyphicon-cloud",
-        _ => "glyphicon-link",
-    }
 }
 
 /// `helpers.js`'s `trunc()`: truncates to `n` characters (not bytes) plus an
@@ -153,7 +135,7 @@ pub fn render_network_html(data: JsValue, id: &str) -> Result<String, JsValue> {
             "<div class=\"net-group\">\n      \
              <div class=\"net-group-head\"><i class=\"glyphicon {icon}\"></i>&nbsp;{label}\n        \
              <span class=\"badge\">{total}</span>{more}</div>",
-            icon = group_icon(&g.key),
+            icon = group_icon(&g.key).unwrap_or("glyphicon-link"),
             label = escape_html(&g.label),
             total = g.total,
         ));

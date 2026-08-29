@@ -46,8 +46,11 @@
 <div id="network-null-host">(null-case host not yet populated)</div>
 <div id="network-nogroups-host">(no-groups-case host not yet populated)</div>
 <div id="network-host">(network host not yet populated)</div>
+<p id="leads-proof">leads render not yet run</p>
+<div id="leads-empty-host">(empty-case host not yet populated)</div>
+<div id="leads-host">(leads host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -546,6 +549,59 @@
     && (networkFullHtml.match(/class="cls c-/g) || []).length === 3;
   document.getElementById('network-proof').textContent =
     `null=${networkNullOk}, noGroups=${networkNoGroupsOk}, full=${networkFullOk}`;
+
+  // Exercises scan_info::leads::render_leads_html -- and, via the shared
+  // crate::html::group_icon it now shares with network.rs (a genuine second
+  // caller, promoted off network.rs's formerly-local copy), the SAME lookup
+  // table with a DIFFERENT per-caller fallback icon (glyphicon-flag here vs.
+  // network.rs's glyphicon-link). Also specifically proves target_kind (the
+  // scan-seed field) drives the button's data-kind attribute while the
+  // DIFFERENT kind field drives the kind-pill -- these were mixed up in an
+  // early draft of this port and caught before shipping.
+  const leadsEmptyHtml = renderLeadsHtml({ leads: [] }, "scan-9");
+  document.getElementById('leads-empty-host').innerHTML = leadsEmptyHtml;
+
+  const leadsHtml = renderLeadsHtml({
+      leads: [
+        { value: "John Doe", kind: "person", target_kind: "full_name",
+          reason: "A relative of the subject <script>evil<\/script>",
+          confirmed: true, discordant: false, structural: true, group: "people" },
+        { value: "namesake@example.com", kind: "email", target_kind: "email",
+          reason: "Shares surname, different region",
+          confirmed: false, discordant: true, structural: false, group: "identifiers" },
+        { value: "plain-value", kind: "domain", target_kind: "domain",
+          reason: "A container seed",
+          confirmed: false, discordant: false, structural: false, group: "unknown_bucket" },
+      ] }, "scan-10");
+  document.getElementById('leads-host').innerHTML = leadsHtml;
+
+  const leadsSingularHtml = renderLeadsHtml({
+      leads: [{ value: "v", kind: "domain", target_kind: "domain", reason: "r",
+        confirmed: false, discordant: false, structural: false, group: "locations" }] }, "scan-11");
+
+  const leadsEmptyOk = leadsEmptyHtml.includes('No open leads')
+    && leadsEmptyHtml.includes('href="#/scaninfo?id=scan-9&tab=network"');
+  const leadsOk = leadsHtml.includes('<b>3</b> recommended next steps')
+    && leadsHtml.includes('<b>1</b> corroborated')
+    && leadsHtml.includes('k-person') && leadsHtml.includes('k-email') && leadsHtml.includes('k-domain')
+    && leadsHtml.includes('data-kind="full_name"') && leadsHtml.includes('data-value="John Doe"')
+    && leadsHtml.includes('✓ CONFIRMED')
+    && leadsHtml.includes('⚠ NAMESAKE?')
+    && leadsHtml.includes('⌘ PIVOT')
+    && leadsHtml.includes('lead-card confirmed')
+    && leadsHtml.includes('lead-card discordant')
+    && leadsHtml.includes('glyphicon-user')
+    && leadsHtml.includes('glyphicon-flag')
+    && leadsHtml.includes('&lt;script&gt;evil&lt;/script&gt;')
+    && !leadsHtml.includes('<script>evil')
+    && (leadsHtml.match(/lead-badge"/g) || []).length === 1
+    && (leadsHtml.match(/lead-badge namesake/g) || []).length === 1
+    && (leadsHtml.match(/lead-badge pivot/g) || []).length === 1;
+  const leadsSingularOk = leadsSingularHtml.includes('<b>1</b> recommended next step\n')
+    && !leadsSingularHtml.includes('recommended next steps')
+    && !leadsSingularHtml.includes('corroborated');
+  document.getElementById('leads-proof').textContent =
+    `empty=${leadsEmptyOk}, leads=${leadsOk}, singular=${leadsSingularOk}`;
 </script>
 </body>
 </html>

@@ -556,9 +556,22 @@ use super::*;
         // Summary (the &tab=network link folds onto Summary and scrolls to
         // #sum-network). Guard both the anchor/nav and the dispatch so a link
         // can never go inert again.
+        // The anchor itself now lives in wasm-ui/src/scan_info/leads.rs (the
+        // empty-state's HTML templating moved to WASM; leads.js's own text no
+        // longer contains it) — a sibling-crate source read, same pattern as
+        // the `EntityKind` drift guard below.
+        let leads_rs = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/wasm-ui/src/scan_info/leads.rs"
+        ))
+        .expect("leads.rs source readable");
         assert!(
-            app_file("js/scan_info/leads.js").contains("tab=network\">Network</a>"),
-            "expected deep-link anchor text `tab=network\">Network</a>` in leads.js"
+            // Raw string: the .rs file's own text escapes this quote as `\"`
+            // (it's inside a Rust string literal), so the search pattern must
+            // match that literal backslash rather than a bare `"`.
+            leads_rs.contains(r#"tab=network\">Network</a>"#),
+            "expected deep-link anchor text `tab=network\">Network</a>` in \
+             wasm-ui/src/scan_info/leads.rs"
         );
         // report.js navigates programmatically (`nav(...)`) rather than
         // rendering an `<a>` — the Summary's correlation-count callout is a
