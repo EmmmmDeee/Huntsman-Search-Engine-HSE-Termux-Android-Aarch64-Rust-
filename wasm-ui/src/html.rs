@@ -114,6 +114,37 @@ pub fn fmt_date(ts: u64) -> String {
     )
 }
 
+/// `helpers.js`'s `statusPill(s)`. The CSS class and the displayed text
+/// default independently, exactly as the original's `m[s]||'s-pending'` /
+/// `s||'pending'` do: an unrecognised non-empty status still shows its own
+/// text (with the fallback class), while a missing/empty one shows the
+/// literal text "pending" too. Reused as-is for `crate::views::live`'s
+/// `LiveStatus` values (`"running"`/`"completed"`/`"stopped"`, a distinct
+/// enum from `ScanStatus`): `"completed"` matches no arm here either, so it
+/// falls to the same `s-pending` class with its own text shown — the exact
+/// (mildly surprising) behaviour `helpers.js`'s original single `statusPill`
+/// already gave every `live.js` call site, faithfully preserved rather than
+/// "fixed" by a wider match. Promoted from [`crate::views::scans`]'s own
+/// copy once [`crate::views::live`] needed the exact same mapping.
+pub fn status_pill(status: Option<&str>) -> String {
+    let class = match status {
+        Some("complete") => "s-complete",
+        Some("running") => "s-running",
+        Some("failed") => "s-failed",
+        Some("pending") => "s-pending",
+        Some("aborted") => "s-aborted",
+        _ => "s-pending",
+    };
+    let text = match status {
+        Some(s) if !s.is_empty() => s,
+        _ => "pending",
+    };
+    format!(
+        "<span class=\"status-pill {class}\">{}</span>",
+        escape_html(text)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,6 +172,28 @@ mod tests {
         assert_eq!(
             kind_pill("email"),
             "<span class=\"kind-pill k-email\">email</span>"
+        );
+    }
+
+    #[test]
+    fn status_pill_defaults_class_and_text_independently() {
+        assert_eq!(
+            status_pill(None),
+            "<span class=\"status-pill s-pending\">pending</span>"
+        );
+        assert_eq!(
+            status_pill(Some("weird")),
+            "<span class=\"status-pill s-pending\">weird</span>"
+        );
+        assert_eq!(
+            status_pill(Some("complete")),
+            "<span class=\"status-pill s-complete\">complete</span>"
+        );
+        // LiveStatus's "completed" (not "complete") matches no arm either —
+        // the exact cross-enum quirk this promotion's doc comment preserves.
+        assert_eq!(
+            status_pill(Some("completed")),
+            "<span class=\"status-pill s-pending\">completed</span>"
         );
     }
 }

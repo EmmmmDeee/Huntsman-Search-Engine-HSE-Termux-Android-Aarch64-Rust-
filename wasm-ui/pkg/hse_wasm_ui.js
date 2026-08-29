@@ -526,6 +526,37 @@ export function renderLeadsHtml(data, id) {
 }
 
 /**
+ * Ports `live.js`'s `renderLiveSessions(sessions)`: the "Active sessions"
+ * table.
+ * @param {any} sessions_js
+ * @returns {string}
+ */
+export function renderLiveSessionsHtml(sessions_js) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.renderLiveSessionsHtml(retptr, addHeapObject(sessions_js));
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        var ptr1 = r0;
+        var len1 = r1;
+        if (r3) {
+            ptr1 = 0; len1 = 0;
+            throw takeObject(r2);
+        }
+        deferred2_0 = ptr1;
+        deferred2_1 = len1;
+        return getStringFromWasm0(ptr1, len1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export5(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * Builds the "Residency fix" panel fragment for a `/scans/{id}/location`
  * response, or `""` when there is no location to show (no `best_location`,
  * or one without both `lat` and `lon`).
@@ -706,6 +737,37 @@ export function renderPivotsHtml(data, entities_js) {
     try {
         const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
         wasm.renderPivotsHtml(retptr, addHeapObject(data), addHeapObject(entities_js));
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        var ptr1 = r0;
+        var len1 = r1;
+        if (r3) {
+            ptr1 = 0; len1 = 0;
+            throw takeObject(r2);
+        }
+        deferred2_0 = ptr1;
+        deferred2_1 = len1;
+        return getStringFromWasm0(ptr1, len1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export5(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Ports `live.js`'s `renderRadarHistory(sweeps)`: the "Radar history"
+ * table.
+ * @param {any} sweeps_js
+ * @returns {string}
+ */
+export function renderRadarHistoryHtml(sweeps_js) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.renderRadarHistoryHtml(retptr, addHeapObject(sweeps_js));
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
         var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
@@ -1161,7 +1223,7 @@ function __wbg_get_imports() {
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 17, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
-            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_292);
+            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_300);
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000002: function(arg0) {
@@ -1193,8 +1255,8 @@ function __wbg_get_imports() {
     };
 }
 
-function __wasm_bindgen_func_elem_292(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_292(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_300(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_300(arg0, arg1, addHeapObject(arg2));
 }
 
 function addHeapObject(obj) {

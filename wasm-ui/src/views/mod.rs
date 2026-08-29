@@ -5,4 +5,5 @@
 
 pub mod dash;
 pub mod diff;
+pub mod live;
 pub mod scans;

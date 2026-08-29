@@ -16,7 +16,7 @@
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
-use crate::html::{escape_html, fmt_date, kind_pill};
+use crate::html::{escape_html, fmt_date, kind_pill, status_pill};
 use crate::to_js_error;
 
 /// One provider's session quota snapshot — `src/api/handlers/mod.rs`'s
@@ -190,30 +190,6 @@ struct ScanRow {
     entity_count: Option<u64>,
 }
 
-/// `helpers.js`'s `statusPill(s)`. The CSS class and the displayed text
-/// default independently, exactly as the original's `m[s]||'s-pending'` /
-/// `s||'pending'` do: an unrecognised non-empty status still shows its own
-/// text (with the fallback class), while a missing/empty one shows the
-/// literal text "pending" too.
-fn status_pill(status: Option<&str>) -> String {
-    let class = match status {
-        Some("complete") => "s-complete",
-        Some("running") => "s-running",
-        Some("failed") => "s-failed",
-        Some("pending") => "s-pending",
-        Some("aborted") => "s-aborted",
-        _ => "s-pending",
-    };
-    let text = match status {
-        Some(s) if !s.is_empty() => s,
-        _ => "pending",
-    };
-    format!(
-        "<span class=\"status-pill {class}\">{}</span>",
-        escape_html(text)
-    )
-}
-
 /// `helpers.js`'s `fmtDuration(secs)`.
 fn fmt_duration(secs: Option<i64>) -> String {
     let Some(secs) = secs.filter(|&s| s >= 0) else {
@@ -335,22 +311,6 @@ pub fn render_scans_table_html(scans_js: JsValue) -> Result<String, JsValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn status_pill_defaults_class_and_text_independently() {
-        assert_eq!(
-            status_pill(None),
-            "<span class=\"status-pill s-pending\">pending</span>"
-        );
-        assert_eq!(
-            status_pill(Some("weird")),
-            "<span class=\"status-pill s-pending\">weird</span>"
-        );
-        assert_eq!(
-            status_pill(Some("complete")),
-            "<span class=\"status-pill s-complete\">complete</span>"
-        );
-    }
 
     #[test]
     fn fmt_duration_matches_helpers_js_thresholds() {

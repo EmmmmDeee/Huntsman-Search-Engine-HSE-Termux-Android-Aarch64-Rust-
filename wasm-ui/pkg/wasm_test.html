@@ -84,8 +84,14 @@
 <p id="diff-proof">diff result render not yet run</p>
 <div id="diff-full-host">(full-case host not yet populated)</div>
 <div id="diff-identical-host">(identical-case host not yet populated)</div>
+<p id="live-sessions-proof">live sessions render not yet run</p>
+<div id="live-sessions-full-host">(full-case host not yet populated)</div>
+<div id="live-sessions-empty-host">(empty-case host not yet populated)</div>
+<p id="radar-history-proof">radar history render not yet run</p>
+<div id="radar-history-full-host">(full-case host not yet populated)</div>
+<div id="radar-history-empty-host">(empty-case host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, isNonCorroboratingSource, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml, renderCorrCardHtml, renderCorrMembersHtml, renderExposureHtml, renderScanSettingsHtml, renderPathResultHtml, renderBrowseTableHtml, renderApiBudgetsPanelHtml, renderModuleHealthPanelHtml, renderScansTableHtml, renderDiffResultHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, isNonCorroboratingSource, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml, renderCorrCardHtml, renderCorrMembersHtml, renderExposureHtml, renderScanSettingsHtml, renderPathResultHtml, renderBrowseTableHtml, renderApiBudgetsPanelHtml, renderModuleHealthPanelHtml, renderScansTableHtml, renderDiffResultHtml, renderLiveSessionsHtml, renderRadarHistoryHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -1225,6 +1231,91 @@
 
   document.getElementById('diff-proof').textContent =
     `full=${diffFullOk}, identical=${diffIdenticalOk}`;
+
+  // Exercises views::live::render_live_sessions_html. Covers: a missing
+  // target falling to the "unknown" kind pill (NOT the em-dash
+  // views::scans::scan_row_html uses for the same situation -- scans.js and
+  // live.js wrote different fallback text independently), the radar badge
+  // and iterations-suffix appearing only when present, the interval "?"
+  // fallback, a zero/missing last_iteration_at showing the em-dash, a
+  // present one formatting via fmt_date, the scan_ids array length, and
+  // LiveStatus's "completed" (not ScanStatus's "complete") falling to the
+  // shared status_pill's s-pending default -- the exact cross-enum quirk
+  // the promotion to html.rs preserves rather than "fixes". Also an XSS
+  // probe on a session id.
+  const liveSessionsFullHtml = renderLiveSessionsHtml([
+    {
+      id: "<script>evil<\/script>",
+      target: { kind: "domain", value: "example.com" },
+      live_options: { interval_secs: 30, iterations: 10, radar: true },
+      status: "running",
+      iteration: 3,
+      started_at: 1700000000,
+      last_iteration_at: 1700001000,
+      scan_ids: ["a", "b", "c"],
+    },
+    {
+      id: "sess2",
+      target: null,
+      live_options: null,
+      status: "completed",
+      iteration: 0,
+      started_at: 0,
+      last_iteration_at: null,
+      scan_ids: [],
+    },
+  ]);
+  document.getElementById('live-sessions-full-host').innerHTML = liveSessionsFullHtml;
+  const liveSessionsFullOk = liveSessionsFullHtml.includes('k-domain')
+    && liveSessionsFullHtml.includes('example.com')
+    && liveSessionsFullHtml.includes('label label-info')
+    && liveSessionsFullHtml.includes('>3 / 10<')
+    && liveSessionsFullHtml.includes('>30s<')
+    && liveSessionsFullHtml.includes('&lt;script&gt;evil&lt;/script&gt;')
+    && !liveSessionsFullHtml.includes('<script>evil')
+    && liveSessionsFullHtml.includes('status-pill s-running')
+    && liveSessionsFullHtml.includes('>3</td>')
+    && liveSessionsFullHtml.includes('k-unknown')
+    && liveSessionsFullHtml.includes('>sess2<')
+    && liveSessionsFullHtml.includes('>?s<')
+    && liveSessionsFullHtml.includes('text-right">0</td>')
+    && liveSessionsFullHtml.includes('status-pill s-pending">completed</span>')
+    && (liveSessionsFullHtml.match(/text-muted">—<\/span>/g) || []).length === 1;
+
+  const liveSessionsEmptyHtml = renderLiveSessionsHtml([]);
+  document.getElementById('live-sessions-empty-host').innerHTML = liveSessionsEmptyHtml;
+  const liveSessionsEmptyOk = liveSessionsEmptyHtml.includes('No active sessions');
+
+  document.getElementById('live-sessions-proof').textContent =
+    `full=${liveSessionsFullOk}, empty=${liveSessionsEmptyOk}`;
+
+  // Exercises views::live::render_radar_history_html. Covers: the
+  // mac_address-only "local network" seed text vs. the "ambient (GPS/RF)"
+  // fallback (both for a non-mac_address kind AND a missing target), the
+  // raw "{n}s" duration suffix (not h/m/s), the em-dash duration when
+  // either timestamp is missing, and the Review link's scan id.
+  const radarHistoryFullHtml = renderRadarHistoryHtml([
+    { id: "sw1", target: { kind: "mac_address" }, status: "complete", started_at: 1000, finished_at: 4600, entity_count: 12 },
+    { id: "sw2", target: { kind: "coordinates" }, status: "running", started_at: 2000, finished_at: null, entity_count: 0 },
+    { id: "sw3", target: null, status: "failed", started_at: 0, finished_at: null, entity_count: 0 },
+  ]);
+  document.getElementById('radar-history-full-host').innerHTML = radarHistoryFullHtml;
+  const radarHistoryFullOk = radarHistoryFullHtml.includes('>local network<')
+    && (radarHistoryFullHtml.match(/>ambient \(GPS\/RF\)</g) || []).length === 2
+    && radarHistoryFullHtml.includes('>3600s<')
+    && radarHistoryFullHtml.includes('status-pill s-complete')
+    && radarHistoryFullHtml.includes('status-pill s-running')
+    && radarHistoryFullHtml.includes('status-pill s-failed')
+    && radarHistoryFullHtml.includes('>12</td>')
+    && radarHistoryFullHtml.includes('#/scaninfo?id=sw1')
+    && (radarHistoryFullHtml.match(/text-muted">—<\/span>/g) || []).length === 2;
+
+  const radarHistoryEmptyHtml = renderRadarHistoryHtml([]);
+  document.getElementById('radar-history-empty-host').innerHTML = radarHistoryEmptyHtml;
+  const radarHistoryEmptyOk = radarHistoryEmptyHtml.includes('No radar sweeps yet');
+
+  document.getElementById('radar-history-proof').textContent =
+    `full=${radarHistoryFullOk}, empty=${radarHistoryEmptyOk}`;
 </script>
 </body>
 </html>

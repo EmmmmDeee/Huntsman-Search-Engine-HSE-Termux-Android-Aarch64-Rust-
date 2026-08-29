@@ -1,9 +1,10 @@
 import { API } from '/static/js/api.js';
-import { $, $$, attr, esc, fmtClock, fmtDate, kindPill, saveShownRows, statusPill, toast } from '/static/js/helpers.js';
+import { $, $$, attr, esc, fmtClock, saveShownRows, toast } from '/static/js/helpers.js';
 import { closeLiveSse, mapEvent, openLiveSse } from '/static/js/scan_info/log.js';
 import { S, TARGET_KINDS } from '/static/js/state.js';
 import { clearLiveTimer, pageHidden } from '/static/js/timers.js';
 import { render } from '/static/js/main.js';
+import { renderLiveSessionsHtml, renderRadarHistoryHtml } from '/static/hse_wasm_ui.js';
 
 export function wireLiveStops(){
   $$('button[data-livestop]').forEach(b=>b.addEventListener('click', async ()=>{
@@ -61,59 +62,6 @@ export function saveLiveShown(){
     header: (n) => `# HSE live-session activity (as shown in the browser)\n# ${n} event(s) — live capture, may be partial\n\n`,
     filename: 'hse-live-activity.log',
   });
-}
-export function renderLiveSessions(sessions){
-  if (!sessions.length){
-    return '<div class="empty-state"><h3>No active sessions</h3>'
-      + '<p>Start one above to continuously re-scan a target on an interval — new '
-      + 'entities and correlations accrue as they appear.</p></div>';
-  }
-  const rows = sessions.map(s=>`<tr>
-    <td>${kindPill(s.target&&s.target.kind)} <code>${esc((s.target&&s.target.value)||s.id)}</code>${(s.live_options&&s.live_options.radar)?' <span class="label label-info" title="Radar: paid APIs not re-queried on covered seeds">radar</span>':''}</td>
-    <td>${statusPill(s.status)}</td>
-    <td class="text-right">${s.iteration||0}${(s.live_options&&s.live_options.iterations)?` / ${s.live_options.iterations}`:''}</td>
-    <td class="text-right">${(s.live_options&&s.live_options.interval_secs)||'?'}s</td>
-    <td>${esc(fmtDate(s.started_at))}</td>
-    <td>${s.last_iteration_at?esc(fmtDate(s.last_iteration_at)):'<span class="text-muted">—</span>'}</td>
-    <td class="text-right">${(s.scan_ids||[]).length}</td>
-    <td class="text-right">
-      <button class="btn btn-info btn-xs" data-livestream="${attr(s.id)}" data-lval="${attr((s.target&&s.target.value)||s.id)}" title="Tail this session's live events"><i class="glyphicon glyphicon-transfer"></i></button>
-      <button class="btn btn-danger btn-xs" data-livestop="${attr(s.id)}" title="Stop"><i class="glyphicon glyphicon-stop"></i></button>
-    </td>
-  </tr>`).join('');
-  return `<div class="table-responsive"><table class="table table-condensed table-striped">
-    <thead><tr><th>Target</th><th>Status</th><th class="text-right">Iter</th>
-      <th class="text-right">Interval</th><th>Started</th><th>Last run</th>
-      <th class="text-right">Scans</th><th></th></tr></thead>
-    <tbody>${rows}</tbody></table></div>`;
-}
-/* Historical review of past radar sweeps — sourced from the persisted scans
-   table (GET /api/v1/radar/history), so it survives a server restart unlike
-   the "Active sessions" table above, which only shows what's still held in
-   memory. This is the surface that lets an operator reconstruct "what was
-   around me" after the fact, even having forgotten the session id. */
-export function renderRadarHistory(sweeps){
-  if (!sweeps.length){
-    return '<div class="empty-state"><h3>No radar sweeps yet</h3>'
-      + '<p>Every sweep the radar button or continuous radar ever queued is listed here, newest '
-      + 'first, once it runs — reviewable later even after a server restart.</p></div>';
-  }
-  const rows = sweeps.map(sw=>{
-    const seed = sw.target && sw.target.kind==='mac_address' ? 'local network' : 'ambient (GPS/RF)';
-    const dur = sw.finished_at && sw.started_at ? (sw.finished_at - sw.started_at) : null;
-    return `<tr>
-      <td>${esc(fmtDate(sw.started_at))}</td>
-      <td>${esc(seed)}</td>
-      <td>${statusPill(sw.status)}</td>
-      <td class="text-right">${dur==null?'<span class="text-muted">—</span>':(dur+'s')}</td>
-      <td class="text-right">${sw.entity_count||0}</td>
-      <td><a href="#/scaninfo?id=${attr(sw.id)}" class="btn btn-default btn-xs" title="Review this sweep's signals"><i class="glyphicon glyphicon-eye-open"></i>&nbsp;Review</a></td>
-    </tr>`;
-  }).join('');
-  return `<div class="table-responsive"><table class="table table-condensed table-striped">
-    <thead><tr><th>When</th><th>Seed</th><th>Status</th><th class="text-right">Duration</th>
-      <th class="text-right">Signals</th><th></th></tr></thead>
-    <tbody>${rows}</tbody></table></div>`;
 }
 export async function renderLive(v){
   const data = await API.liveList();
@@ -179,12 +127,12 @@ export async function renderLive(v){
     </div>
     <div class="panel panel-default">
       <div class="panel-heading"><b>Active sessions</b> <span class="badge">${sessions.length}</span></div>
-      <div id="live-sessions">${renderLiveSessions(sessions)}</div>
+      <div id="live-sessions">${renderLiveSessionsHtml(sessions)}</div>
     </div>
     <div class="panel panel-default">
       <div class="panel-heading"><b><i class="glyphicon glyphicon-time"></i>&nbsp;Radar history</b> <span class="badge">${sweeps.length}</span>
         <span class="text-muted" style="font-weight:400">— review past sweeps later, even after a restart</span></div>
-      <div id="radar-history">${renderRadarHistory(sweeps)}</div>
+      <div id="radar-history">${renderRadarHistoryHtml(sweeps)}</div>
     </div>`;
   $('#live-start').addEventListener('click', async ()=>{
     const kind = $('#live-kind').value;
@@ -233,7 +181,7 @@ export async function renderLive(v){
       const d = await API.liveList();
       const sessions = d.sessions || [];
       const host = $('#live-sessions');
-      if (host){ host.innerHTML = renderLiveSessions(sessions); wireLiveStops(); wireLiveStreams(); }
+      if (host){ host.innerHTML = renderLiveSessionsHtml(sessions); wireLiveStops(); wireLiveStreams(); }
       // If the session being tailed has ended (gone from the list), close its
       // stream so the Live-activity panel doesn't hang on a dead session.
       if (S.streamLiveId && !sessions.some(s=>s.id===S.streamLiveId)) closeLiveStream();
