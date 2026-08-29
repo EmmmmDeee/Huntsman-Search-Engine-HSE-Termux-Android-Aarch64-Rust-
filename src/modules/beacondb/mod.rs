@@ -218,6 +218,9 @@ impl Module for BeaconDb {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Single-purpose MAC->Coordinates lookup, guarded against leaking
+        // operator/cell data — matches the Geo default like `mylnikov`; unlike
+        // `wigle`, which also emits Address data and overrides for T1591.002.
         ModuleCategory::Geo
     }
 
