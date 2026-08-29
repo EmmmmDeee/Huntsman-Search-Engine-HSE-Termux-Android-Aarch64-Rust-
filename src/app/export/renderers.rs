@@ -1338,6 +1338,32 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             .map(String::as_str),
         wal_oversized: inp.wal_bytes.is_some_and(|b| b > WAL_RUNAWAY_BYTES),
     });
+    write_detected_issues(&mut s, &issues);
+
+    // ── 1. Environment fingerprint (build / host / module set / key presence) ──
+    // Reuse the `curl_present` already computed for the verdict — one spawn, not two.
+    s.push_str(&super::environment::render_environment(curl_present));
+
+    write_update_status(&mut s, inp);
+    write_disabled_capabilities(&mut s);
+    write_validation(&mut s, &inp.selftest);
+    write_module_health(&mut s, &module_health);
+    write_search_engine_liveness(&mut s, &engines, &engines_down, &engines_blocked);
+    write_scraper_health(&mut s, inp);
+    write_key_authentication(&mut s, inp);
+    write_provider_quotas(&mut s, &provider_budgets, &quota_exhausted);
+    write_key_pool(&mut s, inp);
+    write_storage_health(&mut s, inp);
+    write_recent_scans(&mut s, inp);
+    write_recent_logs(&mut s, inp);
+    write_source_files(&mut s);
+
+    s
+}
+
+/// ── 0. DETECTED ISSUES — the self-diagnosing verdict, read first. ──
+fn write_detected_issues(s: &mut String, issues: &[DetectedIssue]) {
+    use std::fmt::Write as _;
     let (crit, warn) = issues.iter().fold((0usize, 0usize), |(c, w), i| {
         if i.severity == SEV_CRITICAL {
             (c + 1, w)
@@ -1356,15 +1382,14 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
              no failed scans"
         );
     }
-    for i in &issues {
+    for i in issues {
         let _ = writeln!(s, "  [{}] {}: {}", i.severity, i.category, i.detail);
     }
+}
 
-    // ── 1. Environment fingerprint (build / host / module set / key presence) ──
-    // Reuse the `curl_present` already computed for the verdict — one spawn, not two.
-    s.push_str(&super::environment::render_environment(curl_present));
-
-    // ── 1a. Update / build freshness — is this binary current? ──
+/// ── 1a. Update / build freshness — is this binary current? ──
+fn write_update_status(s: &mut String, inp: &SystemDebugInputs) {
+    use std::fmt::Write as _;
     let _ = writeln!(s, "\n── UPDATE STATUS ──");
     let behind = match inp.update_commits_behind {
         Some(0) => "up to date".to_string(),
@@ -1379,10 +1404,13 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
         crate::util::timefmt::compact_utc(inp.update_last_checked)
     };
     let _ = writeln!(s, "  last_checked  : {last}");
+}
 
-    // ── 1b. Disabled capabilities (operator toggles) — the single most direct
-    //        answer to "why didn't module/feature X run?" that isn't a bug: an
-    //        operator turned it off in `~/.huntsman/settings.json`. ──
+/// ── 1b. Disabled capabilities (operator toggles) — the single most direct
+///        answer to "why didn't module/feature X run?" that isn't a bug: an
+///        operator turned it off in `~/.huntsman/settings.json`. ──
+fn write_disabled_capabilities(s: &mut String) {
+    use std::fmt::Write as _;
     let disabled_modules: Vec<&'static str> = {
         let reg = crate::modules::registry();
         let mut v: Vec<&'static str> = reg
@@ -1429,14 +1457,20 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
     if !disabled_features.is_empty() {
         let _ = writeln!(s, "  features OFF: {}", disabled_features.join(", "));
     }
+}
 
-    // ── 2. Validation — the full self-test suite (`hse selftest`) ──
+/// ── 2. Validation — the full self-test suite (`hse selftest`). ──
+fn write_validation(s: &mut String, selftest: &crate::selftest::Report) {
+    use std::fmt::Write as _;
     let _ = writeln!(s, "\n── VALIDATION (SELF-TEST) ──");
-    let _ = writeln!(s, "  {}", inp.selftest.summary());
-    s.push_str(&inp.selftest.render());
+    let _ = writeln!(s, "  {}", selftest.summary());
+    s.push_str(&selftest.render());
     s.push('\n');
+}
 
-    // ── 3. Live per-process module health (failure streaks) ──
+/// ── 3. Live per-process module health (failure streaks). ──
+fn write_module_health(s: &mut String, module_health: &[crate::core::engine::ModuleHealth]) {
+    use std::fmt::Write as _;
     let _ = writeln!(
         s,
         "\n── MODULE HEALTH (live, this process — {} with a failure streak) ──",
@@ -1448,7 +1482,7 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             "  ✓ no module is currently showing a dispatch-failure streak"
         );
     }
-    for h in &module_health {
+    for h in module_health {
         let last = h
             .last_success_at
             .map_or_else(|| "never this process".to_string(), |t| t.to_string());
@@ -1458,8 +1492,16 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             h.name, h.consecutive_failures, last
         );
     }
+}
 
-    // ── 4a. Search-engine liveness (latest cached sweep) ──
+/// ── 4a. Search-engine liveness (latest cached sweep). ──
+fn write_search_engine_liveness(
+    s: &mut String,
+    engines: &crate::modules::search_engines::health::HealthSnapshot,
+    engines_down: &[&str],
+    engines_blocked: &[&str],
+) {
+    use std::fmt::Write as _;
     let _ = writeln!(
         s,
         "\n── SEARCH-ENGINE LIVENESS (checked_at={}, {} engines: {} down, {} blocked) ──",
@@ -1485,8 +1527,11 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             h.detail
         );
     }
+}
 
-    // ── 4b. Cross-scan scraper health (persisted drift) ──
+/// ── 4b. Cross-scan scraper health (persisted drift). ──
+fn write_scraper_health(s: &mut String, inp: &SystemDebugInputs) {
+    use std::fmt::Write as _;
     let drifted: Vec<_> = inp
         .scraper_health
         .iter()
@@ -1526,13 +1571,16 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             h.module, h.consecutive_zero_yield
         );
     }
+}
 
-    // ── 4b′. Key authentication — which keyed sources the upstream is actively
-    //        REJECTING (auth-shaped errors: 401/403, "invalid API key", "API key
-    //        not found", …), lifted out of the generic drift errors above so a
-    //        dead credential is called out explicitly with the exact upstream
-    //        message and the env var most likely holding it. Grounded in observed
-    //        responses — never mis-reports a working key like a synthetic probe. ──
+/// ── 4b′. Key authentication — which keyed sources the upstream is actively
+///        REJECTING (auth-shaped errors: 401/403, "invalid API key", "API key
+///        not found", …), lifted out of the generic drift errors above so a
+///        dead credential is called out explicitly with the exact upstream
+///        message and the env var most likely holding it. Grounded in observed
+///        responses — never mis-reports a working key like a synthetic probe. ──
+fn write_key_authentication(s: &mut String, inp: &SystemDebugInputs) {
+    use std::fmt::Write as _;
     let auth_rejected = crate::util::key_health::auth_failing_sources(&inp.scraper_health);
     let _ = writeln!(
         s,
@@ -1556,14 +1604,21 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             i.module, i.consecutive_failures
         );
     }
+}
 
-    // ── 4c. Keyed-provider quota budgets (why a keyed module returns nothing) ──
+/// ── 4c. Keyed-provider quota budgets (why a keyed module returns nothing). ──
+fn write_provider_quotas(
+    s: &mut String,
+    provider_budgets: &[(&str, crate::util::budget::BudgetSnapshot)],
+    quota_exhausted: &[&str],
+) {
+    use std::fmt::Write as _;
     let _ = writeln!(
         s,
         "\n── PROVIDER QUOTAS ({} exhausted) ──",
         quota_exhausted.len()
     );
-    for (name, b) in &provider_budgets {
+    for (name, b) in provider_budgets {
         let flag = if b.quota_exhausted {
             " · EXHAUSTED"
         } else {
@@ -1575,10 +1630,13 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             name, b.scan_used, b.scan_cap, b.session_used, b.session_cap, flag
         );
     }
+}
 
-    // ── 4d. Key-pool health — value-free per-service status. A service with
-    //        keys but 0 ACTIVE is a silent top-source death (invisible to the
-    //        error-based health above). ──
+/// ── 4d. Key-pool health — value-free per-service status. A service with keys
+///        but 0 ACTIVE is a silent top-source death (invisible to the
+///        error-based health above). ──
+fn write_key_pool(s: &mut String, inp: &SystemDebugInputs) {
+    use std::fmt::Write as _;
     let dead_pools = inp.key_pool.iter().filter(|k| k.is_dead()).count();
     let _ = writeln!(
         s,
@@ -1613,9 +1671,12 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             dead
         );
     }
+}
 
-    // ── 4e. Storage health — the REAL on-disk DB (self-test only checks a
-    //        throwaway temp DB, so corruption is invisible everywhere else). ──
+/// ── 4e. Storage health — the REAL on-disk DB (self-test only checks a
+///        throwaway temp DB, so corruption is invisible everywhere else). ──
+fn write_storage_health(s: &mut String, inp: &SystemDebugInputs) {
+    use std::fmt::Write as _;
     let integrity_ok = inp.db_integrity.iter().all(|r| r == "ok");
     let _ = writeln!(s, "\n── STORAGE HEALTH (real on-disk DB) ──");
     if integrity_ok {
@@ -1646,8 +1707,11 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             let _ = writeln!(s, "  WAL size : (no -wal sidecar found)");
         }
     }
+}
 
-    // ── 5. Recent scans (with each failed scan's error inline) ──
+/// ── 5. Recent scans (with each failed scan's error inline). ──
+fn write_recent_scans(s: &mut String, inp: &SystemDebugInputs) {
+    use std::fmt::Write as _;
     let _ = writeln!(
         s,
         "\n── RECENT SCANS ({}, newest-first; pull /api/v1/scans/<id>/debug.txt for per-scan depth) ──",
@@ -1674,8 +1738,11 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             let _ = writeln!(s, "        error: {err}");
         }
     }
+}
 
-    // ── 6. Recent verbose logs (the in-memory TRACE ring) ──
+/// ── 6. Recent verbose logs (the in-memory TRACE ring). ──
+fn write_recent_logs(s: &mut String, inp: &SystemDebugInputs) {
+    use std::fmt::Write as _;
     let _ = writeln!(
         s,
         "\n── RECENT LOGS ({} line(s) in the ring buffer) ──",
@@ -1692,8 +1759,11 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             s.push('\n');
         }
     }
+}
 
-    // ── 7. Source-file manifest (build fingerprint — every file the binary carries) ──
+/// ── 7. Source-file manifest (build fingerprint — every file the binary carries). ──
+fn write_source_files(s: &mut String) {
+    use std::fmt::Write as _;
     let _ = writeln!(
         s,
         "\n── SOURCE FILES ({} files, {} LOC) ──",
@@ -1703,8 +1773,6 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
     for (path, lines) in crate::source_manifest::SOURCE_FILES {
         let _ = writeln!(s, "  {lines:>6}  {path}");
     }
-
-    s
 }
 
 pub(super) fn render_report(store: &Store, sid: &str, include_infra: bool) -> Result<String> {
@@ -1891,6 +1959,70 @@ pub(crate) fn extract_au_location_fix(
 #[cfg(test)]
 mod tests {
     use super::{partial_export_reason, render_raw_response_body};
+
+    /// A minimal, fully-populated [`super::SystemDebugInputs`] with empty
+    /// collections and a healthy DB — enough to drive
+    /// [`super::render_system_debug_bundle`] through every section without
+    /// touching the store or the network.
+    fn minimal_system_debug_inputs() -> super::SystemDebugInputs {
+        super::SystemDebugInputs {
+            selftest: crate::selftest::Report {
+                ok: true,
+                passed: 0,
+                warned: 0,
+                failed: 0,
+                total: 0,
+                elapsed_ms: 0,
+                version: "test".into(),
+                checks: vec![],
+            },
+            scans: vec![],
+            scraper_health: vec![],
+            scraper_events_checked: 0,
+            log_dump: String::new(),
+            log_lines: 0,
+            key_pool: vec![],
+            db_integrity: vec!["ok".to_string()],
+            wal_bytes: None,
+            update_commits_behind: Some(0),
+            update_last_checked: 0,
+            update_phase: "idle".into(),
+        }
+    }
+
+    /// Characterization guard for the system debug bundle: it is assembled
+    /// section by section, and this pins the section set AND their order so the
+    /// per-section-helper refactor cannot silently drop, reorder, or duplicate a
+    /// section. Substrings (not whole lines) so live counts in the headers don't
+    /// make the test brittle.
+    #[test]
+    fn system_debug_bundle_emits_every_section_in_canonical_order() {
+        let out = super::render_system_debug_bundle(&minimal_system_debug_inputs());
+        const SECTIONS: &[&str] = &[
+            "=== HUNTSMAN SYSTEM DEBUG BUNDLE",
+            "── DETECTED ISSUES",
+            "── UPDATE STATUS ──",
+            "── DISABLED CAPABILITIES",
+            "── VALIDATION (SELF-TEST) ──",
+            "── MODULE HEALTH",
+            "── SEARCH-ENGINE LIVENESS",
+            "── SCRAPER HEALTH",
+            "── KEY AUTHENTICATION",
+            "── PROVIDER QUOTAS",
+            "── KEY POOL",
+            "── STORAGE HEALTH (real on-disk DB) ──",
+            "── RECENT SCANS",
+            "── RECENT LOGS",
+            "── SOURCE FILES",
+        ];
+        let mut cursor = 0usize;
+        for header in SECTIONS {
+            match out[cursor..].find(header) {
+                Some(off) => cursor += off + header.len(),
+                None => panic!("section {header:?} missing or out of order in:\n{out}"),
+            }
+        }
+    }
 
     #[test]
     fn raw_response_body_masks_an_echoed_api_key_but_keeps_the_rest() {
