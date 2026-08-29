@@ -6,3 +6,4 @@ pub mod benchmark;
 pub mod gaps;
 pub mod identities;
 pub mod location;
+pub mod metrics;
