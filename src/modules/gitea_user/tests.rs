@@ -40,6 +40,24 @@ fn emits_username_and_profile_url() {
 }
 
 #[test]
+fn confirmed_username_sits_at_the_cohort_canon_confidence_tier() {
+    // OD-19 (.agent/state.json): a confirmed username from a direct,
+    // successful, single-source account-existence API lookup with no further
+    // corroboration belongs at HIGH_PLUSPLUS_PLUS, this codebase's settled
+    // tier for that evidence class (matching gitlab_user, hacker_news,
+    // lobsters, reddit_user, gaming_profile — all moved here by OD-19/OD-21).
+    // Pins the tier so it can't silently drift back; no equivalent regression
+    // test existed for this module before.
+    let user = make_user("gdev", None, None, None, None, None);
+    let ents = build_entities(user, "scan-gt-tier");
+    let u = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Username)
+        .expect("should succeed");
+    assert!((u.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
+}
+
+#[test]
 fn emits_person_from_multi_word_full_name() {
     let user = make_user("gdev", Some("Gitea Developer"), None, None, None, None);
     let ents = build_entities(user, "scan-gt-002");

@@ -790,3 +790,92 @@ fn has_nonzero_len_assert(line: &str) -> bool {
     let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
     digits.parse::<usize>().unwrap_or(0) > 0
 }
+
+/// Collects every `HUNTSMAN_*` env var a module reads via a RAW
+/// `std::env::var(...)` call — i.e. bypassing the [`ModuleContext`] key
+/// accessors. Line-based like [`collect_key_env_consts`]: `env::var(` matches
+/// both `std::env::var(` and a `use std::env` shorthand, and never
+/// `env::var_os(` (the char after `var` is `_`, not `(`). Only literal-argument
+/// reads are seen — the one shape the two sanctioned reads actually use — which
+/// is the same best-effort structural signal every scanner in this file relies
+/// on.
+fn collect_raw_huntsman_env_reads(dir: &Path, out: &mut std::collections::HashSet<String>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_raw_huntsman_env_reads(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            let content = fs::read_to_string(&path).unwrap();
+            for line in content.lines() {
+                let mut from = 0;
+                while let Some(i) = line[from..].find("env::var(") {
+                    let after = from + i + "env::var(".len();
+                    if line[after..].starts_with('"') {
+                        push_huntsman_literal(line, after, out);
+                    }
+                    from = after;
+                }
+            }
+        }
+    }
+}
+
+/// A module must never read a `HUNTSMAN_*` credential via a raw
+/// `std::env::var(...)` call: that bypasses [`ModuleContext::key`] /
+/// [`ModuleContext::key_opt`], which are the single chokepoint applying
+/// `util::keys::resolve_key`'s "what counts as a configured credential"
+/// filter (absent / blank / an unedited `insert_..._here` provisioning
+/// placeholder all resolve to "unconfigured"). A credential read raw would
+/// forward an unedited template placeholder to the provider verbatim — a
+/// confused-deputy request against a stranger's account (the IL-2 class the
+/// `key_opt` chokepoint exists to close). This is the source-structural half
+/// of that guarantee: the `key_opt` unit tests prove the accessor filters;
+/// this proves no module sidesteps the accessor.
+///
+/// The two sanctioned raw reads are NON-credential tuning knobs (no
+/// `_KEY`/`_TOKEN`/`_SECRET` suffix), allow-listed with justification.
+/// A credential MUST NOT be added here — route it through the accessors so the
+/// filter applies. The allow-list is anti-rot-checked so a knob that stops
+/// being read is removed rather than lingering as a phantom exemption.
+#[test]
+fn modules_never_read_credentials_via_raw_env() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    // Sanctioned raw `env::var("HUNTSMAN_…")` reads in src/modules — both are
+    // non-credential tuning knobs deliberately read inline rather than threaded
+    // through `ModuleContext`:
+    //   * HUNTSMAN_SEARCH_PROXY  — abn_lookup's per-request proxy override.
+    //   * HUNTSMAN_EMAIL_DOMAINS — name_intel's permutation domain list.
+    const ALLOWED_RAW_ENV: &[&str] = &["HUNTSMAN_SEARCH_PROXY", "HUNTSMAN_EMAIL_DOMAINS"];
+
+    let mut raw = std::collections::HashSet::new();
+    collect_raw_huntsman_env_reads(&root.join("src/modules"), &mut raw);
+
+    let allowed: std::collections::HashSet<&str> = ALLOWED_RAW_ENV.iter().copied().collect();
+    let mut offenders: Vec<&str> = raw
+        .iter()
+        .map(String::as_str)
+        .filter(|v| !allowed.contains(v))
+        .collect();
+    offenders.sort_unstable();
+    assert!(
+        offenders.is_empty(),
+        "module(s) read a HUNTSMAN_* env var via raw std::env::var, bypassing the \
+         ModuleContext key/key_opt accessors (and thus util::keys::resolve_key's \
+         placeholder/blank filter). Route it through ctx.key/ctx.key_opt; or, ONLY \
+         for a genuinely non-credential tuning knob, add it to ALLOWED_RAW_ENV with \
+         justification: {offenders:?}"
+    );
+
+    // Anti-rot: every allow-listed knob must still actually be read, else it is
+    // a stale exemption to delete (mirrors NOT_YET_WIRED's own staleness check).
+    let stale: Vec<&str> = ALLOWED_RAW_ENV
+        .iter()
+        .copied()
+        .filter(|k| !raw.contains(*k))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "ALLOWED_RAW_ENV lists env vars no module reads any more (remove them): {stale:?}"
+    );
+}
