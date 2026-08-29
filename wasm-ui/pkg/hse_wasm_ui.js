@@ -85,6 +85,37 @@ export function main() {
 }
 
 /**
+ * Ports `scans.js`'s `apiBudgetsPanel(s)`: the dashboard's "API Budgets"
+ * panel (SeekNow / OathNet / WiGLE's four sub-budgets + account status).
+ * @param {any} stats_js
+ * @returns {string}
+ */
+export function renderApiBudgetsPanelHtml(stats_js) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.renderApiBudgetsPanelHtml(retptr, addHeapObject(stats_js));
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        var ptr1 = r0;
+        var len1 = r1;
+        if (r3) {
+            ptr1 = 0; len1 = 0;
+            throw takeObject(r2);
+        }
+        deferred2_0 = ptr1;
+        deferred2_1 = len1;
+        return getStringFromWasm0(ptr1, len1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export5(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * Builds the "Audit" panel fragment for a `/scans/{id}/audit` response.
  * @param {any} data
  * @param {string} id
@@ -526,6 +557,39 @@ export function renderMetricsHtml(data) {
 }
 
 /**
+ * Ports `dash.js`'s `moduleHealthPanel(health)`. `health` itself may be
+ * absent (`renderDash`'s `Promise.allSettled` fallback for a failed
+ * `/api/v1/modules/health` fetch is `null`), hence `Option` at the top
+ * level rather than only on `modules`.
+ * @param {any} health_js
+ * @returns {string}
+ */
+export function renderModuleHealthPanelHtml(health_js) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.renderModuleHealthPanelHtml(retptr, addHeapObject(health_js));
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        var ptr1 = r0;
+        var len1 = r1;
+        if (r3) {
+            ptr1 = 0; len1 = 0;
+            throw takeObject(r2);
+        }
+        deferred2_0 = ptr1;
+        deferred2_1 = len1;
+        return getStringFromWasm0(ptr1, len1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export5(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * Builds the "Network" panel fragment for a `/scans/{id}/network` response.
  * @param {any} data
  * @param {string} id
@@ -641,6 +705,38 @@ export function renderScanSettingsHtml(scan_js) {
     try {
         const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
         wasm.renderScanSettingsHtml(retptr, addHeapObject(scan_js));
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        var ptr1 = r0;
+        var len1 = r1;
+        if (r3) {
+            ptr1 = 0; len1 = 0;
+            throw takeObject(r2);
+        }
+        deferred2_0 = ptr1;
+        deferred2_1 = len1;
+        return getStringFromWasm0(ptr1, len1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export5(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Ports `scans.js`'s `renderScansTable(scans)`: the reusable per-row table
+ * builder shared by `scans.js`'s own scan list (`#/scans`, including its
+ * live filter-input re-render) and `dash.js`'s "Recent Scans" panel.
+ * @param {any} scans_js
+ * @returns {string}
+ */
+export function renderScansTableHtml(scans_js) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.renderScansTableHtml(retptr, addHeapObject(scans_js));
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
         var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
@@ -1032,8 +1128,8 @@ function __wbg_get_imports() {
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 16, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
-            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_270);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 17, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
+            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_282);
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000002: function(arg0) {
@@ -1065,8 +1161,8 @@ function __wbg_get_imports() {
     };
 }
 
-function __wasm_bindgen_func_elem_270(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_270(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_282(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_282(arg0, arg1, addHeapObject(arg2));
 }
 
 function addHeapObject(obj) {

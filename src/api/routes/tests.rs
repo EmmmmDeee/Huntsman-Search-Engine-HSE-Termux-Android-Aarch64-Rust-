@@ -242,7 +242,10 @@ use super::*;
         );
         let dash = app_file("js/views/dash.js");
         assert!(
-            dash.contains("moduleHealthPanel("),
+            // Ported to wasm-ui/src/views/dash.rs (renderModuleHealthPanelHtml,
+            // called here via /static/hse_wasm_ui.js) — the JS-side call site
+            // is the string that must keep wiring the fetched data in.
+            dash.contains("renderModuleHealthPanelHtml("),
             "the Dashboard must render the module-health panel"
         );
     }

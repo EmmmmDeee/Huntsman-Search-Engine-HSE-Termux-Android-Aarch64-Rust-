@@ -71,8 +71,18 @@
 <div id="browse-table-full-host">(full-case host not yet populated)</div>
 <div id="browse-table-other-host">(other-kind-case host not yet populated)</div>
 <div id="browse-table-empty-host">(empty-case host not yet populated)</div>
+<p id="budgets-proof">API budgets panel render not yet run</p>
+<div id="budgets-full-host">(full-case host not yet populated)</div>
+<div id="budgets-empty-host">(empty-case host not yet populated)</div>
+<div id="budgets-unverified-host">(unverified-case host not yet populated)</div>
+<p id="module-health-proof">module health panel render not yet run</p>
+<div id="module-health-full-host">(with-modules-case host not yet populated)</div>
+<div id="module-health-null-host">(null-case host not yet populated)</div>
+<p id="scans-table-proof">scans table render not yet run</p>
+<div id="scans-table-full-host">(full-case host not yet populated)</div>
+<div id="scans-table-empty-host">(empty-case host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, isNonCorroboratingSource, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml, renderCorrCardHtml, renderCorrMembersHtml, renderExposureHtml, renderScanSettingsHtml, renderPathResultHtml, renderBrowseTableHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, isNonCorroboratingSource, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml, renderCorrCardHtml, renderCorrMembersHtml, renderExposureHtml, renderScanSettingsHtml, renderPathResultHtml, renderBrowseTableHtml, renderApiBudgetsPanelHtml, renderModuleHealthPanelHtml, renderScansTableHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -1031,6 +1041,132 @@
 
   document.getElementById('browse-table-proof').textContent =
     `full=${browseFullOk}, other=${browseOtherOk}, empty=${browseEmptyOk}`;
+
+  // Exercises views::scans::render_api_budgets_panel_html. Covers: the
+  // Math.round-not-truncating percentage (2/3 -> 67%, not floor(200/3)=66),
+  // a zero-cap budget's label collapsing to just the used count (no " / 0"),
+  // the exhausted/red+FULL and high/amber and normal/green color bands, all
+  // three verified-badge states independently, and the {} whole-stats
+  // fallback (every provider missing -> "n/a" everywhere).
+  const budgetsFullHtml = renderApiBudgetsPanelHtml({
+    seeknow: { scan_used: 0, scan_cap: 0, session_used: 2, session_cap: 3, quota_exhausted: false },
+    oathnet: { scan_used: 0, scan_cap: 0, session_used: 85, session_cap: 100, quota_exhausted: false },
+    wigle: {
+      geo: { scan_used: 0, scan_cap: 0, session_used: 5, session_cap: 5, quota_exhausted: true },
+      bssid: { scan_used: 0, scan_cap: 0, session_used: 0, session_cap: 0, quota_exhausted: false },
+      cell: { scan_used: 0, scan_cap: 0, session_used: 10, session_cap: 20, quota_exhausted: false },
+      bluetooth: { scan_used: 0, scan_cap: 0, session_used: 0, session_cap: 0, quota_exhausted: false },
+      account: { verified: true, user: "op", last_polled_ts: 1700000000 },
+    },
+  });
+  document.getElementById('budgets-full-host').innerHTML = budgetsFullHtml;
+  const budgetsFullOk = budgetsFullHtml.includes('2 / 3')
+    && budgetsFullHtml.includes('width:67%')
+    && budgetsFullHtml.includes('background:#3c763d')
+    && budgetsFullHtml.includes('85 / 100')
+    && budgetsFullHtml.includes('width:85%;height:100%;background:#8a6d3b')
+    && budgetsFullHtml.includes('width:100%;height:100%;background:#a94442')
+    && budgetsFullHtml.includes('FULL')
+    && budgetsFullHtml.includes('10 / 20')
+    && budgetsFullHtml.includes('width:50%')
+    && budgetsFullHtml.includes('font-size:11px;min-width:64px;text-align:right">0</span>')
+    && budgetsFullHtml.includes('WiGLE · WiFi geo')
+    && budgetsFullHtml.includes('WiGLE · bluetooth')
+    && budgetsFullHtml.includes('account verified')
+    && !budgetsFullHtml.includes('account UNVERIFIED')
+    && budgetsFullHtml.includes('≥2 sources')
+    && budgetsFullHtml.includes("subject's real location");
+
+  const budgetsEmptyHtml = renderApiBudgetsPanelHtml({});
+  document.getElementById('budgets-empty-host').innerHTML = budgetsEmptyHtml;
+  const budgetsEmptyOk = (budgetsEmptyHtml.match(/n\/a/g) || []).length === 6
+    && budgetsEmptyHtml.includes('account status unknown')
+    && !budgetsEmptyHtml.includes('account verified')
+    && !budgetsEmptyHtml.includes('account UNVERIFIED');
+
+  const budgetsUnverifiedHtml = renderApiBudgetsPanelHtml({ wigle: { account: { verified: false } } });
+  document.getElementById('budgets-unverified-host').innerHTML = budgetsUnverifiedHtml;
+  const budgetsUnverifiedOk = budgetsUnverifiedHtml.includes('account UNVERIFIED')
+    && budgetsUnverifiedHtml.includes('wigle.net');
+
+  document.getElementById('budgets-proof').textContent =
+    `full=${budgetsFullOk}, empty=${budgetsEmptyOk}, unverified=${budgetsUnverifiedOk}`;
+
+  // Exercises views::dash::render_module_health_panel_html. Covers: an
+  // explicit `last_success_at: 0` and a missing/`null` one both falling to
+  // "never this process" (not fmt_date's own, different zero-timestamp
+  // em-dash branch), name escaping, the failure-streak count, and the
+  // whole-`health`-argument-is-null fallback (a failed `/api/v1/modules/
+  // health` fetch in `renderDash`'s `Promise.allSettled`).
+  const moduleHealthFullHtml = renderModuleHealthPanelHtml({
+    modules: [
+      { name: "seon", consecutive_failures: 5, last_success_at: 1700000000 },
+      { name: "<script>evil<\/script>", consecutive_failures: 1, last_success_at: null },
+      { name: "niamonx", consecutive_failures: 2, last_success_at: 0 },
+    ],
+  });
+  document.getElementById('module-health-full-host').innerHTML = moduleHealthFullHtml;
+  const moduleHealthFullOk = moduleHealthFullHtml.includes('3 with a failure streak')
+    && moduleHealthFullHtml.includes('<span class="label label-warning">5</span>')
+    && moduleHealthFullHtml.includes('<span class="label label-warning">1</span>')
+    && moduleHealthFullHtml.includes('<span class="label label-warning">2</span>')
+    && moduleHealthFullHtml.includes('&lt;script&gt;evil&lt;/script&gt;')
+    && !moduleHealthFullHtml.includes('<script>evil')
+    && (moduleHealthFullHtml.match(/never this process/g) || []).length === 2;
+
+  const moduleHealthNullHtml = renderModuleHealthPanelHtml(null);
+  document.getElementById('module-health-null-host').innerHTML = moduleHealthNullHtml;
+  const moduleHealthNullOk = moduleHealthNullHtml.includes('No modules currently show a failure streak')
+    && moduleHealthNullHtml.includes('0 with a failure streak');
+
+  document.getElementById('module-health-proof').textContent =
+    `full=${moduleHealthFullOk}, null=${moduleHealthNullOk}`;
+
+  // Exercises views::scans::render_scans_table_html. Covers: a finished
+  // scan's elapsed-time math (3661s -> "1h 1m"), a missing `target` falling
+  // to the em-dash kind pill and the scan's own id as the display value, the
+  // running/pending -> Stop-button vs. otherwise -> Rescan-button branch,
+  // every status-pill class, the zero-timestamp `started_at` em-dash, a
+  // zero `entity_count` still rendering "0" (not blank), HTML-escaping a
+  // target value, and the CSV/log download URLs. `encodeURIComponent`
+  // parity isn't re-tested here since every id used is pure lowercase hex,
+  // which round-trips unchanged either way (see `scan_row_html`'s own doc
+  // comment).
+  const scansFullHtml = renderScansTableHtml([
+    { id: 'abc123deadbeef', target: { kind: 'domain', value: 'example.com' }, status: 'complete', started_at: 1700000000, finished_at: 1700003661, entity_count: 42 },
+    { id: 'run1', target: null, status: 'running', started_at: 1700000000, finished_at: null, entity_count: 3 },
+    { id: 'xss1', target: { kind: 'username', value: "<script>evil<\/script>" }, status: 'pending', started_at: 0, finished_at: null, entity_count: 0 },
+    { id: 'ab1', target: { kind: 'ip_address', value: '1.2.3.4' }, status: 'aborted', started_at: 1, finished_at: 2, entity_count: 5 },
+    { id: 'fl1', target: { kind: 'phone', value: '+1' }, status: 'failed', started_at: 1, finished_at: null, entity_count: 0 },
+  ]);
+  document.getElementById('scans-table-full-host').innerHTML = scansFullHtml;
+  const scansFullOk = scansFullHtml.includes('1h 1m')
+    && scansFullHtml.includes('/api/v1/scans/abc123deadbeef/entities.csv')
+    && scansFullHtml.includes('/api/v1/scans/abc123deadbeef/events.log')
+    && scansFullHtml.includes('kind-pill k-—')
+    && scansFullHtml.includes('>run1<')
+    && scansFullHtml.includes('data-cancel="run1"')
+    && !scansFullHtml.includes('data-rerun="run1"')
+    && scansFullHtml.includes('data-cancel="xss1"')
+    && scansFullHtml.includes('&lt;script&gt;evil&lt;/script&gt;')
+    && !scansFullHtml.includes('<script>evil')
+    && scansFullHtml.includes('status-pill s-complete')
+    && scansFullHtml.includes('status-pill s-running')
+    && scansFullHtml.includes('status-pill s-pending')
+    && scansFullHtml.includes('status-pill s-aborted')
+    && scansFullHtml.includes('status-pill s-failed')
+    && scansFullHtml.includes('data-rerun="ab1"')
+    && scansFullHtml.includes('data-rerun="fl1"')
+    && scansFullHtml.includes('text-right">0</td>');
+
+  const scansEmptyHtml = renderScansTableHtml([]);
+  document.getElementById('scans-table-empty-host').innerHTML = scansEmptyHtml;
+  const scansEmptyOk = scansEmptyHtml.includes('No scans yet')
+    && scansEmptyHtml.includes('Run Scan Now')
+    && !scansEmptyHtml.includes('<table');
+
+  document.getElementById('scans-table-proof').textContent =
+    `full=${scansFullOk}, empty=${scansEmptyOk}`;
 </script>
 </body>
 </html>
