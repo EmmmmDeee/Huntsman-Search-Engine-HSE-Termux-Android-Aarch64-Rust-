@@ -55,6 +55,32 @@ export function main() {
 }
 
 /**
+ * Builds the "Benchmark scorecard" panel fragment for a
+ * `/scans/{id}/benchmark` response — unlike `scan_info::identities`, this
+ * view has no "nothing to show" case (a scan always has a scorecard).
+ * @param {any} data
+ * @returns {string}
+ */
+export function renderBenchmarkHtml(data) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ret = wasm.renderBenchmarkHtml(data);
+        var ptr1 = ret[0];
+        var len1 = ret[1];
+        if (ret[3]) {
+            ptr1 = 0; len1 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred2_0 = ptr1;
+        deferred2_1 = len1;
+        return getStringFromWasm0(ptr1, len1);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * Builds the "Resolved identities" panel fragment for a `/scans/{id}/identities`
  * response, or `""` when there is nothing to show (no coreferences) — the
  * caller assigns the result straight to `host.innerHTML`, exactly like the
@@ -349,7 +375,7 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 31, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 38, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
             const ret = makeClosure(arg0, arg1, wasm_bindgen_48c654dadb7de768___convert__closures_____invoke___web_sys_e88ace82c6e22ebf___features__gen_Event__Event______true_);
             return ret;
         },
