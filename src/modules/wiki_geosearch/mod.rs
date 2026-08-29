@@ -73,6 +73,14 @@ fn build_entities(query_coord: &str, places: &[GeoPlace], scan_id: &str) -> Vec<
         let (Some(lat), Some(lon)) = (p.lat, p.lon) else {
             continue;
         };
+        // The API returns raw floats with no accuracy/radius metadata, so the
+        // plain range + null-island check is the right gate here (unlike a
+        // radio-geolocation provider, there's no confidence signal to weigh).
+        // Every other geo-emitting module converged on this validator after a
+        // recurring null-island/out-of-range defect class; this site had not.
+        if !crate::util::geo::is_valid_coords(lat, lon) {
+            continue;
+        }
         let title = match p.title.as_deref().filter(|t| !t.trim().is_empty()) {
             Some(t) => t,
             None => continue,

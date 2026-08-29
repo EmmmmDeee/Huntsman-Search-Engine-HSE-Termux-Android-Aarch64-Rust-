@@ -103,6 +103,15 @@ impl Module for FullContact {
         ModuleCost::KeyGated
     }
 
+    fn cache_ttl_secs(&self) -> u64 {
+        // A person's name/employer/location/social enrichment is stable within
+        // a day — the same paid-lookup convention dehashed/hibp/niamonx/fofa
+        // already apply, so a repeat scan of the same email/phone replays for
+        // free within the window instead of re-spending this module's paid
+        // quota.
+        86_400
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email | TargetKind::Phone)
     }

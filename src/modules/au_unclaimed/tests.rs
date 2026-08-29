@@ -213,6 +213,53 @@ mod qld {
     }
 
     #[test]
+    fn given_name_surname_collision_is_not_a_family_candidate() {
+        // Real-scan reproduction (seed "Onur Ada" → derived surname query
+        // "Ada"): "ADA DRINKWATER" clears `owner_matches_query` (it shares the
+        // token "Ada") and is not `exact` (it has no "Onur"), so — before this
+        // fix — it was tagged `family-candidate` and Ada Drinkwater's address
+        // and unclaimed-money record entered the subject's dossier. But
+        // `owner_person_names` parses "ADA DRINKWATER" to given name "Ada",
+        // surname "Drinkwater" — the shared token is in the GIVEN-name
+        // position, not the surname position, so no family relationship is
+        // actually indicated. "Ada" happens to be both a common English given
+        // name and the seed's (Turkish) surname.
+        //
+        // A genuine relative — "FLANNAN DRINKWATER" — still survives: the
+        // query "Ada" would not match him at all here, so pair him with a
+        // second record whose owner's surname genuinely is "Ada" to confirm
+        // the positive path stays intact alongside the negative one.
+        let raw = r#"{"result":{"total":2,"records":[
+            {"_id":1,"Owner":"ADA DRINKWATER","Amount":"419.70","PCode":"2903"},
+            {"_id":2,"Owner":"MEHMET ADA","Amount":"88.10","PCode":"2000"}
+        ]}}"#;
+        let recs = serde_json::from_str::<CkanResp>(raw)
+            .expect("should succeed")
+            .result
+            .expect("should succeed")
+            .records;
+        let ents = records_to_entities(&recs, 2, "Onur Ada", "Ada", true, "s");
+
+        assert!(
+            !ents.iter().any(|e| e.value.contains("Drinkwater")),
+            "a given-name/surname token collision must not attribute an \
+             unrelated person's address or record: {:?}",
+            ents.iter().map(|e| &e.value).collect::<Vec<_>>()
+        );
+        assert!(
+            !ents.iter().any(|e| e.value.contains("2903")),
+            "Ada Drinkwater's postcode must not leak into the dossier either"
+        );
+        assert!(
+            ents.iter().any(|e| e.value.contains("Mehmet Ada")
+                || e.value.to_uppercase().contains("MEHMET ADA")),
+            "a genuine surname match (Ada is the SURNAME position here) must \
+             still be emitted: {:?}",
+            ents.iter().map(|e| &e.value).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn bare_initial_does_not_license_an_unrelated_owner_match() {
         // A single-letter token ("M") must not match an unrelated "M Smith" —
         // MIN_QUERY_TOKEN keeps initials from re-opening the cross-field hole.

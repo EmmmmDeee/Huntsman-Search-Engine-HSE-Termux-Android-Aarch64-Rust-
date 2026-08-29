@@ -8,7 +8,7 @@
 **All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
 SpiderFoot-inspired breadth without the daemon or the footprint.**
 
-Pure-Rust OSINT / GEOINT platform with **175 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **188 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 dark-console Web UI, zero native dependencies, keyless-first.
 
@@ -82,6 +82,14 @@ so keys never leave the device).
 
 > That's the whole install: **one command, then `hse serve`, then open
 > `http://127.0.0.1:8080` in Chrome.** Everything below is reference detail.
+
+> **On Termux aarch64 the installer also sets up on-device AI.** It installs
+> Ollama from the official Termux package, pulls a Qwen model sized to the
+> device's RAM, and arms `hse analyze` — so a scan can be summarised on the
+> phone with nothing leaving it. Opt out with `HSE_WITH_AI=0`; see
+> [AI-Daemon Scan Analysis](#ai-daemon-scan-analysis-opt-in). No 32-bit `arm`
+> ollama package exists, so armv7 devices skip this step with a message and
+> everything else works unchanged.
 
 > **Web & API scans are as thorough as the CLI.** A scan launched from the
 > Chrome SPA's **New Scan** wizard, or via `POST /api/v1/scans` with `options`
@@ -160,6 +168,34 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 > pkg install -y git rust binutils clang openssh && git clone --depth 1 git@github.com:EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git ~/hse && cd ~/hse && cargo build --release --locked && cp target/release/hse $PREFIX/bin/
 > ```
 
+> **Seeing "crate `std` required to be available in rlib format, but was not
+> found in this form" (or the same for `core`/`alloc`/…)?** A broken/partial
+> Termux `rust` package shipped libstd as a dynamic library only, missing the
+> static `.rlib` every build script and proc-macro needs to link against —
+> library crates still compile, so only the build step fails. Not an HSE bug.
+> Fix:
+> ```bash
+> pkg reinstall rust
+> ```
+> then retry the build above. The one-line installer already detects and
+> self-heals this automatically before it starts building.
+
+---
+
+## Deploy (Railway)
+
+```sh
+railway up
+```
+
+Railway builds the repo's `Dockerfile` automatically. Before your first
+deploy: attach a **Volume at `/data`** (state doesn't survive a redeploy
+without one) and set `HSE_AUTH_TOKEN` (Railway binds a public, non-loopback
+address, which HSE gates behind a bearer token). See
+[`docs/RAILWAY.md`](docs/RAILWAY.md) for the full walkthrough, what's already
+wired up (health check, `$PORT` binding, volume-ownership handling), and the
+single-instance constraint (local SQLite — do not scale replicas above 1).
+
 ---
 
 ## Quick Start
@@ -168,9 +204,11 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 175 modules
+hse modules                                                 # list all 188 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
+hse keys status                                             # multi-key pool: what's loaded, per source
+hse-ai status                                               # local model server (Termux aarch64)
 hse query "melbourne coworking spaces"                      # general web search across the free engines
 hse query "acme.example" --dark                             # dark-web EXPOSURE: onion pages mentioning an asset
 hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
@@ -236,7 +274,7 @@ the onion address itself.
 
 ---
 
-## Module Overview (175 modules — 136 free, 39 key-gated/paid)
+## Module Overview (188 modules — 142 free, 46 key-gated/paid)
 
 > A curated highlight of the modules below (not the full list). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run
@@ -314,13 +352,27 @@ design and every dependency underneath it are HSE's own:
 - **Settings** — API key management with validation
 - **Dark mode** by default, light mode opt-out toggle
 
-Binds to `127.0.0.1:8080` by default — no LAN exposure. This is the
-operator-followed default, not an enforced restriction: `--bind`/`HSE_BIND`
-accept any address, and binding non-loopback exposes scan/live/radar
-**triggering** (not just viewing results) to anyone who can reach that
-address, with no authentication — only key-writing (`PUT /settings/keys`)
-stays loopback-only regardless of bind. Use 127.0.0.1 unless you specifically
-need LAN access and understand that trade-off.
+Binds to `127.0.0.1:8080` by default — no LAN exposure, and no authentication
+to configure, since only this device can connect.
+
+`--bind`/`HSE_BIND` accept any address. Binding a **non-loopback** address
+would otherwise expose scan/live/radar **triggering** (not just viewing
+results) to anyone who can reach it, so HSE requires a bearer token on every
+request for such a bind. Supply one with `--auth-token`/`HSE_AUTH_TOKEN`, or
+let HSE mint a 256-bit token and print it once at startup with a
+ready-to-open URL:
+
+```
+hse serve --bind 0.0.0.0:8080
+#   http://0.0.0.0:8080/?t=<token>
+```
+
+Opening that link sets an `HttpOnly; SameSite=Strict` session cookie and drops
+the token from the address bar; scripts send `Authorization: Bearer <token>`
+instead. The token is disclosed only on that startup line — never in a log, an
+API response, or an export. `--allow-unauthenticated` restores the old
+open-LAN behaviour for a deliberately public deployment. Key-writing
+(`PUT /settings/keys`) stays loopback-only regardless of bind, as before.
 
 ---
 
@@ -433,20 +485,82 @@ error, never a silent no-op.
 
 > **Complete integration guide:** See [`docs/ALL_IN_ONE_SETUP.md`](docs/ALL_IN_ONE_SETUP.md) for an end-to-end walkthrough combining HSE installation, SeekNow authentication, Ollama setup across all platforms (Linux/Termux/macOS/Docker), model selection, and Web UI launch — with comprehensive troubleshooting for all common issues.
 
+### Installed for you on Termux aarch64
+
+`install.sh` now sets this up end to end: it installs Ollama from the official
+Termux package (`pkg install ollama` — an **aarch64-only** package; there is no
+32-bit `arm` build), picks a model sized to the device's RAM, pulls it, and
+arms `feature.ai_daemon`. Nothing leaves the phone.
+
+| Device RAM | Model pulled | On-disk |
+|---|---|---|
+| ≥ 7.5 GB | `qwen2.5:7b` | ~5.2 GB |
+| ≥ 4.5 GB | `qwen2.5:3b` | ~2.2 GB |
+| ≥ 2.8 GB | `qwen2.5:1.5b` | ~1.2 GB |
+| below that | *skipped, with a message* | — |
+
+Sizing is deliberate: a model too large for the device does not merely run
+slowly, it gets killed by Android's low-memory killer, which looks to you like
+Ollama randomly dying. Override with `HSE_AI_MODEL=…`, or opt out entirely with
+`HSE_WITH_AI=0`.
+
 ```bash
-# 1. Install and start Ollama separately (not installed by HSE), then pull a model:
-ollama pull qwen2.5:7b
+hse-ai status          # is the model server up? which model?
+hse-ai start           # start it, holding the same wake-lock as hse-bg
+hse-ai pull qwen2.5:3b # fetch a different model
+hse-ai stop            # free the RAM
 
-# 2. Arm the feature (off by default):
-hse config feature.ai_daemon on
+hse scan -k name -v "Jane Roe"
+hse analyze --scan-id latest        # model comes from ~/.huntsman.env
+```
 
-# 3a. One-shot, on-demand analysis of a stored scan:
+`hse-ai` shares the refcounted wake-lock with `hse-bg`, because Android kills
+the model server the moment the screen turns off and a half-killed server is
+indistinguishable from a hung one.
+
+### Manual setup (other platforms)
+
+```bash
+ollama pull qwen2.5:7b              # install Ollama yourself
+hse config feature.ai_daemon on     # arm the feature (off by default)
 hse analyze --scan-id latest --model qwen2.5:7b
 
-# 3b. Or run the background poller, which analyzes newly-completed scans on an
-#     interval (HUNTSMAN_AI_POLL_INTERVAL_SECS, default 60s, floor 15s):
+# Or the background poller, which analyzes newly-completed scans on an
+# interval (HUNTSMAN_AI_POLL_INTERVAL_SECS, default 60s, floor 15s):
 HUNTSMAN_OLLAMA_MODEL=qwen2.5:7b hse-ai-daemon
 ```
+
+### What the model is and is not allowed to assert
+
+A local model is a fallible narrator, so its output is checked rather than
+trusted:
+
+- **Every finding must cite the entities it rests on.** Citations are resolved
+  against the scan's actual entities; a finding citing anything that does not
+  resolve is discarded whole — a claim citing one real and one invented entity
+  is not partly true. If a model returns findings and *none* ground, that is a
+  surfaced error, never a silently empty "clean scan".
+- **Severity is capped by the evidence under it.** A finding can never be
+  scored more severe than its strongest cited entity is confident. This can
+  only lower a score.
+- **Identity expansion defaults to exclusion.** Before a discovered username or
+  email is expanded as "also the subject", it is triaged; only an affirmative,
+  grounded, high-confidence verdict earns expansion. A wrong exclusion costs
+  one lead — a wrong inclusion spends a scan round collecting an uninvolved
+  person's data.
+- **What can be decided exactly is never asked of a model.** An entity whose
+  value matches the subject's own name is settled by string comparison.
+
+This matters concretely: probed before these checks existed, a well-formed
+model response asserting a home address and a cleartext credential — neither
+present anywhere in the scan — parsed cleanly and would have been stored as
+critical exposure. For people-centric OSINT the subject is a real person, so a
+fabricated address is a physical-safety claim.
+
+> **Scope note.** These checks were validated against `qwen2.5:3b` on x86_64.
+> The Termux/Android path is wired up but has not been run on-device here; a
+> 3B model was also observed making poor identity judgements, which is why the
+> most important case is decided without a model at all.
 
 `HUNTSMAN_OLLAMA_URL` (default `http://127.0.0.1:11434`) and
 `HUNTSMAN_OLLAMA_TIMEOUT_MS` (default 120000, floor 1000) tune both entry
@@ -454,7 +568,7 @@ points. See `src/ai/` for the implementation and `src/lib.rs`'s `Runtime
 AI-independence` invariant for why this layer exists as a narrow, isolated
 exception rather than a change to the deterministic core.
 
-Skipping step 2 or omitting a model produces a clear startup error
+Skipping the arming step or omitting a model produces a clear startup error
 (`feature.ai_daemon is off` / `no Ollama model configured`), never a silent
 no-op — and `hse doctor` reports both preconditions (armed? model reachable
 and pulled?) in one place before you run either entry point for the first
@@ -537,8 +651,10 @@ diagnostic bundle") for the complete engine state in one file.
 
 | Document | Content |
 |----------|---------|
-| [`docs/INSTALL.md`](docs/INSTALL.md) | All install paths + Termux quirks |
-| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Common install/runtime errors + fixes |
+| [`docs/INSTALL.md`](docs/INSTALL.md) | All install paths + Termux quirks + install/runtime troubleshooting |
+| [`docs/RAILWAY.md`](docs/RAILWAY.md) | Deploying to Railway — Volume setup, `HSE_AUTH_TOKEN`, health check, single-instance constraint |
+| [`docs/AUTONOMY.md`](docs/AUTONOMY.md) | Running HSE unattended: `hse-bg`/`hse-watch`, boot persistence, scheduled sweeps |
+| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | SeekNow API error troubleshooting (connectivity, auth, budget, rate limits) — for install/runtime issues see `docs/INSTALL.md`'s own Troubleshooting section instead |
 | [`docs/OSINT_API_REFERENCE.md`](docs/OSINT_API_REFERENCE.md) | External OSINT-provider API reference (free tiers, key shapes, integration status) |
 | [`docs/SEEKNOW_SETUP.md`](docs/SEEKNOW_SETUP.md) | SeekNow (see-know.ru) API setup + full endpoint reference |
 | [`docs/SEEKNOW_WEB_AUTOMATION.md`](docs/SEEKNOW_WEB_AUTOMATION.md) | SeekNow web automation, Turnstile analysis, manual login workflow, browser automation framework evaluation |

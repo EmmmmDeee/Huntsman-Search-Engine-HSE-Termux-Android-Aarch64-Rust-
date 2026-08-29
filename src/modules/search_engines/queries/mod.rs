@@ -387,9 +387,14 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
             let domain = v.rsplit_once('@').map_or("", |(_, d)| d);
             let local = v.split('@').next().unwrap_or("");
             let mut q = vec![format!("\"{v}\""), format!("\"{local}\"")];
-            if !domain.is_empty()
-                && !["gmail.com", "yahoo.com", "hotmail.com", "outlook.com"].contains(&domain)
-            {
+            // The canonical freemail list (also used by email_parse, disposable_check,
+            // proxycurl, employer_pivot, org.rs — and this module's own build.rs a few
+            // files over) recognises 40+ providers including country variants
+            // (icloud.com, protonmail.com, gmx.com, yahoo.co.uk, hotmail.co.uk, …); this
+            // local 4-entry list missed all of them, so e.g. an @icloud.com or
+            // @yahoo.co.uk target still spent a query-budget slot on the noisy
+            // employer-signal dork the exclusion exists to skip for a personal mailbox.
+            if !domain.is_empty() && !crate::util::domains::is_freemail(&domain.to_lowercase()) {
                 q.push(format!(
                     "\"{v}\" site:linkedin.com OR site:github.com OR site:facebook.com"
                 ));

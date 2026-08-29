@@ -194,7 +194,7 @@ pub fn geo_npv(kind: TargetKind, has_paid_keys: bool) -> f64 {
         TargetKind::Asn => 10.5,
         TargetKind::Url => 12.0,
         TargetKind::Organisation => 11.0,
-        TargetKind::Coordinates => 8.5,
+        TargetKind::Coordinates => 18.0,
         TargetKind::AbnAcn => 7.0,
         TargetKind::ApiKey => 3.8,
         // A wallet address carries no geolocation signal of its own.

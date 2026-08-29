@@ -177,32 +177,32 @@ fn build_entities(r: &NvResp, scan_id: &str) -> Vec<Entity> {
     out.push(e);
     if let Some((lat, lon)) = crate::util::city_coords::city_coords(&place) {
         let coord_val = format!("{lat:.4},{lon:.4}");
-        let mut c = Entity::new(
-            EntityKind::Coordinates,
-            &coord_val,
-            confidence::LOW_MEDIUM,
-            scan_id,
+        out.push(
+            Entity::builder(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::LOW_MEDIUM,
+                scan_id,
+            )
+            .tags([SRC, "addr-derived", "geoint", "phone-region"])
+            .evidence(ev)
+            .build(),
         );
-        c.tag(SRC);
-        c.tag("addr-derived");
-        c.tag("geoint");
-        c.tag("phone-region");
-        c.add_evidence(ev);
-        out.push(c);
     }
 
     // Carrier → Organisation pivot (same pattern as ip2location ISP extraction).
     if let Some(carrier) = r.carrier.as_deref().map(str::trim).filter(|c| c.len() >= 2) {
-        let mut oe = Entity::new(
-            EntityKind::Organisation,
-            carrier,
-            confidence::MEDIUM_PLUS,
-            scan_id,
+        out.push(
+            Entity::builder(
+                EntityKind::Organisation,
+                carrier,
+                confidence::MEDIUM_PLUS,
+                scan_id,
+            )
+            .tags([SRC, "carrier"])
+            .evidence(Evidence::new(SRC, format!("Phone carrier: {carrier}")))
+            .build(),
         );
-        oe.tag(SRC);
-        oe.tag("carrier");
-        oe.add_evidence(Evidence::new(SRC, format!("Phone carrier: {carrier}")));
-        out.push(oe);
     }
 
     out

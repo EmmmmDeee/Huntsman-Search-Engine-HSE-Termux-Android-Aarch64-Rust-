@@ -31,6 +31,37 @@ path = "src/main.rs"
 name = "hse-ai-daemon"
 path = "src/bin/hse_ai_daemon/main.rs"
 
+# Dev/build tooling: regenerates `src/util/oui/ieee.bin` (the packed IEEE
+# MA-L vendor registry `src/util/oui/ieee.rs` binary-searches at runtime)
+# from the live registry. A one-off, occasionally-run offline tool, not scan
+# engine code — same "separate binary, not an `hse` subcommand" reasoning as
+# `hse-ai-daemon` above. Replaces the former `scripts/gen_oui.py`, closing
+# that accepted non-Rust exception in `docs/RUST_MIGRATION_AUDIT_2026-08-27.md`.
+#
+# Deliberately UNGATED, for the identical reason `hse-ai-daemon` is: every
+# dependency it needs (csv/reqwest/sha2/clap/tokio) is already unconditional
+# for the `hse` binary itself, so a `required-features` gate would add
+# `--features` friction for zero dependency-weight benefit.
+[[bin]]
+name = "gen-oui"
+path = "src/bin/gen_oui/main.rs"
+
+# Dev-time architecture inventory: audits the module dependency graph from a
+# running `hse serve` (or a captured `modules.json`/`graph.json` pair) for
+# consolidation and correctness risks — orphan/ungrounded kinds, sole
+# producers, duplicate capability signatures, fan-out blast radius. Not scan
+# engine code; same "separate binary, not an `hse` subcommand" reasoning as
+# `hse-ai-daemon`/`gen-oui` above. Replaces the former
+# `scripts/architecture_audit.py`, closing that accepted non-Rust exception in
+# `docs/RUST_MIGRATION_AUDIT_2026-08-27.md`.
+#
+# Deliberately UNGATED, for the identical reason `gen-oui` is: every
+# dependency it needs (reqwest/serde_json/clap/tokio) is already unconditional
+# for the `hse` binary itself.
+[[bin]]
+name = "architecture-audit"
+path = "src/bin/architecture_audit/main.rs"
+
 # Supply-chain gate: fails when a crates.io dependency in Cargo.lock was
 # published more recently than a configured cooldown window (a compromised
 # publish is most likely to slip through unnoticed in its first few days).

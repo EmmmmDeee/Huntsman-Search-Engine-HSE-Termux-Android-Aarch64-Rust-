@@ -335,6 +335,7 @@ impl Module for SocialProbe {
 
         let mut result = ModuleResult::new();
         let mut found_count = 0u32;
+        let mut verified_count = 0u32;
         let mut checked_count = 0u32;
         // Probes that returned no definitive answer — `fetch_with_status` code 0,
         // i.e. curl could not connect / was blocked / had no egress — as distinct
@@ -374,11 +375,28 @@ impl Module for SocialProbe {
             )
             .await;
 
+            // A probe that did not answer must not be counted as a definitive
+            // "no such handle here".
+            //
             // Code 0 = curl gave no definitive answer (couldn't connect / blocked
-            // / no egress). It can never be a hit (`exists_codes` are real HTTP
-            // statuses), so count it as inconclusive rather than letting it fall
-            // through as a definitive not-found.
-            if code == 0 {
+            // / no egress); it can never be a hit, since `exists_codes` are real
+            // HTTP statuses, and the classifier maps it to `Error` like any other
+            // non-answer. That case was already handled.
+            //
+            // A real-but-refusing status needs the same treatment and did not get
+            // it: a 403 WAF challenge, a 429 throttle or a 5xx outage is not in
+            // `exists_codes`, so it silently fell through as a *definitive*
+            // "no such handle here" and never reached `inconclusive_sweep`. Only
+            // curl-level failure was counted, so a platform that answers every
+            // probe with a challenge page looked like a confirmed absence.
+            // `classify_non_matching_status` is the same policy the two
+            // `util::probe` enumerators use.
+            let refused = !platform.exists_codes.contains(&code)
+                && matches!(
+                    crate::util::probe::classify_non_matching_status(code),
+                    crate::util::probe::ProbeResult::Error
+                );
+            if refused {
                 inconclusive_probes += 1;
             }
 
@@ -390,6 +408,9 @@ impl Module for SocialProbe {
                 found_platforms.push(platform.name);
 
                 let (confidence, verified) = detection_strength(platform);
+                if verified {
+                    verified_count += 1;
+                }
 
                 let mut entity = Entity::new(EntityKind::Url, &url, confidence, &ctx.scan_id);
                 entity.tag("social-profile");
@@ -469,6 +490,7 @@ impl Module for SocialProbe {
         if let Some(summary) = build_target_summary(
             target,
             found_count,
+            verified_count,
             checked_count,
             &found_platforms,
             &ctx.scan_id,
@@ -522,6 +544,7 @@ pub(super) fn should_echo_target(found_count: u32) -> bool {
 pub(super) fn build_target_summary(
     target: &Target,
     found_count: u32,
+    verified_count: u32,
     checked_count: u32,
     found_platforms: &[&str],
     scan_id: &str,
@@ -529,7 +552,11 @@ pub(super) fn build_target_summary(
     if !should_echo_target(found_count) {
         return None;
     }
-    let mut summary = target.to_entity(0.82, scan_id);
+    // VERY_HIGH_PLUSPLUS matches the identical "independently confirmed across
+    // platforms" claim its structural siblings' summaries use
+    // (username_search, streaming_probe) — a bare 0.82 scored the same claim
+    // a full tier lower for no documented reason.
+    let mut summary = target.to_entity(confidence::VERY_HIGH_PLUSPLUS, scan_id);
     summary.tag("social-probed");
     if found_count >= 3 {
         summary.tag("multi-platform");
@@ -551,7 +578,18 @@ pub(super) fn build_target_summary(
         // being tagged `multi-platform` here. Kept alongside `found` (its own
         // profiles-checked convention) rather than replacing it.
         .with_attr("platforms_count", found_platforms.len().to_string())
-        .with_attr("platforms", found_platforms.join(", ")),
+        .with_attr("platforms", found_platforms.join(", "))
+        // AU-035/AU-077's `is_verified_discovery` reads `hits_verified` on THIS
+        // aggregate record — the per-platform verified/weak split lives on the
+        // separate Url entities those rules never scan. An absent attribute
+        // reads as vacuously verified, so an all-status-only sweep could still
+        // fabricate a "prediction confirmed" bridge. Mirrors the shape
+        // `username_search`/`streaming_probe` already stamp.
+        .with_attr("hits_verified", verified_count.to_string())
+        .with_attr(
+            "hits_status_only",
+            (found_count - verified_count).to_string(),
+        ),
     );
     Some(summary)
 }

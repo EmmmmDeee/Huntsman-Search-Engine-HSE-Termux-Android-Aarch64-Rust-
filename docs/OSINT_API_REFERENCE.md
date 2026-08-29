@@ -38,7 +38,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **LeakCheck** | breach lookups by email/user/domain | free public API + Pro | 40+ alnum | D |
 | **LeakPeek** | breach credential search | ltd | — | D |
 | **Leak-Lookup** | breach database search | key | 32 alnum | D |
-| **BreachDirectory** | breached account/credential search | ltd (RapidAPI) | RapidAPI key | K D |
+| **BreachDirectory** | breached account/credential search | ltd (RapidAPI) | RapidAPI key | M K D |
 | **Hudson Rock (Cavalier)** | **stealer-log / infostealer** infections by email/domain | free email/domain endpoints | — | M D |
 | **XposedOrNot** | breach exposure (free HIBP-style) | free | — | M D |
 | **Scattered Secrets** | breach + credential monitoring | paid | — | D |
@@ -59,11 +59,11 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **Shodan** | host/port/banner/CVE, IoT, internet scan | ltd ($) | 32 alnum | M K D |
 | **Censys** | hosts, certs, services | basic free | API ID (UUID) + secret (32 alnum) / PAT | M K D |
 | **ZoomEye** | host/web fingerprint scan | ltd | 32 alnum / JWT | M K D |
-| **BinaryEdge** | host/port/exposure scan | ltd | UUID | K D |
+| **BinaryEdge** | host/port/exposure scan | ltd | UUID | M K D |
 | **FOFA** | cyberspace asset search | ltd | email + 32-hex key | K D |
 | **Netlas** | attack-surface / host & cert search | ltd | alnum | M K D |
 | **Onyphe** | cyber-defense / exposure data | ltd | UUID/alnum | M K D |
-| **FullHunt** | attack-surface management | ltd | alnum | K D |
+| **FullHunt** | attack-surface management | ltd | alnum | M K D |
 | **Criminal IP** | host/IP/domain attack-surface + risk | ltd | alnum | M K D |
 | **LeakIX** | indexed open services + leaks | free/key | base64url ~40 | M K D |
 | **Spyse** *(defunct→merged)* | host/cert/domain (legacy) | — | — | D |
@@ -78,10 +78,12 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **VirusTotal** | file/URL/domain/IP reputation | free (4/min) | 64 hex | M K D |
 | **AbuseIPDB** | IP abuse reports/score | free (1k/day) | 80 alnum | M K D |
 | **GreyNoise** | internet-scan noise / RIOT benign | community free | UUID / 32 alnum | M K D |
-| **Pulsedive** | indicator/threat enrichment | free | alnum | K D |
+| **Pulsedive** | indicator/threat enrichment | free | alnum | M K D |
 | **ThreatFox (abuse.ch)** | IOCs (malware, C2) | free | abuse.ch key | M K D |
 | **URLhaus (abuse.ch)** | malicious URL feed | free | — | M D |
+| **PhishTank** | phishing-URL verification feed/lookup | free | app key | D C |
 | **MalwareBazaar (abuse.ch)** | malware-sample intel | free | abuse.ch key | D |
+| **MalShare** | malware-sample repository (hash/source/filename search + download) | free (2k/day key) | alnum | D C |
 | **urlscan.io** | URL scan + screenshots + DOM | free | UUID | M K D |
 | **AlienVault OTX** | open threat exchange pulses | free (keyless) | 64 hex | M K D |
 | **Hybrid Analysis** | sandbox malware reports | free (vetted) | 64 alnum | D C |
@@ -90,7 +92,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **IBM X-Force Exchange** | threat intel | ltd | key + password | D C |
 | **PolySwarm** | malware intel marketplace | ltd | 32 hex | D C |
 | **ThreatMiner** | passive threat intel | free | — (no key) | D C |
-| **PassiveTotal (RiskIQ)** | passive DNS, WHOIS, infra intel | ltd | email + key | K D |
+| **PassiveTotal (RiskIQ)** | passive DNS, WHOIS, infra intel | ltd | email + key | M K D |
 
 ## 4. Email / identity / people search
 
@@ -130,7 +132,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 
 | Provider | What it gives | Free tier | Key shape | HSE |
 |---|---|---|---|---|
-| **IPinfo** | IP geo/ASN/company/privacy | 50k/mo | hex token | M K D |
+| **IPinfo** | IP geo/ASN/company/privacy | 50k/mo | hex token | M D |
 | **IP2Location** | IP geo (API + DB) | free (1k/day, keyless) | — | M D |
 | **ipgeolocation.io** | IP geo/timezone/astronomy | 1k/day | alnum | D C |
 | **ipstack** | IP geo | 100/mo | 32 hex | D C |
@@ -149,7 +151,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **crt.sh** | certificate-transparency search | free | — | M |
 | **Certspotter / cert_intel** | cert transparency monitor | free/key | — | M |
 | **BuiltWith** | website tech profiling | ltd | alnum | K D |
-| **C99.nl** | multi-tool (subdomain, etc.) | key | alnum | K D |
+| **C99.nl** | multi-tool (subdomain, etc.) | key | alnum | M K D |
 | **Whoxy** | WHOIS + reverse WHOIS history | ltd | alnum | D C |
 | **DomainTools** | Iris WHOIS/DNS/infra | paid | api user + key | D C |
 | **ViewDNS.info** | DNS/WHOIS/reverse tools | ltd | alnum | D C |
@@ -204,6 +206,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **WiGLE** | wifi/BT/cell wardriving DB | free (ltd) | API name + token | M K D |
 | **OpenCellID** | cell-tower geolocation | free key | alnum | M K D |
 | **Unwired Labs / Mylnikov** | cell/wifi geolocation | ltd/free | alnum | M(mylnikov) D |
+| **macaddress.io** | MAC OUI/vendor lookup, VM-interface detection | free (key) | alnum | D C |
 | **Google/Combain geolocation** | wifi/cell→position | paid | `AIza…`/key | C |
 | *(keyless)* **mls / cell_intel / wifi_intel** | offline cell/wifi context | free | — | M |
 
@@ -256,7 +259,7 @@ VIRUSTOTAL, ABUSEIPDB, ABUSECH, THREATFOX, ALIENVAULT, URLSCAN, PULSEDIVE,
 PASSIVETOTAL, SECTRAILS, WHOISXML, DOMAINSDB, BUILTWITH, C99, BREACHDIR, NUMVERIFY,
 HLR, OPENCNAM, IPQS, OPENCELLID, WIGLE (USER+TOKEN), OPENCORP, TROVE, EXA, ABR_GUID`.
 
-Most are optional — ~79% of HSE modules need **no** key. Add a key only to escalate
+Most are optional — ~75% of HSE modules need **no** key. Add a key only to escalate
 a specific source; HSE never marks up provider pricing (pay the provider directly,
 usually on a free tier).
 

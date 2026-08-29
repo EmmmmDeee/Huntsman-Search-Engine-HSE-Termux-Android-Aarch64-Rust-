@@ -1,6 +1,7 @@
 //! Pure helper functions: entity building, OpenCelliD query, confidence
 //! mapping, MCC table, and JSON normalisation.
 
+#[cfg(test)]
 use std::borrow::Cow;
 
 use crate::core::{
@@ -112,10 +113,12 @@ pub(super) async fn query_opencellid(
 
 /// Map a cell fix's accuracy radius (metres) to a coordinate confidence.
 /// Delegates to the single authoritative implementation in `cell_db`.
+#[cfg(test)]
 pub(super) use crate::util::cell_db::accuracy_to_confidence;
 
 /// `mcc`/`mnc` come as `"505"` on some Android versions and `505` on others.
 /// Normalise to string; missing -> empty.
+#[cfg(test)]
 pub(super) fn json_to_str(v: &Option<serde_json::Value>) -> Cow<'_, str> {
     v.as_ref()
         .and_then(crate::util::json::scalar_str)

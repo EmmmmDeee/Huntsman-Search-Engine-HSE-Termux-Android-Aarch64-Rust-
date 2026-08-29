@@ -802,3 +802,35 @@ fn snapshot_and_export_order_services_deterministically() {
         "two exports of one pool must be byte-identical"
     );
 }
+
+#[test]
+fn harvested_keys_are_pooled_but_never_authenticate() {
+    // A key auto-discovered in scanned content (`discovered_by` set — a crawled
+    // page, an HTTP header, a WHOIS/DNS field, a breach record) is recorded as
+    // portfolio intelligence but must NEVER authenticate HSE's own request: an
+    // attacker who plants a valid-looking token on a page HSE crawls could
+    // otherwise make the engine adopt and use it, exposing the investigation's
+    // targets to the key's owner. An operator-supplied key stays fully usable.
+    let pool = KeyPool::new();
+    let mut harvested = KeyEntry::new("attacker-planted-key");
+    harvested.discovered_by = Some("web_crawler:https://evil.example".to_string());
+    pool.add("shodan", harvested);
+
+    // Still POOLED (portfolio intelligence) — the snapshot shows it...
+    assert_eq!(pool.snapshot().services["shodan"].len(), 1);
+    // ...but NEVER auth-eligible, via either selection path.
+    assert_eq!(
+        pool.next_key("shodan"),
+        None,
+        "a harvested key must not authenticate HSE's own request"
+    );
+    assert_eq!(
+        pool.next_key_excluding("shodan", &std::collections::HashSet::new()),
+        None,
+        "the in-scan key cascade must not fall through to a harvested key"
+    );
+
+    // An operator-added key (no provenance tag) for the same service is served.
+    pool.add("shodan", KeyEntry::new("operator-key"));
+    assert_eq!(pool.next_key("shodan").as_deref(), Some("operator-key"));
+}

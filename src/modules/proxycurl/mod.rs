@@ -1,6 +1,20 @@
 //! Proxycurl LinkedIn profile extraction. Paid (Bearer Token).
 //!
-//! Endpoints:
+//! **Permanently dead** (2026-08-26): the vendor (`nubela.co`) sunset this
+//! API entirely — "The Proxycurl API has been sunset and is no longer
+//! available. The team behind Proxycurl has moved on to…" (confirmed live
+//! against a real key). This is not a transient drift or a bad key: no key,
+//! new or old, will ever work again. `process` short-circuits before making
+//! a request so a scan never spends a dispatch slot / wall-clock budget on a
+//! call that cannot succeed. The module stays registered — its entity/evidence
+//! shape, ATT&CK mapping, and correlator/tests integration are left intact —
+//! rather than a wider removal across the ~30 files that reference it, since
+//! nothing about that shape is wrong, only the live endpoint. Revisit if the
+//! vendor's stated successor turns out to expose a compatible API worth
+//! wiring in (unverified — the sunset notice truncated the name), or delete
+//! outright once someone has time to audit and update every reference.
+//!
+//! Dead endpoints (kept only as a paper trail, not called):
 //! - username / URL → `GET …/api/v2/linkedin?url=https://linkedin.com/in/{id}`
 //! - email          → `GET …/api/linkedin/profile/resolve/email?work_email=…`
 //!
@@ -20,12 +34,17 @@
 //! | `personal_emails[]`                    | `Email` + derived non-freemail `Domain` |
 //! | `personal_numbers[]`                   | `Phone`                             |
 //!
-//! The whole field→entity mapping lives in the pure [`build::build_entities`] so
-//! it is unit-tested without a live API; `process` only owns URL construction,
-//! auth, transport, and error mapping.
+//! The whole field→entity mapping lives in the pure `build::build_entities`,
+//! kept `#[cfg(test)]`-only alongside its parsing types and URL builder since
+//! nothing in the live path calls them anymore (`process` is a bare
+//! short-circuit — see above). The tests keep the mapping logic validated and
+//! ready to re-wire if this is ever pointed at a live endpoint again.
 
+#[cfg(test)]
 mod build;
+#[cfg(test)]
 mod types;
+#[cfg(test)]
 mod url;
 
 #[cfg(test)]
@@ -39,16 +58,6 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::RequestBuilderExt;
-
-const KEY_ENV: &str = "HUNTSMAN_PROXYCURL_KEY";
-pub(super) const SRC: &str = "proxycurl";
-
-/// Caps on per-profile output, keeping a single dump bounded. Personal emails and
-/// phones are NOT capped — they are the subject's own discovered contact pivots
-/// (a handful per profile) and dropping them loses real leads.
-pub(super) const MAX_EXPERIENCES: usize = 5;
-pub(super) const MAX_LISTED: usize = 3; // companies/schools surfaced inline on the Person
 
 pub struct Proxycurl;
 
@@ -105,33 +114,9 @@ impl Module for Proxycurl {
         KINDS
     }
 
-    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let Some(key) = ctx.key_opt(KEY_ENV) else {
-            return Ok(ModuleResult::new());
-        };
-
-        let Some(api_url) = url::profile_url(target) else {
-            return Ok(ModuleResult::new());
-        };
-
-        let resp = ctx
-            .http
-            .get(&api_url)
-            .bearer_auth(key)
-            .header("Accept", "application/json")
-            .send_tagged(SRC)
-            .await?;
-
-        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
-            return Ok(ModuleResult::new());
-        };
-
-        // json_scanned: LinkedIn profiles include headline and summary
-        // (free-form user text) that may contain embedded API keys or tokens.
-        let profile: types::LinkedInProfile = crate::util::http::json_scanned(resp, SRC)
-            .await
-            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
-
-        Ok(build::build_entities(&profile, target, &ctx.scan_id))
+    async fn process(&self, _target: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
+        // Vendor sunset the whole API (see module doc) — never dispatch, key or
+        // no key, so a scan never spends a slot on a call that cannot succeed.
+        Ok(ModuleResult::new())
     }
 }

@@ -139,11 +139,16 @@ impl Module for GithubUser {
 
         let mut result = ModuleResult::new();
 
-        // Username entity with GitHub profile metadata.
+        // Confirmed-on-GitHub username — a single-source, keyless
+        // account-existence lookup (profile metadata rides as evidence). Graded
+        // at the cohort canon HIGH_PLUSPLUS_PLUS (0.85; OD-19, matching
+        // gitea_user/gitlab_user), not VERY_HIGH_PLUSPLUS (0.95): the ladder
+        // reserves 0.95 for agreement "across sources", which one lookup — even
+        // GitHub's — cannot satisfy.
         let mut u_entity = Entity::new(
             EntityKind::Username,
             &user.login,
-            confidence::VERY_HIGH_PLUSPLUS,
+            confidence::HIGH_PLUSPLUS_PLUS,
             &ctx.scan_id,
         );
         u_entity.tag("github");

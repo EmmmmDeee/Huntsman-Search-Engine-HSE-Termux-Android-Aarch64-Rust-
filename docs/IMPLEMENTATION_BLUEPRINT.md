@@ -2,6 +2,22 @@
 **Date:** July 22, 2026  
 **Branch:** `claude/see-know-gap-analysis-3yydci`  
 **Scope:** Complete file structure and architecture for all 4 phases
+**Status:** Partially realized (see note below) — Part 2's `query_optimizer/`
+split landed; most of the rest of the To-Be structure did not.
+
+> **2026-08-26 status note:** this blueprint's sibling doc from the same
+> date/branch, [`HIGH_VALUE_QUERY_SYSTEM.md`](HIGH_VALUE_QUERY_SYSTEM.md),
+> already carries a "Superseded" correction; this one never did. Verified
+> against current source: Part 2's `src/modules/see_know/query_optimizer/{mod,
+> types,roi_router,value_scorer,cost_analyzer}.rs` and `endpoints/{mod,
+> tests}.rs` exist as specified. The rest of the To-Be structure does not —
+> no per-category `endpoints/{search,username,discord,network,domain,gaming,
+> utility}.rs` split, no `src/modules/see_know/{metrics,cache,
+> cascade_optimizer}.rs`, no `src/util/see_know/{tier.rs,client/}`. This
+> blueprint also references `docs/SEEKNOW_GAP_ANALYSIS.md` (Part 1's file
+> tree, below) as an existing reference doc; it is not present in `docs/`.
+> Treat Part 2 as a partial, dated snapshot of what was actually built, not
+> a current or complete architecture map.
 
 ---
 

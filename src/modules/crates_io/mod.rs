@@ -94,11 +94,13 @@ fn build_entities(body: &UserResp, scan_id: &str) -> Vec<Entity> {
 
     let mut result = Vec::new();
 
-    // The confirmed-on-crates.io username.
+    // The confirmed-on-crates.io username — a single-source, keyless
+    // account-existence lookup, graded at the cohort canon HIGH_PLUSPLUS_PLUS
+    // (0.85; OD-19, matching gitea_user/gitlab_user), not EXPERT (0.88).
     let mut u = Entity::new(
         EntityKind::Username,
         &user.login,
-        confidence::EXPERT,
+        confidence::HIGH_PLUSPLUS_PLUS,
         scan_id,
     );
     u.tag("crates-io");

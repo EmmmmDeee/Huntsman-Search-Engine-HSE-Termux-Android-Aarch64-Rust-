@@ -296,6 +296,14 @@ impl Module for CriminalIp {
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }
+    fn cache_ttl_secs(&self) -> u64 {
+        // IP risk/threat classification is stable within a day — the "IP
+        // intel: 24h" bracket `core::module::Module::cache_ttl_secs`'s own doc
+        // names, already applied to the other paid IP-intel modules. A repeat
+        // scan of the same address replays for free within the window instead
+        // of re-spending this module's paid quota.
+        86_400
+    }
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress)
     }

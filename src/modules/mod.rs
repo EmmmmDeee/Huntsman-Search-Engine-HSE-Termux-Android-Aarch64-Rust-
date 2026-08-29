@@ -22,11 +22,15 @@ pub mod au_electoral;
 pub mod au_geo;
 pub mod au_people;
 pub mod au_property;
+pub mod au_rdap;
 pub mod au_unclaimed;
+pub mod auspost;
 pub mod austlii;
 pub mod beacondb;
 pub mod bgpview;
+pub mod binaryedge;
 pub mod bitbucket_user;
+pub mod bitcoin;
 pub mod bluesky_user;
 pub mod builtwith;
 // Shared "maximum raw data" breach/stealer extractor — a `pub(crate)` HELPER
@@ -37,6 +41,8 @@ pub mod builtwith;
 // `pub mod` as dead-at-runtime.
 pub(crate) mod breach_rich;
 pub mod breach_timezone;
+pub mod breachdirectory;
+pub mod c99;
 pub mod cell_intel;
 pub mod cell_local;
 pub mod censys;
@@ -48,11 +54,14 @@ pub mod cloud_storage;
 pub mod codeberg_user;
 pub mod codewars_user;
 pub mod comb_search;
+pub mod commoncrawl;
 pub mod contact_enrich;
 pub mod cpan_user;
 pub mod crates_io;
 pub mod criminal_ip;
+pub mod crossref_search;
 pub mod crtsh;
+pub mod data_gov_au;
 pub mod dehashed;
 pub mod device_sensors;
 // Shared Termux `termux-location` fix primitives (the `Fix` shape +
@@ -76,11 +85,13 @@ pub mod email_parse;
 pub mod emailrep;
 pub mod employer_pivot;
 pub mod epieos;
+pub mod europepmc_search;
 pub mod exa_search;
 pub mod exif_geo;
 pub mod fediverse;
 pub mod fofa;
 pub mod fullcontact;
+pub mod fullhunt;
 pub mod gaming_profile;
 pub mod geo_domain_classifier;
 pub mod geo_intel;
@@ -138,6 +149,7 @@ pub mod opencorporates;
 pub mod opensanctions;
 pub mod osintcat;
 pub mod overpass;
+pub mod passivetotal;
 pub mod payid;
 pub mod pgp;
 pub mod phone_au;
@@ -154,6 +166,7 @@ pub mod wikidata_geo;
 pub(crate) mod profile_kit;
 pub mod proxycurl;
 pub mod psbdmp;
+pub mod pulsedive;
 pub mod pwned_passwords;
 pub mod pypi_user;
 pub mod qld_cadastre;
@@ -368,6 +381,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(censys::Censys),
             Arc::new(greynoise::GreyNoise),
             Arc::new(dehashed::DeHashed),
+            Arc::new(breachdirectory::BreachDirectory),
             Arc::new(intelx::IntelX),
             Arc::new(securitytrails::SecurityTrails),
             Arc::new(leakix::LeakIx),
@@ -376,6 +390,11 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(zoomeye::ZoomEye),
             Arc::new(fofa::Fofa),
             Arc::new(builtwith::BuiltWith),
+            Arc::new(binaryedge::BinaryEdge),
+            Arc::new(c99::C99),
+            Arc::new(fullhunt::FullHunt),
+            Arc::new(pulsedive::Pulsedive),
+            Arc::new(passivetotal::PassiveTotal),
             Arc::new(ipqs::IpQs),
             Arc::new(contact_enrich::ContactEnrich),
             Arc::new(hunter_io::HunterIo),
@@ -411,6 +430,10 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(subdomain_center::SubdomainCenter),
             Arc::new(threatfox::ThreatFox),
             Arc::new(rdap_domain::RdapDomain),
+            // AU-specific RDAP (auDA) sibling of the generic `rdap_domain`
+            // above — discloses registrant identity a generic RDAP client
+            // can't reach for a .au domain, so it dispatches right after it.
+            Arc::new(au_rdap::AuRdap),
             Arc::new(ripestat::RipeStat),
             Arc::new(search_engines::SearchEngines),
             Arc::new(webserver_banner::WebserverBanner),
@@ -439,6 +462,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(bluesky_user::BlueskyUser),
             Arc::new(plc_directory::PlcDirectory),
             Arc::new(mastodon_user::MastodonUser),
+            Arc::new(bitcoin::Bitcoin),
             Arc::new(gitlab_user::GitlabUser),
             Arc::new(gitea_user::GiteaUser),
             Arc::new(sourceforge_user::SourceforgeUser),
@@ -464,6 +488,9 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(phone_intl::PhoneIntl),
             Arc::new(phone_au::PhoneAu),
             Arc::new(wayback::Wayback),
+            // Common Crawl's own independent web-crawl index for a domain's
+            // URLs — a separate corpus from the Wayback CDX lookup above.
+            Arc::new(commoncrawl::CommonCrawl),
             Arc::new(sitemap::Sitemap),
             Arc::new(device_sensors::DeviceSensors),
             Arc::new(cell_intel::CellIntel),
@@ -498,6 +525,9 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(wiki_geosearch::WikiGeoSearch),
             Arc::new(wikidata_geo::WikidataGeo),
             Arc::new(qld_cadastre::QldCadastre),
+            // Coordinates -> Address reverse lookup against Australia Post,
+            // alongside the other AU-specific geo sources above.
+            Arc::new(auspost::AusPost),
             Arc::new(sunrise_sunset::SunriseSunset),
             // Geolocation enrichment (passive, zero-API)
             Arc::new(geo_domain_classifier::GeoDomainClassifier),
@@ -519,8 +549,13 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(name_intel::NameIntel),
             Arc::new(social_location::SocialLocation),
             Arc::new(wikidata::Wikidata),
+            // Academic-literature search by name, two independent corpora
+            // (kept adjacent: same target kinds, same search shape).
+            Arc::new(crossref_search::CrossrefSearch),
+            Arc::new(europepmc_search::EuropePmcSearch),
             // Australian + global public-records / corporate registries
             Arc::new(opencorporates::OpenCorporates),
+            Arc::new(data_gov_au::DataGovAu),
             Arc::new(au_unclaimed::AuUnclaimed),
             Arc::new(au_people::AuPeople),
             Arc::new(asic_director::AsicDirector),

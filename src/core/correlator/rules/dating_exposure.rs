@@ -65,6 +65,13 @@ pub(in crate::core::correlator) fn rule_au_119_dating_platform_exposure(
     }
 
     let n = platforms.len().max(1);
+    // The finding is sized on distinct PLATFORMS (a broad footprint across
+    // platforms is the escalation signal), but `uids` — the entity count the
+    // finding actually cites — can exceed it: the same platform discovered
+    // under two different handles is two Url entities and one platform. Report
+    // both counts explicitly rather than mislabelling the entity count as the
+    // (possibly smaller) platform count.
+    let profile_count = uids.len();
     let severity = if n >= 3 {
         Severity::High
     } else {
@@ -88,15 +95,10 @@ pub(in crate::core::correlator) fn rule_au_119_dating_platform_exposure(
         "Dating-platform exposure",
         severity,
         format!(
-            "Subject holds {n} confirmed dating-app profile(s){}: {listed}{suffix} — a \
-             location-bearing, personal-exposure surface (dating platforms geolocate users and \
-             expose age, photos and preferences), materially higher OSINT / personal-safety \
-             signal than a generic account footprint.",
-            if n == 1 {
-                ""
-            } else {
-                " across distinct platforms"
-            },
+            "Subject holds {profile_count} confirmed dating-app profile(s) across {n} \
+             platform(s): {listed}{suffix} — a location-bearing, personal-exposure surface \
+             (dating platforms geolocate users and expose age, photos and preferences), \
+             materially higher OSINT / personal-safety signal than a generic account footprint.",
         ),
         uids,
         scan_id,
@@ -158,6 +160,27 @@ mod tests {
             rule_au_119_dating_platform_exposure(&RuleContext::new(&[a]), "s", 0).is_empty(),
             "a status-only dating hit is not a confirmed profile"
         );
+    }
+
+    #[test]
+    fn au119_counts_two_handles_on_one_platform_as_two_profiles() {
+        // Two independently-confirmed accounts under different handles on the
+        // SAME platform: one platform, but two distinct profiles/entities. The
+        // description's profile count must reflect the entity count (2), not
+        // silently collapse to the platform count (1).
+        let ents = [
+            dating_profile("https://tinder.com/@rhino", "Tinder", true),
+            dating_profile("https://tinder.com/@rhino2", "Tinder", true),
+        ];
+        let out = rule_au_119_dating_platform_exposure(&RuleContext::new(&ents), "s", 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].entity_uids.len(), 2);
+        assert!(
+            out[0].description.contains("2 confirmed"),
+            "two distinct profiles on one platform must report a profile count of 2: {}",
+            out[0].description
+        );
+        assert!(out[0].description.contains("1 platform"));
     }
 
     #[test]

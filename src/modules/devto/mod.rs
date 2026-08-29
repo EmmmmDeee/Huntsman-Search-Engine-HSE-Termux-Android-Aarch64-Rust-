@@ -130,11 +130,13 @@ impl Module for DevTo {
 pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
-    // Confirmed-on-dev.to username.
+    // Confirmed-on-dev.to username — a single-source, keyless account-existence
+    // lookup, graded at the cohort canon HIGH_PLUSPLUS_PLUS (0.85; OD-19,
+    // matching gitea_user/gitlab_user), not EXPERT (0.88).
     let mut u = Entity::new(
         EntityKind::Username,
         &user.username,
-        confidence::EXPERT,
+        confidence::HIGH_PLUSPLUS_PLUS,
         scan_id,
     );
     u.tag("devto");

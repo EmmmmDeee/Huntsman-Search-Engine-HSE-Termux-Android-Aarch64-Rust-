@@ -1,9 +1,18 @@
 //! ZoomEye — internet-wide host/service search engine (Shodan/Censys-class).
 //! Key-gated; requires `HUNTSMAN_ZOOMEYE_KEY`.
 //!
-//! Endpoint: `GET https://api.zoomeye.org/host/search?query={dork}&page=1`
+//! Endpoint: `GET https://api.zoomeye.ai/host/search?query={dork}&page=1`
 //! Auth:     `API-KEY: {key}` request header (per ZoomEye docs / the service def
 //! the key-probe already validates against `…/resources-info`).
+//!
+//! ZoomEye splits its service by region: `api.zoomeye.org` (mainland-China-
+//! facing, vendor SDK: `knownsec/ZoomEye-*`) and `api.zoomeye.ai`
+//! (international, vendor SDK: `zoomeye-ai/ZoomEye-*`, docs at
+//! `zoomeye.ai/doc`) — a request to the wrong one for the caller's region gets
+//! a "service not available in your area" response rather than a normal
+//! auth/quota error. `.ai` is the default here since this is not a mainland-
+//! China-targeted tool; override with `HUNTSMAN_ZOOMEYE_BASE` (validated by
+//! [`crate::util::endpoint_override`]) for an operator who needs `.org`.
 //!
 //! Given an IP it dorks `ip:{ip}`; given a domain, `hostname:{domain}` (the hosts
 //! ZoomEye has indexed serving that name). Each match carries `portinfo` (the open
@@ -39,6 +48,9 @@ use crate::util::http::{json_decode, urlencode};
 
 const KEY_ENV: &str = "HUNTSMAN_ZOOMEYE_KEY";
 const SRC: &str = "zoomeye";
+/// International endpoint (see module docs for the mainland-China/`.org` split).
+/// Override with `HUNTSMAN_ZOOMEYE_BASE`.
+const DEFAULT_BASE: &str = "https://api.zoomeye.ai/host/search";
 /// Cap matches processed — a broad dork can return thousands of hosts.
 const MAX_MATCHES: usize = 50;
 /// Cap distinct exposed ports tagged onto the seed IP.
@@ -166,10 +178,8 @@ impl Module for ZoomEye {
         let Some(dork) = zoomeye_dork(target) else {
             return Ok(ModuleResult::new());
         };
-        let url = format!(
-            "https://api.zoomeye.org/host/search?query={}&page=1",
-            urlencode(&dork)
-        );
+        let base = crate::util::endpoint_override::resolve("HUNTSMAN_ZOOMEYE_BASE", DEFAULT_BASE);
+        let url = format!("{base}?query={}&page=1", urlencode(&dork));
 
         // Key cascade via the shared primitive: on a terminal key quota/auth
         // failure, rotate to the next untried usable pooled key so one call

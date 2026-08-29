@@ -88,7 +88,7 @@ hse-bg stop
 ## Manual build (Termux)
 
 ```bash
-pkg install -y rust clang make pkg-config openssl-tool
+pkg install -y git rust clang make pkg-config openssl-tool
 git clone --depth 1 \
   https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git \
   ~/hse
@@ -137,7 +137,15 @@ every 30 s. Do not interrupt.
 **"cargo: not found"**
 Run `pkg install rust` and retry.
 
+**"crate `std` required to be available in rlib format, but was not found in this form"**
+A broken/partial Termux `rust` package can ship libstd as a dynamic library
+only, missing the static `.rlib` every build script and proc-macro needs to
+link against — library crates still compile, so only the build step fails.
+Not an HSE bug; run `pkg reinstall rust` and retry. `install.sh` detects and
+self-heals this automatically before it starts building.
+
 **Low RAM (< 1.5 GB)**
 Set `CARGO_BUILD_JOBS=1` before running the installer to limit parallel compilation.
 
-See [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) for a full list of known issues.
+For SeekNow API errors (not install/runtime issues), see
+[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).

@@ -373,7 +373,7 @@ async fn run_auto_scan(
         crate::util::uid::scan_id("document", document_source)
     );
     let evidence_source = format!("ingest:{document_source}");
-    let converted: Vec<crate::core::entity::Entity> = entities
+    let mut converted: Vec<crate::core::entity::Entity> = entities
         .iter()
         .map(|e| {
             crate::app::convert::extracted_to_hse_entity(
@@ -384,6 +384,12 @@ async fn run_auto_scan(
             )
         })
         .collect();
+    // The same admission guard `hse import` runs before persisting (drops
+    // documentation/placeholder values — example.com, TEST-NET IPs, template
+    // fragments — that would otherwise be stored as real findings) applies
+    // here too: an ingested document quoting a placeholder value as an
+    // example is no more a real finding than one lifted from an import file.
+    crate::app::import::deduplicate_by_uid(&mut converted);
     let label = crate::app::persist::strongest_identity_label(
         &converted,
         format!("ingested document: {document_source}"),
@@ -474,7 +480,7 @@ fn format_output(
         // `csv_escape`: that also RFC-4180-quotes, which would double-quote
         // everything `csv::Writer` is about to quote itself.
         "csv" => {
-            use crate::api::scan_export::formula_guard;
+            use crate::app::export::formula_guard;
             let mut wtr = csv::Writer::from_writer(Vec::new());
             wtr.write_record(["kind", "value", "confidence", "source_pattern"])?;
             for e in entities {
@@ -522,9 +528,14 @@ mod tests {
     use crate::util::entity_extractor::EntityKind;
 
     fn sample() -> Vec<crate::util::entity_extractor::ExtractedEntity> {
+        // NOT a placeholder value (see `auto_scan_drops_placeholder_entities`
+        // below for why that matters): `run_auto_scan` now runs the same
+        // admission guard `hse import` does, which would silently filter a
+        // `*@example.com`-style fixture to zero entities and break every test
+        // below that expects the sample to survive persistence.
         vec![crate::util::entity_extractor::ExtractedEntity {
             kind: EntityKind::Email,
-            value: "test@example.com".to_string(),
+            value: "qa-fixture@hse-ingest-unittest.dev".to_string(),
             confidence: 0.85,
             context: None,
             source_pattern: "email_rfc5322".to_string(),
@@ -535,7 +546,7 @@ mod tests {
     #[test]
     fn format_jsonl() {
         let output = format_output(&sample(), "jsonl", "notes.txt").expect("should succeed");
-        assert!(output.contains("test@example.com"));
+        assert!(output.contains("qa-fixture@hse-ingest-unittest.dev"));
         assert!(output.contains("email"));
     }
 
@@ -578,6 +589,35 @@ mod tests {
         assert_ne!(
             sid_a, sid_b,
             "two ingests must not collide on one scan id (would overwrite data)"
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_scan_drops_placeholder_entities() {
+        // A real document (an incident report, a tutorial, a leaked config)
+        // legitimately quotes documentation/placeholder values as EXAMPLES —
+        // `hse ingest` (no --auto-scan) correctly surfaces every literal match
+        // it finds, placeholders included. But `--auto-scan` persists the
+        // batch as a completed, correlated SCAN, indistinguishable from a real
+        // finding to every downstream consumer (`hse gaps`, `hse audit`,
+        // export, the correlator) — exactly the class of pollution `hse
+        // import`'s `deduplicate_by_uid` already guards against for import
+        // data. This was missing here until now: `run_auto_scan` persisted
+        // whatever the extractor found, unfiltered.
+        let placeholder = vec![crate::util::entity_extractor::ExtractedEntity {
+            kind: EntityKind::Email,
+            value: "jordan@example.com".to_string(),
+            confidence: 0.85,
+            context: None,
+            source_pattern: "email_rfc5322".to_string(),
+            boost_reason: None,
+        }];
+        let (_sid, n, _relations, _correlations) = run_auto_scan(&placeholder, "notes.txt")
+            .await
+            .expect("auto-scan must still succeed on an all-filtered batch");
+        assert_eq!(
+            n, 0,
+            "a placeholder email must never be persisted as a real finding"
         );
     }
 
@@ -693,7 +733,7 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         let entity = &parsed[0];
         assert_eq!(entity.kind, crate::core::entity::EntityKind::Email);
-        assert_eq!(entity.value, "test@example.com");
+        assert_eq!(entity.value, "qa-fixture@hse-ingest-unittest.dev");
         assert!(
             entity.tags.iter().any(|t| t == "document-ingestion"),
             "entities must be attributable to the ingest path"
@@ -752,7 +792,7 @@ mod tests {
         let arr = parsed.as_array().expect("json output must be a JSON array");
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["kind"], "email");
-        assert_eq!(arr[0]["value"], "test@example.com");
+        assert_eq!(arr[0]["value"], "qa-fixture@hse-ingest-unittest.dev");
         assert_eq!(arr[0]["confidence"], 0.85);
         assert_eq!(arr[0]["source_pattern"], "email_rfc5322");
         assert_eq!(arr[0]["boost_reason"], "RFC 5322 compliant");

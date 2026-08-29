@@ -5,7 +5,9 @@ export function parseHash(){
   const segs = path.split('/').filter(Boolean);
   const query = {};
   (qs||'').split('&').filter(Boolean).forEach(p=>{
-    const [k,v] = p.split('=');
+    const i = p.indexOf('=');
+    const k = i === -1 ? p : p.slice(0, i);
+    const v = i === -1 ? '' : p.slice(i + 1);
     // A malformed percent-encoding (e.g. a bare trailing '%', or one hex digit
     // short — plausible from a hand-edited address bar or a corrupted bookmark)
     // throws URIError. parseHash() is called synchronously before render()'s own
@@ -29,4 +31,3 @@ export function parseHash(){
   return {name:'dash', params:{}, query};
 }
 export function nav(href){ location.hash = href; }
-

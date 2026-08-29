@@ -45,10 +45,15 @@ use std::sync::{LazyLock, Mutex};
 /// `/api/v1/stats` handler and the `hse doctor` diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BudgetSnapshot {
+    /// Calls already spent by the CURRENT scan.
     pub scan_used: u32,
+    /// Effective per-scan ceiling: runtime override, else env var, else default.
     pub scan_cap: u32,
+    /// Calls spent by every scan in this process since start.
     pub session_used: u32,
+    /// Effective per-session ceiling — the operator's daily-quota contract.
     pub session_cap: u32,
+    /// True once the provider reported the quota spent, latched for the scan.
     pub quota_exhausted: bool,
 }
 
@@ -102,6 +107,17 @@ struct ScanState {
     /// Sticky flag — once `true`, `remaining()` returns `false` for this
     /// scan until `reset_scan()` clears it.
     exhausted: bool,
+    /// Sticky flag — a burst 429 outlived its retry budget for this scan.
+    /// Kept separate from `exhausted` (the daily-quota signal): a rate
+    /// limit and a spent daily allowance need opposite operator responses
+    /// (retry shortly vs. wait for the reset, possibly hours), so an owner
+    /// module that latches both on a persistent 429 needs to report which
+    /// one actually happened. Scan-scoped for the same reason `exhausted`
+    /// is: a bare process-wide flag would let one of hse serve's
+    /// concurrently-running scans silently block/mislabel every sibling
+    /// scan's queries, and a new scan starting would clear a still-active
+    /// sibling's latch out from under it.
+    rate_limited: bool,
 }
 
 /// Shared quota lifecycle.
@@ -361,6 +377,22 @@ impl QuotaBudget {
     pub fn is_exhausted(&self) -> bool {
         let scan = current_scan();
         self.lock().get(&scan).is_some_and(|s| s.exhausted)
+    }
+
+    /// Trip the sticky rate-limited flag for the current scan — set when a
+    /// burst 429 outlives its retry budget. See [`ScanState::rate_limited`]
+    /// for why this is distinct from [`Self::mark_exhausted`]. Cleared by
+    /// `reset_scan()` like every other per-scan flag this type owns.
+    pub fn mark_rate_limited(&self) {
+        let scan = current_scan();
+        self.lock().entry(scan).or_default().rate_limited = true;
+    }
+
+    /// True if `mark_rate_limited()` has been called for the current scan
+    /// since its last `reset_scan()`.
+    pub fn is_rate_limited(&self) -> bool {
+        let scan = current_scan();
+        self.lock().get(&scan).is_some_and(|s| s.rate_limited)
     }
 
     /// Build a [`BudgetSnapshot`] for `/api/v1/stats` / diagnostics, for the

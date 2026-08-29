@@ -613,21 +613,6 @@ pub(in crate::core::correlator) fn rule_au_001_multi_breach(
     ts: u64,
 ) -> Vec<Correlation> {
     let entities = context.entities();
-    const BREACH_SOURCES: &[&str] = &[
-        "hudsonrock",
-        "xposed_or_not",
-        "breach_directory",
-        "dehashed",
-        "hibp",
-        "oathnet_pro",
-        "emailrep",
-        // NOTE: the generic `search_engines` source is deliberately NOT listed.
-        // A web-search hit is not breach corroboration, and counting it would let
-        // one real breach + one search result fire a false Critical. (An earlier
-        // `search_engines:oathnet` entry was dead — the module emits the plain
-        // `search_engines` source — so it was removed rather than "fixed" to
-        // `search_engines`, which would introduce exactly that false positive.)
-    ];
     let mut out = Vec::new();
     for e in entities_of_kind(entities, EntityKind::Email) {
         // A role / provider mailbox (abuse@, noreply@, dns@, …) appears in breach
@@ -639,9 +624,23 @@ pub(in crate::core::correlator) fn rule_au_001_multi_breach(
         if crate::core::validation::is_role_mailbox(&e.value) {
             continue;
         }
-        let sources = tagged_matching_sources(e, BREACH_SOURCES);
-        if sources.len() >= 2 {
-            let mut names: Vec<&str> = sources.into_iter().collect();
+        // Independence-filtered (corroborating_sources, not raw evidence_sources)
+        // sources the canonical `source_family` classifies "breach" — not a
+        // hand-maintained allow-list, which drifted: it never grew to cover
+        // intelx/comb_search/psbdmp/niamonx/osintcat/see_know/pwned_passwords/
+        // leakix even though `source_family` (pinned by its own regression test,
+        // `source_family_covers_every_breach_category_module`) has classified
+        // every one of them "breach" all along, and it carried a dead
+        // `"breach_directory"` literal matching no real module. Deriving from
+        // `source_family` means this can never drift from it again, and
+        // `search_engines` (family "search") stays excluded for free — no
+        // special-case needed.
+        let sources = e
+            .corroborating_sources()
+            .into_iter()
+            .filter(|s| source_family(s) == "breach");
+        let mut names: Vec<&str> = sources.collect();
+        if names.len() >= 2 {
             names.sort_unstable();
             out.push(Correlation::new(
                 "AU-001",
@@ -670,7 +669,16 @@ pub(in crate::core::correlator) fn rule_au_009_stealer_log(
     let entities = context.entities();
     entities
         .iter()
-        .filter(|e| e.kind == EntityKind::Email && e.has_tag("stealer-log"))
+        // `stealer-log` (niamonx, hudsonrock via tags::STEALER_LOG) and
+        // `stealer` (oathnet_pro::stealer's push_stealer_entity/
+        // push_oathnet_entity, see_know's stealer extraction -- this
+        // codebase's two richest stealer-log extraction paths) are two
+        // distinct literals both meaning "seen in an infostealer log dump".
+        // Checking only the former silently missed both.
+        .filter(|e| {
+            e.kind == EntityKind::Email
+                && (e.has_tag(crate::core::tags::STEALER_LOG) || e.has_tag("stealer"))
+        })
         .map(|e| Correlation {
             rule_id: "AU-009".into(),
             rule_name: "Stealer-log compromise".into(),
@@ -696,6 +704,20 @@ pub(in crate::core::correlator) fn rule_au_019_temporal_breach_cluster(
             continue;
         }
         for ev in &e.evidence {
+            // The entity-level `breach` tag is not enough on its own: a domain
+            // genuinely breach-tagged by one source (e.g. `seon`'s
+            // `breach_domain_entity`) can ALSO merge in a Certificate-Transparency
+            // module's evidence (`certspotter`/`crtsh`/`cert_intel`, none of them
+            // breach sources) if the same domain is independently discovered
+            // during the engine's normal pivot expansion. Those CT modules are the
+            // only producers of `not_before` — a routine TLS certificate issuance
+            // date — so without this gate a domain's unrelated cert renewal could
+            // supply a fabricated third member of a "coordinated compromise"
+            // cluster. Mirrors the `is_breach_source` gate every sibling rule in
+            // `breach_pii.rs` applies.
+            if !is_breach_source(&ev.source) {
+                continue;
+            }
             for field in ["breach_date", "not_before", "earliest_record", "date"] {
                 if let Some(d) = ev.attributes.get(field)
                     && let Some(day) = d.get(..10)
@@ -924,30 +946,74 @@ pub(in crate::core::correlator) fn rule_au_095_exposed_key_portfolio(
 ///
 /// This is the pivot the operator asked for — the provider is the intelligence,
 /// not the secret it contains; nothing here is used to authenticate. Severity
-/// High (a strong, specific attribution): a single OSINT artifact is a lead,
-/// several across categories is a profile. One finding per scan.
+/// High (a strong, specific attribution) requires subject-ownership grounding
+/// (item 25) — [`osint_key_is_subject_grounded`] — since the universal harvester
+/// also mints these artifacts from crawled pages, wayback snapshots, search
+/// results, and public source code that the subject never possessed. An
+/// ungrounded artifact still surfaces as a Medium tradecraft lead rather than
+/// being silently dropped, but is never worded as subject possession.
 pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
     context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
     let entities = context.entities();
-    use std::collections::{BTreeMap, BTreeSet};
-
-    let mut providers: BTreeSet<&str> = BTreeSet::new();
-    // category slug → distinct providers in it, for a tradecraft breakdown.
-    let mut by_category: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    let mut uids: Vec<String> = Vec::new();
 
     // Both provider-access kinds carry the pivot tags: a harvested ApiKey and a
     // leaked login Credential for the same provider are equal practitioner
     // evidence. The `osint-practitioner` tag is only ever stamped on these two
     // kinds, so the tag filter alone is sufficient — but the kind guard keeps the
     // intent explicit and pins it if the tag is ever reused elsewhere.
-    for e in entities.iter().filter(|e| {
-        matches!(e.kind, EntityKind::ApiKey | EntityKind::Credential)
-            && e.has_tag("osint-practitioner")
-    }) {
+    let (grounded, ungrounded): (Vec<&Entity>, Vec<&Entity>) = entities
+        .iter()
+        .filter(|e| {
+            matches!(e.kind, EntityKind::ApiKey | EntityKind::Credential)
+                && e.has_tag("osint-practitioner")
+        })
+        .partition(|e| osint_key_is_subject_grounded(e));
+
+    [
+        au096_finding(&grounded, true, scan_id, ts),
+        au096_finding(&ungrounded, false, scan_id, ts),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// Subject-ownership grounding for a harvested OSINT-provider artifact (item
+/// 25), used by [`rule_au_096_osint_practitioner`]. An artifact's mere
+/// presence in a scan is NOT possession: the universal harvester surfaces
+/// keys found in crawled pages, wayback snapshots, search results and public
+/// source code — none of which the subject owns or controls. An artifact is
+/// attributable to the subject only when it was observed in the subject's OWN
+/// compromised data — a breach or stealer-log record — which is exactly the
+/// possession standard AU-037 (leaked passwords/credentials) and AU-009
+/// (stealer-log) already apply. Grounding is: at least one evidence entry
+/// whose source is a breach/stealer source.
+fn osint_key_is_subject_grounded(e: &Entity) -> bool {
+    e.evidence
+        .iter()
+        .any(|ev| super::breach_pii::is_breach_source(&ev.source))
+}
+
+/// Build one AU-096 finding over `keys` — the shared shape
+/// [`rule_au_096_osint_practitioner`] uses for the grounded (subject-
+/// possession) and ungrounded (unassigned-lead) partitions. `None` for an
+/// empty partition.
+fn au096_finding(keys: &[&Entity], grounded: bool, scan_id: &str, ts: u64) -> Option<Correlation> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    if keys.is_empty() {
+        return None;
+    }
+
+    let mut providers: BTreeSet<&str> = BTreeSet::new();
+    // category slug → distinct providers in it, for a tradecraft breakdown.
+    let mut by_category: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    let mut uids: Vec<String> = Vec::new();
+
+    for e in keys {
         let provider = e
             .tags
             .iter()
@@ -963,10 +1029,6 @@ pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
         uids.push(e.uid.clone());
     }
 
-    if providers.is_empty() {
-        return Vec::new();
-    }
-
     let tradecraft = by_category
         .iter()
         .map(|(cat, provs)| {
@@ -978,22 +1040,43 @@ pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
         .collect::<Vec<_>>()
         .join("; ");
 
-    vec![Correlation::new(
-        "AU-096",
-        "OSINT practitioner (recon-provider access)",
-        Severity::High,
+    let description = if grounded {
         format!(
             "Subject holds {} OSINT/recon-provider credential(s) (API keys and/or leaked \
-             logins) across {} provider(s) — by possession an OSINT practitioner. Tradecraft: \
-             {tradecraft}. The provider is the pivot (tooling, intent); artifacts are \
-             catalogued, not used.",
+             logins) across {} provider(s), observed in the subject's own breach/stealer data \
+             — by possession an OSINT practitioner. Tradecraft: {tradecraft}. The provider is \
+             the pivot (tooling, intent); artifacts are catalogued, not used.",
             uids.len(),
             providers.len()
-        ),
+        )
+    } else {
+        format!(
+            "{} OSINT/recon-provider credential(s) across {} provider(s) surfaced in this scan \
+             (crawled pages, wayback snapshots, search results, or public source — NOT the \
+             subject's own compromised data), so this is a tradecraft lead pending ownership \
+             grounding, not a subject attribution. Tradecraft: {tradecraft}.",
+            uids.len(),
+            providers.len()
+        )
+    };
+
+    Some(Correlation::new(
+        "AU-096",
+        if grounded {
+            "OSINT practitioner (recon-provider access)"
+        } else {
+            "OSINT recon-tool key (unassigned lead)"
+        },
+        if grounded {
+            Severity::High
+        } else {
+            Severity::Medium
+        },
+        description,
         uids,
         scan_id,
         ts,
-    )]
+    ))
 }
 
 /// AU-037 — Plaintext credential exposure.
@@ -1020,6 +1103,11 @@ pub(in crate::core::correlator) fn rule_au_037_credential_exposure(
     for e in entities {
         match e.kind {
             EntityKind::Password => passwords += 1,
+            // A published SSH/PGP public key (github_user/pgp mint these to
+            // feed AU-048's cross-account key-sharing link) is not a breach
+            // secret -- its private half is definitionally not "directly
+            // recoverable". Same exclusion AU-048 itself already applies.
+            EntityKind::Credential if e.has_tag("ssh-key") || e.has_tag("pgp-key") => continue,
             EntityKind::Credential => credentials += 1,
             _ => continue,
         }

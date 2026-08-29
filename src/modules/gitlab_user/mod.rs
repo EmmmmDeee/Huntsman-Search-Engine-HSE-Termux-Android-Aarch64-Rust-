@@ -151,11 +151,21 @@ impl Module for GitlabUser {
 pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
-    // Confirmed-on-GitLab username.
+    // Confirmed-on-GitLab username — a direct, successful, unauthenticated
+    // API lookup with no further corroboration, the same evidence class as
+    // gitea_user's "Confirmed username on Gitea.com" (src/modules/gitea_user/
+    // mod.rs). HIGH_PLUSPLUS_PLUS matches that module and is the dominant
+    // tier across single-service confirmed-account modules generally (10 of
+    // ~20 surveyed: bluesky_user, chess_profile, dockerhub_user, gitea_user,
+    // launchpad_user, mastodon_user, plc_directory, pypi_user, rubygems_user,
+    // gaming_profile's Minecraft check) — VERY_HIGH_PLUS was a minority
+    // outlier (OD-19, .agent/state.json) with no documented reason for
+    // ranking a confirmed GitLab account above the equivalent signal
+    // elsewhere.
     let mut u = Entity::new(
         EntityKind::Username,
         &user.username,
-        confidence::VERY_HIGH_PLUS,
+        confidence::HIGH_PLUSPLUS_PLUS,
         scan_id,
     );
     u.tag("gitlab");

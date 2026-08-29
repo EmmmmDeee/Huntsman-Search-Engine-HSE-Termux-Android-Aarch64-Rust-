@@ -20,6 +20,7 @@
 //!   * **Hyphenated surname** — "Smith-Jones" yields merged and per-part shapes.
 
 use crate::core::confidence;
+use crate::util::canonical::GEN_SUFFIXES;
 
 // ── Output caps ──────────────────────────────────────────────────────────────
 pub(super) const MAX_USERNAMES: usize = 48;
@@ -145,11 +146,9 @@ const HONORIFICS: &[&str] = &[
     "det", "insp", "cpl",
 ];
 
-/// Trailing generational / professional suffixes stripped from the last token.
-const GEN_SUFFIXES: &[&str] = &[
-    "jr", "sr", "ii", "iii", "iv", "v", "vi", "esq", "phd", "md", "dds", "jd", "mba", "rn", "np",
-    "do", "psyd",
-];
+// Trailing generational / professional suffixes stripped from the last token:
+// see `crate::util::canonical::GEN_SUFFIXES`, shared with `core::resolve` so a
+// name that is "just a suffix" to one is never "a given name" to the other.
 
 // ── Phonetic / nickname alias table ──────────────────────────────────────────
 
@@ -687,7 +686,16 @@ pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<ScoredEmail> {
             }
         }
     }
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    // Sort by score descending, then break ties deterministically on the address
+    // (ascending). The `.take(MAX_EMAILS)` cutoff below shapes the scan graph —
+    // surviving speculative emails become new lead targets — so *which* equal-score
+    // addresses survive must not depend on input/insertion order. Matches the
+    // engine's explicit tie-break convention.
+    scored.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.cmp(&b.1))
+    });
     scored
         .into_iter()
         .take(MAX_EMAILS)
@@ -702,12 +710,14 @@ pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<ScoredEmail> {
 /// 404 (so a probe can tell "no Gravatar" from a default placeholder),
 /// requesting a 200px image.
 pub fn gravatar_url(email: &str) -> String {
-    use md5::{Digest, Md5};
-    let mut h = Md5::new();
-    h.update(email.trim().to_ascii_lowercase().as_bytes());
+    // Reuse the canonical Gravatar request-hash rather than re-deriving it: the
+    // preimage here (MD5 of the trimmed, ASCII-lowercased address) was
+    // byte-identical to `crate::util::gravatar::hash`, which is unit-tested and
+    // already shared by the `gravatar` and `contact_enrich` modules. One fewer
+    // drift-prone copy of the Gravatar identifier contract.
     format!(
         "https://www.gravatar.com/avatar/{}?d=404&s=200",
-        hex::encode(h.finalize())
+        crate::util::gravatar::hash(email)
     )
 }
 

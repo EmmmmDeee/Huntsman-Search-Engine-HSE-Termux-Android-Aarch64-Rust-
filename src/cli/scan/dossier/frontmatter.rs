@@ -47,6 +47,18 @@ pub(super) fn print(
     // chars, so this is byte-for-byte identical output on the live path.
     println!("  Scan ID:   {}", &scan.id[..scan.id.len().min(16)]);
     println!("  Status:    {}", scan.status.as_str());
+    // WHY the expansion stopped, and — when that reason means the dossier is
+    // not a complete answer — the caveat spelled out. Without this a
+    // budget-truncated scan's dossier read exactly like an exhaustive one's,
+    // which for an evidentiary artifact is the most consequential thing it
+    // could get wrong: it invites "not in the dossier" to be read as "does not
+    // exist". Same wording as every other read path (`Scan::completeness_caveat`).
+    if let Some(r) = scan.stop_reason {
+        println!("  Stopped:   {}", r.label());
+    }
+    if let Some(c) = scan.completeness_caveat("this scan") {
+        println!("  ⚠ {c}");
+    }
     println!(
         "{}",
         entities_header_line(entities.len(), scan.entity_count)

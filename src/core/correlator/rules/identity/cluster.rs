@@ -32,6 +32,7 @@ pub(in crate::core::correlator) fn rule_au_002_identity_cluster(
     if emails.is_empty() || usernames.is_empty() || phones.is_empty() {
         return Vec::new();
     }
+
     if emails.len() > MAX_PER_KIND || usernames.len() > MAX_PER_KIND || phones.len() > MAX_PER_KIND
     {
         return Vec::new();

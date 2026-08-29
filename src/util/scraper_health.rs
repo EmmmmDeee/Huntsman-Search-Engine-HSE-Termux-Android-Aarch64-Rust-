@@ -58,6 +58,19 @@ pub const YIELD_DRIFT_THRESHOLD: u32 = 3;
 /// unbounded history into memory.
 pub const RECENT_EVENTS_WINDOW: usize = 5_000;
 
+/// How long a quarantine verdict (hard-drift or yield-drift) stays active
+/// before the module is given a fresh dispatch attempt regardless of its
+/// still-unresolved streak. Without this, a module quarantined under the
+/// DEFAULT automatic sweep (`skip_dead_modules`, see `core::engine::mod`) is
+/// never dispatched again — and can therefore never emit the success event
+/// that would clear it, turning three consecutive failures into a
+/// PERMANENT suppression rather than genuinely "self-recovering". Distinct
+/// from `doctor`'s own `DRIFT_TTL_SECS` (7 days): that knob paces how long
+/// to keep *nagging the operator* about a stale `--live`-probe finding;
+/// this one paces how often an *automatically skipped* module gets a real
+/// retry, so it is deliberately much shorter.
+pub const DRIFT_RETRY_TTL_SECS: u64 = 24 * 60 * 60;
+
 /// One module's rolling health, derived from the tail of its recent outcome
 /// events.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,12 +99,34 @@ pub struct SourceHealth {
     /// mode is already covered by `consecutive_failures`. Reset the moment a
     /// non-zero-yield `ModuleDone` is seen walking backward from "now".
     pub consecutive_zero_yield: u32,
+    /// Unix seconds of the newest event (success, error, or zero-yield
+    /// completion) seen for this module anywhere in the queried window —
+    /// i.e. the last time dispatch actually heard from it. Drives
+    /// [`Self::quarantine_expired`]: once a module has gone silent (because
+    /// it is being skipped) for longer than [`DRIFT_RETRY_TTL_SECS`], it is
+    /// worth one more real attempt.
+    pub newest_event_at: u64,
 }
 
 impl SourceHealth {
+    /// The raw historical signal: this module's current unbroken failure
+    /// streak has reached [`DRIFTED_THRESHOLD`]. Distinct from whether a
+    /// quarantine is *currently* suppressing dispatch — see
+    /// [`Self::quarantine_expired`] and [`quarantined_modules`], which
+    /// layer the TTL backstop on top of this predicate.
     #[must_use]
     pub fn is_drifted(&self) -> bool {
         self.consecutive_failures >= DRIFTED_THRESHOLD
+    }
+
+    /// True once [`DRIFT_RETRY_TTL_SECS`] has elapsed since this module's
+    /// newest recorded event. A quarantined module under the default
+    /// automatic sweep never gets dispatched, so it never produces a new
+    /// event on its own — this is the backstop that ends that stalemate by
+    /// giving it a fresh attempt regardless of the still-unresolved streak.
+    #[must_use]
+    pub fn quarantine_expired(&self, now: u64) -> bool {
+        now.saturating_sub(self.newest_event_at) >= DRIFT_RETRY_TTL_SECS
     }
 
     /// True when this source has proven it can yield results (`ever_yielded`)
@@ -122,6 +157,10 @@ struct Acc {
     /// FULL window independently of `resolved` (which only gates the
     /// hard-failure streak above).
     zero_yield_streak_open: bool,
+    /// The event `ts` of the first (newest, since we walk newest-first)
+    /// outcome seen for this module — set once, unconditionally, on entry
+    /// creation.
+    newest_event_at: u64,
 }
 
 /// Aggregate per-module health from a **newest-first** slice of
@@ -154,6 +193,7 @@ pub fn aggregate_source_health(events_newest_first: &[Event]) -> Vec<SourceHealt
             ever_yielded: false,
             consecutive_zero_yield: 0,
             zero_yield_streak_open: true,
+            newest_event_at: ev.ts,
         });
 
         // Yield-drift tracking scans the FULL window regardless of the
@@ -191,6 +231,7 @@ pub fn aggregate_source_health(events_newest_first: &[Event]) -> Vec<SourceHealt
             last_error: acc.last_error,
             ever_yielded: acc.ever_yielded,
             consecutive_zero_yield: acc.consecutive_zero_yield,
+            newest_event_at: acc.newest_event_at,
         })
         .collect();
     out.sort_by(|a, b| a.module.cmp(&b.module));
@@ -200,7 +241,8 @@ pub fn aggregate_source_health(events_newest_first: &[Event]) -> Vec<SourceHealt
 /// The set of module names whose parser has **provably gone dead** — either
 /// hard-drifted ([`SourceHealth::is_drifted`]: ≥[`DRIFTED_THRESHOLD`] trailing
 /// errors) or yield-drifted ([`SourceHealth::is_yield_drifted`]: a proven-
-/// capable source silently returning zero for ≥[`YIELD_DRIFT_THRESHOLD`] runs).
+/// capable source silently returning zero for ≥[`YIELD_DRIFT_THRESHOLD`] runs)
+/// — and not [`SourceHealth::quarantine_expired`].
 ///
 /// This is the signal **capability-aware dispatch** acts on: a scan skips these
 /// modules so their dispatch slot goes to a source that still works — the
@@ -209,15 +251,32 @@ pub fn aggregate_source_health(events_newest_first: &[Event]) -> Vec<SourceHealt
 /// slice, so it is unit-testable without a DB and shares one definition of
 /// "dead" between the engine and any diagnostics that report the quarantine.
 ///
-/// **Self-recovering by construction:** both drift predicates reset on the first
-/// success walking back from "now", so once a quarantined module emits a single
-/// healthy `ModuleDone` it drops out of this set on the very next scan — no
-/// timer, no manual reset. Until then it stays skipped, which is the point.
+/// **Recovers two ways.** The fast path: both drift predicates reset on the
+/// first success walking back from "now", so a module that *does* get
+/// dispatched (an explicit `--modules`/`--full` run bypasses this gate
+/// entirely) and succeeds drops out on the very next scan. The backstop:
+/// under the DEFAULT automatic sweep a quarantined module is never
+/// dispatched, so it can never emit that success event on its own — which is
+/// exactly why [`SourceHealth::quarantine_expired`] exists: after
+/// [`DRIFT_RETRY_TTL_SECS`] of silence the module is un-quarantined for one
+/// real attempt regardless of its still-unresolved streak, and that
+/// attempt's outcome then drives the next verdict.
 #[must_use]
 pub fn quarantined_modules(health: &[SourceHealth]) -> std::collections::HashSet<String> {
+    quarantined_modules_at(health, crate::core::entity::unix_now())
+}
+
+/// [`quarantined_modules`] against an explicit `now` — pure and
+/// unit-testable without the wall clock, matching this crate's convention
+/// for time-aware pure functions (see `core::engine::circuit`).
+#[must_use]
+pub fn quarantined_modules_at(
+    health: &[SourceHealth],
+    now: u64,
+) -> std::collections::HashSet<String> {
     health
         .iter()
-        .filter(|h| h.is_drifted() || h.is_yield_drifted())
+        .filter(|h| (h.is_drifted() || h.is_yield_drifted()) && !h.quarantine_expired(now))
         .map(|h| h.module.clone())
         .collect()
 }
@@ -468,7 +527,12 @@ mod tests {
             err("s2", 120, "borderline", "500"),
             err("s1", 115, "borderline", "500"),
         ];
-        let q = quarantined_modules(&aggregate_source_health(&events));
+        let health = aggregate_source_health(&events);
+        // `now` shortly after the newest event — well inside
+        // DRIFT_RETRY_TTL_SECS, so the TTL backstop (covered separately
+        // below) doesn't interfere with this test's actual subject: the
+        // drift predicates themselves.
+        let q = quarantined_modules_at(&health, 400);
         assert!(q.contains("hard_dead"), "hard-drift must quarantine");
         assert!(q.contains("parse_broken"), "yield-drift must quarantine");
         assert!(
@@ -487,5 +551,51 @@ mod tests {
         // The invariant capability-aware dispatch relies on for zero behaviour
         // change on a fresh DB: no events → nothing quarantined.
         assert!(quarantined_modules(&aggregate_source_health(&[])).is_empty());
+    }
+
+    // ── Quarantine TTL backstop ──────────────────────────────────────────
+    // Under the default automatic sweep a quarantined module is never
+    // dispatched, so it can never emit the success event that would clear
+    // it on its own — without a TTL, three consecutive failures would be a
+    // PERMANENT suppression rather than "self-recovering". These tests
+    // guard the backstop that ends that stalemate.
+
+    #[test]
+    fn quarantine_expired_is_false_just_under_the_ttl_and_true_at_it() {
+        let events = vec![
+            err("s3", 1_000, "long_dead", "500"),
+            err("s2", 990, "long_dead", "500"),
+            err("s1", 980, "long_dead", "500"),
+        ];
+        let health = aggregate_source_health(&events);
+        assert_eq!(health[0].newest_event_at, 1_000);
+        assert!(health[0].is_drifted());
+        assert!(!health[0].quarantine_expired(1_000 + DRIFT_RETRY_TTL_SECS - 1));
+        assert!(health[0].quarantine_expired(1_000 + DRIFT_RETRY_TTL_SECS));
+    }
+
+    #[test]
+    fn a_stale_quarantine_expires_and_gets_one_more_real_attempt() {
+        // hard-drifted at ts=330 (newest event for this module), same as
+        // the collects_hard_and_yield_drift_only fixture above.
+        let events = vec![
+            err("s3", 330, "long_dead", "500"),
+            err("s2", 320, "long_dead", "500"),
+            err("s1", 310, "long_dead", "500"),
+        ];
+        let health = aggregate_source_health(&events);
+
+        let still_quarantined = quarantined_modules_at(&health, 330 + DRIFT_RETRY_TTL_SECS - 1);
+        assert!(
+            still_quarantined.contains("long_dead"),
+            "quarantine holds while still within the TTL"
+        );
+
+        let after_ttl = quarantined_modules_at(&health, 330 + DRIFT_RETRY_TTL_SECS);
+        assert!(
+            !after_ttl.contains("long_dead"),
+            "a stale quarantine must expire so a module the default sweep \
+             would otherwise never re-dispatch gets a real retry"
+        );
     }
 }

@@ -503,9 +503,10 @@ pub async fn scan_delete(
             .into_response();
     }
     // `delete_scan` is a multi-table cascade transaction (scans, correlations,
-    // observations, events, relations, stealer_rows, entities + FTS sync) under
-    // the global connection mutex — the heaviest write in the API. Run it off the
-    // reactor so a large-scan delete can't stall unrelated requests.
+    // observations, events, relations, scan_analysis, stealer_rows,
+    // rf_sightings, entities + FTS sync) under the global connection mutex —
+    // the heaviest write in the API. Run it off the reactor so a large-scan
+    // delete can't stall unrelated requests.
     let store = Arc::clone(&s.store);
     let id_db = id.clone();
     match super::offload_store(move || store.delete_scan(&id_db)).await {
@@ -670,9 +671,17 @@ pub async fn scan_import(
             // Run the correlator so cross-entry handle-reuse / breach clusters
             // surface exactly as they would for a live scan. Best-effort: a
             // correlator hiccup must not fail an otherwise-successful import.
-            let correlator = crate::core::correlator::Correlator::new(Arc::clone(&store));
+            // Route through the canonical panic guard (`guarded_correlation_pass`),
+            // exactly as the CLI import path (`app::persist`) does — a correlator
+            // rule panicking on adversarial imported entities must degrade to "no
+            // correlations", not unwind the import after the entities were already
+            // committed. (`Correlator::run` was left unguarded ONLY on this API path.)
             let mut correlations = 0usize;
-            if let Ok(hits) = correlator.run(&sid2) {
+            let guard_store = Arc::clone(&store);
+            let sid_run = sid2.clone();
+            if let Some(hits) = crate::core::engine::guarded_correlation_pass(&sid2, move || {
+                crate::core::correlator::Correlator::new(guard_store).run(&sid_run)
+            }) {
                 for c in &hits {
                     if store.upsert_correlation(c).is_ok() {
                         correlations += 1;

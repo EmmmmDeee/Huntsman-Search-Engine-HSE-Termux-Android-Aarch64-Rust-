@@ -156,3 +156,68 @@ use super::*;
             addr1.evidence
         );
     }
+
+    /// Sibling of the test above for the gap it didn't cover: the SAME local
+    /// part on two DIFFERENT domains (real aliases of one person across
+    /// providers — a common OSINT pattern, e.g. `erik.johansson@gmail.com` /
+    /// `erik.johansson@hotmail.com`) used to produce a byte-identical evidence
+    /// summary (local part only, no domain) and so ALSO collapsed to one entry
+    /// on merge — silently blocking AU-083 from a genuine two-provider
+    /// corroboration exactly like the distinct-local-part case above.
+    #[tokio::test]
+    async fn two_emails_sharing_a_local_part_on_different_domains_both_survive_the_merge() {
+        let (bus, _rx) = tokio::sync::broadcast::channel(1);
+        let ctx = ModuleContext {
+            scan_id: "s".into(),
+            bus,
+            http: reqwest::Client::new(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+
+        // The SAME person's alias on two providers — identical local part,
+        // different domain.
+        let r1 = EmailLocale
+            .process(
+                &Target::new(TargetKind::Email, "erik.johansson@example.com"),
+                &ctx,
+            )
+            .await
+            .expect("should succeed");
+        let r2 = EmailLocale
+            .process(
+                &Target::new(TargetKind::Email, "erik.johansson@example.net"),
+                &ctx,
+            )
+            .await
+            .expect("should succeed");
+
+        let mut addr1 = r1
+            .entities
+            .into_iter()
+            .find(|e| e.kind == EntityKind::Address && e.has_tag("locale-inferred"))
+            .expect("erik.johansson@example.com must produce a locale-inferred Address entity");
+        let addr2 = r2
+            .entities
+            .into_iter()
+            .find(|e| e.kind == EntityKind::Address && e.has_tag("locale-inferred"))
+            .expect("erik.johansson@example.net must produce a locale-inferred Address entity");
+        assert_eq!(
+            addr1.uid, addr2.uid,
+            "both emails must resolve to the SAME region/uid — the scenario AU-083 corroborates"
+        );
+
+        addr1.merge(addr2);
+        let locale_count = addr1
+            .evidence
+            .iter()
+            .filter(|ev| ev.source == "email_locale")
+            .count();
+        assert_eq!(
+            locale_count, 2,
+            "two DISTINCT emails sharing a local part on different domains must both survive the \
+             merge as separate evidence entries, or AU-083 can never fire on a real two-provider \
+             alias corroboration: {:?}",
+            addr1.evidence
+        );
+    }

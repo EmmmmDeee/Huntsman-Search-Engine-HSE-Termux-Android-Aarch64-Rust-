@@ -18,6 +18,10 @@ mod templates; // `impl Store`: cross-scan pathway-template learning
 pub use entities::EvidenceAnomaly;
 pub use signal::{RfDeviceRow, RfSummary};
 
+/// The SQLite WAL-backed persistence layer.
+///
+/// One `Store` owns one connection behind a mutex; every scan, entity,
+/// correlation, relation and event for the whole application flows through it.
 pub struct Store {
     conn: Mutex<Connection>,
 }
@@ -444,6 +448,8 @@ fn deserialize_rows<T: serde::de::DeserializeOwned>(raw: Vec<String>, context: &
 }
 
 impl Store {
+    /// Open (creating if absent) the database at `path`, applying the pragmas
+    /// and the `CREATE … IF NOT EXISTS` schema, then stamping `SCHEMA_VERSION`.
     pub fn open(path: &str) -> Result<Self> {
         // Performance pragmas are env-tunable (low-RAM Termux devices may want a
         // smaller page cache / mmap); the schema itself is static (SCHEMA_DDL).
@@ -586,6 +592,7 @@ impl Store {
 
     // ── Scans ──────────────────────────────────────────────────────────────
 
+    /// Insert `scan`, or update every mutable column when its id already exists.
     pub fn upsert_scan(&self, scan: &Scan) -> Result<()> {
         let json = serde_json::to_string(scan)?;
         let conn = self.conn.lock();
@@ -641,10 +648,14 @@ impl Store {
             .map_err(Into::into)
     }
 
+    /// The scan with this id, or `None` when no such row exists. A corrupt
+    /// `data_json` on a matched row is an `Err`, never a silent `None`.
     pub fn get_scan(&self, id: &str) -> Result<Option<Scan>> {
         self.query_one_json("SELECT data_json FROM scans WHERE id = ?1", params![id])
     }
 
+    /// The most recent `limit` scans, newest first, with a deterministic
+    /// tie-break for scans sharing a start second.
     pub fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
         let raw: Vec<String> = {
             let conn = self.conn.lock();
@@ -1005,6 +1016,16 @@ impl Store {
         // table grow unbounded. A cascade delete must reach it too.
         tx.execute(
             "DELETE FROM stealer_rows WHERE scan_id = ?1",
+            params![scan_id],
+        )?;
+        // `rf_sightings` is scan-scoped exactly like stealer_rows and carries
+        // device MAC addresses, GPS fixes, and signal strength from a WiGLE
+        // import or a local radar sweep. It has no other prune path, so
+        // omitting it here left an operator's own wardriving/counter-
+        // surveillance data live on disk indefinitely after they explicitly
+        // deleted the scan that captured it.
+        tx.execute(
+            "DELETE FROM rf_sightings WHERE scan_id = ?1",
             params![scan_id],
         )?;
         // FTS sync: a contentless-external FTS5 index never observes a bare

@@ -219,7 +219,13 @@ pub(in crate::core::correlator) fn rule_au_027_address_coordinates_chain(
     let entities = context.entities();
     let addresses: Vec<&Entity> = entities_of_kind(entities, EntityKind::Address)
         .into_iter()
-        .filter(|e| e.confidence >= 0.55)
+        // Gate on `is_infrastructure_geo` like the sibling geo rules
+        // (AU-018/026/030) and like the `coords` filter just below — without
+        // it, a WHOIS-registrant/hosting address (a company's filing address,
+        // not the subject's home) rides into `entity_uids` unfiltered,
+        // fusing it into a "validated geolocation chain" anchored on the
+        // subject's real, unrelated coordinate cluster.
+        .filter(|e| e.confidence >= 0.55 && !is_infrastructure_geo(e))
         .collect();
     let coords: Vec<&Entity> = entities_of_kind(entities, EntityKind::Coordinates)
         .into_iter()

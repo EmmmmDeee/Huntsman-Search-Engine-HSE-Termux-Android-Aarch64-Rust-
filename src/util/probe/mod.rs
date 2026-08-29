@@ -53,6 +53,43 @@ pub enum ProbeResult {
     Error,
 }
 
+/// Classify a response status that did **not** match a site's declared presence
+/// code into the outcome it actually supports.
+///
+/// The probe modules previously had no such step: anything other than
+/// `status == want` became [`ProbeResult::NotFound`], so a Cloudflare `403`, a
+/// `429` rate-limit and a `503` outage were each recorded as a *definitive*
+/// "this handle does not exist on this platform". Those runs then fed
+/// `definitive_absent`, and [`inconclusive`] — the guard that exists precisely
+/// to stop a blocked sweep being read as a confirmed absence — never saw them.
+/// A fully WAF-blocked sweep reported a clean, confident zero.
+///
+/// The rule, given the site's own equality check has already failed:
+///
+/// * `404` / `410` — the web's actual absence answers. Definitive.
+/// * `2xx` — the origin answered successfully, just not with this site's
+///   presence code. Definitive: the platform served us a page about this
+///   handle and it was not a profile.
+/// * everything else — `401`/`403` (login wall, WAF), `405` (refuses HEAD),
+///   `408`/`429` (timeout, throttle), `451`, every `5xx`, any surfacing `3xx`
+///   (the client follows redirects, so one reaching here means the SSRF guard
+///   declined it) and every `1xx` — established nothing about the handle.
+///   Inconclusive.
+///
+/// **Ordering matters**: this is consulted only *after* `status == want` has
+/// failed, so a site whose declared presence signal is itself a `403` or `404`
+/// never has that code reinterpreted here.
+///
+/// Pure, so the policy is verifiable without a network.
+#[must_use]
+pub fn classify_non_matching_status(status: u16) -> ProbeResult {
+    match status {
+        404 | 410 => ProbeResult::NotFound,
+        200..=299 => ProbeResult::NotFound,
+        _ => ProbeResult::Error,
+    }
+}
+
 /// True when a zero-hit run is *inconclusive* rather than a confirmed absence:
 /// nothing was found AND at least half the probes were blocked or unreachable,
 /// so most sites never gave a definitive answer. Pure, so the M6 disambiguation

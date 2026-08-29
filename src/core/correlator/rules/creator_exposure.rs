@@ -72,6 +72,13 @@ pub(in crate::core::correlator) fn rule_au_120_monetized_creator_exposure(
     }
 
     let n = platforms.len().max(1);
+    // The finding is sized on distinct PLATFORMS (a broad footprint across
+    // platforms is the escalation signal), but `uids` — the entity count the
+    // finding actually cites — can exceed it: the same platform discovered
+    // under two different handles is two Url entities and one platform. Report
+    // both counts explicitly rather than mislabelling the entity count as the
+    // (possibly smaller) platform count.
+    let profile_count = uids.len();
     let severity = if n >= 3 {
         Severity::High
     } else {
@@ -95,10 +102,11 @@ pub(in crate::core::correlator) fn rule_au_120_monetized_creator_exposure(
         "Monetized/adult-content creator exposure",
         severity,
         format!(
-            "Subject holds {n} confirmed subscription-creator / webcam / adult-content \
-             profile(s): {listed}{suffix} — a deliberate, identity-linked footprint tied to a real \
-             name and payout details through the platform's payment / KYC / age verification, and \
-             a significant real-identity, financial-attribution and personal-safety exposure.",
+            "Subject holds {profile_count} confirmed subscription-creator / webcam / \
+             adult-content profile(s) across {n} platform(s): {listed}{suffix} — a deliberate, \
+             identity-linked footprint tied to a real name and payout details through the \
+             platform's payment / KYC / age verification, and a significant real-identity, \
+             financial-attribution and personal-safety exposure.",
         ),
         uids,
         scan_id,
@@ -158,6 +166,28 @@ mod tests {
             rule_au_120_monetized_creator_exposure(&ctx, "s", 0).is_empty(),
             "a status-only creator hit is not a confirmed profile"
         );
+    }
+
+    #[test]
+    fn au120_counts_two_handles_on_one_platform_as_two_profiles() {
+        // Two independently-confirmed accounts under different handles on the
+        // SAME platform: one platform, but two distinct profiles/entities. The
+        // description's profile count must reflect the entity count (2), not
+        // silently collapse to the platform count (1).
+        let ents = [
+            creator_profile("https://onlyfans.com/rhino", "OnlyFans", "fans", true),
+            creator_profile("https://onlyfans.com/rhino2", "OnlyFans", "fans", true),
+        ];
+        let ctx = RuleContext::new(&ents);
+        let out = rule_au_120_monetized_creator_exposure(&ctx, "s", 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].entity_uids.len(), 2);
+        assert!(
+            out[0].description.contains("2 confirmed"),
+            "two distinct profiles on one platform must report a profile count of 2: {}",
+            out[0].description
+        );
+        assert!(out[0].description.contains("1 platform"));
     }
 
     #[test]

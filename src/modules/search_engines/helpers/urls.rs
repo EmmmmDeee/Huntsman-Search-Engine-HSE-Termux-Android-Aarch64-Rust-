@@ -3,6 +3,7 @@
 //! Reaches the other helper groups and shared imports through `use super::*`.
 
 use super::*;
+use crate::util::url_util::is_tracking_param_key;
 
 pub(in crate::modules::search_engines) fn extract_path_username(url: &str) -> Option<String> {
     let parsed = url::Url::parse(url).ok()?;
@@ -623,46 +624,27 @@ pub(in crate::modules::search_engines) fn dedup_results(
 
 /// Dedup / cross-engine-corroboration KEY for a result URL (the stored URL is
 /// never altered). Drops the fragment, a trailing slash, and known
-/// tracking/analytics query params — but KEEPS content-bearing params, so
-/// distinct pages such as `…/watch?v=A` vs `…/watch?v=B` or `…?id=1` vs `…?id=2`
-/// are not collapsed into one (collapsing them would silently *omit* real
-/// results). Kept params are sorted so param order can't defeat dedup.
+/// tracking/analytics query params (via the shared
+/// [`crate::util::url_util::is_tracking_param_key`] — the same denylist
+/// `core::entity`'s `Url` UID normalisation strips, so a URL is never treated
+/// as tracking-tagged here but content-distinct there or vice versa) — but
+/// KEEPS content-bearing params, so distinct pages such as `…/watch?v=A` vs
+/// `…/watch?v=B` or `…?id=1` vs `…?id=2` are not collapsed into one
+/// (collapsing them would silently *omit* real results). Kept params are
+/// sorted so param order can't defeat dedup.
 pub(in crate::modules::search_engines) fn canonicalize_url(url: &str) -> String {
     let url = url.split('#').next().unwrap_or(url); // drop fragment first
     let (base, query) = url.split_once('?').map_or((url, ""), |(b, q)| (b, q));
     let base = base.trim_end_matches('/');
     let mut kept: Vec<&str> = query
         .split('&')
-        .filter(|kv| !kv.is_empty() && !is_tracking_param(kv.split('=').next().unwrap_or(kv)))
+        .filter(|kv| !kv.is_empty() && !is_tracking_param_key(kv.split('=').next().unwrap_or(kv)))
         .collect();
     if kept.is_empty() {
         return base.to_string();
     }
     kept.sort_unstable();
     format!("{base}?{}", kept.join("&"))
-}
-
-/// Known click-tracking / analytics query params that have no bearing on which
-/// page a URL addresses — stripped from [`canonicalize_url`]'s key so the same
-/// page tagged with different campaign params dedups, while content params
-/// (`v`, `id`, `q`, `page`, …) are preserved.
-fn is_tracking_param(key: &str) -> bool {
-    let k = key.to_ascii_lowercase();
-    k.starts_with("utm_")
-        || matches!(
-            k.as_str(),
-            "fbclid"
-                | "gclid"
-                | "gclsrc"
-                | "dclid"
-                | "msclkid"
-                | "yclid"
-                | "mc_cid"
-                | "mc_eid"
-                | "igshid"
-                | "_ga"
-                | "_gl"
-        )
 }
 
 pub(in crate::modules::search_engines) fn extract_registrable(host: &str) -> String {
@@ -692,34 +674,50 @@ mod tests {
         assert!(!is_web_stopword("profile"));
     }
 
-    // ── is_tracking_param ────────────────────────────────────────────────────
+    // ── is_tracking_param_key (shared with core::entity — see util::url_util) ──
 
     #[test]
     fn is_tracking_param_matches_utm_and_click_ids() {
         // Any `utm_*` campaign param.
-        assert!(is_tracking_param("utm_source"));
-        assert!(is_tracking_param("utm_medium"));
+        assert!(is_tracking_param_key("utm_source"));
+        assert!(is_tracking_param_key("utm_medium"));
         // Known click-tracking / analytics ids.
         for k in [
             "fbclid", "gclid", "gclsrc", "dclid", "msclkid", "yclid", "mc_cid", "mc_eid", "igshid",
             "_ga", "_gl",
         ] {
             assert!(
-                is_tracking_param(k),
+                is_tracking_param_key(k),
                 "expected `{k}` to be a tracking param"
             );
         }
         // Case-insensitive (the key is lowercased first).
-        assert!(is_tracking_param("UTM_SOURCE"));
-        assert!(is_tracking_param("GCLID"));
+        assert!(is_tracking_param_key("UTM_SOURCE"));
+        assert!(is_tracking_param_key("GCLID"));
     }
 
     #[test]
     fn is_tracking_param_allows_content_params() {
         for k in ["id", "q", "v", "page", "query"] {
             assert!(
-                !is_tracking_param(k),
+                !is_tracking_param_key(k),
                 "expected `{k}` to be a content param, not tracking"
+            );
+        }
+    }
+
+    #[test]
+    fn canonicalize_url_now_also_strips_params_the_old_local_list_missed() {
+        // Regression guard for the list-unification: these params were absent
+        // from this module's old standalone `is_tracking_param` but were
+        // already in `core::entity`'s (larger) `URL_TRACKING_PARAMS` — so a
+        // URL varying only in one of them used to dedup as one entity but as
+        // two distinct search results. Now both consumers share one list.
+        for param in ["twclid", "igsh", "mibextid", "vero_id", "spm", "icid"] {
+            assert_eq!(
+                canonicalize_url(&format!("https://example.com/page?id=1&{param}=x")),
+                "https://example.com/page?id=1",
+                "`{param}` should now be stripped as tracking noise"
             );
         }
     }

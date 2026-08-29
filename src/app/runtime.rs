@@ -45,41 +45,21 @@ pub fn build_runtime(bus_capacity: usize) -> Result<ApplicationRuntime> {
     Ok(ApplicationRuntime { store, bus, engine })
 }
 
-/// The operator-facing caveat [`resolve_scan_id`] should print for a
-/// non-`Complete` scan being read for offline analysis (`benchmark`, `export`,
-/// `audit`, `gap`, `diff`) — or `None` when the scan needs no caveat at all.
+/// The operator-facing caveat [`resolve_scan_id`] should print for a scan
+/// being read for offline analysis (`benchmark`, `export`, `audit`, `gap`,
+/// `diff`) — or `None` when the scan needs no caveat at all.
 ///
-/// Pulled out as a pure function so the one real distinction it draws —
-/// `Aborted` is not like the others — is unit-testable directly, without
-/// capturing `stderr`.
-///
-/// [`ScanStatus::Aborted`](crate::core::scan::ScanStatus::Aborted)'s own doc
-/// comment establishes that "entities + correlations produced before the
-/// cancel are persisted as for a `Complete` scan" — an aborted scan has no
-/// writer still racing this read and no more data ever arriving; what's on
-/// disk for it is exactly as final as a `Complete` scan's, just shorter
-/// because the operator chose to stop it. Bucketing it with `Failed` /
-/// `Pending` / `Running` under one "may be incomplete, still recovering
-/// partial/checkpointed data" message was wrong for that one case: those
-/// three genuinely can still change (a crash-recovered partial write, a scan
-/// that hasn't started, one actively being written to), but a completed
-/// abort cannot.
+/// A thin adapter over [`Scan::completeness_caveat`](crate::core::scan::Scan::completeness_caveat),
+/// which is the single source for this wording across every read path. It used
+/// to key off [`ScanStatus`](crate::core::scan::ScanStatus) alone, which meant
+/// it could not see the one case a status cannot express: a scan that reached
+/// `Complete` with its expansion cut short by a budget. Taking the whole `Scan`
+/// lets that case be disclosed too — see
+/// [`StopReason`](crate::core::scan::StopReason).
 #[must_use]
-fn scan_incompleteness_warning(status: crate::core::scan::ScanStatus, raw: &str) -> Option<String> {
-    use crate::core::scan::ScanStatus;
-    match status {
-        ScanStatus::Complete => None,
-        ScanStatus::Aborted => Some(format!(
-            "⚠ scan {raw} was stopped early by the operator (aborted) — entities from \
-             modules that completed before the stop are final; no further data will \
-             arrive for this scan"
-        )),
-        other => Some(format!(
-            "⚠ scan {raw} is {status}, not complete — recovering its checkpointed \
-             (partial) entities; results may be incomplete",
-            status = other.as_str()
-        )),
-    }
+fn scan_incompleteness_warning(scan: &crate::core::scan::Scan, raw: &str) -> Option<String> {
+    scan.completeness_caveat(&format!("scan {raw}"))
+        .map(|c| format!("⚠ {c}"))
 }
 
 /// Resolve `latest` or validate an explicit scan id for read-oriented use cases.
@@ -93,7 +73,7 @@ pub fn resolve_scan_id(store: &Store, raw: &str) -> Result<String> {
         // are final" caveat the explicit-id path below prints, so resolving
         // `latest` never silently hands back partial-looking data without the
         // note. `Complete` yields no warning.
-        if let Some(warning) = scan_incompleteness_warning(scan.status, "latest") {
+        if let Some(warning) = scan_incompleteness_warning(&scan, "latest") {
             eprintln!("{warning}");
         }
         return Ok(scan.id);
@@ -102,7 +82,7 @@ pub fn resolve_scan_id(store: &Store, raw: &str) -> Result<String> {
     match store.get_scan(raw)? {
         None => Err(Error::Other(format!("scan {raw} not found"))),
         Some(scan) => {
-            if let Some(warning) = scan_incompleteness_warning(scan.status, raw) {
+            if let Some(warning) = scan_incompleteness_warning(&scan, raw) {
                 eprintln!("{warning}");
             }
             Ok(raw.to_string())
@@ -113,7 +93,22 @@ pub fn resolve_scan_id(store: &Store, raw: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{ApplicationRuntime, scan_incompleteness_warning};
-    use crate::core::scan::ScanStatus;
+    use crate::core::scan::{Scan, ScanStatus, StopReason, Target, TargetKind};
+
+    /// A terminal scan in `status`, with no expansion-stop reason recorded —
+    /// i.e. exactly what every scan row written before `stop_reason` existed
+    /// deserialises to.
+    fn scan_with(status: ScanStatus) -> Scan {
+        let mut s = Scan::new(
+            "s1",
+            Target {
+                kind: TargetKind::Email,
+                value: "a@b.test".into(),
+            },
+        );
+        s.status = status;
+        s
+    }
 
     #[test]
     fn application_runtime_is_publicly_nameable() {
@@ -124,7 +119,7 @@ mod tests {
     #[test]
     fn scan_incompleteness_warning_is_silent_for_a_complete_scan() {
         assert_eq!(
-            scan_incompleteness_warning(ScanStatus::Complete, "s1"),
+            scan_incompleteness_warning(&scan_with(ScanStatus::Complete), "s1"),
             None
         );
     }
@@ -137,7 +132,7 @@ mod tests {
         // Complete scan's. The message must say so, and must NOT reuse the
         // generic "recovering checkpointed (partial) entities" framing that
         // fits Failed/Pending/Running but actively misleads for Aborted.
-        let msg = scan_incompleteness_warning(ScanStatus::Aborted, "s1")
+        let msg = scan_incompleteness_warning(&scan_with(ScanStatus::Aborted), "s1")
             .expect("an aborted scan still gets a caveat — it stopped early");
         assert!(
             msg.contains("stopped early") && msg.contains("final"),
@@ -157,7 +152,7 @@ mod tests {
         // "may be incomplete" framing is correct for exactly these three,
         // and must survive unchanged.
         for status in [ScanStatus::Failed, ScanStatus::Pending, ScanStatus::Running] {
-            let msg = scan_incompleteness_warning(status, "s1")
+            let msg = scan_incompleteness_warning(&scan_with(status), "s1")
                 .unwrap_or_else(|| panic!("{status:?} must still produce a caveat"));
             assert!(
                 msg.contains("may be incomplete") && msg.contains("checkpointed"),
@@ -166,6 +161,55 @@ mod tests {
             assert!(
                 msg.contains(status.as_str()),
                 "{status:?} message must name the actual status: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_budget_truncated_complete_scan_is_disclosed_not_reported_as_whole() {
+        // The defect this pins: a scan cut off by `max_entities` /
+        // `max_wall_time_secs` reaches ScanStatus::Complete like any other, so
+        // keying the caveat off status alone reported it as a complete answer.
+        // An analyst reading "complete" concludes the absent result does not
+        // exist; the truth is only that the search stopped.
+        for reason in [StopReason::MaxEntities(500), StopReason::MaxWallTime(60)] {
+            let mut scan = scan_with(ScanStatus::Complete);
+            scan.stop_reason = Some(reason);
+            let msg = scan_incompleteness_warning(&scan, "s1")
+                .unwrap_or_else(|| panic!("{reason:?} must be disclosed, not silent"));
+            assert!(
+                msg.contains("TRUNCATED"),
+                "{reason:?} must be named as a truncation: {msg}"
+            );
+            assert!(
+                msg.contains("not evidence"),
+                "{reason:?} must warn that absence here is not evidence of absence: {msg}"
+            );
+            assert!(
+                msg.contains(&reason.label()),
+                "{reason:?} must name the budget that cut it short: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_benignly_stopped_complete_scan_stays_silent() {
+        // The other half of the guarantee: exhausting the candidate frontier or
+        // running every requested depth round is a COMPLETE answer, and must
+        // not acquire a scary caveat. `None` (an old row, or a depth-0 scan
+        // that ran no expansion) must stay silent too — never invent a warning
+        // on no evidence.
+        for reason in [
+            None,
+            Some(StopReason::NoMoreCandidates),
+            Some(StopReason::DepthExhausted),
+        ] {
+            let mut scan = scan_with(ScanStatus::Complete);
+            scan.stop_reason = reason;
+            assert_eq!(
+                scan_incompleteness_warning(&scan, "s1"),
+                None,
+                "{reason:?} is a complete answer and must not be caveated"
             );
         }
     }

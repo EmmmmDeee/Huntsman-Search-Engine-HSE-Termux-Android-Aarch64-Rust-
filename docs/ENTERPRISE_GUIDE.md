@@ -1,151 +1,39 @@
-# See-Know Enterprise Features Guide
-**Status:** Phase 2.4 (To-Be Implemented)
+# See-Know Enterprise Features — Planning Reference (Not Implemented)
+
+> **⚠️ Not implemented — never built.** The three `/enterprise/discord/*`
+> endpoints this guide documents are Enterprise-plan-gated and, per
+> `docs/SEEKNOW_SETUP.md`'s endpoint reference table, were never built: no
+> code in `src/modules/see_know/` calls them. Their 5-credit prices below are
+> real (tracked in `ENDPOINT_COSTS`, `src/util/see_know/config.rs`, for
+> budgeting purposes and CI-checked against this doc), but the "automatically
+> detects enterprise tier" language some earlier versions of this guide used
+> describes a dispatch path that does not exist — nothing below can currently
+> be exercised against a live scan; `hse doctor` reports no tier-detection
+> status, and no `PlanTier`/tier-detection code exists anywhere in `src/`.
 
 ## Overview
 This guide covers enterprise-only features in the See-Know module, including Discord history export, raw message access, and advanced reporting.
 
-## Enterprise Plan Tier
+## What the See-Know Enterprise plan advertises
 
-### Features Included
-- [ ] `/enterprise/discord/history` — Historical Discord conversation archive
-- [ ] `/enterprise/discord/messages` — Raw message content export
-- [ ] `/enterprise/discord/export` — Packaged ZIP export with metadata
-- [ ] Advanced cascade resolution (up to 5 hops)
-- [ ] Priority support queue
-- [ ] Custom SLA (99.9% uptime)
-- [ ] 5,000 daily credits (vs. 1,000 pro)
+Per the vendor's own plan tiers, an Enterprise subscription adds:
+- `/enterprise/discord/history` — historical Discord conversation archive
+- `/enterprise/discord/messages` — raw message content export
+- `/enterprise/discord/export` — packaged ZIP export with metadata
+- Advanced cascade resolution, priority support, a custom SLA, and a higher
+  daily credit allowance than the Pro tier
 
-### Pricing
-- Standard enterprise plan: Contact sales
-- Volume discounts available for 10M+ queries/month
+None of this is wired into HSE. If you have an Enterprise-tier SeekNow key
+today, HSE will not dispatch these endpoints for you — you would need to
+call them yourself outside HSE.
 
-## Upgrade Process
+## Credit cost reference (if/when built)
 
-### Step 1: Purchase Enterprise Plan
-1. Visit https://see-know.ru/plans
-2. Select "Enterprise" tier
-3. Provide billing information
-4. Receive new API key (seek-...)
+These are the vendor's advertised per-call credit costs, kept here so this
+document stays useful as a planning reference; they're checked against
+this repo's own `ENDPOINT_COSTS` table by `tests/doc_drift.rs`, so they
+won't silently drift from whatever HSE's config says:
 
-### Step 2: Activate in HSE
-```bash
-# Update API key
-echo 'HUNTSMAN_SEEKNOW_KEY=seek-your-enterprise-key' >> ~/.huntsman.env
-
-# Verify tier detection
-hse doctor
-# Look for "SeekNow account: Enterprise ✓"
-```
-
-## Discord History Export
-
-### Use Case
-Export complete Discord conversation history for security investigation, compliance, or account recovery.
-
-### Example: Query Discord History
-```bash
-hse scan --value discord-user-id-123456789
-# Automatically detects enterprise tier
-# Includes /enterprise/discord/history in cascade
-```
-
-### API Details
-- **Endpoint:** `GET /enterprise/discord/history`
-- **Cost:** 5 credits per user
-- **Latency:** ~10-15 seconds
-- **Response:** Conversation list with timestamps and participant info
-
-### Response Format
-```json
-{
-  "discord_id": "123456789",
-  "history": [
-    {
-      "channel_id": "...",
-      "channel_name": "...",
-      "message_count": 1234,
-      "date_range": ["2023-01-01", "2024-07-22"],
-      "participants": ["user1", "user2", ...],
-      "preview": "Last 3 messages..."
-    }
-  ]
-}
-```
-
-## Raw Message Export
-
-### Use Case
-Extract raw message content for threat intelligence, anomaly detection, or credential discovery.
-
-### API Details
-- **Endpoint:** `GET /enterprise/discord/messages`
-- **Cost:** 5 credits per user (+ per message payload)
-- **Latency:** ~15-20 seconds
-- **Response:** Message list with full content
-
-### Example Response
-```json
-{
-  "discord_id": "123456789",
-  "messages": [
-    {
-      "message_id": "...",
-      "channel": "...",
-      "author": "...",
-      "timestamp": "2024-07-20T15:30:00Z",
-      "content": "API key: sk-ant-...redacted...",
-      "attachments": [...]
-    }
-  ]
-}
-```
-
-### Automatic Extraction
-HSE automatically extracts from message content:
-- Email addresses
-- Phone numbers
-- API keys (80+ patterns recognized)
-- URLs and domains
-- Cryptocurrency addresses
-
-## ZIP Export Workflow
-
-### Use Case
-Download complete Discord account archive for offline analysis or compliance records.
-
-### API Details
-- **Endpoint:** `GET /enterprise/discord/export`
-- **Cost:** 5 credits per user
-- **Latency:** ~20-30 seconds
-- **Response:** ZIP download URL
-
-### Contents
-```
-discord-export-123456789.zip
-├── metadata.json
-│   ├── account_id
-│   ├── export_date
-│   ├── total_messages
-│   ├── date_range
-│   └── channels
-├── conversations/
-│   ├── channel-1/
-│   │   ├── messages.csv
-│   │   ├── attachments/
-│   │   └── metadata.json
-│   └── ...
-├── entities.json (extracted API keys, emails, etc.)
-└── summary.txt
-```
-
-## Budget Management for Enterprise
-
-### Daily Credits Allocation
-- Free: 300 credits/day
-- Pro: 1,000 credits/day
-- Enterprise: 5,000 credits/day
-
-### Cost Breakdown
 ```
 /search: 1 credit
 /search/deep: 1 credit (if fast /search returned empty)
@@ -156,61 +44,29 @@ discord-export-123456789.zip
 /enterprise/discord/export: 5 credits ← enterprise only
 ```
 
-### Optimization Tips
-1. Use fast `/search` first, fallback to `/search/deep` only on miss
-2. Batch similar targets to maximize cache hits
-3. Limit cascade depth (3 hops default, tunable)
-4. Schedule bulk operations during low-traffic windows
+Daily credit allocation the vendor advertises by tier: Free 300/day, Pro
+1,000/day, Enterprise 5,000/day (contact the vendor for current pricing —
+see https://see-know.ru/plans).
 
-## SLA & Support
+## If you want to use these endpoints today
 
-### Enterprise SLA
-- **Uptime:** 99.9% (max 43 minutes/month downtime)
-- **Response Time:** p95 <10s for fast endpoints, <45s for /search/deep
-- **Support:** Priority email queue, <2 hour response time
+Since HSE doesn't dispatch them, you'd call the See-Know API directly with
+your Enterprise key and your own HTTP client, outside HSE. See the vendor's
+own documentation for the current request/response shapes — this repo makes
+no claim about them since nothing here has been built or tested against
+them.
 
-### Monitoring
-Check service status:
-```bash
-hse scan --value "status-check"
-# Returns: Service health for integrated data sources
-```
+## Notes for whoever implements this
 
-### Escalation
-- Outage/Critical: Email support@see-know.ru
-- Response time SLA: 1 hour for P1 issues
-
-## Troubleshooting
-
-### "Plan tier verification failed"
-- Ensure API key is up to date
-- Check `hse doctor` for tier detection
-- Verify outbound connectivity to see-know.ru
-
-### "Insufficient credits"
-- Current daily limit: `hse scan --dry-run` to preview cost
-- Upgrade plan or wait for daily reset (UTC midnight)
-
-### "Enterprise endpoint not available"
-- Confirm enterprise tier: `hse doctor`
-- Check API key: `echo $HUNTSMAN_SEEKNOW_KEY`
-- Verify plan tier detection is working
-
-## FAQ
-
-**Q: Can I use Discord history export for GDPR compliance?**
-A: Yes. Export includes all history the user has access to. Note: See-Know only has access to Discord data found in breaches/stealer logs, not live Discord API.
-
-**Q: How often is Discord data updated?**
-A: Weekly from integrated sources (snusbase, leakcheck, intelx). Live Discord API access requires Discord API integration (not currently supported).
-
-**Q: What's the retention period?**
-A: All data is retained for 24 hours in HSE's cache. API responses are never logged or stored beyond your export.
-
-**Q: Can I export multiple Discord users?**
-A: Yes. Costs scale linearly: 5 credits × number of users.
-
----
-
-**Report Generated:** Phase 2.4 (To-Be Implemented)
-**Branch:** claude/see-know-gap-analysis-3yydci
+- `SEEKNOW_SETUP.md` documents the real, currently-dispatched endpoints and
+  their actual priority/dispatch order — start there to see how a new
+  endpoint gets wired into the module.
+- `src/util/see_know/enterprise_config.rs` previously carried hardcoded
+  `daily_limit`/`per_scan_cap` constants for this tier; they were removed
+  because a fixed number is wrong for any operator on a different actual
+  plan — any real implementation needs to read the operator's actual limits
+  from the API, not hardcode the numbers above.
+- No tier-detection code exists (`grep -r PlanTier src/` returns nothing) —
+  that would need to be built from scratch, most likely as a live probe
+  similar to how `hse doctor`'s existing "SeekNow account" section already
+  probes `/credits`.

@@ -106,8 +106,16 @@ pub(super) fn build_entities(user: HexUser, scan_id: &str) -> Vec<Entity> {
         e
     };
 
-    // Confirmed username on hex.pm.
-    let mut e = Entity::new(EntityKind::Username, handle, 0.87, scan_id);
+    // Confirmed username on hex.pm — a single-source, keyless account-existence
+    // lookup, graded at the cohort canon HIGH_PLUSPLUS_PLUS (0.85; OD-19,
+    // matching gitea_user/gitlab_user and its structural siblings npm_author /
+    // huggingface_user, all moved to the same tier).
+    let mut e = Entity::new(
+        EntityKind::Username,
+        handle,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     e.tag("hexpm");
     e.tag("public-profile");
     e.add_evidence(ev());

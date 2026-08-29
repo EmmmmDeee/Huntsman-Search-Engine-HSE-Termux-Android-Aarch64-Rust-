@@ -103,6 +103,64 @@ pub fn shared_resolver() -> &'static TokioResolver {
     })
 }
 
+/// Decode DNS presentation-format escapes in a label: `\DDD` (a decimal byte) or
+/// `\X` (the literal char `X`, covering the common `\.` and `\\`). A trailing
+/// lone `\` is dropped. Per RFC 1035 §3.3.13.
+pub fn unescape_dns_label(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        if i + 3 < bytes.len()
+            && bytes[i + 1..i + 4].iter().all(u8::is_ascii_digit)
+            && let Ok(n) = std::str::from_utf8(&bytes[i + 1..i + 4])
+                .unwrap_or("")
+                .parse::<u16>()
+            && n <= 255
+        {
+            out.push(n as u8);
+            i += 4;
+        } else if i + 1 < bytes.len() {
+            out.push(bytes[i + 1]);
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Convert an SOA RNAME (`local.domain`) into email form, respecting escaped
+/// dots in the local part and stripping a wire-format trailing dot.
+pub fn soa_rname_to_email(rname: &str) -> String {
+    if rname.is_empty() || !rname.contains('.') {
+        return String::new();
+    }
+    let bytes = rname.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'.' {
+            let (local, rest) = rname.split_at(i);
+            let domain = rest[1..].trim_end_matches('.');
+            if local.is_empty() || domain.is_empty() {
+                return String::new();
+            }
+            return format!("{}@{domain}", unescape_dns_label(local));
+        }
+        i += 1;
+    }
+    String::new()
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};

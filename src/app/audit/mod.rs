@@ -99,7 +99,7 @@ fn csv_scan_id_conflict_note(csv_path: &str) -> String {
 /// layouts alike. Unknown/missing columns degrade gracefully.
 fn parse_csv(text: &str) -> Result<Vec<AuditEntity>> {
     // RFC-4180 record reader: HSE's own `entities_to_csv` quotes any field
-    // containing a newline (see `api::scan_export::csv_escape`), so a
+    // containing a newline (see `crate::app::export::csv_escape`), so a
     // line-by-line split tore a single record with multi-line evidence into a
     // truncated row plus fabricated garbage rows. `csv::ReaderBuilder` treats a
     // newline inside a quoted field as data, so one logical record is one row —

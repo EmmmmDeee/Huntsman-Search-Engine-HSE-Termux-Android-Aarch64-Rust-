@@ -26,6 +26,67 @@ fn uid_differs_across_kinds() {
     assert_ne!(e.uid, d.uid);
 }
 
+// ── EntityBuilder equivalence ─────────────────────────────────────────────
+
+#[test]
+fn builder_produces_the_same_entity_as_the_hand_rolled_sequence() {
+    // Hand-rolled: the exact new + tag + tag + add_evidence sequence copied
+    // across the module fleet.
+    let mut hand = Entity::new(EntityKind::Domain, "Example.COM", 0.83, "scan-1");
+    hand.tag("archived");
+    hand.tag("web");
+    hand.add_evidence(
+        Evidence::new("wayback", "3 snapshots")
+            .with_attr("snapshot_count", "3")
+            .with_attr("first_seen", "2020"),
+    );
+
+    // Builder: same inputs, same order.
+    let built = Entity::builder(EntityKind::Domain, "Example.COM", 0.83, "scan-1")
+        .tag("archived")
+        .tag("web")
+        .evidence(
+            Evidence::new("wayback", "3 snapshots")
+                .with_attr("snapshot_count", "3")
+                .with_attr("first_seen", "2020"),
+        )
+        .build();
+
+    // Byte-identical in every observable field (observed_at is a timestamp set
+    // by the constructor in both, so compare the fields the builder governs).
+    assert_eq!(built.uid, hand.uid);
+    assert_eq!(built.kind, hand.kind);
+    assert_eq!(built.value, hand.value); // normalisation preserved
+    assert_eq!(built.raw_value, hand.raw_value);
+    assert!((built.confidence - hand.confidence).abs() < f64::EPSILON);
+    assert_eq!(built.tags, hand.tags); // order + de-dupe preserved
+    assert_eq!(built.evidence.len(), hand.evidence.len());
+    assert_eq!(built.evidence[0].source, hand.evidence[0].source);
+    assert_eq!(built.evidence[0].summary, hand.evidence[0].summary);
+    assert_eq!(built.evidence[0].attributes, hand.evidence[0].attributes);
+}
+
+#[test]
+fn builder_tags_dedupe_and_tags_iter_helper_works() {
+    let e = Entity::builder(EntityKind::Email, "a@b.com", 0.5, "s")
+        .tag("dup")
+        .tags(["dup", "fresh", "fresh"]) // both de-dupe against prior + each other
+        .build();
+    assert_eq!(e.tags, vec!["dup".to_string(), "fresh".to_string()]);
+}
+
+#[test]
+fn builder_push_to_emits_into_module_result() {
+    use crate::core::module::ModuleResult;
+    let mut result = ModuleResult::new();
+    Entity::builder(EntityKind::IpAddress, "1.2.3.4", 0.9, "s")
+        .tag("infra")
+        .push_to(&mut result);
+    assert_eq!(result.entities.len(), 1);
+    assert_eq!(result.entities[0].kind, EntityKind::IpAddress);
+    assert!(result.entities[0].has_tag("infra"));
+}
+
 #[test]
 fn demote_to_candidate_caps_confidence_tags_and_is_idempotent() {
     let mut e = Entity::new(EntityKind::Email, "stranger@example.com", 0.70, "s");
@@ -379,6 +440,99 @@ fn source_count_ignores_stored_field_when_all_evidence_is_noncorroborating() {
         "stays at base confidence, not resurrected to VERIFIED"
     );
     assert_eq!(e.classify(), Classification::Candidate);
+}
+
+#[test]
+fn merging_in_a_derived_duplicate_does_not_drop_an_already_grounded_tier() {
+    // Regression (critical audit): the promotion-source GROUNDING GATE in
+    // source_count() reads `self.has_tag("derived")` fresh on every call, but
+    // that tag is unioned wholesale into `self` by absorb()'s generic tag-merge
+    // loop whenever ANY merged-in duplicate happened to carry it -- regardless
+    // of whether that duplicate contributed anything to REAL evidence. Many
+    // modules (name_intel, url_extract, email_parse, ...) tag their output
+    // "derived" while using an otherwise-weak or non-corroborating source.
+    //
+    // Before this fix: an entity genuinely grounded by ONE independent real
+    // source (crtsh) plus a legitimate multipath_corroboration promotion
+    // record (source_count()==2, C_eff lifted to Verified) could be merged
+    // with an unrelated, same-UID "derived" duplicate carrying only
+    // non-corroborating evidence (name_intel). After the merge, `self`
+    // acquires the "derived" tag, so the gate silently tightens from
+    // real>=1 to real>=2; real is still 1, so grounded flips false and the
+    // promotion evidence stops counting -- source_count() drops from 2 to 1
+    // and the entity's classification falls from Verified to Probable,
+    // directly contradicting Entity::classify's own doc ("a tier can only
+    // ever rise as merges add corroboration") and the "GREATEST-semantics
+    // merge (confidence, corroboration only ever increase)" architecture
+    // invariant.
+    let mut a = Entity::new(EntityKind::Domain, "example.com", 0.65, "scan");
+    a.add_evidence(Evidence::new("crtsh", "cert SAN"));
+    a.add_evidence(Evidence::new(
+        MULTIPATH_CORROBORATION_SOURCE,
+        "linked via 2 pathways",
+    ));
+    assert_eq!(
+        a.source_count(),
+        2,
+        "grounded by crtsh + a legitimate promotion"
+    );
+    assert_eq!(a.classify(), Classification::Verified);
+
+    let mut b = Entity::new(EntityKind::Domain, "example.com", 0.30, "scan");
+    b.tag("derived");
+    b.add_evidence(Evidence::new("name_intel", "Speculative domain guess"));
+    a.merge(b);
+
+    assert_eq!(
+        a.confidence, 0.65,
+        "GREATEST: confidence unaffected (max(0.65,0.30))"
+    );
+    assert_eq!(
+        a.source_count(),
+        2,
+        "merging in a low-value derived duplicate must not un-ground an          already-grounded entity"
+    );
+    assert_eq!(
+        a.classify(),
+        Classification::Verified,
+        "tier must not drop from merging in MORE evidence"
+    );
+}
+
+#[test]
+fn a_genuinely_independent_merge_graduates_a_derived_entity() {
+    // Symmetric case: an entity that started as a pure derivation guess
+    // (real=0, so grounded is false regardless of the gate) is later merged
+    // with a genuinely independently-OBSERVED duplicate of the same value.
+    // The merged entity should graduate out of the stricter "derived" gate —
+    // matching the "candidate" tag's own symmetric promotion rule just above
+    // this code in absorb().
+    let mut guess = Entity::new(EntityKind::Domain, "example.org", 0.30, "scan");
+    guess.tag("derived");
+    guess.add_evidence(Evidence::new("name_intel", "Speculative domain guess"));
+    assert_eq!(
+        guess.source_count(),
+        1,
+        "no real evidence yet, floored at 1"
+    );
+
+    let mut observed = Entity::new(EntityKind::Domain, "example.org", 0.7, "scan");
+    observed.add_evidence(Evidence::new("crtsh", "cert SAN"));
+    observed.add_evidence(Evidence::new(
+        MULTIPATH_CORROBORATION_SOURCE,
+        "linked via 2 pathways",
+    ));
+    guess.merge(observed);
+
+    assert!(
+        !guess.has_tag("derived"),
+        "a genuinely independent merge must graduate the entity out of the          derived gate, exactly as a non-candidate merge clears quarantine"
+    );
+    assert_eq!(
+        guess.source_count(),
+        2,
+        "now real>=1 suffices (non-derived), so the promotion source counts"
+    );
 }
 
 #[test]
@@ -2320,4 +2474,53 @@ fn identifier_kinds_keep_their_pre_existing_uids() {
             "{kind} UID must be unchanged by identity folding"
         );
     }
+}
+
+#[test]
+fn seed_and_url_extract_do_not_corroborate_the_operators_own_input() {
+    // Regression (live andersonbushikai.com URL scan, debug bundle
+    // 6b2d34664852…): the operator's own seed was counted as an independent
+    // corroborating source of itself. The seed URL entity carried exactly two
+    // evidence records — `[search_engines]` and `[seed] Scan seed —
+    // operator-provided target` — and reported `source_count=2`, `c_eff=0.99`,
+    // class VERIFIED. One real observation was presented as two.
+    let mut url = Entity::new(EntityKind::Url, "https://example.com/locations", 0.90, "s");
+    url.add_evidence(Evidence::new(
+        "seed",
+        "Scan seed — operator-provided target (subject anchor)",
+    ));
+    url.add_evidence(Evidence::new(
+        "search_engines",
+        "Search returned 18 results",
+    ));
+    assert_eq!(
+        url.source_count(),
+        1,
+        "the seed is the operator's input, not an independent sighting of it"
+    );
+
+    // Same class of defect for `url_extract`: its own module doc states it is
+    // "pure offline, zero network" and derives the host from a URL already in
+    // the graph. In the same scan it was one of the five "independent sources"
+    // AU-003 reported for andersonbushikai.com, and one of the five
+    // "infrastructure sources" AU-010 listed.
+    let mut dom = Entity::new(EntityKind::Domain, "example.com", 0.92, "s");
+    dom.add_evidence(Evidence::new("url_extract", "Host extracted from URL seed"));
+    dom.add_evidence(Evidence::new("dns_intel", "SOA record"));
+    dom.add_evidence(Evidence::new("doh_resolver", "A record"));
+    assert_eq!(
+        dom.source_count(),
+        2,
+        "url_extract restates a URL already known; only the two live lookups corroborate"
+    );
+
+    // A seed-only entity still reports one source, not zero: with no
+    // corroborating evidence the stored magnitude is honoured, exactly as for
+    // any other evidence-less entity.
+    let mut seed_only = Entity::new(EntityKind::Url, "https://example.com/", 0.90, "s");
+    seed_only.add_evidence(Evidence::new(
+        "seed",
+        "Scan seed — operator-provided target",
+    ));
+    assert_eq!(seed_only.source_count(), 1);
 }
