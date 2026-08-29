@@ -396,6 +396,61 @@ fn readme_correlator_rule_count_matches_registry() {
     );
 }
 
+/// The Browse view's `ENRICHMENT_SOURCES` set (`src/web/js/helpers.js`) hand-mirrors
+/// the backend's non-corroborating-source set so a scan result's client-side
+/// `C_eff`/tier matches the server's authoritative classification (CSV export, CLI
+/// dossier). That mirror has silently drifted before — `seed`/`url_extract` were
+/// added to the Rust set and the JS copy lagged, letting an enrichment-only entity
+/// render a higher tier in Browse than the server assigned. Tie the JS `Set` literal
+/// to the live Rust source of truth (`core::entity`) so any future divergence fails
+/// CI here instead of shipping the over-credit display bug again — the same
+/// no-silent-drift guard as `readme_module_overview_count_matches_registry`.
+#[test]
+fn web_ui_enrichment_sources_match_backend_non_corroborating_set() {
+    use huntsman_search_engine::core::entity::{
+        CONSENSUS_SOURCE, CROSS_SCAN_SOURCE, ENRICHMENT_ONLY_SOURCES, RECALL_SOURCE,
+        is_non_corroborating_source,
+    };
+    use std::collections::BTreeSet;
+
+    // Authoritative backend set = ENRICHMENT_ONLY_SOURCES ∪ the three named
+    // provenance sources — exactly what `is_non_corroborating_source()` accepts.
+    let mut backend: BTreeSet<String> =
+        ENRICHMENT_ONLY_SOURCES.iter().copied().map(String::from).collect();
+    for s in [RECALL_SOURCE, CROSS_SCAN_SOURCE, CONSENSUS_SOURCE] {
+        backend.insert(s.to_string());
+    }
+    // Guard the guard: every listed member must really classify as
+    // non-corroborating, so this test can't quietly go stale against the fn.
+    for s in &backend {
+        assert!(
+            is_non_corroborating_source(s),
+            "backend set member {s:?} is not classified non-corroborating — update this test"
+        );
+    }
+
+    // Extract the JS `ENRICHMENT_SOURCES = new Set([ '…', '…' ])` string literals.
+    let js = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/web/js/helpers.js"))
+        .expect("src/web/js/helpers.js must exist");
+    let anchor = js
+        .find("ENRICHMENT_SOURCES = new Set([")
+        .expect("helpers.js must define `ENRICHMENT_SOURCES = new Set([...])`");
+    let open = anchor + js[anchor..].find('[').unwrap();
+    let close = open + js[open..].find(']').expect("unterminated ENRICHMENT_SOURCES literal");
+    let ui: BTreeSet<String> = js[open + 1..close]
+        .split(',')
+        .map(|t| t.trim().trim_matches(|c| c == '\'' || c == '"').to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+
+    assert_eq!(
+        ui, backend,
+        "src/web/js/helpers.js `ENRICHMENT_SOURCES` drifted from the backend \
+         non-corroborating-source set (core::entity). Update the JS Set literal to \
+         ENRICHMENT_ONLY_SOURCES ∪ {{recall, cross_scan_history, breach_consensus}}."
+    );
+}
+
 /// Runtime AI-independence guard (the `RUNTIME_INDEPENDENCE` charter): the
 /// compiled binary must carry NO AI / ML / LLM / cloud-inference / vector /
 /// embedding dependency, so every runtime capability is deterministic Rust that
