@@ -363,6 +363,26 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         "application/javascript",
         include_bytes!("../../web/js/views/search.js"),
     ),
+    // TEMPORARY — proves the JS -> Rust/WASM port's full pipeline (compile to
+    // wasm32-unknown-unknown, run wasm-bindgen, embed the same way every JS
+    // file above is embedded, serve, load in a real browser and call into
+    // hse-core) before any real view is ported. Not linked from spa.html.
+    // Remove once real view ports make this diagnostic page redundant.
+    (
+        "wasm_test.html",
+        "text/html; charset=utf-8",
+        include_bytes!("../../../wasm-ui/pkg/wasm_test.html"),
+    ),
+    (
+        "hse_wasm_ui.js",
+        "application/javascript",
+        include_bytes!("../../../wasm-ui/pkg/hse_wasm_ui.js"),
+    ),
+    (
+        "hse_wasm_ui_bg.wasm",
+        "application/wasm",
+        include_bytes!("../../../wasm-ui/pkg/hse_wasm_ui_bg.wasm"),
+    ),
 ];
 
 /// Build the full router. `bind` is the host:port the server will listen on;
@@ -767,8 +787,17 @@ async fn enforce_csrf(req: axum::extract::Request, next: axum::middleware::Next)
 /// `object-src 'none'` + `base-uri 'self'` close clickjacking, plugin, and
 /// `<base>`-hijack vectors. All vendor assets ship same-origin from `/static`,
 /// so no external host needs allow-listing.
+///
+/// `script-src` also carries `'wasm-unsafe-eval'` — required by the CSP3
+/// WebAssembly integration for `WebAssembly.instantiate`/`instantiateStreaming`
+/// to run at all (confirmed directly: Chromium refuses compilation without it,
+/// citing this exact directive, even for a same-origin `.wasm` fetched under
+/// `'self'`). Deliberately the narrow Wasm-only token, not the general
+/// `'unsafe-eval'` it is scoped out of: it permits compiling WebAssembly
+/// bytecode and nothing else — plain `eval()`/`new Function(string)` stay
+/// blocked exactly as before.
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
-     script-src 'self' 'unsafe-inline'; \
+     script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; \
      style-src 'self' 'unsafe-inline'; \
      img-src 'self' data:; \
      connect-src 'self'; \

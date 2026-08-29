@@ -93,7 +93,17 @@ use super::*;
     /// Tokens a CSP fetch/navigation directive may legitimately carry. Anything
     /// else — notably an `http(s)://` host or a `*` wildcard — would let the
     /// console reach an external origin, the one thing this policy forbids.
-    const ALLOWED_CSP_TOKENS: &[&str] = &["'self'", "'unsafe-inline'", "'none'", "data:"];
+    /// `'wasm-unsafe-eval'` is the narrow CSP3 token for WebAssembly
+    /// compilation specifically (required for the wasm-ui build to run at
+    /// all — confirmed directly in a real browser) — not the general
+    /// `'unsafe-eval'`, which stays absent and would still fail this list.
+    const ALLOWED_CSP_TOKENS: &[&str] = &[
+        "'self'",
+        "'unsafe-inline'",
+        "'none'",
+        "data:",
+        "'wasm-unsafe-eval'",
+    ];
 
     #[test]
     fn csp_names_no_external_origin() {

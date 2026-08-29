@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HSE wasm-ui pipeline proof</title>
+</head>
+<body>
+<!--
+  Temporary diagnostic page — not linked from the real SPA (spa.html/
+  router.js are untouched). Proves the full JS -> Rust/WASM pipeline before
+  any real view is ported: this file, the wasm-bindgen JS glue, and the
+  compiled .wasm binary are all served from the same embedded-in-the-binary
+  mechanism (src/api/routes/mod.rs's APP_FILES) that already serves every
+  other web-UI asset. Remove once real view ports make it redundant.
+-->
+<p id="wasm-proof">wasm not yet loaded — if this text never changes, the pipeline is broken</p>
+<script type="module">
+  import init, { main } from '/static/hse_wasm_ui.js';
+  await init();
+  main();
+</script>
+</body>
+</html>
