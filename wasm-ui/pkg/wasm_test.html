@@ -57,8 +57,11 @@
 <div id="corr-card-full-host">(full-card host not yet populated)</div>
 <div id="corr-card-plain-host">(plain-card host not yet populated)</div>
 <div id="corr-members-host">(members host not yet populated)</div>
+<p id="exposure-proof">exposure render not yet run</p>
+<div id="exposure-host">(exposure host not yet populated)</div>
+<div id="exposure-minimal-host">(minimal-case host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml, renderCorrCardHtml, renderCorrMembersHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml, renderCorrCardHtml, renderCorrMembersHtml, renderExposureHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -734,6 +737,45 @@
   document.getElementById('correlations-proof').textContent =
     `full=${corrCardFullOk}, plain=${corrCardPlainOk}, emptyName=${corrCardEmptyNameOk}, ` +
     `members=${corrMembersOk}, membersEmpty=${corrMembersEmptyOk}`;
+
+  // Exercises scan_info::info::render_exposure_html against the real
+  // /scans/{id}/exposure envelope (core::exposure::ExposureIndex, hand-built
+  // by the scan_exposure handler). Covers: a HIGH-band case with a normal
+  // fraction component AND a max=0 component (the div-by-zero guard -> 0%,
+  // not NaN%), HTML-escaping on a scan-derived summary string, a CRITICAL
+  // case proving it shares HIGH's label-danger class (not a naive 1:1
+  // mapping), and a MINIMAL case with empty summary/components proving both
+  // optional sections are correctly omitted.
+  const exposureHtml = renderExposureHtml({
+      score: 72, band: "HIGH", summary: "Exposure 72/100 [HIGH] <script>evil<\/script>",
+      components: [
+        { name: "Breach exposure", score: 18, max: 20, detail: "3 breaches found" },
+        { name: "Untested signal", score: 0, max: 0, detail: "no data" },
+      ],
+    });
+  document.getElementById('exposure-host').innerHTML = exposureHtml;
+  const exposureCriticalHtml = renderExposureHtml({ score: 95, band: "CRITICAL", summary: "", components: [] });
+  const exposureMinimalHtml = renderExposureHtml({ score: 5, band: "MINIMAL", summary: "", components: [] });
+  document.getElementById('exposure-minimal-host').innerHTML = exposureMinimalHtml;
+
+  const exposureOk = exposureHtml.includes('<b>72</b>')
+    && exposureHtml.includes('label-danger')
+    && exposureHtml.includes('>HIGH<')
+    && exposureHtml.includes('width:90%')
+    && exposureHtml.includes('<code>18/20</code>')
+    && exposureHtml.includes('width:0%')
+    && exposureHtml.includes('<code>0/0</code>')
+    && exposureHtml.includes('&lt;script&gt;evil&lt;/script&gt;')
+    && !exposureHtml.includes('<script>evil')
+    && exposureHtml.includes('calibrated 0–100');
+  const exposureCriticalOk = exposureCriticalHtml.includes('label-danger')
+    && exposureCriticalHtml.includes('>CRITICAL<')
+    && !exposureCriticalHtml.includes('<table')
+    && !exposureCriticalHtml.includes('margin-bottom:8px');
+  const exposureMinimalOk = exposureMinimalHtml.includes('label-success')
+    && exposureMinimalHtml.includes('>MINIMAL<');
+  document.getElementById('exposure-proof').textContent =
+    `full=${exposureOk}, critical=${exposureCriticalOk}, minimal=${exposureMinimalOk}`;
 </script>
 </body>
 </html>

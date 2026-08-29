@@ -9,6 +9,7 @@ pub mod correlations;
 pub mod duplicates;
 pub mod gaps;
 pub mod identities;
+pub mod info;
 pub mod leads;
 pub mod location;
 pub mod metrics;

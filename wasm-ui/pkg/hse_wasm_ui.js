@@ -280,6 +280,37 @@ export function renderDuplicatesHtml(data, entities_js) {
 }
 
 /**
+ * Builds the "Exposure Index" panel fragment for a `/scans/{id}/exposure`
+ * response.
+ * @param {any} data
+ * @returns {string}
+ */
+export function renderExposureHtml(data) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.renderExposureHtml(retptr, addHeapObject(data));
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        var ptr1 = r0;
+        var len1 = r1;
+        if (r3) {
+            ptr1 = 0; len1 = 0;
+            throw takeObject(r2);
+        }
+        deferred2_0 = ptr1;
+        deferred2_1 = len1;
+        return getStringFromWasm0(ptr1, len1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export5(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * Builds the "Discovery gaps" panel fragment for a `/scans/{id}/gaps`
  * response, or `""` for the explicit null state (no validated seeds at
  * all).
@@ -852,8 +883,8 @@ function __wbg_get_imports() {
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 14, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
-            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_228);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 15, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
+            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_233);
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
@@ -880,8 +911,8 @@ function __wbg_get_imports() {
     };
 }
 
-function __wasm_bindgen_func_elem_228(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_228(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_233(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_233(arg0, arg1, addHeapObject(arg2));
 }
 
 function addHeapObject(obj) {

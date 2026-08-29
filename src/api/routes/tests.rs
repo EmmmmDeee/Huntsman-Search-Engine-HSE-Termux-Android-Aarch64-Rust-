@@ -316,8 +316,17 @@ use super::*;
             info.contains("API.exposure("),
             "the Info tab must call API.exposure()"
         );
+        // The panel markup and per-component rendering moved to
+        // wasm-ui/src/scan_info/info.rs's render_exposure_html — a
+        // sibling-crate source read, same pattern as the leads.js/
+        // correlations.js ports' own fitness-test updates.
+        let info_rs = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/wasm-ui/src/scan_info/info.rs"
+        ))
+        .expect("info.rs source readable");
         assert!(
-            info.contains("Exposure Index"),
+            info_rs.contains("Exposure Index"),
             "the Exposure Index panel must be rendered"
         );
         // Every component field the backend serialises must be consumed — a
@@ -325,8 +334,8 @@ use super::*;
         // per-signal explanation to a bare number.
         for field in ["c.name", "c.score", "c.max", "c.detail"] {
             assert!(
-                info.contains(field),
-                "the Exposure breakdown must render {field}"
+                info_rs.contains(field),
+                "the Exposure breakdown must render {field} in wasm-ui/src/scan_info/info.rs"
             );
         }
     }
