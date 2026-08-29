@@ -338,11 +338,19 @@ export function mapEvent(ev){
   // number, candidate as a boolean), and the downloaded events.log
   // / debug-bundle sequence therefore carry both. We extract them from the
   // structured event and show them here so on-screen and on-disk logs agree.
+  // `EventKind::EntityFound` carries one field, `entity: Entity` (core/event/
+  // mod.rs) — not the flat entity_kind/value/confidence/candidate this used
+  // to read (those never existed on the wire event, only in this file's own
+  // stale expectations), so every entity_found line rendered as a bare
+  // "unknown" pill with no value, confidence, or candidate marker at all.
+  // `candidate` isn't a stored field either — it's derived the same way the
+  // CLI does, from the "candidate" tag (hse_core::tags::CANDIDATE).
   if (t==='entity_found'){
-    const conf = typeof ev.confidence === 'number' ? ev.confidence.toFixed(2) : null;
-    const cand = ev.candidate ? ' <span class="text-muted">(candidate)</span>' : '';
+    const entity = ev.entity || {};
+    const conf = typeof entity.confidence === 'number' ? entity.confidence.toFixed(2) : null;
+    const cand = (entity.tags||[]).includes('candidate') ? ' <span class="text-muted">(candidate)</span>' : '';
     return {typ:'entity', lv:'found',
-      msg:`${kindPill(ev.entity_kind)} ${esc(ev.value)}${conf!=null?` <span class="text-muted">·${esc(conf)}</span>`:''}${cand}`};
+      msg:`${kindPill(entity.kind)} ${esc(entity.value)}${conf!=null?` <span class="text-muted">·${esc(conf)}</span>`:''}${cand}`};
   }
   if (t==='scan_start')     return {typ:'scan',   lv:'info',  msg:`scan started: ${esc(ev.target_kind)}=${esc(ev.target_value)}`};
   // Mirrors the three-way branch in the Rust twin (core/event/mod.rs): a
@@ -352,20 +360,35 @@ export function mapEvent(ev){
   // to 'complete'.
   if (t==='scan_complete'){
     const st = ev.status || 'complete';
-    if (st==='aborted') return {typ:'scan', lv:'warn', msg:`scan aborted — stopped early, ${ev.entities} entities`};
+    // `EventKind::ScanComplete`'s count field is `entity_count`, not `entities`
+    // (which never existed on the wire event) — both branches below always
+    // rendered "undefined entities" until this was corrected.
+    if (st==='aborted') return {typ:'scan', lv:'warn', msg:`scan aborted — stopped early, ${ev.entity_count} entities`};
     if (st==='failed')  return {typ:'scan', lv:'err',  msg:`scan failed`};
-    return {typ:'scan', lv:'ok', msg:`scan complete, ${ev.entities} entities`};
+    return {typ:'scan', lv:'ok', msg:`scan complete, ${ev.entity_count} entities`};
   }
   if (t==='expansion_tick') return {typ:'expand', lv:'info',  msg:`expansion: depth ${ev.depth}, queued ${ev.queued}, visited ${ev.visited}`};
   if (t==='expansion_stop') return {typ:'expand', lv:'warn',  msg:`expansion stopped: ${esc(ev.reason)}`};
-  if (t==='entity_excluded') return {typ:'expand', lv:'skip', msg:`not expanded: ${kindPill(ev.entity_kind)} ${esc(ev.value)} <span class="text-muted">${esc(ev.reason)}</span>`};
+  // `EventKind::EntityExcluded`'s kind field is `kind` (already a flat string
+  // — the emitting code calls .to_string() before storing it), not
+  // `entity_kind` (which never existed on the wire event, so this always
+  // rendered an "unknown" pill regardless of the excluded entity's real kind).
+  if (t==='entity_excluded') return {typ:'expand', lv:'skip', msg:`not expanded: ${kindPill(ev.kind)} ${esc(ev.value)} <span class="text-muted">${esc(ev.reason)}</span>`};
   // Final bulk breach sweep. `dropped` is part of the line, not a tooltip: a
   // capped plan and a complete one must not read the same.
   if (t==='breach_sweep')   return {typ:'expand', lv:'info',  msg:`breach sweep: ${ev.probes} probe${plural(ev.probes)} from ${ev.anchors} anchor${plural(ev.anchors)}${ev.dropped?` <span class="text-muted">(${ev.dropped} over cap)</span>`:''}`};
   // Autonomous audit of the breach corpus. A non-passing verdict means two
   // corpora contradict each other, so it renders at warn level.
   if (t==='consensus_audit') return {typ:'corr', lv:(ev.verdict==='PASS'||ev.verdict==='PASS_WITH_WARNINGS')?'ok':'warn', msg:`breach audit: ${esc(ev.verdict)}, ${ev.corroborated}/${ev.examined} corroborated <span class="text-muted">${ev.flags} flag${plural(ev.flags)}</span>`};
-  if (t==='correlation_found') return {typ:'corr', lv:'corr', msg:`${esc(ev.rule||ev.rule_id||'?')}`};
+  // `EventKind::CorrelationFound` carries one field, `correlation:
+  // core::correlator::Correlation` — not the flat rule/rule_id this used to
+  // read (neither ever existed on the wire event), so every correlation_found
+  // line rendered the bare "?" fallback. Same rule_name-then-rule_id
+  // preference correlations.js's own card template uses.
+  if (t==='correlation_found'){
+    const c = ev.correlation || {};
+    return {typ:'corr', lv:'corr', msg:`${esc(c.rule_name||c.rule_id||'?')}`};
+  }
   if (t==='correlations_done') return {typ:'corr', lv:'info', msg:`correlations: ${ev.count} evaluated`};
   // Live-session lifecycle (streamed into the Live-activity panel). Without
   // these the panel rendered each as raw JSON via the fallback below.
