@@ -15,8 +15,11 @@
 -->
 <p id="wasm-proof">wasm not yet loaded — if this text never changes, the pipeline is broken</p>
 <p id="confidence-proof">confidence math not yet run</p>
+<p id="identities-proof">identities render not yet run</p>
+<div id="identities-empty-host">(empty-case host not yet populated)</div>
+<div id="identities-host">(non-empty-case host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -49,6 +52,43 @@
   const tier = classify(eff);
   document.getElementById('confidence-proof').textContent =
     `sourceCount=${n} (want 2 -- geo_normalize excluded), effC=${eff.toFixed(4)}, classify=${tier}`;
+
+  // Exercises scan_info::identities::render_identities_html against the real
+  // /scans/{id}/identities envelope shape (src/api/scan_handlers/analysis.rs
+  // + src/core/coref/mod.rs's CoReference), including a value containing a
+  // '<' to prove HTML-escaping actually runs on scan-derived (i.e.
+  // adversary-influenceable) strings rather than trusting them verbatim.
+  const emptyHtml = renderIdentitiesHtml({ min_score: 0.55, count: 0, coreferences: [] });
+  document.getElementById('identities-empty-host').innerHTML = emptyHtml;
+
+  const nonEmptyHtml = renderIdentitiesHtml({
+    min_score: 0.55,
+    count: 2,
+    coreferences: [
+      {
+        uid_a: "a1", uid_b: "b1",
+        value_a: "elina.moreau@example.com", value_b: "Elina Moreau",
+        kind_a: "email", kind_b: "person",
+        score: 0.8123,
+        signals: ["shared-source", "name-token"],
+      },
+      {
+        uid_a: "a2", uid_b: "b2",
+        value_a: "<script>alert(1)<\/script>", value_b: "normal-handle",
+        kind_a: "username", kind_b: "username",
+        score: 0.6,
+        signals: ["substring"],
+      },
+    ],
+  });
+  document.getElementById('identities-host').innerHTML = nonEmptyHtml;
+
+  const emptyOk = emptyHtml === '';
+  const escapedOk = nonEmptyHtml.includes('&lt;script&gt;') && !nonEmptyHtml.includes('<script>alert');
+  const countOk = nonEmptyHtml.includes('2 selector pairs');
+  const scoreOk = nonEmptyHtml.includes('score 0.81') && nonEmptyHtml.includes('score 0.60');
+  document.getElementById('identities-proof').textContent =
+    `emptyCase=${emptyOk}, escaped=${escapedOk}, count=${countOk}, scores=${scoreOk}`;
 </script>
 </body>
 </html>
