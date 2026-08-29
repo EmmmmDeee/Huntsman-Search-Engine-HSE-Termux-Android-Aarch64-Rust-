@@ -48,6 +48,9 @@ wasm-bindgen        = "0.2.127"
 # Entity::source_count()/c_effective() rather than a hand-mirrored
 # reimplementation — the whole point of this crate's existence (see lib.rs).
 serde-wasm-bindgen  = "0.6.5"
+# For view-local response structs (e.g. scan_info::identities) that mirror an
+# API handler's JSON envelope but aren't part of hse-core's domain model.
+serde               = { version = "1", features = ["derive"] }
 
 [dependencies.web-sys]
 version  = "0.3"

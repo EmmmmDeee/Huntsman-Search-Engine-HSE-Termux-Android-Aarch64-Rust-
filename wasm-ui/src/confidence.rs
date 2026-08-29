@@ -14,9 +14,7 @@
 
 use wasm_bindgen::prelude::*;
 
-fn to_js_error(e: impl std::fmt::Display) -> JsValue {
-    JsValue::from_str(&e.to_string())
-}
+use crate::to_js_error;
 
 /// Distinct corroborating sources for an entity — mirrors
 /// [`hse_core::Entity::source_count`] exactly, because it *is*
@@ -26,7 +24,8 @@ fn to_js_error(e: impl std::fmt::Display) -> JsValue {
 /// worth surfacing as a thrown JS error, not silently guessing a value.
 #[wasm_bindgen(js_name = sourceCount)]
 pub fn source_count(entity_js: JsValue) -> Result<u32, JsValue> {
-    let entity: hse_core::Entity = serde_wasm_bindgen::from_value(entity_js).map_err(to_js_error)?;
+    let entity: hse_core::Entity =
+        serde_wasm_bindgen::from_value(entity_js).map_err(to_js_error)?;
     Ok(entity.source_count())
 }
 
@@ -35,7 +34,8 @@ pub fn source_count(entity_js: JsValue) -> Result<u32, JsValue> {
 /// [`source_count`] does.
 #[wasm_bindgen(js_name = effC)]
 pub fn eff_c(entity_js: JsValue) -> Result<f64, JsValue> {
-    let entity: hse_core::Entity = serde_wasm_bindgen::from_value(entity_js).map_err(to_js_error)?;
+    let entity: hse_core::Entity =
+        serde_wasm_bindgen::from_value(entity_js).map_err(to_js_error)?;
     Ok(entity.c_effective())
 }
 
@@ -46,5 +46,7 @@ pub fn eff_c(entity_js: JsValue) -> Result<f64, JsValue> {
 /// deserialization.
 #[wasm_bindgen]
 pub fn classify(eff: f64) -> String {
-    hse_core::Classification::from_c_eff(eff).as_str().to_string()
+    hse_core::Classification::from_c_eff(eff)
+        .as_str()
+        .to_string()
 }

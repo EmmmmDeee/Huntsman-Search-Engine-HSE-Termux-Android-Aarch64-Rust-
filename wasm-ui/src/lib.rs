@@ -6,6 +6,7 @@
 //! - [`theme`] — `src/web/js/theme.js`
 //! - [`confidence`] — the `ENRICHMENT_SOURCES`/`sourceCount`/`effC`/`classify`
 //!   cluster in `src/web/js/helpers.js`
+//! - [`scan_info`] — `src/web/js/scan_info/*.js`, one submodule per file
 //!
 //! The compiled output is checked into `pkg/` and embedded into
 //! `src/api/routes/mod.rs`'s `APP_FILES` the same way every hand-written JS
@@ -18,9 +19,19 @@
 //! ```
 
 pub mod confidence;
+pub mod html;
+pub mod scan_info;
 pub mod theme;
 
 use wasm_bindgen::prelude::*;
+
+/// Converts any displayable error (chiefly a `serde_wasm_bindgen::Error` from
+/// a failed JS-value deserialization) into the `JsValue` a `#[wasm_bindgen]`
+/// function's `Result::Err` must carry, so it surfaces to the caller as a
+/// real thrown JS error instead of a silently-swallowed one.
+pub(crate) fn to_js_error(e: impl std::fmt::Display) -> JsValue {
+    JsValue::from_str(&e.to_string())
+}
 
 /// Runs automatically when the browser loads this module — no explicit JS
 /// call needed, unlike every other function here (which `wasm-bindgen`
