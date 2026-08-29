@@ -18,8 +18,10 @@
 <p id="identities-proof">identities render not yet run</p>
 <div id="identities-empty-host">(empty-case host not yet populated)</div>
 <div id="identities-host">(non-empty-case host not yet populated)</div>
+<p id="benchmark-proof">benchmark render not yet run</p>
+<div id="benchmark-host">(benchmark host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -89,6 +91,30 @@
   const scoreOk = nonEmptyHtml.includes('score 0.81') && nonEmptyHtml.includes('score 0.60');
   document.getElementById('identities-proof').textContent =
     `emptyCase=${emptyOk}, escaped=${escapedOk}, count=${countOk}, scores=${scoreOk}`;
+
+  // Exercises scan_info::benchmark::render_benchmark_html against the real
+  // /scans/{id}/benchmark envelope shape (crate::core::benchmark::BenchmarkReport):
+  // integer fields render verbatim, and the two fraction fields go through
+  // Math.round(v*100)+'%' -- e.g. 0.8123 must land on 81%, not 81.23% or 0.81%.
+  const benchmarkHtml = renderBenchmarkHtml({
+    scan_id: "s", seed: "seed", seed_kind: "person", status: "complete",
+    duration_secs: 34, entities_per_sec: 1.2345,
+    modules_run: 23, modules_errored: 1, modules_timed_out: 0,
+    pivot_count: 3, top_pivot_uid: null,
+    scorecard: {
+      multi_hop_depth: 4, graph_coverage: 0.8123, corroborated_fraction: 0.5,
+      graph_density: 0.1, cut_vertex_count: 2, bridge_count: 1,
+      degeneracy: 2, main_core_size: 6, total_entities: 42, total_relations: 17,
+      cross_scan_bridges: 0,
+    },
+    metrics: {},
+  });
+  document.getElementById('benchmark-host').innerHTML = benchmarkHtml;
+  const benchRowsOk = ['>42</td>', '>17</td>', '>23</td>', '>1.23</td>', '>4</td>']
+    .every(needle => benchmarkHtml.includes(needle));
+  const benchPctOk = benchmarkHtml.includes('>81%</td>') && benchmarkHtml.includes('>50%</td>');
+  document.getElementById('benchmark-proof').textContent =
+    `rows=${benchRowsOk}, percents=${benchPctOk}`;
 </script>
 </body>
 </html>
