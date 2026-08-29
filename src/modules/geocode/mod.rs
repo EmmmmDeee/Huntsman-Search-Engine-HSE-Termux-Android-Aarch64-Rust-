@@ -26,7 +26,7 @@ use crate::core::{
 use crate::util::http::RequestBuilderExt;
 use crate::util::http::urlencode;
 
-// ── Nominatim response types (forward) ────────────────────────
+// ── Nominatim response types (forward) ──────────────────────────────
 
 #[derive(Deserialize)]
 pub(super) struct NominatimResult {
@@ -45,7 +45,7 @@ pub(super) struct NominatimResult {
     pub(super) address: Option<NominatimAddr>,
 }
 
-// ── Nominatim response types (reverse) ────────────────────────
+// ── Nominatim response types (reverse) ──────────────────────────────
 
 #[derive(Deserialize)]
 pub(super) struct NominatimResp {
@@ -136,7 +136,7 @@ impl Module for Geocode {
 }
 
 impl Geocode {
-    // ── Forward geocode: Address → Coordinates ──────────────────
+    // ── Forward geocode: Address → Coordinates ──────────────────────
 
     async fn forward(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let addr = target.value.trim();
@@ -244,7 +244,7 @@ impl Geocode {
         Ok(result)
     }
 
-    // ── Reverse geocode: Coordinates → Address ──────────────────
+    // ── Reverse geocode: Coordinates → Address ──────────────────────
 
     async fn reverse(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
