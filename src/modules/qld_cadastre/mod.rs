@@ -168,6 +168,9 @@ impl Module for QldCadastre {
         matches!(t.kind, TargetKind::Coordinates)
     }
     fn category(&self) -> ModuleCategory {
+        // Resolves QLD coordinates to lot/plan, locality, LGA, and tenure via
+        // the public DCDB cadastre — pure "determine physical locations" data,
+        // so the Geo category's default ATT&CK Reconnaissance mapping is tight.
         ModuleCategory::Geo
     }
     fn produces(&self) -> &'static [EntityKind] {

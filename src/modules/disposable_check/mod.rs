@@ -89,6 +89,12 @@ impl Module for DisposableCheck {
         matches!(t.kind, TargetKind::Email)
     }
     fn category(&self) -> ModuleCategory {
+        // debounce.io only verifies whether the Email is disposable/throwaway
+        // (T1589.002; no credential/breach/social/role data), and its incidental
+        // Domain emission is a bare host-part split with no WHOIS/DNS/certificate
+        // query, mirroring email_parse's identical extraction — so the category
+        // default already covers this module and no attack_techniques() override
+        // is needed.
         ModuleCategory::Email
     }
 

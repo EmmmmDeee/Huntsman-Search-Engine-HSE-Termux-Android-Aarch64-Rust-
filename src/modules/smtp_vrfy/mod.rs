@@ -55,6 +55,13 @@ impl Module for SmtpVrfy {
         ModuleCategory::Email
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Beyond the RCPT TO probe that verifies the address itself
+        // (T1589.002), the module resolves and records MX, SPF, and DMARC
+        // records as standalone evidence — domain DNS recon (T1590.002).
+        &["T1589.002", "T1590.002"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Email];
         KINDS

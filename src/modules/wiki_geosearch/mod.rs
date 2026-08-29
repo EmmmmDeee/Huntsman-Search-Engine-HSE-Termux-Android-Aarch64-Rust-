@@ -137,6 +137,9 @@ impl Module for WikiGeoSearch {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Coordinate -> Wikipedia GeoSearch -> named nearby places (titles, own
+        // lat/lon, distance) as geoint entities: squarely "Determine Physical
+        // Locations" (ATT&CK T1591.001 via the category default; no other data).
         ModuleCategory::Geo
     }
 

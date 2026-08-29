@@ -85,6 +85,13 @@ impl Module for UrlExtract {
         ModuleCategory::Web
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Deliberately no network (doc comment): no site fetch/search (T1594)
+        // or host fingerprinting (T1592.002) — process() only parses an
+        // already-observed URL's host into Domain/IpAddress: T1590.001/.005.
+        &["T1590.001", "T1590.005"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::IpAddress];
         KINDS

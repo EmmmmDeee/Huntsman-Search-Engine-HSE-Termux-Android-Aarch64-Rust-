@@ -76,6 +76,9 @@ impl Module for Ahpra {
     }
 
     fn category(&self) -> ModuleCategory {
+        // AHPRA register lookups by name/organisation emit one Person per row with name,
+        // profession/role tag, and registration number — exactly Employee Names (T1589.003)
+        // + Identify Roles (T1591.004); no DNS/location/business data to justify an override.
         ModuleCategory::People
     }
 

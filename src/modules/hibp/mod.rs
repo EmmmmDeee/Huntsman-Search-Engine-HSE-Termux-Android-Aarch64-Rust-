@@ -326,6 +326,16 @@ impl Module for Hibp {
         ModuleCategory::Breach
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Breach default's T1589.001 (breach/stealer-log exposure, tags-only)
+        // and T1589.002 (email-oracle) are tight — HIBP mints no Person/
+        // IpAddress/Organisation entities, and phone/physical flags are just
+        // tags off data-class strings, not extracted values. But HIBP has no
+        // free tier (paid-only, like dehashed/oathnet_pro/see_know/intelx) —
+        // add their T1597.002 (Purchase Technical Data); the default under-claims.
+        &["T1589.001", "T1589.002", "T1597.002"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         // HIBP returns breach metadata on the input Email/Domain — it
         // does NOT emit standalone Credential entities (policy: leaked

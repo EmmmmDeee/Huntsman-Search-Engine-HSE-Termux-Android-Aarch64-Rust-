@@ -106,6 +106,14 @@ impl Module for Geocode {
     }
 
     fn category(&self) -> ModuleCategory {
+        // The module does exactly one thing bidirectionally: resolve
+        // Address↔Coordinates via OSM Nominatim, producing Coordinates/Address
+        // entities with street/suburb/city/state/postcode/country evidence — a
+        // direct, tight fit for "Determine Physical Locations." It touches no
+        // DNS/WHOIS/certificate/CDN/scan database (Nominatim is a geocoding
+        // lookup, not one of the T1596 technical-database subtypes), no
+        // identity/employee/network data, so no additional technique is
+        // implicated.
         ModuleCategory::Geo
     }
 

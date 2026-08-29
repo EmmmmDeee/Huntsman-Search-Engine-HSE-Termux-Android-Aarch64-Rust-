@@ -60,6 +60,15 @@ impl Module for GeoIntel {
         ModuleCategory::Geo
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // build_ipapico_entity() promotes ipapi.co's `asn` field into a
+        // standalone EntityKind::Asn (same guard as sibling ip_geo, which
+        // adds T1590.005 for it), so the Geo default alone is too coarse.
+        // org/ISP name stays a folded attribute here (never its own
+        // Organisation entity like ip_geo), so no T1591.002 — 2-ID superset.
+        &["T1590.005", "T1591.001"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Coordinates, EntityKind::Asn];
         KINDS

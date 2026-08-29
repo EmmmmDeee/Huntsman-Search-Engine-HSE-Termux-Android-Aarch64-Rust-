@@ -40,6 +40,9 @@ impl Module for EmailLocale {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Offline string analysis of an already-known email (naming-convention
+        // + ccTLD, no network) yields only Address/Coordinates for an inferred
+        // country/region — maps exactly to T1591.001 via the category default.
         ModuleCategory::Geo
     }
 

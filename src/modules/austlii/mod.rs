@@ -102,6 +102,16 @@ impl Module for AustLii {
         ModuleCategory::Corporate
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // process()/build_entities() only ever emit a court-judgment Url (raw
+        // case/legislation title, no personnel parsing) and, for Organisation
+        // targets, a generic legal-record count Organisation entity — no
+        // officer name/title/role extraction anywhere, so drop the Corporate
+        // default's T1591.004 (cf. acnc_charities). T1591.002 stands in for
+        // the litigation/legislative footprint the "legal-record" entity captures.
+        &["T1591.002"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Url, EntityKind::Organisation];
         KINDS

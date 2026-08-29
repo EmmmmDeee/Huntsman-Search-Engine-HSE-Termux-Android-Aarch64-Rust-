@@ -310,6 +310,16 @@ impl Module for SocialProbe {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Probes 20+ platforms for username presence (T1593.001) and, for
+        // FullName targets, probes people-search directories (PeeKYou,
+        // Facebook public directory) whose confirmed hits are summarized into
+        // a genuine Person entity via target.to_entity() (T1589.003) —
+        // produces() explicitly lists Person, unlike structural siblings
+        // username_search/streaming_probe (Username-only, no Person) which
+        // override the same default down to just T1593.001 for exactly that
+        // reason. Because social_probe actually does resolve real-name
+        // identity via FullName probing, the category default fits it
+        // tightly and needs no override.
         ModuleCategory::Social
     }
 

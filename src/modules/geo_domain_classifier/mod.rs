@@ -54,6 +54,13 @@ impl Module for GeoDomainClassifier {
     }
 
     fn category(&self) -> ModuleCategory {
+        // The module's entire function (zero network calls, per its doc comment) is
+        // inferring country/city/state physical location from domain-name patterns —
+        // ccTLD tables, known corporate/bank/university domains, and AU gov/edu
+        // jurisdiction rules — emitting only Address and derived Coordinates
+        // entities; it never queries WHOIS, DNS, or any other registry, so no
+        // broader technique (e.g. T1590.001, T1596.002) applies. This is a tight,
+        // textbook fit for T1591.001 Determine Physical Locations.
         ModuleCategory::Geo
     }
 

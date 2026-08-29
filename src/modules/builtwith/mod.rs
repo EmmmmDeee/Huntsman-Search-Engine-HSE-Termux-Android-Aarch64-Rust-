@@ -125,6 +125,17 @@ impl Module for BuiltWith {
         ModuleCategory::Infrastructure
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // T1590.005 (IP Addresses) is inapplicable — never queries, parses,
+        // or emits IP data, only a domain's tech stack and Meta-block
+        // registrant contacts. Core purpose is T1592.002 (Software) via
+        // BuiltWith tech-stack fingerprinting, with T1589.002 (Email
+        // Addresses) as a substantially-coded secondary output from the
+        // Meta block. T1596.005 (Scan Databases) holds since BuiltWith
+        // itself is the named database being queried.
+        &["T1592.002", "T1596.005", "T1589.002"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::Domain,
