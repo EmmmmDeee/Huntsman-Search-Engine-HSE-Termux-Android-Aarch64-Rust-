@@ -4,4 +4,5 @@
 //! are ported.
 
 pub mod dash;
+pub mod diff;
 pub mod scans;
