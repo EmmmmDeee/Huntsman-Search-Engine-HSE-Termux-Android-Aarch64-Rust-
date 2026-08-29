@@ -402,10 +402,13 @@ use super::*;
             );
         }
         // Drift guard: pin to the real enum (every variant is a bare unit ident
-        // except the `Other(String)` tuple, so count both forms).
+        // except the `Other(String)` tuple, so count both forms). `EntityKind`
+        // lives in the sibling `hse-core` crate (extracted so the entity model
+        // can be shared with a wasm32 web-UI build) — a directory next to
+        // `src/`, not inside it, hence the path below is not under `src/`.
         let src = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/src/core/entity/mod.rs"
+            "/hse-core/src/lib.rs"
         ))
         .expect("entity source readable");
         let body = src
