@@ -164,6 +164,9 @@ impl Module for WikidataGeo {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Coordinates target -> wikibase:around SPARQL query against the public
+        // Wikidata endpoint, resolving nearby named places (QID, label, coords,
+        // distance): a tight T1591.001 fit; no attack_techniques() override needed.
         ModuleCategory::Geo
     }
 
