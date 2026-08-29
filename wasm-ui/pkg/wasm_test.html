@@ -26,8 +26,11 @@
 <p id="gaps-proof">gaps render not yet run</p>
 <div id="gaps-linked-host">(all-linked-case host not yet populated)</div>
 <div id="gaps-orphans-host">(orphans-case host not yet populated)</div>
+<p id="metrics-proof">metrics render not yet run</p>
+<div id="metrics-plain-host">(plain-case host not yet populated)</div>
+<div id="metrics-full-host">(full-case host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -205,6 +208,58 @@
     && !gapsOrphansHtml.includes('label-info');
   document.getElementById('gaps-proof').textContent =
     `null=${gapsNullOk}, allLinked=${gapsLinkedOk}, orphans=${gapsOrphansOk}`;
+
+  // Exercises scan_info::metrics::render_metrics_html against the real
+  // /scans/{id}/metrics envelope (core::metrics::ScanMetrics). Covers: the
+  // empty-scan case (total_entities=0), an unanchored/edgeless scan (no
+  // Reach/Max-depth/Core stats -- both gates are truthy checks on a NUMBER,
+  // hiding on exactly 0), and an anchored scan with a core, including the
+  // max_depth===1 singular "hop" (not "hops") pluralization edge case.
+  const metricsEmptyHtml = renderMetricsHtml({
+    total_entities: 0, entities_by_kind: [], tier_counts: {verified:0,probable:0,candidate:0},
+    mean_confidence: 0, median_confidence: 0, corroborated_fraction: 0,
+    total_relations: 0, relations_by_kind: [], linked_entity_fraction: 0,
+    graph_density: 0, graph_degeneracy: 0, main_core_size: 0, cross_scan_bridges: 0,
+    distinct_evidence_sources: 0,
+    seed_reach: {anchored:false, max_depth:0, reached_at_hop:[], reachable_total:0, reachable_fraction:0},
+  });
+  const metricsPlainHtml = renderMetricsHtml({
+    total_entities: 10, entities_by_kind: [], tier_counts: {verified:3,probable:5,candidate:2},
+    mean_confidence: 0.55, median_confidence: 0.5, corroborated_fraction: 0.4,
+    total_relations: 5, relations_by_kind: [], linked_entity_fraction: 0.7,
+    graph_density: 0.15, graph_degeneracy: 0, main_core_size: 0, cross_scan_bridges: 1,
+    distinct_evidence_sources: 4,
+    seed_reach: {anchored:false, max_depth:0, reached_at_hop:[], reachable_total:0, reachable_fraction:0},
+  });
+  document.getElementById('metrics-plain-host').innerHTML = metricsPlainHtml;
+  const metricsFullHtml = renderMetricsHtml({
+    total_entities: 25, entities_by_kind: [], tier_counts: {verified:10,probable:10,candidate:5},
+    mean_confidence: 0.61, median_confidence: 0.58, corroborated_fraction: 0.68,
+    total_relations: 30, relations_by_kind: [], linked_entity_fraction: 0.92,
+    graph_density: 0.333, graph_degeneracy: 2, main_core_size: 6, cross_scan_bridges: 3,
+    distinct_evidence_sources: 9,
+    seed_reach: {anchored:true, max_depth:1, reached_at_hop:[1,19], reachable_total:20, reachable_fraction:0.8},
+  });
+  document.getElementById('metrics-full-host').innerHTML = metricsFullHtml;
+
+  const metricsEmptyOk = metricsEmptyHtml === '';
+  const metricsPlainOk = metricsPlainHtml.includes('40%')
+    && metricsPlainHtml.includes('70%')
+    && metricsPlainHtml.includes('15%')
+    && !metricsPlainHtml.includes('Reach')
+    && !metricsPlainHtml.includes('Max depth')
+    && !metricsPlainHtml.includes('Core (k)');
+  const metricsFullOk = metricsFullHtml.includes('68%')
+    && metricsFullHtml.includes('92%')
+    && metricsFullHtml.includes('33%')
+    && metricsFullHtml.includes('>20<')
+    && metricsFullHtml.includes('>1 hop<')
+    && !metricsFullHtml.includes('1 hops')
+    && metricsFullHtml.includes('>2<')
+    && metricsFullHtml.includes('>6<')
+    && metricsFullHtml.includes('>9<');
+  document.getElementById('metrics-proof').textContent =
+    `empty=${metricsEmptyOk}, plain=${metricsPlainOk}, full=${metricsFullOk}`;
 </script>
 </body>
 </html>
