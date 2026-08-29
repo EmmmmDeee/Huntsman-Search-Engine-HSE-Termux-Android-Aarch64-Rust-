@@ -632,10 +632,22 @@ use super::*;
         // Correlation member rows are built lazily on expand — a 607-member
         // cluster must not put tens of thousands of hidden DOM nodes on the page
         // up front (the same unbounded-render class as the graph clique bug).
+        // The lazy-build orchestration (dataset.built) stays in correlations.js;
+        // the card markup carrying data-corr-idx moved to
+        // wasm-ui/src/scan_info/correlations.rs's render_corr_card_html.
         let corr = app_file("js/scan_info/correlations.js");
         assert!(
-            corr.contains("data-corr-idx") && corr.contains("dataset.built"),
+            corr.contains("dataset.built"),
             "correlation members must be built lazily on card expand, not up front"
+        );
+        let corr_rs = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/wasm-ui/src/scan_info/correlations.rs"
+        ))
+        .expect("correlations.rs source readable");
+        assert!(
+            corr_rs.contains("data-corr-idx"),
+            "expected data-corr-idx in wasm-ui/src/scan_info/correlations.rs's card markup"
         );
     }
 

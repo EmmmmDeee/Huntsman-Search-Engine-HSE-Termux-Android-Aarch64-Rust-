@@ -53,8 +53,12 @@
 <div id="timeline-empty-host">(empty-case host not yet populated)</div>
 <div id="timeline-plain-host">(plain-case host not yet populated)</div>
 <div id="timeline-host">(timeline host not yet populated)</div>
+<p id="correlations-proof">correlations render not yet run</p>
+<div id="corr-card-full-host">(full-card host not yet populated)</div>
+<div id="corr-card-plain-host">(plain-card host not yet populated)</div>
+<div id="corr-members-host">(members host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml, renderCorrCardHtml, renderCorrMembersHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -660,6 +664,76 @@
     && timelineHtml.includes('1.0000, 2.0000 → 3.0000, 4.0000');
   document.getElementById('timeline-proof').textContent =
     `empty=${timelineEmptyOk}, plain=${timelinePlainOk}, full=${timelineOk}`;
+
+  // Exercises scan_info::correlations::{render_corr_card_html,
+  // render_corr_members_html} -- the two pure templating helpers extracted
+  // from correlations.js (pagination/lazy-expand orchestration stays in JS,
+  // so there is no single render_correlations_html to call here). Covers:
+  // the rank badge shown only above 0 (a legacy zero-rank correlation hides
+  // it), the rule_name -> rule_id -> em-dash fallback chain, singular/plural
+  // "linked entity/entities", HTML-escaping on a scan-derived description,
+  // and for members: a resolved entity preferring raw_value for its display
+  // text but its OWN value (not raw_value) for the pivot/title attribute --
+  // a mixup an early draft of this port had and caught before shipping --
+  // a resolved entity with empty raw_value falling back to value for both,
+  // a >16-char unresolved uid (truncated + ellipsis), and the empty-list
+  // guided message.
+  const cardFullHtml = renderCorrCardHtml(
+    { rule_id: "R-100", rule_name: "Breach Cluster", severity: "critical",
+      description: "Multiple sources <script>evil<\/script>", entity_uids: ["a","b","c"], rank: 4.567 },
+    5);
+  document.getElementById('corr-card-full-host').innerHTML = cardFullHtml;
+  const cardPlainHtml = renderCorrCardHtml(
+    { rule_id: "R-200", rule_name: "", severity: "low", description: "", entity_uids: ["x"], rank: 0 },
+    0);
+  document.getElementById('corr-card-plain-host').innerHTML = cardPlainHtml;
+  const cardEmptyNameHtml = renderCorrCardHtml(
+    { rule_id: "", rule_name: "", severity: "medium", description: "", entity_uids: [], rank: 0 },
+    1);
+
+  const corrCardFullOk = cardFullHtml.includes('data-corr-idx="5"')
+    && cardFullHtml.includes('cv-critical')
+    && cardFullHtml.includes('<b>CRITICAL</b>')
+    && cardFullHtml.includes('· R-100')
+    && cardFullHtml.includes('<span class="badge">3</span>')
+    && cardFullHtml.includes('rank 4.57')
+    && cardFullHtml.includes('>Breach Cluster<')
+    && cardFullHtml.includes('&lt;script&gt;evil&lt;/script&gt;')
+    && !cardFullHtml.includes('<script>evil')
+    && cardFullHtml.includes('3 linked entities');
+  const corrCardPlainOk = !cardPlainHtml.includes('pull-right')
+    && cardPlainHtml.includes('<div class="corr-name">R-200</div>')
+    && cardPlainHtml.includes('1 linked entity"')
+    && cardPlainHtml.includes('cv-low');
+  const corrCardEmptyNameOk = cardEmptyNameHtml.includes('<div class="corr-name">—</div>')
+    && cardEmptyNameHtml.includes('0 linked entities');
+
+  const dupEntitiesForCorr = [
+    { uid: "m1", kind: "email", value: "raw@example.com", raw_value: "Raw@Example.com",
+      confidence: 0.5, corroboration: 1, observed_at: 0, evidence: [], tags: [], scan_id: "s", generation: 0 },
+    { uid: "m2", kind: "domain", value: "<script>evil<\/script>.example", raw_value: "",
+      confidence: 0.5, corroboration: 1, observed_at: 0, evidence: [], tags: [], scan_id: "s", generation: 0 },
+  ];
+  const membersHtml = renderCorrMembersHtml(
+    ["m1", "m2", "unknown-uid-with-more-than-sixteen-chars"], dupEntitiesForCorr);
+  document.getElementById('corr-members-host').innerHTML = membersHtml;
+  const membersEmptyHtml = renderCorrMembersHtml([], dupEntitiesForCorr);
+
+  const corrMembersOk = membersHtml.includes('k-email')
+    && membersHtml.includes('<code>Raw@Example.com</code>')
+    && membersHtml.includes('data-pivot="raw@example.com"')
+    && membersHtml.includes('title="Show \'raw@example.com\' in Browse"')
+    && membersHtml.includes('k-domain')
+    && membersHtml.includes('&lt;script&gt;evil&lt;/script&gt;.example</code>')
+    && !membersHtml.includes('<script>evil')
+    && membersHtml.includes('data-pivot="&lt;script&gt;evil&lt;/script&gt;.example"')
+    && membersHtml.includes('unknown-uid-with…')
+    && !membersHtml.includes('unknown-uid-with-…')
+    && (membersHtml.match(/class="corr-member"/g) || []).length === 3;
+  const corrMembersEmptyOk = membersEmptyHtml.includes('No member entities in this scan view');
+  document.getElementById('correlations-proof').textContent =
+    `full=${corrCardFullOk}, plain=${corrCardPlainOk}, emptyName=${corrCardEmptyNameOk}, ` +
+    `members=${corrMembersOk}, membersEmpty=${corrMembersEmptyOk}`;
 </script>
 </body>
 </html>

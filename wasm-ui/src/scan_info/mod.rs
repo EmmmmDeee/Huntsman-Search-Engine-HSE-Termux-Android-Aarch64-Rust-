@@ -5,6 +5,7 @@
 pub mod audit;
 pub mod benchmark;
 pub mod communities;
+pub mod correlations;
 pub mod duplicates;
 pub mod gaps;
 pub mod identities;
