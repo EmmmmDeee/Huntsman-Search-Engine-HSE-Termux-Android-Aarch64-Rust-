@@ -330,6 +330,59 @@ mod qld {
     }
 
     #[test]
+    fn batch_owner_row_attributes_the_company_to_the_matching_name_only() {
+        // Real-scan reproduction (a "Fletcher Moreau" scan, via a debug bundle):
+        // the QLD register holds bulk/batch rows where ONE sender's row lists many
+        // largely-unrelated people's payouts, semicolon-joined (owner_person_names
+        // treats `;` as a joint-owner separator, same as `&`/`+`/"AND"). A
+        // broadened surname search ("Moreau") correctly accepts such a row the
+        // moment ANY ONE listed owner shares the surname — but attaching the RAW,
+        // unsplit owner string to the sender/company-owner Organisation's evidence
+        // put every unrelated listed person's full name into that entity, with no
+        // relation to the actual subject, accumulating further on every future
+        // scan that happens to touch the same big sender company. Confirmed via
+        // this exact shape in a live debug bundle: "paid_to_owner" held 23 names
+        // spanning a dozen unrelated surnames, because ONE of them (a Moreau) had
+        // shared the queried surname.
+        let raw = r#"{"result":{"total":1,"records":[
+            {"_id":9,"Owner":"ANDREW KNIGHT; CATHERINE WHITAKER; ELINA MOREAU; EMMA SMALLEY","Amount":"5.05","SenderName":"ALLIANZ WORLDWIDE PARTNERS AUSTRALIA PTY LTD","PCode":"2042"}
+        ]}}"#;
+        let recs = serde_json::from_str::<CkanResp>(raw)
+            .expect("should succeed")
+            .result
+            .expect("should succeed")
+            .records;
+        let ents = records_to_entities(&recs, 1, "Fletcher Moreau", "Moreau", true, "s");
+
+        let sender = ents
+            .iter()
+            .find(|e| {
+                e.kind == EntityKind::Organisation
+                    && e.tags.iter().any(|t| t.as_str() == "sender-company")
+            })
+            .expect("row shares the queried surname, so it must be accepted");
+        let paid_to_owner = sender.evidence[0]
+            .attributes
+            .get("paid_to_owner")
+            .expect("sender evidence carries paid_to_owner");
+        assert_eq!(
+            paid_to_owner, "Elina Moreau",
+            "must narrow to the one owner actually sharing the query surname, \
+             not the raw batch string with all four names"
+        );
+
+        // The Person pass is untouched by this fix — it already correctly mints
+        // one Person entity per parsed owner regardless (this is where "Andrew
+        // Knight" etc. legitimately belong, each judged and tagged on its own
+        // name, not bundled into the company's evidence).
+        assert!(
+            ents.iter()
+                .any(|e| e.kind == EntityKind::Person && e.value == "Andrew Knight"),
+            "unrelated owners still become their own Person entities elsewhere"
+        );
+    }
+
+    #[test]
     fn parses_records_into_geo_addresses_tagged_qld_source() {
         let resp = sample();
         let result = resp.result.expect("should succeed");
