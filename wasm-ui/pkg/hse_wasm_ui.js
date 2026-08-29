@@ -168,6 +168,83 @@ export function renderCommunitiesHtml(data, entities_js) {
 }
 
 /**
+ * Ports `correlations.js`'s `cardHtml(c, idx)`: one collapsed correlation
+ * card (severity, rule, member count, and — once above zero, a legacy
+ * pre-`rank`-field correlation reads exactly 0.0 — the rank badge). `idx`
+ * is the card's position in `S.correlations` (pagination state JS alone
+ * tracks), stamped onto `data-corr-idx` so `toggleCorrMembers` can look the
+ * correlation back up when the card is clicked. The `.corr-members`
+ * container is left empty here — see [`render_corr_members_html`].
+ * @param {any} data
+ * @param {number} idx
+ * @returns {string}
+ */
+export function renderCorrCardHtml(data, idx) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.renderCorrCardHtml(retptr, addHeapObject(data), idx);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        var ptr1 = r0;
+        var len1 = r1;
+        if (r3) {
+            ptr1 = 0; len1 = 0;
+            throw takeObject(r2);
+        }
+        deferred2_0 = ptr1;
+        deferred2_1 = len1;
+        return getStringFromWasm0(ptr1, len1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export5(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Ports the member-row templating inside `correlations.js`'s
+ * `toggleCorrMembers` — built lazily by JS on a card's first expand, from
+ * that correlation's `entity_uids` and the scan's own entities (see
+ * [`crate::entity_lookup`], shared with every other ranked/graph view built
+ * on `S.entities`). A resolved member's inner markup is
+ * [`EntityLookup::label`] (kind pill + value) wrapped in a clickable
+ * `data-pivot` div (`pivotToEntity`, kept in JS, cross-references it in
+ * Browse); an unresolved uid gets the same label — its own 16-char-
+ * truncated fallback — without the pivot wrapper, since there is no entity
+ * to pivot to.
+ * @param {any} uids_js
+ * @param {any} entities_js
+ * @returns {string}
+ */
+export function renderCorrMembersHtml(uids_js, entities_js) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.renderCorrMembersHtml(retptr, addHeapObject(uids_js), addHeapObject(entities_js));
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        var ptr1 = r0;
+        var len1 = r1;
+        if (r3) {
+            ptr1 = 0; len1 = 0;
+            throw takeObject(r2);
+        }
+        deferred2_0 = ptr1;
+        deferred2_1 = len1;
+        return getStringFromWasm0(ptr1, len1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export5(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * Builds the "Likely duplicates" panel fragment for a `/scans/{id}/duplicates`
  * response, or `""` when there are no suggested groups.
  *
@@ -776,7 +853,7 @@ function __wbg_get_imports() {
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 14, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
-            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_224);
+            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_228);
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
@@ -803,8 +880,8 @@ function __wbg_get_imports() {
     };
 }
 
-function __wasm_bindgen_func_elem_224(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_224(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_228(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_228(arg0, arg1, addHeapObject(arg2));
 }
 
 function addHeapObject(obj) {
