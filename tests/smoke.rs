@@ -1663,7 +1663,7 @@ fn platform_static_attack_envelope_is_pinned() {
     // all of it (the phishing / active-solicitation techniques are honest gaps a
     // passive collector never performs).
     // Coarse, human-readable scale check (the exact envelope is pinned below):
-    // HSE structurally reaches ~73% of the Reconnaissance tactic — most of it,
+    // HSE structurally reaches ~75% of the Reconnaissance tactic — most of it,
     // never all of it.
     assert!(
         cov.coverage_fraction > 0.65 && cov.coverage_fraction < 0.80,
@@ -1683,9 +1683,14 @@ fn platform_static_attack_envelope_is_pinned() {
     //     never performs: the whole T1598 phishing family + T1597 (buying org
     //     intel from a vendor);
     //   • parent techniques whose *sub*-techniques HSE does map but the umbrella
-    //     itself is not directly claimed (T1590, T1593), plus specific
-    //     sub-techniques out of scope (network trust deps, business tempo, device
-    //     firmware / client configs).
+    //     itself is not directly claimed (T1590), plus specific sub-techniques
+    //     out of scope (network trust deps, business tempo, device firmware /
+    //     client configs).
+    // T1593 (Search Open Websites/Domains) closed as a directly-claimed gap when
+    // `psbdmp` was audited: it queries psbdmp.ws, an index over the open website
+    // Pastebin, which is T1593 itself rather than any of its named sub-techniques
+    // (Social Media / Search Engines / Code Repositories) — so the parent ID is
+    // the honest claim, not a sub-technique.
     // (Catalogue-sorted, as `uncovered` returns.)
     let gaps: Vec<&str> = cov.uncovered.iter().map(|t| t.id).collect();
     let expected_gaps = [
@@ -1694,7 +1699,6 @@ fn platform_static_attack_envelope_is_pinned() {
         "T1591.003", // Identify Business Tempo
         "T1592.003", // Firmware
         "T1592.004", // Client Configurations
-        "T1593",     // Search Open Websites/Domains (parent; subs are mapped)
         "T1597",     // Acquire Victim Org Information (closed-source vendor intel)
         "T1598",     // Phishing for Information
         "T1598.001", // Spearphishing Service
