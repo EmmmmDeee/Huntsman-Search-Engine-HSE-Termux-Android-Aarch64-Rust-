@@ -9,15 +9,15 @@
 //! S.scan || {}` (a possibly-fully-absent client-state object, not a live
 //! fetch — JS resolves that fallback chain before calling in, since a bare
 //! `{}` still needs to deserialize cleanly here), and formats dates via
-//! `js_sys::Date` — the browser's own `Date` object through the same FFI
-//! wasm-bindgen itself is built on, so the formatted string is
+//! [`crate::html::fmt_date`] — the browser's own `Date` object through the
+//! same FFI wasm-bindgen itself is built on, so the formatted string is
 //! byte-identical to `helpers.js`'s `fmtDate()` (same LOCAL timezone, same
 //! everything) without reimplementing timezone logic in Rust.
 
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
-use crate::html::{escape_html, kind_pill};
+use crate::html::{escape_html, fmt_date, kind_pill};
 use crate::to_js_error;
 
 /// The subset of `crate::core::exposure::ExposureComponent`'s fields this
@@ -207,28 +207,6 @@ fn status_pill(s: Option<&str>) -> String {
     format!(
         "<span class=\"status-pill {cls}\">{}</span>",
         escape_html(text)
-    )
-}
-
-/// `helpers.js`'s `fmtDate()`. `0` (a genuinely-absent timestamp, per the
-/// original's own `!ts` falsy check — true for `0` as well as
-/// missing/`undefined`) renders as an em dash instead of the 1970 epoch
-/// date.
-fn fmt_date(ts: u64) -> String {
-    if ts == 0 {
-        return "\u{2014}".to_string();
-    }
-    #[allow(clippy::cast_precision_loss)]
-    let millis = ts as f64 * 1000.0;
-    let d = js_sys::Date::new(&JsValue::from_f64(millis));
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        d.get_full_year(),
-        d.get_month() + 1,
-        d.get_date(),
-        d.get_hours(),
-        d.get_minutes(),
-        d.get_seconds(),
     )
 }
 

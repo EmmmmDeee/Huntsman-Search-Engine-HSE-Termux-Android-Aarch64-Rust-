@@ -60,6 +60,60 @@ pub fn group_icon(key: &str) -> Option<&'static str> {
     }
 }
 
+/// `helpers.js`'s `trunc()`: truncates to `n` characters (not bytes) plus an
+/// ellipsis when longer, else returned as-is. Promoted from
+/// [`crate::scan_info::network`]'s own copy once
+/// [`crate::scan_info::browse`] needed the exact same truncation.
+pub fn truncate(s: &str, n: usize) -> String {
+    if s.chars().count() > n {
+        format!("{}\u{2026}", s.chars().take(n).collect::<String>())
+    } else {
+        s.to_string()
+    }
+}
+
+/// `helpers.js`'s `extLink()`: an external `http(s)` link wrapped in
+/// `<a target="_blank">`, or just the escaped (optionally truncated) text
+/// for anything else (`javascript:`/`data:` stay inert). `max_text` mirrors
+/// the JS original's optional second parameter: `None` renders the full
+/// (escaped) url with no truncation at all, matching a caller that omits
+/// the argument entirely.
+pub fn ext_link(url: &str, max_text: Option<usize>) -> String {
+    let text = escape_html(&max_text.map_or_else(|| url.to_string(), |n| truncate(url, n)));
+    let lower = url.to_ascii_lowercase();
+    if !lower.starts_with("http://") && !lower.starts_with("https://") {
+        return text;
+    }
+    format!(
+        "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">{text}</a>",
+        escape_html(url)
+    )
+}
+
+/// `helpers.js`'s `fmtDate()`: `ts*1000` formatted via the JS `Date` object's
+/// LOCAL-timezone getters, or an em-dash for a falsy (here: zero) timestamp.
+/// Uses [`js_sys::Date`] rather than reimplementing timezone logic in Rust —
+/// see `wasm-ui/Cargo.toml`'s `js-sys` dependency comment. Promoted from
+/// [`crate::scan_info::info`]'s own copy once [`crate::scan_info::browse`]
+/// needed the exact same formatting.
+pub fn fmt_date(ts: u64) -> String {
+    if ts == 0 {
+        return "\u{2014}".to_string();
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let millis = ts as f64 * 1000.0;
+    let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(millis));
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        d.get_full_year(),
+        d.get_month() + 1,
+        d.get_date(),
+        d.get_hours(),
+        d.get_minutes(),
+        d.get_seconds(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
