@@ -376,11 +376,8 @@ fn entity_confidence_uses_named_ladder_constants() {
     const BASELINE: &[(&str, &str)] = &[
         ("src/modules/asic_business_names/mod.rs", "0.42"),
         ("src/modules/au_people/mod.rs", "0.42"), // [revealed]
-        ("src/modules/bitbucket_user/mod.rs", "0.86"), // [revealed]
         ("src/modules/codewars_user/mod.rs", "0.48"), // [revealed]
-        ("src/modules/codewars_user/mod.rs", "0.84"), // [revealed]
         ("src/modules/cpan_user/mod.rs", "0.66"), // [revealed]
-        ("src/modules/cpan_user/mod.rs", "0.87"), // [revealed]
         ("src/modules/crates_io/mod.rs", "0.66"),
         ("src/modules/crates_io/mod.rs", "0.74"),
         ("src/modules/epieos/mod.rs", "0.42"), // [revealed]
@@ -418,7 +415,6 @@ fn entity_confidence_uses_named_ladder_constants() {
         // `(conf - 0.27).max(0.42)` is honestly both.
         ("src/modules/phone_geo/mod.rs", "0.08"), // [embedded]
         ("src/modules/sourceforge_user/mod.rs", "0.79"), // [revealed]
-        ("src/modules/sourceforge_user/mod.rs", "0.86"), // [revealed]
         ("src/modules/steam_profile/mod.rs", "0.05"), // [embedded]
         ("src/modules/steam_profile/mod.rs", "0.13"), // [embedded]
         ("src/modules/steam_profile/mod.rs", "0.15"), // [embedded]

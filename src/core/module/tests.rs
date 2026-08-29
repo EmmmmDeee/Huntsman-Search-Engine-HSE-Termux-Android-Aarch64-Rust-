@@ -72,6 +72,49 @@ use super::*;
         assert_eq!(ctx.key_opt("NO_SUCH_KEY"), None);
     }
 
+    /// The optional accessor applies the same "what counts as a configured key"
+    /// filter as [`ModuleContext::key`]: a blank or `hse provision` template
+    /// placeholder slot is an unconfigured slot, not a credential, so `key_opt`
+    /// reports `None` rather than handing a keyed module the literal placeholder
+    /// to send as its bearer token. Most keyed modules read their key via
+    /// `key_opt`, so without this filter an unedited `insert_<svc>_key_here`
+    /// template value would be forwarded to the provider verbatim. Mirrors
+    /// `key_treats_a_blank_value_as_missing` for the optional path.
+    #[test]
+    fn key_opt_filters_blank_and_placeholder_slots() {
+        // A real key still resolves through the filter unchanged.
+        let ctx = make_ctx(HashMap::from([(
+            "HUNTSMAN_FOO".to_string(),
+            "bar".to_string(),
+        )]));
+        assert_eq!(ctx.key_opt("HUNTSMAN_FOO"), Some("bar"));
+
+        // Blank / whitespace-only slots read as absent.
+        for blank in ["", "   ", "\t"] {
+            let ctx = make_ctx(HashMap::from([(
+                "HUNTSMAN_FOO".to_string(),
+                blank.to_string(),
+            )]));
+            assert_eq!(
+                ctx.key_opt("HUNTSMAN_FOO"),
+                None,
+                "blank {blank:?} must not resolve as a credential",
+            );
+        }
+
+        // An unedited `hse provision` template placeholder reads as absent, so it
+        // is never forwarded to a provider as a live credential.
+        let ctx = make_ctx(HashMap::from([(
+            "HUNTSMAN_FOO".to_string(),
+            "insert_foo_key_here".to_string(),
+        )]));
+        assert_eq!(
+            ctx.key_opt("HUNTSMAN_FOO"),
+            None,
+            "template placeholder must not resolve as a credential",
+        );
+    }
+
     // ── ModuleResult ────────────────────────────────────────────────────
 
     #[test]

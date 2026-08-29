@@ -149,11 +149,14 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
         ev = ev.with_attr("created_at", ts);
     }
 
-    // Confirmed-on-Codeberg username.
+    // Confirmed-on-Codeberg username — a single-source, keyless
+    // account-existence lookup. Codeberg runs Gitea, so this is gitea_user's
+    // exact class; graded at the cohort canon HIGH_PLUSPLUS_PLUS (0.85; OD-19),
+    // not EXPERT (0.88).
     let mut u = Entity::new(
         EntityKind::Username,
         &user.login,
-        confidence::EXPERT,
+        confidence::HIGH_PLUSPLUS_PLUS,
         scan_id,
     );
     u.tag("codeberg");

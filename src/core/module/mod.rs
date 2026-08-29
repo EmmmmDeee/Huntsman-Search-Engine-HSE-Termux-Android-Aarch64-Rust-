@@ -345,9 +345,39 @@ impl ModuleContext {
             .ok_or_else(|| Error::MissingKey(name.into()))
     }
 
-    /// Fetch an optional key — None if absent (no error).
+    /// Fetch an optional key — `None` if the slot is absent, blank, or still
+    /// holding the `hse provision` template placeholder (`insert_<svc>_key_here`).
+    ///
+    /// Applies the same [`crate::util::keys::resolve_key`] filter as [`Self::key`]
+    /// so the "what counts as a configured key" rule is identical for the required
+    /// and optional accessors. This accessor is the chokepoint every keyed
+    /// module's `ctx.key_opt(...)` credential read funnels through: without the
+    /// filter here, a module reading its key this way would forward an unedited
+    /// placeholder slot to the provider as if it were a real credential — a
+    /// confused-deputy request against a stranger's account, and a wasted call
+    /// that earns a 401 reading like a revoked key rather than "you never set
+    /// this". `resolve_key` is idempotent, so `key`'s own wrap (and the modules
+    /// that already call `resolve_key` explicitly) remain correct.
     pub fn key_opt(&self, name: &str) -> Option<&str> {
-        self.keys.get(name).map(String::as_str)
+        crate::util::keys::resolve_key(self.keys.get(name).map(String::as_str))
+    }
+
+    /// Fetch the next pooled key for `service` that isn't already in `tried` —
+    /// the in-scan **key cascade**. A keyed module whose current key hits a
+    /// terminal 401/403/429 records that value in `tried` and calls this to get
+    /// the next usable credential the pool holds, retrying the same request with
+    /// it. This spends every key the pool has for the service within one
+    /// `process()` call instead of stranding sibling keys until a later expansion
+    /// round re-injects one. Returns `None` once no untried, usable key remains.
+    ///
+    /// The caller seeds `tried` with the key it started on (the one hot-injected
+    /// into `ctx.keys`) so the cascade never re-hands the key that just failed.
+    pub fn next_pooled_key(
+        &self,
+        service: &str,
+        tried: &std::collections::HashSet<String>,
+    ) -> Option<String> {
+        crate::util::key_pool::global_pool().next_key_excluding(service, tried)
     }
 
     /// Fetch the next pooled key for `service` that isn't already in `tried` —

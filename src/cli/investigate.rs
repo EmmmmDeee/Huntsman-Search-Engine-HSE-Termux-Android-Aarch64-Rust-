@@ -135,7 +135,7 @@ async fn run_auto_scan(entities: &[ExtractedEntity], text: &str) -> Result<AutoS
         crate::util::uid::scan_id("investigate", text)
     );
     let evidence_source = format!("investigate:{label}");
-    let converted: Vec<crate::core::entity::Entity> = entities
+    let mut converted: Vec<crate::core::entity::Entity> = entities
         .iter()
         .map(|e| {
             crate::app::convert::extracted_to_hse_entity(
@@ -146,6 +146,9 @@ async fn run_auto_scan(entities: &[ExtractedEntity], text: &str) -> Result<AutoS
             )
         })
         .collect();
+    // Same admission guard `hse import`/`hse ingest --auto-scan` run before
+    // persisting — see ingest's identical call for the full rationale.
+    crate::app::import::deduplicate_by_uid(&mut converted);
     let scan_label =
         crate::app::persist::strongest_identity_label(&converted, format!("investigate: {label}"));
     let (relations, correlations) = crate::app::persist::persist_entities_as_scan(
@@ -236,6 +239,16 @@ mod tests {
         "Find everything linked to alice@example.com and the domain example.com"
     }
 
+    // `sample_text()` intentionally uses RFC 2606 placeholder values (they
+    // are the clearest, most realistic way to demonstrate extraction from
+    // natural language). That makes it unusable for tests that assert on
+    // what actually gets *persisted* by `run_auto_scan`, since the same
+    // admission-guard filter `hse import` and the live-scan engine already
+    // apply now runs here too and correctly drops placeholder entities.
+    fn live_prompt_text() -> &'static str {
+        "Find everything linked to qa-fixture@hse-investigate-unittest.dev and the domain hse-investigate-unittest.dev"
+    }
+
     #[test]
     fn stdin_prompt_read_is_bounded() {
         // Under the cap: returned verbatim (any `Read`, so a byte slice stands
@@ -280,15 +293,17 @@ mod tests {
     #[tokio::test]
     async fn auto_scan_persists_entities_extracted_from_the_prompt() {
         // Under cfg(test) the store is rooted in a temp dir, so this touches
-        // no real ~/.huntsman.
+        // no real ~/.huntsman. Uses `live_prompt_text()`, not `sample_text()`:
+        // this test asserts on the persisted count, and `sample_text()`'s
+        // placeholder entities are now correctly filtered before persist.
         let extractor = EntityExtractor::new(0.30).expect("valid floor");
-        let entities = extractor.extract_from_text(sample_text());
+        let entities = extractor.extract_from_text(live_prompt_text());
         assert!(
             !entities.is_empty(),
             "the sample prompt must extract something"
         );
 
-        let summary = run_auto_scan(&entities, sample_text())
+        let summary = run_auto_scan(&entities, live_prompt_text())
             .await
             .expect("auto-scan should persist the extracted entities");
         assert!(
@@ -303,18 +318,43 @@ mod tests {
     async fn auto_scan_ids_are_unique_across_calls_in_the_same_second() {
         // Same collision hazard ingest's auto-scan had (and was fixed for):
         // a fixed-per-second id would let two investigations of the same
-        // prompt in the same second overwrite each other's data.
+        // prompt in the same second overwrite each other's data. Uses
+        // `live_prompt_text()` so this exercises the real persistence path
+        // rather than the all-filtered/0-entity path.
         let extractor = EntityExtractor::new(0.30).expect("valid floor");
-        let entities = extractor.extract_from_text(sample_text());
-        let a = run_auto_scan(&entities, sample_text())
+        let entities = extractor.extract_from_text(live_prompt_text());
+        let a = run_auto_scan(&entities, live_prompt_text())
             .await
             .expect("first auto-scan persists");
-        let b = run_auto_scan(&entities, sample_text())
+        let b = run_auto_scan(&entities, live_prompt_text())
             .await
             .expect("second auto-scan persists");
         assert_ne!(
             a.sid, b.sid,
             "two investigations must not collide on one scan id (would overwrite data)"
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_scan_drops_placeholder_entities() {
+        // `run_auto_scan` claims (in its own doc comment) to share the same
+        // admission-guard filtering as `hse import` and the live-scan
+        // engine. Prove it: a prompt that only names RFC 2606 placeholder
+        // values must extract something (so this isn't vacuous) but persist
+        // nothing.
+        let extractor = EntityExtractor::new(0.30).expect("valid floor");
+        let entities = extractor.extract_from_text(sample_text());
+        assert!(
+            !entities.is_empty(),
+            "the placeholder-only prompt must still extract entities to filter"
+        );
+
+        let summary = run_auto_scan(&entities, sample_text())
+            .await
+            .expect("auto-scan must still succeed on an all-filtered batch");
+        assert_eq!(
+            summary.entities, 0,
+            "placeholder entities (alice@example.com, example.com) must never be persisted as real findings"
         );
     }
 

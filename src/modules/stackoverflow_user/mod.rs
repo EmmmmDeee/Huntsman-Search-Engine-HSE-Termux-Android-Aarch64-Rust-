@@ -207,11 +207,14 @@ pub(super) fn build_entities(
 ) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
-    // Confirmed-on-StackOverflow username.
+    // Confirmed-on-StackOverflow username — a single-source, keyless
+    // account-existence lookup, graded at the cohort canon HIGH_PLUSPLUS_PLUS
+    // (0.85; OD-19, matching gitea_user/gitlab_user). Was CORROBORATED (0.82),
+    // whose name implies a second source this single lookup does not have.
     let mut u = Entity::new(
         EntityKind::Username,
         &user.display_name,
-        confidence::CORROBORATED,
+        confidence::HIGH_PLUSPLUS_PLUS,
         scan_id,
     );
     u.tag("stackoverflow");
@@ -462,7 +465,11 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "alice");
         assert!(u.is_some(), "must emit Username entity");
-        assert!((u.expect("should succeed").confidence - 0.82).abs() < 0.01);
+        // OD-19 cohort canon: single-source confirmed-account lookup = 0.85
+        // (was a bare 0.82 / CORROBORATED, whose name implied a second source).
+        assert!(
+            (u.expect("should succeed").confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01
+        );
         assert!(
             u.expect("should succeed").has_tag("stackoverflow")
                 && u.expect("should succeed").has_tag("forum")

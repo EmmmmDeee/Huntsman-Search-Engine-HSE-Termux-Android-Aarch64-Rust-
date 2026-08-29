@@ -132,7 +132,9 @@ fn builds_username_entity_confirmed_on_codeberg() {
         .iter()
         .find(|e| e.kind == EntityKind::Username && e.value == "alice")
         .expect("must emit Username entity");
-    assert!((u.confidence - confidence::EXPERT).abs() < 0.01);
+    // OD-19 cohort canon: a single-source confirmed-account lookup is
+    // HIGH_PLUSPLUS_PLUS (0.85), matching gitea_user (Codeberg runs Gitea).
+    assert!((u.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
     assert!(u.has_tag("codeberg") && u.has_tag("code"));
     assert_eq!(
         u.evidence[0]
