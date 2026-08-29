@@ -145,6 +145,11 @@ impl Module for Fofa {
     }
 
     fn category(&self) -> ModuleCategory {
+        // FOFA is a named example of a "scan database" service in MITRE's T1596.005, and this
+        // module does nothing but query it by IP/domain and mint IpAddress/Domain entities with
+        // attached port/banner/OS evidence from that lookup — it performs no active scanning, DNS
+        // resolution, or WHOIS of its own, so T1596.005 (Scan Databases) plus T1590.005 (IP
+        // Addresses) already characterizes it tightly with no gap or overreach.
         ModuleCategory::Infrastructure
     }
 

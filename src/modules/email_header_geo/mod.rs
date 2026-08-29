@@ -52,6 +52,12 @@ impl Module for EmailHeaderGeo {
     }
 
     fn category(&self) -> ModuleCategory {
+        // No attack_techniques() override is needed — the category default's MITRE ATT&CK
+        // Reconnaissance mapping already covers this: the module does purely offline inference,
+        // matching the email domain against static ccTLD and regional-ISP-brand tables (no DNS,
+        // WHOIS, or network calls per the doc comment and is_passive()=true) to emit a coarse
+        // Address/Coordinates entity — exactly "Determine Physical Locations" (T1591.001) and
+        // nothing broader (no DNS/WHOIS/technical-database technique is implicated).
         ModuleCategory::Geo
     }
 
