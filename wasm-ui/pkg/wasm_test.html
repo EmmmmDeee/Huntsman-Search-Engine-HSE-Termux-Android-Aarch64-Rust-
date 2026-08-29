@@ -29,8 +29,10 @@
 <p id="metrics-proof">metrics render not yet run</p>
 <div id="metrics-plain-host">(plain-case host not yet populated)</div>
 <div id="metrics-full-host">(full-case host not yet populated)</div>
+<p id="duplicates-proof">duplicates render not yet run</p>
+<div id="duplicates-host">(duplicates host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -260,6 +262,39 @@
     && metricsFullHtml.includes('>9<');
   document.getElementById('metrics-proof').textContent =
     `empty=${metricsEmptyOk}, plain=${metricsPlainOk}, full=${metricsFullOk}`;
+
+  // Exercises scan_info::duplicates::render_duplicates_html -- the first
+  // scan_info port needing a second argument (S.entities, real
+  // hse_core::Entity JSON) alongside its own API response. Covers: a member
+  // UID resolved to its entity's raw_value, one resolved to `value` (empty
+  // raw_value), one absent from entities entirely (uid-prefix+ellipsis
+  // fallback), and a reason string containing HTML to prove escaping.
+  const dupEntities = [
+    { uid: "aaa111", kind: "person", value: "john smith", raw_value: "John Smith",
+      confidence: 0.7, corroboration: 2, observed_at: 1700000000, evidence: [],
+      tags: [], scan_id: "s", generation: 0 },
+    { uid: "bbb222", kind: "email", value: "j.smith@gmail.com", raw_value: "",
+      confidence: 0.6, corroboration: 1, observed_at: 1700000000, evidence: [],
+      tags: [], scan_id: "s", generation: 0 },
+  ];
+  const duplicatesHtml = renderDuplicatesHtml(
+    { duplicates: [
+        { kind: "person", members: ["aaa111", "ccc333333333extra"], reason: "Name variant <b>match</b>" },
+        { kind: "email", members: ["bbb222", "eee555"], reason: "Gmail dot-insensitive mailbox" },
+      ] },
+    dupEntities,
+  );
+  document.getElementById('duplicates-host').innerHTML = duplicatesHtml;
+  const duplicatesOk = duplicatesHtml.includes('2 groups')
+    && duplicatesHtml.includes('k-person')
+    && duplicatesHtml.includes('k-email')
+    && duplicatesHtml.includes('<code>John Smith</code>')
+    && duplicatesHtml.includes('<code>ccc333333333…</code>')
+    && duplicatesHtml.includes('<code>j.smith@gmail.com</code>')
+    && duplicatesHtml.includes('<code>eee555…</code>')
+    && duplicatesHtml.includes('&lt;b&gt;match&lt;/b&gt;')
+    && !duplicatesHtml.includes('<b>match</b>');
+  document.getElementById('duplicates-proof').textContent = `groups=${duplicatesOk}`;
 </script>
 </body>
 </html>
