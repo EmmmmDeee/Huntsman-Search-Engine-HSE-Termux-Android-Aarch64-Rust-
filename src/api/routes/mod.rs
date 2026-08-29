@@ -299,11 +299,6 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         include_bytes!("../../web/js/state.js"),
     ),
     (
-        "js/theme.js",
-        "application/javascript",
-        include_bytes!("../../web/js/theme.js"),
-    ),
-    (
         "js/timers.js",
         "application/javascript",
         include_bytes!("../../web/js/timers.js"),
@@ -363,16 +358,20 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         "application/javascript",
         include_bytes!("../../web/js/views/search.js"),
     ),
-    // TEMPORARY — proves the JS -> Rust/WASM port's full pipeline (compile to
-    // wasm32-unknown-unknown, run wasm-bindgen, embed the same way every JS
-    // file above is embedded, serve, load in a real browser and call into
-    // hse-core) before any real view is ported. Not linked from spa.html.
-    // Remove once real view ports make this diagnostic page redundant.
+    // TEMPORARY diagnostic page proving the JS -> Rust/WASM port's pipeline
+    // in isolation (not linked from spa.html). Remove once enough real view
+    // ports make it clearly redundant.
     (
         "wasm_test.html",
         "text/html; charset=utf-8",
         include_bytes!("../../../wasm-ui/pkg/wasm_test.html"),
     ),
+    // The wasm-ui crate's compiled output (see wasm-ui/Cargo.toml) — real,
+    // growing production content, imported by main.js the same way every JS
+    // module above is imported. Currently provides the theme toggle
+    // (wasm-ui/src/theme.rs, was js/theme.js); more views move here over
+    // time. Checked in rather than built by this crate's own build step —
+    // see wasm-ui/src/lib.rs's doc comment for the regeneration command.
     (
         "hse_wasm_ui.js",
         "application/javascript",

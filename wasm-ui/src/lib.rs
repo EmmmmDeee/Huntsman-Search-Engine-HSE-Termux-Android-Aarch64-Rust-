@@ -1,15 +1,21 @@
-//! Proof-of-concept vertical slice for the JS -> Rust/WASM web-UI port.
+//! Web-UI build target: Rust compiled to wasm32-unknown-unknown, replacing
+//! `src/web/js/*` incrementally, view by view (simplest first — see the
+//! project's own task tracker).
 //!
-//! Not wired into the real SPA yet (`spa.html`/`router.js` are untouched).
-//! This validates the full pipeline end to end before any real view is
-//! ported: compile to wasm32-unknown-unknown, run wasm-bindgen, embed the
-//! output the same way `src/api/routes/mod.rs` embeds JS today, serve it,
-//! and load it in a real browser — including calling into `hse-core`
-//! (this is the first time that crate has been built for wasm32 at all) to
-//! prove the actual point of the extraction, not just a "hello world".
+//! Modules ported so far:
+//! - [`theme`] — `src/web/js/theme.js`
 //!
-//! Once this is proven, real ports start replacing this module's content
-//! view by view (simplest first — see the project's own task tracker).
+//! The compiled output is checked into `pkg/` and embedded into
+//! `src/api/routes/mod.rs`'s `APP_FILES` the same way every hand-written JS
+//! file is — there is no `build.rs` step wiring this crate into the main
+//! crate's own build. Regenerate after any change here with:
+//! ```sh
+//! cargo build --manifest-path wasm-ui/Cargo.toml --target wasm32-unknown-unknown --release
+//! wasm-bindgen --target web --no-typescript --out-dir wasm-ui/pkg \
+//!     --out-name hse_wasm_ui wasm-ui/target/wasm32-unknown-unknown/release/hse_wasm_ui.wasm
+//! ```
+
+pub mod theme;
 
 use wasm_bindgen::prelude::*;
 
@@ -19,6 +25,7 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen(start)]
 pub fn main() {
     render_proof();
+    theme::wire_toggle_click();
 }
 
 /// Writes a visible, checkable result into `#wasm-proof` (added only to the
