@@ -74,20 +74,19 @@ pub(in crate::core::correlator) fn rule_au_072_payid_payment_surface(
         )
     };
 
-    vec![Correlation {
-        rule_id: "AU-072".into(),
-        rule_name: "Consolidated PayID payment-identity surface".into(),
+    vec![Correlation::new(
+        "AU-072",
+        "Consolidated PayID payment-identity surface",
         severity,
-        description: format!(
+        format!(
             "Subject reachable by {} PayID identifier(s) across {} channel(s) ({}){}",
             payids.len(),
             types_listed.len(),
             types_listed.join(", "),
             tail
         ),
-        entity_uids: uids,
-        scan_id: scan_id.into(),
+        uids,
+        scan_id,
         ts,
-        rank: 0.0,
-    }]
+    )]
 }

@@ -154,11 +154,11 @@ pub(in crate::core::correlator) fn rule_au_080_recurring_cooccurrence_link(
             ranked.push((
                 is_hub,
                 shared,
-                Correlation {
-                    rule_id: "AU-080".into(),
-                    rule_name: "Recurring co-occurrence identity association".into(),
+                Correlation::new(
+                    "AU-080",
+                    "Recurring co-occurrence identity association",
                     severity,
-                    description: format!(
+                    format!(
                         "{} '{}' and {} '{}' have appeared together in {shared} prior \
                          investigation(s) — a recurring structural association in the local \
                          intelligence database that bridges cases{}",
@@ -168,11 +168,10 @@ pub(in crate::core::correlator) fn rule_au_080_recurring_cooccurrence_link(
                         partner_e.value,
                         if is_hub { " (hub-level frequency)" } else { "" },
                     ),
-                    entity_uids: uids,
-                    scan_id: scan_id.into(),
+                    uids,
+                    scan_id,
                     ts,
-                    rank: 0.0,
-                },
+                ),
             ));
         }
     }
@@ -204,19 +203,18 @@ pub(in crate::core::correlator) fn rule_au_080_recurring_cooccurrence_link(
     tail_uids.sort_unstable();
     tail_uids.dedup();
     tail_uids.truncate(ROLLUP_UID_CAP);
-    out.push(Correlation {
-        rule_id: "AU-080".into(),
-        rule_name: "Recurring co-occurrence identity association".into(),
-        severity: Severity::Low,
-        description: format!(
+    out.push(Correlation::new(
+        "AU-080",
+        "Recurring co-occurrence identity association",
+        Severity::Low,
+        format!(
             "{suppressed} further recurring co-occurrence pair(s), below the top {MAX_PAIRS} by \
              frequency, were rolled up to reduce noise — each pairing's evidence remains on the \
              entities involved"
         ),
-        entity_uids: tail_uids,
-        scan_id: scan_id.into(),
+        tail_uids,
+        scan_id,
         ts,
-        rank: 0.0,
-    });
+    ));
     out
 }

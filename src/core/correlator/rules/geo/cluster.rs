@@ -23,19 +23,18 @@ pub(in crate::core::correlator) fn rule_au_013_local_network_discovery(
     if hits.len() < 2 {
         return Vec::new();
     }
-    vec![Correlation {
-        rule_id: "AU-013".into(),
-        rule_name: "Local-network discovery".into(),
-        severity: Severity::Low,
-        description: format!(
+    vec![Correlation::new(
+        "AU-013",
+        "Local-network discovery",
+        Severity::Low,
+        format!(
             "{} entities observed on the local network (ARP / interfaces / Wi-Fi APs)",
             hits.len()
         ),
-        entity_uids: hits.iter().map(|e| e.uid.clone()).collect(),
-        scan_id: scan_id.into(),
+        hits.iter().map(|e| e.uid.clone()).collect(),
+        scan_id,
         ts,
-        rank: 0.0,
-    }]
+    )]
 }
 
 pub(in crate::core::correlator) fn rule_au_014_geo_cluster(
@@ -67,20 +66,19 @@ pub(in crate::core::correlator) fn rule_au_014_geo_cluster(
             // already catches, so nothing is lost by requiring it alone.
             let sources = e.corroborating_sources();
             if sources.len() >= 2 {
-                Some(Correlation {
-                    rule_id: "AU-014".into(),
-                    rule_name: "Geolocation cluster".into(),
-                    severity: Severity::Medium,
-                    description: format!(
+                Some(Correlation::new(
+                    "AU-014",
+                    "Geolocation cluster",
+                    Severity::Medium,
+                    format!(
                         "Coordinates '{}' confirmed by {} geo source(s)",
                         e.value,
                         sources.len()
                     ),
-                    entity_uids: vec![e.uid.clone()],
-                    scan_id: scan_id.into(),
+                    vec![e.uid.clone()],
+                    scan_id,
                     ts,
-                    rank: 0.0,
-                })
+                ))
             } else {
                 None
             }

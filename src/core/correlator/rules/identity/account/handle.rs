@@ -115,19 +115,18 @@ pub(in crate::core::correlator) fn rule_au_011_cross_platform_username(
             };
             if count >= 3 {
                 let detail = best_list.map(|s| format!(": {s}")).unwrap_or_default();
-                Some(Correlation {
-                    rule_id: "AU-011".into(),
-                    rule_name: "Cross-platform username footprint".into(),
-                    severity: Severity::Medium,
-                    description: format!(
+                Some(Correlation::new(
+                    "AU-011",
+                    "Cross-platform username footprint",
+                    Severity::Medium,
+                    format!(
                         "Username '{}' present on {count} platforms{detail}",
                         e.value
                     ),
-                    entity_uids: vec![e.uid.clone()],
-                    scan_id: scan_id.into(),
+                    vec![e.uid.clone()],
+                    scan_id,
                     ts,
-                    rank: 0.0,
-                })
+                ))
             } else {
                 None
             }
@@ -432,16 +431,15 @@ pub(in crate::core::correlator) fn rule_au_076_email_username_localpart_bridge(
             )
         };
 
-        out.push(Correlation {
-            rule_id: "AU-076".into(),
-            rule_name: "Email-username local-part identity bridge".into(),
-            severity: Severity::High,
+        out.push(Correlation::new(
+            "AU-076",
+            "Email-username local-part identity bridge",
+            Severity::High,
             description,
-            entity_uids: uids,
-            scan_id: scan_id.into(),
+            uids,
+            scan_id,
             ts,
-            rank: 0.0,
-        });
+        ));
     }
     out
 }
@@ -485,21 +483,20 @@ pub(in crate::core::correlator) fn rule_au_077_name_derived_username_confirmed(
             let confirmed_by: Vec<&str> =
                 sorted_evidence_sources(&e.evidence, is_verified_discovery);
             let confirmed_by_str = confirmed_by.join(", ");
-            Correlation {
-                rule_id: "AU-077".into(),
-                rule_name: "Name-derived username confirmed on platform".into(),
-                severity: Severity::High,
-                description: format!(
+            Correlation::new(
+                "AU-077",
+                "Name-derived username confirmed on platform",
+                Severity::High,
+                format!(
                     "Username '{}' was predicted by a name/email derivation pass and \
                      independently confirmed live on: {} — prediction + verification is a \
                      strong, free identity bridge requiring no breach data",
                     e.value, confirmed_by_str,
                 ),
-                entity_uids: vec![e.uid.clone()],
-                scan_id: scan_id.into(),
+                vec![e.uid.clone()],
+                scan_id,
                 ts,
-                rank: 0.0,
-            }
+            )
         })
         .collect()
 }
