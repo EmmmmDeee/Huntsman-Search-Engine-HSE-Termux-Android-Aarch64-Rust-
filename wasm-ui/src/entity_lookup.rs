@@ -21,6 +21,14 @@ impl<'a> EntityLookup<'a> {
         }
     }
 
+    /// The full entity for `uid`, when a caller needs more than
+    /// [`display`](Self::display) gives (e.g. its `kind`, for a kind pill
+    /// alongside the value) and wants to build its own not-found fallback
+    /// rather than this type's.
+    pub fn get(&self, uid: &str) -> Option<&'a hse_core::Entity> {
+        self.by_uid.get(uid).copied()
+    }
+
     /// HTML-escaped display value for `uid`: the entity's `raw_value` (or
     /// `value` when `raw_value` is empty) if found, else the UID's first 12
     /// characters plus an ellipsis — the same fallback every JS original

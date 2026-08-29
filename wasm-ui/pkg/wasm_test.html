@@ -34,8 +34,11 @@
 <p id="communities-proof">communities render not yet run</p>
 <div id="communities-empty-host">(empty-case host not yet populated)</div>
 <div id="communities-host">(communities host not yet populated)</div>
+<p id="trust-proof">trust render not yet run</p>
+<div id="trust-empty-host">(empty-case host not yet populated)</div>
+<div id="trust-host">(trust host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -332,6 +335,35 @@
     && communitiesHtml.includes('+2 more');
   document.getElementById('communities-proof').textContent =
     `empty=${communitiesEmptyOk}, clusters=${communitiesOk}`;
+
+  // Exercises scan_info::trust::render_trust_html -- notably its OWN
+  // not-found-uid styling (16-char truncation, muted/no-kind-pill), kept
+  // deliberately distinct from EntityLookup::display's 12-char one, plus the
+  // now-shared crate::html::kind_pill (promoted off duplicates.rs's
+  // formerly-local copy) rendering a REAL hse_core::EntityKind via its
+  // Display impl (kindToStr's job in the JS original) rather than an
+  // already-flattened string like duplicates.rs's ResolutionGroup.kind.
+  const trustEmptyHtml = renderTrustHtml({ trust: [] }, []);
+  document.getElementById('trust-empty-host').innerHTML = trustEmptyHtml;
+  const trustHtml = renderTrustHtml(
+    { trust: [
+        { uid: "aaa111", score: 0.876 },
+        { uid: "unknownuid1234567890", score: 0.4321 },
+      ] },
+    dupEntities,
+  );
+  document.getElementById('trust-host').innerHTML = trustHtml;
+
+  const trustEmptyOk = trustEmptyHtml.includes('No trust ranking yet');
+  const trustOk = trustHtml.includes('Top 2 entities')
+    && trustHtml.includes('k-person')
+    && trustHtml.includes('<code>John Smith</code>')
+    && trustHtml.includes('width:88%')
+    && trustHtml.includes('<code>0.88</code>')
+    && trustHtml.includes('>unknownuid123456…<')
+    && !trustHtml.includes('unknownuid1234567…')
+    && trustHtml.includes('<code>0.43</code>');
+  document.getElementById('trust-proof').textContent = `empty=${trustEmptyOk}, ranked=${trustOk}`;
 </script>
 </body>
 </html>

@@ -21,7 +21,7 @@ use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
 use crate::entity_lookup::EntityLookup;
-use crate::html::escape_html;
+use crate::html::{escape_html, kind_pill};
 use crate::to_js_error;
 
 #[derive(Deserialize)]
@@ -37,13 +37,6 @@ struct ResolutionGroup {
 #[derive(Deserialize)]
 struct DuplicatesResponse {
     duplicates: Vec<ResolutionGroup>,
-}
-
-fn kind_pill(kind: &str) -> String {
-    format!(
-        "<span class=\"kind-pill k-{k}\">{k}</span>",
-        k = escape_html(kind)
-    )
 }
 
 /// Builds the "Likely duplicates" panel fragment for a `/scans/{id}/duplicates`
