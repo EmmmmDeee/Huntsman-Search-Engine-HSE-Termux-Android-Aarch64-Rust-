@@ -1,6 +1,6 @@
 import { API } from '/static/js/api.js';
 import { $, attr, attrText, esc, extLink, fmtDate, kindPill } from '/static/js/helpers.js';
-import { classify, effC, sourceCount } from '/static/hse_wasm_ui.js';
+import { classify, effC, isNonCorroboratingSource, sourceCount } from '/static/hse_wasm_ui.js';
 import { S } from '/static/js/state.js';
 
 // A large scan can produce thousands of entities; rendering each as two <tr>s
@@ -132,7 +132,7 @@ export function renderBrowseTable(rows, total){
       // `is_non_corroborating_source` in core::entity) so the web UI stops
       // implying every listed source independently boosted C_eff when some
       // are self-enrichment/recall/cross-scan passes that don't.
-      const nonCorrob = ev.source && ENRICHMENT_SOURCES.has(ev.source);
+      const nonCorrob = ev.source && isNonCorroboratingSource(ev.source);
       const marker = nonCorrob ? ' <span class="text-muted" style="font-size:10px">(non-corroborating: enrichment/recall/cross-scan)</span>' : '';
       return `<div class="ev-block"><span class="ev-src">${esc(ev.source)}</span>${marker}<span class="text-muted pull-right" style="font-size:10px">${esc(fmtDate(ev.recorded_at))}</span><div class="ev-sum">${esc(ev.summary)}</div>${attrs?`<div class="ev-attrs">${attrs}</div>`:''}</div>`;
     }).join('');

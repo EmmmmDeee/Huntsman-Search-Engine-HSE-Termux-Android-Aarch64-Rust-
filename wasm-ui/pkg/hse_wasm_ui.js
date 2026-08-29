@@ -58,6 +58,24 @@ export function effC(entity_js) {
 }
 
 /**
+ * True if `source` must not count toward cross-source corroboration —
+ * mirrors [`hse_core::is_non_corroborating_source`] exactly. This is the
+ * predicate `scan_info/browse.js`'s evidence-detail rows use to mark a
+ * non-corroborating source (the same "(non-corroborating: …)" annotation
+ * the CLI dossier prints); the JS side used to hold its own `ENRICHMENT_SOURCES`
+ * set for this before that set moved into `hse_core` under this module's
+ * migration, leaving `browse.js`'s call site referencing an undefined global.
+ * @param {string} source
+ * @returns {boolean}
+ */
+export function isNonCorroboratingSource(source) {
+    const ptr0 = passStringToWasm0(source, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.isNonCorroboratingSource(ptr0, len0);
+    return ret !== 0;
+}
+
+/**
  * Runs automatically when the browser loads this module — no explicit JS
  * call needed, unlike every other function here (which `wasm-bindgen`
  * exports for JS to call directly by name).
@@ -980,7 +998,7 @@ function __wbg_get_imports() {
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 16, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
-            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_264);
+            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_266);
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000002: function(arg0) {
@@ -1012,8 +1030,8 @@ function __wbg_get_imports() {
     };
 }
 
-function __wasm_bindgen_func_elem_264(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_264(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_266(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_266(arg0, arg1, addHeapObject(arg2));
 }
 
 function addHeapObject(obj) {
