@@ -311,13 +311,16 @@ fn env_template_keys_are_all_consumed() {
     // 2. Keys genuinely read somewhere in source. `collect_key_env_consts`
     //    (the `_ENV`-const / `key`/`key_opt` forms) stays scoped to `src/` here
     //    rather than `src/modules` — this test cares about ANY consumer, not
-    //    just OSINT-provider modules. `collect_direct_env_var_reads` adds the
-    //    one further form real config-knob reads use (`env::var(...)`
-    //    bypassing `ModuleContext` entirely) that the other collector
-    //    intentionally excludes (see its own doc comment).
+    //    just OSINT-provider modules. `collect_raw_huntsman_env_reads` (below,
+    //    shared with `modules_never_read_credentials_via_raw_env`) adds the one
+    //    further form real config-knob reads use (`env::var(...)` bypassing
+    //    `ModuleContext` entirely) that the other collector intentionally
+    //    excludes (see its own doc comment) — called over all of `src/` here
+    //    rather than that test's `src/modules`-only scope, for the same
+    //    any-consumer-counts reason as the line above.
     let mut consumed: HashSet<String> = HashSet::new();
     collect_key_env_consts(&root.join("src"), &mut consumed);
-    collect_direct_env_var_reads(&root.join("src"), &mut consumed);
+    collect_raw_huntsman_env_reads(&root.join("src"), &mut consumed);
 
     let reserved: HashSet<&str> = NOT_YET_WIRED.iter().copied().collect();
 
@@ -391,7 +394,7 @@ fn push_huntsman_literal(
 /// directly to a key read, which is the precise "a module genuinely reads
 /// this env var" signal — the inverse of what `env_template_keys_are_all_consumed`
 /// guards. Also deliberately excludes a bare `env::var("HUNTSMAN_...")` read
-/// (see [`collect_direct_env_var_reads`]): that form is how config knobs
+/// (see [`collect_raw_huntsman_env_reads`]): that form is how config knobs
 /// bypass `ModuleContext` entirely, and this collector's own caller
 /// (`key_gated_modules_are_documented_everywhere_an_operator_would_look`)
 /// requires every var it finds to appear in `KNOWN_KEYS` — correct for a
@@ -447,36 +450,6 @@ fn collect_key_env_consts(dir: &Path, out: &mut std::collections::HashSet<String
                     push_huntsman_literal(&content[call_start..], q, out);
                 }
                 from = call_start + "fetch_keyed_json".len();
-            }
-        }
-    }
-}
-
-/// Collects every `HUNTSMAN_*` env var read via a direct `env::var("HUNTSMAN_...")`
-/// call — `std::env::var(...)` or an imported bare `env::var(...)` (both
-/// contain the `env::var(` substring this matches on). This is the config-knob
-/// read pattern (`HUNTSMAN_DNS_RESOLVERS`, `HUNTSMAN_WEBHOOK_URL`,
-/// `HUNTSMAN_SEARCH_PROXY`, …) that bypasses `ModuleContext::key`/`key_opt`
-/// entirely and so is invisible to [`collect_key_env_consts`] — kept as a
-/// separate collector rather than a third form there specifically so it stays
-/// out of the credential-shaped set that guards `KNOWN_KEYS` membership (see
-/// that function's own doc comment for why merging them would be wrong).
-fn collect_direct_env_var_reads(dir: &Path, out: &mut std::collections::HashSet<String>) {
-    for entry in fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.is_dir() {
-            collect_direct_env_var_reads(&path, out);
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            let content = fs::read_to_string(&path).unwrap();
-            for line in content.lines() {
-                let mut from = 0;
-                while let Some(i) = line[from..].find("env::var(") {
-                    let after = from + i + "env::var(".len();
-                    if line[after..].starts_with('"') {
-                        push_huntsman_literal(line, after, out);
-                    }
-                    from = after;
-                }
             }
         }
     }
@@ -799,6 +772,12 @@ fn has_nonzero_len_assert(line: &str) -> bool {
 /// reads are seen — the one shape the two sanctioned reads actually use — which
 /// is the same best-effort structural signal every scanner in this file relies
 /// on.
+///
+/// Two callers, two different directory scopes: [`modules_never_read_credentials_via_raw_env`]
+/// below passes `src/modules` (its "no module bypasses the accessor"
+/// invariant only concerns modules); [`env_template_keys_are_all_consumed`]
+/// passes all of `src/` (a config knob consumed outside `src/modules` still
+/// needs to count as "this template key is genuinely read somewhere").
 fn collect_raw_huntsman_env_reads(dir: &Path, out: &mut std::collections::HashSet<String>) {
     for entry in fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
