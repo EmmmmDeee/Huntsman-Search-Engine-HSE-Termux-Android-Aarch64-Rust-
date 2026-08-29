@@ -81,8 +81,11 @@
 <p id="scans-table-proof">scans table render not yet run</p>
 <div id="scans-table-full-host">(full-case host not yet populated)</div>
 <div id="scans-table-empty-host">(empty-case host not yet populated)</div>
+<p id="diff-proof">diff result render not yet run</p>
+<div id="diff-full-host">(full-case host not yet populated)</div>
+<div id="diff-identical-host">(identical-case host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, isNonCorroboratingSource, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml, renderCorrCardHtml, renderCorrMembersHtml, renderExposureHtml, renderScanSettingsHtml, renderPathResultHtml, renderBrowseTableHtml, renderApiBudgetsPanelHtml, renderModuleHealthPanelHtml, renderScansTableHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, isNonCorroboratingSource, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml, renderCorrCardHtml, renderCorrMembersHtml, renderExposureHtml, renderScanSettingsHtml, renderPathResultHtml, renderBrowseTableHtml, renderApiBudgetsPanelHtml, renderModuleHealthPanelHtml, renderScansTableHtml, renderDiffResultHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -1167,6 +1170,61 @@
 
   document.getElementById('scans-table-proof').textContent =
     `full=${scansFullOk}, empty=${scansEmptyOk}`;
+
+  // Exercises views::diff::render_diff_result_html. Covers: an entity kind
+  // that is ALREADY server-flattened to "other:..." (core::diff::EntityRef
+  // serialises via EntityKind's own Display impl, unlike the raw wire shape
+  // elsewhere in this codebase), a value that isn't http(s) rendering as
+  // plain escaped text (not a link), HTML-escaping a confidence-shift's
+  // value, the Added/Removed/Re-scored panels each independently appearing
+  // only when non-empty, the "C_eff" vs "Before → After" column header
+  // choice, and both up/down shift-arrow-and-color directions plus the
+  // equal-counts-as-improved edge case. And the "Identical" fallback when
+  // all three lists are empty.
+  const diffFullHtml = renderDiffResultHtml({
+    added: [
+      { uid: 'u1', kind: 'email', value: 'new@example.com', c_effective: 0.723 },
+      { uid: 'u2', kind: 'other:custom_type', value: 'beta-value', c_effective: 0.1 },
+    ],
+    removed: [],
+    common: 10,
+    confidence_shifts: [
+      { uid: 'u3', kind: 'domain', value: "<script>evil<\/script>.example", before: 0.4, after: 0.9 },
+      { uid: 'u4', kind: 'phone', value: '+61400000000', before: 0.9, after: 0.4 },
+    ],
+  });
+  document.getElementById('diff-full-host').innerHTML = diffFullHtml;
+  const diffFullOk = diffFullHtml.includes('Added <span class="badge">2</span>')
+    && !diffFullHtml.includes('Removed <span class="badge">')
+    && diffFullHtml.includes('Re-scored <span class="badge">2</span>')
+    && diffFullHtml.includes('k-email')
+    && diffFullHtml.includes('k-other:custom_type')
+    && diffFullHtml.includes('>other:custom_type<')
+    && diffFullHtml.includes('>new@example.com<')
+    && !diffFullHtml.includes('<a href="new@example.com"')
+    && diffFullHtml.includes('0.723')
+    && diffFullHtml.includes('&lt;script&gt;evil&lt;/script&gt;.example')
+    && !diffFullHtml.includes('<script>evil')
+    && diffFullHtml.includes('0.400 → 0.900')
+    && diffFullHtml.includes('#3c763d')
+    && diffFullHtml.includes('▲')
+    && diffFullHtml.includes('0.900 → 0.400')
+    && diffFullHtml.includes('#a94442')
+    && diffFullHtml.includes('▼')
+    && diffFullHtml.includes('Before → After')
+    && diffFullHtml.includes('C_eff')
+    && diffFullHtml.includes('+2')
+    && diffFullHtml.includes('−0')
+    && diffFullHtml.includes('<div class="val">10</div>');
+
+  const diffIdenticalHtml = renderDiffResultHtml({ added: [], removed: [], common: 7, confidence_shifts: [] });
+  document.getElementById('diff-identical-host').innerHTML = diffIdenticalHtml;
+  const diffIdenticalOk = diffIdenticalHtml.includes('Identical')
+    && diffIdenticalHtml.includes('7 in common')
+    && !diffIdenticalHtml.includes('panel-default');
+
+  document.getElementById('diff-proof').textContent =
+    `full=${diffFullOk}, identical=${diffIdenticalOk}`;
 </script>
 </body>
 </html>
