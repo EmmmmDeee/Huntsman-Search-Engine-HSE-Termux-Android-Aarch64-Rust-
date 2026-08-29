@@ -10,7 +10,7 @@
 //!   * [`crate::modules::email_canonical`] *emits* the canonical form as a new
 //!     `Email` entity for one seed, so the correlator pivots on it directly at
 //!     depth;
-//!   * [`crate::modules::name_intel::permute`] strips a trailing suffix before
+//!   * `modules::name_intel::permute` strips a trailing suffix before
 //!     deriving username/email permutations from a display name;
 //!   * AU-081 (`core::correlator::rules::identity::account::platform`)
 //!     tokenizes both sides of a cross-source person-name match, so a
@@ -53,11 +53,10 @@ pub const GMAIL_DOMAINS: [&str; 2] = ["gmail.com", "googlemail.com"];
 ///
 /// Shared by [`crate::core::resolve`] (deciding whether a post-comma segment
 /// is a real given name or just a suffix, before folding a name to its
-/// canonical surname-first-normalised form) and
-/// [`crate::modules::name_intel::permute`] (stripping a trailing suffix before
-/// deriving username/email permutations from a display name) — the same list,
-/// so a name that is "just a suffix" to one is never "a given name" to the
-/// other.
+/// canonical surname-first-normalised form) and `modules::name_intel::permute`
+/// (stripping a trailing suffix before deriving username/email permutations
+/// from a display name) — the same list, so a name that is "just a suffix" to
+/// one is never "a given name" to the other.
 pub const GEN_SUFFIXES: &[&str] = &[
     "jr", "sr", "ii", "iii", "iv", "v", "vi", "esq", "phd", "md", "dds", "jd", "mba", "rn", "np",
     "do", "psyd",

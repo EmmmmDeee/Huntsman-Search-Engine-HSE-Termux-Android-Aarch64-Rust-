@@ -106,8 +106,8 @@ pub struct ResolutionGroup {
 ///
 /// # What is grouped
 /// Per kind, via a private canonical function (all documented on the helpers):
-/// * [`EntityKind::Email`] → [`canonical_email_mailbox`](crate::util::canonical::canonical_email_mailbox)
-///   (Gmail dots/`+tag`; `+tag` only for other domains, dots kept);
+/// * [`EntityKind::Email`] → [`canonical_email_mailbox`] (Gmail dots/`+tag`;
+///   `+tag` only for other domains, dots kept);
 /// * [`EntityKind::Phone`] → [`canonical_phone`] (digits only, optional
 ///   leading `+`; equality only — never country-code inference);
 /// * [`EntityKind::Username`] → [`canonical_handle`] (case/space/punctuation);
