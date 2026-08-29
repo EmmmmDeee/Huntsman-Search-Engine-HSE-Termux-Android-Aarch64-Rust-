@@ -50,3 +50,15 @@ pub fn classify(eff: f64) -> String {
         .as_str()
         .to_string()
 }
+
+/// True if `source` must not count toward cross-source corroboration —
+/// mirrors [`hse_core::is_non_corroborating_source`] exactly. This is the
+/// predicate `scan_info/browse.js`'s evidence-detail rows use to mark a
+/// non-corroborating source (the same "(non-corroborating: …)" annotation
+/// the CLI dossier prints); the JS side used to hold its own `ENRICHMENT_SOURCES`
+/// set for this before that set moved into `hse_core` under this module's
+/// migration, leaving `browse.js`'s call site referencing an undefined global.
+#[wasm_bindgen(js_name = isNonCorroboratingSource)]
+pub fn is_non_corroborating_source(source: &str) -> bool {
+    hse_core::is_non_corroborating_source(source)
+}

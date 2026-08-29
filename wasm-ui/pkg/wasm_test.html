@@ -68,7 +68,7 @@
 <div id="path-solo-host">(solo-case host not yet populated)</div>
 <div id="path-multi-host">(multi-case host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml, renderCorrCardHtml, renderCorrMembersHtml, renderExposureHtml, renderScanSettingsHtml, renderPathResultHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, isNonCorroboratingSource, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml, renderCorrCardHtml, renderCorrMembersHtml, renderExposureHtml, renderScanSettingsHtml, renderPathResultHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -99,8 +99,20 @@
   const n = sourceCount(entity);
   const eff = effC(entity);
   const tier = classify(eff);
+  // isNonCorroboratingSource: the predicate scan_info/browse.js's evidence-
+  // detail rows need to mark a source's "(non-corroborating: …)" annotation.
+  // Covers all four ways a source can be non-corroborating (an
+  // ENRICHMENT_ONLY_SOURCES member, or an exact match on recall/
+  // cross_scan_history/breach_consensus) and the negative case that a reader
+  // might mistake for one: "geo_corroboration" is a DIFFERENT engine-signal
+  // category (is_engine_corroboration_source) that this predicate does not
+  // cover -- it still counts as a real corroborating source.
+  const nonCorrobOk = isNonCorroboratingSource("geo_normalize") === true
+    && isNonCorroboratingSource("recall") === true
+    && isNonCorroboratingSource("geo_corroboration") === false
+    && isNonCorroboratingSource("qld_unclaimed") === false;
   document.getElementById('confidence-proof').textContent =
-    `sourceCount=${n} (want 2 -- geo_normalize excluded), effC=${eff.toFixed(4)}, classify=${tier}`;
+    `sourceCount=${n} (want 2 -- geo_normalize excluded), effC=${eff.toFixed(4)}, classify=${tier}, nonCorrob=${nonCorrobOk}`;
 
   // Exercises scan_info::identities::render_identities_html against the real
   // /scans/{id}/identities envelope shape (src/api/scan_handlers/analysis.rs
