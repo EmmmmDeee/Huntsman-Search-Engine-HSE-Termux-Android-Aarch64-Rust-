@@ -1,5 +1,5 @@
 import { API } from '/static/js/api.js';
-import { $, attr, attrText, esc, extLink, fmtDate, kindPill } from '/static/js/helpers.js';
+import { $, attr, attrText, esc, extLink, fmtDate, kindPill, kindToStr } from '/static/js/helpers.js';
 import { classify, effC, isNonCorroboratingSource, sourceCount } from '/static/hse_wasm_ui.js';
 import { S } from '/static/js/state.js';
 
@@ -16,11 +16,14 @@ function debounce(fn, ms) {
 
 /* ── Browse tab ── */
 export function renderBrowse(host){
-  const kinds = Array.from(new Set(S.entities.map(e=>e.kind))).sort();
   const qKind = S.route.query.k || '';
-  // SpiderFoot 4.0-style data-element rollup: per-kind Unique + Total (sum of corroboration)
+  // SpiderFoot 4.0-style data-element rollup: per-kind Unique + Total (sum of
+  // corroboration). Keyed on kindToStr(e.kind), not the raw e.kind: an
+  // EntityKind::Other entity's raw wire shape is an object ({"other":"…"}),
+  // which coerces to the literal string "[object Object]" as a plain-object
+  // key — collapsing every Other-kind entity into one bogus rollup row.
   const roll = {};
-  S.entities.forEach(e=>{ const r = roll[e.kind] || (roll[e.kind] = {u:0, t:0}); r.u++; r.t += (e.corroboration||1); });
+  S.entities.forEach(e=>{ const k = kindToStr(e.kind); const r = roll[k] || (roll[k] = {u:0, t:0}); r.u++; r.t += (e.corroboration||1); });
   const rollRows = Object.keys(roll).sort((a,b)=>roll[b].u-roll[a].u);
   // SpiderFoot-identical two-column Browse layout:
   // left = sticky "Data Element" sidebar with per-kind counts (click to filter);
@@ -74,7 +77,7 @@ export function renderBrowse(host){
     const q = $('#b-q').value.trim().toLowerCase();
     const ks = $('#b-kind').value, cs = $('#b-cls').value;
     let rows = S.entities.slice();
-    if (ks) rows = rows.filter(e=>e.kind===ks);
+    if (ks) rows = rows.filter(e=>kindToStr(e.kind)===ks);
     if (cs) rows = rows.filter(e=>{const t=classify(effC(e)); return t===cs || (cs==='PROBABLE' && effC(e)>=0.40);});
     if (q)  rows = rows.filter(e =>
       (e.value||'').toLowerCase().includes(q)
