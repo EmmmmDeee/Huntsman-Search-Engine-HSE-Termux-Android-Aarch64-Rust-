@@ -298,6 +298,9 @@ impl Module for PhoneIntl {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Pure offline E.164 parser: resolves a Phone target's country-code prefix
+        // against an embedded static table, emitting one Phone entity tagged
+        // country/ISO — victim identity (T1589, no subtechnique); default fits as-is.
         ModuleCategory::Phone
     }
 

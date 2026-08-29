@@ -117,6 +117,15 @@ impl Module for PwnedPasswords {
     fn category(&self) -> ModuleCategory {
         ModuleCategory::Breach
     }
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Only data source is HIBP's k-Anonymity range endpoint, which returns
+        // SHA-1-suffix:breach-count pairs with no email-address semantics —
+        // unlike HIBP's own breach/paste module, which queries per-email
+        // exposure and keeps T1589.002. accepts()/produces() include Username
+        // too, so "Email Addresses" doesn't even loosely apply; every path
+        // here is a password-hash-reuse check, so T1589.001 fits tightly.
+        &["T1589.001"]
+    }
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email | TargetKind::Username)
     }
