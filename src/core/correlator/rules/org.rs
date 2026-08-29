@@ -134,10 +134,8 @@ pub(in crate::core::correlator) fn rule_au_025_corporate_identity_link(
     ts: u64,
 ) -> Vec<Correlation> {
     let entities = context.entities();
-    let orgs: Vec<&Entity> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Organisation && e.has_tag("opencorporates"))
-        .collect();
+    let orgs: Vec<&Entity> =
+        entities_of_kind_with_tag(entities, EntityKind::Organisation, "opencorporates");
     if orgs.is_empty() {
         return Vec::new();
     }

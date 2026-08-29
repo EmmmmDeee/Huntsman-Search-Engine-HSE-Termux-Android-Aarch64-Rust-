@@ -62,7 +62,7 @@ pub(in crate::core::correlator) fn rule_au_005_anonymous_network(
         // Collect the matching tags once and gate on non-emptiness, instead of
         // scanning ANON_TAGS for `.any()` and then a second time to build `hits`.
         .filter_map(|e| {
-            let hits: Vec<&str> = ANON_TAGS.iter().copied().filter(|t| e.has_tag(t)).collect();
+            let hits = present_tags(e, ANON_TAGS);
             if hits.is_empty() {
                 return None;
             }
@@ -142,7 +142,7 @@ pub(in crate::core::correlator) fn rule_au_007_high_risk_reputation(
         // Build the matching-tag list once; gate on non-emptiness instead of a
         // separate `.any()` pre-scan.
         .filter_map(|e| {
-            let hits: Vec<&str> = RISK_TAGS.iter().copied().filter(|t| e.has_tag(t)).collect();
+            let hits = present_tags(e, RISK_TAGS);
             if hits.is_empty() {
                 return None;
             }
@@ -178,11 +178,7 @@ pub(in crate::core::correlator) fn rule_au_008_exposed_service(
         // scanner tagged `vulnerable` — don't report it as an exposed service.
         .filter(|e| EXPOSURE_TAGS.iter().any(|t| e.has_tag(t)) && !is_benign_infra(e))
         .map(|e| {
-            let hits: Vec<&str> = EXPOSURE_TAGS
-                .iter()
-                .copied()
-                .filter(|t| e.has_tag(t))
-                .collect();
+            let hits = present_tags(e, EXPOSURE_TAGS);
             Correlation {
                 rule_id: "AU-008".into(),
                 rule_name: "Exposed service".into(),

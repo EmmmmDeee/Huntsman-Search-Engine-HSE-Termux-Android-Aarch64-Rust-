@@ -148,10 +148,7 @@ pub(in crate::core::correlator) fn rule_au_042_pgp_email_identity(
     // fingerprint -> (address -> emitting uid). BTreeMaps keep the output
     // deterministic (fingerprint order, then address order) with no HashMap leak.
     let mut by_key: BTreeMap<&str, BTreeMap<&str, String>> = BTreeMap::new();
-    for e in entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Email && e.has_tag("pgp-linked"))
-    {
+    for e in entities_of_kind_with_tag(entities, EntityKind::Email, "pgp-linked") {
         // An email merged from several keyserver hits can carry more than one
         // fingerprint; it legitimately belongs to each key that bound it.
         let fingerprints: BTreeSet<&str> = e
