@@ -32,7 +32,7 @@ const PURPOSE: &str = "Law Enforcement Intelligence";
 
 pub struct OsintCat;
 
-// ── Response types ───────────────────────────────────────────────
+// ── Response types ─────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct OcUserResponse {
@@ -72,7 +72,7 @@ struct OcBreachResponse {
     breach_data: Vec<Value>,
 }
 
-// ── Module trait ────────────────────────────────────────────────
+// ── Module trait ───────────────────────────────────────────────────────────────
 
 #[async_trait]
 impl Module for OsintCat {
@@ -188,7 +188,7 @@ impl Module for OsintCat {
     }
 }
 
-// ── HTTP helpers ────────────────────────────────────────────
+// ── HTTP helpers ───────────────────────────────────────────────────────────────
 
 /// Fetch the paid email-osint endpoint. Needs an extra `x-purpose` header that
 /// [`fetch_keyed_json`] does not support, so we build the request manually and
@@ -211,7 +211,7 @@ async fn fetch_email_osint(email: &str, ctx: &ModuleContext) -> Result<Value> {
         .map_err(|e| Error::module(SRC, e))
 }
 
-// ── Emitters ──────────────────────────────────────────────────
+// ── Emitters ───────────────────────────────────────────────────────────────────
 
 fn emit_footprint(fp: &OcFootprintResponse, entity: &mut Entity, result: &mut ModuleResult) {
     if fp.stats.registered_count == 0 {
