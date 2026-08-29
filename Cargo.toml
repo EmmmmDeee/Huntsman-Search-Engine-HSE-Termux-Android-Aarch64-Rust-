@@ -59,6 +59,51 @@ name = "dep-cooldown"
 path = "src/bin/dep_cooldown/main.rs"
 required-features = ["dep-cooldown"]
 
+# Regenerates `src/util/oui/ieee.bin` (the embedded IEEE MA-L registry blob
+# read by `src/util/oui/ieee.rs`) from the upstream CSV. Dev/maintenance
+# tooling, not part of the OSINT scan engine's runtime surface — a separate
+# `[[bin]]` rather than an `hse` subcommand for the same reason as
+# `dep-cooldown` above. Deliberately UNGATED like `hse-ai-daemon`: it needs no
+# dependency `hse` doesn't already carry unconditionally (tokio/reqwest/clap/
+# csv/sha2/hex), so gating it would only add CI/`--features` friction for zero
+# dependency-weight benefit.
+[[bin]]
+name = "gen-oui"
+path = "src/bin/gen_oui/main.rs"
+
+# Resolves an `.agent/state.json` merge conflict between two concurrent
+# autonomous-loop sessions (see the module doc comment for why this needs
+# scripting at all). Dev-workflow tooling invoked by hand mid-conflict, not
+# part of the OSINT scan engine's runtime surface — same rationale as
+# `dep-cooldown`/`gen-oui` above for a separate `[[bin]]`. Deliberately
+# UNGATED: needs only `serde_json`, already an unconditional dependency.
+[[bin]]
+name = "merge-state"
+path = "src/bin/merge_state/main.rs"
+
+# Inventories the live module capability graph (`hse serve`'s
+# `/api/v1/modules` + `/api/v1/modules/graph`, or a captured
+# modules.json/graph.json pair) for consolidation and correctness risks —
+# see the module doc comment for what each finding means and why this reads
+# the running binary rather than grepping source. Dev/architecture tooling,
+# not part of the OSINT scan engine's runtime surface — same rationale as
+# the other `[[bin]]`s above for a separate binary. Deliberately UNGATED:
+# needs only already-unconditional dependencies (tokio/reqwest/clap/serde_json).
+[[bin]]
+name = "architecture-audit"
+path = "src/bin/architecture_audit/main.rs"
+
+# Packs every git-tracked file into one topologically ordered, loss-less
+# monolithic text file (and unpacks/verifies it back) — see the module doc
+# comment for the format and why it exists. Dev tooling for whole-repo LLM
+# ingestion, not part of the OSINT scan engine's runtime surface — same
+# rationale as the other `[[bin]]`s above for a separate binary.
+# Deliberately UNGATED: needs only already-unconditional dependencies
+# (base64/sha2/hex/clap) plus the system `git` binary at runtime.
+[[bin]]
+name = "pack-monolith"
+path = "src/bin/pack_monolith/main.rs"
+
 [features]
 dep-cooldown = ["dep:toml", "dep:time"]
 
