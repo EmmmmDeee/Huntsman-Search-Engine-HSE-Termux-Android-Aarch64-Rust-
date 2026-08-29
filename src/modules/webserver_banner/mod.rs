@@ -76,6 +76,15 @@ impl Module for WebserverBanner {
         ModuleCategory::Web
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // A single HEAD with no body fetched can't "search" content (T1594),
+        // so drop the Web default. What it does: fingerprint server/stack
+        // headers (T1592.002) and tag CDN providers via cf-ray/x-amz-cf-id/
+        // x-served-by (T1596.004) — same single-header mechanism as
+        // `waf_detect`, overridden for the same reason.
+        &["T1592.002", "T1596.004"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         // Domain / IpAddress targets are re-emitted as-is via `to_entity`; a
         // Url target is rebased to its host `Domain` (see `banner_entity`) —
