@@ -1,6 +1,7 @@
 import { API } from '/static/js/api.js';
 import { esc, fmtDate, kindPill, statusPill } from '/static/js/helpers.js';
 import { S } from '/static/js/state.js';
+import { renderExposureHtml } from '/static/hse_wasm_ui.js';
 
 /* ── Scan Settings — the scan's configuration + run metadata. Surfaced as the
    "Scan Settings" lens under Insights (SpiderFoot's Scan Settings tab), and
@@ -48,49 +49,13 @@ export function renderScanSettings(host, scan){
    primary interface on a Termux/Android device — must too, so the Summary tab
    leads with it. Fetched separately so a failure here degrades to a quiet
    notice instead of taking the surrounding view down with it. Writes into
-   `host` directly so it can headline the Summary or stand alone. */
-const BAND_CLASS = { MINIMAL:'label-success', LOW:'label-info', MODERATE:'label-warning', HIGH:'label-danger', CRITICAL:'label-danger' };
+   `host` directly so it can headline the Summary or stand alone. The HTML
+   templating lives in wasm-ui/src/scan_info/info.rs. */
 export async function renderExposure(host, scanId){
   if (!host) return;
   let x = null;
   try { x = await API.exposure(scanId); }
   catch { host.innerHTML = ''; return; }   // never block the surrounding view
-  if (!x || x.score == null){ host.innerHTML = ''; return; }
-
-  const band = String(x.band || '');
-  const cls = BAND_CLASS[band.toUpperCase()] || 'label-default';
-  const comps = (x.components || []).map(c => {
-    // Coerce to numbers and clamp to 0–100: the values are trusted backend
-    // integers today, but a non-numeric/over-max value must never emit
-    // `width:NaN%` or `width:120%` and break the bar layout.
-    const max = Number(c.max) || 0;
-    const score = Number(c.score) || 0;
-    const pct = max ? Math.max(0, Math.min(100, Math.round((score / max) * 100))) : 0;
-    return `
-      <tr>
-        <td style="width:190px">${esc(c.name)}</td>
-        <td class="text-right" style="width:70px"><code>${esc(score)}/${esc(max)}</code></td>
-        <td style="width:120px">
-          <div style="background:var(--border,#eee);height:6px;border-radius:3px;overflow:hidden">
-            <div style="width:${pct}%;height:6px;background:var(--accent,#337ab7)"></div>
-          </div>
-        </td>
-        <td style="font-size:12px;color:var(--text-dim)">${esc(c.detail || '')}</td>
-      </tr>`;
-  }).join('');
-
-  host.innerHTML = `
-    <div class="panel panel-default">
-      <div class="panel-heading"><b>Exposure Index</b>
-        <span class="text-muted pull-right" style="font-size:12px">calibrated 0–100 · same assessment as the CLI dossier</span>
-      </div>
-      <div class="panel-body">
-        <div style="font-size:22px;margin-bottom:2px">
-          <b>${esc(x.score)}</b><span class="text-muted" style="font-size:14px">/100</span>
-          &nbsp;<span class="label ${cls}">${esc(band)}</span>
-        </div>
-        ${x.summary ? `<div class="text-muted" style="font-size:12px;margin-bottom:8px">${esc(x.summary)}</div>` : ''}
-        ${comps ? `<table class="table table-condensed" style="margin-bottom:0"><tbody>${comps}</tbody></table>` : ''}
-      </div>
-    </div>`;
+  try { host.innerHTML = renderExposureHtml(x); }
+  catch { host.innerHTML = ''; }
 }
