@@ -127,8 +127,16 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
             .with_attr("profile_url", &profile_url)
     };
 
-    // Confirmed PAUSE ID / CPAN username.
-    let mut e = Entity::new(EntityKind::Username, &pause_id, 0.87, scan_id);
+    // Confirmed PAUSE ID / CPAN username — a single-source, keyless
+    // account-existence lookup, graded at the cohort canon HIGH_PLUSPLUS_PLUS
+    // (0.85; OD-19, matching gitea_user/gitlab_user). Replaces a bare `0.87`
+    // literal that sat off the ladder for no recorded reason.
+    let mut e = Entity::new(
+        EntityKind::Username,
+        &pause_id,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     e.tag("cpan");
     e.tag("public-profile");
     e.add_evidence(ev());

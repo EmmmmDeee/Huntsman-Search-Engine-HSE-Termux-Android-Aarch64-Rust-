@@ -127,8 +127,8 @@ use super::*;
     fn co_maintainer_username_is_emitted_but_subject_not_duplicated() {
         // Same fixture as above: `bob`'s handle should now surface as its own
         // Username entity (co-maintainer), while `alice` — the subject — is not
-        // duplicated via this path (she's already emitted once at confidence::EXPERT by the
-        // final confirmed-on-npm block).
+        // duplicated via this path (she's already emitted once at
+        // confidence::HIGH_PLUSPLUS_PLUS by the final confirmed-on-npm block).
         let body = search(
             r#"{"objects":[{"package":{"name":"pkg",
                 "maintainers":[
@@ -155,7 +155,8 @@ use super::*;
             .into_iter()
             .find(|e| e.value == "alice")
             .expect("alice subject username entity");
-        assert_eq!(alice.confidence, confidence::EXPERT);
+        // OD-19 cohort canon: single-source confirmed-account lookup = 0.85.
+        assert_eq!(alice.confidence, confidence::HIGH_PLUSPLUS_PLUS);
         assert!(!alice.has_tag("co-maintainer"));
     }
 
