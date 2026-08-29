@@ -104,7 +104,8 @@ fn build_entities_full_profile_emits_all_declared_pivots() {
     // Subject account: confirmed-on-dev.to, with the profile URL folded in.
     let acct = find(EntityKind::Username, "alice").expect("subject username entity");
     assert!(acct.has_tag("devto"));
-    assert!((acct.confidence - confidence::EXPERT).abs() < f64::EPSILON);
+    // OD-19 cohort canon: single-source confirmed-account lookup = 0.85.
+    assert!((acct.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < f64::EPSILON);
     let attr = |k: &str| acct.evidence[0].attributes.get(k).map(String::as_str);
     assert_eq!(attr("profile_url"), Some("https://dev.to/alice"));
     assert_eq!(attr("joined_at"), Some("Jan 1, 2019"));

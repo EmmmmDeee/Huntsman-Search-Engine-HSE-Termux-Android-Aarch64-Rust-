@@ -1,5 +1,5 @@
 import { API } from '/static/js/api.js';
-import { $, attr } from '/static/js/helpers.js';
+import { $, attr, kindToStr } from '/static/js/helpers.js';
 import { S } from '/static/js/state.js';
 
 /* ── Graph tab — a basic 2D flow chart, dependency-free ────────────────────
@@ -223,7 +223,7 @@ export function buildGraph(){
     // `generation` is how many pivots from the seed this entity was first
     // found at (0 = seed round) — see Entity's doc comment. Row = gen + 1,
     // since row 0 is reserved for the seed itself.
-    nodes.push({id:e.uid, kind:e.kind, label:e.value, gen: e.generation ?? 0});
+    nodes.push({id:e.uid, kind:kindToStr(e.kind), label:e.value, gen: e.generation ?? 0});
   }
 
   // Links, in priority order so the global ceiling trims the least-important

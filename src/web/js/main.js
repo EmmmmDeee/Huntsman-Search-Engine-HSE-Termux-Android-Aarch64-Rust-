@@ -18,7 +18,7 @@ import { API } from '/static/js/api.js';
 import { S } from '/static/js/state.js';
 import { parseHash, nav } from '/static/js/router.js';
 import { clearLiveTimer, clearScanTimer, clearEnginesTimer, clearOptsTimers, clearDebugLogTimer } from '/static/js/timers.js';
-import { applyTheme } from '/static/js/theme.js';
+import initWasmUi, { applyTheme } from '/static/hse_wasm_ui.js';
 import { renderDash } from '/static/js/views/dash.js';
 import { renderScans } from '/static/js/views/scans.js';
 import { renderDiff } from '/static/js/views/diff.js';
@@ -112,6 +112,7 @@ Object.assign(window, {
 
 /* ═══════════ Bootstrap ═══════════ */
 (async function init(){
+  await initWasmUi();
   applyTheme();
   initMoreSheet();
   initModals();

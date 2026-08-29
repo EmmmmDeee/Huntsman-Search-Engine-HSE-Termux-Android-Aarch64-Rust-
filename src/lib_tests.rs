@@ -40,7 +40,10 @@ use super::*;
         for rel in [
             "src/lib.rs",
             "src/main.rs",
-            "src/core/entity/mod.rs",
+            // A nested-subdirectory sample (the point of this test, per the
+            // comment above) — was src/core/entity/mod.rs until that module
+            // moved to the hse-core crate (shared with a wasm32 web-UI build).
+            "src/core/mod.rs",
             "src/modules/mod.rs",
         ] {
             let recorded = SOURCE_FILES

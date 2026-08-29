@@ -88,8 +88,15 @@ pub(super) fn build_entities(user: HfUser, scan_id: &str) -> Vec<Entity> {
         e
     };
 
-    // Confirmed username entity.
-    let mut e = Entity::new(EntityKind::Username, handle, confidence::EXPERT, scan_id);
+    // Confirmed username entity — a single-source, keyless account-existence
+    // lookup, graded at the cohort canon HIGH_PLUSPLUS_PLUS (0.85; OD-19,
+    // matching gitea_user/gitlab_user), not EXPERT (0.88).
+    let mut e = Entity::new(
+        EntityKind::Username,
+        handle,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     e.tag("huggingface");
     e.tag("public-profile");
     e.add_evidence(ev());

@@ -1,0 +1,1036 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HSE wasm-ui pipeline proof</title>
+</head>
+<body>
+<!--
+  Temporary diagnostic page — not linked from the real SPA (spa.html/
+  router.js are untouched). Proves the full JS -> Rust/WASM pipeline before
+  any real view is ported: this file, the wasm-bindgen JS glue, and the
+  compiled .wasm binary are all served from the same embedded-in-the-binary
+  mechanism (src/api/routes/mod.rs's APP_FILES) that already serves every
+  other web-UI asset. Remove once real view ports make it redundant.
+-->
+<p id="wasm-proof">wasm not yet loaded — if this text never changes, the pipeline is broken</p>
+<p id="confidence-proof">confidence math not yet run</p>
+<p id="identities-proof">identities render not yet run</p>
+<div id="identities-empty-host">(empty-case host not yet populated)</div>
+<div id="identities-host">(non-empty-case host not yet populated)</div>
+<p id="benchmark-proof">benchmark render not yet run</p>
+<div id="benchmark-host">(benchmark host not yet populated)</div>
+<p id="location-proof">location render not yet run</p>
+<div id="location-synergy-host">(synergy-case host not yet populated)</div>
+<div id="location-fallback-host">(fallback-case host not yet populated)</div>
+<p id="gaps-proof">gaps render not yet run</p>
+<div id="gaps-linked-host">(all-linked-case host not yet populated)</div>
+<div id="gaps-orphans-host">(orphans-case host not yet populated)</div>
+<p id="metrics-proof">metrics render not yet run</p>
+<div id="metrics-plain-host">(plain-case host not yet populated)</div>
+<div id="metrics-full-host">(full-case host not yet populated)</div>
+<p id="duplicates-proof">duplicates render not yet run</p>
+<div id="duplicates-host">(duplicates host not yet populated)</div>
+<p id="communities-proof">communities render not yet run</p>
+<div id="communities-empty-host">(empty-case host not yet populated)</div>
+<div id="communities-host">(communities host not yet populated)</div>
+<p id="trust-proof">trust render not yet run</p>
+<div id="trust-empty-host">(empty-case host not yet populated)</div>
+<div id="trust-host">(trust host not yet populated)</div>
+<p id="pivots-proof">pivots render not yet run</p>
+<div id="pivots-host">(pivots host not yet populated)</div>
+<p id="audit-proof">audit render not yet run</p>
+<div id="audit-host">(audit host not yet populated)</div>
+<div id="audit-clean-host">(audit clean-case host not yet populated)</div>
+<p id="network-proof">network render not yet run</p>
+<div id="network-null-host">(null-case host not yet populated)</div>
+<div id="network-nogroups-host">(no-groups-case host not yet populated)</div>
+<div id="network-host">(network host not yet populated)</div>
+<p id="leads-proof">leads render not yet run</p>
+<div id="leads-empty-host">(empty-case host not yet populated)</div>
+<div id="leads-host">(leads host not yet populated)</div>
+<p id="timeline-proof">timeline render not yet run</p>
+<div id="timeline-empty-host">(empty-case host not yet populated)</div>
+<div id="timeline-plain-host">(plain-case host not yet populated)</div>
+<div id="timeline-host">(timeline host not yet populated)</div>
+<p id="correlations-proof">correlations render not yet run</p>
+<div id="corr-card-full-host">(full-card host not yet populated)</div>
+<div id="corr-card-plain-host">(plain-card host not yet populated)</div>
+<div id="corr-members-host">(members host not yet populated)</div>
+<p id="exposure-proof">exposure render not yet run</p>
+<div id="exposure-host">(exposure host not yet populated)</div>
+<div id="exposure-minimal-host">(minimal-case host not yet populated)</div>
+<p id="settings-proof">scan settings render not yet run</p>
+<div id="settings-empty-host">(empty-case host not yet populated)</div>
+<div id="settings-full-host">(full-case host not yet populated)</div>
+<p id="path-proof">path render not yet run</p>
+<div id="path-notfound-host">(not-found-case host not yet populated)</div>
+<div id="path-solo-host">(solo-case host not yet populated)</div>
+<div id="path-multi-host">(multi-case host not yet populated)</div>
+<p id="browse-table-proof">browse table render not yet run</p>
+<div id="browse-table-full-host">(full-case host not yet populated)</div>
+<div id="browse-table-other-host">(other-kind-case host not yet populated)</div>
+<div id="browse-table-empty-host">(empty-case host not yet populated)</div>
+<script type="module">
+  import init, { main, sourceCount, effC, classify, isNonCorroboratingSource, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml, renderCorrCardHtml, renderCorrMembersHtml, renderExposureHtml, renderScanSettingsHtml, renderPathResultHtml, renderBrowseTableHtml } from '/static/hse_wasm_ui.js';
+  await init();
+  main();
+
+  // Exercises the actual JS -> Rust deserialization boundary (not just Rust
+  // calling Rust): a realistic entity object shaped exactly like the API's
+  // real JSON (modeled on a real entity from a live-scan debug bundle), with
+  // two genuinely-corroborating sources (source_count should be 2, not the
+  // evidence array's length of 3 — "geo_normalize" is enrichment-only and
+  // must not count) plus a confidence high enough to land in PROBABLE at
+  // n=2's boost.
+  const entity = {
+    uid: "27f3f6a2628786ac78b56663e36b3a91a98d6aa5ba36e1a8fab2d8d231ae99db",
+    kind: "address",
+    value: "NSW 2042, Australia",
+    raw_value: "NSW 2042, Australia",
+    confidence: 0.32,
+    corroboration: 14,
+    observed_at: 1787995179,
+    evidence: [
+      { source: "geo_corroboration", summary: "shared-surname relative nearby", attributes: {}, recorded_at: 1787626800, verification: null, is_inferred: false },
+      { source: "geo_normalize", summary: "address parse", attributes: {}, recorded_at: 1787626184, verification: null, is_inferred: false },
+      { source: "qld_unclaimed", summary: "QLD unclaimed money", attributes: {}, recorded_at: 1787995080, verification: null, is_inferred: false },
+    ],
+    tags: ["coarse", "geoint", "family-candidate"],
+    scan_id: "s",
+    generation: 1,
+  };
+  const n = sourceCount(entity);
+  const eff = effC(entity);
+  const tier = classify(eff);
+  // isNonCorroboratingSource: the predicate scan_info/browse.js's evidence-
+  // detail rows need to mark a source's "(non-corroborating: …)" annotation.
+  // Covers all four ways a source can be non-corroborating (an
+  // ENRICHMENT_ONLY_SOURCES member, or an exact match on recall/
+  // cross_scan_history/breach_consensus) and the negative case that a reader
+  // might mistake for one: "geo_corroboration" is a DIFFERENT engine-signal
+  // category (is_engine_corroboration_source) that this predicate does not
+  // cover -- it still counts as a real corroborating source.
+  const nonCorrobOk = isNonCorroboratingSource("geo_normalize") === true
+    && isNonCorroboratingSource("recall") === true
+    && isNonCorroboratingSource("geo_corroboration") === false
+    && isNonCorroboratingSource("qld_unclaimed") === false;
+  document.getElementById('confidence-proof').textContent =
+    `sourceCount=${n} (want 2 -- geo_normalize excluded), effC=${eff.toFixed(4)}, classify=${tier}, nonCorrob=${nonCorrobOk}`;
+
+  // Exercises scan_info::identities::render_identities_html against the real
+  // /scans/{id}/identities envelope shape (src/api/scan_handlers/analysis.rs
+  // + src/core/coref/mod.rs's CoReference), including a value containing a
+  // '<' to prove HTML-escaping actually runs on scan-derived (i.e.
+  // adversary-influenceable) strings rather than trusting them verbatim.
+  const emptyHtml = renderIdentitiesHtml({ min_score: 0.55, count: 0, coreferences: [] });
+  document.getElementById('identities-empty-host').innerHTML = emptyHtml;
+
+  const nonEmptyHtml = renderIdentitiesHtml({
+    min_score: 0.55,
+    count: 2,
+    coreferences: [
+      {
+        uid_a: "a1", uid_b: "b1",
+        value_a: "elina.moreau@example.com", value_b: "Elina Moreau",
+        kind_a: "email", kind_b: "person",
+        score: 0.8123,
+        signals: ["shared-source", "name-token"],
+      },
+      {
+        uid_a: "a2", uid_b: "b2",
+        value_a: "<script>alert(1)<\/script>", value_b: "normal-handle",
+        kind_a: "username", kind_b: "username",
+        score: 0.6,
+        signals: ["substring"],
+      },
+    ],
+  });
+  document.getElementById('identities-host').innerHTML = nonEmptyHtml;
+
+  const emptyOk = emptyHtml === '';
+  const escapedOk = nonEmptyHtml.includes('&lt;script&gt;') && !nonEmptyHtml.includes('<script>alert');
+  const countOk = nonEmptyHtml.includes('2 selector pairs');
+  const scoreOk = nonEmptyHtml.includes('score 0.81') && nonEmptyHtml.includes('score 0.60');
+  document.getElementById('identities-proof').textContent =
+    `emptyCase=${emptyOk}, escaped=${escapedOk}, count=${countOk}, scores=${scoreOk}`;
+
+  // Exercises scan_info::benchmark::render_benchmark_html against the real
+  // /scans/{id}/benchmark envelope shape (crate::core::benchmark::BenchmarkReport):
+  // integer fields render verbatim, and the two fraction fields go through
+  // Math.round(v*100)+'%' -- e.g. 0.8123 must land on 81%, not 81.23% or 0.81%.
+  const benchmarkHtml = renderBenchmarkHtml({
+    scan_id: "s", seed: "seed", seed_kind: "person", status: "complete",
+    duration_secs: 34, entities_per_sec: 1.2345,
+    modules_run: 23, modules_errored: 1, modules_timed_out: 0,
+    pivot_count: 3, top_pivot_uid: null,
+    scorecard: {
+      multi_hop_depth: 4, graph_coverage: 0.8123, corroborated_fraction: 0.5,
+      graph_density: 0.1, cut_vertex_count: 2, bridge_count: 1,
+      degeneracy: 2, main_core_size: 6, total_entities: 42, total_relations: 17,
+      cross_scan_bridges: 0,
+    },
+    metrics: {},
+  });
+  document.getElementById('benchmark-host').innerHTML = benchmarkHtml;
+  const benchRowsOk = ['>42</td>', '>17</td>', '>23</td>', '>1.23</td>', '>4</td>']
+    .every(needle => benchmarkHtml.includes(needle));
+  const benchPctOk = benchmarkHtml.includes('>81%</td>') && benchmarkHtml.includes('>50%</td>');
+  document.getElementById('benchmark-proof').textContent =
+    `rows=${benchRowsOk}, percents=${benchPctOk}`;
+
+  // Exercises scan_info::location::render_location_html against BOTH real
+  // shapes extract_au_location_fix (src/app/export/renderers.rs) can send --
+  // the AU-059 synergy fix (no `locality`, uses `synergy_confidence`) and the
+  // single-signal fallback (`locality`+`confidence`+`basis`+`source`) -- plus
+  // the null case and (synthetically, since neither real branch currently
+  // populates it) the `classes` pills + escaping, so that dormant-but-real
+  // JS-contract code path is still proven correct rather than untested.
+  const nullLocHtml = renderLocationHtml({ best_location: null });
+  const synergyHtml = renderLocationHtml({
+    best_location: {
+      lat: -33.8688, lon: 151.2093, state: "NSW",
+      synergy_confidence: 0.912, radius_km: 0.6, rule_id: "AU-059",
+    },
+  });
+  document.getElementById('location-synergy-host').innerHTML = synergyHtml;
+  const fallbackHtml = renderLocationHtml({
+    best_location: {
+      lat: -27.4698, lon: 153.0251, locality: "Brisbane", state: "QLD",
+      confidence: 0.61, basis: "<b>exif</b> geotag", source: "single-signal",
+      classes: ["exif_geo", "abn_lookup"],
+    },
+  });
+  document.getElementById('location-fallback-host').innerHTML = fallbackHtml;
+
+  const nullOk = nullLocHtml === '';
+  const synergyOk = synergyHtml.includes('NSW</b>')
+    && synergyHtml.includes('-33.8688, 151.2093')
+    && synergyHtml.includes('±0.6 km')
+    && synergyHtml.includes('confidence 0.91')
+    && synergyHtml.includes('AU-059')
+    && synergyHtml.includes('mlat=-33.8688&amp;mlon=151.2093');
+  const fallbackOk = fallbackHtml.includes('Brisbane, QLD</b>')
+    && fallbackHtml.includes('confidence 0.61')
+    && fallbackHtml.includes('single-signal')
+    && fallbackHtml.includes('&lt;b&gt;exif&lt;/b&gt; geotag')
+    && !fallbackHtml.includes('<b>exif</b>')
+    && fallbackHtml.includes('label-info">exif_geo<')
+    && fallbackHtml.includes('label-info">abn_lookup<');
+  document.getElementById('location-proof').textContent =
+    `null=${nullOk}, synergy=${synergyOk}, fallback=${fallbackOk}`;
+
+  // Exercises scan_info::gaps::render_gaps_html against the real
+  // /scans/{id}/gaps envelope (core::gap::GapReport + the handler's own
+  // corrective_modules addition, src/api/scan_handlers/diagnostics.rs).
+  // Covers: null_state, the "every seed linked" (empty orphans) case, and a
+  // populated case exercising the terminal/non-terminal split, the >6
+  // corrective_modules ellipsis, an empty corrective_modules list, and
+  // escaping on a scan-derived value.
+  const gapsNullHtml = renderGapsHtml({ null_state: true, total_seeds: 0, linked_seeds: 0, linked_fraction: 0, orphans: [] });
+  const gapsLinkedHtml = renderGapsHtml({ null_state: false, total_seeds: 5, linked_seeds: 5, linked_fraction: 1.0, orphans: [] });
+  document.getElementById('gaps-linked-host').innerHTML = gapsLinkedHtml;
+  const gapsOrphansHtml = renderGapsHtml({
+    null_state: false, total_seeds: 20, linked_seeds: 15, linked_fraction: 0.75,
+    orphans: [
+      {
+        uid: "u1", kind: "domain", value: "<script>evil<\/script>.example",
+        isolation: "unexpanded", action: "re-inject and run modules",
+        corrective_modules: ["m1","m2","m3","m4","m5","m6","m7","m8"],
+      },
+      {
+        uid: "u2", kind: "email", value: "",
+        isolation: "below_expand_floor", action: "corroborate to raise confidence",
+        corrective_modules: [],
+      },
+      { uid: "u3", kind: "password", value: "", isolation: "terminal", action: "terminal leaf", corrective_modules: [] },
+      { uid: "u4", kind: "tracking_id", value: "", isolation: "terminal", action: "terminal leaf", corrective_modules: [] },
+    ],
+  });
+  document.getElementById('gaps-orphans-host').innerHTML = gapsOrphansHtml;
+
+  const gapsNullOk = gapsNullHtml === '';
+  const gapsLinkedOk = gapsLinkedHtml.includes('Every validated seed is linked');
+  const gapsOrphansOk = gapsOrphansHtml.includes('15/20 seeds linked (75%)')
+    && gapsOrphansHtml.includes('&lt;script&gt;evil&lt;/script&gt;.example')
+    && !gapsOrphansHtml.includes('<script>evil')
+    && gapsOrphansHtml.includes('run: m1, m2, m3, m4, m5, m6…')
+    && gapsOrphansHtml.includes('label-warning">unexpanded<')
+    && gapsOrphansHtml.includes('label-default">below expand floor<')
+    && gapsOrphansHtml.includes('<code>u2</code>')
+    && gapsOrphansHtml.includes('+ 2 terminal leaf/leaves')
+    && !gapsOrphansHtml.includes('label-info');
+  document.getElementById('gaps-proof').textContent =
+    `null=${gapsNullOk}, allLinked=${gapsLinkedOk}, orphans=${gapsOrphansOk}`;
+
+  // Exercises scan_info::metrics::render_metrics_html against the real
+  // /scans/{id}/metrics envelope (core::metrics::ScanMetrics). Covers: the
+  // empty-scan case (total_entities=0), an unanchored/edgeless scan (no
+  // Reach/Max-depth/Core stats -- both gates are truthy checks on a NUMBER,
+  // hiding on exactly 0), and an anchored scan with a core, including the
+  // max_depth===1 singular "hop" (not "hops") pluralization edge case.
+  const metricsEmptyHtml = renderMetricsHtml({
+    total_entities: 0, entities_by_kind: [], tier_counts: {verified:0,probable:0,candidate:0},
+    mean_confidence: 0, median_confidence: 0, corroborated_fraction: 0,
+    total_relations: 0, relations_by_kind: [], linked_entity_fraction: 0,
+    graph_density: 0, graph_degeneracy: 0, main_core_size: 0, cross_scan_bridges: 0,
+    distinct_evidence_sources: 0,
+    seed_reach: {anchored:false, max_depth:0, reached_at_hop:[], reachable_total:0, reachable_fraction:0},
+  });
+  const metricsPlainHtml = renderMetricsHtml({
+    total_entities: 10, entities_by_kind: [], tier_counts: {verified:3,probable:5,candidate:2},
+    mean_confidence: 0.55, median_confidence: 0.5, corroborated_fraction: 0.4,
+    total_relations: 5, relations_by_kind: [], linked_entity_fraction: 0.7,
+    graph_density: 0.15, graph_degeneracy: 0, main_core_size: 0, cross_scan_bridges: 1,
+    distinct_evidence_sources: 4,
+    seed_reach: {anchored:false, max_depth:0, reached_at_hop:[], reachable_total:0, reachable_fraction:0},
+  });
+  document.getElementById('metrics-plain-host').innerHTML = metricsPlainHtml;
+  const metricsFullHtml = renderMetricsHtml({
+    total_entities: 25, entities_by_kind: [], tier_counts: {verified:10,probable:10,candidate:5},
+    mean_confidence: 0.61, median_confidence: 0.58, corroborated_fraction: 0.68,
+    total_relations: 30, relations_by_kind: [], linked_entity_fraction: 0.92,
+    graph_density: 0.333, graph_degeneracy: 2, main_core_size: 6, cross_scan_bridges: 3,
+    distinct_evidence_sources: 9,
+    seed_reach: {anchored:true, max_depth:1, reached_at_hop:[1,19], reachable_total:20, reachable_fraction:0.8},
+  });
+  document.getElementById('metrics-full-host').innerHTML = metricsFullHtml;
+
+  const metricsEmptyOk = metricsEmptyHtml === '';
+  const metricsPlainOk = metricsPlainHtml.includes('40%')
+    && metricsPlainHtml.includes('70%')
+    && metricsPlainHtml.includes('15%')
+    && !metricsPlainHtml.includes('Reach')
+    && !metricsPlainHtml.includes('Max depth')
+    && !metricsPlainHtml.includes('Core (k)');
+  const metricsFullOk = metricsFullHtml.includes('68%')
+    && metricsFullHtml.includes('92%')
+    && metricsFullHtml.includes('33%')
+    && metricsFullHtml.includes('>20<')
+    && metricsFullHtml.includes('>1 hop<')
+    && !metricsFullHtml.includes('1 hops')
+    && metricsFullHtml.includes('>2<')
+    && metricsFullHtml.includes('>6<')
+    && metricsFullHtml.includes('>9<');
+  document.getElementById('metrics-proof').textContent =
+    `empty=${metricsEmptyOk}, plain=${metricsPlainOk}, full=${metricsFullOk}`;
+
+  // Exercises scan_info::duplicates::render_duplicates_html -- the first
+  // scan_info port needing a second argument (S.entities, real
+  // hse_core::Entity JSON) alongside its own API response. Covers: a member
+  // UID resolved to its entity's raw_value, one resolved to `value` (empty
+  // raw_value), one absent from entities entirely (uid-prefix+ellipsis
+  // fallback), and a reason string containing HTML to prove escaping.
+  const dupEntities = [
+    { uid: "aaa111", kind: "person", value: "john smith", raw_value: "John Smith",
+      confidence: 0.7, corroboration: 2, observed_at: 1700000000, evidence: [],
+      tags: [], scan_id: "s", generation: 0 },
+    { uid: "bbb222", kind: "email", value: "j.smith@gmail.com", raw_value: "",
+      confidence: 0.6, corroboration: 1, observed_at: 1700000000, evidence: [],
+      tags: [], scan_id: "s", generation: 0 },
+  ];
+  const duplicatesHtml = renderDuplicatesHtml(
+    { duplicates: [
+        { kind: "person", members: ["aaa111", "ccc333333333extra"], reason: "Name variant <b>match</b>" },
+        { kind: "email", members: ["bbb222", "eee555"], reason: "Gmail dot-insensitive mailbox" },
+      ] },
+    dupEntities,
+  );
+  document.getElementById('duplicates-host').innerHTML = duplicatesHtml;
+  const duplicatesOk = duplicatesHtml.includes('2 groups')
+    && duplicatesHtml.includes('k-person')
+    && duplicatesHtml.includes('k-email')
+    && duplicatesHtml.includes('<code>John Smith</code>')
+    && duplicatesHtml.includes('<code>ccc333333333…</code>')
+    && duplicatesHtml.includes('<code>j.smith@gmail.com</code>')
+    && duplicatesHtml.includes('<code>eee555…</code>')
+    && duplicatesHtml.includes('&lt;b&gt;match&lt;/b&gt;')
+    && !duplicatesHtml.includes('<b>match</b>');
+  document.getElementById('duplicates-proof').textContent = `groups=${duplicatesOk}`;
+
+  // Exercises scan_info::communities::render_communities_html -- and, via the
+  // shared crate::entity_lookup it now shares with duplicates.rs, the same
+  // uid-lookup fallback path reused across a second view. Covers: the
+  // zero-communities guided empty state (a full block, not "" like every
+  // other scan_info port), a small cluster (known entities via
+  // dupEntities, label escaping), and a >8-member cluster (unknown uids,
+  // the "+N more" truncation, pluralization).
+  const communitiesEmptyHtml = renderCommunitiesHtml({ communities: [] }, []);
+  document.getElementById('communities-empty-host').innerHTML = communitiesEmptyHtml;
+  const bigUids = Array.from({length: 10}, (_, i) => `u${i+1}`);
+  const communitiesHtml = renderCommunitiesHtml(
+    { communities: [
+        { id: 0, uids: ["aaa111", "bbb222"], size: 2, label: "Family cluster <b>Smith</b>" },
+        { id: 1, uids: bigUids, size: 10, label: "Infra estate" },
+      ] },
+    dupEntities,
+  );
+  document.getElementById('communities-host').innerHTML = communitiesHtml;
+
+  const communitiesEmptyOk = communitiesEmptyHtml.includes('No communities yet');
+  const communitiesOk = communitiesHtml.includes('<b>2</b> sub-clusters')
+    && communitiesHtml.includes('<code>John Smith</code>')
+    && communitiesHtml.includes('<code>j.smith@gmail.com</code>')
+    && communitiesHtml.includes('&lt;b&gt;Smith&lt;/b&gt;')
+    && !communitiesHtml.includes('<b>Smith</b>')
+    && communitiesHtml.includes('2 members')
+    && communitiesHtml.includes('10 members')
+    && communitiesHtml.includes('<code>u1…</code>')
+    && communitiesHtml.includes('<code>u8…</code>')
+    && !communitiesHtml.includes('<code>u9…</code>')
+    && communitiesHtml.includes('+2 more');
+  document.getElementById('communities-proof').textContent =
+    `empty=${communitiesEmptyOk}, clusters=${communitiesOk}`;
+
+  // Exercises scan_info::trust::render_trust_html -- notably its OWN
+  // not-found-uid styling (16-char truncation, muted/no-kind-pill), kept
+  // deliberately distinct from EntityLookup::display's 12-char one, plus the
+  // now-shared crate::html::kind_pill (promoted off duplicates.rs's
+  // formerly-local copy) rendering a REAL hse_core::EntityKind via its
+  // Display impl (kindToStr's job in the JS original) rather than an
+  // already-flattened string like duplicates.rs's ResolutionGroup.kind.
+  const trustEmptyHtml = renderTrustHtml({ trust: [] }, []);
+  document.getElementById('trust-empty-host').innerHTML = trustEmptyHtml;
+  const trustHtml = renderTrustHtml(
+    { trust: [
+        { uid: "aaa111", score: 0.876 },
+        { uid: "unknownuid1234567890", score: 0.4321 },
+      ] },
+    dupEntities,
+  );
+  document.getElementById('trust-host').innerHTML = trustHtml;
+
+  const trustEmptyOk = trustEmptyHtml.includes('No trust ranking yet');
+  const trustOk = trustHtml.includes('Top 2 entities')
+    && trustHtml.includes('k-person')
+    && trustHtml.includes('<code>John Smith</code>')
+    && trustHtml.includes('width:88%')
+    && trustHtml.includes('<code>0.88</code>')
+    && trustHtml.includes('>unknownuid123456…<')
+    && !trustHtml.includes('unknownuid1234567…')
+    && trustHtml.includes('<code>0.43</code>');
+  document.getElementById('trust-proof').textContent = `empty=${trustEmptyOk}, ranked=${trustOk}`;
+
+  // Exercises scan_info::pivots::render_pivots_html -- notably the 3-tier
+  // coreness badge (>=2 coloured, ==1 muted, ==0 none), the cut-vertex
+  // "critical" badge, singular/plural "link(s)", and EntityLookup::label
+  // reused a second time (both for pivot rows and for bridge endpoints).
+  const pivotsEmptyHtml = renderPivotsHtml({ pivots: [], bridges: [] }, []);
+  const pivotsHtml = renderPivotsHtml(
+    { pivots: [
+        { uid: "aaa111", degree: 5, score: 0.72, is_cut_vertex: true, coreness: 3 },
+        { uid: "bbb222", degree: 1, score: 0.5, is_cut_vertex: false, coreness: 1 },
+        { uid: "unknownpivot123456789", degree: 0, score: 0.1, is_cut_vertex: false, coreness: 0 },
+      ],
+      bridges: [
+        { from_uid: "aaa111", to_uid: "bbb222" },
+      ] },
+    dupEntities,
+  );
+  document.getElementById('pivots-host').innerHTML = pivotsHtml;
+
+  const pivotsEmptyOk = pivotsEmptyHtml === '';
+  const pivotsOk = pivotsHtml.includes('k-person')
+    && pivotsHtml.includes('<code>John Smith</code>')
+    && pivotsHtml.includes('critical</span>')
+    && pivotsHtml.includes('⬡3')
+    && pivotsHtml.includes('label-info')
+    && pivotsHtml.includes('⬡1')
+    && !pivotsHtml.includes('⬡0')
+    && pivotsHtml.includes('>5 links<')
+    && pivotsHtml.includes('>1 link<')
+    && pivotsHtml.includes('>0 links<')
+    && pivotsHtml.includes('unknownpivot1234…')
+    && pivotsHtml.includes('(1 bridge)')
+    && pivotsHtml.includes('<code>j.smith@gmail.com</code>');
+  document.getElementById('pivots-proof').textContent = `empty=${pivotsEmptyOk}, ranked=${pivotsOk}`;
+
+  // Exercises scan_info::audit::render_audit_html against the real
+  // /scans/{id}/audit envelope (audit::types::AuditReport::to_json). Covers:
+  // a busy scan (by_kind descending-count sort, both finding border-color
+  // branches, an examples list vs. a finding with none, every source-health
+  // and expansion-ledger bit, a geo block with an outlier, quarantined>0,
+  // log_lines_parsed>0, and HTML-escaping on scan-derived finding text) and
+  // a clean scan (score 100, no findings/kinds/source-health/expansion/geo
+  // sections at all -- proving every conditional block actually hides).
+  const auditFullHtml = renderAuditHtml({
+      score: 42, grade: "D — significant weaknesses",
+      entity_total: 50, tiers: { verified: 10, probable: 20, candidate: 20 },
+      noise_ratio: 0.4, quarantined: 3,
+      by_kind: { email: 5, person: 12, domain: 8 },
+      findings: [
+        { severity: "CRITICAL", category: "infrastructure-pollution",
+          message: "Entity <script>evil<\/script> is CDN infra", examples: ["1.2.3.4", "<script>x<\/script>"],
+          recommendation: "Quarantine infra entities" },
+        { severity: "MEDIUM", category: "low-corroboration",
+          message: "12 entities single-sourced", examples: [],
+          recommendation: "Run a deeper scan" },
+      ],
+      source_health: {
+        engine_parser_defects: ["shodan"], engines_down: ["censys"], engines_blocked: ["google"],
+        module_errors: { breach_check: 3, geo_normalize: 1 },
+        http_failures: 7, log_lines_parsed: 512,
+      },
+      expansion: { stops: ["max-depth"], excluded_reasons: { identity_mismatch: 4, rate_limited: 2 } },
+      geo: { coord_count: 3, source_count: 2, max_spread_km: 12.4, outliers: 1, has_consensus: true },
+    }, "scan-42");
+  document.getElementById('audit-host').innerHTML = auditFullHtml;
+  const auditCleanHtml = renderAuditHtml({
+      score: 100, grade: "A — clean, individualised, well-sourced",
+      entity_total: 5, tiers: { verified: 5, probable: 0, candidate: 0 },
+      noise_ratio: 0, quarantined: 0,
+      by_kind: {},
+      findings: [],
+      source_health: {
+        engine_parser_defects: [], engines_down: [], engines_blocked: [],
+        module_errors: {}, http_failures: 0, log_lines_parsed: 0,
+      },
+      expansion: { stops: [], excluded_reasons: {} },
+      geo: { coord_count: 0, source_count: 0, max_spread_km: 0, outliers: 0, has_consensus: false },
+    }, "scan-clean");
+  document.getElementById('audit-clean-host').innerHTML = auditCleanHtml;
+
+  const auditFullOk = auditFullHtml.includes('color:#d9534f')
+    && auditFullHtml.indexOf('k-person') < auditFullHtml.indexOf('k-domain')
+    && auditFullHtml.indexOf('k-domain') < auditFullHtml.indexOf('k-email')
+    && auditFullHtml.includes('50 entities · 10 verified · 20 probable · 20 candidate · 40% noise · <span style="color:var(--warning)">3 quarantined</span>')
+    && auditFullHtml.includes('geo: 3 fix(es) / 2 source(s) · spread 12 km · consensus · <span style="color:var(--danger)">1 outlier(s)</span>')
+    && auditFullHtml.includes('parser-defect: shodan')
+    && auditFullHtml.includes('down: censys')
+    && auditFullHtml.includes('blocked: google')
+    && auditFullHtml.includes('module errors: breach_check×3, geo_normalize×1')
+    && auditFullHtml.includes('HTTP failures: 7')
+    && auditFullHtml.includes('identity_mismatch×4 · rate_limited×2 · stops: max-depth')
+    && auditFullHtml.includes('<span class="badge">2</span>')
+    && auditFullHtml.includes('background:#a94442')
+    && auditFullHtml.includes('&lt;script&gt;evil&lt;/script&gt; is CDN infra')
+    && auditFullHtml.includes('<li><code>1.2.3.4</code></li>')
+    && auditFullHtml.includes('<li><code>&lt;script&gt;x&lt;/script&gt;</code></li>')
+    && !auditFullHtml.includes('<script>evil')
+    && !auditFullHtml.includes('<script>x')
+    && auditFullHtml.includes('background:#8a6d3b')
+    && (auditFullHtml.match(/<ul /g) || []).length === 1
+    && auditFullHtml.includes('Audited 512 scan-log line(s). Source-health')
+    && auditFullHtml.includes('--scan-id scan-42');
+  const auditCleanOk = auditCleanHtml.includes('color:#3c763d')
+    && !auditCleanHtml.includes('kind-pill')
+    && !auditCleanHtml.includes('quarantined</span>')
+    && !auditCleanHtml.includes('geo:')
+    && !auditCleanHtml.includes('Source health:')
+    && !auditCleanHtml.includes('Expansion ledger:')
+    && !auditCleanHtml.includes('class="badge"')
+    && auditCleanHtml.includes('✓ No weaknesses detected — results are individualised and verifiable.')
+    && !auditCleanHtml.includes('Audited ')
+    && auditCleanHtml.includes('--scan-id scan-clean');
+  document.getElementById('audit-proof').textContent = `full=${auditFullOk}, clean=${auditCleanOk}`;
+
+  // Exercises scan_info::network::render_network_html against the real
+  // /scans/{id}/network envelope (core::network::SubjectNetwork). Covers: the
+  // null-subject empty state, a subject with zero groups (hero still renders,
+  // plus its own distinct empty message), and a full case exercising a known
+  // group-icon key, an unknown one (the fallback), the "top N of M" cap
+  // notice, a present vs. absent tier pill, edge_confidence clamped above
+  // 100%, a >72-char URL truncated inside its <a> link text (full URL still
+  // in href), a non-http value escaped but not linkified, and HTML-escaping
+  // on a scan-derived connection value.
+  const networkNullHtml = renderNetworkHtml(
+    { subject: null, groups: [], direct_count: 0, reachable_count: 0, edge_count: 0 }, "scan-1");
+  document.getElementById('network-null-host').innerHTML = networkNullHtml;
+
+  const networkNoGroupsHtml = renderNetworkHtml(
+    { subject: { value: "Jane Doe", kind: "person", confidence: 0.61, classification: "VERIFIED" },
+      groups: [], direct_count: 0, reachable_count: 0, edge_count: 0 }, "scan-2");
+  document.getElementById('network-nogroups-host').innerHTML = networkNoGroupsHtml;
+
+  const longUrl = "https://example.com/a/very/long/path/that/should/get/truncated/because/it/exceeds/seventy-two/chars";
+  const networkFullHtml = renderNetworkHtml(
+    { subject: { value: "Jane Doe", kind: "person", confidence: 0.61, classification: "VERIFIED" },
+      groups: [
+        { key: "people", label: "People — family & associates", total: 5, items: [
+            { value: "John Doe", kind: "person", label: "relative", edge_confidence: 0.9123, entity_confidence: 0.61, classification: "PROBABLE" },
+            { value: "<script>evil<\/script>", kind: "username", label: "alias", edge_confidence: 0.5, entity_confidence: 0.2, classification: "" },
+          ] },
+        { key: "unknown_group", label: "Mystery bucket", total: 1, items: [
+            { value: longUrl, kind: "domain", label: "hosts", edge_confidence: 1.5, entity_confidence: 0.5, classification: "CANDIDATE" },
+          ] },
+      ],
+      direct_count: 6, reachable_count: 12, edge_count: 20 }, "scan-3");
+  document.getElementById('network-host').innerHTML = networkFullHtml;
+
+  const networkNullOk = networkNullHtml.includes('No subject network yet')
+    && networkNullHtml.includes('href="#/scaninfo?id=scan-1&tab=browse"')
+    && networkNullHtml.includes('--depth ≥ 1');
+  const networkNoGroupsOk = networkNoGroupsHtml.includes('Jane Doe')
+    && networkNoGroupsHtml.includes('k-person')
+    && networkNoGroupsHtml.includes('c-VERIFIED')
+    && networkNoGroupsHtml.includes('C_eff 0.61')
+    && networkNoGroupsHtml.includes('no derived connections yet')
+    && networkNoGroupsHtml.includes('href="#/scaninfo?id=scan-2&tab=browse"');
+  const networkFullOk = networkFullHtml.includes('<div class="v">6</div><div class="l">direct</div>')
+    && networkFullHtml.includes('<div class="v">12</div><div class="l">reachable</div>')
+    && networkFullHtml.includes('<div class="v">20</div><div class="l">edges</div>')
+    && networkFullHtml.includes('glyphicon-user')
+    && networkFullHtml.includes('glyphicon-link')
+    && networkFullHtml.includes('top 2 of 5')
+    && networkFullHtml.includes('c-PROBABLE')
+    && networkFullHtml.includes('node confidence 61%')
+    && networkFullHtml.includes('link confidence 91%')
+    && networkFullHtml.includes('&lt;script&gt;evil&lt;/script&gt;')
+    && !networkFullHtml.includes('<script>evil')
+    && networkFullHtml.includes('link confidence 100%')
+    && networkFullHtml.includes('>https://example.com/a/very/long/path/that/should/get/truncated/because/i…</a>')
+    && networkFullHtml.includes(`href="${longUrl}"`)
+    && (networkFullHtml.match(/class="cls c-/g) || []).length === 3;
+  document.getElementById('network-proof').textContent =
+    `null=${networkNullOk}, noGroups=${networkNoGroupsOk}, full=${networkFullOk}`;
+
+  // Exercises scan_info::leads::render_leads_html -- and, via the shared
+  // crate::html::group_icon it now shares with network.rs (a genuine second
+  // caller, promoted off network.rs's formerly-local copy), the SAME lookup
+  // table with a DIFFERENT per-caller fallback icon (glyphicon-flag here vs.
+  // network.rs's glyphicon-link). Also specifically proves target_kind (the
+  // scan-seed field) drives the button's data-kind attribute while the
+  // DIFFERENT kind field drives the kind-pill -- these were mixed up in an
+  // early draft of this port and caught before shipping.
+  const leadsEmptyHtml = renderLeadsHtml({ leads: [] }, "scan-9");
+  document.getElementById('leads-empty-host').innerHTML = leadsEmptyHtml;
+
+  const leadsHtml = renderLeadsHtml({
+      leads: [
+        { value: "John Doe", kind: "person", target_kind: "full_name",
+          reason: "A relative of the subject <script>evil<\/script>",
+          confirmed: true, discordant: false, structural: true, group: "people" },
+        { value: "namesake@example.com", kind: "email", target_kind: "email",
+          reason: "Shares surname, different region",
+          confirmed: false, discordant: true, structural: false, group: "identifiers" },
+        { value: "plain-value", kind: "domain", target_kind: "domain",
+          reason: "A container seed",
+          confirmed: false, discordant: false, structural: false, group: "unknown_bucket" },
+      ] }, "scan-10");
+  document.getElementById('leads-host').innerHTML = leadsHtml;
+
+  const leadsSingularHtml = renderLeadsHtml({
+      leads: [{ value: "v", kind: "domain", target_kind: "domain", reason: "r",
+        confirmed: false, discordant: false, structural: false, group: "locations" }] }, "scan-11");
+
+  const leadsEmptyOk = leadsEmptyHtml.includes('No open leads')
+    && leadsEmptyHtml.includes('href="#/scaninfo?id=scan-9&tab=network"');
+  const leadsOk = leadsHtml.includes('<b>3</b> recommended next steps')
+    && leadsHtml.includes('<b>1</b> corroborated')
+    && leadsHtml.includes('k-person') && leadsHtml.includes('k-email') && leadsHtml.includes('k-domain')
+    && leadsHtml.includes('data-kind="full_name"') && leadsHtml.includes('data-value="John Doe"')
+    && leadsHtml.includes('✓ CONFIRMED')
+    && leadsHtml.includes('⚠ NAMESAKE?')
+    && leadsHtml.includes('⌘ PIVOT')
+    && leadsHtml.includes('lead-card confirmed')
+    && leadsHtml.includes('lead-card discordant')
+    && leadsHtml.includes('glyphicon-user')
+    && leadsHtml.includes('glyphicon-flag')
+    && leadsHtml.includes('&lt;script&gt;evil&lt;/script&gt;')
+    && !leadsHtml.includes('<script>evil')
+    && (leadsHtml.match(/lead-badge"/g) || []).length === 1
+    && (leadsHtml.match(/lead-badge namesake/g) || []).length === 1
+    && (leadsHtml.match(/lead-badge pivot/g) || []).length === 1;
+  const leadsSingularOk = leadsSingularHtml.includes('<b>1</b> recommended next step\n')
+    && !leadsSingularHtml.includes('recommended next steps')
+    && !leadsSingularHtml.includes('corroborated');
+  document.getElementById('leads-proof').textContent =
+    `empty=${leadsEmptyOk}, leads=${leadsOk}, singular=${leadsSingularOk}`;
+
+  // Exercises scan_info::timeline::render_timeline_html against the real
+  // /scans/{id}/timeline envelope (core::timeline::{TimelineEvent,
+  // OnlineTenure, FootprintRecency, Movement}). Covers: the no-events empty
+  // state, a plain case with tenure/recency/movement all null and a single
+  // event (proving the singular "event" text and the absent tenure-line/
+  // movement-section/span), and a full case with 2 events (a known kind AND
+  // an unrecognized one, proving the TL_KIND fallback), tenure+recency
+  // present, a movement leg, and HTML-escaping on a scan-derived value.
+  const timelineEmptyHtml = renderTimelineHtml({ events: [], tenure: null, recency: null, movement: null });
+  document.getElementById('timeline-empty-host').innerHTML = timelineEmptyHtml;
+
+  const timelinePlainHtml = renderTimelineHtml({
+      events: [
+        { iso: "2015-03-03", kind: "registered", entity_value: "example.com", entity_kind: "domain", source: "whois" },
+      ],
+      tenure: null, recency: null, movement: null,
+    });
+  document.getElementById('timeline-plain-host').innerHTML = timelinePlainHtml;
+
+  const timelineHtml = renderTimelineHtml({
+      events: [
+        { iso: "2010-05-15", kind: "breach_exposure", entity_value: "user@example.com", entity_kind: "email", source: "breach_db" },
+        { iso: "2020-01-01T00:00:00Z", kind: "unknown_future_kind", entity_value: "<script>evil<\/script>", entity_kind: "username", source: "some_module" },
+      ],
+      tenure: { earliest_iso: "2010-05-15", span_years: 14, breach_count: 2 },
+      recency: { status: "aging" },
+      movement: { legs: [
+          { from_iso: "2019-01-01", from_coords: "1.0000, 2.0000", to_iso: "2019-06-01", to_coords: "3.0000, 4.0000", distance_km: 45.67 },
+        ], total_km: 45.67, locations_visited: 2 },
+    });
+  document.getElementById('timeline-host').innerHTML = timelineHtml;
+
+  const timelineEmptyOk = timelineEmptyHtml.includes('No dated events');
+  const timelinePlainOk = timelinePlainHtml.includes('<b>1</b> dated event,')
+    && !timelinePlainHtml.includes('dated events')
+    && !timelinePlainHtml.includes('Online since')
+    && !timelinePlainHtml.includes('Movement path')
+    && !timelinePlainHtml.includes('·');
+  const timelineOk = timelineHtml.includes('<b>2</b> dated events')
+    && timelineHtml.includes('· 2010-05-15 → 2020-01-01')
+    && timelineHtml.includes('Online since <b>2010-05-15</b> — 14y span, 2 breach exposures, footprint <b>aging</b>.')
+    && timelineHtml.includes('glyphicon-alert') && timelineHtml.includes('&nbsp;Breach</span>')
+    && timelineHtml.includes('glyphicon-calendar') && timelineHtml.includes('&nbsp;Event</span>')
+    && timelineHtml.includes('k-email') && timelineHtml.includes('k-username')
+    && timelineHtml.includes('&lt;script&gt;evil&lt;/script&gt;')
+    && !timelineHtml.includes('<script>evil')
+    && timelineHtml.includes('Movement path')
+    && timelineHtml.includes('<b>2</b>')
+    && timelineHtml.includes('dated location fixes')
+    && timelineHtml.includes('45.7 km')
+    && timelineHtml.includes('1.0000, 2.0000 → 3.0000, 4.0000');
+  document.getElementById('timeline-proof').textContent =
+    `empty=${timelineEmptyOk}, plain=${timelinePlainOk}, full=${timelineOk}`;
+
+  // Exercises scan_info::correlations::{render_corr_card_html,
+  // render_corr_members_html} -- the two pure templating helpers extracted
+  // from correlations.js (pagination/lazy-expand orchestration stays in JS,
+  // so there is no single render_correlations_html to call here). Covers:
+  // the rank badge shown only above 0 (a legacy zero-rank correlation hides
+  // it), the rule_name -> rule_id -> em-dash fallback chain, singular/plural
+  // "linked entity/entities", HTML-escaping on a scan-derived description,
+  // and for members: a resolved entity preferring raw_value for its display
+  // text but its OWN value (not raw_value) for the pivot/title attribute --
+  // a mixup an early draft of this port had and caught before shipping --
+  // a resolved entity with empty raw_value falling back to value for both,
+  // a >16-char unresolved uid (truncated + ellipsis), and the empty-list
+  // guided message.
+  const cardFullHtml = renderCorrCardHtml(
+    { rule_id: "R-100", rule_name: "Breach Cluster", severity: "critical",
+      description: "Multiple sources <script>evil<\/script>", entity_uids: ["a","b","c"], rank: 4.567 },
+    5);
+  document.getElementById('corr-card-full-host').innerHTML = cardFullHtml;
+  const cardPlainHtml = renderCorrCardHtml(
+    { rule_id: "R-200", rule_name: "", severity: "low", description: "", entity_uids: ["x"], rank: 0 },
+    0);
+  document.getElementById('corr-card-plain-host').innerHTML = cardPlainHtml;
+  const cardEmptyNameHtml = renderCorrCardHtml(
+    { rule_id: "", rule_name: "", severity: "medium", description: "", entity_uids: [], rank: 0 },
+    1);
+
+  const corrCardFullOk = cardFullHtml.includes('data-corr-idx="5"')
+    && cardFullHtml.includes('cv-critical')
+    && cardFullHtml.includes('<b>CRITICAL</b>')
+    && cardFullHtml.includes('· R-100')
+    && cardFullHtml.includes('<span class="badge">3</span>')
+    && cardFullHtml.includes('rank 4.57')
+    && cardFullHtml.includes('>Breach Cluster<')
+    && cardFullHtml.includes('&lt;script&gt;evil&lt;/script&gt;')
+    && !cardFullHtml.includes('<script>evil')
+    && cardFullHtml.includes('3 linked entities');
+  const corrCardPlainOk = !cardPlainHtml.includes('pull-right')
+    && cardPlainHtml.includes('<div class="corr-name">R-200</div>')
+    && cardPlainHtml.includes('1 linked entity"')
+    && cardPlainHtml.includes('cv-low');
+  const corrCardEmptyNameOk = cardEmptyNameHtml.includes('<div class="corr-name">—</div>')
+    && cardEmptyNameHtml.includes('0 linked entities');
+
+  const dupEntitiesForCorr = [
+    { uid: "m1", kind: "email", value: "raw@example.com", raw_value: "Raw@Example.com",
+      confidence: 0.5, corroboration: 1, observed_at: 0, evidence: [], tags: [], scan_id: "s", generation: 0 },
+    { uid: "m2", kind: "domain", value: "<script>evil<\/script>.example", raw_value: "",
+      confidence: 0.5, corroboration: 1, observed_at: 0, evidence: [], tags: [], scan_id: "s", generation: 0 },
+  ];
+  const membersHtml = renderCorrMembersHtml(
+    ["m1", "m2", "unknown-uid-with-more-than-sixteen-chars"], dupEntitiesForCorr);
+  document.getElementById('corr-members-host').innerHTML = membersHtml;
+  const membersEmptyHtml = renderCorrMembersHtml([], dupEntitiesForCorr);
+
+  const corrMembersOk = membersHtml.includes('k-email')
+    && membersHtml.includes('<code>Raw@Example.com</code>')
+    && membersHtml.includes('data-pivot="raw@example.com"')
+    && membersHtml.includes('title="Show \'raw@example.com\' in Browse"')
+    && membersHtml.includes('k-domain')
+    && membersHtml.includes('&lt;script&gt;evil&lt;/script&gt;.example</code>')
+    && !membersHtml.includes('<script>evil')
+    && membersHtml.includes('data-pivot="&lt;script&gt;evil&lt;/script&gt;.example"')
+    && membersHtml.includes('unknown-uid-with…')
+    && !membersHtml.includes('unknown-uid-with-…')
+    && (membersHtml.match(/class="corr-member"/g) || []).length === 3;
+  const corrMembersEmptyOk = membersEmptyHtml.includes('No member entities in this scan view');
+  document.getElementById('correlations-proof').textContent =
+    `full=${corrCardFullOk}, plain=${corrCardPlainOk}, emptyName=${corrCardEmptyNameOk}, ` +
+    `members=${corrMembersOk}, membersEmpty=${corrMembersEmptyOk}`;
+
+  // Exercises scan_info::info::render_exposure_html against the real
+  // /scans/{id}/exposure envelope (core::exposure::ExposureIndex, hand-built
+  // by the scan_exposure handler). Covers: a HIGH-band case with a normal
+  // fraction component AND a max=0 component (the div-by-zero guard -> 0%,
+  // not NaN%), HTML-escaping on a scan-derived summary string, a CRITICAL
+  // case proving it shares HIGH's label-danger class (not a naive 1:1
+  // mapping), and a MINIMAL case with empty summary/components proving both
+  // optional sections are correctly omitted.
+  const exposureHtml = renderExposureHtml({
+      score: 72, band: "HIGH", summary: "Exposure 72/100 [HIGH] <script>evil<\/script>",
+      components: [
+        { name: "Breach exposure", score: 18, max: 20, detail: "3 breaches found" },
+        { name: "Untested signal", score: 0, max: 0, detail: "no data" },
+      ],
+    });
+  document.getElementById('exposure-host').innerHTML = exposureHtml;
+  const exposureCriticalHtml = renderExposureHtml({ score: 95, band: "CRITICAL", summary: "", components: [] });
+  const exposureMinimalHtml = renderExposureHtml({ score: 5, band: "MINIMAL", summary: "", components: [] });
+  document.getElementById('exposure-minimal-host').innerHTML = exposureMinimalHtml;
+
+  const exposureOk = exposureHtml.includes('<b>72</b>')
+    && exposureHtml.includes('label-danger')
+    && exposureHtml.includes('>HIGH<')
+    && exposureHtml.includes('width:90%')
+    && exposureHtml.includes('<code>18/20</code>')
+    && exposureHtml.includes('width:0%')
+    && exposureHtml.includes('<code>0/0</code>')
+    && exposureHtml.includes('&lt;script&gt;evil&lt;/script&gt;')
+    && !exposureHtml.includes('<script>evil')
+    && exposureHtml.includes('calibrated 0–100');
+  const exposureCriticalOk = exposureCriticalHtml.includes('label-danger')
+    && exposureCriticalHtml.includes('>CRITICAL<')
+    && !exposureCriticalHtml.includes('<table')
+    && !exposureCriticalHtml.includes('margin-bottom:8px');
+  const exposureMinimalOk = exposureMinimalHtml.includes('label-success')
+    && exposureMinimalHtml.includes('>MINIMAL<');
+  document.getElementById('exposure-proof').textContent =
+    `full=${exposureOk}, critical=${exposureCriticalOk}, minimal=${exposureMinimalOk}`;
+
+  // Exercises scan_info::info::render_scan_settings_html -- uniquely among
+  // scan_info ports, this is called with a POSSIBLY-FULLY-ABSENT client-state
+  // object (scan || S.scan || {}), so covers a bare {} (every one of its ~20
+  // rows' own fallback: unknown kind pill, pending status pill, em-dash
+  // dates, "all (default)"/"none"/"unlimited"/"module default"/"no filter"
+  // placeholders, false/0/0.2 numeric defaults) and a fully-populated scan
+  // (real values in every row, a real Unix timestamp formatted via
+  // js_sys::Date -- the test's own timezoneId is pinned to UTC so this is
+  // deterministic regardless of the host machine's local timezone -- and
+  // HTML-escaping on scan-derived error/notes strings).
+  const settingsEmptyHtml = renderScanSettingsHtml({});
+  document.getElementById('settings-empty-host').innerHTML = settingsEmptyHtml;
+  const settingsFullHtml = renderScanSettingsHtml({
+    id: "scan-abc123",
+    target: { kind: "full_name", value: "Jane Doe" },
+    status: "running",
+    started_at: 1700000000,
+    finished_at: 0,
+    entity_count: 42,
+    error: "Module X <script>evil<\/script> crashed",
+    options: {
+      modules: ["shodan", "censys"],
+      exclude_modules: [],
+      free_only: true,
+      passive_only: false,
+      throttle_ms: 500,
+      module_timeout_ms: 30000,
+      max_concurrent: 4,
+      min_confidence: 0.55,
+      depth: 3,
+      min_expand_confidence: 0.35,
+      max_entities: 1000,
+      max_wall_time_secs: 3600,
+      scan_tags: ["q2-audit", "apt-29"],
+      notes: "Investigation notes <b>bold<\/b>",
+    },
+  });
+  document.getElementById('settings-full-host').innerHTML = settingsFullHtml;
+
+  const settingsEmptyOk = settingsEmptyHtml.includes('k-unknown') && settingsEmptyHtml.includes('>unknown<')
+    && settingsEmptyHtml.includes('s-pending') && settingsEmptyHtml.includes('>pending<')
+    && (settingsEmptyHtml.match(/<td>—<\/td>/g) || []).length === 2
+    && settingsEmptyHtml.includes('>0</td>')
+    && (settingsEmptyHtml.match(/none<\/span>/g) || []).length === 3
+    && (settingsEmptyHtml.match(/all \(default\)/g) || []).length === 2
+    && (settingsEmptyHtml.match(/>false<\/td>/g) || []).length === 2
+    && settingsEmptyHtml.includes('module default')
+    && settingsEmptyHtml.includes('no filter')
+    && (settingsEmptyHtml.match(/unlimited/g) || []).length === 2
+    && settingsEmptyHtml.includes('0.2</td>');
+  const settingsFullOk = settingsFullHtml.includes('<code>scan-abc123</code>')
+    && settingsFullHtml.includes('k-full_name') && settingsFullHtml.includes('>full_name<')
+    && settingsFullHtml.includes('<code>Jane Doe</code>')
+    && settingsFullHtml.includes('s-running') && settingsFullHtml.includes('>running<')
+    && settingsFullHtml.includes('<td>2023-11-14 22:13:20</td>')
+    && settingsFullHtml.includes('<td>—</td>')
+    && settingsFullHtml.includes('>42</td>')
+    && settingsFullHtml.includes('class="scan-error"')
+    && settingsFullHtml.includes('&lt;script&gt;evil&lt;/script&gt;')
+    && !settingsFullHtml.includes('<script>evil')
+    && settingsFullHtml.includes('<code>shodan</code>') && settingsFullHtml.includes('<code>censys</code>')
+    && settingsFullHtml.includes('all (default)')
+    && settingsFullHtml.includes('>true</td>') && settingsFullHtml.includes('>false</td>')
+    && settingsFullHtml.includes('>500</td>')
+    && settingsFullHtml.includes('>30000</td>')
+    && settingsFullHtml.includes('>4</td>')
+    && settingsFullHtml.includes('0.55</td>')
+    && settingsFullHtml.includes('>3</td>')
+    && settingsFullHtml.includes('0.35</td>')
+    && settingsFullHtml.includes('>1000</td>')
+    && settingsFullHtml.includes('>3600</td>')
+    && settingsFullHtml.includes('<span class="tag">q2-audit</span>')
+    && settingsFullHtml.includes('<span class="tag">apt-29</span>')
+    && settingsFullHtml.includes('&lt;b&gt;bold&lt;/b&gt;')
+    && !settingsFullHtml.includes('<b>bold');
+  document.getElementById('settings-proof').textContent =
+    `empty=${settingsEmptyOk}, full=${settingsFullOk}`;
+
+  // Exercises scan_info::path::render_path_result_html against the real
+  // /scans/{id}/path envelope (core::path::ConnectionPath, whose `nodes` map
+  // entries are pre-resolved server-side by the scan_path handler -- the
+  // node's `value` is already raw_value-preferring, so no further
+  // EntityLookup-style resolution happens client-side). Covers: the
+  // no-connection-found notice with HTML-escaping on both search terms, a
+  // trivial zero-hop self-path (singular "route" text but JS's exact
+  // hops===1-only singular rule, so a zero-hop path still reads "0 hops",
+  // and no chain markup at all since there are no edges), and a two-route
+  // multi-hop case proving the first-route-vs-rest border-color alternation,
+  // the em-dash + arrow chain separator between hops, and the
+  // 12-char-truncated-plus-ellipsis fallback (unconditional, unlike
+  // helpers.js's own trunc()) for a uid absent from the `nodes` map.
+  const pathNotFoundHtml = renderPathResultHtml(
+    { paths: [], nodes: {} }, "Alice", "<script>evil<\/script>");
+  document.getElementById('path-notfound-host').innerHTML = pathNotFoundHtml;
+  const pathNotFoundOk = pathNotFoundHtml.includes('No connection found')
+    && pathNotFoundHtml.includes('<code>Alice</code>')
+    && pathNotFoundHtml.includes('&lt;script&gt;evil&lt;/script&gt;')
+    && !pathNotFoundHtml.includes('<script>evil')
+    && pathNotFoundHtml.includes('within 6 hops');
+
+  const pathSoloHtml = renderPathResultHtml({
+    paths: [{ nodes: ["u1"], edges: [], hops: 0, strength: 1.0 }],
+    nodes: { u1: { kind: "person", value: "Solo Node" } },
+  }, "Solo Node", "Solo Node");
+  document.getElementById('path-solo-host').innerHTML = pathSoloHtml;
+  const pathSoloOk = pathSoloHtml.includes('<b>1</b> route ')
+    && !pathSoloHtml.includes('routes found')
+    && pathSoloHtml.includes('0 hops</span>')
+    && pathSoloHtml.includes('strength 1.00')
+    && pathSoloHtml.includes('k-person')
+    && pathSoloHtml.includes('<code>Solo Node</code>')
+    && !pathSoloHtml.includes('text-muted">—');
+
+  const pathMultiHtml = renderPathResultHtml({
+    paths: [
+      { nodes: ["u1", "u2"], edges: [{ kind: "parent_of" }], hops: 1, strength: 0.9 },
+      { nodes: ["u1", "u3", "unknown-uid-that-is-quite-long"],
+        edges: [{ kind: "friend_of" }, { kind: "co_worker" }], hops: 2, strength: 0.42 },
+    ],
+    nodes: {
+      u1: { kind: "person", value: "Alice <b>Smith<\/b>" },
+      u2: { kind: "email", value: "bob@example.com" },
+      u3: { kind: "person", value: "Carol" },
+    },
+  }, "Alice", "Bob");
+  document.getElementById('path-multi-host').innerHTML = pathMultiHtml;
+  const pathMultiOk = pathMultiHtml.includes('<b>2</b> routes found')
+    && pathMultiHtml.includes('solid #5cb85c')
+    && pathMultiHtml.includes('solid #5bc0de')
+    && pathMultiHtml.includes('1 hop</span>')
+    && pathMultiHtml.includes('2 hops</span>')
+    && pathMultiHtml.includes('strength 0.90')
+    && pathMultiHtml.includes('strength 0.42')
+    && pathMultiHtml.includes('k-email')
+    && pathMultiHtml.includes('<code>bob@example.com</code>')
+    && pathMultiHtml.includes('Alice &lt;b&gt;Smith&lt;/b&gt;')
+    && !pathMultiHtml.includes('<b>Smith')
+    && pathMultiHtml.includes('—<span class="tag" style="margin:0 3px">parent_of</span>→')
+    && pathMultiHtml.includes('—<span class="tag" style="margin:0 3px">friend_of</span>→')
+    && pathMultiHtml.includes('—<span class="tag" style="margin:0 3px">co_worker</span>→')
+    && pathMultiHtml.includes('unknown-uid-…')
+    && !pathMultiHtml.includes('unknown-uid-that')
+    && !pathMultiHtml.includes('unknown-uid-t…');
+  document.getElementById('path-proof').textContent =
+    `notFound=${pathNotFoundOk}, solo=${pathSoloOk}, multi=${pathMultiOk}`;
+
+  // Exercises scan_info::browse::render_browse_table_html -- reused by BOTH
+  // scan_info/browse.js's own tab and views/search.js's global search
+  // results. Deserializes straight into hse_core::Entity (unlike most other
+  // ports), so covers nearly every field: raw_value-over-value preference,
+  // the two independently-toFixed(3)'d confidence numbers, the corroboration
+  // count, distinct-corroborating-source count (Entity::source_count(),
+  // called directly -- geo_normalize excluded), the full evidence-source
+  // list (deduped + sorted, INCLUDING geo_normalize, unlike source_count()),
+  // an evidence entry's non-corroborating marker + escaped attributes, tag
+  // pills, the UID/generation detail block and its Scan-pivot button, and
+  // HTML-escaping throughout (raw_value, an evidence summary, an attribute
+  // value, and a tag all carry a literal <script> probe). Also covers: the
+  // fetch-truncation note and the pre-cap "showing top N of M" note (each
+  // independently, and the empty-rows case with only the fetch note still
+  // showing); an EntityKind::Other entity (tying back to the eager-kind-
+  // flattening fix) rendering its kind pill correctly and needing no
+  // fetch/cap notes when the caller's meta object omits every field; the
+  // zero-timestamp em-dash date; the singular "hop" text; and the "No
+  // evidence attached" fallback for an entity with none.
+  const entityFull = {
+    uid: 'uid-aaaa-full', kind: 'email', value: 'clean@example.com',
+    raw_value: 'Raw <script>evil<\/script>@Example.com',
+    confidence: 0.6, corroboration: 3, observed_at: 1700000000,
+    evidence: [
+      { source: 'zzz_module', summary: 'Zzz <b>summary<\/b>', attributes: {}, recorded_at: 1690000000, verification: null, is_inferred: false },
+      { source: 'geo_normalize', summary: 'Enrichment pass', attributes: { city: 'Sydney', xss: '<script>x<\/script>' }, recorded_at: 1680000000, verification: null, is_inferred: false },
+      { source: 'aaa_module', summary: 'Aaa summary', attributes: {}, recorded_at: 1670000000, verification: null, is_inferred: false },
+    ],
+    tags: ['<script>tag<\/script>', 'clean-tag'],
+    scan_id: 's', generation: 2,
+  };
+  const browseFullHtml = renderBrowseTableHtml([entityFull], { total: 5, entities_total: 10, loaded_count: 1 });
+  document.getElementById('browse-table-full-host').innerHTML = browseFullHtml;
+  const browseFullOk = browseFullHtml.includes('This scan has 10 entities')
+    && browseFullHtml.includes('top 1')
+    && browseFullHtml.includes('Showing the top 1 of 5 matching entities')
+    && browseFullHtml.includes('k-email')
+    && browseFullHtml.includes('Raw &lt;script&gt;evil&lt;/script&gt;@Example.com')
+    && !browseFullHtml.includes('<script>evil')
+    && browseFullHtml.includes('<code>0.600</code>')
+    && browseFullHtml.includes('>3</td>')
+    && browseFullHtml.includes('src-pill">aaa_module')
+    && browseFullHtml.includes('src-pill">geo_normalize')
+    && browseFullHtml.includes('src-pill">zzz_module')
+    && browseFullHtml.indexOf('aaa_module') < browseFullHtml.indexOf('geo_normalize')
+    && browseFullHtml.indexOf('geo_normalize') < browseFullHtml.indexOf('zzz_module')
+    && browseFullHtml.includes('<span class="tag">clean-tag</span>')
+    && browseFullHtml.includes('&lt;script&gt;tag&lt;/script&gt;')
+    && !browseFullHtml.includes('<script>tag')
+    && browseFullHtml.includes('(non-corroborating: enrichment/recall/cross-scan)')
+    && browseFullHtml.includes('Zzz &lt;b&gt;summary&lt;/b&gt;')
+    && browseFullHtml.includes('city:</span>')
+    && browseFullHtml.includes('&lt;script&gt;x&lt;/script&gt;')
+    && !browseFullHtml.includes('<script>x')
+    && browseFullHtml.includes('Generation:</b> 2 hops from seed')
+    && browseFullHtml.includes('data-uid="uid-aaaa-full"')
+    && browseFullHtml.includes('<code style="font-size:10px">uid-aaaa-full</code>')
+    && browseFullHtml.includes('<b>3 evidence entries:</b>');
+
+  const entityOther = {
+    uid: 'uid-bbbb-other', kind: { other: 'custom_type' }, value: 'beta-value', raw_value: '',
+    confidence: 0.9, corroboration: 1, observed_at: 0, evidence: [], tags: [],
+    scan_id: 's', generation: 1,
+  };
+  const browseOtherHtml = renderBrowseTableHtml([entityOther], {});
+  document.getElementById('browse-table-other-host').innerHTML = browseOtherHtml;
+  const browseOtherOk = !browseOtherHtml.includes('text-warning')
+    && !browseOtherHtml.includes('Showing the top')
+    && browseOtherHtml.includes('k-other:custom_type')
+    && browseOtherHtml.includes('>other:custom_type<')
+    && browseOtherHtml.includes('<code>beta-value</code>')
+    && browseOtherHtml.includes('>—</span>')
+    && browseOtherHtml.includes('Generation:</b> 1 hop from seed')
+    && browseOtherHtml.includes('No evidence attached')
+    && browseOtherHtml.includes('<b>0 evidence entries:</b>');
+
+  const browseEmptyHtml = renderBrowseTableHtml([], { entities_total: 50, loaded_count: 20 });
+  document.getElementById('browse-table-empty-host').innerHTML = browseEmptyHtml;
+  const browseEmptyOk = browseEmptyHtml.includes('This scan has 50 entities')
+    && browseEmptyHtml.includes('top 20')
+    && browseEmptyHtml.includes('No entities match')
+    && !browseEmptyHtml.includes('Showing the top');
+
+  document.getElementById('browse-table-proof').textContent =
+    `full=${browseFullOk}, other=${browseOtherOk}, empty=${browseEmptyOk}`;
+</script>
+</body>
+</html>

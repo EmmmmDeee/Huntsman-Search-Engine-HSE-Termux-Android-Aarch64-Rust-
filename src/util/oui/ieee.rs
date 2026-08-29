@@ -24,9 +24,9 @@
 //! to compile, nothing to start, and is binary-searched in place: no decode
 //! pass, no allocation, no lazily-built map.
 //!
-//! Regenerate with `python3 scripts/gen_oui.py`; the layout is documented there
-//! and re-validated by [`layout`] here, so a truncated or foreign file is
-//! rejected rather than silently misread.
+//! Regenerate with `cargo run --bin gen-oui` (`src/bin/gen_oui/`); the layout
+//! is documented there and re-validated by [`layout`] here, so a truncated or
+//! foreign file is rejected rather than silently misread.
 
 /// The packed registry. See `scripts/gen_oui.py` for the layout.
 const DATA: &[u8] = include_bytes!("ieee.bin");

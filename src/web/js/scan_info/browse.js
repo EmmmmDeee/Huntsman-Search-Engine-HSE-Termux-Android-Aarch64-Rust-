@@ -1,5 +1,6 @@
 import { API } from '/static/js/api.js';
-import { $, ENRICHMENT_SOURCES, attr, attrText, classify, effC, esc, extLink, fmtDate, kindPill, sourceCount } from '/static/js/helpers.js';
+import { $, attr, esc, kindPill, kindToStr } from '/static/js/helpers.js';
+import { classify, effC, renderBrowseTableHtml } from '/static/hse_wasm_ui.js';
 import { S } from '/static/js/state.js';
 
 // A large scan can produce thousands of entities; rendering each as two <tr>s
@@ -15,11 +16,14 @@ function debounce(fn, ms) {
 
 /* ── Browse tab ── */
 export function renderBrowse(host){
-  const kinds = Array.from(new Set(S.entities.map(e=>e.kind))).sort();
   const qKind = S.route.query.k || '';
-  // SpiderFoot 4.0-style data-element rollup: per-kind Unique + Total (sum of corroboration)
+  // SpiderFoot 4.0-style data-element rollup: per-kind Unique + Total (sum of
+  // corroboration). Keyed on kindToStr(e.kind), not the raw e.kind: an
+  // EntityKind::Other entity's raw wire shape is an object ({"other":"…"}),
+  // which coerces to the literal string "[object Object]" as a plain-object
+  // key — collapsing every Other-kind entity into one bogus rollup row.
   const roll = {};
-  S.entities.forEach(e=>{ const r = roll[e.kind] || (roll[e.kind] = {u:0, t:0}); r.u++; r.t += (e.corroboration||1); });
+  S.entities.forEach(e=>{ const k = kindToStr(e.kind); const r = roll[k] || (roll[k] = {u:0, t:0}); r.u++; r.t += (e.corroboration||1); });
   const rollRows = Object.keys(roll).sort((a,b)=>roll[b].u-roll[a].u);
   // SpiderFoot-identical two-column Browse layout:
   // left = sticky "Data Element" sidebar with per-kind counts (click to filter);
@@ -73,7 +77,7 @@ export function renderBrowse(host){
     const q = $('#b-q').value.trim().toLowerCase();
     const ks = $('#b-kind').value, cs = $('#b-cls').value;
     let rows = S.entities.slice();
-    if (ks) rows = rows.filter(e=>e.kind===ks);
+    if (ks) rows = rows.filter(e=>kindToStr(e.kind)===ks);
     if (cs) rows = rows.filter(e=>{const t=classify(effC(e)); return t===cs || (cs==='PROBABLE' && effC(e)>=0.40);});
     if (q)  rows = rows.filter(e =>
       (e.value||'').toLowerCase().includes(q)
@@ -87,7 +91,8 @@ export function renderBrowse(host){
       ? `${rows.length} of ${loaded} loaded · ${scanTotal} in scan`
       : `${rows.length} of ${loaded}`;
     const shown = rows.length > BROWSE_ROW_CAP ? rows.slice(0, BROWSE_ROW_CAP) : rows;
-    $('#b-table-host').innerHTML = renderBrowseTable(shown, rows.length);
+    $('#b-table-host').innerHTML = renderBrowseTableHtml(shown,
+      { total: rows.length, entities_total: S.entitiesTotal ?? null, loaded_count: loaded });
     if (window.jQuery && jQuery.fn.tablesorter && shown.length){
       try { jQuery('#browse-table').tablesorter({sortList:[[2,1]]}); } catch {}
     }
@@ -107,62 +112,6 @@ export function renderBrowse(host){
   // Deep-link: a `q` query param pre-fills the value filter
   if (S.route.query.q){ $('#b-q').value = S.route.query.q; }
   refresh();
-}
-export function renderBrowseTable(rows, total){
-  // Server-fetch truncation (distinct from the client render cap below): the
-  // scan holds more entities than the page fetched, so counts/filters here
-  // cover only the loaded slice. Shown even when the current filter matches
-  // nothing loaded, since the sought entity may be in the unfetched remainder.
-  const fetchNote = (S.entitiesTotal != null && S.entitiesTotal > S.entities.length)
-    ? `<div class="text-warning" style="font-size:11px;margin-bottom:6px">This scan has ${S.entitiesTotal} entities; the browser loaded the confidence-ranked top ${S.entities.length}. Counts and filters below apply to the loaded slice — export CSV/JSON for the complete set.</div>`
-    : '';
-  if (!rows.length){
-    return `${fetchNote}<div class="empty-state"><h3>No entities match</h3><p>Adjust the filter, or check the Scan Log if the scan is still running.</p></div>`;
-  }
-  const capNote = (total != null && total > rows.length)
-    ? `<div class="text-muted" style="font-size:11px;margin-bottom:6px">Showing the top ${rows.length} of ${total} matching entities (confidence-ranked) — filter by type or search to narrow, or export CSV/JSON for the full set.</div>`
-    : '';
-  const body = rows.map((e,idx)=>{
-    const eff = effC(e), tier = classify(eff), srcN = sourceCount(e);
-    const sources = Array.from(new Set((e.evidence||[]).map(ev=>ev.source))).sort();
-    const evDetail = (e.evidence||[]).map(ev=>{
-      const attrs = Object.entries(ev.attributes||{}).map(([k,v])=>`<span class="ev-attr"><span class="ak">${esc(k)}:</span> ${extLink(attrText(v),90)}</span>`).join('');
-      // Mirrors the CLI dossier's "(non-corroborating: …)" marker (see
-      // `is_non_corroborating_source` in core::entity) so the web UI stops
-      // implying every listed source independently boosted C_eff when some
-      // are self-enrichment/recall/cross-scan passes that don't.
-      const nonCorrob = ev.source && ENRICHMENT_SOURCES.has(ev.source);
-      const marker = nonCorrob ? ' <span class="text-muted" style="font-size:10px">(non-corroborating: enrichment/recall/cross-scan)</span>' : '';
-      return `<div class="ev-block"><span class="ev-src">${esc(ev.source)}</span>${marker}<span class="text-muted pull-right" style="font-size:10px">${esc(fmtDate(ev.recorded_at))}</span><div class="ev-sum">${esc(ev.summary)}</div>${attrs?`<div class="ev-attrs">${attrs}</div>`:''}</div>`;
-    }).join('');
-    return `<tr onclick="toggleDetail(this)" data-idx="${idx}">
-      <td>${kindPill(e.kind)}</td>
-      <td style="word-break:break-word"><code>${extLink(e.raw_value||e.value)}</code></td>
-      <td class="text-right"><code>${eff.toFixed(3)}</code></td>
-      <td class="text-right"><code>${(e.confidence??0).toFixed(3)}</code></td>
-      <td class="text-right">${e.corroboration||1}</td>
-      <td class="text-right" title="Distinct corroborating sources (excludes enrichment/recall/cross-scan)">${srcN}</td>
-      <td><span class="cls c-${attr(tier)}">${tier}</span></td>
-      <td>${(e.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</td>
-      <td>${sources.map(s=>`<span class="src-pill">${esc(s)}</span>`).join('')}</td>
-      <td><span class="text-muted" style="font-family:monospace;font-size:11px">${esc(fmtDate(e.observed_at))}</span></td>
-    </tr>
-    <tr class="entity-detail-row" style="display:none"><td colspan="10"><div class="entity-detail">
-      <div style="margin-bottom:4px"><b>UID:</b> <code style="font-size:10px">${esc(e.uid||'')}</code>
-        <span style="margin-left:10px"><b>Generation:</b> ${e.generation??0} hop${(e.generation===1)?'':'s'} from seed</span>
-        <button class="btn btn-default btn-xs" style="margin-left:8px" data-uid="${attr(e.uid||'')}" onclick="event.stopPropagation();entityPivot(this.dataset.uid,this)"
-                title="Find every scan this exact identifier appears in"><i class="glyphicon glyphicon-globe"></i>&nbsp;Seen across scans</button>
-        <span class="pivot-out" style="margin-left:8px"></span></div>
-      <div style="margin-bottom:6px"><b>${(e.evidence||[]).length} evidence entries:</b></div>
-      ${evDetail || '<span class="text-muted">No evidence attached</span>'}
-    </div></td></tr>`;
-  }).join('');
-  return `${fetchNote}${capNote}<div class="table-responsive"><table class="table table-striped table-condensed tablesorter" id="browse-table">
-    <thead><tr>
-      <th>Type</th><th>Value</th><th class="text-right">C_eff</th><th class="text-right" title="Base confidence, before corroboration boost">Conf</th>
-      <th class="text-right">Corr</th><th class="text-right" title="Distinct corroborating sources">Src</th><th>Tier</th>
-      <th class="sorter-false">Tags</th><th class="sorter-false">Sources</th><th>Observed</th>
-    </tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 /* Cross-scan entity pivot: resolve an entity's UID to every scan it appears in

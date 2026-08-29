@@ -92,26 +92,6 @@ fn architecture_constants() {
     assert_eq!(huntsman_search_engine::DEFAULT_BIND, "127.0.0.1:8080");
 }
 
-/// Walk `dir` recursively and collect every `HUNTSMAN_*` identifier literal
-/// that appears in a `.rs` source file (i.e. every key a module could read).
-fn collect_env_literals(dir: &Path, out: &mut std::collections::HashSet<String>) {
-    for entry in fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.is_dir() {
-            collect_env_literals(&path, out);
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            let content = fs::read_to_string(&path).unwrap();
-            for (idx, _) in content.match_indices("HUNTSMAN_") {
-                let tail = &content[idx..];
-                let end = tail
-                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                    .unwrap_or(tail.len());
-                out.insert(tail[..end].to_string());
-            }
-        }
-    }
-}
-
 /// Recursively collect `.rs` file paths under `dir`.
 fn collect_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     for entry in fs::read_dir(dir).unwrap() {
@@ -122,6 +102,27 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
             out.push(path);
         }
     }
+}
+
+/// True iff `s` is at least `n` characters, entirely ASCII hex digits, and
+/// contains at least one decimal digit — the last clause excludes purely
+/// alphabetic hex-alphabet strings (e.g. a stray word like "deedbead" would
+/// pass `is_ascii_hexdigit` alone) while still matching real deployed keys,
+/// which are effectively random over 0-9a-f.
+fn hexish(s: &str, n: usize) -> bool {
+    s.len() >= n && s.chars().all(|c| c.is_ascii_hexdigit()) && s.chars().any(char::is_numeric)
+}
+
+/// True iff `lit` matches one of the two provider-key shapes this project has
+/// actually leaked and could plausibly paste back: SeekNow (`seek-` + 48 hex)
+/// or a WiGLE API name (`AID` + 32 hex). A generic "long hex run" rule is
+/// deliberately NOT used here — this codebase is full of legitimate MD5/SHA/
+/// UUID fixtures — the `secret-scan` workflow's entropy rules cover the
+/// general case. Shared by [`no_provider_credential_is_embedded_in_source`]
+/// and [`no_provider_credential_is_embedded_in_narrative_files`].
+fn looks_like_provider_key(lit: &str) -> bool {
+    lit.strip_prefix("seek-").is_some_and(|r| hexish(r, 32))
+        || lit.strip_prefix("AID").is_some_and(|r| hexish(r, 24))
 }
 
 /// No provider credential may be embedded in the source tree.
@@ -137,24 +138,16 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
 /// (`.github/workflows/secret-scan.yml`) is the thorough one — but it runs in
 /// the normal `cargo test` gate, so a re-embedded key fails locally and in every
 /// PR rather than only in a scheduled job.
+///
+/// The shape check ([`looks_like_provider_key`]) is shared with
+/// [`no_provider_credential_is_embedded_in_narrative_files`] below, which
+/// applies the identical check outside `src/` — the file-scope, not the
+/// shape, is what differs between the two.
 #[test]
 fn no_provider_credential_is_embedded_in_source() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     collect_rs_files(&root.join("src"), &mut files);
-
-    let hexish = |s: &str, n: usize| {
-        s.len() >= n && s.chars().all(|c| c.is_ascii_hexdigit()) && s.chars().any(char::is_numeric)
-    };
-    // The two provider formats this project actually leaked and could plausibly
-    // paste back: SeekNow (`seek-` + 48 hex) and a WiGLE API name (`AID` + 32
-    // hex). A generic "long hex run" rule is deliberately NOT used here — this
-    // codebase is full of legitimate MD5/SHA/UUID fixtures — the `secret-scan`
-    // workflow's entropy rules cover the general case.
-    let looks_like_provider_key = |lit: &str| -> bool {
-        lit.strip_prefix("seek-").is_some_and(|r| hexish(r, 32))
-            || lit.strip_prefix("AID").is_some_and(|r| hexish(r, 24))
-    };
 
     // A credential-named constant bound to a long literal is the exact shape the
     // removed defaults had (`const HIBP_DEFAULT_KEY: &str = "…"`). Env-var NAMES
@@ -224,17 +217,75 @@ fn no_provider_credential_is_embedded_in_source() {
     );
 }
 
+/// No provider credential may be pasted into a narrative/bookkeeping file
+/// outside `src/`. `no_provider_credential_is_embedded_in_source` above only
+/// scans `.rs` files under `src/` — a live-shaped SeekNow key leaked into
+/// `.agent/state.json` for 17 days specifically because that file is neither
+/// (see `docs/CREDENTIAL_AUDIT_2026-08-27.md`). Two new `gitleaks` rules
+/// closed the detection gap at the repo-scanning layer; this is the same
+/// SHAPE check ([`looks_like_provider_key`]) made a `cargo test`-gated, always
+/// -local complement, per that audit's own follow-up recommendation.
+///
+/// Deliberately an explicit small file list, not a tree-walk over everything
+/// outside `src/`: `Cargo.lock`, vendored test fixtures, and the rest of the
+/// non-`src/` tree are not free-text narrative and would only add
+/// false-positive risk (fixture hashes, lockfile checksums) with no real
+/// leak-surface benefit. Add a path here the day a new narrative/bookkeeping
+/// file joins `.agent/state.json`, rather than widening the scope generally.
+#[test]
+fn no_provider_credential_is_embedded_in_narrative_files() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    const NARRATIVE_FILES: &[&str] = &[".agent/state.json"];
+
+    let mut offenders = Vec::new();
+    for rel in NARRATIVE_FILES {
+        let content = fs::read_to_string(root.join(rel))
+            .unwrap_or_else(|e| panic!("narrative file {rel} must be readable: {e}"));
+        for lit in content.split('"').skip(1).step_by(2) {
+            if looks_like_provider_key(lit) {
+                offenders.push(format!("{rel} (provider-key-shaped literal)"));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "credential-shaped literal(s) in a narrative file — rotate the credential \
+         immediately and see docs/CREDENTIAL_AUDIT_2026-08-27.md for the response \
+         playbook: {offenders:?}"
+    );
+}
+
 /// Guards against the silent-key-mismatch bug class: a key documented in the
 /// provisioning template under a name no module actually reads, so the operator
-/// sets it and gets nothing. Every key in `env_template.txt` must be consumed in
-/// `src/` (or registered as a service def), or be explicitly listed as reserved.
+/// sets it and gets nothing. Every key in `env_template.txt` must be genuinely
+/// READ somewhere in `src/` (an `_ENV` const, a `ctx.key`/`key_opt` call, or a
+/// direct `env::var` read), or be explicitly listed as reserved.
+///
+/// Deliberately does NOT count mere `service_defs()` registration as
+/// consumption (a `ServiceDef` only drives `hse doctor`'s validation probe and
+/// the Settings UI, and can exist with zero consuming modules): that was
+/// exactly the loophole that let `HUNTSMAN_BREACHDIR_KEY`,
+/// `HUNTSMAN_BINARYEDGE_KEY`, `HUNTSMAN_C99_KEY`, `HUNTSMAN_FULLHUNT_KEY`,
+/// `HUNTSMAN_PULSEDIVE_KEY`, and `HUNTSMAN_PASSIVETOTAL_KEY` go orphaned
+/// (registered, documented, and even accepted by `hse doctor` — yet spent by
+/// no scan) before each finally grew a real consuming module. Nor does it
+/// count a bare textual mention anywhere in `src/` (a doc comment, another
+/// constant's value, `service_defs.rs`'s own registration literal): every one
+/// of those six keys was already textually present in `src/` the whole time
+/// they were orphaned, so that weaker bar would have let them straight
+/// through.
 #[test]
 fn env_template_keys_are_all_consumed() {
     use std::collections::HashSet;
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
 
-    // Documented but not yet wired to a consuming module. Each MUST be marked
-    // `[RESERVED]` in the template; setting it has no runtime effect (yet).
+    // Documented but currently a no-op for the operator. Each MUST be marked
+    // `[RESERVED]` in the template; setting any of them has no runtime effect.
+    // Usually because no consuming module has shipped yet — except
+    // `HUNTSMAN_PROXYCURL_KEY`, whose module *did* ship and consume it, but the
+    // vendor permanently sunset the API (2026-08-26): `proxycurl::process` now
+    // short-circuits unconditionally without reading the key, so it is exactly
+    // as inert to an operator as the "not yet wired" entries below.
     const NOT_YET_WIRED: &[&str] = &[
         "HUNTSMAN_MALSHARE_KEY",
         "HUNTSMAN_PHISHTANK_KEY",
@@ -243,6 +294,7 @@ fn env_template_keys_are_all_consumed() {
         "HUNTSMAN_MACADDRESS_KEY",
         "HUNTSMAN_IPINFO_KEY",
         "HUNTSMAN_MAXMIND_KEY",
+        "HUNTSMAN_PROXYCURL_KEY",
     ];
 
     // 1. Keys declared in the provisioning template.
@@ -256,12 +308,19 @@ fn env_template_keys_are_all_consumed() {
         .collect();
     assert!(!declared.is_empty(), "no keys parsed from env template");
 
-    // 2. Keys actually read in source, plus the registered service registry.
+    // 2. Keys genuinely read somewhere in source. `collect_key_env_consts`
+    //    (the `_ENV`-const / `key`/`key_opt` forms) stays scoped to `src/` here
+    //    rather than `src/modules` — this test cares about ANY consumer, not
+    //    just OSINT-provider modules. `collect_raw_huntsman_env_reads` (below,
+    //    shared with `modules_never_read_credentials_via_raw_env`) adds the one
+    //    further form real config-knob reads use (`env::var(...)` bypassing
+    //    `ModuleContext` entirely) that the other collector intentionally
+    //    excludes (see its own doc comment) — called over all of `src/` here
+    //    rather than that test's `src/modules`-only scope, for the same
+    //    any-consumer-counts reason as the line above.
     let mut consumed: HashSet<String> = HashSet::new();
-    collect_env_literals(&root.join("src"), &mut consumed);
-    for d in huntsman_search_engine::util::service_defs::service_defs() {
-        consumed.insert(d.env_var.to_string());
-    }
+    collect_key_env_consts(&root.join("src"), &mut consumed);
+    collect_raw_huntsman_env_reads(&root.join("src"), &mut consumed);
 
     let reserved: HashSet<&str> = NOT_YET_WIRED.iter().copied().collect();
 
@@ -306,13 +365,18 @@ fn push_huntsman_literal(
 }
 
 /// Collects every `HUNTSMAN_*` env var a module under `dir` genuinely READS, in
-/// both forms the codebase actually uses:
+/// all three forms the codebase actually uses:
 ///
 /// 1. the `const ..._ENV: &str = "HUNTSMAN_..."` naming convention (`const
 ///    KEY_ENV: &str = "HUNTSMAN_SHODAN_KEY"`, `const OTX_KEY_ENV: &str =
-///    "HUNTSMAN_ALIENVAULT_KEY"`, …); and
+///    "HUNTSMAN_ALIENVAULT_KEY"`, …);
 /// 2. an **inline** read that names the var at the call site —
-///    `ctx.key_opt("HUNTSMAN_GITHUB_TOKEN")` / `ctx.key("HUNTSMAN_…")`.
+///    `ctx.key_opt("HUNTSMAN_GITHUB_TOKEN")` / `ctx.key("HUNTSMAN_…")`; and
+/// 3. the var name passed as a positional literal to the shared
+///    `util::http::fetch_keyed_json` helper (`fetch_keyed_json(ctx, SRC, &url,
+///    "HUNTSMAN_VIRUSTOTAL_KEY", "x-apikey")`), which reads the key itself
+///    rather than making the caller do it — used as-is (not through a `_ENV`
+///    const) by `virustotal`, `abuseipdb`, and `auspost`.
 ///
 /// Form 2 was previously invisible here: the scan hard-required `const ` AND
 /// `ENV` on the line, so a module reading its key inline was silently exempt
@@ -320,13 +384,23 @@ fn push_huntsman_literal(
 /// `service_defs`-registered credential (`HUNTSMAN_GITHUB_TOKEN`, read by
 /// `github_user`/`github_code_search`/`github_commits`) go missing from both
 /// `KNOWN_KEYS` and `env_template.txt` — invisible to the Settings grid, to
-/// `hse provision`, and to `hse doctor`'s acquisition ranking.
+/// `hse provision`, and to `hse doctor`'s acquisition ranking. Form 3 closed
+/// the same class of blind spot for `virustotal`/`abuseipdb`'s keys once this
+/// collector started being asked (by `env_template_keys_are_all_consumed`) to
+/// prove consumption instead of accepting mere `service_defs()` registration.
 ///
-/// Still deliberately narrower than `collect_env_literals` (which also matches
-/// prose/doc-comment mentions): a literal only counts here when it is bound to
-/// an `_ENV` const or passed directly to a key read, which is the precise "a
-/// module genuinely reads this env var" signal — the inverse of what
-/// `env_template_keys_are_all_consumed` already guards.
+/// Deliberately narrower than a plain textual search for the identifier: a
+/// mention only counts here when it is bound to an `_ENV` const or passed
+/// directly to a key read, which is the precise "a module genuinely reads
+/// this env var" signal — the inverse of what `env_template_keys_are_all_consumed`
+/// guards. Also deliberately excludes a bare `env::var("HUNTSMAN_...")` read
+/// (see [`collect_raw_huntsman_env_reads`]): that form is how config knobs
+/// bypass `ModuleContext` entirely, and this collector's own caller
+/// (`key_gated_modules_are_documented_everywhere_an_operator_would_look`)
+/// requires every var it finds to appear in `KNOWN_KEYS` — correct for a
+/// pooled provider credential, wrong for a tuning knob like
+/// `HUNTSMAN_SEARCH_PROXY` that was never meant to appear in the Settings-page
+/// API-key grid.
 fn collect_key_env_consts(dir: &Path, out: &mut std::collections::HashSet<String>) {
     for entry in fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
@@ -356,6 +430,26 @@ fn collect_key_env_consts(dir: &Path, out: &mut std::collections::HashSet<String
                         from = after;
                     }
                 }
+            }
+            // 3. `fetch_keyed_json(ctx, SRC, &url, "HUNTSMAN_...", "header")` —
+            //    sometimes `fetch_keyed_json::<SomeResponse>(...)` when the
+            //    return type can't be inferred, so this matches the bare
+            //    function name rather than requiring an immediately-following
+            //    `(`. Scanned across the whole file rather than line-by-line
+            //    since a real call commonly wraps its arguments across several
+            //    lines; the search window after each call site is bounded so
+            //    an unrelated later literal can't be mistaken for its argument.
+            let mut from = 0;
+            while let Some(i) = content[from..].find("fetch_keyed_json") {
+                let call_start = from + i;
+                let mut window_end = (call_start + 400).min(content.len());
+                while !content.is_char_boundary(window_end) {
+                    window_end -= 1;
+                }
+                if let Some(q) = content[call_start..window_end].find("\"HUNTSMAN_") {
+                    push_huntsman_literal(&content[call_start..], q, out);
+                }
+                from = call_start + "fetch_keyed_json".len();
             }
         }
     }
@@ -668,4 +762,99 @@ fn has_nonzero_len_assert(line: &str) -> bool {
     let after = line[pos + "len(), ".len()..].trim_start();
     let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
     digits.parse::<usize>().unwrap_or(0) > 0
+}
+
+/// Collects every `HUNTSMAN_*` env var a module reads via a RAW
+/// `std::env::var(...)` call — i.e. bypassing the [`ModuleContext`] key
+/// accessors. Line-based like [`collect_key_env_consts`]: `env::var(` matches
+/// both `std::env::var(` and a `use std::env` shorthand, and never
+/// `env::var_os(` (the char after `var` is `_`, not `(`). Only literal-argument
+/// reads are seen — the one shape the two sanctioned reads actually use — which
+/// is the same best-effort structural signal every scanner in this file relies
+/// on.
+///
+/// Two callers, two different directory scopes: [`modules_never_read_credentials_via_raw_env`]
+/// below passes `src/modules` (its "no module bypasses the accessor"
+/// invariant only concerns modules); [`env_template_keys_are_all_consumed`]
+/// passes all of `src/` (a config knob consumed outside `src/modules` still
+/// needs to count as "this template key is genuinely read somewhere").
+fn collect_raw_huntsman_env_reads(dir: &Path, out: &mut std::collections::HashSet<String>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_raw_huntsman_env_reads(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            let content = fs::read_to_string(&path).unwrap();
+            for line in content.lines() {
+                let mut from = 0;
+                while let Some(i) = line[from..].find("env::var(") {
+                    let after = from + i + "env::var(".len();
+                    if line[after..].starts_with('"') {
+                        push_huntsman_literal(line, after, out);
+                    }
+                    from = after;
+                }
+            }
+        }
+    }
+}
+
+/// A module must never read a `HUNTSMAN_*` credential via a raw
+/// `std::env::var(...)` call: that bypasses [`ModuleContext::key`] /
+/// [`ModuleContext::key_opt`], which are the single chokepoint applying
+/// `util::keys::resolve_key`'s "what counts as a configured credential"
+/// filter (absent / blank / an unedited `insert_..._here` provisioning
+/// placeholder all resolve to "unconfigured"). A credential read raw would
+/// forward an unedited template placeholder to the provider verbatim — a
+/// confused-deputy request against a stranger's account (the IL-2 class the
+/// `key_opt` chokepoint exists to close). This is the source-structural half
+/// of that guarantee: the `key_opt` unit tests prove the accessor filters;
+/// this proves no module sidesteps the accessor.
+///
+/// The two sanctioned raw reads are NON-credential tuning knobs (no
+/// `_KEY`/`_TOKEN`/`_SECRET` suffix), allow-listed with justification.
+/// A credential MUST NOT be added here — route it through the accessors so the
+/// filter applies. The allow-list is anti-rot-checked so a knob that stops
+/// being read is removed rather than lingering as a phantom exemption.
+#[test]
+fn modules_never_read_credentials_via_raw_env() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    // Sanctioned raw `env::var("HUNTSMAN_…")` reads in src/modules — both are
+    // non-credential tuning knobs deliberately read inline rather than threaded
+    // through `ModuleContext`:
+    //   * HUNTSMAN_SEARCH_PROXY  — abn_lookup's per-request proxy override.
+    //   * HUNTSMAN_EMAIL_DOMAINS — name_intel's permutation domain list.
+    const ALLOWED_RAW_ENV: &[&str] = &["HUNTSMAN_SEARCH_PROXY", "HUNTSMAN_EMAIL_DOMAINS"];
+
+    let mut raw = std::collections::HashSet::new();
+    collect_raw_huntsman_env_reads(&root.join("src/modules"), &mut raw);
+
+    let allowed: std::collections::HashSet<&str> = ALLOWED_RAW_ENV.iter().copied().collect();
+    let mut offenders: Vec<&str> = raw
+        .iter()
+        .map(String::as_str)
+        .filter(|v| !allowed.contains(v))
+        .collect();
+    offenders.sort_unstable();
+    assert!(
+        offenders.is_empty(),
+        "module(s) read a HUNTSMAN_* env var via raw std::env::var, bypassing the \
+         ModuleContext key/key_opt accessors (and thus util::keys::resolve_key's \
+         placeholder/blank filter). Route it through ctx.key/ctx.key_opt; or, ONLY \
+         for a genuinely non-credential tuning knob, add it to ALLOWED_RAW_ENV with \
+         justification: {offenders:?}"
+    );
+
+    // Anti-rot: every allow-listed knob must still actually be read, else it is
+    // a stale exemption to delete (mirrors NOT_YET_WIRED's own staleness check).
+    let stale: Vec<&str> = ALLOWED_RAW_ENV
+        .iter()
+        .copied()
+        .filter(|k| !raw.contains(*k))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "ALLOWED_RAW_ENV lists env vars no module reads any more (remove them): {stale:?}"
+    );
 }

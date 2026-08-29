@@ -189,8 +189,7 @@ fn maidenhead_known_point_in_australia() {
     // QG62kn sits in SE Queensland; QG62 is the coarser 4-char square.
     let p = parse("QG62kn").expect("should succeed");
     near(p.lat, -27.4375, 1e-4, "lat");
-    near(p.lon, 152.875, 1e-4, "lon");
-    assert!(crate::util::geo::is_in_australia(p.lat, p.lon));
+    near(p.lon, 152.875, 1e-4, "lon"); // SE Queensland, Australia
     let coarse = parse("QG62").expect("should succeed");
     near(coarse.lat, -27.5, 1e-9, "coarse lat");
     near(coarse.lon, 153.0, 1e-9, "coarse lon");

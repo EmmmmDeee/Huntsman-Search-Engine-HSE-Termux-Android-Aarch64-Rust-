@@ -299,11 +299,6 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         include_bytes!("../../web/js/state.js"),
     ),
     (
-        "js/theme.js",
-        "application/javascript",
-        include_bytes!("../../web/js/theme.js"),
-    ),
-    (
         "js/timers.js",
         "application/javascript",
         include_bytes!("../../web/js/timers.js"),
@@ -362,6 +357,30 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         "js/views/search.js",
         "application/javascript",
         include_bytes!("../../web/js/views/search.js"),
+    ),
+    // TEMPORARY diagnostic page proving the JS -> Rust/WASM port's pipeline
+    // in isolation (not linked from spa.html). Remove once enough real view
+    // ports make it clearly redundant.
+    (
+        "wasm_test.html",
+        "text/html; charset=utf-8",
+        include_bytes!("../../../wasm-ui/pkg/wasm_test.html"),
+    ),
+    // The wasm-ui crate's compiled output (see wasm-ui/Cargo.toml) — real,
+    // growing production content, imported by main.js the same way every JS
+    // module above is imported. Currently provides the theme toggle
+    // (wasm-ui/src/theme.rs, was js/theme.js); more views move here over
+    // time. Checked in rather than built by this crate's own build step —
+    // see wasm-ui/src/lib.rs's doc comment for the regeneration command.
+    (
+        "hse_wasm_ui.js",
+        "application/javascript",
+        include_bytes!("../../../wasm-ui/pkg/hse_wasm_ui.js"),
+    ),
+    (
+        "hse_wasm_ui_bg.wasm",
+        "application/wasm",
+        include_bytes!("../../../wasm-ui/pkg/hse_wasm_ui_bg.wasm"),
     ),
 ];
 
@@ -767,8 +786,17 @@ async fn enforce_csrf(req: axum::extract::Request, next: axum::middleware::Next)
 /// `object-src 'none'` + `base-uri 'self'` close clickjacking, plugin, and
 /// `<base>`-hijack vectors. All vendor assets ship same-origin from `/static`,
 /// so no external host needs allow-listing.
+///
+/// `script-src` also carries `'wasm-unsafe-eval'` — required by the CSP3
+/// WebAssembly integration for `WebAssembly.instantiate`/`instantiateStreaming`
+/// to run at all (confirmed directly: Chromium refuses compilation without it,
+/// citing this exact directive, even for a same-origin `.wasm` fetched under
+/// `'self'`). Deliberately the narrow Wasm-only token, not the general
+/// `'unsafe-eval'` it is scoped out of: it permits compiling WebAssembly
+/// bytecode and nothing else — plain `eval()`/`new Function(string)` stay
+/// blocked exactly as before.
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
-     script-src 'self' 'unsafe-inline'; \
+     script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; \
      style-src 'self' 'unsafe-inline'; \
      img-src 'self' data:; \
      connect-src 'self'; \

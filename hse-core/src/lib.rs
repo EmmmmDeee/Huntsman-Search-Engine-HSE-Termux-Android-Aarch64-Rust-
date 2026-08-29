@@ -1,5 +1,16 @@
 //! `core::entity` — HSE entity model.
 //!
+//! Extracted from `huntsman_search_engine::core::entity` into its own crate,
+//! re-exported at that same path (`crate::core::entity` in the parent crate)
+//! so this file's content and every one of its ~250 call sites are otherwise
+//! unchanged. The point of the extraction is sharing this logic — unmodified,
+//! not reimplemented — with a wasm32-unknown-unknown browser build of the web
+//! UI, so confidence-tier math the UI displays can call the real
+//! `Entity::c_effective`/`source_count` instead of a hand-maintained JS
+//! approximation that had already drifted out of sync once
+//! (`ENRICHMENT_ONLY_SOURCES` vs. `src/web/js/helpers.js`'s old
+//! `ENRICHMENT_SOURCES` mirror).
+//!
 //! # Architecture invariants
 //! - SHA-256 deterministic UIDs
 //! - GREATEST-semantics merge (confidence, corroboration only ever increase)
@@ -8,8 +19,11 @@
 //!   `corroboration` field, a separate per-module observation magnitude. See
 //!   [`Entity::c_effective`] and [`Entity::source_count`].
 //! - `Classify()` is derived-only from `C_eff`
-//! - No unsafe, no std::sync::Mutex (use tokio::sync)
+//! - No unsafe, no std::sync::Mutex (use tokio::sync, in the native build)
 //! - Zero CGO / native deps
+
+pub mod coords;
+pub mod tags;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -17,9 +31,71 @@ use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::hash::BuildHasher;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::util::url_util::is_tracking_param_key;
+/// Moved here from `huntsman_search_engine::util::url_util` (which now
+/// re-exports this) so this crate has no dependency back onto the binary it
+/// was extracted out of. This is the single definition — `util::url_util`
+/// and `modules::search_engines::helpers::urls` both consume it through the
+/// re-export, so there is exactly one tracking-param list, not a mirror.
+const URL_TRACKING_PARAMS: &[&str] = &[
+    // Google / Ads
+    "gclid",
+    "gclsrc",
+    "dclid",
+    "gbraid",
+    "wbraid",
+    "_ga",
+    "_gl",
+    // Facebook / Instagram / Meta
+    "fbclid",
+    "fb_action_ids",
+    "fb_action_types",
+    "fb_ref",
+    "fb_source",
+    "igshid",
+    "igsh",
+    "mibextid",
+    // Microsoft / Bing, Twitter/X, Yandex
+    "msclkid",
+    "twclid",
+    "ref_src",
+    "ref_url",
+    "yclid",
+    // Email / marketing automation
+    "mc_cid",
+    "mc_eid",
+    "mkt_tok",
+    "_hsenc",
+    "_hsmi",
+    "hsctatracking",
+    "vero_id",
+    "vero_conv",
+    "oly_anon_id",
+    "oly_enc_id",
+    "wickedid",
+    // Misc analytics
+    "spm",
+    "scm",
+    "s_kwcid",
+    "_openstat",
+    "icid",
+];
+
+/// True when a query-parameter key is pure tracking and safe to drop during
+/// URL canonicalisation: the `utm_*` family (case-insensitive prefix) or an
+/// exact (case-insensitive) match in `URL_TRACKING_PARAMS`. Uses `get(..4)`
+/// rather than slicing so a non-ASCII key can never panic on a char boundary.
+#[must_use]
+pub fn is_tracking_param_key(key: &str) -> bool {
+    if key.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("utm_")) {
+        return true;
+    }
+    URL_TRACKING_PARAMS
+        .iter()
+        .any(|p| key.eq_ignore_ascii_case(p))
+}
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -51,7 +127,7 @@ pub const CANDIDATE_CONF: f64 = 0.25;
 /// Evidence "sources" that are deterministic self-enrichment passes the engine
 /// runs over every entity of a given kind — NOT independent intelligence.
 ///
-/// `geo_normalize` is the geospatial enrichment pass ([`crate::core::engine`])
+/// `geo_normalize` is the geospatial enrichment pass (`core::engine`)
 /// that attaches a geohash/timezone/parsed-address evidence record to *every*
 /// `Coordinates`/`Address` entity. Because it fires unconditionally it is not a
 /// cross-correlating observation: counting it as a distinct source silently
@@ -107,7 +183,12 @@ pub fn is_enrichment_source(source: &str) -> bool {
 /// Canonical comparison form of a handle: ASCII-lowercased with the handle
 /// separators (`.`, `_`, `-`) removed, so equivalent spellings across services
 /// collapse to one token.
-pub(in crate::core) fn canonical_handle(value: &str) -> String {
+// Was `pub(in crate::core)` before this module's extraction — restricted to
+// sibling `core::*` callers in the parent crate (correlator rules,
+// relation/resolve/cross_scan), deliberately excluding `modules::*`/`api::*`.
+// A crate boundary can't express "visible to this dependent crate's `core`
+// submodule only", so that narrower encapsulation is lost; this is `pub`.
+pub fn canonical_handle(value: &str) -> String {
     value
         .chars()
         .filter(|c| !matches!(c, '.' | '_' | '-'))
@@ -142,7 +223,7 @@ pub const RECALL_SOURCE: &str = "recall";
 pub const CROSS_SCAN_SOURCE: &str = "cross_scan_history";
 
 /// Evidence source name of the final breach-consensus grading pass
-/// ([`crate::core::breach_consensus`]).
+/// (`core::breach_consensus`).
 ///
 /// The pass reads the evidence the breach modules already attached and records
 /// how many DISTINCT corpora attest each finding. It is a *summary of* those
@@ -192,7 +273,7 @@ pub fn is_promotion_source(source: &str) -> bool {
 /// True if `source` is an engine-derived corroboration signal — multipath,
 /// cross-scan, or geo agreement — rather than an independent observation. Such a
 /// signal must classify as the unscored `"other"`
-/// [`source_family`](crate::core::correlator::source_family): it records that
+/// `core::correlator::source_family`: it records that
 /// existing sources agree, so counting it as its own family would manufacture a
 /// phantom orthogonal source family. (`geo_corroboration`'s name contains the
 /// `"geo"` substring the family classifier keys `"infra"` on, so without an
@@ -507,7 +588,7 @@ impl Evidence {
     /// Yields trimmed, non-empty parts; absent keys yield nothing.
     ///
     /// ```
-    /// use huntsman_search_engine::core::entity::Evidence;
+    /// use hse_core::Evidence;
     ///
     /// let ev = Evidence::new("oathnet", "Breach on ForumX")
     ///     .with_attr("username", "alice")
@@ -758,7 +839,7 @@ impl Entity {
     /// change only ever *adds* confidence for genuinely multi-sourced entities.
     ///
     /// ```
-    /// use huntsman_search_engine::core::entity::{Entity, EntityKind};
+    /// use hse_core::{Entity, EntityKind};
     ///
     /// // Single source (no evidence attached → n = 1): C_eff equals confidence.
     /// let e = Entity::new(EntityKind::Email, "x@example.com", 0.6, "scan");
@@ -818,7 +899,7 @@ impl Entity {
     /// add corroboration.
     ///
     /// ```
-    /// use huntsman_search_engine::core::entity::{Classification, Entity, EntityKind};
+    /// use hse_core::{Classification, Entity, EntityKind};
     ///
     /// let mk = |c| Entity::new(EntityKind::Email, "x@example.com", c, "scan").classify();
     /// assert_eq!(mk(0.90), Classification::Verified);
@@ -884,7 +965,7 @@ impl Entity {
     /// between them.
     pub fn demote_to_candidate(&mut self) {
         self.confidence = self.confidence.min(CANDIDATE_CONF);
-        self.tag(crate::core::tags::CANDIDATE);
+        self.tag(tags::CANDIDATE);
     }
 
     pub fn has_tag(&self, t: &str) -> bool {
@@ -1063,7 +1144,7 @@ impl Entity {
     /// - `tags` unioned (de-duplicated)
     ///
     /// ```
-    /// use huntsman_search_engine::core::entity::{Entity, EntityKind, Evidence};
+    /// use hse_core::{Entity, EntityKind, Evidence};
     ///
     /// let mut a = Entity::new(EntityKind::Email, "x@example.com", 0.5, "scan");
     /// a.tag("breach");
@@ -1130,7 +1211,9 @@ impl Entity {
     /// responsible for having decided the two are the same; `absorb` only fuses
     /// their evidence. Commutative in confidence/corroboration/evidence/tags, so
     /// folding a group in any order yields the same result.
-    pub(crate) fn absorb(&mut self, other: Self) {
+    // Was `pub(crate)` before extraction (called by core::engine::passes);
+    // see uid_for's comment above on why a crate boundary widens this to `pub`.
+    pub fn absorb(&mut self, other: Self) {
         self.confidence = f64::max(self.confidence, other.confidence).clamp(0.0, 1.0);
         self.corroboration = self
             .corroboration
@@ -1226,7 +1309,7 @@ impl Entity {
         // in the general union below, then promote `self` out of quarantine
         // the moment `other` was NOT itself a candidate — a single non-candidate
         // corroboration is enough, symmetric with the confidence rule.
-        let other_is_candidate = other.tags.iter().any(|t| t == crate::core::tags::CANDIDATE);
+        let other_is_candidate = other.tags.iter().any(|t| t == tags::CANDIDATE);
         // `derived` marks an entity whose OWN evidence is a deterministic
         // derivation of the seed (see `ENRICHMENT_ONLY_SOURCES`'s doc),
         // consulted fresh on every call by `source_count`'s GROUNDING GATE to
@@ -1246,12 +1329,12 @@ impl Entity {
         // non-candidate side clearing quarantine.
         let other_is_derived = other.tags.iter().any(|t| t == "derived");
         for t in other.tags {
-            if t != crate::core::tags::CANDIDATE && t != "derived" {
+            if t != tags::CANDIDATE && t != "derived" {
                 self.tag(t);
             }
         }
         if !other_is_candidate {
-            self.tags.retain(|t| t != crate::core::tags::CANDIDATE);
+            self.tags.retain(|t| t != tags::CANDIDATE);
         }
         if !other_is_derived {
             self.tags.retain(|t| t != "derived");
@@ -1327,13 +1410,6 @@ impl EntityBuilder {
     #[must_use]
     pub fn build(self) -> Entity {
         self.entity
-    }
-
-    /// Finish and push the entity into a
-    /// [`ModuleResult`](crate::core::module::ModuleResult) — the terminal step
-    /// for the overwhelmingly common "build one entity and emit it" case.
-    pub fn push_to(self, result: &mut crate::core::module::ModuleResult) {
-        result.push(self.entity);
     }
 }
 
@@ -1550,7 +1626,9 @@ fn prefers_display(candidate: &str, current: &str) -> bool {
 /// not match those computed after, so entities already persisted under a
 /// mixed-case spelling are reachable only by re-scanning. Every other kind is
 /// bit-for-bit unchanged.
-pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
+// Was `pub(crate)` before extraction (called directly by core::engine::history
+// and storage's tests); see uid_for's comment above on the crate-boundary widening.
+pub fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
     let normalised_value = &*identity_fold(kind, normalised_value);
     // digest 0.11 dropped the `io::Write` impl for hashers. Stream the `Display`
     // of `<kind>` straight into the hasher through [`HashWrite`] so the
@@ -1605,7 +1683,11 @@ pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
 /// * Callers that already hold a **normalised** (`canon`) value; they call
 ///   [`derive_uid`] directly, because re-normalising a canonical value is at
 ///   best wasted work and at worst not provably idempotent for every kind.
-pub(crate) fn uid_for(kind: &EntityKind, value: &str) -> String {
+// Was `pub(crate)` before this module's extraction — visible engine-wide in
+// the parent crate (crate-level `pub(crate)` there meant "anywhere in
+// huntsman_search_engine"), used by core::engine's dispatch/history. A crate
+// boundary can't express that scope from here, so this is `pub`.
+pub fn uid_for(kind: &EntityKind, value: &str) -> String {
     derive_uid(kind, &normalise(kind, value))
 }
 
@@ -1671,7 +1753,10 @@ fn strip_format_noise(s: &str) -> std::borrow::Cow<'_, str> {
 /// - IpAddress → trim
 /// - Phone → strip non-digits (keep leading +)
 /// - Everything else → trim
-pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
+// Was `pub(crate)` before extraction (widely called across core::relation,
+// core::breach_sweep, core::scan); see uid_for's comment above on the
+// crate-boundary widening.
+pub fn normalise(kind: &EntityKind, value: &str) -> String {
     match kind {
         EntityKind::Email => {
             // Breach dumps sometimes append a literal escape tail
@@ -1879,7 +1964,7 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             // every downstream consumer (geocoders, the geo correlator) sees one
             // decimal shape. Non-finite / unparseable input still falls through
             // untouched.
-            if let Some(p) = crate::util::geo::coords::parse(trimmed) {
+            if let Some(p) = coords::parse(trimmed) {
                 let lat = (p.lat * 1e6).round() / 1e6 + 0.0;
                 let lon = (p.lon * 1e6).round() / 1e6 + 0.0;
                 return format!("{lat:.6},{lon:.6}");
@@ -1955,12 +2040,24 @@ pub fn expansion_timeline(entities: &[Entity]) -> std::collections::BTreeMap<u32
 }
 
 /// Current Unix timestamp in seconds.
+///
+/// `std::time::SystemTime::now()` panics at runtime on `wasm32-unknown-unknown`
+/// (no OS clock syscall in that target) — this browser build uses
+/// `js_sys::Date::now()` (milliseconds since epoch) instead.
 #[inline]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// Current Unix timestamp in seconds (`wasm32-unknown-unknown` browser build).
+#[inline]
+#[cfg(target_arch = "wasm32")]
+pub fn unix_now() -> u64 {
+    (js_sys::Date::now() / 1000.0) as u64
 }
 
 /// Generate a unique scan ID: `hex(SHA-256("<kind>:<value>:<unix_now>"))`.
@@ -1978,9 +2075,16 @@ pub fn scan_id(kind: &str, value: &str) -> String {
     // ids across a restart that resets the counter), keeping `unix_now()` for
     // human-meaningful time ordering. Re-scans still get a fresh id by design.
     static SEQ: AtomicU64 = AtomicU64::new(0);
+    #[cfg(not(target_arch = "wasm32"))]
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.subsec_nanos());
+    // `js_sys::Date::now()` only has millisecond resolution, not nanosecond —
+    // honestly coarser sub-second entropy, not fabricated precision. SEQ still
+    // guarantees same-run uniqueness regardless; this only affects separation
+    // across a restart that resets the counter.
+    #[cfg(target_arch = "wasm32")]
+    let nanos = (js_sys::Date::now() as u64 % 1000) as u32 * 1_000_000;
     let mut h = Sha256::new();
     h.update(kind.as_bytes());
     h.update(b":");

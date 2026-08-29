@@ -59,8 +59,8 @@ fn every_src_file_is_wired_into_the_module_tree() {
         // Rust's own resolution rule: a `mod.rs`/`lib.rs`/`main.rs` declares its
         // children as siblings in its own directory, but a *leaf* `name.rs`
         // declares its children under a `name/` subdirectory of its own dir —
-        // e.g. `util/geo/coords.rs`'s `mod tests;` resolves to
-        // `util/geo/coords/tests.rs`, not `util/geo/tests.rs`.
+        // e.g. `hse-core/src/coords.rs`'s `mod tests;` resolves to
+        // `hse-core/src/coords/tests.rs`, not `hse-core/src/tests.rs`.
         let mod_base = if matches!(&*fname, "mod.rs" | "lib.rs" | "main.rs") {
             dir.to_path_buf()
         } else {

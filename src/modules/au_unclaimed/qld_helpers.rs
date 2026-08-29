@@ -140,6 +140,45 @@ pub(super) fn ends_with_surname(name: &str, surname: &str) -> bool {
         .is_some_and(|last| last.eq_ignore_ascii_case(surname))
 }
 
+/// The text to attribute a company (co-owner or sender) to, for a joint-owner
+/// record. A genuine small joint record (a married couple, a family trust)
+/// uses the full raw owner string unchanged — the existing, tested behaviour.
+///
+/// A broadened, non-exact surname search can accept a QLD register row whose
+/// owner field is actually a large BATCH of largely-unrelated payouts sharing
+/// one sender (real observed case, from a live debug bundle: a single big
+/// insurer's row listing 20+ distinct people spanning a dozen unrelated
+/// surnames, accepted only because ONE of them happened to share the query
+/// surname). Attaching the raw owner string there put every one of those
+/// unrelated people's full names into the company entity's evidence,
+/// unrelated to the actual subject and accumulating further on every future
+/// scan that happens to touch the same sender. Narrow to just the parsed
+/// owners that actually share the query surname in that case — the same bar
+/// [`records_to_entities`] already used to accept the row at all — falling
+/// back to the raw string only if that leaves nothing (should not happen for
+/// an accepted row, but stay total rather than produce empty evidence).
+fn attributed_owner_text(
+    owner: &str,
+    owner_persons: &[String],
+    broadened: bool,
+    exact: bool,
+    query: &str,
+) -> String {
+    if !broadened || exact || owner_persons.is_empty() {
+        return owner.to_string();
+    }
+    let matching: Vec<&str> = owner_persons
+        .iter()
+        .filter(|p| ends_with_surname(p, query))
+        .map(String::as_str)
+        .collect();
+    if matching.is_empty() {
+        owner.to_string()
+    } else {
+        matching.join("; ")
+    }
+}
+
 /// Honorific tokens stripped from the FRONT of a parsed owner name, so the real
 /// register's `"MR HERVE MOREAU"` yields the person "Herve Moreau", not the
 /// title-polluted "Mr Herve Moreau" (which fragments his identity and breaks the
@@ -499,7 +538,10 @@ pub(super) fn records_to_entities(
                         Evidence::new(SRC, format!("Company owed unclaimed money: {company}"))
                             .with_attr("register", "QLD Public Trustee unclaimed monies");
                     if company != owner {
-                        oev = oev.with_attr("joint_owner", &owner);
+                        oev = oev.with_attr(
+                            "joint_owner",
+                            attributed_owner_text(&owner, &owner_persons, broadened, exact, query),
+                        );
                     }
                     org.add_evidence(oev);
                     org
@@ -529,7 +571,10 @@ pub(super) fn records_to_entities(
                             format!("Company that lodged unclaimed money: {company}"),
                         )
                         .with_attr("register", "QLD Public Trustee unclaimed monies")
-                        .with_attr("paid_to_owner", &owner);
+                        .with_attr(
+                            "paid_to_owner",
+                            attributed_owner_text(&owner, &owner_persons, broadened, exact, query),
+                        );
                         org.add_evidence(oev);
                         org
                     }),
