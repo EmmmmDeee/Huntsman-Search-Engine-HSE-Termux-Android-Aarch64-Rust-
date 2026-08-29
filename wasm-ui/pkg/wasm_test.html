@@ -14,10 +14,41 @@
   other web-UI asset. Remove once real view ports make it redundant.
 -->
 <p id="wasm-proof">wasm not yet loaded — if this text never changes, the pipeline is broken</p>
+<p id="confidence-proof">confidence math not yet run</p>
 <script type="module">
-  import init, { main } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify } from '/static/hse_wasm_ui.js';
   await init();
   main();
+
+  // Exercises the actual JS -> Rust deserialization boundary (not just Rust
+  // calling Rust): a realistic entity object shaped exactly like the API's
+  // real JSON (modeled on a real entity from a live-scan debug bundle), with
+  // two genuinely-corroborating sources (source_count should be 2, not the
+  // evidence array's length of 3 — "geo_normalize" is enrichment-only and
+  // must not count) plus a confidence high enough to land in PROBABLE at
+  // n=2's boost.
+  const entity = {
+    uid: "27f3f6a2628786ac78b56663e36b3a91a98d6aa5ba36e1a8fab2d8d231ae99db",
+    kind: "address",
+    value: "NSW 2042, Australia",
+    raw_value: "NSW 2042, Australia",
+    confidence: 0.32,
+    corroboration: 14,
+    observed_at: 1787995179,
+    evidence: [
+      { source: "geo_corroboration", summary: "shared-surname relative nearby", attributes: {}, recorded_at: 1787626800, verification: null, is_inferred: false },
+      { source: "geo_normalize", summary: "address parse", attributes: {}, recorded_at: 1787626184, verification: null, is_inferred: false },
+      { source: "qld_unclaimed", summary: "QLD unclaimed money", attributes: {}, recorded_at: 1787995080, verification: null, is_inferred: false },
+    ],
+    tags: ["coarse", "geoint", "family-candidate"],
+    scan_id: "s",
+    generation: 1,
+  };
+  const n = sourceCount(entity);
+  const eff = effC(entity);
+  const tier = classify(eff);
+  document.getElementById('confidence-proof').textContent =
+    `sourceCount=${n} (want 2 -- geo_normalize excluded), effC=${eff.toFixed(4)}, classify=${tier}`;
 </script>
 </body>
 </html>

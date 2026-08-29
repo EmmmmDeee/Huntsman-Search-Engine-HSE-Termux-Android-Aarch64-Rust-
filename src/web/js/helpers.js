@@ -59,57 +59,13 @@ export function kindToStr(k){
   return String(k);
 }
 export function kindPill(k){const s=kindToStr(k);return `<span class="kind-pill k-${attr(s)}">${esc(s)}</span>`;}
-// Non-corroborating evidence sources — NOT independent intelligence, so they
-// must not count toward the C_eff boost. Mirrors the backend's
-// is_non_corroborating_source() exactly — all EIGHT members: the deterministic
-// self-enrichment passes ENRICHMENT_ONLY_SOURCES ('geo_normalize',
-// 'name_intel', 'payid', 'seed', 'url_extract'), the recall replay ('recall'),
-// the cross-scan history link ('cross_scan_history'), and the
-// breach-consensus grading summary ('breach_consensus' =
-// core::entity::CONSENSUS_SOURCE). Any omission reintroduces over-credit: an
-// entity corroborated only by these sources (e.g. a name-permuted email plus
-// a cross-scan hit, an operator-supplied seed plus one real lookup, or a
-// breach_consensus summary plus one real source) renders a higher C_eff/tier
-// in Browse than the server's authoritative classification (CSV export, CLI
-// dossier, debug bundle) — the exact bug these exclusions exist to close,
-// reopened in the display layer. 'seed'/'url_extract' were added to the
-// backend set after this JS copy was last synced and drifted out; keep the
-// two in lockstep (see the backend doc comments on
-// ENRICHMENT_ONLY_SOURCES/RECALL_SOURCE/CROSS_SCAN_SOURCE/CONSENSUS_SOURCE in
-// core::entity).
-export const ENRICHMENT_SOURCES = new Set(['geo_normalize', 'name_intel', 'payid', 'seed', 'url_extract', 'recall', 'cross_scan_history', 'breach_consensus']);
-// Distinct corroborating sources drive the C_eff boost — must match the
-// backend's Entity::source_count() exactly, branch for branch: (1) evidence
-// exists with >=1 distinct non-enrichment source -> that distinct count; (2)
-// no evidence at all (synthetic/test entity) -> the explicit corroboration
-// field; (3) evidence exists but EVERY record is non-corroborating -> forced
-// to 1, NOT the corroboration field. Branch 3 matters: `recall` ratchets
-// corroboration up by one on every re-scan, so falling back to it here (as
-// an earlier version of this function did) let a purely enrichment-sourced
-// entity's on-screen Src/C_eff/tier climb indefinitely while the backend's
-// own classification correctly stayed pinned at one source — the exact
-// recall-ratchet bug `Entity::source_count()`'s own doc comment (core::entity)
-// describes fixing server-side, just reopened client-side.
-export function sourceCount(e){
-  const evs=e.evidence||[];
-  const s=new Set();
-  for(const ev of evs){if(ev&&ev.source&&!ENRICHMENT_SOURCES.has(ev.source))s.add(ev.source);}
-  if(s.size) return s.size;
-  if(!evs.length) return Math.max(1,e.corroboration??1);
-  return 1;
-}
-// Mirror the backend Entity::c_effective(): the STRONGER of the multiplicative
-// boost and the independent-agreement (noisy-OR) term over the distinct
-// corroborating source count n, so Browse tiers/confidence match the engine's
-// authoritative classification + the CSV export instead of under-reporting
-// genuinely multi-source entities. gamma = 0.65 (CORROBORATION_DOUBT_DECAY); at
-// n = 1 both terms equal the base confidence, so single-source rows are unchanged.
-export function effC(e){
-  const c=e.confidence??0, n=sourceCount(e);
-  const mult=c*(1+0.15*Math.log(n));
-  const agreement=1-(1-c)*Math.pow(0.65,n-1);
-  return Math.min(1,Math.max(0,Math.max(mult,agreement)));
-}
+// ENRICHMENT_SOURCES/sourceCount/effC/classify moved to wasm-ui/src/
+// confidence.rs (loaded from /static/hse_wasm_ui.js) — they now call the
+// real hse_core::Entity::source_count()/c_effective()/Classification
+// directly instead of hand-mirroring them in JS. That mirror had already
+// drifted out of sync once (this comment used to warn about it); calling
+// the authoritative implementation closes the whole drift class instead of
+// re-guarding against the next occurrence.
 export function trunc(s,n){s=String(s||'');return s.length>n?s.slice(0,n)+'…':s;}
 /* Linkify http(s) values only (javascript:/data: stay inert escaped text), so
    URL entities and pivot/avatar evidence are clickable — SpiderFoot/NAMINT UX. */
@@ -122,7 +78,6 @@ export function extLink(url,maxText){
   if(!/^https?:\/\//i.test(url)) return text;
   return `<a href="${attr(url)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
 }
-export function classify(eff){return eff>=0.75?'VERIFIED':eff>=0.4?'PROBABLE':'CANDIDATE';}
 export function toast(msg,kind){
   if (typeof alertify === 'undefined') return;
   const fn = kind==='err'?'error':kind==='warn'?'warning':'success';
