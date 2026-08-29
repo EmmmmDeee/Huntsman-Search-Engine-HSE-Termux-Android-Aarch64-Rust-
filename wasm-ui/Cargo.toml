@@ -42,7 +42,8 @@ unnested_or_patterns = "deny"
 [dependencies]
 hse-core            = { path = "../hse-core" }
 wasm-bindgen        = "0.2.127"
-# Only for js_sys::Date in scan_info::info::render_scan_settings_html:
+# Only for js_sys::Date in html::fmt_date (shared by every view that formats
+# a Unix timestamp for display — scan_info::info, scan_info::browse, …):
 # helpers.js's fmtDate() formats via the JS Date object's LOCAL-timezone
 # getters (getFullYear/getHours/...), which Rust's own std::time has no
 # equivalent for — js_sys::Date calls the browser's real Date object through

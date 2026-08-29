@@ -67,8 +67,12 @@
 <div id="path-notfound-host">(not-found-case host not yet populated)</div>
 <div id="path-solo-host">(solo-case host not yet populated)</div>
 <div id="path-multi-host">(multi-case host not yet populated)</div>
+<p id="browse-table-proof">browse table render not yet run</p>
+<div id="browse-table-full-host">(full-case host not yet populated)</div>
+<div id="browse-table-other-host">(other-kind-case host not yet populated)</div>
+<div id="browse-table-empty-host">(empty-case host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, isNonCorroboratingSource, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml, renderCorrCardHtml, renderCorrMembersHtml, renderExposureHtml, renderScanSettingsHtml, renderPathResultHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, isNonCorroboratingSource, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml, renderLeadsHtml, renderTimelineHtml, renderCorrCardHtml, renderCorrMembersHtml, renderExposureHtml, renderScanSettingsHtml, renderPathResultHtml, renderBrowseTableHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -941,6 +945,92 @@
     && !pathMultiHtml.includes('unknown-uid-t…');
   document.getElementById('path-proof').textContent =
     `notFound=${pathNotFoundOk}, solo=${pathSoloOk}, multi=${pathMultiOk}`;
+
+  // Exercises scan_info::browse::render_browse_table_html -- reused by BOTH
+  // scan_info/browse.js's own tab and views/search.js's global search
+  // results. Deserializes straight into hse_core::Entity (unlike most other
+  // ports), so covers nearly every field: raw_value-over-value preference,
+  // the two independently-toFixed(3)'d confidence numbers, the corroboration
+  // count, distinct-corroborating-source count (Entity::source_count(),
+  // called directly -- geo_normalize excluded), the full evidence-source
+  // list (deduped + sorted, INCLUDING geo_normalize, unlike source_count()),
+  // an evidence entry's non-corroborating marker + escaped attributes, tag
+  // pills, the UID/generation detail block and its Scan-pivot button, and
+  // HTML-escaping throughout (raw_value, an evidence summary, an attribute
+  // value, and a tag all carry a literal <script> probe). Also covers: the
+  // fetch-truncation note and the pre-cap "showing top N of M" note (each
+  // independently, and the empty-rows case with only the fetch note still
+  // showing); an EntityKind::Other entity (tying back to the eager-kind-
+  // flattening fix) rendering its kind pill correctly and needing no
+  // fetch/cap notes when the caller's meta object omits every field; the
+  // zero-timestamp em-dash date; the singular "hop" text; and the "No
+  // evidence attached" fallback for an entity with none.
+  const entityFull = {
+    uid: 'uid-aaaa-full', kind: 'email', value: 'clean@example.com',
+    raw_value: 'Raw <script>evil<\/script>@Example.com',
+    confidence: 0.6, corroboration: 3, observed_at: 1700000000,
+    evidence: [
+      { source: 'zzz_module', summary: 'Zzz <b>summary<\/b>', attributes: {}, recorded_at: 1690000000, verification: null, is_inferred: false },
+      { source: 'geo_normalize', summary: 'Enrichment pass', attributes: { city: 'Sydney', xss: '<script>x<\/script>' }, recorded_at: 1680000000, verification: null, is_inferred: false },
+      { source: 'aaa_module', summary: 'Aaa summary', attributes: {}, recorded_at: 1670000000, verification: null, is_inferred: false },
+    ],
+    tags: ['<script>tag<\/script>', 'clean-tag'],
+    scan_id: 's', generation: 2,
+  };
+  const browseFullHtml = renderBrowseTableHtml([entityFull], { total: 5, entities_total: 10, loaded_count: 1 });
+  document.getElementById('browse-table-full-host').innerHTML = browseFullHtml;
+  const browseFullOk = browseFullHtml.includes('This scan has 10 entities')
+    && browseFullHtml.includes('top 1')
+    && browseFullHtml.includes('Showing the top 1 of 5 matching entities')
+    && browseFullHtml.includes('k-email')
+    && browseFullHtml.includes('Raw &lt;script&gt;evil&lt;/script&gt;@Example.com')
+    && !browseFullHtml.includes('<script>evil')
+    && browseFullHtml.includes('<code>0.600</code>')
+    && browseFullHtml.includes('>3</td>')
+    && browseFullHtml.includes('src-pill">aaa_module')
+    && browseFullHtml.includes('src-pill">geo_normalize')
+    && browseFullHtml.includes('src-pill">zzz_module')
+    && browseFullHtml.indexOf('aaa_module') < browseFullHtml.indexOf('geo_normalize')
+    && browseFullHtml.indexOf('geo_normalize') < browseFullHtml.indexOf('zzz_module')
+    && browseFullHtml.includes('<span class="tag">clean-tag</span>')
+    && browseFullHtml.includes('&lt;script&gt;tag&lt;/script&gt;')
+    && !browseFullHtml.includes('<script>tag')
+    && browseFullHtml.includes('(non-corroborating: enrichment/recall/cross-scan)')
+    && browseFullHtml.includes('Zzz &lt;b&gt;summary&lt;/b&gt;')
+    && browseFullHtml.includes('city:</span>')
+    && browseFullHtml.includes('&lt;script&gt;x&lt;/script&gt;')
+    && !browseFullHtml.includes('<script>x')
+    && browseFullHtml.includes('Generation:</b> 2 hops from seed')
+    && browseFullHtml.includes('data-uid="uid-aaaa-full"')
+    && browseFullHtml.includes('<code style="font-size:10px">uid-aaaa-full</code>')
+    && browseFullHtml.includes('<b>3 evidence entries:</b>');
+
+  const entityOther = {
+    uid: 'uid-bbbb-other', kind: { other: 'custom_type' }, value: 'beta-value', raw_value: '',
+    confidence: 0.9, corroboration: 1, observed_at: 0, evidence: [], tags: [],
+    scan_id: 's', generation: 1,
+  };
+  const browseOtherHtml = renderBrowseTableHtml([entityOther], {});
+  document.getElementById('browse-table-other-host').innerHTML = browseOtherHtml;
+  const browseOtherOk = !browseOtherHtml.includes('text-warning')
+    && !browseOtherHtml.includes('Showing the top')
+    && browseOtherHtml.includes('k-other:custom_type')
+    && browseOtherHtml.includes('>other:custom_type<')
+    && browseOtherHtml.includes('<code>beta-value</code>')
+    && browseOtherHtml.includes('>—</span>')
+    && browseOtherHtml.includes('Generation:</b> 1 hop from seed')
+    && browseOtherHtml.includes('No evidence attached')
+    && browseOtherHtml.includes('<b>0 evidence entries:</b>');
+
+  const browseEmptyHtml = renderBrowseTableHtml([], { entities_total: 50, loaded_count: 20 });
+  document.getElementById('browse-table-empty-host').innerHTML = browseEmptyHtml;
+  const browseEmptyOk = browseEmptyHtml.includes('This scan has 50 entities')
+    && browseEmptyHtml.includes('top 20')
+    && browseEmptyHtml.includes('No entities match')
+    && !browseEmptyHtml.includes('Showing the top');
+
+  document.getElementById('browse-table-proof').textContent =
+    `full=${browseFullOk}, other=${browseOtherOk}, empty=${browseEmptyOk}`;
 </script>
 </body>
 </html>

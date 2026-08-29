@@ -150,6 +150,41 @@ export function renderBenchmarkHtml(data) {
 }
 
 /**
+ * Builds the entities table for `rows` (already filtered and capped by the
+ * caller), or the empty/fetch-truncation notices in its place. `meta.total`
+ * is the pre-cap match count (`browse.js`'s own "Showing the top N of M"
+ * note); `meta.entities_total`/`meta.loaded_count` are the scan-wide
+ * "server truncated the fetch" note's inputs.
+ * @param {any} rows_js
+ * @param {any} meta_js
+ * @returns {string}
+ */
+export function renderBrowseTableHtml(rows_js, meta_js) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.renderBrowseTableHtml(retptr, addHeapObject(rows_js), addHeapObject(meta_js));
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        var ptr1 = r0;
+        var len1 = r1;
+        if (r3) {
+            ptr1 = 0; len1 = 0;
+            throw takeObject(r2);
+        }
+        deferred2_0 = ptr1;
+        deferred2_1 = len1;
+        return getStringFromWasm0(ptr1, len1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export5(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * Builds the "Communities" panel fragment for a `/scans/{id}/communities`
  * response — the guided `EMPTY_STATE` block when there are no communities,
  * or the full sub-cluster list (largest first, as the backend already
@@ -998,7 +1033,7 @@ function __wbg_get_imports() {
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 16, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
-            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_266);
+            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_270);
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000002: function(arg0) {
@@ -1030,8 +1065,8 @@ function __wbg_get_imports() {
     };
 }
 
-function __wasm_bindgen_func_elem_266(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_266(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_270(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_270(arg0, arg1, addHeapObject(arg2));
 }
 
 function addHeapObject(obj) {

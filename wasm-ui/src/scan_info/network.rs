@@ -8,7 +8,7 @@
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
-use crate::html::{escape_html, group_icon, kind_pill};
+use crate::html::{escape_html, ext_link, group_icon, kind_pill};
 use crate::to_js_error;
 
 /// The subset of `crate::core::network::Connection`'s fields this view
@@ -49,31 +49,6 @@ struct SubjectNetwork {
     direct_count: usize,
     reachable_count: usize,
     edge_count: usize,
-}
-
-/// `helpers.js`'s `trunc()`: truncates to `n` characters (not bytes) plus an
-/// ellipsis when longer, else returned as-is.
-fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() > n {
-        format!("{}\u{2026}", s.chars().take(n).collect::<String>())
-    } else {
-        s.to_string()
-    }
-}
-
-/// `helpers.js`'s `extLink()`: an external `http(s)` link wrapped in
-/// `<a target="_blank">`, or just the escaped (optionally truncated) text
-/// for anything else (`javascript:`/`data:` stay inert).
-fn ext_link(url: &str, max_text: usize) -> String {
-    let text = escape_html(&truncate(url, max_text));
-    let lower = url.to_ascii_lowercase();
-    if !lower.starts_with("http://") && !lower.starts_with("https://") {
-        return text;
-    }
-    format!(
-        "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">{text}</a>",
-        escape_html(url)
-    )
 }
 
 /// Builds the "Network" panel fragment for a `/scans/{id}/network` response.
@@ -159,7 +134,7 @@ pub fn render_network_html(data: JsValue, id: &str) -> Result<String, JsValue> {
                  <span class=\"net-conf\" title=\"link confidence {conf}%\"><span class=\"net-conf-bar\" style=\"width:{conf}%\"></span></span>\n      \
                  </div>",
                 label = escape_html(&c.label),
-                link = ext_link(&c.value, 72),
+                link = ext_link(&c.value, Some(72)),
                 kind_pill = kind_pill(&c.kind),
             ));
         }
