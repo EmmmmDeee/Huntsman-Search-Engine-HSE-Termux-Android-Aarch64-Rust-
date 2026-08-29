@@ -251,6 +251,11 @@ toml = { version = "1.1.4", default-features = false, features = ["parse", "serd
 # compare it to `OffsetDateTime::now_utc()` — no formatting/macros/local-offset
 # needed, so those stay off. `optional = true` — see `toml`'s comment above.
 time = { version = "0.3.55", default-features = false, features = ["parsing", "std"], optional = true }
+# `core::entity`'s implementation, extracted to its own path-dependency crate
+# (not a `[workspace]` member — see hse-core/Cargo.toml's own comment) so it
+# can be shared, unmodified, with a wasm32-unknown-unknown browser build of
+# the web UI with no dependency on tokio/rusqlite/reqwest/etc.
+hse-core = { path = "hse-core" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

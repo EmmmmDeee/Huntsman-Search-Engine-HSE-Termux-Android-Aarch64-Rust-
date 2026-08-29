@@ -76,36 +76,18 @@ fn builder_tags_dedupe_and_tags_iter_helper_works() {
 }
 
 #[test]
-fn builder_push_to_emits_into_module_result() {
-    use crate::core::module::ModuleResult;
-    let mut result = ModuleResult::new();
-    Entity::builder(EntityKind::IpAddress, "1.2.3.4", 0.9, "s")
-        .tag("infra")
-        .push_to(&mut result);
-    assert_eq!(result.entities.len(), 1);
-    assert_eq!(result.entities[0].kind, EntityKind::IpAddress);
-    assert!(result.entities[0].has_tag("infra"));
-}
-
-#[test]
 fn demote_to_candidate_caps_confidence_tags_and_is_idempotent() {
     let mut e = Entity::new(EntityKind::Email, "stranger@example.com", 0.70, "s");
     e.demote_to_candidate();
     assert!((e.confidence - CANDIDATE_CONF).abs() < f64::EPSILON);
-    assert!(e.has_tag(crate::core::tags::CANDIDATE));
+    assert!(e.has_tag(tags::CANDIDATE));
     // Lands in the Candidate tier (the demotion's whole purpose).
     assert_eq!(e.classify(), Classification::Candidate);
     // Idempotent: a second call neither lowers confidence further nor
     // duplicates the tag (min + de-duped tag).
     e.demote_to_candidate();
     assert!((e.confidence - CANDIDATE_CONF).abs() < f64::EPSILON);
-    assert_eq!(
-        e.tags
-            .iter()
-            .filter(|t| *t == crate::core::tags::CANDIDATE)
-            .count(),
-        1
-    );
+    assert_eq!(e.tags.iter().filter(|t| *t == tags::CANDIDATE).count(), 1);
     // Never RAISES an already-lower confidence.
     let mut low = Entity::new(EntityKind::Email, "x@y.com", 0.10, "s");
     low.demote_to_candidate();
@@ -272,7 +254,7 @@ fn uncorroborated_recycled_is_gated_until_a_second_source_confirms() {
     // plus the deterministic `geo_normalize` self-enrichment, which does NOT
     // count as corroboration.
     let mut addr = Entity::new(EntityKind::Address, "Austin, Texas", 0.45, "s");
-    addr.tag(crate::core::tags::SEARCH_DISCOVERED);
+    addr.tag(tags::SEARCH_DISCOVERED);
     addr.tag("recycled");
     addr.add_evidence(Evidence::new("search_engines", "from recycled search"));
     addr.add_evidence(Evidence::new(
@@ -803,7 +785,7 @@ fn merge_does_not_let_a_candidate_duplicate_poison_a_verified_entity() {
     verified.merge(stray_candidate);
 
     assert!(
-        !verified.has_tag(crate::core::tags::CANDIDATE),
+        !verified.has_tag(tags::CANDIDATE),
         "a verified entity must not be quarantined by a merged-in candidate duplicate"
     );
     assert!((verified.confidence - 0.9).abs() < 1e-9);
@@ -817,7 +799,7 @@ fn merge_does_not_let_a_candidate_duplicate_poison_a_verified_entity() {
 fn merge_promotes_a_candidate_entity_once_a_verified_duplicate_lands() {
     let mut candidate = email("x@y.com");
     candidate.demote_to_candidate();
-    assert!(candidate.has_tag(crate::core::tags::CANDIDATE));
+    assert!(candidate.has_tag(tags::CANDIDATE));
 
     let mut verified = email("x@y.com");
     verified.confidence = 0.9;
@@ -825,7 +807,7 @@ fn merge_promotes_a_candidate_entity_once_a_verified_duplicate_lands() {
     candidate.merge(verified);
 
     assert!(
-        !candidate.has_tag(crate::core::tags::CANDIDATE),
+        !candidate.has_tag(tags::CANDIDATE),
         "a non-candidate corroboration must promote the entity out of quarantine"
     );
 }
@@ -841,7 +823,7 @@ fn merge_keeps_two_candidate_duplicates_quarantined() {
 
     a.merge(b);
 
-    assert!(a.has_tag(crate::core::tags::CANDIDATE));
+    assert!(a.has_tag(tags::CANDIDATE));
 }
 
 // ── Decay ────────────────────────────────────────────────────────────────
@@ -1334,7 +1316,7 @@ fn expansion_timeline_counts_entities_per_generation_in_order() {
     ents[1].generation = 0;
     ents[2].generation = 2; // note: skips generation 1
     ents[3].generation = 2;
-    let timeline = crate::core::entity::expansion_timeline(&ents);
+    let timeline = expansion_timeline(&ents);
     // BTreeMap keeps generations ordered; only populated generations appear.
     let pairs: Vec<(u32, usize)> = timeline.into_iter().collect();
     assert_eq!(pairs, vec![(0, 2), (2, 2)]);

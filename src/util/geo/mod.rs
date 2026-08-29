@@ -1,7 +1,13 @@
 use crate::core::confidence;
 use crate::core::error::{Error, Result};
 
-pub mod coords;
+/// Re-export of the `hse-core` crate's `coords` module — moved there
+/// (alongside `core::entity`, which uses it for geo-value canonicalisation)
+/// so it can be shared, unmodified, with a wasm32-unknown-unknown browser
+/// build. It has no dependency on this module's `confidence`/`error` types
+/// (those belong to `LatLon`/`resolve`, defined below, not to `coords`
+/// itself), so the move needed no adaptation.
+pub use hse_core::coords;
 
 /// Parse a `"lat,lon"` seed into a finite, in-range coordinate pair.
 ///

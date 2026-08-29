@@ -82,16 +82,28 @@ impl std::fmt::Display for DiamondVertex {
     }
 }
 
-impl EntityKind {
+/// Classify something as its Diamond Model vertex. A trait, not inherent
+/// `impl EntityKind`/`impl Entity` blocks, because both types now live in the
+/// `hse-core` crate (extracted so the entity model can be shared with a
+/// wasm32 web-UI build) — the orphan rule forbids an inherent impl for a
+/// foreign type, but a local trait implemented for a foreign type is fine.
+/// Method-call syntax (`kind.diamond_vertex()`) is unaffected; callers outside
+/// this module just need `use crate::core::diamond::ClassifyDiamondVertex;`.
+pub trait ClassifyDiamondVertex {
     /// This kind's Diamond Model vertex — a total, deterministic classification
-    /// requiring no analyst judgment. The match is **exhaustive with no wildcard
-    /// arm on purpose**: adding a new `EntityKind` is then a compile error until
-    /// its vertex is assigned, so the mapping can never silently fall out of date.
+    /// requiring no analyst judgment.
+    #[must_use]
+    fn diamond_vertex(&self) -> DiamondVertex;
+}
+
+impl ClassifyDiamondVertex for EntityKind {
+    /// The match is **exhaustive with no wildcard arm on purpose**: adding a
+    /// new `EntityKind` is then a compile error until its vertex is assigned,
+    /// so the mapping can never silently fall out of date.
     ///
     /// Never returns [`DiamondVertex::Adversary`] — that vertex is relational, not
     /// intrinsic to a kind (see the module documentation).
-    #[must_use]
-    pub fn diamond_vertex(&self) -> DiamondVertex {
+    fn diamond_vertex(&self) -> DiamondVertex {
         match self {
             // Identity facets of the subject under characterisation.
             Self::Person
@@ -128,11 +140,9 @@ impl EntityKind {
     }
 }
 
-impl Entity {
-    /// This entity's Diamond Model vertex — a convenience delegate to
-    /// [`EntityKind::diamond_vertex`].
-    #[must_use]
-    pub fn diamond_vertex(&self) -> DiamondVertex {
+impl ClassifyDiamondVertex for Entity {
+    /// A convenience delegate to [`EntityKind::diamond_vertex`].
+    fn diamond_vertex(&self) -> DiamondVertex {
         self.kind.diamond_vertex()
     }
 }

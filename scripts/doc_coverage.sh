@@ -54,7 +54,7 @@ set -euo pipefail
 # an unrelated confidence fix for debt it did not introduce (the same correction
 # and reasoning as the 1054 -> 1064 note above). NOT a permission slip for new
 # undocumented items. Figure from the command this script runs, not an estimate.
-BASELINE=1057
+BASELINE=1028
 
 cd "$(dirname "$0")/.."
 
