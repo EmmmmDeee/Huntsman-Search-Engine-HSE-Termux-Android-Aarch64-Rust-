@@ -39,8 +39,11 @@
 <div id="trust-host">(trust host not yet populated)</div>
 <p id="pivots-proof">pivots render not yet run</p>
 <div id="pivots-host">(pivots host not yet populated)</div>
+<p id="audit-proof">audit render not yet run</p>
+<div id="audit-host">(audit host not yet populated)</div>
+<div id="audit-clean-host">(audit clean-case host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -400,6 +403,85 @@
     && pivotsHtml.includes('(1 bridge)')
     && pivotsHtml.includes('<code>j.smith@gmail.com</code>');
   document.getElementById('pivots-proof').textContent = `empty=${pivotsEmptyOk}, ranked=${pivotsOk}`;
+
+  // Exercises scan_info::audit::render_audit_html against the real
+  // /scans/{id}/audit envelope (audit::types::AuditReport::to_json). Covers:
+  // a busy scan (by_kind descending-count sort, both finding border-color
+  // branches, an examples list vs. a finding with none, every source-health
+  // and expansion-ledger bit, a geo block with an outlier, quarantined>0,
+  // log_lines_parsed>0, and HTML-escaping on scan-derived finding text) and
+  // a clean scan (score 100, no findings/kinds/source-health/expansion/geo
+  // sections at all -- proving every conditional block actually hides).
+  const auditFullHtml = renderAuditHtml({
+      score: 42, grade: "D — significant weaknesses",
+      entity_total: 50, tiers: { verified: 10, probable: 20, candidate: 20 },
+      noise_ratio: 0.4, quarantined: 3,
+      by_kind: { email: 5, person: 12, domain: 8 },
+      findings: [
+        { severity: "CRITICAL", category: "infrastructure-pollution",
+          message: "Entity <script>evil<\/script> is CDN infra", examples: ["1.2.3.4", "<script>x<\/script>"],
+          recommendation: "Quarantine infra entities" },
+        { severity: "MEDIUM", category: "low-corroboration",
+          message: "12 entities single-sourced", examples: [],
+          recommendation: "Run a deeper scan" },
+      ],
+      source_health: {
+        engine_parser_defects: ["shodan"], engines_down: ["censys"], engines_blocked: ["google"],
+        module_errors: { breach_check: 3, geo_normalize: 1 },
+        http_failures: 7, log_lines_parsed: 512,
+      },
+      expansion: { stops: ["max-depth"], excluded_reasons: { identity_mismatch: 4, rate_limited: 2 } },
+      geo: { coord_count: 3, source_count: 2, max_spread_km: 12.4, outliers: 1, has_consensus: true },
+    }, "scan-42");
+  document.getElementById('audit-host').innerHTML = auditFullHtml;
+  const auditCleanHtml = renderAuditHtml({
+      score: 100, grade: "A — clean, individualised, well-sourced",
+      entity_total: 5, tiers: { verified: 5, probable: 0, candidate: 0 },
+      noise_ratio: 0, quarantined: 0,
+      by_kind: {},
+      findings: [],
+      source_health: {
+        engine_parser_defects: [], engines_down: [], engines_blocked: [],
+        module_errors: {}, http_failures: 0, log_lines_parsed: 0,
+      },
+      expansion: { stops: [], excluded_reasons: {} },
+      geo: { coord_count: 0, source_count: 0, max_spread_km: 0, outliers: 0, has_consensus: false },
+    }, "scan-clean");
+  document.getElementById('audit-clean-host').innerHTML = auditCleanHtml;
+
+  const auditFullOk = auditFullHtml.includes('color:#d9534f')
+    && auditFullHtml.indexOf('k-person') < auditFullHtml.indexOf('k-domain')
+    && auditFullHtml.indexOf('k-domain') < auditFullHtml.indexOf('k-email')
+    && auditFullHtml.includes('50 entities · 10 verified · 20 probable · 20 candidate · 40% noise · <span style="color:var(--warning)">3 quarantined</span>')
+    && auditFullHtml.includes('geo: 3 fix(es) / 2 source(s) · spread 12 km · consensus · <span style="color:var(--danger)">1 outlier(s)</span>')
+    && auditFullHtml.includes('parser-defect: shodan')
+    && auditFullHtml.includes('down: censys')
+    && auditFullHtml.includes('blocked: google')
+    && auditFullHtml.includes('module errors: breach_check×3, geo_normalize×1')
+    && auditFullHtml.includes('HTTP failures: 7')
+    && auditFullHtml.includes('identity_mismatch×4 · rate_limited×2 · stops: max-depth')
+    && auditFullHtml.includes('<span class="badge">2</span>')
+    && auditFullHtml.includes('background:#a94442')
+    && auditFullHtml.includes('&lt;script&gt;evil&lt;/script&gt; is CDN infra')
+    && auditFullHtml.includes('<li><code>1.2.3.4</code></li>')
+    && auditFullHtml.includes('<li><code>&lt;script&gt;x&lt;/script&gt;</code></li>')
+    && !auditFullHtml.includes('<script>evil')
+    && !auditFullHtml.includes('<script>x')
+    && auditFullHtml.includes('background:#8a6d3b')
+    && (auditFullHtml.match(/<ul /g) || []).length === 1
+    && auditFullHtml.includes('Audited 512 scan-log line(s). Source-health')
+    && auditFullHtml.includes('--scan-id scan-42');
+  const auditCleanOk = auditCleanHtml.includes('color:#3c763d')
+    && !auditCleanHtml.includes('kind-pill')
+    && !auditCleanHtml.includes('quarantined</span>')
+    && !auditCleanHtml.includes('geo:')
+    && !auditCleanHtml.includes('Source health:')
+    && !auditCleanHtml.includes('Expansion ledger:')
+    && !auditCleanHtml.includes('class="badge"')
+    && auditCleanHtml.includes('✓ No weaknesses detected — results are individualised and verifiable.')
+    && !auditCleanHtml.includes('Audited ')
+    && auditCleanHtml.includes('--scan-id scan-clean');
+  document.getElementById('audit-proof').textContent = `full=${auditFullOk}, clean=${auditCleanOk}`;
 </script>
 </body>
 </html>
