@@ -42,8 +42,12 @@
 <p id="audit-proof">audit render not yet run</p>
 <div id="audit-host">(audit host not yet populated)</div>
 <div id="audit-clean-host">(audit clean-case host not yet populated)</div>
+<p id="network-proof">network render not yet run</p>
+<div id="network-null-host">(null-case host not yet populated)</div>
+<div id="network-nogroups-host">(no-groups-case host not yet populated)</div>
+<div id="network-host">(network host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml, renderAuditHtml, renderNetworkHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -482,6 +486,66 @@
     && !auditCleanHtml.includes('Audited ')
     && auditCleanHtml.includes('--scan-id scan-clean');
   document.getElementById('audit-proof').textContent = `full=${auditFullOk}, clean=${auditCleanOk}`;
+
+  // Exercises scan_info::network::render_network_html against the real
+  // /scans/{id}/network envelope (core::network::SubjectNetwork). Covers: the
+  // null-subject empty state, a subject with zero groups (hero still renders,
+  // plus its own distinct empty message), and a full case exercising a known
+  // group-icon key, an unknown one (the fallback), the "top N of M" cap
+  // notice, a present vs. absent tier pill, edge_confidence clamped above
+  // 100%, a >72-char URL truncated inside its <a> link text (full URL still
+  // in href), a non-http value escaped but not linkified, and HTML-escaping
+  // on a scan-derived connection value.
+  const networkNullHtml = renderNetworkHtml(
+    { subject: null, groups: [], direct_count: 0, reachable_count: 0, edge_count: 0 }, "scan-1");
+  document.getElementById('network-null-host').innerHTML = networkNullHtml;
+
+  const networkNoGroupsHtml = renderNetworkHtml(
+    { subject: { value: "Jane Doe", kind: "person", confidence: 0.61, classification: "VERIFIED" },
+      groups: [], direct_count: 0, reachable_count: 0, edge_count: 0 }, "scan-2");
+  document.getElementById('network-nogroups-host').innerHTML = networkNoGroupsHtml;
+
+  const longUrl = "https://example.com/a/very/long/path/that/should/get/truncated/because/it/exceeds/seventy-two/chars";
+  const networkFullHtml = renderNetworkHtml(
+    { subject: { value: "Jane Doe", kind: "person", confidence: 0.61, classification: "VERIFIED" },
+      groups: [
+        { key: "people", label: "People — family & associates", total: 5, items: [
+            { value: "John Doe", kind: "person", label: "relative", edge_confidence: 0.9123, entity_confidence: 0.61, classification: "PROBABLE" },
+            { value: "<script>evil<\/script>", kind: "username", label: "alias", edge_confidence: 0.5, entity_confidence: 0.2, classification: "" },
+          ] },
+        { key: "unknown_group", label: "Mystery bucket", total: 1, items: [
+            { value: longUrl, kind: "domain", label: "hosts", edge_confidence: 1.5, entity_confidence: 0.5, classification: "CANDIDATE" },
+          ] },
+      ],
+      direct_count: 6, reachable_count: 12, edge_count: 20 }, "scan-3");
+  document.getElementById('network-host').innerHTML = networkFullHtml;
+
+  const networkNullOk = networkNullHtml.includes('No subject network yet')
+    && networkNullHtml.includes('href="#/scaninfo?id=scan-1&tab=browse"')
+    && networkNullHtml.includes('--depth ≥ 1');
+  const networkNoGroupsOk = networkNoGroupsHtml.includes('Jane Doe')
+    && networkNoGroupsHtml.includes('k-person')
+    && networkNoGroupsHtml.includes('c-VERIFIED')
+    && networkNoGroupsHtml.includes('C_eff 0.61')
+    && networkNoGroupsHtml.includes('no derived connections yet')
+    && networkNoGroupsHtml.includes('href="#/scaninfo?id=scan-2&tab=browse"');
+  const networkFullOk = networkFullHtml.includes('<div class="v">6</div><div class="l">direct</div>')
+    && networkFullHtml.includes('<div class="v">12</div><div class="l">reachable</div>')
+    && networkFullHtml.includes('<div class="v">20</div><div class="l">edges</div>')
+    && networkFullHtml.includes('glyphicon-user')
+    && networkFullHtml.includes('glyphicon-link')
+    && networkFullHtml.includes('top 2 of 5')
+    && networkFullHtml.includes('c-PROBABLE')
+    && networkFullHtml.includes('node confidence 61%')
+    && networkFullHtml.includes('link confidence 91%')
+    && networkFullHtml.includes('&lt;script&gt;evil&lt;/script&gt;')
+    && !networkFullHtml.includes('<script>evil')
+    && networkFullHtml.includes('link confidence 100%')
+    && networkFullHtml.includes('>https://example.com/a/very/long/path/that/should/get/truncated/because/i…</a>')
+    && networkFullHtml.includes(`href="${longUrl}"`)
+    && (networkFullHtml.match(/class="cls c-/g) || []).length === 3;
+  document.getElementById('network-proof').textContent =
+    `null=${networkNullOk}, noGroups=${networkNoGroupsOk}, full=${networkFullOk}`;
 </script>
 </body>
 </html>
