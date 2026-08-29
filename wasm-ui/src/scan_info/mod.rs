@@ -9,4 +9,5 @@ pub mod gaps;
 pub mod identities;
 pub mod location;
 pub mod metrics;
+pub mod pivots;
 pub mod trust;

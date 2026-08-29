@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use crate::html::escape_html;
+use crate::html::{escape_html, kind_pill};
 
 /// `uid -> hse_core::Entity` lookup built once per render.
 pub struct EntityLookup<'a> {
@@ -41,6 +41,33 @@ impl<'a> EntityLookup<'a> {
             None => format!(
                 "{}\u{2026}",
                 escape_html(&uid.chars().take(12).collect::<String>())
+            ),
+        }
+    }
+
+    /// Rich label for `uid`: a kind pill plus display value when it resolves
+    /// to a known entity, else a muted, 16-character-truncated UID
+    /// placeholder (no kind pill, since there is no known kind) — the label
+    /// every ranked/graph view built on this scan's entities (trust, pivots)
+    /// uses, extracted once the second such view needed the exact same thing
+    /// [`crate::scan_info::trust`] already had inline.
+    pub fn label(&self, uid: &str) -> String {
+        match self.by_uid.get(uid) {
+            Some(e) => {
+                let value = if e.raw_value.is_empty() {
+                    &e.value
+                } else {
+                    &e.raw_value
+                };
+                format!(
+                    "{} <code>{}</code>",
+                    kind_pill(&e.kind.to_string()),
+                    escape_html(value)
+                )
+            }
+            None => format!(
+                "<code class=\"text-muted\" style=\"font-size:10px\">{}\u{2026}</code>",
+                escape_html(&uid.chars().take(16).collect::<String>())
             ),
         }
     }

@@ -296,6 +296,38 @@ export function renderMetricsHtml(data) {
 }
 
 /**
+ * Builds the "Pivot nodes" panel fragment for a `/scans/{id}/pivots`
+ * response, or `""` when there are neither pivots nor bridges.
+ * @param {any} data
+ * @param {any} entities_js
+ * @returns {string}
+ */
+export function renderPivotsHtml(data, entities_js) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.renderPivotsHtml(retptr, addHeapObject(data), addHeapObject(entities_js));
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        var ptr1 = r0;
+        var len1 = r1;
+        if (r3) {
+            ptr1 = 0; len1 = 0;
+            throw takeObject(r2);
+        }
+        deferred2_0 = ptr1;
+        deferred2_1 = len1;
+        return getStringFromWasm0(ptr1, len1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export5(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * Builds the "Network trust" panel fragment for a `/scans/{id}/trust`
  * response — the guided `EMPTY_STATE` block when there are no scores, or the
  * top 12 ranked entities (the backend already sorts most-trusted first)
@@ -606,7 +638,7 @@ function __wbg_get_imports() {
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 12, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
-            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_130);
+            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_139);
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
@@ -633,8 +665,8 @@ function __wbg_get_imports() {
     };
 }
 
-function __wasm_bindgen_func_elem_130(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_130(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_139(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_139(arg0, arg1, addHeapObject(arg2));
 }
 
 function addHeapObject(obj) {

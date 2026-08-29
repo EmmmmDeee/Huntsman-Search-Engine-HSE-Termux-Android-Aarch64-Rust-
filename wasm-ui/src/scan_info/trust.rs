@@ -8,13 +8,15 @@
 //! `crate::entity_lookup`) and builds the "Network trust" panel fragment,
 //! including the guided empty-state message (a full block, not `""` — the
 //! same non-`""`-empty-case choice `communities.rs` made, for the same
-//! "run a deeper scan" guidance reason).
+//! "run a deeper scan" guidance reason). Each ranked entity's label (a kind
+//! pill plus value, or a muted truncated-UID placeholder) is
+//! [`EntityLookup::label`], shared with [`crate::scan_info::pivots`] since it
+//! needs the exact same thing.
 
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
 use crate::entity_lookup::EntityLookup;
-use crate::html::{escape_html, kind_pill};
 use crate::to_js_error;
 
 #[derive(Deserialize)]
@@ -33,33 +35,6 @@ struct TrustResponse {
 }
 
 const EMPTY_STATE: &str = "<h4 style=\"margin-top:0\"><i class=\"glyphicon glyphicon-stats\"></i>&nbsp;Network trust</h4>\n      <div class=\"empty-state\"><h3>No trust ranking yet</h3>\n      <p>Trust radiates across the relationship graph from high-confidence anchors.\n      It appears once the scan derives relations \u{2014} run a deeper scan to populate it.</p></div>";
-
-/// The label for one ranked entity: a kind pill plus display value when the
-/// UID resolves to a known entity, else a muted, truncated-UID placeholder.
-/// Deliberately not `EntityLookup::display` for the not-found case: this
-/// view's own JS original truncates to 16 characters (not 12) with its own
-/// muted/smaller styling and no kind pill — a distinct look this port
-/// preserves exactly rather than forcing through the shared fallback.
-fn label(lookup: &EntityLookup, uid: &str) -> String {
-    match lookup.get(uid) {
-        Some(e) => {
-            let value = if e.raw_value.is_empty() {
-                &e.value
-            } else {
-                &e.raw_value
-            };
-            format!(
-                "{} <code>{}</code>",
-                kind_pill(&e.kind.to_string()),
-                escape_html(value)
-            )
-        }
-        None => format!(
-            "<code class=\"text-muted\" style=\"font-size:10px\">{}\u{2026}</code>",
-            escape_html(&uid.chars().take(16).collect::<String>())
-        ),
-    }
-}
 
 /// Builds the "Network trust" panel fragment for a `/scans/{id}/trust`
 /// response — the guided `EMPTY_STATE` block when there are no scores, or the
@@ -91,7 +66,7 @@ pub fn render_trust_html(data: JsValue, entities_js: JsValue) -> Result<String, 
              <div style=\"width:{pct}%;height:100%;background:#5cb85c\"></div></div>\n      \
              <div style=\"flex:0 0 38px;text-align:right\"><code>{score:.2}</code></div>\n    \
              </div>",
-            label = label(&lookup, &t.uid),
+            label = lookup.label(&t.uid),
             score = t.score,
         ));
     }

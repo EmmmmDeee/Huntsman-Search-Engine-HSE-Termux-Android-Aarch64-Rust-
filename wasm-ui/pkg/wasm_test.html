@@ -37,8 +37,10 @@
 <p id="trust-proof">trust render not yet run</p>
 <div id="trust-empty-host">(empty-case host not yet populated)</div>
 <div id="trust-host">(trust host not yet populated)</div>
+<p id="pivots-proof">pivots render not yet run</p>
+<div id="pivots-host">(pivots host not yet populated)</div>
 <script type="module">
-  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml } from '/static/hse_wasm_ui.js';
+  import init, { main, sourceCount, effC, classify, renderIdentitiesHtml, renderBenchmarkHtml, renderLocationHtml, renderGapsHtml, renderMetricsHtml, renderDuplicatesHtml, renderCommunitiesHtml, renderTrustHtml, renderPivotsHtml } from '/static/hse_wasm_ui.js';
   await init();
   main();
 
@@ -364,6 +366,40 @@
     && !trustHtml.includes('unknownuid1234567…')
     && trustHtml.includes('<code>0.43</code>');
   document.getElementById('trust-proof').textContent = `empty=${trustEmptyOk}, ranked=${trustOk}`;
+
+  // Exercises scan_info::pivots::render_pivots_html -- notably the 3-tier
+  // coreness badge (>=2 coloured, ==1 muted, ==0 none), the cut-vertex
+  // "critical" badge, singular/plural "link(s)", and EntityLookup::label
+  // reused a second time (both for pivot rows and for bridge endpoints).
+  const pivotsEmptyHtml = renderPivotsHtml({ pivots: [], bridges: [] }, []);
+  const pivotsHtml = renderPivotsHtml(
+    { pivots: [
+        { uid: "aaa111", degree: 5, score: 0.72, is_cut_vertex: true, coreness: 3 },
+        { uid: "bbb222", degree: 1, score: 0.5, is_cut_vertex: false, coreness: 1 },
+        { uid: "unknownpivot123456789", degree: 0, score: 0.1, is_cut_vertex: false, coreness: 0 },
+      ],
+      bridges: [
+        { from_uid: "aaa111", to_uid: "bbb222" },
+      ] },
+    dupEntities,
+  );
+  document.getElementById('pivots-host').innerHTML = pivotsHtml;
+
+  const pivotsEmptyOk = pivotsEmptyHtml === '';
+  const pivotsOk = pivotsHtml.includes('k-person')
+    && pivotsHtml.includes('<code>John Smith</code>')
+    && pivotsHtml.includes('critical</span>')
+    && pivotsHtml.includes('⬡3')
+    && pivotsHtml.includes('label-info')
+    && pivotsHtml.includes('⬡1')
+    && !pivotsHtml.includes('⬡0')
+    && pivotsHtml.includes('>5 links<')
+    && pivotsHtml.includes('>1 link<')
+    && pivotsHtml.includes('>0 links<')
+    && pivotsHtml.includes('unknownpivot1234…')
+    && pivotsHtml.includes('(1 bridge)')
+    && pivotsHtml.includes('<code>j.smith@gmail.com</code>');
+  document.getElementById('pivots-proof').textContent = `empty=${pivotsEmptyOk}, ranked=${pivotsOk}`;
 </script>
 </body>
 </html>
