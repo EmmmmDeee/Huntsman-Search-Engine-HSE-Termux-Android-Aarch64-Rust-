@@ -106,6 +106,15 @@ impl Module for Mylnikov {
         ModuleCategory::Geo
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Sole action is querying api.mylnikov.org, a crowdsourced open technical
+        // database (WiGLE/OpenCelliD-like) to resolve a BSSID to Coordinates. The
+        // T1591.001 category default alone misses that "named DB" mechanism, so
+        // add T1596 (opencellid precedent), stopping at the parent — not
+        // T1596.005, whose Shodan/Censys IP-banner definition doesn't fit here.
+        &["T1591.001", "T1596"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Coordinates];
         KINDS
