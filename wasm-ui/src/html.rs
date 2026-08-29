@@ -21,6 +21,22 @@ pub fn escape_html(s: &str) -> String {
     out
 }
 
+/// The `<span class="kind-pill k-...">...</span>` badge every view that
+/// displays an entity kind uses. `kind` is already the display string (an
+/// `EntityKind`'s `Display` output, e.g. `"email"`, `"other:xyz"`, or a
+/// server-side field that is already flattened to the same form, e.g.
+/// `crate::core::resolve::ResolutionGroup::kind`) — this function only builds
+/// the markup, matching `helpers.js`'s `kindPill(kindToStr(k))` split into
+/// its two halves (callers already have the string; the
+/// object-or-string-shaped `kindToStr` half has no equivalent need here since
+/// every Rust caller already holds a real, unambiguous kind value).
+pub fn kind_pill(kind: &str) -> String {
+    format!(
+        "<span class=\"kind-pill k-{k}\">{k}</span>",
+        k = escape_html(kind)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -41,5 +57,13 @@ mod tests {
     #[test]
     fn empty_string_stays_empty() {
         assert_eq!(escape_html(""), "");
+    }
+
+    #[test]
+    fn kind_pill_wraps_and_escapes() {
+        assert_eq!(
+            kind_pill("email"),
+            "<span class=\"kind-pill k-email\">email</span>"
+        );
     }
 }
