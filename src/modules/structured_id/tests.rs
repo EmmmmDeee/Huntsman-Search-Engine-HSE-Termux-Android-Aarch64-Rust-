@@ -119,6 +119,62 @@ fn ksuid_round_trips_creation_time() {
 }
 
 #[tokio::test]
+async fn process_decodes_ksuid_through_target_new_without_case_corruption() {
+    // Regression: `Target::new` normalises every Username-kind value (which is
+    // where a bare structured ID like a KSUID lands — see `accepts()`'s own
+    // comment) before any module sees it. Base62 is case-SIGNIFICANT (unlike
+    // Crockford base32/ULID), so folding a KSUID's case used to silently
+    // decode a DIFFERENT 160-bit value — this real KSUID's creation date is
+    // 2023-01-16, but decoding it after lowercasing instead yields
+    // 2024-08-17, a plausible-looking date 580+ days wrong.
+    // `hse_core::normalise`'s Username arm now preserves case for this exact
+    // shape (see its own tests for that guarantee in isolation); this proves
+    // the FULL pipeline a real scan uses — seed → `Target::new` → `process()`
+    // — benefits from it, not just `decode_ksuid` called directly (which is
+    // how the pre-existing `ksuid_round_trips_creation_time` test above
+    // exercises it, bypassing `Target::new` entirely and so never catching
+    // this).
+    let ksuid = "2KNu8EwGT2LWr6M7B7987uqR6mm";
+    assert_eq!(decode_ksuid(ksuid), Some(1_673_827_200)); // 2023-01-16T00:00:00Z
+    assert_ne!(
+        decode_ksuid(&ksuid.to_ascii_lowercase()),
+        Some(1_673_827_200),
+        "sanity: lowercasing this KSUID really does change its decoded value"
+    );
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = ModuleContext {
+        scan_id: "t".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    // `Target::new` is the SAME path every real scan seed and every derived
+    // Username entity goes through — not `decode_ksuid` called directly.
+    let target = Target::new(TargetKind::Username, ksuid);
+    assert_eq!(target.value, ksuid, "case must survive Target::new");
+    let r = StructuredId
+        .process(&target, &ctx)
+        .await
+        .expect("offline decode never errors");
+    let date = r
+        .entities
+        .iter()
+        .find(|e| e.has_tag("ksuid"))
+        .expect("a ksuid-tagged entity")
+        .evidence[0]
+        .attributes
+        .get("ksuid_created_date")
+        .cloned();
+    assert_eq!(
+        date.as_deref(),
+        Some("2023-01-16"),
+        "the KSUID's real creation date must survive Target::new intact"
+    );
+}
+
+#[tokio::test]
 async fn process_decodes_uuid_v1_to_mac_and_time() {
     // Fully offline + deterministic — runs in CI.
     let u = build_uuid_v1(1_577_836_800, "00a0c91e6bf6");

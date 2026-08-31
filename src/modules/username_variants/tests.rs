@@ -126,6 +126,26 @@ use super::*;
     }
 
     #[test]
+    fn attack_techniques_do_not_overclaim_person_or_email() {
+        // Regression: this module only ever emits Username entities (see
+        // `produces`) — even from an Email seed, it mines the local part for
+        // variants and never emits the address itself, and it never resolves
+        // a real name. T1589.003 (Employee Names) and T1589.002 (Email
+        // Addresses) both claim entity kinds this module cannot produce.
+        let m = UsernameVariants;
+        let techniques = m.attack_techniques();
+        assert!(
+            !techniques.contains(&"T1589.003"),
+            "must not claim T1589.003 (Employee Names) — this module never emits a Person"
+        );
+        assert!(
+            !techniques.contains(&"T1589.002"),
+            "must not claim T1589.002 (Email Addresses) — this module never emits an Email"
+        );
+        assert_eq!(techniques, &["T1593.001"]);
+    }
+
+    #[test]
     fn add_variant_guards_length_and_seed() {
         let seed = "jdoe";
         let mut out: BTreeSet<String> = BTreeSet::new();

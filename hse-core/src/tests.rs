@@ -1508,6 +1508,58 @@ fn normalise_username_strips_leading_handle_sigil_for_dedup() {
 }
 
 #[test]
+fn normalise_username_preserves_case_for_a_ksuid_shaped_value() {
+    // Regression: a 27-char all-alphanumeric value is the shape of a base62
+    // structured ID (a KSUID — see `structured_id::decode_ksuid` in the main
+    // crate). Unlike Crockford base32 (ULID), which is case-insensitive BY
+    // DESIGN, base62 is case-SIGNIFICANT: `'A'` and `'a'` are different digit
+    // values. Case-folding this arm's usual way would silently decode a
+    // DIFFERENT (and generally wrong) 160-bit value — including the leading
+    // bytes, which are the KSUID's creation timestamp — rather than merely
+    // fail to decode. A real KSUID (`2KNu8EwGT2LWr6M7B7987uqR6mm`, encoding
+    // 2023-01-16T00:00:00Z) decodes to 2024-08-17 if its case is folded away.
+    let ksuid = "2KNu8EwGT2LWr6M7B7987uqR6mm";
+    assert_eq!(ksuid.len(), 27);
+    assert_eq!(normalise(&EntityKind::Username, ksuid), ksuid);
+    // Sigils/whitespace around it are still stripped — only the CASE of the
+    // qualifying inner value is preserved.
+    assert_eq!(
+        normalise(&EntityKind::Username, &format!("  @{ksuid} ")),
+        ksuid
+    );
+    // A value one character short or long of 27, or containing a non-
+    // alphanumeric character, does NOT qualify — ordinary case-folding still
+    // applies (this shape is deliberately narrow: no real human handle is a
+    // bare 27-char alphanumeric run, but a 26- or 28-char lookalike, or one
+    // with a separator, is treated as an ordinary handle).
+    assert_eq!(
+        normalise(&EntityKind::Username, &ksuid[..26]),
+        ksuid[..26].to_lowercase()
+    );
+    assert_eq!(
+        normalise(&EntityKind::Username, &format!("{ksuid}X")),
+        format!("{ksuid}X").to_lowercase()
+    );
+    let with_dash = format!("{}-{}", &ksuid[..13], &ksuid[13..]);
+    assert_eq!(
+        normalise(&EntityKind::Username, &with_dash),
+        with_dash.to_lowercase()
+    );
+}
+
+#[test]
+fn normalise_username_ksuid_shape_stays_a_fixed_point() {
+    let ksuid = "2KNu8EwGT2LWr6M7B7987uqR6mm";
+    let once = normalise(&EntityKind::Username, ksuid);
+    let twice = normalise(&EntityKind::Username, &once);
+    assert_eq!(once, ksuid, "case must be preserved on the first pass");
+    assert_eq!(
+        once, twice,
+        "re-normalising a preserved-case value is a no-op"
+    );
+}
+
+#[test]
 fn normalise_username_is_a_fixed_point_when_whitespace_shields_a_sigil() {
     // Regression for the property test `normalise_is_idempotent`, whose minimal
     // shrink was `kind=Username, v="`\t`\0"`. A whitespace char wedged *between*

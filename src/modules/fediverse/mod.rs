@@ -34,6 +34,7 @@ pub struct Fediverse;
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct WebFinger {
+    subject: Option<String>,
     aliases: Vec<String>,
     links: Vec<Link>,
 }
@@ -118,10 +119,6 @@ impl Module for Fediverse {
         let Some(wf): Option<WebFinger> = fetch_json_probe(&ctx.http, SRC, &url).await else {
             return Ok(result);
         };
-        if wf.links.is_empty() && wf.aliases.is_empty() {
-            return Ok(result);
-        }
-
         extract_webfinger(&wf, email, domain, &ctx.scan_id, &mut result);
         Ok(result)
     }
@@ -135,6 +132,16 @@ fn domain_worth_probing(domain: &str) -> bool {
     !crate::util::domains::is_freemail(domain)
 }
 
+/// Whether a WebFinger document's `subject` (when present) names the SAME
+/// identity that was queried, tolerating the conventional `acct:` prefix and
+/// case. Pure.
+fn subject_matches_queried_identity(subject: &str, email: &str) -> bool {
+    subject
+        .strip_prefix("acct:")
+        .unwrap_or(subject)
+        .eq_ignore_ascii_case(email)
+}
+
 /// Build entities from a resolved WebFinger document. Pure (no I/O) so it is
 /// unit-tested against a fixture; the network shell in `process` stays thin.
 fn extract_webfinger(
@@ -144,6 +151,20 @@ fn extract_webfinger(
     scan_id: &str,
     result: &mut ModuleResult,
 ) {
+    if wf.links.is_empty() && wf.aliases.is_empty() {
+        return;
+    }
+    // A WebFinger server is keyed by the `resource` query parameter, so its
+    // `subject` should always echo the identity we asked about — but nothing
+    // stops a misconfigured or catch-all responder from returning the SAME
+    // document for every query. `subject` is optional per RFC 7033, so its
+    // absence is not itself rejected; only a present, mismatched one is.
+    if let Some(subject) = wf.subject.as_deref()
+        && !subject_matches_queried_identity(subject, email)
+    {
+        return;
+    }
+
     let local = email.split('@').next().unwrap_or(email);
     let ev = Evidence::new(SRC, format!("Fediverse account `{email}` (WebFinger)"))
         .with_attr("handle", email)
@@ -168,8 +189,10 @@ fn extract_webfinger(
         })
         .and_then(|l| l.href.as_deref());
 
+    let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (href, conf) in [(profile_page, 0.82), (actor, 0.76)] {
         if let Some(u) = href.filter(|u| u.starts_with("http")) {
+            seen_urls.insert(u.to_ascii_lowercase());
             let mut url_e = Entity::new(EntityKind::Url, u, conf, scan_id);
             url_e.tag("fediverse");
             url_e.tag("mastodon");
@@ -183,8 +206,15 @@ fn extract_webfinger(
     // same subject — sibling data to the typed `rel` links above, but untyped
     // (no `rel`/`type` to confirm which is the profile page vs. the actor), so
     // each is still a URL pivot, just at a confidence below the typed
-    // actor/profile-page tiers.
-    for alias in wf.aliases.iter().filter(|a| a.starts_with("http")) {
+    // actor/profile-page tiers. In practice a server commonly aliases a subject
+    // to the SAME URIs already surfaced as typed links (real Mastodon responses
+    // do this) — skip those so the same profile URL is never emitted twice
+    // under a different tag/confidence.
+    for alias in wf
+        .aliases
+        .iter()
+        .filter(|a| a.starts_with("http") && !seen_urls.contains(&a.to_ascii_lowercase()))
+    {
         let mut url_e = Entity::new(
             EntityKind::Url,
             alias.as_str(),

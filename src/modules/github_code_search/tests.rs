@@ -100,6 +100,80 @@ fn build_commit_emails_filters_noreply() {
 }
 
 #[test]
+fn build_commit_emails_extracts_name_even_without_a_usable_email() {
+    // Regression: the name-extraction used to be lexically nested inside the
+    // email `continue`s, so a commit author with NO email at all — GitHub's
+    // "keep my email private" noreply default is the common real-world case —
+    // never reached the name check, even though the check only examines
+    // `author.name`.
+    let commits = CommitsResp {
+        commits: vec![
+            CommitItem {
+                commit: Some(CommitDetail {
+                    author: Some(CommitAuthor {
+                        name: Some("Jane Doe".into()),
+                        email: None,
+                    }),
+                }),
+            },
+            CommitItem {
+                commit: Some(CommitDetail {
+                    author: Some(CommitAuthor {
+                        name: Some("John Roe".into()),
+                        email: Some("12345+johnroe@users.noreply.github.com".into()),
+                    }),
+                }),
+            },
+        ],
+    };
+    let ents = build_commit_emails(&commits, "test/repo", "s");
+    let names: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(
+        names.contains(&"Jane Doe"),
+        "a commit with no email at all must still yield its author's name: {names:?}"
+    );
+    assert!(
+        names.contains(&"John Roe"),
+        "a noreply-only commit must still yield its author's name: {names:?}"
+    );
+    // Neither commit has a usable email, so no Email entity is emitted.
+    assert!(!ents.iter().any(|e| e.kind == EntityKind::Email));
+}
+
+#[test]
+fn build_commit_emails_rejects_the_unknown_user_placeholder() {
+    // Regression: the inline name filter used to accept anything ≥4 chars with
+    // a space that wasn't "github actions" or bot-flavored — "Unknown User"
+    // (a real placeholder GitHub itself can return) slipped through untouched.
+    let commits = CommitsResp {
+        commits: vec![CommitItem {
+            commit: Some(CommitDetail {
+                author: Some(CommitAuthor {
+                    name: Some("Unknown User".into()),
+                    email: Some("real@example.com".into()),
+                }),
+            }),
+        }],
+    };
+    let ents = build_commit_emails(&commits, "test/repo", "s");
+    assert!(
+        !ents
+            .iter()
+            .any(|e| e.kind == EntityKind::Person && e.value == "Unknown User"),
+        "the 'Unknown User' placeholder must not become a Person: {ents:?}"
+    );
+    // The real email is untouched by the name-side fix.
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "real@example.com")
+    );
+}
+
+#[test]
 fn build_commit_emails_deduplicates() {
     let commits = CommitsResp {
         commits: vec![

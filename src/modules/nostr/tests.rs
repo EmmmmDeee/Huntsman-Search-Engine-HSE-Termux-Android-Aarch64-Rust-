@@ -135,6 +135,34 @@ fn nip05_emits_every_distinct_relay_deduped() {
 }
 
 #[test]
+fn nip05_relay_lookup_is_case_insensitive_on_the_pubkey_key() {
+    // process() always lowercases `hex` before calling emit_nip05 (is_hex64
+    // accepts either case), but a document's own `relays` map keys are never
+    // normalised — if it publishes the pubkey in uppercase there, an exact
+    // BTreeMap::get(hex) with the lowercased key would silently find nothing.
+    let mut names = BTreeMap::new();
+    names.insert("bob".to_string(), HEX.to_string());
+    let mut relays = BTreeMap::new();
+    relays.insert(
+        HEX.to_ascii_uppercase(),
+        vec!["wss://relay.example.com".to_string()],
+    );
+    let doc = Nip05 { names, relays };
+
+    let mut result = ModuleResult::new();
+    emit_nip05("bob", "example.com", "bob@example.com", HEX, &doc, "scan", &mut result);
+
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|x| x.kind == EntityKind::Other("nostr-relay".into())
+                && x.value == "wss://relay.example.com"),
+        "the relay must still be found despite the uppercase key"
+    );
+}
+
+#[test]
 fn nip05_root_underscore_emits_no_username() {
     let mut names = BTreeMap::new();
     names.insert("_".to_string(), HEX.to_string());
