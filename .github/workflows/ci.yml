@@ -141,11 +141,14 @@ jobs:
       # wasm-bindgen-cli's version is derived from wasm-ui/Cargo.toml's own
       # `wasm-bindgen` dependency rather than hardcoded here, so a future
       # version bump there can't silently drift this install out of sync.
+      # --force: a plain `cargo install` errors out if a DIFFERENT version is
+      # already present (e.g. a future runner image that preinstalls one) —
+      # harmless here since a fresh runner has nothing to overwrite.
       - name: Install wasm-bindgen-cli (pinned to wasm-ui's wasm-bindgen dependency)
         run: |
           set -euo pipefail
           pin="$(grep -m1 '^wasm-bindgen ' wasm-ui/Cargo.toml | sed -E 's/.*"([0-9.]+)".*/\1/')"
-          cargo install wasm-bindgen-cli --version "$pin" --locked
+          cargo install wasm-bindgen-cli --version "$pin" --locked --force
 
       # binaryen (wasm-opt) has no `cargo install`-able CLI, so it's fetched
       # directly from its own GitHub releases — pinned to an exact version

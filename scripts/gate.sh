@@ -121,7 +121,7 @@ elif ! rustup target list --installed 2>/dev/null | grep -q '^wasm32-unknown-unk
 elif ! command -v wasm-bindgen >/dev/null 2>&1; then
     skip "wasm-ui/pkg drift check" "wasm-bindgen-cli not installed — cargo install wasm-bindgen-cli --version $WASM_BINDGEN_PIN --locked"
 elif [ "$WASM_BINDGEN_HAVE" != "$WASM_BINDGEN_PIN" ]; then
-    skip "wasm-ui/pkg drift check" "installed wasm-bindgen-cli $WASM_BINDGEN_HAVE != wasm-ui/Cargo.toml's pinned $WASM_BINDGEN_PIN (a mismatched CLI produces spurious diffs, not real drift) — cargo install wasm-bindgen-cli --version $WASM_BINDGEN_PIN --locked"
+    skip "wasm-ui/pkg drift check" "installed wasm-bindgen-cli $WASM_BINDGEN_HAVE != wasm-ui/Cargo.toml's pinned $WASM_BINDGEN_PIN (a mismatched CLI produces spurious diffs, not real drift) — cargo install wasm-bindgen-cli --version $WASM_BINDGEN_PIN --locked --force"
 elif ! command -v wasm-opt >/dev/null 2>&1; then
     skip "wasm-ui/pkg drift check" "wasm-opt (binaryen) not installed — CI is the authority for this check on hosts without it"
 else
