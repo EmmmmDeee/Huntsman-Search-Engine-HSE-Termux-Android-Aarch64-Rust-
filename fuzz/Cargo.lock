@@ -926,6 +926,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hse-core"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "js-sys",
+ "serde",
+ "sha2",
+]
+
+[[package]]
 name = "http"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -985,6 +995,7 @@ dependencies = [
  "futures",
  "hex",
  "hickory-resolver",
+ "hse-core",
  "image",
  "kamadak-exif",
  "md-5",

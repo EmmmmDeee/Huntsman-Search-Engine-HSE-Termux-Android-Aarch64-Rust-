@@ -1170,11 +1170,11 @@ pub(in crate::core::correlator) fn rule_au_043_paste_exposure(
     ts: u64,
 ) -> Vec<Correlation> {
     let entities = context.entities();
-    let uids: Vec<String> = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Url && e.has_tag(crate::core::tags::PASTE_EXPOSED))
-        .map(|e| e.uid.clone())
-        .collect();
+    let uids: Vec<String> =
+        entities_of_kind_with_tag(entities, EntityKind::Url, crate::core::tags::PASTE_EXPOSED)
+            .into_iter()
+            .map(|e| e.uid.clone())
+            .collect();
     if uids.is_empty() {
         return Vec::new();
     }

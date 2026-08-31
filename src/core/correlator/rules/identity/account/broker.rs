@@ -291,10 +291,7 @@ pub(in crate::core::correlator) fn rule_au_108_breach_social_footprint(
     use std::collections::BTreeSet;
     let mut platforms: BTreeSet<&'static str> = BTreeSet::new();
     let mut uids: Vec<String> = Vec::new();
-    for e in entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Username && e.has_tag("breach"))
-    {
+    for e in entities_of_kind_with_tag(entities, EntityKind::Username, "breach") {
         let Some((prefix, handle)) = e.value.split_once(':') else {
             continue;
         };
