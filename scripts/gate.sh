@@ -80,6 +80,26 @@ run "test"     cargo test --all --lib --bins --tests --locked "${DEP_COOLDOWN_FE
 run "doctests" cargo test --doc --locked
 run "doc coverage" scripts/doc_coverage.sh
 
+# ── ci.yml: hse-core + wasm-ui (native; not in the root workspace) ───────────
+# Path dependencies of the root crate, deliberately NOT `[workspace]` members
+# (see each crate's own Cargo.toml comment), so none of the steps above ever
+# lint or test them directly: `cargo check`/`clippy`/`test --all` above only
+# compile hse-core as an ordinary dependency (test cfg stripped) and never
+# touch wasm-ui at all. Without these lines hse-core's 144 unit tests + 6
+# doctests and both crates' deny-level clippy lints ran nowhere — not in CI,
+# not here. wasm-ui's `cargo test` step is native-only (crate-type includes
+# `rlib` alongside `cdylib` specifically so this works) — it proves the
+# source compiles and runs any unit tests added going forward, but is NOT a
+# build or test of the real wasm32-unknown-unknown browser artifact.
+run "fmt (hse-core)"    cargo fmt --manifest-path hse-core/Cargo.toml --check
+run "clippy (hse-core)" cargo clippy --manifest-path hse-core/Cargo.toml --all-targets --locked -- -D warnings
+RUSTDOCFLAGS="$RUSTDOC_LINTS" \
+  run "rustdoc lints (hse-core)" cargo doc --manifest-path hse-core/Cargo.toml --no-deps --document-private-items --locked
+run "test (hse-core)"   cargo test --manifest-path hse-core/Cargo.toml --locked
+run "fmt (wasm-ui)"     cargo fmt --manifest-path wasm-ui/Cargo.toml --check
+run "clippy (wasm-ui)"  cargo clippy --manifest-path wasm-ui/Cargo.toml --all-targets --locked -- -D warnings
+run "test (wasm-ui, native)" cargo test --manifest-path wasm-ui/Cargo.toml --locked
+
 # ── ci.yml: MSRV ─────────────────────────────────────────────────────────────
 if [ "$QUICK" = 1 ]; then
     skip "MSRV ($MSRV)" "--quick"
@@ -120,12 +140,13 @@ fi
 
 # ── audit.yml: only fires when a manifest changed, so mirror that ────────────
 # Must match audit.yml's `push.paths` exactly (src/bin/dep_cooldown/** included,
-# and fuzz/Cargo.{toml,lock} because audit.yml's filter is `**/Cargo.{toml,lock}`
-# — the fuzz/ crate has its own manifest, which that glob covers and this list
-# must too) — a mismatch here means this script silently SKIPS the check
-# locally on a commit that only touches dep_cooldown's or fuzz's own manifest,
+# and fuzz/Cargo.{toml,lock} plus hse-core/Cargo.{toml,lock} and
+# wasm-ui/Cargo.{toml,lock} because audit.yml's filter is `**/Cargo.{toml,lock}`
+# — each of those crates has its own manifest, which that glob covers and this
+# list must too) — a mismatch here means this script silently SKIPS the check
+# locally on a commit that only touches one of those crates' own manifest,
 # while CI still runs it.
-if git diff --quiet HEAD -- Cargo.toml Cargo.lock deny.toml dep-cooldown.toml src/bin/dep_cooldown fuzz/Cargo.toml fuzz/Cargo.lock 2>/dev/null; then
+if git diff --quiet HEAD -- Cargo.toml Cargo.lock deny.toml dep-cooldown.toml src/bin/dep_cooldown fuzz/Cargo.toml fuzz/Cargo.lock hse-core/Cargo.toml hse-core/Cargo.lock wasm-ui/Cargo.toml wasm-ui/Cargo.lock 2>/dev/null; then
     skip "cargo-audit / deny / machete / dep-cooldown" "no manifest change (audit.yml path filter)"
 else
     for t in cargo-audit cargo-deny cargo-machete; do
