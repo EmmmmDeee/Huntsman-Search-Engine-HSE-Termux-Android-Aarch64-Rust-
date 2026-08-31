@@ -245,44 +245,90 @@ pub(super) fn build_entities(
             }),
     );
 
-    // ── Organisations (employers) — title, dates, and job location ────────
-    result.extend(
-        profile
-            .experiences
-            .iter()
-            .take(MAX_EXPERIENCES)
-            .filter_map(|exp| {
-                let company = nonempty(&exp.company).filter(|c| c.chars().count() >= 2)?;
-                let mut oe =
-                    Entity::new(EntityKind::Organisation, company, confidence::HIGH, scan_id);
-                oe.tag("proxycurl");
-                oe.tag("linkedin");
-                let mut ev = Evidence::new(SRC, format!("Employer: {company}"));
-                if let Some(title) = nonempty(&exp.title) {
-                    ev = ev.with_attr("title", title);
-                }
-                if let Some(loc) = nonempty(&exp.location) {
-                    ev = ev.with_attr("location", loc);
-                }
-                if let Some(start) = exp.starts_at.as_ref().map(DateField::to_string_approx)
-                    && !start.is_empty()
-                {
-                    ev = ev.with_attr("start_date", start);
-                }
-                match exp.ends_at.as_ref().map(DateField::to_string_approx) {
-                    Some(end) if !end.is_empty() => ev = ev.with_attr("end_date", end),
-                    _ => oe.tag("current-employer"),
-                }
-                oe.add_evidence(ev);
-                Some(oe)
-            }),
-    );
+    // ── Organisations (employers + alma maters) ────────────────────────────
+    // Shared dedup: LinkedIn commonly restates the same company across two
+    // stints (a role change, a re-hire) or, rarely, the same name appears as
+    // both an employer and a school. A plain "keep first, skip duplicates"
+    // guard would silently drop whichever occurrence lost the race — e.g. a
+    // past stint (has `ends_at`) listed before the current one (no
+    // `ends_at`) would permanently lose the "current-employer" tag and the
+    // newer evidence. `Entity::merge` (GREATEST-semantics: unions tags,
+    // deduplicated evidence union, confidence never decreases) folds a
+    // restated stint into the one already kept instead, so no occurrence's
+    // information is lost regardless of which order LinkedIn returned them
+    // in. `org_index` tracks each company's position in `orgs` so a repeat
+    // finds its existing entity to merge into rather than re-scanning.
+    let mut orgs: Vec<Entity> = Vec::new();
+    let mut org_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut push_or_merge_org =
+        |orgs: &mut Vec<Entity>, key: String, entity: Entity| match org_index.get(&key) {
+            Some(&idx) => orgs[idx].merge(entity),
+            None => {
+                org_index.insert(key, orgs.len());
+                orgs.push(entity);
+            }
+        };
 
-    // ── Organisations (alma maters) — degree and field of study ───────────
-    // Lower confidence than the employer loop above: a school attended in the
-    // past is a weaker "current relationship" signal than a listed employer.
-    result.extend(profile.education.iter().take(MAX_LISTED).filter_map(|edu| {
-        let school = nonempty(&edu.school).filter(|s| s.chars().count() >= 2)?;
+    // Employers — title, dates, and job location.
+    for exp in profile.experiences.iter().take(MAX_EXPERIENCES) {
+        let Some(company) = nonempty(&exp.company).filter(|c| c.chars().count() >= 2) else {
+            continue;
+        };
+        let mut oe = Entity::new(EntityKind::Organisation, company, confidence::HIGH, scan_id);
+        oe.tag("proxycurl");
+        oe.tag("linkedin");
+        let start = exp
+            .starts_at
+            .as_ref()
+            .map(DateField::to_string_approx)
+            .filter(|s| !s.is_empty());
+        let end = exp
+            .ends_at
+            .as_ref()
+            .map(DateField::to_string_approx)
+            .filter(|s| !s.is_empty());
+        // The date range rides in the SUMMARY text, not only as attributes:
+        // `Entity::merge` dedups evidence by (source, summary), and two
+        // temporally-distinct stints at the same employer sharing identical
+        // company-name casing would otherwise collide on an identical bare
+        // "Employer: {company}" summary — collapsing into ONE evidence
+        // record whose attribute-level conflict resolution (an arbitrary
+        // "smaller value wins" tie-break) has no notion of which stint is
+        // more current, and could keep the PAST stint's title/dates even
+        // though the entity itself is now correctly tagged current-employer.
+        // A distinct summary per stint keeps both stints' evidence genuinely
+        // separate regardless of casing.
+        let range = match (&start, &end) {
+            (Some(s), Some(e)) => format!(" ({s} to {e})"),
+            (Some(s), None) => format!(" (since {s})"),
+            (None, Some(e)) => format!(" (until {e})"),
+            (None, None) => String::new(),
+        };
+        let mut ev = Evidence::new(SRC, format!("Employer: {company}{range}"));
+        if let Some(title) = nonempty(&exp.title) {
+            ev = ev.with_attr("title", title);
+        }
+        if let Some(loc) = nonempty(&exp.location) {
+            ev = ev.with_attr("location", loc);
+        }
+        if let Some(start) = &start {
+            ev = ev.with_attr("start_date", start);
+        }
+        match &end {
+            Some(end) => ev = ev.with_attr("end_date", end),
+            None => oe.tag("current-employer"),
+        }
+        oe.add_evidence(ev);
+        push_or_merge_org(&mut orgs, company.to_lowercase(), oe);
+    }
+
+    // Alma maters — degree and field of study. Lower confidence than the
+    // employer loop above: a school attended in the past is a weaker
+    // "current relationship" signal than a listed employer.
+    for edu in profile.education.iter().take(MAX_LISTED) {
+        let Some(school) = nonempty(&edu.school).filter(|s| s.chars().count() >= 2) else {
+            continue;
+        };
         let mut oe = Entity::new(
             EntityKind::Organisation,
             school,
@@ -300,8 +346,9 @@ pub(super) fn build_entities(
             ev = ev.with_attr("field_of_study", field);
         }
         oe.add_evidence(ev);
-        Some(oe)
-    }));
+        push_or_merge_org(&mut orgs, school.to_lowercase(), oe);
+    }
+    result.extend(orgs);
 
     // ── Personal website URL ──────────────────────────────────────────────
     if let Some(url) = profile

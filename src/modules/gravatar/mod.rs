@@ -60,10 +60,13 @@ impl Module for Gravatar {
 
     fn attack_techniques(&self) -> &'static [&'static str] {
         // People default (T1589.003 Employee Names + T1591.004 Identify Roles) but
-        // Gravatar surfaces no role information — only Person, Username, URL, and a
-        // profile location Address (T1591.001 Determine Physical Locations). Drop
-        // the over-claimed T1591.004 and add the correct T1591.001.
-        &["T1591.001", "T1589.003"]
+        // Gravatar surfaces no role information. Drop the over-claimed T1591.004
+        // and add what this module actually produces: a profile location Address
+        // (T1591.001 Determine Physical Locations), owner-published Email
+        // entities (T1589.002 Email Addresses), and an employer Organisation
+        // (T1591.002 Business Relationships) — the same pairing `fullcontact`
+        // claims for the same employer-field shape.
+        &["T1591.001", "T1589.002", "T1589.003", "T1591.002"]
     }
 
     fn max_timeout_ms(&self) -> u64 {

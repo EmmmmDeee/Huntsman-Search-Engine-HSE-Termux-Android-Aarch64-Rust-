@@ -8,6 +8,57 @@ static ENROLLED_MARKERS: std::sync::LazyLock<crate::util::scan::MatchSet> =
         crate::util::scan::MatchSet::new_ascii_ci(["enrolled in ", "enrolled for "])
     });
 
+/// Common negation phrasing a genuine "you are NOT enrolled"/"enrolment has
+/// LAPSED" result page would carry — checked in a window around a marker
+/// match before trusting it. `"enrolled for "`/`"division of "` are plain
+/// substrings of exactly those negative sentences ("You are **not enrolled
+/// for** the Division of Sydney", "your enrolment for the **Division of**
+/// Sydney has **lapsed**"), so an unguarded marker match reads a genuine
+/// negative as a confirmed positive. This is a partial mitigation, not a
+/// guaranteed one — the real per-commission negative-result wording is not
+/// available to verify from this environment (see `query_roll`'s own doc
+/// comment on the same limitation), so this covers common English negation
+/// rather than an exhaustive, live-verified list.
+static NEGATION_MARKERS: std::sync::LazyLock<crate::util::scan::MatchSet> =
+    std::sync::LazyLock::new(|| {
+        crate::util::scan::MatchSet::new_ascii_ci([
+            "not enrolled",
+            "not currently enrolled",
+            "no longer enrolled",
+            "unable to find",
+            "no record",
+            "not found",
+            "no match",
+            "lapsed",
+            "cancelled",
+            "removed from the roll",
+            "removed from the electoral roll",
+        ])
+    });
+
+/// Bytes of context scanned on each side of a marker match for a nearby
+/// negation word — wide enough to span "You are **not** currently
+/// **enrolled for** the Division of Sydney" and "...Division of Sydney has
+/// **lapsed**", narrow enough that an unrelated negation mention elsewhere
+/// on the page (e.g. a footer disclaimer) doesn't suppress a genuine match.
+const NEGATION_WINDOW: usize = 60;
+
+/// `true` when a negation phrase appears within [`NEGATION_WINDOW`] bytes
+/// either side of `[marker_start, marker_end)` in `text`. Byte-boundary safe:
+/// widens outward to the nearest char boundary rather than slicing mid-codepoint.
+fn has_nearby_negation(text: &str, marker_start: usize, marker_end: usize) -> bool {
+    let win_start = marker_start.saturating_sub(NEGATION_WINDOW);
+    let mut win_start = win_start.min(text.len());
+    while win_start > 0 && !text.is_char_boundary(win_start) {
+        win_start -= 1;
+    }
+    let mut win_end = (marker_end + NEGATION_WINDOW).min(text.len());
+    while win_end < text.len() && !text.is_char_boundary(win_end) {
+        win_end += 1;
+    }
+    NEGATION_MARKERS.is_match(&text[win_start..win_end])
+}
+
 /// Parse a confirmed division name from an AEC or state EC HTML response.
 /// Returns `(division_name, suburb_hint)` when a match is found. Pure.
 ///
@@ -19,7 +70,9 @@ pub(crate) fn extract_division(html: &str) -> Option<(String, Option<String>)> {
 
     // AEC pattern: "division of <name>". `find_range` returns boundary-safe
     // `[start, end)` from original bytes — no offset-on-a-copy panic risk.
-    if let Some((_, end)) = DIVISION_MARKER.find_range(&text) {
+    if let Some((start, end)) = DIVISION_MARKER.find_range(&text)
+        && !has_nearby_negation(&text, start, end)
+    {
         let rest = &text[end..];
         // Allow apostrophes: real AU divisions/suburbs carry them (the federal
         // Division of O'Connor, the ACT suburb O'Malley). Without `'\''` the
@@ -48,7 +101,9 @@ pub(crate) fn extract_division(html: &str) -> Option<(String, Option<String>)> {
     // State EC pattern: "enrolled in <Division>" or "enrolled for <Division>".
     // One aho-corasick pass covers both markers; `end` skips past whichever
     // matched without needing to know its length.
-    if let Some((_, end)) = ENROLLED_MARKERS.find_range(&text) {
+    if let Some((start, end)) = ENROLLED_MARKERS.find_range(&text)
+        && !has_nearby_negation(&text, start, end)
+    {
         let rest = &text[end..];
         let name: String = rest
             .chars()
@@ -186,6 +241,48 @@ mod extract_division_tests {
     #[test]
     fn no_marker_returns_none() {
         assert_eq!(extract_division("<p>Nothing electoral here</p>"), None);
+    }
+
+    #[test]
+    fn a_negated_enrolment_is_not_read_as_a_confirmed_match() {
+        // Regression: "enrolled for "/"division of " are plain substrings of
+        // exactly the negative sentences a real "you are NOT on the roll"
+        // response would use — an unguarded marker match read a genuine
+        // negative as a confirmed, high-confidence positive division.
+        assert_eq!(
+            extract_division("<p>You are not enrolled for the Division of Sydney</p>"),
+            None,
+            "a NOT-enrolled response must not resolve to a confirmed division"
+        );
+        assert_eq!(
+            extract_division("<p>Your enrolment for the Division of Sydney has lapsed</p>"),
+            None,
+            "a lapsed enrolment must not resolve to a confirmed division"
+        );
+        assert_eq!(
+            extract_division("<p>We were unable to find you enrolled for Bondi Beach</p>"),
+            None,
+            "an unable-to-find response must not resolve to a confirmed division"
+        );
+        assert_eq!(
+            extract_division("<p>No record found: not currently enrolled in Parramatta</p>"),
+            None,
+            "a no-record response must not resolve to a confirmed division"
+        );
+    }
+
+    #[test]
+    fn an_unrelated_negation_far_from_the_marker_does_not_suppress_a_real_match() {
+        // The negation window is deliberately narrow: a disclaimer elsewhere
+        // on the page (well outside NEGATION_WINDOW bytes of the marker)
+        // must not suppress a genuine, nearby positive match.
+        let filler = "x".repeat(200);
+        let html = format!(
+            "<p>Some unrelated notice: not found in a different system. {filler} You are enrolled for the Division of Sydney</p>"
+        );
+        let (name, _) =
+            extract_division(&html).expect("a distant negation must not suppress this match");
+        assert_eq!(name, "Sydney");
     }
 
     #[test]

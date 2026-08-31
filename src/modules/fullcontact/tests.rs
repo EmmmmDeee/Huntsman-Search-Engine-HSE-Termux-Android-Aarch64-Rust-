@@ -39,6 +39,21 @@ use super::*;
         let acme = es.iter().find(|e| e.value == "Acme Pty Ltd").expect("should succeed");
         let globex = es.iter().find(|e| e.value == "Globex").expect("should succeed");
         assert!(acme.confidence > globex.confidence);
+        // Regression: the top-level `organization` convenience field and
+        // `details.employment[]` commonly restate the same current employer —
+        // this fixture's own shape — which used to mint TWO Organisation
+        // entities for "Acme Pty Ltd" (one per source) instead of one.
+        let acme_count = es
+            .iter()
+            .filter(|e| e.kind == EntityKind::Organisation && e.value == "Acme Pty Ltd")
+            .count();
+        assert_eq!(
+            acme_count, 1,
+            "the same employer restated in organization + employment[] must not double-emit: {:?}",
+            es.iter()
+                .filter(|e| e.kind == EntityKind::Organisation)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

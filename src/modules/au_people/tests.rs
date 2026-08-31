@@ -82,6 +82,30 @@ fn parse_relatives_extracts_same_surname_family_and_binds_to_subject() {
 }
 
 #[test]
+fn parse_relatives_entities_never_carry_the_tps_au_anchor_tag() {
+    // Regression: `process()` only mints the "confirmed-in-directory" Person
+    // anchor when at least one accumulated entity carries the "tps-au" tag —
+    // the tag `parse_tps_html` (True People Search AU) applies to its own
+    // address/coordinates/email findings. `parse_relatives`'s output must
+    // never carry that tag, or a relatives-only hit (no confirmed TPS-AU
+    // record) would wrongly satisfy the anchor gate.
+    let html = r#"
+      <h2>Possible Relatives</h2>
+      <ul>
+        <li><a href="/x">Stephen R Moreau</a> — View Profile</li>
+        <li><a href="/y">HELENE MOREAU</a> Background Check</li>
+      </ul>
+    "#;
+    let rel = parse_relatives(html, "Fletcher Moreau", "s");
+    assert!(!rel.is_empty(), "fixture must actually produce relatives");
+    assert!(
+        rel.iter().all(|e| !e.has_tag("tps-au")),
+        "parse_relatives entities must never carry the tps-au anchor tag: {:?}",
+        rel.iter().map(|e| &e.tags).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn split_name_standard() {
     assert_eq!(split_name("Haigen Bamford"), ("Haigen", "Bamford"));
     assert_eq!(split_name("Mary Jane Watson"), ("Mary", "Jane Watson"));
@@ -108,6 +132,35 @@ fn parse_tps_html_skips_non_au_lines() {
     assert!(
         ents.iter().all(|e| e.kind != EntityKind::Address),
         "non-AU addresses should not be emitted"
+    );
+}
+
+#[test]
+fn parse_tps_html_chrome_emails_are_tps_au_tagged_but_never_address_kind() {
+    // Regression: the email-mining block scans the WHOLE page for any
+    // email-shaped string with no structural gate at all (unlike the
+    // address block's AU-state + postcode requirement) — a bare site
+    // support/contact address in the page's own chrome satisfies it just as
+    // readily as a genuine result. Both blocks tag "tps-au", so the
+    // "confirmed-in-directory" Person anchor in `process()` must key on
+    // `kind == Address`, not the tag alone, or a page with zero genuine
+    // address hits could still anchor purely on page chrome. This test pins
+    // the invariant that anchor-gating relies on: a chrome-only page (no AU
+    // state/postcode anywhere) yields "tps-au"-tagged emails but no Address.
+    let html = "<div>Results for Test Person</div>\
+                <p>No matching records found.</p>\
+                <footer>Questions? contact@truepeoplesearch.com.au</footer>";
+    let ents = parse_tps_html(html, "Test Person", "s");
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Email && e.has_tag("tps-au")),
+        "the chrome email must still be mined and tagged tps-au"
+    );
+    assert!(
+        !ents
+            .iter()
+            .any(|e| e.kind == EntityKind::Address && e.has_tag("tps-au")),
+        "a chrome-only page must yield no tps-au Address hit"
     );
 }
 

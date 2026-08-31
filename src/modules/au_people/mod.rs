@@ -149,7 +149,12 @@ pub(super) fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<
         .filter_map(|e| {
             let (lat, lon) = crate::util::city_coords::city_coords(&e.value)?;
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.42, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::derived_from(confidence::MEDIUM_LIGHT),
+                scan_id,
+            );
             c.tag(SRC);
             c.tag("addr-derived");
             c.tag("geoint");
@@ -169,16 +174,25 @@ pub(super) fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<
         .collect();
     out.extend(tps_coords);
 
-    // Mine emails.
+    // Mine emails. Same unattributed-line-scan reasoning as the address block
+    // above: a TPS results page lists the subject alongside relatives,
+    // associates, and unrelated same-name people, and this scan cannot tell
+    // whose email a line belongs to — an email mined here is no more
+    // attributable than an address line, so it gets the identical candidate
+    // quarantine (previously only the address/coordinates legs did).
     out.extend(page_emails(&stripped).into_iter().map(|email| {
         let mut e = Entity::new(EntityKind::Email, &email, confidence::LOW_MEDIUM, scan_id);
         e.tag(SRC);
         e.tag("au-directory");
         e.tag("tps-au");
         e.add_evidence(
-            Evidence::new(SRC, format!("TPS AU contact email for {full_name}"))
-                .with_attr("source", "tps_au"),
+            Evidence::new(
+                SRC,
+                format!("TPS AU contact email for {full_name} (attribution unconfirmed)"),
+            )
+            .with_attr("source", "tps_au"),
         );
+        e.demote_to_candidate();
         e
     }));
 
@@ -401,9 +415,11 @@ impl Module for AuPeople {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
+        // Phone was dropped when the White Pages AU leg was retired (see
+        // `max_timeout_ms` below) — only TPS AU remains, which never
+        // constructs a Phone entity.
         const KINDS: &[EntityKind] = &[
             EntityKind::Address,
-            EntityKind::Phone,
             EntityKind::Email,
             EntityKind::Person,
             EntityKind::Coordinates,
@@ -468,9 +484,26 @@ impl Module for AuPeople {
         result.extend(parse_tps_html(&html, full_name, &ctx.scan_id));
         result.extend(parse_relatives(&html, full_name, &ctx.scan_id));
 
-        // Emit a Person anchor for the name if we got any results — confirms
-        // the name exists in AU residential directories.
-        if !result.entities.is_empty() {
+        // Emit a Person anchor for the name if the page yielded a genuine
+        // ADDRESS-LINE hit from `parse_tps_html`'s results-page scan —
+        // narrowly gated (an AU state code AND a plausible postcode on the
+        // same line), unlike that function's email-mining block, which tags
+        // "tps-au" too but scans the WHOLE page for any email-shaped string
+        // with no structural gate at all — a bare support/contact address in
+        // the page's own chrome would satisfy that tag even on a genuinely
+        // empty-result page. `parse_relatives` entities are deliberately
+        // excluded from this check too: they're tagged "relatives"/
+        // "family-candidate" and, by that function's own construction, NEVER
+        // include the subject's own name (`name_lc == subject_lc` is
+        // explicitly skipped) — a page listing only relatives of `full_name`
+        // proves a namesake or family member exists in the directory, not
+        // that `full_name` itself does, so it must not confidently confirm
+        // this Person anchor.
+        if result
+            .entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Address && e.has_tag("tps-au"))
+        {
             let mut person = Entity::new(
                 EntityKind::Person,
                 full_name,

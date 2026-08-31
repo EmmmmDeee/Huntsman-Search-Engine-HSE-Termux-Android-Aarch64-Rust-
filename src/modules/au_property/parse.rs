@@ -7,6 +7,18 @@ use crate::core::{
 
 pub(super) const SRC: &str = "au_property";
 
+/// Owner name matched with suburb + state only — no postcode found nearby.
+/// The base title-register match tier; see the module doc's confidence model.
+const OWNER_MATCH_CONF: f64 = confidence::NOTABLE;
+/// Owner name matched with suburb + state + a corroborating postcode
+/// extracted nearby. Deliberately one notch above `confidence::ATTRIBUTED`
+/// (0.72, `au_electoral`'s own suburb-match tier): the extra extracted field
+/// is itself weak corroboration of a genuine structured record, and this
+/// module's source class (title register) outranks a directory or electoral
+/// roll per the module doc's sourcing note. Not itself a named ladder rung —
+/// kept at its calibrated value rather than rounded onto a neighbouring one.
+const OWNER_MATCH_WITH_POSTCODE_CONF: f64 = 0.74;
+
 // ─── Name parsing helpers ─────────────────────────────────────────────────
 
 /// Split `"First Last"` into `("First", "Last")`. Pure.
@@ -175,7 +187,11 @@ pub(crate) fn record_to_entities(rec: &PropertyRecord, scan_id: &str) -> Vec<Ent
         Some(pc) => format!("{}, {} {}", rec.suburb, rec.state, pc),
         None => format!("{}, {}", rec.suburb, rec.state),
     };
-    let conf = if rec.postcode.is_some() { 0.74 } else { 0.62 };
+    let conf = if rec.postcode.is_some() {
+        OWNER_MATCH_WITH_POSTCODE_CONF
+    } else {
+        OWNER_MATCH_CONF
+    };
     let evid = Evidence::new(
         SRC,
         format!("Property title owner match: {}", rec.owner_name),

@@ -28,6 +28,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -40,7 +41,7 @@ const SRC: &str = "payid";
 /// fact about the identifier, not evidence it belongs to the subject; because
 /// `payid` is enrichment-only it never raises the merged entity's tier, and the
 /// floor only matters for an identifier this module is the first to surface.
-const PAYID_CONF: f64 = 0.30;
+const PAYID_CONF: f64 = confidence::SPECULATIVE;
 
 /// PayID enrichment module. See the module docs for the scope/boundary.
 pub struct PayId;
@@ -71,10 +72,15 @@ impl Module for PayId {
     }
 
     fn category(&self) -> ModuleCategory {
-        // People-centric enrichment: a payment identifier pivots to the
-        // registered account-holder NAME (ATT&CK T1589.003 / T1591.004 via the
-        // category default).
         ModuleCategory::People
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // People default is T1589.003 + T1591.004 (Identify Roles), but PayID
+        // never surfaces a role/title — every pivot here (confirm-payee, or the
+        // ABN register) resolves to the account-holder's NAME only. Trim the
+        // over-claimed role technique.
+        &["T1589.003"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {

@@ -123,10 +123,12 @@ impl Module for FullContact {
     fn attack_techniques(&self) -> &'static [&'static str] {
         // person.enrich resolves the owner's name + title (the People default
         // T1589.003 + T1591.004), their employer(s) (T1591.002 Business
-        // Relationships), location (T1591.001 Physical Locations), and linked
-        // social handles (T1593.001 Social Media). Superset of the default —
-        // coverage cannot regress.
+        // Relationships), location (T1591.001 Physical Locations), linked
+        // social handles (T1593.001 Social Media), and standalone Email
+        // entities from details.emails[] (T1589.002 Email Addresses).
+        // Superset of the default — coverage cannot regress.
         &[
+            "T1589.002",
             "T1589.003",
             "T1591.004",
             "T1591.002",
@@ -238,6 +240,12 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
         }
     }
     // Employer(s): the top-level `organization` plus structured employment.
+    // The two commonly restate the same current employer (the convenience
+    // field mirrors the first/current entry in the structured array), so
+    // dedupe case-insensitively — same pattern as `seen_loc` below — or one
+    // real employer relationship mints two Organisation entities at two
+    // different confidence tiers for the identical value.
+    let mut seen_org = std::collections::HashSet::new();
     let mut orgs: Vec<&str> = Vec::new();
     if let Some(o) = r.organization.as_deref() {
         orgs.push(o);
@@ -248,6 +256,10 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
             .iter()
             .filter_map(|e| e.name.as_deref()),
     );
+    let orgs: Vec<&str> = orgs
+        .into_iter()
+        .filter(|o| seen_org.insert(o.to_lowercase()))
+        .collect();
     orgs.iter().enumerate().for_each(|(i, o)| {
         let conf = if i == 0 {
             confidence::HIGH

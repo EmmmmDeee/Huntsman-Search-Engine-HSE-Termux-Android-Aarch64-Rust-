@@ -296,12 +296,13 @@ fn attack_overrides_attribute_collection_modules_precisely() {
     );
 
     // Gravatar: People category, but profile location → T1591.001 Physical
-    // Locations. T1591.004 (Identify Roles) dropped — Gravatar profiles carry
+    // Locations, owner-published emails → T1589.002, employer Organisation →
+    // T1591.002. T1591.004 (Identify Roles) dropped — Gravatar profiles carry
     // no role information.
     assert_eq!(
         techniques("gravatar"),
-        vec!["T1591.001", "T1589.003"],
-        "gravatar → Physical Locations + Employee Names (no roles)"
+        vec!["T1591.001", "T1589.002", "T1589.003", "T1591.002"],
+        "gravatar → Physical Locations + Email Addresses + Employee Names + Business Relationships (no roles)"
     );
     assert!(
         !techniques("gravatar").contains(&"T1591.004"),

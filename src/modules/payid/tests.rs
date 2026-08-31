@@ -13,6 +13,19 @@ fn ctx() -> ModuleContext {
 }
 
 #[test]
+fn attack_techniques_does_not_over_claim_role_identification() {
+    // Regression: the People category default (T1589.003 + T1591.004) was
+    // inherited unmodified, but PayID never surfaces a role/title — every
+    // pivot (confirm-payee, or the ABN register) resolves to a NAME only.
+    let m = PayId;
+    assert!(m.attack_techniques().contains(&"T1589.003"));
+    assert!(
+        !m.attack_techniques().contains(&"T1591.004"),
+        "PayID never identifies a role — only the account-holder name"
+    );
+}
+
+#[test]
 fn accepts_only_payid_eligible_kinds() {
     let m = PayId;
     assert!(m.accepts(&Target::new(TargetKind::Email, "a@b.com")));

@@ -115,3 +115,41 @@ use super::*;
             "duplicate name across UIDs must be emitted once"
         );
     }
+
+    #[test]
+    fn extract_ignores_a_second_key_whose_uids_never_name_the_queried_email() {
+        // Regression: an HKP index response can carry more than one `pub:`
+        // block. If a keyserver ever returns an unrelated key alongside the
+        // real match (fuzzy fallback despite `exact=on`, keyserver bug), NONE
+        // of that second key's own UIDs name the queried address — its name
+        // and alternate email must not be misattributed to this query.
+        let body = "info:1:2\n\
+            pub:ABCDEF0123456789ABCDEF0123456789ABCDEF01:1:4096:1500000000::\n\
+            uid:Jordan%20Avery%20%3Cmatt%40example.com%3E:1500000000::\n\
+            pub:1111111111111111111111111111111111111111:1:4096:1500000000::\n\
+            uid:Someone%20Else%20%3Cstranger%40other.com%3E:1500000000::\n";
+        let mut r = ModuleResult::new();
+        extract(body, "matt@example.com", "scan", &mut r);
+
+        assert!(
+            r.entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Person && e.value == "Jordan Avery"),
+            "the actually-matching key's owner must still surface"
+        );
+        assert!(
+            !r.entities
+                .iter()
+                .any(|e| e.value.contains("Someone Else") || e.value.contains("stranger")),
+            "an unrelated key's name/email must not be attributed to this query: {:?}",
+            r.entities
+        );
+        assert!(
+            r.entities
+                .iter()
+                .all(|e| e.kind != EntityKind::Credential
+                    || e.value == "pgp:abcdef0123456789abcdef0123456789abcdef01"),
+            "the unrelated key must not be minted as a Credential either: {:?}",
+            r.entities
+        );
+    }

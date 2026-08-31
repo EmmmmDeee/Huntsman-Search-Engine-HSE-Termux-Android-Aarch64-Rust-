@@ -43,13 +43,22 @@
 //!
 //! MITRE ATT&CK:
 //!   * T1591.001 — Determine Physical Locations (property address + suburb)
-//!   * T1591.002 — Business Relationships (co-owners, trusts, companies)
 //!   * T1589.003 — Employee Names (confirms legal registered name)
 //!
-//! Confidence model:
-//!   * Registered owner with suburb + state: 0.74 (title register is
-//!     government-maintained, higher than directory or electoral sources)
-//!   * Suburb + postcode only (no street address exposed): 0.62
+//! Note: this module does NOT claim T1591.002 (Business Relationships). Every
+//! `PropertyRecord::owner_name` is always just the queried `full_name` echoed
+//! back — there is no co-owner, trust, or company extraction here, so a
+//! "business relationships" claim would be phantom.
+//!
+//! Confidence model — a title register outranks a directory or electoral
+//! roll (per the sourcing note above), so both tiers sit at or above
+//! `au_electoral`'s own suburb-match tier (`confidence::ATTRIBUTED`, 0.72):
+//!   * Owner name matched with suburb + state + a corroborating postcode
+//!     extracted nearby: 0.74 — one notch above `ATTRIBUTED`, since the extra
+//!     extracted field is itself weak corroboration of a genuine structured
+//!     record rather than an isolated name/suburb coincidence.
+//!   * Owner name matched with suburb + state only (no postcode found
+//!     nearby): `confidence::NOTABLE` (0.62) — the base title-register tier.
 //!   * Coordinates from suburb centroid: confidence::MEDIUM_PLUS (derived, not raw)
 //!
 //! Orthogonal to `au_electoral` (electoral roll), `au_people` (residential
@@ -99,7 +108,7 @@ impl Module for AuProperty {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        &["T1591.001", "T1591.002", "T1589.003"]
+        &["T1591.001", "T1589.003"]
     }
 
     fn category(&self) -> ModuleCategory {

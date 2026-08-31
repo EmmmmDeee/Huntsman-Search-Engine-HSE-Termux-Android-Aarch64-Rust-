@@ -115,9 +115,6 @@ impl Module for Pgp {
 ///   `uid:<URL-encoded "Name <email>">:<created>:<expires>:<flags>`
 fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResult) {
     let query_lower = query_email.to_lowercase();
-    let mut fingerprint = String::new();
-    // Collect a few fingerprints for evidence; the most recent `pub:` applies to
-    // the `uid:` lines that follow it.
     let mut seen_person = std::collections::HashSet::new();
     let mut seen_email = std::collections::HashSet::new();
     // fingerprint → every email bound to that key (the queried one plus each UID
@@ -127,53 +124,86 @@ fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResu
     let mut key_emails: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
         std::collections::BTreeMap::new();
 
+    // Group the flat line stream into per-key blocks: each `pub:` line starts a
+    // new key, and every `uid:` line up to the next `pub:` belongs to it. A
+    // `uid:` line with no preceding `pub:` is malformed input and dropped.
+    let mut blocks: Vec<(String, Vec<&str>)> = Vec::new();
     for line in body.lines() {
         if let Some(rest) = line.strip_prefix("pub:") {
-            fingerprint = rest.split(':').next().unwrap_or("").to_string();
-            continue;
-        }
-        let Some(rest) = line.strip_prefix("uid:") else {
-            continue;
-        };
-        let raw_uid = rest.split(':').next().unwrap_or("");
-        let uid = urldecode(raw_uid);
-        let (name, email) = split_uid(&uid);
-
-        let ev = || {
-            let mut e = Evidence::new(SRC, "PGP keyserver User ID");
-            if !fingerprint.is_empty() {
-                e = e.with_attr("key_fingerprint", &fingerprint);
-            }
-            e.with_attr("uid", &uid)
-        };
-
-        if let Some(name) = name
-            && name.trim().contains(' ')
-            && seen_person.insert(name.to_lowercase())
+            blocks.push((rest.split(':').next().unwrap_or("").to_string(), Vec::new()));
+        } else if line.starts_with("uid:")
+            && let Some((_, uids)) = blocks.last_mut()
         {
-            let mut e = Entity::new(EntityKind::Person, name.trim(), confidence::HIGH, scan_id);
-            e.tag(SRC);
-            e.add_evidence(ev());
-            result.push(e);
+            uids.push(line);
         }
-        if let Some(email) = email {
-            let lower = email.to_lowercase();
-            if lower.contains('@') && !fingerprint.is_empty() {
-                // Bind EVERY UID email (including the queried one) to the key, so
-                // the Credential carries the full controller set for AU-048.
-                key_emails
-                    .entry(fingerprint.clone())
-                    .or_default()
-                    .insert(lower.clone());
-            }
-            // Alternate emails bound to the same key are the high-value pivot;
-            // the queried email itself adds nothing new as a standalone entity.
-            if lower.contains('@') && lower != query_lower && seen_email.insert(lower) {
-                let mut e = Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
+    }
+
+    for (fingerprint, uid_lines) in &blocks {
+        let decoded: Vec<(Option<String>, Option<String>, String)> = uid_lines
+            .iter()
+            .map(|line| {
+                let rest = line.strip_prefix("uid:").unwrap_or(line);
+                let raw_uid = rest.split(':').next().unwrap_or("");
+                let uid = urldecode(raw_uid);
+                let (name, email) = split_uid(&uid);
+                (name.map(str::to_string), email.map(str::to_string), uid)
+            })
+            .collect();
+
+        // `exact=on` is a per-KEY match guarantee from the keyserver, not a
+        // per-UID one: a key can legitimately carry several UIDs (that's the
+        // whole point — "every other email bound to the same key"), but if the
+        // server ever returns an unrelated key (fuzzy fallback, keyserver bug),
+        // NONE of its UIDs name the queried address. Trusting that key's other
+        // UIDs would misattribute a stranger's name and emails to this query,
+        // so gate the whole key on actually containing the queried email.
+        let key_matches_query = decoded.iter().any(|(_, email, _)| {
+            email
+                .as_deref()
+                .is_some_and(|e| e.to_lowercase() == query_lower)
+        });
+        if !key_matches_query {
+            continue;
+        }
+
+        for (name, email, uid) in &decoded {
+            let ev = || {
+                let mut e = Evidence::new(SRC, "PGP keyserver User ID");
+                if !fingerprint.is_empty() {
+                    e = e.with_attr("key_fingerprint", fingerprint);
+                }
+                e.with_attr("uid", uid)
+            };
+
+            if let Some(name) = name
+                && name.trim().contains(' ')
+                && seen_person.insert(name.to_lowercase())
+            {
+                let mut e = Entity::new(EntityKind::Person, name.trim(), confidence::HIGH, scan_id);
                 e.tag(SRC);
-                e.tag("pgp-linked");
                 e.add_evidence(ev());
                 result.push(e);
+            }
+            if let Some(email) = email {
+                let lower = email.to_lowercase();
+                if lower.contains('@') && !fingerprint.is_empty() {
+                    // Bind EVERY UID email (including the queried one) to the
+                    // key, so the Credential carries the full controller set.
+                    key_emails
+                        .entry(fingerprint.clone())
+                        .or_default()
+                        .insert(lower.clone());
+                }
+                // Alternate emails bound to the same key are the high-value
+                // pivot; the queried email itself adds nothing new standalone.
+                if lower.contains('@') && lower != query_lower && seen_email.insert(lower) {
+                    let mut e =
+                        Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
+                    e.tag(SRC);
+                    e.tag("pgp-linked");
+                    e.add_evidence(ev());
+                    result.push(e);
+                }
             }
         }
     }
