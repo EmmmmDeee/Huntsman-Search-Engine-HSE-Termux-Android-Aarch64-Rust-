@@ -1,7 +1,7 @@
 # Run State
 
 **Phase:** Phase 0 complete → targeted remediation (this codebase does not need the migration loop; see below)
-**Current item:** offline vendored build verification (in progress, background)
+**Current item:** final deliverable assembly (offline vendored build verification SUCCEEDED — see `offline_build_result.txt`)
 **Last checkpoint:** PR #547 merged (`e67e0c6ba`) — CI green, artifact ledger closed
 
 ## Open counts
@@ -13,6 +13,7 @@
 | Issue ledger (fresh census, this run) | 0 | 2 (PR #544, PR #547) | 2 |
 | Issue ledger (pre-existing `.agent/state.json`) | 1 recorded as OPEN as of its own last update (OD-20, Low-Medium severity, ip2location hosting signal — explicitly deferred pending a live-API check neither that cycle nor this run has performed) | 40+ across 42 recorded cycles | — |
 | Retention manifest | 0 flagged defects (count skew across 3 surfaces noted, not established as a gap) | — | 3 surfaces |
+| Enforcement follow-ups (infrastructure gaps, not defects) | 1 (`gate.sh` has no automated wasm-ui/pkg round-trip drift check — proven by hand this run, not yet wired into the gate; see `PHASE0_AUDIT.md` §6) | — | 1 |
 
 ## The headline finding
 

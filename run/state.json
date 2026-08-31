@@ -40,7 +40,8 @@
       "cargo_deny": "clean (root + hse-core + wasm-ui, verified this session)",
       "cargo_machete": "clean (root + hse-core + wasm-ui, verified this session)",
       "failing_tests": 0,
-      "open_findings_this_session": 0
+      "open_defect_findings_this_session": 0,
+      "open_followups_this_session": ["enforcement.drift_check_gap (see below) - a disclosed infrastructure gap, not a defect"]
     },
     "issues_closed_this_run": [
       "PR #544: hse-core (144 tests) + wasm-ui had zero CI/gate coverage since PR #509's crate split; wired into ci.yml + scripts/gate.sh + audit.yml (fmt/clippy/test/doc + audit/deny/machete/dep-cooldown)",
@@ -58,7 +59,7 @@
   },
   "offline_build": {
     "vendor_dir_created": "vendor/ (543MB, 448 packages, cargo vendor --sync across all 4 manifests) — NOT committed to the live branch (see rationale in PHASE0_AUDIT.md); packaged into the final deliverable zip only",
-    "offline_build_verification": "in progress / see run/offline_build_result.txt"
+    "offline_build_verification": "SUCCEEDED - cargo build --offline --locked against only the vendored tree completed with exit 0 in 2m46s, zero network access; see run/offline_build_result.txt for the full command and raw output"
   },
   "final_deliverable": {
     "status": "not yet produced",
