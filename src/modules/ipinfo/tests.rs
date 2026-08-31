@@ -84,8 +84,9 @@ use super::*;
     #[test]
     fn coordinates_carry_the_originating_ip_for_login_ip_recognition() {
         // Like `ip_geo`, this module's Coordinates fix passes the shared
-        // "is this actually the subject" trust gate (CDN/anycast edges are
-        // dropped entirely, see `cdn_edge_ip_yields_no_entities`) and uses the
+        // "is this actually the subject" trust gate (CDN/anycast edges have
+        // their Coordinates/Address suppressed, see
+        // `cdn_edge_ip_suppresses_geo_but_keeps_network_entities`) and uses the
         // same recalibrated-confidence `coarse_provider_coords` helper — a
         // sibling in the same IP-geolocation family. The correlator's shared
         // `person_login_ip_coords` (used by `best_au_location_estimate` and
@@ -104,11 +105,13 @@ use super::*;
     }
 
     #[test]
-    fn cdn_edge_ip_yields_no_entities() {
+    fn cdn_edge_ip_suppresses_geo_but_keeps_network_entities() {
         // A Cloudflare anycast edge IP (104.16.0.0/13) geolocates to whichever
-        // datacenter answered — never the subject. ipinfo drops the whole record
-        // (the city/coords/org all describe infrastructure) rather than seed a
-        // false subject location into identity-location correlation.
+        // datacenter answered — never the subject. Regression: this used to drop
+        // the WHOLE record (including Organisation/Asn/Domain), but those describe
+        // the network, not a place — "AS13335 Cloudflare, Inc." is true
+        // infrastructure attribution regardless of the IP's location trust. Only
+        // Coordinates/Address (the place-based findings) may be suppressed.
         let d = data(
             r#"{"ip":"104.16.1.1","hostname":"edge.cloudflare.example",
                 "city":"San Francisco","region":"California","country":"US",
@@ -116,9 +119,27 @@ use super::*;
         );
         let ents = build_entities("104.16.1.1", &d, "s");
         assert!(
-            ents.is_empty(),
-            "CDN-edge IP must yield no entities, got {ents:?}"
+            one(&ents, EntityKind::Coordinates).is_none(),
+            "CDN-edge geolocation is the datacenter, not the subject: {ents:?}"
         );
+        assert!(
+            one(&ents, EntityKind::Address).is_none(),
+            "CDN-edge address is infrastructure, not the subject's: {ents:?}"
+        );
+        assert_eq!(
+            one(&ents, EntityKind::Organisation).expect("should survive").value,
+            "AS13335 Cloudflare, Inc.",
+            "ASN/Organisation attribution is true regardless of geo trust: {ents:?}"
+        );
+        assert_eq!(
+            one(&ents, EntityKind::Asn).expect("should survive").value,
+            "AS13335"
+        );
+        assert_eq!(
+            one(&ents, EntityKind::Domain).expect("should survive").value,
+            "edge.cloudflare.example"
+        );
+
         // Sanity: the same record on a non-CDN IP DOES produce the geo entities
         // the CDN gate suppressed — a Coordinates (from `loc`) and an Address
         // (from city/region). Asserting the kinds, not just non-emptiness, makes

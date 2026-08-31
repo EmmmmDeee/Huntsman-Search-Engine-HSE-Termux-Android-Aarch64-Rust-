@@ -147,10 +147,34 @@ use super::*;
     }
 
     #[test]
+    fn build_asns_dedupes_a_repeated_asn() {
+        // A repeated value in `asns` must not yield two ASN entities — matches
+        // `build_announced_prefixes`'s own BTreeSet dedup for the same file's
+        // other array-shaped field.
+        let ni = NetworkInfo {
+            asns: vec!["15169".into(), "15169".into()],
+            prefix: None,
+        };
+        let es = build_asns(&ni, "scan");
+        assert_eq!(
+            es.iter().filter(|e| e.kind == EntityKind::Asn).count(),
+            1,
+            "a repeated ASN must be deduplicated: {es:?}"
+        );
+    }
+
+    #[test]
     fn build_abuse_emits_multiple_distinct() {
         // Two different non-infrastructure contacts → both emitted.
         let emails = vec!["ops@example.org".to_string(), "sec@example.net".to_string()];
         let es = build_abuse(&emails, "scan");
         assert_eq!(es.len(), 2);
         assert!(es.iter().all(|e| e.kind == crate::core::entity::EntityKind::Email));
+    }
+
+    #[test]
+    fn build_abuse_dedupes_a_repeated_contact() {
+        let emails = vec!["ops@example.org".to_string(), "ops@example.org".to_string()];
+        let es = build_abuse(&emails, "scan");
+        assert_eq!(es.len(), 1, "a repeated abuse contact must be deduplicated: {es:?}");
     }

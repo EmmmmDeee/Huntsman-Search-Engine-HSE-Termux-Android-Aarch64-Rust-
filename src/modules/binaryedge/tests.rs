@@ -286,6 +286,45 @@ fn subdomains_are_emitted_and_filtered() {
 }
 
 #[test]
+fn a_host_not_actually_under_the_queried_domain_gets_lower_confidence_and_no_subdomain_tag() {
+    // Regression: BinaryEdge's subdomain-enumeration endpoint can echo back a
+    // host that passes the blank/self-echo/dotless/IP-literal filters yet
+    // isn't actually a subdomain of the queried domain (a CNAME target, an
+    // unrelated host). Mirrors c99's `non_subdomain_entry_gets_lower_
+    // confidence_and_no_subdomain_tag` for the identical endpoint shape.
+    use crate::core::confidence;
+    let body = sub_body(
+        r#"{
+            "total": 2,
+            "events": ["m.example.com", "cdn.fastly.net"]
+        }"#,
+    );
+    let ents = build_subdomain_entities("example.com", &body, "s");
+    assert_eq!(ents.len(), 2, "both hosts still reported: {ents:?}");
+
+    let real_sub = ents
+        .iter()
+        .find(|e| e.value == "m.example.com")
+        .expect("genuine subdomain present");
+    assert!(real_sub.has_tag("subdomain"));
+    assert!((real_sub.confidence - confidence::EXPERT).abs() < 1e-9);
+
+    let unverified = ents
+        .iter()
+        .find(|e| e.value == "cdn.fastly.net")
+        .expect("unrelated host still reported, just not as a verified subdomain");
+    assert!(
+        !unverified.has_tag("subdomain"),
+        "a host not under the queried domain must not carry the subdomain tag"
+    );
+    assert!(
+        (unverified.confidence - confidence::MEDIUM_PLUS).abs() < 1e-9,
+        "an unverified host must not outrank a verified one: {}",
+        unverified.confidence
+    );
+}
+
+#[test]
 fn subdomain_total_falls_back_to_events_len_when_absent() {
     let body = sub_body(r#"{"events":["a.example.com","b.example.com"]}"#);
     let ents = build_subdomain_entities("example.com", &body, "s");

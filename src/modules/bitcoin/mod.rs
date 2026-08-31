@@ -278,8 +278,11 @@ impl Module for Bitcoin {
 
     fn attack_techniques(&self) -> &'static [&'static str] {
         // T1589 Gather Victim Identity Information — a wallet cluster is an
-        // identity-linked financial surface.
-        &["T1589"]
+        // identity-linked financial surface. T1596 Search Open Technical
+        // Databases — queries a public block explorer (blockstream.info's
+        // Esplora API), the same source/action `chain_intel` maps to T1596
+        // for its own BTC/LTC lookups.
+        &["T1589", "T1596"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
