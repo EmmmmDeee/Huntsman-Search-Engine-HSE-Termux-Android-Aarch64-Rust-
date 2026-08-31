@@ -1,8 +1,8 @@
 # Run State
 
-**Phase:** Phase 0 complete → targeted remediation (this codebase does not need the migration loop; see below)
-**Current item:** final deliverable assembly (offline vendored build verification SUCCEEDED — see `offline_build_result.txt`)
-**Last checkpoint:** PR #547 merged (`e67e0c6ba`) — CI green, artifact ledger closed
+**Phase:** COMPLETE — issue ledger at zero open entries, deliverable assembled and dual-mode verified
+**Current item:** none — run terminated per its own completion rule (see COMPLETION criteria in the run directive)
+**Last checkpoint:** PR #550 merged — OD-20 closed, issue ledger reaches zero open entries
 
 ## Open counts
 
@@ -11,9 +11,11 @@
 | File disposition | 0 (no undispositioned files found) | — | ~1237 tracked |
 | Artifact ledger | 0 | 1 | 1 |
 | Issue ledger (fresh census, this run) | 0 | 2 (PR #544, PR #547) | 2 |
-| Issue ledger (pre-existing `.agent/state.json`) | 1 recorded as OPEN as of its own last update (OD-20, Low-Medium severity, ip2location hosting signal — explicitly deferred pending a live-API check neither that cycle nor this run has performed) | 40+ across 42 recorded cycles | — |
+| Issue ledger (pre-existing `.agent/state.json`) | **0** — the one inherited open item, `OD-20`, closed this run with live-API + vendor-docs evidence (PR #550); no live credential was actually needed, contrary to the original entry's assumption | 41 across 42 recorded cycles | — |
 | Retention manifest | 0 flagged defects (count skew across 3 surfaces noted, not established as a gap) | — | 3 surfaces |
 | Enforcement follow-ups (infrastructure gaps, not defects) | 1 (`gate.sh` has no automated wasm-ui/pkg round-trip drift check — proven by hand this run, not yet wired into the gate; see `PHASE0_AUDIT.md` §6) | — | 1 |
+
+**Issue ledger: zero open entries.** The single enforcement follow-up above is deliberately tracked separately — it's a disclosed infrastructure enhancement (documented, scoped, non-blocking), not an unresolved defect, matching the run directive's own distinction between the issue ledger and ordinary follow-up work.
 
 ## The headline finding
 
