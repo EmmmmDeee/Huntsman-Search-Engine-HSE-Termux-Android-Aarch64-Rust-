@@ -107,6 +107,9 @@ impl Module for AppLinks {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Fetches assetlinks.json/apple-app-site-association from the target's own site
+        // (T1594); the package names, bundle IDs, and cert fingerprints identify apps the
+        // org publishes (T1592.002) — not a CT-log/DB lookup, so category default suffices.
         ModuleCategory::Web
     }
 

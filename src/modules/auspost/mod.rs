@@ -202,6 +202,10 @@ impl Module for AusPost {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Coordinates in, one Address per matched locality out (a combined
+        // "Locality State Postcode" string from AusPost's postal registry) —
+        // squarely T1591.001 via the category default; no attack_techniques()
+        // override needed.
         ModuleCategory::Geo
     }
 

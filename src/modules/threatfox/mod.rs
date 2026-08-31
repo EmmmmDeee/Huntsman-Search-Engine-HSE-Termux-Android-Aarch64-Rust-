@@ -229,6 +229,9 @@ impl Module for ThreatFox {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Key-gated abuse.ch ThreatFox query (curated vendor DB): submits IOC via search_ioc,
+        // collects only threat-intel attributes (family, type, tags, confidence, first/last-seen)
+        // — no scanning or victim data — so T1597.001 via the default is a precise, tight match.
         ModuleCategory::Threat
     }
 

@@ -79,6 +79,10 @@ HUNTSMAN_GITHUB_TOKEN="insert_github_personal_access_token_here"
 HUNTSMAN_TROVE_KEY="insert_nla_trove_key_here"
 HUNTSMAN_BREACHDIR_KEY="insert_breachdirectory_key_here"
 HUNTSMAN_HUNTER_KEY="insert_hunter_io_key_here"
+# [RESERVED] the vendor (nubela.co) permanently sunset the Proxycurl API on
+# 2026-08-26 — no key, new or old, will ever work again. The proxycurl module
+# stays registered (entity/evidence shape kept as a paper trail) but its
+# `process` short-circuits unconditionally without ever reading this key.
 HUNTSMAN_PROXYCURL_KEY="insert_proxycurl_key_here"
 # [RESERVED] not yet wired to a module (xposed_or_not + hudsonrock modules run
 # key-free today; these keys are placeholders for future paid tiers):

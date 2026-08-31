@@ -4,6 +4,12 @@
 //!
 //! Modules ported so far:
 //! - [`theme`] — `src/web/js/theme.js`
+//! - [`confidence`] — the `ENRICHMENT_SOURCES`/`sourceCount`/`effC`/`classify`
+//!   cluster in `src/web/js/helpers.js`
+//! - [`scan_info`] — `src/web/js/scan_info/*.js`, one submodule per file
+//! - [`views`] — `src/web/js/views/*.js`'s pure, DOM-free rendering helpers
+//!   (dash.js's module-health panel; scans.js's budget panel and scan table;
+//!   diff.js's scan-comparison result rendering)
 //!
 //! The compiled output is checked into `pkg/` and embedded into
 //! `src/api/routes/mod.rs`'s `APP_FILES` the same way every hand-written JS
@@ -13,11 +19,38 @@
 //! cargo build --manifest-path wasm-ui/Cargo.toml --target wasm32-unknown-unknown --release
 //! wasm-bindgen --target web --no-typescript --out-dir wasm-ui/pkg \
 //!     --out-name hse_wasm_ui wasm-ui/target/wasm32-unknown-unknown/release/hse_wasm_ui.wasm
+//! # Optional but recommended (needs `binaryen`'s wasm-opt; skip if unavailable
+//! # — the Cargo.toml release profile alone already does most of the work):
+//! wasm-opt -Os --enable-sign-ext --enable-bulk-memory --enable-mutable-globals \
+//!     --enable-nontrapping-float-to-int \
+//!     -o wasm-ui/pkg/hse_wasm_ui_bg.wasm wasm-ui/pkg/hse_wasm_ui_bg.wasm
 //! ```
+//! The `wasm-opt` feature flags are pinned to exactly what this toolchain's
+//! `wasm32-unknown-unknown` output actually uses (found by starting from none
+//! and adding only what `wasm-opt`'s own validator complained was missing) —
+//! deliberately not `--all-features` (nor no flags/MVP-only), either of which
+//! is wrong for this crate's purpose: MVP-only fails validation outright (the
+//! input already uses these features), while `--all-features` risks `wasm-opt`
+//! leaning on much newer features (SIMD, GC, threads, …) than this input
+//! actually needs, for a measured ~120 B difference — a bad trade when the
+//! entire point is a `.wasm` an older Android WebView can still load.
 
+pub mod confidence;
+pub mod entity_lookup;
+pub mod html;
+pub mod scan_info;
 pub mod theme;
+pub mod views;
 
 use wasm_bindgen::prelude::*;
+
+/// Converts any displayable error (chiefly a `serde_wasm_bindgen::Error` from
+/// a failed JS-value deserialization) into the `JsValue` a `#[wasm_bindgen]`
+/// function's `Result::Err` must carry, so it surfaces to the caller as a
+/// real thrown JS error instead of a silently-swallowed one.
+pub(crate) fn to_js_error(e: impl std::fmt::Display) -> JsValue {
+    JsValue::from_str(&e.to_string())
+}
 
 /// Runs automatically when the browser loads this module — no explicit JS
 /// call needed, unlike every other function here (which `wasm-bindgen`

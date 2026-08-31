@@ -1,7 +1,7 @@
 import { API } from '/static/js/api.js';
 import { $, esc } from '/static/js/helpers.js';
 import { nav } from '/static/js/router.js';
-import { renderBrowseTable } from '/static/js/scan_info/browse.js';
+import { renderBrowseTableHtml } from '/static/hse_wasm_ui.js';
 import { S } from '/static/js/state.js';
 
 export function globalSearch(e){
@@ -33,7 +33,8 @@ export async function renderSearch(v){
         <small>${rows.length} match${rows.length===1?'':'es'} for <code>${esc(q)}</code> across all scans</small>
       </h3>
     </div>
-    ${renderBrowseTable(rows)}`;
+    ${renderBrowseTableHtml(rows,
+      { entities_total: S.entitiesTotal ?? null, loaded_count: S.entities ? S.entities.length : null })}`;
   if (window.jQuery && jQuery.fn.tablesorter && rows.length){
     try { jQuery('#browse-table').tablesorter(); } catch(_){}
   }

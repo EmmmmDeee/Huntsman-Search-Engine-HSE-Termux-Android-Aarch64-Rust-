@@ -232,6 +232,14 @@ impl Module for Overpass {
         ModuleCategory::Geo
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Beyond characterising physical locations (T1591.001), this POSTs a
+        // structured OverpassQL query to the named public Overpass API to
+        // enumerate infrastructure nodes — the same query-a-named-open-database
+        // pattern opencellid tags T1596 for; no T1596.00x subtechnique fits OSM.
+        &["T1591.001", "T1596"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Coordinates];
         KINDS

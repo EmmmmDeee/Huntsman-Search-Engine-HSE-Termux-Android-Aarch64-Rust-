@@ -47,6 +47,16 @@ impl Module for BreachTimezone {
     }
 
     fn category(&self) -> ModuleCategory {
+        // The module makes no network calls; it clusters unix-timestamp digit
+        // windows already present in the target value/evidence to infer a UTC
+        // offset, then emits Address/Coordinates entities naming a physical
+        // region (e.g. "US/Pacific", "Australia Eastern") — exactly Determine
+        // Physical Locations. It never touches DNS/WHOIS/certs/scan databases
+        // (ruling out T1596.x), never queries open/closed external sources or
+        // performs scanning (ruling out T1593-T1597), and doesn't gather
+        // identity/network/host attributes (ruling out T1589/T1590/T1592), so
+        // the Geo category's default is both accurate and already maximally
+        // tight for this module.
         ModuleCategory::Geo
     }
 

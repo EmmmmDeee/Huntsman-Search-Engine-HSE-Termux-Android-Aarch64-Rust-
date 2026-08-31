@@ -76,6 +76,14 @@ impl Module for Psbdmp {
         ModuleCategory::Breach
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // T1589.001/.002 fit the breach-tagged email/username/domain lookup, but the
+        // module's core mechanic — emitting pastebin.com URLs per hit for `web_crawler` to
+        // fetch and re-scan — is Search Open Websites/Domains (T1593). No T1593
+        // sub-technique fits a paste-dump aggregator, so the parent ID is used.
+        &["T1589.001", "T1589.002", "T1593"]
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         // Live scan: psbdmp.ws averaged 14.8 s dispatch-to-done at 0/152 ok
         // (consistently unreachable from DC IPs). The API is a single fetch;

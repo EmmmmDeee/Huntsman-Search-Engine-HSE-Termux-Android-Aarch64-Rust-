@@ -1,8 +1,9 @@
 import { API } from '/static/js/api.js';
-import { $, $$, attr, esc, fmtDate, fmtDuration, kindPill, nowSec, statusPill, toast } from '/static/js/helpers.js';
+import { $, $$, toast } from '/static/js/helpers.js';
 import { nav } from '/static/js/router.js';
 import { S } from '/static/js/state.js';
 import { render } from '/static/js/main.js';
+import { renderScansTableHtml } from '/static/hse_wasm_ui.js';
 
 /* ═══════════ Page: SCANLIST (#/scans) ═══════════ */
 export async function renderScans(v){
@@ -33,7 +34,7 @@ export async function renderScans(v){
         <input id="scan-filter" type="search" class="form-control input-sm pull-right"
                style="width:240px;margin-top:-4px" placeholder="Filter scans…">
       </div>
-      <div id="scans-table-host">${renderScansTable(S.scans)}</div>
+      <div id="scans-table-host">${renderScansTableHtml(S.scans)}</div>
     </div>
   `;
   if (S.scans.length){ wireScansTable(); }
@@ -46,53 +47,9 @@ export async function renderScans(v){
       || (s.status||'').includes(q)
       || (s.id||'').includes(q)
     ) : S.scans;
-    $('#scans-table-host').innerHTML = renderScansTable(rows);
+    $('#scans-table-host').innerHTML = renderScansTableHtml(rows);
     wireScansTable();
   });
-}
-/* Daily API-quota dashboard from GET /api/v1/stats. Surfaces session
-   consumption for the budget-bounded paid providers (SeekNow / OathNet /
-   WiGLE) so the operator can see "maximum API effectiveness" at a glance, and
-   — critically — the WiGLE account email-verification flag: an unverified
-   WiGLE account silently fails every database query, so we flag it loudly. */
-export function budgetBar(b){
-  if(!b) return '<span class="text-muted">n/a</span>';
-  const used=b.session_used||0, cap=b.session_cap||0;
-  const pct = cap>0 ? Math.min(100, Math.round(used*100/cap)) : 0;
-  const col = b.quota_exhausted ? '#a94442' : (pct>=80?'#8a6d3b':'#3c763d');
-  const lab = cap>0 ? `${used} / ${cap}` : `${used}`;
-  return `<div style="display:flex;align-items:center;gap:6px">
-    <div style="flex:1;background:var(--bg-elevated-2);border-radius:3px;height:8px;overflow:hidden">
-      <div style="width:${pct}%;height:100%;background:${col}"></div></div>
-    <span class="text-muted" style="font-size:11px;min-width:64px;text-align:right">${esc(lab)}${b.quota_exhausted?' <b style="color:var(--danger)">FULL</b>':''}</span>
-  </div>`;
-}
-export function apiBudgetsPanel(s){
-  const w = s.wigle||{}, acct = w.account||{};
-  // verified === false is the silent-failure case; null = not yet polled.
-  const verBadge = acct.verified===false
-    ? '<span class="label label-danger" title="Email-verification not confirmed — WiGLE database queries will fail until the account email is verified at wigle.net">account UNVERIFIED</span>'
-    : acct.verified===true
-      ? '<span class="label label-success">account verified</span>'
-      : '<span class="label label-default" title="Not yet polled this session">account status unknown</span>';
-  const rows = [
-    ['SeekNow', budgetBar(s.seeknow)],
-    ['OathNet', budgetBar(s.oathnet)],
-    ['WiGLE · WiFi geo', budgetBar(w.geo)],
-    ['WiGLE · BSSID', budgetBar(w.bssid)],
-    ['WiGLE · cell', budgetBar(w.cell)],
-    ['WiGLE · bluetooth', budgetBar(w.bluetooth)],
-  ];
-  return `<div class="panel panel-default" style="margin-top:12px">
-    <div class="panel-heading"><b>API Budgets</b>
-      <span class="pull-right" style="font-size:12px">WiGLE ${verBadge}</span></div>
-    <div class="panel-body">
-      <table class="table table-condensed" style="margin-bottom:0">
-        ${rows.map(([k,v])=>`<tr><td style="width:160px;white-space:nowrap">${k}</td><td>${v}</td></tr>`).join('')}
-      </table>
-      <p class="text-muted" style="margin:8px 0 0;font-size:11px">Session quota consumed so far. Paid GEOINT (WiGLE) is gated to fire only after the free geo layer corroborates a coordinate through recursion (≥2 sources), so the daily allowance is spent confirming the subject's real location, not chasing noise.</p>
-    </div>
-  </div>`;
 }
 export function scanStats(scans){
   let running=0,complete=0,aborted=0,failed=0,entities=0;
@@ -107,42 +64,6 @@ export function scanStats(scans){
     entities += s.entity_count||0;
   }
   return {total:scans.length,running,complete,aborted,failed,entities};
-}
-export function renderScansTable(scans){
-  if (!scans.length){
-    return `<div class="empty-state"><h3>No scans yet</h3>
-            <p>Submit a target to start the first scan. Results stream in real-time
-               and are persisted to the local database.</p>
-            <a class="btn btn-danger" href="#/newscan"><i class="glyphicon glyphicon-plus"></i>&nbsp;Run Scan Now</a></div>`;
-  }
-  const rows = scans.map(s=>{
-    const kind = s.target?.kind||'—';
-    const dur = s.finished_at && s.started_at ? s.finished_at - s.started_at
-              : s.status==='running' ? nowSec()-(s.started_at||nowSec()) : null;
-    return `<tr>
-      <td><a href="#/scaninfo?id=${attr(s.id)}" class="link">${esc(s.target?.value||s.id)}</a></td>
-      <td>${kindPill(kind)}</td>
-      <td>${esc(fmtDate(s.started_at))}</td>
-      <td>${esc(fmtDuration(dur))}</td>
-      <td>${statusPill(s.status)}</td>
-      <td class="text-right">${s.entity_count||0}</td>
-      <td>
-        <a href="#/scaninfo?id=${attr(s.id)}" class="btn btn-default btn-xs" title="Open"><i class="glyphicon glyphicon-eye-open"></i></a>
-        ${(s.status==='running'||s.status==='pending')
-          ? `<button class="btn btn-warning btn-xs" data-cancel="${attr(s.id)}" title="Stop scan"><i class="glyphicon glyphicon-stop"></i></button>`
-          : `<button class="btn btn-default btn-xs" data-rerun="${attr(s.id)}" title="Rescan"><i class="glyphicon glyphicon-repeat"></i></button>`}
-        <a class="btn btn-default btn-xs" href="${API.csvUrl(s.id)}" data-download title="Export entities as CSV"><i class="glyphicon glyphicon-download-alt"></i></a>
-        <a class="btn btn-default btn-xs" href="${API.eventsLogUrl(s.id)}" download data-download title="Download the scan event log (.log)"><i class="glyphicon glyphicon-align-left"></i></a>
-        <button class="btn btn-danger btn-xs" data-delete="${attr(s.id)}" title="Delete"><i class="glyphicon glyphicon-trash"></i></button>
-      </td>
-    </tr>`;
-  }).join('');
-  return `<div class="table-responsive"><table class="table table-striped table-condensed tablesorter" id="scans-table">
-    <thead><tr>
-      <th>Target</th><th>Type</th><th>Created</th><th>Duration</th>
-      <th>Status</th><th class="text-right">Entities</th>
-      <th class="sorter-false">Actions</th>
-    </tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 export function wireScansTable(){
   if (window.jQuery && jQuery.fn.tablesorter) {
@@ -176,4 +97,3 @@ export function wireScansTable(){
     }, ()=>{});
   }));
 }
-

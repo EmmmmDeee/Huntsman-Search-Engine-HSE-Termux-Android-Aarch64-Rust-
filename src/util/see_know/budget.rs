@@ -115,7 +115,7 @@ pub fn scale_scan_cap_from_daily(daily_limit: u32) {
     );
 }
 
-/// Latched once per process when see-know.eu rejects the configured API key.
+/// Latched once per process when SeekNow rejects the configured API key.
 ///
 /// curl exits 0 on an HTTP 401 (it got a response), so the shared curl client
 /// reports success and the `{"error":"invalid_api_key"}` body parses to zero
@@ -219,7 +219,7 @@ pub(super) fn mark_quota_exhausted() {
     tracing::warn!("SeekNow daily quota exhausted — skipping remaining queries");
 }
 
-/// True once see-know.eu has rejected the key. The diagnostic accessor
+/// True once SeekNow has rejected the key. The diagnostic accessor
 /// `hse doctor`'s "SeekNow account" section reads after probing `/credits` —
 /// that probe (`endpoints::query_credits`) is the one call site that can
 /// classify+latch this from a FRESH process (before any data-bearing
@@ -234,12 +234,12 @@ pub(super) fn mark_key_invalid(body: &str) {
     // upgrade the plan.
     if !KEY_INVALID.swap(true, Ordering::Relaxed) {
         let reason = if body.contains("plan_required") {
-            "the account has no paid plan (plan_required) — upgrade at https://see-know.eu/pricing"
+            "the account has no paid plan (plan_required) — upgrade at https://see-know.ru/pricing"
         } else {
             "the API key was rejected (invalid_api_key)"
         };
         tracing::warn!(
-            "SeekNow (see-know.eu) lookups disabled: {reason}. Set a valid, \
+            "SeekNow lookups disabled: {reason}. Set a valid, \
              plan-enabled key via HUNTSMAN_SEEKNOW_KEY or the UI Settings panel."
         );
     }

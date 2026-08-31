@@ -230,6 +230,9 @@ impl Module for OpenMeteoGeo {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Single-purpose: resolves a self-reported place-name to coordinates via a free GeoNames
+        // geocoder; every field it emits is descriptive metadata about that place, not a separate
+        // technique — no DNS, WHOIS, network, host, or identity data touched. Matches Geo default.
         ModuleCategory::Geo
     }
 

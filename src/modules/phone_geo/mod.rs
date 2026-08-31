@@ -79,6 +79,13 @@ impl Module for PhoneGeo {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Both passes are pure offline lookup-table inference on the phone digits
+        // (no network calls) and both exclusively emit physical-location entities —
+        // area-code pass emits a city/region Address plus derived Coordinates,
+        // carrier pass emits a coarse country Address with a regional market-share
+        // hint — with no DNS/WHOIS/network-topology or identity data ever touched,
+        // so T1591.001 (Determine Physical Locations) tightly and accurately
+        // covers the module's entire output (via the category default).
         ModuleCategory::Geo
     }
 

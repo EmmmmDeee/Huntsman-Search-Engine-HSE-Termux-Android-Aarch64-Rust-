@@ -1,7 +1,8 @@
 import { API } from '/static/js/api.js';
-import { $, attr, esc, extLink, fmtDate, kindPill } from '/static/js/helpers.js';
+import { $, attr, esc, fmtDate } from '/static/js/helpers.js';
 import { nav } from '/static/js/router.js';
 import { S } from '/static/js/state.js';
+import { renderDiffResultHtml } from '/static/hse_wasm_ui.js';
 
 /* ═══════════ Page: DIFF (#/diff?a=X&b=Y) — temporal scan comparison ═══════════ */
 export async function renderDiff(v){
@@ -42,36 +43,10 @@ export async function renderDiff(v){
     host.innerHTML = '<p class="text-muted">Computing diff…</p>';
     try {
       const d = await API.diff(av, bv);
-      host.innerHTML = renderDiffResult(d);
+      host.innerHTML = renderDiffResultHtml(d);
     } catch(e){ host.innerHTML = `<div class="alert alert-danger">${esc(e.message)}</div>`; }
   };
   $('#d-go').addEventListener('click', run);
   if (a && b) run();
-}
-export function diffRow(e){
-  return `<tr><td>${kindPill(e.kind)}</td><td style="word-break:break-word"><code>${extLink(e.value)}</code></td>
-    <td class="text-right"><code>${(e.c_effective!=null?Number(e.c_effective):0).toFixed(3)}</code></td></tr>`;
-}
-export function renderDiffResult(d){
-  const added = d.added||[], removed = d.removed||[], shifts = d.confidence_shifts||[];
-  if (!added.length && !removed.length && !shifts.length){
-    return `<div class="empty-state"><h3>Identical</h3><p>The two scans found the same entities at the same confidence — ${d.common||0} in common.</p></div>`;
-  }
-  const tbl = (title, color, rows, mk) => rows.length ? `
-    <div class="panel panel-default"><div class="panel-heading" style="font-weight:600;color:${color}">${title} <span class="badge">${rows.length}</span></div>
-      <div class="table-responsive"><table class="table table-condensed table-striped">
-        <thead><tr><th>Type</th><th>Value</th><th class="text-right">${title==='Re-scored'?'Before → After':'C_eff'}</th></tr></thead>
-        <tbody>${rows.map(mk).join('')}</tbody></table></div></div>` : '';
-  const shiftRow = s=>`<tr><td>${kindPill(s.kind)}</td><td style="word-break:break-word"><code>${extLink(s.value)}</code></td>
-    <td class="text-right"><code>${Number(s.before).toFixed(3)} → ${Number(s.after).toFixed(3)}</code>
-      <span style="color:${s.after>=s.before?'#3c763d':'#a94442'}">${s.after>=s.before?'▲':'▼'}</span></td></tr>`;
-  return `<div class="row" style="margin-bottom:10px">
-      <div class="col-xs-4"><div class="stat-card"><div class="lab">Added</div><div class="val" style="color:var(--success)">+${added.length}</div></div></div>
-      <div class="col-xs-4"><div class="stat-card"><div class="lab">Removed</div><div class="val" style="color:var(--danger)">−${removed.length}</div></div></div>
-      <div class="col-xs-4"><div class="stat-card"><div class="lab">In common</div><div class="val">${d.common||0}</div></div></div>
-    </div>
-    ${tbl('Added','#3c763d',added,diffRow)}
-    ${tbl('Removed','#a94442',removed,diffRow)}
-    ${tbl('Re-scored','#8a6d3b',shifts,shiftRow)}`;
 }
 

@@ -187,6 +187,9 @@ impl Module for BreachDirectory {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Credential-exposure enrichment: only Email/Username targets, a breach-
+        // corpus hit re-emitted with corpus-membership/password-exposure evidence
+        // (secret never persisted) — T1589.001/.002 via the category default.
         ModuleCategory::Breach
     }
 

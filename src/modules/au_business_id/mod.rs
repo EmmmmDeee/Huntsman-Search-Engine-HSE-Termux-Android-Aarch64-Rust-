@@ -91,6 +91,13 @@ impl Module for AuBusinessId {
         ModuleCategory::Corporate
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Pure offline checksum decode: classifies company vs non-company and
+        // derives the embedded ACN pivot, but never surfaces an officer,
+        // director, or employee — drop the Corporate default's T1591.004.
+        &["T1591.002"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::AbnAcn];
         KINDS

@@ -1,5 +1,5 @@
 import { API } from '/static/js/api.js';
-import { $, $$, attr, esc, fmtDate, fmtDuration, kindPill, kindToStr, nowSec, statusPill, toast } from '/static/js/helpers.js';
+import { $, $$, attr, esc, fmtDate, fmtDuration, kindPill, nowSec, statusPill, toast } from '/static/js/helpers.js';
 import { nav } from '/static/js/router.js';
 import { renderBrowse } from '/static/js/scan_info/browse.js';
 import { renderCorrelations } from '/static/js/scan_info/correlations.js';
@@ -49,12 +49,18 @@ export async function renderScanInfo(v){
   // slice is only part of the scan, instead of silently reporting the fetched
   // count as if it were the whole set.
   S.entitiesTotal = entsR.status==='fulfilled' ? (entsR.value.total ?? S.entities.length) : 0;
-  // `EntityKind::Other(s)` serializes as the object {"other":"…"} (externally
-  // tagged), unlike every unit variant which is a plain string. Left as-is it
-  // renders as "[object Object]" and, because it's used as a Map key, splits
-  // into one bogus row per entity. Normalise every kind to a flat string once,
-  // here, so all downstream views (pills, type grouping, relations) are correct.
-  S.entities.forEach(e=>{ e.kind = kindToStr(e.kind); });
+  // `S.entities[].kind` is deliberately left in its raw wire shape here (a
+  // plain string for every unit `EntityKind` variant, `{"other":"…"}` for the
+  // `Other(String)` catch-all) rather than flattened once up front: several
+  // scan_info views (duplicates/communities/trust/pivots/correlations)
+  // deserialize `S.entities` straight into a real `hse_core::Entity` via
+  // wasm-ui's EntityLookup, which requires that raw shape — a global
+  // `e.kind = kindToStr(e.kind)` mutation here once broke deserialization for
+  // any scan with an `Other`-kind entity. Views that need a flat, comparable
+  // kind string for their own purposes (Browse's per-kind rollup, the Graph
+  // tab's node colouring) call `kindToStr(e.kind)` locally instead; `kindPill`
+  // already normalises defensively, so every pill-only display is unaffected
+  // either way.
 
   const dur = scan.finished_at && scan.started_at ? scan.finished_at - scan.started_at
             : scan.status==='running' ? nowSec() - (scan.started_at||nowSec()) : null;
