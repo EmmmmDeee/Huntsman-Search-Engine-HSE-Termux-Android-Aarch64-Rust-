@@ -82,7 +82,7 @@ impl Module for AsicBannedOrgs {
             return Ok(result);
         }
 
-        let records = ckan_query(ctx, name).await?;
+        let (records, server_total) = ckan_query(ctx, name).await?;
         // Pure epoch-day count `emit_banned_org` compares each ban's own end
         // date against; not called internally (a `SystemTime::now()` reaching
         // into a "pure" builder would make its tests depend on wall-clock
@@ -102,12 +102,13 @@ impl Module for AsicBannedOrgs {
             return Ok(result);
         }
 
-        // Signal if results were truncated.
-        let total_matches = records
-            .iter()
-            .filter(|r| record_name_matches(r, name))
-            .count();
-        let matches_capped = total_matches > MAX_HITS;
+        // Signal if CKAN itself held more rows for this free-text query than
+        // this page fetched — `records` is already capped at MAX_HITS by the
+        // request's own `limit=`, so this can only ever be answered against
+        // CKAN's own reported total, never against a further-filtered slice
+        // of the already-capped `records` (which can never exceed MAX_HITS by
+        // construction, making that comparison always false).
+        let matches_capped = server_total > records.len() as u64;
 
         let mut seed = Entity::new(
             EntityKind::Organisation,
@@ -122,7 +123,7 @@ impl Module for AsicBannedOrgs {
             format!("ASIC Banned & Disqualified Organisations search for '{name}'"),
         )
         .with_attr("matched_count", matched_count.to_string())
-        .with_attr("total_matches", total_matches.to_string());
+        .with_attr("total_matches", server_total.to_string());
         if matches_capped {
             ev = ev.with_attr("matches_capped", "true");
             seed.tag("truncated");
@@ -145,11 +146,22 @@ impl Module for AsicBannedOrgs {
 /// (bad resource id / datastore offline / rate-limit) becomes an explicit
 /// `Error::module`. A genuine empty result set (no `result`, or an empty
 /// `records`) is still the honest clean miss.
-async fn ckan_query(ctx: &ModuleContext, name: &str) -> Result<Vec<Map<String, Value>>> {
+///
+/// Returns `(records, server_total)` — `server_total` is CKAN's own reported
+/// match count for the free-text query, BEFORE this module's stricter
+/// whole-word `record_name_matches` filter narrows it further. `records`
+/// itself is already capped at [`MAX_HITS`] by the request's own `limit=`, so
+/// comparing a further-filtered subset of `records` against `MAX_HITS` (the
+/// previous approach) could never detect real truncation; `server_total` is
+/// the only signal CKAN actually held more rows than this page fetched.
+async fn ckan_query(ctx: &ModuleContext, name: &str) -> Result<(Vec<Map<String, Value>>, u64)> {
     let url = datastore_search_url(CKAN_BASE, RES, name, MAX_HITS);
     Ok(crate::util::ckan::validated_result(&ctx.http, SRC, &url)
         .await?
-        .map(|r| r.records)
+        .map(|r| {
+            let total = r.total.unwrap_or(r.records.len() as u64);
+            (r.records, total)
+        })
         .unwrap_or_default())
 }
 
