@@ -280,7 +280,9 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
         }
         for link in crate::util::extract::urls(&note_text) {
             let link = link.as_str();
-            if link.contains(instance) {
+            // Case-insensitive: a bio link isn't guaranteed to match the
+            // lowercase `INSTANCES` literal's exact casing.
+            if link.to_ascii_lowercase().contains(instance) {
                 continue;
             }
             let mut url_e = Entity::new(EntityKind::Url, link, confidence::MEDIUM_SOLID, scan_id);
@@ -318,7 +320,9 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
         let url_candidate = href.as_deref().unwrap_or(plain.trim());
 
         if url_candidate.starts_with("http://") || url_candidate.starts_with("https://") {
-            if url_candidate.contains(instance) {
+            // Case-insensitive: a profile-field URL isn't guaranteed to match
+            // the lowercase `INSTANCES` literal's exact casing.
+            if url_candidate.to_ascii_lowercase().contains(instance) {
                 // Skip self-links to the mastodon instance.
             } else {
                 let mut url_e = Entity::new(EntityKind::Url, url_candidate, conf_url, scan_id);
@@ -395,33 +399,44 @@ fn extract_href(html: &str) -> Option<String> {
 }
 
 /// True when a field name indicates a geographic location.
+///
+/// Whole-word matching, not a raw substring test: `"loc"`/`"city"` as bare
+/// `.contains()` needles misclassified fields like "Clock" or "Blockchain"
+/// ("clock"/"blockchain" both contain "loc") and "Capacity"/"Toxicity"
+/// (both contain "city") as location fields.
 fn looks_like_location_field(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    n.contains("location")
-        || n.contains("loc")
-        || n.contains("city")
-        || n.contains("country")
-        || n == "based in"
-        || n == "where"
+    use crate::util::str_util::whole_word_token_match;
+    whole_word_token_match(name, "location")
+        || whole_word_token_match(name, "loc")
+        || whole_word_token_match(name, "city")
+        || whole_word_token_match(name, "country")
+        || name.eq_ignore_ascii_case("based in")
+        || name.eq_ignore_ascii_case("where")
 }
 
 /// Suppresses Domain entities for high-volume social/platform hosts that
 /// add noise rather than signal.
+///
+/// Covers every instance in [`INSTANCES`], not just `mastodon.social` — a
+/// cross-instance mention ("also @friend@fosstodon.org", a common Fediverse
+/// bio pattern) would otherwise emit a Domain for another large shared
+/// instance as if it were the subject's own infrastructure, the same
+/// misattribution `plc_directory` documents guarding against.
 fn is_common_platform(host: &str) -> bool {
-    matches!(
-        host,
-        "mastodon.social"
-            | "twitter.com"
-            | "x.com"
-            | "github.com"
-            | "instagram.com"
-            | "linkedin.com"
-            | "youtube.com"
-            | "facebook.com"
-            | "tiktok.com"
-            | "bsky.app"
-            | "bsky.social"
-    )
+    INSTANCES.contains(&host)
+        || matches!(
+            host,
+            "twitter.com"
+                | "x.com"
+                | "github.com"
+                | "instagram.com"
+                | "linkedin.com"
+                | "youtube.com"
+                | "facebook.com"
+                | "tiktok.com"
+                | "bsky.app"
+                | "bsky.social"
+        )
 }
 
 /// Emit a Domain entity derived from a URL found in the bio, excluding the
@@ -566,6 +581,69 @@ mod tests {
         let a = ents.iter().find(|e| e.kind == EntityKind::Address);
         assert!(a.is_some(), "must emit Address from location field");
         assert_eq!(a.expect("should succeed").value, "Berlin, Germany");
+    }
+
+    #[test]
+    fn location_field_matching_is_whole_word_not_bare_substring() {
+        // "Clock"/"Blockchain" both contain "loc"; "Capacity" contains
+        // "city" — none of these are location fields, and must not become
+        // an Address. "Loc" and "City" alone (real, if terse, labels) must
+        // still match.
+        assert!(!looks_like_location_field("Clock"));
+        assert!(!looks_like_location_field("Blockchain"));
+        assert!(!looks_like_location_field("Capacity"));
+        assert!(!looks_like_location_field("Toxicity"));
+        assert!(looks_like_location_field("Location"));
+        assert!(looks_like_location_field("Loc"));
+        assert!(looks_like_location_field("City"));
+
+        let acct = make_acct("alice", None, None, None, vec![("Clock", "UTC+9", false)]);
+        let ents = build_entities(acct, "mastodon.social", "scan-mst-loc");
+        assert!(
+            !ents.iter().any(|e| e.kind == EntityKind::Address),
+            "a field named 'Clock' must not be treated as a location"
+        );
+    }
+
+    #[test]
+    fn cross_instance_mention_is_not_treated_as_a_personal_domain() {
+        // fosstodon.org is a listed INSTANCES entry, same as mastodon.social
+        // — a cross-instance profile link to another large shared instance
+        // must not be emitted as if it were the subject's own domain.
+        let acct = make_acct(
+            "alice",
+            None,
+            Some("also here: https://fosstodon.org/@friend"),
+            None,
+            vec![],
+        );
+        let ents = build_entities(acct, "mastodon.social", "scan-mst-xinst");
+        assert!(
+            !ents
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value.contains("fosstodon")),
+            "a link to another known Mastodon instance must not become a Domain"
+        );
+    }
+
+    #[test]
+    fn self_link_exclusion_is_case_insensitive() {
+        // The queried instance is always lowercase (from the static
+        // INSTANCES table), but a URL a user actually typed is not
+        // guaranteed to match that casing.
+        let acct = make_acct(
+            "alice",
+            None,
+            Some("My profile: https://Mastodon.Social/@alice"),
+            None,
+            vec![],
+        );
+        let ents = build_entities(acct, "mastodon.social", "scan-mst-selflink");
+        assert!(
+            !ents.iter().any(|e| e.kind == EntityKind::Url
+                && e.value.to_ascii_lowercase().contains("mastodon.social")),
+            "a differently-cased self-link must still be excluded"
+        );
     }
 
     #[test]

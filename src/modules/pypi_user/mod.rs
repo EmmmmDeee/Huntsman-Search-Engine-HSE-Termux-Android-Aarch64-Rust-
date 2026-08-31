@@ -181,13 +181,16 @@ pub(super) fn build_entities(
 
     // Enrich from the first owned package's JSON info.
     if let Some(info) = info {
-        // author_email and maintainer_email carry RFC 5322 Name <email> entries.
-        for raw in [
-            info.author_email.as_deref(),
-            info.maintainer_email.as_deref(),
+        // author_email and maintainer_email carry RFC 5322 Name <email>
+        // entries. `field` names which one `raw` actually came from, so the
+        // emitted evidence states what was actually observed rather than
+        // always claiming "author_email" for a maintainer-sourced value.
+        for (field, raw) in [
+            ("author_email", info.author_email.as_deref()),
+            ("maintainer_email", info.maintainer_email.as_deref()),
         ]
         .into_iter()
-        .flatten()
+        .filter_map(|(field, raw)| raw.map(|raw| (field, raw)))
         {
             for (name_opt, email) in parse_rfc5322_contact(raw) {
                 if seen_emails.insert(email.clone()) {
@@ -195,7 +198,7 @@ pub(super) fn build_entities(
                         Entity::new(EntityKind::Email, &email, confidence::ATTRIBUTED, scan_id);
                     em.tag("pypi");
                     em.tag("public-profile");
-                    em.add_evidence(ev_base().with_attr("source_field", "author_email"));
+                    em.add_evidence(ev_base().with_attr("source_field", field));
                     result.push(em);
 
                     // Real name from the "Name" part.
@@ -205,7 +208,7 @@ pub(super) fn build_entities(
                     {
                         p.tag("pypi");
                         p.tag("derived");
-                        p.add_evidence(ev_base().with_attr("source_field", "author_email"));
+                        p.add_evidence(ev_base().with_attr("source_field", field));
                         result.push(p);
                     }
                 }
@@ -213,16 +216,19 @@ pub(super) fn build_entities(
         }
 
         // author / maintainer plain-text name fields (older packages).
-        for raw_name in [info.author.as_deref(), info.maintainer.as_deref()]
-            .into_iter()
-            .flatten()
+        for (field, raw_name) in [
+            ("author", info.author.as_deref()),
+            ("maintainer", info.maintainer.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(field, raw)| raw.map(|raw| (field, raw)))
         {
             if let Some(mut p) =
                 profile_kit::person_from_name(raw_name, confidence::MEDIUM_HIGH, scan_id)
             {
                 p.tag("pypi");
                 p.tag("derived");
-                p.add_evidence(ev_base().with_attr("source_field", "author"));
+                p.add_evidence(ev_base().with_attr("source_field", field));
                 // Only push if no duplicate Person was already added from author_email.
                 if result
                     .entities

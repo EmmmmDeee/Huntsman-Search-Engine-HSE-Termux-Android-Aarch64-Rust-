@@ -233,3 +233,24 @@ fn build_entities_falls_back_to_query_username_when_basics_absent() {
         Some("https://keybase.io/fallback")
     );
 }
+
+#[test]
+fn build_entities_rejects_a_returned_username_that_does_not_match_the_query() {
+    // Defensive parity with codeberg_user/hexpm_user/devto: verify the
+    // record's own username before trusting it, rather than attributing a
+    // different account's data to the queried handle.
+    let body = kb(r#"{"status": {"code": 0}, "them": {"id": "x",
+            "basics": {"username": "someone_else"}}}"#);
+    assert!(build_entities(body, "alice", "scan").is_empty());
+}
+
+#[test]
+fn build_entities_case_insensitive_username_match_is_accepted() {
+    let body = kb(r#"{"status": {"code": 0}, "them": {"id": "x",
+            "basics": {"username": "Alice"}}}"#);
+    let ents = build_entities(body, "alice", "scan");
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Username && e.value == "alice")
+    );
+}

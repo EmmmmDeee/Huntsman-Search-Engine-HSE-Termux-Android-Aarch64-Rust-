@@ -185,9 +185,11 @@ fn scans_every_gem_not_capped() {
 
 #[test]
 fn empty_gem_list_produces_only_header_entities() {
-    // build_entities always emits the Username + profile URL; the process()
-    // function guards against empty gem lists before calling build_entities, so
-    // this path is unreachable in practice but the helper itself is correct.
+    // A real account that currently owns zero gems (ownership transferred
+    // away, registered-but-unpublished, ...) hits this exact path: process()
+    // only treats a genuine 404 as "no such user", so a 200 with an empty
+    // array reaches build_entities, which must still emit the confirmed
+    // Username + profile URL rather than nothing.
     let ents = build_entities(vec![], "ghost", "scan-rg-008");
     assert!(
         ents.iter()
