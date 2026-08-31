@@ -51,9 +51,10 @@ use wasm_bindgen::prelude::*;
 ///
 /// Constructs a real `js_sys::Error` rather than `JsValue::from_str`: every
 /// JS call site that catches one of these (e.g. `scan_info/browse.js`,
-/// `audit.js`, `communities.js`, `leads.js`, `network.js`, `path.js`) reads
-/// `e.message` to display it, which is `undefined` on a bare thrown string —
-/// the string has no `.message` property.
+/// `scan_info/audit.js`, `scan_info/communities.js`, `scan_info/leads.js`,
+/// `scan_info/network.js`, `scan_info/path.js`) reads `e.message` to display
+/// it, which is `undefined` on a bare thrown string — the string has no
+/// `.message` property.
 pub(crate) fn to_js_error(e: impl std::fmt::Display) -> JsValue {
     js_sys::Error::new(&e.to_string()).into()
 }
