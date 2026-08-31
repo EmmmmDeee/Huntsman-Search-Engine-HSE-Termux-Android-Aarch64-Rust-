@@ -246,14 +246,14 @@ intelligence across 212M+ records and 70+ data sources. Just add your API key
 — HSE handles everything else: endpoint routing, budget management, credit
 detection, error recovery, request caching, and response archiving.
 
-**Official SeekNow API:** https://see-know.eu/api/v1 (24 endpoints, 99.97% uptime)
+**Official SeekNow API:** https://see-know.ru/api/v1 (24 endpoints, 99.97% uptime)
 
 ### Quick Start (2 minutes)
 
 **1. Get Your SeekNow API Key**
 
-1. Sign up at [see-know.eu](https://see-know.eu/signup) and verify your account.
-2. Go to **Account → API Dashboard**: https://see-know.eu/account/dashboard.
+1. Sign up at [see-know.ru](https://see-know.ru/signup) and verify your account.
+2. Go to **Account → API Dashboard**: https://see-know.ru/account/dashboard.
 3. Copy your active key (starts with `seek-`, typically 64+ characters).
 4. Check your **plan tier** (Beginner/Pro/PremiumHQ/Enterprise) and daily credit
    limit.
@@ -265,7 +265,7 @@ echo 'export HUNTSMAN_SEEKNOW_KEY="seek-your-api-key-here"' >> ~/.huntsman.env
 ```
 
 HSE **automatically**:
-- Uses the official `https://see-know.eu/api/v1` endpoint.
+- Uses the official `https://see-know.ru/api/v1` endpoint.
 - Detects your daily credit limit (via `/credits` endpoint — free, no budget
   consumed).
 - Routes queries to optimal endpoints by target type.
@@ -409,7 +409,7 @@ not shape alone).
 - Intelligence X (IntelX): M K D
 - Hudson Rock (Cavalier): M D
 - OathNet: M K D
-- SeekNow (see-know.eu): M K D
+- SeekNow (see-know.ru): M K D
 
 **Attack-surface / internet-wide host scanners**
 

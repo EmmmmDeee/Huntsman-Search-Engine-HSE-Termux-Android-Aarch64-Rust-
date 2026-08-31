@@ -139,16 +139,26 @@ use super::*;
         }
 
         // A known multiplier (Shodan) must outrank a known terminal
-        // (IP2Location) — the whole point of the ranking.
+        // (AbuseIPDB) — the whole point of the ranking.
+        //
+        // Regression: this previously paired Shodan against
+        // "HUNTSMAN_IP2LOCATION_KEY", which is not a `KNOWN_KEYS` entry (the
+        // real ip2location.io module is free/keyless — see
+        // `src/modules/ip2location/mod.rs`). `pos()` for it was always
+        // `None`, so the `if let` guard silently never ran this assertion —
+        // the ranking property it names went unverified. AbuseIPDB is a real
+        // registered key (`src/util/service_defs/mod.rs`) that
+        // `key_roi::classify` maps to `KeyRoi::Terminal`, so this exercises
+        // the same ordering claim for real.
         let pos = |env: &str| ranked.iter().position(|(k, _)| *k == env);
-        if let (Some(shodan), Some(ip2)) =
-            (pos("HUNTSMAN_SHODAN_KEY"), pos("HUNTSMAN_IP2LOCATION_KEY"))
-        {
-            assert!(
-                shodan < ip2,
-                "multiplier Shodan must precede terminal IP2Location"
-            );
-        }
+        let (shodan, abuseipdb) = (
+            pos("HUNTSMAN_SHODAN_KEY").expect("HUNTSMAN_SHODAN_KEY is a KNOWN_KEYS entry"),
+            pos("HUNTSMAN_ABUSEIPDB_KEY").expect("HUNTSMAN_ABUSEIPDB_KEY is a KNOWN_KEYS entry"),
+        );
+        assert!(
+            shodan < abuseipdb,
+            "multiplier Shodan must precede terminal AbuseIPDB"
+        );
         // The first entry is multiplier-tier (there are several).
         assert_eq!(ranked[0].1, KeyRoi::Multiplier);
     }
