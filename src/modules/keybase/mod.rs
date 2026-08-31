@@ -188,6 +188,12 @@ pub(super) fn build_entities(body: KbResp, query_username: &str, scan_id: &str) 
         .as_ref()
         .and_then(|b| b.username.as_deref())
         .unwrap_or(query_username);
+    // Verify the returned record's own username matches what was actually
+    // queried before trusting it — same guard codeberg_user/hexpm_user/devto
+    // use for their own by-username lookups.
+    if !kb_username.eq_ignore_ascii_case(query_username) {
+        return Vec::new();
+    }
 
     let mut entity = Entity::new(
         EntityKind::Username,

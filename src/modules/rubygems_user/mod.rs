@@ -261,10 +261,16 @@ impl Module for RubygemsUser {
             "https://rubygems.org/api/v1/owners/{}/gems.json",
             crate::util::http::urlencode(handle)
         );
+        // `fetch_json_or_404` returns `None` only on a genuine 404 (no such
+        // owner). A 200 with an empty array is a real account that currently
+        // owns zero gems (ownership transferred away, registered-but-
+        // unpublished, ...) — build_entities already handles an empty list
+        // correctly (just the confirmed-username + profile-URL entities), so
+        // that case must flow through, not collapse into the same "no such
+        // user" outcome as an actual 404.
         let gems: Option<Vec<RgGem>> = fetch_json_or_404(&ctx.http, SRC, &url).await?;
-        let gems = match gems {
-            Some(g) if !g.is_empty() => g,
-            _ => return Ok(ModuleResult::new()),
+        let Some(gems) = gems else {
+            return Ok(ModuleResult::new());
         };
 
         let mut result = ModuleResult::new();

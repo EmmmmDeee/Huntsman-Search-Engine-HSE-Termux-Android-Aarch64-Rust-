@@ -132,6 +132,47 @@ fn emits_email_from_author_email_field() {
 }
 
 #[test]
+fn source_field_names_maintainer_not_author_when_that_is_the_actual_source() {
+    // author and maintainer are genuinely distinct PyPI metadata fields
+    // (self-declared authorship vs. current point of contact) — regression
+    // for `source_field` evidence that used to hardcode "author_email"/
+    // "author" regardless of which field a value actually came from.
+    let pkgs = vec![("Owner".to_string(), "mypkg".to_string())];
+    let info = PypiPackageInfo {
+        author: None,
+        author_email: None,
+        home_page: None,
+        maintainer: Some("Dave Maintainer".to_string()),
+        maintainer_email: Some("dave@example.com".to_string()),
+    };
+    let ents = build_entities("alice", &pkgs, Some(&info), "scan-pypi-maint");
+
+    let email = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("must emit Email from maintainer_email");
+    assert_eq!(
+        email.evidence[0]
+            .attributes
+            .get("source_field")
+            .map(String::as_str),
+        Some("maintainer_email")
+    );
+
+    let person = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .expect("must emit Person from maintainer");
+    assert_eq!(
+        person.evidence[0]
+            .attributes
+            .get("source_field")
+            .map(String::as_str),
+        Some("maintainer")
+    );
+}
+
+#[test]
 fn emits_person_from_rfc5322_name() {
     let pkgs = vec![("Owner".to_string(), "mypkg".to_string())];
     let info = make_info(None, Some("Alice Smith <alice@example.com>"), None);

@@ -262,17 +262,22 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
         if verified {
             tags.push("verified");
         }
+        // Shared by both entities below: a linked account's URL is the same
+        // claim as its username (Gravatar's own `rel="me"`-style verification
+        // of that specific account), so the two should carry the same
+        // confidence — not the URL silently ignoring `verified` and sitting
+        // at a flat, unrelated value regardless of it.
+        let conf = if verified {
+            confidence::HIGH
+        } else {
+            confidence::MEDIUM_HIGH
+        };
         if let Some(uname) = acct
             .username
             .as_deref()
             .map(str::trim)
             .filter(|u| !u.is_empty())
         {
-            let conf = if verified {
-                confidence::HIGH
-            } else {
-                confidence::MEDIUM_HIGH
-            };
             let mut e = Entity::new(EntityKind::Username, uname, conf, scan_id);
             e.tag(SRC);
             tags.iter().for_each(|t| e.tag(*t));
@@ -289,7 +294,7 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
             .map(str::trim)
             .filter(|u| u.starts_with("http"))
         {
-            push(result, EntityKind::Url, u, confidence::MEDIUM_HIGH, &tags);
+            push(result, EntityKind::Url, u, conf, &tags);
         }
     }
 
