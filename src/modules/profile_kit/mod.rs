@@ -68,7 +68,7 @@ pub(crate) fn profile_url(api_link: Option<&str>, fallback: impl FnOnce() -> Str
     api_link
         .map(str::trim)
         .map(|u| u.trim_end_matches('/'))
-        .filter(|u| u.starts_with("http"))
+        .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
         .map_or_else(fallback, str::to_string)
 }
 
