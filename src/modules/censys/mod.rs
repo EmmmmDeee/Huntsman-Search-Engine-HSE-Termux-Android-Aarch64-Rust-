@@ -260,6 +260,11 @@ fn build_entities(host: &HostResult, ip: &str, scan_id: &str) -> Vec<Entity> {
         // "unknown location" placeholder, which the prior range-only
         // check let through as a false Coordinates entity.
         && is_valid_coords(lat, lon)
+        // Suppressed when the host IP is a CDN/anycast edge (the geo is the
+        // datacentre, not the subject) — parity with the sibling IP-geo
+        // modules (ipinfo/ip2location/ip_whois_geo/ipquery/netlas/geo_intel).
+        // ASN/Organisation below are unaffected.
+        && crate::core::validation::untrusted_ip_geo_reason(ip).is_none()
     {
         let coord_str = format!("{lat:.6},{lon:.6}");
         let mut geo = Entity::new(

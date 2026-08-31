@@ -114,6 +114,59 @@ fn populated_response_builds_full_asset_graph() {
 }
 
 #[test]
+fn a_forward_confirmed_ptr_does_not_duplicate_the_host_domain() {
+    // Regression: a host's own reverse-DNS PTR pointing back to its own name
+    // (a "forward-confirmed" PTR — an ordinary shape for e.g. a dedicated
+    // mail server) used to mint the SAME Domain value twice: once as the
+    // primary discovered-asset entity, once again as a `ptr`-tagged pivot,
+    // since the two code paths tracked separate `seen` sets.
+    let b = body(
+        r#"{
+          "results": [
+            {"asn": 13335, "dns_ptr": ["mail.example.com"], "domain": "example.com",
+             "host": "mail.example.com", "ip_address": "203.0.113.5", "organization": "Example Hosting Inc"}
+          ]
+        }"#,
+    );
+    let ents = build_entities(&b, "example.com", "s");
+    let domains: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert_eq!(
+        domains.iter().filter(|v| **v == "mail.example.com").count(),
+        1,
+        "a forward-confirmed PTR must not duplicate its own host's Domain entity: {domains:?}"
+    );
+}
+
+#[test]
+fn the_same_host_repeating_across_result_rows_is_not_duplicated() {
+    // The identical `host` value can in principle repeat verbatim across two
+    // `results[]` rows (e.g. two differently-shaped records both naming the
+    // same asset) — must still surface as one Domain entity.
+    let b = body(
+        r#"{
+          "results": [
+            {"asn": 1, "dns_ptr": null, "domain": "example.com",
+             "host": "www.example.com", "ip_address": "203.0.113.5", "organization": "Org"},
+            {"asn": 1, "dns_ptr": null, "domain": "example.com",
+             "host": "www.example.com", "ip_address": "203.0.113.9", "organization": "Org"}
+          ]
+        }"#,
+    );
+    let ents = build_entities(&b, "example.com", "s");
+    assert_eq!(
+        ents.iter()
+            .filter(|e| e.kind == EntityKind::Domain && e.raw_value == "www.example.com")
+            .count(),
+        1,
+        "the same host repeating across rows must still be one Domain entity: {ents:?}"
+    );
+}
+
+#[test]
 fn apex_and_unrelated_hosts_are_skipped_entirely() {
     let b = body(
         r#"{

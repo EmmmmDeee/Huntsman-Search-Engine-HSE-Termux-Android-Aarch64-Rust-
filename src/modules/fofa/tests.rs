@@ -126,6 +126,86 @@ fn build_entities_emits_ip_domain_from_results() {
 }
 
 #[test]
+fn build_entities_aggregates_multiple_ports_on_one_host_into_one_ip_entity() {
+    // Regression: a host with several indexed open ports comes back as
+    // multiple result rows sharing the same `ip` (one row per port) — the
+    // module used to mint a brand-new IpAddress entity per row, inflating
+    // corroboration and losing the "one host, N ports" shape the module's
+    // own doc comment claims ("attached as evidence attributes on THE IP
+    // entity"). The same host's repeated domain must also fold to one entity.
+    let resp = FofaResp {
+        error: false,
+        errmsg: None,
+        results: vec![
+            FofaResult {
+                host: "1.2.3.4:80".to_string(),
+                ip: "1.2.3.4".to_string(),
+                port: 80,
+                protocol: "http".to_string(),
+                title: "Example Site".to_string(),
+                domain: "example.com".to_string(),
+                os: "Linux".to_string(),
+            },
+            FofaResult {
+                host: "1.2.3.4:443".to_string(),
+                ip: "1.2.3.4".to_string(),
+                port: 443,
+                protocol: "https".to_string(),
+                title: "Example Site".to_string(),
+                domain: "example.com".to_string(),
+                os: "Linux".to_string(),
+            },
+            FofaResult {
+                host: "1.2.3.4:22".to_string(),
+                ip: "1.2.3.4".to_string(),
+                port: 22,
+                protocol: "ssh".to_string(),
+                title: String::new(),
+                domain: "example.com".to_string(),
+                os: "Linux".to_string(),
+            },
+        ],
+    };
+
+    let result = build_entities(&resp, "test-scan");
+    let ips: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+    assert_eq!(
+        ips.len(),
+        1,
+        "three rows for the SAME ip must fold to one IpAddress entity: {ips:?}"
+    );
+    // No per-port detail is lost — each row still contributes its own evidence.
+    assert_eq!(
+        ips[0].evidence.len(),
+        3,
+        "each of the 3 ports must still contribute its own evidence record"
+    );
+    let ports: Vec<Option<&str>> = ips[0]
+        .evidence
+        .iter()
+        .map(|ev| ev.attributes.get("open_port").map(String::as_str))
+        .collect();
+    assert!(ports.contains(&Some("80")));
+    assert!(ports.contains(&Some("443")));
+    assert!(ports.contains(&Some("22")));
+
+    let domains: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain)
+        .collect();
+    assert_eq!(
+        domains.len(),
+        1,
+        "the same domain repeating across rows must fold to one Domain entity: {domains:?}"
+    );
+}
+
+#[test]
 fn produces_lists_exactly_the_kinds_build_entities_emits() {
     // Contract guard: `produces()` must advertise exactly the entity kinds the
     // module can actually mint. `Organisation` was declared here but never

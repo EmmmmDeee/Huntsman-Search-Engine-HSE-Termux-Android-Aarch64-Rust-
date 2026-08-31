@@ -5,6 +5,7 @@ use super::*;
 fn sample() -> BwResp {
     BwResp {
         results: vec![BwResult {
+            lookup: Some("acme.com".to_string()),
             result: Some(BwResultInner {
                 paths: vec![BwPath {
                     technologies: vec![
@@ -124,6 +125,7 @@ fn build_entities_emits_tech_domain_and_contacts() {
 fn build_entities_skips_short_org_and_bad_contacts() {
     let resp = BwResp {
         results: vec![BwResult {
+            lookup: Some("x.com".to_string()),
             result: None,
             meta: Some(BwMeta {
                 company_name: Some("AB".to_string()), // < 3 chars → skipped
@@ -142,6 +144,7 @@ fn build_entities_skips_short_org_and_bad_contacts() {
 fn build_entities_falls_back_to_first_name_for_org() {
     let resp = BwResp {
         results: vec![BwResult {
+            lookup: Some("x.com".to_string()),
             result: None,
             meta: Some(BwMeta {
                 company_name: None,
@@ -160,6 +163,67 @@ fn build_entities_falls_back_to_first_name_for_org() {
             .entities
             .iter()
             .any(|e| e.kind == EntityKind::Organisation && e.value == "Jane Roe Holdings")
+    );
+}
+
+#[test]
+fn build_entities_rejects_a_result_whose_lookup_names_a_different_domain() {
+    // Regression: `Results[]` entries never had their own `Lookup` field
+    // checked against the queried domain, so a mismatched entry (a
+    // redirect/canonicalization/API anomaly) would silently attach its
+    // Organisation/tech-profile data to the queried domain's entity graph.
+    let resp = BwResp {
+        results: vec![BwResult {
+            lookup: Some("evil.example".to_string()),
+            result: Some(BwResultInner {
+                paths: vec![BwPath {
+                    technologies: vec![BwTech {
+                        name: Some("nginx".to_string()),
+                    }],
+                }],
+            }),
+            meta: Some(BwMeta {
+                company_name: Some("Unrelated Org".to_string()),
+                emails: None,
+                telephones: None,
+                names: None,
+            }),
+        }],
+        errors: None,
+    };
+    let result = build_entities(&resp, "acme.com", "test-scan");
+    assert!(
+        result.entities.is_empty(),
+        "a Lookup mismatch must yield nothing: {:?}",
+        result.entities
+    );
+}
+
+#[test]
+fn build_entities_trusts_a_result_with_no_lookup_field_at_all() {
+    // `Lookup` is optional in our model — its absence must not itself
+    // reject an otherwise-valid entry (only a present, mismatched one does).
+    let resp = BwResp {
+        results: vec![BwResult {
+            lookup: None,
+            result: None,
+            meta: Some(BwMeta {
+                company_name: Some("Acme Pty Ltd".to_string()),
+                emails: None,
+                telephones: None,
+                names: None,
+            }),
+        }],
+        errors: None,
+    };
+    let result = build_entities(&resp, "acme.com", "test-scan");
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Organisation && e.value == "Acme Pty Ltd"),
+        "a result with no Lookup field must still be trusted: {:?}",
+        result.entities
     );
 }
 

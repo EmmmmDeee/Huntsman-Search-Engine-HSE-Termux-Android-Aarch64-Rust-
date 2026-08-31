@@ -66,6 +66,68 @@ fn build_entities_surfaces_previously_dropped_cert_issuer_and_http_fields() {
 }
 
 #[test]
+fn build_entities_does_not_pool_facts_from_a_different_host() {
+    use crate::core::entity::EntityKind;
+    // A Domain/Email-kind query (host:/certificate.subject.email:) can
+    // legitimately return items for several DIFFERENT hosts — the same
+    // Subject email appearing on unrelated hosts is the concrete case here.
+    // The SECOND item's own `ip` disagrees with the first (canonical) item's
+    // — its CVE, ISP, and geo must NOT be pooled onto the canonical host's
+    // entity, even though both items are in the same response.
+    let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "items": [
+            { "data": { "ip": "203.0.113.10", "isp": "Canonical ISP",
+                        "cve": [{"name": "CVE-2024-0001"}] } },
+            { "data": { "ip": "198.51.100.20", "isp": "Unrelated Host ISP",
+                        "cve": [{"name": "CVE-2024-9999"}],
+                        "geo": {"latitude": -33.8688, "longitude": 151.2093,
+                                "country": "Australia", "city": "Sydney"} } }
+        ]
+    }))
+    .expect("should succeed");
+    let r = super::build_entities(&body, "someone@example.com", "scan");
+
+    let ip = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress)
+        .expect("ip entity");
+    assert_eq!(
+        ip.value, "203.0.113.10",
+        "the canonical (first) host's IP must be used"
+    );
+
+    let ev = &ip.evidence[0];
+    let cves = ev.attributes.get("cves").map_or("", String::as_str);
+    assert!(
+        !cves.contains("CVE-2024-9999"),
+        "the unrelated host's CVE must not be pooled: {cves}"
+    );
+    assert!(
+        cves.contains("CVE-2024-0001"),
+        "the canonical host's own CVE must still surface: {cves}"
+    );
+
+    // The unrelated host's geo must not become a Coordinates/Address entity
+    // attributed (via evidence) to the canonical host.
+    assert!(
+        !r.entities.iter().any(|e| e.kind == EntityKind::Coordinates),
+        "the unrelated host's geo must not surface at all: {:?}",
+        r.entities
+    );
+
+    let isp = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Organisation)
+        .expect("isp organisation entity");
+    assert_eq!(
+        isp.value, "Canonical ISP",
+        "the unrelated host's ISP must not overwrite the canonical one's"
+    );
+}
+
+#[test]
 fn build_entities_emits_every_unique_cve_with_a_disclosed_count() {
     use crate::core::entity::EntityKind;
     // A host with 8 distinct CVEs (spread across two response items, with a

@@ -490,7 +490,14 @@ fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
         (Some(lat), Some(lon)) if crate::util::geo::is_valid_coords(lat, lon) => Some((lat, lon)),
         _ => None,
     };
-    if let Some((lat, lon)) = real_coords {
+    // Suppressed when the host IP is a CDN/anycast edge (the geo — real fix,
+    // country-centroid fallback, and Address alike — is the datacentre, not
+    // the subject) — parity with the sibling IP-geo modules. ASN/Organisation
+    // above are unaffected. Checked once and applied to both the real-fix and
+    // the country-centroid-fallback/Address block below, so an untrusted IP
+    // doesn't fall through to the fallback path when its real fix is suppressed.
+    let geo_trusted = crate::core::validation::untrusted_ip_geo_reason(ip).is_none();
+    if geo_trusted && let Some((lat, lon)) = real_coords {
         let coord_val = format!("{lat:.4},{lon:.4}");
         let mut c = Entity::new(
             EntityKind::Coordinates,
@@ -506,7 +513,8 @@ fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
         ));
         result.push(c);
     }
-    if let Some(country) = &body.country_name
+    if geo_trusted
+        && let Some(country) = &body.country_name
         && !country.is_empty()
     {
         // Country centroid only as a fallback — never in addition to a real
