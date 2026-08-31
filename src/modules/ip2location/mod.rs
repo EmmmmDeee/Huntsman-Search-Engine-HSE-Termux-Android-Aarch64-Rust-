@@ -6,6 +6,19 @@
 //! Returns country, region, city, postcode, lat/lon, timezone, ASN, ISP,
 //! and proxy detection. Often more precise than ip-api.com (returns suburb-
 //! level city names like "Gatton" instead of "Sydney").
+//!
+//! No hosting/datacenter signal (unlike [`crate::modules::criminal_ip`]'s
+//! `is_hosting`) — deliberately not a gap to fix. Confirmed by a live call to
+//! this exact endpoint (`curl https://api.ip2location.io/?ip=8.8.8.8`): the
+//! free-tier response is exactly the fields [`Resp`] models plus a rate-limit
+//! notice, nothing else. The provider's own docs (ip2location.io's API
+//! reference) name a `usage_type` field with a `DCH` (datacenter/hosting)
+//! value that would give exactly this signal, but gate it behind a paid
+//! "Starter Plan" — this module intentionally stays
+//! [`crate::core::module::ModuleCost::Free`] (no `cost()` override), so that
+//! field is out of reach by design, not by oversight. See
+//! `.agent/state.json`'s OD-20 for the full investigation (including why a
+//! heuristic AS-name substitute wasn't pursued).
 
 use async_trait::async_trait;
 use serde::Deserialize;
