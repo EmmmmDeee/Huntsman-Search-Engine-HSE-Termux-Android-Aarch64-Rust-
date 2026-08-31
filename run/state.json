@@ -1,0 +1,67 @@
+{
+  "$comment": "Autonomous migration/remediation run state. Single source of truth per the run directive. See run/RUNSTATE.md for the human-readable view and run/PHASE0_AUDIT.md for full evidence.",
+  "run_started": "2026-08-31T04:40:00Z",
+  "phase": "phase0-complete -> targeted-remediation",
+  "layers_detected": {
+    "vcs_tool": "git (existing repo, remote 'origin' present but treated as optional)",
+    "remote": "present (GitHub, EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-) — engaged for PR workflow, not load-bearing",
+    "tracker": "absent as a dedicated tracker; in-tree ledgers (.agent/state.json, docs/gap_register.md, docs/*_LEDGER*.md) serve as the canonical, pre-existing issue-tracking system and are treated as authoritative",
+    "ci": "present (.github/workflows/*.yml) — engaged, not load-bearing; scripts/gate.sh is the load-bearing local equivalent",
+    "network": "present but partially restricted in this sandbox (crates.io REST API blocked for one host; sparse index + git + GitHub API all reachable) — CI has full access"
+  },
+  "premise_finding": "CRITICAL: the run directive's premise (a legacy non-Rust codebase requiring full migration to Rust, with orphaned proprietary/.all artifacts requiring reverse engineering) does not match this codebase's actual state. Evidence in run/PHASE0_AUDIT.md. Strategy adapted accordingly per the directive's own 'adapt to the code as actually found' clause.",
+  "file_census": {
+    "total_tracked_files_approx": 1237,
+    "by_extension_top": {"rs": 1087, "md": 45, "js": 41, "html": 11, "sh": 10, "yml": 9, "toml": 9, "txt": 7, "json": 5, "py": 4, "lock": 4},
+    "non_rust_dispositions": "see run/PHASE0_AUDIT.md section 'Migration disposition ledger'"
+  },
+  "artifact_ledger": {
+    "total_artifacts": 1,
+    "closed": 1,
+    "open": 0,
+    "entries": [
+      {
+        "artifact": "wasm-ui/pkg/hse_wasm_ui_bg.wasm (+ hse_wasm_ui.js glue)",
+        "status": "CLOSED - SOURCE-BACKED, round-trip proven",
+        "source": "wasm-ui/src/*.rs",
+        "generator": "cargo build --manifest-path wasm-ui/Cargo.toml --target wasm32-unknown-unknown --release && wasm-bindgen ... && wasm-opt ... (documented in wasm-ui/src/lib.rs's doc comment)",
+        "proof": "Regenerated end-to-end this run (PR #547): wasm32 target + wasm-bindgen-cli 0.2.127 (pinned, matching crate version) + binaryen wasm-opt installed and run; regenerated .js/.wasm diffed against the previously-committed copy and found minimal, explained, behavior-correct (new js_sys::Error import binding); byte size within 50 bytes of the prior committed artifact. Merged to main.",
+        "no_all_files_found": "Extension census found zero .all files or unrecognized proprietary binary formats anywhere in the tracked tree. The reverse-engineering loop (Phase 15-20) has no applicable target in this codebase."
+      }
+    ]
+  },
+  "issue_ledger_reconciliation": {
+    "pre_existing_ledger": ".agent/state.json (42+ recorded cycles) + docs/gap_register.md + docs/*_LEDGER*.md — treated as the canonical, pre-existing system of record per the directive's own 'never duplicate' engineering default",
+    "pre_existing_ledger_staleness": "the .agent/state.json ledger's most recent recorded commit references predate ~50+ commits now on main (PR #509 hse-core/wasm-ui extraction, the entire wasm-ui view-porting series, PR #544, PR #547, and others) — flagged as a documentation-drift finding, not re-litigated wholesale given its depth (42 cycles of evidence-based, individually-verified closures)",
+    "fresh_census_on_current_head_e67e0c6ba": {
+      "todo_fixme_hack_markers_in_src": 0,
+      "clippy_warnings": "0 (CI gate is -D warnings; verified green on current head via PR #547's merged CI run)",
+      "cargo_audit": "clean (root + hse-core + wasm-ui, verified this session)",
+      "cargo_deny": "clean (root + hse-core + wasm-ui, verified this session)",
+      "cargo_machete": "clean (root + hse-core + wasm-ui, verified this session)",
+      "failing_tests": 0,
+      "open_findings_this_session": 0
+    },
+    "issues_closed_this_run": [
+      "PR #544: hse-core (144 tests) + wasm-ui had zero CI/gate coverage since PR #509's crate split; wired into ci.yml + scripts/gate.sh + audit.yml (fmt/clippy/test/doc + audit/deny/machete/dep-cooldown)",
+      "PR #547: wasm-ui::to_js_error threw a bare JS string instead of a real Error, breaking e.message at 6+ JS call sites (found by Copilot review on unrelated PR #515, independently verified, fixed, artifact regenerated and proven)"
+    ]
+  },
+  "retention_manifest": {
+    "surfaces": [".env.example (47 documented _KEY vars)", "src/cli/env_template.txt (61 entries)", "src/util/keys/constants.rs KNOWN_KEYS (54 unique HUNTSMAN_* names)"],
+    "verification": "wiring correctness is covered by the project's own existing test suite (src/util/keys/tests.rs and per-module tests), which is green on current HEAD; no key values touched, moved, or invented this run",
+    "status": "no action required; flagged as an area for a future dedicated 3-way reconciliation pass if the count mismatch (47 vs 54 vs 61) is ever found to hide a real gap - not established as a defect this run"
+  },
+  "enforcement": {
+    "local_gate_runner": "scripts/gate.sh already IS the one-command local gate runner the directive calls for (fmt, check, clippy -D warnings, rustdoc lints, test, doctests, doc-coverage ratchet, hse-core+wasm-ui equivalents, MSRV, aarch64-android cross-build, install.sh+shellcheck, audit/deny/machete/dep-cooldown) - proven green end to end multiple times this session",
+    "drift_check_gap": "gate.sh does not currently regenerate and diff wasm-ui/pkg against source on every run (the directive's 'round-trip drift check'); this is a genuine, small, currently-open gap - see PHASE0_AUDIT.md follow-ups"
+  },
+  "offline_build": {
+    "vendor_dir_created": "vendor/ (543MB, 448 packages, cargo vendor --sync across all 4 manifests) — NOT committed to the live branch (see rationale in PHASE0_AUDIT.md); packaged into the final deliverable zip only",
+    "offline_build_verification": "in progress / see run/offline_build_result.txt"
+  },
+  "final_deliverable": {
+    "status": "not yet produced",
+    "honest_scope_statement": "see run/PHASE0_AUDIT.md 'Final deliverable scope' section for what is and is not achievable from this sandbox"
+  }
+}
