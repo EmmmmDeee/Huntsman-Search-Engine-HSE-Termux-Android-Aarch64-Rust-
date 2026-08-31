@@ -195,7 +195,12 @@ fn record_name_matches(rec: &Map<String, Value>, query: &str) -> bool {
 /// Bounded to a plausible calendar year (matches `hudsonrock::parse_iso_epoch`
 /// /`core::timeline::parse_date`'s convention for untrusted date strings) so a
 /// malformed or wildly out-of-range value can't overflow
-/// [`crate::core::timeline::days_from_civil`].
+/// [`crate::core::timeline::days_from_civil`]. Also rejects a day that is
+/// in-range in isolation (1..=31) but doesn't exist in that specific month
+/// (e.g. 31/04, 30/02) — `days_from_civil` does not validate its inputs, so
+/// an impossible date would otherwise silently roll into the following
+/// month instead of being rejected, same as `core::timeline::parse_date`'s
+/// own day-of-month table.
 fn parse_au_date(s: &str) -> Option<i64> {
     let mut parts = s.trim().split('/');
     let day: i64 = parts.next()?.parse().ok()?;
@@ -206,6 +211,15 @@ fn parse_au_date(s: &str) -> Option<i64> {
         || !(1..=12).contains(&month)
         || !(1..=31).contains(&day)
     {
+        return None;
+    }
+    const DAYS_IN_MONTH: [i64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let max_day = if month == 2 && crate::core::timeline::is_leap(year) {
+        29
+    } else {
+        DAYS_IN_MONTH[(month - 1) as usize]
+    };
+    if day > max_day {
         return None;
     }
     Some(crate::core::timeline::days_from_civil(year, month, day))

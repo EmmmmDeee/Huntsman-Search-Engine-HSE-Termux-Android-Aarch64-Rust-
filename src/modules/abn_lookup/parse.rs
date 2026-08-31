@@ -52,7 +52,13 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
     // Organisation, needs to reflect that currency signal. Computed once so
     // the demotion the Organisation already applied to itself is applied
     // identically everywhere else below.
-    let is_inactive = !status.is_empty() && !status.to_lowercase().contains("active");
+    //
+    // Whole-word, not `.contains("active")`: a raw substring check matches
+    // "active" *inside* "Inactive"/"Deactivated" too, which would have
+    // flipped exactly the statuses this fix exists to catch into looking
+    // current.
+    let is_active = crate::util::str_util::whole_word_token_match(&status, "active");
+    let is_inactive = !status.is_empty() && !is_active;
 
     let org_conf = if is_inactive {
         confidence::derived_from(confidence::VERY_HIGH_PLUS)
@@ -64,7 +70,7 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
     org.tag("australian");
     if is_inactive {
         org.tag("inactive");
-    } else if status.to_lowercase().contains("active") {
+    } else if is_active {
         org.tag("active");
     }
 

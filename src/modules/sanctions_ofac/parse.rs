@@ -171,7 +171,8 @@ pub(super) fn name_tokens(name: &str) -> Vec<String> {
 /// True if every one of `tokens` appears in `record_name` as a whole word
 /// (case-insensitive). Whole-word, not substring — a raw `.contains()` check
 /// let a token land inside an unrelated word of a DIFFERENT sanctioned
-/// entity's name (e.g. `"ali"` inside `"KH-ALI-D"`), which for a sanctions
+/// entity's name (e.g. `"ali"` inside `"KHALID"`, where there is no
+/// separator to carve "ali" out as its own token), which for a sanctions
 /// screen means falsely associating an innocent person sharing a common name
 /// with an entry for someone else entirely. Same precision gate
 /// `acnc_charities`/`gleif_lei` use for their own full-text search results.

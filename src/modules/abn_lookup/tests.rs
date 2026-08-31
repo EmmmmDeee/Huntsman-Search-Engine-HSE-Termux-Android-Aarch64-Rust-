@@ -346,6 +346,40 @@ fn an_active_abn_does_not_demote_or_tag_inactive_on_any_entity() {
 }
 
 #[test]
+fn a_status_of_literally_inactive_is_not_misread_as_active() {
+    // Regression: `is_inactive` used to be `!status.to_lowercase().contains("active")`
+    // — a raw substring check, and "inactive" contains "active" as a substring
+    // (i-n-ACTIVE), so `AbnStatus: "Inactive"` inverted to `is_inactive == false`
+    // (and, on the old `else if status.to_lowercase().contains("active")` arm,
+    // even picked up the `active` tag) — the exact opposite of correct.
+    let data = serde_json::json!({
+        "Abn": "19415776361",
+        "EntityName": "Jane Citizen",
+        "EntityTypeCode": "IND",
+        "AbnStatus": "Inactive",
+        "AddressState": "VIC",
+        "AddressPostcode": "3000"
+    });
+    let mut result = ModuleResult::new();
+    parse_abn_result(&data, "test", &mut result);
+
+    let org = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Organisation)
+        .expect("organisation");
+    assert!(
+        org.has_tag("inactive"),
+        "a status of \"Inactive\" must be recognised as inactive: {org:?}"
+    );
+    assert!(
+        !org.has_tag("active"),
+        "a status of \"Inactive\" must never be tagged active: {org:?}"
+    );
+    assert!(org.confidence < confidence::VERY_HIGH_PLUS);
+}
+
+#[test]
 fn parse_empty_response() {
     let data = serde_json::json!({"Message": "No records found"});
     let mut result = ModuleResult::new();

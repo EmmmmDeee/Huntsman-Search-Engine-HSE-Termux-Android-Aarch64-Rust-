@@ -100,6 +100,37 @@ fn parse_au_date_reads_ddmmyyyy_and_rejects_junk() {
 }
 
 #[test]
+fn parse_au_date_rejects_a_day_that_does_not_exist_in_that_month() {
+    // Regression: day (1..=31) and month (1..=12) were range-checked in
+    // isolation, but never validated together — days_from_civil() does not
+    // validate its inputs, so `31/04/2020` (April has 30 days) or
+    // `30/02/2020` (February never has 30) would previously fall through to
+    // days_from_civil() and silently roll into the following month instead
+    // of being rejected as the impossible date it is.
+    assert_eq!(parse_au_date("31/04/2020"), None, "April has 30 days");
+    assert_eq!(parse_au_date("30/02/2020"), None, "February never has 30 days");
+    assert_eq!(
+        parse_au_date("29/02/2021"),
+        None,
+        "2021 is not a leap year — no 29 February"
+    );
+    // A genuine leap-day must still parse: 2020 is a leap year.
+    assert_eq!(
+        parse_au_date("29/02/2020"),
+        Some(crate::core::timeline::days_from_civil(2020, 2, 29))
+    );
+    // The last real day of a 30-day and a 31-day month must still parse.
+    assert_eq!(
+        parse_au_date("30/04/2020"),
+        Some(crate::core::timeline::days_from_civil(2020, 4, 30))
+    );
+    assert_eq!(
+        parse_au_date("31/12/2020"),
+        Some(crate::core::timeline::days_from_civil(2020, 12, 31))
+    );
+}
+
+#[test]
 fn ban_is_expired_only_for_a_genuine_past_date() {
     let today = crate::core::timeline::days_from_civil(2026, 8, 31);
     assert!(ban_is_expired(Some("07/11/2008"), today), "18 years past end date");
