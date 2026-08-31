@@ -168,16 +168,19 @@ pub(super) fn name_tokens(name: &str) -> Vec<String> {
         .collect()
 }
 
-/// True if every one of `tokens` appears in `record_name` (case-insensitive
-/// substring match) — the same all-tokens-present discipline
-/// `asic_banned_orgs::record_name_matches` uses for its own name-register hit
-/// test.
+/// True if every one of `tokens` appears in `record_name` as a whole word
+/// (case-insensitive). Whole-word, not substring — a raw `.contains()` check
+/// let a token land inside an unrelated word of a DIFFERENT sanctioned
+/// entity's name (e.g. `"ali"` inside `"KHALID"`, where there is no
+/// separator to carve "ali" out as its own token), which for a sanctions
+/// screen means falsely associating an innocent person sharing a common name
+/// with an entry for someone else entirely. Same precision gate
+/// `acnc_charities`/`gleif_lei` use for their own full-text search results.
 pub(super) fn record_name_matches(record_name: &str, tokens: &[String]) -> bool {
     if tokens.is_empty() {
         return false;
     }
-    let lower = record_name.to_ascii_lowercase();
-    tokens.iter().all(|t| lower.contains(t.as_str()))
+    crate::util::str_util::whole_word_token_match(record_name, &tokens.join(" "))
 }
 
 #[cfg(test)]

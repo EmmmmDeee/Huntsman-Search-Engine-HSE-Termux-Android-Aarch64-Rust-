@@ -39,6 +39,17 @@ pub(super) const POSTCODE_CAP: usize = 25;
 /// Cap on the localities emitted per resolved postcode (a postcode spans a
 /// bounded set of suburbs; 25 covers it).
 pub(super) const SUBURB_CAP: usize = 25;
+/// Confidence for a postcode-only `Address` on an EXACT register name match.
+/// A bare postcode is a coarse locator, not a residence, so even an
+/// exact-name hit stays below `confidence::LOW` (it must not masquerade as a
+/// precise, probable address) — but it still outranks the family-candidate
+/// tier below it.
+pub(super) const EXACT_POSTCODE_ADDR_CONF: f64 = 0.38;
+/// Confidence for a postcode-only `Address` on a surname-only (non-exact,
+/// family-candidate) register match — deliberately below
+/// [`EXACT_POSTCODE_ADDR_CONF`] so an unrelated relative sharing a surname
+/// (e.g. "MS DAWN BAMFORD") never outranks the actual subject's own hit.
+pub(super) const FAMILY_POSTCODE_ADDR_CONF: f64 = 0.32;
 
 /// A 4-digit Australian postcode, else `None`.
 pub(super) fn postcode(rec: &Map<String, Value>) -> Option<String> {
@@ -408,17 +419,17 @@ pub(super) fn records_to_entities(
         // exact-name register hit stays a Candidate-tier `Address` (it must not
         // masquerade as a precise, Probable address) — its evidentiary weight
         // lives in the unclaimed-money evidence chain and in ranking above the
-        // family/suburb guesses, where exact (0.38) still outranks family
-        // (0.32). The `find_conf` for the non-geo `unclaimed_money` finding /
-        // company Organisation keeps its full weight: those are real records,
-        // not coarse geo.
+        // family/suburb guesses, where EXACT_POSTCODE_ADDR_CONF still outranks
+        // FAMILY_POSTCODE_ADDR_CONF. The `find_conf` for the non-geo
+        // `unclaimed_money` finding / company Organisation keeps its full
+        // weight: those are real records, not coarse geo.
         // Non-exact surname-only matches must stay below the confidence::MEDIUM expansion
         // floor so unrelated family members (e.g. "MS DAWN BAMFORD") never
         // trigger pivots when scanning a specific individual.
         let (addr_conf, find_conf) = if exact {
-            (0.38, confidence::MEDIUM_PLUS)
+            (EXACT_POSTCODE_ADDR_CONF, confidence::MEDIUM_PLUS)
         } else {
-            (0.32, 0.35)
+            (FAMILY_POSTCODE_ADDR_CONF, confidence::TENTATIVE)
         };
 
         // Geo pivot when we have a usable postcode; otherwise a plain finding.
@@ -493,7 +504,7 @@ pub(super) fn records_to_entities(
             let pconf = if person_exact {
                 confidence::MEDIUM_PLUS
             } else {
-                0.35
+                confidence::TENTATIVE
             };
             let mut p = Entity::new(EntityKind::Person, person, pconf, scan_id);
             p.tag(SRC);

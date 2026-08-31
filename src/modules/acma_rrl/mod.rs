@@ -134,7 +134,12 @@ impl Module for AcmaRrl {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        &["T1591.001", "T1591.002"]
+        // Resolves the licensee behind a radiocommunications licence —
+        // T1591.002 Business Relationships. T1591.001 (Physical Locations)
+        // does NOT apply: unlike the sibling AU registries that geocode a
+        // registered address into Coordinates/Address, this module never
+        // parses or emits a location — only Organisation and AbnAcn.
+        &["T1591.002"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {

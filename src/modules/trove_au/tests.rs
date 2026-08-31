@@ -103,6 +103,80 @@ fn build_entities_emits_org_and_per_article_url_sources() {
 }
 
 #[test]
+fn build_entities_demotes_and_flags_an_article_whose_own_text_never_names_the_query() {
+    // Regression: `zone=newspaper` is a full-text search across Trove's
+    // 150+ year archive — a same-named-but-unrelated historical business is a
+    // real risk, and every article used to be trusted at the identical
+    // MEDIUM_HIGH confidence with an evidence summary unconditionally
+    // asserting it "mentions the subject", regardless of whether the
+    // article's own title/snippet ever named the query at all.
+    use super::{TroveArticle, build_entities};
+    use crate::core::entity::EntityKind;
+
+    let articles = vec![TroveArticle {
+        id: Some("1".into()),
+        title: Some("Totally Unrelated Historical Notice".into()),
+        date: Some("1901-01-01".into()),
+        title_id: None,
+        snippet: Some("nothing to do with the query at all".into()),
+        url: Some("https://trove.nla.gov.au/newspaper/article/1".into()),
+    }];
+    let res = build_entities("Acme Pty Ltd", 1, &articles, "scan");
+
+    let org = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Organisation)
+        .expect("org headline");
+    assert!(org.has_tag("needs-identity-verification"));
+    assert!(
+        (org.confidence - crate::core::confidence::LOW_MEDIUM).abs() < 1e-9,
+        "unconfirmed relevance must demote below the confirmed HIGH tier: {}",
+        org.confidence
+    );
+
+    let url = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Url)
+        .expect("url source");
+    assert!(url.has_tag("needs-identity-verification"));
+    assert!(
+        (url.confidence - crate::core::confidence::LOW_MEDIUM).abs() < 1e-9,
+        "unconfirmed relevance must demote below MEDIUM_HIGH: {}",
+        url.confidence
+    );
+    assert!(
+        !url.evidence[0].summary.contains("mentioning the subject"),
+        "an unconfirmed hit's summary must not assert relevance: {}",
+        url.evidence[0].summary
+    );
+}
+
+#[test]
+fn build_entities_trusts_an_article_whose_snippet_names_the_query_even_if_the_title_does_not() {
+    use super::{TroveArticle, build_entities};
+    use crate::core::entity::EntityKind;
+
+    let articles = vec![TroveArticle {
+        id: Some("1".into()),
+        title: Some("Local Business Notes".into()),
+        date: Some("1950-01-01".into()),
+        title_id: None,
+        snippet: Some("...Acme Pty Ltd announced today...".into()),
+        url: Some("https://trove.nla.gov.au/newspaper/article/1".into()),
+    }];
+    let res = build_entities("Acme Pty Ltd", 1, &articles, "scan");
+    let url = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Url)
+        .expect("url source");
+    assert!(!url.has_tag("needs-identity-verification"));
+    assert!((url.confidence - crate::core::confidence::MEDIUM_HIGH).abs() < 1e-9);
+}
+
+#[test]
 fn all_fetched_articles_emit_url_sources_not_just_the_first_ten() {
     use super::{TroveArticle, build_entities};
     use crate::core::entity::EntityKind;

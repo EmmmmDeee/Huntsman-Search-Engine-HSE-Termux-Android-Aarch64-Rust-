@@ -114,7 +114,23 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
     .into_iter()
     .filter_map(|(attr, val)| val.map(|v| (attr, v)))
     .fold(
-        Evidence::new(SRC, format!("OpenCorporates: {name}")),
+        // Qualified with the record's own registry key, not just the bare
+        // name: two different real companies in different jurisdictions can
+        // share a name (OpenCorporates searches ~140 jurisdictions at once),
+        // which collapses onto the same Organisation UID (name-only identity
+        // fold). Without this qualifier both records' evidence shared the
+        // identical (source, summary) key and were folded together —
+        // producing one entity that claimed to be simultaneously active and
+        // dissolved, in two countries, with two company numbers. Now each
+        // stays its own, individually-coherent evidence record.
+        Evidence::new(
+            SRC,
+            format!(
+                "OpenCorporates: {name} ({}:{})",
+                co.jurisdiction_code.as_deref().unwrap_or("unknown"),
+                co.company_number.as_deref().unwrap_or("unknown"),
+            ),
+        ),
         |ev, (attr, v)| ev.with_attr(attr, v),
     );
     ev = ev.with_attr("total_matches", total.to_string());
@@ -162,7 +178,7 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
     }
 
     if let Some(url) = co.opencorporates_url.as_deref().filter(|u| !u.is_empty()) {
-        let mut ue = Entity::new(EntityKind::Url, url, 0.68, scan_id);
+        let mut ue = Entity::new(EntityKind::Url, url, confidence::HIGH_PLUS, scan_id);
         ue.tag("opencorporates");
         ue.tag("profile-url");
         ue.add_evidence(Evidence::new(
@@ -187,6 +203,26 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
     }
 
     out
+}
+
+/// True when a company's own name shares every whole-word token with the
+/// search query — the same precision gate `acnc_charities`/`gleif_lei` use
+/// for their own full-text search results. OpenCorporates' `/search?q=` is a
+/// broad text search across ~140 jurisdictions; a generic or common company
+/// name can return several genuinely unrelated companies in one page, and
+/// without this gate every one of them was minted as an `Organisation` at the
+/// same full confidence as an exact hit.
+pub(super) fn company_matches_query(name: &str, query: &str) -> bool {
+    crate::util::str_util::whole_word_token_match(name, query)
+}
+
+/// True when an officer's own name shares every whole-word token with the
+/// search query — same rationale as [`company_matches_query`], for the
+/// officer-search path (`FullName` targets): a common personal name can
+/// return several unrelated real people in one page. `None` (no usable
+/// officer name at all) never counts as a match.
+pub(super) fn officer_matches_query(officer_name: Option<&str>, query: &str) -> bool {
+    officer_name.is_some_and(|n| crate::util::str_util::whole_word_token_match(n, query))
 }
 
 /// Build the OpenCorporates search URL for `target_kind`/`query` (the auth
@@ -325,7 +361,7 @@ pub(super) fn build_officer_entities(
             out.push(org);
 
             if let Some(url) = co.opencorporates_url.as_deref().filter(|u| !u.is_empty()) {
-                let mut ue = Entity::new(EntityKind::Url, url, 0.68, scan_id);
+                let mut ue = Entity::new(EntityKind::Url, url, confidence::HIGH_PLUS, scan_id);
                 ue.tag("opencorporates");
                 ue.tag("profile-url");
                 ue.add_evidence(Evidence::new(
@@ -359,10 +395,28 @@ pub(super) fn build_officer_entities(
         if let Some(p) = position {
             pe.tag(format!("role:{}", p.to_lowercase().replace(' ', "-")));
         }
-        pe.add_evidence(
-            Evidence::new(SRC, format!("OpenCorporates officer: {name}"))
-                .with_attr("total_matches", total.to_string()),
-        );
+        // Qualified with position + company, not just the bare name: a common
+        // personal name search can return several unrelated real people in
+        // one page, and a bare "OpenCorporates officer: {name}" summary gave
+        // them all the identical (source, summary) evidence key — folding
+        // one person's directorship and another's company-secretary role (at
+        // two different, unrelated companies) onto a single Person entity as
+        // if one individual held both. Same rationale as the Organisation fix
+        // above for company records.
+        let co_label = officer
+            .company
+            .as_ref()
+            .and_then(|c| c.name.as_deref())
+            .map(str::trim)
+            .filter(|n| !n.is_empty());
+        let mut summary = format!("OpenCorporates officer: {name}");
+        if let Some(p) = position {
+            summary.push_str(&format!(" — {p}"));
+        }
+        if let Some(c) = co_label {
+            summary.push_str(&format!(" at {c}"));
+        }
+        pe.add_evidence(Evidence::new(SRC, summary).with_attr("total_matches", total.to_string()));
         out.push(pe);
     }
 
@@ -536,7 +590,19 @@ impl Module for OpenCorporates {
                     .iter()
                     .take(PER_PAGE)
                     .filter_map(|w| w.officer.as_ref())
-                    .flat_map(|o| build_officer_entities(o, total, &ctx.scan_id)),
+                    .flat_map(|o| {
+                        let mut ents = build_officer_entities(o, total, &ctx.scan_id);
+                        // A common personal name can return several unrelated
+                        // real people from the officer-search index; only an
+                        // officer record whose own name actually matches the
+                        // query keeps full confidence.
+                        if !officer_matches_query(o.name.as_deref(), query) {
+                            for e in &mut ents {
+                                e.demote_to_candidate();
+                            }
+                        }
+                        ents
+                    }),
             );
         } else {
             let body: OcResp = crate::util::http::json_decode(SRC, resp).await?;
@@ -555,7 +621,25 @@ impl Module for OpenCorporates {
                     .iter()
                     .take(PER_PAGE)
                     .filter_map(|wrapper| wrapper.company.as_ref())
-                    .flat_map(|co| build_company_entities(co, total, &ctx.scan_id)),
+                    .flat_map(|co| {
+                        let mut ents = build_company_entities(co, total, &ctx.scan_id);
+                        // `AbnAcn` is an exact numeric-identifier lookup (the
+                        // query IS the company number, not company-name text),
+                        // so the name-token match doesn't apply; `Organisation`
+                        // search is broad full-text across ~140 jurisdictions
+                        // and needs the same match gate as the officer path.
+                        let is_match = target.kind == TargetKind::AbnAcn
+                            || co
+                                .name
+                                .as_deref()
+                                .is_some_and(|n| company_matches_query(n, query));
+                        if !is_match {
+                            for e in &mut ents {
+                                e.demote_to_candidate();
+                            }
+                        }
+                        ents
+                    }),
             );
         }
 

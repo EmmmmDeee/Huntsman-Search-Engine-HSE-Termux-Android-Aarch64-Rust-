@@ -43,8 +43,13 @@ fn metadata() {
     assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
     assert!(m.max_timeout_ms() > 3000);
     let techs = m.attack_techniques();
-    assert!(techs.contains(&"T1591.001"));
     assert!(techs.contains(&"T1591.002"));
+    // Regression: T1591.001 (Physical Locations) was claimed despite this
+    // module never parsing or emitting a location — only Organisation/AbnAcn.
+    assert!(
+        !techs.contains(&"T1591.001"),
+        "no Coordinates/Address is ever emitted, so Physical Locations is unearned"
+    );
 }
 
 #[test]

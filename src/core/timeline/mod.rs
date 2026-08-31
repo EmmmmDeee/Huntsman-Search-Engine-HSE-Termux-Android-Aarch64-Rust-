@@ -441,7 +441,11 @@ pub(crate) fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146097 + doe - 719468
 }
 
-fn is_leap(y: i64) -> bool {
+/// `pub(crate)` so callers validating their own `DD/MM/YYYY`-shaped date
+/// strings before [`days_from_civil`] (which does not validate its inputs)
+/// can reuse this rather than re-deriving the leap-year rule — see
+/// `asic_banned_orgs::parse_au_date`.
+pub(crate) fn is_leap(y: i64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
