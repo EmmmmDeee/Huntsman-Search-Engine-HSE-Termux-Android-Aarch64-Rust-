@@ -164,10 +164,26 @@ fn ip_entities(data: &BgpIpData, ip: &str, scan_id: &str) -> Vec<Entity> {
     // nested more-/less-specific announcements) — each is a real network-block +
     // ASN mapping for the address, not a sample.
     let mut asn_and_cidr: Vec<Entity> = Vec::new();
+    // An operator commonly announces both an aggregate block and one or more
+    // more-specific sub-blocks from the SAME origin ASN (e.g. Cloudflare's
+    // AS13335 covering an IP via both a /13 and a /20) — dedupe the ASN
+    // entity across such sibling prefixes so it isn't minted once per
+    // covering prefix. Every distinct CIDR is still its own real entity.
+    let mut seen_asn = std::collections::HashSet::new();
     for prefix in &data.prefixes {
         let Some(asn) = prefix.asn.as_ref() else {
             continue;
         };
+        if let Some(cidr) = nonempty(&prefix.prefix).filter(|c| c.contains('/')) {
+            // Emit the covering CIDR as a scannable entity, not just evidence.
+            let mut ce = Entity::new(EntityKind::Cidr, cidr, confidence::VERY_HIGH, scan_id);
+            ce.tag("bgp-prefix");
+            ce.add_evidence(Evidence::new(SRC, format!("Covering prefix for {ip}")));
+            asn_and_cidr.push(ce);
+        }
+        if !seen_asn.insert(asn.asn) {
+            continue;
+        }
         let asn_label = format!("AS{}", asn.asn);
         let mut asn_e = Entity::new(
             EntityKind::Asn,
@@ -183,11 +199,6 @@ fn ip_entities(data: &BgpIpData, ip: &str, scan_id: &str) -> Vec<Entity> {
         }
         if let Some(cidr) = nonempty(&prefix.prefix).filter(|c| c.contains('/')) {
             ev = ev.with_attr("prefix", cidr);
-            // Emit the covering CIDR as a scannable entity, not just evidence.
-            let mut ce = Entity::new(EntityKind::Cidr, cidr, confidence::VERY_HIGH, scan_id);
-            ce.tag("bgp-prefix");
-            ce.add_evidence(Evidence::new(SRC, format!("Covering prefix for {ip}")));
-            asn_and_cidr.push(ce);
         }
         asn_e.add_evidence(ev);
         asn_and_cidr.push(asn_e);

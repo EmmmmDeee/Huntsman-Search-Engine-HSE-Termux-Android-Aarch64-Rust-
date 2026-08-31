@@ -176,6 +176,13 @@ fn build_asns(ni: &NetworkInfo, scan_id: &str) -> Vec<Entity> {
         .asns
         .iter()
         .filter(|a| a.chars().all(|c| c.is_ascii_digit()) && !a.is_empty())
+        // Deduplicated and in a deterministic (sorted) order, matching
+        // `build_announced_prefixes` below — a repeated value in `asns`
+        // would otherwise inflate `Entity.corroboration` for no real second
+        // observation (see `hse-core::Entity::absorb`, which sums it
+        // unconditionally across evidence with the same (source, summary)).
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
         .map(|a| {
             let mut e = Entity::new(
                 EntityKind::Asn,
@@ -282,6 +289,11 @@ fn build_abuse(contacts: &[String], scan_id: &str) -> Vec<Entity> {
         // case — `abuse@cloudflare.com`) is infrastructure, never the subject;
         // suppress it so it can't pollute the identity cluster.
         .filter(|c| !crate::util::domains::is_infrastructure_email(c))
+        // Deduplicated, matching `build_announced_prefixes` — a repeated
+        // contact would otherwise inflate `Entity.corroboration` for no real
+        // second observation (see the same rationale in `build_asns` above).
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
         .map(|c| {
             let mut e = Entity::new(EntityKind::Email, c, confidence::MEDIUM, scan_id);
             e.tag(SRC);

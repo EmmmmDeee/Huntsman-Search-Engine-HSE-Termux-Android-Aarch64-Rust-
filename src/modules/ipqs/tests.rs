@@ -11,6 +11,19 @@ fn accepts_three_kinds() {
 fn cost_is_key_gated() {
     assert!(matches!(IpQs.cost(), ModuleCost::KeyGated));
 }
+#[test]
+fn attack_techniques_covers_the_organisation_pivot() {
+    // Regression: process() emits Organisation from the ISP, `organization`,
+    // and phone-carrier fields, but attack_techniques() omitted T1591.002
+    // (Business Relationships) — the same pivot every sibling Infrastructure
+    // module with an ISP/ASN-operator Organisation declares.
+    let ids = IpQs.attack_techniques();
+    assert!(
+        ids.contains(&"T1591.002"),
+        "must declare T1591.002 for the ISP/organization/carrier Organisation pivot: {ids:?}"
+    );
+    assert!(IpQs.produces().contains(&EntityKind::Organisation));
+}
 
 fn parse(json: &str) -> Common {
     serde_json::from_str(json).expect("should succeed")

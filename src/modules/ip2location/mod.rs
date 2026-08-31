@@ -225,7 +225,13 @@ fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<E
         } else {
             format!("{city}, {country}")
         };
-        let mut ae = Entity::new(EntityKind::Address, &addr, 0.68, scan_id);
+        // Matches ipquery's Address confidence for the identical
+        // city/region/country composition (see that module's `compose_address`
+        // call site) — was a stale bare `0.68` left un-recalibrated when the
+        // sibling Coordinates entity above was recalibrated 0.72 → 0.62,
+        // leaving Address confidence HIGHER than the Coordinates it derives
+        // from.
+        let mut ae = Entity::new(EntityKind::Address, &addr, confidence::NOTABLE, scan_id);
         ae.tag("ip2location");
         ae.tag(tags::GEOINT);
         // An anonymiser/VPN exit's city is not the subject's location — tag it so

@@ -207,11 +207,8 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
             addr.tag("geoint");
             addr.tag("derived");
             addr.add_evidence(
-                Evidence::new(
-                    "ip_whois_geo",
-                    format!("Address derived from IP geo for {ip}"),
-                )
-                .with_attr("source", "ipwho.is"),
+                Evidence::new(SRC, format!("Address derived from IP geo for {ip}"))
+                    .with_attr("source", "ipwho.is"),
             );
             result.push(addr);
         }

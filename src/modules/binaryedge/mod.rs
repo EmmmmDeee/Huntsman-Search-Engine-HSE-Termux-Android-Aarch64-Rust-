@@ -375,9 +375,25 @@ fn build_one_subdomain(
     {
         return None;
     }
-    let mut e = Entity::new(EntityKind::Domain, &host, confidence::EXPERT, scan_id);
+    // Defensive: BinaryEdge's subdomain-enumeration endpoint can echo back a
+    // host that passes the filters above (not blank/self/dotless/IP-literal)
+    // yet isn't actually under the queried domain — a CNAME target or a
+    // loosely-associated host. Mirrors c99's `is_proper_subdomain_of` gate for
+    // the identical endpoint shape (a domain in, a flat hostname list out): a
+    // verified subdomain keeps the top confidence and the `subdomain` tag; an
+    // unverified one is still reported, but at a lower confidence and without
+    // the tag, rather than an unverified host outranking c99's own verified one.
+    let is_sub = crate::util::domains::is_proper_subdomain_of(&host, domain_lc);
+    let conf = if is_sub {
+        confidence::EXPERT
+    } else {
+        confidence::MEDIUM_PLUS
+    };
+    let mut e = Entity::new(EntityKind::Domain, &host, conf, scan_id);
     e.tag("binaryedge");
-    e.tag("subdomain");
+    if is_sub {
+        e.tag("subdomain");
+    }
     e.add_evidence(
         Evidence::new(SRC, format!("Subdomain of {domain} per BinaryEdge"))
             .with_attr("parent_domain", domain)

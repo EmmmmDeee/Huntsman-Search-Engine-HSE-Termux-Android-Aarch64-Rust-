@@ -222,3 +222,17 @@ fn module_metadata_is_coherent() {
         "produces() must declare what build_entities actually emits"
     );
 }
+
+#[test]
+fn attack_techniques_covers_the_open_technical_database_pivot() {
+    // Regression: this module queries the same Esplora block explorer
+    // (blockstream.info) that `chain_intel` maps to T1596 (Search Open
+    // Technical Databases) for its own BTC/LTC lookups — the claim was
+    // missing here despite the identical source/action.
+    let m = Bitcoin;
+    assert!(
+        m.attack_techniques().contains(&"T1596"),
+        "querying a public block explorer is Search Open Technical Databases: {:?}",
+        m.attack_techniques()
+    );
+}
