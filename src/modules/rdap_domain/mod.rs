@@ -28,6 +28,12 @@ use crate::util::str_util::slugify;
 
 #[derive(Deserialize)]
 struct RdapResp {
+    /// The RDAP record's own statement of which domain it's FOR (RFC 9083)
+    /// — checked in `process()` against the domain actually queried before
+    /// the rest of the response (registrar/nameservers/status/events) is
+    /// trusted.
+    #[serde(default, rename = "ldhName")]
+    ldh_name: Option<String>,
     #[serde(default)]
     handle: Option<String>,
     #[serde(default)]
@@ -171,6 +177,20 @@ fn build_registrar_entity(
     }
     oe.add_evidence(ev);
     Some(oe)
+}
+
+/// True when the RDAP response's own `ldhName` (RFC 9083 — the record's
+/// statement of which domain it's FOR) is either absent (older/minimal
+/// responses may omit it — permissive-if-absent, only a PRESENT mismatch is
+/// rejected) or matches the domain actually queried, case-insensitively and
+/// trailing-dot-tolerant. A redirect/registry glitch or fuzzy-matching
+/// registry server must not silently misattribute another domain's
+/// registrar/nameservers/status/events to the one queried. **Pure.**
+fn ldh_name_matches_query(ldh_name: Option<&str>, queried: &str) -> bool {
+    match ldh_name.map(str::trim).map(|s| s.trim_end_matches('.')) {
+        None | Some("") => true,
+        Some(ldh) => ldh.eq_ignore_ascii_case(queried.trim_end_matches('.')),
+    }
 }
 
 /// Build the primary `Domain` entity from an RDAP record. **Pure** (no
@@ -406,6 +426,10 @@ impl Module for RdapDomain {
         }
 
         let body: RdapResp = crate::util::http::json_decode(SRC, resp).await?;
+
+        if !ldh_name_matches_query(body.ldh_name.as_deref(), domain) {
+            return Ok(ModuleResult::new());
+        }
 
         let mut result = ModuleResult::new();
         result.push(build_domain_entity(domain, &body, &ctx.scan_id));

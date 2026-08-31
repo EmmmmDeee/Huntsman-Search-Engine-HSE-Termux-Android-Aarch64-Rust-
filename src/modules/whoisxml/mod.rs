@@ -331,7 +331,16 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
             out.push(e);
         }
 
-        if let Some(email) = nonempty(&c.email).filter(|s| s.contains('@')) {
+        // Email is the one contact field in this loop that was missing the
+        // gate every sibling field (organization/name/telephone/location)
+        // already applies — a privacy-proxy mailbox ("a1b2c3.protect@
+        // whoisguard.com") or role desk ("abuse@godaddy.com") sailed through
+        // as if it were the subject's own contact, at confidence::HIGH_PLUS.
+        if let Some(email) = nonempty(&c.email)
+            .filter(|s| s.contains('@'))
+            .filter(|s| !crate::core::validation::is_whois_privacy_placeholder(s))
+            .filter(|s| !crate::util::domains::is_infrastructure_email(s))
+        {
             let low = email.to_lowercase();
             if seen.insert(format!("mail:{low}")) {
                 let mut e = Entity::new(EntityKind::Email, &email, confidence::HIGH_PLUS, scan_id);

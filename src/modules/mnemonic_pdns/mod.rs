@@ -139,6 +139,7 @@ fn forward_infra_domain(
     rrtype: &str,
     r: &PdnsRecord,
     scan_id: &str,
+    inbound: bool,
 ) -> Entity {
     let mut e = Entity::new(EntityKind::Domain, host, confidence::HIGH, scan_id);
     e.tag(SRC);
@@ -149,11 +150,19 @@ fn forward_infra_domain(
     } else {
         e.tag(tags::EXTERNAL);
     }
-    e.add_evidence(pdns_evidence(
-        format!("Passive DNS: {target} {rrtype} → {host}"),
-        rrtype,
-        r,
-    ));
+    // `inbound` distinguishes the two callers' opposite DNS relationships:
+    // the forward CNAME/MX/NS branch means `target`'s OWN record points at
+    // `host` ("target rrtype → host"), but the inbound-CNAME branch means
+    // the reverse — `host`'s OWN record CNAMEs into `target` — and reusing
+    // the same summary template there stated the record backwards (e.g.
+    // "github.com cname → pages.example.org" for a record whose real DNS
+    // fact is "pages.example.org CNAME → github.com").
+    let summary = if inbound {
+        format!("Passive DNS: {host} {rrtype} → {target}")
+    } else {
+        format!("Passive DNS: {target} {rrtype} → {host}")
+    };
+    e.add_evidence(pdns_evidence(summary, rrtype, r));
     e
 }
 
@@ -229,7 +238,7 @@ fn build_entities(
                 }
                 "cname" | "mx" | "ns" if is_hostname(&answer) && seen.insert(answer.clone()) => {
                     out.push(forward_infra_domain(
-                        &answer, &target_l, &rrtype, r, scan_id,
+                        &answer, &target_l, &rrtype, r, scan_id, false,
                     ));
                 }
                 _ => {}
@@ -239,8 +248,12 @@ fn build_entities(
             && is_hostname(&query)
             && seen.insert(query.clone())
         {
-            // A name that CNAMEs *into* our domain — an inbound alias.
-            out.push(forward_infra_domain(&query, &target_l, &rrtype, r, scan_id));
+            // A name that CNAMEs *into* our domain — an inbound alias. The
+            // record's own subject is `query` (it CNAMEs to `target_l`), the
+            // reverse of the forward branch above.
+            out.push(forward_infra_domain(
+                &query, &target_l, &rrtype, r, scan_id, true,
+            ));
         }
     }
 

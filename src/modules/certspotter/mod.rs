@@ -106,8 +106,17 @@ fn build_entities(entries: &[Issuance], domain_base: &str, scan_id: &str) -> Vec
             if !seen_domains.insert(name.clone()) {
                 return None;
             }
-            let is_sub = crate::util::domains::is_or_subdomain_of(&name, &base);
-            let conf = if is_sub { 0.75 } else { 0.45 };
+            // Proper-subdomain, not `is_or_subdomain_of` — the apex itself
+            // routinely appears in its own cert's dns_names (a single cert
+            // commonly SANs both "example.com" and "www.example.com"), and
+            // the apex is not a subdomain of itself; using the inclusive
+            // check mislabeled it `tags::SUBDOMAIN`.
+            let is_sub = crate::util::domains::is_proper_subdomain_of(&name, &base);
+            let conf = if is_sub {
+                confidence::VERY_HIGH
+            } else {
+                confidence::LOW_MEDIUM
+            };
             let mut e = Entity::new(EntityKind::Domain, &name, conf, scan_id);
             e.tag(tags::CT_LOG);
             if is_sub {

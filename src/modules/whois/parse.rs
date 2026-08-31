@@ -119,11 +119,17 @@ pub(super) fn parse_whois(response: &str) -> WhoisFields {
                 "paid-till:",
             ],
         ),
-        registrant_email: field(
-            response,
-            &["Registrant Email:", "Tech Email:", "Admin Email:"],
-        )
-        .filter(|e| crate::util::extract::looks_like_email(e)),
+        // Registrant-role only — "Tech Email:"/"Admin Email:" are a DIFFERENT
+        // role, not a dialect synonym for the same field (unlike the other
+        // multi-key lookups in this struct, e.g. registrar/created above,
+        // which really are the same fact spelled differently by different
+        // WHOIS servers). Those two are already captured under their own
+        // correct role via `tech_email`/`admin_email` below; folding them in
+        // here too let a response with no published Registrant Email (common
+        // post-GDPR) silently substitute the admin's or tech contact's
+        // address and evidence it as "WHOIS registrant contact".
+        registrant_email: field(response, &["Registrant Email:"])
+            .filter(|e| crate::util::extract::looks_like_email(e)),
         registrant_org: field(
             response,
             &[

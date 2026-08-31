@@ -8,6 +8,28 @@ fn accepts_only_domain() {
 }
 
 #[test]
+fn ldh_name_matches_query_is_permissive_absent_but_rejects_a_present_mismatch() {
+    // Regression: the RDAP response's own `ldhName` (RFC 9083 — which domain
+    // the record is FOR) was never parsed or cross-checked against the
+    // query at all — a redirect/registry glitch could silently attribute
+    // another domain's registrar/nameservers/status/events to the one
+    // queried.
+    assert!(
+        ldh_name_matches_query(None, "example.com"),
+        "absent ldhName (older/minimal responses) must not itself reject"
+    );
+    assert!(ldh_name_matches_query(Some("example.com"), "example.com"));
+    assert!(
+        ldh_name_matches_query(Some("EXAMPLE.COM."), "example.com"),
+        "case and trailing-dot must not matter"
+    );
+    assert!(
+        !ldh_name_matches_query(Some("evil.example"), "example.com"),
+        "a present, mismatched ldhName must be rejected"
+    );
+}
+
+#[test]
 fn query_domain_reduces_subdomains_to_registrable_base() {
     // The reported flaw: a `www.`-prefixed Domain entity was queried verbatim
     // (`rdap.org/domain/www.peekyou.com`) and 404'd. RDAP only resolves the

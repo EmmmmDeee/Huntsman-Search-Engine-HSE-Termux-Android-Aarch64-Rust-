@@ -236,9 +236,19 @@ pub(super) fn build_entities(resp: &RdapResponse, domain: &str, scan_id: &str) -
         let Some(vcard) = &entity.vcard_array else {
             continue;
         };
-        if entity.roles.iter().any(|r| r == "registrar")
-            && let Some(org) = crate::modules::whois::vcard_field(vcard, "fn")
-        {
+        // Both the Organisation below AND the nested abuse-contact loop are
+        // scoped to a CONFIRMED registrar-role entity — an RDAP response can
+        // list several top-level entities with other roles (technical,
+        // administrative, billing, reseller, noc, ...), and this loop's own
+        // nested-child search used to run for any of them that happened to
+        // carry a vCard, regardless of role. An abuse email nested under a
+        // non-registrar entity was then emitted with evidence text
+        // unconditionally asserting "Registrar abuse contact for {domain}" —
+        // a role never actually checked.
+        if !entity.roles.iter().any(|r| r == "registrar") {
+            continue;
+        }
+        if let Some(org) = crate::modules::whois::vcard_field(vcard, "fn") {
             let mut e = Entity::new(
                 EntityKind::Organisation,
                 &org,
@@ -261,7 +271,16 @@ pub(super) fn build_entities(resp: &RdapResponse, domain: &str, scan_id: &str) -
             let Some(child_vcard) = &child.vcard_array else {
                 continue;
             };
-            if let Some(email) = crate::modules::whois::vcard_field(child_vcard, "email") {
+            // The abuse desk is the registrar's own automation mailbox, not
+            // the subject's — emitting it as a plain, un-gated Email entity
+            // is the same leakage class #351 removed from cert_intel/crtsh/
+            // ip_registry/doh_resolver (and this file's own sibling
+            // `whois::find_ip_entity` already gates the identical RIR-abuse
+            // shape). Several real AU registrar domains are even already in
+            // `is_infrastructure_email`'s own INFRA_MAIL list.
+            if let Some(email) = crate::modules::whois::vcard_field(child_vcard, "email")
+                && !crate::util::domains::is_infrastructure_email(&email)
+            {
                 let mut e = Entity::new(EntityKind::Email, &email, confidence::HIGH, scan_id);
                 e.tag("au_rdap");
                 e.tag("abuse-contact");

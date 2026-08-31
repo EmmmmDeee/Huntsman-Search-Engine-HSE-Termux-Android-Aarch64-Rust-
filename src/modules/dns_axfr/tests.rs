@@ -60,6 +60,13 @@ fn module_metadata_full() {
     assert_eq!(m.name(), "dns_axfr");
     assert!(!m.description().is_empty());
     assert!(!m.attack_techniques().is_empty());
+    // Regression: an active, target-touching zone-transfer probe testing for
+    // an exploitable AXFR-open misconfiguration (tagged VULNERABLE on
+    // success) must claim Active Scanning: Vulnerability Scanning
+    // (T1595.002), mirroring subdomain_takeover's identical reasoning — the
+    // DNS/topology-only codes under-represented that this is an exploit-
+    // condition probe, not passive info-gathering.
+    assert!(m.attack_techniques().contains(&"T1595.002"));
     assert!(m.produces().contains(&EntityKind::Domain));
 }
 

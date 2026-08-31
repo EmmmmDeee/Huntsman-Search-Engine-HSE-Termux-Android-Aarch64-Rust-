@@ -83,10 +83,10 @@ fn build_domain_entity(entry: &DomainEntry, broad_match: bool, scan_id: &str) ->
         return None;
     }
     let is_dead = entry.is_dead.as_deref() == Some("True");
-    // Live domain confidence::MEDIUM_HIGH, dead 0.35; a broad keyword match is weakly related to
-    // the target, so dampen it (0.7×).
+    // Live domain confidence::MEDIUM_HIGH, dead confidence::TENTATIVE; a broad
+    // keyword match is weakly related to the target, so dampen it (0.7×).
     let mut conf = if is_dead {
-        0.35
+        confidence::TENTATIVE
     } else {
         confidence::MEDIUM_HIGH
     };
@@ -150,8 +150,14 @@ impl Module for DomainsDb {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // Domain/passive-DNS database — ATT&CK DNS/Passive DNS (T1596.001).
-        &["T1596.001"]
+        // A domain-REGISTRATION (zone-file) keyword search, not a
+        // passive-DNS/resolution-history source — DomainEntry carries only
+        // registration metadata (domain/create_date/update_date/country/
+        // is_dead), never an IP/resolve/record-type field. Matches the
+        // WHOIS (T1596.002) classification `whois`/`rdap_domain` use for the
+        // same registration-database category, not T1596.001 (Passive DNS),
+        // which this module has no data supporting.
+        &["T1596.002"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {

@@ -227,12 +227,39 @@ fn registrar_org_extracted_from_vcard_fn() {
 }
 
 #[test]
-fn abuse_email_extracted_from_nested_vcard() {
+fn abuse_email_is_suppressed_as_a_role_desk_not_the_subject() {
+    // `abuse@` is the registrar's own automation mailbox, not the subject's
+    // — the same leakage class #351 removed from cert_intel/crtsh/
+    // ip_registry/doh_resolver. It is real evidence (recorded on the
+    // Organisation) but must not become a first-class, breach-checked,
+    // identity-clustered Email entity.
     let body = resp(REGISTRAR_WITH_ABUSE_JSON);
     let ents = build_entities(&body, "example.com.au", "s");
-    let e = find(&ents, &EntityKind::Email, "abuse@registrar.example").expect("abuse email");
-    assert!(e.has_tag("au_rdap") && e.has_tag("abuse-contact"));
-    assert_eq!(e.confidence, confidence::HIGH);
+    assert!(
+        find(&ents, &EntityKind::Email, "abuse@registrar.example").is_none(),
+        "a registrar abuse desk must not be emitted as the subject's email: {ents:?}"
+    );
+}
+
+#[test]
+fn a_real_individual_mailbox_under_an_abuse_role_child_still_survives() {
+    // The infrastructure-email gate must not be so broad it swallows a real,
+    // individually-addressed mailbox that happens to be nested under an
+    // "abuse"-role RDAP entity.
+    let body = resp(
+        r#"{"entities":[{
+            "roles":["registrar"],
+            "vcardArray":["vcard",[["fn",{},"text","Example Registrar"]]],
+            "entities":[{
+                "roles":["abuse"],
+                "vcardArray":["vcard",[["email",{},"text","j.smith@registrar.example"]]]
+            }]
+        }]}"#,
+    );
+    let ents = build_entities(&body, "example.com.au", "s");
+    let e = find(&ents, &EntityKind::Email, "j.smith@registrar.example")
+        .expect("a personal mailbox must survive the role-desk gate");
+    assert!(e.has_tag("abuse-contact"));
 }
 
 #[test]
@@ -245,6 +272,33 @@ fn non_registrar_role_does_not_yield_an_organisation() {
     );
     let ents = build_entities(&body, "example.com.au", "s");
     assert!(!ents.iter().any(|e| e.kind == EntityKind::Organisation));
+}
+
+#[test]
+fn non_registrar_role_with_an_abuse_child_does_not_yield_an_email_either() {
+    // Regression: the nested abuse-contact loop used to run for ANY
+    // vcard-bearing outer entity, regardless of its own role — so a
+    // "technical"-role entity with its own nested "abuse"-role child (a
+    // realistic RDAP shape: several roles beyond "registrar" carry
+    // sub-entities) had its child's email extracted and evidenced as
+    // "Registrar abuse contact", a role never actually checked. Both the
+    // Organisation AND the nested-child search must be scoped to a
+    // confirmed registrar-role entity.
+    let body = resp(
+        r#"{"entities":[{
+            "roles":["technical"],
+            "vcardArray":["vcard",[["fn",{},"text","Some Tech Contact"]]],
+            "entities":[{
+                "roles":["abuse"],
+                "vcardArray":["vcard",[["email",{},"text","abuse@unrelated-tech.example"]]]
+            }]
+        }]}"#,
+    );
+    let ents = build_entities(&body, "example.com.au", "s");
+    assert!(
+        !ents.iter().any(|e| e.kind == EntityKind::Email),
+        "an abuse child nested under a non-registrar entity must not be emitted: {ents:?}"
+    );
 }
 
 #[test]
@@ -380,7 +434,10 @@ fn full_response_projects_every_category_and_stays_deterministic() {
         )
         .is_some()
     );
-    assert!(find(&a, &EntityKind::Email, "abuse@registrar.example").is_some());
+    // The registrar's own abuse desk is a role mailbox, not the subject's —
+    // suppressed by the is_infrastructure_email gate (see
+    // abuse_email_is_suppressed_as_a_role_desk_not_the_subject).
+    assert!(find(&a, &EntityKind::Email, "abuse@registrar.example").is_none());
     assert!(find(&a, &EntityKind::Domain, "ns1.example.com.au").is_some());
     assert!(find(&a, &EntityKind::Domain, "ns2.example.com.au").is_some());
     // Two distinct Organisation entities (registrant vs registrar) survive —

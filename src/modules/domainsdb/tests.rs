@@ -192,7 +192,7 @@ use super::*;
         )
         .expect("should succeed");
         assert!(e.has_tag("dead-domain"));
-        assert!((e.confidence - 0.35).abs() < 1e-9);
+        assert!((e.confidence - confidence::TENTATIVE).abs() < 1e-9);
     }
 
     #[test]
@@ -204,7 +204,19 @@ use super::*;
         // Dead + broad stacks both penalties.
         let dead = build_domain_entity(&entry(r#"{"domain":"x.com","isDead":"True"}"#), true, "s")
             .expect("should succeed");
-        assert!((dead.confidence - 0.35 * 0.7).abs() < 1e-9);
+        assert!((dead.confidence - confidence::TENTATIVE * 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn attack_techniques_claims_whois_not_passive_dns() {
+        // Regression: this is a domain-REGISTRATION keyword search (no
+        // IP/resolve/record-type field anywhere in DomainEntry) — it must
+        // match the WHOIS classification (T1596.002) whois/rdap_domain use
+        // for the same registration-database category, not T1596.001
+        // (Passive DNS), which it has no data supporting.
+        let techs = DomainsDb.attack_techniques();
+        assert!(techs.contains(&"T1596.002"));
+        assert!(!techs.contains(&"T1596.001"));
     }
 
     #[test]

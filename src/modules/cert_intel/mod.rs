@@ -73,8 +73,12 @@ impl Module for CertIntel {
 
     fn produces(&self) -> &'static [EntityKind] {
         // Domain from dNSName SANs / CT-log names; Email from rfc822Name SANs
-        // (S/MIME and client-auth certificates) and CT-log email entries.
-        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::Email];
+        // (S/MIME and client-auth certificates) and CT-log email entries;
+        // IpAddress when the live TLS probe re-emits an IP target
+        // (`target.to_entity`, dynamically kinded) with its certificate
+        // evidence attached.
+        const KINDS: &[EntityKind] =
+            &[EntityKind::Domain, EntityKind::Email, EntityKind::IpAddress];
         KINDS
     }
 
@@ -259,8 +263,21 @@ fn ct_log_entities(
         .iter()
         .flat_map(|entry| entry.name_value.split('\n').map(move |name| (entry, name)))
         .filter_map(|(entry, name)| {
-            let name = name.trim().trim_start_matches("*.").to_lowercase();
-            if name.is_empty() || name == parent || !seen_subs.insert(name.clone()) {
+            let name = name.trim().to_lowercase();
+            // A wildcard SAN (`*.dev.example.com`) proves the certificate
+            // holder controls DNS for that zone, not that the literal host
+            // `dev.example.com` resolves or exists (RFC 6125: the wildcard
+            // matches single-label children, not the bare label). Stripping
+            // the `*.` prefix and treating the remainder as a literal
+            // subdomain — as this used to do — is indistinguishable from
+            // crt.sh actually returning that literal hostname. Skip it
+            // instead, matching this module's own live-TLS-SAN path below
+            // and the sibling `crtsh`/`anubis` modules.
+            if name.is_empty()
+                || name.starts_with('*')
+                || name == parent
+                || !seen_subs.insert(name.clone())
+            {
                 return None;
             }
             // An rfc822Name SAN — crt.sh returns these inline in `name_value` — is
@@ -342,11 +359,8 @@ fn parse_certificate(
             sub.tag(tags::SUBDOMAIN);
             sub.tag("tls-san");
             sub.add_evidence(
-                Evidence::new(
-                    "cert_intel",
-                    format!("TLS SAN on {target_domain} certificate"),
-                )
-                .with_attr("parent_domain", target_domain),
+                Evidence::new(SRC, format!("TLS SAN on {target_domain} certificate"))
+                    .with_attr("parent_domain", target_domain),
             );
             Some(sub)
         }));

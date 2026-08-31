@@ -98,8 +98,14 @@ impl Module for Typosquat {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // Look-alike domain properties — ATT&CK Domain Properties (T1590.001).
-        &["T1590.001"]
+        // Look-alike domain properties — ATT&CK Domain Properties (T1590.001)
+        // — PLUS Wordlist Scanning (T1595.003): this module generates a large
+        // candidate-hostname set algorithmically (homoglyph/omission/
+        // transposition/...) and actively DNS-resolves every one to see
+        // which are registered, the same "generate + actively probe many
+        // names" mechanism dns_intel's dictionary subdomain brute-force
+        // claims T1595.003 for.
+        &["T1590.001", "T1595.003"]
     }
 
     fn accepts(&self, t: &Target) -> bool {
