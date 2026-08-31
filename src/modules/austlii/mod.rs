@@ -148,28 +148,58 @@ impl Module for AustLii {
 
 /// Map the extracted AustLII document links to entities. **Pure** (no network):
 /// each link (up to [`MAX_DOCS`], matched to the request's `results=`) becomes a
-/// `court-judgment` `Url`, and an Organisation target with ≥2 references also
-/// gets a `legal-record` Organisation summary. Split out of `process` so the
-/// no-omission cap is unit-testable without a network round-trip.
+/// `court-judgment` `Url`, and an Organisation target with ≥2 title-relevant
+/// references also gets a `legal-record` Organisation summary. Split out of
+/// `process` so the no-omission cap is unit-testable without a network
+/// round-trip.
+///
+/// `sinosrch.cgi` is a full-text search across AustLII's entire corpus, not a
+/// party-name-scoped lookup — a judgment's title is the only text available
+/// here, and it routinely mentions people who are not litigants (witnesses,
+/// barristers, cited third parties). A link whose title shares no whole-word
+/// token with the query is still real evidence (AustLII's own relevance
+/// ranking put it in the results), just weaker than a title that actually
+/// names the subject — so it is kept, at a lower confidence and flagged
+/// `needs-identity-verification`, rather than dropped or trusted equally.
 fn build_entities(links: &[(String, String)], target: &Target, scan_id: &str) -> ModuleResult {
     let mut result = ModuleResult::new();
+    let query = target.value.trim();
+    let mut title_matches = 0usize;
 
     for (doc_url, title) in links.iter().take(MAX_DOCS) {
-        let mut url_ent = Entity::new(EntityKind::Url, doc_url, confidence::HIGH_PLUS, scan_id);
+        let relevant = crate::util::str_util::shares_whole_word_token(title, query);
+        if relevant {
+            title_matches += 1;
+        }
+        let conf = if relevant {
+            confidence::HIGH_PLUS
+        } else {
+            confidence::LOW_MEDIUM
+        };
+        let mut url_ent = Entity::new(EntityKind::Url, doc_url, conf, scan_id);
         url_ent.tag("court-judgment");
         url_ent.tag("austlii");
-        url_ent.add_evidence(
-            Evidence::new(SRC, format!("AustLII document: {title}"))
-                .with_attr("title", title)
-                .with_attr("source", "austlii.edu.au"),
-        );
+        let mut ev = Evidence::new(SRC, format!("AustLII document: {title}"))
+            .with_attr("title", title)
+            .with_attr("source", "austlii.edu.au");
+        if !relevant {
+            url_ent.tag("needs-identity-verification");
+            ev = ev.with_attr(
+                "caution",
+                "Full-text search hit — the query may appear only in the document \
+                 body (e.g. a witness, cited party, or barrister) rather than the \
+                 title naming a litigant; verify before treating this as the \
+                 subject's own case.",
+            );
+        }
+        url_ent.add_evidence(ev);
         result.push(url_ent);
     }
 
-    if links.len() >= 2 && matches!(target.kind, TargetKind::Organisation) {
+    if title_matches >= 2 && matches!(target.kind, TargetKind::Organisation) {
         let mut org = Entity::new(
             EntityKind::Organisation,
-            target.value.trim(),
+            query,
             confidence::MEDIUM_HIGH,
             scan_id,
         );
@@ -178,10 +208,7 @@ fn build_entities(links: &[(String, String)], target: &Target, scan_id: &str) ->
         org.add_evidence(
             Evidence::new(
                 SRC,
-                format!(
-                    "AustLII: {} legal document references found",
-                    links.len().min(MAX_DOCS)
-                ),
+                format!("AustLII: {title_matches} legal document references found"),
             )
             .with_attr("source", "austlii.edu.au"),
         );

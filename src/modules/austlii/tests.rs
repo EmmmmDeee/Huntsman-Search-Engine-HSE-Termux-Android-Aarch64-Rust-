@@ -11,7 +11,7 @@ fn build_entities_emits_all_fetched_docs_not_just_the_first_ten() {
         .map(|i| {
             (
                 format!("https://www.austlii.edu.au/au/cases/cth/HCA/2023/{i}.html"),
-                format!("Case {i} [2023] HCA {i}"),
+                format!("Acme Corp v Case {i} [2023] HCA {i}"),
             )
         })
         .collect();
@@ -28,6 +28,75 @@ fn build_entities_emits_all_fetched_docs_not_just_the_first_ten() {
         res.entities
             .iter()
             .any(|e| e.kind == EntityKind::Organisation && e.has_tag("legal-record"))
+    );
+}
+
+#[test]
+fn build_entities_demotes_and_flags_a_hit_whose_title_never_names_the_query() {
+    // Regression: sinosrch.cgi is a full-text search across AustLII's entire
+    // corpus, not a party-name-scoped lookup — a judgment can mention the
+    // query deep in its body (a witness, a cited third party) while its
+    // TITLE (the only text available here) names entirely different
+    // litigants. Every hit used to be trusted equally at HIGH_PLUS.
+    let links = vec![
+        (
+            "https://www.austlii.edu.au/au/cases/cth/HCA/2023/1.html".to_string(),
+            "John Smith v Acme Pty Ltd [2023] HCA 1".to_string(),
+        ),
+        (
+            "https://www.austlii.edu.au/au/cases/cth/HCA/2023/2.html".to_string(),
+            "Totally Unrelated Pty Ltd v Other Party [2019] FCA 812".to_string(),
+        ),
+    ];
+    let target = Target::new(TargetKind::FullName, "John Smith");
+    let res = build_entities(&links, &target, "scan");
+
+    let matching = res
+        .entities
+        .iter()
+        .find(|e| e.value.contains("2023/1.html"))
+        .expect("title-matching hit");
+    assert!((matching.confidence - crate::core::confidence::HIGH_PLUS).abs() < 1e-9);
+    assert!(!matching.has_tag("needs-identity-verification"));
+
+    let unrelated = res
+        .entities
+        .iter()
+        .find(|e| e.value.contains("2023/2.html"))
+        .expect("non-matching hit still kept, not dropped");
+    assert!(
+        unrelated.confidence < matching.confidence,
+        "a title with no relation to the query must rank below one that names it"
+    );
+    assert!(unrelated.has_tag("needs-identity-verification"));
+    assert!(
+        unrelated.evidence[0].attributes.contains_key("caution"),
+        "the unverified hit's evidence must carry the caution"
+    );
+}
+
+#[test]
+fn build_entities_organisation_summary_counts_only_title_relevant_hits() {
+    // The `legal-record` Organisation summary must reflect genuine relevance,
+    // not raw hit count — two coincidental appearances in unrelated case
+    // titles must not be presented as "2 legal document references".
+    let links = vec![
+        (
+            "https://www.austlii.edu.au/au/cases/cth/HCA/2023/1.html".to_string(),
+            "Totally Unrelated Pty Ltd v Someone [2019] FCA 1".to_string(),
+        ),
+        (
+            "https://www.austlii.edu.au/au/cases/cth/HCA/2023/2.html".to_string(),
+            "Another Unrelated Entity v Someone Else [2020] FCA 2".to_string(),
+        ),
+    ];
+    let target = Target::new(TargetKind::Organisation, "Acme Corp");
+    let res = build_entities(&links, &target, "scan");
+    assert!(
+        !res.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Organisation && e.has_tag("legal-record")),
+        "two title-irrelevant hits must not manufacture a legal-record summary"
     );
 }
 

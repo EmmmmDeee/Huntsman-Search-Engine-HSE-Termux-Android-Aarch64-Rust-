@@ -164,6 +164,23 @@ impl Module for TroveAu {
     }
 }
 
+/// True when an article's title or snippet shares a whole-word token with the
+/// query — `zone=newspaper` is a full-text search across Trove's entire
+/// (150+ year) archive, so a same-named-but-unrelated historical business or
+/// person is a real risk, not a hypothetical one; the total hit count and
+/// each article's own relevance-ranked placement come from Trove, not from
+/// anything this module verifies itself.
+fn article_is_relevant(article: &TroveArticle, query: &str) -> bool {
+    article
+        .title
+        .as_deref()
+        .is_some_and(|t| crate::util::str_util::shares_whole_word_token(t, query))
+        || article
+            .snippet
+            .as_deref()
+            .is_some_and(|s| crate::util::str_util::shares_whole_word_token(s, query))
+}
+
 /// Build the org headline plus a pivotable `Url` SOURCE per newspaper article.
 /// Pure (no I/O) so the extraction is unit-tested directly. Returns empty when
 /// the archive reported no hits.
@@ -178,14 +195,25 @@ fn build_entities(
         return result;
     }
 
-    let mut org = Entity::new(
-        EntityKind::Organisation,
-        target_value,
-        confidence::HIGH,
-        scan_id,
-    );
+    // Whether at least one FETCHED article's own title/snippet actually names
+    // the query, rather than trusting Trove's raw total_hits count (its own
+    // full-text relevance ranking) unverified. `total_hits` can exceed the
+    // fetched page, so this can't prove no hit anywhere is relevant — only
+    // that this page's sample didn't confirm it.
+    let any_relevant = articles
+        .iter()
+        .any(|a| article_is_relevant(a, target_value));
+    let org_conf = if any_relevant {
+        confidence::HIGH
+    } else {
+        confidence::LOW_MEDIUM
+    };
+    let mut org = Entity::new(EntityKind::Organisation, target_value, org_conf, scan_id);
     org.tag("trove");
     org.tag("newspaper-archive");
+    if !any_relevant {
+        org.tag("needs-identity-verification");
+    }
     let mut ev = Evidence::new(
         SRC,
         format!("Trove newspaper archive: {total_hits} mentions of '{target_value}'"),
@@ -197,6 +225,15 @@ fn build_entities(
         {
             ev = ev.with_attr("article", format!("{date}: {title}"));
         }
+    }
+    if !any_relevant {
+        ev = ev.with_attr(
+            "caution",
+            "None of the sampled articles' own title/snippet named the query — \
+             Trove's full-text ranking may be surfacing a same-named but \
+             unrelated historical mention; verify before treating this as the \
+             subject's own record.",
+        );
     }
     org.add_evidence(ev);
     result.push(org);
@@ -217,11 +254,25 @@ fn build_entities(
         {
             continue;
         }
-        let mut url_e = Entity::new(EntityKind::Url, u, confidence::MEDIUM_HIGH, scan_id);
+        let relevant = article_is_relevant(article, target_value);
+        let conf = if relevant {
+            confidence::MEDIUM_HIGH
+        } else {
+            confidence::LOW_MEDIUM
+        };
+        let mut url_e = Entity::new(EntityKind::Url, u, conf, scan_id);
         url_e.tag("trove");
         url_e.tag("newspaper-archive");
         url_e.tag("source-document");
-        let mut uev = Evidence::new(SRC, "Trove newspaper article mentioning the subject");
+        if !relevant {
+            url_e.tag("needs-identity-verification");
+        }
+        let summary = if relevant {
+            "Trove newspaper article mentioning the subject"
+        } else {
+            "Trove newspaper article returned by full-text search (relevance unconfirmed)"
+        };
+        let mut uev = Evidence::new(SRC, summary);
         if let Some(t) = &article.title {
             uev = uev.with_attr("title", t);
         }
