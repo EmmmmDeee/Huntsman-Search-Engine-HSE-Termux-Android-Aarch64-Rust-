@@ -229,6 +229,44 @@ fn evidence_role_matches_the_field_the_person_actually_came_from() {
 }
 
 #[test]
+fn blank_package_name_drops_the_dangling_suffix_and_attribute() {
+    // `package.name` is an Option — a record with no name must not render as
+    // "npm author email (package )" / "npm author URL ()" / "npm co-maintainer
+    // of " (a dangling parenthetical/preposition around nothing), and must
+    // not attach an empty `package` attribute either. `alice` (the subject,
+    // via `author`) exercises the email/URL paths; `dave` (a non-subject, via
+    // `maintainers`) exercises the co-username path — each path's own
+    // is_subject gate needs a different record to fire.
+    let body = search(
+        r#"{"objects":[{"package":{
+                "author":{"username":"alice","email":"alice@example.com","url":"https://alice.dev"},
+                "maintainers":[{"username":"dave"}]
+                }}],"total":1}"#,
+    );
+    let ents = build_entities(&body, "alice", "s");
+
+    let by_value = |kind: EntityKind, value: &str| -> &Entity {
+        of_kind(&ents, kind.clone())
+            .into_iter()
+            .find(|e| e.value == value)
+            .unwrap_or_else(|| panic!("must emit {kind:?} entity for {value}"))
+    };
+    let no_package_attr = |e: &Entity| assert!(!e.evidence[0].attributes.contains_key("package"));
+
+    let email = by_value(EntityKind::Email, "alice@example.com");
+    assert_eq!(email.evidence[0].summary, "npm author email");
+    no_package_attr(email);
+
+    let url = by_value(EntityKind::Url, "https://alice.dev");
+    assert_eq!(url.evidence[0].summary, "npm author URL");
+    no_package_attr(url);
+
+    let dave = by_value(EntityKind::Username, "dave");
+    assert_eq!(dave.evidence[0].summary, "npm co-maintainer");
+    no_package_attr(dave);
+}
+
+#[test]
 fn usernameless_record_email_is_kept() {
     // A record with an email but no username is treated as the subject's.
     let body = search(

@@ -184,9 +184,14 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
             let mut e = Entity::new(EntityKind::Email, &email, 0.74, scan_id);
             e.tag("npm");
             e.tag("public-profile");
-            let mut ev = Evidence::new(SRC, format!("npm {role} email (package {pkg})"))
-                .with_attr("source", "npm_registry");
-            // Skip a blank package attribute (dead-field hygiene).
+            // `package.name` is optional — skip the blank "(package )" suffix
+            // and the attribute alike (dead-field hygiene) when it's absent.
+            let summary = if pkg.is_empty() {
+                format!("npm {role} email")
+            } else {
+                format!("npm {role} email (package {pkg})")
+            };
+            let mut ev = Evidence::new(SRC, summary).with_attr("source", "npm_registry");
             if !pkg.is_empty() {
                 ev = ev.with_attr("package", pkg);
             }
@@ -234,7 +239,12 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
             {
                 let mut url_e = Entity::new(EntityKind::Url, u, 0.66, scan_id);
                 url_e.tag("npm");
-                let mut ev = Evidence::new(SRC, format!("npm {role} URL ({pkg_name})"));
+                let summary = if pkg_name.is_empty() {
+                    format!("npm {role} URL")
+                } else {
+                    format!("npm {role} URL ({pkg_name})")
+                };
+                let mut ev = Evidence::new(SRC, summary);
                 if !pkg_name.is_empty() {
                     ev = ev.with_attr("package", pkg_name);
                 }
@@ -260,10 +270,16 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
                 );
                 uname_e.tag("npm");
                 uname_e.tag(format!("co-{role}"));
-                uname_e.add_evidence(
-                    Evidence::new(SRC, format!("npm co-{role} of {pkg_name}"))
-                        .with_attr("package", pkg_name),
-                );
+                let summary = if pkg_name.is_empty() {
+                    format!("npm co-{role}")
+                } else {
+                    format!("npm co-{role} of {pkg_name}")
+                };
+                let mut ev = Evidence::new(SRC, summary);
+                if !pkg_name.is_empty() {
+                    ev = ev.with_attr("package", pkg_name);
+                }
+                uname_e.add_evidence(ev);
                 result.push(uname_e);
             }
         }
