@@ -185,10 +185,16 @@ impl Module for UsernameVariants {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // Generates Username variants (T1593.001 Social-media, T1589.003
-        // Employee Names) and — when called on an Email seed — also covers
-        // T1589.002 Email Addresses. Superset of the Social category default.
-        &["T1593.001", "T1589.002", "T1589.003"]
+        // Derives Username variants ONLY (see `produces`) — never a real-name
+        // `Person`, and never an `Email` entity even when called on an Email
+        // seed (it mines the local part for separator/decoration variants; it
+        // does not emit the address itself). So T1589.003 (Employee Names) and
+        // T1589.002 (Email Addresses) are both over-claimed — the same
+        // correction already applied to hacker_news / lobsters / nostr /
+        // reddit_user / username_search — leaving T1593.001 (Social Media) as
+        // the one precise technique: the derived variants feed the platforms
+        // `username_search` et al. actually search.
+        &["T1593.001"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {

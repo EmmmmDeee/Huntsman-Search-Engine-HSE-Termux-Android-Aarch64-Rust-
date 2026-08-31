@@ -269,7 +269,17 @@ fn emit_nip05(
     // Dropping the tail would hide relays the subject actually uses; the list is
     // fetched once and yields terminal (non-crawled) entities, so there is no
     // frontier to bound.
-    if let Some(relays) = doc.relays.get(hex) {
+    // `hex` is the canonical lowercased pubkey (normalised by the caller), but
+    // `doc.relays`'s keys are the JSON document's own, un-normalised strings —
+    // is_hex64 accepts either case, so a document publishing the SAME pubkey
+    // in uppercase under "relays" would silently miss an exact-key `.get()`
+    // here and emit zero relay entities. Case-insensitive lookup instead.
+    if let Some(relays) = doc
+        .relays
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(hex))
+        .map(|(_, v)| v)
+    {
         let mut seen_relay: std::collections::HashSet<String> = std::collections::HashSet::new();
         for relay in relays
             .iter()

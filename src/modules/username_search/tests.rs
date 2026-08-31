@@ -82,8 +82,8 @@ use crate::core::confidence;
 
     #[test]
     fn max_timeout_ms_budgeted_for_full_table_sweep() {
-        // Regression guard: with 334 sites and 32 concurrent probes,
-        // the module needs ~ceil(334/32) × 4.5s = 47s of probing
+        // Regression guard: with 354 sites and 32 concurrent probes,
+        // the module needs ~ceil(354/32) × 4.5s = 54s of probing
         // wall-time. If a future contributor reverts to the default
         // 3_000ms (MODULE_TIMEOUT_MS) the engine will kill the
         // module after ~2 batches and surface only ~10% of real
@@ -120,6 +120,166 @@ use crate::core::confidence;
             c_status > confidence::MEDIUM,
             "status-only hit {c_status} must stay above the confidence::MEDIUM expand floor"
         );
+    }
+
+    #[test]
+    fn duplicate_site_table_urls_exist_and_are_the_reason_aggregate_results_dedups() {
+        // Documents the real, present-day shape of SITES: a handful of entries
+        // across the table resolve to the identical URL for any given username
+        // (two upstream list sources describing the same platform). This is not
+        // itself asserted as a defect — see `aggregate_results_counts_a_shared_url_once`
+        // for the behavior that makes it harmless — but a future cleanup that
+        // removes the duplication is fine too; this only pins today's ground
+        // truth so aggregate_results's dedup path stays exercised by at least
+        // one real pair rather than only by synthetic fixtures below.
+        let mut by_template: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        for site in SITES {
+            *by_template.entry(site.url).or_insert(0) += 1;
+        }
+        assert!(
+            by_template.values().any(|&n| n > 1),
+            "expected at least one URL template shared by more than one site entry"
+        );
+    }
+
+    #[test]
+    fn aggregate_results_counts_a_shared_url_once() {
+        // Two site-table entries that both resolve to the SAME URL (as several
+        // real entries do — see the test above) must contribute exactly one
+        // Url entity and one count toward found_names/category_counts/
+        // verified_hits, not two. Without the dedup this doubles
+        // `platforms_count` and can flip summary tags like
+        // `strong-social-presence` (>=3 social hits) off a single real account.
+        let results: Vec<(&'static str, &'static str, ProbeResult)> = vec![
+            (
+                "SiteA",
+                "social",
+                ProbeResult::Found {
+                    url: "https://example.com/alice".to_string(),
+                    confidence: 0.92,
+                    verified: true,
+                },
+            ),
+            (
+                "SiteA (alt)",
+                "social",
+                ProbeResult::Found {
+                    url: "https://example.com/alice".to_string(),
+                    confidence: 0.74,
+                    verified: false,
+                },
+            ),
+        ];
+        let r = aggregate_results("alice", &results, "scan").expect("two hits, never inconclusive");
+        let urls: Vec<&Entity> = r
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Url)
+            .collect();
+        assert_eq!(
+            urls.len(),
+            1,
+            "the shared URL must be emitted once, not once per table entry: {urls:?}"
+        );
+        let summary = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Username)
+            .expect("summary entity");
+        assert_eq!(
+            summary.evidence[0].attributes.get("platforms_count").map(String::as_str),
+            Some("1"),
+            "platforms_count must reflect the one distinct platform, not two table entries"
+        );
+    }
+
+    #[test]
+    fn aggregate_results_prefers_the_verified_hit_regardless_of_table_order() {
+        // Regression (Copilot review on PR #557): a first-seen-wins dedup let
+        // site-table ORDER decide the outcome — the real `DeviantArt` (status-
+        // only, 0.74, table-order first) / `DeviantArt (alt)` (body-marker,
+        // 0.92, table-order second) pair both target the identical URL, and
+        // "keep whichever was probed first" would keep the WEAK result even
+        // though a stronger sibling rule also confirmed the same account. The
+        // deduped hit must always be the strongest one seen, independent of
+        // which arrived first.
+        let results: Vec<(&'static str, &'static str, ProbeResult)> = vec![
+            (
+                "DeviantArt",
+                "photo",
+                ProbeResult::Found {
+                    url: "https://www.deviantart.com/alice".to_string(),
+                    confidence: 0.74,
+                    verified: false,
+                },
+            ),
+            (
+                "DeviantArt (alt)",
+                "photo",
+                ProbeResult::Found {
+                    url: "https://www.deviantart.com/alice".to_string(),
+                    confidence: 0.92,
+                    verified: true,
+                },
+            ),
+        ];
+        let r = aggregate_results("alice", &results, "scan").expect("two hits, never inconclusive");
+        let urls: Vec<&Entity> = r
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Url)
+            .collect();
+        assert_eq!(urls.len(), 1, "the shared URL must still be emitted once: {urls:?}");
+        assert!(
+            urls[0].has_tag("verified-detection"),
+            "the STRONGER (verified) sibling must win regardless of which table entry \
+             was probed first: {urls:?}"
+        );
+        assert!((urls[0].confidence - 0.92).abs() < 1e-9);
+        let summary = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Username)
+            .expect("summary entity");
+        assert_eq!(
+            summary.evidence[0].attributes.get("hits_verified").map(String::as_str),
+            Some("1"),
+            "the winning hit must count toward hits_verified, not hits_status_only"
+        );
+    }
+
+    #[test]
+    fn aggregate_results_emits_distinct_hits_on_distinct_urls() {
+        // Sanity check for the test above: two DIFFERENT URLs are not folded
+        // together by the dedup.
+        let results: Vec<(&'static str, &'static str, ProbeResult)> = vec![
+            (
+                "SiteA",
+                "social",
+                ProbeResult::Found {
+                    url: "https://example.com/alice".to_string(),
+                    confidence: 0.92,
+                    verified: true,
+                },
+            ),
+            (
+                "SiteB",
+                "dev",
+                ProbeResult::Found {
+                    url: "https://example.org/alice".to_string(),
+                    confidence: 0.92,
+                    verified: true,
+                },
+            ),
+        ];
+        let r = aggregate_results("alice", &results, "scan").expect("two hits, never inconclusive");
+        let urls: Vec<&Entity> = r
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Url)
+            .collect();
+        assert_eq!(urls.len(), 2, "two distinct URLs must both be emitted: {urls:?}");
     }
 
     #[test]

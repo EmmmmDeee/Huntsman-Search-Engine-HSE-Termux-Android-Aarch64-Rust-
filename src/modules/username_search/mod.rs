@@ -24,8 +24,8 @@ use std::time::Duration;
 
 /// Concurrent probe ceiling. Each batch is bounded by `per_site_timeout`
 /// so the wall-time is `ceil(SITES.len()/MAX) × per_site_timeout`. At 32
-/// concurrent + 4.5s/probe + 334 sites that's ~47s — fits inside the
-/// 60s `max_timeout_ms` budget below with comfortable slack.
+/// concurrent + 4.5s/probe + 354 sites that's ~54s — fits inside the
+/// 60s `max_timeout_ms` budget below, with slack for slow probes.
 const MAX_CONCURRENT_PROBES: usize = 32;
 
 use crate::core::{
@@ -62,8 +62,8 @@ impl Module for UsernameSearch {
     }
 
     fn priority(&self) -> u8 {
-        // Higher than email_to_username (95) so it dispatches first when
-        // a Username target is the seed — gives the user visible progress
+        // Higher than email_parse (96) so it dispatches first when a
+        // Username target is the seed — gives the user visible progress
         // immediately rather than waiting for derivation modules.
         111
     }
@@ -84,8 +84,8 @@ impl Module for UsernameSearch {
     fn max_timeout_ms(&self) -> u64 {
         // The previous default of 3_000 (inherited from
         // `MODULE_TIMEOUT_MS`) was killing the module after ~2 probe
-        // batches of 16, surfacing only ~32 of 334 sites' results.
-        // 60s envelope gives 47s of probing wall-time + 13s of slack
+        // batches of 16, surfacing only ~32 of 354 sites' results.
+        // 60s envelope gives ~54s of probing wall-time + ~6s of slack
         // for slow Cloudflare / Akamai / PerimeterX challenges that
         // social-analyzer's published research flags as the dominant
         // failure mode for username-enumeration tools.
@@ -227,156 +227,203 @@ impl Module for UsernameSearch {
 
         let results: Vec<(&'static str, &'static str, ProbeResult)> = join_all(probes).await;
 
-        let mut module_result = ModuleResult::new();
-        let mut found_names: Vec<&str> = Vec::new();
-        let mut category_counts: std::collections::BTreeMap<&str, usize> =
-            std::collections::BTreeMap::new();
-        // Track inconclusive (blocked/unreachable) vs definitive not-found so a
-        // mostly-blocked run isn't reported as a confirmed absence (error-tree
-        // finding M6 — `found=0` must not conflate "absent" with "couldn't tell").
-        let mut inconclusive_probes = 0usize;
-        let mut definitive_absent = 0usize;
-        // Provenance split: hits corroborated by a body marker vs. those resting
-        // on a bare HTTP-200 (which an SPA shell / soft-404 can fake). Surfaced in
-        // the summary so the operator can weigh a "47 platforms" result honestly.
-        let mut verified_hits = 0usize;
-        let mut weak_hits = 0usize;
-        for (site_name, site_cat, outcome) in &results {
-            match outcome {
-                ProbeResult::Found {
-                    url,
-                    confidence,
-                    verified,
-                } => {
-                    found_names.push(site_name);
-                    *category_counts.entry(site_cat).or_insert(0) += 1;
-                    let mut e =
-                        Entity::new(EntityKind::Url, url.as_str(), *confidence, &ctx.scan_id);
-                    e.tag("social-profile");
-                    e.tag(format!("platform:{site_name}"));
-                    e.tag(format!("cat:{site_cat}"));
-                    // Provenance tag lets the correlator / SPA discount status-only
-                    // hits without re-deriving how the match was made.
-                    if *verified {
-                        verified_hits += 1;
-                        e.tag("verified-detection");
-                    } else {
-                        weak_hits += 1;
-                        e.tag("weak-detection");
-                    }
-                    e.add_evidence(
-                        Evidence::new(SRC, format!("@{username} has a profile on {site_name}"))
-                            .with_attr("platform", *site_name)
-                            .with_attr("category", *site_cat)
-                            .with_attr("username", username)
-                            .with_attr("url", url)
-                            .with_attr(
-                                "detection",
-                                if *verified {
-                                    "body-marker"
-                                } else {
-                                    "status-only"
-                                },
-                            ),
-                    );
-                    module_result.push(e);
-                }
-                ProbeResult::NotFound => definitive_absent += 1,
-                ProbeResult::Error => inconclusive_probes += 1,
-            }
-        }
-
-        // Zero hits: distinguish a genuine "not on any site" from "couldn't tell"
-        // (WAF / rate-limit / no egress blocked the probes). If the probes were
-        // mostly inconclusive, surface an error instead of a silent zero so the
-        // operator never reads a blocked run as a confirmed absence.
-        if found_names.is_empty() {
-            if inconclusive(found_names.len(), inconclusive_probes, results.len()) {
-                return Err(Error::module(
-                    SRC,
-                    format!(
-                        "inconclusive: {inconclusive_probes}/{} site probes were blocked or \
-                         unreachable (WAF / rate-limit / no egress) — not a confirmed absence",
-                        results.len()
-                    ),
-                ));
-            }
-            return Ok(module_result);
-        }
-
-        // Re-emit the seed username with a corroboration-style summary so
-        // the SPA's Entities table shows a single "N platforms" row for
-        // the username itself, alongside the per-platform Url entities.
-        if !found_names.is_empty() {
-            let mut summary = Entity::new(
-                EntityKind::Username,
-                username,
-                confidence::VERY_HIGH_PLUSPLUS,
-                &ctx.scan_id,
-            );
-            summary.tag("multi-platform");
-
-            // Tag each category that had at least one hit.
-            category_counts
-                .keys()
-                .for_each(|cat| summary.tag(format!("cat:{cat}")));
-
-            // People-centric intelligence tags: flag high-value
-            // categories that reveal personal lifestyle/identity
-            // exposure. These are MORE valuable for OSINT than dev
-            // platform presence (which is professional, not personal).
-            let social_count = category_counts.get("social").copied().unwrap_or(0);
-            let dating_count = category_counts.get("dating").copied().unwrap_or(0);
-            let messaging_count = category_counts.get("messaging").copied().unwrap_or(0);
-            let gaming_count = category_counts.get("gaming").copied().unwrap_or(0);
-
-            if social_count >= 3 {
-                summary.tag("strong-social-presence");
-            }
-            if dating_count > 0 {
-                summary.tag("dating-profile-exposed");
-            }
-            if messaging_count > 0 {
-                summary.tag("messaging-identity");
-            }
-            if social_count + dating_count + messaging_count + gaming_count >= 5 {
-                summary.tag("high-personal-exposure");
-            }
-            // At least three body-marker-confirmed hits is a genuinely corroborated
-            // identity, not a pile of status-only guesses — let the SPA highlight it.
-            if verified_hits >= 3 {
-                summary.tag("strong-corroboration");
-            }
-
-            let cat_summary: Vec<String> = category_counts
-                .iter()
-                .map(|(c, n)| format!("{c}:{n}"))
-                .collect();
-            summary.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!(
-                        "@{username} found on {n} platform(s): {list}",
-                        n = found_names.len(),
-                        list = found_names.join(", ")
-                    ),
-                )
-                .with_attr("platforms_count", found_names.len().to_string())
-                .with_attr("platforms", found_names.join(", "))
-                .with_attr("categories", cat_summary.join(", "))
-                .with_attr("social_count", social_count.to_string())
-                .with_attr("dating_count", dating_count.to_string())
-                .with_attr("messaging_count", messaging_count.to_string())
-                .with_attr("sites_probed", SITES.len().to_string())
-                .with_attr("sites_not_found", definitive_absent.to_string())
-                .with_attr("sites_inconclusive", inconclusive_probes.to_string())
-                .with_attr("hits_verified", verified_hits.to_string())
-                .with_attr("hits_status_only", weak_hits.to_string()),
-            );
-            module_result.push(summary);
-        }
-        Ok(module_result)
+        aggregate_results(username, &results, &ctx.scan_id)
     }
+}
+
+/// Turn resolved per-site probe outcomes into the module's entities. Pure (no
+/// I/O), so the aggregation — in particular the URL-based dedup below — is
+/// unit-tested directly against synthetic outcomes; the network shell in
+/// `process` stays thin.
+fn aggregate_results(
+    username: &str,
+    results: &[(&'static str, &'static str, ProbeResult)],
+    scan_id: &str,
+) -> Result<ModuleResult> {
+    let mut module_result = ModuleResult::new();
+    let mut found_names: Vec<&str> = Vec::new();
+    let mut category_counts: std::collections::BTreeMap<&str, usize> =
+        std::collections::BTreeMap::new();
+    // Track inconclusive (blocked/unreachable) vs definitive not-found so a
+    // mostly-blocked run isn't reported as a confirmed absence (error-tree
+    // finding M6 — `found=0` must not conflate "absent" with "couldn't tell").
+    let mut inconclusive_probes = 0usize;
+    let mut definitive_absent = 0usize;
+    // Provenance split: hits corroborated by a body marker vs. those resting
+    // on a bare HTTP-200 (which an SPA shell / soft-404 can fake). Surfaced in
+    // the summary so the operator can weigh a "47 platforms" result honestly.
+    let mut verified_hits = 0usize;
+    let mut weak_hits = 0usize;
+
+    // A handful of site-table entries resolve to the SAME URL (two upstream
+    // list sources describing the same platform with different detection
+    // rules — e.g. a bare-200 check and a body-marker check both aimed at
+    // the identical profile URL, such as the real `DeviantArt` (status-only)
+    // vs `DeviantArt (alt)` (body-marker) pair). Pass 1: reduce to the
+    // STRONGEST hit per URL — verified beats unverified, and among two of the
+    // same provenance the higher confidence wins — rather than whichever
+    // table entry happens to be probed first. A first-seen-wins dedup would
+    // let site-table ORDER decide whether a URL a stronger sibling rule also
+    // confirmed still ends up reported as merely "weak-detection".
+    let mut best_by_url: std::collections::HashMap<&str, (&str, &str, f64, bool)> =
+        std::collections::HashMap::new();
+    let mut url_order: Vec<&str> = Vec::new();
+    for (site_name, site_cat, outcome) in results {
+        match outcome {
+            ProbeResult::Found {
+                url,
+                confidence,
+                verified,
+            } => {
+                let candidate = (*site_name, *site_cat, *confidence, *verified);
+                match best_by_url.entry(url.as_str()) {
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        url_order.push(url.as_str());
+                        v.insert(candidate);
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut o) => {
+                        let existing = *o.get();
+                        // Compare (verified, confidence): verified strictly
+                        // outranks unverified regardless of confidence, and
+                        // ties within the same tier break on confidence.
+                        if (candidate.3, candidate.2) > (existing.3, existing.2) {
+                            o.insert(candidate);
+                        }
+                    }
+                }
+            }
+            ProbeResult::NotFound => definitive_absent += 1,
+            ProbeResult::Error => inconclusive_probes += 1,
+        }
+    }
+
+    // Pass 2: emit one entity per distinct URL, in first-seen order, using
+    // whichever table entry won the reduction above.
+    for url in &url_order {
+        let (site_name, site_cat, confidence, verified) = best_by_url[url];
+        found_names.push(site_name);
+        *category_counts.entry(site_cat).or_insert(0) += 1;
+        let mut e = Entity::new(EntityKind::Url, *url, confidence, scan_id);
+        e.tag("social-profile");
+        e.tag(format!("platform:{site_name}"));
+        e.tag(format!("cat:{site_cat}"));
+        // Provenance tag lets the correlator / SPA discount status-only
+        // hits without re-deriving how the match was made.
+        if verified {
+            verified_hits += 1;
+            e.tag("verified-detection");
+        } else {
+            weak_hits += 1;
+            e.tag("weak-detection");
+        }
+        e.add_evidence(
+            Evidence::new(SRC, format!("@{username} has a profile on {site_name}"))
+                .with_attr("platform", site_name)
+                .with_attr("category", site_cat)
+                .with_attr("username", username)
+                .with_attr("url", *url)
+                .with_attr(
+                    "detection",
+                    if verified {
+                        "body-marker"
+                    } else {
+                        "status-only"
+                    },
+                ),
+        );
+        module_result.push(e);
+    }
+
+    // Zero hits: distinguish a genuine "not on any site" from "couldn't tell"
+    // (WAF / rate-limit / no egress blocked the probes). If the probes were
+    // mostly inconclusive, surface an error instead of a silent zero so the
+    // operator never reads a blocked run as a confirmed absence.
+    if found_names.is_empty() {
+        if inconclusive(found_names.len(), inconclusive_probes, results.len()) {
+            return Err(Error::module(
+                SRC,
+                format!(
+                    "inconclusive: {inconclusive_probes}/{} site probes were blocked or \
+                         unreachable (WAF / rate-limit / no egress) — not a confirmed absence",
+                    results.len()
+                ),
+            ));
+        }
+        return Ok(module_result);
+    }
+
+    // Re-emit the seed username with a corroboration-style summary so
+    // the SPA's Entities table shows a single "N platforms" row for
+    // the username itself, alongside the per-platform Url entities.
+    if !found_names.is_empty() {
+        let mut summary = Entity::new(
+            EntityKind::Username,
+            username,
+            confidence::VERY_HIGH_PLUSPLUS,
+            scan_id,
+        );
+        summary.tag("multi-platform");
+
+        // Tag each category that had at least one hit.
+        category_counts
+            .keys()
+            .for_each(|cat| summary.tag(format!("cat:{cat}")));
+
+        // People-centric intelligence tags: flag high-value
+        // categories that reveal personal lifestyle/identity
+        // exposure. These are MORE valuable for OSINT than dev
+        // platform presence (which is professional, not personal).
+        let social_count = category_counts.get("social").copied().unwrap_or(0);
+        let dating_count = category_counts.get("dating").copied().unwrap_or(0);
+        let messaging_count = category_counts.get("messaging").copied().unwrap_or(0);
+        let gaming_count = category_counts.get("gaming").copied().unwrap_or(0);
+
+        if social_count >= 3 {
+            summary.tag("strong-social-presence");
+        }
+        if dating_count > 0 {
+            summary.tag("dating-profile-exposed");
+        }
+        if messaging_count > 0 {
+            summary.tag("messaging-identity");
+        }
+        if social_count + dating_count + messaging_count + gaming_count >= 5 {
+            summary.tag("high-personal-exposure");
+        }
+        // At least three body-marker-confirmed hits is a genuinely corroborated
+        // identity, not a pile of status-only guesses — let the SPA highlight it.
+        if verified_hits >= 3 {
+            summary.tag("strong-corroboration");
+        }
+
+        let cat_summary: Vec<String> = category_counts
+            .iter()
+            .map(|(c, n)| format!("{c}:{n}"))
+            .collect();
+        summary.add_evidence(
+            Evidence::new(
+                SRC,
+                format!(
+                    "@{username} found on {n} platform(s): {list}",
+                    n = found_names.len(),
+                    list = found_names.join(", ")
+                ),
+            )
+            .with_attr("platforms_count", found_names.len().to_string())
+            .with_attr("platforms", found_names.join(", "))
+            .with_attr("categories", cat_summary.join(", "))
+            .with_attr("social_count", social_count.to_string())
+            .with_attr("dating_count", dating_count.to_string())
+            .with_attr("messaging_count", messaging_count.to_string())
+            .with_attr("sites_probed", SITES.len().to_string())
+            .with_attr("sites_not_found", definitive_absent.to_string())
+            .with_attr("sites_inconclusive", inconclusive_probes.to_string())
+            .with_attr("hits_verified", verified_hits.to_string())
+            .with_attr("hits_status_only", weak_hits.to_string()),
+        );
+        module_result.push(summary);
+    }
+    Ok(module_result)
 }
 
 /// Confidence and provenance for a positive hit, tiered by how rigorously a

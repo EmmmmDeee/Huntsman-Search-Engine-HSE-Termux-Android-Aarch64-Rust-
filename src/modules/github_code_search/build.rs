@@ -93,37 +93,43 @@ pub(super) fn build_commit_emails(
         let Some(author) = item.commit.as_ref().and_then(|c| c.author.as_ref()) else {
             continue;
         };
-        let Some(email) = nonempty(&author.email) else {
-            continue;
-        };
-        // Skip noreply GitHub emails — not real contact addresses.
-        if email.contains("noreply.github.com") || email.contains("users.noreply") {
-            continue;
-        }
-        let email_lc = email.to_lowercase();
-        if seen_emails.insert(email_lc.clone()) {
-            let mut e = Entity::new(EntityKind::Email, &email_lc, confidence::TENTATIVE, scan_id);
-            e.tag(SRC);
-            e.tag("github");
-            e.tag("commit-author");
-            let mut ev = Evidence::new(SRC, format!("Commit author email from {repo_name}"))
-                .with_attr("repo", repo_name)
-                .with_attr("email", &email_lc);
-            if let Some(name) = author.name.as_deref().filter(|s| !s.is_empty()) {
-                ev = ev.with_attr("commit_author_name", name);
+
+        // Email and name are INDEPENDENT signals from the same commit author —
+        // a commit with no usable email (none at all, or a GitHub noreply
+        // address) must not also suppress the name extraction below.
+        if let Some(email) = nonempty(&author.email)
+            && !email.contains("noreply.github.com")
+            && !email.contains("users.noreply")
+        {
+            let email_lc = email.to_lowercase();
+            if seen_emails.insert(email_lc.clone()) {
+                let mut e =
+                    Entity::new(EntityKind::Email, &email_lc, confidence::TENTATIVE, scan_id);
+                e.tag(SRC);
+                e.tag("github");
+                e.tag("commit-author");
+                let mut ev = Evidence::new(SRC, format!("Commit author email from {repo_name}"))
+                    .with_attr("repo", repo_name)
+                    .with_attr("email", &email_lc);
+                if let Some(name) = author.name.as_deref().filter(|s| !s.is_empty()) {
+                    ev = ev.with_attr("commit_author_name", name);
+                }
+                e.add_evidence(ev);
+                out.push(e);
             }
-            e.add_evidence(ev);
-            out.push(e);
         }
 
         // Commit author name → Person entity (low confidence; one of potentially
-        // many contributors to the repo).
-        if let Some(name) = author.name.as_deref().map(str::trim).filter(|n| {
-            n.len() >= 4
-                && n.contains(' ')
-                && !n.eq_ignore_ascii_case("github actions")
-                && !n.to_lowercase().contains("bot")
-        }) {
+        // many contributors to the repo), regardless of whether this commit also
+        // carried a usable email. `is_real_name` is the same placeholder/bot gate
+        // `github_commits` uses, so "Unknown User" / "Your Name" / a bot account
+        // are rejected here exactly as they are there.
+        if let Some(name) = author
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| crate::modules::github_api::is_real_name(n))
+        {
             let name_lc = name.to_lowercase();
             if seen_names.insert(name_lc) {
                 let mut pe =

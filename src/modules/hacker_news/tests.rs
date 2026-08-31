@@ -147,6 +147,31 @@ fn build_entities_bio_url_emits_url_entity_without_trailing_punct() {
 }
 
 #[test]
+fn build_entities_bio_url_with_html_escaped_query_is_decoded() {
+    // Regression: HN serves `about` as HTML-escaped free text (the official
+    // API itself documents `about` as "Delay-loaded HTML") — a bio URL with an
+    // ordinary multi-param query string is stored/served with `&`
+    // HTML-escaped to `&amp;`. Left undecoded, the extracted Url would carry
+    // the corrupted `&amp;` literal instead of `&`.
+    let u = HnUser {
+        id: "carol".to_string(),
+        created: None,
+        karma: None,
+        about: Some("My search: https://example.com/search?q=rust&amp;sort=stars".to_string()),
+        submitted: None,
+    };
+    let pool = crate::util::key_pool::global_pool();
+    let ents = build_entities(u, "scan-6", &pool);
+    let url = ents.iter().find(|e| e.kind == EntityKind::Url).expect("should succeed");
+    assert_eq!(url.value, "https://example.com/search?q=rust&sort=stars");
+    assert!(
+        !url.value.contains("&amp;"),
+        "entity must not carry a raw &amp; literal: {}",
+        url.value
+    );
+}
+
+#[test]
 fn build_entities_no_bio_yields_only_username() {
     let pool = crate::util::key_pool::global_pool();
     let ents = build_entities(user("quiet"), "scan-5", &pool);

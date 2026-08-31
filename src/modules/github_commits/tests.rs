@@ -109,16 +109,10 @@ fn shared_email_emits_every_distinct_name_and_login() {
     }
 }
 
-#[test]
-fn is_real_name_gates_placeholders_and_bots() {
-    assert!(is_real_name("Linus Torvalds"));
-    assert!(is_real_name("Ada P Lovelace"));
-    assert!(!is_real_name("Your Name")); // git default placeholder
-    assert!(!is_real_name("torvalds")); // single word — likely a handle
-    assert!(!is_real_name("dependabot[bot]"));
-    assert!(!is_real_name("github-actions[bot]"));
-    assert!(!is_real_name(""));
-}
+// The placeholder/bot-name gate itself (`is_real_name`) now lives in
+// `github_api` (shared with `github_code_search`) and is unit-tested there;
+// `extract_pulls_identity_and_filters_noise` above still pins that this
+// module's own extraction wires it in correctly (`"Your Name"` filtered).
 
 #[test]
 fn accepts_only_well_formed_emails() {

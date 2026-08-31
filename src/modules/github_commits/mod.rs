@@ -77,7 +77,7 @@ struct GhUser {
 #[async_trait]
 impl Module for GithubCommits {
     fn name(&self) -> &'static str {
-        "github_commits"
+        SRC
     }
 
     fn description(&self) -> &'static str {
@@ -216,7 +216,9 @@ fn extract(items: &[CommitItem], email: &str, scan_id: &str) -> Vec<Entity> {
         // genuine contributors, and dropping the 4th+ hides real identities.
         if let Some(name) = item.commit.author.as_ref().and_then(|a| a.name.as_deref()) {
             let name = name.trim();
-            if is_real_name(name) && seen_name.insert(name.to_ascii_lowercase()) {
+            if crate::modules::github_api::is_real_name(name)
+                && seen_name.insert(name.to_ascii_lowercase())
+            {
                 let mut p = Entity::new(EntityKind::Person, name, confidence::NOTABLE, scan_id);
                 p.tag("derived");
                 p.tag("github-commit");
@@ -230,28 +232,6 @@ fn extract(items: &[CommitItem], email: &str, scan_id: &str) -> Vec<Entity> {
         }
     }
     out
-}
-
-/// A commit author name that is plausibly a real person's name: multi-word,
-/// reasonable length, and not a `git`/CI placeholder.
-fn is_real_name(name: &str) -> bool {
-    const PLACEHOLDERS: &[&str] = &[
-        "your name",
-        "first last",
-        "unknown",
-        "unknown user",
-        "github action",
-        "github actions",
-        "dependabot",
-        "semantic-release-bot",
-    ];
-    let lower = name.to_ascii_lowercase();
-    name.len() >= 3
-        && name.len() <= 80
-        && name.contains(' ')
-        && !PLACEHOLDERS.contains(&lower.as_str())
-        && !lower.ends_with("[bot]")
-        && !lower.contains("bot]")
 }
 
 #[cfg(test)]

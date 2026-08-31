@@ -230,25 +230,28 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
         }
     }
 
-    // Self-reported profile location → Address (+ inline geocode).
-    if let Some(loc) = extract_tag(xml, "location").filter(|l| l.len() >= 2) {
-        let mut a = Entity::new(EntityKind::Address, &loc, (conf - 0.27).max(0.42), scan_id);
+    // Self-reported profile location → Address (+ inline geocode). Delegates
+    // to the shared profile_kit helpers — matching gitlab_user / gitea_user /
+    // codeberg_user / stackoverflow_user / devto / bitbucket_user / dockerhub_user
+    // — instead of a hand-rolled length guard, so an overlong value (a bio
+    // mis-mapped to the location field, not a place) is rejected the same way
+    // every sibling profile module already rejects it; the previous inline
+    // check only had a lower bound (`len() >= 2`), with no upper one.
+    if let Some(loc) = extract_tag(xml, "location")
+        && let Some(mut a) =
+            crate::modules::profile_kit::location_address(&loc, (conf - 0.27).max(0.42), scan_id)
+    {
         a.tag("steam");
         a.tag("geoint");
         a.tag("self-reported");
         a.add_evidence(ev.clone().with_attr("location", loc.as_str()));
         result.push(a);
-        if let Some((lat, lon)) = crate::util::city_coords::city_coords(&loc) {
-            let coord = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(
-                EntityKind::Coordinates,
-                &coord,
-                (conf - 0.33).max(0.42),
-                scan_id,
-            );
+        if let Some(mut c) = crate::modules::profile_kit::location_coordinates(
+            &loc,
+            (conf - 0.33).max(0.42),
+            scan_id,
+        ) {
             c.tag("steam");
-            c.tag("addr-derived");
-            c.tag("geoint");
             c.add_evidence(ev.clone().with_attr("location", loc.as_str()));
             result.push(c);
         }

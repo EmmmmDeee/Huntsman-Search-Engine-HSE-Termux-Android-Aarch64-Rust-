@@ -210,15 +210,26 @@ impl Module for GithubCodeSearch {
             if let Some(tok) = token {
                 creq = creq.bearer_auth(tok);
             }
-            if let Ok(cr) = creq.send_tagged(SRC).await
-                && cr.status().is_success()
-                // Capped decode (32 MiB) — a raw `bytes()` would buffer an
-                // unbounded body on the low-RAM Termux target.
-                && let Ok(arr) =
-                    crate::util::http::json_decode::<Vec<CommitItem>>(SRC, cr).await
-            {
-                let wrapped = CommitsResp { commits: arr };
-                result.extend(build_commit_emails(&wrapped, &full_name, &ctx.scan_id));
+            if let Ok(cr) = creq.send_tagged(SRC).await {
+                let cstatus = cr.status();
+                if cstatus.as_u16() == 403 || cstatus.as_u16() == 429 {
+                    // Same key-pool feedback as the primary search request above.
+                    // The commit fetch hits GitHub's separate CORE rate limit, so a
+                    // token exhausted here (but fine for search) would otherwise
+                    // silently no-op every commit-fetch for the rest of the scan
+                    // with no operator-visible signal and no chance to rotate.
+                    if let Some(tok) = token {
+                        crate::util::http::note_keyed_error(cstatus.as_u16(), "github", tok, ctx);
+                    }
+                } else if cstatus.is_success()
+                    // Capped decode (32 MiB) — a raw `bytes()` would buffer an
+                    // unbounded body on the low-RAM Termux target.
+                    && let Ok(arr) =
+                        crate::util::http::json_decode::<Vec<CommitItem>>(SRC, cr).await
+                {
+                    let wrapped = CommitsResp { commits: arr };
+                    result.extend(build_commit_emails(&wrapped, &full_name, &ctx.scan_id));
+                }
             }
         }
 

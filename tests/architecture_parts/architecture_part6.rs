@@ -404,15 +404,23 @@ fn entity_confidence_uses_named_ladder_constants() {
         //     centroid from a dialling prefix is a different inference.
         //   * `steam_profile` runs a graded family (0.05 … 0.33) with per-kind
         //     floors, ranking eight kinds of profile-derived signal against one
-        //     another. Its `.max(0.42)` / `.max(0.38)` floors are the two rows
-        //     that genuinely should be named — its other floors already are
-        //     (`.max(confidence::LOW_MEDIUM)`), which makes these inconsistent
-        //     rather than principled.
+        //     another. Its location/coordinates floors (formerly bare `.max(0.42)`
+        //     literals here) now flow through the shared `profile_kit::
+        //     location_address` / `location_coordinates` helpers instead — the
+        //     `0.27` / `0.33` steps are passed to THEM as a confidence argument,
+        //     not embedded in a bare `Entity::new` call of this file's own, so
+        //     they no longer trip this ratchet (see
+        //     `derived_confidence_goes_through_the_shared_step`'s baseline for
+        //     why the steps themselves stay deliberately non-uniform). Its
+        //     Domain floor (`.max(0.38)`) is the one row left that genuinely
+        //     should be named — its other floors already are
+        //     (`.max(confidence::LOW_MEDIUM)`), which makes this one
+        //     inconsistent rather than principled.
         //
         // The two ratchets deliberately overlap here: one asks whether the
         // derivation STEP is hand-rolled, this one asks whether a bare float
-        // sits in an `Entity::new` confidence argument. The `0.27` in
-        // `(conf - 0.27).max(0.42)` is honestly both.
+        // sits in an `Entity::new` confidence argument. The `0.25` in
+        // `(conf - 0.25).max(0.38)` is honestly both.
         ("src/modules/phone_geo/mod.rs", "0.08"), // [embedded]
         ("src/modules/sourceforge_user/mod.rs", "0.79"), // [revealed]
         ("src/modules/steam_profile/mod.rs", "0.05"), // [embedded]
@@ -420,11 +428,7 @@ fn entity_confidence_uses_named_ladder_constants() {
         ("src/modules/steam_profile/mod.rs", "0.15"), // [embedded]
         ("src/modules/steam_profile/mod.rs", "0.20"), // [embedded]
         ("src/modules/steam_profile/mod.rs", "0.25"), // [embedded]
-        ("src/modules/steam_profile/mod.rs", "0.27"), // [embedded]
-        ("src/modules/steam_profile/mod.rs", "0.33"), // [embedded]
         ("src/modules/steam_profile/mod.rs", "0.38"), // [embedded] hardcoded floor
-        ("src/modules/steam_profile/mod.rs", "0.42"), // [embedded] hardcoded floor
-        ("src/modules/steam_profile/mod.rs", "0.42"), // [embedded] hardcoded floor
         ("src/modules/whois/mod.rs", "0.68"),     // [revealed]
     ];
 

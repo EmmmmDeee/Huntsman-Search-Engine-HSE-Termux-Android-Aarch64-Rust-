@@ -85,6 +85,89 @@ fn extract_emits_alias_uris_that_diverge_from_links() {
 }
 
 #[test]
+fn extract_does_not_duplicate_a_url_present_in_both_links_and_aliases() {
+    // FIXTURE's `aliases` are the SAME two URIs as its typed `links` — the
+    // common real-world shape (Mastodon itself does this). Each must surface
+    // exactly once, not once per array it appears in.
+    let wf: WebFinger = serde_json::from_str(FIXTURE).expect("should succeed");
+    let mut result = ModuleResult::new();
+    extract_webfinger(&wf, "Gargron@mastodon.social", "mastodon.social", "scan", &mut result);
+    let urls: Vec<&str> = result
+        .entities
+        .iter()
+        .filter(|x| x.kind == EntityKind::Url)
+        .map(|x| x.value.as_str())
+        .collect();
+    assert_eq!(
+        urls.len(),
+        2,
+        "the profile-page and actor URLs must each appear once, not duplicated via aliases: {urls:?}"
+    );
+}
+
+#[test]
+fn subject_matches_queried_identity_checks() {
+    assert!(subject_matches_queried_identity(
+        "acct:alice@example.social",
+        "alice@example.social"
+    ));
+    // Case-insensitive, on both the local part and the domain.
+    assert!(subject_matches_queried_identity(
+        "acct:Alice@Example.Social",
+        "alice@example.social"
+    ));
+    // A bare subject without the "acct:" prefix is still accepted.
+    assert!(subject_matches_queried_identity(
+        "alice@example.social",
+        "alice@example.social"
+    ));
+    assert!(!subject_matches_queried_identity(
+        "acct:mallory@example.social",
+        "alice@example.social"
+    ));
+    assert!(!subject_matches_queried_identity(
+        "acct:alice@evil.social",
+        "alice@example.social"
+    ));
+}
+
+#[test]
+fn extract_rejects_a_response_whose_subject_names_a_different_identity() {
+    // A misconfigured/catch-all WebFinger responder returns links that are
+    // real, but for someone else entirely — FIXTURE's subject
+    // ("acct:Gargron@mastodon.social") disagrees with the queried email, so
+    // nothing from this document may be trusted.
+    let wf: WebFinger = serde_json::from_str(FIXTURE).expect("should succeed");
+    let mut result = ModuleResult::new();
+    extract_webfinger(&wf, "someone-else@mastodon.social", "mastodon.social", "scan", &mut result);
+    assert!(
+        result.entities.is_empty(),
+        "a subject mismatch must yield no entities: {:?}",
+        result.entities
+    );
+}
+
+#[test]
+fn extract_still_trusts_a_response_with_no_subject_at_all() {
+    // `subject` is optional per RFC 7033 — its absence must not itself reject
+    // an otherwise-valid document (only a PRESENT, mismatched subject does).
+    const NO_SUBJECT_FIXTURE: &str = r#"{
+      "aliases": [],
+      "links": [
+        { "rel": "http://webfinger.net/rel/profile-page", "type": "text/html", "href": "https://example.social/@alice" }
+      ]
+    }"#;
+    let wf: WebFinger = serde_json::from_str(NO_SUBJECT_FIXTURE).expect("should succeed");
+    assert!(wf.subject.is_none());
+    let mut result = ModuleResult::new();
+    extract_webfinger(&wf, "alice@example.social", "example.social", "scan", &mut result);
+    assert!(
+        result.entities.iter().any(|x| x.kind == EntityKind::Url),
+        "a document with no subject field must still be trusted"
+    );
+}
+
+#[test]
 fn freemail_domains_are_skipped_custom_domains_probed() {
     // Freemail providers run no WebFinger server → a certain 404, so they are not
     // probed (saves the guaranteed-miss request).

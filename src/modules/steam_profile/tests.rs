@@ -94,6 +94,35 @@ fn extract_profile_builds_identity_from_fixture() {
     assert!(e.iter().all(|x| x.has_tag("steam")));
 }
 
+/// Regression: the location→Address/Coordinates step used to be hand-rolled
+/// with only a LOWER length bound (`len() >= 2`) — unlike every sibling
+/// profile module, which rejects an overlong value (a bio mis-mapped to the
+/// location field, not a place) via `profile_kit::location_address`'s `> 100`
+/// cap. An overlong `<location>` must now be rejected the same way.
+#[test]
+fn extract_profile_rejects_an_overlong_location() {
+    let fixture = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<profile>
+  <steamID64>76561197960287930</steamID64>
+  <steamID><![CDATA[Rabscuttle]]></steamID>
+  <location><![CDATA[{}]]></location>
+  <customURL><![CDATA[rabscuttle]]></customURL>
+</profile>"#,
+        "x".repeat(101)
+    );
+    let mut result = ModuleResult::new();
+    extract_profile(&fixture, confidence::HIGH_PLUSPLUS_PLUS, "scan", &mut result);
+    assert!(
+        result
+            .entities
+            .iter()
+            .all(|x| x.kind != EntityKind::Address && x.kind != EntityKind::Coordinates),
+        "an overlong location must not become an Address/Coordinates: {:?}",
+        result.entities
+    );
+}
+
 /// T2.106 regression: `<steamID>` (persona name) matching `<customURL>`
 /// case-insensitively (the fixture's own "Rabscuttle" vs "rabscuttle") must
 /// NOT mint a second near-duplicate Username entity for the same handle.

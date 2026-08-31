@@ -1750,6 +1750,9 @@ fn strip_format_noise(s: &str) -> std::borrow::Cow<'_, str> {
 /// - Email → lowercase, trim, strip surrounding quotes
 /// - Domain → lowercase, trim, strip trailing dot
 /// - Username → lowercase, trim, strip surrounding quotes + leading `@`
+///   (EXCEPT a 27-char all-ASCII-alphanumeric value — a base62 structured-ID
+///   shape like a KSUID, where case is significant — which is trimmed/
+///   sigil-stripped but NOT case-folded, so its encoded data survives intact)
 /// - IpAddress → trim
 /// - Phone → strip non-digits (keep leading +)
 /// - Everything else → trim
@@ -1811,7 +1814,8 @@ pub fn normalise(kind: &EntityKind, value: &str) -> String {
             // Invisible format noise is removed first (see [`strip_format_noise`])
             // so a BOM/zero-width char can neither fork the UID nor hide the
             // leading `@` from the sigil strip.
-            strip_format_noise(value.trim())
+            let noise_free = strip_format_noise(value.trim());
+            let cleaned = noise_free
                 // Strip the leading run of the `@` handle sigil, surrounding quote
                 // contamination (`"`, `'`, `` ` ``) AND any interleaved whitespace
                 // in a SINGLE predicate — plus the symmetric trailing run of quotes
@@ -1829,8 +1833,28 @@ pub fn normalise(kind: &EntityKind, value: &str) -> String {
                 .trim_start_matches(|c: char| {
                     matches!(c, '@' | '"' | '\'' | '`') || c.is_whitespace()
                 })
-                .trim_end_matches(|c: char| matches!(c, '"' | '\'' | '`') || c.is_whitespace())
-                .to_lowercase()
+                .trim_end_matches(|c: char| matches!(c, '"' | '\'' | '`') || c.is_whitespace());
+            // A 27-char, all-ASCII-alphanumeric value is the shape of a base62
+            // structured ID (a KSUID — see `structured_id::decode_ksuid`), not a
+            // human-chosen handle: nobody types a 27-char no-separator alnum
+            // string as their own account name across platforms, so preserving
+            // its case costs none of the cross-platform-handle correlation this
+            // fold exists to provide. And it MUST be preserved here — unlike
+            // Crockford base32 (ULID), which is case-insensitive BY DESIGN, base62
+            // is case-SIGNIFICANT: `'A'` and `'a'` are different digit values, so
+            // folding case does not normalise a KSUID, it silently decodes it into
+            // a DIFFERENT value. Its leading bytes are a creation timestamp, so a
+            // downstream decode over the folded value doesn't just fail closed —
+            // it can confidently report a real-looking date that is months or
+            // years wrong. (This still keeps `normalise` a fixed point: the
+            // shape check and its outcome are unaffected by a second pass, since
+            // nothing upstream of it — trim/format-noise-strip/sigil-strip — has
+            // anything left to remove from an all-alphanumeric value.)
+            if cleaned.len() == 27 && cleaned.bytes().all(|b| b.is_ascii_alphanumeric()) {
+                cleaned.to_string()
+            } else {
+                cleaned.to_lowercase()
+            }
         }
         EntityKind::Domain => {
             // Invisible format noise removed first (see [`strip_format_noise`]) so a

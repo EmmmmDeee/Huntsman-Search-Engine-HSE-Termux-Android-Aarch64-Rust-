@@ -56,7 +56,7 @@ pub(super) struct HnUser {
 #[async_trait]
 impl Module for HackerNews {
     fn name(&self) -> &'static str {
-        "hacker_news"
+        SRC
     }
 
     fn description(&self) -> &'static str {
@@ -169,6 +169,17 @@ pub(super) fn build_entities(
     result.push(u);
 
     if let Some(about) = user.about.as_deref() {
+        // HN bios are HTML-escaped free text (the API itself documents `about`
+        // as "Delay-loaded HTML"): a bio URL with an ordinary multi-parameter
+        // query string like `?q=rust&sort=stars` is served as
+        // `?q=rust&amp;sort=stars`, and neither the email regex nor `URL_RE`
+        // decodes entities on its own — left raw, the extracted `Url` would
+        // carry a corrupted `&amp;` in place of `&`. Decode once, upfront, and
+        // use the decoded text for every extraction below (same idiom as
+        // `reddit_user::feed`).
+        let about = crate::util::html::decode_entities(about);
+        let about = about.as_str();
+
         // Also scan the bio for a leaked API key/credential via the universal
         // `found_keys`/`key_harvest` classifier — the same one `web_crawler`/
         // `username_search`/`wayback` run over their own fetched text. Bios
@@ -177,8 +188,8 @@ pub(super) fn build_entities(
         // in memory.
         mine_keys_from_text(pool, about, &user.id, "bio");
 
-        // Extract ALL emails and URLs from the bio (HN bios are HTML-escaped
-        // free text; both often appear multiple times in developer profiles).
+        // Extract ALL emails and URLs from the (now entity-decoded) bio — both
+        // often appear multiple times in developer profiles.
         for email in crate::util::extract::emails(about) {
             let mut e = Entity::new(EntityKind::Email, &email, confidence::STRONG, scan_id);
             e.tag("hacker-news");
@@ -282,7 +293,7 @@ fn mine_keys_from_text(
             entry.notes = Some(format!("Hacker News {source_label} — user {username}"));
             entry.status = crate::util::key_pool::KeyStatus::Untested;
             entry.discovered_at = Some(crate::core::entity::unix_now());
-            entry.discovered_by = Some(format!("hacker_news:{username}"));
+            entry.discovered_by = Some(format!("{SRC}:{username}"));
             if pool.add(service, entry) {
                 tracing::info!(
                     service,
@@ -323,11 +334,8 @@ fn algolia_domain_entities(body: &str, username: &str, scan_id: &str) -> Vec<Ent
             let mut d = Entity::new(EntityKind::Domain, &dom, confidence::MEDIUM, scan_id);
             d.tag("hn-submission");
             d.add_evidence(
-                Evidence::new(
-                    "hacker_news",
-                    format!("HN submissions by {username} link to {dom}"),
-                )
-                .with_attr("domain", &dom),
+                Evidence::new(SRC, format!("HN submissions by {username} link to {dom}"))
+                    .with_attr("domain", &dom),
             );
             d
         })
