@@ -40,7 +40,7 @@ pub(super) fn confidence_for_count(count: usize) -> f64 {
         0 => 0.0,
         1..=2 => confidence::HIGH_PLUSPLUS,
         3..=5 => confidence::HIGH_PLUSPLUS_PLUS,
-        6..=9 => 0.92,
+        6..=9 => confidence::AUTHORITATIVE,
         _ => confidence::VERY_HIGH_PLUSPLUS,
     }
 }

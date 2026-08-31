@@ -454,6 +454,43 @@ fn non_target_stranger_record_is_quarantined_not_dropped() {
 }
 
 #[test]
+fn a_strangers_row_processed_first_does_not_permanently_pin_the_subjects_own_value() {
+    // Regression: `seen` is shared across the whole `entries` array. If a
+    // same-value STRANGER row happened to precede the subject's own matching
+    // row (a real possibility on the broad `name` selector, whose ordering
+    // DeHashed's API controls, not this module), the stranger's row claimed
+    // the shared phone number FIRST and got demoted to `candidate`; the
+    // subject's own later row then found the value already `seen` and its
+    // push silently no-opped — permanently pinning a fact that IS true about
+    // the subject at the stranger's quarantined confidence, with no
+    // corroborating non-candidate entity ever created. Records are now
+    // processed target-match-first specifically to remove this ordering
+    // dependency, regardless of the array's original order.
+    let entries = vec![
+        json!({"name": "John Smith", "phone": "+1234567890"}),
+        json!({"name": "Jane Doe", "phone": "+1234567890"}),
+    ];
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_records(&entries, "Jane Doe", "fp", "s", &mut seen, &mut result);
+
+    let phones: Vec<&Entity> = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Phone && e.value == "+1234567890")
+        .collect();
+    assert_eq!(
+        phones.len(),
+        1,
+        "the shared phone must dedup to exactly one entity: {phones:?}"
+    );
+    assert!(
+        !phones[0].has_tag(tags::CANDIDATE),
+        "the subject's own genuine value must not stay pinned at the stranger's quarantined tier"
+    );
+}
+
+#[test]
 fn record_evidence_stamps_canonical_dbname_for_au105() {
     // AU-105 (credential reuse across breaches) groups records by the `dbname`
     // evidence attribute, falling back to the Evidence `source` FIELD (the module

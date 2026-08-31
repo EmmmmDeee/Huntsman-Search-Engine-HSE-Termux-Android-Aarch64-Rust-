@@ -26,6 +26,28 @@ fn emit_breach_tags_entity() {
 }
 
 #[test]
+fn emit_breach_count_reflects_the_array_actually_iterated_not_the_self_reported_total() {
+    // Regression: `results_count` is the API's self-reported total, but the
+    // per-source tags/evidence are only generated for entries actually
+    // present in `breach_data`. If the two diverge, the evidence must not
+    // overstate how many records are backing those per-source tags.
+    let br = OcBreachResponse {
+        results_count: 2,
+        breach_data: vec![serde_json::json!({"source": "ExampleLeak", "breach_date": "2021-01-01"})],
+    };
+    let target = Target::new(TargetKind::Email, "x@y.com");
+    let mut entity = target.to_entity(confidence::VERY_HIGH, "s");
+    emit_breach(&br, &mut entity);
+    let ev = &entity.evidence[0];
+    assert_eq!(
+        ev.attributes.get("breach_count").map(String::as_str),
+        Some("1"),
+        "breach_count must reflect the one record actually iterated, not the self-reported 2"
+    );
+    assert!(ev.summary.contains("1 breach record(s)"));
+}
+
+#[test]
 fn emit_breach_noop_on_zero() {
     let br = OcBreachResponse {
         results_count: 0,

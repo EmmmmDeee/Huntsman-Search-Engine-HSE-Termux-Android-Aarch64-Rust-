@@ -60,6 +60,29 @@ use crate::core::{confidence, entity::EntityKind};
         assert_eq!(parse_breach_count("", "ABC"), None);
     }
 
+    // ── is_signal_free (pure) ────────────────────────────────────────────
+
+    #[test]
+    fn is_signal_free_flags_generic_dictionary_values() {
+        // Regression: `accepts()` admits Username, and a generic username like
+        // "admin"/"test" is ALSO one of the most common breached passwords —
+        // for reasons entirely unrelated to whoever happens to use that
+        // username on some platform. Checking it against the k-Anonymity
+        // corpus would return a high count for every such scan regardless of
+        // the real subject, carrying zero subject-specific signal.
+        assert!(is_signal_free("admin"));
+        assert!(is_signal_free("test"));
+        assert!(is_signal_free("password"));
+        // Case-insensitive, matching `hashcat::is_common_password`'s own contract.
+        assert!(is_signal_free("Admin"));
+    }
+
+    #[test]
+    fn is_signal_free_does_not_flag_distinctive_identifiers() {
+        assert!(!is_signal_free("jsmith87xyz"));
+        assert!(!is_signal_free("matt@example.com"));
+    }
+
     // ── confidence_for (pure) ───────────────────────────────────────────
 
     #[test]

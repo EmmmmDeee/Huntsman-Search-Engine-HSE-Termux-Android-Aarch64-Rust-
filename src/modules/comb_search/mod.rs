@@ -46,7 +46,7 @@ const MAX_SECRETS: usize = 50;
 /// Base confidence for a leaked secret tied to the EXACT subject email. COMB is
 /// an aggregated compilation of older breaches (lower fidelity than a live
 /// stealer log), so it sits below HudsonRock's confidence::HIGH_PLUSPLUS_PLUS stealer baseline.
-const EMAIL_MATCH_CONF: f64 = 0.62;
+const EMAIL_MATCH_CONF: f64 = confidence::NOTABLE;
 
 /// Confidence for an exposed account discovered under a DOMAIN target — a real
 /// account at that domain, but a third party rather than the scan subject.
@@ -100,7 +100,14 @@ impl Module for CombSearch {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Email, EntityKind::Password];
+        // The enriched seed re-affirms the queried identity as its own kind
+        // (Email/Domain/Username) alongside the discovered Password secrets.
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Email,
+            EntityKind::Password,
+            EntityKind::Domain,
+            EntityKind::Username,
+        ];
         KINDS
     }
 

@@ -267,11 +267,14 @@ fn emit_breach(br: &OcBreachResponse, entity: &mut Entity) {
         return;
     }
     entity.tag("breach");
-    let mut ev = Evidence::new(
-        SRC,
-        format!("{} breach record(s) via OsintCat", br.results_count),
-    )
-    .with_attr("breach_count", br.results_count.to_string());
+    // `breach_data.len()` — not the API's self-reported `results_count` — is
+    // the ground truth: it's what the per-source tags/evidence below are
+    // actually built from, so the summary can never overstate how many
+    // records are backing them (the same convention `breachdirectory`'s
+    // module doc adopts for its own self-reported `found` count).
+    let record_count = br.breach_data.len();
+    let mut ev = Evidence::new(SRC, format!("{record_count} breach record(s) via OsintCat"))
+        .with_attr("breach_count", record_count.to_string());
 
     for record in &br.breach_data {
         let source = record

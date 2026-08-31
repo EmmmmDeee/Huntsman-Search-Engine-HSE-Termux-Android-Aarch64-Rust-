@@ -36,6 +36,21 @@ fn parse_breach_count(body: &str, suffix: &str) -> Option<u64> {
         .and_then(|(_, count_str)| count_str.trim().parse().ok())
 }
 
+/// Whether `value` carries no subject-specific signal and should be skipped
+/// BEFORE ever querying the k-Anonymity endpoint. **Pure.**
+///
+/// A value that is itself one of the handful of near-universally-reused
+/// passwords (`hashcat::COMMON_PASSWORDS`) will register a high breach count
+/// for countless unrelated people who happen to share a generic Username like
+/// "admin" or "test" — not because of anything particular to THIS subject.
+/// The same noise-reduction reasoning `hashcat::is_common_collision` already
+/// applies on the correlator's identity-linking side. Most consequential for
+/// Username targets; an Email is essentially never itself one of these bare
+/// dictionary words, so this is a no-op there.
+fn is_signal_free(value: &str) -> bool {
+    crate::util::hashcat::is_common_password(value)
+}
+
 /// Confidence band for a pwned-password hit: more breach occurrences ⇒ higher
 /// confidence the credential is genuinely compromised. **Pure.**
 fn confidence_for(count: u64) -> f64 {
@@ -153,7 +168,7 @@ impl Module for PwnedPasswords {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let value = target.value.trim();
-        if value.is_empty() {
+        if value.is_empty() || is_signal_free(value) {
             return Ok(ModuleResult::new());
         }
 

@@ -103,6 +103,13 @@ pub(crate) struct Record {
 
 pub(crate) const SRC: &str = "intelx";
 
+/// Confidence for a STRUCTURED-selector hit (email/phone/etc., not a bare text
+/// search) — a real, confirmed exposure, distinctly above the text-search
+/// lead tier ([`confidence::MEDIUM_HIGH`]). Not itself a named ladder rung —
+/// kept at its calibrated value (between `HIGH_PLUSPLUS_PLUS`=0.85 and
+/// `EXPERT`=0.88) rather than rounded onto a neighbouring one.
+const STRUCTURED_HIT_CONF: f64 = 0.86;
+
 pub struct IntelX;
 
 /// Map IntelX `media` type codes to human-readable labels, per the official
@@ -440,7 +447,7 @@ impl Module for IntelX {
         let confidence = if is_text_search {
             confidence::MEDIUM_HIGH
         } else {
-            0.86
+            STRUCTURED_HIT_CONF
         };
         let mut entity = target.to_entity(confidence, &ctx.scan_id);
         entity.tag("intelx");
