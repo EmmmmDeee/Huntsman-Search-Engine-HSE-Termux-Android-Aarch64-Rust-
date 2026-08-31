@@ -1,8 +1,10 @@
 use super::GithubUser;
+use super::build_entities;
 use super::fetch::{GhEvent, SshKey, commit_email_entities, ssh_key_entities};
 use super::helpers::{ssh_fingerprint, top_event_types, usable_commit_email};
 use super::types::GhUser;
 use crate::core::{
+    confidence,
     entity::EntityKind,
     module::Module,
     scan::{Target, TargetKind},
@@ -224,6 +226,66 @@ fn deserialize_full_profile() {
     assert_eq!(u.twitter_username.as_deref(), Some("alicedev"));
     assert_eq!(u.public_repos, Some(42));
     assert_eq!(u.followers, Some(100));
+}
+
+// ── build_entities (pure profile→entity mapping) ───────────────────
+
+#[test]
+fn confirmed_username_entity_is_graded_at_cohort_canon() {
+    let user: GhUser = serde_json::from_str(r#"{"login":"alice","id":1}"#).expect("should succeed");
+    let ents = build_entities(&user, "scan-gh-001");
+    let u = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Username && e.value == "alice")
+        .expect("must emit a Username entity for the confirmed login");
+    // OD-19/#497 cohort canon: a single-source confirmed-account lookup is
+    // HIGH_PLUSPLUS_PLUS (0.85), not VERY_HIGH_PLUSPLUS (0.95) — the ladder
+    // reserves 0.95 for multi-source agreement, which one lookup can't satisfy.
+    assert!((u.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
+    assert!(u.has_tag("github"));
+}
+
+#[test]
+fn twitter_handle_emits_exactly_one_cleaned_pivot_entity() {
+    // Leading '@' and stray whitespace exercise the cleanup; also regression
+    // coverage for a prior bug where two separate code paths each emitted a
+    // Twitter Username entity for the same profile field.
+    let user: GhUser =
+        serde_json::from_str(r#"{"login":"alice","id":1,"twitter_username":" @alicedev "}"#)
+            .expect("should succeed");
+    let ents = build_entities(&user, "scan-gh-002");
+    let twitter_matches: Vec<_> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username && e.has_tag("twitter"))
+        .collect();
+    assert_eq!(
+        twitter_matches.len(),
+        1,
+        "exactly one Twitter pivot entity, not one per emission path"
+    );
+    let tw = twitter_matches[0];
+    assert_eq!(
+        tw.value, "alicedev",
+        "leading '@' and whitespace must be stripped"
+    );
+    assert!(tw.has_tag("social-profile"));
+    assert!(
+        !tw.has_tag("derived"),
+        "a field GitHub returned directly is observed, not derived"
+    );
+    // The GitHub username entity must stay first: process()'s own later
+    // fetchers (SSH keys, events, gists) all tag `result.entities.first_mut()`,
+    // so a Twitter pivot landing at index 0 would misattribute their evidence.
+    assert_eq!(ents[0].kind, EntityKind::Username);
+    assert_eq!(ents[0].value, "alice");
+    assert!(ents[0].has_tag("github"));
+}
+
+#[test]
+fn no_twitter_username_emits_no_pivot_entity() {
+    let user: GhUser = serde_json::from_str(r#"{"login":"alice","id":1}"#).expect("should succeed");
+    let ents = build_entities(&user, "scan-gh-003");
+    assert!(!ents.iter().any(|e| e.has_tag("twitter")));
 }
 
 #[test]
