@@ -94,6 +94,7 @@ jobs:
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
@@ -122,13 +123,52 @@ jobs:
 
       # Native build/test only (crate-type includes `rlib` alongside `cdylib`
       # specifically so this works — see wasm-ui/Cargo.toml). Proves the
-      # source compiles cleanly and runs any unit tests added going forward;
-      # it does NOT produce or verify the real wasm32-unknown-unknown
-      # browser artifact, which needs the wasm32 target + wasm-bindgen-cli
-      # and has no job here yet, mirroring how the `check` job above openly
-      # SKIPs the Android NDK cross-build rather than silently omitting it.
+      # source compiles cleanly and runs any unit tests added going forward.
+      # It does NOT produce or verify the real wasm32-unknown-unknown browser
+      # artifact — the steps below do that.
       - name: Test (wasm-ui, native — not the wasm32 browser build)
         run: cargo test --manifest-path wasm-ui/Cargo.toml --locked
+
+      # wasm-ui/pkg round-trip drift check: regenerates the real
+      # wasm32-unknown-unknown browser artifact from source and diffs it
+      # against the committed wasm-ui/pkg/, catching the class of drift PR
+      # #547 found by hand (a source change landed without anyone
+      # regenerating the checked-in compiled output). See
+      # scripts/wasm_ui_drift_check.sh for the actual pipeline, and
+      # scripts/gate.sh's own copy of this job for why the two must never
+      # diverge.
+      #
+      # wasm-bindgen-cli's version is derived from wasm-ui/Cargo.toml's own
+      # `wasm-bindgen` dependency rather than hardcoded here, so a future
+      # version bump there can't silently drift this install out of sync.
+      # --force: a plain `cargo install` errors out if a DIFFERENT version is
+      # already present (e.g. a future runner image that preinstalls one) —
+      # harmless here since a fresh runner has nothing to overwrite.
+      - name: Install wasm-bindgen-cli (pinned to wasm-ui's wasm-bindgen dependency)
+        run: |
+          set -euo pipefail
+          pin="$(grep -m1 '^wasm-bindgen ' wasm-ui/Cargo.toml | sed -E 's/.*"([0-9.]+)".*/\1/')"
+          cargo install wasm-bindgen-cli --version "$pin" --locked --force
+
+      # binaryen (wasm-opt) has no `cargo install`-able CLI, so it's fetched
+      # directly from its own GitHub releases — pinned to an exact version
+      # (not e.g. `apt-get install binaryen`, whose version drifts with the
+      # runner image) because this check's pass/fail is a byte-exact diff:
+      # a different wasm-opt BUILD can legitimately re-optimize identical
+      # input to different output bytes, which would make this check cry
+      # wolf on every run. version_108 is pinned here because it is what
+      # produced the wasm-ui/pkg/ committed in this repo.
+      - name: Install wasm-opt (binaryen, pinned)
+        run: |
+          set -euo pipefail
+          curl -sSL -o /tmp/binaryen.tar.gz \
+            https://github.com/WebAssembly/binaryen/releases/download/version_108/binaryen-version_108-x86_64-linux.tar.gz
+          echo "7bb8a2d97214f40bf34abc31d49b34aa5deab10b25d6d13c5f72cb395cf142fb  /tmp/binaryen.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/binaryen.tar.gz -C /tmp
+          echo "/tmp/binaryen-version_108/bin" >> "$GITHUB_PATH"
+
+      - name: wasm-ui/pkg drift check
+        run: scripts/wasm_ui_drift_check.sh
 
   msrv:
     name: MSRV (1.88)

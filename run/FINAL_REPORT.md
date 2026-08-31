@@ -1,6 +1,6 @@
 # Final Report — Autonomous Migration/Remediation Run
 
-Run against `main` at `e67e0c6ba`, with this run's own follow-up work in PRs #548, #549, and #550. See `run/PHASE0_AUDIT.md` for full audit detail; this is the completion summary the run directive requires.
+Run against `main` at `e67e0c6ba`, with this run's own follow-up work in PRs #548 through #552. See `run/PHASE0_AUDIT.md` for full audit detail; this is the completion summary the run directive requires.
 
 ## Before / after
 
@@ -41,12 +41,13 @@ Zero clippy warnings (`-D warnings` gate, root + `hse-core` + `wasm-ui`), zero T
 | Kept `vendor/` (543 MB) and the final zip out of git history | Matches this repo's own pre-existing `.gitignore` precedent (it already excludes a prior "generated delivery package" zip and a monolith snapshot for the identical reason); a 543 MB permanent addition to every future clone would itself be a "system degraded" regression | commit `b10b24fd0` (PR #548) |
 | Used a merge commit, not squash/rebase, for PR #544 and PR #547 | Preserves independently-attributed commit history from other already-merged work mixed into the branch by the repo's own high-concurrency multi-session workflow | merge commits `97a17a07d`, `e67e0c6ba` |
 | Native x86_64 release binary built for MODE 2 verification is explicitly NOT presented as the shipped artifact | This project's only real target is `aarch64-linux-android` (Termux); no Android NDK is available in this sandbox (the same limitation `scripts/gate.sh` has always disclosed for its own cross-build step) | this report, §"Known risks" |
+| Pinned `binaryen` via a direct, checksummed GitHub-release download in CI rather than `apt-get install binaryen` | The new wasm-ui/pkg drift check's pass/fail is a byte-exact diff; a different `wasm-opt` build can legitimately re-optimize identical source to different bytes, which would make the check cry wolf on version drift alone (an apt-tracked version isn't pinned to what built the committed artifact) | `PHASE0_AUDIT.md` §6, PR #552 |
 
 ## Known risks / follow-ups (honestly disclosed, not fabricated as resolved)
 
 Everything the run directive classifies as an *issue* is closed — the items below are disclosed scope/environment limitations and enhancement follow-ups, not open defects:
 
-1. **`scripts/gate.sh` has no automated wasm-ui round-trip drift check** — proved by hand this run (PR #547), not yet wired into the gate. Full rationale: `PHASE0_AUDIT.md` §6.
+1. ~~`scripts/gate.sh` has no automated wasm-ui round-trip drift check`~~ — **CLOSED, PR #552**: `scripts/wasm_ui_drift_check.sh` now runs from both `gate.sh` and CI, with pinned `wasm-bindgen-cli`/`binaryen` installs. Full detail: `PHASE0_AUDIT.md` §6.
 2. **The packaged git bundle reflects this sandbox's local (shallow) clone, not the project's complete history since inception** — consistent with the run directive's own "local-first: the codebase is whatever exists on local disk" framing, but disclosed here so it isn't mistaken for the full upstream history.
 3. **The packaged "prebuilt binary" is a native x86_64 build of this sandbox's host, produced only to exercise MODE 2's "run the prebuilt binary through its entry points" verification.** It is not, and is not presented as, the project's actual shipped `aarch64-linux-android` Termux artifact — that binary is built and verified by this project's own CI (`.github/workflows/ci.yml`'s `aarch64-android` job and `release.yml`), which this sandbox cannot reproduce locally (no Android NDK). This mirrors `scripts/gate.sh`'s own long-standing, disclosed treatment of the identical limitation.
 4. **`.agent/state.json`'s recorded state (outside the now-closed `OD-20`) is stale relative to ~50 commits now on `main`** — flagged, not corrected wholesale, since every individual entry it does record remains independently verifiable. Same finding: `PHASE0_AUDIT.md` §4, `ISSUE_LEDGER_PORTABLE.md`'s documentation-drift note.

@@ -100,6 +100,34 @@ run "fmt (wasm-ui)"     cargo fmt --manifest-path wasm-ui/Cargo.toml --check
 run "clippy (wasm-ui)"  cargo clippy --manifest-path wasm-ui/Cargo.toml --all-targets --locked -- -D warnings
 run "test (wasm-ui, native)" cargo test --manifest-path wasm-ui/Cargo.toml --locked
 
+# ── ci.yml: wasm-ui/pkg round-trip drift check ───────────────────────────────
+# Regenerates wasm-ui/pkg/ from source and diffs it against the committed
+# copy — see scripts/wasm_ui_drift_check.sh for what actually runs and why.
+# Was a disclosed, open gap as of this repo's PR #547/#551 (nothing here
+# regenerated and diffed the artifact automatically); this closes it.
+#
+# Exact-version-gated rather than "best effort": a mismatched wasm-bindgen or
+# wasm-opt build can produce different bytes from IDENTICAL source, which
+# would make this check cry wolf on an unrelated host — worse than not
+# running it at all (see the shellcheck severity note below for the same
+# philosophy). CI installs an exact pinned toolchain so it always runs there;
+# locally this SKIPs rather than guesses.
+WASM_BINDGEN_PIN="$(grep -m1 '^wasm-bindgen ' wasm-ui/Cargo.toml | sed -E 's/.*"([0-9.]+)".*/\1/')"
+WASM_BINDGEN_HAVE="$(wasm-bindgen --version 2>/dev/null | awk '{print $2}')"
+if [ "$QUICK" = 1 ]; then
+    skip "wasm-ui/pkg drift check" "--quick"
+elif ! rustup target list --installed 2>/dev/null | grep -q '^wasm32-unknown-unknown$'; then
+    skip "wasm-ui/pkg drift check" "wasm32-unknown-unknown target not installed — rustup target add wasm32-unknown-unknown"
+elif ! command -v wasm-bindgen >/dev/null 2>&1; then
+    skip "wasm-ui/pkg drift check" "wasm-bindgen-cli not installed — cargo install wasm-bindgen-cli --version $WASM_BINDGEN_PIN --locked"
+elif [ "$WASM_BINDGEN_HAVE" != "$WASM_BINDGEN_PIN" ]; then
+    skip "wasm-ui/pkg drift check" "installed wasm-bindgen-cli $WASM_BINDGEN_HAVE != wasm-ui/Cargo.toml's pinned $WASM_BINDGEN_PIN (a mismatched CLI produces spurious diffs, not real drift) — cargo install wasm-bindgen-cli --version $WASM_BINDGEN_PIN --locked --force"
+elif ! command -v wasm-opt >/dev/null 2>&1; then
+    skip "wasm-ui/pkg drift check" "wasm-opt (binaryen) not installed — CI is the authority for this check on hosts without it"
+else
+    run "wasm-ui/pkg drift check" scripts/wasm_ui_drift_check.sh
+fi
+
 # ── ci.yml: MSRV ─────────────────────────────────────────────────────────────
 if [ "$QUICK" = 1 ]; then
     skip "MSRV ($MSRV)" "--quick"

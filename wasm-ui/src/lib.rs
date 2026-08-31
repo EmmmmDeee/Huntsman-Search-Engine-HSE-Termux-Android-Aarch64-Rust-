@@ -14,17 +14,33 @@
 //! The compiled output is checked into `pkg/` and embedded into
 //! `src/api/routes/mod.rs`'s `APP_FILES` the same way every hand-written JS
 //! file is — there is no `build.rs` step wiring this crate into the main
-//! crate's own build. Regenerate after any change here with:
+//! crate's own build. Regenerate after any change here with (or just run
+//! `scripts/wasm_ui_drift_check.sh`, which does exactly this into a scratch
+//! dir and diffs it against `pkg/` without touching it):
 //! ```sh
-//! cargo build --manifest-path wasm-ui/Cargo.toml --target wasm32-unknown-unknown --release
+//! export RUSTFLAGS="--remap-path-prefix=$(pwd)=/remapped/wasm-ui-build-root --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/registry/src=/remapped/cargo-registry-src"
+//! cargo build --manifest-path wasm-ui/Cargo.toml --target wasm32-unknown-unknown --release --locked
 //! wasm-bindgen --target web --no-typescript --out-dir wasm-ui/pkg \
 //!     --out-name hse_wasm_ui wasm-ui/target/wasm32-unknown-unknown/release/hse_wasm_ui.wasm
 //! # Optional but recommended (needs `binaryen`'s wasm-opt; skip if unavailable
 //! # — the Cargo.toml release profile alone already does most of the work):
 //! wasm-opt -Os --enable-sign-ext --enable-bulk-memory --enable-mutable-globals \
 //!     --enable-nontrapping-float-to-int \
-//!     -o wasm-ui/pkg/hse_wasm_ui_bg.wasm wasm-ui/pkg/hse_wasm_ui_bg.wasm
+//!     -o wasm-ui/pkg/hse_wasm_ui_bg.wasm.opt wasm-ui/pkg/hse_wasm_ui_bg.wasm
+//! mv wasm-ui/pkg/hse_wasm_ui_bg.wasm.opt wasm-ui/pkg/hse_wasm_ui_bg.wasm
 //! ```
+//! The `RUSTFLAGS` line matters, not just tidiness: without it, `rustc`
+//! embeds the absolute build path (and `CARGO_HOME`'s registry checkout
+//! path) into panic-location strings even in this `--release` build, so two
+//! checkouts of IDENTICAL source at two different absolute paths produce two
+//! DIFFERENT `hse_wasm_ui_bg.wasm` — this is exactly how this repo's own CI
+//! first ran `scripts/wasm_ui_drift_check.sh` (checkout path
+//! `/home/runner/work/...`) against a `pkg/` regenerated in a development
+//! sandbox (a different path) and failed on a tree with no real source
+//! change. Both placeholder strings on the right of `=` are arbitrary but
+//! MUST stay byte-for-byte fixed forever — changing either changes every
+//! future regeneration's output.
+//!
 //! The `wasm-opt` feature flags are pinned to exactly what this toolchain's
 //! `wasm32-unknown-unknown` output actually uses (found by starting from none
 //! and adding only what `wasm-opt`'s own validator complained was missing) —
