@@ -273,6 +273,12 @@ fn twitter_handle_emits_exactly_one_cleaned_pivot_entity() {
         !tw.has_tag("derived"),
         "a field GitHub returned directly is observed, not derived"
     );
+    // The GitHub username entity must stay first: process()'s own later
+    // fetchers (SSH keys, events, gists) all tag `result.entities.first_mut()`,
+    // so a Twitter pivot landing at index 0 would misattribute their evidence.
+    assert_eq!(ents[0].kind, EntityKind::Username);
+    assert_eq!(ents[0].value, "alice");
+    assert!(ents[0].has_tag("github"));
 }
 
 #[test]

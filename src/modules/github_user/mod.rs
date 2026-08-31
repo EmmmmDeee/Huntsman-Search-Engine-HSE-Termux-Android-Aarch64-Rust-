@@ -108,24 +108,26 @@ fn build_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
     // API never includes '@', but breach-derived or hand-edited profile
     // data can). Tagged "social-profile", not "derived" — this is a directly
     // observed field on the fetched profile, not something this module
-    // inferred.
+    // inferred. Built here but pushed AFTER u_entity below: process()'s own
+    // later fetchers (SSH keys, events, gists) all tag `result.entities.
+    // first_mut()`, so the GitHub username entity must stay at index 0.
+    let mut tw_entity = None;
     if let Some(tw) = user
         .twitter_username
         .as_deref()
         .map(str::trim)
         .filter(|t| !t.is_empty())
     {
-        ev = ev.with_attr("twitter", tw);
         let handle = tw.trim_start_matches('@');
         if !handle.is_empty() {
+            ev = ev.with_attr("twitter", handle);
             u_entity.tag("twitter-linked");
             // Confidence confidence::HIGH_PLUS: self-asserted on a confirmed
             // GitHub profile.
-            let mut tw_entity =
-                Entity::new(EntityKind::Username, handle, confidence::HIGH_PLUS, scan_id);
-            tw_entity.tag("twitter");
-            tw_entity.tag("social-profile");
-            tw_entity.add_evidence(
+            let mut e = Entity::new(EntityKind::Username, handle, confidence::HIGH_PLUS, scan_id);
+            e.tag("twitter");
+            e.tag("social-profile");
+            e.add_evidence(
                 Evidence::new(
                     SRC,
                     format!("Twitter handle from GitHub profile @{}", user.login),
@@ -134,11 +136,12 @@ fn build_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
                 .with_attr("github_login", &user.login)
                 .with_attr("source", "github_profile"),
             );
-            result.push(tw_entity);
+            tw_entity = Some(e);
         }
     }
     u_entity.add_evidence(ev);
     result.push(u_entity);
+    result.extend(tw_entity);
 
     // Real name → Person entity, when present.
     if let Some(name) = user.name.as_deref()
@@ -240,10 +243,7 @@ fn build_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
                 c.add_evidence(
                     Evidence::new(
                         SRC,
-                        format!(
-                            "Inline geocode of GitHub location '{}' → {coord_val}",
-                            user.login
-                        ),
+                        format!("Inline geocode of GitHub location '{location}' → {coord_val}"),
                     )
                     .with_attr("github_login", &user.login),
                 );
@@ -262,7 +262,7 @@ fn build_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
             u.tag("personal-site");
             u.add_evidence(
                 Evidence::new(
-                    "github_user",
+                    SRC,
                     format!("Personal site linked from GitHub profile @{}", user.login),
                 )
                 .with_attr("github_login", &user.login),
