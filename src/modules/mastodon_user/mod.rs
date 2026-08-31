@@ -280,9 +280,11 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
         }
         for link in crate::util::extract::urls(&note_text) {
             let link = link.as_str();
-            // Case-insensitive: a bio link isn't guaranteed to match the
-            // lowercase `INSTANCES` literal's exact casing.
-            if link.to_ascii_lowercase().contains(instance) {
+            // Host-based, not a raw substring search: `.contains(instance)`
+            // would also drop an unrelated link that merely mentions the
+            // instance elsewhere (e.g. `https://example.com/?ref=mastodon.social`).
+            // `host_from_url` already lowercases, so no case mismatch either.
+            if crate::util::url_util::host_from_url(link).as_deref() == Some(instance) {
                 continue;
             }
             let mut url_e = Entity::new(EntityKind::Url, link, confidence::MEDIUM_SOLID, scan_id);
@@ -320,9 +322,9 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
         let url_candidate = href.as_deref().unwrap_or(plain.trim());
 
         if url_candidate.starts_with("http://") || url_candidate.starts_with("https://") {
-            // Case-insensitive: a profile-field URL isn't guaranteed to match
-            // the lowercase `INSTANCES` literal's exact casing.
-            if url_candidate.to_ascii_lowercase().contains(instance) {
+            // Host-based, not a raw substring search — see the identical
+            // comment on the bio-link exclusion above.
+            if crate::util::url_util::host_from_url(url_candidate).as_deref() == Some(instance) {
                 // Skip self-links to the mastodon instance.
             } else {
                 let mut url_e = Entity::new(EntityKind::Url, url_candidate, conf_url, scan_id);
@@ -643,6 +645,27 @@ mod tests {
             !ents.iter().any(|e| e.kind == EntityKind::Url
                 && e.value.to_ascii_lowercase().contains("mastodon.social")),
             "a differently-cased self-link must still be excluded"
+        );
+    }
+
+    #[test]
+    fn self_link_exclusion_is_host_based_not_a_bare_substring_search() {
+        // A URL whose host is NOT the queried instance, but whose path
+        // happens to mention the instance name, must NOT be excluded — only
+        // the actual host matters. Regression for `.contains(instance)`
+        // matching anywhere in the URL string.
+        let acct = make_acct(
+            "alice",
+            None,
+            Some("Found via https://example.com/about-mastodon.social-migration"),
+            None,
+            vec![],
+        );
+        let ents = build_entities(acct, "mastodon.social", "scan-mst-hostcheck");
+        assert!(
+            ents.iter()
+                .any(|e| e.kind == EntityKind::Url && e.value.starts_with("https://example.com")),
+            "a link merely mentioning the instance name in its path must not be excluded"
         );
     }
 
