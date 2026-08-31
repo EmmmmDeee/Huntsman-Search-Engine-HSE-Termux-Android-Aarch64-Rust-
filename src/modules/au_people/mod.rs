@@ -484,18 +484,26 @@ impl Module for AuPeople {
         result.extend(parse_tps_html(&html, full_name, &ctx.scan_id));
         result.extend(parse_relatives(&html, full_name, &ctx.scan_id));
 
-        // Emit a Person anchor for the name if the page yielded results
-        // ABOUT THE QUERIED NAME ITSELF — i.e. anything from parse_tps_html
-        // (tagged "tps-au": address/coordinates/email lines from the results
-        // page for this exact search). `parse_relatives` entities are
-        // deliberately excluded from this check: they're tagged "relatives"/
-        // "family-candidate" and, by that function's own construction,
-        // NEVER include the subject's own name (`name_lc == subject_lc` is
+        // Emit a Person anchor for the name if the page yielded a genuine
+        // ADDRESS-LINE hit from `parse_tps_html`'s results-page scan —
+        // narrowly gated (an AU state code AND a plausible postcode on the
+        // same line), unlike that function's email-mining block, which tags
+        // "tps-au" too but scans the WHOLE page for any email-shaped string
+        // with no structural gate at all — a bare support/contact address in
+        // the page's own chrome would satisfy that tag even on a genuinely
+        // empty-result page. `parse_relatives` entities are deliberately
+        // excluded from this check too: they're tagged "relatives"/
+        // "family-candidate" and, by that function's own construction, NEVER
+        // include the subject's own name (`name_lc == subject_lc` is
         // explicitly skipped) — a page listing only relatives of `full_name`
         // proves a namesake or family member exists in the directory, not
         // that `full_name` itself does, so it must not confidently confirm
         // this Person anchor.
-        if result.entities.iter().any(|e| e.has_tag("tps-au")) {
+        if result
+            .entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Address && e.has_tag("tps-au"))
+        {
             let mut person = Entity::new(
                 EntityKind::Person,
                 full_name,

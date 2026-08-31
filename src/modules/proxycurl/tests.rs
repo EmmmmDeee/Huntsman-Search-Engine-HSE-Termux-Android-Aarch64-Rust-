@@ -396,6 +396,71 @@ fn build_entities_deduplicates_a_company_restated_across_two_stints() {
         1,
         "the same employer restated (case-insensitively) across two stints must not double-emit: {orgs:?}"
     );
+    // Regression: a plain "keep first, skip duplicates" guard would have kept
+    // the PAST stint (2018-2020, listed first) and silently dropped the
+    // CURRENT one (2021-, listed second) entirely — losing the
+    // "current-employer" tag and the second stint's own evidence. The merge
+    // must preserve both.
+    assert!(
+        orgs[0].has_tag("current-employer"),
+        "merging must not lose the current-employer signal from the later stint: {orgs:?}"
+    );
+    assert_eq!(
+        orgs[0].evidence.len(),
+        2,
+        "both stints' evidence must survive the merge: {orgs:?}"
+    );
+}
+
+#[test]
+fn merged_stints_at_identically_cased_company_names_keep_distinct_evidence() {
+    // Regression: `Entity::merge` dedups evidence by (source, summary). Two
+    // stints at the SAME company with IDENTICAL casing (the common real
+    // case — LinkedIn shows the same company-page spelling both times)
+    // would collide on a bare "Employer: {company}" summary and collapse
+    // into ONE evidence record, whose attribute-level conflict resolution
+    // has no notion of which stint is more current — it could keep the
+    // PAST stint's title/start_date even though the entity is correctly
+    // tagged current-employer. The date range folded into the summary text
+    // keeps the two stints' evidence genuinely distinct regardless of
+    // casing, so neither stint's title/dates are silently overwritten.
+    let raw = r#"{
+        "full_name": "Jordan Avery",
+        "experiences": [
+            {"company": "Acme Pty Ltd", "title": "Engineer", "starts_at": {"year": 2018}, "ends_at": {"year": 2020}},
+            {"company": "Acme Pty Ltd", "title": "Senior Engineer", "starts_at": {"year": 2021}}
+        ]
+    }"#;
+    let profile: LinkedInProfile = serde_json::from_str(raw).expect("should succeed");
+    let r = build_entities(&profile, &target(), "scan");
+    let orgs: Vec<_> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Organisation)
+        .collect();
+    assert_eq!(
+        orgs.len(),
+        1,
+        "identically-cased stints must still dedup to one entity: {orgs:?}"
+    );
+    assert!(
+        orgs[0].has_tag("current-employer"),
+        "the current stint's tag must survive: {orgs:?}"
+    );
+    assert_eq!(
+        orgs[0].evidence.len(),
+        2,
+        "identical casing must not collapse the two stints' evidence into one: {orgs:?}"
+    );
+    let titles: std::collections::BTreeSet<&str> = orgs[0]
+        .evidence
+        .iter()
+        .filter_map(|ev| ev.attributes.get("title").map(String::as_str))
+        .collect();
+    assert!(
+        titles.contains("Engineer") && titles.contains("Senior Engineer"),
+        "both stints' own titles must survive uncorrupted, not tie-broken away: {orgs:?}"
+    );
 }
 
 #[test]

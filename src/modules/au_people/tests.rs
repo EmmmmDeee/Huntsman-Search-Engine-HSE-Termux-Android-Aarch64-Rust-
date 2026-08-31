@@ -136,6 +136,35 @@ fn parse_tps_html_skips_non_au_lines() {
 }
 
 #[test]
+fn parse_tps_html_chrome_emails_are_tps_au_tagged_but_never_address_kind() {
+    // Regression: the email-mining block scans the WHOLE page for any
+    // email-shaped string with no structural gate at all (unlike the
+    // address block's AU-state + postcode requirement) — a bare site
+    // support/contact address in the page's own chrome satisfies it just as
+    // readily as a genuine result. Both blocks tag "tps-au", so the
+    // "confirmed-in-directory" Person anchor in `process()` must key on
+    // `kind == Address`, not the tag alone, or a page with zero genuine
+    // address hits could still anchor purely on page chrome. This test pins
+    // the invariant that anchor-gating relies on: a chrome-only page (no AU
+    // state/postcode anywhere) yields "tps-au"-tagged emails but no Address.
+    let html = "<div>Results for Test Person</div>\
+                <p>No matching records found.</p>\
+                <footer>Questions? contact@truepeoplesearch.com.au</footer>";
+    let ents = parse_tps_html(html, "Test Person", "s");
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Email && e.has_tag("tps-au")),
+        "the chrome email must still be mined and tagged tps-au"
+    );
+    assert!(
+        !ents
+            .iter()
+            .any(|e| e.kind == EntityKind::Address && e.has_tag("tps-au")),
+        "a chrome-only page must yield no tps-au Address hit"
+    );
+}
+
+#[test]
 fn parse_tps_html_addresses_are_candidate_leads_not_confirmed() {
     // A TPS results page lists the subject ALONGSIDE relatives, associates, and
     // unrelated same-name people; this line scan cannot attribute an address line
