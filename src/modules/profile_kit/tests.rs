@@ -39,8 +39,8 @@ fn profile_url_rejects_a_bare_http_prefix_without_a_real_scheme() {
     // Regression: the filter used to be `starts_with("http")`, a bare-prefix
     // check that a string like "httpfoo.com" (no "://" at all) would pass —
     // inconsistent with website_url_and_domain's stricter
-    // `starts_with("http://") || starts_with("https://")` a few lines below
-    // in the same file. Both must reject the same non-URL shapes.
+    // `starts_with("http://") || starts_with("https://")` in mod.rs. Both
+    // must reject the same non-URL shapes.
     let u = profile_url(Some("httpfoo.com/alice"), || "https://x/alice".to_string());
     assert_eq!(u, "https://x/alice");
 }
