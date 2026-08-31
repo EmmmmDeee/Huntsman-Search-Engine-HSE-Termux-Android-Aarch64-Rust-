@@ -160,6 +160,20 @@ else
     # cargo-audit/deny already have here). `--features dep-cooldown`: see this
     # script's `DEP_COOLDOWN_FEATURE` comment above.
     run "dep-cooldown" cargo run --locked --bin dep-cooldown "${DEP_COOLDOWN_FEATURE[@]}"
+
+    # hse-core and wasm-ui keep their own separate Cargo.lock (see the
+    # `sibling-crates` CI job above for why), so every tool above only ever
+    # walked the root crate's graph. Same shared-policy reasoning as the
+    # root invocations: `deny.toml`/`dep-cooldown.toml` apply as-is via
+    # `--config`/`--policy` rather than forking a copy per crate.
+    command -v cargo-audit >/dev/null 2>&1 && run "cargo audit (hse-core)" cargo audit -f hse-core/Cargo.lock
+    command -v cargo-audit >/dev/null 2>&1 && run "cargo audit (wasm-ui)" cargo audit -f wasm-ui/Cargo.lock
+    command -v cargo-deny  >/dev/null 2>&1 && run "cargo deny (hse-core)" cargo deny --manifest-path hse-core/Cargo.toml --config deny.toml check
+    command -v cargo-deny  >/dev/null 2>&1 && run "cargo deny (wasm-ui)"  cargo deny --manifest-path wasm-ui/Cargo.toml --config deny.toml check
+    command -v cargo-machete >/dev/null 2>&1 && run "cargo machete (hse-core)" cargo machete --with-metadata hse-core
+    command -v cargo-machete >/dev/null 2>&1 && run "cargo machete (wasm-ui)"  cargo machete --with-metadata wasm-ui
+    run "dep-cooldown (hse-core)" cargo run --locked --bin dep-cooldown "${DEP_COOLDOWN_FEATURE[@]}" -- --lockfile hse-core/Cargo.lock --policy dep-cooldown.toml
+    run "dep-cooldown (wasm-ui)"  cargo run --locked --bin dep-cooldown "${DEP_COOLDOWN_FEATURE[@]}" -- --lockfile wasm-ui/Cargo.lock --policy dep-cooldown.toml
 fi
 
 # ── Report ───────────────────────────────────────────────────────────────────
