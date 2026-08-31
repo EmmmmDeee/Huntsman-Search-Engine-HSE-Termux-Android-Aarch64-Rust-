@@ -24,7 +24,7 @@ See `run/ISSUE_LEDGER_PORTABLE.md` for the full table with evidence and commit h
 
 ### Retention manifest
 
-47/61/54 `HUNTSMAN_*` entries across `.env.example`/`env_template.txt`/`constants.rs` respectively (expected variance — different purposes, not a defect); zero credential values in the tree (gitleaks clean on every CI run this session); no key touched, moved, or invented. See `PHASE0_AUDIT.md` §5.
+No defect: zero credential values in the tree (gitleaks clean on every CI run this session), no key touched, moved, or invented this run. Full 3-surface count table and rationale: `PHASE0_AUDIT.md` §5.
 
 ### Compiler/linter/audit status
 
@@ -46,16 +46,16 @@ Zero clippy warnings (`-D warnings` gate, root + `hse-core` + `wasm-ui`), zero T
 
 Everything the run directive classifies as an *issue* is closed — the items below are disclosed scope/environment limitations and enhancement follow-ups, not open defects:
 
-1. **`scripts/gate.sh` does not yet run the wasm-ui round-trip drift check automatically** — this run proved the round-trip once by hand (PR #547) but did not wire `wasm-bindgen-cli`/`wasm-opt` installation into the automated gate. Scoped, real follow-up work, not done this run.
+1. **`scripts/gate.sh` has no automated wasm-ui round-trip drift check** — proved by hand this run (PR #547), not yet wired into the gate. Full rationale: `PHASE0_AUDIT.md` §6.
 2. **The packaged git bundle reflects this sandbox's local (shallow) clone, not the project's complete history since inception** — consistent with the run directive's own "local-first: the codebase is whatever exists on local disk" framing, but disclosed here so it isn't mistaken for the full upstream history.
 3. **The packaged "prebuilt binary" is a native x86_64 build of this sandbox's host, produced only to exercise MODE 2's "run the prebuilt binary through its entry points" verification.** It is not, and is not presented as, the project's actual shipped `aarch64-linux-android` Termux artifact — that binary is built and verified by this project's own CI (`.github/workflows/ci.yml`'s `aarch64-android` job and `release.yml`), which this sandbox cannot reproduce locally (no Android NDK). This mirrors `scripts/gate.sh`'s own long-standing, disclosed treatment of the identical limitation.
-4. **`.agent/state.json`'s recorded state (outside the now-closed `OD-20`) is stale relative to ~50 commits now on `main`** — flagged, not corrected wholesale, since every individual entry it does record remains independently verifiable.
+4. **`.agent/state.json`'s recorded state (outside the now-closed `OD-20`) is stale relative to ~50 commits now on `main`** — flagged, not corrected wholesale, since every individual entry it does record remains independently verifiable. Same finding: `PHASE0_AUDIT.md` §4, `ISSUE_LEDGER_PORTABLE.md`'s documentation-drift note.
 
 ## Cold-start verification (both modes, from clean extractions)
 
 Performed on the actual packaged zip — extracted to a fresh `/tmp` location distinct from the packaging working tree, not re-verified in place:
 
-- **MODE 1 (build from source, offline)**: `cargo build --offline --locked --lib` — succeeded, 0 errors, zero network access. Then `cargo test --offline --locked --lib --bins --tests` against that same fresh extraction ran all 16 test binaries this crate produces: 5 `unittests` targets (the `huntsman_search_engine` lib itself — `cargo test`'s own summary line reported **6686 passed, 0 failed, 22 ignored** — plus `hse`, `hse_ai_daemon`, `architecture_audit`, and `gen_oui`'s own bin-level unit tests) and 11 integration-test files under `tests/`: `api`, `architecture`, `audit_regression`, `autonomy_charter`, `cli_seed_validation`, `doc_drift`, `entity_merge_greatest`, `halting`, `install_invariants`, `live_drift`, `smoke` — **every one of the 16 reported `0 failed`**.
+- **MODE 1 (build from source, offline)**: `cargo build --offline --locked --lib` — succeeded, 0 errors, zero network access. Then `cargo test --offline --locked --lib --bins --tests` against that same fresh extraction ran all 16 test binaries this crate produces: 5 `unittests` targets (the `huntsman_search_engine` lib itself — `cargo test`'s own summary line reported **6686 passed, 0 failed, 22 ignored** — plus `hse`, `hse_ai_daemon`, `architecture_audit`, and `gen_oui`'s own bin-level unit tests) and 11 integration-test files under `tests/`: `api`, `architecture`, `audit_regression`, `autonomy_charter`, `cli_seed_validation`, `doc_drift`, `entity_merge_greatest`, `halting`, `install_invariants`, `live_drift`, `smoke` — **every one of the 16 reported `0 failed`**. Independently re-run a second time in the same sandbox after an unrelated disk-space recovery (freeing a full `target/` rebuild); identical result, all 16 binaries again `0 failed`, confirming the first run wasn't a fluke of that particular build.
 - **MODE 2 (prebuilt binary, no build step)**: `./prebuilt/hse-x86_64-linux-verification-build --version` and `... selftest` both run directly from the fresh extraction with no build step and no network — `selftest` reports 11/11 checks passing (module registry/dispatch/reachability across 188 modules, correlator DB round-trip, log capture, ATT&CK coverage).
 
 Both modes verified green from clean extractions, satisfying this run's own completion rule before the zip is reported as final.
