@@ -237,20 +237,20 @@ fn build_entities(body: &FofaResp, scan_id: &str) -> ModuleResult {
             // observation of that host's infrastructure — the provider scanned
             // it — so it sits a rung above the domain below, which is derived
             // from the same record rather than observed on its own.
-            let is_new = !ip_entities.contains_key(hit.ip.as_str());
-            let ip_entity = ip_entities.entry(hit.ip.as_str()).or_insert_with(|| {
-                let mut e = Entity::new(
-                    EntityKind::IpAddress,
-                    &hit.ip,
-                    confidence::HIGH_PLUSPLUS,
-                    scan_id,
-                );
-                e.tag("fofa-host");
-                e
-            });
-            if is_new {
-                ip_order.push(hit.ip.as_str());
-            }
+            let ip_entity = match ip_entities.entry(hit.ip.as_str()) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    ip_order.push(hit.ip.as_str());
+                    let mut new_entity = Entity::new(
+                        EntityKind::IpAddress,
+                        &hit.ip,
+                        confidence::HIGH_PLUSPLUS,
+                        scan_id,
+                    );
+                    new_entity.tag("fofa-host");
+                    e.insert(new_entity)
+                }
+            };
 
             let mut evidence = Evidence::new(SRC, format!("FOFA intelligence for {}", hit.ip));
             if !hit.protocol.is_empty() {
