@@ -254,14 +254,20 @@ fn aggregate_results(
     // the summary so the operator can weigh a "47 platforms" result honestly.
     let mut verified_hits = 0usize;
     let mut weak_hits = 0usize;
+
     // A handful of site-table entries resolve to the SAME URL (two upstream
     // list sources describing the same platform with different detection
     // rules — e.g. a bare-200 check and a body-marker check both aimed at
-    // the identical profile URL). Count and emit a hit on that URL once,
-    // not once per table entry that happened to find it, or `found_names`/
-    // `category_counts`/`verified_hits`/`weak_hits` — and the summary tags
-    // gated on them — overstate the real number of distinct platforms.
-    let mut seen_urls: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    // the identical profile URL, such as the real `DeviantArt` (status-only)
+    // vs `DeviantArt (alt)` (body-marker) pair). Pass 1: reduce to the
+    // STRONGEST hit per URL — verified beats unverified, and among two of the
+    // same provenance the higher confidence wins — rather than whichever
+    // table entry happens to be probed first. A first-seen-wins dedup would
+    // let site-table ORDER decide whether a URL a stronger sibling rule also
+    // confirmed still ends up reported as merely "weak-detection".
+    let mut best_by_url: std::collections::HashMap<&str, (&str, &str, f64, bool)> =
+        std::collections::HashMap::new();
+    let mut url_order: Vec<&str> = Vec::new();
     for (site_name, site_cat, outcome) in results {
         match outcome {
             ProbeResult::Found {
@@ -269,44 +275,63 @@ fn aggregate_results(
                 confidence,
                 verified,
             } => {
-                if !seen_urls.insert(url.as_str()) {
-                    continue;
+                let candidate = (*site_name, *site_cat, *confidence, *verified);
+                match best_by_url.entry(url.as_str()) {
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        url_order.push(url.as_str());
+                        v.insert(candidate);
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut o) => {
+                        let existing = *o.get();
+                        // Compare (verified, confidence): verified strictly
+                        // outranks unverified regardless of confidence, and
+                        // ties within the same tier break on confidence.
+                        if (candidate.3, candidate.2) > (existing.3, existing.2) {
+                            o.insert(candidate);
+                        }
+                    }
                 }
-                found_names.push(site_name);
-                *category_counts.entry(site_cat).or_insert(0) += 1;
-                let mut e = Entity::new(EntityKind::Url, url.as_str(), *confidence, scan_id);
-                e.tag("social-profile");
-                e.tag(format!("platform:{site_name}"));
-                e.tag(format!("cat:{site_cat}"));
-                // Provenance tag lets the correlator / SPA discount status-only
-                // hits without re-deriving how the match was made.
-                if *verified {
-                    verified_hits += 1;
-                    e.tag("verified-detection");
-                } else {
-                    weak_hits += 1;
-                    e.tag("weak-detection");
-                }
-                e.add_evidence(
-                    Evidence::new(SRC, format!("@{username} has a profile on {site_name}"))
-                        .with_attr("platform", *site_name)
-                        .with_attr("category", *site_cat)
-                        .with_attr("username", username)
-                        .with_attr("url", url)
-                        .with_attr(
-                            "detection",
-                            if *verified {
-                                "body-marker"
-                            } else {
-                                "status-only"
-                            },
-                        ),
-                );
-                module_result.push(e);
             }
             ProbeResult::NotFound => definitive_absent += 1,
             ProbeResult::Error => inconclusive_probes += 1,
         }
+    }
+
+    // Pass 2: emit one entity per distinct URL, in first-seen order, using
+    // whichever table entry won the reduction above.
+    for url in &url_order {
+        let (site_name, site_cat, confidence, verified) = best_by_url[url];
+        found_names.push(site_name);
+        *category_counts.entry(site_cat).or_insert(0) += 1;
+        let mut e = Entity::new(EntityKind::Url, *url, confidence, scan_id);
+        e.tag("social-profile");
+        e.tag(format!("platform:{site_name}"));
+        e.tag(format!("cat:{site_cat}"));
+        // Provenance tag lets the correlator / SPA discount status-only
+        // hits without re-deriving how the match was made.
+        if verified {
+            verified_hits += 1;
+            e.tag("verified-detection");
+        } else {
+            weak_hits += 1;
+            e.tag("weak-detection");
+        }
+        e.add_evidence(
+            Evidence::new(SRC, format!("@{username} has a profile on {site_name}"))
+                .with_attr("platform", site_name)
+                .with_attr("category", site_cat)
+                .with_attr("username", username)
+                .with_attr("url", *url)
+                .with_attr(
+                    "detection",
+                    if verified {
+                        "body-marker"
+                    } else {
+                        "status-only"
+                    },
+                ),
+        );
+        module_result.push(e);
     }
 
     // Zero hits: distinguish a genuine "not on any site" from "couldn't tell"

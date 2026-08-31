@@ -195,6 +195,61 @@ use crate::core::confidence;
     }
 
     #[test]
+    fn aggregate_results_prefers_the_verified_hit_regardless_of_table_order() {
+        // Regression (Copilot review on PR #557): a first-seen-wins dedup let
+        // site-table ORDER decide the outcome — the real `DeviantArt` (status-
+        // only, 0.74, table-order first) / `DeviantArt (alt)` (body-marker,
+        // 0.92, table-order second) pair both target the identical URL, and
+        // "keep whichever was probed first" would keep the WEAK result even
+        // though a stronger sibling rule also confirmed the same account. The
+        // deduped hit must always be the strongest one seen, independent of
+        // which arrived first.
+        let results: Vec<(&'static str, &'static str, ProbeResult)> = vec![
+            (
+                "DeviantArt",
+                "photo",
+                ProbeResult::Found {
+                    url: "https://www.deviantart.com/alice".to_string(),
+                    confidence: 0.74,
+                    verified: false,
+                },
+            ),
+            (
+                "DeviantArt (alt)",
+                "photo",
+                ProbeResult::Found {
+                    url: "https://www.deviantart.com/alice".to_string(),
+                    confidence: 0.92,
+                    verified: true,
+                },
+            ),
+        ];
+        let r = aggregate_results("alice", &results, "scan").expect("two hits, never inconclusive");
+        let urls: Vec<&Entity> = r
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Url)
+            .collect();
+        assert_eq!(urls.len(), 1, "the shared URL must still be emitted once: {urls:?}");
+        assert!(
+            urls[0].has_tag("verified-detection"),
+            "the STRONGER (verified) sibling must win regardless of which table entry \
+             was probed first: {urls:?}"
+        );
+        assert!((urls[0].confidence - 0.92).abs() < 1e-9);
+        let summary = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Username)
+            .expect("summary entity");
+        assert_eq!(
+            summary.evidence[0].attributes.get("hits_verified").map(String::as_str),
+            Some("1"),
+            "the winning hit must count toward hits_verified, not hits_status_only"
+        );
+    }
+
+    #[test]
     fn aggregate_results_emits_distinct_hits_on_distinct_urls() {
         // Sanity check for the test above: two DIFFERENT URLs are not folded
         // together by the dedup.
