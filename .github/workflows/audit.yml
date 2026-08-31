@@ -71,6 +71,19 @@ jobs:
       - name: Audit dependencies
         run: cargo audit
 
+      # hse-core and wasm-ui (src/api/routes/mod.rs's already-live wasm-ui/pkg
+      # output) are path dependencies of the root crate but deliberately NOT
+      # `[workspace]` members (see each crate's own Cargo.toml comment), so
+      # each keeps its own separate Cargo.lock — `cargo audit` above, run at
+      # the repo root, never sees either one. This glob's own `pull_request`/
+      # `push` path filters already cover both manifests (`**/Cargo.{toml,
+      # lock}`); the tool invocations below just needed to catch up.
+      - name: Audit dependencies (hse-core)
+        run: cargo audit -f hse-core/Cargo.lock
+
+      - name: Audit dependencies (wasm-ui)
+        run: cargo audit -f wasm-ui/Cargo.lock
+
       # Supply-chain policy beyond advisories: license governance, banned /
       # wildcard crates, duplicate versions (warn), and dependency sources.
       # Config + rationale live in deny.toml. Installed directly for the same
@@ -80,6 +93,17 @@ jobs:
 
       - name: Check supply-chain policy
         run: cargo deny check
+
+      # Same crate-graph gap as the audit steps above. Both sibling crates
+      # reuse the root `deny.toml` (`--config`) rather than each carrying its
+      # own copy — one policy for one project, and neither crate's small,
+      # well-established dependency set (serde/sha2/hex; wasm-bindgen/js-sys/
+      # web-sys) has any reason to diverge from it.
+      - name: Check supply-chain policy (hse-core)
+        run: cargo deny --manifest-path hse-core/Cargo.toml --config deny.toml check
+
+      - name: Check supply-chain policy (wasm-ui)
+        run: cargo deny --manifest-path wasm-ui/Cargo.toml --config deny.toml check
 
       # Unused-dependency hygiene. `--with-metadata` resolves library names so
       # crates whose lib name differs from the package name (e.g. kamadak-exif →
@@ -91,6 +115,15 @@ jobs:
       - name: Check for unused dependencies
         run: cargo machete --with-metadata
 
+      # Same crate-graph gap as the audit/deny steps above — cargo-machete
+      # walks a crate graph from a manifest, so hse-core's and wasm-ui's own
+      # dependencies (not the root's) need their own directory argument.
+      - name: Check for unused dependencies (hse-core)
+        run: cargo machete --with-metadata hse-core
+
+      - name: Check for unused dependencies (wasm-ui)
+        run: cargo machete --with-metadata wasm-ui
+
       # Freshness/cooldown gate: fails on a crates.io dependency in Cargo.lock
       # published more recently than the cooldown window in dep-cooldown.toml
       # (unless explicitly allow-listed there) — a compromised publish is most
@@ -100,3 +133,13 @@ jobs:
       # external tool, so there is no separate install step.
       - name: Check dependency cooldown
         run: cargo run --locked --bin dep-cooldown --features dep-cooldown
+
+      # Same crate-graph gap as every step above, plus the same shared-policy
+      # reasoning as `deny.toml`: reuse the root `dep-cooldown.toml` rather
+      # than fork it, pointed at each sibling crate's own lockfile via
+      # `--lockfile`.
+      - name: Check dependency cooldown (hse-core)
+        run: cargo run --locked --bin dep-cooldown --features dep-cooldown -- --lockfile hse-core/Cargo.lock --policy dep-cooldown.toml
+
+      - name: Check dependency cooldown (wasm-ui)
+        run: cargo run --locked --bin dep-cooldown --features dep-cooldown -- --lockfile wasm-ui/Cargo.lock --policy dep-cooldown.toml

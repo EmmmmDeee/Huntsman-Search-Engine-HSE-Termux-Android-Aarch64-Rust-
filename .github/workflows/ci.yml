@@ -71,6 +71,65 @@ jobs:
       - name: Test
         run: cargo test --all --locked --features dep-cooldown
 
+  sibling-crates:
+    # hse-core and wasm-ui are path dependencies of the root crate but
+    # deliberately NOT `[workspace]` members (see each crate's own Cargo.toml
+    # comment) — which means the `check` job above never runs their OWN
+    # `#[cfg(test)]` suites or lints them directly: it only compiles hse-core
+    # as an ordinary dependency of the root crate (test cfg stripped) and
+    # never touches wasm-ui at all. Before this job existed, hse-core's 144
+    # unit tests + 6 doctests and both crates' deny-level clippy lints ran
+    # nowhere — not here, not locally via scripts/gate.sh. This job closes
+    # that gap directly rather than folding these crates into the root
+    # workspace (which would pull wasm32-oriented deps into every native
+    # build for no benefit — the reason they were split out in the first
+    # place).
+    name: hse-core + wasm-ui (native; not in the root workspace)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
+        with:
+          workspaces: |
+            hse-core
+            wasm-ui
+
+      - name: Format (hse-core)
+        run: cargo fmt --manifest-path hse-core/Cargo.toml --check
+
+      - name: Clippy (hse-core, warnings = errors)
+        run: cargo clippy --manifest-path hse-core/Cargo.toml --all-targets --locked -- -D warnings
+
+      - name: Docs (hse-core; no broken intra-doc links, bare URLs, or stray HTML tags)
+        run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::bare_urls -D rustdoc::invalid_html_tags" cargo doc --manifest-path hse-core/Cargo.toml --no-deps --document-private-items --locked
+
+      - name: Test (hse-core)
+        run: cargo test --manifest-path hse-core/Cargo.toml --locked
+
+      - name: Format (wasm-ui)
+        run: cargo fmt --manifest-path wasm-ui/Cargo.toml --check
+
+      - name: Clippy (wasm-ui, warnings = errors)
+        run: cargo clippy --manifest-path wasm-ui/Cargo.toml --all-targets --locked -- -D warnings
+
+      # Native build/test only (crate-type includes `rlib` alongside `cdylib`
+      # specifically so this works — see wasm-ui/Cargo.toml). Proves the
+      # source compiles cleanly and runs any unit tests added going forward;
+      # it does NOT produce or verify the real wasm32-unknown-unknown
+      # browser artifact, which needs the wasm32 target + wasm-bindgen-cli
+      # and has no job here yet, mirroring how the `check` job above openly
+      # SKIPs the Android NDK cross-build rather than silently omitting it.
+      - name: Test (wasm-ui, native — not the wasm32 browser build)
+        run: cargo test --manifest-path wasm-ui/Cargo.toml --locked
+
   msrv:
     name: MSRV (1.88)
     runs-on: ubuntu-latest
