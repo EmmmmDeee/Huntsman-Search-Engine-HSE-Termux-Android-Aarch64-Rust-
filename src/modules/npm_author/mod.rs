@@ -174,23 +174,26 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
     let mut seen_usernames: HashSet<String> = HashSet::new();
     let mut package_names: Vec<String> = Vec::new();
 
-    let push_email =
-        |result: &mut ModuleResult, seen: &mut HashSet<String>, raw: &str, pkg: &str| {
-            let email = raw.trim().to_lowercase();
-            if crate::util::extract::looks_like_email(&email) && seen.insert(email.clone()) {
-                let mut e = Entity::new(EntityKind::Email, &email, 0.74, scan_id);
-                e.tag("npm");
-                e.tag("public-profile");
-                let mut ev = Evidence::new(SRC, format!("npm maintainer email (package {pkg})"))
-                    .with_attr("source", "npm_registry");
-                // Skip a blank package attribute (dead-field hygiene).
-                if !pkg.is_empty() {
-                    ev = ev.with_attr("package", pkg);
-                }
-                e.add_evidence(ev);
-                result.push(e);
+    let push_email = |result: &mut ModuleResult,
+                      seen: &mut HashSet<String>,
+                      raw: &str,
+                      pkg: &str,
+                      role: &str| {
+        let email = raw.trim().to_lowercase();
+        if crate::util::extract::looks_like_email(&email) && seen.insert(email.clone()) {
+            let mut e = Entity::new(EntityKind::Email, &email, 0.74, scan_id);
+            e.tag("npm");
+            e.tag("public-profile");
+            let mut ev = Evidence::new(SRC, format!("npm {role} email (package {pkg})"))
+                .with_attr("source", "npm_registry");
+            // Skip a blank package attribute (dead-field hygiene).
+            if !pkg.is_empty() {
+                ev = ev.with_attr("package", pkg);
             }
-        };
+            e.add_evidence(ev);
+            result.push(e);
+        }
+    };
 
     // Full-fidelity policy: process EVERY package the author published, never a
     // capped subset — these are the target's own packages, a result not a preview.
@@ -205,11 +208,16 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
 
         // Emails: only from records whose username matches the queried handle
         // (the author/publisher/maintainer that IS the subject), so a
-        // co-maintainer's address isn't mis-attributed.
-        for person in std::iter::once(pkg.publisher.as_ref())
-            .chain(std::iter::once(pkg.author.as_ref()))
+        // co-maintainer's address isn't mis-attributed. `role` names which of
+        // npm's three genuinely distinct fields `person` actually came from —
+        // author (self-declared in package.json, possibly stale/unverified),
+        // publisher (the account that ran `npm publish`), or maintainer (the
+        // registry's current co-maintainer list) — so the emitted evidence
+        // text states what was actually observed instead of a fixed guess.
+        for (role, person) in std::iter::once(pkg.publisher.as_ref().map(|p| ("publisher", p)))
+            .chain(std::iter::once(pkg.author.as_ref().map(|p| ("author", p))))
             .flatten()
-            .chain(pkg.maintainers.iter())
+            .chain(pkg.maintainers.iter().map(|p| ("maintainer", p)))
         {
             let is_subject = person
                 .username
@@ -218,7 +226,7 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
             if let Some(email) = person.email.as_deref()
                 && (is_subject || person.username.is_none())
             {
-                push_email(&mut result, &mut seen_emails, email, pkg_name);
+                push_email(&mut result, &mut seen_emails, email, pkg_name, role);
             }
             if let Some(u) = person.url.as_deref()
                 && (u.starts_with("http://") || u.starts_with("https://"))
@@ -226,7 +234,7 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
             {
                 let mut url_e = Entity::new(EntityKind::Url, u, 0.66, scan_id);
                 url_e.tag("npm");
-                let mut ev = Evidence::new(SRC, format!("npm author URL ({pkg_name})"));
+                let mut ev = Evidence::new(SRC, format!("npm {role} URL ({pkg_name})"));
                 if !pkg_name.is_empty() {
                     ev = ev.with_attr("package", pkg_name);
                 }
@@ -234,9 +242,11 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
                 result.push(url_e);
             }
 
-            // Co-maintainer/co-author handles: every OTHER npm username on the
-            // record (the subject's own is already emitted below), so a
-            // co-maintainer isn't silently dropped the way their email would be.
+            // Co-maintainer/co-author/co-publisher handles: every OTHER npm
+            // username on the record (the subject's own is already emitted
+            // below), so one isn't silently dropped the way their email would
+            // be. Tagged "co-{role}" for the same reason the evidence text
+            // above is role-specific.
             if let Some(u) = person.username.as_deref()
                 && !is_subject
                 && seen_usernames.insert(u.to_lowercase())
@@ -249,9 +259,9 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
                     scan_id,
                 );
                 uname_e.tag("npm");
-                uname_e.tag("co-maintainer");
+                uname_e.tag(format!("co-{role}"));
                 uname_e.add_evidence(
-                    Evidence::new(SRC, format!("npm co-maintainer of {pkg_name}"))
+                    Evidence::new(SRC, format!("npm co-{role} of {pkg_name}"))
                         .with_attr("package", pkg_name),
                 );
                 result.push(uname_e);

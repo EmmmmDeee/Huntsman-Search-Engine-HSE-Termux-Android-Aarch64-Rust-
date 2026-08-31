@@ -118,6 +118,15 @@ impl Module for DevTo {
         let Some(user) = user else {
             return Ok(ModuleResult::new());
         };
+        // The `url` query param accepts more than a bare username (Dev.to's
+        // API historically also resolves a full profile URL/slug through it),
+        // so a lenient or redirect-following match could hand back an account
+        // whose own `username` differs from what was actually queried. Verify
+        // before trusting it — same guard codeberg_user/hexpm_user already
+        // use for their own by-username lookups.
+        if !user.username.eq_ignore_ascii_case(handle) {
+            return Ok(ModuleResult::new());
+        }
 
         let mut result = ModuleResult::new();
         result.entities = build_entities(user, &ctx.scan_id);
