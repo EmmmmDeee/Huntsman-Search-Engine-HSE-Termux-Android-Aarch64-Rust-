@@ -57,10 +57,10 @@
   },
   "enforcement": {
     "local_gate_runner": "scripts/gate.sh already IS the one-command local gate runner the directive calls for (fmt, check, clippy -D warnings, rustdoc lints, test, doctests, doc-coverage ratchet, hse-core+wasm-ui equivalents, MSRV, aarch64-android cross-build, install.sh+shellcheck, audit/deny/machete/dep-cooldown) - proven green end to end multiple times this session",
-    "drift_check_gap": "gate.sh does not currently regenerate and diff wasm-ui/pkg against source on every run (the directive's 'round-trip drift check'); this is a genuine, small, currently-open gap - see PHASE0_AUDIT.md §6"
+    "drift_check_gap": "gate.sh does not currently regenerate and diff wasm-ui/pkg against source on every run (the directive's 'round-trip drift check'); this is a genuine, small, currently-open gap - see run/PHASE0_AUDIT.md §6"
   },
   "offline_build": {
-    "vendor_dir_created": "vendor/ (543MB, 448 packages, cargo vendor --sync across all 4 manifests) — NOT committed to the live branch (see rationale in PHASE0_AUDIT.md); packaged into the final deliverable zip only",
+    "vendor_dir_created": "vendor/ (543MB, 448 packages, cargo vendor --sync across all 4 manifests) — NOT committed to the live branch (see rationale in run/PHASE0_AUDIT.md); packaged into the final deliverable zip only",
     "offline_build_verification": "SUCCEEDED - cargo build --offline --locked against only the vendored tree completed with exit 0 in 2m46s, zero network access; see run/offline_build_result.txt for the full command and raw output"
   },
   "final_deliverable": {
