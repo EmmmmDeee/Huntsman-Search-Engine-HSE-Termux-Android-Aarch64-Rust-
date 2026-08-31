@@ -1,0 +1,16 @@
+# Evidence for run/PHASE0_AUDIT.md section 7, MODE 1.
+# Command (run from repo root, after `cargo vendor --sync hse-core/Cargo.toml
+# --sync wasm-ui/Cargo.toml --sync fuzz/Cargo.toml vendor`):
+#
+#   cargo build --offline --locked \
+#     --config 'source.crates-io.replace-with="vendored-sources"' \
+#     --config 'source.vendored-sources.directory="vendor"' \
+#     --lib
+#
+# --offline makes cargo refuse any network access outright; --locked forbids
+# any Cargo.lock modification. A prior `rm -rf target` (this session) ensured
+# this was a clean build, not a cache hit. Full raw output below.
+
+   Compiling huntsman-search-engine v1.40.0 (/home/user/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 46s
+OFFLINE_BUILD_EXIT=0

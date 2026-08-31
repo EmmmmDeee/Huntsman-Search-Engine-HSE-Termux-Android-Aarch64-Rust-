@@ -1,8 +1,23 @@
 # Rust build artefacts
 /target/
 
+# `cargo vendor` output for offline-build packaging (run/PHASE0_AUDIT.md
+# section 7) — regenerable from Cargo.lock via `cargo vendor --sync ...`
+# (see run/ for the exact command), ~540 MB, and only ever consumed by the
+# packaged deliverable zip, never by ongoing development on this branch.
+# Same reasoning as this file's existing zip/monolith exclusions below: a
+# derived, large aggregate that would otherwise permanently bloat every
+# future clone.
+/vendor/
+
 # Generated delivery package (git archive of the tree — circular to commit)
 /huntsman_refactored.zip
+
+# Final-deliverable assembly workspace (run/FINAL_REPORT.md): the git bundle,
+# staged tree, and final zip itself. Same "derived, large, circular to
+# commit" reasoning as the zip exclusion directly above and /vendor/ below —
+# these are build OUTPUTS of this run's own packaging step, not inputs.
+/run/deliverable/
 
 # Generated monolithic whole-repo snapshot (regenerate: scripts/pack_monolith.py).
 # Excluded for the same reason as the zip above — it is a derived, ~10 MiB

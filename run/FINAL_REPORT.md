@@ -1,0 +1,54 @@
+# Final Report — Autonomous Migration/Remediation Run
+
+Run against `main` at `e67e0c6ba` (and this run's own follow-up work, PR #548). See `run/PHASE0_AUDIT.md` for full audit detail; this is the completion summary the run directive requires.
+
+## Before / after
+
+**Before this run** (evidence: file census in `PHASE0_AUDIT.md` §2): a mature, 1087-of-~1237-tracked-files Rust codebase with an existing 42-cycle issue-remediation practice, a `hse-core` entity-model crate and a `wasm-ui` browser crate both extracted from the main crate by PR #509 but left with **zero** CI/gate coverage, and a live, shipped `wasm-ui` bug (bare-string thrown errors breaking `.message` at 6+ JS call sites).
+
+**After this run**: `hse-core` (144 tests, 6 doctests) and `wasm-ui` fully covered by CI and the local gate, including their own supply-chain checks (PR #544); the `to_js_error` defect fixed and its compiled artifact regenerated and proven (PR #547); a Phase 0 audit on record explaining why the requested full migration doesn't apply here, with an offline/vendored build path built and proven as the one genuinely-missing, applicable piece of infrastructure (PR #548); this final report and packaged deliverable.
+
+## Ledgers
+
+### Artifact ledger — CLOSED, 0 open
+
+| Artifact | Status | Source | Generator | Proof |
+|---|---|---|---|---|
+| `wasm-ui/pkg/hse_wasm_ui.js` + `hse_wasm_ui_bg.wasm` | CLOSED (source-backed) | `wasm-ui/src/*.rs` | documented in `wasm-ui/src/lib.rs` doc comment; run via `wasm32-unknown-unknown` + `wasm-bindgen` 0.2.127 + `wasm-opt` | Regenerated this run, diffed against the prior committed copy (minimal, explained delta), merged in PR #547 with CI green |
+
+No `.all` files or other proprietary/orphaned artifacts exist in this repository (extension census, `PHASE0_AUDIT.md` §3) — the reverse-engineering loop has no target.
+
+### Issue ledger — 0 open from this run's own census; 1 open item inherited and left honestly open
+
+See `run/ISSUE_LEDGER_PORTABLE.md` for the full table with evidence and commit hashes. Summary: 2 closed this run (PR #544, PR #547), 1 pre-existing item (`OD-20`) left open because closing it needs a live API credential this sandbox does not have — not closed on inference.
+
+### Retention manifest
+
+47/61/54 `HUNTSMAN_*` entries across `.env.example`/`env_template.txt`/`constants.rs` respectively (expected variance — different purposes, not a defect); zero credential values in the tree (gitleaks clean on every CI run this session); no key touched, moved, or invented. See `PHASE0_AUDIT.md` §5.
+
+### Compiler/linter/audit status
+
+Zero clippy warnings (`-D warnings` gate, root + `hse-core` + `wasm-ui`), zero TODO/FIXME/HACK, `cargo audit`/`deny`/`machete` clean across all four `Cargo.lock` files, full suite green. All verified directly against the current head, not carried over from an older cycle.
+
+## Autonomous-decision log (with recovery points)
+
+| Decision | Rationale | Recovery point |
+|---|---|---|
+| Did not treat this codebase as a migration target | 88% already Rust; remainder is docs/config/fixtures (never migration targets) or has a specific, evidenced justification to stay non-Rust | `run/PHASE0_AUDIT.md` §2 |
+| Did not invent reverse-engineering work | Zero `.all`/orphaned artifacts exist | `run/PHASE0_AUDIT.md` §3 |
+| Left `OD-20` open rather than closing on inference | No live-API credential available in this sandbox; closing without evidence would be a fabricated closure | `run/ISSUE_LEDGER_PORTABLE.md` |
+| Kept `vendor/` (543 MB) and the final zip out of git history | Matches this repo's own pre-existing `.gitignore` precedent (it already excludes a prior "generated delivery package" zip and a monolith snapshot for the identical reason); a 543 MB permanent addition to every future clone would itself be a "system degraded" regression | commit `b10b24fd0` (PR #548) |
+| Used a merge commit, not squash/rebase, for PR #544 and PR #547 | Preserves independently-attributed commit history from other already-merged work mixed into the branch by the repo's own high-concurrency multi-session workflow | merge commits `97a17a07d`, `e67e0c6ba` |
+| Native x86_64 release binary built for MODE 2 verification is explicitly NOT presented as the shipped artifact | This project's only real target is `aarch64-linux-android` (Termux); no Android NDK is available in this sandbox (the same limitation `scripts/gate.sh` has always disclosed for its own cross-build step) | this report, §"Known risks" |
+
+## Known risks / follow-ups (honestly disclosed, not fabricated as resolved)
+
+1. **`OD-20` remains open** (ip2location hosting-signal gap) — needs a live API check with a real `HUNTSMAN_IP2LOCATION_KEY`, not available in this sandbox.
+2. **`scripts/gate.sh` does not yet run the wasm-ui round-trip drift check automatically** — this run proved the round-trip once by hand (PR #547) but did not wire `wasm-bindgen-cli`/`wasm-opt` installation into the automated gate. Scoped, real follow-up work, not done this run.
+3. **The packaged git bundle reflects this sandbox's local (shallow) clone, not the project's complete history since inception** — consistent with the run directive's own "local-first: the codebase is whatever exists on local disk" framing, but disclosed here so it isn't mistaken for the full upstream history.
+4. **The packaged "prebuilt binary" is a native x86_64 build of this sandbox's host, produced only to exercise MODE 2's "run the prebuilt binary through its entry points" verification.** It is not, and is not presented as, the project's actual shipped `aarch64-linux-android` Termux artifact — that binary is built and verified by this project's own CI (`.github/workflows/ci.yml`'s `aarch64-android` job and `release.yml`), which this sandbox cannot reproduce locally (no Android NDK). This mirrors `scripts/gate.sh`'s own long-standing, disclosed treatment of the identical limitation.
+5. **`.agent/state.json`'s recorded state is stale relative to ~50 commits now on `main`** — flagged, not corrected wholesale, since every individual entry it does record remains independently verifiable.
+
+## Deliverable
+
+See the accompanying zip's own manifest (`run/deliverable/MANIFEST.md`) for contents, and the closing message of this run for filename/size/SHA-256.
