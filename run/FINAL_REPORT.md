@@ -49,6 +49,15 @@ Zero clippy warnings (`-D warnings` gate, root + `hse-core` + `wasm-ui`), zero T
 4. **The packaged "prebuilt binary" is a native x86_64 build of this sandbox's host, produced only to exercise MODE 2's "run the prebuilt binary through its entry points" verification.** It is not, and is not presented as, the project's actual shipped `aarch64-linux-android` Termux artifact — that binary is built and verified by this project's own CI (`.github/workflows/ci.yml`'s `aarch64-android` job and `release.yml`), which this sandbox cannot reproduce locally (no Android NDK). This mirrors `scripts/gate.sh`'s own long-standing, disclosed treatment of the identical limitation.
 5. **`.agent/state.json`'s recorded state is stale relative to ~50 commits now on `main`** — flagged, not corrected wholesale, since every individual entry it does record remains independently verifiable.
 
+## Cold-start verification (both modes, from clean extractions)
+
+Performed on the actual packaged zip — extracted to a fresh `/tmp` location distinct from the packaging working tree, not re-verified in place:
+
+- **MODE 1 (build from source, offline)**: `cargo build --offline --locked --lib` — succeeded, 0 errors, zero network access. Then `cargo test --offline --locked --lib --bins --tests` against that same fresh extraction ran all 16 test binaries this crate produces: 5 `unittests` targets (the `huntsman_search_engine` lib itself — `cargo test`'s own summary line reported **6686 passed, 0 failed, 22 ignored** — plus `hse`, `hse_ai_daemon`, `architecture_audit`, and `gen_oui`'s own bin-level unit tests) and 11 integration-test files under `tests/`: `api`, `architecture`, `audit_regression`, `autonomy_charter`, `cli_seed_validation`, `doc_drift`, `entity_merge_greatest`, `halting`, `install_invariants`, `live_drift`, `smoke` — **every one of the 16 reported `0 failed`**.
+- **MODE 2 (prebuilt binary, no build step)**: `./prebuilt/hse-x86_64-linux-verification-build --version` and `... selftest` both run directly from the fresh extraction with no build step and no network — `selftest` reports 11/11 checks passing (module registry/dispatch/reachability across 188 modules, correlator DB round-trip, log capture, ATT&CK coverage).
+
+Both modes verified green from clean extractions, satisfying this run's own completion rule before the zip is reported as final.
+
 ## Deliverable
 
-See the accompanying zip's own manifest (`run/deliverable/MANIFEST.md`) for contents, and the closing message of this run for filename/size/SHA-256.
+See the accompanying zip's own `MANIFEST.md` (top level) for contents. Filename, size, and SHA-256 are reported in this run's closing message.
