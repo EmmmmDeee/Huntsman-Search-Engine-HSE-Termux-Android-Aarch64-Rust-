@@ -201,6 +201,36 @@ fn doc_roi_examples_use_the_real_credit_costs() {
     );
 }
 
+/// `RULE.md` (the project's top-level, "binding" operational doc) must send a
+/// new operator to the live SeekNow host, not the dead `.eu` alias.
+///
+/// Regression: `src/util/keys/tests.rs`'s
+/// `seeknow_signup_hint_names_the_live_ru_host_not_the_dead_eu_alias` already
+/// guards `hse doctor`'s own signup hint against this class of drift — its
+/// doc comment records that `see-know.eu` is a dead host
+/// (`docs/SEEKNOW_WEB_AUTOMATION.md` logs it "Not responding | 000") and that
+/// `see_know::client::DEFAULT_BASE` (the actual live API base) is
+/// `see-know.ru`. `RULE.md`'s "Setup & Configuration: SeekNow API" section
+/// independently told operators to sign up and find their dashboard at
+/// `see-know.eu` — the same defect class, in the doc a fresh reader hits
+/// first, just never caught because that guard only reads `hse doctor`'s
+/// in-process hint string, not the markdown. `DEFAULT_BASE` is a private
+/// `const` this integration test cannot import, so the literal host names
+/// are asserted directly here, same as the unit test does.
+#[test]
+fn rule_md_names_the_live_seeknow_host_not_the_dead_eu_alias() {
+    let rule = fs::read_to_string(doc_path("RULE.md")).expect("RULE.md must exist");
+    assert!(
+        rule.contains("see-know.ru"),
+        "RULE.md's SeekNow section should name the live .ru host"
+    );
+    assert!(
+        !rule.contains("see-know.eu"),
+        "RULE.md must not point an operator at the dead .eu host \
+         (docs/SEEKNOW_WEB_AUTOMATION.md logs it \"Not responding | 000\")"
+    );
+}
+
 /// `ci.yml`'s MSRV job must pin exactly the version `Cargo.toml` declares.
 ///
 /// The MSRV floor lives in four places at once: `Cargo.toml`'s `rust-version`,
