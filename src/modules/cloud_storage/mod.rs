@@ -65,6 +65,14 @@ impl Module for CloudStorage {
         ModuleCategory::Web
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Wordlist-driven active probing (base name + affixes like
+        // backup/dev/staging/dumps) against the real S3/GCS/Azure/DigitalOcean
+        // endpoints, not searching the victim's own site or fingerprinting
+        // software — T1595.003 precisely, neither category default applies.
+        &["T1595.003"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[EntityKind::Url];
         KINDS

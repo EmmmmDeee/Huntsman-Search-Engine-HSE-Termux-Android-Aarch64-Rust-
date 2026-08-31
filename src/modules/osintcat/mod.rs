@@ -110,6 +110,16 @@ impl Module for OsintCat {
     }
 
     fn category(&self) -> ModuleCategory {
+        // The module's three endpoints map cleanly onto the two defaults:
+        // /api/breach returns breach_data records (credential-adjacent)
+        // tagged "breach" → T1589.001, while /api/email-footprint and
+        // /api/email-osint both query and enrich by the email address
+        // itself (platform-registration checks, username pivots keyed off
+        // email) → T1589.002. Nothing in the parsing logic touches DNS,
+        // WHOIS, domain/network properties, physical location, or named
+        // social-media/code-repo searches, so no broader or different
+        // technique is evidenced; the category default is already tight
+        // for this module.
         ModuleCategory::Breach
     }
 

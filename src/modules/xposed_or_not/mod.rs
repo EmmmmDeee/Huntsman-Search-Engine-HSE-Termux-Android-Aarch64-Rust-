@@ -57,6 +57,9 @@ impl Module for XposedOrNot {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Breach names, paste exposure, and password_risk/exposed_data_types
+        // confirm email exposure (T1589.002) and credential risk (T1589.001)
+        // — the category default already covers this; no attack_techniques() needed.
         ModuleCategory::Breach
     }
 

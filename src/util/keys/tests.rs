@@ -126,6 +126,26 @@ fn signup_hint_is_defined_for_every_known_key() {
     );
 }
 
+/// Regression: the SeekNow signup hint printed by `hse doctor` named the
+/// `see-know.eu` alias — a host `docs/SEEKNOW_WEB_AUTOMATION.md` records as
+/// "Not responding | 000" — while the live API base
+/// (`see_know::client`'s `DEFAULT_BASE`) is `see-know.ru`. A fresh operator was
+/// sent to a dead domain to sign up, and `hse doctor` printed two different
+/// SeekNow domains one line apart. The hint must name the live `.ru` host and
+/// never the dead `.eu` alias.
+#[test]
+fn seeknow_signup_hint_names_the_live_ru_host_not_the_dead_eu_alias() {
+    let hint = signup_hint("HUNTSMAN_SEEKNOW_KEY").expect("SeekNow signup hint is defined");
+    assert!(
+        hint.contains("see-know.ru"),
+        "SeekNow signup hint should name the live .ru host: {hint:?}"
+    );
+    assert!(
+        !hint.contains("see-know.eu"),
+        "SeekNow signup hint must not point at the dead .eu host: {hint:?}"
+    );
+}
+
 fn map_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
     pairs
         .iter()

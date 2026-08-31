@@ -186,6 +186,9 @@ impl Module for AuGeo {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Point-in-polygon lookup of ABS ASGS boundaries (postcode, suburb, LGA,
+        // electorates, remoteness, SA2/SA4, mesh-block land use) — a tight fit
+        // for the category default's T1591.001 mapping; no override needed.
         ModuleCategory::Geo
     }
 

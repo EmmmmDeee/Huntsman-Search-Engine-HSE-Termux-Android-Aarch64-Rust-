@@ -156,6 +156,9 @@ impl Module for SunriseSunset {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Coordinates → sunrise-sunset.org solar-phase timestamps (sunrise/sunset/twilight/day
+        // length) for chronolocation — physical-location context only, not DNS/WHOIS/cert/
+        // network/identity/host data, so the default T1591.001 mapping already fits.
         ModuleCategory::Geo
     }
 

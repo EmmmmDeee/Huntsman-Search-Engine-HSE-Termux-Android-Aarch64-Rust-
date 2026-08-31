@@ -237,6 +237,16 @@ impl Module for PhoneAu {
     }
 
     fn category(&self) -> ModuleCategory {
+        // The module purely decorates the already-produced +61 Phone entity
+        // with PII-type attributes (line type, and — only as an attribute,
+        // never a separate location/coordinates entity — the coarse
+        // area-code region) using an offline numbering-plan lookup; it
+        // explicitly refuses to emit Address/Coordinates or infer carrier,
+        // so it never crosses into T1591.001 (org physical locations),
+        // T1590.x (network info), or any active-scanning/database
+        // technique. This is squarely victim identity information about a
+        // phone number, matching the Phone category's T1589 default
+        // tightly.
         ModuleCategory::Phone
     }
 

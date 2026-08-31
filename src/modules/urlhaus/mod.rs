@@ -210,6 +210,9 @@ impl Module for UrlHaus {
     }
 
     fn category(&self) -> ModuleCategory {
+        // POSTs a host/IP to the gated (Auth-Key-required) abuse.ch URLhaus API and
+        // surfaces the malicious-URL count, threat families, and blocklist verdicts —
+        // this is T1597.001 via the category default; no DNS/WHOIS/cert/T1596.x activity.
         ModuleCategory::Threat
     }
 

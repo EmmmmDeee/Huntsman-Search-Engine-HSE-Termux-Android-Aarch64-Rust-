@@ -54,6 +54,9 @@ impl Module for Photon {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Pure forward/reverse geocoder: resolves address <-> lat/lon via Komoot,
+        // using OSM place-type only to annotate precision — no DNS, WHOIS, cert,
+        // identity, or org data. Exactly "Determine Physical Locations" (T1591.001).
         ModuleCategory::Geo
     }
 

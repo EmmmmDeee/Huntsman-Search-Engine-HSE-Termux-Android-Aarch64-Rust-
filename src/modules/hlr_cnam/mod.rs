@@ -86,6 +86,9 @@ impl Module for HlrCnam {
     }
 
     fn category(&self) -> ModuleCategory {
+        // HLR + OpenCNAM both resolve to identity/status attrs of the number (Person, verified
+        // Phone, carrier Organisation) — no Address/Coordinates entity, unlike numverify (which
+        // geocodes and overrides for T1591.001), so the default T1589 mapping fits as-is.
         ModuleCategory::Phone
     }
 

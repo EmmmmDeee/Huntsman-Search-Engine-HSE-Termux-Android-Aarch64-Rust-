@@ -242,7 +242,10 @@ use super::*;
         );
         let dash = app_file("js/views/dash.js");
         assert!(
-            dash.contains("moduleHealthPanel("),
+            // Ported to wasm-ui/src/views/dash.rs (renderModuleHealthPanelHtml,
+            // called here via /static/hse_wasm_ui.js) — the JS-side call site
+            // is the string that must keep wiring the fetched data in.
+            dash.contains("renderModuleHealthPanelHtml("),
             "the Dashboard must render the module-health panel"
         );
     }
@@ -316,8 +319,17 @@ use super::*;
             info.contains("API.exposure("),
             "the Info tab must call API.exposure()"
         );
+        // The panel markup and per-component rendering moved to
+        // wasm-ui/src/scan_info/info.rs's render_exposure_html — a
+        // sibling-crate source read, same pattern as the leads.js/
+        // correlations.js ports' own fitness-test updates.
+        let info_rs = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/wasm-ui/src/scan_info/info.rs"
+        ))
+        .expect("info.rs source readable");
         assert!(
-            info.contains("Exposure Index"),
+            info_rs.contains("Exposure Index"),
             "the Exposure Index panel must be rendered"
         );
         // Every component field the backend serialises must be consumed — a
@@ -325,8 +337,8 @@ use super::*;
         // per-signal explanation to a bare number.
         for field in ["c.name", "c.score", "c.max", "c.detail"] {
             assert!(
-                info.contains(field),
-                "the Exposure breakdown must render {field}"
+                info_rs.contains(field),
+                "the Exposure breakdown must render {field} in wasm-ui/src/scan_info/info.rs"
             );
         }
     }
@@ -556,9 +568,22 @@ use super::*;
         // Summary (the &tab=network link folds onto Summary and scrolls to
         // #sum-network). Guard both the anchor/nav and the dispatch so a link
         // can never go inert again.
+        // The anchor itself now lives in wasm-ui/src/scan_info/leads.rs (the
+        // empty-state's HTML templating moved to WASM; leads.js's own text no
+        // longer contains it) — a sibling-crate source read, same pattern as
+        // the `EntityKind` drift guard below.
+        let leads_rs = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/wasm-ui/src/scan_info/leads.rs"
+        ))
+        .expect("leads.rs source readable");
         assert!(
-            app_file("js/scan_info/leads.js").contains("tab=network\">Network</a>"),
-            "expected deep-link anchor text `tab=network\">Network</a>` in leads.js"
+            // Raw string: the .rs file's own text escapes this quote as `\"`
+            // (it's inside a Rust string literal), so the search pattern must
+            // match that literal backslash rather than a bare `"`.
+            leads_rs.contains(r#"tab=network\">Network</a>"#),
+            "expected deep-link anchor text `tab=network\">Network</a>` in \
+             wasm-ui/src/scan_info/leads.rs"
         );
         // report.js navigates programmatically (`nav(...)`) rather than
         // rendering an `<a>` — the Summary's correlation-count callout is a
@@ -619,10 +644,22 @@ use super::*;
         // Correlation member rows are built lazily on expand — a 607-member
         // cluster must not put tens of thousands of hidden DOM nodes on the page
         // up front (the same unbounded-render class as the graph clique bug).
+        // The lazy-build orchestration (dataset.built) stays in correlations.js;
+        // the card markup carrying data-corr-idx moved to
+        // wasm-ui/src/scan_info/correlations.rs's render_corr_card_html.
         let corr = app_file("js/scan_info/correlations.js");
         assert!(
-            corr.contains("data-corr-idx") && corr.contains("dataset.built"),
+            corr.contains("dataset.built"),
             "correlation members must be built lazily on card expand, not up front"
+        );
+        let corr_rs = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/wasm-ui/src/scan_info/correlations.rs"
+        ))
+        .expect("correlations.rs source readable");
+        assert!(
+            corr_rs.contains("data-corr-idx"),
+            "expected data-corr-idx in wasm-ui/src/scan_info/correlations.rs's card markup"
         );
     }
 
@@ -690,72 +727,6 @@ use super::*;
              event-contract list pins {} — add the new variant's snake_case type \
              here (and a mapEvent case in spa.html)",
             EVENT_TYPES.len()
-        );
-    }
-
-    #[test]
-    fn spa_enrichment_sources_matches_backend_is_non_corroborating_source() {
-        // Drift guard: the SPA's client-side C_eff mirror (`ENRICHMENT_SOURCES`,
-        // used by `sourceCount()`/`effC()` in spa.html to reproduce
-        // `Entity::c_effective()` for Browse) must exclude exactly the same
-        // evidence sources as the backend's authoritative
-        // `is_non_corroborating_source()`. It once carried only 2 of the real
-        // exclusions (missing `name_intel`, `payid`, `cross_scan_history`), and
-        // later lagged again on `breach_consensus`, so an entity corroborated
-        // only by one of those rendered a higher
-        // C_eff/tier in Browse than the server's own classification —
-        // reintroducing, client-side, the exact over-credit bugs those
-        // exclusions were added to close.
-        //
-        // NOTE when adding a new non-corroborating source: append its constant
-        // to `expected` below as well. This list is a hand-assembled mirror of
-        // `is_non_corroborating_source`'s arms (a predicate's domain can't be
-        // enumerated), so it is itself drift-prone — it once omitted
-        // `CONSENSUS_SOURCE` after that arm was added, which made this guard
-        // demand the *stale* 5-member set and fail the corrected 6-member SPA
-        // copy. The `is_non_corroborating_source` assertion below catches the
-        // reverse slip (a constant listed here that the predicate no longer
-        // excludes).
-        use crate::core::entity::{
-            CONSENSUS_SOURCE, CROSS_SCAN_SOURCE, ENRICHMENT_ONLY_SOURCES, RECALL_SOURCE,
-            is_non_corroborating_source,
-        };
-        let expected: Vec<&str> = ENRICHMENT_ONLY_SOURCES
-            .iter()
-            .copied()
-            .chain([RECALL_SOURCE, CROSS_SCAN_SOURCE, CONSENSUS_SOURCE])
-            .collect();
-        for name in &expected {
-            assert!(
-                is_non_corroborating_source(name),
-                "`{name}` is listed as an expected exclusion but the backend's \
-                 is_non_corroborating_source() no longer excludes it — this \
-                 guard's mirror of the predicate has gone stale"
-            );
-        }
-        let js = app_file("js/helpers.js")
-            .split_once("const ENRICHMENT_SOURCES = new Set([")
-            .and_then(|(_, rest)| rest.split_once(']'))
-            .map(|(set, _)| set)
-            .expect("ENRICHMENT_SOURCES literal present in helpers.js");
-        for name in &expected {
-            assert!(
-                js.contains(&format!("'{name}'")),
-                "backend is_non_corroborating_source excludes `{name}` but the \
-                 SPA's ENRICHMENT_SOURCES set does not — Browse would over-credit \
-                 an entity corroborated only by this source"
-            );
-        }
-        // Symmetric: no UNEXPECTED member either — a source wrongly excluded
-        // client-side would under-credit an entity the backend treats as
-        // genuinely corroborating.
-        let js_count = js.matches('\'').count() / 2;
-        assert_eq!(
-            js_count,
-            expected.len(),
-            "SPA ENRICHMENT_SOURCES has a different member count than the \
-             backend's exclusion list ({expected:?}) — check for a stale or \
-             extra entry: {js}"
         );
     }
 

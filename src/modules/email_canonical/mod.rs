@@ -82,6 +82,11 @@ impl Module for EmailCanonical {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Purely offline, no network (is_passive=true): it accepts/produces only Email entities and
+        // applies string-level canonicalization (Gmail dot-blindness, +tag stripping,
+        // googlemail.com alias) to merge email-address variants into one identity — squarely and
+        // exclusively Gather Victim Identity Information: Email Addresses, with no
+        // DNS/WHOIS/domain/host behavior to justify broadening.
         ModuleCategory::Email
     }
 

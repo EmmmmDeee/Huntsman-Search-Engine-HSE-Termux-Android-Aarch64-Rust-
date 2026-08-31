@@ -173,6 +173,14 @@ impl Module for Netlas {
         ModuleCategory::Infrastructure
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Beyond the IP/scan-database default, Netlas emits Coordinates/Address
+        // from decoded geo lat/lon and Organisation from both ISP and cert
+        // Subject-O — same geo+org shape as sibling scan-database modules
+        // (shodan, censys, zoomeye, onyphe, criminal_ip), which all add these.
+        &["T1590.005", "T1591.001", "T1591.002", "T1596.005"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         const KINDS: &[EntityKind] = &[
             EntityKind::IpAddress,

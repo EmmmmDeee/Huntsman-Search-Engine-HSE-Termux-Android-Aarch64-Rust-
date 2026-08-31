@@ -87,6 +87,13 @@ impl Module for TroveAu {
         ModuleCategory::Corporate
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Trove full-text search by org/ABN name yields only press-mention `Url`
+        // pivots — no business-relationship or officer-role parsing, so Corporate's
+        // T1591.002/.004 don't fit. Same shape as crossref_search: T1593.002.
+        &["T1593.002"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         // The org headline, plus each newspaper article as a pivotable Url source
         // (deserialized all along, previously dropped).

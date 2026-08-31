@@ -108,6 +108,9 @@ impl Module for ExaSearch {
     }
 
     fn category(&self) -> ModuleCategory {
+        // Collection is a single free-text POST to Exa's neural search API —
+        // never a named DB, DNS, WHOIS, or platform API — with domains/emails/
+        // phones/leads parsed from generic results, i.e. T1593.002 (Search Engines).
         ModuleCategory::Search
     }
 

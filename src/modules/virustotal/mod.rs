@@ -269,6 +269,14 @@ impl Module for VirusTotal {
         ModuleCategory::Threat
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // The core lookup (detection ratios, reputation score from a VT API
+        // key) is squarely T1597.001, but parsing last_dns_records into
+        // IpAddress/Domain pivots is dedicated, tested logic that is
+        // specifically T1596.001 (Search Open Technical Databases: DNS).
+        &["T1597.001", "T1596.001"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         // The scanned entity (Domain, IpAddress, or Url), enriched in-place,
         // plus passive-DNS pivots from last_dns_records: A/AAAA -> IpAddress,
