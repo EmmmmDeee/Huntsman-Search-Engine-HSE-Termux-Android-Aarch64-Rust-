@@ -1,7 +1,7 @@
 {
   "$comment": "Autonomous migration/remediation run state. Single source of truth per the run directive. See run/RUNSTATE.md for the human-readable view and run/PHASE0_AUDIT.md for full evidence.",
   "run_started": "2026-08-31T04:40:00Z",
-  "phase": "phase0-complete -> targeted-remediation",
+  "phase": "COMPLETE - issue ledger at zero open entries, deliverable assembled and dual-mode verified (PR #550)",
   "layers_detected": {
     "vcs_tool": "git (existing repo, remote 'origin' present but treated as optional)",
     "remote": "present (GitHub, EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-) — engaged for PR workflow, not load-bearing",
@@ -45,9 +45,11 @@
     },
     "issues_closed_this_run": [
       "PR #544: hse-core (144 tests) + wasm-ui had zero CI/gate coverage since PR #509's crate split; wired into ci.yml + scripts/gate.sh + audit.yml (fmt/clippy/test/doc + audit/deny/machete/dep-cooldown)",
-      "PR #547: wasm-ui::to_js_error threw a bare JS string instead of a real Error, breaking e.message at 6+ JS call sites (found by Copilot review on unrelated PR #515, independently verified, fixed, artifact regenerated and proven)"
+      "PR #547: wasm-ui::to_js_error threw a bare JS string instead of a real Error, breaking e.message at 6+ JS call sites (found by Copilot review on unrelated PR #515, independently verified, fixed, artifact regenerated and proven)",
+      "PR #550: OD-20 (pre-existing, inherited from .agent/state.json) - ip2location's missing hosting/datacenter signal closed as DISPROVEN-not-a-defect. Initially left open pending a live API check believed to need a credential; re-examined and found the endpoint is keyless at this module's tier, made the call directly, cross-checked the vendor's public docs (usage_type/DCH field exists but requires a paid tier this module intentionally doesn't use), and re-verified the ledger's suggested heuristic-reuse path was based on a data-shape mismatch. Zero open items remain in either ledger."
     ]
   },
+  "issue_ledger_status": "ZERO OPEN ENTRIES - both this run's own fresh census and the one pre-existing inherited item (OD-20) are closed with cited evidence (PR #544, #547, #550).",
   "retention_manifest": {
     "surfaces": [".env.example (47 documented _KEY vars)", "src/cli/env_template.txt (61 entries)", "src/util/keys/constants.rs KNOWN_KEYS (54 unique HUNTSMAN_* names)"],
     "verification": "wiring correctness is covered by the project's own existing test suite (src/util/keys/tests.rs and per-module tests), which is green on current HEAD; no key values touched, moved, or invented this run",
@@ -62,7 +64,7 @@
     "offline_build_verification": "SUCCEEDED - cargo build --offline --locked against only the vendored tree completed with exit 0 in 2m46s, zero network access; see run/offline_build_result.txt for the full command and raw output"
   },
   "final_deliverable": {
-    "status": "not yet produced",
-    "honest_scope_statement": "see run/PHASE0_AUDIT.md 'Final deliverable scope' section for what is and is not achievable from this sandbox"
+    "status": "PRODUCED AND DUAL-MODE VERIFIED - huntsman-search-engine-deliverable.zip, 132107480 bytes, SHA-256 d6f95e1c5dfb012bc6e7871d060f4c6138904ae951d1dcfd76942f8ab43e72e9 (as of PR #549; not re-packaged for OD-20's closure since that change is source+ledger only and the shipped zip's source tree already reflects the pre-OD-20-closure commit - see run/FINAL_REPORT.md for the precise commit boundary)",
+    "honest_scope_statement": "see run/PHASE0_AUDIT.md 'Final deliverable scope' section for what is and is not achievable from this sandbox; both cold-start modes verified green from clean /tmp extractions, recorded in run/FINAL_REPORT.md"
   }
 }
