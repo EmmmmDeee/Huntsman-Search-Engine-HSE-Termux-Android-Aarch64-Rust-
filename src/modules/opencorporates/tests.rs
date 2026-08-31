@@ -226,6 +226,53 @@ fn blank_name_yields_nothing() {
     assert!(build_company_entities(&company("{}"), 1, "s").is_empty());
 }
 
+#[test]
+fn company_evidence_summary_is_qualified_by_jurisdiction_and_number() {
+    // Regression: two different real companies in different jurisdictions can
+    // share a name (OpenCorporates searches ~140 jurisdictions at once), which
+    // collapses onto the same Organisation UID (name-only identity fold). A
+    // bare "OpenCorporates: {name}" evidence summary gave both records the
+    // identical (source, summary) key, so their attributes were smashed
+    // together on merge ("au; gb", "Active; Dissolved"). The summary must
+    // name the record's own registry key so two different companies never
+    // share one evidence record.
+    let co = company(
+        r#"{"name":"Meridian Holdings","company_number":"123456789","jurisdiction_code":"au"}"#,
+    );
+    let ents = build_company_entities(&co, 1, "s");
+    let org = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Organisation)
+        .expect("org entity");
+    assert_eq!(
+        org.evidence[0].summary,
+        "OpenCorporates: Meridian Holdings (au:123456789)"
+    );
+}
+
+#[test]
+fn company_matches_query_is_whole_word_not_substring() {
+    assert!(company_matches_query(
+        "Meridian Holdings Pty Ltd",
+        "Meridian Holdings"
+    ));
+    // "Reef" must not match as a substring of "Reeftown".
+    assert!(!company_matches_query(
+        "Reeftown Financial Consultancy",
+        "Reef Trading Co"
+    ));
+}
+
+#[test]
+fn officer_matches_query_is_whole_word_and_none_is_never_a_match() {
+    assert!(officer_matches_query(Some("Jane Roe"), "Jane Roe"));
+    assert!(!officer_matches_query(
+        Some("Alexandra Greenwood"),
+        "Al Green"
+    ));
+    assert!(!officer_matches_query(None, "Jane Roe"));
+}
+
 fn officer(json: &str) -> OcOfficer {
     serde_json::from_str(json).expect("should succeed")
 }
@@ -252,6 +299,28 @@ fn officer_au_with_company_emits_org_acn_and_person() {
     assert!(
         ents.iter()
             .any(|e| e.kind == EntityKind::Person && e.value == "Jane Roe")
+    );
+}
+
+#[test]
+fn person_evidence_summary_is_qualified_by_position_and_company() {
+    // Regression: a common personal name search can return several unrelated
+    // real people. A bare "OpenCorporates officer: {name}" evidence summary
+    // gave them all the identical (source, summary) key, folding one
+    // person's directorship and another unrelated same-named person's
+    // company-secretary role (at a different company) onto a single Person
+    // entity as if one individual held both.
+    let o = officer(
+        r#"{"name":"Jane Roe","position":"director","company":{"name":"Acme Pty Ltd","company_number":"123456789","jurisdiction_code":"au"}}"#,
+    );
+    let ents = build_officer_entities(&o, 1, "s");
+    let person = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .expect("person entity");
+    assert_eq!(
+        person.evidence[0].summary,
+        "OpenCorporates officer: Jane Roe — director at Acme Pty Ltd"
     );
 }
 

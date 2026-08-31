@@ -95,9 +95,21 @@ fn checksum_invalid_abn_is_not_emitted_as_a_pivot() {
 
 #[test]
 fn name_matching_requires_all_tokens() {
-    let tokens = name_tokens("Cut Above Painting");
-    assert!(record_name_matches(&rec(REC), &tokens));
-    assert!(!record_name_matches(&rec(REC), &name_tokens("Smith Plumbing")));
+    assert!(record_name_matches(&rec(REC), "Cut Above Painting"));
+    assert!(!record_name_matches(&rec(REC), "Smith Plumbing"));
+}
+
+#[test]
+fn name_matching_is_whole_word_not_substring() {
+    // Regression: a raw `.contains()` token check let a short query token
+    // land as a SUBSTRING of an unrelated business name — "reef" inside
+    // "Reeftown" — attributing a completely different real business's ABN
+    // and registration to the queried name.
+    let reeftown = rec(r#"{"BN_NAME":"Reeftown Financial Trading Consultancy"}"#);
+    assert!(
+        !record_name_matches(&reeftown, "Reef Trading Co"),
+        "\"reef\"/\"trading\" must not match as substrings of an unrelated business name"
+    );
 }
 
 #[test]

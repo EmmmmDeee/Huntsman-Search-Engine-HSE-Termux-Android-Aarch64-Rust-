@@ -107,6 +107,30 @@ fn parse_asic_html_extracts_name_match() {
 }
 
 #[test]
+fn parse_asic_html_matches_whole_words_not_substrings() {
+    // Regression: the row filter used to check whether every query token was
+    // a raw SUBSTRING anywhere in the cleaned line — so a query like
+    // "Grace Han" matched a completely unrelated director's row whose
+    // company/name text merely happened to contain "grace"/"han" as
+    // fragments of other words ("Graceful", "Chan"), attributing that
+    // person's company/ACN/address to the queried name.
+    let html = "Chan Graceful Enterprises Pty Ltd ACN 123456789 Level 2 Sydney NSW 2000 \
+                 John Chan - Director\n\
+                 Grace Han Holdings Pty Ltd ACN 987654321 Level 3 Sydney NSW 2000 \
+                 Grace Han - Director\n";
+    let results = parse_asic_html(html, "Grace Han");
+    let companies: Vec<&str> = results.iter().map(|(c, _, _)| c.as_str()).collect();
+    assert!(
+        !companies.iter().any(|c| c.contains("Chan Graceful")),
+        "\"grace\"/\"han\" must not match as substrings of \"Graceful\"/\"Chan\": {companies:?}"
+    );
+    assert!(
+        companies.iter().any(|c| c.contains("Grace Han Holdings")),
+        "the genuine whole-word match must still be found: {companies:?}"
+    );
+}
+
+#[test]
 fn extract_company_name_strips_acn_and_trailing_punct() {
     // The ACN portion and trailing punctuation are stripped; the company name
     // remains clean.

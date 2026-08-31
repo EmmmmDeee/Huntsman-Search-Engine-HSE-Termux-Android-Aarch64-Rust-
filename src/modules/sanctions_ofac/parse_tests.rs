@@ -118,3 +118,16 @@ fn record_name_matches_requires_all_tokens_present() {
 fn record_name_matches_empty_tokens_never_matches() {
     assert!(!record_name_matches("ABBAS, Abu", &[]));
 }
+
+#[test]
+fn record_name_matches_is_whole_word_not_substring() {
+    // Regression: "ali"/"khan" could each land as a SUBSTRING of a DIFFERENT
+    // sanctioned entity's name — "ali" inside "KHALID", "khan" as its own
+    // word too — falsely associating an innocent person named "Ali Khan"
+    // with an unrelated SDN entry for "Khalid Abdul Khan".
+    let tokens = name_tokens("Ali Khan");
+    assert!(
+        !record_name_matches("KHALID ABDUL KHAN", &tokens),
+        "\"ali\" must not match as a substring of \"KHALID\""
+    );
+}

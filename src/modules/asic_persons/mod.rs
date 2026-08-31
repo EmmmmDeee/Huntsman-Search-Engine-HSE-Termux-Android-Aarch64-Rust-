@@ -128,7 +128,7 @@ impl Module for AsicPersons {
             Ok(records) => {
                 for rec in records
                     .iter()
-                    .filter(|r| record_name_matches(r, "BD_PER_NAME", &tokens))
+                    .filter(|r| record_name_matches(r, "BD_PER_NAME", &target.value))
                     .take(MAX_HITS)
                 {
                     emit_banned(rec, &ctx.scan_id, &mut result);
@@ -142,7 +142,7 @@ impl Module for AsicPersons {
             Ok(records) => {
                 for rec in records
                     .iter()
-                    .filter(|r| record_name_matches(r, "ADV_NAME", &tokens))
+                    .filter(|r| record_name_matches(r, "ADV_NAME", &target.value))
                     .take(MAX_HITS)
                 {
                     emit_adviser(rec, &ctx.scan_id, &mut result);
@@ -156,7 +156,7 @@ impl Module for AsicPersons {
             Ok(records) => {
                 for rec in records
                     .iter()
-                    .filter(|r| record_name_matches(r, "CRED_REP_NAME", &tokens))
+                    .filter(|r| record_name_matches(r, "CRED_REP_NAME", &target.value))
                     .take(MAX_HITS)
                 {
                     emit_credit_rep(rec, &ctx.scan_id, &mut result);
@@ -201,14 +201,19 @@ fn name_tokens(full: &str) -> Vec<String> {
         .collect()
 }
 
-/// True if a record's name field contains every target token (order-independent,
-/// so `"Bill Abbott"` matches `"ABBOTT, BILL"`).
-fn record_name_matches(rec: &Map<String, Value>, name_field: &str, tokens: &[String]) -> bool {
+/// True if a record's name field shares every whole-word token with the
+/// queried full name, order-independent (so `"Bill Abbott"` matches
+/// `"ABBOTT, BILL"`). Whole-word, not substring — a raw `.contains()` check
+/// lets a short token land inside an unrelated word (e.g. `"al"` inside
+/// `"Alexandra"`, `"green"` inside `"Greenwood"`), which would attribute a
+/// completely different real person's licensee/ban/disciplinary record to the
+/// queried name. Same precision gate `acnc_charities`/`gleif_lei` use for
+/// their own full-text CKAN search results.
+fn record_name_matches(rec: &Map<String, Value>, name_field: &str, full_name: &str) -> bool {
     let Some(name) = field(rec, name_field) else {
         return false;
     };
-    let lower = name.to_ascii_lowercase();
-    tokens.iter().all(|t| lower.contains(t.as_str()))
+    crate::util::str_util::whole_word_token_match(&name, full_name)
 }
 
 /// Normalise a name/organisation string for order-preserving equality: trim,

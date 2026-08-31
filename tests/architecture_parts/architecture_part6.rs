@@ -374,7 +374,6 @@ fn entity_confidence_uses_named_ladder_constants() {
     /// tree when the shorter baseline was frozen; the scanner simply never
     /// reached them. Recording them is the correction, not a regression.
     const BASELINE: &[(&str, &str)] = &[
-        ("src/modules/asic_business_names/mod.rs", "0.42"),
         ("src/modules/au_people/mod.rs", "0.42"), // [revealed]
         ("src/modules/codewars_user/mod.rs", "0.48"), // [revealed]
         ("src/modules/cpan_user/mod.rs", "0.66"), // [revealed]
@@ -391,8 +390,6 @@ fn entity_confidence_uses_named_ladder_constants() {
         ("src/modules/nostr/mod.rs", "0.66"),
         ("src/modules/npm_author/mod.rs", "0.66"),
         ("src/modules/npm_author/mod.rs", "0.74"),
-        ("src/modules/opencorporates/mod.rs", "0.68"), // [revealed]
-        ("src/modules/opencorporates/mod.rs", "0.68"), // [revealed]
         // ── [embedded] ───────────────────────────────────────────────────
         // Literals inside a compound confidence argument, invisible until
         // `bare_float_literals` replaced the whole-argument test. Like the

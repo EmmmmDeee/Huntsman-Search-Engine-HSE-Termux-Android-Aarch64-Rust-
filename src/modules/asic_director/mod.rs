@@ -16,7 +16,10 @@
 //!   * T1591.001 — Determine Physical Locations (registered office address)
 //!
 //! Confidence model:
-//!   * Exact name match in ASIC register: confidence::HIGH_PLUSPLUS (official govt source)
+//!   * Whole-word all-tokens name match in ASIC register: confidence::HIGH_PLUSPLUS
+//!     (official govt source — the previous "exact match" description overclaimed:
+//!     the row-scanning match is name-text-only, so two different real directors
+//!     sharing a full name are indistinguishable to it)
 //!   * ACN emitted for downstream abn_lookup: 0.82
 //!   * Address from registered office: 0.72
 //!
@@ -200,17 +203,18 @@ fn build_director_entities(
 /// Parse ASIC Connect Online HTML search result for director name matches.
 /// Returns `(company_name, acn, registered_office_address)` tuples. Pure.
 fn parse_asic_html(html: &str, full_name: &str) -> Vec<(String, String, Option<String>)> {
-    let name_lc = full_name.to_lowercase();
     // ASIC result rows contain: Company Name | ACN | Address | Role | Status.
-    // Keep lines where every name token appears, then extract company/ACN/address.
+    // Keep lines where every whole-word name token appears somewhere in the
+    // row, then extract company/ACN/address. Whole-word, not substring — a
+    // raw `.contains()` check let a short token land inside an unrelated
+    // word anywhere in the row (company name, address, ...), matching a
+    // completely different director's row and attributing their company/
+    // ACN/address to the queried name.
     clean_html(html)
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .filter(|line| {
-            let line_lc = line.to_lowercase();
-            name_lc.split_whitespace().all(|tok| line_lc.contains(tok))
-        })
+        .filter(|line| crate::util::str_util::whole_word_token_match(line, full_name))
         .filter_map(|line| {
             let acn = extract_acn(line).unwrap_or_default();
             let company = extract_company_name(line, &acn);

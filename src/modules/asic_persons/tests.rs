@@ -295,12 +295,26 @@ fn checksum_invalid_abn_or_acn_is_not_emitted_as_a_pivot() {
 fn name_matching_is_order_independent_and_token_complete() {
     let tokens = name_tokens("Bill Abbott");
     assert_eq!(tokens, vec!["bill".to_string(), "abbott".to_string()]);
-    assert!(record_name_matches(&rec(BANNED), "BD_PER_NAME", &tokens));
+    assert!(record_name_matches(&rec(BANNED), "BD_PER_NAME", "Bill Abbott"));
     // A different person must not match.
-    let other = name_tokens("John Smith");
-    assert!(!record_name_matches(&rec(BANNED), "BD_PER_NAME", &other));
+    assert!(!record_name_matches(&rec(BANNED), "BD_PER_NAME", "John Smith"));
     // Single-token names are too ambiguous (filtered upstream).
     assert_eq!(name_tokens("Madonna").len(), 1);
+}
+
+#[test]
+fn name_matching_is_whole_word_not_substring() {
+    // Regression: a raw `.contains()` token check let a short query token land
+    // as a SUBSTRING of an unrelated name — "al" inside "Alexandra", "green"
+    // inside "Greenwood" — attributing a completely different real person's
+    // ban/licensee/disciplinary record to the queried name.
+    let greenwood = rec(r##"{"BD_PER_NAME":"GREENWOOD, ALEXANDRA"}"##);
+    assert!(
+        !record_name_matches(&greenwood, "BD_PER_NAME", "Al Green"),
+        "\"al\"/\"green\" must not match as substrings of \"Alexandra\"/\"Greenwood\""
+    );
+    // The whole-word counterpart must still match.
+    assert!(record_name_matches(&greenwood, "BD_PER_NAME", "Alexandra Greenwood"));
 }
 
 #[test]

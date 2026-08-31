@@ -83,14 +83,19 @@ impl Module for AsicBannedOrgs {
         }
 
         let records = ckan_query(ctx, name).await?;
+        // Pure epoch-day count `emit_banned_org` compares each ban's own end
+        // date against; not called internally (a `SystemTime::now()` reaching
+        // into a "pure" builder would make its tests depend on wall-clock
+        // time — see `hudsonrock::compute_confidence`'s identical rationale).
+        let today_days = (crate::core::entity::unix_now() / 86_400) as i64;
         let mut matched_count = 0usize;
         for rec in records
             .iter()
-            .filter(|r| record_name_matches(r, &tokens))
+            .filter(|r| record_name_matches(r, name))
             .take(MAX_HITS)
         {
             matched_count += 1;
-            emit_banned_org(rec, &ctx.scan_id, &mut result);
+            emit_banned_org(rec, &ctx.scan_id, today_days, &mut result);
         }
 
         if matched_count == 0 {
@@ -100,7 +105,7 @@ impl Module for AsicBannedOrgs {
         // Signal if results were truncated.
         let total_matches = records
             .iter()
-            .filter(|r| record_name_matches(r, &tokens))
+            .filter(|r| record_name_matches(r, name))
             .count();
         let matches_capped = total_matches > MAX_HITS;
 
@@ -155,25 +160,81 @@ fn name_tokens(name: &str) -> Vec<String> {
         .collect()
 }
 
-fn record_name_matches(rec: &Map<String, Value>, tokens: &[String]) -> bool {
+/// True if the record's `BD_ORG_NAME` shares every whole-word token with the
+/// queried organisation name. Whole-word, not substring — a raw `.contains()`
+/// check lets two query tokens each land inside a DIFFERENT unrelated word
+/// of an otherwise-unrelated banned entity (e.g. "cotton"/"on" both land
+/// inside "sCOTTONi"/"cONstruction"), attributing a real company's ASIC ban
+/// to an unrelated business searched by a similar-looking name — unusually
+/// costly for this specific register, whose whole purpose is due-diligence
+/// on adverse findings. Same precision gate `acnc_charities`/`gleif_lei` use
+/// for their own full-text CKAN search results.
+fn record_name_matches(rec: &Map<String, Value>, query: &str) -> bool {
     let Some(name) = field(rec, "BD_ORG_NAME") else {
         return false;
     };
-    let lower = name.to_ascii_lowercase();
-    tokens.iter().all(|t| lower.contains(t.as_str()))
+    crate::util::str_util::whole_word_token_match(&name, query)
 }
 
-/// Emit the adverse-flagged organisation and its ACN.
-fn emit_banned_org(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResult) {
+/// Parse an ASIC register date (`DD/MM/YYYY`) to a Unix epoch-day count.
+/// `None` for anything else — `BD_ORG_END_DT` is genuinely mixed in the live
+/// data: a real date, the JSON `null` (open-ended ban), or free text like
+/// `"Permanent banning"`, and only the first shape is a comparable date.
+/// Bounded to a plausible calendar year (matches `hudsonrock::parse_iso_epoch`
+/// /`core::timeline::parse_date`'s convention for untrusted date strings) so a
+/// malformed or wildly out-of-range value can't overflow
+/// [`crate::core::timeline::days_from_civil`].
+fn parse_au_date(s: &str) -> Option<i64> {
+    let mut parts = s.trim().split('/');
+    let day: i64 = parts.next()?.parse().ok()?;
+    let month: i64 = parts.next()?.parse().ok()?;
+    let year: i64 = parts.next()?.parse().ok()?;
+    if parts.next().is_some()
+        || !(1900..=2100).contains(&year)
+        || !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+    {
+        return None;
+    }
+    Some(crate::core::timeline::days_from_civil(year, month, day))
+}
+
+/// True when a ban's own `BD_ORG_END_DT` names a real, parseable date that
+/// has already passed relative to `today_days` (a Unix epoch-day count).
+/// Absent, `null`, or unparseable (e.g. `"Permanent banning"`) is treated as
+/// still current — only a genuine, comparable past date counts as expired,
+/// never an inability to parse the field.
+fn ban_is_expired(end_dt: Option<&str>, today_days: i64) -> bool {
+    end_dt
+        .and_then(parse_au_date)
+        .is_some_and(|d| d < today_days)
+}
+
+/// Emit the adverse-flagged organisation and its ACN. `today_days` is a Unix
+/// epoch-day count, threaded in from `process()` rather than read internally
+/// via the wall clock, so this stays pure and its tests deterministic —
+/// same rationale as `hudsonrock::compute_confidence`'s caller-supplied clock.
+fn emit_banned_org(
+    rec: &Map<String, Value>,
+    scan_id: &str,
+    today_days: i64,
+    result: &mut ModuleResult,
+) {
     let Some(org_name) = field(rec, "BD_ORG_NAME") else {
         return;
     };
     // ASIC stores some names with a non-breaking space; normalise for display.
     let org_name = org_name.replace('\u{a0}', " ");
+    let end_dt = field(rec, "BD_ORG_END_DT");
+    let expired = ban_is_expired(end_dt.as_deref(), today_days);
 
     let mut ev = Evidence::new(
         SRC,
-        format!("ASIC banned/disqualified organisation: {org_name}"),
+        if expired {
+            format!("ASIC banned/disqualified organisation (ban expired): {org_name}")
+        } else {
+            format!("ASIC banned/disqualified organisation: {org_name}")
+        },
     )
     .with_attr("register", "ASIC Banned & Disqualified Organisations")
     .with_attr("organisation", &org_name);
@@ -189,16 +250,24 @@ fn emit_banned_org(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleR
         }
     }
 
-    let mut org = Entity::new(
-        EntityKind::Organisation,
-        &org_name,
-        confidence::MEDIUM_PLUS,
-        scan_id,
-    );
+    // A ban that already ended (per the register's own end date) is a
+    // historical, not a current, adverse finding — an 18-year-expired ban
+    // read identically to one active for another 13 months otherwise, with
+    // nothing short of the operator doing their own date arithmetic on the
+    // raw `ban_end` attribute to tell them apart.
+    let conf = if expired {
+        confidence::derived_from(confidence::MEDIUM_PLUS)
+    } else {
+        confidence::MEDIUM_PLUS
+    };
+    let mut org = Entity::new(EntityKind::Organisation, &org_name, conf, scan_id);
     org.tag("au");
     org.tag("asic");
     org.tag("asic-banned");
     org.tag("regulatory-action");
+    if expired {
+        org.tag("ban-expired");
+    }
     org.add_evidence(ev.clone());
     result.push(org);
 

@@ -93,7 +93,7 @@ impl Module for AsicBusinessNames {
         let mut matched_count = 0usize;
         for rec in records
             .iter()
-            .filter(|r| record_name_matches(r, &tokens))
+            .filter(|r| record_name_matches(r, name))
             .take(MAX_HITS)
         {
             matched_count += 1;
@@ -109,7 +109,7 @@ impl Module for AsicBusinessNames {
         // just the first MAX_HITS (T2.140 — truncation-signaling pattern).
         let total_matches = records
             .iter()
-            .filter(|r| record_name_matches(r, &tokens))
+            .filter(|r| record_name_matches(r, name))
             .count();
         let matches_capped = total_matches > MAX_HITS;
 
@@ -160,13 +160,18 @@ fn name_tokens(name: &str) -> Vec<String> {
         .collect()
 }
 
-/// True if the record's `BN_NAME` contains every target token.
-fn record_name_matches(rec: &Map<String, Value>, tokens: &[String]) -> bool {
+/// True if the record's `BN_NAME` shares every whole-word token with the
+/// queried business name. Whole-word, not substring — a raw `.contains()`
+/// check lets a short token land inside an unrelated word (e.g. `"reef"`
+/// inside `"Reeftown"`), attributing a completely different real business's
+/// ABN/registration to the queried name. Same precision gate
+/// `acnc_charities`/`gleif_lei` use for their own full-text CKAN search
+/// results.
+fn record_name_matches(rec: &Map<String, Value>, query: &str) -> bool {
     let Some(name) = field(rec, "BN_NAME") else {
         return false;
     };
-    let lower = name.to_ascii_lowercase();
-    tokens.iter().all(|t| lower.contains(t.as_str()))
+    crate::util::str_util::whole_word_token_match(&name, query)
 }
 
 /// Emit the confirmed registered name and — the prize — the holder's ABN.
@@ -239,7 +244,7 @@ fn emit_business_name(
         .and_then(crate::util::address_au::state_code)
     {
         let addr_value = format!("{state}, Australia");
-        let mut addr = Entity::new(EntityKind::Address, &addr_value, 0.42, scan_id);
+        let mut addr = Entity::new(EntityKind::Address, &addr_value, confidence::LOW, scan_id);
         addr.tag("au");
         addr.tag("asic");
         addr.tag("business-name");
