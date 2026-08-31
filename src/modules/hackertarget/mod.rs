@@ -106,21 +106,41 @@ fn build_reverse_ip_entities(body: &str, ip: &str, scan_id: &str) -> Vec<Entity>
         .collect()
 }
 
-/// Map a `reversedns` body (the PTR host per line) to `Domain` entities.
-/// **Pure** (no network). Each non-blank dotted host (trailing dot stripped)
-/// yields a `Domain` tagged `hackertarget` + `ptr`.
+/// Map a `reversedns` body to `Domain` entities. **Pure** (no network).
+///
+/// The live endpoint answers `"{ip} {hostname}"` per line (e.g.
+/// `"8.8.8.8 dns.google"`), NOT a bare hostname despite the API's own naming —
+/// confirmed against the real API. Taking the whole line as the domain (the
+/// previous behaviour) let the echoed IP + a literal space survive into the
+/// emitted value, since `EntityKind::Domain`'s normalisation only trims
+/// leading/trailing whitespace, never collapses an internal one — every
+/// reverse-DNS lookup emitted a garbled `"{ip} {hostname}"` string instead of
+/// the real PTR hostname. The last whitespace-separated token is taken
+/// instead, which also degrades gracefully to a bare-hostname response if the
+/// API's format ever reverts.
 fn build_reverse_dns_entities(body: &str, ip: &str, scan_id: &str) -> Vec<Entity> {
+    let mut seen: HashSet<String> = HashSet::new();
     body.lines()
         .filter_map(|line| {
-            let domain = line.trim().trim_end_matches('.').to_lowercase();
-            (!domain.is_empty() && domain.contains('.')).then(|| {
-                let mut e =
-                    Entity::new(EntityKind::Domain, &domain, confidence::HIGH_PLUS, scan_id);
-                e.tag("hackertarget");
-                e.tag(tags::PTR);
-                e.add_evidence(Evidence::new(SRC, format!("Reverse DNS for {ip}")));
-                e
-            })
+            let domain = line
+                .trim()
+                .split_whitespace()
+                .next_back()?
+                .trim_end_matches('.')
+                .to_lowercase();
+            if domain.is_empty()
+                || !domain.contains('.')
+                // No PTR record: the line was just the echoed IP itself.
+                || domain.parse::<std::net::IpAddr>().is_ok()
+                || !seen.insert(domain.clone())
+            {
+                return None;
+            }
+            let mut e = Entity::new(EntityKind::Domain, &domain, confidence::HIGH_PLUS, scan_id);
+            e.tag("hackertarget");
+            e.tag(tags::PTR);
+            e.add_evidence(Evidence::new(SRC, format!("Reverse DNS for {ip}")));
+            Some(e)
         })
         .collect()
 }

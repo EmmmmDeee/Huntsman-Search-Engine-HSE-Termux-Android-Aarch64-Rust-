@@ -516,6 +516,11 @@ fn caa_parse_rejects_malformed_and_non_caa() {
 #[test]
 fn caa_entities_aggregate_policy_and_surface_iodef_security_contact() {
     // Mixed set across both wire forms — issue, issuewild, and an iodef mailto.
+    // "tls-abuse@cloudflare.com" is a REAL, verbatim live capture from
+    // Cloudflare's own CAA record — and a role/infrastructure address (the
+    // "abuse" role segment, and cloudflare.com is itself in INFRA_MAIL), so
+    // it must be recorded as raw policy evidence but NOT emitted as a
+    // pivotable Email entity (see the dedicated suppression test below).
     let records = vec![
         rec(r#"0 issue "letsencrypt.org""#),
         rec(r#"0 issuewild "digicert.com""#),
@@ -538,14 +543,39 @@ fn caa_entities_aggregate_policy_and_surface_iodef_security_contact() {
         a.get("iodef").map(String::as_str),
         Some("mailto:tls-abuse@cloudflare.com")
     );
+}
 
-    // The iodef mailto becomes a pivotable security-contact Email — the key
-    // Termux-parity win (routed via the shared dns_intel extractor).
+#[test]
+fn caa_entities_suppresses_a_role_desk_iodef_contact_as_infrastructure() {
+    // Regression: the CAA iodef mailto was the one contact-email path in
+    // this module's family (dns_intel/doh_resolver share one extractor)
+    // that skipped the is_infrastructure_email gate every sibling path
+    // (SOA admin, DMARC, TLSRPT) already applies. This exact address —
+    // "tls-abuse@cloudflare.com" — is a real, verbatim live capture from
+    // Cloudflare's own CAA record and used to be emitted as a pivotable
+    // Email entity as if it were the subject's own PII.
+    let records = vec![rec(
+        r"\# 38 00 05 69 6f 64 65 66 6d 61 69 6c 74 6f 3a 74 6c 73 2d 61 62 75 73 65 40 63 6c 6f 75 64 66 6c 61 72 65 2e 63 6f 6d",
+    )];
+    let out = caa_entities(&records, "example.com", "s");
+    assert!(
+        !out.iter().any(|e| e.kind == EntityKind::Email),
+        "a role-desk iodef mailbox must not become a pivotable Email entity: {out:?}"
+    );
+}
+
+#[test]
+fn caa_entities_surfaces_a_genuine_individual_iodef_contact() {
+    // Counter-case: a non-role, non-infrastructure iodef mailbox must still
+    // become a pivotable security-contact Email — the fix must not be so
+    // broad it swallows a real individual pivot.
+    let records = vec![rec(r#"0 iodef "mailto:j.smith@example.com""#)];
+    let out = caa_entities(&records, "example.com", "s");
     let email = out
         .iter()
         .find(|e| e.kind == EntityKind::Email)
         .expect("iodef security-contact email");
-    assert_eq!(email.value, "tls-abuse@cloudflare.com");
+    assert_eq!(email.value, "j.smith@example.com");
     assert!(email.has_tag("security-contact"));
     assert!(email.has_tag("iodef"));
 }

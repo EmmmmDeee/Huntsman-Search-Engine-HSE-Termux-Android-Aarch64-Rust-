@@ -39,6 +39,35 @@ fn ct_log_discriminates_subdomain_from_co_hosted_confidence() {
 }
 
 #[test]
+fn ct_log_skips_wildcard_sans_instead_of_emitting_the_stripped_name() {
+    // Regression: `*.dev.example.com` used to have its `*.` prefix stripped
+    // and the remainder ("dev.example.com") emitted as a literal, confirmed
+    // subdomain — indistinguishable from crt.sh actually returning that
+    // literal hostname. A wildcard SAN only proves the cert holder controls
+    // DNS for the zone (RFC 6125: it matches single-label CHILDREN, not the
+    // bare label itself), so it must be skipped, matching this module's own
+    // live-TLS-SAN path and the sibling crtsh/anubis/certspotter modules.
+    let entries = vec![CrtEntry {
+        name_value: "*.dev.example.com\nreal.example.com".to_string(),
+        issuer_name: None,
+        not_before: None,
+        not_after: None,
+        serial_number: None,
+    }];
+    let mut seen = std::collections::HashSet::new();
+    let out = ct_log_entities(&entries, "example.com", "s", &mut seen);
+
+    assert!(
+        !out.iter().any(|e| e.value == "dev.example.com"),
+        "the wildcard's stripped remainder must never be emitted as a literal subdomain: {out:?}"
+    );
+    assert!(
+        out.iter().any(|e| e.value == "real.example.com"),
+        "a genuine literal SAN on the same entry must still be emitted"
+    );
+}
+
+#[test]
 fn ct_log_emits_rfc822_name_as_email_not_domain() {
     // crt.sh returns rfc822Name SANs inline in `name_value`. An email address
     // (`jdoe@example.com`) contains a dot, so the prior `.contains('.')`-only
@@ -122,6 +151,10 @@ fn module_metadata() {
     assert!(!m.attack_techniques().is_empty());
     assert!(m.produces().contains(&EntityKind::Domain));
     assert!(m.produces().contains(&EntityKind::Email));
+    // Regression: the live TLS probe re-emits an IP target (`target.to_entity`,
+    // dynamically kinded) with its certificate evidence attached, but
+    // produces() never declared it.
+    assert!(m.produces().contains(&EntityKind::IpAddress));
 }
 
 #[test]

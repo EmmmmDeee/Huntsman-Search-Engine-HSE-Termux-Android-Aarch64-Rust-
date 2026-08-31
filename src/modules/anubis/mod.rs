@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use std::collections::HashSet;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -51,7 +52,11 @@ fn build_entities(names: &[String], domain_base: &str, scan_id: &str) -> Vec<Ent
             // Off-base names are rare here (Anubis is keyed on the apex) but a
             // corrupt entry is retained as a low-confidence lead rather than
             // asserted as the subject's subdomain.
-            let conf = if is_sub { 0.72 } else { 0.40 };
+            let conf = if is_sub {
+                confidence::ATTRIBUTED
+            } else {
+                confidence::LOW
+            };
             let mut e = Entity::new(EntityKind::Domain, &name, conf, scan_id);
             e.tag(SRC);
             e.tag("passive-dns");

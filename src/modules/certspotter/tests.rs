@@ -94,7 +94,7 @@ fn build_entities_classifies_subdomains_and_skips_wildcards() {
         .iter()
         .find(|e| e.value == "mail.example.com")
         .expect("subdomain present");
-    assert!((sub.confidence - 0.75).abs() < 1e-9);
+    assert!((sub.confidence - confidence::VERY_HIGH).abs() < 1e-9);
     assert!(sub.tags.iter().any(|t| t == tags::SUBDOMAIN));
     assert!(sub.tags.iter().any(|t| t == tags::CT_LOG));
 
@@ -104,11 +104,24 @@ fn build_entities_classifies_subdomains_and_skips_wildcards() {
         .iter()
         .find(|e| e.value == "unrelated.org")
         .expect("off-base SAN present");
-    assert!((other.confidence - 0.45).abs() < 1e-9);
+    assert!((other.confidence - confidence::LOW_MEDIUM).abs() < 1e-9);
     assert!(!other.tags.iter().any(|t| t == tags::SUBDOMAIN));
 
     // Wildcard SANs are never emitted (not resolvable hosts).
     assert!(!has_domain(&es, "*.example.com"));
+
+    // Regression: the apex itself is not a subdomain of itself — a single
+    // cert commonly SANs both the bare apex and "www." (and this fixture's
+    // apex, "example.com", is present in `entries` above). It must be kept
+    // (real, useful evidence) but never tagged tags::SUBDOMAIN.
+    let apex = es
+        .iter()
+        .find(|e| e.value == "example.com")
+        .expect("apex itself present");
+    assert!(
+        !apex.tags.iter().any(|t| t == tags::SUBDOMAIN),
+        "the apex must never be tagged as its own subdomain"
+    );
 }
 
 #[test]
@@ -157,7 +170,7 @@ fn build_entities_is_deterministic_and_confidence_sorted() {
     // Reproducible order (Determinism Requirement).
     let order = |v: &[Entity]| v.iter().map(|e| e.value.clone()).collect::<Vec<_>>();
     assert_eq!(order(&first), order(&second));
-    // Confidence-descending: the two 0.75 subdomains precede the 0.45 off-base name.
+    // Confidence-descending: the VERY_HIGH subdomains precede the LOW_MEDIUM off-base name.
     let confs: Vec<f64> = first.iter().map(|e| e.confidence).collect();
     assert!(
         confs.windows(2).all(|w| w[0] >= w[1]),

@@ -126,3 +126,36 @@ use super::*;
         let vals: Vec<&str> = ents.iter().map(|e| e.value.as_str()).collect();
         assert_eq!(vals, vec!["ptr.example.com"]);
     }
+
+    #[test]
+    fn reverse_dns_parses_the_real_live_ip_plus_hostname_format() {
+        // Regression: the live API actually answers "{ip} {hostname}" per
+        // line (e.g. "8.8.8.8 dns.google"), not a bare hostname despite the
+        // endpoint's own name — verified against the real API. Taking the
+        // whole line as the domain let the echoed IP + a literal space
+        // survive into the emitted value, since Domain normalisation only
+        // trims leading/trailing whitespace, never an internal one — every
+        // real reverse-DNS lookup emitted a garbled "8.8.8.8 dns.google"
+        // string instead of the actual PTR hostname "dns.google".
+        let ents = build_reverse_dns_entities("8.8.8.8 dns.google\n", "8.8.8.8", "s");
+        assert_eq!(ents.len(), 1);
+        assert_eq!(ents[0].value, "dns.google");
+    }
+
+    #[test]
+    fn reverse_dns_repeated_hostname_dedups_to_one_entity() {
+        let ents = build_reverse_dns_entities(
+            "1.2.3.4 host.example.com\n1.2.3.4 host.example.com\n",
+            "1.2.3.4",
+            "s",
+        );
+        assert_eq!(ents.len(), 1, "a repeated hostname must not double-emit");
+    }
+
+    #[test]
+    fn reverse_dns_no_ptr_record_line_yields_nothing() {
+        // A line that's just the echoed IP (no PTR record for it) must not
+        // be mistaken for a domain.
+        let ents = build_reverse_dns_entities("1.2.3.4\n", "1.2.3.4", "s");
+        assert!(ents.is_empty());
+    }

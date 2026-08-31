@@ -73,12 +73,29 @@ fn soa_admin_role_mailbox_is_gated_as_infrastructure() {
 #[test]
 fn iodef_mailto_becomes_a_security_contact_email() {
     use crate::core::entity::EntityKind;
-    let ents = iodef_entities("mailto:security@example.com", "example.com", "scan-iodef");
+    // A non-role local part: the happy path where the iodef mailbox is a
+    // genuine, individually-addressed pivot rather than a role desk.
+    let ents = iodef_entities("mailto:j.smith@example.com", "example.com", "scan-iodef");
     assert_eq!(ents.len(), 1);
     let e = &ents[0];
     assert_eq!(e.kind, EntityKind::Email);
-    assert_eq!(e.value, "security@example.com");
+    assert_eq!(e.value, "j.smith@example.com");
     assert!(e.has_tag("iodef") && e.has_tag("security-contact") && e.has_tag("caa"));
+}
+
+#[test]
+fn iodef_mailto_role_desk_is_suppressed_as_infrastructure() {
+    // Regression: a CAA iodef mailto is BY DEFINITION a designated security/
+    // cert-issuance-violation reporting desk (RFC 8659) — "security@"/
+    // "abuse@" are the textbook real-world values, and every other
+    // contact-email path in this module (SOA admin, DMARC, TLSRPT) already
+    // suppresses a role mailbox. This was the one path that didn't, letting
+    // it leak through as if it were the subject's own PII.
+    let ents = iodef_entities("mailto:security@example.com", "example.com", "scan-iodef");
+    assert!(
+        ents.is_empty(),
+        "a role-desk iodef mailbox must be suppressed: {ents:?}"
+    );
 }
 
 #[test]

@@ -629,7 +629,14 @@ pub(crate) fn iodef_entities(value: &str, domain: &str, scan_id: &str) -> Vec<En
         let looks_like_email = addr.split('@').count() == 2
             && !addr.chars().any(char::is_whitespace)
             && addr.rsplit('@').next().is_some_and(|d| d.contains('.'));
-        if !looks_like_email {
+        // A CAA iodef mailto is BY DEFINITION a designated security/
+        // cert-issuance-violation reporting desk, not personal contact —
+        // "security@"/"abuse@" are the textbook real-world values (RFC 8659).
+        // Every other contact-email path in this module (SOA admin, DMARC
+        // rua/ruf, TLSRPT rua) already gates on `is_infrastructure_email`;
+        // this was the one path that didn't, letting a role mailbox leak
+        // through as if it were the subject's own PII.
+        if !looks_like_email || crate::util::domains::is_infrastructure_email(addr) {
             return Vec::new();
         }
         let mut e = Entity::new(EntityKind::Email, addr, confidence::VERY_HIGH, scan_id);

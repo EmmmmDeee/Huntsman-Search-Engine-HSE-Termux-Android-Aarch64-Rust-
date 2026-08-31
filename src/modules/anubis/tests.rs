@@ -63,7 +63,7 @@ fn build_entities_classifies_subdomains_and_skips_junk() {
         .iter()
         .find(|e| e.value == "mail.example.com")
         .expect("subdomain present");
-    assert!((sub.confidence - 0.72).abs() < 1e-9);
+    assert!((sub.confidence - confidence::ATTRIBUTED).abs() < 1e-9);
     assert!(sub.tags.iter().any(|t| t == tags::SUBDOMAIN));
     assert!(sub.tags.iter().any(|t| t == "passive-dns"));
 
@@ -75,7 +75,7 @@ fn build_entities_classifies_subdomains_and_skips_junk() {
         .iter()
         .find(|e| e.value == "unrelated.org")
         .expect("off-base name retained");
-    assert!((other.confidence - 0.40).abs() < 1e-9);
+    assert!((other.confidence - confidence::LOW).abs() < 1e-9);
     assert!(!other.tags.iter().any(|t| t == tags::SUBDOMAIN));
 }
 
