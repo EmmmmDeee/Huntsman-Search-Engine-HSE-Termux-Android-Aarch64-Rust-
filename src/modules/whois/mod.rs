@@ -98,6 +98,24 @@ pub(super) fn registrant_location_parts<'a>(
         .collect()
 }
 
+/// True when a WHOIS contact email is usable as a standalone `Email` pivot —
+/// neither an infrastructure/role mailbox (`abuse@`, `dns@`, `hostmaster@`,
+/// or one on a CDN/registrar/cloud provider's own domain, e.g.
+/// `abuse@cloudflare.com`) nor a dedicated privacy-proxy forwarding address
+/// (WhoisGuard, Domains By Proxy, PrivacyProtect, Withheld for Privacy, ...)
+/// a registrar stamps into the contact fields when GDPR/privacy protection
+/// is on but the registry still emits a real (non-placeholder-TEXT) address.
+/// Either is the registrar/provider's desk, never the subject — emitting one
+/// as a `confidence::STRONG` Email entity made it a breach-checked,
+/// identity-clustered, expandable target (a real scan merged
+/// `dns@cloudflare.com`/`abuse@cloudflare.com` into the subject's identity).
+/// The address is still preserved in the parent domain's evidence attrs; it
+/// just must not become standalone PII. **Pure** — unit-tested directly.
+pub(super) fn is_usable_contact_email(addr: &str) -> bool {
+    !crate::util::domains::is_infrastructure_email(addr)
+        && !crate::core::validation::is_whois_privacy_placeholder(addr)
+}
+
 /// Walk `entities` recursively, returning the first one whose `roles` list
 /// contains `role`.
 fn find_ip_entity<'a>(entities: &'a [RdapIpEntity], role: &str) -> Option<&'a RdapIpEntity> {
@@ -178,7 +196,13 @@ async fn rdap_ip_fallback(target: &Target, ctx: &ModuleContext) -> Result<Module
         }
     }
 
-    if !country.is_empty() {
+    // A CDN/anycast edge IP's RDAP network-block registration describes the
+    // PROVIDER's registered country, not the subject's — the same class
+    // `untrusted_ip_geo_reason` exists to catch (the org/abuse-contact data
+    // above is unaffected: an operator attribution, not a geo claim).
+    if !country.is_empty()
+        && crate::core::validation::untrusted_ip_geo_reason(&target.value).is_none()
+    {
         let mut ae = Entity::new(
             EntityKind::Address,
             &country,
@@ -262,6 +286,10 @@ impl Module for Whois {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
+        // IpAddress: `target.to_entity(...)` (dynamically kinded) re-emits
+        // an IpAddress target itself when the WHOIS/RDAP response carries
+        // enough to be worth reporting (registrar/created/nameservers/
+        // status) — RIPE-style inetnum/inet6num objects commonly do.
         const KINDS: &[EntityKind] = &[
             EntityKind::Domain,
             EntityKind::Email,
@@ -270,6 +298,7 @@ impl Module for Whois {
             EntityKind::Organisation,
             EntityKind::Address,
             EntityKind::Coordinates,
+            EntityKind::IpAddress,
         ];
         KINDS
     }
@@ -462,7 +491,7 @@ impl Module for Whois {
             .into_iter()
             .filter_map(|(email, role)| {
                 let addr = email.as_deref()?;
-                if crate::util::domains::is_infrastructure_email(addr) {
+                if !is_usable_contact_email(addr) {
                     return None;
                 }
                 let mut e = Entity::new(EntityKind::Email, addr, confidence::STRONG, &_ctx.scan_id);
@@ -523,7 +552,18 @@ impl Module for Whois {
         // Registrant address → Address entity (when available and not a
         // privacy-proxy placeholder — via the SAME shared guard the registrant
         // name/org paths above use, not a narrow redacted/privacy substring test).
-        if let Some(country) = &registrant_country {
+        //
+        // For an IpAddress target this same field also carries the RIR
+        // allocation record's `country:`/`state:` RPSL attributes — a CDN/
+        // anycast edge IP's own registration describes the PROVIDER's
+        // registered address, not the subject's, exactly the class
+        // `untrusted_ip_geo_reason` exists to catch (the same policy
+        // `ip_whois_geo`/`geo_intel`/`ipinfo`/`ip2location`/`ipquery`/`netlas`
+        // already apply). A Domain target's registrant address is unaffected
+        // — it has nothing to do with IP geolocation trust.
+        let geo_trusted = target.kind != TargetKind::IpAddress
+            || crate::core::validation::untrusted_ip_geo_reason(&target.value).is_none();
+        if geo_trusted && let Some(country) = &registrant_country {
             let parts = registrant_location_parts(registrant_state.as_deref(), country);
             if !parts.is_empty() && parts.iter().any(|p| p.len() >= 2) {
                 let addr = parts.join(", ");
@@ -610,7 +650,12 @@ impl Module for Whois {
         // Contact phone numbers — redacted values are already excluded in
         // parse_whois; each surviving number is in E.164 `+<digits>` form.
         for phone in &phones {
-            let mut pe = Entity::new(EntityKind::Phone, phone, 0.68, &_ctx.scan_id);
+            let mut pe = Entity::new(
+                EntityKind::Phone,
+                phone,
+                confidence::HIGH_PLUS,
+                &_ctx.scan_id,
+            );
             pe.tag("whois");
             pe.add_evidence(
                 Evidence::new(SRC, format!("WHOIS contact phone for {}", target.value))

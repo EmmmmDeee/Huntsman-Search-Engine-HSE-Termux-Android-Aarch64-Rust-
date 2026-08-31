@@ -157,6 +157,14 @@ fn forward_inbound_cname_alias_is_emitted() {
     assert_eq!(domains.len(), 1);
     assert_eq!(domains[0].value, "pages.example.org");
     assert!(domains[0].has_tag("cname") && domains[0].has_tag(PASSIVE_DNS));
+    // Regression: the evidence text used to state the DNS relationship
+    // backwards ("github.com cname → pages.example.org") — the real record
+    // is pages.example.org's own CNAME pointing AT github.com, not the
+    // reverse.
+    assert_eq!(
+        domains[0].evidence[0].summary,
+        "Passive DNS: pages.example.org cname → github.com"
+    );
 }
 
 // ── reverse (IP target) ───────────────────────────────────────────────────────

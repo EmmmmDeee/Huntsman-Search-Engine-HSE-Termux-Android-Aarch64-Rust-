@@ -9,6 +9,17 @@ fn cands(domain: &str) -> HashSet<String> {
 }
 
 #[test]
+fn attack_techniques_claims_wordlist_scanning() {
+    // Regression: this module generates a large candidate-hostname set
+    // algorithmically and actively DNS-resolves every one — the same
+    // "generate + actively probe many names" mechanism dns_intel's
+    // dictionary subdomain brute-force claims T1595.003 for.
+    let techs = Typosquat.attack_techniques();
+    assert!(techs.contains(&"T1590.001"));
+    assert!(techs.contains(&"T1595.003"));
+}
+
+#[test]
 fn generates_classic_typo_classes() {
     let c = cands("example.com");
     // omission, transposition, repetition, homoglyph, hyphenation, tld-swap.

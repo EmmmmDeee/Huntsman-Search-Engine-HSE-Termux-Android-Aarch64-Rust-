@@ -89,11 +89,21 @@ use super::*;
             values(&es, EntityKind::Organisation).is_empty(),
             "privacy-proxy org must not become an Organisation"
         );
+        // Regression: Email was the one contact field in this same fixture
+        // missing the privacy/infrastructure gate every other field here
+        // already applies — "abuse@godaddy.com" (a role desk at the
+        // registrar's own domain) used to be emitted verbatim as a real,
+        // pivotable Email entity at confidence::HIGH_PLUS.
+        assert!(
+            values(&es, EntityKind::Email).is_empty(),
+            "a registrar abuse desk must not become the subject's Email"
+        );
         // A registrant real name still surfaces (regression guard).
-        let real = record(r#"{ "registrant": {"name": "Jordan Avery", "organization": "Avery Media Pty Ltd"} }"#);
+        let real = record(r#"{ "registrant": {"name": "Jordan Avery", "organization": "Avery Media Pty Ltd", "email": "jordan@example-target.com"} }"#);
         let ok = build_entities(&real, "example-target.com", "t");
         assert_eq!(values(&ok, EntityKind::Person), vec!["Jordan Avery"]);
         assert_eq!(values(&ok, EntityKind::Organisation), vec!["Avery Media Pty Ltd"]);
+        assert_eq!(values(&ok, EntityKind::Email), vec!["jordan@example-target.com"]);
     }
 
     #[test]

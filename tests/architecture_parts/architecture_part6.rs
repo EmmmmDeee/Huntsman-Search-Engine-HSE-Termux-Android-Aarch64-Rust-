@@ -429,7 +429,6 @@ fn entity_confidence_uses_named_ladder_constants() {
         ("src/modules/steam_profile/mod.rs", "0.20"), // [embedded]
         ("src/modules/steam_profile/mod.rs", "0.25"), // [embedded]
         ("src/modules/steam_profile/mod.rs", "0.38"), // [embedded] hardcoded floor
-        ("src/modules/whois/mod.rs", "0.68"),     // [revealed]
     ];
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));

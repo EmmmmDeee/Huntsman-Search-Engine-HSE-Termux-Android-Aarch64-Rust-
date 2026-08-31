@@ -123,7 +123,6 @@ fn build_reverse_dns_entities(body: &str, ip: &str, scan_id: &str) -> Vec<Entity
     body.lines()
         .filter_map(|line| {
             let domain = line
-                .trim()
                 .split_whitespace()
                 .next_back()?
                 .trim_end_matches('.')

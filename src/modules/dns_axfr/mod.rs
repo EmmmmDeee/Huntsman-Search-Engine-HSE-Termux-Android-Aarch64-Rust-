@@ -61,10 +61,15 @@ impl Module for DnsAxfr {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // DNS zone-transfer attempt — ATT&CK DNS (T1590.002). A successful AXFR
-        // dumps every record in the zone, exposing the victim's internal network
-        // layout → T1590.004 Network Topology (beyond the passive DNS lookup).
-        &["T1590.002", "T1590.004"]
+        // DNS zone-transfer attempt against the target's OWN authoritative
+        // nameserver — ATT&CK DNS (T1590.002). A successful AXFR dumps every
+        // record in the zone, exposing the victim's internal network layout
+        // → T1590.004 Network Topology. This is also an active,
+        // target-touching probe testing for an exploitable AXFR-open
+        // misconfiguration (tagged VULNERABLE on success) — ATT&CK Active
+        // Scanning: Vulnerability Scanning (T1595.002), mirroring
+        // subdomain_takeover's identical reasoning for its own active probe.
+        &["T1590.002", "T1590.004", "T1595.002"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
