@@ -201,8 +201,9 @@ fn doc_roi_examples_use_the_real_credit_costs() {
     );
 }
 
-/// `RULE.md` (the project's top-level, "binding" operational doc) must send a
-/// new operator to the live SeekNow host, not the dead `.eu` alias.
+/// The operator-facing sections of `RULE.md` (the project's top-level,
+/// "binding" operational doc) must send a new operator to the live SeekNow
+/// host, not the dead `.eu` alias.
 ///
 /// Regression: `src/util/keys/tests.rs`'s
 /// `seeknow_signup_hint_names_the_live_ru_host_not_the_dead_eu_alias` already
@@ -210,25 +211,50 @@ fn doc_roi_examples_use_the_real_credit_costs() {
 /// doc comment records that `see-know.eu` is a dead host
 /// (`docs/SEEKNOW_WEB_AUTOMATION.md` logs it "Not responding | 000") and that
 /// `see_know::client::DEFAULT_BASE` (the actual live API base) is
-/// `see-know.ru`. `RULE.md`'s "Setup & Configuration: SeekNow API" section
-/// independently told operators to sign up and find their dashboard at
-/// `see-know.eu` — the same defect class, in the doc a fresh reader hits
-/// first, just never caught because that guard only reads `hse doctor`'s
-/// in-process hint string, not the markdown. `DEFAULT_BASE` is a private
-/// `const` this integration test cannot import, so the literal host names
-/// are asserted directly here, same as the unit test does.
+/// `see-know.ru`. `RULE.md`'s "Setup & Configuration: SeekNow API" and "OSINT
+/// API Reference" sections independently told operators to sign up and find
+/// their dashboard at `see-know.eu` — the same defect class, in the doc a
+/// fresh reader hits first, just never caught because that guard only reads
+/// `hse doctor`'s in-process hint string, not the markdown. `DEFAULT_BASE` is
+/// a private `const` this integration test cannot import, so the literal
+/// host names are asserted directly here, same as the unit test does.
+///
+/// Scoped to the two sections that actually point an operator at a signup
+/// URL, endpoint, or provider table, rather than banning the substring
+/// `see-know.eu` across the whole file: `RULE.md` legitimately covers many
+/// other topics (the three RULEs, installation, troubleshooting, security
+/// policy) where a *future, accurate* explanatory note naming the dead alias
+/// — e.g. warning readers not to use it — would be exactly the kind of
+/// content this guard exists to encourage, not forbid.
+fn seeknow_section<'a>(rule: &'a str, heading: &str) -> &'a str {
+    let start = rule
+        .find(heading)
+        .unwrap_or_else(|| panic!("RULE.md must still have a {heading:?} section"));
+    let after = &rule[start..];
+    let end = after[heading.len()..]
+        .find("\n## ")
+        .map_or(after.len(), |i| i + heading.len());
+    &after[..end]
+}
+
 #[test]
 fn rule_md_names_the_live_seeknow_host_not_the_dead_eu_alias() {
     let rule = fs::read_to_string(doc_path("RULE.md")).expect("RULE.md must exist");
-    assert!(
-        rule.contains("see-know.ru"),
-        "RULE.md's SeekNow section should name the live .ru host"
-    );
-    assert!(
-        !rule.contains("see-know.eu"),
-        "RULE.md must not point an operator at the dead .eu host \
-         (docs/SEEKNOW_WEB_AUTOMATION.md logs it \"Not responding | 000\")"
-    );
+    for heading in [
+        "## Setup & Configuration: SeekNow API",
+        "## OSINT API Reference",
+    ] {
+        let section = seeknow_section(&rule, heading);
+        assert!(
+            section.contains("see-know.ru"),
+            "RULE.md's {heading:?} section should name the live .ru host"
+        );
+        assert!(
+            !section.contains("see-know.eu"),
+            "RULE.md's {heading:?} section must not point an operator at the dead \
+             .eu host (docs/SEEKNOW_WEB_AUTOMATION.md logs it \"Not responding | 000\")"
+        );
+    }
 }
 
 /// `ci.yml`'s MSRV job must pin exactly the version `Cargo.toml` declares.
