@@ -45,19 +45,27 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
         return;
     }
 
-    let mut org = Entity::new(
-        EntityKind::Organisation,
-        &entity_name,
-        confidence::VERY_HIGH_PLUS,
-        scan_id,
-    );
+    // A cancelled/deregistered ABN's registered address, trading names, and
+    // sole-trader identity can all be stale — mail forwarding lapses,
+    // premises change hands, a business closes years before its ABN record
+    // is updated — so every entity fanned out from this record, not just the
+    // Organisation, needs to reflect that currency signal. Computed once so
+    // the demotion the Organisation already applied to itself is applied
+    // identically everywhere else below.
+    let is_inactive = !status.is_empty() && !status.to_lowercase().contains("active");
+
+    let org_conf = if is_inactive {
+        confidence::derived_from(confidence::VERY_HIGH_PLUS)
+    } else {
+        confidence::VERY_HIGH_PLUS
+    };
+    let mut org = Entity::new(EntityKind::Organisation, &entity_name, org_conf, scan_id);
     org.tag("abr");
     org.tag("australian");
-    if status.to_lowercase().contains("active") {
-        org.tag("active");
-    } else if !status.is_empty() {
+    if is_inactive {
         org.tag("inactive");
-        org.confidence = confidence::derived_from(org.confidence);
+    } else if status.to_lowercase().contains("active") {
+        org.tag("active");
     }
 
     let mut ev = Evidence::new(SRC, format!("ABR: {entity_name} (ABN {abn})"))
@@ -96,17 +104,25 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
         } else {
             format!("{postcode}, {state}, Australia")
         };
-        let mut addr_entity =
-            Entity::new(EntityKind::Address, &addr, confidence::VERY_HIGH, scan_id);
+        let addr_conf = if is_inactive {
+            confidence::derived_from(confidence::VERY_HIGH)
+        } else {
+            confidence::VERY_HIGH
+        };
+        let mut addr_entity = Entity::new(EntityKind::Address, &addr, addr_conf, scan_id);
         addr_entity.tag("abr");
         addr_entity.tag("country:AU");
+        if is_inactive {
+            addr_entity.tag("inactive");
+        }
         if let Some(sc) = crate::util::address_au::state_code(&addr) {
             addr_entity.tag(format!("au-state:{sc}"));
         }
-        addr_entity.add_evidence(Evidence::new(
-            SRC,
-            format!("Business address for {entity_name}"),
-        ));
+        let mut addr_ev = Evidence::new(SRC, format!("Business address for {entity_name}"));
+        if !status.is_empty() {
+            addr_ev = addr_ev.with_attr("business_status", &status);
+        }
+        addr_entity.add_evidence(addr_ev);
         result.push(addr_entity);
 
         // Emit inline Coordinates for city-level geo correlation.
@@ -121,15 +137,18 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
         };
         if let Some((lat, lon)) = coord_source {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(
-                EntityKind::Coordinates,
-                &coord_val,
-                confidence::HIGH,
-                scan_id,
-            );
+            let coord_conf = if is_inactive {
+                confidence::derived_from(confidence::HIGH)
+            } else {
+                confidence::HIGH
+            };
+            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, coord_conf, scan_id);
             c.tag("addr-derived");
             c.tag("geoint");
             c.tag("country:AU");
+            if is_inactive {
+                c.tag("inactive");
+            }
             if let Some(sc) = crate::util::address_au::state_code(&addr) {
                 c.tag(format!("au-state:{sc}"));
             }
@@ -149,14 +168,17 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
                 && !name.is_empty()
                 && name != entity_name
             {
-                let mut bn_entity = Entity::new(
-                    EntityKind::Organisation,
-                    name,
-                    confidence::HIGH_PLUSPLUS,
-                    scan_id,
-                );
+                let bn_conf = if is_inactive {
+                    confidence::derived_from(confidence::HIGH_PLUSPLUS)
+                } else {
+                    confidence::HIGH_PLUSPLUS
+                };
+                let mut bn_entity = Entity::new(EntityKind::Organisation, name, bn_conf, scan_id);
                 bn_entity.tag("abr");
                 bn_entity.tag("business-name");
+                if is_inactive {
+                    bn_entity.tag("inactive");
+                }
                 bn_entity.add_evidence(Evidence::new(SRC, format!("Trading name for ABN {abn}")));
                 result.push(bn_entity);
             }
@@ -164,14 +186,17 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
     }
 
     if entity_type.contains("IND") || entity_type.contains("Individual") {
-        let mut person = Entity::new(
-            EntityKind::Person,
-            &entity_name,
-            confidence::HIGH_PLUSPLUS,
-            scan_id,
-        );
+        let person_conf = if is_inactive {
+            confidence::derived_from(confidence::HIGH_PLUSPLUS)
+        } else {
+            confidence::HIGH_PLUSPLUS
+        };
+        let mut person = Entity::new(EntityKind::Person, &entity_name, person_conf, scan_id);
         person.tag("abr");
         person.tag("sole-trader");
+        if is_inactive {
+            person.tag("inactive");
+        }
         person.add_evidence(Evidence::new(
             SRC,
             format!("Individual/sole trader: ABN {abn}"),
@@ -245,9 +270,23 @@ pub(super) fn parse_name_results(
             50..=69 => confidence::HIGH_PLUS,
             _ => confidence::MEDIUM_PLUS,
         };
+        // A "Former Name" hit is currency, not just match quality — the ABR
+        // itself distinguishes the entity's CURRENT legal/business name from
+        // one it used to hold, and a name it no longer uses is a weaker
+        // pivot than one it holds today regardless of how well the search
+        // score matched it.
+        let is_former = name_type.to_lowercase().contains("former");
+        let conf = if is_former {
+            confidence::derived_from(conf)
+        } else {
+            conf
+        };
 
         let mut org = Entity::new(EntityKind::Organisation, &name, conf, scan_id);
         org.tag("abr");
+        if is_former {
+            org.tag("former-name");
+        }
         org.tag("australian");
 
         let mut ev = Evidence::new(

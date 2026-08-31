@@ -1,5 +1,6 @@
 use super::*;
 use crate::core::{
+    confidence,
     entity::EntityKind,
     module::ModuleResult,
     scan::{Target, TargetKind},
@@ -158,6 +159,25 @@ fn parse_name_search_response() {
         .filter(|e| e.kind == EntityKind::Organisation)
         .collect();
     assert_eq!(orgs.len(), 2);
+
+    // Regression: `NameType: "Former Name"` was captured into evidence but
+    // never changed the entity's tags or confidence — a former legal name
+    // read identically to the entity's current one.
+    let current = orgs
+        .iter()
+        .find(|e| e.value == "BHP GROUP LIMITED")
+        .expect("current name entity");
+    assert!(!current.has_tag("former-name"));
+    let former = orgs
+        .iter()
+        .find(|e| e.value == "BHP BILLITON LIMITED")
+        .expect("former name entity");
+    assert!(former.has_tag("former-name"));
+    assert!(
+        former.confidence < confidence::HIGH_PLUSPLUS,
+        "a former name must rank below its un-demoted score-90 tier: {}",
+        former.confidence
+    );
 }
 
 #[test]
@@ -222,6 +242,107 @@ fn all_distinct_trading_names_are_emitted() {
             "trading name {n:?} must be emitted"
         );
     }
+}
+
+#[test]
+fn a_cancelled_abn_demotes_every_derived_entity_not_just_the_organisation() {
+    // Regression: `AbnStatus: "Cancelled"` demoted only the Organisation
+    // entity's confidence — the registered Address, its derived Coordinates,
+    // every trading BusinessName, and the sole-trader Person all still
+    // emitted at their full, undemoted confidence from the same stale
+    // record, with no `status`/`inactive` signal on any of them.
+    let data = serde_json::json!({
+        "Abn": "19415776361",
+        "EntityName": "Jane Citizen",
+        "EntityTypeCode": "IND",
+        "AbnStatus": "Cancelled",
+        "AddressState": "VIC",
+        "AddressPostcode": "3000",
+        "BusinessName": ["Jane's Cakes"]
+    });
+    let mut result = ModuleResult::new();
+    parse_abn_result(&data, "test", &mut result);
+
+    let org = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Organisation && e.value == "Jane Citizen")
+        .expect("organisation");
+    assert!(org.has_tag("inactive"));
+    assert!(
+        org.confidence < confidence::VERY_HIGH_PLUS,
+        "organisation must already be demoted: {}",
+        org.confidence
+    );
+
+    let addr = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("address");
+    assert!(
+        addr.has_tag("inactive"),
+        "a stale record's address is not confirmed current"
+    );
+    assert!(
+        addr.confidence < confidence::VERY_HIGH,
+        "address must be demoted like the organisation: {}",
+        addr.confidence
+    );
+    assert_eq!(
+        addr.evidence[0]
+            .attributes
+            .get("business_status")
+            .map(String::as_str),
+        Some("Cancelled")
+    );
+
+    let trading_name = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Organisation && e.value == "Jane's Cakes")
+        .expect("trading name");
+    assert!(trading_name.has_tag("inactive"));
+    assert!(trading_name.confidence < confidence::HIGH_PLUSPLUS);
+
+    let person = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .expect("sole-trader person");
+    assert!(person.has_tag("inactive"));
+    assert!(person.confidence < confidence::HIGH_PLUSPLUS);
+
+    if let Some(coords) = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+    {
+        assert!(coords.has_tag("inactive"));
+        assert!(coords.confidence < confidence::HIGH);
+    }
+}
+
+#[test]
+fn an_active_abn_does_not_demote_or_tag_inactive_on_any_entity() {
+    // Counter-case: an active ABN's derived entities must NOT carry the
+    // `inactive` tag or a demoted confidence — the fix must not over-fire.
+    let data = serde_json::json!({
+        "Abn": "19415776361",
+        "EntityName": "Jane Citizen",
+        "EntityTypeCode": "IND",
+        "AbnStatus": "Active",
+        "AddressState": "VIC",
+        "AddressPostcode": "3000",
+        "BusinessName": ["Jane's Cakes"]
+    });
+    let mut result = ModuleResult::new();
+    parse_abn_result(&data, "test", &mut result);
+    assert!(
+        result.entities.iter().all(|e| !e.has_tag("inactive")),
+        "an active record must not tag anything inactive: {:?}",
+        result.entities
+    );
 }
 
 #[test]
