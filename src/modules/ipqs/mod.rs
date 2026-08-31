@@ -210,20 +210,8 @@ impl Module for IpQs {
         // phone, so beyond the Infrastructure default (T1590.005 IP Addresses +
         // T1596.005 Scan Databases) it is Search Closed Sources: Threat Intel
         // Vendors (T1597.001). Scoring also surfaces Email entities (T1589.002)
-        // and Phone entities (T1589 Gather Victim Identity Info), and identifies
-        // the ISP/organization/carrier as an Organisation entity (T1591.002
-        // Business Relationships) — the same pivot abuseipdb/greynoise/ipquery/
-        // ip_registry/ip2location/criminal_ip/censys/shodan/onyphe/zoomeye/
-        // ripestat all declare for their own ISP/ASN-operator Organisation.
-        // Superset.
-        &[
-            "T1589",
-            "T1589.002",
-            "T1590.005",
-            "T1591.002",
-            "T1596.005",
-            "T1597.001",
-        ]
+        // and Phone entities (T1589 Gather Victim Identity Info). Superset.
+        &["T1589", "T1589.002", "T1590.005", "T1596.005", "T1597.001"]
     }
 
     fn produces(&self) -> &'static [crate::core::entity::EntityKind] {

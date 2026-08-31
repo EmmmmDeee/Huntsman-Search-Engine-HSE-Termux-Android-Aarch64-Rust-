@@ -182,11 +182,17 @@ impl Module for Onyphe {
             return Ok(ModuleResult::new());
         }
 
+        // For an IP target that is a CDN/anycast edge, the geoloc is the answering
+        // datacentre, not the subject — suppress coordinates (as ip_geo does).
+        let skip_coords = matches!(target.kind, TargetKind::IpAddress)
+            && crate::core::validation::is_cdn_edge_ip(value);
+
         Ok(extract_entities(
             &body.results,
             target,
             value,
             selector,
+            skip_coords,
             &ctx.scan_id,
         ))
     }
@@ -214,18 +220,15 @@ fn check_onyphe_error(body: &OnypheResp) -> Result<()> {
 
 /// Pure entity extraction over the ONYPHE summary `results` documents — unit-
 /// tested against fixtures so the network shell in `process` stays a thin
-/// adapter. CDN/anycast-edge geo suppression (parity with `ip_geo`/the sibling
-/// IP-geo modules) is computed PER RECORD, not once for the whole query: a
-/// Domain-target query's `results` can each carry a DIFFERENT resolved `ip`
-/// (a Cloudflare-fronted domain shows different edge IPs across documents),
-/// so a single target-kind-gated flag would leave every Domain-query result
-/// unprotected regardless of its own `ip` field. No per-module output cap:
-/// every distinct in-scope resolution is emitted (see the resolutions block).
+/// adapter. `skip_coords` is precomputed by the caller (the CDN-edge suppression
+/// needs the IP target). No per-module output cap: every distinct in-scope
+/// resolution is emitted (see the resolutions block).
 fn extract_entities(
     results: &[Value],
     target: &Target,
     value: &str,
     selector: &str,
+    skip_coords: bool,
     scan_id: &str,
 ) -> ModuleResult {
     let mut result = ModuleResult::new();
@@ -240,17 +243,8 @@ fn extract_entities(
             e
         };
 
-        // This record's own resolved IP when it carries one (the common case
-        // for a Domain-target query, one document per resolution); otherwise
-        // the queried value itself (correct as-is for an IpAddress-target
-        // query, where every record already describes that one IP).
-        let record_ip = vstr(r, "ip");
-        let geo_trusted =
-            crate::core::validation::untrusted_ip_geo_reason(record_ip.as_deref().unwrap_or(value))
-                .is_none();
-
         // ── Geolocation ──────────────────────────────────────────────────
-        if geo_trusted
+        if !skip_coords
             && let Some((lat, lon)) = coords(r)
             && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
             && let Some(mut ce) =
@@ -264,7 +258,7 @@ fn extract_entities(
         }
 
         // ── City / country as an Address ────────────────────────────────
-        if geo_trusted && let Some(city) = vstr(r, "city") {
+        if let Some(city) = vstr(r, "city") {
             let country = vstr(r, "countryname").or_else(|| vstr(r, "country"));
             let addr = match country {
                 Some(c) => format!("{city}, {c}"),
@@ -349,7 +343,7 @@ fn extract_entities(
                     list_tags.join(",").to_lowercase()
                 ))
             {
-                let mut te = target.to_entity(confidence::MEDIUM_PLUS, scan_id);
+                let mut te = target.to_entity(0.6, scan_id);
                 te.tag(crate::core::tags::THREAT_INTEL);
                 te.tag(crate::core::tags::MALICIOUS);
                 let mut tev = Evidence::new(SRC, format!("ONYPHE threatlist hit: {value}"));

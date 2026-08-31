@@ -200,10 +200,8 @@ impl Module for IpReputation {
 
     fn attack_techniques(&self) -> &'static [&'static str] {
         // OTX pulse lookup → threat-intelligence vendor data (T1597.001);
-        // surfaced adversary/organisation context (T1591.002); IP addresses
-        // confirmed as Tor exits (T1590.005). Replaces the Infrastructure
-        // default T1596.005. (No ISP data: this module never fetches or
-        // surfaces one — that's ip_geo/ip_whois_geo.)
+        // surfaced organisation/ISP context (T1591.002); IP addresses confirmed
+        // as Tor exits (T1590.005). Replaces the Infrastructure default T1596.005.
         &["T1590.005", "T1591.002", "T1597.001"]
     }
 
@@ -246,11 +244,6 @@ impl Module for IpReputation {
 
 // ── OTX sub-routine ────────────────────────────────────────────────
 
-/// Middle tier of [`otx_confidence`]'s graduation (2-4 corroborating pulses) —
-/// between `confidence::MEDIUM_HIGH` (0-1 pulses) and `confidence::VERY_HIGH`
-/// (5+), with no existing ladder rung at this exact value.
-const OTX_MULTI_PULSE_CONFIDENCE: f64 = 0.68;
-
 /// Confidence for an OTX-flagged indicator, graduated by corroborating pulse
 /// count. A lone pulse is often self-published low-signal noise — a lead, not a
 /// probable finding — while many independent pulses agreeing is stronger
@@ -261,7 +254,7 @@ const OTX_MULTI_PULSE_CONFIDENCE: f64 = 0.68;
 fn otx_confidence(pulse_count: u64) -> f64 {
     match pulse_count {
         0 | 1 => confidence::MEDIUM_HIGH,
-        2..=4 => OTX_MULTI_PULSE_CONFIDENCE,
+        2..=4 => 0.68,
         _ => confidence::VERY_HIGH,
     }
 }
@@ -438,12 +431,6 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
 fn passive_dns_entities(rows: &[PassiveDnsRow], domain: &str, scan_id: &str) -> Vec<Entity> {
     const MAX_IPS: usize = 25;
     const MAX_SUBDOMAINS: usize = 50;
-    // A passively-observed subdomain hostname (a real DNS label OTX saw
-    // resolve) — no existing `confidence::` rung sits at this exact value;
-    // above `NOTABLE` (0.62, used for the sibling historical-IP entity below)
-    // since the hostname string itself is a more durable signal than a
-    // point-in-time resolved address.
-    const OBSERVED_SUBDOMAIN_CONFIDENCE: f64 = 0.68;
     let base = domain.trim().to_ascii_lowercase();
     let dot_base = format!(".{base}");
     let mut out = Vec::new();
@@ -473,12 +460,7 @@ fn passive_dns_entities(rows: &[PassiveDnsRow], domain: &str, scan_id: &str) -> 
             && host.parse::<std::net::IpAddr>().is_err()
             && seen_hosts.insert(host.clone())
         {
-            let mut d = Entity::new(
-                EntityKind::Domain,
-                &host,
-                OBSERVED_SUBDOMAIN_CONFIDENCE,
-                scan_id,
-            );
+            let mut d = Entity::new(EntityKind::Domain, &host, 0.68, scan_id);
             d.tag(SRC);
             d.tag("otx");
             d.tag("passive-dns");
@@ -583,9 +565,12 @@ async fn run_tor_check(
     entity.tag("tor-exit");
     entity.tag("anonymous-network");
     entity.add_evidence(
-        Evidence::new(SRC, format!("{ip} is on the public Tor exit-relay list"))
-            .with_attr("source", "check.torproject.org/exit-addresses")
-            .with_attr("exit_list_size", set.len().to_string()),
+        Evidence::new(
+            "ip_reputation",
+            format!("{ip} is on the public Tor exit-relay list"),
+        )
+        .with_attr("source", "check.torproject.org/exit-addresses")
+        .with_attr("exit_list_size", set.len().to_string()),
     );
     result.push(entity);
     Ok(())

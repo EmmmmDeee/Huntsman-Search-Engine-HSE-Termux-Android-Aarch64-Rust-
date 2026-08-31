@@ -119,17 +119,6 @@ fn is_ip(s: &str) -> bool {
     s.parse::<IpAddr>().is_ok()
 }
 
-/// IP-aware equality: parses both sides so textually different
-/// representations of the same address (e.g. IPv6 forms) still compare
-/// equal; falls back to string equality when either side doesn't parse.
-/// Mirrors `mnemonic_pdns::ip_eq`.
-fn ip_eq(a: &str, b: &str) -> bool {
-    match (a.parse::<IpAddr>(), b.parse::<IpAddr>()) {
-        (Ok(x), Ok(y)) => x == y,
-        _ => a == b,
-    }
-}
-
 /// True when `s` looks like a routable hostname: dotted, not an IP literal,
 /// and free of whitespace. Shared shape check for every `Domain` pivot this
 /// module emits, so a malformed record never becomes a bogus entity.
@@ -195,17 +184,7 @@ fn build_entities(
     for r in records.iter().take(RESULT_LIMIT) {
         if target_is_ip {
             // Reverse passive DNS: `value` is the domain that historically
-            // resolved to our queried IP. Verify the record's own `resolve`
-            // field (when present) actually names the queried IP before
-            // trusting `value` as a pivot — PassiveTotal's schema pairs the
-            // two fields specifically so this is checkable; a present,
-            // mismatched `resolve` means the record concerns a different IP.
-            if r.resolve
-                .as_deref()
-                .is_some_and(|resolved| !ip_eq(resolved.trim(), &target_l))
-            {
-                continue;
-            }
+            // resolved to our queried IP.
             let Some(domain) = r.value.as_deref().map(normalise).filter(|h| is_hostname(h)) else {
                 continue;
             };
@@ -224,20 +203,8 @@ fn build_entities(
             continue;
         }
 
-        // Forward (domain target): verify the record's own `value` field
-        // (when present) actually echoes the queried domain before trusting
-        // its `resolve` answer — `value` is documented to "echo the query
-        // for a forward/domain lookup", so a present, mismatched `value`
-        // means the record concerns a different domain entirely.
-        if r.value
-            .as_deref()
-            .map(normalise)
-            .is_some_and(|v| !v.eq_ignore_ascii_case(&target_l))
-        {
-            continue;
-        }
-        // Classify the answer by `resolveType`, falling back to shape when
-        // the field is blank/absent.
+        // Forward (domain target): classify the answer by `resolveType`,
+        // falling back to shape when the field is blank/absent.
         let Some(resolve) = r
             .resolve
             .as_deref()

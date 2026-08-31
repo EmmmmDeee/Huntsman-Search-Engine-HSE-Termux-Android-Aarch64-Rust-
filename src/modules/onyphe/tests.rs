@@ -102,92 +102,6 @@ fn vstr_trims_and_rejects_empty() {
 }
 
 #[test]
-fn cdn_edge_ip_target_suppresses_coordinates_and_address() {
-    // Regression: the CDN/anycast-edge suppression used to gate Coordinates
-    // only — the Address block built from the SAME untrusted record's
-    // city/country was emitted unconditionally. A Cloudflare edge IP must
-    // suppress both, matching the sibling IP-geo modules (ipinfo/ip2location/
-    // ip_whois_geo/ipquery/netlas/geo_intel/censys/criminal_ip/shodan).
-    let doc = serde_json::json!({
-        "@category": "geoloc",
-        "ip": "104.16.0.1",
-        "country": "US",
-        "countryname": "United States",
-        "city": "San Francisco",
-        "location": "37.7749,-122.4194",
-    });
-    let target = Target::new(TargetKind::IpAddress, "104.16.0.1");
-    let r = extract_entities(&[doc], &target, "104.16.0.1", "ip", "scan");
-    assert!(
-        !r.entities
-            .iter()
-            .any(|e| e.kind == EntityKind::Coordinates || e.kind == EntityKind::Address),
-        "a Cloudflare edge IP must suppress both Coordinates and Address: {:?}",
-        r.entities
-    );
-}
-
-#[test]
-fn domain_query_suppresses_geo_only_for_the_cdn_edge_record() {
-    // Regression: the old `skip_coords` was a single flag gated on
-    // `target.kind == IpAddress`, so it was ALWAYS false for a Domain-target
-    // query — every resolution's geo went through unguarded, even one whose
-    // OWN `ip` field is a CDN edge. A Domain-target query can return several
-    // resolutions (a Cloudflare-fronted domain shows different edge IPs
-    // across documents), so suppression must be evaluated per record, not
-    // once for the whole query.
-    let cdn_doc = serde_json::json!({
-        "@category": "geoloc",
-        "ip": "104.16.0.1",
-        "country": "US",
-        "countryname": "United States",
-        "city": "San Francisco",
-        "location": "37.7749,-122.4194",
-    });
-    let real_doc = serde_json::json!({
-        "@category": "geoloc",
-        "ip": "8.8.8.8",
-        "country": "US",
-        "countryname": "United States",
-        "city": "Mountain View",
-        "location": "37.4056,-122.0775",
-    });
-    let target = Target::new(TargetKind::Domain, "example.com");
-    let r = extract_entities(
-        &[cdn_doc, real_doc],
-        &target,
-        "example.com",
-        "domain",
-        "scan",
-    );
-
-    let addresses: Vec<&str> = r
-        .entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Address)
-        .map(|e| e.value.as_str())
-        .collect();
-    assert!(
-        !addresses.iter().any(|a| a.contains("San Francisco")),
-        "the CDN-edge record's Address must be suppressed: {addresses:?}"
-    );
-    assert!(
-        addresses.iter().any(|a| a.contains("Mountain View")),
-        "the genuine record's Address must still surface: {addresses:?}"
-    );
-    let coords: Vec<&Entity> = r
-        .entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Coordinates)
-        .collect();
-    assert_eq!(
-        coords.len(),
-        1,
-        "only the non-CDN record's coordinates must surface: {coords:?}"
-    );
-}
-
-#[test]
 fn geoloc_subnet_emits_cidr_entity() {
     // The `geoloc` category carries a covering `subnet` CIDR alongside asn/
     // organization/country/city. Before this fix `subnet` was deserialised
@@ -206,7 +120,7 @@ fn geoloc_subnet_emits_cidr_entity() {
         "subnet": "8.8.8.0/24",
     });
     let target = Target::new(TargetKind::IpAddress, "8.8.8.8");
-    let r = extract_entities(&[doc], &target, "8.8.8.8", "ip", "scan");
+    let r = extract_entities(&[doc], &target, "8.8.8.8", "ip", false, "scan");
 
     let cidr = r
         .entities
@@ -233,7 +147,7 @@ fn threatlist_category_wires_name_and_tags_into_evidence() {
         "tag": ["Scanner", "SSH"],
     });
     let target = Target::new(TargetKind::IpAddress, "8.8.8.8");
-    let r = extract_entities(&[doc], &target, "8.8.8.8", "ip", "scan");
+    let r = extract_entities(&[doc], &target, "8.8.8.8", "ip", false, "scan");
 
     let hit = r
         .entities
@@ -262,7 +176,7 @@ fn threatlist_category_without_name_or_tags_emits_nothing() {
     // fabricate a threat hit out of thin air.
     let doc = serde_json::json!({"@category": "threatlist"});
     let target = Target::new(TargetKind::IpAddress, "8.8.8.8");
-    let r = extract_entities(&[doc], &target, "8.8.8.8", "ip", "scan");
+    let r = extract_entities(&[doc], &target, "8.8.8.8", "ip", false, "scan");
     assert!(
         !r.entities
             .iter()
@@ -291,7 +205,14 @@ fn every_distinct_resolution_is_emitted_no_cap() {
     });
     let results = vec![doc];
     let target = Target::new(TargetKind::Domain, "acme-target.com");
-    let r = extract_entities(&results, &target, "acme-target.com", "domain", "scan");
+    let r = extract_entities(
+        &results,
+        &target,
+        "acme-target.com",
+        "domain",
+        false,
+        "scan",
+    );
 
     let domains: Vec<&str> = r
         .entities

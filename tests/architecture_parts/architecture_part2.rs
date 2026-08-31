@@ -555,20 +555,11 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "leakix → Credentials + Email Addresses + IP Addresses + Scan Databases"
     );
 
-    // ipqs: existing override adds T1589 + T1589.002 for Phone and Email scoring,
-    // and T1591.002 for the ISP/organization/carrier Organisation pivot.
+    // ipqs: existing override adds T1589 + T1589.002 for Phone and Email scoring.
     assert_eq!(
         techniques("ipqs"),
-        vec![
-            "T1589",
-            "T1589.002",
-            "T1590.005",
-            "T1591.002",
-            "T1596.005",
-            "T1597.001"
-        ],
-        "ipqs → Victim Identity (Phone) + Email Addresses + IP Addresses + \
-         Business Relationships (ISP/org) + Scan Databases + Threat Intel Vendors"
+        vec!["T1589", "T1589.002", "T1590.005", "T1596.005", "T1597.001"],
+        "ipqs → Victim Identity (Phone) + Email Addresses + IP Addresses + Scan Databases + Threat Intel Vendors"
     );
 
     // criminal_ip: override adds T1591.002 for the ASN operator Organisation and

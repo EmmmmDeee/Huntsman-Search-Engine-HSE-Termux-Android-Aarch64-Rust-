@@ -52,15 +52,6 @@ struct BwError {
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct BwResult {
-    /// The domain THIS entry is for. BuiltWith's `LOOKUP` parameter accepts a
-    /// CSV batch of domains in one call, each surfacing as its own `Results[]`
-    /// entry naming itself here — checked in `build_entities` before an
-    /// entry's `Meta`/technologies are trusted, so a `Lookup` mismatch
-    /// (redirect/canonicalization/API anomaly) can't silently attach another
-    /// domain's registrant data to the one queried domain this module ever
-    /// requests.
-    #[serde(rename = "Lookup")]
-    lookup: Option<String>,
     #[serde(rename = "Result")]
     result: Option<BwResultInner>,
     #[serde(rename = "Meta")]
@@ -201,30 +192,15 @@ impl Module for BuiltWith {
     }
 }
 
-/// Whether a `Results[]` entry's own `Lookup` field (when present) names the
-/// SAME domain this module queried. `Lookup` is optional in our model (older
-/// API responses / undocumented edge cases might omit it), so its absence is
-/// not itself rejected — only a present, mismatched one is. Pure.
-fn result_matches_domain(res: &BwResult, domain_lc: &str) -> bool {
-    res.lookup
-        .as_deref()
-        .is_none_or(|l| l.trim().eq_ignore_ascii_case(domain_lc))
-}
-
 /// Map a decoded BuiltWith response to entities. **Pure** (no network/IO).
 /// Emits a technology-annotated Domain plus the owning Organisation and any
 /// observed contact Emails / Phones from the `Meta` block.
 fn build_entities(body: &BwResp, domain: &str, scan_id: &str) -> ModuleResult {
     let mut result = ModuleResult::new();
-    let domain_lc = domain.trim().to_ascii_lowercase();
 
     // Collect a deterministic, deduplicated technology list across every path.
     let mut techs: Vec<String> = Vec::new();
-    for res in body
-        .results
-        .iter()
-        .filter(|r| result_matches_domain(r, &domain_lc))
-    {
+    for res in &body.results {
         if let Some(inner) = &res.result {
             for path in &inner.paths {
                 for tech in &path.technologies {
@@ -266,11 +242,7 @@ fn build_entities(body: &BwResp, domain: &str, scan_id: &str) -> ModuleResult {
     }
 
     // Meta block → Organisation / Email / Phone.
-    for res in body
-        .results
-        .iter()
-        .filter(|r| result_matches_domain(r, &domain_lc))
-    {
+    for res in &body.results {
         let Some(meta) = &res.meta else { continue };
 
         // Company name (or the first observed registrant Name) → Organisation.

@@ -132,44 +132,6 @@ fn ip_entities_map_ptr_and_asn_with_prefix() {
 }
 
 #[test]
-fn ip_entities_dedupes_the_same_origin_asn_across_sibling_prefixes() {
-    // Regression: an operator commonly announces both an aggregate block and
-    // a more-specific sub-block from the SAME origin ASN (e.g. Cloudflare's
-    // AS13335 covering an IP via both a /13 and a /20) — BGPView returns
-    // both covering prefixes for the queried IP. The ASN entity must surface
-    // once, not once per covering prefix; each distinct CIDR still does.
-    let data: BgpIpData = serde_json::from_str(
-        r#"{
-            "ptr_record":[],
-            "prefixes":[
-                {"prefix":"104.16.0.0/13","asn":{"asn":13335,"name":"CLOUDFLARENET"}},
-                {"prefix":"104.16.0.0/20","asn":{"asn":13335,"name":"CLOUDFLARENET"}}
-            ]
-        }"#,
-    )
-    .expect("should succeed");
-    let es = ip_entities(&data, "104.16.0.1", "s");
-
-    let asn: Vec<&Entity> = es.iter().filter(|e| e.kind == EntityKind::Asn).collect();
-    assert_eq!(
-        asn.len(),
-        1,
-        "the same origin ASN across sibling prefixes must surface once: {asn:?}"
-    );
-    assert_eq!(asn[0].value, "AS13335");
-
-    // Both covering prefixes are still genuinely distinct CIDR entities.
-    let cidrs: Vec<&str> = es
-        .iter()
-        .filter(|e| e.kind == EntityKind::Cidr)
-        .map(|e| e.value.as_str())
-        .collect();
-    assert_eq!(cidrs.len(), 2, "each distinct covering CIDR must still surface: {cidrs:?}");
-    assert!(cidrs.contains(&"104.16.0.0/13"));
-    assert!(cidrs.contains(&"104.16.0.0/20"));
-}
-
-#[test]
 fn ip_entities_skip_prefix_without_asn() {
     let data: BgpIpData =
         serde_json::from_str(r#"{"ptr_record":[],"prefixes":[{"prefix":"1.0.0.0/24"}]}"#)

@@ -60,26 +60,6 @@ use super::*;
     }
 
     #[test]
-    fn address_confidence_never_exceeds_its_own_coordinates() {
-        // Regression: Address used to carry a bare, un-recalibrated `0.68`
-        // while the sibling Coordinates entity it derives from had been
-        // recalibrated down to `confidence::NOTABLE` (0.62) — leaving the
-        // coarser, derived Address entity outranking the coordinates it was
-        // composed from. Address must never exceed Coordinates.
-        let r: Resp = serde_json::from_str(GATTON_JSON).expect("should succeed");
-        let es = build_entities(&r, "101.169.42.148", false, "t");
-        let coords = entity(&es, EntityKind::Coordinates).expect("coordinates");
-        let addr = entity(&es, EntityKind::Address).expect("address");
-        assert!(
-            addr.confidence <= coords.confidence,
-            "Address confidence ({}) must not exceed Coordinates ({})",
-            addr.confidence,
-            coords.confidence
-        );
-        assert!((addr.confidence - confidence::NOTABLE).abs() < 1e-9);
-    }
-
-    #[test]
     fn proxy_ip_address_and_coordinates_are_both_proxy_tagged() {
         // An anonymiser/VPN exit: the geolocation is the exit node, not the
         // subject, so BOTH the Coordinates and the Address must carry the PROXY

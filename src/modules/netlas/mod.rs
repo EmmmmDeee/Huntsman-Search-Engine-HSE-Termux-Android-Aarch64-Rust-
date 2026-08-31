@@ -240,22 +240,6 @@ impl Module for Netlas {
 fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> ModuleResult {
     let mut result = ModuleResult::new();
 
-    // Establish the canonical host IP FIRST (the first item that carries
-    // one), then the main loop below only folds an item's OTHER fields
-    // (ports, geo, ISP, cert, HTTP, CVEs, technologies) when its OWN
-    // `data.ip` agrees with that IP. A Domain/Email-kind query
-    // (`host:`/`certificate.subject.email:`) can legitimately return items
-    // for several DIFFERENT hosts — a domain resolving to multiple IPs, or
-    // the same cert Subject email appearing on unrelated hosts — and without
-    // this check their facts pooled onto one entity regardless of which host
-    // they actually describe. An item with no `ip` field of its own is
-    // trusted as before; there is nothing to disprove it with.
-    let canonical_ip: Option<&str> = body
-        .items
-        .iter()
-        .filter_map(|item| item.data.as_ref())
-        .find_map(|data| data.ip.as_deref());
-
     let mut all_emails: Vec<String> = Vec::new();
     let mut all_cert_domains: Vec<String> = Vec::new();
     let mut cert_orgs: Vec<String> = Vec::new();
@@ -276,20 +260,19 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
     let mut isp_val: Option<String> = None;
     let mut geo_val: Option<(f64, f64, String, String)> = None;
     let mut ssl_cn: Option<String> = None;
+    let mut ip_val: Option<String> = None;
     let mut ssl_issuer: Option<String> = None;
     let mut http_title: Option<String> = None;
     let mut http_status: Option<u16> = None;
 
     for item in &body.items {
         let Some(data) = &item.data else { continue };
-        if let Some(ip) = data.ip.as_deref()
-            && canonical_ip.is_some_and(|c| c != ip)
-        {
-            // A different host's record — do not pool its facts onto the
-            // canonical host's entity.
-            continue;
-        }
 
+        if let Some(ip) = &data.ip
+            && ip_val.is_none()
+        {
+            ip_val = Some(ip.clone());
+        }
         if let Some(p) = data.port {
             let proto = data.protocol.as_deref().unwrap_or("tcp");
             port_list.push(format!("{p}/{proto}"));
@@ -393,7 +376,7 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
     }
 
     // Emit IP entity.
-    let ip_str = canonical_ip.unwrap_or(target_value);
+    let ip_str = ip_val.as_deref().unwrap_or(target_value);
     let mut ip_entity = Entity::new(
         EntityKind::IpAddress,
         ip_str,

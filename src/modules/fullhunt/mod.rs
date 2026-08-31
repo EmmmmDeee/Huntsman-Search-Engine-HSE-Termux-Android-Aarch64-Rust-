@@ -133,14 +133,7 @@ fn build_entities(body: &DomainResp, domain: &str, scan_id: &str) -> Vec<Entity>
     let mut seen_ips: HashSet<String> = HashSet::new();
     let mut seen_asns: HashSet<i64> = HashSet::new();
     let mut seen_orgs: HashSet<String> = HashSet::new();
-    // Shared by the primary discovered-asset Domain AND the reverse-DNS PTR
-    // Domain below: a forward-confirmed PTR (a host whose reverse DNS points
-    // back to its own name — an ordinary shape for e.g. a mail server) can
-    // carry the SAME value as `host`, and `host` itself is not guaranteed
-    // unique across `results[]` rows either. Without one shared set, the
-    // identical (Domain, value) pair could be minted twice from within this
-    // module's own code path.
-    let mut seen_domains: HashSet<String> = HashSet::new();
+    let mut seen_ptrs: HashSet<String> = HashSet::new();
 
     for rec in &body.results {
         let Some(host) = rec
@@ -165,28 +158,26 @@ fn build_entities(body: &DomainResp, domain: &str, scan_id: &str) -> Vec<Entity>
             .filter(|s| s.len() >= 2);
 
         // ── Discovered subdomain/asset ───────────────────────────
-        if seen_domains.insert(host.clone()) {
-            let mut e = Entity::new(EntityKind::Domain, &host, confidence::EXPERT, scan_id);
-            e.tag(SRC);
-            e.tag(tags::SUBDOMAIN);
-            let mut ev = Evidence::new(
-                SRC,
-                format!("FullHunt attack-surface asset under {domain_lc}"),
-            )
-            .with_attr("parent_domain", &domain_lc)
-            .with_attr("total_query_results", &total);
-            if let Some(ip) = ip {
-                ev = ev.with_attr("ip_address", ip);
-            }
-            if let Some(asn) = asn {
-                ev = ev.with_attr("asn", format!("AS{asn}"));
-            }
-            if let Some(org) = org {
-                ev = ev.with_attr("organization", org);
-            }
-            e.add_evidence(ev);
-            out.push(e);
+        let mut e = Entity::new(EntityKind::Domain, &host, confidence::EXPERT, scan_id);
+        e.tag(SRC);
+        e.tag(tags::SUBDOMAIN);
+        let mut ev = Evidence::new(
+            SRC,
+            format!("FullHunt attack-surface asset under {domain_lc}"),
+        )
+        .with_attr("parent_domain", &domain_lc)
+        .with_attr("total_query_results", &total);
+        if let Some(ip) = ip {
+            ev = ev.with_attr("ip_address", ip);
         }
+        if let Some(asn) = asn {
+            ev = ev.with_attr("asn", format!("AS{asn}"));
+        }
+        if let Some(org) = org {
+            ev = ev.with_attr("organization", org);
+        }
+        e.add_evidence(ev);
+        out.push(e);
 
         // ── Resolved IP as its own asset ──────────────────────────
         if let Some(ip) = ip
@@ -236,7 +227,7 @@ fn build_entities(body: &DomainResp, domain: &str, scan_id: &str) -> Vec<Entity>
                     || !ptr.contains('.')
                     || ptr.parse::<std::net::IpAddr>().is_ok()
                     || ptr.contains(char::is_whitespace)
-                    || !seen_domains.insert(ptr.clone())
+                    || !seen_ptrs.insert(ptr.clone())
                 {
                     continue;
                 }

@@ -181,47 +181,6 @@ use super::*;
     }
 
     #[test]
-    fn summarize_drops_a_country_whose_own_ip_is_a_cdn_edge() {
-        // Regression: `countries` used to be collected with no relation to
-        // which IP produced it, so a Cloudflare-fronted domain's historical
-        // scans — each behind a DIFFERENT edge IP, none of them the subject's
-        // real infrastructure — minted a real-looking Address/Coordinates
-        // per distinct "country" the CDN edges happened to answer from. A
-        // result whose own `ip` is a CDN/anycast edge must not contribute its
-        // country; a result with a genuine IP still does.
-        let r = results(
-            r#"{"results":[
-              {"page":{"domain":"example.com","ip":"104.16.0.1","country":"US"}},
-              {"page":{"domain":"example.com","ip":"8.8.8.8","country":"DE"}}
-            ]}"#,
-        );
-        let i = summarize(&r);
-        assert!(
-            !i.countries.contains("US"),
-            "the CDN-edge record's country must be dropped: {:?}",
-            i.countries
-        );
-        assert!(
-            i.countries.contains("DE"),
-            "the genuine record's country must still surface: {:?}",
-            i.countries
-        );
-        // Both IPs are still real, useful pivots regardless of geo trust —
-        // only the derived country/Address/Coordinates are suppressed.
-        assert_eq!(i.unique_ips.len(), 2);
-    }
-
-    #[test]
-    fn summarize_trusts_a_country_when_the_record_carries_no_ip() {
-        // A record with no `ip` field at all has nothing to disprove it with
-        // — it must still be trusted, matching the module's pre-existing
-        // (unguarded) behavior for this case.
-        let r = results(r#"{"results":[{"page":{"domain":"example.com","country":"FR"}}]}"#);
-        let i = summarize(&r);
-        assert!(i.countries.contains("FR"));
-    }
-
-    #[test]
     fn child_entities_surface_announcing_asn_and_ptr_host() {
         let r = results(
             r#"{"results":[

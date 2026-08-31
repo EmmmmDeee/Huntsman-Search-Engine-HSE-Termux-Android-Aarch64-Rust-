@@ -225,11 +225,6 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
     out.push(entity);
 
     if let Some(w) = body.whois.as_ref().and_then(|w| w.data.first()) {
-        // Suppressed when the host IP is a CDN/anycast edge (the geo is the
-        // datacentre, not the subject) — parity with the sibling IP-geo
-        // modules (ipinfo/ip2location/ip_whois_geo/ipquery/netlas/geo_intel).
-        // Gates Coordinates/Address only; Organisation/ASN below are unaffected.
-        let geo_trusted = crate::core::validation::untrusted_ip_geo_reason(ip).is_none();
         if let Some(org) = nonblank(w.org_name.as_deref()) {
             let mut oe = Entity::new(EntityKind::Organisation, org, confidence::HIGH, scan_id);
             oe.tag("criminal_ip");
@@ -253,7 +248,6 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
         // registered location, not proof of the subject's whereabouts.
         if let (Some(lat), Some(lon)) = (w.latitude, w.longitude)
             && crate::util::geo::is_valid_coords(lat, lon)
-            && geo_trusted
         {
             let coord_val = format!("{lat:.4},{lon:.4}");
             let mut ce = Entity::new(
@@ -268,7 +262,7 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
             out.push(ce);
         }
         let city = nonblank(w.city.as_deref()).unwrap_or("");
-        if !city.is_empty() && geo_trusted {
+        if !city.is_empty() {
             let region = nonblank(w.region.as_deref()).unwrap_or("");
             let country = nonblank(w.org_country_code.as_deref())
                 .map(str::to_uppercase)
