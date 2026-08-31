@@ -127,7 +127,12 @@ impl Module for ExifGeo {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        &["T1589.003", "T1591.001"]
+        // T1589.003 (Employee Names, for Person) and T1591.001 (Physical
+        // Locations, for Coordinates) cover two of the three produced kinds;
+        // the third — DeviceId, a camera hardware serial — is T1592.001
+        // (Hardware), the same mapping signal_radar already uses for a
+        // device hardware identifier.
+        &["T1589.003", "T1591.001", "T1592.001"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {

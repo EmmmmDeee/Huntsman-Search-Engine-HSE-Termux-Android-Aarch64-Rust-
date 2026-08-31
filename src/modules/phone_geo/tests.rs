@@ -72,6 +72,40 @@ fn short_number_returns_none() {
 }
 
 #[test]
+fn truncated_number_that_merely_starts_with_a_real_area_code_is_rejected() {
+    // Regression: lookup_area_code only checked that the national digits
+    // START WITH a real area code, never that there were enough digits left
+    // for a genuine subscriber number — so "1" + "212" (NYC) + "9999" (a
+    // 4-digit remainder, 3 short of a real 7-digit US subscriber number)
+    // used to resolve exactly as confidently as a genuine 10-digit number.
+    assert!(
+        lookup_area_code("12129999").is_none(),
+        "a truncated NANP number must not resolve just because it starts with a real area code"
+    );
+    // The full, genuine number (10 national digits) must still resolve.
+    assert!(lookup_area_code("12129999999").is_some());
+
+    // Same class of truncation for AU (needs 9 national digits) and GB
+    // (needs 10).
+    assert!(
+        lookup_area_code("6121234567").is_none(),
+        "8 national digits, one short"
+    );
+    assert!(
+        lookup_area_code("61212345678").is_some(),
+        "9 national digits, complete"
+    );
+    assert!(
+        lookup_area_code("44201234567").is_none(),
+        "9 national digits, one short"
+    );
+    assert!(
+        lookup_area_code("442012345678").is_some(),
+        "10 national digits, complete"
+    );
+}
+
+#[test]
 fn area_tables_are_well_formed_and_prefix_ordered() {
     // Country prefixes must not shadow each other (longest-first), or a whole
     // country's table becomes unreachable.
@@ -181,7 +215,7 @@ fn au_carrier_maps_prefixes_with_full_fields() {
     let telstra = au_carrier("400").expect("should succeed");
     assert_eq!(telstra.carrier, "Telstra");
     assert_eq!(telstra.country, "Australia");
-    assert_eq!(telstra.confidence, 0.42);
+    assert_eq!(telstra.confidence, confidence::LOW);
     assert_eq!(telstra.network_hint, "dominant_rural_regional");
 
     let vodafone = au_carrier("420").expect("should succeed");

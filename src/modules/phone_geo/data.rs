@@ -27,11 +27,43 @@ pub(super) struct AreaCodeGeo {
     pub(super) confidence: f64,
 }
 
+/// The minimum national-significant-number length (digits after the country
+/// dialling prefix) for a COMPLETE number, keyed by dialling prefix — `None`
+/// when no exact figure is asserted here (see below).
+///
+/// AU (9: 1-digit area + 8-digit subscriber, or the 2-digit "36" Tasmania
+/// label + 7-digit subscriber), GB (10: matches the mobile threshold
+/// [`identify_carrier`] already uses for the same country), NANP/`1` (10:
+/// area(3) + exchange(3) + subscriber(4), fixed by the NANP standard with no
+/// regional variation), and FR (9: single national significant number length
+/// regardless of the leading region digit) are well-established, fixed
+/// figures. DE and JP are deliberately absent — both have genuinely
+/// variable-length area codes in real-world use (a longer area code pairs
+/// with a shorter subscriber number and vice versa), so a single asserted
+/// minimum risks rejecting a real, complete number rather than only a
+/// truncated one; left as a documented gap rather than a guess.
+fn min_national_len(country_prefix: &str) -> Option<usize> {
+    match country_prefix {
+        "61" => Some(9),
+        "44" => Some(10),
+        "1" => Some(10),
+        "33" => Some(9),
+        "64" => Some(8),
+        _ => None,
+    }
+}
+
 /// Resolve a phone number's geographic **area code** to a city-grain fix
-/// (`AreaCodeGeo`: city, country, ISO, area code, 0.58 confidence), or `None` when
-/// no country prefix + area code matches. The phone-number locality signal — for
-/// an AU landline its `02/03/07/08` area code names the region; the tables are
-/// scanned by dialling prefix, so any covered country resolves.
+/// (`AreaCodeGeo`: city, country, ISO, area code, confidence::MEDIUM_SOLID),
+/// or `None` when no country prefix + area code matches, OR the matched
+/// country's national digits are shorter than a complete number can be (see
+/// [`min_national_len`]) — an area code alone is not evidence of a REAL
+/// number; a truncated digit string (e.g. a breach-dump phone field cut off
+/// mid-number) that merely starts with a real area code used to resolve at
+/// the identical confidence as a genuinely complete one. The phone-number
+/// locality signal — for an AU landline its `02/03/07/08` area code names
+/// the region; the tables are scanned by dialling prefix, so any covered
+/// country resolves.
 pub(super) fn lookup_area_code(digits: &str) -> Option<AreaCodeGeo> {
     // First country whose dialling prefix the number carries AND whose table has
     // a matching area code; a prefix match with no area hit falls through to the
@@ -40,13 +72,16 @@ pub(super) fn lookup_area_code(digits: &str) -> Option<AreaCodeGeo> {
         .iter()
         .find_map(|&(country_prefix, table)| {
             let national = digits.strip_prefix(country_prefix)?;
+            if national.len() < min_national_len(country_prefix).unwrap_or(0) {
+                return None;
+            }
             table.iter().find_map(|&(area, city, cc)| {
                 national.starts_with(area).then(|| AreaCodeGeo {
                     location: city,
                     country: country_name(cc),
                     country_code: cc,
                     area_code: area,
-                    confidence: 0.58,
+                    confidence: confidence::MEDIUM_SOLID,
                 })
             })
         })
@@ -235,7 +270,9 @@ pub(super) fn au_carrier(prefix_3: &str) -> Option<CarrierInfo> {
     Some(CarrierInfo {
         carrier,
         country: "Australia",
-        confidence: 0.42,
+        // Aligned with uk_carrier's identical signal class below (allocation-
+        // predates-portability carrier hint) — 0.42 had no exact ladder rung.
+        confidence: confidence::LOW,
         network_hint: match carrier {
             "Telstra" => "dominant_rural_regional",
             "Optus" => "metro_suburban",

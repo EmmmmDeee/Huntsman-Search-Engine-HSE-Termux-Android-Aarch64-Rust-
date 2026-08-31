@@ -2,6 +2,7 @@ use super::EmailHeaderGeo;
 use super::infer::{detect_corporate_provider, infer_geo_from_email_domain};
 use super::tables::CONSUMER_PROVIDERS;
 use crate::core::{
+    confidence,
     entity::EntityKind,
     module::{Module, ModuleContext},
     scan::{Target, TargetKind},
@@ -174,7 +175,10 @@ async fn au_email_produces_address() {
 }
 
 #[tokio::test]
-async fn bigpond_email_produces_two_entities() {
+async fn bigpond_com_email_yields_the_provider_inferred_address() {
+    // "bigpond.com" carries no ccTLD match (no ".au" suffix), so only the
+    // regional-provider path fires here — the collision case where BOTH
+    // paths fire for the same domain is covered separately below.
     let m = EmailHeaderGeo;
     let target = Target::new(TargetKind::Email, "alice@bigpond.com");
     let (bus, _rx) = tokio::sync::broadcast::channel(8);
@@ -213,6 +217,38 @@ async fn bigpond_email_produces_two_entities() {
 }
 
 #[tokio::test]
+async fn bigpond_com_au_does_not_double_emit_the_same_region() {
+    // Regression: "bigpond.com.au" matches BOTH the ccTLD path (".au" suffix
+    // -> Australia) AND the regional-provider path ("bigpond" brand ->
+    // Australia) independently, since the two `if let` blocks were not
+    // mutually exclusive — one process() call pushed two Address entities
+    // (and two derived Coordinates) both named "Australia" for what is
+    // really one signal restated twice.
+    let m = EmailHeaderGeo;
+    let target = Target::new(TargetKind::Email, "alice@bigpond.com.au");
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let ctx = ModuleContext {
+        scan_id: "test".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: Default::default(),
+        cancel: Default::default(),
+    };
+    let r = m.process(&target, &ctx).await.expect("should succeed");
+    let australia_addresses: Vec<_> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address && e.value == "Australia")
+        .collect();
+    assert_eq!(
+        australia_addresses.len(),
+        1,
+        "must emit exactly one Australia Address, not one per matching path: {:?}",
+        r.entities
+    );
+}
+
+#[tokio::test]
 async fn mixed_case_domain_is_detected() {
     // DNS is case-insensitive; a mixed-case address must geolocate the same
     // as its lowercase form (the ccTLD table is lowercase, so without folding
@@ -234,7 +270,7 @@ async fn mixed_case_domain_is_detected() {
 #[test]
 fn au_family_domains_all_infer_australia() {
     // Every `.au` shape — direct, net, id, asn — must earn the AU signal, not
-    // just `.com.au`. The catch-all uses the `.au`-suffix 0.52 confidence branch.
+    // just `.com.au`. The catch-all uses the `.au`-suffix confidence::MEDIUM_LIGHT branch.
     for d in [
         "qantas.com.au",
         "qantas.net.au",
@@ -245,7 +281,7 @@ fn au_family_domains_all_infer_australia() {
         let g = infer_geo_from_email_domain(d).unwrap_or_else(|| panic!("{d} should infer AU"));
         assert_eq!(g.region, "Australia", "{d}");
         assert!(
-            (g.confidence - 0.52).abs() < 1e-9,
+            (g.confidence - confidence::MEDIUM_LIGHT).abs() < 1e-9,
             "{d} confidence {}",
             g.confidence
         );

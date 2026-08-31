@@ -130,13 +130,35 @@ use super::*;
     }
 
     #[test]
-    fn cdn_edge_ip_is_skipped_entirely() {
-        // 151.101.0.1 ∈ Fastly 151.101.0.0/16 — geo belongs to the datacenter.
+    fn cdn_edge_ip_suppresses_coords_and_address_but_keeps_asn_and_org() {
+        // 151.101.0.1 ∈ Fastly 151.101.0.0/16 — geo belongs to the datacenter,
+        // but "AS54113 Fastly, Inc." is correct operator attribution regardless
+        // of where the edge node physically sits. Regression: this used to
+        // early-return an empty Vec for the whole record, dropping ASN/Org too.
         let body = resp(
             r#"{"status":"success","country":"United States","city":"San Francisco",
-                "lat":37.77,"lon":-122.42,"as":"AS54113 Fastly"}"#,
+                "lat":37.77,"lon":-122.42,"as":"AS54113 Fastly","org":"Fastly, Inc.",
+                "mobile":false,"proxy":false,"hosting":false}"#,
         );
-        assert!(build_entities(&body, "151.101.0.1", "s").is_empty());
+        let ents = build_entities(&body, "151.101.0.1", "s");
+        assert!(
+            of_kind(&ents, EntityKind::Coordinates).is_none(),
+            "a CDN/anycast edge IP must not synthesise subject Coordinates"
+        );
+        assert!(
+            of_kind(&ents, EntityKind::Address).is_none(),
+            "a CDN/anycast edge IP must not synthesise a subject Address"
+        );
+        assert_eq!(
+            of_kind(&ents, EntityKind::Asn).expect("ASN survives a CDN edge IP").value,
+            "AS54113 Fastly"
+        );
+        assert_eq!(
+            of_kind(&ents, EntityKind::Organisation)
+                .expect("Organisation survives a CDN edge IP")
+                .value,
+            "Fastly, Inc."
+        );
     }
 
     #[test]
@@ -149,11 +171,11 @@ use super::*;
                 "as":"AS13335 Cloudflare","org":"Cloudflare Inc",
                 "mobile":false,"proxy":true,"hosting":true}"#,
         );
-        let ents = build_entities(&body, "203.confidence::MEDIUM_HIGH.55", "s");
+        let ents = build_entities(&body, "203.0.113.55", "s");
 
         let coords = of_kind(&ents, EntityKind::Coordinates).expect("Coordinates entity");
-        // hosting/proxy → 0.35.
-        assert!((coords.confidence - 0.35).abs() < 1e-9);
+        // hosting/proxy → confidence::TENTATIVE.
+        assert!((coords.confidence - confidence::TENTATIVE).abs() < 1e-9);
         assert!(coords.has_tag("proxy") && coords.has_tag("hosting"));
         assert!(coords.has_tag("off-region"), "US fix → off-region");
 

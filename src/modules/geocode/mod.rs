@@ -223,7 +223,8 @@ impl Geocode {
             && crate::util::geo::is_valid_coords(lat, lon)
         {
             let coords = format!("{lat:.6},{lon:.6}");
-            let mut e = build_forward_entity(lat, lon, &coords, &ctx.scan_id);
+            let mut e =
+                build_forward_entity(lat, lon, &coords, first.address.as_ref(), &ctx.scan_id);
             let mut ev = Evidence::new(SRC, format!("Geocoded \"{addr}\" \u{2192} {coords}"))
                 .with_attr("input_address", addr)
                 .with_attr("latitude", lat_str)
@@ -301,15 +302,29 @@ fn decode_forward_body(body: &str) -> Option<Vec<NominatimResult>> {
 }
 
 /// Build the forward-geocode Coordinates entity, shaping confidence and tags by
-/// AU relevance of the resolved point (offline [`crate::util::geo::is_in_australia`]):
-/// a fix that lands in Australia is a strong on-region anchor (confidence::HIGH_PLUS,
-/// `au-relevant`); one abroad is demoted to a candidate (confidence::LOW, `off-region` +
-/// `candidate`) so it sits below the confidence::MEDIUM expansion floor and is quarantined
-/// from confirmed correlations — an ambiguous address string can't drag an
-/// AU-focused scan off-region. Pure (no I/O); the caller attaches evidence.
+/// AU relevance of the resolved point via [`au_relevance`] — the same
+/// country-code-first classification `build_reverse_entity` uses, rather than
+/// the offline [`crate::util::geo::is_in_australia`] bounding box alone.
+/// Regression: the box is deliberately coarse and has a known false-positive
+/// band (e.g. Rote Island/West Timor, Indonesia) that it misreads as Western
+/// Australia; Nominatim's own `address.country_code` is authoritative when
+/// present and must win over the box, exactly as the reverse leg already does.
+/// A fix classified `InAustralia` is a strong on-region anchor
+/// (confidence::HIGH_PLUS, `au-relevant`); anything else (a genuinely
+/// off-region country, or no country code and outside the box) is demoted to
+/// a candidate (confidence::LOW, `off-region` + `candidate`) so it sits below
+/// the confidence::MEDIUM expansion floor and is quarantined from confirmed
+/// correlations — an ambiguous address string can't drag an AU-focused scan
+/// off-region. Pure (no I/O); the caller attaches evidence.
 #[must_use]
-pub(super) fn build_forward_entity(lat: f64, lon: f64, coords: &str, scan_id: &str) -> Entity {
-    let in_au = crate::util::geo::is_in_australia(lat, lon);
+pub(super) fn build_forward_entity(
+    lat: f64,
+    lon: f64,
+    coords: &str,
+    addr: Option<&NominatimAddr>,
+    scan_id: &str,
+) -> Entity {
+    let in_au = au_relevance(lat, lon, addr) == AuRelevance::InAustralia;
     let confidence = if in_au {
         confidence::HIGH_PLUS
     } else {

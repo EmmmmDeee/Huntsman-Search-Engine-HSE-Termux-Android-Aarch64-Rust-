@@ -540,7 +540,7 @@ pub fn confidence_for_accuracy_m(metres: Option<f64>) -> f64 {
         0..=200 => confidence::VERY_HIGH,
         201..=1000 => confidence::HIGH,
         1001..=5000 => confidence::MEDIUM,
-        _ => 0.35,
+        _ => confidence::TENTATIVE,
     }
 }
 

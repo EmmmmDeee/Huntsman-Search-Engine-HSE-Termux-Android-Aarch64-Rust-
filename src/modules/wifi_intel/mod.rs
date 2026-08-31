@@ -91,7 +91,10 @@ impl Module for WifiIntel {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        &["T1591.001", "T1592"]
+        // T1596 (Search Open Technical Databases): the WiGLE-detail lookup
+        // phase queries the same crowdsourced open WiFi/cell database the
+        // sibling wigle/mylnikov/opencellid modules claim T1596 for.
+        &["T1591.001", "T1592", "T1596"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {

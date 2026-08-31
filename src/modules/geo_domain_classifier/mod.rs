@@ -237,7 +237,7 @@ fn classify_au_jurisdiction_domain(domain: &str) -> Option<GeoClassification> {
     Some(GeoClassification {
         location,
         country_code: "AU",
-        confidence: 0.62,
+        confidence: confidence::NOTABLE,
         method: "au_gov_domain",
         au_state: Some(state),
     })

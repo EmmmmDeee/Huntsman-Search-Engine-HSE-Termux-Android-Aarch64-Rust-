@@ -87,6 +87,51 @@ use super::*;
         );
     }
 
+    /// Regression: the ccTLD block and the local-part block used to be
+    /// independent `if let`s, so an email matching BOTH — exactly this
+    /// module's own documented best case ("Combined with the domain ccTLD,
+    /// these signals narrow geography") — pushed two Address + two duplicate
+    /// Coordinates entities (at the identical Berlin centroid) both naming
+    /// "Germany" for what both readings agree is one place.
+    #[tokio::test]
+    async fn german_name_on_de_domain_does_not_double_emit_the_same_region() {
+        let (bus, _rx) = tokio::sync::broadcast::channel(1);
+        let ctx = ModuleContext {
+            scan_id: "s".into(),
+            bus,
+            http: reqwest::Client::new(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+        let r = EmailLocale
+            .process(
+                &Target::new(TargetKind::Email, "matthias.schmidt@example.de"),
+                &ctx,
+            )
+            .await
+            .expect("should succeed");
+        let germany_addresses: Vec<_> = r
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Address && e.value == "Germany")
+            .collect();
+        assert_eq!(
+            germany_addresses.len(),
+            1,
+            "must emit exactly one Germany Address, not one per matching signal: {:?}",
+            r.entities
+        );
+        let germany_coords = r
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Coordinates)
+            .count();
+        assert_eq!(
+            germany_coords, 1,
+            "must emit exactly one derived Coordinates entity, not one per matching signal"
+        );
+    }
+
     #[tokio::test]
     async fn module_metadata() {
         let m = EmailLocale;

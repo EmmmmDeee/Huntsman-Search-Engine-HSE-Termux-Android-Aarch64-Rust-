@@ -29,6 +29,21 @@ fn module_name_and_priority() {
 }
 
 #[test]
+fn attack_techniques_claims_open_technical_database_search() {
+    // Regression: the WiGLE-detail lookup phase queries the same crowdsourced
+    // open WiFi/cell database the sibling wigle/mylnikov/opencellid modules
+    // claim T1596 (Search Open Technical Databases) for, but this module
+    // never declared it.
+    let t = WifiIntel.attack_techniques();
+    assert!(t.contains(&"T1591.001"));
+    assert!(t.contains(&"T1592"));
+    assert!(
+        t.contains(&"T1596"),
+        "must include open technical databases"
+    );
+}
+
+#[test]
 fn description_is_set() {
     assert_eq!(
         WifiIntel.description(),

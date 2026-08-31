@@ -1,13 +1,29 @@
-//! Breach timestamp timezone inference — cluster entity observation
-//! timestamps to infer the target's active timezone.
+//! Breach timestamp timezone inference — cluster observed timestamps to infer
+//! the target's active timezone.
 //!
 //! Stealer logs and breach records carry timestamps. If 70%+ of a
 //! target's activity falls within a consistent 14-hour window, the
-//! midpoint of that window reveals the local timezone (±1 hour).
+//! midpoint of that window reveals the local timezone (±1 hour). The
+//! clustering algorithm itself ([`infer_timezone`]) is correct and directly
+//! unit-tested.
 //!
-//! No network calls. Operates on evidence attributes already attached
-//! to entities. Priority 7 — runs late so other modules have produced
-//! timestamped evidence first.
+//! No network calls.
+//!
+//! **Known limitation**: `ModuleContext` (`src/core/module/mod.rs`) carries no
+//! accessor for the scan's accumulated entity/evidence graph — only
+//! `scan_id`/`bus`/`http`/`keys`/`cancel` — so [`Module::process`] cannot
+//! read "evidence attributes already attached to entities" despite that
+//! being this module's original intent (and the reason for its late,
+//! priority-7 dispatch). What it does instead is slide a 10-digit window
+//! across the bare `target.value` string (an Email/Username/Phone) looking
+//! for embedded Unix timestamps — which a realistic target value essentially
+//! never contains 5+ of, so `process()` returns empty on effectively every
+//! real scan. The architecturally correct fix is a correlator rule (which
+//! does see the full post-scan entity graph, e.g. via
+//! `core::timeline::reconstruct`) reusing this file's existing clustering
+//! algorithm, not a `Module`; that is a genuine redesign beyond a tactical
+//! per-module audit fix, so it stays a documented follow-up rather than a
+//! guess at one.
 
 use async_trait::async_trait;
 
@@ -203,13 +219,17 @@ fn infer_timezone(hours: &[u32]) -> Option<TimezoneInference> {
         return None;
     }
 
-    let confidence = 0.35 + (concentration - MIN_CONCENTRATION) * 0.5;
+    // concentration ranges over [MIN_CONCENTRATION, 1.0], so this formula's
+    // own maximum is confidence::TENTATIVE + (1.0 - MIN_CONCENTRATION) * 0.5
+    // = 0.50 — well under confidence::MEDIUM_PLUS, so no further clamp is
+    // needed (a `.min(confidence::MEDIUM_PLUS)` here would be dead code).
+    let confidence = confidence::TENTATIVE + (concentration - MIN_CONCENTRATION) * 0.5;
     let region = offset_to_region(best_offset);
 
     Some(TimezoneInference {
         utc_offset: best_offset,
         region,
-        confidence: confidence.min(confidence::MEDIUM_PLUS),
+        confidence,
         concentration,
     })
 }

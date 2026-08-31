@@ -136,7 +136,23 @@ impl Module for EmailHeaderGeo {
             result.push(e);
         }
 
-        if let Some((provider, region)) = detect_corporate_provider(domain) {
+        // A real Australian regional-ISP brand (bigpond, optusnet, tpg, …) is
+        // routinely ALSO on a matching .com.au/.net.au domain, so the ccTLD
+        // block above and this one can independently resolve to the identical
+        // region from the same domain (e.g. "bigpond.com.au") — without this
+        // guard, one process() call pushed two Address + two Coordinates
+        // entities for what is really one signal restated twice, inflating
+        // Entity::absorb's corroboration counter for a non-corroborating dupe.
+        let already_named_this_region = |region: &str| {
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Address && e.value.eq_ignore_ascii_case(region))
+        };
+
+        if let Some((provider, region)) = detect_corporate_provider(domain)
+            && !already_named_this_region(region)
+        {
             let mut e = Entity::new(EntityKind::Address, region, confidence::LOW, &ctx.scan_id);
             e.tag("geoint");
             e.tag(crate::core::tags::COARSE);

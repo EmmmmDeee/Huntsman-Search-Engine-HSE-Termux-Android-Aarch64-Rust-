@@ -150,6 +150,21 @@ fn cost_is_key_gated() {
 }
 
 #[test]
+fn attack_techniques_claims_open_technical_database_search() {
+    // Regression: WiGLE's entire function is querying its own crowdsourced
+    // open WiFi/cell/Bluetooth database — the same mechanism mylnikov/
+    // opencellid claim T1596 (Search Open Technical Databases) for, but this
+    // module never declared it.
+    let t = Wigle.attack_techniques();
+    assert!(t.contains(&"T1591.001"));
+    assert!(t.contains(&"T1591.002"));
+    assert!(
+        t.contains(&"T1596"),
+        "must include open technical databases"
+    );
+}
+
+#[test]
 fn mode_breaks_ties_deterministically() {
     assert_eq!(mode(&["bravo", "alpha", "alpha", "bravo"]), "alpha");
     assert_eq!(mode(&["alpha", "bravo", "bravo", "alpha"]), "alpha");

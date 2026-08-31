@@ -18,6 +18,21 @@ fn classifies_known_australian_service() {
     }
 
     #[test]
+    fn classifies_au_state_gov_domain() {
+        // Regression: this classifier's confidence was a bare 0.62 (exact
+        // match for confidence::NOTABLE) assigned via a struct-literal field
+        // rather than the module's own named constants its two sibling
+        // classifiers use — and had no confidence assertion at all until now.
+        let geo =
+            classify_au_jurisdiction_domain("health.nsw.gov.au").expect("should succeed");
+        assert_eq!(geo.location, "New South Wales, Australia");
+        assert_eq!(geo.country_code, "AU");
+        assert_eq!(geo.method, "au_gov_domain");
+        assert_eq!(geo.au_state, Some("NSW"));
+        assert!((geo.confidence - confidence::NOTABLE).abs() < 1e-9);
+    }
+
+    #[test]
     fn strips_www() {
         let geo = classify_by_known_service("www.chase.com").expect("should succeed");
         assert_eq!(geo.country_code, "US");

@@ -123,7 +123,7 @@ async fn national_number_without_marker_yields_no_coordinate() {
 fn ip_geo_rejects_the_null_island_band_not_just_exact_zero() {
     // geo_intel now gates both coarse free-tier IP sources on the null-island
     // BAND guard (is_plausible_provider_coord) — a near-(0,0) "unknown location"
-    // placeholder is rejected, not emitted as a 0.68-confidence GPS-grade fix
+    // placeholder is rejected, not emitted as a confidence::HIGH GPS-grade fix
     // that poisons AU-014 geo-clustering with a false Null-Island convergence.
     let band: IpApiCoResp =
         serde_json::from_str(r#"{"latitude":0.004,"longitude":0.004}"#).expect("should succeed");
@@ -187,7 +187,7 @@ fn freeipapi_resp_deserializes() {
 }
 
 #[test]
-fn ipapico_builder_emits_for_clean_ip_with_iso_and_skips_untrusted() {
+fn ipapico_builder_emits_for_clean_ip_with_iso() {
     let json = r#"{"city":"South Brisbane","region":"Queensland","country_name":"Australia","country_code":"AU","postal":"4101","latitude":-27.4766,"longitude":153.0166,"timezone":"Australia/Brisbane","org":"APNIC","asn":"AS13335"}"#;
     let r: IpApiCoResp = serde_json::from_str(json).expect("should succeed");
     let entities = build_ipapico_entity(&r, "1.2.3.4", false, "t");
@@ -204,9 +204,28 @@ fn ipapico_builder_emits_for_clean_ip_with_iso_and_skips_untrusted() {
     );
     assert!(e.tags.iter().any(|t| t == "country:AU"));
     assert!(e.tags.iter().any(|t| t.starts_with("au-state:")));
-    assert!(build_ipapico_entity(&r, "104.16.0.1", true, "t").is_empty());
     let err: IpApiCoResp = serde_json::from_str(r#"{"error":true}"#).expect("should succeed");
     assert!(build_ipapico_entity(&err, "1.2.3.4", false, "t").is_empty());
+}
+
+#[test]
+fn ipapico_builder_untrusted_suppresses_coords_but_keeps_asn() {
+    // Regression: geo_untrusted used to early-return an empty Vec for the
+    // whole record, silently dropping the ASN too — "AS13335 Cloudflare" is
+    // correct operator attribution for a CDN edge IP even though its lat/lon
+    // isn't, matching every other IP-geo module's narrow-gating policy.
+    let json = r#"{"city":"South Brisbane","region":"Queensland","country_name":"Australia","country_code":"AU","postal":"4101","latitude":-27.4766,"longitude":153.0166,"timezone":"Australia/Brisbane","org":"APNIC","asn":"AS13335"}"#;
+    let r: IpApiCoResp = serde_json::from_str(json).expect("should succeed");
+    let entities = build_ipapico_entity(&r, "104.16.0.1", true, "t");
+    assert!(
+        entities.iter().all(|e| e.kind != EntityKind::Coordinates),
+        "geo-untrusted IP must not emit Coordinates: {entities:?}"
+    );
+    let asn = entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Asn)
+        .expect("ASN must survive a geo-untrusted IP");
+    assert_eq!(asn.value, "AS13335");
 }
 
 #[test]
