@@ -48,8 +48,14 @@ use wasm_bindgen::prelude::*;
 /// a failed JS-value deserialization) into the `JsValue` a `#[wasm_bindgen]`
 /// function's `Result::Err` must carry, so it surfaces to the caller as a
 /// real thrown JS error instead of a silently-swallowed one.
+///
+/// Constructs a real `js_sys::Error` rather than `JsValue::from_str`: every
+/// JS call site that catches one of these (e.g. `scan_info/browse.js`,
+/// `audit.js`, `communities.js`, `leads.js`, `network.js`, `path.js`) reads
+/// `e.message` to display it, which is `undefined` on a bare thrown string —
+/// the string has no `.message` property.
 pub(crate) fn to_js_error(e: impl std::fmt::Display) -> JsValue {
-    JsValue::from_str(&e.to_string())
+    js_sys::Error::new(&e.to_string()).into()
 }
 
 /// Runs automatically when the browser loads this module — no explicit JS
