@@ -198,135 +198,141 @@ impl Module for ZoomEye {
         };
         let body: ZoomResp = json_decode(SRC, resp).await?;
 
-        if body.matches.is_empty() {
-            return Ok(ModuleResult::new());
-        }
-
-        let mut result = ModuleResult::new();
-        let mut seen: HashSet<String> = HashSet::new();
-        // For a CDN/anycast edge IP the geoloc is the answering datacentre, not
-        // the subject — suppress coordinates (as ip_geo / onyphe do).
-        let skip_coords = matches!(target.kind, TargetKind::IpAddress)
-            && crate::core::validation::is_cdn_edge_ip(value);
-        // Distinct exposed ports/services, collected across matches to tag the
-        // seed IP once with its full service surface.
-        let mut ports: Vec<String> = Vec::new();
-        // Per-port app/banner detail (only for ports that have one), reported
-        // as a separate evidence attribute so the raw banner text never
-        // pollutes the short `port:<label>` tag.
-        let mut port_details: Vec<String> = Vec::new();
-        let mut ips_emitted = 0usize;
-
-        for m in body.matches.iter().take(MAX_MATCHES) {
-            let ev = || Evidence::new(SRC, format!("ZoomEye host match for {value}"));
-
-            // ── Coordinates ─────────────────────────────────────────────────
-            if !skip_coords
-                && let Some((lat, lon)) = coords(m)
-                && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
-                && let Some(mut ce) = crate::util::geo::coarse_provider_coords(
-                    lat,
-                    lon,
-                    confidence::MEDIUM_HIGH,
-                    &ctx.scan_id,
-                )
-            {
-                if let Some(cc) = geo_country_code(m) {
-                    ce.tag(format!("country:{}", cc.to_uppercase()));
-                }
-                ce.add_evidence(ev());
-                result.push(ce);
-            }
-
-            // ── City / country as an Address ────────────────────────────────
-            if let Some(addr) = geo_address(m)
-                && seen.insert(format!("@addr:{}", addr.to_lowercase()))
-            {
-                let mut ae = Entity::new(
-                    EntityKind::Address,
-                    &addr,
-                    confidence::MEDIUM_HIGH,
-                    &ctx.scan_id,
-                );
-                ae.tag(crate::core::tags::GEOINT);
-                ae.add_evidence(ev());
-                result.push(ae);
-            }
-
-            // ── ASN + operator org ──────────────────────────────────────────
-            if let Some(asn) = geo_asn(m)
-                && seen.insert(asn.to_lowercase())
-            {
-                let mut ae =
-                    Entity::new(EntityKind::Asn, &asn, confidence::VERY_HIGH, &ctx.scan_id);
-                ae.add_evidence(ev());
-                result.push(ae);
-            }
-            if let Some(org) = geo_org(m).filter(|o| o.len() >= 3)
-                && seen.insert(format!("@org:{}", org.to_lowercase()))
-            {
-                let mut oe = Entity::new(
-                    EntityKind::Organisation,
-                    &org,
-                    confidence::MEDIUM_HIGH,
-                    &ctx.scan_id,
-                );
-                oe.add_evidence(ev());
-                result.push(oe);
-            }
-
-            // ── Exposed port / service (tags the seed IP below) ─────────────
-            if ports.len() < MAX_PORTS
-                && let Some(label) = port_label(m)
-                && seen.insert(format!("@port:{label}"))
-            {
-                if let Some(detail) = port_detail(m, &label) {
-                    port_details.push(detail);
-                }
-                ports.push(label);
-            }
-
-            // ── Hosting IPs (domain dork) ───────────────────────────────────
-            if matches!(target.kind, TargetKind::Domain)
-                && ips_emitted < MAX_IPS
-                && let Some(ip) = vstr(m, "ip")
-                && ip != value
-                && seen.insert(format!("@ip:{ip}"))
-            {
-                let mut ie = Entity::new(
-                    EntityKind::IpAddress,
-                    &ip,
-                    confidence::HIGH_PLUS,
-                    &ctx.scan_id,
-                );
-                ie.tag(SRC);
-                ie.add_evidence(ev());
-                result.push(ie);
-                ips_emitted += 1;
-            }
-        }
-
-        // For an IP target, fold the exposed service surface onto the seed entity.
-        if matches!(target.kind, TargetKind::IpAddress) && !ports.is_empty() {
-            let mut e = target.to_entity(confidence::MEDIUM_PLUS, &ctx.scan_id);
-            e.tag(SRC);
-            for label in &ports {
-                e.tag(format!("port:{label}"));
-            }
-            let mut ev = Evidence::new(SRC, format!("ZoomEye: {} exposed service(s)", ports.len()))
-                .with_attr("ports", ports.join(", "));
-            if !port_details.is_empty() {
-                // Full-fidelity policy (mirrors `webserver_banner`): a
-                // detected app/banner reaches the operator verbatim, paired
-                // with its port label so it stays traceable to one service.
-                ev = ev.with_attr("service_details", port_details.join("; "));
-            }
-            e.add_evidence(ev);
-            result.push(e);
-        }
-
-        Ok(result)
+        Ok(extract_entities(&body, target, value, &ctx.scan_id))
     }
+}
+
+/// Pure entity extraction over a decoded ZoomEye response — unit-tested
+/// against fixtures so the network shell in `process` stays a thin adapter.
+/// Mirrors the `extract_entities` convention used by the sibling `onyphe`
+/// module.
+fn extract_entities(body: &ZoomResp, target: &Target, value: &str, scan_id: &str) -> ModuleResult {
+    if body.matches.is_empty() {
+        return ModuleResult::new();
+    }
+
+    let mut result = ModuleResult::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    // Distinct exposed ports/services, collected across matches to tag the
+    // seed IP once with its full service surface.
+    let mut ports: Vec<String> = Vec::new();
+    // Per-port app/banner detail (only for ports that have one), reported
+    // as a separate evidence attribute so the raw banner text never
+    // pollutes the short `port:<label>` tag.
+    let mut port_details: Vec<String> = Vec::new();
+    let mut ips_emitted = 0usize;
+
+    for m in body.matches.iter().take(MAX_MATCHES) {
+        let ev = || Evidence::new(SRC, format!("ZoomEye host match for {value}"));
+
+        // For a CDN/anycast edge IP the geoloc is the answering
+        // datacentre, not the subject — suppress Coordinates/Address (as
+        // ip_geo / onyphe do). Evaluated PER MATCH, not once for the
+        // whole query: a Domain-target dork's matches can each carry a
+        // DIFFERENT `ip` (a Cloudflare-fronted domain shows different
+        // edge IPs across hosts), so a single target-kind-gated flag
+        // would leave every Domain-query match unprotected regardless of
+        // its own `ip` field. Falls back to the queried `value` when a
+        // match carries no `ip` of its own (correct as-is for an
+        // IpAddress-target query, where every match already describes
+        // that one IP).
+        let record_ip = vstr(m, "ip");
+        let geo_trusted =
+            crate::core::validation::untrusted_ip_geo_reason(record_ip.as_deref().unwrap_or(value))
+                .is_none();
+
+        // ── Coordinates ─────────────────────────────────────────────────
+        if geo_trusted
+            && let Some((lat, lon)) = coords(m)
+            && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
+            && let Some(mut ce) =
+                crate::util::geo::coarse_provider_coords(lat, lon, confidence::MEDIUM_HIGH, scan_id)
+        {
+            if let Some(cc) = geo_country_code(m) {
+                ce.tag(format!("country:{}", cc.to_uppercase()));
+            }
+            ce.add_evidence(ev());
+            result.push(ce);
+        }
+
+        // ── City / country as an Address ────────────────────────────────
+        if geo_trusted
+            && let Some(addr) = geo_address(m)
+            && seen.insert(format!("@addr:{}", addr.to_lowercase()))
+        {
+            let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM_HIGH, scan_id);
+            ae.tag(crate::core::tags::GEOINT);
+            ae.add_evidence(ev());
+            result.push(ae);
+        }
+
+        // ── ASN + operator org ──────────────────────────────────────────
+        if let Some(asn) = geo_asn(m)
+            && seen.insert(asn.to_lowercase())
+        {
+            let mut ae = Entity::new(EntityKind::Asn, &asn, confidence::VERY_HIGH, scan_id);
+            ae.add_evidence(ev());
+            result.push(ae);
+        }
+        if let Some(org) = geo_org(m).filter(|o| o.len() >= 3)
+            && seen.insert(format!("@org:{}", org.to_lowercase()))
+        {
+            let mut oe = Entity::new(
+                EntityKind::Organisation,
+                &org,
+                confidence::MEDIUM_HIGH,
+                scan_id,
+            );
+            oe.add_evidence(ev());
+            result.push(oe);
+        }
+
+        // ── Exposed port / service (tags the seed IP below) ─────────────
+        if ports.len() < MAX_PORTS
+            && let Some(label) = port_label(m)
+            && seen.insert(format!("@port:{label}"))
+        {
+            if let Some(detail) = port_detail(m, &label) {
+                port_details.push(detail);
+            }
+            ports.push(label);
+        }
+
+        // ── Hosting IPs (domain dork) ───────────────────────────────────
+        if matches!(target.kind, TargetKind::Domain)
+            && ips_emitted < MAX_IPS
+            && let Some(ip) = vstr(m, "ip")
+            && ip != value
+            && seen.insert(format!("@ip:{ip}"))
+        {
+            let mut ie = Entity::new(EntityKind::IpAddress, &ip, confidence::HIGH_PLUS, scan_id);
+            ie.tag(SRC);
+            ie.add_evidence(ev());
+            result.push(ie);
+            ips_emitted += 1;
+        }
+    }
+
+    // For an IP target, fold the exposed service surface onto the seed entity.
+    if matches!(target.kind, TargetKind::IpAddress) && !ports.is_empty() {
+        let mut e = target.to_entity(confidence::MEDIUM_PLUS, scan_id);
+        e.tag(SRC);
+        for label in &ports {
+            e.tag(format!("port:{label}"));
+        }
+        let mut ev = Evidence::new(SRC, format!("ZoomEye: {} exposed service(s)", ports.len()))
+            .with_attr("ports", ports.join(", "));
+        if !port_details.is_empty() {
+            // Full-fidelity policy (mirrors `webserver_banner`): a
+            // detected app/banner reaches the operator verbatim, paired
+            // with its port label so it stays traceable to one service.
+            ev = ev.with_attr("service_details", port_details.join("; "));
+        }
+        e.add_evidence(ev);
+        result.push(e);
+    }
+
+    result
 }
 
 /// A trimmed, non-empty string field at the top level of a match document.

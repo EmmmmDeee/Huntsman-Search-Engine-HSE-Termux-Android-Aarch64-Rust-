@@ -247,6 +247,45 @@ fn reverse_maps_value_side_to_domain_pivots() {
     }));
 }
 
+#[test]
+fn reverse_rejects_a_record_whose_resolve_names_a_different_ip() {
+    // Regression: the reverse branch never read `resolve` at all, so a
+    // record whose `resolve` names a DIFFERENT IP than the one queried was
+    // still trusted and its `value` pivoted on. `resolve` is documented as
+    // "what value resolved to" — a present, mismatched one must be rejected.
+    let recs = vec![
+        // Genuinely resolves to the queried IP — must still surface.
+        rec("github.com", "140.82.114.3", "ip", "A", "", "", "", &["riskiq"]),
+        // Resolves to a DIFFERENT IP entirely — must be rejected.
+        rec("evil.example", "203.0.113.9", "ip", "A", "", "", "", &["riskiq"]),
+    ];
+    let ents = build_entities(&recs, "140.82.114.3", true, "s");
+    let vals: Vec<&str> = ents.iter().map(|e| e.value.as_str()).collect();
+    assert_eq!(vals, vec!["github.com"], "the mismatched record must be rejected: {vals:?}");
+}
+
+#[test]
+fn forward_rejects_a_record_whose_value_names_a_different_domain() {
+    // Regression: the forward branch never read `value` at all, so a record
+    // whose `value` echoes a DIFFERENT domain than the one queried was still
+    // trusted and its `resolve` answer pivoted on. `value` is documented to
+    // "echo the query for a forward/domain lookup" — a present, mismatched
+    // one must be rejected.
+    let recs = vec![
+        // Genuinely echoes the queried domain — must still surface.
+        rec("github.com", "140.82.114.3", "ip", "A", "", "", "", &["riskiq"]),
+        // Echoes a DIFFERENT domain entirely — must be rejected.
+        rec("evil.example", "198.51.100.7", "ip", "A", "", "", "", &["riskiq"]),
+    ];
+    let ents = build_entities(&recs, "github.com", false, "s");
+    let vals: Vec<&str> = ents.iter().map(|e| e.value.as_str()).collect();
+    assert_eq!(
+        vals,
+        vec!["140.82.114.3"],
+        "the mismatched record must be rejected: {vals:?}"
+    );
+}
+
 // ── edge cases ────────────────────────────────────────────────────
 
 #[test]

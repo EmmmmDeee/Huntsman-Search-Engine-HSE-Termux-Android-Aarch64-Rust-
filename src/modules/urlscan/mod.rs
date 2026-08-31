@@ -287,7 +287,29 @@ fn summarize(results: &[ScanResult]) -> UrlScanIntel {
     };
     UrlScanIntel {
         unique_ips: field(|p| p.ip.as_deref()),
-        countries: field(|p| p.country.as_deref()),
+        // Countries from records whose OWN resolved IP (when present) is not
+        // a CDN/anycast edge — parity with the sibling IP-geo modules
+        // (ipinfo/ip2location/ip_whois_geo/ipquery/netlas/geo_intel/censys/
+        // criminal_ip/shodan/onyphe/zoomeye): its geo is the datacentre, not
+        // the subject. Evaluated PER RESULT, not once for the whole query —
+        // urlscan's primary use is a Domain/Url target, and a
+        // Cloudflare-fronted domain shows a DIFFERENT edge IP (and therefore
+        // a different, meaningless "country") across its historical scans, so
+        // a single target-kind-gated check would leave every result
+        // unprotected. A record with no `ip` at all is trusted as before —
+        // there is nothing to disprove it with.
+        countries: results
+            .iter()
+            .filter_map(|e| e.page.as_ref())
+            .filter(|p| {
+                p.ip.as_deref()
+                    .is_none_or(|ip| crate::core::validation::untrusted_ip_geo_reason(ip).is_none())
+            })
+            .filter_map(|p| p.country.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect(),
         servers: field(|p| p.server.as_deref()),
         domains: field(|p| p.domain.as_deref()),
         urls: field(|p| p.url.as_deref()),

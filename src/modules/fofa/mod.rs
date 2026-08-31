@@ -218,6 +218,18 @@ impl Module for Fofa {
 /// OS ride as evidence on the IP, not as their own entities).
 fn build_entities(body: &FofaResp, scan_id: &str) -> ModuleResult {
     let mut result = ModuleResult::new();
+    // A host with more than one indexed port comes back as MULTIPLE result
+    // rows sharing the same `ip` (one row per `(ip, port)` pair — see the
+    // `host` field's own doc comment above), and the same `domain` can repeat
+    // the same way. Aggregate onto ONE entity per distinct value instead of
+    // minting a fresh Entity per hit — matching this module's own doc intent
+    // just above ("attached as evidence attributes on THE IP entity",
+    // singular) and the aggregate-once convention `zoomeye`/`shodan` use for
+    // the identical per-port-row shape. Each hit still contributes its own
+    // Evidence record (one per port), so no per-port detail is lost.
+    let mut ip_entities: std::collections::HashMap<&str, Entity> = std::collections::HashMap::new();
+    let mut ip_order: Vec<&str> = Vec::new();
+    let mut seen_domains: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
     for hit in &body.results {
         if !hit.ip.is_empty() {
@@ -225,13 +237,20 @@ fn build_entities(body: &FofaResp, scan_id: &str) -> ModuleResult {
             // observation of that host's infrastructure — the provider scanned
             // it — so it sits a rung above the domain below, which is derived
             // from the same record rather than observed on its own.
-            let mut ip_entity = Entity::new(
-                EntityKind::IpAddress,
-                &hit.ip,
-                confidence::HIGH_PLUSPLUS,
-                scan_id,
-            );
-            ip_entity.tag("fofa-host");
+            let is_new = !ip_entities.contains_key(hit.ip.as_str());
+            let ip_entity = ip_entities.entry(hit.ip.as_str()).or_insert_with(|| {
+                let mut e = Entity::new(
+                    EntityKind::IpAddress,
+                    &hit.ip,
+                    confidence::HIGH_PLUSPLUS,
+                    scan_id,
+                );
+                e.tag("fofa-host");
+                e
+            });
+            if is_new {
+                ip_order.push(hit.ip.as_str());
+            }
 
             let mut evidence = Evidence::new(SRC, format!("FOFA intelligence for {}", hit.ip));
             if !hit.protocol.is_empty() {
@@ -248,10 +267,9 @@ fn build_entities(body: &FofaResp, scan_id: &str) -> ModuleResult {
             }
 
             ip_entity.add_evidence(evidence);
-            result.push(ip_entity);
         }
 
-        if !hit.domain.is_empty() && hit.domain != "-" {
+        if !hit.domain.is_empty() && hit.domain != "-" && seen_domains.insert(hit.domain.as_str()) {
             // A domain read off the same record is the provider's own
             // association rather than something it scanned directly, so it
             // stays one rung below the IP.
@@ -267,6 +285,12 @@ fn build_entities(body: &FofaResp, scan_id: &str) -> ModuleResult {
                 format!("Domain discovered via FOFA for {}", hit.ip),
             ));
             result.push(domain_entity);
+        }
+    }
+
+    for ip in ip_order {
+        if let Some(e) = ip_entities.remove(ip) {
+            result.push(e);
         }
     }
 
