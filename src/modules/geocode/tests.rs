@@ -72,19 +72,60 @@ fn resp(json: serde_json::Value) -> NominatimResp {
 #[test]
 fn forward_geocode_shapes_confidence_by_au_relevance() {
     // An AU result is a strong on-region anchor; a foreign one is a demoted
-    // candidate that won't be expanded or counted as confirmed.
-    let au = build_forward_entity(-27.4766, 153.0166, "-27.476600,153.016600", "scan");
+    // candidate that won't be expanded or counted as confirmed. No address
+    // breakdown (None) falls back to the offline bounding box, same as
+    // au_relevance's own None arm.
+    let au = build_forward_entity(-27.4766, 153.0166, "-27.476600,153.016600", None, "scan");
     assert!((au.confidence - confidence::HIGH_PLUS).abs() < 1e-9);
     assert!(au.has_tag("au-relevant"));
     assert!(au.has_tag("au-state:QLD")); // Brisbane
     assert!(au.has_tag("geocoded"));
     assert!(!au.has_tag("candidate"));
 
-    let foreign = build_forward_entity(51.5074, -0.1278, "51.507400,-0.127800", "scan");
+    let foreign = build_forward_entity(51.5074, -0.1278, "51.507400,-0.127800", None, "scan");
     assert!((foreign.confidence - confidence::LOW).abs() < 1e-9);
     assert!(foreign.has_tag("off-region"));
     assert!(foreign.has_tag("candidate"));
     assert!(!foreign.has_tag("au-relevant"));
+}
+
+#[test]
+fn forward_geocode_prefers_the_authoritative_country_code_over_the_crude_box() {
+    // Regression: build_forward_entity used to classify AU-relevance purely
+    // from the offline bounding box (is_in_australia), which has a known
+    // false-positive band around Rote Island/West Timor, Indonesia — real
+    // Indonesian territory that the crude box misreads as Western Australia.
+    // Nominatim's own address.country_code is authoritative and must win,
+    // exactly as the reverse leg (au_relevance) already applies it.
+    let indonesia_addr = addr(serde_json::json!({ "country_code": "id" }));
+    let e = build_forward_entity(
+        -10.9,
+        123.0,
+        "-10.900000,123.000000",
+        Some(&indonesia_addr),
+        "scan",
+    );
+    assert!(
+        (e.confidence - confidence::LOW).abs() < 1e-9,
+        "an Indonesian country code must demote, not anchor: {}",
+        e.confidence
+    );
+    assert!(e.has_tag("off-region"));
+    assert!(e.has_tag("candidate"));
+    assert!(!e.has_tag("au-relevant"));
+    assert!(!e.has_tag("au-state:WA"), "must not misattribute to WA");
+
+    // The same coordinates WITH an explicit AU country code still anchor.
+    let au_addr = addr(serde_json::json!({ "country_code": "au" }));
+    let e = build_forward_entity(
+        -10.9,
+        123.0,
+        "-10.900000,123.000000",
+        Some(&au_addr),
+        "scan",
+    );
+    assert!((e.confidence - confidence::HIGH_PLUS).abs() < 1e-9);
+    assert!(e.has_tag("au-relevant"));
 }
 
 #[test]

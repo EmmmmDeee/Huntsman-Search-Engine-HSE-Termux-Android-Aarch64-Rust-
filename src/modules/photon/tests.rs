@@ -84,6 +84,34 @@ fn build_forward_without_geometry_is_none() {
 }
 
 #[test]
+fn build_forward_prefers_the_authoritative_country_code_over_the_crude_box() {
+    // Regression: build_forward used to call tag_au_state unconditionally, so
+    // a coordinate falling in the offline bounding box's known false-positive
+    // band (Rote Island/West Timor, Indonesia) got a self-contradicting
+    // country:ID + country:AU + au-state:WA on the same entity, and sat at a
+    // flat confidence::MEDIUM_PLUS regardless of the confirmed foreign country.
+    let feature: Feature = serde_json::from_str(
+        r#"{"geometry":{"coordinates":[123.0,-10.9]},
+            "properties":{"name":"Rote","countrycode":"id"}}"#,
+    )
+    .expect("should succeed");
+    let e = build_forward("rote island", &feature, "s").expect("should succeed");
+    assert!(e.has_tag("country:ID"));
+    assert!(
+        !e.has_tag("country:AU"),
+        "must not contradict the real country"
+    );
+    assert!(!e.has_tag("au-state:WA"), "must not misattribute to WA");
+    assert!(e.has_tag("off-region"));
+    assert!(e.has_tag("candidate"));
+    assert!(
+        (e.confidence - crate::core::confidence::LOW).abs() < 1e-9,
+        "an off-region country code must demote confidence: {}",
+        e.confidence
+    );
+}
+
+#[test]
 fn build_forward_rejects_out_of_range_and_null_island() {
     // A malformed geometry must not become a Coordinates entity (it would be
     // a high-confidence false fix). Longitude is `coordinates[0]`.
@@ -127,6 +155,27 @@ fn build_reverse_uses_name_and_dedupes_against_city() {
     let city = props(r#"{"name":"Sydney","city":"Sydney","country":"Australia"}"#);
     let ce = build_reverse(-33.8, 151.2, &city, "s").expect("should succeed");
     assert_eq!(ce.value, "Sydney, Australia");
+}
+
+#[test]
+fn build_reverse_prefers_the_authoritative_country_code_over_the_crude_box() {
+    // Regression: same self-contradicting-tags/flat-confidence bug as
+    // build_forward, on the reverse leg.
+    let p = props(r#"{"name":"Rote","city":"Rote Ndao","country":"Indonesia","countrycode":"id"}"#);
+    let e = build_reverse(-10.9, 123.0, &p, "s").expect("should succeed");
+    assert!(e.has_tag("country:ID"));
+    assert!(
+        !e.has_tag("country:AU"),
+        "must not contradict the real country"
+    );
+    assert!(!e.has_tag("au-state:WA"), "must not misattribute to WA");
+    assert!(e.has_tag("off-region"));
+    assert!(e.has_tag("candidate"));
+    assert!(
+        (e.confidence - crate::core::confidence::LOW).abs() < 1e-9,
+        "an off-region country code must demote confidence: {}",
+        e.confidence
+    );
 }
 
 #[test]

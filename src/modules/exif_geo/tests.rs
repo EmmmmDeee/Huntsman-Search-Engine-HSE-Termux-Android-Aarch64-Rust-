@@ -74,6 +74,18 @@ fn category_is_geo() {
 }
 
 #[test]
+fn attack_techniques_covers_all_three_produced_kinds() {
+    // Regression: attack_techniques() covered Coordinates (T1591.001) and
+    // Person (T1589.003) but not the third produced kind, DeviceId (a camera
+    // hardware serial) — T1592.001 (Hardware) is the same mapping
+    // signal_radar already uses for a device hardware identifier.
+    let t = ExifGeo.attack_techniques();
+    assert!(t.contains(&"T1589.003"));
+    assert!(t.contains(&"T1591.001"));
+    assert!(t.contains(&"T1592.001"), "must cover the DeviceId output");
+}
+
+#[test]
 fn produces_coordinates_device_and_person() {
     assert_eq!(
         ExifGeo.produces(),

@@ -66,14 +66,19 @@ fn build_entities(data: &IpApiResp, ip: &str, scan_id: &str) -> Vec<Entity> {
     // datacenter answered the query — Montreal, Toronto, San Francisco — NOT
     // to the subject. Emitting those as Coordinates/Address PII produced the
     // false "geolocation convergence" and "email + physical location" hits in
-    // a real scan of an Australian subject. Skip geo for edge IPs entirely.
-    if crate::core::validation::is_cdn_edge_ip(ip) {
+    // a real scan of an Australian subject. Gates ONLY the place-based
+    // Coordinates/Address entities below — ASN/Organisation remain valid
+    // operator attribution for a CDN IP regardless of geo trust (the earlier
+    // whole-record early return dropped those too, which was over-broad:
+    // "AS13335 Cloudflare, Inc." is correct for a Cloudflare edge IP even
+    // though its lat/lon isn't).
+    let geo_trusted = crate::core::validation::untrusted_ip_geo_reason(ip).is_none();
+    if !geo_trusted {
         tracing::debug!(
             module = SRC,
             ip = %ip,
-            "skipping IP-geo — CDN/anycast edge IP, location is datacenter not subject"
+            "suppressing IP-geo coordinates/address — CDN/anycast edge IP, location is datacenter not subject"
         );
-        return Vec::new();
     }
 
     let mut result = Vec::new();
@@ -86,7 +91,7 @@ fn build_entities(data: &IpApiResp, ip: &str, scan_id: &str) -> Vec<Entity> {
     // a single overstated IP-geo hit was outranking a corroborated WiGLE
     // WiFi fix at confidence::HIGH_PLUSPLUS_PLUS.
     let geo_conf = if data.hosting == Some(true) || data.proxy == Some(true) {
-        0.35
+        confidence::TENTATIVE
     } else if data.mobile == Some(true) {
         confidence::MEDIUM
     } else {
@@ -96,7 +101,8 @@ fn build_entities(data: &IpApiResp, ip: &str, scan_id: &str) -> Vec<Entity> {
     // `if` is false in exactly the same cases the old `is_plausible_provider_coord`
     // guard made it false — the `else if` below (lat/lon present but rejected)
     // still fires identically.
-    if let (Some(lat), Some(lon)) = (data.lat, data.lon)
+    if geo_trusted
+        && let (Some(lat), Some(lon)) = (data.lat, data.lon)
         && let Some(mut e) = crate::util::geo::coarse_provider_coords(lat, lon, geo_conf, scan_id)
     {
         if let Some(cc) = data.country_code.as_deref() {
@@ -156,7 +162,7 @@ fn build_entities(data: &IpApiResp, ip: &str, scan_id: &str) -> Vec<Entity> {
         );
         e.add_evidence(ev);
         result.push(e);
-    } else if data.lat.is_some() || data.lon.is_some() {
+    } else if geo_trusted && (data.lat.is_some() || data.lon.is_some()) {
         // ip-api returned coordinates but they failed the plausibility
         // gate (Null Island / sentinel "no-fix" bands). Previously dropped
         // silently — now logged so a missing geo fix is never a black box.
@@ -170,14 +176,16 @@ fn build_entities(data: &IpApiResp, ip: &str, scan_id: &str) -> Vec<Entity> {
     }
 
     // Emit Address entity from city/region/country — but NOT for a
-    // hosting/datacenter or proxy IP: that "address" is the server's, never
-    // the subject's, and at confidence::HIGH it outweighed genuine residential signals
-    // and seeded false identity-location correlations.
+    // hosting/datacenter or proxy IP (that "address" is the server's, never
+    // the subject's, and at confidence::HIGH it outweighed genuine residential
+    // signals and seeded false identity-location correlations), nor for an
+    // untrusted-geo (CDN/anycast) IP — same reasoning as the Coordinates gate
+    // above.
     let is_datacenter = data.hosting == Some(true) || data.proxy == Some(true);
     let city = data.city.as_deref().unwrap_or("");
     let region = data.region_name.as_deref().unwrap_or("");
     let country = data.country.as_deref().unwrap_or("");
-    if !is_datacenter && !city.is_empty() && !country.is_empty() {
+    if geo_trusted && !is_datacenter && !city.is_empty() && !country.is_empty() {
         let addr = crate::util::geo::compose_address(city, region, country);
         let mut ae = Entity::new(EntityKind::Address, &addr, confidence::HIGH, scan_id);
         ae.tag("geoint");

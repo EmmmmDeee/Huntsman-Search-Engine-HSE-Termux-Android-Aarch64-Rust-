@@ -370,11 +370,13 @@ fn attack_overrides_attribute_collection_modules_precisely() {
 
     // WiGLE: Geo category (T1591.001 Physical Locations) but also surfaces
     // the cellular carrier / WiFi network operator as an Organisation →
-    // T1591.002 Business Relationships.
+    // T1591.002 Business Relationships, and queries its own crowdsourced
+    // open WiFi/cell/Bluetooth database → T1596 Search Open Technical
+    // Databases (the same mechanism mylnikov/opencellid claim it for).
     assert_eq!(
         techniques("wigle"),
-        vec!["T1591.001", "T1591.002"],
-        "wigle → Physical Locations + Business Relationships (carrier/operator)"
+        vec!["T1591.001", "T1591.002", "T1596"],
+        "wigle → Physical Locations + Business Relationships (carrier/operator) + Open Technical Databases"
     );
 
     // ip_registry: queries RDAP (T1596.002 WHOIS) + BGPView (T1590.005 IP Addresses).
@@ -391,11 +393,13 @@ fn attack_overrides_attribute_collection_modules_precisely() {
     );
 
     // exif_geo: Geo category (T1591.001) but EXIF Author field → Person entity
-    // → T1589.003 Employee Names, which the Geo default omits.
+    // → T1589.003 Employee Names, which the Geo default omits. Also emits a
+    // DeviceId (camera hardware serial) → T1592.001 Hardware, the same
+    // mapping signal_radar uses for a device hardware identifier.
     assert_eq!(
         techniques("exif_geo"),
-        vec!["T1589.003", "T1591.001"],
-        "exif_geo → Employee Names (EXIF author) + Physical Locations (GPS)"
+        vec!["T1589.003", "T1591.001", "T1592.001"],
+        "exif_geo → Employee Names (EXIF author) + Physical Locations (GPS) + Hardware (camera serial)"
     );
 
     // search_engines: Search category (T1593.002) but SERP scraping surfaces
@@ -447,11 +451,14 @@ fn attack_overrides_attribute_collection_modules_precisely() {
     );
 
     // wifi_intel: Geo default (T1591.001 Physical Locations) but also enumerates
-    // WiFi AP MAC addresses → T1592 Host Information (hardware identification).
+    // WiFi AP MAC addresses → T1592 Host Information (hardware identification),
+    // and its WiGLE-detail lookup phase queries the same crowdsourced open
+    // WiFi/cell database the sibling wigle/mylnikov/opencellid modules claim
+    // T1596 for.
     assert_eq!(
         techniques("wifi_intel"),
-        vec!["T1591.001", "T1592"],
-        "wifi_intel → Physical Locations + Host Information (AP MAC addresses)"
+        vec!["T1591.001", "T1592", "T1596"],
+        "wifi_intel → Physical Locations + Host Information (AP MAC addresses) + Open Technical Databases"
     );
 
     // cell_intel: Sensor default (T1592 Host Information) but primarily determines

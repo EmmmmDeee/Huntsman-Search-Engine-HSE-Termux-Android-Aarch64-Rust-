@@ -109,7 +109,26 @@ impl Module for EmailLocale {
             }
         }
 
-        if let Some(geo) = detect_locale_from_local_part(local) {
+        // Regression: the ccTLD block above and the local-part block below can
+        // independently resolve to the identical region for the same email —
+        // exactly the module's own documented best case ("Combined with the
+        // domain ccTLD, these signals narrow geography"), e.g.
+        // "matthias.schmidt@example.de" matches both the German-name pattern
+        // AND the .de ccTLD. Without this guard, one process() call pushed
+        // two Address + two duplicate Coordinates entities (at the identical
+        // centroid) for what both readings agree is one place, instead of
+        // letting the ccTLD block's already-emitted, higher-confidence
+        // (confidence::LOW) Address stand as the one finding.
+        let already_named_this_region = |region: &str| {
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Address && e.value.eq_ignore_ascii_case(region))
+        };
+
+        if let Some(geo) = detect_locale_from_local_part(local)
+            && !already_named_this_region(geo.region)
+        {
             // Include the source local-part AND domain in the summary:
             // `Entity::absorb` dedups evidence by (source, summary), and the
             // locale-inferred Address entity is keyed by REGION, not by email —
@@ -204,7 +223,7 @@ fn detect_locale_from_local_part(local: &str) -> Option<LocaleGeo> {
             region,
             locale,
             pattern: "surname_suffix",
-            confidence: 0.35,
+            confidence: confidence::TENTATIVE,
         });
 
     by_surname.or_else(|| {
@@ -215,7 +234,7 @@ fn detect_locale_from_local_part(local: &str) -> Option<LocaleGeo> {
                 region,
                 locale,
                 pattern: "given_name",
-                confidence: 0.30,
+                confidence: confidence::SPECULATIVE,
             })
     })
 }

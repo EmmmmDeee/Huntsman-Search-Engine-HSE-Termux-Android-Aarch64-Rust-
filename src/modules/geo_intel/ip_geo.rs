@@ -135,10 +135,13 @@ fn tag_country(e: &mut Entity, country_code: Option<&str>, lat: f64, lon: f64) {
 }
 
 /// Build the ipapi.co `Coordinates` entity, plus a standalone `Asn` entity
-/// when `data.asn` is present. **Pure.** Returns an empty `Vec` when the API
-/// errored, the coordinates are absent/invalid, or `geo_untrusted` (the IP's
-/// location is infrastructure, not the subject) — in that case the `asn` is
-/// also withheld, since it isn't trustworthy for the subject either.
+/// when `data.asn` is present. **Pure.** An API error returns an empty `Vec`
+/// outright; `geo_untrusted` (the IP's location is infrastructure, not the
+/// subject) suppresses only the `Coordinates` entity — the ASN remains valid
+/// operator attribution regardless of geo trust (same narrow-gating policy as
+/// every other IP-geo module in this codebase, e.g. `ip_geo`/`ipinfo`:
+/// "AS13335 Cloudflare, Inc." is correct for a Cloudflare edge IP even though
+/// its lat/lon isn't).
 #[must_use]
 pub(super) fn build_ipapico_entity(
     data: &IpApiCoResp,
@@ -146,46 +149,46 @@ pub(super) fn build_ipapico_entity(
     geo_untrusted: bool,
     scan_id: &str,
 ) -> Vec<Entity> {
-    if data.error == Some(true) || geo_untrusted {
+    if data.error == Some(true) {
         return Vec::new();
     }
-    let Some((lat, lon)) = data.latitude.zip(data.longitude) else {
-        return Vec::new();
-    };
-    // Coarse free-tier IP-geo: reject the null-island BAND these providers emit
-    // as an "unknown location" placeholder, not just the exact (0,0) point.
-    if !is_plausible_provider_coord(lat, lon) {
-        return Vec::new();
+    let mut result = Vec::new();
+
+    if !geo_untrusted && let Some((lat, lon)) = data.latitude.zip(data.longitude) {
+        // Coarse free-tier IP-geo: reject the null-island BAND these providers
+        // emit as an "unknown location" placeholder, not just the exact (0,0) point.
+        if is_plausible_provider_coord(lat, lon) {
+            let coords = format!("{lat:.4},{lon:.4}");
+            let mut e = Entity::new(EntityKind::Coordinates, &coords, confidence::HIGH, scan_id);
+            tag_country(&mut e, data.country_code.as_deref(), lat, lon);
+
+            let ev = [
+                ("city", data.city.as_deref()),
+                ("region", data.region.as_deref()),
+                ("country", data.country_name.as_deref()),
+                ("country_iso", data.country_code.as_deref()),
+                ("postal", data.postal.as_deref()),
+                ("timezone", data.timezone.as_deref()),
+                ("org", data.org.as_deref()),
+                ("asn", data.asn.as_deref()),
+            ]
+            .into_iter()
+            .filter_map(|(k, v)| v.map(|val| (k, val)))
+            .fold(
+                Evidence::new(SRC, format!("IP geo for {ip} via ipapi.co"))
+                    .with_attr("latitude", lat.to_string())
+                    .with_attr("longitude", lon.to_string())
+                    .with_attr("source", "ipapi.co"),
+                |ev, (k, val)| ev.with_attr(k, val),
+            );
+            e.add_evidence(ev);
+            result.push(e);
+        }
     }
-    let coords = format!("{lat:.4},{lon:.4}");
-    let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.68, scan_id);
-    tag_country(&mut e, data.country_code.as_deref(), lat, lon);
 
-    let ev = [
-        ("city", data.city.as_deref()),
-        ("region", data.region.as_deref()),
-        ("country", data.country_name.as_deref()),
-        ("country_iso", data.country_code.as_deref()),
-        ("postal", data.postal.as_deref()),
-        ("timezone", data.timezone.as_deref()),
-        ("org", data.org.as_deref()),
-        ("asn", data.asn.as_deref()),
-    ]
-    .into_iter()
-    .filter_map(|(k, v)| v.map(|val| (k, val)))
-    .fold(
-        Evidence::new(SRC, format!("IP geo for {ip} via ipapi.co"))
-            .with_attr("latitude", lat.to_string())
-            .with_attr("longitude", lon.to_string())
-            .with_attr("source", "ipapi.co"),
-        |ev, (k, val)| ev.with_attr(k, val),
-    );
-    e.add_evidence(ev);
-
-    let mut result = vec![e];
-    // Promote the same "asn" field folded into the Coordinates evidence above
-    // into a standalone Asn entity — mirrors the sibling ip_geo module's
-    // identical guard (src/modules/ip_geo/mod.rs).
+    // Promote the "asn" field into a standalone Asn entity — mirrors the
+    // sibling ip_geo module's identical guard (src/modules/ip_geo/mod.rs).
+    // Unconditional on geo_untrusted: see the doc comment above.
     if let Some(asn) = &data.asn
         && !asn.is_empty()
     {

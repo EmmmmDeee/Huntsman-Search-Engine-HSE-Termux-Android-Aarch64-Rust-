@@ -10,6 +10,8 @@ use crate::core::{
     scan::Target,
 };
 
+use super::SRC;
+
 // ─── Phone number geolocation (free — E.164 prefix only) ────────────────────
 
 pub(super) async fn process_phone_prefix_only(
@@ -43,7 +45,7 @@ pub(super) async fn process_phone_prefix_only(
             e.tag(format!("country:{cc}"));
             e.add_evidence(
                 Evidence::new(
-                    "geo_intel",
+                    SRC,
                     format!("Phone prefix -> {country} for {}", target.value),
                 )
                 .with_attr("country", country)

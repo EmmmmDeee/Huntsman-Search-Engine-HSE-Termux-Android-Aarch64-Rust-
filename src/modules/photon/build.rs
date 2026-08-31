@@ -38,6 +38,17 @@ pub(super) fn osm_attrs(ev: Evidence, entity: &mut Entity, props: &Props) -> Evi
 
 /// Forward geocode (`Address` → `Coordinates`). Returns `None` when the feature
 /// has no usable geometry.
+///
+/// Confidence and off-region gating follow Photon's own `countrycode` when
+/// present, falling back to the offline bounding box only when it's absent —
+/// same country-code-first, box-as-fallback order `geocode::au_relevance`
+/// uses. Regression: this used to (a) call `tag_au_state` unconditionally,
+/// so a genuinely foreign hit that happened to fall in the box's known
+/// false-positive band (e.g. Rote Island/West Timor, Indonesia) got a
+/// self-contradicting `country:ID` + `country:AU` + `au-state:WA` on the
+/// same entity, and (b) sit at a flat confidence regardless of region, so an
+/// unrelated foreign address could anchor an AU-focused scan as if
+/// corroborated.
 pub(super) fn build_forward(addr: &str, feature: &Feature, scan_id: &str) -> Option<Entity> {
     let geom = feature.geometry.as_ref()?;
     if geom.coordinates.len() < 2 {
@@ -49,12 +60,21 @@ pub(super) fn build_forward(addr: &str, feature: &Feature, scan_id: &str) -> Opt
     }
     let coords = format!("{lat:.6},{lon:.6}");
 
-    let mut e = Entity::new(
-        EntityKind::Coordinates,
-        &coords,
-        confidence::MEDIUM_PLUS,
-        scan_id,
-    );
+    let country_code = feature
+        .properties
+        .as_ref()
+        .and_then(|p| nonempty(&p.countrycode));
+    let in_au = match country_code {
+        Some(cc) => cc.eq_ignore_ascii_case("au"),
+        None => crate::util::geo::is_in_australia(lat, lon),
+    };
+    let confidence = if in_au {
+        confidence::MEDIUM_PLUS
+    } else {
+        confidence::LOW
+    };
+
+    let mut e = Entity::new(EntityKind::Coordinates, &coords, confidence, scan_id);
     e.tag("photon");
     e.tag("geocoded");
     let mut ev = Evidence::new(SRC, format!("Photon geocoded \"{addr}\" -> {coords}"))
@@ -65,7 +85,7 @@ pub(super) fn build_forward(addr: &str, feature: &Feature, scan_id: &str) -> Opt
         if let Some(name) = nonempty(&props.name) {
             ev = ev.with_attr("place_name", name);
         }
-        if let Some(cc) = nonempty(&props.countrycode) {
+        if let Some(cc) = country_code {
             ev = ev.with_attr("country_code", cc);
             e.tag(format!("country:{}", cc.to_uppercase()));
         }
@@ -74,7 +94,12 @@ pub(super) fn build_forward(addr: &str, feature: &Feature, scan_id: &str) -> Opt
         }
         ev = osm_attrs(ev, &mut e, props);
     }
-    crate::util::geo::tag_au_state(&mut e, lat, lon);
+    if in_au {
+        crate::util::geo::tag_au_state(&mut e, lat, lon);
+    } else {
+        e.tag("off-region");
+        e.tag("candidate");
+    }
     e.add_evidence(ev);
     Some(e)
 }
@@ -82,6 +107,9 @@ pub(super) fn build_forward(addr: &str, feature: &Feature, scan_id: &str) -> Opt
 /// Reverse geocode (`Coordinates` → `Address`). The resolved place **name** is
 /// the most-specific component of the display (deduped against city). Returns
 /// `None` when fewer than two address components resolve.
+///
+/// Confidence and off-region gating follow the same country-code-first,
+/// box-as-fallback order as [`build_forward`] — see its doc comment.
 pub(super) fn build_reverse(lat: f64, lon: f64, props: &Props, scan_id: &str) -> Option<Entity> {
     let parts = join_unique(&[
         nonempty(&props.name),
@@ -96,12 +124,18 @@ pub(super) fn build_reverse(lat: f64, lon: f64, props: &Props, scan_id: &str) ->
     }
     let display = parts.join(", ");
 
-    let mut ae = Entity::new(
-        EntityKind::Address,
-        &display,
-        confidence::HIGH_PLUS,
-        scan_id,
-    );
+    let country_code = nonempty(&props.countrycode);
+    let in_au = match country_code {
+        Some(cc) => cc.eq_ignore_ascii_case("au"),
+        None => crate::util::geo::is_in_australia(lat, lon),
+    };
+    let confidence = if in_au {
+        confidence::HIGH_PLUS
+    } else {
+        confidence::LOW
+    };
+
+    let mut ae = Entity::new(EntityKind::Address, &display, confidence, scan_id);
     ae.tag("photon");
     ae.tag("reverse-geocoded");
     ae.tag("geoint");
@@ -120,7 +154,7 @@ pub(super) fn build_reverse(lat: f64, lon: f64, props: &Props, scan_id: &str) ->
     if let Some(c) = nonempty(&props.country) {
         ev = ev.with_attr("country", c);
     }
-    if let Some(cc) = nonempty(&props.countrycode) {
+    if let Some(cc) = country_code {
         ev = ev.with_attr("country_code", cc);
         ae.tag(format!("country:{}", cc.to_uppercase()));
     }
@@ -128,7 +162,12 @@ pub(super) fn build_reverse(lat: f64, lon: f64, props: &Props, scan_id: &str) ->
         ev = ev.with_attr("postcode", p);
     }
     ev = osm_attrs(ev, &mut ae, props);
-    crate::util::geo::tag_au_state(&mut ae, lat, lon);
+    if in_au {
+        crate::util::geo::tag_au_state(&mut ae, lat, lon);
+    } else {
+        ae.tag("off-region");
+        ae.tag("candidate");
+    }
     ae.add_evidence(ev);
     Some(ae)
 }

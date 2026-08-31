@@ -240,7 +240,10 @@ impl Module for Wigle {
         ModuleCategory::Geo
     }
     fn attack_techniques(&self) -> &'static [&'static str] {
-        &["T1591.001", "T1591.002"]
+        // T1596 (Search Open Technical Databases): WiGLE's entire function is
+        // querying its own crowdsourced open WiFi/cell/Bluetooth database —
+        // the same mechanism mylnikov/opencellid claim T1596 for.
+        &["T1591.001", "T1591.002", "T1596"]
     }
     fn produces(&self) -> &'static [EntityKind] {
         // WiGLE corroborates Coordinates with WiFi density, emits
