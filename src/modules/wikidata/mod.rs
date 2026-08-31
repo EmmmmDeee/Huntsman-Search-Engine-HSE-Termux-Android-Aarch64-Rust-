@@ -58,10 +58,10 @@ const MAX_CANDIDATES: usize = 6;
 // Confidence tiers vs the confidence::MEDIUM noisy-OR expansion floor. The primary pivots;
 // candidates stay sub-floor. People are kept a touch lower than orgs because a
 // name-only seed is more ambiguous than an organisation name.
-pub(super) const PERSON_PRIMARY: f64 = 0.72;
+pub(super) const PERSON_PRIMARY: f64 = confidence::ATTRIBUTED;
 pub(super) const ORG_PRIMARY: f64 = confidence::HIGH_PLUSPLUS;
 pub(super) const CANDIDATE: f64 = confidence::LOW;
-pub(super) const DOMAIN_CONF: f64 = 0.58;
+pub(super) const DOMAIN_CONF: f64 = confidence::MEDIUM_SOLID;
 pub(super) const HANDLE_CONF: f64 = confidence::MEDIUM_HIGH;
 /// Confidence for the Wikidata P18 image URL. Moderate: the image authentically
 /// depicts the matched subject, but the URL is a derived pointer, not a direct

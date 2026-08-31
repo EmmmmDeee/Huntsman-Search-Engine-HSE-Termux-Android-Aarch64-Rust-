@@ -1,5 +1,6 @@
 //! Entity builders for electoral division findings.
 
+use crate::core::confidence;
 use crate::core::entity::{Entity, EntityKind, Evidence};
 
 use super::{
@@ -11,11 +12,11 @@ use super::{
 /// caller's own `suburb_hint` or the offline centroid table's suburb. Per the
 /// module doc's confidence model: electoral roll enrolment is compulsory and
 /// address-verified, so a suburb-level match is the high-confidence tier.
-const ADDRESS_WITH_SUBURB_CONF: f64 = 0.72;
+const ADDRESS_WITH_SUBURB_CONF: f64 = confidence::ATTRIBUTED;
 /// Confidence for the Address when only the division name is known — no
 /// suburb from a hint or a centroid lookup. A bare division can span many
 /// suburbs, so this is a materially weaker locate than the suburb-level tier.
-const ADDRESS_DIVISION_ONLY_CONF: f64 = 0.58;
+const ADDRESS_DIVISION_ONLY_CONF: f64 = confidence::MEDIUM_SOLID;
 
 /// Build entity set from a confirmed electoral division match. Pure.
 /// Returns Address + Coordinates (when division centroid is known) tagged
@@ -35,7 +36,7 @@ pub(crate) fn build_electoral_entities(
             suburb_hint.unwrap_or(info.suburb).to_string(),
             Some(info.lat),
             Some(info.lon),
-            0.65_f64,
+            confidence::HIGH,
         )
     } else {
         // Division not in offline table — emit address-only, no coords.

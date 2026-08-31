@@ -36,6 +36,14 @@ pub(super) const SRC: &str = "epieos";
 pub(super) const MAX_PLACES_INLINE: usize = 5;
 pub(super) const MAX_PLACE_ENTITIES: usize = 3;
 
+/// Person-lead confidence for the Google Calendar display name — deliberately
+/// between [`confidence::HIGH`] and the Skype lead's [`confidence::HIGH_PLUS`]:
+/// a calendar owner name is a real Google-account signal (unlike Skype's
+/// separately-set display name) but less direct than the primary Google
+/// profile name. Not itself a named ladder rung — kept at its calibrated
+/// value rather than rounded onto a neighbouring one.
+const CALENDAR_NAME_CONF: f64 = 0.68;
+
 pub struct Epieos;
 
 #[derive(Deserialize)]
@@ -188,7 +196,7 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
         ),
         (
             "google-calendar",
-            0.68,
+            CALENDAR_NAME_CONF,
             body.calendar.as_ref().and_then(|c| nonempty(&c.name)),
         ),
     ] {
@@ -233,7 +241,12 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
             ae.add_evidence(Evidence::new(SRC, format!("Skype location for {email}")));
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(&location) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.42, scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::derived_from(confidence::MEDIUM_LIGHT),
+                    scan_id,
+                );
                 c.tag("epieos");
                 c.tag("addr-derived");
                 c.tag("geoint");
@@ -283,7 +296,12 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
             ae.add_evidence(rev_ev);
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(place) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.42, scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::derived_from(confidence::MEDIUM_LIGHT),
+                    scan_id,
+                );
                 c.tag("epieos");
                 c.tag("addr-derived");
                 c.tag("geoint");

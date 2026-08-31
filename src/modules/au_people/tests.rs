@@ -82,6 +82,30 @@ fn parse_relatives_extracts_same_surname_family_and_binds_to_subject() {
 }
 
 #[test]
+fn parse_relatives_entities_never_carry_the_tps_au_anchor_tag() {
+    // Regression: `process()` only mints the "confirmed-in-directory" Person
+    // anchor when at least one accumulated entity carries the "tps-au" tag —
+    // the tag `parse_tps_html` (True People Search AU) applies to its own
+    // address/coordinates/email findings. `parse_relatives`'s output must
+    // never carry that tag, or a relatives-only hit (no confirmed TPS-AU
+    // record) would wrongly satisfy the anchor gate.
+    let html = r#"
+      <h2>Possible Relatives</h2>
+      <ul>
+        <li><a href="/x">Stephen R Moreau</a> — View Profile</li>
+        <li><a href="/y">HELENE MOREAU</a> Background Check</li>
+      </ul>
+    "#;
+    let rel = parse_relatives(html, "Fletcher Moreau", "s");
+    assert!(!rel.is_empty(), "fixture must actually produce relatives");
+    assert!(
+        rel.iter().all(|e| !e.has_tag("tps-au")),
+        "parse_relatives entities must never carry the tps-au anchor tag: {:?}",
+        rel.iter().map(|e| &e.tags).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn split_name_standard() {
     assert_eq!(split_name("Haigen Bamford"), ("Haigen", "Bamford"));
     assert_eq!(split_name("Mary Jane Watson"), ("Mary", "Jane Watson"));

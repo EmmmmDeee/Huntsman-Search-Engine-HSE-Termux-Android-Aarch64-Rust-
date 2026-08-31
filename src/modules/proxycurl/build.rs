@@ -245,7 +245,16 @@ pub(super) fn build_entities(
             }),
     );
 
-    // ── Organisations (employers) — title, dates, and job location ────────
+    // ── Organisations (employers + alma maters) ────────────────────────────
+    // Shared dedup: LinkedIn commonly restates the same company across two
+    // stints (a role change, a re-hire) or, rarely, the same name appears as
+    // both an employer and a school. Without this, the same (kind, value)
+    // pair would mint as two separate Organisation entities instead of one —
+    // the exact double-emission this session already fixed in `fullcontact`
+    // for its own `organization` + `employment[]` restatement.
+    let mut seen_orgs: HashSet<String> = HashSet::new();
+
+    // Employers — title, dates, and job location.
     result.extend(
         profile
             .experiences
@@ -253,6 +262,9 @@ pub(super) fn build_entities(
             .take(MAX_EXPERIENCES)
             .filter_map(|exp| {
                 let company = nonempty(&exp.company).filter(|c| c.chars().count() >= 2)?;
+                if !seen_orgs.insert(company.to_lowercase()) {
+                    return None;
+                }
                 let mut oe =
                     Entity::new(EntityKind::Organisation, company, confidence::HIGH, scan_id);
                 oe.tag("proxycurl");
@@ -278,11 +290,14 @@ pub(super) fn build_entities(
             }),
     );
 
-    // ── Organisations (alma maters) — degree and field of study ───────────
-    // Lower confidence than the employer loop above: a school attended in the
-    // past is a weaker "current relationship" signal than a listed employer.
+    // Alma maters — degree and field of study. Lower confidence than the
+    // employer loop above: a school attended in the past is a weaker
+    // "current relationship" signal than a listed employer.
     result.extend(profile.education.iter().take(MAX_LISTED).filter_map(|edu| {
         let school = nonempty(&edu.school).filter(|s| s.chars().count() >= 2)?;
+        if !seen_orgs.insert(school.to_lowercase()) {
+            return None;
+        }
         let mut oe = Entity::new(
             EntityKind::Organisation,
             school,

@@ -347,8 +347,11 @@ fn module_metadata_is_valid() {
     assert!(m.accepts(&Target::new(TargetKind::FullName, "Haigen Bamford")));
     assert!(!m.accepts(&Target::new(TargetKind::Email, "x@example.com")));
     assert!(m.attack_techniques().contains(&"T1591.001"));
-    assert!(m.attack_techniques().contains(&"T1591.002"));
     assert!(m.attack_techniques().contains(&"T1589.003"));
+    assert!(
+        !m.attack_techniques().contains(&"T1591.002"),
+        "no co-owner/trust/company extraction exists — owner_name is always just the queried full_name"
+    );
     assert!(m.max_timeout_ms() > crate::MODULE_TIMEOUT_MS);
 }
 

@@ -370,6 +370,35 @@ fn build_entities_extracts_full_profile() {
 }
 
 #[test]
+fn build_entities_deduplicates_a_company_restated_across_two_stints() {
+    // Regression: LinkedIn commonly lists two separate stints at the same
+    // employer (a role change, a re-hire) as two `experiences[]` entries.
+    // Without a dedup guard these minted as two separate Organisation
+    // entities for the identical (kind, value) pair instead of one — the
+    // same double-emission class already fixed in `fullcontact` for its
+    // `organization` + `employment[]` restatement.
+    let raw = r#"{
+        "full_name": "Jordan Avery",
+        "experiences": [
+            {"company": "Acme Pty Ltd", "title": "Engineer", "starts_at": {"year": 2018}, "ends_at": {"year": 2020}},
+            {"company": "acme pty ltd", "title": "Senior Engineer", "starts_at": {"year": 2021}}
+        ]
+    }"#;
+    let profile: LinkedInProfile = serde_json::from_str(raw).expect("should succeed");
+    let r = build_entities(&profile, &target(), "scan");
+    let orgs: Vec<_> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Organisation)
+        .collect();
+    assert_eq!(
+        orgs.len(),
+        1,
+        "the same employer restated (case-insensitively) across two stints must not double-emit: {orgs:?}"
+    );
+}
+
+#[test]
 fn build_entities_empty_profile_yields_nothing() {
     let p: LinkedInProfile = serde_json::from_str("{}").expect("should succeed");
     assert!(build_entities(&p, &target(), "scan").entities.is_empty());
