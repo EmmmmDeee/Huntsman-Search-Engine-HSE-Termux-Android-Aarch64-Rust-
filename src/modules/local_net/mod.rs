@@ -120,6 +120,14 @@ impl Module for LocalNet {
 /// Parses the ARP table format. First line is the header; data rows have
 /// columns: IP, HW type, Flags, MAC, Mask, Device. Rows with the placeholder
 /// MAC `00:00:00:00:00:00` are incomplete (no resolution yet) and skipped.
+///
+/// Also requires `flags == "0x2"` (a complete, resolved entry) — mirroring
+/// `signal_radar::lan::parse_arp`'s identical check on the same
+/// `/proc/net/arp` format. Regression: this parser used to skip only the
+/// placeholder-MAC case, so a proxy-ARP row (flags `0x4`, ATF_PUBL — a router
+/// answering ARP on behalf of another host) carrying a REAL but non-subject
+/// MAC was emitted as if it were a genuine resolved LAN neighbour, silently
+/// disagreeing with the sibling parser of the identical file.
 fn parse_arp(content: &str, scan_id: &str, result: &mut ModuleResult) {
     for line in content.lines().skip(1) {
         let mut cols = line.split_whitespace();
@@ -133,6 +141,9 @@ fn parse_arp(content: &str, scan_id: &str, result: &mut ModuleResult) {
         ) else {
             continue;
         };
+        if flags != "0x2" {
+            continue;
+        }
         if mac == "00:00:00:00:00:00" {
             continue;
         }

@@ -66,14 +66,14 @@ pub(super) fn build_entities(
     if !location_seed {
         let engines_hit: HashSet<&str> = results.iter().map(|r| r.engine).collect();
         let queries_run: HashSet<&str> = results.iter().map(|r| r.query.as_str()).collect();
-        // 0.82: Search re-affirmation of seed identity (2-engine discovery boost)
-        let mut parent = target.to_entity(0.82, scan_id);
+        // Search re-affirmation of seed identity (2-engine discovery boost)
+        let mut parent = target.to_entity(confidence::CORROBORATED, scan_id);
         parent.tag("search-enriched");
         let mut engines_list: Vec<&str> = engines_hit.iter().copied().collect();
         engines_list.sort_unstable();
         parent.add_evidence(
             Evidence::new(
-                "search_engines",
+                SRC,
                 format!(
                     "Search across {} engine(s) returned {} result(s) from {} quer{}",
                     engines_hit.len(),
@@ -214,7 +214,7 @@ pub(super) fn build_entities(
                     }
                     e.add_evidence(
                         Evidence::new(
-                            "search_engines",
+                            SRC,
                             format!(
                                 "[{}] Email found on {} — {}",
                                 r.engine,
@@ -252,7 +252,7 @@ pub(super) fn build_entities(
                     e.tag(tags::SEARCH_DISCOVERED);
                     e.add_evidence(
                         Evidence::new(
-                            "search_engines",
+                            SRC,
                             format!(
                                 "[{}] Phone found on {} — {}",
                                 r.engine,
@@ -284,7 +284,7 @@ pub(super) fn build_entities(
                 e.tag(kind_label);
                 e.add_evidence(
                     Evidence::new(
-                        "search_engines",
+                        SRC,
                         format!(
                             "[{}] {} {} found on {} — {}",
                             r.engine,
@@ -430,7 +430,7 @@ pub(super) fn build_entities(
                 }
                 e.add_evidence(
                     Evidence::new(
-                        "search_engines",
+                        SRC,
                         format!(
                             "[{}] Address near {} — {}",
                             r.engine,
@@ -454,7 +454,7 @@ pub(super) fn build_entities(
                     existing.corroboration = existing.corroboration.saturating_add(1);
                     existing.add_evidence(
                         Evidence::new(
-                            "search_engines",
+                            SRC,
                             format!("[{}] Address corroborated — {}", r.engine, r.url),
                         )
                         .with_attr("url", &r.url)
@@ -498,7 +498,7 @@ pub(super) fn build_entities(
             let base = if confirmed {
                 confidence::HIGH_PLUSPLUS_PLUS
             } else if location_seed || offtarget_repo {
-                0.30 // Quarantine level for candidate filtering
+                confidence::SPECULATIVE // Quarantine level for candidate filtering
             } else {
                 confidence::MEDIUM
             };
@@ -528,13 +528,18 @@ pub(super) fn build_entities(
         if let Some(username) = extract_path_username(&r.url) {
             let lower_user = username.to_lowercase();
             let is_social = is_social_host(&host);
-            if is_social
-                && lower_user.len() >= 3
-                && !is_navigation_path(&lower_user)
-                && seen_domains.insert(format!("@username:{lower_user}"))
-            {
+            // Regression: `seen_domains.insert(...)` used to be part of this
+            // guard, claiming the `@username:` dedup key BEFORE `score_username`
+            // ran. An off-target hit (score 0, no entity emitted) still
+            // permanently claimed the key, so a LATER, genuinely-matching
+            // occurrence of the identical username string in another result
+            // found `insert` already `false` and was silently dropped — never
+            // even scored. The key is now claimed only once a candidate has
+            // actually earned an entity (`score >= 1`), so a zero-score attempt
+            // leaves the door open for a stronger later occurrence.
+            if is_social && lower_user.len() >= 3 && !is_navigation_path(&lower_user) {
                 let (score, confidence) = score_username(&lower_user, &host, &terms, r);
-                if score >= 1 {
+                if score >= 1 && seen_domains.insert(format!("@username:{lower_user}")) {
                     let mut e = Entity::new(EntityKind::Username, &lower_user, confidence, scan_id);
                     e.tag(tags::SEARCH_DISCOVERED);
                     e.tag("social-profile");
@@ -642,14 +647,15 @@ pub(super) fn build_entities(
                 continue;
             };
             let lower_user = uname.to_lowercase();
-            if lower_user.len() < 3
-                || is_navigation_path(&lower_user)
-                || !seen_domains.insert(format!("@username:{lower_user}"))
-            {
+            if lower_user.len() < 3 || is_navigation_path(&lower_user) {
                 continue;
             }
+            // Same reordering as the result-URL pass above: claim the shared
+            // `@username:` dedup key only once `score_username` has actually
+            // earned an entity, not before — a zero-score attempt from either
+            // pass must not block a stronger later occurrence from the other.
             let (score, confidence) = score_username(&lower_user, &s_host, &terms, r);
-            if score >= 1 {
+            if score >= 1 && seen_domains.insert(format!("@username:{lower_user}")) {
                 let mut e = Entity::new(EntityKind::Username, &lower_user, confidence, scan_id);
                 e.tag(tags::SEARCH_DISCOVERED);
                 e.tag("social-profile");
@@ -682,11 +688,8 @@ pub(super) fn build_entities(
             e.tag(tags::SEARCH_DISCOVERED);
             e.tag("family-member");
             e.add_evidence(
-                Evidence::new(
-                    "search_engines",
-                    format!("Shares surname with target — {source_url}"),
-                )
-                .with_attr("url", source_url),
+                Evidence::new(SRC, format!("Shares surname with target — {source_url}"))
+                    .with_attr("url", source_url),
             );
             e.demote_to_candidate();
             result.push(e);
@@ -739,12 +742,9 @@ pub(super) fn build_entities(
                         }
                     }
                     ce.add_evidence(
-                        Evidence::new(
-                            "search_engines",
-                            format!("Geocoded from search address: {addr}"),
-                        )
-                        .with_attr("source_address", addr)
-                        .with_attr("method", "known-city-lookup"),
+                        Evidence::new(SRC, format!("Geocoded from search address: {addr}"))
+                            .with_attr("source_address", addr)
+                            .with_attr("method", "known-city-lookup"),
                     );
                     result.push(ce);
                 }

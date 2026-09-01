@@ -131,19 +131,37 @@ pub(super) fn build_ioc_entity(
     )
     .with_attr("hits", iocs.len().to_string());
     if !families.is_empty() {
-        ev = ev.with_attr(
-            "malware_families",
-            families.into_iter().take(MAX_FAMILIES).enumerate().fold(
-                String::new(),
-                |mut acc, (i, s)| {
-                    if i > 0 {
-                        acc.push(',');
-                    }
-                    acc.push_str(&s);
-                    acc
-                },
-            ),
-        );
+        // Regression: `.take(MAX_FAMILIES)` silently dropped every family past
+        // the cap with nothing recording the true distinct count, so a shared
+        // C2 indicator correlated to more families than the cap showed only
+        // the alphabetically-first ones with no signal to the operator that
+        // the list was incomplete — mirrors `gleif_lei::note_child_coverage`'s
+        // `_total`/`_truncated` convention for the same silent-cap shape.
+        let total = families.len();
+        ev = ev
+            .with_attr(
+                "malware_families",
+                families.into_iter().take(MAX_FAMILIES).enumerate().fold(
+                    String::new(),
+                    |mut acc, (i, s)| {
+                        if i > 0 {
+                            acc.push(',');
+                        }
+                        acc.push_str(&s);
+                        acc
+                    },
+                ),
+            )
+            .with_attr("malware_families_total", total.to_string());
+        if total > MAX_FAMILIES {
+            ev = ev.with_attr(
+                "malware_families_truncated",
+                format!(
+                    "{total} distinct malware families associated with this indicator; \
+                     only {MAX_FAMILIES} are listed above"
+                ),
+            );
+        }
     }
     if !types.is_empty() {
         ev = ev.with_attr(
@@ -176,19 +194,32 @@ pub(super) fn build_ioc_entity(
         );
     }
     if !ioc_tags.is_empty() {
-        ev = ev.with_attr(
-            "ioc_tags",
-            ioc_tags.into_iter().take(MAX_IOC_TAGS).enumerate().fold(
-                String::new(),
-                |mut acc, (i, s)| {
-                    if i > 0 {
-                        acc.push(',');
-                    }
-                    acc.push_str(&s);
-                    acc
-                },
-            ),
-        );
+        // Same silent-truncation fix as malware_families above.
+        let total = ioc_tags.len();
+        ev = ev
+            .with_attr(
+                "ioc_tags",
+                ioc_tags.into_iter().take(MAX_IOC_TAGS).enumerate().fold(
+                    String::new(),
+                    |mut acc, (i, s)| {
+                        if i > 0 {
+                            acc.push(',');
+                        }
+                        acc.push_str(&s);
+                        acc
+                    },
+                ),
+            )
+            .with_attr("ioc_tags_total", total.to_string());
+        if total > MAX_IOC_TAGS {
+            ev = ev.with_attr(
+                "ioc_tags_truncated",
+                format!(
+                    "{total} distinct IOC tags associated with this indicator; \
+                     only {MAX_IOC_TAGS} are listed above"
+                ),
+            );
+        }
     }
     if max_confidence > 0 {
         ev = ev.with_attr("max_confidence", max_confidence.to_string());
