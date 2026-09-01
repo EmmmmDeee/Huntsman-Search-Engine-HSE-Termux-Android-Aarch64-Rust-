@@ -79,8 +79,7 @@ fn classify_document_treats_a_urlset_as_page_urls_at_any_depth() {
     }
 }
 
-#[test]
-fn mark_truncated_annotates_the_last_entitys_last_evidence_record() {
+fn entity_with_evidence() -> Entity {
     let mut e = Entity::new(
         EntityKind::Url,
         "https://example.com/a",
@@ -91,8 +90,13 @@ fn mark_truncated_annotates_the_last_entitys_last_evidence_record() {
         SRC,
         "Listed in https://example.com/sitemap.xml",
     ));
-    let mut entities = vec![e];
-    mark_truncated(&mut entities, 200);
+    e
+}
+
+#[test]
+fn mark_truncated_records_the_url_cap_when_that_was_the_reason() {
+    let mut entities = vec![entity_with_evidence()];
+    mark_truncated(&mut entities, TruncationReason::UrlCap);
     let ev = entities[0].evidence.last().expect("should succeed");
     assert_eq!(
         ev.attributes
@@ -102,14 +106,48 @@ fn mark_truncated_annotates_the_last_entitys_last_evidence_record() {
     );
     assert_eq!(
         ev.attributes.get("sitemap_url_cap").map(String::as_str),
-        Some("200")
+        Some(MAX_URLS.to_string()).as_deref()
     );
+    assert!(!ev.attributes.contains_key("sitemap_fetch_cap"));
+    assert!(!ev.attributes.contains_key("sitemap_enumeration_cancelled"));
+}
+
+#[test]
+fn mark_truncated_records_the_fetch_cap_distinctly_from_the_url_cap() {
+    // Regression: a single `sitemap_url_cap` attribute used to be written
+    // unconditionally, which claimed a specific URL ceiling was hit even
+    // when the true cause was running out of fetch budget with candidate
+    // documents still queued — misleading metadata about why the
+    // enumeration is incomplete.
+    let mut entities = vec![entity_with_evidence()];
+    mark_truncated(&mut entities, TruncationReason::FetchCap);
+    let ev = entities[0].evidence.last().expect("should succeed");
+    assert_eq!(
+        ev.attributes.get("sitemap_fetch_cap").map(String::as_str),
+        Some(MAX_SITEMAP_FETCHES.to_string()).as_deref()
+    );
+    assert!(!ev.attributes.contains_key("sitemap_url_cap"));
+}
+
+#[test]
+fn mark_truncated_records_cancellation_distinctly_from_either_cap() {
+    let mut entities = vec![entity_with_evidence()];
+    mark_truncated(&mut entities, TruncationReason::Cancelled);
+    let ev = entities[0].evidence.last().expect("should succeed");
+    assert_eq!(
+        ev.attributes
+            .get("sitemap_enumeration_cancelled")
+            .map(String::as_str),
+        Some("true")
+    );
+    assert!(!ev.attributes.contains_key("sitemap_url_cap"));
+    assert!(!ev.attributes.contains_key("sitemap_fetch_cap"));
 }
 
 #[test]
 fn mark_truncated_is_a_noop_on_an_empty_entity_list() {
     let mut entities: Vec<Entity> = Vec::new();
-    mark_truncated(&mut entities, 200);
+    mark_truncated(&mut entities, TruncationReason::UrlCap);
     assert!(entities.is_empty());
 }
 

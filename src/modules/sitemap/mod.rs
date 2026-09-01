@@ -155,12 +155,34 @@ fn classify_document(xml: &str, depth: u32) -> DocumentKind {
     }
 }
 
+/// Why the enumeration loop stopped short of exhausting every candidate
+/// document. Kept distinct (rather than a single flat boolean) because each
+/// cause implies a different thing about how complete the emitted list is:
+/// hitting the URL cap means the site likely publishes MORE URLs than were
+/// emitted, hitting the fetch cap means there were more CANDIDATE DOCUMENTS
+/// left unfetched (independent of how many URLs came from the ones that
+/// were), and a cancellation is an operator-initiated stop, not a site
+/// property at all. Regression: a single `sitemap_url_cap` attribute used to
+/// be written even when the true cause was the fetch cap or a cancellation,
+/// which claimed a specific numeric URL ceiling was hit when it may not have
+/// been.
+#[derive(Clone, Copy)]
+enum TruncationReason {
+    /// `MAX_URLS` was reached.
+    UrlCap,
+    /// `MAX_SITEMAP_FETCHES` was reached with candidate documents still
+    /// queued.
+    FetchCap,
+    /// The scan was cancelled mid-enumeration.
+    Cancelled,
+}
+
 /// Mark the last emitted entity's evidence to say the enumeration was cut
-/// short by a numeric cap (URLs or fetches), rather than silently presenting
-/// a partial list as the complete sitemap. **Pure**. No-op when `entities` is
-/// empty (every candidate document failed to fetch) — there is nowhere to
-/// attach the note. Mirrors `web_crawler`'s `image_leads_capped` convention.
-fn mark_truncated(entities: &mut [Entity], cap: usize) {
+/// short, and why, rather than silently presenting a partial list as the
+/// complete sitemap. **Pure**. No-op when `entities` is empty (every
+/// candidate document failed to fetch) — there is nowhere to attach the
+/// note. Mirrors `web_crawler`'s `image_leads_capped` convention.
+fn mark_truncated(entities: &mut [Entity], reason: TruncationReason) {
     if let Some(last) = entities.last_mut()
         && let Some(last_ev) = last.evidence.last_mut()
     {
@@ -168,9 +190,25 @@ fn mark_truncated(entities: &mut [Entity], cap: usize) {
             "sitemap_enumeration_truncated".to_string(),
             "true".to_string(),
         );
-        last_ev
-            .attributes
-            .insert("sitemap_url_cap".to_string(), cap.to_string());
+        match reason {
+            TruncationReason::UrlCap => {
+                last_ev
+                    .attributes
+                    .insert("sitemap_url_cap".to_string(), MAX_URLS.to_string());
+            }
+            TruncationReason::FetchCap => {
+                last_ev.attributes.insert(
+                    "sitemap_fetch_cap".to_string(),
+                    MAX_SITEMAP_FETCHES.to_string(),
+                );
+            }
+            TruncationReason::Cancelled => {
+                last_ev.attributes.insert(
+                    "sitemap_enumeration_cancelled".to_string(),
+                    "true".to_string(),
+                );
+            }
+        }
     }
 }
 
@@ -308,10 +346,10 @@ impl Module for Sitemap {
         // A worklist so a <sitemapindex> can enqueue its children (one level).
         let mut queue: std::collections::VecDeque<(String, u32)> =
             candidates.into_iter().map(|u| (u, 0u32)).collect();
-        // Set whenever a numeric cap (URLs or fetches) cut the enumeration
-        // short of what the site actually publishes — surfaced as evidence
-        // below rather than silently presenting a partial list as complete.
-        let mut truncated = false;
+        // Set whenever the enumeration stopped short of exhausting every
+        // candidate document — surfaced as evidence below (with the specific
+        // reason) rather than silently presenting a partial list as complete.
+        let mut truncated: Option<TruncationReason> = None;
 
         while let Some((doc_url, depth)) = queue.pop_front() {
             if fetched >= MAX_SITEMAP_FETCHES || entities.len() >= MAX_URLS {
@@ -319,12 +357,16 @@ impl Module for Sitemap {
                 // back rather than losing it to `pop_front`, so the queue's
                 // state honestly reflects that there was more left to do.
                 queue.push_front((doc_url, depth));
-                truncated = true;
+                truncated = Some(if entities.len() >= MAX_URLS {
+                    TruncationReason::UrlCap
+                } else {
+                    TruncationReason::FetchCap
+                });
                 break;
             }
             if ctx.cancel.is_cancelled() {
                 queue.push_front((doc_url, depth));
-                truncated = true;
+                truncated = Some(TruncationReason::Cancelled);
                 break;
             }
             if !seen_docs.insert(doc_url.clone()) {
@@ -348,7 +390,7 @@ impl Module for Sitemap {
                     // A urlset: emit its URLs as page-URL pivots.
                     for url in locs {
                         if entities.len() >= MAX_URLS {
-                            truncated = true;
+                            truncated = Some(TruncationReason::UrlCap);
                             break;
                         }
                         if !in_scope(&url, &site) {
@@ -370,7 +412,7 @@ impl Module for Sitemap {
                         entities.push(e);
                     }
                     if entities.len() >= MAX_URLS {
-                        truncated = true;
+                        truncated = Some(TruncationReason::UrlCap);
                         break;
                     }
                 }
@@ -379,8 +421,8 @@ impl Module for Sitemap {
             tokio::time::sleep(std::time::Duration::from_millis(INTER_FETCH_MS)).await;
         }
 
-        if truncated {
-            mark_truncated(&mut entities, MAX_URLS);
+        if let Some(reason) = truncated {
+            mark_truncated(&mut entities, reason);
         }
 
         let mut result = ModuleResult::new();
