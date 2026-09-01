@@ -813,12 +813,12 @@ $ scripts/gate.sh                                                         # 17/1
 |---|---|---|---|---|---|---|
 | VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 |
 | IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 |
-| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed this pass)* | 17 *(REQ-API-SCAN-007 fixed this pass)* |
-| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed this pass)* | 0 | 0 |
+| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* |
+| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 |
 | AMBIGUOUS | 1 | 0 | 0 | 0 | 0 | 0 |
 | OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 |
 | BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 |
-| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed this pass, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* |
+| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* |
 | **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** |
 
 Pass 4's `VERIFIED` count (53) is Pass 3's 50, plus the REQ-ENV-003 flip

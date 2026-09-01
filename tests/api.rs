@@ -2267,7 +2267,7 @@ async fn scan_entities_pagination_works() {
 async fn scan_entities_pagination_rejects_invalid_offset_and_limit() {
     use huntsman_search_engine::core::scan::{Scan, Target, TargetKind};
     // The test above only ever exercises valid offset/limit combinations —
-    // the four `bad_request` branches in `scan_entities` (non-numeric
+    // the three `bad_request` branches in `scan_entities` (non-numeric
     // offset, non-numeric limit, and limit=0) had never been driven through
     // the real HTTP handler (see REQ-API-SCAN-007 in
     // docs/REQUIREMENTS_LEDGER.md).
