@@ -55,6 +55,46 @@ fn declares_valid_contracts() {
     );
 }
 
+#[test]
+fn produces_covers_every_kind_to_entity_kind_can_yield() {
+    // `process()` below emits `c.kind` unfiltered by kind for any classified
+    // candidate that clears `is_actionable()` — a confidence check, not a
+    // kind check — so `produces()` must mirror the full range
+    // `TargetKind::to_entity_kind()` can return, not just the subset a
+    // manual read happens to notice (the same under-declaration already
+    // fixed in `web_crawler`'s hydration path).
+    let m = ClassifyModule;
+    let declared = m.produces();
+    const ALL_TARGET_KINDS: &[TargetKind] = &[
+        TargetKind::Email,
+        TargetKind::Username,
+        TargetKind::Phone,
+        TargetKind::FullName,
+        TargetKind::IpAddress,
+        TargetKind::Domain,
+        TargetKind::Url,
+        TargetKind::Asn,
+        TargetKind::Cidr,
+        TargetKind::Coordinates,
+        TargetKind::Address,
+        TargetKind::Organisation,
+        TargetKind::AbnAcn,
+        TargetKind::ApiKey,
+        TargetKind::MacAddress,
+        TargetKind::CryptoAddress,
+        TargetKind::DeviceId,
+        TargetKind::Ssid,
+        TargetKind::TrackingId,
+    ];
+    for tk in ALL_TARGET_KINDS {
+        let ek = tk.to_entity_kind();
+        assert!(
+            declared.contains(&ek),
+            "produces() is missing {ek:?}, which TargetKind::{tk:?}::to_entity_kind() can yield"
+        );
+    }
+}
+
 #[tokio::test]
 async fn process_emits_reinjectable_seeds_from_text() {
     let m = ClassifyModule;

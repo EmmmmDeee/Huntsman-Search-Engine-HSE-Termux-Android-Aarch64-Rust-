@@ -163,7 +163,8 @@ fn historical_subdomains(rows: &[Row], domain: &str, scan_id: &str) -> Vec<Entit
         .filter(|h| h != &domain && h.ends_with(&suffix))
         .collect();
 
-    hosts
+    let total = hosts.len();
+    let mut entities: Vec<Entity> = hosts
         .into_iter()
         .take(MAX_HISTORICAL_SUBDOMAINS)
         .map(|host| {
@@ -176,7 +177,42 @@ fn historical_subdomains(rows: &[Row], domain: &str, scan_id: &str) -> Vec<Entit
             ));
             e
         })
-        .collect()
+        .collect();
+
+    // Regression: `.take(MAX_HISTORICAL_SUBDOMAINS)` silently dropped every
+    // subdomain past the cap with nothing recording the true distinct count —
+    // a long-lived domain's decommissioned attack surface looked complete at
+    // 60 hosts with no signal hundreds more were archived. Mirrors
+    // `gleif_lei::family::note_child_coverage`'s convention of stamping the
+    // true total onto every emitted child entity.
+    let emitted = entities.len();
+    for e in &mut entities {
+        note_subdomain_coverage(e, emitted, total);
+    }
+    entities
+}
+
+/// Stamp the true CDX-reported subdomain count onto `e`'s evidence, so a
+/// bounded walk (see [`MAX_HISTORICAL_SUBDOMAINS`]) stays legible as bounded
+/// in the dossier itself, not only in a log line the report never sees.
+fn note_subdomain_coverage(e: &mut Entity, emitted: usize, total: usize) {
+    if let Some(ev) = e.evidence.first_mut() {
+        ev.attributes.insert(
+            "historical_subdomains_emitted".to_string(),
+            emitted.to_string(),
+        );
+        ev.attributes
+            .insert("historical_subdomains_total".to_string(), total.to_string());
+        if total > emitted {
+            ev.attributes.insert(
+                "historical_subdomains_truncated".to_string(),
+                format!(
+                    "The Wayback CDX archive reports {total} historical subdomains; {emitted} \
+                     are in this scan. The remainder were NOT retrieved."
+                ),
+            );
+        }
+    }
 }
 
 /// True when `url` contains a path keyword associated with contact / team

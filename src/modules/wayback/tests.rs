@@ -134,6 +134,49 @@ use super::*;
     }
 
     #[test]
+    fn historical_subdomains_records_the_total_and_flags_truncation_past_the_cap() {
+        // 70 distinct subdomains, well past MAX_HISTORICAL_SUBDOMAINS (60) —
+        // the archive genuinely has more decommissioned hosts than one
+        // bounded walk can emit.
+        let mut rows = vec![row(&["original"])]; // CDX column header
+        let urls: Vec<String> = (0..70)
+            .map(|i| format!("http://sub{i}.example.com/"))
+            .collect();
+        for u in &urls {
+            rows.push(row(&[u.as_str()]));
+        }
+        let ents = historical_subdomains(&rows, "example.com", "s");
+        assert_eq!(ents.len(), 60, "capped at MAX_HISTORICAL_SUBDOMAINS");
+        for e in &ents {
+            assert_eq!(attr(e, "historical_subdomains_emitted"), Some("60"));
+            assert_eq!(attr(e, "historical_subdomains_total"), Some("70"));
+            let note = attr(e, "historical_subdomains_truncated")
+                .expect("a bounded walk must announce itself");
+            assert!(note.contains("70") && note.contains("60"), "{note}");
+        }
+    }
+
+    #[test]
+    fn historical_subdomains_records_the_total_with_no_truncation_flag_under_the_cap() {
+        let rows = [
+            row(&["original"]),
+            row(&["http://dev.example.com/index.html"]),
+            row(&["http://staging.example.com/"]),
+            row(&["http://api.example.com/"]),
+        ];
+        let ents = historical_subdomains(&rows, "example.com", "s");
+        assert_eq!(ents.len(), 3);
+        for e in &ents {
+            assert_eq!(attr(e, "historical_subdomains_emitted"), Some("3"));
+            assert_eq!(attr(e, "historical_subdomains_total"), Some("3"));
+            assert!(
+                attr(e, "historical_subdomains_truncated").is_none(),
+                "a complete enumeration must not be marked partial"
+            );
+        }
+    }
+
+    #[test]
     fn is_contact_path_matches_keywords() {
         assert!(is_contact_path("https://example.com/contact-us"));
         assert!(is_contact_path("https://example.com/about"));

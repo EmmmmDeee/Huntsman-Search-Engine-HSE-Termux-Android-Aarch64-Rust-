@@ -88,20 +88,33 @@ impl Module for ClassifyModule {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
+        // `process()` below emits `c.kind` unfiltered by kind — gated only on
+        // `c.is_actionable()`, a confidence check — for any candidate
+        // `classifier::extract` returns. That covers every `EntityKind` that
+        // `TargetKind::to_entity_kind()` maps to (confirmed while fixing the
+        // identical under-declaration in `web_crawler`'s hydration path), so
+        // this list must mirror that full set, not just the subset a manual
+        // read happens to notice.
         const KINDS: &[EntityKind] = &[
             EntityKind::Email,
             EntityKind::Username,
             EntityKind::Phone,
+            EntityKind::Person,
             EntityKind::IpAddress,
             EntityKind::Domain,
             EntityKind::Url,
             EntityKind::Asn,
             EntityKind::Cidr,
             EntityKind::Coordinates,
+            EntityKind::Address,
+            EntityKind::Organisation,
             EntityKind::AbnAcn,
+            EntityKind::ApiKey,
             EntityKind::MacAddress,
             EntityKind::CryptoAddress,
             EntityKind::DeviceId,
+            EntityKind::Ssid,
+            EntityKind::TrackingId,
         ];
         KINDS
     }
