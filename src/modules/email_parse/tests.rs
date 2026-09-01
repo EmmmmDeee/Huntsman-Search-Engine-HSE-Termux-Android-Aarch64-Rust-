@@ -319,6 +319,84 @@ async fn freemail_still_derives_usernames() {
 }
 
 #[tokio::test]
+async fn hyphen_separated_local_part_infers_a_person_like_dot_and_underscore() {
+    // Regression: the Person-inference split omitted '-', while the
+    // initial-blend username derivation (same 2-token firstname/lastname
+    // shape) already split on '.', '_', AND '-'. A hyphen-separated local
+    // part correctly derived blend usernames but never got a Person
+    // inferred for the identical name shape a dot or underscore separator
+    // would have inferred.
+    let t = Target::new(TargetKind::Email, "haigen-bamford@acme.com");
+    let r = EmailParse
+        .process(&t, &ctx())
+        .await
+        .expect("should succeed");
+    let person = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .expect("a hyphen-separated firstname-lastname local part must infer a Person");
+    assert_eq!(person.value, "Haigen Bamford");
+}
+
+#[tokio::test]
+async fn domain_local_part_and_corporate_check_agree_on_the_same_at_split() {
+    // Regression: this function used to re-split target.value three
+    // different ways (rsplit_once for the domain, split().next() for the
+    // local part, split().nth(1) for the corporate-domain check), which
+    // silently disagreed on a value with more than one '@'. A quoted local
+    // part containing an embedded '@' is a rare but real shape; the
+    // rightmost '@' must be the domain boundary for every step.
+    let t = Target::new(TargetKind::Email, "weird@name@acme.com");
+    let r = EmailParse
+        .process(&t, &ctx())
+        .await
+        .expect("should succeed");
+    let domain = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain)
+        .expect("domain should be extracted from the rightmost @");
+    assert_eq!(domain.value, "acme.com");
+    // The local part used for username derivation must be everything BEFORE
+    // the rightmost '@' ("weird@name"), not the first '@'-delimited token
+    // ("weird") a naive `split('@').next()` would have produced. '@' is not
+    // a name separator, so it survives verbatim in the raw candidate and is
+    // stripped (like any other non-alphanumeric) in the collapsed one.
+    let usernames: Vec<&str> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(usernames.contains(&"weird@name"), "got: {usernames:?}");
+    assert!(usernames.contains(&"weirdname"), "got: {usernames:?}");
+    assert!(
+        !usernames.contains(&"weird"),
+        "must not truncate at the FIRST '@' like split('@').next() used to, got: {usernames:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_value_with_no_at_sign_yields_nothing() {
+    // Regression: `split('@').next()` on a value with no '@' at all returns
+    // the WHOLE string, so a malformed non-email input still fed the
+    // username/Person derivation below even though the domain-extraction
+    // branch correctly emitted nothing. Sharing one `rsplit_once('@')` split
+    // (returning early on `None`) makes both branches agree: no '@' means no
+    // finding at all, not a partial one.
+    let t = Target::new(TargetKind::Email, "noatsign");
+    let r = EmailParse
+        .process(&t, &ctx())
+        .await
+        .expect("should succeed");
+    assert!(
+        r.is_empty(),
+        "no '@' at all must yield no entities of any kind"
+    );
+}
+
+#[tokio::test]
 async fn evidence_source_is_email_parse() {
     let t = Target::new(TargetKind::Email, "alice@widgets.co");
     let r = EmailParse
