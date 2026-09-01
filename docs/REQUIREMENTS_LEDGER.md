@@ -5,7 +5,7 @@ individual scanning modules' business logic — that was the subject of a
 separate, now-complete module-by-module bug audit under
 `src/modules/*/mod.rs` (Phases 0-10, PRs #553-568, merged; every one of the
 188 registered modules read against an established bug-class checklist). The
-areas covered here, across four passes:
+areas covered here, across five passes:
 
 1. The `Module` trait contract (`src/core/module/mod.rs`).
 2. The CLI surface (`src/main.rs`, `src/cli/`).
@@ -51,11 +51,20 @@ documentary only, added after a drafted duplicate test was caught and
 reverted before being shipped). See "Pass 4 findings" below for the full
 account.
 
+**Pass 5** (this pass) closed one correctness-affecting `PARTIAL` row,
+REQ-API-MISC-003: `settings_toggles_put`'s success path, and the
+`set_bool` persistence primitive it and `hse config` both write through,
+had zero test coverage of any kind — only the write endpoint's two
+rejection paths were tested. Added a direct `set_bool`/`get_bool`
+round-trip and an HTTP-level success-path test proving the write actually
+persists (not just the two rejection tests). No production code changed —
+see "Pass 5 findings" below.
+
 This still does **not** claim to have reconstructed requirements for the
 *entire* codebase (the correlator's actual rule logic beyond registry-level
 completeness, the scan engine's internals beyond the quarantine gate, the
 storage layer beyond one fix, the web/WASM UI, and `hse-ai-daemon` remain
-out of scope for all four passes) — see "Known limitations" for why, and
+out of scope for all five passes) — see "Known limitations" for why, and
 for what a further pass would need to cover.
 
 **How to read this ledger.**
@@ -89,14 +98,16 @@ reflected in any row below since it was never a defect in that pass's own
 scope. That module-bug-audit has since completed in full (Phases 0-10,
 188/188 registered modules, PRs #553-568, all merged).
 
-**Known limitations of Pass 4 — what a further pass would need to cover.**
+**Known limitations of Pass 5 — what a further pass would need to cover.**
 This ledger's 8 sections are the core contracts, the remote-facing API
 surface, and two registry-level guards of a Rust CLI/module-engine tool: the
 `Module` trait, the CLI, the installer, the env/config template, the
 README's own claims, `hse serve`'s HTTP API, the scan engine's dead-module
-quarantine gate, and the correlator's rule-registration completeness.
-Deliberately still **not** covered by any of the four passes, and not
-claimed as VERIFIED/MISSING/etc. anywhere above:
+quarantine gate, and the correlator's rule-registration completeness. Pass 5
+closed one more `PARTIAL` row within the existing HTTP API section (section
+6) without expanding scope to any new subsystem, so the list below is
+unchanged from Pass 4's. Deliberately still **not** covered by any of the
+five passes, and not claimed as VERIFIED/MISSING/etc. anywhere above:
 
 - **The scan engine's internals beyond the quarantine gate**
   (`src/core/engine/` past `gate_skips` — expansion, ROI/budget pruning, and
@@ -487,7 +498,7 @@ this pass), 12 PARTIAL, 2 IMPLEMENTED_UNVERIFIED, 1 UNREACHABLE.
 |---|---|---|---|
 | REQ-API-MISC-001 | The 4 key-pool/env WRITE endpoints in settings_handlers (PUT /api/v1/settings/keys, POST /api/v1/keys/pool/add, /revoke, /rotate) gate on AppState.allow_key_write BEFORE inspecting the peer address — a non-loopback caller with writes disabled sees the 'key… | Ran `cargo test --test api keys_pool` this pass — 3 passed (keys_pool_add_is_write_gated, keys_pool_get_is_masked_and_revoke_is_write_gated, keys_pool_rotate_is_write_gated; 0.41s). Ran `cargo test --test api settings_keys` — 3 passed including settings_keys_put_forbidden_without_flag (0.49s). Then ran `grep -rn "allow_key_write" --include="*.rs" .` across the whole repo (excluding an unrelated build-staging mirror under run/deliverable/) and confirmed every non-definition hit is either the… | PARTIAL |
 | REQ-API-MISC-002 | settings_handlers's read-only key/config endpoints (keys_status, keys_pool_get, keys_health, settings_keys_get) are loopback-gated and never serialise a plaintext key value — masking (mask_secret in keys_pool_get) and pure-count aggregation (summarize_pool,… | Ran `cargo test --lib api::` this pass (122 tests, 0 failed) which includes both settings_handlers::tests. Separately ran `cargo test --test api settings_keys` (3 passed), `cargo test --test api keys_status_endpoint` (2 passed), `cargo test --test api keys_health` (2 passed), and `cargo test --test api keys_pool` (3 passed) — all green, including the `!json.contains("SECRET")` assertion in summarize_pool_counts_by_status_and_never_leaks_values and every loopback-rejection test. | VERIFIED |
-| REQ-API-MISC-003 | settings_toggles_put (PUT /api/v1/settings/toggles) is loopback-only but is the ONE write endpoint across these four files that does NOT require allow_key_write (no secret is involved in flipping a bool), and only persists when toggle_key_is_known() resolves… | Ran `cargo test --test api settings_toggles_put` this pass — 2 passed (0.03s), both rejection-path tests. Grepped the whole repo for `set_bool(` and found exactly 2 real call sites (this handler, and `hse config` in src/cli/config.rs) and ZERO occurrences in any test file — src/util/settings/tests.rs (5 tests) exercises only the pure resolve()/is_feature_key()/default_for() helpers, never set_bool itself. So neither this handler's success path nor the underlying persistence primitive it calls… | PARTIAL |
+| REQ-API-MISC-003 (**fixed in Pass 5**) | settings_toggles_put (PUT /api/v1/settings/toggles) is loopback-only but is the ONE write endpoint across these four files that does NOT require allow_key_write (no secret is involved in flipping a bool), and only persists when toggle_key_is_known() resolves the key to a real engine/module/feature toggle, via `crate::util::settings::set_bool` — the same primitive `hse config` writes through. | **Was PARTIAL**: only the two rejection paths (non-loopback 403, unknown-key 400) were tested; `set_bool` itself — the actual cache-mutate-then-atomic-persist primitive — had zero test coverage anywhere in the repo, and the handler's success path had never been driven end-to-end. **Fixed in Pass 5**: added `set_bool_persists_and_get_bool_reads_it_back` (`src/util/settings/tests.rs`) — a direct round-trip proving `set_bool` both flips the in-process cache immediately and persists to disk (read back independently via `read_map`, not just the cache), using a scratch key so it can't collide with any other test's toggle assertions despite the cache/file being process-global. Added `settings_toggles_put_succeeds_and_persists_the_flip` (`tests/api.rs`) — a loopback PUT with a real feature key (`feature.depth_decay`) asserts the 200 response body, then a fresh GET on `/api/v1/settings/toggles` confirms the flip is visible (not just echoed back), then restores the default. Ran `cargo test --lib set_bool_persists_and_get_bool_reads_it_back` and `cargo test --test api settings_toggles_put` this pass — both new tests plus the 2 pre-existing rejection-path tests all passed. | VERIFIED |
 | REQ-API-MISC-004 (**fixed this pass**) | cells_import (POST /api/v1/cells/import) treated `HUNTSMAN_OPENCELLID_KEY` as 'configured' whenever `std::env::var` returned `Ok(_)` at all — including an empty string or the exact, shipped-by-default template placeholder `insert_opencellid_key_here` — because the check was a raw env read rather than the codebase's one sanctioned resolution policy, `keys::resolve_key`, that every other credential check on this surface (e.g. `accounts_block`'s SeekNow/WiGLE lookups) already uses. **Was BROKEN**: a blank or un-edited-template key silently downgraded from the intended fast `400` to an async `202` that fired a real outbound request carrying the garbage credential, only failing later, visible solely by polling `GET /cells/status`. | Split the resolution into a pure `resolve_opencellid_key(&HashMap<String,String>) -> Option<String>` helper (routed through `keys::load()` + `keys::resolve_key`) so the placeholder-filtering behavior is unit-testable without mutating the process environment (`std::env::set_var` is `unsafe`, forbidden by this crate's `#![forbid(unsafe_code)]`). Added 4 regression tests: genuinely-unset, blank, the exact shipped placeholder, and a real-looking value — all pass. Ran `cargo test --lib api::cells_handlers` — 14/14 passed. Ran `cargo clippy --all-targets --features dep-cooldown -- -D warnings` — clean. | VERIFIED |
 | REQ-API-MISC-005 | cells_import/cells_clear (the two mutating cell-DB endpoints) are loopback-only; cells_import additionally uses an atomic check-and-claim (try_start_import, one mutex acquisition) to refuse a second concurrent import while one is Running — mirroring… | Ran `cargo test --lib api::` this pass — all 10 cells_handlers tests passed, e.g. `test api::cells_handlers::tests::cells_clear_succeeds_with_confirm_true ... ok`, `test api::cells_handlers::tests::try_start_import_claims_atomically_and_refuses_a_concurrent_second_call ... ok` (full run: 122 passed; 0 failed). The clear-during-running-import race noted above was found by reading the two handlers side by side, not by a test. | VERIFIED |
 | REQ-API-MISC-006 | keys_harvest (GET /api/v1/keys/harvest) — the actual axum handler function, including its reject_non_loopback gate and its {vault,pool,accounts} envelope construction — has no test anywhere in the repository that invokes it directly. Every existing test… | Ran `cargo test --lib api::` this pass — all 3 key_harvest_handlers tests passed (part of the 122-test, 0-failed run). Ran `grep -rn "keys/harvest\\|keys_harvest" tests/*.rs src/api/**/*.rs` across the repo — the only hits are the handler's own doc comments, its route registration, and one prose mention in settings_handlers/mod.rs:186; no call site in any test file constructs an HTTP request against this route. | PARTIAL |
@@ -697,24 +708,80 @@ $ cargo test --test architecture                                          # 56 p
 $ scripts/gate.sh                                                         # 17/17 executed checks PASS
 ```
 
+## Pass 5 findings
+
+Continuing the loop after Pass 4's PR merged: re-fetched `origin/main`,
+recomputed the ledger's non-`MISSING`/non-`BROKEN` remainder fresh (per the
+priority order, next up is a correctness-affecting `PARTIAL`), and picked
+**REQ-API-MISC-003** — the settings-toggle write endpoint.
+
+Re-reading the row rather than trusting Pass 3's framing: `settings_toggles_put`
+(`PUT /api/v1/settings/toggles`) had two rejection-path tests
+(`settings_toggles_put_rejects_non_loopback_peer`,
+`settings_toggles_put_rejects_unknown_key`) but its SUCCESS path — the one
+that actually flips a capability on or off — had never been driven end to
+end, and the persistence primitive it and `hse config` both funnel through,
+`crate::util::settings::set_bool`, had zero test coverage anywhere in the
+repository (confirmed via `grep -rn "set_bool("` — exactly 2 real call
+sites, both non-test). A write endpoint whose only tested behavior was
+"refuses to write" is a real gap: a regression in `set_bool`'s cache-mutate
+step, or in the atomic-persist step, or in the handler's own success
+branch, would ship with zero automated signal.
+
+Fixed with two tests, one per layer:
+
+- `set_bool_persists_and_get_bool_reads_it_back`
+  (`src/util/settings/tests.rs`) — a direct round-trip: `set_bool` flips the
+  in-process `CACHE` immediately (checked via `get_bool`), AND persists to
+  disk (checked independently via `read_map(&settings_path())`, not the
+  cache). Uses a private scratch key (`test.set_bool_round_trip_marker`,
+  not a registered `FEATURE_TOGGLES` entry) and restores it to `false` at
+  the end, since `CACHE` and the settings file are process-global and
+  shared across every test in the binary.
+- `settings_toggles_put_succeeds_and_persists_the_flip` (`tests/api.rs`) —
+  a loopback `PUT` with a real, known key (`feature.depth_decay`, chosen
+  because no other test in the file asserts a specific value for it)
+  asserts the 200 response body (`status`/`key`/`enabled`), then issues a
+  FRESH `GET /api/v1/settings/toggles` and confirms the flip is visible
+  there too — proving the write actually persisted rather than merely being
+  echoed back in the PUT's own response — then restores the default,
+  matching the unit test's hygiene for the same process-global-state reason.
+
+No production code changed for this row — same pattern as REQ-CORRELATOR-001
+in Pass 4, a pure coverage fix for behavior that was already correct.
+
+### Verification commands run (Pass 5, in order)
+
+```
+$ cargo test --lib set_bool_persists_and_get_bool_reads_it_back           # 1 passed
+$ cargo test --test api settings_toggles_put                              # 3 passed (2 pre-existing + 1 new)
+$ cargo fmt --all
+$ cargo clippy --all-targets --features dep-cooldown -- -D warnings       # clean
+$ cargo test --lib --features dep-cooldown                                # full suite, 0 failed
+$ cargo test --test architecture                                          # 56 passed, 0 failed
+$ cargo test --test api                                                   # full suite, 0 failed
+$ scripts/gate.sh                                                         # 17/17 executed checks PASS
+```
+
 ## Summary statistics
 
-| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 |
-|---|---|---|---|---|
-| VERIFIED | 23 | 30 | 50 | 53 |
-| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 |
-| PARTIAL | 8 | 7 | 19 | 19 |
-| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed this pass)* |
-| AMBIGUOUS | 1 | 0 | 0 | 0 |
-| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 |
-| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 |
-| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed this pass, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* |
-| **Total rows** | **51** | **51** | **86** | **88** |
+| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 |
+|---|---|---|---|---|---|
+| VERIFIED | 23 | 30 | 50 | 53 | 54 |
+| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 |
+| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed this pass)* |
+| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed this pass)* | 0 |
+| AMBIGUOUS | 1 | 0 | 0 | 0 | 0 |
+| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 |
+| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 |
+| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed this pass, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* |
+| **Total rows** | **51** | **51** | **86** | **88** | **88** |
 
 Pass 4's `VERIFIED` count (53) is Pass 3's 50, plus the REQ-ENV-003 flip
 (+1), plus the two new one-row sections REQ-ENGINE-001/REQ-CORRELATOR-001
 (+2) — both landed `VERIFIED` on first pass, so no row moved through an
-intermediate status this time.
+intermediate status this time. Pass 5 added no new rows (88 unchanged) —
+just the REQ-API-MISC-003 `PARTIAL` → `VERIFIED` flip.
 
 Breakdown by section: Module trait contract 14 rows (REQ-CORE-001..014), CLI
 surface 12 rows (REQ-CLI-001..012), `install.sh` 9 rows
