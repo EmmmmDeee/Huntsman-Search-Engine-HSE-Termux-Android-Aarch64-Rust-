@@ -6,9 +6,11 @@
 //!                                          email appeared in (the "paste" half)
 //!   GET /api/v3/breaches?domain={domain} — breaches affecting a domain
 //!
-//! Rate limit: 10 req/min on the basic subscription. The module
-//! throttles internally with 6.5s inter-request delay to stay within
-//! budget across all queries per process() call.
+//! Rate limit: 10 req/min on the basic subscription. The module does not
+//! proactively pace requests to stay under that budget; instead it reacts to
+//! a 429 by sleeping for the server's `Retry-After` (capped, up to a few
+//! attempts) before retrying, then cascading to the next pooled key, then
+//! surfacing a real error once no usable key remains.
 //!
 //! Key: required, from HUNTSMAN_HIBP_KEY. HIBP has no free tier and this build
 //! embeds no credential, so an unconfigured module reports a "needs key" skip

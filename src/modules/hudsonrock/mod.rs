@@ -55,7 +55,7 @@ const BASE_CONFIDENCE: f64 = confidence::HIGH_PLUSPLUS_PLUS;
 /// 90 days. Per Recorded Future's 2025 report, 53% of credentials are
 /// indexed within one week — a recent date means the exposure is likely
 /// still live.
-const FRESH_CONFIDENCE: f64 = 0.92;
+const FRESH_CONFIDENCE: f64 = confidence::AUTHORITATIVE;
 
 /// Number of days within which a compromise is considered "fresh".
 const FRESHNESS_WINDOW_DAYS: u64 = 90;
@@ -191,10 +191,10 @@ fn victim_ip_entities(stealers: &[Stealer], scan_id: &str) -> Vec<Entity> {
                 scan_id,
             );
             e.tag(tags::STEALER_LOG);
-            e.tag("hudsonrock");
+            e.tag(SRC);
             e.tag(crate::core::tags::GEOLOCATION_LEAD);
             e.add_evidence(Evidence::new(
-                "hudsonrock",
+                SRC,
                 "Victim device IP from stealer log".to_string(),
             ));
             Some(e)

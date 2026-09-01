@@ -36,7 +36,8 @@ fn pbs_v1_skips_not_found_status() {
     let target = Target::new(TargetKind::Email, "x@y.com");
     let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
-    emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s");
+    let mut seen = std::collections::HashSet::new();
+    emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s", &mut seen);
     assert!(!entity.has_tag("breach"));
     assert!(entity.evidence.is_empty());
 }
@@ -68,7 +69,8 @@ fn pbs_v1_found_with_blocks_tags_breach_and_pivots_names() {
     let target = Target::new(TargetKind::Email, "x@y.com");
     let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
-    emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s");
+    let mut seen = std::collections::HashSet::new();
+    emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s", &mut seen);
     assert!(entity.has_tag("breach"));
     assert!(entity.has_tag("niamonx:breach:exampleleak"));
     // The breach-block evidence carries the canonical `breach_date` key AU-019's
@@ -95,6 +97,14 @@ fn pbs_v1_found_with_blocks_tags_breach_and_pivots_names() {
             .entities
             .iter()
             .any(|e| e.kind == EntityKind::Email && e.value == "other@example.com")
+    );
+    // Regression: every pivot must carry its own evidence, not just the
+    // shared seed entity — a pivot with zero evidence is invisible to any
+    // evidence-based dossier view or correlator despite claiming corroboration.
+    assert!(
+        result.entities.iter().all(|e| !e.evidence.is_empty()),
+        "every PBS v1 pivot must carry evidence: {:?}",
+        result.entities
     );
 }
 
@@ -125,7 +135,8 @@ fn pbs_v1_suppresses_username_derived_name_pivots() {
     let target = Target::new(TargetKind::Email, "x@y.com");
     let mut entity = target.to_entity(0.80, "s");
     let mut result = ModuleResult::new();
-    emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s");
+    let mut seen = std::collections::HashSet::new();
+    emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s", &mut seen);
     assert!(
         !result.entities.iter().any(|e| e.kind == EntityKind::Person),
         "a username-derived meta.names entry must not mint a Person pivot"
@@ -153,7 +164,8 @@ fn ulp_emits_stealer_tag_and_pivots() {
     let target = Target::new(TargetKind::Email, "victim@example.com");
     let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
-    emit_ulp(resp, &mut entity, &mut result, "victim@example.com", "s");
+    let mut seen = std::collections::HashSet::new();
+    emit_ulp(resp, &mut entity, &mut result, "victim@example.com", "s", &mut seen);
     assert!(entity.has_tag("stealer-log"));
     assert!(entity.has_tag("infostealer"));
     // login differs from query → Email pivot emitted, plus the login-URL Url pivot.
@@ -200,7 +212,8 @@ fn ulp_promotes_the_login_url_to_a_first_class_url_pivot() {
     let target = Target::new(TargetKind::Email, "victim@example.com");
     let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
-    emit_ulp(resp, &mut entity, &mut result, "victim@example.com", "s");
+    let mut seen = std::collections::HashSet::new();
+    emit_ulp(resp, &mut entity, &mut result, "victim@example.com", "s", &mut seen);
     let url_pivot = result
         .entities
         .iter()
@@ -249,7 +262,8 @@ fn ulp_recovers_the_login_on_username_and_ip_scans() {
         let target = Target::new(kind, query);
         let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
         let mut result = ModuleResult::new();
-        emit_ulp(resp, &mut entity, &mut result, query, "s");
+        let mut seen = std::collections::HashSet::new();
+        emit_ulp(resp, &mut entity, &mut result, query, "s", &mut seen);
         // The differing login is now promoted to a first-class Email pivot…
         assert!(
             result
@@ -321,7 +335,8 @@ fn pbs_v2_found_with_records_tags_breach() {
     let target = Target::new(TargetKind::Email, "victim@example.com");
     let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
-    emit_pbs_v2(resp, &mut entity, &mut result, "victim@example.com", "s");
+    let mut seen = std::collections::HashSet::new();
+    emit_pbs_v2(resp, &mut entity, &mut result, "victim@example.com", "s", &mut seen);
     assert!(entity.has_tag("breach"), "breach tag must be set on hit");
     assert!(entity.has_tag("niamonx:breach:leaksite"));
     // The alternate email pivot is emitted.
@@ -346,7 +361,82 @@ fn pbs_v2_zero_found_is_quiet() {
     let target = Target::new(TargetKind::Email, "clean@example.com");
     let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
-    emit_pbs_v2(resp, &mut entity, &mut result, "clean@example.com", "s");
+    let mut seen = std::collections::HashSet::new();
+    emit_pbs_v2(resp, &mut entity, &mut result, "clean@example.com", "s", &mut seen);
     assert!(!entity.has_tag("breach"));
     assert!(result.entities.is_empty());
+}
+
+#[test]
+fn a_shared_seen_set_dedups_the_same_email_restated_across_pbs_v1_and_pbs_v2() {
+    // Regression: PBS v1 and PBS v2 are independent endpoints over the SAME
+    // underlying NiamonX provider, and commonly restate the same
+    // corroborating email. Without a dedup guard spanning both calls, this
+    // minted two separate Email pivots for one restated fact instead of one.
+    let v1 = PbsV1Response {
+        success: true,
+        data: Some(PbsV1Data {
+            status: Some("found".to_string()),
+            error: None,
+            meta: Some(PbsV1Meta {
+                blocks_total: 1,
+                emails: Some(vec!["Other@Example.com".to_string()]),
+                names: None,
+                first_seen: None,
+                last_seen: None,
+            }),
+            risk: None,
+            blocks: None,
+            rate: None,
+        }),
+    };
+    let v2 = PbsV2Response {
+        success: true,
+        data: Some(PbsV2Data {
+            niamonx_success: true,
+            error: None,
+            stats: Some(PbsV2Stats {
+                found: 1,
+                with_passwords: 0,
+                unique_sources: 1,
+            }),
+            records: Some(vec![PbsV2Record {
+                source: Some(PbsV2Source {
+                    name: Some("LeakSite".to_string()),
+                    breach_date: Some("2022-03-01".to_string()),
+                    compilation: Some(0),
+                }),
+                // Same address, different case — restated by the other endpoint.
+                email: Some("other@example.com".to_string()),
+                username: None,
+                phone: None,
+                fields: None,
+            }]),
+        }),
+    };
+    let target = Target::new(TargetKind::Email, "victim@example.com");
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
+    let mut result = ModuleResult::new();
+    let mut seen = std::collections::HashSet::new();
+    emit_pbs_v1(v1, &mut entity, &mut result, "victim@example.com", "s", &mut seen);
+    emit_pbs_v2(v2, &mut entity, &mut result, "victim@example.com", "s", &mut seen);
+    let email_count = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email)
+        .count();
+    assert_eq!(
+        email_count, 1,
+        "the same email restated by PBS v1 and PBS v2 must not double-emit: {:?}",
+        result.entities
+    );
+}
+
+#[test]
+fn produces_includes_the_seed_kinds_for_every_accepted_target_kind() {
+    // Regression: the enriched seed entity re-affirms the queried identity as
+    // Domain/IpAddress too (accepts() admits both), not just Email/Username.
+    let m = NiamonX;
+    assert!(m.produces().contains(&EntityKind::Domain));
+    assert!(m.produces().contains(&EntityKind::IpAddress));
 }

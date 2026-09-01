@@ -134,6 +134,7 @@ impl Module for DeHashed {
             EntityKind::Organisation,
             EntityKind::MacAddress,
             EntityKind::DeviceId,
+            EntityKind::Ssid,
         ];
         KINDS
     }

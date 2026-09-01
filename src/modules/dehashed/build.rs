@@ -305,14 +305,34 @@ pub(super) fn extract_records(
     result: &mut ModuleResult,
 ) {
     let matcher = TargetMatch::new(target_value);
-    for item in entries {
-        // Scalar-flattened view for the evidence fold, the target match, and the
-        // shared rich-detail pass; the original `item` (arrays intact) feeds the
+    // `seen` is shared across the WHOLE array — a genuinely corroborating
+    // value can legitimately repeat across records — so which record claims
+    // a shared key FIRST matters. DeHashed's one non-exact selector, `name`,
+    // can return same-name STRANGERS ahead of the subject's own row in
+    // whatever order the API happens to return them. Processing a stranger's
+    // row first would let it claim a value the subject's own later row also
+    // carries; `seen.insert` would then no-op for the subject's row, and the
+    // value would stay permanently pinned at the stranger's demoted
+    // `candidate` confidence instead of the subject's full tier — losing a
+    // real corroborating fact about the subject to an unrelated coincidence.
+    // A stable sort (target-matching rows first) removes the ordering
+    // dependency while preserving each group's original relative order.
+    let mut prepared: Vec<(&Value, Value, bool)> = entries
+        .iter()
+        .map(|item| {
+            let flat = flatten_record(item);
+            let is_target = matcher.matches(&flat);
+            (item, flat, is_target)
+        })
+        .collect();
+    prepared.sort_by_key(|(_, _, is_target)| !is_target);
+
+    for (item, flat, is_target) in prepared {
+        // Scalar-flattened view for the evidence fold and the shared
+        // rich-detail pass; the original `item` (arrays intact) feeds the
         // per-value identity loops so a record with several emails/passwords
         // surfaces every one of them.
-        let flat = flatten_record(item);
         let ev = record_evidence(&flat, key_fp);
-        let is_target = matcher.matches(&flat);
         let quarantine_start = result.entities.len();
 
         for email in field_strings(item, "email") {

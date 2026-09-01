@@ -237,6 +237,7 @@ impl Module for SeekNow {
             EntityKind::MacAddress,
             EntityKind::DeviceId,
             EntityKind::Password,
+            EntityKind::Ssid,
             // Plus `Other(<field>)` for every remaining raw field — see
             // `extract_rich_detail` (an unbounded set, so not enumerable here).
         ];

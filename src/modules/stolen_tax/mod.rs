@@ -180,11 +180,25 @@ impl Module for StolenTax {
 
 fn build_entities(data: &StolenTaxData, query_value: &str, scan_id: &str) -> Vec<Entity> {
     let mut entities = Vec::new();
+    // The same email/username can legitimately appear in more than one of
+    // these overlapping identity sources — a top-level rollup list AND a
+    // detailed per-platform accounts array both naming the same address is a
+    // plausible real API shape. Without this guard, the same (kind, value)
+    // pair mints as two separate entities for one fact restated twice.
+    let mut seen: std::collections::HashSet<(EntityKind, String)> =
+        std::collections::HashSet::new();
+    // Case-insensitive, matching the `seen` dedup key below: an API that
+    // restates the queried identity with different casing (e.g. queried
+    // "User@Example.com", API echoes "user@example.com" in its own
+    // emails[]) must still be recognised as the query itself, not
+    // re-emitted as a new corroborating pivot.
+    let query_lower = query_value.to_lowercase();
 
     entities.extend(
         data.emails
             .iter()
-            .filter(|e| *e != query_value)
+            .filter(|e| e.to_lowercase() != query_lower)
+            .filter(|e| seen.insert((EntityKind::Email, e.to_lowercase())))
             .map(|email| {
                 let mut entity = Entity::new(EntityKind::Email, email, confidence::MEDIUM, scan_id);
                 entity.add_evidence(Evidence::new(
@@ -198,7 +212,8 @@ fn build_entities(data: &StolenTaxData, query_value: &str, scan_id: &str) -> Vec
     entities.extend(
         data.usernames
             .iter()
-            .filter(|u| *u != query_value)
+            .filter(|u| u.to_lowercase() != query_lower)
+            .filter(|u| seen.insert((EntityKind::Username, u.to_lowercase())))
             .map(|username| {
                 let mut entity =
                     Entity::new(EntityKind::Username, username, confidence::MEDIUM, scan_id);
@@ -223,7 +238,8 @@ fn build_entities(data: &StolenTaxData, query_value: &str, scan_id: &str) -> Vec
         );
 
         if let Some(email) = &account.email
-            && email != query_value
+            && email.to_lowercase() != query_lower
+            && seen.insert((EntityKind::Email, email.to_lowercase()))
         {
             let mut entity = Entity::new(EntityKind::Email, email, confidence::MEDIUM, scan_id);
             entity.add_evidence(Evidence::new(SRC, evidence_text.clone()));
@@ -231,7 +247,8 @@ fn build_entities(data: &StolenTaxData, query_value: &str, scan_id: &str) -> Vec
         }
 
         if let Some(username) = &account.username
-            && username != query_value
+            && username.to_lowercase() != query_lower
+            && seen.insert((EntityKind::Username, username.to_lowercase()))
         {
             let mut entity =
                 Entity::new(EntityKind::Username, username, confidence::MEDIUM, scan_id);
@@ -316,5 +333,68 @@ mod tests {
         let entities = build_entities(&data, "user@example.com", "test-scan");
         assert_eq!(entities.len(), 1);
         assert!(entities[0].value.contains("testuser"));
+    }
+
+    #[test]
+    fn test_build_entities_dedups_a_value_restated_across_sources() {
+        // Regression: the top-level `emails`/`usernames` rollup and the
+        // detailed `associated_accounts[]` array can restate the SAME
+        // email/username — a plausible real API shape — which previously
+        // double-emitted it as two separate entities instead of one.
+        let data = StolenTaxData {
+            breaches: None,
+            emails: vec!["Alt@Example.com".to_string()],
+            usernames: vec!["altuser".to_string()],
+            associated_accounts: vec![AssociatedAccount {
+                username: Some("altuser".to_string()),
+                email: Some("alt@example.com".to_string()),
+                platform: Some("forum".to_string()),
+                first_seen: None,
+            }],
+        };
+        let entities = build_entities(&data, "user@example.com", "test-scan");
+        let email_count = entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email)
+            .count();
+        let username_count = entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Username)
+            .count();
+        assert_eq!(
+            email_count, 1,
+            "the same email restated in emails[] and associated_accounts[] must not double-emit: {entities:?}"
+        );
+        assert_eq!(
+            username_count, 1,
+            "the same username restated in usernames[] and associated_accounts[] must not double-emit: {entities:?}"
+        );
+    }
+
+    #[test]
+    fn test_build_entities_excludes_the_query_value_regardless_of_casing() {
+        // Regression: the query-value suppression check was case-sensitive
+        // while the `seen` dedup key is case-insensitive. An API that
+        // restates the queried identity with different casing (a common
+        // real shape — the query was "User@Example.com", the API's own
+        // emails[]/associated_accounts[] echo "user@example.com") was not
+        // recognised as the query itself and got re-emitted as a new
+        // corroborating pivot instead of being excluded.
+        let data = StolenTaxData {
+            breaches: None,
+            emails: vec!["user@example.com".to_string()],
+            usernames: vec![],
+            associated_accounts: vec![AssociatedAccount {
+                username: None,
+                email: Some("USER@EXAMPLE.COM".to_string()),
+                platform: None,
+                first_seen: None,
+            }],
+        };
+        let entities = build_entities(&data, "User@Example.com", "test-scan");
+        assert!(
+            entities.is_empty(),
+            "the queried identity restated with different casing must not be re-emitted as a pivot: {entities:?}"
+        );
     }
 }

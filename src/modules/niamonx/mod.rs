@@ -231,14 +231,18 @@ impl Module for NiamonX {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        // Domain is accepted as input but no Domain pivot entity is ever emitted.
-        // Person is emitted from PBS v1 meta.names corroboration.
+        // The enriched seed entity re-affirms the queried identity as its own
+        // kind — Email/Username/IpAddress/Domain, whichever `accepts()` let
+        // through — whenever any endpoint contributed evidence. Person is
+        // emitted from PBS v1 meta.names corroboration.
         const KINDS: &[EntityKind] = &[
             EntityKind::Email,
             EntityKind::Username,
             EntityKind::Phone,
             EntityKind::Person,
             EntityKind::Url,
+            EntityKind::IpAddress,
+            EntityKind::Domain,
         ];
         KINDS
     }
@@ -328,27 +332,36 @@ impl Module for NiamonX {
         let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, &ctx.scan_id);
         entity.tag(SRC);
 
+        // PBS v1, PBS v2, and ULP are independent surfaces over the SAME
+        // underlying provider, and commonly restate the same corroborating
+        // email/username/phone (e.g. PBS v1's `meta.emails` and PBS v2's
+        // per-record `email` naming the identical address). Without a dedup
+        // guard spanning all three, the same (kind, value) pair mints as two
+        // separate pivot entities instead of one whose corroboration count
+        // reflects a SINGLE provider's overlap, not two independent sources.
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
         // The last genuine transport/parse failure seen across the three
         // independent endpoints (T2.114). Real evidence from any endpoint is
         // never discarded because a *different* endpoint failed — see
         // `ModuleResult::or_hard_failure` below.
         let mut hard_failure: Option<Error> = None;
         match r1 {
-            Ok(r) => emit_pbs_v1(r, &mut entity, &mut result, query, &ctx.scan_id),
+            Ok(r) => emit_pbs_v1(r, &mut entity, &mut result, query, &ctx.scan_id, &mut seen),
             Err(e) => {
                 warn!(error = %e, "niamonx pbs_v1 failed");
                 hard_failure = Some(e);
             }
         }
         match r2 {
-            Ok(r) => emit_pbs_v2(r, &mut entity, &mut result, query, &ctx.scan_id),
+            Ok(r) => emit_pbs_v2(r, &mut entity, &mut result, query, &ctx.scan_id, &mut seen),
             Err(e) => {
                 warn!(error = %e, "niamonx pbs_v2 failed");
                 hard_failure.get_or_insert(e);
             }
         }
         match r3 {
-            Ok(r) => emit_ulp(r, &mut entity, &mut result, query, &ctx.scan_id),
+            Ok(r) => emit_ulp(r, &mut entity, &mut result, query, &ctx.scan_id, &mut seen),
             Err(e) => {
                 warn!(error = %e, "niamonx ulp failed");
                 hard_failure.get_or_insert(e);
@@ -505,6 +518,7 @@ fn emit_pbs_v1(
     result: &mut ModuleResult,
     query: &str,
     scan_id: &str,
+    seen: &mut std::collections::HashSet<String>,
 ) {
     if !resp.success {
         return;
@@ -567,11 +581,23 @@ fn emit_pbs_v1(
         }
         // Corroborating emails as BFS pivots.
         for email in meta.emails.iter().flatten() {
-            if !email.eq_ignore_ascii_case(query) {
+            if !email.eq_ignore_ascii_case(query)
+                && seen.insert(format!("{}:{}", EntityKind::Email, email.to_lowercase()))
+            {
                 let mut pivot =
                     Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
                 pivot.tag(SRC);
                 pivot.tag("pbs-v1-pivot");
+                pivot.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!(
+                            "Corroborating email from NiamonX PBS v1 breach record for {query}"
+                        ),
+                    )
+                    .with_attr("related_to", query)
+                    .with_attr("source", "pbs_v1"),
+                );
                 result.push(pivot);
             }
         }
@@ -583,10 +609,19 @@ fn emit_pbs_v1(
         for name in meta.names.iter().flatten() {
             if !name.eq_ignore_ascii_case(query)
                 && !crate::core::validation::is_username_derived_name(name)
+                && seen.insert(format!("{}:{}", EntityKind::Person, name.to_lowercase()))
             {
                 let mut pivot = Entity::new(EntityKind::Person, name, confidence::HIGH, scan_id);
                 pivot.tag(SRC);
                 pivot.tag("pbs-v1-pivot");
+                pivot.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("Corroborating name from NiamonX PBS v1 breach record for {query}"),
+                    )
+                    .with_attr("related_to", query)
+                    .with_attr("source", "pbs_v1"),
+                );
                 result.push(pivot);
             }
         }
@@ -624,6 +659,7 @@ fn emit_pbs_v2(
     result: &mut ModuleResult,
     query: &str,
     scan_id: &str,
+    seen: &mut std::collections::HashSet<String>,
 ) {
     if !resp.success {
         return;
@@ -702,27 +738,46 @@ fn emit_pbs_v2(
             .email
             .as_deref()
             .filter(|e| !e.eq_ignore_ascii_case(query))
+            && seen.insert(format!("{}:{}", EntityKind::Email, email.to_lowercase()))
         {
             let mut pivot = Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
             pivot.tag(SRC);
             pivot.tag("pbs-v2-pivot");
+            pivot.add_evidence(
+                Evidence::new(SRC, format!("Email from NiamonX PBS v2 record: {label}"))
+                    .with_attr("source", source_name)
+                    .with_attr("breach_date", breach_date),
+            );
             result.push(pivot);
         }
         if let Some(uname) = record
             .username
             .as_deref()
             .filter(|u| !u.eq_ignore_ascii_case(query))
+            && seen.insert(format!("{}:{}", EntityKind::Username, uname.to_lowercase()))
         {
             let mut pivot =
                 Entity::new(EntityKind::Username, uname, confidence::HIGH_PLUS, scan_id);
             pivot.tag(SRC);
             pivot.tag("pbs-v2-pivot");
+            pivot.add_evidence(
+                Evidence::new(SRC, format!("Username from NiamonX PBS v2 record: {label}"))
+                    .with_attr("source", source_name)
+                    .with_attr("breach_date", breach_date),
+            );
             result.push(pivot);
         }
-        if let Some(phone) = &record.phone {
+        if let Some(phone) = &record.phone
+            && seen.insert(format!("{}:{}", EntityKind::Phone, phone.to_lowercase()))
+        {
             let mut pivot = Entity::new(EntityKind::Phone, phone, confidence::HIGH_PLUS, scan_id);
             pivot.tag(SRC);
             pivot.tag("pbs-v2-pivot");
+            pivot.add_evidence(
+                Evidence::new(SRC, format!("Phone from NiamonX PBS v2 record: {label}"))
+                    .with_attr("source", source_name)
+                    .with_attr("breach_date", breach_date),
+            );
             result.push(pivot);
         }
         if let Some(fields) = &record.fields {
@@ -740,6 +795,7 @@ fn emit_ulp(
     result: &mut ModuleResult,
     query: &str,
     scan_id: &str,
+    seen: &mut std::collections::HashSet<String>,
 ) {
     if !resp.success {
         return;
@@ -799,10 +855,17 @@ fn emit_ulp(
             } else {
                 EntityKind::Username
             };
-            let mut pivot = Entity::new(kind, login, confidence::HIGH_PLUS, scan_id);
-            pivot.tag(SRC);
-            pivot.tag("ulp-pivot");
-            result.push(pivot);
+            if seen.insert(format!("{kind}:{}", login.to_lowercase())) {
+                let mut pivot = Entity::new(kind, login, confidence::HIGH_PLUS, scan_id);
+                pivot.tag(SRC);
+                pivot.tag("ulp-pivot");
+                pivot.add_evidence(
+                    Evidence::new(SRC, format!("Stealer log login captured at {url}"))
+                        .with_attr("host", host)
+                        .with_attr("url", url),
+                );
+                result.push(pivot);
+            }
         }
 
         // The login `url` is where the credentials were captured — the most
@@ -815,11 +878,18 @@ fn emit_ulp(
         // dns/cert/wayback expansion onto the *platform's* infrastructure.
         if let Some(u) = record.url.as_deref() {
             let u = u.trim();
-            if u.starts_with("http") && u.contains('.') {
+            if u.starts_with("http")
+                && u.contains('.')
+                && seen.insert(format!("{}:{}", EntityKind::Url, u.to_lowercase()))
+            {
                 let mut pivot = Entity::new(EntityKind::Url, u, confidence::MEDIUM_HIGH, scan_id);
                 pivot.tag(SRC);
                 pivot.tag("ulp-pivot");
                 pivot.tag("credential-url");
+                pivot.add_evidence(
+                    Evidence::new(SRC, format!("Credential capture URL: {u}"))
+                        .with_attr("host", host),
+                );
                 result.push(pivot);
             }
         }
