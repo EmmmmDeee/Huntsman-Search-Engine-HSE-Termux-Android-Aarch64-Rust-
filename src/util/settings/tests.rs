@@ -80,8 +80,10 @@ fn set_bool_persists_and_get_bool_reads_it_back() {
     );
     set_bool(key, true).expect("set_bool persists");
     assert!(
-        get_bool(key, true),
-        "set_bool must flip the in-process cache immediately"
+        get_bool(key, false),
+        "set_bool must flip the in-process cache immediately \
+         (default false here so a cache that stayed unset can't pass by \
+         coincidentally falling back to the same value)"
     );
     // Read the file back independently of the CACHE static, proving the
     // write landed on disk and isn't just an in-memory mutation.
