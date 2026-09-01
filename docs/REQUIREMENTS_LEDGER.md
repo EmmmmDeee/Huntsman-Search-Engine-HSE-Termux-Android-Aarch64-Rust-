@@ -23,10 +23,14 @@ areas covered here:
   (`tests/architecture_parts/*.rs`, ~55 tests as of this pass) are treated as
   pre-existing verification evidence and cited by name rather than re-derived;
   this ledger only re-ran the specific ones it cites.
-- All line numbers are approximate pointers as of the commit this pass was
-  taken against (`hse build-sha` reported `8b113ca`, tree partially dirty from
-  concurrent, unrelated work in `src/modules/*` — see "Known limitations"
-  below); a module-audit commit landing after this pass may shift them.
+- All line numbers are approximate pointers as of when this pass was taken
+  (captured locally against a build reporting `hse build-sha` `8b113ca`, an
+  example snapshot rather than a value this document tracks going forward —
+  the tree was also partially dirty from concurrent, unrelated work in
+  `src/modules/*`, see "Known limitations" below). Any subsequent commit,
+  this PR's own merge included, will have shifted past that SHA; treat every
+  line number here as approximate for that reason, not just the ones noted
+  individually.
 
 **Known limitations of this pass.** A separate module-bug-audit session was
 editing `src/modules/*` concurrently with this pass (per the task brief). This
