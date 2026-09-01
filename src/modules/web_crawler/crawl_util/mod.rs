@@ -5,6 +5,16 @@ use std::collections::HashSet;
 use std::time::Duration;
 use url::Url;
 
+/// Regression: this list used to also include `/.well-known/security.txt`,
+/// `/crossdomain.xml`, and `/clientaccesspolicy.xml` — but these are
+/// standards-based files (RFC 9116, and the legacy Flash/Silverlight
+/// cross-domain policy convention) that a well-run, security-conscious site
+/// PUBLISHES DELIBERATELY. A 200 there is the opposite of a misconfiguration
+/// signal; probing them alongside genuine secret-leak candidates like
+/// `.env`/`.aws/credentials` meant any site following the RFC 9116 best
+/// practice got logged and evidenced as `"config_leak: exposed file
+/// discovered"` — a false positive on a file that exists specifically to be
+/// public.
 const CONFIG_LEAK_PATHS: &[&str] = &[
     // Plain env files (highest yield in practice)
     "/.env",
@@ -81,10 +91,7 @@ const CONFIG_LEAK_PATHS: &[&str] = &[
     "/server-info",
     "/phpinfo.php",
     "/info.php",
-    "/.well-known/security.txt",
     "/.htpasswd",
-    "/crossdomain.xml",
-    "/clientaccesspolicy.xml",
     // Package manifests (sometimes carry tokens in scripts/registries)
     "/package.json",
     "/composer.json",

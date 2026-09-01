@@ -646,6 +646,27 @@ async fn a_cancelled_scan_stops_probing_for_config_leaks() {
     );
 }
 
+#[test]
+fn config_leak_paths_excludes_standards_based_public_files() {
+    // Regression: `/.well-known/security.txt` (RFC 9116), `/crossdomain.xml`,
+    // and `/clientaccesspolicy.xml` (the legacy Flash/Silverlight
+    // cross-domain policy convention) are files a security-conscious site
+    // PUBLISHES DELIBERATELY. A 200 there is the opposite of a leak signal —
+    // probing them alongside genuine secret-leak candidates meant any site
+    // following the RFC 9116 best practice got reported as
+    // "config_leak: exposed file discovered".
+    for path in [
+        "/.well-known/security.txt",
+        "/crossdomain.xml",
+        "/clientaccesspolicy.xml",
+    ] {
+        assert!(
+            !super::CONFIG_LEAK_PATHS.contains(&path),
+            "{path} is intentionally public and must not be probed as a config leak"
+        );
+    }
+}
+
 /// The config-leak sweep must probe the seed's PORT, not just its host.
 ///
 /// `host_root` was built with `url::Url::host_str()`, which returns the host
