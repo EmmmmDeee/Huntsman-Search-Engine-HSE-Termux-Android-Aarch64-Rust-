@@ -95,20 +95,39 @@ use super::*;
 
     #[test]
     fn default_optional_methods_are_documented_no_ops() {
-        // Seven methods carry no-op defaults "for test doubles". `InMemoryStore`
-        // overrides NONE of them, so it is the exact contract a non-SQLite backend
-        // (or mock) inherits, and the engine hits these defaults through it at
-        // every scan boundary (checkpoint/prune) and cache lookup. Exercise each
-        // through the trait object (the real dyn-dispatch path) and pin its
-        // documented return, so a future edit to a default body can't silently
-        // change what a non-overriding backend gets. Complements the round-trip
-        // tests above, which drive the concrete SQLite `Store` overrides.
+        // Five methods still carry the trait's no-op default for `InMemoryStore`
+        // (pathway-template learning, checkpoint, both prunes), and the engine
+        // hits these defaults through it at every scan boundary. The remaining
+        // two — the inter-scan entity cache — were deliberately given REAL
+        // in-memory semantics instead (see `InMemoryStore::archive_module_result`/
+        // `lookup_module_result_fresh`): a no-op cache made the dispatch-level
+        // cache-hit-skips-`process()` path structurally untestable against this
+        // port, which is exactly the gap
+        // `core::engine::tests::cache_hit_skips_reprocessing_a_later_scan_of_the_same_target`
+        // closes (REQ-CORE-009). Exercise each through the trait object (the
+        // real dyn-dispatch path) and pin its documented return, so a future
+        // edit to a default/override body can't silently change what a
+        // non-SQLite backend gets. Complements the round-trip tests above,
+        // which drive the concrete SQLite `Store` overrides.
         let store: Arc<dyn StoragePort> = Arc::new(crate::core::test_support::InMemoryStore::new());
 
-        // Inter-scan entity cache: archive succeeds (best-effort), lookup misses.
+        // Inter-scan entity cache: now a genuine round-trip, not a no-op — a
+        // fresh archive is a real hit, and an unarchived key still misses.
+        // `Entity` has no `PartialEq`, so assert the hit via its length.
         assert!(store.archive_module_result("k", 3600, &[]).is_ok());
-        // `Entity` has no `PartialEq`, so assert the miss via `is_none`.
-        assert!(store.lookup_module_result_fresh("k").expect("should succeed").is_none());
+        let hit = store.lookup_module_result_fresh("k").expect("should succeed");
+        assert_eq!(
+            hit.map(|v| v.len()),
+            Some(0),
+            "a fresh archive must be a genuine hit, not the old no-op miss"
+        );
+        assert!(
+            store
+                .lookup_module_result_fresh("unarchived-key")
+                .expect("should succeed")
+                .is_none(),
+            "a key that was never archived must still miss"
+        );
 
         // Pathway-template learning: record succeeds, count never credits a route.
         assert!(store.record_pathway_template("a>b").is_ok());

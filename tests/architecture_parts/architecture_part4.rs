@@ -736,4 +736,30 @@ fn readme_seed_type_module_counts_match_registry() {
          registry (update README.md after adding/removing a module or changing a \
          module's consumes()): {mismatches:#?}"
     );
+
+    // The clarifying note explaining why device_id/ssid/tracking_id are
+    // deliberately omitted from the table above also states their current
+    // module counts — pin those too, so that sentence can't silently drift
+    // the same way the table itself once did (REQ-README-003/004).
+    let device_id_count = live
+        .iter()
+        .filter(|m| m.consumes().contains(&TargetKind::DeviceId))
+        .count();
+    let ssid_count = live
+        .iter()
+        .filter(|m| m.consumes().contains(&TargetKind::Ssid))
+        .count();
+    let tracking_id_count = live
+        .iter()
+        .filter(|m| m.consumes().contains(&TargetKind::TrackingId))
+        .count();
+    let expected_note = format!(
+        "They currently feed {device_id_count}, {ssid_count}, and {tracking_id_count} \
+         modules respectively."
+    );
+    assert!(
+        readme.contains(&expected_note),
+        "README's pivot-only seed-kind note (device_id/ssid/tracking_id) has drifted \
+         from the live registry — expected to find {expected_note:?} in README.md"
+    );
 }
