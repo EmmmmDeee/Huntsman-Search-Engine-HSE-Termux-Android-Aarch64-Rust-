@@ -178,14 +178,32 @@ impl Module for WebCrawler {
             EntityKind::Phone,
             EntityKind::ApiKey,
             EntityKind::TrackingId,
-            // Additional kinds `core::classifier::extract` can return when run
-            // over embedded SPA hydration JSON (see `hydration.rs`): a locator
-            // match can resolve to a validated IP, an ABN/ACN (digit-run +
-            // checksum), or a `@handle` username, none of which the crawler's
-            // other extractors ever produced before.
+            // Every kind below is reachable ONLY via the hydration-JSON path
+            // (see `hydration.rs`): `extract_hydration_entities` calls
+            // `core::classifier::extract` over each JSON string leaf and
+            // `build_entities` (below) mints the entity as `Entity::new(c.kind
+            // .clone(), ...)` — a VARIABLE kind, not a literal `EntityKind::X`
+            // token, so it is invisible to the architecture guard
+            // (`every_literal_constructed_entity_kind_is_declared_in_produces`)
+            // that would otherwise catch a missing declaration here. There is
+            // no confidence or kind filter on that path at all, so `classify`
+            // can hand back the `EntityKind` for ANY of its 19 `TargetKind`
+            // variants — this list is every one of them, not just the three
+            // (IpAddress, AbnAcn, Username) a prior pass added after noticing
+            // just those in practice.
             EntityKind::IpAddress,
             EntityKind::AbnAcn,
             EntityKind::Username,
+            EntityKind::Person,
+            EntityKind::Asn,
+            EntityKind::Cidr,
+            EntityKind::Coordinates,
+            EntityKind::Address,
+            EntityKind::Organisation,
+            EntityKind::MacAddress,
+            EntityKind::CryptoAddress,
+            EntityKind::DeviceId,
+            EntityKind::Ssid,
         ];
         KINDS
     }

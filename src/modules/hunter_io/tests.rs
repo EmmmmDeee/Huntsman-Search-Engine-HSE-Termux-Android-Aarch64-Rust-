@@ -307,8 +307,8 @@ use super::*;
             (Some(50), confidence::MEDIUM_HIGH),
             (Some(20), confidence::LOW_MEDIUM),
             (Some(1), confidence::LOW_MEDIUM),
-            (Some(0), confidence::MEDIUM), // explicit 0 collapses to unknown floor
-            (None, confidence::MEDIUM),
+            (Some(0), confidence::LOW), // explicit 0 collapses to unknown floor
+            (None, confidence::LOW),
         ];
         for (input, expected) in cases {
             let got = confidence_from_hunter_score(input);
@@ -317,4 +317,73 @@ use super::*;
                 "confidence {input:?} → {got} (expected {expected})"
             );
         }
+    }
+
+    #[test]
+    fn confidence_floor_never_outranks_a_genuinely_reported_low_score() {
+        // Regression: the floor case (0/missing) used to map to
+        // confidence::MEDIUM (0.50), which sits ABOVE the 1-39 bucket's
+        // confidence::LOW_MEDIUM (0.45) — a real, if weak, reported score
+        // ranked as LESS confident than Hunter reporting no signal at all.
+        assert!(confidence_from_hunter_score(None) <= confidence_from_hunter_score(Some(1)));
+        assert!(confidence_from_hunter_score(Some(0)) <= confidence_from_hunter_score(Some(1)));
+    }
+
+    #[test]
+    fn apply_verification_penalty_downweights_invalid_and_disposable() {
+        assert!((apply_verification_penalty(confidence::HIGH_PLUSPLUS_PLUS, Some("invalid")) - confidence::LOW).abs() < f64::EPSILON);
+        assert!(
+            (apply_verification_penalty(confidence::HIGH_PLUSPLUS_PLUS, Some("Disposable"))
+                - confidence::LOW)
+                .abs()
+                < f64::EPSILON
+        );
+        // A verification status this codebase treats as known-bad must never
+        // be able to RAISE a confidence already at or below the penalty
+        // floor — `.min` only ever lowers.
+        assert!(
+            (apply_verification_penalty(confidence::LOW_MEDIUM, Some("invalid"))
+                - confidence::LOW_MEDIUM.min(confidence::LOW))
+            .abs()
+                < f64::EPSILON
+        );
+    }
+
+    #[test]
+    fn apply_verification_penalty_leaves_other_statuses_untouched() {
+        for status in [Some("valid"), Some("accept_all"), Some("webmail"), Some("unknown"), None] {
+            assert!(
+                (apply_verification_penalty(confidence::HIGH_PLUSPLUS_PLUS, status)
+                    - confidence::HIGH_PLUSPLUS_PLUS)
+                    .abs()
+                    < f64::EPSILON,
+                "status {status:?} must not affect confidence"
+            );
+        }
+    }
+
+    #[test]
+    fn build_entities_downweights_an_email_hunter_itself_marked_invalid() {
+        // Regression: `verification.status` was surfaced only as an evidence
+        // attribute and never fed back into the entity's confidence, so an
+        // address Hunter's OWN deliverability check flagged as bounced could
+        // still be emitted at full HIGH_PLUSPLUS_PLUS confidence.
+        let d = data(
+            r#"{
+                "emails": [
+                    {"value": "bounced@acme.com", "confidence": 97,
+                     "verification": {"status": "invalid"}}
+                ]
+            }"#,
+        );
+        let es = build_entities(&d, "acme.com", "t");
+        let email = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Email)
+            .expect("email entity");
+        assert!(
+            email.confidence <= confidence::LOW,
+            "an address Hunter itself marked invalid must not keep its raw discovery confidence, got {}",
+            email.confidence
+        );
     }

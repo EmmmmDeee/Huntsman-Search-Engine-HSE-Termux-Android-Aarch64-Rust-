@@ -45,6 +45,26 @@ const FINGERPRINT_HEADERS: &[&str] = &[
     "x-cache",
 ];
 
+/// The subset of [`FINGERPRINT_HEADERS`] that directly reveal the underlying
+/// stack, framework, or CDN identity — a banner value, a generator tag, or a
+/// CDN-specific request-id header. The rest (`x-frame-options`,
+/// `content-security-policy`, `strict-transport-security`, `via`, `x-cache`)
+/// are purely security-posture / caching headers present on countless
+/// unrelated stacks and confirm nothing distinctive by themselves. Used by
+/// [`banner_confidence`] so a response that only sent a generic security
+/// header doesn't earn the same confidence as one that named its actual
+/// server software.
+const IDENTIFYING_HEADERS: &[&str] = &[
+    "server",
+    "x-powered-by",
+    "x-generator",
+    "x-aspnet-version",
+    "x-aspnetmvc-version",
+    "cf-ray",
+    "x-amz-cf-id",
+    "x-served-by",
+];
+
 #[async_trait]
 impl Module for WebserverBanner {
     fn name(&self) -> &'static str {
@@ -119,7 +139,7 @@ impl Module for WebserverBanner {
             }
 
             let mut entity =
-                banner_entity(target, &host, confidence::HIGH_PLUSPLUS_PLUS, &ctx.scan_id);
+                banner_entity(target, &host, banner_confidence(&captured), &ctx.scan_id);
             entity.tag(crate::core::tags::WEB);
             apply_stack_tags(&mut entity, &captured);
 
@@ -186,6 +206,29 @@ fn extract_host_port(kind: TargetKind, value: &str) -> Option<(String, Option<u1
         return None;
     }
     Some((host, port))
+}
+
+/// Confidence for a captured header set. **Pure**.
+///
+/// Regression: every non-empty capture used to get the same flat
+/// [`confidence::HIGH_PLUSPLUS_PLUS`], whether it was an actual stack banner
+/// (`server: nginx/1.24.0`) or nothing but a generic security-posture header
+/// like `x-frame-options: SAMEORIGIN` — present on countless unrelated
+/// stacks and revealing nothing distinctive about this one. A response with
+/// at least one [`IDENTIFYING_HEADERS`] entry keeps the high-confidence
+/// verdict; a capture made up entirely of generic headers is confirmed
+/// present but identifies nothing, so it sits at [`confidence::MEDIUM_PLUS`]
+/// instead. `captured` is assumed non-empty (the caller already skips an
+/// empty capture).
+fn banner_confidence(captured: &[(String, String)]) -> f64 {
+    if captured
+        .iter()
+        .any(|(h, _)| IDENTIFYING_HEADERS.contains(&h.as_str()))
+    {
+        confidence::HIGH_PLUSPLUS_PLUS
+    } else {
+        confidence::MEDIUM_PLUS
+    }
 }
 
 fn capture_headers(h: &reqwest::header::HeaderMap) -> Vec<(String, String)> {

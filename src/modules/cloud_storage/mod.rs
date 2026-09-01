@@ -36,9 +36,9 @@ const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 /// Exposed object keys retained from a public listing (the rest are summarised).
 const KEY_SAMPLE: usize = 25;
 /// Confidence for the per-object `Url` entities minted from a `PublicListable`
-/// finding's key sample — slightly below the 0.9 bucket-root confidence since
-/// each is a derived pivot (a joined URL) rather than the directly-observed
-/// listing itself.
+/// finding's key sample — slightly below the [`confidence::VERY_HIGH_PLUS`]
+/// bucket-root confidence since each is a derived pivot (a joined URL) rather
+/// than the directly-observed listing itself.
 const OBJECT_KEY_CONFIDENCE: f64 = confidence::HIGH_PLUSPLUS_PLUS;
 
 pub struct CloudStorage;
@@ -270,13 +270,13 @@ struct Finding {
 
 impl Finding {
     fn into_entity(self, scan_id: &str) -> Entity {
-        let confidence = match self.access.severity() {
-            3 => 0.9,
-            2 => 0.8,
-            _ => 0.6,
+        let conf = match self.access.severity() {
+            3 => confidence::VERY_HIGH_PLUS,
+            2 => confidence::HIGH_PLUSPLUS,
+            _ => confidence::MEDIUM_PLUS,
         };
         let label = self.provider.label();
-        let mut e = Entity::new(EntityKind::Url, &self.url, confidence, scan_id);
+        let mut e = Entity::new(EntityKind::Url, &self.url, conf, scan_id);
         e.tag("cloud-storage");
         e.tag(format!("provider:{label}"));
         let ev = match &self.access {

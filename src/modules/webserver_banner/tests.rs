@@ -86,6 +86,40 @@ use super::*;
     }
 
     #[test]
+    fn banner_confidence_is_high_when_an_identifying_header_is_present() {
+        let captured = vec![("server".to_string(), "nginx/1.24.0".to_string())];
+        assert!((banner_confidence(&captured) - confidence::HIGH_PLUSPLUS_PLUS).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn banner_confidence_is_lower_for_generic_security_headers_alone() {
+        // Regression: a capture made up ENTIRELY of generic security-posture
+        // headers (present on countless unrelated stacks, revealing nothing
+        // distinctive about this one) used to get the same flat
+        // HIGH_PLUSPLUS_PLUS confidence as an actual stack banner.
+        let captured = vec![
+            ("x-frame-options".to_string(), "SAMEORIGIN".to_string()),
+            ("strict-transport-security".to_string(), "max-age=31536000".to_string()),
+        ];
+        let got = banner_confidence(&captured);
+        assert!(
+            got < confidence::HIGH_PLUSPLUS_PLUS,
+            "generic-only headers must not earn the same confidence as an identifying banner, got {got}"
+        );
+    }
+
+    #[test]
+    fn banner_confidence_upgrades_the_moment_one_identifying_header_appears() {
+        // Even mixed in with generic headers, a single identifying header is
+        // enough to earn the high-confidence verdict.
+        let captured = vec![
+            ("x-frame-options".to_string(), "SAMEORIGIN".to_string()),
+            ("x-powered-by".to_string(), "PHP/8.1.0".to_string()),
+        ];
+        assert!((banner_confidence(&captured) - confidence::HIGH_PLUSPLUS_PLUS).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn extract_host_port_handles_url_domain_and_rejects_junk() {
         // URL with explicit port.
         assert_eq!(

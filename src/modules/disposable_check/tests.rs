@@ -21,15 +21,28 @@ use super::*;
     }
 
     #[test]
-    fn verdict_parsing_is_affirmative_only_and_lenient() {
-        assert!(is_disposable("true"));
-        assert!(is_disposable("  TRUE \n"));
-        assert!(is_disposable("True"));
-        assert!(!is_disposable("false"));
-        // Fail-open: an unexpected/garbage verdict is NOT branded disposable.
-        assert!(!is_disposable(""));
-        assert!(!is_disposable("yes"));
-        assert!(!is_disposable("1"));
+    fn verdict_parsing_is_lenient_on_case_and_whitespace() {
+        assert_eq!(parse_verdict("true"), Some(true));
+        assert_eq!(parse_verdict("  TRUE \n"), Some(true));
+        assert_eq!(parse_verdict("True"), Some(true));
+        assert_eq!(parse_verdict("false"), Some(false));
+        assert_eq!(parse_verdict("  FALSE \n"), Some(false));
+    }
+
+    #[test]
+    fn verdict_parsing_fails_closed_on_an_unrecognized_value() {
+        // Regression: a prior version treated anything not affirmatively
+        // "true" as `false` ("fail-open"), so an API error message, a
+        // changed field contract, or a typo'd value all silently became a
+        // confident "confirmed legitimate" verdict — which then drove a
+        // VERY_HIGH-confidence `email-validated` entity and a domain pivot,
+        // far more assertion than an unrecognized response earned. An
+        // ambiguous verdict must be told apart from a genuine `false`.
+        assert_eq!(parse_verdict(""), None);
+        assert_eq!(parse_verdict("yes"), None);
+        assert_eq!(parse_verdict("1"), None);
+        assert_eq!(parse_verdict("error"), None);
+        assert_eq!(parse_verdict("null"), None);
     }
 
     #[test]

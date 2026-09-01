@@ -15,7 +15,7 @@ use serde::Deserialize;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -26,23 +26,37 @@ const SRC: &str = "disposable_check";
 
 /// Confidence for a confirmed disposable/throwaway address — deliberately low:
 /// it anchors no durable identity, so it should not pull expansion toward it.
-const DISPOSABLE_CONFIDENCE: f64 = 0.20;
+/// [`confidence::VERY_LOW`] is the floor of the ladder's emittable range
+/// (below it sits only [`confidence::ZERO`], documented as never emitted) —
+/// this module deliberately sits AT that floor rather than inventing its own
+/// below-floor value.
+const DISPOSABLE_CONFIDENCE: f64 = confidence::VERY_LOW;
 /// Confidence for an address on a legitimate (non-throwaway) provider.
 const LEGIT_CONFIDENCE: f64 = confidence::VERY_HIGH;
 
 /// debounce.io returns its boolean verdict as the JSON *string* `"true"` /
-/// `"false"`, not a bare bool — hence `String`, parsed via [`is_disposable`].
+/// `"false"`, not a bare bool — hence `String`, parsed via [`parse_verdict`].
 #[derive(Deserialize)]
 struct Resp {
     disposable: String,
 }
 
 /// Interpret debounce.io's stringly-typed `disposable` field. The API emits
-/// `"true"`/`"false"`; we accept any case and surrounding whitespace, and treat
-/// anything that is not an affirmative `true` as not-disposable (fail-open — a
-/// malformed verdict must not silently brand a real address as throwaway).
-fn is_disposable(raw: &str) -> bool {
-    raw.trim().eq_ignore_ascii_case("true")
+/// `"true"`/`"false"`; accepted case-insensitively with surrounding
+/// whitespace trimmed. `None` for anything else — an ambiguous or malformed
+/// verdict that the caller must fail closed on, NOT silently fold into a
+/// confident "legitimate" outcome: `process()` emits a `LEGIT_CONFIDENCE`
+/// `email-validated` entity (and a domain pivot) on a `false` verdict, which
+/// is far more assertion than an unrecognized API response has actually
+/// earned. A prior version treated anything not affirmatively `"true"` as
+/// `false` ("fail-open"), which meant an API error message, a changed field
+/// contract, or a typo'd value all silently became "confirmed legitimate."
+fn parse_verdict(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
 }
 
 /// Map a disposable verdict onto the target email's entity. **Pure** (no
@@ -135,7 +149,15 @@ impl Module for DisposableCheck {
 
         let data: Resp = crate::util::http::json_decode(SRC, resp).await?;
 
-        let disposable = is_disposable(&data.disposable);
+        let Some(disposable) = parse_verdict(&data.disposable) else {
+            return Err(Error::module(
+                SRC,
+                format!(
+                    "debounce.io returned an unrecognized disposable verdict: {:?}",
+                    data.disposable
+                ),
+            ));
+        };
         let mut result = ModuleResult::new();
         result.push(build_email_entity(email, disposable, &ctx.scan_id));
 

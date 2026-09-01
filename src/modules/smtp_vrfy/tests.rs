@@ -117,6 +117,121 @@ fn deliverability_ladder_is_ordered() {
     assert!((catchall - mk(SmtpVerdict::Unreachable("x".into()))).abs() < f64::EPSILON);
 }
 
+/// Read one SMTP command line off the mock-server side of a
+/// `tokio::io::duplex()` pipe, looping until a full `\r\n`-terminated line
+/// has arrived (an in-memory duplex can split a write across multiple
+/// `read` calls, so a single `read` is not guaranteed to return a whole
+/// line).
+async fn read_cmd(server: &mut tokio::io::DuplexStream) -> String {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 256];
+    loop {
+        let n = server.read(&mut chunk).await.expect("should succeed");
+        assert!(n > 0, "connection closed while reading a command");
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.ends_with(b"\r\n") {
+            return String::from_utf8_lossy(&buf).into_owned();
+        }
+    }
+}
+
+#[tokio::test]
+async fn run_probe_reports_unreachable_when_mail_from_is_rejected() {
+    // Regression: a MAIL FROM rejection must surface as `Unreachable`, not
+    // fall through to RCPT TO — which would then typically be misreported
+    // as `Invalid` for the TARGET address even though nothing about the
+    // target was ever actually tested. Also confirms the sender is the
+    // RFC 5321 §4.1.1.2 null reverse-path, not a fabricated `.local`
+    // address that a real MTA could plausibly reject for its own domain.
+    use tokio::io::AsyncWriteExt;
+    let (client, mut server) = tokio::io::duplex(4096);
+    tokio::spawn(async move {
+        server
+            .write_all(b"220 mx.example.com ESMTP\r\n")
+            .await
+            .expect("should succeed");
+        let ehlo = read_cmd(&mut server).await;
+        assert!(ehlo.starts_with("EHLO"), "got: {ehlo}");
+        server
+            .write_all(b"250 mx.example.com\r\n")
+            .await
+            .expect("should succeed");
+        let mail_from = read_cmd(&mut server).await;
+        assert_eq!(
+            mail_from, "MAIL FROM:<>\r\n",
+            "must probe with the null reverse-path sender, not a fabricated domain"
+        );
+        server
+            .write_all(b"550 sender domain not found\r\n")
+            .await
+            .expect("should succeed");
+        // No RCPT TO is ever sent by a correct implementation once MAIL
+        // FROM is rejected; leaving the mock server here means a bug that
+        // does send RCPT TO will simply time out waiting for a response
+        // that never comes, which is caught by the test's own timeout.
+    });
+
+    let verdict = super::run_probe(client, "target@example.com").await;
+    match verdict {
+        SmtpVerdict::Unreachable(reason) => {
+            assert!(
+                reason.contains("MAIL FROM rejected"),
+                "expected a MAIL FROM rejection reason, got: {reason}"
+            );
+        }
+        _ => panic!("a rejected MAIL FROM must yield Unreachable, not a target-address verdict"),
+    }
+}
+
+#[tokio::test]
+async fn run_probe_reaches_the_target_when_mail_from_is_accepted() {
+    // Companion to the rejection test above: a normal MAIL FROM 250
+    // acceptance must still flow through to a RCPT TO probe of the actual
+    // target and reach the usual Valid/Invalid/CatchAll verdicts.
+    use tokio::io::AsyncWriteExt;
+    let (client, mut server) = tokio::io::duplex(4096);
+    tokio::spawn(async move {
+        server
+            .write_all(b"220 mx.example.com ESMTP\r\n")
+            .await
+            .expect("should succeed");
+        read_cmd(&mut server).await; // EHLO
+        server
+            .write_all(b"250 mx.example.com\r\n")
+            .await
+            .expect("should succeed");
+        let mail_from = read_cmd(&mut server).await;
+        assert_eq!(mail_from, "MAIL FROM:<>\r\n");
+        server
+            .write_all(b"250 OK\r\n")
+            .await
+            .expect("should succeed");
+        let rcpt = read_cmd(&mut server).await;
+        assert_eq!(rcpt, "RCPT TO:<target@example.com>\r\n");
+        server
+            .write_all(b"250 OK\r\n")
+            .await
+            .expect("should succeed");
+        read_cmd(&mut server).await; // catch-all probe RCPT TO
+        server
+            .write_all(b"550 no such user\r\n")
+            .await
+            .expect("should succeed");
+        read_cmd(&mut server).await; // QUIT
+        server
+            .write_all(b"221 bye\r\n")
+            .await
+            .expect("should succeed");
+    });
+
+    let verdict = super::run_probe(client, "target@example.com").await;
+    assert!(
+        matches!(verdict, SmtpVerdict::Valid),
+        "target accepted + catch-all probe rejected must yield Valid"
+    );
+}
+
 #[tokio::test]
 async fn read_line_timeout_caps_a_giant_newline_less_line() {
     // T2.8: a single newline-less line from a hostile MX must not grow `buf`

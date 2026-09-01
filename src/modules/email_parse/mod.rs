@@ -81,12 +81,28 @@ impl Module for EmailParse {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
 
+        // A single, authoritative @ split shared by every step below.
+        // Regression: this function used to re-split `target.value` three
+        // different ways — `rsplit_once('@')` for the domain,
+        // `split('@').next()` for the local part, and `split('@').nth(1)`
+        // for the corporate-domain check. All three agree for a normal
+        // single-`@` address, but a value with more than one `@` (or none at
+        // all) made them silently disagree: `split('@').next()` on a value
+        // with NO `@` returns the whole string (so a malformed non-email
+        // input still fed the username/Person derivation below, even though
+        // the domain-extraction branch correctly emitted nothing), and on a
+        // value with two `@`s the local-part and domain-check splits would
+        // not agree with the domain the domain-extraction branch actually
+        // used. The rightmost `@` is the standard convention for resolving
+        // the domain boundary (a quoted local-part can rarely contain an
+        // unescaped `@`), so every step below shares this one split.
+        let Some((local, domain_part)) = target.value.rsplit_once('@') else {
+            return Ok(result);
+        };
+
         // ── Domain extraction ──────────────────────────────────────────
-        if let Some((_, d)) = target.value.rsplit_once('@')
-            && !d.is_empty()
-            && d.contains('.')
-        {
-            let domain = d.to_lowercase();
+        if !domain_part.is_empty() && domain_part.contains('.') {
+            let domain = domain_part.to_lowercase();
             // Only a *corporate/self-owned* mail domain is a real finding. Beyond
             // the freemail list, suppress every mega/social/shared-infrastructure
             // host (ISP webmail like `rr.com`, regional providers like `web.de`,
@@ -111,7 +127,7 @@ impl Module for EmailParse {
         }
 
         // ── Username derivation ────────────────────────────────────────
-        if let Some(local) = target.value.split('@').next() {
+        {
             let local = local.to_lowercase();
             // Role / generic mailbox local-parts (`dns@`, `abuse@`, `info@`,
             // `noreply@`, …) are not a person's handle — deriving a Username from
@@ -195,7 +211,7 @@ impl Module for EmailParse {
                 // from `firstname.lastname` — fabricating a real name from a
                 // throwaway consumer address, and disagreeing with the very
                 // freemail check that skipped the Domain two blocks up.
-                let email_domain = target.value.split('@').nth(1).unwrap_or("").to_lowercase();
+                let email_domain = domain_part.to_lowercase();
                 let is_corporate = !is_freemail(&email_domain);
                 let uname_conf = if is_corporate {
                     confidence::HIGH_PLUS
@@ -223,7 +239,16 @@ impl Module for EmailParse {
                 // Freemail usernames like ryne.manka@gmail.com still produce a Person
                 // candidate — the lower confidence and `freemail-inferred` tag signal
                 // that the inference is weaker and requires corroboration.
-                let parts: Vec<&str> = detagged.split(['.', '_']).collect();
+                //
+                // Regression: this used to split on `['.', '_']` only, while
+                // the initial-blend username derivation two blocks up (same
+                // 2-token firstname/lastname shape) splits on
+                // `['.', '_', '-']`. A hyphen-separated local part like
+                // `haigen-bamford` correctly derived blend usernames
+                // (`hbamford`, `haigen-bamford`, …) but never got a Person
+                // inferred for the exact same name shape a dot or underscore
+                // separator would have inferred.
+                let parts: Vec<&str> = detagged.split(['.', '_', '-']).collect();
                 if parts.len() == 2
                     && parts[0].len() >= 2
                     && parts[1].len() >= 2

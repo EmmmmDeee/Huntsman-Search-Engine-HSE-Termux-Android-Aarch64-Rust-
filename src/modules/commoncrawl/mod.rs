@@ -71,6 +71,23 @@ struct CcRecord {
     url: Option<String>,
 }
 
+/// Build the CDX query URL for `domain`. **Pure**, so the matchType behavior
+/// is unit-testable without a live server.
+///
+/// The CDX-Server API's `matchType` defaults to `exact` when omitted: a bare
+/// `url=<domain>` matches only that literal URL string across snapshot
+/// dates, not the domain's pages — silently defeating this module's entire
+/// purpose ("a domain's URLs") with no error, just a near-empty result.
+/// `url=*.{domain}` triggers CDX `matchType=domain` (the domain + every
+/// subdomain, all their paths) without needing a separate query parameter —
+/// the same proven pattern `wayback`'s own CDX domain-match pass uses.
+fn cdx_query_url(cdx_api: &str, domain: &str) -> String {
+    format!(
+        "{cdx_api}?url=*.{}&output=json&limit=100",
+        urlencode(domain)
+    )
+}
+
 /// Pure projection of the CDX index's JSON-lines body into `Url` entities.
 ///
 /// Lines that fail to parse are skipped rather than failing the whole
@@ -179,7 +196,7 @@ impl Module for CommonCrawl {
 
         // 2) Query that index for the domain. Same fail-closed treatment: a
         // 404 is a clean miss, anything else non-2xx is a typed `Err`.
-        let url = format!("{cdx_api}?url={}&output=json&limit=100", urlencode(domain));
+        let url = cdx_query_url(&cdx_api, domain);
         let resp = ctx
             .http
             .get(&url)
