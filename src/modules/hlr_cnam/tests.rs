@@ -1,6 +1,6 @@
 use super::{
-    CnamResp, HlrCnam, HlrResp, build_cnam_person, build_hlr_entities, cnam_pool_service,
-    hlr_pool_service,
+    CnamResp, HlrCnam, HlrResp, build_cnam_person, build_hlr_entities, canonical_phone_value,
+    cnam_pool_service, hlr_pool_service,
 };
 use crate::core::{
     entity::EntityKind,
@@ -41,7 +41,13 @@ fn build_hlr_entities_captures_msisdn_and_network_metadata() {
         .iter()
         .find(|e| e.kind == EntityKind::Phone)
         .expect("phone entity");
-    assert_eq!(phone.value, "0400000000");
+    // Regression: this used to be the raw queried local-form "0400000000",
+    // which hashes to a DIFFERENT Phone uid than the canonical "+61400000000"
+    // phone_au/phone_intl produce for the identical number — the HLR-verified
+    // evidence and tags landed on a disconnected second entity instead of
+    // merging onto the canonical one. Now keyed on the provider's own
+    // returned MSISDN.
+    assert_eq!(phone.value, "+61400000000");
     assert!(phone.has_tag("hlr-verified") && phone.has_tag("ported"));
     let attr = |k: &str| {
         phone.evidence[0]
@@ -51,6 +57,9 @@ fn build_hlr_entities_captures_msisdn_and_network_metadata() {
             .unwrap_or_default()
     };
     assert_eq!(attr("msisdn"), "+61400000000");
+    // The originally-queried local-form number is preserved as evidence, not
+    // lost, when it differs from the canonical entity value.
+    assert_eq!(attr("queried_number"), "0400000000");
     assert_eq!(attr("hlr_status"), "connected");
     assert_eq!(attr("mcc"), "505");
     assert_eq!(attr("ported_from_carrier"), "Optus");
@@ -61,6 +70,39 @@ fn build_hlr_entities_captures_msisdn_and_network_metadata() {
         .expect("carrier org");
     assert_eq!(org.value, "Telstra");
     assert!(org.has_tag("carrier"));
+}
+
+#[test]
+fn canonical_phone_value_prefers_the_providers_own_msisdn() {
+    let hlr = HlrResp {
+        msisdn: Some("61400000000".into()), // no leading '+' — common MSISDN shape
+        ..Default::default()
+    };
+    assert_eq!(
+        canonical_phone_value(&hlr, "0400000000"),
+        "+61400000000",
+        "the provider's authoritative MSISDN must win, with a '+' restored"
+    );
+}
+
+#[test]
+fn canonical_phone_value_falls_back_to_au_local_form_parsing() {
+    // No MSISDN in the response at all — canonicalize the queried AU-local
+    // number offline via the same parser phone_au uses.
+    let hlr = HlrResp::default();
+    assert_eq!(canonical_phone_value(&hlr, "0400000000"), "+61400000000");
+}
+
+#[test]
+fn canonical_phone_value_falls_back_to_the_raw_queried_value_as_a_last_resort() {
+    // Neither the provider's MSISDN nor offline AU parsing can canonicalize
+    // this — keep the raw queried value verbatim rather than fabricating or
+    // discarding it. It just won't merge onto a canonical entity.
+    let hlr = HlrResp::default();
+    assert_eq!(
+        canonical_phone_value(&hlr, "not-a-real-number"),
+        "not-a-real-number"
+    );
 }
 
 #[test]

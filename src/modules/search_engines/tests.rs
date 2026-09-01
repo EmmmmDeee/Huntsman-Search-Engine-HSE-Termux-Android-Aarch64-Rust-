@@ -1693,6 +1693,51 @@ fn corroboration_count_survives_dedup() {
 }
 
 #[test]
+fn a_zero_score_hit_does_not_permanently_block_a_later_strong_hit_for_the_same_username() {
+    // Regression: `seen_domains.insert("@username:{lower_user}")` used to be
+    // part of the initial guard, claiming the shared dedup key BEFORE
+    // `score_username` ever ran. An off-target result carrying the identical
+    // handle string but naming none of the target's terms scored 0 (no entity
+    // emitted) yet still permanently claimed the key — so a LATER result that
+    // would have scored highly for the exact same handle found `insert`
+    // already `false` and was silently dropped without ever being scored.
+    let target = Target::new(TargetKind::FullName, "Jordan Meyers");
+    let results = vec![
+        // First: shares the handle string but names none of the target's
+        // terms anywhere — every score_username signal fails, score == 0.
+        SearchResult {
+            url: "https://t.me/shadowfox92".to_string(),
+            title: "shadowfox92".to_string(),
+            snippet: "Channel updates and memes.".to_string(),
+            engine: "mojeek",
+            query: "shadowfox92".to_string(),
+        },
+        // Second: a bio-aggregator page explicitly naming the subject
+        // alongside the identical handle — co-occurrence (signal 3) must
+        // score this >= 1 and it must not be silently dropped.
+        SearchResult {
+            url: "https://linktr.ee/shadowfox92".to_string(),
+            title: "Jordan Meyers — Links".to_string(),
+            snippet: "Jordan Meyers (shadowfox92) — all my links in one place.".to_string(),
+            engine: "mojeek",
+            query: "Jordan Meyers".to_string(),
+        },
+    ];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        res.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Username && e.value == "shadowfox92"),
+        "the second result's scoring hit must not be silently dropped by the \
+         first result's zero-score dedup-key claim, got: {:?}",
+        res.entities
+            .iter()
+            .map(|e| (&e.kind, &e.value))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn snippet_embedded_social_link_emits_username() {
     // The result URL is a news article (no profile path), but its snippet names
     // the subject's GitHub — the snippet-link miner must still surface the handle,

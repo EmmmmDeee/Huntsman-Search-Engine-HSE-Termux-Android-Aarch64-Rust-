@@ -121,3 +121,49 @@ fn family_and_tag_lists_are_capped() {
         MAX_IOC_TAGS
     );
 }
+
+#[test]
+fn a_capped_list_records_the_true_distinct_count_and_flags_truncation() {
+    // Regression: `.take(N)` silently dropped every family/tag past the cap
+    // with nothing recording the true distinct count, so a shared C2
+    // indicator correlated to more families than the cap showed only the
+    // alphabetically-first ones with no way for an operator to tell the list
+    // was incomplete.
+    let many_families: Vec<Ioc> = (0..20)
+        .map(|i| ioc(&format!(r#"{{"malware":"fam{i:02}"}}"#)))
+        .collect();
+    let e = build_ioc_entity(EntityKind::Domain, "x.test", &many_families, "s");
+    assert_eq!(attr(&e, "malware_families_total"), Some("20"));
+    assert!(
+        attr(&e, "malware_families_truncated")
+            .is_some_and(|s| s.contains("20") && s.contains(&MAX_FAMILIES.to_string())),
+        "must name both the true total and the emitted cap, got {:?}",
+        attr(&e, "malware_families_truncated")
+    );
+
+    let big_tags = ioc(&format!(
+        r#"{{"tags":[{}]}}"#,
+        (0..30)
+            .map(|i| format!(r#""t{i:02}""#))
+            .collect::<Vec<_>>()
+            .join(",")
+    ));
+    let e = build_ioc_entity(EntityKind::Domain, "x.test", &[big_tags], "s");
+    assert_eq!(attr(&e, "ioc_tags_total"), Some("30"));
+    assert!(attr(&e, "ioc_tags_truncated").is_some());
+}
+
+#[test]
+fn an_uncapped_list_records_the_total_but_no_truncation_flag() {
+    // No truncation → no misleading "_truncated" note, but the total count is
+    // still recorded (matching gleif_lei::note_child_coverage's convention of
+    // always stating emitted/total, not just on the truncated path).
+    let e = build_ioc_entity(
+        EntityKind::Domain,
+        "evil.test",
+        &[ioc(r#"{"malware":"CobaltStrike"}"#)],
+        "s",
+    );
+    assert_eq!(attr(&e, "malware_families_total"), Some("1"));
+    assert_eq!(attr(&e, "malware_families_truncated"), None);
+}

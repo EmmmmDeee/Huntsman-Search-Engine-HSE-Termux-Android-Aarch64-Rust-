@@ -338,7 +338,7 @@ fn recycled_evidence(r: &SearchResult, label: &str, value: &str, combined: &str)
     let snippet: String = r.snippet.clone();
     let context = extract_surrounding_text(combined, value, 240);
     let mut ev = Evidence::new(
-        "search_engines",
+        SRC,
         format!(
             "[{}] {} `{}` from recycled search — {}",
             r.engine, label, value, r.url

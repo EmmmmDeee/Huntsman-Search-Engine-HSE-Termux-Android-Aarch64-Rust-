@@ -65,6 +65,26 @@ IP address       HW type     Flags       HW address            Mask     Device
     }
 
     #[test]
+    fn parser_skips_a_proxy_arp_entry_with_a_real_but_non_subject_mac() {
+        // Regression: this parser used to skip only the placeholder-MAC
+        // (`00:00:00:00:00:00`) row, so a proxy-ARP entry (flags `0x4`,
+        // ATF_PUBL — a router answering ARP on behalf of another host)
+        // carrying a REAL MAC was emitted as if it were a genuine resolved
+        // LAN neighbour. `signal_radar::lan::parse_arp` parsing the identical
+        // file already requires `flags == "0x2"`; this parser must agree.
+        let sample = "\
+IP address       HW type     Flags       HW address            Mask     Device
+192.168.1.1      0x1         0x4         aa:bb:cc:dd:ee:ff     *        wlan0
+";
+        let r = parse_arp_result(sample, "test-scan");
+        assert_eq!(
+            r.entities.len(),
+            0,
+            "an incomplete (non-0x2) entry must not be emitted as a resolved neighbour"
+        );
+    }
+
+    #[test]
     fn parser_skips_short_rows() {
         let r = parse_arp_result("IP\nshort line\n", "test-scan");
         assert_eq!(r.entities.len(), 0);

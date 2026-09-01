@@ -18,7 +18,7 @@ pub(in crate::modules::search_engines) use extractors::{
 ///
 /// Returns (score, confidence):
 ///   score ≥ 3 → strong: confidence::MEDIUM_HIGH confidence (PROBABLE tier)
-///   score 1-2 → weak:   0.30 confidence (CANDIDATE tier)
+///   score 1-2 → weak:   confidence::SPECULATIVE confidence (CANDIDATE tier)
 ///   score 0   → drop:   not emitted
 pub(in crate::modules::search_engines) fn score_username(
     username: &str,
@@ -182,7 +182,7 @@ pub(in crate::modules::search_engines) fn score_username(
     let confidence = if score >= 3 {
         confidence::MEDIUM_HIGH
     } else {
-        0.30
+        confidence::SPECULATIVE
     };
     (score, confidence)
 }

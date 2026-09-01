@@ -204,6 +204,41 @@ impl Module for HlrCnam {
     }
 }
 
+/// Canonicalize the phone entity's value so it merges onto the same Phone uid
+/// `phone_au`/`phone_intl` produce for the identical number, instead of
+/// forking into a disconnected second entity keyed on the raw queried
+/// (often AU-local-format) string — `hse_core::normalise`'s `EntityKind::Phone`
+/// arm only strips non-digit characters and never inserts a missing `+` or
+/// country code, so "0400000000" and "+61400000000" hash to different UIDs
+/// and this module's own HLR-verified/ported/roaming/carrier evidence would
+/// otherwise land on a second, disconnected Phone entity.
+///
+/// Prefers the HLR network's own returned MSISDN (authoritative — the telco's
+/// live record for the subscriber) over `to_e164_au` (which handles both an
+/// already-international `+`-prefixed number for ANY country and an AU-local
+/// form), and only as a last resort keeps the raw queried value verbatim —
+/// still queryable, just not merged onto the canonical entity for a number
+/// this module couldn't canonicalize offline. **Pure**.
+fn canonical_phone_value(hlr: &HlrResp, queried: &str) -> String {
+    let msisdn = hlr
+        .msisdn
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(|m| {
+            if m.starts_with('+') {
+                m.to_string()
+            } else {
+                format!("+{m}")
+            }
+        });
+    msisdn
+        .as_deref()
+        .and_then(crate::core::validation::to_e164_au)
+        .or_else(|| crate::core::validation::to_e164_au(queried))
+        .unwrap_or_else(|| queried.to_string())
+}
+
 /// Map an HLR response to the verified phone entity (with full network/status
 /// evidence) and the current-network carrier Organisation pivot. **Pure** (no
 /// network/IO). The provider's canonical `msisdn` is carried as evidence so the
@@ -212,9 +247,10 @@ impl Module for HlrCnam {
 fn build_hlr_entities(hlr: &HlrResp, number: &str, scan_id: &str) -> Vec<Entity> {
     let mut out = Vec::new();
 
+    let canonical = canonical_phone_value(hlr, number);
     let mut phone = Entity::new(
         EntityKind::Phone,
-        number,
+        &canonical,
         confidence::HIGH_PLUSPLUS_PLUS,
         scan_id,
     );
@@ -226,6 +262,9 @@ fn build_hlr_entities(hlr: &HlrResp, number: &str, scan_id: &str) -> Vec<Entity>
         phone.tag("roaming");
     }
     let mut ev = Evidence::new(SRC, format!("HLR lookup for {number}"));
+    if canonical != number {
+        ev = ev.with_attr("queried_number", number);
+    }
     if let Some(s) = &hlr.status {
         ev = ev.with_attr("hlr_status", s);
     }
@@ -275,8 +314,8 @@ fn build_hlr_entities(hlr: &HlrResp, number: &str, scan_id: &str) -> Vec<Entity>
         oe.tag("hlr-cnam");
         oe.tag("carrier");
         oe.add_evidence(
-            Evidence::new(SRC, format!("Carrier/network for {number} per HLR"))
-                .with_attr("phone", number),
+            Evidence::new(SRC, format!("Carrier/network for {canonical} per HLR"))
+                .with_attr("phone", &canonical),
         );
         out.push(oe);
     }
