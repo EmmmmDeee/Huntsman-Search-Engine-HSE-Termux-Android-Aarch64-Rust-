@@ -255,21 +255,21 @@ the onion address itself.
 
 | Seed | Flag | Example | Modules |
 |------|------|---------|---------|
-| Email | `--kind email` | `user@example.com` | 35 |
-| Username | `--kind username` | `johndoe` | 14 |
-| Phone | `--kind phone` | `+61400000000` | 7 |
-| Full Name | `--kind name` | `Jordan Leigh Meyers` | 6 |
-| IP Address | `--kind ip` | `1.1.1.1` | 33 |
-| Domain | `--kind domain` | `example.com` | 39 |
-| ASN | `--kind asn` | `AS13335` | 1 |
-| CIDR | `--kind cidr` | `1.1.1.0/24` | 3 |
-| Coordinates | `--kind coords` | `-27.47,153.02` | 6 |
-| Address | `--kind address` | `Nundah, QLD 4012` | 2 |
-| URL | `--kind url` | `https://example.com/page` | 2 |
-| Organisation | `--kind org` | `ACME Pty Ltd` | 2 |
-| ABN/ACN | `--kind abn` | `51824753556` | 1 |
-| MAC Address | `--kind mac` | `AA:BB:CC:DD:EE:FF` | 3 |
-| Crypto Address | `--kind crypto` | `bc1q…` | 2 |
+| Email | `--kind email` | `user@example.com` | 42 |
+| Username | `--kind username` | `johndoe` | 50 |
+| Phone | `--kind phone` | `+61400000000` | 18 |
+| Full Name | `--kind name` | `Jordan Leigh Meyers` | 25 |
+| IP Address | `--kind ip` | `1.1.1.1` | 42 |
+| Domain | `--kind domain` | `example.com` | 57 |
+| ASN | `--kind asn` | `AS13335` | 4 |
+| CIDR | `--kind cidr` | `1.1.1.0/24` | 2 |
+| Coordinates | `--kind coords` | `-27.47,153.02` | 19 |
+| Address | `--kind address` | `Nundah, QLD 4012` | 5 |
+| URL | `--kind url` | `https://example.com/page` | 25 |
+| Organisation | `--kind org` | `ACME Pty Ltd` | 22 |
+| ABN/ACN | `--kind abn` | `51824753556` | 7 |
+| MAC Address | `--kind mac` | `AA:BB:CC:DD:EE:FF` | 9 |
+| Crypto Address | `--kind crypto` | `bc1q…` | 5 |
 | API Key | `--kind apikey` | `AKIA…` | 1 |
 
 ---
