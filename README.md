@@ -277,7 +277,8 @@ Three further kinds are CLI-parseable (`--kind device_id`/`tower`/`cell`,
 this table on purpose: a cell tower ID, WiFi SSID, or tracking-pixel ID is
 typically something the engine *discovers* mid-scan (from a stealer log or
 breach record) and pivots on next round, not a value most operators type as
-a starting seed. They currently feed 1, 1, and 2 modules respectively.
+a starting seed. They currently feed 1 module, 1 module, and 2 modules,
+respectively.
 
 ---
 
