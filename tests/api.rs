@@ -1569,6 +1569,69 @@ async fn settings_toggles_put_rejects_unknown_key() {
     assert_eq!(resp.status(), 400, "an unknown toggle key is rejected");
 }
 
+#[tokio::test]
+async fn settings_toggles_put_succeeds_and_persists_the_flip() {
+    use std::net::SocketAddr;
+    // The two tests above only cover PUT's rejection paths (non-loopback,
+    // unknown key); nothing exercised the success path through
+    // `crate::util::settings::set_bool` — the actual persistence primitive
+    // both this handler and `hse config` funnel through had zero coverage of
+    // its own (see REQ-API-MISC-003 in docs/REQUIREMENTS_LEDGER.md).
+    let app = test_app("toggles_put_success");
+    let put = |enabled: bool| {
+        let mut req = Request::builder()
+            .method("PUT")
+            .uri("/api/v1/settings/toggles")
+            .header("content-type", "application/json")
+            .header("x-hse-csrf", "1")
+            .body(Body::from(format!(
+                r#"{{"key":"feature.depth_decay","enabled":{enabled}}}"#
+            )))
+            .unwrap();
+        let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(addr));
+        req
+    };
+
+    let resp = app.clone().oneshot(put(true)).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["status"], "ok");
+    assert_eq!(json["key"], "feature.depth_decay");
+    assert_eq!(json["enabled"], true);
+
+    // Persisted, not just echoed back: a fresh GET sees the flip.
+    let resp2 = app
+        .clone()
+        .oneshot(get("/api/v1/settings/toggles"))
+        .await
+        .unwrap();
+    assert_eq!(resp2.status(), 200);
+    let json2 = body_json(resp2).await;
+    let features = json2["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["group"].as_str() == Some("features"))
+        .expect("features group")["toggles"]
+        .as_array()
+        .unwrap();
+    let flipped = features
+        .iter()
+        .find(|t| t["key"] == "feature.depth_decay")
+        .expect("feature.depth_decay is a registered toggle");
+    assert_eq!(
+        flipped["enabled"], true,
+        "the flip must be visible on a fresh read, not just echoed in the PUT response"
+    );
+
+    // Restore the default so this test leaves no state behind for any other
+    // test sharing the process-global settings cache/file.
+    let restore = app.clone().oneshot(put(false)).await.unwrap();
+    assert_eq!(restore.status(), 200);
+}
+
 // ── Scan rerun ──────────────────────────────────────────────────────────
 
 #[tokio::test]

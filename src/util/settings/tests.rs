@@ -62,3 +62,38 @@ fn feature_toggles_length_matches_registration() {
         assert!(is_feature_key(&key), "{key} missing from FEATURE_TOGGLES");
     }
 }
+
+#[test]
+fn set_bool_persists_and_get_bool_reads_it_back() {
+    // `set_bool` is the ONE write path both `hse config` and
+    // `PUT /api/v1/settings/toggles` funnel through; every other test in this
+    // file exercises only the pure, non-mutating helpers (`resolve`,
+    // `default_for`, `is_feature_key`) — nothing had ever proven the cache
+    // mutation or the atomic on-disk persist actually work. Uses a scratch
+    // key private to this test (not a registered `FEATURE_TOGGLES` entry) so
+    // it can't collide with any other test's toggle assertions despite `CACHE`
+    // and the settings file being process-global.
+    let key = "test.set_bool_round_trip_marker";
+    assert!(
+        !get_bool(key, false),
+        "an unset key must resolve to the caller's default"
+    );
+    set_bool(key, true).expect("set_bool persists");
+    assert!(
+        get_bool(key, false),
+        "set_bool must flip the in-process cache immediately \
+         (default false here so a cache that stayed unset can't pass by \
+         coincidentally falling back to the same value)"
+    );
+    // Read the file back independently of the CACHE static, proving the
+    // write landed on disk and isn't just an in-memory mutation.
+    let on_disk = read_map(&settings_path());
+    assert_eq!(
+        on_disk.get(key),
+        Some(&true),
+        "set_bool must persist to disk, not just the in-process cache"
+    );
+    // Restore, so this test leaves no state behind for any other test sharing
+    // the same process-global CACHE / settings file.
+    set_bool(key, false).expect("restore");
+}
