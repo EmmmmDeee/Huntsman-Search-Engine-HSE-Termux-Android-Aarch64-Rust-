@@ -2855,6 +2855,200 @@ async fn cache_hit_skips_reprocessing_a_later_scan_of_the_same_target() {
     );
 }
 
+/// Counts `process()` invocations via a shared `Arc<AtomicU64>` — for the
+/// dead-module-quarantine dispatch tests below (REQ-ENGINE-001).
+struct CountingProbe {
+    name: &'static str,
+    calls: Arc<AtomicU64>,
+}
+
+#[async_trait::async_trait]
+impl Module for CountingProbe {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, _: &Target) -> bool {
+        true
+    }
+    async fn process(
+        &self,
+        _: &Target,
+        _: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        Ok(crate::core::module::ModuleResult::new())
+    }
+}
+
+/// REQ-ENGINE-001: `gate_skips`'s `cx.quarantined.contains(module.name())`
+/// check (`dispatch.rs:780`) must actually stop a quarantined module from
+/// running — every `DispatchCx` literal elsewhere in this file passes
+/// `no_quarantine()` (an empty set), so until this test nothing had ever
+/// exercised the non-empty case. Looped across `max_concurrent in [0, 4]`
+/// since `gate_skips` is called from 3 separate sites (the sequential path
+/// and both concurrent phases) and this proves both shapes reach it.
+#[tokio::test]
+async fn quarantined_module_is_skipped_at_dispatch_and_never_invoked() {
+    use crate::core::test_support::InMemoryStore;
+
+    for max_concurrent in [0usize, 4] {
+        let calls = Arc::new(AtomicU64::new(0));
+        let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+        let (bus, _rx) = tokio::sync::broadcast::channel(64);
+        let engine = ScanEngine::new(
+            vec![Arc::new(CountingProbe {
+                name: "quarantine_probe",
+                calls: calls.clone(),
+            })],
+            store,
+            bus.clone(),
+        );
+        let target = Target::new(TargetKind::Username, "quarantine-target");
+        let opts = ScanOptions {
+            max_concurrent,
+            ..Default::default()
+        };
+        let mut ctx = ModuleContext {
+            scan_id: "quarantine-scan".to_string(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+        let quarantined: std::collections::HashSet<String> =
+            ["quarantine_probe".to_string()].into_iter().collect();
+        let cx = DispatchCx {
+            scan_id: "quarantine-scan",
+            target: &target,
+            opts: &opts,
+            is_expansion: false,
+            seed_kind: TargetKind::Username,
+            quarantined: &quarantined,
+        };
+        let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+        let mut stats = ModuleStats::default();
+        let mut dispatched: DispatchLog = DispatchLog::new();
+        let mut newly_inserted: Vec<String> = Vec::new();
+        let mut state = DispatchState {
+            entity_map: &mut entity_map,
+            stats: &mut stats,
+            dispatched: &mut dispatched,
+            newly_inserted: &mut newly_inserted,
+        };
+
+        engine
+            .dispatch_target(&cx, &mut ctx, &mut state)
+            .await
+            .expect("dispatch runs");
+
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            0,
+            "a quarantined module must never have process() called (max_concurrent={max_concurrent})"
+        );
+        assert!(
+            entity_map.is_empty(),
+            "a quarantined module must contribute no entities (max_concurrent={max_concurrent})"
+        );
+        assert_eq!(
+            stats.skipped, 1,
+            "the quarantined module must be tallied as skipped (max_concurrent={max_concurrent})"
+        );
+        assert_eq!(
+            stats.run, 0,
+            "the quarantined module must not be tallied as run (max_concurrent={max_concurrent})"
+        );
+    }
+}
+
+/// Companion proof: quarantine is scoped by module NAME, not "any non-empty
+/// set skips everything" — an un-quarantined module sharing the round with a
+/// quarantined one must still dispatch normally.
+#[tokio::test]
+async fn unquarantined_module_in_a_nonempty_quarantine_set_still_dispatches() {
+    use crate::core::test_support::InMemoryStore;
+
+    for max_concurrent in [0usize, 4] {
+        let dead_calls = Arc::new(AtomicU64::new(0));
+        let alive_calls = Arc::new(AtomicU64::new(0));
+        let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+        let (bus, _rx) = tokio::sync::broadcast::channel(64);
+        let engine = ScanEngine::new(
+            vec![
+                Arc::new(CountingProbe {
+                    name: "dead_probe",
+                    calls: dead_calls.clone(),
+                }),
+                Arc::new(CountingProbe {
+                    name: "alive_probe",
+                    calls: alive_calls.clone(),
+                }),
+            ],
+            store,
+            bus.clone(),
+        );
+        let target = Target::new(TargetKind::Username, "mixed-quarantine-target");
+        let opts = ScanOptions {
+            max_concurrent,
+            ..Default::default()
+        };
+        let mut ctx = ModuleContext {
+            scan_id: "mixed-quarantine-scan".to_string(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+        let quarantined: std::collections::HashSet<String> =
+            ["dead_probe".to_string()].into_iter().collect();
+        let cx = DispatchCx {
+            scan_id: "mixed-quarantine-scan",
+            target: &target,
+            opts: &opts,
+            is_expansion: false,
+            seed_kind: TargetKind::Username,
+            quarantined: &quarantined,
+        };
+        let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+        let mut stats = ModuleStats::default();
+        let mut dispatched: DispatchLog = DispatchLog::new();
+        let mut newly_inserted: Vec<String> = Vec::new();
+        let mut state = DispatchState {
+            entity_map: &mut entity_map,
+            stats: &mut stats,
+            dispatched: &mut dispatched,
+            newly_inserted: &mut newly_inserted,
+        };
+
+        engine
+            .dispatch_target(&cx, &mut ctx, &mut state)
+            .await
+            .expect("dispatch runs");
+
+        assert_eq!(
+            dead_calls.load(Ordering::Relaxed),
+            0,
+            "the quarantined module must not run (max_concurrent={max_concurrent})"
+        );
+        assert_eq!(
+            alive_calls.load(Ordering::Relaxed),
+            1,
+            "the un-quarantined module must still run normally (max_concurrent={max_concurrent})"
+        );
+        assert_eq!(
+            stats.skipped, 1,
+            "exactly one skip (max_concurrent={max_concurrent})"
+        );
+        assert_eq!(
+            stats.run, 1,
+            "exactly one run (max_concurrent={max_concurrent})"
+        );
+    }
+}
+
 /// A probe whose static metadata (priority / cost / category / declared outputs)
 /// is fully configurable, and whose `process()` emits ONE entity tagged with a
 /// distinctive value — so a truncated dispatch reveals WHICH module ran first.

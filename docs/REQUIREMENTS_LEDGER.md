@@ -5,7 +5,7 @@ individual scanning modules' business logic — that was the subject of a
 separate, now-complete module-by-module bug audit under
 `src/modules/*/mod.rs` (Phases 0-10, PRs #553-568, merged; every one of the
 188 registered modules read against an established bug-class checklist). The
-areas covered here, across three passes:
+areas covered here, across four passes:
 
 1. The `Module` trait contract (`src/core/module/mod.rs`).
 2. The CLI surface (`src/main.rs`, `src/cli/`).
@@ -15,6 +15,12 @@ areas covered here, across three passes:
 6. The HTTP API surface (`src/api/`) — routes, auth middleware, scan
    lifecycle handlers, settings/cells/key-harvest/update handlers, scan
    export/redaction.
+7. Scan engine dispatch (`src/core/engine/`) — the dead-module quarantine
+   gate only; expansion, ROI/budget pruning, and the rest of the engine's
+   internals remain out of scope.
+8. Correlator rule registry (`src/core/correlator/`) — registration
+   completeness/uniqueness only; individual rules' firing logic remains out
+   of scope beyond the pre-existing per-rule test corpus.
 
 **Pass 2** re-verified every row Pass 1 left
 `IMPLEMENTED_UNVERIFIED`/`PARTIAL`/`AMBIGUOUS` by actually running its cited
@@ -33,11 +39,24 @@ fixed the one BROKEN finding (REQ-API-MISC-004 — an unfiltered credential
 check that could forward an un-edited template placeholder to a live
 request). See section 6 above for the full row set.
 
+**Pass 4** (this pass) closed the ledger's one remaining `MISSING` row
+(REQ-ENV-003) — and, in re-deriving it, corrected an overclaim inherited
+from Pass 1/3 (only 1 of the 4 env knobs it names is actually live; the
+other 3 are parsed then never read) — and opened two new one-row sections
+for previously-unrepresented subsystems: REQ-ENGINE-001 (the scan engine's
+dead-module quarantine gate, previously a completely untested hot path) and
+REQ-CORRELATOR-001 (the correlator rule registry's completeness/uniqueness
+guards, which turned out to already exist in full — this row is
+documentary only, added after a drafted duplicate test was caught and
+reverted before being shipped). See "Pass 4 findings" below for the full
+account.
+
 This still does **not** claim to have reconstructed requirements for the
-*entire* codebase (the correlator, the storage layer beyond one fix, the
-web/WASM UI, and `hse-ai-daemon` remain out of scope for all three passes) —
-see "Known limitations" for why, and for what a further pass would need to
-cover.
+*entire* codebase (the correlator's actual rule logic beyond registry-level
+completeness, the scan engine's internals beyond the quarantine gate, the
+storage layer beyond one fix, the web/WASM UI, and `hse-ai-daemon` remain
+out of scope for all four passes) — see "Known limitations" for why, and
+for what a further pass would need to cover.
 
 **How to read this ledger.**
 
@@ -48,7 +67,7 @@ cover.
   best.
 - **Runtime verification evidence** states plainly whether this pass executed
   anything, or only read source. Existing architecture tests
-  (`tests/architecture_parts/*.rs`, ~55 tests as of this pass) are treated as
+  (`tests/architecture_parts/*.rs`, ~56 tests as of this pass) are treated as
   pre-existing verification evidence and cited by name rather than re-derived;
   this ledger only re-ran the specific ones it cites.
 - All line numbers are approximate pointers as of when this pass was taken
@@ -70,16 +89,29 @@ reflected in any row below since it was never a defect in that pass's own
 scope. That module-bug-audit has since completed in full (Phases 0-10,
 188/188 registered modules, PRs #553-568, all merged).
 
-**Known limitations of Pass 3 — what a further pass would need to cover.**
-This ledger's 6 sections are the core contracts and the remote-facing API
-surface of a Rust CLI/module-engine tool: the `Module` trait, the CLI, the
-installer, the env/config template, the README's own claims, and `hse
-serve`'s HTTP API. Deliberately still **not** covered by any of the three
-passes, and not claimed as VERIFIED/MISSING/etc. anywhere above:
+**Known limitations of Pass 4 — what a further pass would need to cover.**
+This ledger's 8 sections are the core contracts, the remote-facing API
+surface, and two registry-level guards of a Rust CLI/module-engine tool: the
+`Module` trait, the CLI, the installer, the env/config template, the
+README's own claims, `hse serve`'s HTTP API, the scan engine's dead-module
+quarantine gate, and the correlator's rule-registration completeness.
+Deliberately still **not** covered by any of the four passes, and not
+claimed as VERIFIED/MISSING/etc. anywhere above:
 
-- **The scan engine's internals beyond dispatch** (`src/core/engine/` past
-  the `Module` trait boundary — expansion, ROI/budget pruning, the
-  correlator's ~109 rules in `src/core/correlator/`).
+- **The scan engine's internals beyond the quarantine gate**
+  (`src/core/engine/` past `gate_skips` — expansion, ROI/budget pruning, and
+  the *upstream* wiring that computes the `quarantined` set in production
+  (`mod.rs:717-743`'s `skip_dead_modules` → `recent_module_outcome_events`
+  → `quarantined_modules` chain — noted as an explicit follow-up in
+  REQ-ENGINE-001's row, since `InMemoryStore`'s no-op default for
+  `recent_module_outcome_events` makes it untestable under the standard
+  harness).
+- **The correlator's ~121 individual rules' own firing/business logic**
+  (`src/core/correlator/rules/`) — Pass 4 only added registry-level
+  completeness/uniqueness coverage (REQ-CORRELATOR-001), and even that
+  turned out to already exist; per-rule correctness relies entirely on the
+  pre-existing, uncounted `tests/part*.rs` firing-test corpus, not on
+  anything this ledger tracks row-by-row.
 - **The storage layer's own contracts** (`src/storage/` — schema migrations,
   the SQLite `Store`'s full method set beyond what Pass 2's one fix touched).
 - **The web/WASM UI** (`src/web/`, `wasm-ui/`) and the embedded SPA served by
@@ -89,17 +121,23 @@ passes, and not claimed as VERIFIED/MISSING/etc. anywhere above:
 - **Docs beyond `README.md`** — `docs/*.md` carries dozens of other files
   (setup guides, prior audit reports) not cross-checked against current code
   in any pass.
+- **The 3 dead `quota_config.rs` accessors** (`HSE_OATHNET_DAILY_LIMIT`,
+  `HSE_SEE_KNOW_PER_SCAN_LIMIT`, `HSE_WIGLE_PER_SCAN_LIMIT`) — Pass 4
+  documented their actual (inert) status accurately (REQ-ENV-003) but
+  deliberately did not decide whether to wire them up or delete them; that
+  is a real behavior decision left to a future pass.
 
 Within section 6 itself, Pass 3's condensed 4-column format (ID / Behavior /
 Runtime evidence / Status, versus the 10-column format sections 1-5 use)
 trades some structure for density given the row count (35) and the depth of
 evidence each row carries — implementation locations, test names, and full
 adversarial-verification notes live in the source workflow transcript, not
-reproduced in full here.
+reproduced in full here. Sections 7 and 8 (Pass 4) use the full 10-column
+format, one row each.
 
 None of this is a claim that these areas are broken or unverified in some
 absolute sense — only that this ledger has not yet looked at them, and a
-reader should not infer completeness beyond the 6 sections it actually
+reader should not infer completeness beyond the 8 sections it actually
 covers.
 
 ---
@@ -166,7 +204,7 @@ covers.
 |---|---|---|---|---|---|---|---|---|---|
 | REQ-ENV-001 | Every `HUNTSMAN_*` key declared in the canonical provisioning template (`src/cli/env_template.txt`) is genuinely read somewhere in `src/` (an `_ENV` const, a `ctx.key`/`key_opt` call, a `fetch_keyed_json` literal, or a raw `env::var` read), or is explicitly listed `[RESERVED]`/`NOT_YET_WIRED`. | Template file content, `src/` source tree | Pass/fail assertion | none | Guards the "documented key that silently does nothing" bug class (previously true of 6 real keys). | `src/cli/env_template.txt`; guard in `tests/architecture_parts/architecture_part3.rs:278-348` | `env_template_keys_are_all_consumed` | Ran `cargo test --test architecture env_template_keys_are_all_consumed` this pass — passed. | VERIFIED |
 | REQ-ENV-002 | No module under `src/modules/` reads a `HUNTSMAN_*` credential via a raw `std::env::var(...)` call bypassing `ModuleContext::key`/`key_opt` (which is the sole enforcement point for the blank/placeholder filter); the two sanctioned non-credential exceptions (`HUNTSMAN_SEARCH_PROXY`, `HUNTSMAN_EMAIL_DOMAINS`) are allow-listed and anti-rot-checked. | `src/modules/` source tree | Pass/fail assertion | none | A credential read raw would forward an un-edited template placeholder to a provider as a live request. | `tests/architecture_parts/architecture_part3.rs:767-850` | `modules_never_read_credentials_via_raw_env` | Ran `cargo test --test architecture modules_never_read_credentials_via_raw_env` this pass — passed. | VERIFIED |
-| REQ-ENV-003 (**inverse gap — see fix below**) | The env var consumption guards above (REQ-ENV-001/002) only ever scan for **`HUNTSMAN_`-prefixed** literals (`push_huntsman_literal` requires the literal to start with `"HUNTSMAN_"`); any env var read via `std::env::var`/`var_os` under a *different* prefix is invisible to both tests, so it can be genuinely load-bearing yet fully undocumented with no test noticing. | Full `src/` tree | n/a | n/a | A tuning knob under this blind spot can drift silently (renamed, removed, or simply never documented) with zero test coverage. | Test blind spot in `tests/architecture_parts/architecture_part3.rs:350-365` (`push_huntsman_literal`) | None — this is the absence being reported. | Ran `grep -rEo 'env::var(_os)?\("[A-Za-z0-9_]+"\)' src/` this pass and cross-referenced every result against `.env.example`, `src/cli/env_template.txt`, `README.md`, and `docs/*.md`. Found 4 real, undocumented, non-`HUNTSMAN_`-prefixed knobs that are genuinely read and consumed: `HSE_OATHNET_PER_SCAN_LIMIT`, `HSE_OATHNET_DAILY_LIMIT`, `HSE_SEE_KNOW_PER_SCAN_LIMIT`, `HSE_WIGLE_PER_SCAN_LIMIT` (all in `src/util/quota_config.rs`, feeding `oathnet_quota()`/`see_know_quota()`/`wigle_quota()`, which `src/util/oathnet/mod.rs` genuinely calls to seed its `QuotaBudget`). They appear nowhere outside `quota_config.rs`'s own doc comment and its own unit tests. Each has a sane, harmless default and is superseded at runtime by the separately-documented `HUNTSMAN_OATHNET_SCAN_CAP`/`HUNTSMAN_SEEKNOW_SCAN_CAP`/`HUNTSMAN_WIGLE_*_SCAN_CAP` overrides, so the practical operator impact is low (an advanced/testing knob, not a feature an operator would reach for) — this was considered as the pass's one fix but deprioritized below in favor of the higher-visibility README fix (see "Fix selection rationale"). | MISSING |
+| REQ-ENV-003 (**fixed in Pass 4**) | The env var consumption guards above (REQ-ENV-001/002) only ever scan for **`HUNTSMAN_`-prefixed** literals (`push_huntsman_literal` requires the literal to start with `"HUNTSMAN_"`); any env var read via `std::env::var`/`var_os` under a *different* prefix is invisible to both tests, so it can be genuinely load-bearing yet fully undocumented with no test noticing. | Full `src/` tree | n/a | n/a | A tuning knob under this blind spot can drift silently (renamed, removed, or simply never documented) with zero test coverage. | Test blind spot in `tests/architecture_parts/architecture_part3.rs:353-365` (`push_huntsman_literal`); new guard `non_huntsman_env_reads_are_known` (~line 862) closes it | `non_huntsman_env_reads_are_known` (new, Pass 4) | **Corrected and fixed in Pass 4.** Pass 3's framing ("4 real, undocumented knobs feeding live `QuotaBudget`s") was itself unverified — Pass 4 traced every caller of `oathnet_quota()`/`see_know_quota()`/`wigle_quota()` directly (`grep -rn` across `src/`) and found only **`HSE_OATHNET_PER_SCAN_LIMIT`** has a live effect (`oathnet::BUDGET`, `src/util/oathnet/mod.rs:51`); the other three (`HSE_OATHNET_DAILY_LIMIT`, `HSE_SEE_KNOW_PER_SCAN_LIMIT`, `HSE_WIGLE_PER_SCAN_LIMIT`) are parsed by `quota_config.rs` and then never read again — `see_know_quota()`/`wigle_quota()` have zero callers outside their own definitions, and `OathnetQuotaConfig::daily_limit` is assigned to a local `config` binding at `oathnet/mod.rs:51` and never used again (a *different*, same-named field on `RealQuota`, populated from the live API's own response, is what actually tracks the daily limit). Fixed: (1) `.env.example` gained one commented entry for the one live knob only; (2) `quota_config.rs`'s own overclaiming module doc comment ("Each API module reads its limits once at startup and uses them") was corrected to state each var's actual live/dead status; (3) added `non_huntsman_env_reads_are_known` — a generalized, allow-listed, anti-rot-checked guard (mirrors `ALLOWED_RAW_ENV`/`NOT_YET_WIRED`'s existing idiom) that closes the blind spot for ANY future non-`HUNTSMAN_` var, not just these 4. Ran `cargo test --test architecture non_huntsman_env_reads_are_known` — passed. Ran `cargo test --test architecture` (full suite) — 56 passed, 0 failed. | VERIFIED |
 | REQ-ENV-004 | `.env.example` (repo root, the file a user following its own header comment would copy to `~/.huntsman.env`) is a *second*, hand-maintained copy of the key list separate from the test-guarded canonical `src/cli/env_template.txt`; every key name it lists is at least textually referenced somewhere in `src/` (no outright typo'd/orphaned key found), but the two files have drifted apart in both directions — `.env.example` carries 37 keys/knobs `env_template.txt` doesn't (mostly non-credential tuning knobs like the `HUNTSMAN_WIGLE_*_SCAN_CAP`/`SESSION_CAP` family), while `env_template.txt` carries 7 keys `.env.example` doesn't (the `[RESERVED]`/`NOT_YET_WIRED` provider keys added after `.env.example` was last touched) — and none of this is covered by any architecture test the way `env_template.txt`'s own content is. | `.env.example`, `src/cli/env_template.txt`, `src/` | n/a | n/a | An operator who follows `.env.example`'s own instructions instead of `hse provision` gets a file that is stale but not actively wrong (every key it does list is genuinely consumed) and is simply missing 7 reserved-key placeholders that currently do nothing anyway. | `.env.example` (91 `HUNTSMAN_*` mentions, all commented-out) vs `src/cli/env_template.txt` (61 uncommented, live keys) | None. | Ran a diff of key-name sets between the two files this pass (`comm -23`/`comm -13` over sorted, deduped `grep -oE "HUNTSMAN_[A-Z0-9_]+"` extracts: 37 in `.env.example` only, 7 in `env_template.txt` only) and cross-checked every `.env.example`-only key against `grep -rl` over `src/` for a matching string literal — zero orphans found. | PARTIAL |
 | REQ-ENV-005 | `HUNTSMAN_DEFAULT_SEED` (read via `std::env::var`, not the key-pool machinery) lets `hse scan`/`hse live` run with no `--value` at all. | env var | `Option<String>` | none | Absent + no `--value` ⇒ `Error::Other` with actionable guidance (REQ-CLI-007). | `src/util/keys/mod.rs::default_seed()` (consumer: `src/cli/mod.rs:340-352`) | Covered by `collect_raw_huntsman_env_reads`'s general sweep (part of REQ-ENV-001's passing assertion) for "is it consumed", but no test exercises the actual scan-launch fallback behavior end-to-end. | Read-only for the fallback path itself; REQ-ENV-001's pass confirms the var is at least consumed somewhere. | PARTIAL |
 | REQ-ENV-006 | `HSE_BIND`/`HSE_AUTH_TOKEN` (non-`HUNTSMAN_`-prefixed, deliberately outside the credential-pool system) configure `hse serve`'s bind address and bearer token via clap's own `env = "..."` attribute, and are documented in `docs/RAILWAY.md` and `README.md` (not `.env.example`/`env_template.txt`, which is correct since these are deployment knobs, not OSINT-provider credentials). | env var (via clap) | Parsed `Cli` fields | none | Clap's own env-fallback semantics (CLI flag wins if both given). | `src/cli/command.rs:554,569` | No dedicated test asserts the clap `env = "HSE_BIND"` wiring actually reads the process environment (clap's own tests cover the mechanism generically, not this specific field). | Read-only; confirmed via `grep` that both vars appear in `docs/RAILWAY.md` and `README.md`. | IMPLEMENTED_UNVERIFIED |
@@ -469,6 +507,39 @@ this pass), 12 PARTIAL, 2 IMPLEMENTED_UNVERIFIED, 1 UNREACHABLE.
 
 ---
 
+## 7. Scan engine dispatch (`src/core/engine/`)
+
+| ID | Behavior | Inputs | Outputs | Side effects | Failure behavior | Implementation location | Tests covering it | Runtime verification evidence | Status |
+|---|---|---|---|---|---|---|---|---|---|
+| REQ-ENGINE-001 | Capability-aware dead-module quarantine: when a target's dispatch context carries a non-empty `quarantined` set (module names the health system flagged as persistently drift/hard-failing), `gate_skips` must refuse to dispatch any module whose name is in that set — across all 3 call sites that invoke it (the sequential path and both concurrent phases) — while a module NOT in the set still dispatches normally in the same round. | `DispatchCx.quarantined: &HashSet<String>` | `bool` (gate_skips); tallied in `ModuleStats::skipped`/`.run` | None for the skip itself; an emitted `ModuleSkipped` event names the reason ("capability-quarantined — persistent drift"). | A module in the set must never have `process()` called and must contribute zero entities. | `src/core/engine/dispatch.rs:753-790` (`gate_skips`, the `cx.quarantined.contains(module.name())` check at line 780, called from dispatch.rs:836,975,1093) | `quarantined_module_is_skipped_at_dispatch_and_never_invoked`, `unquarantined_module_in_a_nonempty_quarantine_set_still_dispatches` (`src/core/engine/tests.rs`, new Pass 4) | **Was a completely open evidence gap before this pass**: every `DispatchCx` literal previously in `src/core/engine/tests.rs` (7 call sites) passed `no_quarantine()` (an empty static) — nothing had ever exercised the non-empty case, despite this being hot-path behavior on every single scan. Added two dispatch-level regression tests using an `Arc<AtomicU64>`-counted stub module (`CountingProbe`), each looped across `max_concurrent in [0, 4]` to cover both the sequential and concurrent `gate_skips` call sites. Ran `cargo test --lib quarantine` this pass — both new tests passed on first attempt; ran `cargo test --lib core::engine::tests` (full module) — 105 passed, 0 failed, 1 ignored (pre-existing, unrelated). | VERIFIED |
+
+**Explicitly out of scope for this row** (see "Pass 4 findings" below): the
+upstream gate at `src/core/engine/mod.rs:717-743` that COMPUTES the
+`quarantined` set (`opts.skip_dead_modules && opts.modules.is_none()` →
+`store.recent_module_outcome_events()` → `host.quarantined_modules()`) is
+NOT independently tested by this row — `recent_module_outcome_events` is a
+`StoragePort` trait method with a no-op default that `InMemoryStore` (the
+standard engine-test double) does not override, so that upstream path
+always computes an empty set under the standard harness regardless of the
+flag. REQ-ENGINE-001 proves the DOWNSTREAM consequence (a populated
+`quarantined` set is correctly honored); it does not prove the UPSTREAM
+wiring that populates it in production.
+
+---
+
+## 8. Correlator rule registry (`src/core/correlator/`)
+
+| ID | Behavior | Inputs | Outputs | Side effects | Failure behavior | Implementation location | Tests covering it | Runtime verification evidence | Status |
+|---|---|---|---|---|---|---|---|---|---|
+| REQ-CORRELATOR-001 | Every correlation rule function defined under `src/core/correlator/rules/` is (a) registered in exactly one of `RULES`/`RELATION_RULES` — no orphan that compiles but silently never fires; (b) claims a distinct `AU-<N>` number — no two different rule functions collide on the same id, which is the dedup/supersede key `storage::upsert_correlation` queries on; (c) internally consistent — a rule's own emitted `rule_id` string matches its own function-name number; and (d) has at least one positive firing test in the correlator test suite — a dispatched rule with no firing fixture is indistinguishable from a correctly-absent result. | n/a (static analysis of `RULES`/`RELATION_RULES` + `rules/*.rs` + the correlator test corpus) | Pass/fail assertions | none | A regression in any of the four properties fails CI, not just code review. | `RULES`/`RELATION_RULES` (`src/core/correlator/mod.rs:354-569,793-813`, 107 + 14 = 121 bare `fn` pointers) | `every_defined_correlation_rule_is_dispatched`, `no_two_correlation_rule_functions_share_a_number`, `correlation_rule_ids_match_their_function_number` (`tests/architecture_parts/architecture_part4.rs`), `every_dispatched_correlation_rule_has_a_firing_test` (`tests/architecture_parts/architecture_part5.rs`) | **This row was planned as new work and became pure documentation instead** — a genuine example of the ledger's own "do not rediscover already-covered behaviour" principle catching itself in real time. Two independent exploration passes plus a design pass all concluded no completeness/uniqueness guard existed for this registry (citing the `AU-121`/`AU-122` renumbering-after-merge doc comments as motivating evidence) and a new test was drafted and about to be added. Before committing it, a direct read of `tests/architecture_parts/architecture_part4.rs` surfaced FOUR pre-existing tests already covering exactly this — including `no_two_correlation_rule_functions_share_a_number`, whose own doc comment cites the identical AU-114/AU-115 incident. The drafted new test was reverted (confirmed via `git diff` — zero net change) rather than shipped as a duplicate. Ran all four cited tests fresh this pass: `cargo test --test architecture correlat` and `cargo test --test architecture rule` — 5/5 passed each run (both filters overlap on the 4 rule-registry tests plus `readme_correlator_rule_count_matches_registry`). | VERIFIED |
+
+This section exists purely to close the ledger's own blind spot — the
+correlator subsystem had no representation here at all before Pass 4, even
+though its underlying protections were already comprehensive. No code
+changed for this row; the fix is documentary.
+
+---
+
 ## Pass 3 findings
 
 Extended coverage to the HTTP API surface (section 6 above) — `hse serve`'s
@@ -520,26 +591,139 @@ $ cargo test --test architecture                                  # 55 passed, 0
 $ scripts/gate.sh                                                 # 17/17 executed checks PASS
 ```
 
+## Pass 4 findings
+
+Closed the ledger's one remaining `MISSING` row and opened two new
+one-row sections for previously-unrepresented subsystems, per the "HSE
+Requirements Closure Engine" directive's priority order (`MISSING` before
+new-scope expansion). Scope was 3 items, none sharing a file with another:
+
+1. **REQ-ENV-003** (`MISSING` → `VERIFIED`) — re-deriving this row rather
+   than trusting Pass 1/3's prior framing found it had overclaimed: tracing
+   every caller of `oathnet_quota()`/`see_know_quota()`/`wigle_quota()`
+   directly (`grep -rn` across `src/`) showed only
+   `HSE_OATHNET_PER_SCAN_LIMIT` has a live runtime effect
+   (`oathnet::BUDGET`); the other 3 env knobs
+   (`HSE_OATHNET_DAILY_LIMIT`/`HSE_SEE_KNOW_PER_SCAN_LIMIT`/
+   `HSE_WIGLE_PER_SCAN_LIMIT`) are parsed by `quota_config.rs` and then
+   never read again. Rather than paper over that distinction (which would
+   have manufactured a new instance of the exact "documented knob that
+   silently does nothing" bug class REQ-API-MISC-004/REQ-CORE-012 already
+   guard against elsewhere), the fix documents only the one live knob
+   accurately: `.env.example` gained one commented entry for it,
+   `quota_config.rs`'s own overclaiming module doc comment ("Each API
+   module reads its limits once at startup and uses them throughout the
+   process lifetime" — false for 3 of 4) was corrected with an explicit
+   live/dead annotation per var, and a new architecture test,
+   `non_huntsman_env_reads_are_known`
+   (`tests/architecture_parts/architecture_part3.rs`), closes the blind
+   spot generally: it collects every non-`HUNTSMAN_`-prefixed literal
+   `env::var`/`env::var_os` read anywhere in `src/`, asserts each is in an
+   explicit, commented allowlist, and — mirroring the existing
+   `ALLOWED_RAW_ENV`/`NOT_YET_WIRED` anti-rot idiom — asserts nothing in
+   that allowlist has gone stale. (One mistake was caught before running
+   the test: `HSE_BIND`/`HSE_AUTH_TOKEN` were initially included in the
+   allowlist, but those are read via clap's `#[arg(env = "...")]` derive
+   attribute, not a literal `env::var(...)` call this scanner can see, so
+   they were removed with an explanatory comment.)
+
+2. **REQ-ENGINE-001** (new, `VERIFIED`) — the scan engine's dead-module
+   quarantine gate (`gate_skips`, `src/core/engine/dispatch.rs:753-790`,
+   checked at all 3 dispatch call sites) had a completely open evidence
+   gap: every `DispatchCx` literal across the existing
+   `src/core/engine/tests.rs` passed the empty `no_quarantine()` static, so
+   nothing had ever proven the engine actually skips a quarantined module
+   — despite this being hot-path behavior on every scan. Added two new
+   dispatch-level tests using the established `CachingProbe`-style harness
+   (a `CountingProbe` incrementing an `Arc<AtomicU64>`), each looped across
+   `max_concurrent in [0, 4]` to cover both the sequential and concurrent
+   `gate_skips` call sites:
+   `quarantined_module_is_skipped_at_dispatch_and_never_invoked` (the
+   quarantined module is never called, contributes nothing, and
+   `stats.skipped == 1`) and
+   `unquarantined_module_in_a_nonempty_quarantine_set_still_dispatches`
+   (proves quarantine is scoped by name, not "any non-empty set skips
+   everything"). Deliberately left out of scope: the *upstream* gate
+   (`src/core/engine/mod.rs:717-743`) that computes the `quarantined` set
+   in production — `recent_module_outcome_events` is a `StoragePort` trait
+   method `InMemoryStore` does not override (a no-op default), so that path
+   always computes an empty set under the standard test double regardless
+   of the flag. Proving it end-to-end needs a real event-store fake or a
+   heavier SQLite integration test, noted as a follow-up rather than
+   silently left uncovered.
+
+3. **REQ-CORRELATOR-001** (new, `VERIFIED`) — planned as a new
+   completeness/uniqueness guard for the correlator's `RULES`/
+   `RELATION_RULES` registries (121 combined rule-function pointers),
+   motivated by the same class of bug the module registry's own
+   `module_names_are_unique` guards against, and by inline doc comments at
+   the `AU-121`/`AU-122` entries recording a real past incident (a merge
+   that produced two rules both claiming `AU-114`/`AU-115`, caught and
+   manually renumbered by a human). Two independent exploration passes and
+   a design pass all concluded no such guard existed. It did: before
+   committing a drafted new test, a direct read of
+   `tests/architecture_parts/architecture_part4.rs` surfaced four
+   pre-existing tests already covering exactly this —
+   `every_defined_correlation_rule_is_dispatched`,
+   `no_two_correlation_rule_functions_share_a_number` (whose own doc
+   comment cites the identical AU-114/AU-115 incident),
+   `correlation_rule_ids_match_their_function_number`, and (in the sibling
+   file `architecture_part5.rs`) `every_dispatched_correlation_rule_has_a_
+   firing_test`. The drafted duplicate was reverted before being shipped
+   (confirmed via `git diff --stat` showing zero net change), and all four
+   pre-existing tests were re-run fresh as this row's evidence instead. No
+   code changed for this row — new Section 8 exists purely to close the
+   ledger's own blind spot (the correlator had no representation here at
+   all before Pass 4, even though its underlying protections were already
+   comprehensive), and to record, transparently, that this pass almost
+   shipped a duplicate and caught it through direct verification rather
+   than trusting two agents' and its own converging assumption. This is
+   the same "claim ≠ evidence, verify before trusting" discipline the
+   directive itself mandates, demonstrated on itself.
+
+### Verification commands run (Pass 4, in order)
+
+```
+$ cargo test --test architecture non_huntsman_env_reads_are_known         # 1 passed
+$ cargo test --test architecture                                          # 56 passed, 0 failed
+$ cargo test --lib quarantine -- --test-threads=4                         # 2 new + related, all passed
+$ cargo test --lib core::engine::tests -- --test-threads=4                # 105 passed, 0 failed, 1 ignored
+$ cargo test --test architecture correlat                                 # 5 passed
+$ cargo test --test architecture rule                                     # 5 passed
+$ cargo fmt --all
+$ cargo clippy --all-targets --features dep-cooldown -- -D warnings       # clean
+$ cargo test --lib --features dep-cooldown                                # full suite, 0 failed
+$ cargo test --test architecture                                          # 56 passed, 0 failed
+$ scripts/gate.sh                                                         # 17/17 executed checks PASS
+```
+
 ## Summary statistics
 
-| Status | Pass 1 | Pass 2 | Pass 3 |
-|---|---|---|---|
-| VERIFIED | 23 | 30 | 50 |
-| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 |
-| PARTIAL | 8 | 7 | 19 |
-| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 |
-| AMBIGUOUS | 1 | 0 | 0 |
-| OBSOLETE (by design, not a gap) | 1 | 1 | 1 |
-| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* |
-| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed this pass, see section 6)* |
-| **Total rows** | **51** | **51** | **86** |
+| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 |
+|---|---|---|---|---|
+| VERIFIED | 23 | 30 | 50 | 53 |
+| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 |
+| PARTIAL | 8 | 7 | 19 | 19 |
+| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed this pass)* |
+| AMBIGUOUS | 1 | 0 | 0 | 0 |
+| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 |
+| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 |
+| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed this pass, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* |
+| **Total rows** | **51** | **51** | **86** | **88** |
+
+Pass 4's `VERIFIED` count (53) is Pass 3's 50, plus the REQ-ENV-003 flip
+(+1), plus the two new one-row sections REQ-ENGINE-001/REQ-CORRELATOR-001
+(+2) — both landed `VERIFIED` on first pass, so no row moved through an
+intermediate status this time.
 
 Breakdown by section: Module trait contract 14 rows (REQ-CORE-001..014), CLI
 surface 12 rows (REQ-CLI-001..012), `install.sh` 9 rows
 (REQ-INSTALL-001..009), Env/config 6 rows (REQ-ENV-001..006), README claims 10
 rows (REQ-README-001..010), HTTP API surface 35 rows (REQ-API-ROUTE-001..007,
 REQ-API-AUTH-001..004, REQ-API-SCAN-001..010, REQ-API-MISC-001..008,
-REQ-API-EXPORT-001..006) — 14+12+9+6+10+35 = 86, matching the total above.
+REQ-API-EXPORT-001..006), Scan engine dispatch 1 row (REQ-ENGINE-001),
+Correlator rule registry 1 row (REQ-CORRELATOR-001) —
+14+12+9+6+10+35+1+1 = 88, matching the total above.
 Some rows cite tests shared across sections (e.g. REQ-CORE-010 and
 REQ-README-009 both cite `every_module_maps_to_valid_attack_reconnaissance_techniques`),
 which is intentional — the two rows document the same underlying test from

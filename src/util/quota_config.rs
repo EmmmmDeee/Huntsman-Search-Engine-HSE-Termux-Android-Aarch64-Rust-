@@ -1,15 +1,21 @@
 //! Unified API quota configuration system.
 //!
-//! Pre-configures quota limits for all API modules via environment variables,
+//! Pre-configures quota limits for API modules via environment variables,
 //! enabling repeatable testing of rate-limit behavior across concurrent scans.
-//! Each API module reads its limits once at startup and uses them throughout
-//! the process lifetime.
 //!
-//! Environment variables:
-//! - `HSE_OATHNET_PER_SCAN_LIMIT`: oathnet queries per scan (default 4)
-//! - `HSE_OATHNET_DAILY_LIMIT`: oathnet daily limit (default 10000)
-//! - `HSE_SEE_KNOW_PER_SCAN_LIMIT`: see_know queries per scan (default 8)
-//! - `HSE_WIGLE_PER_SCAN_LIMIT`: wigle queries per scan (default 50)
+//! Environment variables — only `HSE_OATHNET_PER_SCAN_LIMIT` is currently
+//! consumed by a live code path (`oathnet::BUDGET`, `src/util/oathnet/mod.rs`);
+//! the other three are parsed here but nothing outside this file reads them
+//! (`see_know_quota()`/`wigle_quota()` have no external callers, and
+//! `OathnetQuotaConfig::daily_limit` is read once into a local `config` binding
+//! at `oathnet/mod.rs:51` and never used again — a *different*, same-named
+//! field on `RealQuota`, populated from the live API's own response, is what
+//! actually tracks the daily limit). See REQ-ENV-003 in
+//! `docs/REQUIREMENTS_LEDGER.md` for the full finding.
+//! - `HSE_OATHNET_PER_SCAN_LIMIT`: oathnet queries per scan (default 4) — **live**
+//! - `HSE_OATHNET_DAILY_LIMIT`: oathnet daily limit (default 10000) — parsed, not consumed
+//! - `HSE_SEE_KNOW_PER_SCAN_LIMIT`: see_know queries per scan (default 8) — parsed, not consumed
+//! - `HSE_WIGLE_PER_SCAN_LIMIT`: wigle queries per scan (default 50) — parsed, not consumed
 
 use std::env;
 use std::sync::OnceLock;

@@ -858,3 +858,121 @@ fn modules_never_read_credentials_via_raw_env() {
         "ALLOWED_RAW_ENV lists env vars no module reads any more (remove them): {stale:?}"
     );
 }
+
+/// Inserts the env-var string literal whose opening `"` sits at `open_quote`
+/// — the unscoped counterpart of [`push_huntsman_literal`], which only
+/// accepts a `HUNTSMAN_`-prefixed literal. Used by
+/// [`collect_all_raw_env_reads`] below, which must see every prefix.
+fn push_env_literal(line: &str, open_quote: usize, out: &mut std::collections::HashSet<String>) {
+    let rest = &line[open_quote + 1..];
+    if let Some(end) = rest.find('"') {
+        out.insert(rest[..end].to_string());
+    }
+}
+
+/// Collects every literal-argument `env::var("...")`/`env::var_os("...")`
+/// read anywhere under `dir`, of ANY prefix — the unscoped counterpart of
+/// [`collect_raw_huntsman_env_reads`], which (by construction — see its own
+/// doc comment) only ever sees `HUNTSMAN_`-prefixed reads and is deliberately
+/// left that way, since its two callers both depend on that exact scoping.
+/// This is the collector [`non_huntsman_env_reads_are_known`] uses instead.
+fn collect_all_raw_env_reads(dir: &Path, out: &mut std::collections::HashSet<String>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_all_raw_env_reads(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            let content = fs::read_to_string(&path).unwrap();
+            for line in content.lines() {
+                for pat in ["env::var(", "env::var_os("] {
+                    let mut from = 0;
+                    while let Some(i) = line[from..].find(pat) {
+                        let after = from + i + pat.len();
+                        if line[after..].starts_with('"') {
+                            push_env_literal(line, after, out);
+                        }
+                        from = after;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// REQ-ENV-003: the env-consumption guards above (`env_template_keys_are_all_consumed`,
+/// `modules_never_read_credentials_via_raw_env`) only ever scan for
+/// `HUNTSMAN_`-prefixed literals — [`push_huntsman_literal`] requires it. Any
+/// env var read via `std::env::var`/`var_os` under a DIFFERENT prefix is
+/// invisible to both, so it can be genuinely load-bearing yet fully
+/// undocumented with no test noticing. This closes that blind spot directly:
+/// every non-`HUNTSMAN_` literal env read anywhere in `src/` must be
+/// allow-listed here, with a note on whether it is actually consumed by a
+/// live code path — a real, evidenced example of the gap this guards
+/// against: `src/util/quota_config.rs` parses 4 such vars, but a direct
+/// trace of every caller of `oathnet_quota()`/`see_know_quota()`/
+/// `wigle_quota()` found only `HSE_OATHNET_PER_SCAN_LIMIT` is ever read again
+/// after being parsed (`oathnet::BUDGET`, `src/util/oathnet/mod.rs:51`); the
+/// other three are parsed and then never consumed by anything (see the
+/// module's own corrected doc comment, and REQ-ENV-003 in
+/// `docs/REQUIREMENTS_LEDGER.md`).
+#[test]
+fn non_huntsman_env_reads_are_known() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    // Standard OS/platform vars this project reads outside its own knob
+    // namespace — never project-specific tuning, so these never move into
+    // KNOWN_HSE_KNOBS below no matter what else changes.
+    const STANDARD_OS_ENV_VARS: &[&str] =
+        &["HOME", "HTTPS_PROXY", "https_proxy", "NO_COLOR", "TERMUX_VERSION"];
+
+    // Every other non-HUNTSMAN_ knob genuinely read anywhere in src/, each
+    // annotated with whether it actually does anything today. Extend this
+    // when a real new one is added; a var appearing here that is NOT
+    // consumed anywhere is caught by the staleness check below.
+    // `HSE_BIND`/`HSE_AUTH_TOKEN` (`hse serve`'s bind address / bearer token)
+    // are NOT in this list: they're read via clap's own `#[arg(env = "...")]`
+    // derive attribute (`src/cli/command.rs:554,569`), never a literal
+    // `env::var(...)` call this scanner's source-text match can see — a
+    // different, already-covered mechanism (REQ-ENV-006 in the ledger).
+    const KNOWN_HSE_KNOBS: &[&str] = &[
+        "HSE_OATHNET_PER_SCAN_LIMIT",  // quota_config.rs — LIVE (oathnet::BUDGET)
+        "HSE_OATHNET_DAILY_LIMIT",     // quota_config.rs — parsed, not consumed
+        "HSE_SEE_KNOW_PER_SCAN_LIMIT", // quota_config.rs — parsed, not consumed
+        "HSE_WIGLE_PER_SCAN_LIMIT",    // quota_config.rs — parsed, not consumed
+    ];
+
+    let mut raw = std::collections::HashSet::new();
+    collect_all_raw_env_reads(&root.join("src"), &mut raw);
+
+    let allowed: std::collections::HashSet<&str> = STANDARD_OS_ENV_VARS
+        .iter()
+        .chain(KNOWN_HSE_KNOBS.iter())
+        .copied()
+        .collect();
+    let mut unknown: Vec<&String> = raw
+        .iter()
+        .filter(|v| !v.starts_with("HUNTSMAN_") && !allowed.contains(v.as_str()))
+        .collect();
+    unknown.sort();
+    assert!(
+        unknown.is_empty(),
+        "non-HUNTSMAN_ env var(s) read somewhere in src/ with no allow-list entry \
+         above (an undocumented, untested blind spot — add it to STANDARD_OS_ENV_VARS \
+         or KNOWN_HSE_KNOBS with a note on whether it's actually consumed): {unknown:?}"
+    );
+
+    // Anti-rot: every allow-listed var must still actually be read (mirrors
+    // NOT_YET_WIRED's and ALLOWED_RAW_ENV's own staleness checks).
+    let mut stale: Vec<&str> = STANDARD_OS_ENV_VARS
+        .iter()
+        .chain(KNOWN_HSE_KNOBS.iter())
+        .copied()
+        .filter(|k| !raw.contains(*k))
+        .collect();
+    stale.sort_unstable();
+    assert!(
+        stale.is_empty(),
+        "allow-list above lists env var(s) no longer read anywhere in src/ \
+         (remove them): {stale:?}"
+    );
+}
