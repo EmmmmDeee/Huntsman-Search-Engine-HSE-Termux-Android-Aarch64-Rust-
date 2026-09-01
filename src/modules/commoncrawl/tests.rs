@@ -16,6 +16,29 @@ fn module_metadata_is_coherent() {
 }
 
 #[test]
+fn cdx_query_url_uses_the_domain_matchtype_wildcard() {
+    // Regression: a bare `url=<domain>` defaults the CDX-Server API's
+    // `matchType` to `exact` — matching only that literal URL string, not
+    // the domain's pages — which would silently defeat this module's
+    // entire purpose with no error, just a near-empty result. The `*.`
+    // prefix triggers `matchType=domain` (the same proven pattern
+    // `wayback`'s own CDX domain-match pass uses) without a separate query
+    // parameter.
+    let url = cdx_query_url(
+        "https://index.commoncrawl.org/CC-MAIN-2026-01-index",
+        "example.com",
+    );
+    assert_eq!(
+        url,
+        "https://index.commoncrawl.org/CC-MAIN-2026-01-index?url=*.example.com&output=json&limit=100"
+    );
+    assert!(
+        !url.contains("&url=example.com&"),
+        "must not query with the CDX-Server API's default exact matchType"
+    );
+}
+
+#[test]
 fn parses_jsonl_and_skips_bad_lines() {
     // Mirrors a real CDX response: a full index record, a stray non-JSON
     // line (the index occasionally emits one), a minimal `{"url":...}`

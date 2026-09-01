@@ -15,10 +15,11 @@
 mod tests;
 
 use async_trait::async_trait;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -139,7 +140,10 @@ pub(super) enum SmtpVerdict {
 /// each verdict fixes the confidence and `smtp-*` tag, and attaches a `mx_host`
 /// evidence attribute whenever an MX was found (every case except `NoMx`).
 /// `domain` is used only for the no-MX message. Mirrors the deliverability
-/// ladder: valid 0.92 ≫ invalid 0.35 > catch-all 0.30 = unreachable/no-MX 0.30.
+/// ladder, from most to least conclusive: valid is [`confidence::AUTHORITATIVE`];
+/// invalid is [`confidence::TENTATIVE`]; catch-all, unreachable, and no-MX all
+/// share [`confidence::SPECULATIVE`] — an inconclusive probe outcome carries no
+/// more weight than a guess.
 pub(super) fn build_entity(
     email: &str,
     domain: &str,
@@ -149,25 +153,25 @@ pub(super) fn build_entity(
 ) -> Entity {
     let (conf, tag, summary, code) = match verdict {
         SmtpVerdict::NoMx => (
-            0.30,
+            confidence::SPECULATIVE,
             "smtp-unreachable",
             format!("No MX record for {domain}"),
             None,
         ),
         SmtpVerdict::Valid => (
-            0.92,
+            confidence::AUTHORITATIVE,
             "smtp-valid",
             format!("SMTP RCPT TO accepted by {}", mx_host.unwrap_or("?")),
             None,
         ),
         SmtpVerdict::Invalid(c) => (
-            0.35,
+            confidence::TENTATIVE,
             "smtp-invalid",
             format!("SMTP RCPT TO rejected ({c}) by {}", mx_host.unwrap_or("?")),
             Some(c.as_str()),
         ),
         SmtpVerdict::CatchAll => (
-            0.30,
+            confidence::SPECULATIVE,
             "smtp-catchall",
             format!(
                 "{} appears to accept all recipients",
@@ -176,7 +180,7 @@ pub(super) fn build_entity(
             None,
         ),
         SmtpVerdict::Unreachable(reason) => (
-            0.30,
+            confidence::SPECULATIVE,
             "smtp-unreachable",
             format!("SMTP connection failed: {reason}"),
             None,
@@ -302,7 +306,22 @@ async fn smtp_rcpt_check(mx_host: &str, email: &str) -> SmtpVerdict {
             _ => return SmtpVerdict::Unreachable(format!("connect to {mx_host}:25 failed")),
         };
 
-    let (reader, mut writer) = stream.into_split();
+    run_probe(stream, email).await
+}
+
+/// The SMTP conversation itself (banner → EHLO → MAIL FROM → RCPT TO →
+/// catch-all probe → QUIT), generic over any `AsyncRead + AsyncWrite` stream
+/// rather than hardcoded to `TcpStream`. Splitting this out of
+/// `smtp_rcpt_check` (which keeps only the DNS/SSRF/connect logic) makes the
+/// protocol logic itself exercisable in tests via `tokio::io::duplex()` — a
+/// real TCP listener can't be used here since it would have to bind
+/// localhost, which the SSRF guard in `smtp_rcpt_check` correctly refuses to
+/// dial (and must not be weakened just for testability).
+async fn run_probe<S>(stream: S, email: &str) -> SmtpVerdict
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (reader, mut writer) = tokio::io::split(stream);
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
 
@@ -325,16 +344,31 @@ async fn smtp_rcpt_check(mx_host: &str, email: &str) -> SmtpVerdict {
         return SmtpVerdict::Unreachable("EHLO response failed".into());
     }
 
-    // MAIL FROM
-    if send_cmd(&mut writer, "MAIL FROM:<probe@huntsman.local>\r\n")
-        .await
-        .is_err()
-    {
+    // MAIL FROM — the RFC 5321 §4.1.1.2 null reverse-path (`<>`), the
+    // standard bounce-message envelope sender. A made-up sender domain
+    // (the previous `probe@huntsman.local` used `.local`, an RFC
+    // 6762-reserved TLD that never resolves in public DNS) can trigger a
+    // real MTA's "reject unknown sender domain" anti-spam policy — and this
+    // code never inspected the MAIL FROM response, so a rejection there
+    // fell through to RCPT TO anyway, which then typically gets `503 Bad
+    // sequence of commands` (no valid MAIL transaction open) and was
+    // reported as `Invalid("503")` — a false "invalid mailbox" verdict for
+    // the TARGET caused entirely by OUR OWN sender being rejected. The null
+    // sender has no domain to verify and is universally accepted.
+    if send_cmd(&mut writer, "MAIL FROM:<>\r\n").await.is_err() {
         return SmtpVerdict::Unreachable("MAIL FROM send failed".into());
     }
     line.clear();
     if read_line_timeout(&mut reader, &mut line).await.is_err() {
         return SmtpVerdict::Unreachable("MAIL FROM response failed".into());
+    }
+    if !line.starts_with("250") {
+        // Even the null sender was refused — an unusually strict server
+        // policy. Reporting `Unreachable`, not `Invalid`, keeps this
+        // honestly distinct from an actual per-mailbox rejection: nothing
+        // about the TARGET address was ever tested.
+        let _ = send_cmd(&mut writer, "QUIT\r\n").await;
+        return SmtpVerdict::Unreachable(format!("MAIL FROM rejected: {}", line.trim()));
     }
 
     // RCPT TO — the actual target
@@ -373,13 +407,13 @@ async fn smtp_rcpt_check(mx_host: &str, email: &str) -> SmtpVerdict {
     SmtpVerdict::Valid
 }
 
-async fn send_cmd(writer: &mut tokio::net::tcp::OwnedWriteHalf, cmd: &str) -> std::io::Result<()> {
+async fn send_cmd<W: AsyncWrite + Unpin>(writer: &mut W, cmd: &str) -> std::io::Result<()> {
     writer.write_all(cmd.as_bytes()).await?;
     writer.flush().await
 }
 
-async fn read_line_timeout(
-    reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>,
+async fn read_line_timeout<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
     buf: &mut String,
 ) -> std::io::Result<()> {
     buf.clear();
@@ -413,8 +447,8 @@ async fn read_line_timeout(
         .map_err(|_| std::io::Error::other("timeout"))?
 }
 
-async fn read_multiline(
-    reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>,
+async fn read_multiline<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
     buf: &mut String,
 ) -> std::io::Result<()> {
     loop {
