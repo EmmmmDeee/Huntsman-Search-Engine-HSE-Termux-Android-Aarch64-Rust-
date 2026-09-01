@@ -42,21 +42,37 @@ pub struct UrlExtract;
 ///
 /// Returns `None` when no usable host can be extracted (e.g. bare paths,
 /// single-label hosts, malformed input).
+///
+/// Uses [`crate::util::url_util::host_only`] rather than the shared
+/// `host_from_url` — that helper's "must contain a `.`" gate is the right
+/// contract for its other ~30 domain-only callers, but it silently discards
+/// every bare IPv6 literal without an embedded IPv4 address (the overwhelming
+/// majority of real IPv6 addresses have no `.` at all), which would make this
+/// module's own documented "bare IPv4/IPv6 hosts are emitted as `IpAddress`"
+/// behavior unreachable for real-world IPv6 hosts. Delegating IP recognition
+/// to `Ipv4Addr`/`Ipv6Addr`'s own parsers (rather than a hand-rolled
+/// dot-count-and-all-digits check) also fixes a second latent bug: the old
+/// check accepted any 4 dot-separated all-digit segments as IPv4 with no
+/// octet-range validation, so a malformed host like `999.999.999.999` was
+/// wrongly classified as a probeable IP address and would have been handed
+/// to the IP-intelligence stack (`geo_intel`, `abuseipdb`, `shodan`, …) as if
+/// it were real.
 fn extract_host(url: &str) -> Option<(String, bool)> {
-    let host = crate::util::url_util::host_from_url(url)?;
-    // IPv6 literals may or may not have brackets stripped by host_from_url;
-    // use the presence of `:` as the canonical signal.
-    let clean = host
+    let raw = crate::util::url_util::host_only(url);
+    if raw.is_empty() {
+        return None;
+    }
+    let clean = raw
         .trim_start_matches('[')
         .trim_end_matches(']')
-        .to_string();
-    let is_ipv6 = host.contains(':');
-    let is_ipv4 = !is_ipv6
-        && clean.split('.').count() == 4
-        && clean
-            .split('.')
-            .all(|seg| !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_digit()));
-    Some((clean, is_ipv6 || is_ipv4))
+        .to_lowercase();
+    if clean.parse::<std::net::Ipv4Addr>().is_ok() || clean.parse::<std::net::Ipv6Addr>().is_ok() {
+        return Some((clean, true));
+    }
+    if !clean.contains('.') {
+        return None;
+    }
+    Some((clean, false))
 }
 
 #[async_trait]
@@ -152,6 +168,36 @@ mod tests {
         let (h, ip) = host("http://192.168.1.1/admin").expect("should succeed");
         assert_eq!(h, "192.168.1.1");
         assert!(ip);
+    }
+
+    #[test]
+    fn extracts_a_bare_ipv6_literal_with_no_embedded_ipv4() {
+        // Regression: `host_from_url`'s shared "must contain a `.`" domain
+        // gate silently discards a bare IPv6 literal before this module's
+        // own IPv6-recognition logic ever ran, so real-world IPv6 hosts
+        // (which almost never contain a `.`) were never emitted as
+        // `IpAddress` despite the module doc explicitly promising that.
+        let (h, ip) = host("http://[2001:db8::1]/path").expect("should succeed");
+        assert_eq!(h, "2001:db8::1");
+        assert!(ip);
+    }
+
+    #[test]
+    fn extracts_ipv4_mapped_ipv6() {
+        let (h, ip) = host("https://[::ffff:192.0.2.128]:8443/x").expect("should succeed");
+        assert_eq!(h, "::ffff:192.0.2.128");
+        assert!(ip);
+    }
+
+    #[test]
+    fn a_malformed_dotted_quad_with_out_of_range_octets_is_not_misclassified_as_ipv4() {
+        // Regression: the old check only verified 4 dot-separated all-digit
+        // segments, with no octet-range validation, so a nonsensical host
+        // like this was wrongly tagged `IpAddress` and would have been
+        // handed to real IP-intelligence lookups as if it were valid.
+        let (h, ip) = host("http://999.999.999.999/x").expect("should succeed");
+        assert_eq!(h, "999.999.999.999");
+        assert!(!ip, "not a valid IPv4 address — octets exceed 255");
     }
 
     #[test]

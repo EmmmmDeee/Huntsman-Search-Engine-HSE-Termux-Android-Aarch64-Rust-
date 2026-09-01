@@ -121,6 +121,59 @@ fn is_sitemap_index(xml: &str) -> bool {
     xml.to_ascii_lowercase().contains("<sitemapindex")
 }
 
+/// What one fetched document turned out to be, and what to do with its
+/// `<loc>` values. Returned by [`classify_document`].
+enum DocumentKind {
+    /// A `<sitemapindex>` — its `<loc>` values are child sitemap URLs, never
+    /// page URLs. Empty when the index was encountered past the one level of
+    /// recursion this module follows (a deeper index-of-indexes): its
+    /// children are dropped rather than enqueued further or, worse,
+    /// misreported as page content.
+    Index(Vec<String>),
+    /// A urlset — its `<loc>` values are page URLs to emit.
+    UrlSet(Vec<String>),
+}
+
+/// Classify one fetched sitemap-adjacent document and extract its `<loc>`
+/// values accordingly. **Pure** — this is the exact decision `process()`'s
+/// enumeration loop applies, factored out so it is unit-testable without a
+/// live fetch loop.
+///
+/// Regression: this used to be `is_sitemap_index(&body) && depth == 0` inline
+/// in the loop, with anything else (a urlset, OR an index found past depth 0)
+/// falling through to the "emit these as page URLs" branch. A nested
+/// index-of-indexes is a real, if uncommon, sitemap shape — sites split a
+/// root index into per-section indexes, each pointing to per-date urlsets —
+/// and its `<loc>` values are further sitemap documents, not pages. The old
+/// code minted them as `Url` entities tagged `sitemap-url` regardless.
+fn classify_document(xml: &str, depth: u32) -> DocumentKind {
+    let locs = extract_locs(xml);
+    if is_sitemap_index(xml) {
+        DocumentKind::Index(if depth == 0 { locs } else { Vec::new() })
+    } else {
+        DocumentKind::UrlSet(locs)
+    }
+}
+
+/// Mark the last emitted entity's evidence to say the enumeration was cut
+/// short by a numeric cap (URLs or fetches), rather than silently presenting
+/// a partial list as the complete sitemap. **Pure**. No-op when `entities` is
+/// empty (every candidate document failed to fetch) — there is nowhere to
+/// attach the note. Mirrors `web_crawler`'s `image_leads_capped` convention.
+fn mark_truncated(entities: &mut [Entity], cap: usize) {
+    if let Some(last) = entities.last_mut()
+        && let Some(last_ev) = last.evidence.last_mut()
+    {
+        last_ev.attributes.insert(
+            "sitemap_enumeration_truncated".to_string(),
+            "true".to_string(),
+        );
+        last_ev
+            .attributes
+            .insert("sitemap_url_cap".to_string(), cap.to_string());
+    }
+}
+
 /// Extract `Sitemap:` directive URLs from a `robots.txt`. **Pure**: case-
 /// insensitive on the directive name, one URL per matching line.
 fn parse_robots_sitemaps(robots: &str) -> Vec<String> {
@@ -255,12 +308,23 @@ impl Module for Sitemap {
         // A worklist so a <sitemapindex> can enqueue its children (one level).
         let mut queue: std::collections::VecDeque<(String, u32)> =
             candidates.into_iter().map(|u| (u, 0u32)).collect();
+        // Set whenever a numeric cap (URLs or fetches) cut the enumeration
+        // short of what the site actually publishes — surfaced as evidence
+        // below rather than silently presenting a partial list as complete.
+        let mut truncated = false;
 
         while let Some((doc_url, depth)) = queue.pop_front() {
             if fetched >= MAX_SITEMAP_FETCHES || entities.len() >= MAX_URLS {
+                // The popped candidate itself goes unprocessed here — put it
+                // back rather than losing it to `pop_front`, so the queue's
+                // state honestly reflects that there was more left to do.
+                queue.push_front((doc_url, depth));
+                truncated = true;
                 break;
             }
             if ctx.cancel.is_cancelled() {
+                queue.push_front((doc_url, depth));
+                truncated = true;
                 break;
             }
             if !seen_docs.insert(doc_url.clone()) {
@@ -271,41 +335,52 @@ impl Module for Sitemap {
             };
             fetched += 1;
 
-            let locs = extract_locs(&body);
-            if is_sitemap_index(&body) && depth == 0 {
-                // Child sitemaps — enqueue those on the same site.
-                for child in locs {
-                    if in_scope(&child, &site) {
-                        queue.push_back((child, depth + 1));
+            match classify_document(&body, depth) {
+                DocumentKind::Index(children) => {
+                    for child in children {
+                        if in_scope(&child, &site) {
+                            queue.push_back((child, depth + 1));
+                        }
+                    }
+                    continue;
+                }
+                DocumentKind::UrlSet(locs) => {
+                    // A urlset: emit its URLs as page-URL pivots.
+                    for url in locs {
+                        if entities.len() >= MAX_URLS {
+                            truncated = true;
+                            break;
+                        }
+                        if !in_scope(&url, &site) {
+                            continue;
+                        }
+                        if !seen_urls.insert(url.clone()) {
+                            continue;
+                        }
+                        let mut e =
+                            Entity::new(EntityKind::Url, &url, confidence::VERY_HIGH, &ctx.scan_id);
+                        e.tag("sitemap");
+                        e.tag("sitemap-url");
+                        e.add_evidence(
+                            Evidence::new(SRC, format!("Listed in {doc_url}"))
+                                .with_attr("sitemap_url", &doc_url)
+                                .with_attr("source_domain", &host)
+                                .with_attr("method", "owner-published-sitemap"),
+                        );
+                        entities.push(e);
+                    }
+                    if entities.len() >= MAX_URLS {
+                        truncated = true;
+                        break;
                     }
                 }
-                continue;
-            }
-
-            // A urlset (or a deeper index we won't recurse further): emit URLs.
-            for url in locs {
-                if entities.len() >= MAX_URLS {
-                    break;
-                }
-                if !in_scope(&url, &site) {
-                    continue;
-                }
-                if !seen_urls.insert(url.clone()) {
-                    continue;
-                }
-                let mut e = Entity::new(EntityKind::Url, &url, confidence::VERY_HIGH, &ctx.scan_id);
-                e.tag("sitemap");
-                e.tag("sitemap-url");
-                e.add_evidence(
-                    Evidence::new(SRC, format!("Listed in {doc_url}"))
-                        .with_attr("sitemap_url", &doc_url)
-                        .with_attr("source_domain", &host)
-                        .with_attr("method", "owner-published-sitemap"),
-                );
-                entities.push(e);
             }
 
             tokio::time::sleep(std::time::Duration::from_millis(INTER_FETCH_MS)).await;
+        }
+
+        if truncated {
+            mark_truncated(&mut entities, MAX_URLS);
         }
 
         let mut result = ModuleResult::new();

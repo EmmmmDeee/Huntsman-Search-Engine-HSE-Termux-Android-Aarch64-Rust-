@@ -86,7 +86,7 @@ impl Module for WafDetect {
             .unwrap_or_else(|| target.value.trim().to_string());
         // Entity confidence tracks the strongest layer detected.
         let score = match detections[0].confidence {
-            Confidence::High => 0.9,
+            Confidence::High => confidence::VERY_HIGH_PLUS,
             Confidence::Medium => confidence::VERY_HIGH,
             Confidence::Low => confidence::MEDIUM_HIGH,
         };

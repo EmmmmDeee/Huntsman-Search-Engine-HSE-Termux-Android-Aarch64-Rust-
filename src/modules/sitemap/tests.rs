@@ -38,6 +38,82 @@ fn urlset_is_not_flagged_as_index() {
 }
 
 #[test]
+fn classify_document_treats_a_root_level_index_as_child_pointers() {
+    let xml = r#"<sitemapindex>
+  <sitemap><loc>https://example.com/sitemap-posts.xml</loc></sitemap>
+  <sitemap><loc>https://example.com/sitemap-pages.xml</loc></sitemap>
+</sitemapindex>"#;
+    match classify_document(xml, 0) {
+        DocumentKind::Index(children) => assert_eq!(children.len(), 2),
+        DocumentKind::UrlSet(_) => panic!("a sitemapindex must never be classified as a urlset"),
+    }
+}
+
+#[test]
+fn classify_document_drops_a_deeper_index_of_indexes_rather_than_mistyping_it_as_pages() {
+    // Regression: an index-of-indexes encountered past the one level of
+    // recursion this module follows used to fall through to the "emit as
+    // page URLs" branch, minting further sitemap-document URLs as if they
+    // were ordinary pages.
+    let xml = r#"<sitemapindex>
+  <sitemap><loc>https://example.com/sitemap-2020.xml</loc></sitemap>
+  <sitemap><loc>https://example.com/sitemap-2021.xml</loc></sitemap>
+</sitemapindex>"#;
+    match classify_document(xml, 1) {
+        DocumentKind::Index(children) => assert!(
+            children.is_empty(),
+            "a level-2 index's children must be dropped, not enqueued or emitted"
+        ),
+        DocumentKind::UrlSet(_) => {
+            panic!("an index document must never be classified as a urlset, regardless of depth")
+        }
+    }
+}
+
+#[test]
+fn classify_document_treats_a_urlset_as_page_urls_at_any_depth() {
+    let xml = "<urlset><url><loc>https://example.com/a</loc></url></urlset>";
+    match classify_document(xml, 1) {
+        DocumentKind::UrlSet(urls) => assert_eq!(urls, vec!["https://example.com/a".to_string()]),
+        DocumentKind::Index(_) => panic!("a urlset must never be classified as an index"),
+    }
+}
+
+#[test]
+fn mark_truncated_annotates_the_last_entitys_last_evidence_record() {
+    let mut e = Entity::new(
+        EntityKind::Url,
+        "https://example.com/a",
+        confidence::VERY_HIGH,
+        "scan",
+    );
+    e.add_evidence(Evidence::new(
+        SRC,
+        "Listed in https://example.com/sitemap.xml",
+    ));
+    let mut entities = vec![e];
+    mark_truncated(&mut entities, 200);
+    let ev = entities[0].evidence.last().expect("should succeed");
+    assert_eq!(
+        ev.attributes
+            .get("sitemap_enumeration_truncated")
+            .map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        ev.attributes.get("sitemap_url_cap").map(String::as_str),
+        Some("200")
+    );
+}
+
+#[test]
+fn mark_truncated_is_a_noop_on_an_empty_entity_list() {
+    let mut entities: Vec<Entity> = Vec::new();
+    mark_truncated(&mut entities, 200);
+    assert!(entities.is_empty());
+}
+
+#[test]
 fn extract_locs_dedups_and_tolerates_attributes_on_the_tag() {
     let xml = "<loc >https://a.example.com/x</loc><loc>https://a.example.com/x</loc>\
                <loc\n>https://a.example.com/y</loc>";
