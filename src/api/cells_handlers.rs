@@ -30,6 +30,7 @@ use crate::app::cells::{
     clear_cells_db, mcc_for_country, opencellid_download_url, opencellid_filename,
 };
 use crate::util::cell_db;
+use crate::util::keys;
 
 use super::handlers::{bad_request, reject_non_loopback};
 
@@ -138,6 +139,24 @@ fn try_start_import(cells_import: &std::sync::Mutex<CellsImportPhase>) -> bool {
     true
 }
 
+/// Resolve the configured OpenCelliD API key from an already-loaded
+/// `HUNTSMAN_*` key map, through `keys::resolve_key` rather than a raw
+/// lookup — so a blank value or an un-edited `hse provision` template
+/// placeholder (`insert_opencellid_key_here`, the literal default
+/// `env_template.txt` ships) resolves as absent, the same policy every
+/// other credential check on this surface (e.g. `accounts_block`'s
+/// SeekNow/WiGLE lookups in `key_harvest_handlers.rs`) already follows. A
+/// raw `std::env::var` read would forward the un-edited placeholder into a
+/// live OpenCelliD request instead of failing fast with this handler's own
+/// 400. Pure and split out from [`cells_import`] so the filtering behavior
+/// is unit-testable without mutating the process environment (`std::env::
+/// set_var` is `unsafe` under this crate's `#![forbid(unsafe_code)]`, so
+/// the env-reading half of this can only be exercised by hand/in CI, not a
+/// unit test).
+fn resolve_opencellid_key(loaded: &std::collections::HashMap<String, String>) -> Option<String> {
+    keys::resolve_key(loaded.get("HUNTSMAN_OPENCELLID_KEY").map(String::as_str)).map(str::to_string)
+}
+
 /// `POST /api/v1/cells/import` — server-side download-by-country-code
 /// equivalent of `hse cells import --country`. Loopback-only. Returns 202
 /// immediately; a detached task drives the download+import, and the SPA
@@ -158,7 +177,7 @@ pub async fn cells_import(
     if country.is_empty() {
         return bad_request("country must not be empty");
     }
-    let Ok(api_key) = std::env::var("HUNTSMAN_OPENCELLID_KEY") else {
+    let Some(api_key) = resolve_opencellid_key(&keys::load()) else {
         return bad_request(
             "no OpenCelliD API key configured — set HUNTSMAN_OPENCELLID_KEY via Settings first",
         );
@@ -286,6 +305,45 @@ mod tests {
         assert!(
             try_start_import(&m),
             "a prior Error phase must not permanently block future imports"
+        );
+    }
+
+    #[test]
+    fn resolve_opencellid_key_treats_a_genuinely_unset_key_as_absent() {
+        let loaded = std::collections::HashMap::new();
+        assert_eq!(resolve_opencellid_key(&loaded), None);
+    }
+
+    #[test]
+    fn resolve_opencellid_key_treats_a_blank_value_as_absent() {
+        let mut loaded = std::collections::HashMap::new();
+        loaded.insert("HUNTSMAN_OPENCELLID_KEY".to_string(), "   ".to_string());
+        assert_eq!(resolve_opencellid_key(&loaded), None);
+    }
+
+    #[test]
+    fn resolve_opencellid_key_treats_the_shipped_template_placeholder_as_absent() {
+        // The exact literal `hse provision`/`env_template.txt` ships for a
+        // fresh install — the regression this fix closes: this must NOT be
+        // forwarded to OpenCelliD as if it were a real credential.
+        let mut loaded = std::collections::HashMap::new();
+        loaded.insert(
+            "HUNTSMAN_OPENCELLID_KEY".to_string(),
+            "insert_opencellid_key_here".to_string(),
+        );
+        assert_eq!(resolve_opencellid_key(&loaded), None);
+    }
+
+    #[test]
+    fn resolve_opencellid_key_passes_through_a_real_looking_value() {
+        let mut loaded = std::collections::HashMap::new();
+        loaded.insert(
+            "HUNTSMAN_OPENCELLID_KEY".to_string(),
+            "a1b2c3d4e5f6".to_string(),
+        );
+        assert_eq!(
+            resolve_opencellid_key(&loaded),
+            Some("a1b2c3d4e5f6".to_string())
         );
     }
 
