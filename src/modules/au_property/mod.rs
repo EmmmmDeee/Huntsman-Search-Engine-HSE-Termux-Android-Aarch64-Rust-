@@ -51,14 +51,15 @@
 //! "business relationships" claim would be phantom.
 //!
 //! Confidence model — a title register outranks a directory or electoral
-//! roll (per the sourcing note above), so both tiers sit at or above
-//! `au_electoral`'s own suburb-match tier (`confidence::ATTRIBUTED`, 0.72):
+//! roll (per the sourcing note above):
 //!   * Owner name matched with suburb + state + a corroborating postcode
-//!     extracted nearby: 0.74 — one notch above `ATTRIBUTED`, since the extra
+//!     extracted nearby: 0.74 — one notch above `au_electoral`'s own
+//!     suburb-match tier (`confidence::ATTRIBUTED`, 0.72), since the extra
 //!     extracted field is itself weak corroboration of a genuine structured
 //!     record rather than an isolated name/suburb coincidence.
 //!   * Owner name matched with suburb + state only (no postcode found
-//!     nearby): `confidence::NOTABLE` (0.62) — the base title-register tier.
+//!     nearby): `confidence::NOTABLE` (0.62) — the base title-register tier,
+//!     below `ATTRIBUTED` since it lacks that corroborating field.
 //!   * Coordinates from suburb centroid: confidence::MEDIUM_PLUS (derived, not raw)
 //!
 //! Orthogonal to `au_electoral` (electoral roll), `au_people` (residential

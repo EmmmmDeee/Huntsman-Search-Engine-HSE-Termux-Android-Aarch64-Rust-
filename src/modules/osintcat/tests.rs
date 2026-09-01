@@ -45,6 +45,28 @@ fn emit_breach_count_reflects_the_array_actually_iterated_not_the_self_reported_
         "breach_count must reflect the one record actually iterated, not the self-reported 2"
     );
     assert!(ev.summary.contains("1 breach record(s)"));
+    // The divergence itself is surfaced as supplementary evidence (not
+    // trusted for logic) so an operator can notice a provider under/over-
+    // reporting, rather than the discrepancy being silently discarded.
+    assert_eq!(
+        ev.attributes.get("reported_results_count").map(String::as_str),
+        Some("2")
+    );
+}
+
+#[test]
+fn emit_breach_omits_reported_results_count_when_it_matches() {
+    // No divergence → no noise: the supplementary attribute only appears
+    // when the self-reported total actually disagrees with the ground truth.
+    let br = OcBreachResponse {
+        results_count: 1,
+        breach_data: vec![serde_json::json!({"source": "ExampleLeak", "breach_date": "2021-01-01"})],
+    };
+    let target = Target::new(TargetKind::Email, "x@y.com");
+    let mut entity = target.to_entity(confidence::VERY_HIGH, "s");
+    emit_breach(&br, &mut entity);
+    let ev = &entity.evidence[0];
+    assert!(!ev.attributes.contains_key("reported_results_count"));
 }
 
 #[test]
@@ -57,6 +79,27 @@ fn emit_breach_noop_on_zero() {
     let mut entity = target.to_entity(confidence::VERY_HIGH, "s");
     emit_breach(&br, &mut entity);
     assert!(!entity.has_tag("breach"));
+    assert!(entity.evidence.is_empty());
+}
+
+#[test]
+fn emit_breach_noop_when_results_count_is_nonzero_but_breach_data_is_empty() {
+    // Regression: `breach_data` is the sole source of truth (the per-source
+    // tags/evidence are built from it, not `results_count`), so the
+    // early-return guard must match — a `results_count > 0` with an empty
+    // `breach_data` array must stay a clean no-op, not tag the entity
+    // `breach` with evidence claiming "0 breach record(s)".
+    let br = OcBreachResponse {
+        results_count: 5,
+        breach_data: vec![],
+    };
+    let target = Target::new(TargetKind::Email, "x@y.com");
+    let mut entity = target.to_entity(confidence::VERY_HIGH, "s");
+    emit_breach(&br, &mut entity);
+    assert!(
+        !entity.has_tag("breach"),
+        "a nonzero results_count with no actual records must not tag breach"
+    );
     assert!(entity.evidence.is_empty());
 }
 

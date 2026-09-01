@@ -187,11 +187,17 @@ fn build_entities(data: &StolenTaxData, query_value: &str, scan_id: &str) -> Vec
     // pair mints as two separate entities for one fact restated twice.
     let mut seen: std::collections::HashSet<(EntityKind, String)> =
         std::collections::HashSet::new();
+    // Case-insensitive, matching the `seen` dedup key below: an API that
+    // restates the queried identity with different casing (e.g. queried
+    // "User@Example.com", API echoes "user@example.com" in its own
+    // emails[]) must still be recognised as the query itself, not
+    // re-emitted as a new corroborating pivot.
+    let query_lower = query_value.to_lowercase();
 
     entities.extend(
         data.emails
             .iter()
-            .filter(|e| *e != query_value)
+            .filter(|e| e.to_lowercase() != query_lower)
             .filter(|e| seen.insert((EntityKind::Email, e.to_lowercase())))
             .map(|email| {
                 let mut entity = Entity::new(EntityKind::Email, email, confidence::MEDIUM, scan_id);
@@ -206,7 +212,7 @@ fn build_entities(data: &StolenTaxData, query_value: &str, scan_id: &str) -> Vec
     entities.extend(
         data.usernames
             .iter()
-            .filter(|u| *u != query_value)
+            .filter(|u| u.to_lowercase() != query_lower)
             .filter(|u| seen.insert((EntityKind::Username, u.to_lowercase())))
             .map(|username| {
                 let mut entity =
@@ -232,7 +238,7 @@ fn build_entities(data: &StolenTaxData, query_value: &str, scan_id: &str) -> Vec
         );
 
         if let Some(email) = &account.email
-            && email != query_value
+            && email.to_lowercase() != query_lower
             && seen.insert((EntityKind::Email, email.to_lowercase()))
         {
             let mut entity = Entity::new(EntityKind::Email, email, confidence::MEDIUM, scan_id);
@@ -241,7 +247,7 @@ fn build_entities(data: &StolenTaxData, query_value: &str, scan_id: &str) -> Vec
         }
 
         if let Some(username) = &account.username
-            && username != query_value
+            && username.to_lowercase() != query_lower
             && seen.insert((EntityKind::Username, username.to_lowercase()))
         {
             let mut entity =
@@ -362,6 +368,33 @@ mod tests {
         assert_eq!(
             username_count, 1,
             "the same username restated in usernames[] and associated_accounts[] must not double-emit: {entities:?}"
+        );
+    }
+
+    #[test]
+    fn test_build_entities_excludes_the_query_value_regardless_of_casing() {
+        // Regression: the query-value suppression check was case-sensitive
+        // while the `seen` dedup key is case-insensitive. An API that
+        // restates the queried identity with different casing (a common
+        // real shape — the query was "User@Example.com", the API's own
+        // emails[]/associated_accounts[] echo "user@example.com") was not
+        // recognised as the query itself and got re-emitted as a new
+        // corroborating pivot instead of being excluded.
+        let data = StolenTaxData {
+            breaches: None,
+            emails: vec!["user@example.com".to_string()],
+            usernames: vec![],
+            associated_accounts: vec![AssociatedAccount {
+                username: None,
+                email: Some("USER@EXAMPLE.COM".to_string()),
+                platform: None,
+                first_seen: None,
+            }],
+        };
+        let entities = build_entities(&data, "User@Example.com", "test-scan");
+        assert!(
+            entities.is_empty(),
+            "the queried identity restated with different casing must not be re-emitted as a pivot: {entities:?}"
         );
     }
 }
