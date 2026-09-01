@@ -656,3 +656,84 @@ fn no_inline_module_bodies_outside_allowed_exceptions() {
          with a justification): {offenders:#?}"
     );
 }
+
+/// The README's "Seed Types (N supported)" table carries a per-seed "Modules"
+/// column that is hand-maintained prose, unlike the headline module total and
+/// free/key-gated split (guarded by `readme_module_overview_count_matches_registry`)
+/// or the correlator rule count (`readme_correlator_rule_count_matches_registry`).
+/// It rotted badly: every row still cited an early, ~90-module-era registry
+/// snapshot while the live registry grew to 188 (e.g. "Full Name 6" vs the live
+/// count, "URL 2" vs the live count, "Organisation 2" vs the live count) — a
+/// table an operator reads to gauge how much recon a given seed kind actually
+/// gets, silently understating it by 3-12x for most rows. Tie each row to
+/// `Module::consumes()` counted over the live registry so it can't silently drift
+/// again — the same no-silent-drift guard the other two README-count tests apply.
+#[test]
+fn readme_seed_type_module_counts_match_registry() {
+    use huntsman_search_engine::core::scan::TargetKind;
+    use huntsman_search_engine::modules::registry;
+
+    let readme = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+        .expect("README.md must exist");
+
+    // (README row label, its `--kind` alias, the `TargetKind` that alias parses
+    // to). Deliberately just the 16 rows the table documents — `device_id`,
+    // `ssid`, and `tracking_id` are pivot-only kinds an operator never types as
+    // a starting `--kind`, so the table (and this guard) omit them by design.
+    const ROWS: &[(&str, &str, TargetKind)] = &[
+        ("Email", "email", TargetKind::Email),
+        ("Username", "username", TargetKind::Username),
+        ("Phone", "phone", TargetKind::Phone),
+        ("Full Name", "name", TargetKind::FullName),
+        ("IP Address", "ip", TargetKind::IpAddress),
+        ("Domain", "domain", TargetKind::Domain),
+        ("ASN", "asn", TargetKind::Asn),
+        ("CIDR", "cidr", TargetKind::Cidr),
+        ("Coordinates", "coords", TargetKind::Coordinates),
+        ("Address", "address", TargetKind::Address),
+        ("URL", "url", TargetKind::Url),
+        ("Organisation", "org", TargetKind::Organisation),
+        ("ABN/ACN", "abn", TargetKind::AbnAcn),
+        ("MAC Address", "mac", TargetKind::MacAddress),
+        ("Crypto Address", "crypto", TargetKind::CryptoAddress),
+        ("API Key", "apikey", TargetKind::ApiKey),
+    ];
+
+    let live = registry();
+    let mut mismatches = Vec::new();
+    for (label, flag, kind) in ROWS {
+        let live_count = live.iter().filter(|m| m.consumes().contains(kind)).count();
+        let needle = format!("| {label} | `--kind {flag}` |");
+        let Some(line) = readme.lines().find(|l| l.starts_with(&needle)) else {
+            mismatches.push(format!(
+                "{label}: README row not found (looked for {needle:?})"
+            ));
+            continue;
+        };
+        // Row shape `| Seed | Flag | Example | Modules |` — the last non-empty
+        // `|`-delimited cell is the documented module count.
+        let documented = line
+            .trim_end_matches('|')
+            .rsplit('|')
+            .next()
+            .map(str::trim)
+            .and_then(|s| s.parse::<usize>().ok());
+        match documented {
+            Some(n) if n == live_count => {}
+            Some(n) => mismatches.push(format!(
+                "{label}: README says {n}, live registry has {live_count}"
+            )),
+            None => {
+                mismatches.push(format!(
+                    "{label}: could not parse a module count from {line:?}"
+                ));
+            }
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "README 'Seed Types' table's per-seed module counts drifted from the live \
+         registry (update README.md after adding/removing a module or changing a \
+         module's consumes()): {mismatches:#?}"
+    );
+}
