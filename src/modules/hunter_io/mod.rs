@@ -326,6 +326,10 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
         let conf = confidence_from_hunter_score(entry.confidence);
         let first = nonempty(&entry.first_name);
         let last = nonempty(&entry.last_name);
+        let verification_status = entry
+            .verification
+            .as_ref()
+            .and_then(|v| nonempty(&v.status));
 
         // The confirmed address, or — when Hunter names a person but withholds
         // their address — a pattern-synthesised candidate (low-confidence lead).
@@ -343,7 +347,11 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
             continue;
         }
 
-        let email_conf = if synthesised { confidence::LOW } else { conf };
+        let email_conf = if synthesised {
+            confidence::LOW
+        } else {
+            apply_verification_penalty(conf, verification_status.as_deref())
+        };
         let mut ee = Entity::new(EntityKind::Email, &addr, email_conf, scan_id);
         ee.tag("hunter-io");
         ee.tag("email-finder");
@@ -368,14 +376,15 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
         }
         // Deliverability verdict — surfaces whether the address is a live
         // mailbox, a catch-all/webmail, or disposable (an evidentiary-weight
-        // signal), plus when Hunter last verified it.
-        if let Some(ver) = &entry.verification {
-            if let Some(s) = nonempty(&ver.status) {
-                ev = ev.with_attr("verification_status", &s);
-            }
-            if let Some(d) = nonempty(&ver.date) {
-                ev = ev.with_attr("verification_date", &d);
-            }
+        // signal that also feeds `apply_verification_penalty` above), plus
+        // when Hunter last verified it.
+        if let Some(s) = &verification_status {
+            ev = ev.with_attr("verification_status", s);
+        }
+        if let Some(ver) = &entry.verification
+            && let Some(d) = nonempty(&ver.date)
+        {
+            ev = ev.with_attr("verification_date", &d);
         }
         if let Some(src) = entry.sources.first() {
             if let Some(uri) = nonempty(&src.uri) {
@@ -551,13 +560,37 @@ fn apply_email_pattern(pattern: &str, first: &str, last: &str, domain: &str) -> 
 /// missing → uncertain (None and Some(0) collapse to the same
 /// floor — an explicit 0 from Hunter means "no signal", which
 /// shouldn't outrank a missing field).
+///
+/// Regression: the floor case used to map to [`confidence::MEDIUM`] (0.50),
+/// which sits ABOVE the 1-39 bucket's [`confidence::LOW_MEDIUM`] (0.45) —
+/// meaning a genuinely-reported low score ranked LESS confident than Hunter
+/// reporting no signal at all. The floor must sit at or below every real
+/// reported bucket, never above one.
 fn confidence_from_hunter_score(score: Option<u8>) -> f64 {
     match score {
         Some(c) if c >= 90 => confidence::HIGH_PLUSPLUS_PLUS,
         Some(c) if c >= 70 => confidence::HIGH_PLUS,
         Some(c) if c >= 40 => confidence::MEDIUM_HIGH,
         Some(c) if c > 0 => confidence::LOW_MEDIUM,
-        _ => confidence::MEDIUM,
+        _ => confidence::LOW,
+    }
+}
+
+/// Down-weight the discovery-confidence score when Hunter's OWN separate
+/// deliverability check flags the address `invalid` or `disposable` — a
+/// clear negative signal that must not be overridden by a high raw
+/// discovery-confidence score, which only measures how sure Hunter is that
+/// this VALUE was correctly extracted from a source, not whether the mailbox
+/// is actually live. Previously `verification.status` was surfaced only as an
+/// evidence attribute and never fed back into `conf`, so a source Hunter
+/// itself had flagged as a bounced or throwaway mailbox could still be
+/// emitted at full HIGH_PLUSPLUS_PLUS confidence. Any other status
+/// (`valid`, `accept_all`, `webmail`, `unknown`, or absent) is not a known-bad
+/// signal and leaves the discovery confidence untouched. **Pure**.
+fn apply_verification_penalty(conf: f64, status: Option<&str>) -> f64 {
+    match status.map(str::to_ascii_lowercase).as_deref() {
+        Some("invalid" | "disposable") => conf.min(confidence::LOW),
+        _ => conf,
     }
 }
 
