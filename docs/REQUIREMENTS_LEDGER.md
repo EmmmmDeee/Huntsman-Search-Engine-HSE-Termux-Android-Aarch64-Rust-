@@ -5,25 +5,39 @@ individual scanning modules' business logic — that was the subject of a
 separate, now-complete module-by-module bug audit under
 `src/modules/*/mod.rs` (Phases 0-10, PRs #553-568, merged; every one of the
 188 registered modules read against an established bug-class checklist). The
-areas covered here, across two passes:
+areas covered here, across three passes:
 
 1. The `Module` trait contract (`src/core/module/mod.rs`).
 2. The CLI surface (`src/main.rs`, `src/cli/`).
 3. `install.sh`.
 4. The env/config template and key consumption.
 5. Top-level `README.md`'s stated capabilities/counts.
+6. The HTTP API surface (`src/api/`) — routes, auth middleware, scan
+   lifecycle handlers, settings/cells/key-harvest/update handlers, scan
+   export/redaction.
 
-**Pass 2** (this pass) re-verified every row Pass 1 left
+**Pass 2** re-verified every row Pass 1 left
 `IMPLEMENTED_UNVERIFIED`/`PARTIAL`/`AMBIGUOUS` by actually running its cited
 test or command, resolved the one genuinely missing behavioral test found
 (REQ-CORE-009, the inter-scan cache's dispatch-level hit/miss path), and
 closed the one documented ambiguity (REQ-README-004) with a one-paragraph
 README clarification plus a drift-guard extension. See "Pass 2 findings"
-below for the full account. It does **not** claim to have reconstructed
-requirements for the *entire* codebase (the API surface, the correlator, the
-storage layer, the web/WASM UI, and `hse-ai-daemon` remain out of scope for
-both passes) — see "Known limitations" for why, and for what a further pass
-would need to cover.
+below for the full account.
+
+**Pass 3** (this pass) extended coverage to section 6, the HTTP API surface —
+`hse serve`'s actual remote-facing product surface, and the highest-value
+gap Pass 2 identified. Derived via a 4-agent parallel sweep with one
+adversarial re-verification agent per candidate row (every cited test
+independently re-run, not accepted from the deriving agent's say-so), then
+fixed the one BROKEN finding (REQ-API-MISC-004 — an unfiltered credential
+check that could forward an un-edited template placeholder to a live
+request). See section 6 above for the full row set.
+
+This still does **not** claim to have reconstructed requirements for the
+*entire* codebase (the correlator, the storage layer beyond one fix, the
+web/WASM UI, and `hse-ai-daemon` remain out of scope for all three passes) —
+see "Known limitations" for why, and for what a further pass would need to
+cover.
 
 **How to read this ledger.**
 
@@ -56,17 +70,13 @@ reflected in any row below since it was never a defect in that pass's own
 scope. That module-bug-audit has since completed in full (Phases 0-10,
 188/188 registered modules, PRs #553-568, all merged).
 
-**Known limitations of Pass 2 — what a further pass would need to cover.**
-This ledger's 5 sections are the core contracts a Rust CLI/module-engine tool
-built around: the `Module` trait, the CLI, the installer, the env/config
-template, and the README's own claims about them. Deliberately still **not**
-covered by either pass, and not claimed as VERIFIED/MISSING/etc. anywhere
-above:
+**Known limitations of Pass 3 — what a further pass would need to cover.**
+This ledger's 6 sections are the core contracts and the remote-facing API
+surface of a Rust CLI/module-engine tool: the `Module` trait, the CLI, the
+installer, the env/config template, the README's own claims, and `hse
+serve`'s HTTP API. Deliberately still **not** covered by any of the three
+passes, and not claimed as VERIFIED/MISSING/etc. anywhere above:
 
-- **The HTTP API surface** (`src/api/` — routes, auth middleware, scan
-  lifecycle handlers, settings/cells/key-harvest/update handlers, scan
-  export/redaction). This is `hse serve`'s actual remote-facing product
-  surface and the highest-value candidate for the next pass.
 - **The scan engine's internals beyond dispatch** (`src/core/engine/` past
   the `Module` trait boundary — expansion, ROI/budget pruning, the
   correlator's ~109 rules in `src/core/correlator/`).
@@ -78,11 +88,18 @@ above:
   utilities (`architecture_audit`, `dep_cooldown`, `gen_oui`).
 - **Docs beyond `README.md`** — `docs/*.md` carries dozens of other files
   (setup guides, prior audit reports) not cross-checked against current code
-  in either pass.
+  in any pass.
+
+Within section 6 itself, Pass 3's condensed 4-column format (ID / Behavior /
+Runtime evidence / Status, versus the 10-column format sections 1-5 use)
+trades some structure for density given the row count (35) and the depth of
+evidence each row carries — implementation locations, test names, and full
+adversarial-verification notes live in the source workflow transcript, not
+reproduced in full here.
 
 None of this is a claim that these areas are broken or unverified in some
 absolute sense — only that this ledger has not yet looked at them, and a
-reader should not infer completeness beyond the 5 sections it actually
+reader should not infer completeness beyond the 6 sections it actually
 covers.
 
 ---
@@ -380,24 +397,149 @@ $ cargo test --test architecture                                  # 55 passed
 $ cargo clippy --all-targets --features dep-cooldown -- -D warnings   # clean
 ```
 
+---
+
+## 6. The HTTP API surface (`src/api/`)
+
+Derived via a 4-agent parallel sweep (routes+auth, scan handlers,
+settings/cells/key-harvest/update handlers, scan export+redaction) followed
+by one adversarial re-verification agent per candidate row — every row below
+was independently re-checked against current source, and every cited test
+was re-run by the verifying agent (not accepted from the deriving agent's
+say-so). All 35 rows survived verification with their status confirmed as
+shown; runtime evidence below is the deriving agent's, condensed. 35 rows
+total: 20 VERIFIED (1 of which — REQ-API-MISC-004 — was BROKEN and is fixed
+this pass), 12 PARTIAL, 2 IMPLEMENTED_UNVERIFIED, 1 UNREACHABLE.
+
+
+### Routes + auth middleware
+
+| ID | Behavior | Runtime verification evidence | Status |
+|---|---|---|---|
+| REQ-API-ROUTE-001 | The production `router()` wires every endpoint (~87 explicit path+method registrations plus `/static/{*file}`, `/favicon.ico`, `/manifest.webmanifest`, and the `/api` and `/` fallbacks) to its handler. Critically, this is the SAME function a live `hse serve`… | Ran a cross-section through the real router this pass, each individually: `cargo test --test api api_not_found_returns_json --exact` -> ok; `spa_fallback_returns_html` -> ok; `favicon_returns_svg_not_html` -> ok; `manifest_is_valid_installable_pwa` -> ok; `responses_carry_security_headers` -> ok; `loopback_bind_is_unchanged_by_the_auth_work` -> ok (6/6 passed, 0 failed each). Did not individually re-run all ~90 doc-table rows. | VERIFIED |
+| REQ-API-ROUTE-002 | The router()'s own doc-comment "Endpoint surface" table at the top of the file claims to enumerate the whole route set; every GET/POST/PUT/DELETE actually registered in the function body should appear as a row. | Ran `grep -cE '^//! \\| (GET\|POST\|PUT\|DELETE\|\*) ' src/api/routes/mod.rs` -> 90 doc rows; cross-referenced by hand against the code's `.route()` calls (lines 415-640) and confirmed `/favicon.ico` (line 636) and `/manifest.webmanifest` (line 640) are real, working, GET routes with no doc-table row. Both are independently tested and passing: `cargo test --test api favicon_returns_svg_not_html --exact` -> ok; `manifest_is_valid_installable_pwa --exact` -> ok. | PARTIAL |
+| REQ-API-ROUTE-003 | Any unmatched path/method under `/api` (typo'd endpoint, `/api/v2/...`) returns a JSON 404 naming the caller-typed path — not the embedded SPA's HTML 200 — via `.fallback(api_not_found)` nested at both the `/api/v1` and outer `/api` router levels, using… | Ran `cargo test --test api api_not_found_returns_json --exact --test-threads=4` this pass: `running 1 test / test api_not_found_returns_json ... ok / test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 122 filtered out`. | VERIFIED |
+| REQ-API-ROUTE-004 | `enforce_csrf` requires an `X-HSE-CSRF` header on every POST/PUT/DELETE/PATCH under `/api` (GET/HEAD/OPTIONS exempt), including a BODYLESS mutating POST — the CORS-simple-request vector a cross-site page can drive with no preflight. Applies uniformly to every… | Ran `cargo test --test api csrf -- --test-threads=4` this pass: `running 2 tests / test bodyless_mutating_post_requires_csrf_header ... ok / test scan_import_requires_csrf_header ... ok / test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 121 filtered out`. | VERIFIED |
+| REQ-API-ROUTE-005 | On a LOOPBACK bind only, `enforce_host_allowlist` rejects (403, before any handler) a request whose `Host` header is present AND not a loopback alias (the bind string itself, or localhost/127.0.0.1/[::1] with the bound port) — defeating DNS rebinding, where a… | Ran `cargo test --lib api::routes -- --test-threads=4` this pass: 33/33 passed (includes both routes/tests.rs cases: `host_allowlist_covers_loopback_aliases_and_rejects_rebind ... ok`, `host_allowlist_is_none_for_non_loopback_bind ... ok`). Ran `cargo test --test api dns_rebind_host_header_is_rejected --exact` separately: `test result: ok. 1 passed; 0 failed`. | VERIFIED |
+| REQ-API-ROUTE-006 | build_cors_layer's docstring states it fixes a real, previously-flagged vulnerability (PR #9): CORS is bound to the bind's own explicit `http(s)://<bind>` origin (plus localhost/127.0.0.1/[::1] aliases, loopback only) — never `Access-Control-Allow-Origin:… | Ran `cargo test --lib api::routes` this pass — the 3 named CORS tests pass (part of 33/33), which is exactly the finding: a test that cannot fail carries no verification value regardless of pass/fail. Read build_cors_layer directly and confirmed it constructs an explicit Vec<HeaderValue> origin list via `push()`, never `Any` — the underlying behavior is genuinely implemented, but nothing in the test suite would catch a future regression to Any. | IMPLEMENTED_UNVERIFIED |
+| REQ-API-ROUTE-007 | `/api/v1/scans/import` alone gets `DefaultBodyLimit::max(scan_handlers::MAX_UPLOAD_BYTES)` (16 MB) layered onto just that one `.route()` registration, raising it above axum's 2 MB default so a legitimate 2-16 MB breach dossier isn't 413'd before reaching the… | Ran `cargo test --test api dossier_upload_accepts_body_larger_than_axum_default_limit --exact --test-threads=4` this pass: `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 122 filtered out; finished in 3.38s` — a real >2.2MB body was POSTed through the actual router and confirmed NOT rejected with 413. | VERIFIED |
+| REQ-API-AUTH-001 | `auth::resolve(bind, supplied, allow_unauthenticated)` returns `Ok(None)` (no gate) for a loopback bind unless a token was explicitly supplied (honored anyway, for defence-in-depth); for a non-loopback bind, returns `Ok(Some(token))` — the supplied token if… | Ran `cargo test --lib api::auth -- --test-threads=4` this pass: `running 21 tests ... test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 6836 filtered out`, including all 6 posture-resolution tests listed above. | VERIFIED |
+| REQ-API-AUTH-002 | When a token is resolved, `enforce_auth` is layered as the outermost-but-one middleware (only `set_security_headers` sits further out) so it runs before the Host allowlist, CORS, CSRF, and every handler/SPA/static asset — an unauthenticated non-loopback… | Ran `cargo test --lib api::auth`: 21/21 passed (includes all 9 middleware tests). Ran `cargo test --test api exposed_bind -- --test-threads=4` separately: `running 4 tests / test exposed_bind_bootstraps_a_browser_then_drops_the_token_from_the_url ... ok / test exposed_bind_rejects_every_unauthenticated_surface ... ok / test exposed_bind_rejects_an_unauthenticated_mutation ... ok / test exposed_bind_admits_a_valid_token ... ok / test result: ok. 4 passed; 0 failed`. Ran… | VERIFIED |
+| REQ-API-AUTH-003 | `AuthToken::matches` hashes the presented credential with SHA-256 and compares digests via `ct_eq`, which XOR-accumulates every byte pair and checks once at the end rather than short-circuiting on the first mismatch, so response timing cannot leak the token's… | Ran `cargo test --lib api::auth` this pass — all 4 tests pass (part of 21/21). These tests confirm ct_eq's functional correctness (right/wrong tokens match/reject as expected, near-misses at every position rejected) and that Debug never leaks the plaintext. They do NOT and cannot measure that the comparison is actually constant-time on real hardware — no timing/statistical test exists in the suite; the constant-time guarantee itself rests on reading the loop's structure (no early return), not… | PARTIAL |
+| REQ-API-AUTH-004 | On a non-loopback bind, presenting a valid `X-HSE-CSRF` header with NO bearer credential must still 401 — CSRF and bearer-auth are independent, both-required (AND-ed) controls, not substitutes for each other, because `enforce_auth` is layered OUTSIDE… | Ran `cargo test --test api exposed_bind -- --test-threads=4` this pass (part of the 4-test group reported above): `test exposed_bind_rejects_an_unauthenticated_mutation ... ok` — a POST to /api/v1/radar carrying X-HSE-CSRF but no bearer token still returned 401. | VERIFIED |
+
+### Scan lifecycle handlers
+
+| ID | Behavior | Runtime verification evidence | Status |
+|---|---|---|---|
+| REQ-API-SCAN-001 | POST /api/v1/scans validates the target at the API boundary (shape check via Target::validate_verbose, e.g. an email kind whose value has no '@') BEFORE the scan is persisted or dispatched to the engine, rejecting with 400 rather than queuing a scan that… | Ran `cargo test --lib api::scan_handlers` this pass — 14/14 passed, including build_scan_from_request_rejects_invalid_target and build_scan_from_request_valid_is_deterministic. Ran `cargo test --test api scan_create` this pass — 4/4 passed, including scan_create_rejects_invalid_target (POST value="not-an-email" kind=email -> 400) and scan_create_accepts_valid_request (-> 202 with a scan_id). | VERIFIED |
+| REQ-API-SCAN-002 | POST /api/v1/scans/{id}/cancel on a scan that is actually in-flight delivers the cancellation signal (via the shared s.cancellations map -> CancelHandle::cancel()) to the running engine task, and the engine honestly reports the outcome as ScanStatus::Aborted… | Ran `cargo test --test api scan_cancel` (1/1 passed, 404 branch only) and `cargo test --test halting wall_time_budget_stops_promptly_and_preserves_findings` (1/1 passed, confirms ScanStatus::Aborted with findings preserved) this pass. No test in tests/api.rs or src/api/scan_handlers/tests.rs drives a real in-flight scan through the actual HTTP scan_cancel handler and then polls GET /scans/{id} to see status become "aborted" — grepped tests/ for "cancelling"/POST .../cancel and found only the… | PARTIAL |
+| REQ-API-SCAN-003 | DELETE /api/v1/scans/{id} refuses (409 Conflict) to delete a scan that is still in-flight (present in s.cancellations), instead of racing delete_scan's cascade against the live engine task's own mid-scan writes — which would silently resurrect a "deleted"… | Ran `cargo test --test api scan_delete` this pass — 3/3 passed, including scan_delete_refuses_an_in_flight_scan_then_succeeds_once_it_ends, which seeds s.cancellations directly, confirms the delete call returns 409 while the entry is present, then removes the entry and confirms delete now returns 200. | VERIFIED |
+| REQ-API-SCAN-004 | POST /api/v1/scans/batch enforces DoS-relevant caps (empty array -> 400, >50 targets -> 400, exactly 50 -> 202) and, for a batch that mixes a structurally-invalid target among valid ones, records a per-item {"error": msg} entry and continues dispatching the… | Ran `cargo test --test api batch_endpoint_enforces_empty_and_size_limits` this pass — 1/1 passed (empty->400, 51 items->400, 50 items->202). The mixed valid/invalid-item continue-and-record-per-item-error path (core.rs:733-739) was confirmed by reading the code only; grepped tests/api.rs and found no batch request containing a malformed target. | PARTIAL |
+| REQ-API-SCAN-005 | Every state-changing request on this surface (POST /scans, /scans/batch, /scans/{id}/cancel, /scans/{id}/rerun, DELETE /scans/{id}, POST /scans/import, /scan/auto*, /radar*) is blocked with 403 unless it carries a custom X-HSE-CSRF header — closing the… | Ran `cargo test --test api dossier_upload` (6/6 passed, includes CSRF-adjacent import tests) and `cargo test --test api bodyless_mutating_post_requires_csrf_header` this pass — 1/1 passed, confirming POST /api/v1/scans/does-not-exist/cancel is 403'd without the header and not 403'd with it. Confirmed by reading routes/mod.rs that this same middleware, not per-handler code, is what protects scan_cancel/scan_create/scan_batch/etc. | VERIFIED |
+| REQ-API-SCAN-006 | POST /api/v1/scans/import's own in-handler size backstop (`if body.len() > MAX_UPLOAD_BYTES { return bad_request(...) }`, documented in a comment as "the friendly-message backstop" for when the route-level limit doesn't apply) can never actually execute: the… | Verified this pass with a throwaway probe test (appended to tests/api.rs, run once via `cargo test --test api`, then reverted with `git checkout -- tests/api.rs` — tree confirmed clean afterward): POSTing MAX_UPLOAD_BYTES+1024 bytes to /api/v1/scans/import with the CSRF header returned `status=413 Payload Too Large`, `content-type: text/plain; charset=utf-8`, body `"Failed to buffer the request body: length limit exceeded"` (56 bytes) — confirming the in-handler bad_request branch is… | UNREACHABLE |
+| REQ-API-SCAN-007 | GET /api/v1/scans/{id}/entities paginates via ?offset=&?limit=, validating both at the boundary: a non-numeric offset/limit or a limit of 0 is rejected with 400 rather than silently defaulting or panicking; a valid limit above 10000 is clamped down rather… | Ran `cargo test --test api scan_entities_pagination_works` this pass — 1/1 passed, confirming count/total/offset/limit accounting across 5 scenarios including the 10000 cap. Grepped tests/ for "invalid limit"/"invalid offset"/"limit=0"/"limit=abc" and found no matches — the 400 branches (analysis.rs:27,34,36) are read-only-verified, not test-executed. | PARTIAL |
+| REQ-API-SCAN-008 | Several read endpoints validate free-form query params before use: scan_entities_filter caps ?kind (32 chars) and ?q (256 chars); scan_snake_svg's ?depth (positive integer, capped at 8), ?size (finite number, clamped 200-4000) and ?center (must name an entity… | Ran `cargo test --test api scan_snake_svg_renders_and_hides_candidate_nodes_by_default` and `cargo test --test api plan_preview_lists_engaged_modules_for_a_seed` this pass — both 1/1 passed (default-parameter rendering only). Grepped tests/api.rs for these handlers' malformed-input branches and found no coverage of any of the 400 paths listed. | PARTIAL |
+| REQ-API-SCAN-009 | POST /api/v1/radar and POST /api/v1/radar/live are armed by default (a bare call with zero input queues the sensor sweep), but both refuse with 403 when the operator has explicitly switched the feature.live_radar toggle off — a client must be able to trust… | Ran `cargo test --lib api::scan_handlers` this pass, which includes radar_scan_spec_activates_only_the_live_sensors and every_live_sensor_accepts_the_radar_sentinel (both passed) — these confirm the SPEC the radar builds (sentinel target, allow_live_sensors, exact sensor module set), not the 403 kill-switch branch, which has zero automated coverage. | IMPLEMENTED_UNVERIFIED |
+| REQ-API-SCAN-010 | A scan dispatched by this surface (spawn_scan always calls engine.run_panic_safe, never the bare run) that panics anywhere in dispatch, or that persists zero entities due to a store error, is force-marked ScanStatus::Failed with the causing error message and… | Ran `cargo test --lib core::engine::tests::run_panic_safe_force_fails_a_scan_that_panics_outside_process` this pass — 1/1 passed, confirming a scan whose accepts() panics ends with persisted.status == ScanStatus::Failed and persisted.error containing the panic message "kaboom in accepts()", read directly back from the store (not just the in-memory Err returned to the caller). | VERIFIED |
+
+### Settings / cells / key-harvest / update handlers
+
+| ID | Behavior | Runtime verification evidence | Status |
+|---|---|---|---|
+| REQ-API-MISC-001 | The 4 key-pool/env WRITE endpoints in settings_handlers (PUT /api/v1/settings/keys, POST /api/v1/keys/pool/add, /revoke, /rotate) gate on AppState.allow_key_write BEFORE inspecting the peer address — a non-loopback caller with writes disabled sees the 'key… | Ran `cargo test --test api keys_pool` this pass — 3 passed (keys_pool_add_is_write_gated, keys_pool_get_is_masked_and_revoke_is_write_gated, keys_pool_rotate_is_write_gated; 0.41s). Ran `cargo test --test api settings_keys` — 3 passed including settings_keys_put_forbidden_without_flag (0.49s). Then ran `grep -rn "allow_key_write" --include="*.rs" .` across the whole repo (excluding an unrelated build-staging mirror under run/deliverable/) and confirmed every non-definition hit is either the… | PARTIAL |
+| REQ-API-MISC-002 | settings_handlers's read-only key/config endpoints (keys_status, keys_pool_get, keys_health, settings_keys_get) are loopback-gated and never serialise a plaintext key value — masking (mask_secret in keys_pool_get) and pure-count aggregation (summarize_pool,… | Ran `cargo test --lib api::` this pass (122 tests, 0 failed) which includes both settings_handlers::tests. Separately ran `cargo test --test api settings_keys` (3 passed), `cargo test --test api keys_status_endpoint` (2 passed), `cargo test --test api keys_health` (2 passed), and `cargo test --test api keys_pool` (3 passed) — all green, including the `!json.contains("SECRET")` assertion in summarize_pool_counts_by_status_and_never_leaks_values and every loopback-rejection test. | VERIFIED |
+| REQ-API-MISC-003 | settings_toggles_put (PUT /api/v1/settings/toggles) is loopback-only but is the ONE write endpoint across these four files that does NOT require allow_key_write (no secret is involved in flipping a bool), and only persists when toggle_key_is_known() resolves… | Ran `cargo test --test api settings_toggles_put` this pass — 2 passed (0.03s), both rejection-path tests. Grepped the whole repo for `set_bool(` and found exactly 2 real call sites (this handler, and `hse config` in src/cli/config.rs) and ZERO occurrences in any test file — src/util/settings/tests.rs (5 tests) exercises only the pure resolve()/is_feature_key()/default_for() helpers, never set_bool itself. So neither this handler's success path nor the underlying persistence primitive it calls… | PARTIAL |
+| REQ-API-MISC-004 (**fixed this pass**) | cells_import (POST /api/v1/cells/import) treated `HUNTSMAN_OPENCELLID_KEY` as 'configured' whenever `std::env::var` returned `Ok(_)` at all — including an empty string or the exact, shipped-by-default template placeholder `insert_opencellid_key_here` — because the check was a raw env read rather than the codebase's one sanctioned resolution policy, `keys::resolve_key`, that every other credential check on this surface (e.g. `accounts_block`'s SeekNow/WiGLE lookups) already uses. **Was BROKEN**: a blank or un-edited-template key silently downgraded from the intended fast `400` to an async `202` that fired a real outbound request carrying the garbage credential, only failing later, visible solely by polling `GET /cells/status`. | Split the resolution into a pure `resolve_opencellid_key(&HashMap<String,String>) -> Option<String>` helper (routed through `keys::load()` + `keys::resolve_key`) so the placeholder-filtering behavior is unit-testable without mutating the process environment (`std::env::set_var` is `unsafe`, forbidden by this crate's `#![forbid(unsafe_code)]`). Added 4 regression tests: genuinely-unset, blank, the exact shipped placeholder, and a real-looking value — all pass. Ran `cargo test --lib api::cells_handlers` — 14/14 passed. Ran `cargo clippy --all-targets --features dep-cooldown -- -D warnings` — clean. | VERIFIED |
+| REQ-API-MISC-005 | cells_import/cells_clear (the two mutating cell-DB endpoints) are loopback-only; cells_import additionally uses an atomic check-and-claim (try_start_import, one mutex acquisition) to refuse a second concurrent import while one is Running — mirroring… | Ran `cargo test --lib api::` this pass — all 10 cells_handlers tests passed, e.g. `test api::cells_handlers::tests::cells_clear_succeeds_with_confirm_true ... ok`, `test api::cells_handlers::tests::try_start_import_claims_atomically_and_refuses_a_concurrent_second_call ... ok` (full run: 122 passed; 0 failed). The clear-during-running-import race noted above was found by reading the two handlers side by side, not by a test. | VERIFIED |
+| REQ-API-MISC-006 | keys_harvest (GET /api/v1/keys/harvest) — the actual axum handler function, including its reject_non_loopback gate and its {vault,pool,accounts} envelope construction — has no test anywhere in the repository that invokes it directly. Every existing test… | Ran `cargo test --lib api::` this pass — all 3 key_harvest_handlers tests passed (part of the 122-test, 0-failed run). Ran `grep -rn "keys/harvest\\|keys_harvest" tests/*.rs src/api/**/*.rs` across the repo — the only hits are the handler's own doc comments, its route registration, and one prose mention in settings_handlers/mod.rs:186; no call site in any test file constructs an HTTP request against this route. | PARTIAL |
+| REQ-API-MISC-007 | accounts_block's SeekNow and WiGLE probes report a 3-state model rather than a plain boolean: configured:false (no credential present; reachable/verified reported as JSON null since nothing was probed) is kept strictly distinct from configured:true,… | Ran `cargo test --lib api::` this pass — `test api::key_harvest_handlers::tests::accounts_block_reports_all_three_providers ... ok`. This test performs the real, best-effort SeekNow/WiGLE network calls against whatever credentials happen to exist in this sandbox's environment (none), so both providers legitimately came back configured:false here, and the configured/reachable invariant assertion held under that real condition rather than a mock. | VERIFIED |
+| REQ-API-MISC-008 | post_trigger (POST /api/v1/update/trigger) gates on reject_non_loopback FIRST, then performs an atomic check-and-claim (try_start_update, one lock acquisition) that admits exactly one of two concurrent callers and returns 409 while phase is Applying OR… | Ran `cargo test --lib api::` this pass — all 6 update_handlers tests passed: `try_start_update_admits_exactly_one_of_two_concurrent_callers ... ok`, `try_start_update_rejects_while_restarting ... ok`, `try_start_update_admits_after_error_or_idle ... ok`, `set_phase_recovers_from_a_poisoned_mutex ... ok`, `trigger_rejects_non_loopback_peers ... ok`, `trigger_allows_loopback_peers ... ok` (full run: 122 passed; 0 failed; 0.29s). Read update_handlers.rs's test module in full (lines 141-259): it… | PARTIAL |
+
+### Scan export + redaction
+
+| ID | Behavior | Runtime verification evidence | Status |
+|---|---|---|---|
+| REQ-API-EXPORT-001 | redact_sensitive_sources() replaces every proprietary breach/intel provider name appearing anywhere in an export body with the fixed label "breach-source", via one whole-token (\b...\b), case-insensitive regex alternation built once from the sensitive-name… | Ran `cargo test --lib api::scan_export -- --nocapture` this pass: `running 8 tests ... test api::scan_export::redact::tests::covers_every_spelling_of_the_named_providers ... ok / idempotent ... ok / redacts_named_paid_provider_but_keeps_public_sources ... ok / redacts_capitalised_brand_in_evidence_summaries ... ok / every_breach_category_source_is_redacted ... ok / whole_token_match_leaves_longer_tokens_intact ... ok ... test result: ok. 8 passed; 0 failed`. | VERIFIED |
+| REQ-API-EXPORT-002 | The sensitive-name set is registry-derived: every module whose category() == ModuleCategory::Breach is swept automatically (so a newly added breach-category module needs no redact.rs edit); EXTRA_SENSITIVE is reserved for names the sweep structurally cannot… | Ran `cargo test --lib api::scan_export::redact::tests::every_breach_category_source_is_redacted` this pass (part of the 8/8 run above) — passed. Cross-checked categories by reading source directly: oathnet_pro::category() returns ModuleCategory::People (src/modules/oathnet_pro/mod.rs:109-110), see_know::category() and dehashed::category() both return ModuleCategory::Breach (src/modules/see_know/mod.rs:194-196, src/modules/dehashed/mod.rs:93-95) — confirming the comment's factual claims about… | VERIFIED |
+| REQ-API-EXPORT-003 | Redaction is enforced at one choke point: all four shareable download handlers (scan_entities_csv, scan_report_json, scan_export_gexf, scan_events_log) route their body through download_response(), which unconditionally calls redact_sensitive_sources(); only… | Ran `grep -n "download_response(\\|download_response_operator(" src/api/scan_export/mod.rs` this pass — output confirmed exactly 4 call sites (lines 49, 82, 120, 174) use download_response and exactly 1 (line 147, scan_debug_bundle) uses download_response_operator, matching the module doc comment's claim that the debug bundle is the sole conscious opt-out. | PARTIAL |
+| REQ-API-EXPORT-004 | End-to-end: a real Breach-category module's evidence (Evidence{source: module name(), summary: the module's own capitalised-brand text, e.g. "DeHashed record from Adobe"}) and its ModuleDone scan event, once persisted and downloaded through the live HTTP… | Ran `cargo test --test api temp_probe_end_to_end_redaction_across_all_four_download_formats -- --nocapture` this pass (test added then reverted). Real output: entities.csv `sources` column = `breach-source\|breach-source`, `evidence` column = `[breach-source] breach-source record from Adobe \|\| [breach-source] breach-source record from MyFitnessPal`; report.json `"source": "breach-source"`, `"summary": "breach-source record from Adobe"` / `"...MyFitnessPal"`; events.log both lines read… | VERIFIED |
+| REQ-API-EXPORT-005 | Candidate quarantine (speculative breach-victim entities tagged CANDIDATE) is excluded by default from both scan_entities_csv and scan_export_gexf, opt-in via `?include_candidates=1` — matching the same policy the `/entities` JSON endpoint and report.json… | Ran `cargo test --test api scan_gexf_quarantines_candidate_nodes_by_default -- --nocapture` this pass — `test result: ok. 1 passed`. Separately wrote and ran (then reverted via `git checkout -- tests/api.rs`) a temporary CSV-equivalent probe: default entities.csv response omitted `stranger@breach.example` entirely while including `subject@real.example`; `?include_candidates=1` response included the candidate row with `tags` column `candidate`. `test result: ok. 1 passed`. | PARTIAL |
+| REQ-API-EXPORT-006 | Every scan-scoped export (CSV/JSON/GEXF via download_response; the debug bundle via download_response_operator) names its download `hse-<stem>-<short_id>.<ext>` with the scan id truncated to 12 characters, and every download (scan-scoped or system-scoped)… | Ran `cargo test --lib api::scan_export -- --nocapture` this pass: `test api::scan_export::tests::download_response_sets_attachment_disposition_with_scan_scoped_filename ... ok` / `test api::scan_export::tests::attachment_response_uses_the_filename_verbatim_for_system_downloads ... ok` (part of the 8/8 passing run). | VERIFIED |
+
+---
+
+## Pass 3 findings
+
+Extended coverage to the HTTP API surface (section 6 above) — `hse serve`'s
+actual remote-facing product surface, the highest-value gap Pass 2
+identified. Derived and verified via a 4-agent-derive + per-row-adversarial-
+verify workflow (39 agents total, 0 errors): 4 parallel agents each surveyed
+one API sub-area (routes+auth, scan handlers, settings/cells/key-harvest/
+update handlers, scan export+redaction) and proposed candidate rows; one
+independent verification agent per candidate row then re-checked it against
+current source and re-ran every cited test itself, correcting or confirming
+the status. 35 rows survived: 19 VERIFIED, 12 PARTIAL, 2
+IMPLEMENTED_UNVERIFIED, 1 BROKEN, 1 UNREACHABLE going in.
+
+**Fix — REQ-API-MISC-004** (the one BROKEN finding): `cells_import`
+(`POST /api/v1/cells/import`) read `HUNTSMAN_OPENCELLID_KEY` via a raw
+`std::env::var` call, so a blank value or the exact template placeholder
+`insert_opencellid_key_here` (`src/cli/env_template.txt`'s shipped default)
+was treated as "configured" — the same "unfiltered credential reaches a live
+request" bug class REQ-CORE-012 already closed at the `Module` trait layer,
+recurring here because that layer's architecture guard
+(`modules_never_read_credentials_via_raw_env`) is scoped to `src/modules/`
+only and cannot see `src/api/`. Fixed by routing the same call site through
+`keys::load()` + `keys::resolve_key` — the codebase's one sanctioned
+resolution policy, already used one file over in `key_harvest_handlers.rs`.
+Split the filtering logic into a pure `resolve_opencellid_key` helper so it
+is unit-testable without mutating the process environment (`std::env::
+set_var` is `unsafe`, forbidden under this crate's `#![forbid(unsafe_code)]`
+— the same constraint `src/util/budget/tests.rs` documents hitting for the
+identical reason). Added 4 regression tests (unset / blank / the exact
+shipped placeholder / a real-looking value).
+
+REQ-API-SCAN-006 (UNREACHABLE — a dead in-handler size-check branch behind
+axum's own `DefaultBodyLimit` layer, so an oversized upload gets a
+plain-text 413 instead of this API's usual JSON error shape) was found and
+verified but **not** fixed this pass: the underlying safety property already
+holds (oversized uploads are rejected either way), so this is a response-
+shape/DX inconsistency, not a correctness or security defect — lower value
+than REQ-API-MISC-004's credential-handling bug. Left as a known gap for a
+future pass.
+
+### Verification commands run (Pass 3, in order)
+
+```
+$ cargo test --lib api::cells_handlers -- --test-threads=4        # 14 passed
+$ cargo fmt --all
+$ cargo clippy --all-targets --features dep-cooldown -- -D warnings   # clean
+$ cargo test --lib --features dep-cooldown                        # 6840 passed, 0 failed
+$ cargo test --test architecture                                  # 55 passed, 0 failed
+$ scripts/gate.sh                                                 # 17/17 executed checks PASS
+```
+
 ## Summary statistics
 
-| Status | Pass 1 | Pass 2 |
-|---|---|---|
-| VERIFIED | 23 | 30 |
-| IMPLEMENTED_UNVERIFIED | 17 | 12 |
-| PARTIAL | 8 | 7 |
-| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* |
-| AMBIGUOUS | 1 | 0 |
-| OBSOLETE (by design, not a gap) | 1 | 1 |
-| BROKEN | 0 | 0 |
-| UNREACHABLE | 0 | 0 |
-| **Total rows** | **51** | **51** |
+| Status | Pass 1 | Pass 2 | Pass 3 |
+|---|---|---|---|
+| VERIFIED | 23 | 30 | 50 |
+| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 |
+| PARTIAL | 8 | 7 | 19 |
+| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 |
+| AMBIGUOUS | 1 | 0 | 0 |
+| OBSOLETE (by design, not a gap) | 1 | 1 | 1 |
+| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* |
+| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed this pass, see section 6)* |
+| **Total rows** | **51** | **51** | **86** |
 
 Breakdown by section: Module trait contract 14 rows (REQ-CORE-001..014), CLI
 surface 12 rows (REQ-CLI-001..012), `install.sh` 9 rows
 (REQ-INSTALL-001..009), Env/config 6 rows (REQ-ENV-001..006), README claims 10
-rows (REQ-README-001..010) — 14+12+9+6+10 = 51, matching the total above.
+rows (REQ-README-001..010), HTTP API surface 35 rows (REQ-API-ROUTE-001..007,
+REQ-API-AUTH-001..004, REQ-API-SCAN-001..010, REQ-API-MISC-001..008,
+REQ-API-EXPORT-001..006) — 14+12+9+6+10+35 = 86, matching the total above.
 Some rows cite tests shared across sections (e.g. REQ-CORE-010 and
 REQ-README-009 both cite `every_module_maps_to_valid_attack_reconnaissance_techniques`),
 which is intentional — the two rows document the same underlying test from
