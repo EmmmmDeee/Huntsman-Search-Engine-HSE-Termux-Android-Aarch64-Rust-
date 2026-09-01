@@ -2648,6 +2648,213 @@ async fn concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_s
     );
 }
 
+/// Counts how many times `process()` actually ran, and declares a nonzero
+/// `cache_ttl_secs()` so the inter-scan entity cache (C9) applies to it.
+/// Isolated per-instance via `Arc<AtomicU64>` rather than a global static, so
+/// two instances (or two tests) never share a counter.
+struct CachingProbe {
+    calls: Arc<AtomicU64>,
+    ttl_secs: u64,
+}
+
+#[async_trait::async_trait]
+impl Module for CachingProbe {
+    fn name(&self) -> &'static str {
+        "cache_probe"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, _: &Target) -> bool {
+        true
+    }
+    fn cache_ttl_secs(&self) -> u64 {
+        self.ttl_secs
+    }
+    fn produces(&self) -> &'static [EntityKind] {
+        const K: &[EntityKind] = &[EntityKind::Username];
+        K
+    }
+    async fn process(
+        &self,
+        target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let mut e = Entity::new(
+            EntityKind::Username,
+            format!("hit-for-{}", target.value),
+            0.9,
+            &ctx.scan_id,
+        );
+        e.add_evidence(crate::core::entity::Evidence::new(
+            "cache_probe",
+            "synthetic",
+        ));
+        let mut r = crate::core::module::ModuleResult::new();
+        r.push(e);
+        Ok(r)
+    }
+}
+
+/// REQ-CORE-009: the inter-scan entity cache (C9) must actually short-circuit
+/// `process()` on a warm hit, not just round-trip cleanly at the storage layer
+/// (`storage::archive_tests` already covers that half). A LATER, independent
+/// dispatch of the SAME target (a different `scan_id`, mirroring a real
+/// re-scan) must replay the archived entity instead of re-invoking the
+/// module, while a dispatch of a DIFFERENT target must still call through —
+/// proving the cache is keyed per-target, not a blanket always-hit.
+#[tokio::test]
+async fn cache_hit_skips_reprocessing_a_later_scan_of_the_same_target() {
+    use crate::core::test_support::InMemoryStore;
+
+    let calls = Arc::new(AtomicU64::new(0));
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(
+        vec![Arc::new(CachingProbe {
+            calls: calls.clone(),
+            ttl_secs: 3600,
+        })],
+        store,
+        bus.clone(),
+    );
+    let opts = ScanOptions::default();
+    let target = Target::new(TargetKind::Username, "cache-target");
+
+    // First dispatch of `target`, scan "cache-scan-1": no cache entry yet, so
+    // the module genuinely runs and its result is archived on the way out.
+    let mut ctx1 = ModuleContext {
+        scan_id: "cache-scan-1".to_string(),
+        bus: bus.clone(),
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let cx1 = DispatchCx {
+        scan_id: "cache-scan-1",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed_kind: TargetKind::Username,
+        quarantined: no_quarantine(),
+    };
+    let mut entity_map1: TrackedEntityMap = TrackedEntityMap::new();
+    let mut stats1 = ModuleStats::default();
+    let mut dispatched1: DispatchLog = DispatchLog::new();
+    let mut newly_inserted1: Vec<String> = Vec::new();
+    let mut state1 = DispatchState {
+        entity_map: &mut entity_map1,
+        stats: &mut stats1,
+        dispatched: &mut dispatched1,
+        newly_inserted: &mut newly_inserted1,
+    };
+    engine
+        .dispatch_target(&cx1, &mut ctx1, &mut state1)
+        .await
+        .expect("first dispatch runs");
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "first dispatch of a cold target must call process() once"
+    );
+    assert_eq!(entity_map1.len(), 1, "the module's one entity was recorded");
+    assert_eq!(
+        stats1.cached, 0,
+        "a cold dispatch must not be tallied as a cache hit"
+    );
+
+    // Second dispatch of the SAME target, a DIFFERENT scan ("cache-scan-2" —
+    // the inter-scan cache is keyed on module+target, never scan_id): must
+    // replay the archived entity and must NOT call process() again.
+    let mut ctx2 = ModuleContext {
+        scan_id: "cache-scan-2".to_string(),
+        bus: bus.clone(),
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let cx2 = DispatchCx {
+        scan_id: "cache-scan-2",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed_kind: TargetKind::Username,
+        quarantined: no_quarantine(),
+    };
+    let mut entity_map2: TrackedEntityMap = TrackedEntityMap::new();
+    let mut stats2 = ModuleStats::default();
+    let mut dispatched2: DispatchLog = DispatchLog::new();
+    let mut newly_inserted2: Vec<String> = Vec::new();
+    let mut state2 = DispatchState {
+        entity_map: &mut entity_map2,
+        stats: &mut stats2,
+        dispatched: &mut dispatched2,
+        newly_inserted: &mut newly_inserted2,
+    };
+    engine
+        .dispatch_target(&cx2, &mut ctx2, &mut state2)
+        .await
+        .expect("second dispatch runs");
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "a warm cache hit on a later scan of the same target must NOT call \
+         process() again — the entire point of the inter-scan cache"
+    );
+    assert_eq!(
+        entity_map2.len(),
+        1,
+        "the cache hit must still replay the archived entity into this scan"
+    );
+    assert_eq!(
+        stats2.cached, 1,
+        "a warm cache hit must be tallied in ModuleStats::cached"
+    );
+
+    // Third dispatch of a DIFFERENT target: the cache must not blanket-hit —
+    // an unrelated target has no archived entry, so process() runs again.
+    let other_target = Target::new(TargetKind::Username, "cache-target-other");
+    let mut ctx3 = ModuleContext {
+        scan_id: "cache-scan-3".to_string(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let cx3 = DispatchCx {
+        scan_id: "cache-scan-3",
+        target: &other_target,
+        opts: &opts,
+        is_expansion: false,
+        seed_kind: TargetKind::Username,
+        quarantined: no_quarantine(),
+    };
+    let mut entity_map3: TrackedEntityMap = TrackedEntityMap::new();
+    let mut stats3 = ModuleStats::default();
+    let mut dispatched3: DispatchLog = DispatchLog::new();
+    let mut newly_inserted3: Vec<String> = Vec::new();
+    let mut state3 = DispatchState {
+        entity_map: &mut entity_map3,
+        stats: &mut stats3,
+        dispatched: &mut dispatched3,
+        newly_inserted: &mut newly_inserted3,
+    };
+    engine
+        .dispatch_target(&cx3, &mut ctx3, &mut state3)
+        .await
+        .expect("third dispatch runs");
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        2,
+        "a different target must not spuriously hit another target's cache entry"
+    );
+    assert_eq!(
+        stats3.cached, 0,
+        "a genuinely cold target must not be tallied as a cache hit"
+    );
+}
+
 /// A probe whose static metadata (priority / cost / category / declared outputs)
 /// is fully configurable, and whose `process()` emits ONE entity tagged with a
 /// distinctive value — so a truncated dispatch reveals WHICH module ran first.

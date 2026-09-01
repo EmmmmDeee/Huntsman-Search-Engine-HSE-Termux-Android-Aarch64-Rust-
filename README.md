@@ -272,6 +272,14 @@ the onion address itself.
 | Crypto Address | `--kind crypto` | `bc1q…` | 5 |
 | API Key | `--kind apikey` | `AKIA…` | 1 |
 
+Three further kinds are CLI-parseable (`--kind device_id`/`tower`/`cell`,
+`--kind ssid`/`wifi`, `--kind tracking_id`/`ga`/`gtm`) but are omitted from
+this table on purpose: a cell tower ID, WiFi SSID, or tracking-pixel ID is
+typically something the engine *discovers* mid-scan (from a stealer log or
+breach record) and pivots on next round, not a value most operators type as
+a starting seed. They currently feed 1 module, 1 module, and 2 modules,
+respectively.
+
 ---
 
 ## Module Overview (188 modules — 142 free, 46 key-gated/paid)

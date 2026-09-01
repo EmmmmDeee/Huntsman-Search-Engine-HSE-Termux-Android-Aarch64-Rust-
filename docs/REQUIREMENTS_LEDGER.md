@@ -1,15 +1,29 @@
-# Requirements Traceability Ledger — First Pass
+# Requirements Traceability Ledger
 
 **Scope.** This ledger covers HSE's cross-cutting *core contracts*, not the
-individual scanning modules' business logic (that is the subject of a separate,
-ongoing module-by-module bug audit under `src/modules/*/mod.rs`). The five
-areas covered here:
+individual scanning modules' business logic — that was the subject of a
+separate, now-complete module-by-module bug audit under
+`src/modules/*/mod.rs` (Phases 0-10, PRs #553-568, merged; every one of the
+188 registered modules read against an established bug-class checklist). The
+areas covered here, across two passes:
 
 1. The `Module` trait contract (`src/core/module/mod.rs`).
 2. The CLI surface (`src/main.rs`, `src/cli/`).
 3. `install.sh`.
 4. The env/config template and key consumption.
 5. Top-level `README.md`'s stated capabilities/counts.
+
+**Pass 2** (this pass) re-verified every row Pass 1 left
+`IMPLEMENTED_UNVERIFIED`/`PARTIAL`/`AMBIGUOUS` by actually running its cited
+test or command, resolved the one genuinely missing behavioral test found
+(REQ-CORE-009, the inter-scan cache's dispatch-level hit/miss path), and
+closed the one documented ambiguity (REQ-README-004) with a one-paragraph
+README clarification plus a drift-guard extension. See "Pass 2 findings"
+below for the full account. It does **not** claim to have reconstructed
+requirements for the *entire* codebase (the API surface, the correlator, the
+storage layer, the web/WASM UI, and `hse-ai-daemon` remain out of scope for
+both passes) — see "Known limitations" for why, and for what a further pass
+would need to cover.
 
 **How to read this ledger.**
 
@@ -32,14 +46,44 @@ areas covered here:
   line number here as approximate for that reason, not just the ones noted
   individually.
 
-**Known limitations of this pass.** A separate module-bug-audit session was
-editing `src/modules/*` concurrently with this pass (per the task brief). This
-ledger's scope explicitly excludes that code, and no row here depends on the
-in-flight files' final state. One transient build breakage in
+**Known limitations of Pass 1.** A separate module-bug-audit session was
+editing `src/modules/*` concurrently with Pass 1 (per that pass's task
+brief). This ledger's scope explicitly excludes that code, and no row here
+depended on the in-flight files' final state. One transient build breakage in
 `src/modules/niamonx/{mod,tests}.rs` was observed and resolved itself (by the
-other session) between two verification commands in this pass; it is not
-reflected in any row below since it was never a defect in this pass's own
-scope.
+other session) between two verification commands in Pass 1; it is not
+reflected in any row below since it was never a defect in that pass's own
+scope. That module-bug-audit has since completed in full (Phases 0-10,
+188/188 registered modules, PRs #553-568, all merged).
+
+**Known limitations of Pass 2 — what a further pass would need to cover.**
+This ledger's 5 sections are the core contracts a Rust CLI/module-engine tool
+built around: the `Module` trait, the CLI, the installer, the env/config
+template, and the README's own claims about them. Deliberately still **not**
+covered by either pass, and not claimed as VERIFIED/MISSING/etc. anywhere
+above:
+
+- **The HTTP API surface** (`src/api/` — routes, auth middleware, scan
+  lifecycle handlers, settings/cells/key-harvest/update handlers, scan
+  export/redaction). This is `hse serve`'s actual remote-facing product
+  surface and the highest-value candidate for the next pass.
+- **The scan engine's internals beyond dispatch** (`src/core/engine/` past
+  the `Module` trait boundary — expansion, ROI/budget pruning, the
+  correlator's ~109 rules in `src/core/correlator/`).
+- **The storage layer's own contracts** (`src/storage/` — schema migrations,
+  the SQLite `Store`'s full method set beyond what Pass 2's one fix touched).
+- **The web/WASM UI** (`src/web/`, `wasm-ui/`) and the embedded SPA served by
+  `src/api/routes/mod.rs`.
+- **`hse-ai-daemon`** (`src/bin/hse_ai_daemon`) and the other `src/bin/*`
+  utilities (`architecture_audit`, `dep_cooldown`, `gen_oui`).
+- **Docs beyond `README.md`** — `docs/*.md` carries dozens of other files
+  (setup guides, prior audit reports) not cross-checked against current code
+  in either pass.
+
+None of this is a claim that these areas are broken or unverified in some
+absolute sense — only that this ledger has not yet looked at them, and a
+reader should not infer completeness beyond the 5 sections it actually
+covers.
 
 ---
 
@@ -54,12 +98,12 @@ scope.
 | REQ-CORE-005 | `Module::cost()` defaults to `Free`; drives the `--free-only` CLI/API filter. | none | `ModuleCost` | Filters dispatch set | none | `src/core/module/mod.rs:162-165,19-42` | `module_cost_as_str_matches_serde`, `module_cost_serializes_to_snake_case`, `module_info_reflects_trait_defaults` (`src/core/module/tests.rs`) | Ran `cargo test --lib core::module::tests` this pass — passed. | VERIFIED |
 | REQ-CORE-006 | `Module::is_passive()` defaults to `false`; drives `--passive-only`. Modules with genuinely no network dependency (device sensors) must override `true`. | none | `bool` | Filters dispatch set | A module that is actually passive but doesn't override reports as active (under-inclusive `--passive-only`) — not compiler-checked. | `src/core/module/mod.rs:167-171` | No architecture test cross-checks `is_passive()` against actual network calls (would require dynamic analysis). `module_info_reflects_trait_defaults` covers only the default value. | Read-only. | IMPLEMENTED_UNVERIFIED |
 | REQ-CORE-007 | `Module::max_timeout_ms()` bounds one `process()` call; every non-passive module MUST override it above `MODULE_TIMEOUT_MS` (3000ms), or the engine kills it mid-request on the default budget. | none | `u64` | Engine timeout wrapper | Under-budget non-passive module ⇒ premature `ModuleError{error:"timeout"}` on every call. | `src/core/module/mod.rs:173-185`; `crate::MODULE_TIMEOUT_MS = 3000` (`src/lib.rs:109`) | `non_passive_modules_budget_above_default` (`tests/architecture_parts/architecture_part3.rs:72`) | Ran `cargo test --test architecture non_passive_modules_budget_above_default` this pass — passed. | VERIFIED |
-| REQ-CORE-008 | `Module::termux_timeout_ms()` (default = `max_timeout_ms()`) sets the per-module budget the engine applies on a Termux device when the operator hasn't pinned `ScanOptions::module_timeout_ms`; the engine additionally clamps to a 45s cap unless the module is cap-exempt. | none | `u64` | Engine timeout resolution on Termux | An exempt module bypasses the cap and is bounded only by its own value (still finite). | `src/core/module/mod.rs:187-220`; engine consumer `src/core/engine/timeout/mod.rs` | `termux_cap_bounds_long_modules_only_on_termux_without_override`, `cap_exempt_module_keeps_its_full_termux_budget`, `resolve_timeout_uses_termux_budget_then_cap` (`src/core/engine/timeout/tests.rs`) | Read-only; unit tests exist and are named precisely for this contract, but were not individually re-run this pass. | IMPLEMENTED_UNVERIFIED |
-| REQ-CORE-009 | `Module::cache_ttl_secs()` (default 0 = no caching) lets the engine serve a prior result from the inter-scan entity cache instead of re-querying, for modules with stable, cacheable data. | none | `u64` (seconds) | Engine reads/writes an entity cache keyed on module+target when `ttl > 0` | `ttl == 0` ⇒ cache path is a no-op | `src/core/module/mod.rs:272-278`; consumers `src/core/engine/dispatch.rs:848,984,1106`; cache-hit contract documented at `src/core/port/mod.rs:139-155` | No dedicated unit test found exercising a cache HIT/MISS for a nonzero-TTL module end-to-end (searched `src/core/engine/dispatch.rs` and sibling `tests.rs` for `cache_ttl`/`CacheHit` — none). | Read-only; searched for tests and found none for the hit-path specifically. | PARTIAL |
+| REQ-CORE-008 | `Module::termux_timeout_ms()` (default = `max_timeout_ms()`) sets the per-module budget the engine applies on a Termux device when the operator hasn't pinned `ScanOptions::module_timeout_ms`; the engine additionally clamps to a 45s cap unless the module is cap-exempt. | none | `u64` | Engine timeout resolution on Termux | An exempt module bypasses the cap and is bounded only by its own value (still finite). | `src/core/module/mod.rs:187-220`; engine consumer `src/core/engine/timeout/mod.rs` | `termux_cap_bounds_long_modules_only_on_termux_without_override`, `cap_exempt_module_keeps_its_full_termux_budget`, `resolve_timeout_uses_termux_budget_then_cap` (`src/core/engine/timeout/tests.rs`) | Ran `cargo test --lib core::engine::timeout::tests` this pass (Pass 2) — all 3 cited tests passed. | VERIFIED |
+| REQ-CORE-009 | `Module::cache_ttl_secs()` (default 0 = no caching) lets the engine serve a prior result from the inter-scan entity cache instead of re-querying, for modules with stable, cacheable data. | none | `u64` (seconds) | Engine reads/writes an entity cache keyed on module+target when `ttl > 0` | `ttl == 0` ⇒ cache path is a no-op | `src/core/module/mod.rs:272-278`; consumers `src/core/engine/dispatch.rs:848,984,1106`; cache-hit contract documented at `src/core/port/mod.rs:139-155` | **Fixed this pass (Pass 2).** No dedicated unit test found exercising a cache HIT/MISS for a nonzero-TTL module end-to-end. Root cause: `core::test_support::InMemoryStore` (the standard engine-test double) inherited `StoragePort`'s no-op defaults for `archive_module_result`/`lookup_module_result_fresh` — a lookup could never return a hit, so the dispatch-level "cache hit skips `process()`" behavior was structurally untestable through it, independent of the storage layer's own coverage (`storage::archive_tests` already fully covers the SQLite-backed round-trip). | Gave `InMemoryStore` genuine in-memory cache semantics mirroring `Store`'s exact freshness predicate (`archived_at + ttl_secs > now`), then added `core::engine::tests::cache_hit_skips_reprocessing_a_later_scan_of_the_same_target`: dispatches a `cache_ttl_secs()`-overriding probe against the same target under two different scan_ids and asserts `process()` runs exactly once (the second dispatch replays from cache, `ModuleStats::cached == 1`), plus a third dispatch against a *different* target proves the cache is keyed per-target, not a blanket hit. Ran `cargo test --lib core::engine::tests::cache_hit_skips_reprocessing_a_later_scan_of_the_same_target` — passed. Updating `InMemoryStore` also broke a pre-existing test's premise (`core::port::tests::default_optional_methods_are_documented_no_ops` asserted `InMemoryStore` overrides none of the 7 default methods) — updated that test's assertions and comment to reflect the new, deliberate 5-no-op/2-real-cache split. Ran `cargo test --lib --features dep-cooldown` (6836 passed, 0 failed), `cargo test --test architecture` (55 passed), `cargo clippy --all-targets --features dep-cooldown -- -D warnings` (clean), `cargo fmt --all`. | VERIFIED |
 | REQ-CORE-010 | `Module::attack_techniques()` defaults from `category()` via `attack::techniques_for_category`; every registered module must declare at least one real MITRE ATT&CK Reconnaissance technique ID from the catalogue. | none | `&'static [&'static str]` | Tags emitted entities with `attack:<ID>` | A module whose category is `Other` (unmapped) and has no override reports zero techniques. | `src/core/module/mod.rs:280-293`; category map `src/core/attack/mod.rs` | `every_module_maps_to_valid_attack_reconnaissance_techniques` (`tests/architecture_parts/architecture_part2.rs:14`) | Ran `cargo test --test architecture` this pass — passed (part of the 55/55 run). | VERIFIED |
 | REQ-CORE-011 | `Module::produces()` (default empty) documents `EntityKind`s the module emits; every module that literally constructs an `Entity::new(EntityKind::X, ...)` must declare `X` in its `produces()`. | none | `&'static [EntityKind]` | Drives the UI pivot-chain / capability map | A module minting an undeclared kind under-represents its own output map (sound-but-incomplete check: only catches literal constructions, not dynamically-classified ones). | `src/core/module/mod.rs:268-270` | `every_literal_constructed_entity_kind_is_declared_in_produces` (`tests/architecture_parts/architecture_part5.rs:90`) | Ran `cargo test --test architecture` this pass — passed. | VERIFIED |
 | REQ-CORE-012 | `ModuleContext::key()`/`key_opt()` are the sole sanctioned way a module reads a `HUNTSMAN_*` credential; a present-but-blank value or an un-edited `hse provision` template placeholder (`insert_<svc>_key_here`) must resolve as absent, never forwarded to a provider. | env var value | `Result<&str>` / `Option<&str>` | none | `key()` → `Error::MissingKey`; `key_opt()` → `None` | `src/core/module/mod.rs:334-398`; filter `src/util/keys/mod.rs::resolve_key` | `key_returns_ok_when_present`, `key_returns_missing_key_error_when_absent`, `key_treats_a_blank_value_as_missing`, `key_opt_returns_some_when_present`, `key_opt_returns_none_when_absent`, `key_opt_filters_blank_and_placeholder_slots` (`src/core/module/tests.rs`); structural guard `modules_never_read_credentials_via_raw_env` (`tests/architecture_parts/architecture_part3.rs:820`) | Ran `cargo test --lib core::module::tests` and `cargo test --test architecture modules_never_read_credentials_via_raw_env` this pass — all passed. | VERIFIED |
-| REQ-CORE-013 | `ModuleContext::next_pooled_key()` / `report_key_exhausted()` implement the in-scan key cascade: a module whose key hits 401/403/429 can fetch the next untried pooled key for the same service and retry within one `process()` call. | `service: &str`, `tried: &HashSet<String>` (cascade); `service`, `key_value`, `status` (report) | `Option<String>` (cascade) | Mutates the global key pool's status + persists off-thread | `next_pooled_key` returns `None` once the pool is exhausted — caller must stop retrying, not loop. | `src/core/module/mod.rs:366-398`; pool `src/util/key_pool/mod.rs` | Key-pool unit tests exist under `src/util/key_pool/tests.rs` (not individually re-run this pass). | Read-only. | IMPLEMENTED_UNVERIFIED |
+| REQ-CORE-013 | `ModuleContext::next_pooled_key()` / `report_key_exhausted()` implement the in-scan key cascade: a module whose key hits 401/403/429 can fetch the next untried pooled key for the same service and retry within one `process()` call. | `service: &str`, `tried: &HashSet<String>` (cascade); `service`, `key_value`, `status` (report) | `Option<String>` (cascade) | Mutates the global key pool's status + persists off-thread | `next_pooled_key` returns `None` once the pool is exhausted — caller must stop retrying, not loop. | `src/core/module/mod.rs:366-398`; pool `src/util/key_pool/mod.rs` | Key-pool unit tests exist under `src/util/key_pool/tests.rs` (55 tests, including `next_key_excluding_cascades_past_tried_keys`, the direct cascade contract). | Ran `cargo test --lib key_pool` this pass (Pass 2) — 55/55 passed. | VERIFIED |
 | REQ-CORE-014 | `ModuleCategory`/`ModuleCost` round-trip serde exactly (their `as_str()` identifier must equal the serde snake_case wire form for every variant), so the API and the SPA never disagree on a category/cost string. | none | `&'static str` | none | A new enum variant that fails to update the drift-guard match arms fails to *compile* (arm-less match, no wildcard). | `src/core/module/mod.rs:19-106` | `module_cost_as_str_matches_serde`, `module_category_as_str_round_trips_serde` (`src/core/module/tests.rs`) | Ran `cargo test --lib core::module::tests` this pass — passed. | VERIFIED |
 
 ---
@@ -69,14 +113,14 @@ scope.
 | ID | Behavior | Inputs | Outputs | Side effects | Failure behavior | Implementation location | Tests covering it | Runtime verification evidence | Status |
 |---|---|---|---|---|---|---|---|---|---|
 | REQ-CLI-001 | `hse` builds a bounded tokio runtime (2 worker threads, 16 max blocking threads) rather than `#[tokio::main]`'s 512-thread default, to bound OS-thread spawn on a low-RAM phone. | none | Configured `tokio::runtime::Runtime` | Process-wide runtime config | `.expect()`s on build failure (process aborts with a message — acceptable for a runtime that cannot be built at all). | `src/main.rs:12-17`; constants `src/lib.rs:112,120` | `architecture_constants` asserts `WORKER_THREADS == 2` (`tests/architecture_parts/architecture_part3.rs:89`); `MAX_BLOCKING_THREADS` itself is not separately asserted. | Ran `cargo test --test architecture architecture_constants` this pass — passed (covers `WORKER_THREADS`, not `MAX_BLOCKING_THREADS`). | PARTIAL |
-| REQ-CLI-002 | A panic caused specifically by a broken stdout pipe (`print!`/`println!` hitting `EPIPE`, e.g. `hse scan \| head`) exits 0 quietly instead of printing a backtrace; every other panic still propagates through the default hook. | Panic payload string | Process exit code | `std::process::exit(0)` for the matched case only | A genuine output failure unrelated to a closed pipe (e.g. disk full) still panics loudly, by design. | `src/main.rs:43-66` | `is_broken_pipe_panic` unit-tested in `src/main_tests.rs` (`#[cfg(test)] mod tests { include!("main_tests.rs"); }` at `src/main.rs:69`). | Read-only; not re-run this pass. | IMPLEMENTED_UNVERIFIED |
+| REQ-CLI-002 | A panic caused specifically by a broken stdout pipe (`print!`/`println!` hitting `EPIPE`, e.g. `hse scan \| head`) exits 0 quietly instead of printing a backtrace; every other panic still propagates through the default hook. | Panic payload string | Process exit code | `std::process::exit(0)` for the matched case only | A genuine output failure unrelated to a closed pipe (e.g. disk full) still panics loudly, by design. | `src/main.rs:43-66` | `is_broken_pipe_panic` unit-tested in `src/main_tests.rs` (`#[cfg(test)] mod tests { include!("main_tests.rs"); }` at `src/main.rs:69`). | Ran `cargo test --bin hse` this pass (Pass 2) — `tests::recognises_only_the_broken_pipe_print_panic` passed. | VERIFIED |
 | REQ-CLI-003 | `hse --version` / the `Cli` clap tree is internally consistent (no duplicate short flags, no conflicting IDs) — validated at test time via clap's own `debug_assert`, since a broken definition only panics at first real invocation otherwise. | none | n/a | none | A broken definition would otherwise panic on first invocation of the affected subcommand in production, not at build time. | `src/cli/command.rs:62-892` | `cli_definition_is_internally_consistent` (`src/cli/command.rs:909`) | Ran `cargo test --lib cli::command::tests::cli_definition_is_internally_consistent` this pass — passed. | VERIFIED |
 | REQ-CLI-004 | `hse scan --min-confidence <f>` and `--min-expand-confidence` reject non-finite (`nan`/`inf`) and out-of-`0.0..=1.0` values at the argument-parsing boundary, rather than silently producing a floor that discards every entity. | CLI string | `Result<f64, String>` (clap `value_parser`) | none | Clap usage error before any scan work begins. | `src/cli/command.rs:23-34` (`confidence_floor`) | `confidence_floor_accepts_the_documented_range_inclusive`, `confidence_floor_rejects_non_finite_values`, `confidence_floor_rejects_values_outside_zero_to_one`, `confidence_floor_rejects_non_numeric_input` (`src/cli/command.rs`) | Ran `cargo test --lib cli::command::tests` this pass — all 4 passed. | VERIFIED |
 | REQ-CLI-005 | `hse scan --min-marginal-yield <f>` rejects non-finite and negative values but, unlike confidence, accepts values above 1.0 (it's a rate, not a probability). | CLI string | `Result<f64, String>` | none | Clap usage error. | `src/cli/command.rs:47-60` (`non_negative_rate`) | `non_negative_rate_accepts_values_above_one`, `non_negative_rate_rejects_non_finite_and_negative` (`src/cli/command.rs`) | Ran `cargo test --lib cli::command::tests` this pass — passed. | VERIFIED |
 | REQ-CLI-006 | `hse scan --full` (`--complete`/`--everything`) is the "no-compromise" preset: forces every module regardless of `--free-only`/`--passive-only`/`--modules`, pins `MAX_DEPTH` recursion, lifts the wrong-identity expansion gate, disables ROI pruning/dead-module skipping, and restores infra entities — overriding every one of those individual flags even when also passed. | CLI flags | `ScanCmd` struct fields | none | none (pure flag composition) | `src/cli/mod.rs:97-144` | Composition asserted inline via the doc comments; no dedicated unit test constructs `--full` alongside each conflicting flag and asserts the override wins for all of them simultaneously (each override is one `bool && !full` expression, individually simple but not table-tested as a set). | Read-only; traced the composition logic by hand, did not execute a combined-flags scenario. | IMPLEMENTED_UNVERIFIED |
 | REQ-CLI-007 | `hse scan` with no `--value` and no `--input-file` falls back to `HUNTSMAN_DEFAULT_SEED`; if neither is set, errors with actionable guidance rather than a bare panic or an empty scan. | `Option<String>` (CLI), `Option<String>` (env-derived default) | `Result<String>` | none | `Error::Other("no target: ...")` | `src/cli/mod.rs:340-352` (`resolve_seed`) | Not found under a dedicated test name in `src/cli/tests.rs` search for `resolve_seed`; the function is `pub(super)`-free and pure, ideal for a unit test, but none was located. | Read-only; searched `src/cli/tests.rs` and `src/cli/mod.rs` inline tests for `resolve_seed` — none found. | PARTIAL |
-| REQ-CLI-008 | `hse serve`'s key-write endpoint is loopback-only regardless of `--no-key-write`; a non-loopback bind requires either an explicit/auto-minted bearer token or `--allow-unauthenticated`. | `--bind`, `--auth-token`/`HSE_AUTH_TOKEN`, `--allow-unauthenticated`, `--no-key-write` | Server startup banner + enforced auth middleware | Binds a socket; may print a one-time minted token | Loopback + no token ⇒ silently open (by design, device-local); non-loopback + no token + no `--allow-unauthenticated` ⇒ auth is required (server still starts, all non-loopback requests 401). | `src/cli/serve/mod.rs:361-421`; enforcement `src/api/routes/mod.rs`, `src/api/auth/mod.rs` | `src/api/auth/tests.rs` (12 tests), `src/api/routes/tests.rs` (33 tests) | Read-only; extensive existing unit-test coverage located and not individually re-run this pass. | IMPLEMENTED_UNVERIFIED |
-| REQ-CLI-009 | `hse build-sha` exits non-zero when the build carries no verifiable revision (dirty tree, or no `.git` and no `HSE_BUILD_SHA`); `install.sh`/`hse update` treat a non-zero exit as "cannot prove it" and rebuild. | none | SHA to stdout (or JSON with `--json`) | Process exit code | Non-zero exit + `Error::Other` message | `src/cli/mod.rs:447-471` | No dedicated test name found asserting the exit-code contract specifically (`build_sha_is_verifiable` itself likely has coverage in its own module, not checked this pass). | Ran `./target/debug/hse build-sha` this pass — the on-disk debug binary self-reported `sha=8b113ca`, `dirty=true` (the tree carries the concurrent module-audit's uncommitted changes), confirming the dirty-tree case is real and observable, though its exit code was not separately captured. | PARTIAL |
+| REQ-CLI-008 | `hse serve`'s key-write endpoint is loopback-only regardless of `--no-key-write`; a non-loopback bind requires either an explicit/auto-minted bearer token or `--allow-unauthenticated`. | `--bind`, `--auth-token`/`HSE_AUTH_TOKEN`, `--allow-unauthenticated`, `--no-key-write` | Server startup banner + enforced auth middleware | Binds a socket; may print a one-time minted token | Loopback + no token ⇒ silently open (by design, device-local); non-loopback + no token + no `--allow-unauthenticated` ⇒ auth is required (server still starts, all non-loopback requests 401). | `src/cli/serve/mod.rs:361-421`; enforcement `src/api/routes/mod.rs`, `src/api/auth/mod.rs` | `src/api/auth/tests.rs` (21 tests), `src/api/routes/tests.rs` (33 tests) | Ran `cargo test --lib api::auth` and `cargo test --lib api::routes` this pass (Pass 2) — 21/21 and 33/33 passed respectively. | VERIFIED |
+| REQ-CLI-009 | `hse build-sha` exits non-zero when the build carries no verifiable revision (dirty tree, or no `.git` and no `HSE_BUILD_SHA`); `install.sh`/`hse update` treat a non-zero exit as "cannot prove it" and rebuild. | none | SHA to stdout (or JSON with `--json`) | Process exit code | Non-zero exit + `Error::Other` message | `src/cli/mod.rs:447-471` | No dedicated test name found asserting the exit-code contract specifically (`build_sha_is_verifiable` itself likely has coverage in its own module, not checked this pass). | Ran `./target/debug/hse build-sha; echo exit=$?` this pass (Pass 2) — `sha=cc55f3858…, dirty=1`, `exit=1` (the on-disk binary predates the current HEAD, the same "cannot prove it" signal a genuinely dirty tree produces). Exit code confirmed non-zero as documented. | VERIFIED |
 | REQ-CLI-010 | `hse modules --category <cat> --json` filters the registry by category and emits the same JSON shape as `GET /api/v1/modules`. | `--category`, `--json` | stdout JSON or table | none | Unknown category presumably yields an empty filtered list (not explicitly checked this pass). | `src/cli/modules.rs`; `Command::Modules` in `src/cli/command.rs:276-283` | Not individually checked this pass. | Ran `./target/debug/hse modules --json` this pass — returned `{"count":188,"modules":[...]}` with per-module `consumes`/`category`/`cost` fields, confirming the JSON shape and that the registry currently holds 188 entries (used to derive REQ-README rows below). | VERIFIED |
 | REQ-CLI-011 | `hse tidy`'s `--help` text quotes the dossier-cache retention cap ("newest N files") as a literal number that must equal `DOSSIER_MAX_FILES`, since clap renders doc-comment intra-doc links as raw unresolved markup rather than resolving them. | none | Help text string | none | Test failure on drift (not a runtime failure — an operator would just see a stale number in `--help`). | `src/cli/command.rs:866-874` (doc comment), constant `src/app/tidy/mod.rs` | `tidy_help_quotes_the_real_dossier_cap` (`src/cli/command.rs:920`) | Ran `cargo test --lib cli::command::tests::tidy_help_quotes_the_real_dossier_cap` this pass — passed. | VERIFIED |
 | REQ-CLI-012 | `hse ingest`/`hse investigate --min-confidence` reuse the same `confidence_floor` parser as `hse scan`, so the "silent total data loss on NaN" regression is closed for every subcommand that takes a confidence floor, not just `scan`. | CLI string | `Result<f64, String>` | none | Same as REQ-CLI-004. | `src/cli/command.rs:508,545` | Same tests as REQ-CLI-004 (shared parser function) — no per-subcommand-wiring test confirms `ingest`/`investigate` actually pass the parsed value through unmodified to the extractor's filter. | Read-only for the wiring; the parser itself is VERIFIED (REQ-CLI-004). | PARTIAL |
@@ -119,9 +163,9 @@ scope.
 | REQ-README-001 | The "## Module Overview (N modules — F free, K key-gated/paid)" headline, and every other "N modules" mention in the README, must equal the live registry's total count and free/key-gated split. | `README.md`, `modules::registry()` | Pass/fail assertion | none | Was previously stated as "60+", "63", and "89" across files while the registry held different counts (per the test's own doc comment). | `README.md:277`; guard `tests/architecture_parts/architecture_part4.rs:306-374` | `readme_module_overview_count_matches_registry` | Ran `cargo test --test architecture readme_module_overview_count_matches_registry` this pass — passed (registry currently 188 modules, 142 free / 46 key-gated+paid). | VERIFIED |
 | REQ-README-002 | The "Deterministic correlator: N rules (E entity + R graph-aware relation)" line must equal `core::correlator::rule_counts()`. | `README.md`, `correlator::rule_counts()` | Pass/fail assertion | none | Previously drifted once (108 documented vs 109 live) immediately after a rule addition. | `README.md` (Architecture section); guard `tests/architecture_parts/architecture_part4.rs:376-397` | `readme_correlator_rule_count_matches_registry` | Ran `cargo test --test architecture readme_correlator_rule_count_matches_registry` this pass — passed. | VERIFIED |
 | REQ-README-003 (**fixed this pass**) | The "## Seed Types (16 supported)" table's per-seed-kind "Modules" column must equal the count of registered modules whose `consumes()` includes that `TargetKind`, for each of the 16 documented seed kinds. | `README.md`, `modules::registry()`, each module's `consumes()` | Pass/fail assertion | none | **Was BROKEN before this pass**: every row still cited an early (~90-module-era) snapshot against a registry that has since grown to 188 — e.g. README said "Full Name: 6" (live: 25), "Username: 14" (live: 50), "URL: 2" (live: 25), "Organisation: 2" (live: 22); 15 of 16 rows were wrong, understating real coverage by roughly 2-12×, with **zero test coverage** (unlike REQ-README-001/002 above, this table had no drift guard at all). | `README.md:258-273`; new guard `tests/architecture_parts/architecture_part4.rs` (`readme_seed_type_module_counts_match_registry`, appended this pass) | `readme_seed_type_module_counts_match_registry` (new, this pass) | **Fixed and verified this pass** — see "Fix applied" below for full command output. | VERIFIED |
-| REQ-README-004 | The README's "Seed Types (16 supported)" heading claims 16 supported seed kinds; the CLI's `parse_target_kind` (`src/cli/mod.rs:362-390`) in fact accepts 19 distinct `TargetKind`s including 3 not in the table (`device_id`/`tower`/`cell`, `ssid`/`wifi`, `tracking_id`/`ga`/`gtm`). | `src/cli/mod.rs`, README table | n/a | n/a | Not a false claim in the strict sense: the 3 omitted kinds are auto-discovered pivot targets (radar/expansion output) an operator would essentially never type as a starting `--kind`, so the omission looks deliberate rather than a drift — but the README never states that scoping rule explicitly, so a careful reader can't distinguish "deliberately curated" from "incomplete" without reading the CLI source. | `src/cli/mod.rs:362-390` vs `README.md:254` | None. | Ran `./target/debug/hse modules --json` and cross-referenced the `consumes` union against `parse_target_kind`'s accepted aliases this pass — confirmed all 19 kinds are CLI-parseable, and confirmed `device_id`/`ssid`/`tracking_id` have very low consumption counts (1, 1, 2 modules respectively), consistent with "pivot-only, not a typical seed". | AMBIGUOUS |
+| REQ-README-004 (**fixed this pass, Pass 2**) | The README's "Seed Types (16 supported)" heading claims 16 supported seed kinds; the CLI's `parse_target_kind` (`src/cli/mod.rs:362-390`) in fact accepts 19 distinct `TargetKind`s including 3 not in the table (`device_id`/`tower`/`cell`, `ssid`/`wifi`, `tracking_id`/`ga`/`gtm`). | `src/cli/mod.rs`, README table | n/a | n/a | **Was AMBIGUOUS before this pass**: not a false claim (the 3 omitted kinds are pivot-only — an operator would essentially never type them as a starting `--kind`, confirmed by their very low consumption counts, 1/1/2 modules), but the README never stated that scoping rule explicitly, so a reader had no way to distinguish "deliberately curated" from "incomplete" without reading the CLI source — and the architecture guard's own comment (`tests/architecture_parts/architecture_part4.rs`) already documented the exclusion rule without the README ever saying so. | `src/cli/mod.rs:362-390` vs `README.md:254-280`; fix in `README.md` + guard extended in `tests/architecture_parts/architecture_part4.rs` | `readme_seed_type_module_counts_match_registry` (extended this pass to also pin the new note's 3 counts) | **Fixed and verified this pass** — added one clarifying paragraph directly under the Seed Types table explaining the 3 pivot-only kinds and their live module counts (1, 1, 2), then extended the existing drift-guard test to assert that paragraph's counts against the live registry too, so it can't silently go stale the way the table itself once did (REQ-README-003). Ran `cargo test --test architecture readme_seed_type_module_counts_match_registry` — passed. | VERIFIED |
 | REQ-README-005 | The "curated highlight" module list under "API-Free (no keys required) — 92" / "Key-gated / Paid — 32 (28 key-gated · 4 paid)" is explicitly disclaimed ("not the full list") and therefore is NOT expected to sum to the registry's 188/142/46 totals. | `README.md:283-303` | n/a | n/a | None — this is a documented exception, not a defect. | `README.md:283` (the disclaimer itself) | Deliberately excluded from `readme_module_overview_count_matches_registry`'s scope per that test's own doc comment. | Read-only; confirmed the disclaimer text is present and the curated counts (92 + 32 = 124) indeed don't match the registry total (188), consistent with "curated, not exhaustive." | OBSOLETE (n/a — by design, not a gap) |
-| REQ-README-006 | The Quick Start block's `hse` command examples (`hse doctor`, `hse modules`, `hse engines`, `hse config`, `hse keys status`, `hse query ... --dark`, `hse scan --kind ... --depth N`, `hse serve`, `hse live --kind ... --interval N`) all name real, currently-registered subcommands/flags. | `README.md:205-218`, `src/cli/command.rs` | n/a | n/a | A stale example naming a removed/renamed flag would silently mislead a new user copy-pasting it. | `README.md` Quick Start section | No test walks README code blocks against the live `Cli::command()` tree. | Ran each example command's subcommand+flag names by hand against `src/cli/command.rs`'s current `Command` enum this pass — all named subcommands (`doctor`, `modules`, `engines`, `config`, `keys`, `query`, `scan`, `serve`, `live`) and flags (`--dark`, `--kind`, `--value`, `--depth`, `--free-only`, `--output`, `--interval`) exist as spelled. Did not execute each example command end-to-end. | IMPLEMENTED_UNVERIFIED |
+| REQ-README-006 | The Quick Start block's `hse` command examples (`hse doctor`, `hse modules`, `hse engines`, `hse config`, `hse keys status`, `hse query ... --dark`, `hse scan --kind ... --depth N`, `hse serve`, `hse live --kind ... --interval N`) all name real, currently-registered subcommands/flags. | `README.md:205-218`, `src/cli/command.rs` | n/a | n/a | A stale example naming a removed/renamed flag would silently mislead a new user copy-pasting it. | `README.md` Quick Start section | No test walks README code blocks against the live `Cli::command()` tree. | Ran 5 of the 9 named commands end-to-end this pass (Pass 2) — `hse doctor`, `hse modules`, `hse engines`, `hse config`, `hse keys status` all exited 0 and produced the documented shape of output. `hse query ... --dark`, `hse scan --kind ... --depth N`, `hse serve`, `hse live --kind ... --interval N` were not run (network calls / long-running processes, unsafe to smoke-test blindly) — their subcommand+flag names were still hand-confirmed against `src/cli/command.rs`'s `Command` enum as in the first pass. | PARTIAL |
 | REQ-README-007 | `install.sh`'s documented knobs (`HSE_PREBUILT`, `HSE_PREBUILT_TAG`, `HSE_NO_DOWNLOAD`, `HSE_PREFER_BUILD`, `HSE_KEEP_MIRROR`, `HSE_REF`, `HSE_INSTALL_DIR`, `HSE_WITH_AI`) named in the README's install section are all genuinely read by `install.sh` (cross-reference of REQ-INSTALL-004/README). | `README.md:26-90`, `install.sh` | n/a | n/a | A documented-but-unread knob would silently no-op for an operator setting it. | `README.md`, `install.sh` (multiple sites, see REQ-INSTALL-004) | None dedicated; `docs/INSTALL.md`'s own "Environment knobs" table duplicates the same claim. | Ran `grep -c` for each knob against `install.sh` this pass — all 8 present with ≥3 occurrences each (declaration + read + doc comment, typically). | VERIFIED |
 | REQ-README-008 | "Value-per-query is maximised by default (v1.14+)" / convex budget allocation claim: `--no-convex-budget` is the only way to disable it, and it is on by default in both `hse scan` and `hse live`. | `README.md:92-99`, `src/cli/mod.rs:120-122,266-267` | n/a | n/a | If the default were accidentally flipped, every scan would silently stop maximizing value-per-query with no operator-visible signal. | `src/cli/mod.rs:122` (`convex_budget: !no_convex_budget`) for `scan`; `:267` for `live` | `core::convex` module has its own unit tests (not enumerated/re-run this pass); no CLI-level test asserts the *default* (omitting the flag) resolves to `convex_budget: true`. | Read-only; traced the boolean literally (`!no_convex_budget` with `no_convex_budget` defaulting `false` via `SetTrue` action ⇒ default `true`) but did not find or run a test pinning this specific default. | IMPLEMENTED_UNVERIFIED |
 | REQ-README-009 | The MITRE ATT&CK claim ("all 14 tactics and every current technique/sub-technique (v17.1)... but HSE only claims coverage of Reconnaissance") is backed by `src/core/attack/`'s static data and the per-module technique mapping enforced by REQ-CORE-010. | `README.md:307-330`, `src/core/attack/` | n/a | n/a | An unmapped/invalid technique ID would be a false "coverage" claim. | `src/core/attack/mod.rs` (catalogue), `tests/architecture_parts/architecture_part2.rs` (enforcement) | `every_module_maps_to_valid_attack_reconnaissance_techniques` (same test as REQ-CORE-010) checks every declared ID resolves in the catalogue. | Ran `cargo test --test architecture` this pass — passed (same run as REQ-CORE-010). | VERIFIED |
@@ -273,19 +317,82 @@ touched by this pass — see `git status` note in "Known limitations").
 
 ---
 
+## Pass 2 findings
+
+Re-verified every Pass 1 row left `IMPLEMENTED_UNVERIFIED`/`PARTIAL`/
+`AMBIGUOUS` by actually running its cited test/command (not by re-reading the
+code — Pass 1 already did that). Nine rows moved:
+
+| ID | Pass 1 status | Pass 2 status | What changed |
+|---|---|---|---|
+| REQ-CORE-008 | IMPLEMENTED_UNVERIFIED | VERIFIED | Ran the 3 cited `core::engine::timeout::tests` — passed. |
+| REQ-CORE-009 | PARTIAL | VERIFIED (**fixed**) | The one genuine gap this pass found and closed — see below. |
+| REQ-CORE-013 | IMPLEMENTED_UNVERIFIED | VERIFIED | Ran `cargo test --lib key_pool` — 55/55 passed. |
+| REQ-CLI-002 | IMPLEMENTED_UNVERIFIED | VERIFIED | Ran `cargo test --bin hse` — the broken-pipe-panic test passed. |
+| REQ-CLI-008 | IMPLEMENTED_UNVERIFIED | VERIFIED | Ran `api::auth`/`api::routes` — 21/21 and 33/33 passed. |
+| REQ-CLI-009 | PARTIAL | VERIFIED | Ran `hse build-sha` directly — confirmed non-zero exit + the dirty/stale-build signal. |
+| REQ-README-004 | AMBIGUOUS | VERIFIED (**fixed**) | Closed the ambiguity — see below. |
+| REQ-README-006 | IMPLEMENTED_UNVERIFIED | PARTIAL | Ran 5 of 9 named example commands (the safe, non-network, non-long-running ones) — all exited 0. Downgraded rather than upgraded: running fewer than all of them is a narrower claim than Pass 1's read-only "traced by hand", not a stronger one. |
+| REQ-CLI-003..007, 012; REQ-INSTALL-001..007; REQ-ENV-006 | unchanged | unchanged | No dedicated automated test exists to run for these (shell-only behavior, or genuinely no test found) — re-confirmed the absence rather than manufacturing a claim, left as `IMPLEMENTED_UNVERIFIED`/`PARTIAL`. |
+
+**Fix 1 — REQ-CORE-009** (the inter-scan entity cache never had a
+dispatch-level HIT/MISS test): `core::test_support::InMemoryStore` — the
+standard in-memory `StoragePort` double every engine test builds on —
+inherited the trait's no-op defaults for `archive_module_result`/
+`lookup_module_result_fresh`, so a lookup could never return a hit through it;
+the cache-skips-`process()` behavior was structurally untestable independent
+of the storage layer's own (already-thorough) coverage in
+`storage::archive_tests`. Gave `InMemoryStore` genuine in-memory cache
+semantics mirroring `Store`'s exact freshness predicate, then added
+`core::engine::tests::cache_hit_skips_reprocessing_a_later_scan_of_the_same_target`:
+dispatches a probe with a nonzero `cache_ttl_secs()` against one target under
+two different scan_ids and asserts `process()` runs exactly once (the second
+dispatch replays from cache), plus a third dispatch against a different
+target proves the cache is keyed per-target. This changed `InMemoryStore`'s
+documented contract, which broke `core::port::tests::default_optional_methods_are_documented_no_ops`'s
+premise ("`InMemoryStore` overrides NONE" of the 7 default methods) — updated
+that test's assertions and comment for the new 5-no-op/2-real-cache split.
+
+**Fix 2 — REQ-README-004** (the ambiguity over the omitted `device_id`/
+`ssid`/`tracking_id` seed kinds): added one clarifying paragraph directly
+under the Seed Types table (`README.md`) stating why they're omitted and
+their live module counts, then extended
+`readme_seed_type_module_counts_match_registry`
+(`tests/architecture_parts/architecture_part4.rs`) to assert that paragraph's
+3 counts against the live registry too, closing the same "documented claim,
+zero drift guard" gap REQ-README-003 fixed for the table itself.
+
+### Verification commands run (Pass 2, in order)
+
+```
+$ cargo test --lib key_pool -- --test-threads=4                  # 55 passed
+$ cargo test --lib core::engine::timeout::tests -- --test-threads=4   # 3 passed
+$ cargo test --bin hse -- --test-threads=4                       # 1 passed
+$ cargo test --lib api::auth -- --test-threads=4                 # 21 passed
+$ cargo test --lib api::routes -- --test-threads=4                # 33 passed
+$ ./target/debug/hse build-sha; echo exit=$?                      # exit=1, dirty=1
+$ ./target/debug/hse doctor / modules / engines / config / keys status   # all exit 0
+$ cargo fmt --all
+$ cargo test --lib core::engine::tests::cache_hit_skips_reprocessing_a_later_scan_of_the_same_target
+    # test result: ok. 1 passed
+$ cargo test --lib --features dep-cooldown                        # 6836 passed, 0 failed
+$ cargo test --test architecture                                  # 55 passed
+$ cargo clippy --all-targets --features dep-cooldown -- -D warnings   # clean
+```
+
 ## Summary statistics
 
-| Status | Count |
-|---|---|
-| VERIFIED | 23 |
-| IMPLEMENTED_UNVERIFIED | 17 |
-| PARTIAL | 8 |
-| MISSING | 1 |
-| AMBIGUOUS | 1 |
-| OBSOLETE (by design, not a gap) | 1 |
-| BROKEN | 0 *(REQ-README-003 was BROKEN before this pass's fix; it is now VERIFIED and counted above)* |
-| UNREACHABLE | 0 |
-| **Total rows** | **51** |
+| Status | Pass 1 | Pass 2 |
+|---|---|---|
+| VERIFIED | 23 | 30 |
+| IMPLEMENTED_UNVERIFIED | 17 | 12 |
+| PARTIAL | 8 | 7 |
+| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* |
+| AMBIGUOUS | 1 | 0 |
+| OBSOLETE (by design, not a gap) | 1 | 1 |
+| BROKEN | 0 | 0 |
+| UNREACHABLE | 0 | 0 |
+| **Total rows** | **51** | **51** |
 
 Breakdown by section: Module trait contract 14 rows (REQ-CORE-001..014), CLI
 surface 12 rows (REQ-CLI-001..012), `install.sh` 9 rows

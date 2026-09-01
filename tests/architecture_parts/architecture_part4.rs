@@ -736,4 +736,42 @@ fn readme_seed_type_module_counts_match_registry() {
          registry (update README.md after adding/removing a module or changing a \
          module's consumes()): {mismatches:#?}"
     );
+
+    // The clarifying note explaining why device_id/ssid/tracking_id are
+    // deliberately omitted from the table above also states their current
+    // module counts — pin those too, so that sentence can't silently drift
+    // the same way the table itself once did (REQ-README-003/004).
+    let device_id_count = live
+        .iter()
+        .filter(|m| m.consumes().contains(&TargetKind::DeviceId))
+        .count();
+    let ssid_count = live
+        .iter()
+        .filter(|m| m.consumes().contains(&TargetKind::Ssid))
+        .count();
+    let tracking_id_count = live
+        .iter()
+        .filter(|m| m.consumes().contains(&TargetKind::TrackingId))
+        .count();
+    // Singular/plural per count, not one trailing "modules" for the whole
+    // list — "1, 1, and 2 modules" read grammatically wrong for the singular
+    // entries (Copilot review on PR #569).
+    let unit = |n: usize| if n == 1 { "module" } else { "modules" };
+    let expected_note = format!(
+        "They currently feed {device_id_count} {}, {ssid_count} {}, and \
+         {tracking_id_count} {}, respectively.",
+        unit(device_id_count),
+        unit(ssid_count),
+        unit(tracking_id_count),
+    );
+    // Collapse whitespace before matching: the sentence is prose that wraps
+    // across lines in the raw Markdown source (a hard newline where the
+    // sentence happens to break), so a literal-newline substring match would
+    // be brittle against harmless rewrapping.
+    let readme_flat = readme.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        readme_flat.contains(&expected_note),
+        "README's pivot-only seed-kind note (device_id/ssid/tracking_id) has drifted \
+         from the live registry — expected to find {expected_note:?} in README.md"
+    );
 }

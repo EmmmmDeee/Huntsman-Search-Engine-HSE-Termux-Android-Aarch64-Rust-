@@ -50,6 +50,13 @@ struct Inner {
     relations: Vec<Relation>,
     events: Vec<Event>,
     scan_analysis: HashMap<String, ScanAnalysis>,
+    /// Mirrors the real store's `raw_archive` table (inter-scan entity
+    /// cache): key → `(archived_at, ttl_secs, entities)`. Without this, the
+    /// trait's default no-op `archive_module_result`/`lookup_module_result_fresh`
+    /// made a cache HIT untestable against this port — every lookup silently
+    /// returned `None` regardless of what was archived, so no dispatch-level
+    /// test could ever exercise the module-skip-on-cache-hit path.
+    raw_archive: HashMap<String, (u64, u64, Vec<Entity>)>,
 }
 
 impl InMemoryStore {
@@ -345,5 +352,29 @@ impl StoragePort for InMemoryStore {
         ids.sort();
         ids.truncate(limit);
         Ok(ids)
+    }
+
+    fn archive_module_result(&self, key: &str, ttl_secs: u64, entities: &[Entity]) -> Result<()> {
+        // Mirror `Store::archive_module_result`: `INSERT OR REPLACE` keyed on
+        // `key`, timestamped `archived_at = now()`.
+        self.inner.lock().raw_archive.insert(
+            key.to_string(),
+            (crate::core::entity::unix_now(), ttl_secs, entities.to_vec()),
+        );
+        Ok(())
+    }
+
+    fn lookup_module_result_fresh(&self, key: &str) -> Result<Option<Vec<Entity>>> {
+        // Mirror `Store::lookup_module_result_fresh`'s freshness predicate
+        // exactly: `archived_at + ttl_secs > now()`, so `ttl_secs == 0`
+        // expires immediately, matching the real store's tested behavior.
+        let now = crate::core::entity::unix_now();
+        Ok(self
+            .inner
+            .lock()
+            .raw_archive
+            .get(key)
+            .filter(|(archived_at, ttl_secs, _)| archived_at + ttl_secs > now)
+            .map(|(_, _, entities)| entities.clone()))
     }
 }
