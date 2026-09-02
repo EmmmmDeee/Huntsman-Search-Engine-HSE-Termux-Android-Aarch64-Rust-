@@ -45,10 +45,24 @@ pub(crate) use diagnostics::snapshot_still_relevant_to;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/// Maximum upload body size for `POST /scans/import`. Shared with the route
-/// `DefaultBodyLimit` so both limits stay in sync. 16 MB comfortably fits a
-/// large multi-entry dossier on a low-RAM Termux device.
+/// Maximum upload body size for `POST /scans/import` that the handler will
+/// actually accept and parse. 16 MB comfortably fits a large multi-entry
+/// dossier on a low-RAM Termux device.
 pub const MAX_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
+
+/// Extra headroom (over [`MAX_UPLOAD_BYTES`]) given to the route's
+/// `DefaultBodyLimit` layer so a body that exceeds the handler's real cap by
+/// a modest amount still reaches `scan_import` and gets rejected with this
+/// API's normal JSON `bad_request` shape, instead of axum's own bare
+/// plain-text 413 — which would otherwise be the *only* outcome, making the
+/// handler's own `body.len() > MAX_UPLOAD_BYTES` check unreachable dead code
+/// (a body large enough to trip it would already have been rejected one
+/// layer up, before the handler ever ran). A truly pathological upload
+/// (more than `MAX_UPLOAD_BYTES + IMPORT_ROUTE_BODY_LIMIT_HEADROOM_BYTES`)
+/// still gets axum's hard 413 backstop, so the OOM-protection intent is
+/// preserved — this only widens the window in which the friendlier,
+/// consistent error shape applies.
+pub const IMPORT_ROUTE_BODY_LIMIT_HEADROOM_BYTES: usize = 1024 * 1024;
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 

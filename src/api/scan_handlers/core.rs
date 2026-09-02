@@ -577,11 +577,14 @@ pub async fn scan_import(
     }
 
     // Bound the upload so a hostile/huge paste can't exhaust phone memory.
-    // NOTE: this in-handler check is the friendly-message backstop; the binding
-    // limit is enforced at the route via `DefaultBodyLimit::max(MAX_UPLOAD_BYTES)`
-    // (see api::routes), because axum's *default* 2 MB body cap would otherwise
-    // reject a 2-16 MB dossier with a bare 413 before this handler ever runs —
-    // making this constant a lie. Both read the one constant, so they can't drift.
+    // The route's `DefaultBodyLimit` (see api::routes) is set to
+    // `MAX_UPLOAD_BYTES + IMPORT_ROUTE_BODY_LIMIT_HEADROOM_BYTES`, deliberately
+    // a bit higher than this handler's own cap — so a body over
+    // `MAX_UPLOAD_BYTES` but within that headroom still reaches this check and
+    // gets this API's normal JSON `bad_request` shape, rather than axum's bare
+    // plain-text 413 (which is reserved for the truly pathological case that
+    // exceeds even the headroom). Both read `MAX_UPLOAD_BYTES`, so the two
+    // limits can't drift apart.
     if body.trim().is_empty() {
         return bad_request("empty upload");
     }

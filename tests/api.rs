@@ -1202,6 +1202,46 @@ async fn dossier_upload_accepts_body_larger_than_axum_default_limit() {
 }
 
 #[tokio::test]
+async fn dossier_upload_between_handler_cap_and_route_headroom_gets_friendly_json_rejection() {
+    // REQ-API-SCAN-006: the handler's own `body.len() > MAX_UPLOAD_BYTES`
+    // check used to be unreachable dead code, because the route's
+    // `DefaultBodyLimit` was set to exactly `MAX_UPLOAD_BYTES` — so any body
+    // large enough to trip the in-handler check had already been rejected one
+    // layer up, by axum's own bare plain-text 413, before the handler ever
+    // ran. The route limit now carries a small headroom
+    // (`IMPORT_ROUTE_BODY_LIMIT_HEADROOM_BYTES`) over the handler's cap, so a
+    // body in that window reaches the handler and gets this API's normal
+    // JSON `bad_request` shape instead. This pins that the branch is now
+    // actually reachable and produces the friendlier, consistent error.
+    let app = test_app("import-over-cap-json");
+    // 16 MB + 512 KB: over the handler's cap, but within the route's headroom.
+    let oversized = "a".repeat(16 * 1024 * 1024 + 512 * 1024);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/scans/import")
+        .header("content-type", "text/plain")
+        .header("x-hse-csrf", "1")
+        .body(Body::from(oversized))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        400,
+        "a body within the route's headroom over MAX_UPLOAD_BYTES must reach \
+         the handler's own check, not axum's 413"
+    );
+    let json = body_json(resp).await;
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("too large"),
+        "must be this API's normal JSON error shape: {json}"
+    );
+}
+
+#[tokio::test]
 async fn batch_endpoint_enforces_empty_and_size_limits() {
     // The batch cap is a DoS-relevant contract: an empty batch is a 400, and more
     // than 50 targets is rejected (so a client can't queue thousands of scans in
