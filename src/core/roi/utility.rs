@@ -70,10 +70,17 @@ pub struct DispatchUtility {
     /// [`crate::core::module::CostModel::Unknown`] — distinct from
     /// `Some(0.0)`, which means a *confirmed* free dispatch.
     pub estimated_cost: Option<f64>,
-    /// Whether this dispatch would spend from an exhausted-adjacent local
-    /// quota — `None` when the provider tracks no local quota, or its
-    /// remaining state isn't currently resolvable (see
-    /// [`crate::core::module::Module::quota_remaining`]).
+    /// Normalised quota-cost penalty in `[0, 1]` (0 = confirmed budget
+    /// remaining, 1 = confirmed exhausted — though an exhausted-and-known
+    /// module would already have been stopped by the
+    /// [`quota_exhausted_blocked`] eligibility gate before reaching this
+    /// scorer). `None` — not `Some(0.0)` — specifically when the provider
+    /// tracks no local quota at all, or its remaining state isn't currently
+    /// resolvable (see [`crate::core::module::Module::quota_remaining`]);
+    /// the formula itself still charges the small, non-zero
+    /// [`QUOTA_COST_NEUTRAL`] penalty in that case (see
+    /// [`compute_dispatch_utility`]) — this field reports what is actually
+    /// *known*, not the penalty the formula applied for the unknown case.
     pub quota_cost: Option<f64>,
     /// Normalised latency penalty in `[0, 1]` (0 = a tight configured
     /// timeout budget, 1 = at/over the longest reasonable budget). A

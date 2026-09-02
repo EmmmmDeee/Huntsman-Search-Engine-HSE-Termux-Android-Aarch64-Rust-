@@ -354,13 +354,18 @@ pub(super) fn module_skip_reason(
     if opts.free_only && !matches!(module.cost(), ModuleCost::Free) {
         return Some("requires key/payment");
     }
+    // Built once and reused by both economics gates below — `ProviderDescriptor`
+    // carries a `Vec<TargetKind>` field, so constructing it twice per module per
+    // dispatch (this function runs on every candidate target) would be a real
+    // allocation on a hot path, not just a style nit.
+    let descriptor = module.provider_descriptor();
     // Cost-budget eligibility gate — checked BEFORE any ranking, per the
     // provider-capability directive: a finite monetary budget must never let
     // a paid/enterprise provider with an unknown per-request cost dispatch
     // silently. UNKNOWN cost is not FREE cost. No-op (returns `false`
     // immediately) unless the operator has actually set `max_cost_usd`.
     if crate::core::module::unknown_cost_paid_provider_blocked(
-        &module.provider_descriptor(),
+        &descriptor,
         opts.effective_max_cost_usd(),
         opts.allow_unknown_cost_dispatch,
     ) {
@@ -375,10 +380,7 @@ pub(super) fn module_skip_reason(
     // must never dispatch, checked before any ranking. A module that tracks
     // no local quota, or whose remaining state isn't currently knowable,
     // never blocks here — "unknown" is not "exhausted".
-    if crate::core::roi::quota_exhausted_blocked(
-        module.provider_descriptor().quota_unit,
-        module.quota_remaining(),
-    ) {
+    if crate::core::roi::quota_exhausted_blocked(descriptor.quota_unit, module.quota_remaining()) {
         return Some("quota exhausted — provider-tracked local budget spent for this scan");
     }
     if opts.passive_only && !module.is_passive() {
@@ -846,7 +848,10 @@ impl super::ScanEngine {
         entity_confidence: Option<f64>,
         dispatched: &DispatchLog,
     ) {
-        if !cx.opts.dispatch_utility {
+        // `dispatch_utility` is documented (ScanOptions::dispatch_utility,
+        // roi/mod.rs's module doc) as requiring `max_roi` — enforced here, not
+        // just claimed in prose, so the two can never silently drift apart.
+        if !cx.opts.max_roi || !cx.opts.dispatch_utility {
             return;
         }
         let descriptor = module.provider_descriptor();

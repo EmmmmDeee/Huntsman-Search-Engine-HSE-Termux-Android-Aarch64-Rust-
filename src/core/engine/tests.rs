@@ -3887,6 +3887,74 @@ async fn dispatch_utility_off_by_default_produces_zero_behavior_change() {
     );
 }
 
+/// `dispatch_utility` is documented as requiring `max_roi` (`ScanOptions::
+/// dispatch_utility`'s own doc comment, and the ROI module doc) — this
+/// proves that's enforced, not just claimed: `dispatch_utility: true` with
+/// `max_roi: false` must still emit zero `DispatchUtilityComputed` events.
+#[tokio::test]
+async fn dispatch_utility_requires_max_roi_to_actually_fire() {
+    use crate::core::test_support::InMemoryStore;
+
+    let calls = Arc::new(AtomicU64::new(0));
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, mut rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(
+        vec![Arc::new(DispatchUtilityProbe {
+            calls: calls.clone(),
+        })],
+        store,
+        bus.clone(),
+    );
+    let target = Target::new(TargetKind::Username, "utility-no-roi-target");
+    let opts = ScanOptions {
+        max_roi: false,
+        dispatch_utility: true,
+        ..Default::default()
+    };
+    let mut ctx = ModuleContext {
+        scan_id: "utility-no-roi-scan".to_string(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let cx = DispatchCx {
+        scan_id: "utility-no-roi-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed_kind: TargetKind::Username,
+        quarantined: no_quarantine(),
+    };
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+
+    engine
+        .dispatch_target(&cx, &mut ctx, &mut state)
+        .await
+        .expect("dispatch runs");
+
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "the eligible module must still dispatch — max_roi off doesn't block dispatch itself"
+    );
+    let utility_events = drain_dispatch_utility_events(&mut rx);
+    assert!(
+        utility_events.is_empty(),
+        "dispatch_utility=true with max_roi=false must never emit a DispatchUtilityComputed \
+         event, got: {utility_events:?}"
+    );
+}
+
 /// With `dispatch_utility` on, a real dispatch of an eligible module must
 /// surface a non-empty, self-consistent explanation via
 /// `EventKind::DispatchUtilityComputed`.
