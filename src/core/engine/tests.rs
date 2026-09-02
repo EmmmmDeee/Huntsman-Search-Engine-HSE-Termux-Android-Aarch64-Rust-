@@ -40,6 +40,58 @@ async fn injected_module_runtime_is_used_by_the_engine() {
     assert_eq!(resets.load(std::sync::atomic::Ordering::Relaxed), 1);
 }
 
+fn ctx_with_keys(keys: std::collections::HashMap<String, String>) -> ModuleContext {
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    ModuleContext {
+        scan_id: "test".into(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys,
+        cancel: Default::default(),
+    }
+}
+
+#[test]
+fn has_paid_oathnet_key_true_for_a_real_key() {
+    let ctx = ctx_with_keys(std::collections::HashMap::from([(
+        "HUNTSMAN_OATHNET_KEY".to_string(),
+        "a-real-key".to_string(),
+    )]));
+    assert!(has_paid_oathnet_key(&ctx));
+}
+
+#[test]
+fn has_paid_oathnet_key_false_when_absent() {
+    let ctx = ctx_with_keys(std::collections::HashMap::new());
+    assert!(!has_paid_oathnet_key(&ctx));
+}
+
+#[test]
+fn has_paid_oathnet_key_false_for_a_blank_slot() {
+    // Regression: a raw `ctx.keys.contains_key(..)` would count a
+    // present-but-blank `HUNTSMAN_OATHNET_KEY=` (an unconfigured slot, not a
+    // credential) as "paid", wrongly biasing pivot budget toward
+    // OathNet-favouring expansion for a scan with no working OathNet key.
+    let ctx = ctx_with_keys(std::collections::HashMap::from([(
+        "HUNTSMAN_OATHNET_KEY".to_string(),
+        String::new(),
+    )]));
+    assert!(!has_paid_oathnet_key(&ctx));
+}
+
+#[test]
+fn has_paid_oathnet_key_false_for_an_unedited_provision_placeholder() {
+    // Regression: same bug class, the `hse provision` template placeholder
+    // form (`insert_<svc>_key_here`) — a slot a user never actually filled
+    // in must not be forwarded to the provider, nor earn the paid-tier
+    // expansion bonus as if a real key were installed.
+    let ctx = ctx_with_keys(std::collections::HashMap::from([(
+        "HUNTSMAN_OATHNET_KEY".to_string(),
+        "insert_oathnet_key_here".to_string(),
+    )]));
+    assert!(!has_paid_oathnet_key(&ctx));
+}
+
 #[test]
 fn consolidate_address_localities_folds_postcode_variants_codebase_wide() {
     use crate::core::entity::{Entity, EntityKind, Evidence};
@@ -631,6 +683,61 @@ fn local_passive_sensor_modules_reject_remote_subject_seeds() {
             "{name} must still engage on a deliberately-local coordinates seed"
         );
     }
+}
+
+/// The mirror of the test above: it proves every LISTED name really is a
+/// local sensor, but not that the list is COMPLETE — a new module could match
+/// the same "operator's own device, coordinates/MAC-only, no network cost"
+/// shape and simply never get added to `LOCAL_PASSIVE_MODULES`, silently
+/// missing both the preflight bypass and `hse radar`'s sweep
+/// (`cli/radar.rs`'s `SENSOR_MODULES` alias). This scans the real registry
+/// for every module matching that shape by the same predicate the 5 known
+/// members share (`accepts()` exactly `{Coordinates, MacAddress}`, nothing
+/// else, and `is_passive() == true`) and asserts the set is exactly
+/// `LOCAL_PASSIVE_MODULES` — no more, no less.
+///
+/// `wigle` deliberately does NOT match: its `accepts()` also includes `Ssid`
+/// (a superset, not the same shape) and it queries a third-party paid API
+/// against those coordinates rather than reading the operator's own
+/// hardware, so `is_passive()` correctly defaults to `false` — it belongs in
+/// the geo-lookup family, not this list, even though it shares the
+/// coordinates/MAC seed.
+#[test]
+fn local_passive_sensor_modules_list_is_exactly_the_matching_registry_subset() {
+    use crate::core::scan::{Target, TargetKind};
+    const REMOTE_SUBJECT_KINDS: &[TargetKind] = &[
+        TargetKind::FullName,
+        TargetKind::Email,
+        TargetKind::Username,
+        TargetKind::Phone,
+        TargetKind::Domain,
+        TargetKind::IpAddress,
+        TargetKind::Url,
+        TargetKind::Organisation,
+    ];
+    let reg = crate::modules::registry();
+    let mut matching: Vec<&str> = reg
+        .iter()
+        .filter(|m| {
+            m.is_passive()
+                && m.accepts(&Target::new(TargetKind::Coordinates, "x"))
+                && m.accepts(&Target::new(TargetKind::MacAddress, "x"))
+                && REMOTE_SUBJECT_KINDS
+                    .iter()
+                    .all(|k| !m.accepts(&Target::new(*k, "x")))
+        })
+        .map(|m| m.name())
+        .collect();
+    matching.sort_unstable();
+    let mut expected: Vec<&str> = LOCAL_PASSIVE_MODULES.to_vec();
+    expected.sort_unstable();
+    assert_eq!(
+        matching, expected,
+        "a module now matches LOCAL_PASSIVE_MODULES's own shape (passive, \
+         coordinates/MAC-only) but the const's membership has drifted from \
+         it — add it to (or remove the stale entry from) LOCAL_PASSIVE_MODULES \
+         so the preflight bypass and `hse radar` sweep stay in sync"
+    );
 }
 
 #[tokio::test]

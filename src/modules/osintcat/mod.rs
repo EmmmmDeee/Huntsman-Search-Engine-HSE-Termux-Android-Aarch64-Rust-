@@ -20,15 +20,33 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::extract::is_placeholder_secret;
 use crate::util::http::{
     RequestBuilderExt, fetch_keyed_json, json_scanned, keyed_ok_or_404, urlencode,
 };
+use crate::util::json::is_null_sentinel;
 use crate::util::str_util::slugify;
 
 const SRC: &str = "osintcat";
 const KEY_ENV: &str = "HUNTSMAN_OSINTCAT_KEY";
 const BASE: &str = "https://www.osintcat.net/api";
 const PURPOSE: &str = "Law Enforcement Intelligence";
+
+/// Cap on a raw `ExtraData` value surfaced as [`Evidence`] text, matching the
+/// convention `breach_rich.rs`'s own raw-field catch-all uses: long enough for
+/// any genuine platform attribute, short enough that a stray blob (base64,
+/// nested-JSON-as-string) cannot make one footprint hit dominate an entity's
+/// evidence list.
+const MAX_EXTRA_VALUE_LEN: usize = 2000;
+
+/// A value that is an absence/redaction marker, not real platform data — a SQL
+/// NULL sentinel or a provider redaction placeholder. Mirrors
+/// `breach_rich.rs`'s `is_absent_marker`, composed from the same two shared
+/// primitives, so a provider that reports e.g. `"REDACTED"` for a field cannot
+/// mint misleading [`Evidence`] text.
+fn is_absent_marker(s: &str) -> bool {
+    is_null_sentinel(s) || is_placeholder_secret(s)
+}
 
 pub struct OsintCat;
 
@@ -234,14 +252,28 @@ fn emit_footprint(fp: &OcFootprintResponse, entity: &mut Entity, result: &mut Mo
 
         if let Some(extra) = &r.extra_data {
             for (k, v) in extra {
-                if v.is_null() {
+                // `ExtraData` is an arbitrary, provider-controlled JSON map —
+                // only a scalar is a genuine attribute value. An `Object`/
+                // `Array` here is a nested structure, not a fact, and its
+                // `Display` would dump raw JSON straight into `Evidence.summary`
+                // (documented as "not the raw data itself"); skip it rather
+                // than stringify it. A `Value::String` is also filtered for the
+                // absence/redaction markers providers use in place of a real
+                // value, same as `breach_rich.rs`'s own raw-field catch-all.
+                let val = match v {
+                    Value::Null | Value::Array(_) | Value::Object(_) => continue,
+                    Value::String(s) => s.clone(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Number(n) => n.to_string(),
+                };
+                if val.is_empty() || val.len() > MAX_EXTRA_VALUE_LEN || is_absent_marker(&val) {
                     continue;
                 }
                 entity.add_evidence(
-                    Evidence::new(SRC, format!("[{}] {k}: {v}", r.domain))
+                    Evidence::new(SRC, format!("[{}] {k}: {val}", r.domain))
                         .with_attr("platform", &r.domain)
                         .with_attr("key", k)
-                        .with_attr("value", v.to_string()),
+                        .with_attr("value", &val),
                 );
                 // Username ExtraData keys become pivot entities.
                 if k.eq_ignore_ascii_case("username")

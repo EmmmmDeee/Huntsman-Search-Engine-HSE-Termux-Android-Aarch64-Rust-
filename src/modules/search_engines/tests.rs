@@ -88,17 +88,19 @@ fn accepts_all_supported_kinds() {
 }
 
 #[test]
-fn termux_budget_is_trimmed_below_desktop_and_the_cap() {
+fn constrained_budget_is_trimmed_below_desktop_and_the_cap() {
     let m = SearchEngines;
-    // Desktop budget stays generous; Termux budget is strictly tighter and
-    // at/under the engine's 45 s Termux cap so it is honoured verbatim
-    // (the module then finalises partials just under that deadline).
+    // Desktop budget stays generous; the constrained-device budget is
+    // strictly tighter and at/under the engine's 45 s constrained-device cap
+    // so it is honoured verbatim (the module then finalises partials just
+    // under that deadline).
     assert_eq!(m.max_timeout_ms(), 120_000);
-    assert_eq!(m.termux_timeout_ms(), 30_000);
-    assert!(m.termux_timeout_ms() < m.max_timeout_ms());
-    assert!(m.termux_timeout_ms() <= 45_000);
+    assert_eq!(m.constrained_timeout_ms(), 30_000);
+    assert!(m.constrained_timeout_ms() < m.max_timeout_ms());
+    assert!(m.constrained_timeout_ms() <= 45_000);
     // The proportional reserve preserves desktop behaviour exactly (the old
-    // flat 30 s) while staying sane under the trimmed Termux budget.
+    // flat 30 s) while staying sane under the trimmed constrained-device
+    // budget.
     let reserve = |budget: u64| (budget / 4).max(8_000);
     assert_eq!(reserve(120_000), 30_000);
     assert_eq!(reserve(30_000), 8_000);

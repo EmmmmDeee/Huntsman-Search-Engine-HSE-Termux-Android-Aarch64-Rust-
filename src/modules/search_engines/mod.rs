@@ -82,7 +82,8 @@ const MAX_RESULTS_PER_ENGINE: usize = 30;
 /// the engines with a `paginate` fn (the 6 proven ones — yahoo/bing/aol/google/
 /// brave/mojeek); the keyless `paginate: None` engines are untouched. Each extra
 /// page self-clamps to the deadline, so deeper paging can never overrun the
-/// Termux time budget. 2→3 adds one more page of the strongest indexes.
+/// constrained-device time budget. 2→3 adds one more page of the strongest
+/// indexes.
 const MAX_PAGES: usize = 3;
 const MAX_ACCUMULATED_RESULTS: usize = 2000;
 /// How many engine fetches run at once in the primary pass. Bounded concurrency so
@@ -515,14 +516,15 @@ impl Module for SearchEngines {
         120_000
     }
 
-    fn termux_timeout_ms(&self) -> u64 {
+    fn constrained_timeout_ms(&self) -> u64 {
         // Live Termux scans showed this burning the full cap (60 s, now 45 s)
         // for ZERO results on a phone — mobile SERP scraping stalls behind
         // captive-portal and rate-limit walls. The happy path across 17
         // engines completes in ~20 s; 30 s preserves that recall while halving
-        // the dead-wait. `process()` reads this same budget on Termux so it
-        // returns whatever it gathered just under the deadline instead of
-        // being hard-killed (which discards all accumulated results).
+        // the dead-wait. `process()` reads this same budget on a constrained
+        // device so it returns whatever it gathered just under the deadline
+        // instead of being hard-killed (which discards all accumulated
+        // results).
         30_000
     }
 
@@ -552,16 +554,18 @@ impl Module for SearchEngines {
         let process_start = std::time::Instant::now();
         // Match the engine's actual deadline so the budget checks below fire
         // BEFORE the hard timeout, letting the module finalise partial results.
-        // On Termux that's the trimmed budget; off Termux the full desktop one.
-        // Capability, not identity — same reasoning as core::engine::timeout.
+        // When constrained that's the trimmed budget; otherwise the full
+        // desktop one. Capability, not identity — same reasoning as
+        // core::engine::timeout.
         let budget_ms = if crate::core::platform::is_resource_constrained() {
-            self.termux_timeout_ms()
+            self.constrained_timeout_ms()
         } else {
             self.max_timeout_ms()
         };
         // Reserve a quarter of the budget (min 8 s) for the secondary pivot +
         // recycler passes, scaling with the budget instead of a flat 30 s that
-        // made the primary pass degenerate under the trimmed Termux budget.
+        // made the primary pass degenerate under the trimmed constrained-
+        // device budget.
         let primary_reserve_ms = (budget_ms / 4).max(8_000);
         // Hard fetch deadlines (as `Instant`s) enforced before EVERY request, so
         // the module always self-finalises with whatever it gathered instead of

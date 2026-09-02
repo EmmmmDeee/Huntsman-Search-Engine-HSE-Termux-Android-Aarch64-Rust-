@@ -369,7 +369,7 @@ fn check_module_probes() -> Check {
         let _ = m.category();
         let _ = m.is_passive();
         let _ = m.max_timeout_ms();
-        let _ = m.termux_timeout_ms();
+        let _ = m.constrained_timeout_ms();
         let _ = m.produces();
         for &kind in ALL_TARGET_KINDS {
             let _ = m.accepts(&Target::new(kind, "probe-value"));
