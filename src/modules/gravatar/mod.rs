@@ -12,7 +12,7 @@
 //! `social_probe`, the geocoders, `web_crawler`). Because the data is published
 //! by the email owner, the linkage confidence is high.
 //!
-//! Termux: a single small JSON GET; `termux_timeout_ms` inherits the scaled
+//! Termux: a single small JSON GET; `constrained_timeout_ms` inherits the scaled
 //! default from `max_timeout_ms` so a slow mobile network still completes.
 
 use async_trait::async_trait;

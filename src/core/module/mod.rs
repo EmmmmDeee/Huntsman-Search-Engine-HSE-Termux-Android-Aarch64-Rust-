@@ -184,8 +184,10 @@ pub trait Module: Send + Sync {
         crate::MODULE_TIMEOUT_MS
     }
 
-    /// Per-`process()` budget the engine allows **on Termux** (Android, no
-    /// root) when the user hasn't pinned a global timeout. Defaults to
+    /// Per-`process()` budget the engine allows on a **resource-constrained**
+    /// device (Termux/Android, or any small/metered container —
+    /// [`crate::core::platform::is_resource_constrained`]) when the user
+    /// hasn't pinned a global timeout. Defaults to
     /// [`max_timeout_ms`](Module::max_timeout_ms) — almost every module
     /// behaves identically on a phone. Override DOWN for modules that are
     /// reliably slow-and-low-yield over a mobile/captive network (heavy SERP
@@ -193,29 +195,31 @@ pub trait Module: Send + Sync {
     /// burning the full cap for zero results, wall-time the phone could spend
     /// on modules that actually resolve.
     ///
-    /// The engine clamps the result to its Termux cap unless the module is
-    /// [cap-exempt](Module::termux_timeout_cap_exempt); an explicit
-    /// `ScanOptions::module_timeout_ms` overrides this entirely. Modules that
-    /// genuinely need their time on a phone too — e.g. a GPS cold-fix — simply
-    /// keep the default and are bounded only by the cap.
-    fn termux_timeout_ms(&self) -> u64 {
+    /// The engine clamps the result to its constrained-device cap unless the
+    /// module is [cap-exempt](Module::constrained_timeout_cap_exempt); an
+    /// explicit `ScanOptions::module_timeout_ms` overrides this entirely.
+    /// Modules that genuinely need their time on a phone too — e.g. a GPS
+    /// cold-fix — simply keep the default and are bounded only by the cap.
+    fn constrained_timeout_ms(&self) -> u64 {
         self.max_timeout_ms()
     }
 
-    /// Whether this module's Termux timeout is **exempt** from the engine's
-    /// Termux per-module cap (`TERMUX_MODULE_TIMEOUT_CAP_MS`, 45 s).
+    /// Whether this module's constrained-device timeout is **exempt** from the
+    /// engine's per-module cap on a resource-constrained device
+    /// (`CONSTRAINED_MODULE_TIMEOUT_CAP_MS`, 45 s).
     ///
     /// Almost every module is capped (default `false`): the cap reclaims the
     /// dead tail of hung mobile requests so one slow module can't stall a phone
     /// scan. Return `true` ONLY when the module's *happy path* legitimately
     /// exceeds the cap on a phone too, so clamping it would guarantee a
-    /// zero-data timeout on every Termux run rather than reclaim waste. The
-    /// canonical case is `see_know`: its `/search` endpoint has a ~55 s
-    /// server-side processing cap and routinely answers in 50–60 s, so a 45 s
-    /// clamp kills it before the upstream ever responds. An exempt module is
-    /// bounded by its own [`termux_timeout_ms`](Module::termux_timeout_ms)
-    /// instead (still finite — never unbounded).
-    fn termux_timeout_cap_exempt(&self) -> bool {
+    /// zero-data timeout on every constrained-device run rather than reclaim
+    /// waste. The canonical case is `see_know`: its `/search` endpoint has a
+    /// ~55 s server-side processing cap and routinely answers in 50–60 s, so a
+    /// 45 s clamp kills it before the upstream ever responds. An exempt module
+    /// is bounded by its own
+    /// [`constrained_timeout_ms`](Module::constrained_timeout_ms) instead
+    /// (still finite — never unbounded).
+    fn constrained_timeout_cap_exempt(&self) -> bool {
         false
     }
 

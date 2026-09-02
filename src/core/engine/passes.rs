@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use tracing::info;
 
+use crate::core::confidence;
 use crate::core::entity::{Entity, EntityKind};
 use crate::core::relation::Relation;
 
@@ -211,7 +212,16 @@ pub(super) fn promote_breach_candidate_geo_corroborated(entities: &mut [Entity])
         // lift to Probable so the record's identifiers become first-class findings.
         e.tags.retain(|t| t != crate::core::tags::CANDIDATE);
         e.tag("breach-corroborated");
-        e.confidence = e.confidence.max(0.50);
+        // Unlike this file's other three promotion passes, this one sets an
+        // explicit floor rather than only adding evidence and letting
+        // `c_effective()` compute the lift — the doc comment above guarantees
+        // "raises confidence to Probable", which a pure evidence-add cannot
+        // promise for an entity whose pre-promotion confidence sits far
+        // below that band. Deliberate; named against the same confidence
+        // vocabulary every sibling engine pass uses instead of a bare float
+        // (see `src/core/confidence.rs`'s own "pick by the number you want"
+        // rule).
+        e.confidence = e.confidence.max(confidence::MEDIUM);
         e.add_evidence(Evidence::new(
             crate::core::entity::GEO_CORROBORATION_SOURCE,
             format!(

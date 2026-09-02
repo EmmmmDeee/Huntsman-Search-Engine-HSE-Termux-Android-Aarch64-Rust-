@@ -515,7 +515,7 @@ impl Module for SearchEngines {
         120_000
     }
 
-    fn termux_timeout_ms(&self) -> u64 {
+    fn constrained_timeout_ms(&self) -> u64 {
         // Live Termux scans showed this burning the full cap (60 s, now 45 s)
         // for ZERO results on a phone — mobile SERP scraping stalls behind
         // captive-portal and rate-limit walls. The happy path across 17
@@ -555,7 +555,7 @@ impl Module for SearchEngines {
         // On Termux that's the trimmed budget; off Termux the full desktop one.
         // Capability, not identity — same reasoning as core::engine::timeout.
         let budget_ms = if crate::core::platform::is_resource_constrained() {
-            self.termux_timeout_ms()
+            self.constrained_timeout_ms()
         } else {
             self.max_timeout_ms()
         };

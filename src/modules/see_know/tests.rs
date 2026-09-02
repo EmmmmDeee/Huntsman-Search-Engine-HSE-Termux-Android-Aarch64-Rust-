@@ -198,13 +198,13 @@ mod numeric_identifier_coercion_tests {
         // platform HSE targets. see_know must opt out so its budget survives the
         // clamp, and that budget must still clear the curl outer timeout.
         assert!(
-            SeekNow.termux_timeout_cap_exempt(),
+            SeekNow.constrained_timeout_cap_exempt(),
             "see_know must be exempt from the 45s Termux cap (server cap is ~55s)"
         );
         assert!(
-            SeekNow.termux_timeout_ms() >= 78_000,
+            SeekNow.constrained_timeout_ms() >= 78_000,
             "exempt budget {} must still exceed the 78s curl outer timeout",
-            SeekNow.termux_timeout_ms()
+            SeekNow.constrained_timeout_ms()
         );
     }
 

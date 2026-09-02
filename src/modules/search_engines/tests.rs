@@ -94,9 +94,9 @@ fn termux_budget_is_trimmed_below_desktop_and_the_cap() {
     // at/under the engine's 45 s Termux cap so it is honoured verbatim
     // (the module then finalises partials just under that deadline).
     assert_eq!(m.max_timeout_ms(), 120_000);
-    assert_eq!(m.termux_timeout_ms(), 30_000);
-    assert!(m.termux_timeout_ms() < m.max_timeout_ms());
-    assert!(m.termux_timeout_ms() <= 45_000);
+    assert_eq!(m.constrained_timeout_ms(), 30_000);
+    assert!(m.constrained_timeout_ms() < m.max_timeout_ms());
+    assert!(m.constrained_timeout_ms() <= 45_000);
     // The proportional reserve preserves desktop behaviour exactly (the old
     // flat 30 s) while staying sane under the trimmed Termux budget.
     let reserve = |budget: u64| (budget / 4).max(8_000);

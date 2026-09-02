@@ -318,6 +318,20 @@ impl std::ops::Deref for TrackedEntityMap {
 /// which is why it sits far above the live-pass bound.
 const RECONSIDER_MAX_ENTITIES: usize = 20_000;
 
+/// Whether this scan has a genuinely usable OathNet credential — the signal
+/// [`crate::core::scan::expansion_weight_for_strategy`] uses to bias pivot
+/// budget toward OathNet-favouring expansion.
+///
+/// Routed through [`ModuleContext::key_opt`] rather than a raw
+/// `ctx.keys.contains_key(..)`: a present-but-blank slot or an unedited `hse
+/// provision` placeholder is an unconfigured credential, not a real one, and
+/// must not earn the paid-tier expansion bonus any more than it earns a live
+/// API call (see `key_opt`'s own doc comment for why every keyed module's
+/// credential read already goes through this same filter).
+fn has_paid_oathnet_key(ctx: &ModuleContext) -> bool {
+    ctx.key_opt("HUNTSMAN_OATHNET_KEY").is_some()
+}
+
 /// Free/offline reconsideration of the whole working set: re-promote, in place,
 /// any set-aside lead that evidence gathered since now corroborates, so it
 /// clears the expansion floor and is selected as a candidate THIS round instead
@@ -2019,7 +2033,7 @@ impl ScanEngine {
             // during this round will be expansion candidates in the next round,
             // not this one.
             let entities_at_round_start = entity_map.len();
-            let has_paid = ctx.keys.contains_key("HUNTSMAN_OATHNET_KEY");
+            let has_paid = has_paid_oathnet_key(ctx);
             // Each candidate carries the UID of the parent entity it was
             // derived from, so a `DerivedFrom` lineage edge can be recorded
             // for whatever new entities its dispatch surfaces.
@@ -2492,6 +2506,14 @@ impl ScanEngine {
 /// set on every sweep — single source of truth, so adding a new
 /// sensor module here both bypasses preflight AND joins the radar
 /// loop in one edit.
+///
+/// This hand-maintained membership is checked against the real module
+/// registry by
+/// `tests::local_passive_sensor_modules_list_is_exactly_the_matching_registry_subset`,
+/// which fails if a future module matches this list's own shape (passive,
+/// `accepts()` exactly `{Coordinates, MacAddress}`) without being added here
+/// — so a new sensor module can no longer silently miss the preflight bypass
+/// and the radar sweep.
 pub(crate) const LOCAL_PASSIVE_MODULES: &[&str] = &[
     "device_sensors",
     "wifi_intel",

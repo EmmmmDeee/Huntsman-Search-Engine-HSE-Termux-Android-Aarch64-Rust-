@@ -279,7 +279,7 @@ impl Module for SeekNow {
         110_000
     }
 
-    fn termux_timeout_cap_exempt(&self) -> bool {
+    fn constrained_timeout_cap_exempt(&self) -> bool {
         // see_know's /search has a ~55s server-side cap and answers in 50–60s,
         // and a typed miss can now chain into a ~40s /search/deep fallback on
         // top of that. The 45s Termux module cap would kill EVERY phone scan
