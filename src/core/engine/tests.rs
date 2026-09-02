@@ -2260,7 +2260,11 @@ async fn max_roi_excludes_saturated_entity_from_real_dispatch() {
         let store = Arc::new(InMemoryStore::new());
         let store_port: Arc<dyn StoragePort> = store.clone();
         let (bus, _rx) = tokio::sync::broadcast::channel(256);
-        let engine = ScanEngine::new(vec![Arc::new(SaturatedChainModule)], store_port, bus.clone());
+        let engine = ScanEngine::new(
+            vec![Arc::new(SaturatedChainModule)],
+            store_port,
+            bus.clone(),
+        );
 
         let opts = ScanOptions {
             depth: 2,

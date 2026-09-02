@@ -12,12 +12,12 @@
 //!   [`DOSSIER_MAX_FILES`] reclaims disk **without losing intelligence** — the
 //!   one on-disk artifact that both accumulates unboundedly and is safe to
 //!   bound. The newest files are always kept.
-//! * **Database** — the scan path already prunes the event log / raw-archive
-//!   and truncates the WAL on every scan (`core::engine::finalise`), so this is
-//!   a *safety net* for the operator who runs `serve` for weeks without ever
-//!   completing a scan: the same canonical [`EVENTS_MAX_ROWS`] /
-//!   [`MODULE_RESULT_CACHE_MAX_ROWS`] bounds and a WAL `TRUNCATE` checkpoint, reusing
-//!   the storage primitives rather than duplicating a retention policy.
+//! * **Database** — the scan path already prunes the event log / module
+//!   result cache and truncates the WAL on every scan (`core::engine::finalise`),
+//!   so this is a *safety net* for the operator who runs `serve` for weeks
+//!   without ever completing a scan: the same canonical [`EVENTS_MAX_ROWS`] /
+//!   [`MODULE_RESULT_CACHE_MAX_ROWS`] bounds and a WAL `TRUNCATE` checkpoint,
+//!   reusing the storage primitives rather than duplicating a retention policy.
 //! * **Layout** — re-asserts the base dir and its known subdirectories exist
 //!   and are `0700`, the same tightening [`crate::util::paths`] applies on
 //!   demand, so an older install whose tree was created world-readable is
@@ -56,7 +56,7 @@ pub struct TidyReport {
     pub dossier_bytes_reclaimed: u64,
     /// Event-log rows pruned past the retention bound.
     pub events_pruned: usize,
-    /// Raw-archive rows pruned past the retention bound.
+    /// Module-result-cache rows pruned past the retention bound.
     pub archive_pruned: usize,
     /// Whether the WAL was checkpoint-truncated back to zero bytes.
     pub wal_truncated: bool,
@@ -145,7 +145,7 @@ pub fn cmd_tidy(dry_run: bool, json: bool) -> Result<()> {
     );
     if !dry_run {
         println!("  event log       {} row(s) pruned", report.events_pruned);
-        println!("  raw archive     {} row(s) pruned", report.archive_pruned);
+        println!("  module cache    {} row(s) pruned", report.archive_pruned);
         println!(
             "  sqlite wal      {}",
             if report.wal_truncated {

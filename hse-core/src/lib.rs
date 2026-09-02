@@ -535,7 +535,7 @@ pub struct Evidence {
     /// entity in `Entity::add_evidence` when not set explicitly, so per-record
     /// provenance survives multi-scan merges. Empty for old persisted records
     /// (pre-dates this field).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub scan_id: String,
 }
 
