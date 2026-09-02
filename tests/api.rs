@@ -14,7 +14,10 @@ use huntsman_search_engine::core::{
     scan::{Scan, Target, TargetKind},
 };
 
-use common::{test_app, test_app_exposed, test_app_with_state, test_app_with_store};
+use common::{
+    CancelCooperativeProbe, test_app, test_app_exposed, test_app_with_modules, test_app_with_state,
+    test_app_with_store,
+};
 
 /// Parse a response body into a `serde_json::Value`.
 async fn body_json(resp: axum::response::Response) -> Value {
@@ -2071,6 +2074,76 @@ async fn scan_cancel_not_found() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn scan_cancel_stops_a_real_in_flight_scan_and_status_becomes_aborted() {
+    // The test above only proves the 404 branch (no in-flight scan
+    // registered). Nothing had ever driven a REAL in-flight scan through the
+    // actual HTTP `scan_cancel` handler and confirmed the engine finalizes it
+    // as "aborted", visible on a subsequent GET (see REQ-API-SCAN-002 in
+    // docs/REQUIREMENTS_LEDGER.md) — `wall_time_budget_stops_promptly_and_
+    // preserves_findings` in tests/halting.rs proves the same downstream
+    // engine mechanism, but triggered by a wall-time deadline, never by this
+    // endpoint, and it drives the engine directly, never through HTTP.
+    let app = test_app_with_modules(
+        vec![std::sync::Arc::new(CancelCooperativeProbe)],
+        "cancel_live",
+    );
+
+    let create_resp = app
+        .clone()
+        .oneshot(post_json(
+            "/api/v1/scans",
+            r#"{"kind":"email","value":"cancel-target@contoso.com","options":{}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(create_resp.status(), 202);
+    let sid = body_json(create_resp).await["scan_id"]
+        .as_str()
+        .expect("scan_id")
+        .to_string();
+
+    // The probe polls its cancel flag every ~100ms for up to 60s, so this is
+    // genuinely in-flight (not already finished) when the cancel arrives —
+    // `spawn_scan` registers the CancelHandle synchronously before the POST
+    // /scans response is even returned, so there is no race to seed here.
+    let cancel_resp = app
+        .clone()
+        .oneshot(post_json(&format!("/api/v1/scans/{sid}/cancel"), "{}"))
+        .await
+        .unwrap();
+    assert_eq!(cancel_resp.status(), 200);
+    let cancel_json = body_json(cancel_resp).await;
+    assert_eq!(cancel_json["status"], "cancelling");
+
+    // The probe's own poll interval is ~100ms; give it generous headroom.
+    let mut status = String::new();
+    for _ in 0..50 {
+        let get_resp = app
+            .clone()
+            .oneshot(get(&format!("/api/v1/scans/{sid}")))
+            .await
+            .unwrap();
+        assert_eq!(
+            get_resp.status(),
+            200,
+            "the scan must still be gettable while polling for its final status"
+        );
+        status = body_json(get_resp).await["status"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if status == "aborted" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        status, "aborted",
+        "a cancelled in-flight scan must finalize as aborted, visible via GET"
+    );
 }
 
 // ── Live create with invalid target ─────────────────────────────────────
