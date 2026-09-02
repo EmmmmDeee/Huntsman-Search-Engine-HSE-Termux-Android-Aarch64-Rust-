@@ -93,6 +93,101 @@ fn integrity_check_reports_ok_on_healthy_db() {
 }
 
 #[test]
+fn integrity_check_reports_problems_on_a_corrupted_db() {
+    // The healthy-path test above only proves `integrity_check()` returns
+    // `["ok"]` when nothing is wrong — it can't tell a real detector from one
+    // that always reports "ok" regardless of what's on disk. This proves the
+    // other half: SQLite's own corruption detector actually fires, and
+    // `Store::integrity_check()` passes that report through unfiltered
+    // (FTA finding E5.1 / top event T5 — the mitigation `hse doctor` and the
+    // debug-bundle export both trust for an operator-visible health signal).
+    //
+    // Truncating away real `entities` row data (below) was found, empirically,
+    // to reliably fail `Store::open()` ITSELF rather than surviving to
+    // `integrity_check()` — `open()` is not a bare `sqlite3_open`: it runs an
+    // idempotent `entity_observations` backfill and an FTS freshness count
+    // (`src/storage/mod.rs`, right after schema setup), both of which scan
+    // `entities`' real data pages and surface the same corruption `open()`
+    // itself would report. That is itself a useful fact this test pins down:
+    // corruption in the most-written table is caught even earlier than the
+    // explicit integrity check, via `app::doctor`'s `Store::open()` failure
+    // branch (already `critical`-flagged — see that module). Accordingly this
+    // test accepts either real outcome — `Store::open()` failing, or opening
+    // fine and `integrity_check()` then reporting the problem — as long as
+    // SOME stage surfaces it and none silently reports a healthy corrupt DB.
+    let path = tmp_db();
+    {
+        let store = Store::open(&path).expect("should succeed");
+        insert_scan(&store, "scan-corrupt");
+        // Enough rows that `entities`' data spans many pages, so truncating
+        // the tail of the file below removes real row content, not empty
+        // space never allocated in the first place.
+        for i in 0..400u32 {
+            let e = Entity::new(
+                EntityKind::Email,
+                format!("user{i}@example.com"),
+                0.9,
+                "scan-corrupt",
+            );
+            store.upsert_entity(&e).expect("should succeed");
+        }
+        // Fold the WAL into the main file so the truncation below (applied
+        // to the main file only) can't be masked by an unmerged WAL frame
+        // still holding the pre-truncation page content.
+        store.checkpoint_truncate().expect("should succeed");
+    } // `store` dropped here — releases the file handle before the raw edit.
+
+    {
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("should succeed");
+        let len = f.metadata().expect("should succeed").len();
+        // Truncate away the trailing ~40% of the file — real row data, since
+        // SQLite allocates pages append-only within a file that's never
+        // shrunk except by an explicit VACUUM. The header + schema (page 1)
+        // stays fully intact; a well-understood, deterministic corruption
+        // technique — unlike overwriting arbitrary bytes, which risks either
+        // landing in a page's unused free space with no detectable effect,
+        // or hitting a page header severely enough that SQLite can't
+        // meaningfully report anything at all.
+        f.set_len(len * 3 / 5).expect("should succeed");
+    }
+
+    let corrupt = |msg: &str| {
+        let m = msg.to_ascii_lowercase();
+        m.contains("corrupt") || m.contains("malformed")
+    };
+    match Store::open(&path) {
+        // Caught at open() — see the doc comment above for why this is the
+        // common case for `entities` corruption specifically.
+        Err(e) => assert!(
+            corrupt(&e.to_string()),
+            "Store::open() on a truncated file failed, but not with a \
+             corruption-named error (would mask the real cause behind an \
+             unrelated failure message): {e}"
+        ),
+        // Rarer, but also valid: opens fine, and the explicit check then
+        // catches it.
+        Ok(store) => match store.integrity_check() {
+            Ok(rows) => assert!(
+                rows.iter().any(|r| r != "ok"),
+                "truncating away real row data must produce at least one \
+                 non-\"ok\" integrity_check row, proving SQLite's detector \
+                 fires and Store::integrity_check() surfaces it unfiltered; \
+                 got: {rows:?}"
+            ),
+            Err(e) => assert!(
+                corrupt(&e.to_string()),
+                "integrity_check() erroring is only an acceptable outcome \
+                 here when the error itself names corruption/malformed \
+                 content: {e}"
+            ),
+        },
+    }
+}
+
+#[test]
 fn entity_observed_by_two_scans_appears_in_both() {
     let path = tmp_db();
     let store = Store::open(&path).expect("should succeed");

@@ -71,7 +71,17 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
                         println!("                {r}");
                     }
                 }
-                Err(e) => println!("  integrity:  could not run check — {e}"),
+                Err(e) => {
+                    // The pragma itself failing to run is not a benign,
+                    // informational signal — severe-enough corruption makes
+                    // SQLite fail `PRAGMA integrity_check` outright rather
+                    // than complete and report a row per problem (see
+                    // `storage::tests::integrity_check_reports_problems_on_a_corrupted_db`),
+                    // and this branch must not be less alarming than the
+                    // "ran and found problems" arm above it.
+                    critical = true;
+                    println!("  integrity:  FAIL — could not run check — {e}");
+                }
             }
             // WAL high-water mark: a never-checkpointed `-wal` can grow without
             // bound under a long-lived process. Report it so the operator can

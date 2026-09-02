@@ -5,7 +5,7 @@ individual scanning modules' business logic — that was the subject of a
 separate, now-complete module-by-module bug audit under
 `src/modules/*/mod.rs` (Phases 0-10, PRs #553-568, merged; every one of the
 188 registered modules read against an established bug-class checklist). The
-areas covered here, across nine passes:
+areas covered here, across ten passes:
 
 1. The `Module` trait contract (`src/core/module/mod.rs`).
 2. The CLI surface (`src/main.rs`, `src/cli/`).
@@ -21,6 +21,9 @@ areas covered here, across nine passes:
 8. Correlator rule registry (`src/core/correlator/`) — registration
    completeness/uniqueness only; individual rules' firing logic remains out
    of scope beyond the pre-existing per-rule test corpus.
+9. Storage subsystem (`src/storage/`) — the `integrity_check()` corruption
+   detector only; schema migration, concurrent-open behavior, and the rest
+   of the storage layer remain out of scope.
 
 **Pass 2** re-verified every row Pass 1 left
 `IMPLEMENTED_UNVERIFIED`/`PARTIAL`/`AMBIGUOUS` by actually running its cited
@@ -100,15 +103,27 @@ reaches the handler and gets this API's normal JSON error shape instead;
 anything larger still hits axum's hard backstop, so the underlying
 OOM-protection safety property is unchanged. Added one new test proving the
 branch is reachable, mutation-tested (reverted the fix locally, confirmed
-the new test fails, restored it). No other rows changed this pass — see
-"Pass 9 findings" below.
+the new test fails, restored it). No other rows changed this pass.
+
+**Pass 10** (this pass) closed one new one-row section, REQ-STORAGE-001
+(`Store::integrity_check()` had never been proven against real corruption,
+only the healthy-DB path), fixing a related `hse doctor` bug found along the
+way (an `integrity_check()` execution failure wasn't flagged critical, even
+though that's a *more* severe signal than "ran and found problems"). Also
+closed two pre-existing evidence gaps (REQ-CLI-001, REQ-CLI-007: both had
+dedicated tests all along, just uncited — search misses predating Pass 1)
+and strengthened REQ-ENV-005's evidence without flipping its status. Started
+as a working "Pass 9," this pass rebased onto PR #577's own, independently
+merged, genuine Pass 9 (REQ-API-SCAN-006) mid-flight and renumbered to avoid
+colliding with it — see "Pass 10 findings" below for the full account,
+including that reconciliation.
 
 This still does **not** claim to have reconstructed requirements for the
 *entire* codebase (the correlator's actual rule logic beyond registry-level
 completeness, the scan engine's internals beyond the quarantine gate, the
-storage layer beyond one fix, the web/WASM UI, and `hse-ai-daemon` remain
-out of scope for all nine passes) — see "Known limitations" for why, and
-for what a further pass would need to cover.
+storage layer beyond the `integrity_check()` detector, the web/WASM UI, and
+`hse-ai-daemon` remain out of scope for all ten passes) — see "Known
+limitations" for why, and for what a further pass would need to cover.
 
 **How to read this ledger.**
 
@@ -141,20 +156,23 @@ reflected in any row below since it was never a defect in that pass's own
 scope. That module-bug-audit has since completed in full (Phases 0-10,
 188/188 registered modules, PRs #553-568, all merged).
 
-**Known limitations of Pass 8 — what a further pass would need to cover.**
-This ledger's 8 sections are the core contracts, the remote-facing API
-surface, and two registry-level guards of a Rust CLI/module-engine tool: the
-`Module` trait, the CLI, the installer, the env/config template, the
-README's own claims, `hse serve`'s HTTP API, the scan engine's dead-module
-quarantine gate, and the correlator's rule-registration completeness. Passes
-5, 6, and 7 each closed one more `PARTIAL` row within the existing HTTP API
-section (section 6); Pass 8 closed one `IMPLEMENTED_UNVERIFIED` row and
-added one new row within the existing `install.sh` section (section 3),
-triggered by a direct install-readiness request rather than the backlog
-scan — none of the four expanded scope to any new subsystem, so the list
-below is unchanged from Pass 4's. Deliberately still **not** covered by any
-of the nine passes, and not claimed as VERIFIED/MISSING/etc. anywhere
-above:
+**Known limitations of Pass 10 — what a further pass would need to cover.**
+This ledger's 9 sections are the core contracts, the remote-facing API
+surface, and three registry/detector-level guards of a Rust CLI/module-engine
+tool: the `Module` trait, the CLI, the installer, the env/config template,
+the README's own claims, `hse serve`'s HTTP API, the scan engine's
+dead-module quarantine gate, the correlator's rule-registration
+completeness, and the storage layer's `integrity_check()` corruption
+detector (section 9, added in Pass 10). Passes 5, 6, and 7 each closed one
+more `PARTIAL` row within the existing HTTP API section (section 6); Pass 8
+closed one `IMPLEMENTED_UNVERIFIED` row and added one new row within the
+existing `install.sh` section (section 3); Pass 9 (PR #577, merged
+independently of this ledger's own working session) closed the one
+`UNREACHABLE` row, also within the existing HTTP API section — none of
+those five expanded scope to any new subsystem. Pass 10 did: it opened new
+section 9, narrowing (not closing) the storage bullet below. Deliberately
+still **not** covered by any of the ten passes, and not claimed as
+VERIFIED/MISSING/etc. anywhere above:
 
 - **The scan engine's internals beyond the quarantine gate**
   (`src/core/engine/` past `gate_skips` — expansion, ROI/budget pruning, and
@@ -170,8 +188,10 @@ above:
   turned out to already exist; per-rule correctness relies entirely on the
   pre-existing, uncounted `tests/part*.rs` firing-test corpus, not on
   anything this ledger tracks row-by-row.
-- **The storage layer's own contracts** (`src/storage/` — schema migrations,
-  the SQLite `Store`'s full method set beyond what Pass 2's one fix touched).
+- **The storage layer's own contracts beyond `integrity_check()`**
+  (`src/storage/` — schema migrations, concurrent-open behavior, and the
+  SQLite `Store`'s full method set beyond what Pass 2's cache-TTL fix and
+  Pass 10's corruption-detection test (section 9) touched).
 - **The web/WASM UI** (`src/web/`, `wasm-ui/`) and the embedded SPA served by
   `src/api/routes/mod.rs`.
 - **`hse-ai-daemon`** (`src/bin/hse_ai_daemon`) and the other `src/bin/*`
@@ -195,7 +215,7 @@ format, one row each.
 
 None of this is a claim that these areas are broken or unverified in some
 absolute sense — only that this ledger has not yet looked at them, and a
-reader should not infer completeness beyond the 8 sections it actually
+reader should not infer completeness beyond the 9 sections it actually
 covers.
 
 ---
@@ -211,7 +231,7 @@ covers.
 | REQ-CORE-005 | `Module::cost()` defaults to `Free`; drives the `--free-only` CLI/API filter. | none | `ModuleCost` | Filters dispatch set | none | `src/core/module/mod.rs:162-165,19-42` | `module_cost_as_str_matches_serde`, `module_cost_serializes_to_snake_case`, `module_info_reflects_trait_defaults` (`src/core/module/tests.rs`) | Ran `cargo test --lib core::module::tests` this pass — passed. | VERIFIED |
 | REQ-CORE-006 | `Module::is_passive()` defaults to `false`; drives `--passive-only`. Modules with genuinely no network dependency (device sensors) must override `true`. | none | `bool` | Filters dispatch set | A module that is actually passive but doesn't override reports as active (under-inclusive `--passive-only`) — not compiler-checked. | `src/core/module/mod.rs:167-171` | No architecture test cross-checks `is_passive()` against actual network calls (would require dynamic analysis). `module_info_reflects_trait_defaults` covers only the default value. | Read-only. | IMPLEMENTED_UNVERIFIED |
 | REQ-CORE-007 | `Module::max_timeout_ms()` bounds one `process()` call; every non-passive module MUST override it above `MODULE_TIMEOUT_MS` (3000ms), or the engine kills it mid-request on the default budget. | none | `u64` | Engine timeout wrapper | Under-budget non-passive module ⇒ premature `ModuleError{error:"timeout"}` on every call. | `src/core/module/mod.rs:173-185`; `crate::MODULE_TIMEOUT_MS = 3000` (`src/lib.rs:109`) | `non_passive_modules_budget_above_default` (`tests/architecture_parts/architecture_part3.rs:72`) | Ran `cargo test --test architecture non_passive_modules_budget_above_default` this pass — passed. | VERIFIED |
-| REQ-CORE-008 | `Module::termux_timeout_ms()` (default = `max_timeout_ms()`) sets the per-module budget the engine applies on a Termux device when the operator hasn't pinned `ScanOptions::module_timeout_ms`; the engine additionally clamps to a 45s cap unless the module is cap-exempt. | none | `u64` | Engine timeout resolution on Termux | An exempt module bypasses the cap and is bounded only by its own value (still finite). | `src/core/module/mod.rs:187-220`; engine consumer `src/core/engine/timeout/mod.rs` | `termux_cap_bounds_long_modules_only_on_termux_without_override`, `cap_exempt_module_keeps_its_full_termux_budget`, `resolve_timeout_uses_termux_budget_then_cap` (`src/core/engine/timeout/tests.rs`) | Ran `cargo test --lib core::engine::timeout::tests` this pass (Pass 2) — all 3 cited tests passed. | VERIFIED |
+| REQ-CORE-008 | `Module::constrained_timeout_ms()` (default = `max_timeout_ms()`) sets the per-module budget the engine applies on a resource-constrained device (Termux/Android, or any small/metered container) when the operator hasn't pinned `ScanOptions::module_timeout_ms`; the engine additionally clamps to a 45s cap unless the module is cap-exempt. | none | `u64` | Engine timeout resolution on a constrained device | An exempt module bypasses the cap and is bounded only by its own value (still finite). | `src/core/module/mod.rs:187-220`; engine consumer `src/core/engine/timeout/mod.rs` | `constrained_cap_bounds_long_modules_only_when_constrained_without_override`, `cap_exempt_module_keeps_its_full_constrained_budget`, `resolve_timeout_uses_constrained_budget_then_cap` (`src/core/engine/timeout/tests.rs`) | **Citations updated in Pass 10** (renamed by PR #576's `CORE LOGIC != PLATFORM LOGIC` fix — `termux_timeout_ms`→`constrained_timeout_ms` etc.; the underlying gating logic is unchanged, confirmed by that PR's own zero-diff-in-behavior verification). Ran `cargo test --lib core::engine::timeout::tests` this pass — all 3 cited tests passed under their new names. | VERIFIED |
 | REQ-CORE-009 | `Module::cache_ttl_secs()` (default 0 = no caching) lets the engine serve a prior result from the inter-scan entity cache instead of re-querying, for modules with stable, cacheable data. | none | `u64` (seconds) | Engine reads/writes an entity cache keyed on module+target when `ttl > 0` | `ttl == 0` ⇒ cache path is a no-op | `src/core/module/mod.rs:272-278`; consumers `src/core/engine/dispatch.rs:848,984,1106`; cache-hit contract documented at `src/core/port/mod.rs:139-155` | **Fixed this pass (Pass 2).** No dedicated unit test found exercising a cache HIT/MISS for a nonzero-TTL module end-to-end. Root cause: `core::test_support::InMemoryStore` (the standard engine-test double) inherited `StoragePort`'s no-op defaults for `archive_module_result`/`lookup_module_result_fresh` — a lookup could never return a hit, so the dispatch-level "cache hit skips `process()`" behavior was structurally untestable through it, independent of the storage layer's own coverage (`storage::archive_tests` already fully covers the SQLite-backed round-trip). | Gave `InMemoryStore` genuine in-memory cache semantics mirroring `Store`'s exact freshness predicate (`archived_at + ttl_secs > now`), then added `core::engine::tests::cache_hit_skips_reprocessing_a_later_scan_of_the_same_target`: dispatches a `cache_ttl_secs()`-overriding probe against the same target under two different scan_ids and asserts `process()` runs exactly once (the second dispatch replays from cache, `ModuleStats::cached == 1`), plus a third dispatch against a *different* target proves the cache is keyed per-target, not a blanket hit. Ran `cargo test --lib core::engine::tests::cache_hit_skips_reprocessing_a_later_scan_of_the_same_target` — passed. Updating `InMemoryStore` also broke a pre-existing test's premise (`core::port::tests::default_optional_methods_are_documented_no_ops` asserted `InMemoryStore` overrides none of the 7 default methods) — updated that test's assertions and comment to reflect the new, deliberate 5-no-op/2-real-cache split. Ran `cargo test --lib --features dep-cooldown` (6836 passed, 0 failed), `cargo test --test architecture` (55 passed), `cargo clippy --all-targets --features dep-cooldown -- -D warnings` (clean), `cargo fmt --all`. | VERIFIED |
 | REQ-CORE-010 | `Module::attack_techniques()` defaults from `category()` via `attack::techniques_for_category`; every registered module must declare at least one real MITRE ATT&CK Reconnaissance technique ID from the catalogue. | none | `&'static [&'static str]` | Tags emitted entities with `attack:<ID>` | A module whose category is `Other` (unmapped) and has no override reports zero techniques. | `src/core/module/mod.rs:280-293`; category map `src/core/attack/mod.rs` | `every_module_maps_to_valid_attack_reconnaissance_techniques` (`tests/architecture_parts/architecture_part2.rs:14`) | Ran `cargo test --test architecture` this pass — passed (part of the 55/55 run). | VERIFIED |
 | REQ-CORE-011 | `Module::produces()` (default empty) documents `EntityKind`s the module emits; every module that literally constructs an `Entity::new(EntityKind::X, ...)` must declare `X` in its `produces()`. | none | `&'static [EntityKind]` | Drives the UI pivot-chain / capability map | A module minting an undeclared kind under-represents its own output map (sound-but-incomplete check: only catches literal constructions, not dynamically-classified ones). | `src/core/module/mod.rs:268-270` | `every_literal_constructed_entity_kind_is_declared_in_produces` (`tests/architecture_parts/architecture_part5.rs:90`) | Ran `cargo test --test architecture` this pass — passed. | VERIFIED |
@@ -225,13 +245,13 @@ covers.
 
 | ID | Behavior | Inputs | Outputs | Side effects | Failure behavior | Implementation location | Tests covering it | Runtime verification evidence | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| REQ-CLI-001 | `hse` builds a bounded tokio runtime (2 worker threads, 16 max blocking threads) rather than `#[tokio::main]`'s 512-thread default, to bound OS-thread spawn on a low-RAM phone. | none | Configured `tokio::runtime::Runtime` | Process-wide runtime config | `.expect()`s on build failure (process aborts with a message — acceptable for a runtime that cannot be built at all). | `src/main.rs:12-17`; constants `src/lib.rs:112,120` | `architecture_constants` asserts `WORKER_THREADS == 2` (`tests/architecture_parts/architecture_part3.rs:89`); `MAX_BLOCKING_THREADS` itself is not separately asserted. | Ran `cargo test --test architecture architecture_constants` this pass — passed (covers `WORKER_THREADS`, not `MAX_BLOCKING_THREADS`). | PARTIAL |
+| REQ-CLI-001 | `hse` builds a bounded tokio runtime (2 worker threads, 16 max blocking threads) rather than `#[tokio::main]`'s 512-thread default, to bound OS-thread spawn on a low-RAM phone. | none | Configured `tokio::runtime::Runtime` | Process-wide runtime config | `.expect()`s on build failure (process aborts with a message — acceptable for a runtime that cannot be built at all). | `src/main.rs:12-17`; constants `src/lib.rs:112,120` | `architecture_constants` asserts `WORKER_THREADS == 2` (`tests/architecture_parts/architecture_part3.rs:89`, not `MAX_BLOCKING_THREADS`) — **and** a second, previously-uncited pre-existing test, `architecture_constants_are_correct` (`src/lib_tests.rs:63-69`, wired via `include!` at `src/lib.rs:161-163`), which asserts `MAX_BLOCKING_THREADS == 16` alongside `WORKER_THREADS == 2` and 3 other constants; `src/main.rs:12-14` wires both into the real `tokio::runtime::Builder`. Predates Pass 1 (`git log -S` places it before commit `26e430cf9`, #481). | **Found and fixed in Pass 10** — the row's own text said `MAX_BLOCKING_THREADS` "is not separately asserted," which was itself a search miss (a differently-named test elsewhere in the tree already covered it), not a real gap. Ran `cargo test --lib architecture_constants_are_correct` this pass — passed. | VERIFIED |
 | REQ-CLI-002 | A panic caused specifically by a broken stdout pipe (`print!`/`println!` hitting `EPIPE`, e.g. `hse scan \| head`) exits 0 quietly instead of printing a backtrace; every other panic still propagates through the default hook. | Panic payload string | Process exit code | `std::process::exit(0)` for the matched case only | A genuine output failure unrelated to a closed pipe (e.g. disk full) still panics loudly, by design. | `src/main.rs:43-66` | `is_broken_pipe_panic` unit-tested in `src/main_tests.rs` (`#[cfg(test)] mod tests { include!("main_tests.rs"); }` at `src/main.rs:69`). | Ran `cargo test --bin hse` this pass (Pass 2) — `tests::recognises_only_the_broken_pipe_print_panic` passed. | VERIFIED |
 | REQ-CLI-003 | `hse --version` / the `Cli` clap tree is internally consistent (no duplicate short flags, no conflicting IDs) — validated at test time via clap's own `debug_assert`, since a broken definition only panics at first real invocation otherwise. | none | n/a | none | A broken definition would otherwise panic on first invocation of the affected subcommand in production, not at build time. | `src/cli/command.rs:62-892` | `cli_definition_is_internally_consistent` (`src/cli/command.rs:909`) | Ran `cargo test --lib cli::command::tests::cli_definition_is_internally_consistent` this pass — passed. | VERIFIED |
 | REQ-CLI-004 | `hse scan --min-confidence <f>` and `--min-expand-confidence` reject non-finite (`nan`/`inf`) and out-of-`0.0..=1.0` values at the argument-parsing boundary, rather than silently producing a floor that discards every entity. | CLI string | `Result<f64, String>` (clap `value_parser`) | none | Clap usage error before any scan work begins. | `src/cli/command.rs:23-34` (`confidence_floor`) | `confidence_floor_accepts_the_documented_range_inclusive`, `confidence_floor_rejects_non_finite_values`, `confidence_floor_rejects_values_outside_zero_to_one`, `confidence_floor_rejects_non_numeric_input` (`src/cli/command.rs`) | Ran `cargo test --lib cli::command::tests` this pass — all 4 passed. | VERIFIED |
 | REQ-CLI-005 | `hse scan --min-marginal-yield <f>` rejects non-finite and negative values but, unlike confidence, accepts values above 1.0 (it's a rate, not a probability). | CLI string | `Result<f64, String>` | none | Clap usage error. | `src/cli/command.rs:47-60` (`non_negative_rate`) | `non_negative_rate_accepts_values_above_one`, `non_negative_rate_rejects_non_finite_and_negative` (`src/cli/command.rs`) | Ran `cargo test --lib cli::command::tests` this pass — passed. | VERIFIED |
 | REQ-CLI-006 | `hse scan --full` (`--complete`/`--everything`) is the "no-compromise" preset: forces every module regardless of `--free-only`/`--passive-only`/`--modules`, pins `MAX_DEPTH` recursion, lifts the wrong-identity expansion gate, disables ROI pruning/dead-module skipping, and restores infra entities — overriding every one of those individual flags even when also passed. | CLI flags | `ScanCmd` struct fields | none | none (pure flag composition) | `src/cli/mod.rs:97-144` | Composition asserted inline via the doc comments; no dedicated unit test constructs `--full` alongside each conflicting flag and asserts the override wins for all of them simultaneously (each override is one `bool && !full` expression, individually simple but not table-tested as a set). | Read-only; traced the composition logic by hand, did not execute a combined-flags scenario. | IMPLEMENTED_UNVERIFIED |
-| REQ-CLI-007 | `hse scan` with no `--value` and no `--input-file` falls back to `HUNTSMAN_DEFAULT_SEED`; if neither is set, errors with actionable guidance rather than a bare panic or an empty scan. | `Option<String>` (CLI), `Option<String>` (env-derived default) | `Result<String>` | none | `Error::Other("no target: ...")` | `src/cli/mod.rs:340-352` (`resolve_seed`) | Not found under a dedicated test name in `src/cli/tests.rs` search for `resolve_seed`; the function is `pub(super)`-free and pure, ideal for a unit test, but none was located. | Read-only; searched `src/cli/tests.rs` and `src/cli/mod.rs` inline tests for `resolve_seed` — none found. | PARTIAL |
+| REQ-CLI-007 | `hse scan` with no `--value` and no `--input-file` falls back to `HUNTSMAN_DEFAULT_SEED`; if neither is set, errors with actionable guidance rather than a bare panic or an empty scan. | `Option<String>` (CLI), `Option<String>` (env-derived default) | `Result<String>` | none | `Error::Other("no target: ...")` | `src/cli/mod.rs:340-352` (`resolve_seed`) | `resolve_seed_prefers_explicit_cli_value`, `resolve_seed_falls_back_to_default_when_value_absent`, `resolve_seed_blank_cli_value_falls_back_to_default`, `resolve_seed_trims_explicit_value`, `resolve_seed_errors_when_nothing_set` (`src/cli/tests.rs:158-187`) — 5 dedicated tests covering exactly this precedence/error-message contract, predating Pass 1 (same `26e430cf9` commit as REQ-CLI-001's miss). | **Found and fixed in Pass 10** — the row's prior "none found" was a search miss, not a real gap (the earlier search apparently missed this exact block in `src/cli/tests.rs`). Ran `cargo test --lib resolve_seed` this pass — 5/5 passed. | VERIFIED |
 | REQ-CLI-008 | `hse serve`'s key-write endpoint is loopback-only regardless of `--no-key-write`; a non-loopback bind requires either an explicit/auto-minted bearer token or `--allow-unauthenticated`. | `--bind`, `--auth-token`/`HSE_AUTH_TOKEN`, `--allow-unauthenticated`, `--no-key-write` | Server startup banner + enforced auth middleware | Binds a socket; may print a one-time minted token | Loopback + no token ⇒ silently open (by design, device-local); non-loopback + no token + no `--allow-unauthenticated` ⇒ auth is required (server still starts, all non-loopback requests 401). | `src/cli/serve/mod.rs:361-421`; enforcement `src/api/routes/mod.rs`, `src/api/auth/mod.rs` | `src/api/auth/tests.rs` (21 tests), `src/api/routes/tests.rs` (33 tests) | Ran `cargo test --lib api::auth` and `cargo test --lib api::routes` this pass (Pass 2) — 21/21 and 33/33 passed respectively. | VERIFIED |
 | REQ-CLI-009 | `hse build-sha` exits non-zero when the build carries no verifiable revision (dirty tree, or no `.git` and no `HSE_BUILD_SHA`); `install.sh`/`hse update` treat a non-zero exit as "cannot prove it" and rebuild. | none | SHA to stdout (or JSON with `--json`) | Process exit code | Non-zero exit + `Error::Other` message | `src/cli/mod.rs:447-471` | No dedicated test name found asserting the exit-code contract specifically (`build_sha_is_verifiable` itself likely has coverage in its own module, not checked this pass). | Ran `./target/debug/hse build-sha; echo exit=$?` this pass (Pass 2) — `sha=cc55f3858…, dirty=1`, `exit=1` (the on-disk binary predates the current HEAD, the same "cannot prove it" signal a genuinely dirty tree produces). Exit code confirmed non-zero as documented. | VERIFIED |
 | REQ-CLI-010 | `hse modules --category <cat> --json` filters the registry by category and emits the same JSON shape as `GET /api/v1/modules`. | `--category`, `--json` | stdout JSON or table | none | Unknown category presumably yields an empty filtered list (not explicitly checked this pass). | `src/cli/modules.rs`; `Command::Modules` in `src/cli/command.rs:276-283` | Not individually checked this pass. | Ran `./target/debug/hse modules --json` this pass — returned `{"count":188,"modules":[...]}` with per-module `consumes`/`category`/`cost` fields, confirming the JSON shape and that the registry currently holds 188 entries (used to derive REQ-README rows below). | VERIFIED |
@@ -265,7 +285,7 @@ covers.
 | REQ-ENV-002 | No module under `src/modules/` reads a `HUNTSMAN_*` credential via a raw `std::env::var(...)` call bypassing `ModuleContext::key`/`key_opt` (which is the sole enforcement point for the blank/placeholder filter); the two sanctioned non-credential exceptions (`HUNTSMAN_SEARCH_PROXY`, `HUNTSMAN_EMAIL_DOMAINS`) are allow-listed and anti-rot-checked. | `src/modules/` source tree | Pass/fail assertion | none | A credential read raw would forward an un-edited template placeholder to a provider as a live request. | `tests/architecture_parts/architecture_part3.rs:767-850` | `modules_never_read_credentials_via_raw_env` | Ran `cargo test --test architecture modules_never_read_credentials_via_raw_env` this pass — passed. | VERIFIED |
 | REQ-ENV-003 (**fixed in Pass 4**) | The env var consumption guards above (REQ-ENV-001/002) only ever scan for **`HUNTSMAN_`-prefixed** literals (`push_huntsman_literal` requires the literal to start with `"HUNTSMAN_"`); any env var read via `std::env::var`/`var_os` under a *different* prefix is invisible to both tests, so it can be genuinely load-bearing yet fully undocumented with no test noticing. | Full `src/` tree | n/a | n/a | A tuning knob under this blind spot can drift silently (renamed, removed, or simply never documented) with zero test coverage. | Test blind spot in `tests/architecture_parts/architecture_part3.rs:353-365` (`push_huntsman_literal`); new guard `non_huntsman_env_reads_are_known` (~line 862) closes it | `non_huntsman_env_reads_are_known` (new, Pass 4) | **Corrected and fixed in Pass 4.** Pass 3's framing ("4 real, undocumented knobs feeding live `QuotaBudget`s") was itself unverified — Pass 4 traced every caller of `oathnet_quota()`/`see_know_quota()`/`wigle_quota()` directly (`grep -rn` across `src/`) and found only **`HSE_OATHNET_PER_SCAN_LIMIT`** has a live effect (`oathnet::BUDGET`, `src/util/oathnet/mod.rs:51`); the other three (`HSE_OATHNET_DAILY_LIMIT`, `HSE_SEE_KNOW_PER_SCAN_LIMIT`, `HSE_WIGLE_PER_SCAN_LIMIT`) are parsed by `quota_config.rs` and then never read again — `see_know_quota()`/`wigle_quota()` have zero callers outside their own definitions, and `OathnetQuotaConfig::daily_limit` is assigned to a local `config` binding at `oathnet/mod.rs:51` and never used again (a *different*, same-named field on `RealQuota`, populated from the live API's own response, is what actually tracks the daily limit). Fixed: (1) `.env.example` gained one commented entry for the one live knob only; (2) `quota_config.rs`'s own overclaiming module doc comment ("Each API module reads its limits once at startup and uses them") was corrected to state each var's actual live/dead status; (3) added `non_huntsman_env_reads_are_known` — a generalized, allow-listed, anti-rot-checked guard (mirrors `ALLOWED_RAW_ENV`/`NOT_YET_WIRED`'s existing idiom) that closes the blind spot for ANY future non-`HUNTSMAN_` var, not just these 4. Ran `cargo test --test architecture non_huntsman_env_reads_are_known` — passed. Ran `cargo test --test architecture` (full suite) — 56 passed, 0 failed. | VERIFIED |
 | REQ-ENV-004 | `.env.example` (repo root, the file a user following its own header comment would copy to `~/.huntsman.env`) is a *second*, hand-maintained copy of the key list separate from the test-guarded canonical `src/cli/env_template.txt`; every key name it lists is at least textually referenced somewhere in `src/` (no outright typo'd/orphaned key found), but the two files have drifted apart in both directions — `.env.example` carries 37 keys/knobs `env_template.txt` doesn't (mostly non-credential tuning knobs like the `HUNTSMAN_WIGLE_*_SCAN_CAP`/`SESSION_CAP` family), while `env_template.txt` carries 7 keys `.env.example` doesn't (the `[RESERVED]`/`NOT_YET_WIRED` provider keys added after `.env.example` was last touched) — and none of this is covered by any architecture test the way `env_template.txt`'s own content is. | `.env.example`, `src/cli/env_template.txt`, `src/` | n/a | n/a | An operator who follows `.env.example`'s own instructions instead of `hse provision` gets a file that is stale but not actively wrong (every key it does list is genuinely consumed) and is simply missing 7 reserved-key placeholders that currently do nothing anyway. | `.env.example` (91 `HUNTSMAN_*` mentions, all commented-out) vs `src/cli/env_template.txt` (61 uncommented, live keys) | None. | Ran a diff of key-name sets between the two files this pass (`comm -23`/`comm -13` over sorted, deduped `grep -oE "HUNTSMAN_[A-Z0-9_]+"` extracts: 37 in `.env.example` only, 7 in `env_template.txt` only) and cross-checked every `.env.example`-only key against `grep -rl` over `src/` for a matching string literal — zero orphans found. | PARTIAL |
-| REQ-ENV-005 | `HUNTSMAN_DEFAULT_SEED` (read via `std::env::var`, not the key-pool machinery) lets `hse scan`/`hse live` run with no `--value` at all. | env var | `Option<String>` | none | Absent + no `--value` ⇒ `Error::Other` with actionable guidance (REQ-CLI-007). | `src/util/keys/mod.rs::default_seed()` (consumer: `src/cli/mod.rs:340-352`) | Covered by `collect_raw_huntsman_env_reads`'s general sweep (part of REQ-ENV-001's passing assertion) for "is it consumed", but no test exercises the actual scan-launch fallback behavior end-to-end. | Read-only for the fallback path itself; REQ-ENV-001's pass confirms the var is at least consumed somewhere. | PARTIAL |
+| REQ-ENV-005 | `HUNTSMAN_DEFAULT_SEED` (read via `std::env::var`, not the key-pool machinery) lets `hse scan`/`hse live` run with no `--value` at all. | env var | `Option<String>` | none | Absent + no `--value` ⇒ `Error::Other` with actionable guidance (REQ-CLI-007). | `src/util/keys/mod.rs::default_seed()` (consumer: `src/cli/mod.rs:340-352`, now VERIFIED under REQ-CLI-007) | **Strengthened in Pass 10.** `resolve_seed`'s own precedence/fallback logic is now fully covered (REQ-CLI-007, 5 tests). One layer below that, the pure precedence/blank-handling logic it delegates to, `keys::pick_default_seed`, has 3 dedicated tests too: `default_seed_precedence_env_wins_then_file_then_none`, `default_seed_trims_and_treats_blank_as_unset`, `default_seed_only_reads_the_seed_key` (`src/util/keys/tests.rs:677-709`). What remains genuinely untested: `keys::default_seed()`'s own one-line `std::env::var(DEFAULT_SEED_ENV)` read (`src/util/keys/io.rs:55`) — a thin, hard-to-unit-test-without-mutating-process-env wrapper, the same class of gap the ledger already tolerates for REQ-ENV-006 (clap's `env=` attribute). | Ran `cargo test --lib default_seed` this pass — 3/3 passed (in addition to REQ-CLI-007's 5/5). The remaining gap is a thin env-read wrapper, not the fallback logic itself — not worth a clean flip to VERIFIED per the ledger's own "no test exercises the actual X" standard, but no longer a real open question about whether the *behavior* works. | PARTIAL |
 | REQ-ENV-006 | `HSE_BIND`/`HSE_AUTH_TOKEN` (non-`HUNTSMAN_`-prefixed, deliberately outside the credential-pool system) configure `hse serve`'s bind address and bearer token via clap's own `env = "..."` attribute, and are documented in `docs/RAILWAY.md` and `README.md` (not `.env.example`/`env_template.txt`, which is correct since these are deployment knobs, not OSINT-provider credentials). | env var (via clap) | Parsed `Cli` fields | none | Clap's own env-fallback semantics (CLI flag wins if both given). | `src/cli/command.rs:554,569` | No dedicated test asserts the clap `env = "HSE_BIND"` wiring actually reads the process environment (clap's own tests cover the mechanism generically, not this specific field). | Read-only; confirmed via `grep` that both vars appear in `docs/RAILWAY.md` and `README.md`. | IMPLEMENTED_UNVERIFIED |
 
 ---
@@ -596,6 +616,14 @@ This section exists purely to close the ledger's own blind spot — the
 correlator subsystem had no representation here at all before Pass 4, even
 though its underlying protections were already comprehensive. No code
 changed for this row; the fix is documentary.
+
+---
+
+## 9. Storage subsystem (`src/storage/`)
+
+| ID | Behavior | Inputs | Outputs | Side effects | Failure behavior | Implementation location | Tests covering it | Runtime verification evidence | Status |
+|---|---|---|---|---|---|---|---|---|---|
+| REQ-STORAGE-001 (**new, Pass 10**) | `Store::integrity_check()` (`PRAGMA integrity_check`) must surface real on-disk SQLite corruption as a non-`["ok"]` result — trusted by `hse doctor` (critical-exit-code path) and the debug-bundle export API to decide whether the database is healthy (FTA finding E5.1 / top event T5). | none | `Result<Vec<String>>` | Read-only pragma | A healthy DB returns exactly `["ok"]`; a corrupt one returns a row per problem found, OR (severe corruption) the pragma itself errors. | `src/core/port/mod.rs:258-261` (trait), `src/storage/mod.rs:584-591` (impl); consumers `src/app/doctor/mod.rs:63-75`, `src/api/handlers/mod.rs:662-664` | `integrity_check_reports_ok_on_healthy_db` (healthy path, pre-existing), `integrity_check_reports_problems_on_a_corrupted_db` (new, Pass 10) (`src/storage/tests.rs`) | **Gap found and fixed in Pass 10.** The only existing test proved the healthy-DB path; nothing had ever fed `integrity_check()` a genuinely corrupted database to prove it actually detects real corruption rather than always reporting "ok". Added a test that builds a real `Store`, writes 400 entities, checkpoints, then truncates away the trailing ~40% of the file (real row data, since SQLite allocates pages append-only) — a deterministic corruption technique. **Empirical finding along the way**: this reliably fails `Store::open()` itself, not just `integrity_check()` — `open()` is not a bare `sqlite3_open`, it runs an idempotent `entity_observations` backfill and an FTS freshness count that both scan `entities`' real data pages (`src/storage/mod.rs`, right after schema setup), so corruption in the most-written table is caught even earlier than the explicit check. The test accepts either real outcome (open failing, or opening fine and `integrity_check()` then reporting/erroring) as long as some stage surfaces it. **A second, related gap found and fixed in the same investigation**: `hse doctor`'s handling of `integrity_check()` returning `Err` (`src/app/doctor/mod.rs`) printed `"could not run check"` but did **not** set the `critical` flag that drives the command's exit code — meaning severe-enough corruption (the pragma itself failing, exactly the failure mode this test's corruption technique produces) would print an alarming-looking line but still exit 0. Fixed: that branch now sets `critical = true` too, matching the sibling "ran and found problems" arm. Ran `cargo test --lib storage::tests` (108/108 passed, including both integrity_check tests) and `cargo test --lib app::doctor::tests` (14/14 passed, confirming the doctor fix didn't disturb any existing assertion) this pass. **Hardened after this pass's own PR review**: a Copilot finding correctly noted the test's original corruption predicate (matching "corrupt"/"malformed" in the error's Display text) wasn't guaranteed to catch every SQLite corruption-shaped error across versions/platforms; reworked to match the underlying `rusqlite::ErrorCode` (`DatabaseCorrupt`/`NotADatabase`/`SystemIoFailure`) instead, substring matching kept only as a fallback for non-`SqliteFailure` shapes. Re-ran the test after the rework — still passes. | VERIFIED |
 
 ---
 
@@ -1010,19 +1038,101 @@ $ cargo test --lib --features dep-cooldown                                # 6852
 $ cargo test --test architecture                                          # 56 passed, 0 failed
 ```
 
+## Pass 10 findings
+
+Triggered by the same "requirements reconstruction and traceability"
+directive mirroring this ledger's own established loop verbatim — re-sync
+with `main`, reconcile the ledger against current reality without trusting
+prior commentary, resolve the highest-value actionable gap, verify through
+the real supported path, update the ledger, repeat. A dedicated
+investigation reconciled the ledger against the two PRs merged since Pass 8
+(#575, itself Pass 8; #576, "Architecture invariants: fix 5 real boundary
+leaks") and swept fresh for gaps not yet in the ledger at all. **Pass 9**
+(PR #577, "Confirm reasoning-effort fix for failing 'copilot' job") landed
+on `main` while this pass was still in flight — a genuine, independent fix
+for REQ-API-SCAN-006 (see its row above) — so this pass rebased onto it and
+renumbered from its original working label of "Pass 9" to Pass 10, to avoid
+colliding with that already-merged, correctly-numbered one.
+
+**Drift found from PR #576** (real): REQ-CORE-008's cited test names/methods
+were renamed (`termux_timeout_ms`→`constrained_timeout_ms` etc.) — citations
+updated in place, status unchanged (VERIFIED, behavior confirmed unchanged by
+PR #576's own zero-diff verification, re-confirmed by re-running the 3 tests
+under their new names this pass).
+
+**Two pre-existing evidence gaps found and closed** (search misses from
+before Pass 1, not drift from #575/#576): REQ-CLI-001 and REQ-CLI-007 were
+both marked `PARTIAL` citing "no test found," when in fact both already had
+dedicated coverage under different file locations/names than the original
+search checked (`src/lib_tests.rs`'s `architecture_constants_are_correct` for
+REQ-CLI-001's `MAX_BLOCKING_THREADS`; `src/cli/tests.rs`'s 5
+`resolve_seed_*` tests for REQ-CLI-007). Both flipped to `VERIFIED` after
+personally re-running the tests this pass. REQ-ENV-005's evidence was
+strengthened similarly (3 newly-found `default_seed_*` tests one layer below
+`resolve_seed`) but deliberately left `PARTIAL` — a thin, genuinely-untested
+one-line env-read wrapper remains, the same class of gap the ledger already
+tolerates for REQ-ENV-006.
+
+**New gap found and fixed — REQ-STORAGE-001** (top-priority pick, see
+Section 9 above for the full writeup): `Store::integrity_check()`, the
+mitigation `hse doctor` and the debug-bundle export both trust for
+FTA finding E5.1 / top event T5, had never been tested against real
+corruption — only the healthy-DB path was covered. Building the corruption
+test surfaced a second, related, genuinely fixed bug along the way:
+`hse doctor`'s handling of the pragma itself erroring (as opposed to running
+and reporting problem rows) did not set the `critical` exit-code flag,
+undertreating a severe corruption signal as merely informational. Both are
+fixed and regression-tested this pass. A Copilot review on this pass's own
+PR caught a real robustness gap in the new test itself: its corruption
+predicate matched only "corrupt"/"malformed" Display-text substrings, which
+SQLite doesn't guarantee across versions/platforms — fixed to match the
+underlying `rusqlite::ErrorCode` (`DatabaseCorrupt`/`NotADatabase`/
+`SystemIoFailure`) instead, keeping substring matching only as a fallback.
+
+**New gaps found, not yet actioned** (ranked below REQ-STORAGE-001, left for
+a future pass): `ScanOptions::max_roi`'s adaptive-depth-termination lever has
+zero test coverage above the pure-function level (its convergence-pruning and
+top-K/knee-gate sibling levers have at least one test each one layer closer
+to real dispatch) — the natural next pick, same size/shape as this pass's.
+`src/bin/hse_ai_daemon/main.rs` still has zero test coverage of any kind
+(confirmed unchanged since Pass 4). The 6 web/JS UI workflow claims Pass 4
+catalogued remain untested — confirmed this pass that **no JS test framework
+exists in the repo at all** (no `package.json`/test runner), while correcting
+an assumption nearly made: the `wasm-ui` Rust companion crate *is* tested in
+CI, just not the interactive JS logic driving it. The evergreen-docs
+drift-check backlog (33 files under `docs/`) remains fully untouched.
+
+### Verification commands run (Pass 10, in order)
+
+```
+$ cargo test --lib --features dep-cooldown -- architecture_constants_are_correct resolve_seed default_seed core::engine::timeout::tests
+                                                                            # 12/12 passed (personal re-verification of the investigation's own claims)
+$ cargo test --lib --features dep-cooldown -- integrity_check              # 2/2 passed (new corruption test + pre-existing healthy-path test)
+$ cargo test --lib --features dep-cooldown -- storage::tests app::doctor::tests
+                                                                            # 108/108, 14/14 passed
+$ cargo fmt --all
+$ cargo clippy --all-targets --features dep-cooldown -- -D warnings        # clean
+$ cargo test --test architecture                                          # 56 passed, 0 failed
+$ scripts/gate.sh                                                         # 17/17 executed checks PASS
+$ # Copilot review fix: reworked the corruption predicate onto rusqlite::ErrorCode
+$ cargo test --lib storage::tests::integrity_check_reports_problems_on_a_corrupted_db
+                                                                            # still passes after the rework
+$ cargo clippy --lib --features dep-cooldown -- -D warnings               # clean
+```
+
 ## Summary statistics
 
-| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 | Pass 6 | Pass 7 | Pass 8 | Pass 9 |
-|---|---|---|---|---|---|---|---|---|---|
-| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 | 56 | 58 | 59 *(REQ-API-SCAN-006 fixed in Pass 9)* |
-| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 | 14 | 13 *(REQ-INSTALL-001 out, fixed; REQ-INSTALL-010 in as new then confirmed VERIFIED by this PR's own CI run before merge — net -1)* | 13 |
-| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* | 16 *(REQ-API-SCAN-002 fixed in Pass 7)* | 16 | 16 |
-| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 | 0 | 0 | 0 |
-| AMBIGUOUS | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 | 0 | 0 | 0 |
-| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 0 *(REQ-API-SCAN-006 fixed in Pass 9)* |
-| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** | **88** | **89** | **89** |
+| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 | Pass 6 | Pass 7 | Pass 8 | Pass 9 | Pass 10 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 | 56 | 58 | 59 *(REQ-API-SCAN-006 fixed in Pass 9)* | 62 *(REQ-CLI-001, REQ-CLI-007 flipped from PARTIAL; REQ-STORAGE-001 new)* |
+| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 | 14 | 13 *(REQ-INSTALL-001 out, fixed; REQ-INSTALL-010 in as new then confirmed VERIFIED by this PR's own CI run before merge — net -1)* | 13 | 13 |
+| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* | 16 *(REQ-API-SCAN-002 fixed in Pass 7)* | 16 | 16 | 14 *(REQ-CLI-001, REQ-CLI-007 out, fixed; REQ-ENV-005 stays, evidence strengthened)* |
+| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 | 0 | 0 | 0 | 0 |
+| AMBIGUOUS | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 0 *(REQ-API-SCAN-006 fixed in Pass 9)* | 0 |
+| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** | **88** | **89** | **89** | **90** *(REQ-STORAGE-001, new Section 9)* |
 
 Pass 4's `VERIFIED` count (53) is Pass 3's 50, plus the REQ-ENV-003 flip
 (+1), plus the two new one-row sections REQ-ENGINE-001/REQ-CORRELATOR-001
@@ -1035,7 +1145,11 @@ intermediate status this time. Passes 5, 6, and 7 each added no new rows
 REQ-INSTALL-010 — new, not yet confirmed by its own PR's CI run — enters
 it), and the new row brings the total from 88 to 89. Pass 9 adds no new
 rows (89 unchanged) — one `UNREACHABLE` → `VERIFIED` flip (REQ-API-SCAN-006),
-so `VERIFIED` rises from 58 to 59 and `UNREACHABLE` drops from 1 to 0.
+so `VERIFIED` rises from 58 to 59 and `UNREACHABLE` drops from 1 to 0. Pass
+10's `VERIFIED` count (62) is Pass 9's 59, plus two `PARTIAL` → `VERIFIED`
+flips (REQ-CLI-001, REQ-CLI-007, +2), plus one new row (REQ-STORAGE-001,
++1); `PARTIAL` drops from 16 to 14 (the same two flips leaving it); the new
+row brings the total from 89 to 90.
 
 Breakdown by section: Module trait contract 14 rows (REQ-CORE-001..014), CLI
 surface 12 rows (REQ-CLI-001..012), `install.sh` 10 rows
@@ -1043,8 +1157,9 @@ surface 12 rows (REQ-CLI-001..012), `install.sh` 10 rows
 rows (REQ-README-001..010), HTTP API surface 35 rows (REQ-API-ROUTE-001..007,
 REQ-API-AUTH-001..004, REQ-API-SCAN-001..010, REQ-API-MISC-001..008,
 REQ-API-EXPORT-001..006), Scan engine dispatch 1 row (REQ-ENGINE-001),
-Correlator rule registry 1 row (REQ-CORRELATOR-001) —
-14+12+10+6+10+35+1+1 = 89, matching the total above.
+Correlator rule registry 1 row (REQ-CORRELATOR-001), Storage subsystem 1 row
+(REQ-STORAGE-001) —
+14+12+10+6+10+35+1+1+1 = 90, matching the total above.
 Some rows cite tests shared across sections (e.g. REQ-CORE-010 and
 REQ-README-009 both cite `every_module_maps_to_valid_attack_reconnaissance_techniques`),
 which is intentional — the two rows document the same underlying test from
