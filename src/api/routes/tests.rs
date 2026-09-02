@@ -683,6 +683,7 @@ use super::*;
             "expansion_tick",
             "expansion_stop",
             "entity_excluded",
+            "dispatch_utility_computed",
             "breach_sweep",
             "consensus_audit",
             "correlation_found",

@@ -105,6 +105,22 @@ pub enum EventKind {
         value: String,
         reason: String,
     },
+    /// A [`crate::core::roi::DispatchUtility`] was computed for an eligible
+    /// (module, target) candidate — the ROI subsystem's fourth,
+    /// explainability-only lever (`ScanOptions::dispatch_utility`). Never
+    /// gates dispatch itself; purely additive telemetry.
+    DispatchUtilityComputed {
+        /// The module the score was computed for.
+        module: String,
+        /// The candidate target's kind (`TargetKind::canonical_str()`).
+        target_kind: String,
+        /// The candidate target's value.
+        target_value: String,
+        /// `DispatchUtility::final_utility` — the additive ranking score.
+        final_utility: f64,
+        /// `DispatchUtility::explanation` — one line per contributing factor.
+        explanation: Vec<String>,
+    },
     /// The final bulk breach sweep dispatched its compiled plan. Reports the
     /// plan's shape, INCLUDING what it declined to ask, so a sweep that hit its
     /// cap is distinguishable from one that simply had less to ask about.
@@ -194,6 +210,7 @@ impl EventKind {
             Self::ExpansionTick { .. } => "expansion_tick",
             Self::ExpansionStop { .. } => "expansion_stop",
             Self::EntityExcluded { .. } => "entity_excluded",
+            Self::DispatchUtilityComputed { .. } => "dispatch_utility_computed",
             Self::BreachSweep { .. } => "breach_sweep",
             Self::ConsensusAudit { .. } => "consensus_audit",
             Self::CorrelationFound { .. } => "correlation_found",
@@ -283,6 +300,19 @@ impl EventKind {
                 ("entity_kind", json!(kind)),
                 ("value", json!(value)),
                 ("reason", json!(reason)),
+            ],
+            Self::DispatchUtilityComputed {
+                module,
+                target_kind,
+                target_value,
+                final_utility,
+                explanation,
+            } => vec![
+                ("module", json!(module)),
+                ("target_kind", json!(target_kind)),
+                ("target_value", json!(target_value)),
+                ("final_utility", json!(final_utility)),
+                ("explanation", json!(explanation)),
             ],
             Self::BreachSweep {
                 anchors,
@@ -399,6 +429,16 @@ impl EventKind {
             } => (
                 "expand",
                 format!("⊘ not expanded · {kind} {value}  {reason}"),
+            ),
+            Self::DispatchUtilityComputed {
+                module,
+                target_kind,
+                target_value,
+                final_utility,
+                ..
+            } => (
+                "expand",
+                format!("Σ utility {final_utility:.2} · {module} -> {target_kind} {target_value}"),
             ),
             Self::BreachSweep {
                 anchors,

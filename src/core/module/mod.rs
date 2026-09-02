@@ -351,6 +351,21 @@ pub trait Module: Send + Sync {
         derive_default_provider_descriptor(self)
     }
 
+    /// Whether this module's locally-tracked quota (see
+    /// [`ProviderDescriptor::quota_unit`]) currently has budget remaining —
+    /// `Some(true)` = has budget, `Some(false)` = exhausted, `None` = this
+    /// module tracks no local quota OR its remaining state genuinely isn't
+    /// knowable from here (the default, and correct for every module whose
+    /// `quota_unit` is also `None`). Used by
+    /// [`crate::core::roi::quota_exhausted_blocked`] as a hard
+    /// eligibility gate, checked before ranking. Never call this to derive
+    /// `quota_unit` — that's what [`Self::provider_descriptor`] is for; this
+    /// is purely the live "is there budget left" signal for the handful of
+    /// modules that track one.
+    fn quota_remaining(&self) -> Option<bool> {
+        None
+    }
+
     /// Built from the other methods — don't override.
     fn info(&self) -> ModuleInfo {
         ModuleInfo {

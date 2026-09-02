@@ -242,6 +242,20 @@ pub struct ScanOptions {
     /// gate exists to catch.
     #[serde(default)]
     pub allow_unknown_cost_dispatch: bool,
+
+    // ── Dispatch utility explainability (v1.5+) ─────────────────────────────
+    /// Compute and surface (via [`crate::core::event::EventKind::DispatchUtilityComputed`])
+    /// the fourth ROI lever — [`crate::core::roi::DispatchUtility`], a
+    /// per-(module, target) score folding in novelty, source independence,
+    /// pivot optionality, reliability, cost, quota, latency, failure, and
+    /// duplication signals. **Off by default** and purely additive: it never
+    /// changes which modules dispatch or in what order — the existing
+    /// saturation-pruning, top-K/knee cutoff, and adaptive-depth-termination
+    /// levers (and the existing priority/convex ordering) are unaffected.
+    /// Requires `max_roi` to have any effect (a candidate that never reaches
+    /// the ROI-gated expansion loop has nothing to score).
+    #[serde(default)]
+    pub dispatch_utility: bool,
 }
 
 /// How the engine orders expansion candidates within a round.
@@ -559,6 +573,7 @@ impl Default for ScanOptions {
             // opts in to a finite budget.
             max_cost_usd: None,
             allow_unknown_cost_dispatch: false,
+            dispatch_utility: false,
         }
     }
 }

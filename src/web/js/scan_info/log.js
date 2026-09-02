@@ -374,6 +374,9 @@ export function mapEvent(ev){
   // `entity_kind` (which never existed on the wire event, so this always
   // rendered an "unknown" pill regardless of the excluded entity's real kind).
   if (t==='entity_excluded') return {typ:'expand', lv:'skip', msg:`not expanded: ${kindPill(ev.kind)} ${esc(ev.value)} <span class="text-muted">${esc(ev.reason)}</span>`};
+  // Dispatch-utility explainability lever (`ScanOptions.dispatch_utility`,
+  // off by default) — purely additive telemetry, never gates dispatch.
+  if (t==='dispatch_utility_computed') return {typ:'expand', lv:'info', msg:`utility ${Number(ev.final_utility).toFixed(2)}: ${esc(ev.module)} &rarr; ${esc(ev.target_kind)} ${esc(ev.target_value)}`};
   // Final bulk breach sweep. `dropped` is part of the line, not a tooltip: a
   // capped plan and a complete one must not read the same.
   if (t==='breach_sweep')   return {typ:'expand', lv:'info',  msg:`breach sweep: ${ev.probes} probe${plural(ev.probes)} from ${ev.anchors} anchor${plural(ev.anchors)}${ev.dropped?` <span class="text-muted">(${ev.dropped} over cap)</span>`:''}`};

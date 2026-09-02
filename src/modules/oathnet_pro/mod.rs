@@ -172,6 +172,10 @@ impl Module for OathnetPro {
         }
     }
 
+    fn quota_remaining(&self) -> Option<bool> {
+        Some(!oathnet::budget_snapshot().quota_exhausted)
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = ctx.key(oathnet::KEY_ENV)?;
         // Origin fingerprint of the exact key in use — stamped on every entity so

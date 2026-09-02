@@ -90,6 +90,15 @@ impl DispatchLog {
         }
     }
 
+    /// Whether `key` has already been dispatched — a read-only check, unlike
+    /// [`Self::insert`]. Used by the dispatch-utility explainability lever
+    /// (`crate::core::roi::DispatchUtility`) to score a candidate's
+    /// duplicate-penalty BEFORE the real dispatch decision mutates the log.
+    #[must_use]
+    pub fn contains(&self, key: &DispatchKey) -> bool {
+        self.seen.contains(key)
+    }
+
     /// Number of keys currently tracked.
     #[must_use]
     pub fn len(&self) -> usize {

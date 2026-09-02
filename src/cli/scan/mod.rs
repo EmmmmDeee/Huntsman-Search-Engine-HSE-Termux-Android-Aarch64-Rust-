@@ -295,6 +295,8 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         // `--allow-unknown-cost` pair can surface these directly.
         max_cost_usd: None,
         allow_unknown_cost_dispatch: false,
+        // No CLI flag yet — explainability-only, off by default.
+        dispatch_utility: false,
     }
     .clamp_depth();
 
