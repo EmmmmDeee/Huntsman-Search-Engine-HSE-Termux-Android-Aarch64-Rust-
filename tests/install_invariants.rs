@@ -85,6 +85,65 @@ fn is_comment(line: &str) -> bool {
     line.trim_start().starts_with('#')
 }
 
+#[test]
+fn play_store_termux_is_detected_and_rejected_before_any_package_work() {
+    // Termux from the Play Store is abandoned (Google blocked its
+    // self-update in 2020) — `pkg`/`apt-get` mirror access fails deep into
+    // the install with a confusing, unrelated-looking network error.
+    // Detecting it up front and dying with the exact remediation (reinstall
+    // from F-Droid) turns that into an instant, actionable failure instead
+    // of a mystery one 10+ steps later. This has no automated coverage
+    // anywhere else in the repo (confirmed: `termux-build-info`/`playstore`
+    // appear nowhere under `tests/` or `src/` besides this test).
+    let script = install_sh();
+    let detect_line = script
+        .lines()
+        .position(|l| !is_comment(l) && l.contains("termux-build-info"))
+        .expect(
+            "install.sh no longer reads termux-build-info — the Play Store \
+             Termux detector may have been removed",
+        );
+    // Must be nested inside the IS_TERMUX detection branch (a few lines
+    // above this file's own `IS_TERMUX=1`), so a refactor that hoists it
+    // above Termux detection — and thus stats an absolute Termux-only path
+    // on every OS — is caught here rather than silently changing behavior
+    // on non-Termux hosts.
+    let before: String = script
+        .lines()
+        .take(detect_line)
+        .filter(|l| !is_comment(l))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        before.contains("IS_TERMUX=1"),
+        "the termux-build-info read must be inside the IS_TERMUX detection branch"
+    );
+    let window: String = script
+        .lines()
+        .skip(detect_line)
+        .take(8)
+        .filter(|l| !is_comment(l))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        window.to_lowercase().contains("playstore"),
+        "the Play Store marker check has gone missing or been renamed: {window}"
+    );
+    assert!(
+        window.contains("-qi") || window.contains("grep -i"),
+        "the Play Store marker match must be case-insensitive (grep -qi/-i): {window}"
+    );
+    assert!(
+        window.contains("die "),
+        "an abandoned Play Store Termux must be a hard failure (die), not a \
+         warning that lets the broken install proceed: {window}"
+    );
+    assert!(
+        window.contains("f-droid.org"),
+        "the failure message must point the operator at the actual fix (F-Droid): {window}"
+    );
+}
+
 /// Every generated program that must not touch the raw Termux wake-lock.
 const WAKE_LOCK_WRAPPERS: &[&str] = &["WRAPPER", "WATCH", "BOOT"];
 

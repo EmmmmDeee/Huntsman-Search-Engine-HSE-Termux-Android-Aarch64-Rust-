@@ -5,7 +5,7 @@ individual scanning modules' business logic — that was the subject of a
 separate, now-complete module-by-module bug audit under
 `src/modules/*/mod.rs` (Phases 0-10, PRs #553-568, merged; every one of the
 188 registered modules read against an established bug-class checklist). The
-areas covered here, across seven passes:
+areas covered here, across eight passes:
 
 1. The `Module` trait contract (`src/core/module/mod.rs`).
 2. The CLI surface (`src/main.rs`, `src/cli/`).
@@ -79,11 +79,21 @@ scan, cancels it mid-flight via `POST /scans/{id}/cancel`, and polls
 `GET /scans/{id}` until it finalizes as `"aborted"`. No production code
 changed — see "Pass 7 findings" below.
 
+**Pass 8** (this pass) was not self-directed from the backlog — it was a
+direct, targeted request to critically assess this repo's readiness for
+immediate installation on a real, no-root Termux Android aarch64 device.
+Found no installation blocker, but two genuine gaps: REQ-INSTALL-001 (the
+Play-Store-Termux rejection had zero test coverage — fixed, mutation-tested)
+and a new REQ-INSTALL-010 (CI's aarch64 cross-compile job built only `hse`,
+not the 3 other default binaries `install.sh`'s on-device build fallback
+also compiles — widened, pending this PR's own CI run for VERIFIED status
+per the ledger's own evidence rule). See "Pass 8 findings" below.
+
 This still does **not** claim to have reconstructed requirements for the
 *entire* codebase (the correlator's actual rule logic beyond registry-level
 completeness, the scan engine's internals beyond the quarantine gate, the
 storage layer beyond one fix, the web/WASM UI, and `hse-ai-daemon` remain
-out of scope for all seven passes) — see "Known limitations" for why, and
+out of scope for all eight passes) — see "Known limitations" for why, and
 for what a further pass would need to cover.
 
 **How to read this ledger.**
@@ -117,16 +127,19 @@ reflected in any row below since it was never a defect in that pass's own
 scope. That module-bug-audit has since completed in full (Phases 0-10,
 188/188 registered modules, PRs #553-568, all merged).
 
-**Known limitations of Pass 7 — what a further pass would need to cover.**
+**Known limitations of Pass 8 — what a further pass would need to cover.**
 This ledger's 8 sections are the core contracts, the remote-facing API
 surface, and two registry-level guards of a Rust CLI/module-engine tool: the
 `Module` trait, the CLI, the installer, the env/config template, the
 README's own claims, `hse serve`'s HTTP API, the scan engine's dead-module
 quarantine gate, and the correlator's rule-registration completeness. Passes
 5, 6, and 7 each closed one more `PARTIAL` row within the existing HTTP API
-section (section 6) without expanding scope to any new subsystem, so the
-list below is unchanged from Pass 4's. Deliberately still **not** covered by
-any of the seven passes, and not claimed as VERIFIED/MISSING/etc. anywhere
+section (section 6); Pass 8 closed one `IMPLEMENTED_UNVERIFIED` row and
+added one new row within the existing `install.sh` section (section 3),
+triggered by a direct install-readiness request rather than the backlog
+scan — none of the four expanded scope to any new subsystem, so the list
+below is unchanged from Pass 4's. Deliberately still **not** covered by any
+of the eight passes, and not claimed as VERIFIED/MISSING/etc. anywhere
 above:
 
 - **The scan engine's internals beyond the quarantine gate**
@@ -217,7 +230,7 @@ covers.
 
 | ID | Behavior | Inputs | Outputs | Side effects | Failure behavior | Implementation location | Tests covering it | Runtime verification evidence | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| REQ-INSTALL-001 | Detects and rejects a Play Store Termux install (abandoned since 2020) via the `termux-build-info` marker, before doing anything else. | `/data/data/com.termux/files/usr/etc/termux-build-info` presence/contents | `die` with remediation message | Process exit 1 | Prints exact remediation (F-Droid link) via `die()`. | `install.sh:204-216` | No dedicated shell test found; `tests/install_invariants.rs` covers other invariants (wake-lock, TTY) but not this one. | Read-only. | IMPLEMENTED_UNVERIFIED |
+| REQ-INSTALL-001 (**fixed in Pass 8**) | Detects and rejects a Play Store Termux install (abandoned since 2020) via the `termux-build-info` marker, before doing anything else. | `/data/data/com.termux/files/usr/etc/termux-build-info` presence/contents | `die` with remediation message | Process exit 1 | Prints exact remediation (F-Droid link) via `die()`. | `install.sh:204-216` | `play_store_termux_is_detected_and_rejected_before_any_package_work` (`tests/install_invariants.rs`, new Pass 8) | **Was IMPLEMENTED_UNVERIFIED**: no dedicated test existed. **Fixed in Pass 8**: added a guard that confirms the `termux-build-info` read sits inside the `IS_TERMUX` branch, the marker match is case-insensitive, the failure is fatal (`die`, not a warning), and the message names the F-Droid remediation. Mutation-tested: flipping `grep -qi` to `grep -q` (case-sensitivity) reproducibly failed the new test before being reverted. Ran `cargo test --test install_invariants` — 6/6 passed. | VERIFIED |
 | REQ-INSTALL-002 | `pkg`/apt index refresh retries up to 4 attempts with backoff (`2s, 4s, 6s`) before failing with actionable guidance (`termux-change-repo`). | Network/mirror state | Package manager state | Repeated `pkg update` invocations | `die` after 4th failed attempt, naming the fix. | `install.sh:625-632` | Not unit-testable (shell, network-dependent); no test found. | Read-only. | IMPLEMENTED_UNVERIFIED |
 | REQ-INSTALL-003 | `cargo build` is retried up to 3 attempts with backoff (`3s, 6s, 9s`) to tolerate flaky mobile networks mid-build (crate downloads), per the README's "retrying on flaky mobile networks" claim. | Network state during build | Compiled binary or failure | Repeated `cargo build` invocations | `die` after 3rd failed attempt, pointing at the log file. | `install.sh:909-926` | Not unit-testable; no test found. | Read-only — but the claim is directly backed by inspectable retry-loop code, so this is a substantive match, not a bare assertion. | IMPLEMENTED_UNVERIFIED |
 | REQ-INSTALL-004 | Prefers a prebuilt aarch64 binary over a source compile (Downloads-folder scan, then GitHub Releases download with size+ELF+`.sha256`+run-test verification); this is also the automatic fallback when an on-device build can't proceed. | `HSE_PREBUILT`, `HSE_PREBUILT_TAG`, `HSE_NO_DOWNLOAD`, `HSE_PREFER_BUILD`, `HSE_KEEP_MIRROR` env knobs | Installed `hse` binary | Writes to `$PREFIX/bin`, may write to Downloads cache | Falls through to source build if no valid prebuilt is found/verified. | `install.sh:322-668` (`resolve_target_sha`, `_prebuilt_sha_matches`, `_validate_prebuilt`, `maybe_use_prebuilt`, `maybe_download_prebuilt`, `_try_download_release`) | No dedicated automated test; `docs/INSTALL.md`'s "Environment knobs" table documents the same knob set this pass found live in the script (cross-checked by grep: all 8 knobs present in both). | Ran `grep -c` for each of the 8 documented knobs against `install.sh` this pass — every one has ≥3 occurrences, confirming they are wired, not just documented. | IMPLEMENTED_UNVERIFIED |
@@ -226,6 +239,7 @@ covers.
 | REQ-INSTALL-007 | Self-heals a broken Termux `rust` package (ships libstd without a static `.rlib`) by reinstalling it automatically before attempting a build, per `docs/INSTALL.md`'s troubleshooting entry. | Detected build error signature | `apt-get install -y --reinstall rust` | Package reinstall | Falls through to the manual-fix message documented in `docs/INSTALL.md` if the self-heal itself fails. | `install.sh:709` | No dedicated test; matches the documented troubleshooting text closely (cross-checked by hand). | Read-only. | IMPLEMENTED_UNVERIFIED |
 | REQ-INSTALL-008 | `hse-bg` background wrapper acquires the shared Android wake-lock through a refcounted helper (never releases it directly), and does not hardcode the Termux `$PREFIX` path. | none | Generated wrapper script | Manages `termux-wake-lock`/`termux-wake-unlock` | A wrapper that releases the lock directly, or hardcodes the prefix, breaks multi-wrapper coexistence / non-standard `$PREFIX` installs. | `install.sh` (wrapper-generation heredoc, ~line 1166-1273) | `generated_wrappers_never_release_the_shared_wake_lock_directly`, `wrappers_acquire_the_wake_lock_through_the_refcounted_helper`, `long_running_wrappers_actually_manage_the_shared_wake_lock`, `generated_wrappers_do_not_hardcode_the_termux_prefix` (`tests/install_invariants.rs`) | Ran `cargo test --test install_invariants` this pass — all 5 tests passed (see full output below). | VERIFIED |
 | REQ-INSTALL-009 | TTY detection for interactive prompts happens *before* stdout is redirected into a pipe/log tee, so a piped `curl \| bash` invocation doesn't wrongly think it's interactive. | none | Boolean gate for interactive-only prompts | none | An interactive prompt issued after redirection would hang a piped/non-interactive install forever waiting for input that can never arrive. | `install.sh` (early in the script, before the log-tee redirection) | `tty_detection_happens_before_stdout_is_redirected_into_a_pipe` (`tests/install_invariants.rs`) | Ran `cargo test --test install_invariants` this pass — passed. | VERIFIED |
+| REQ-INSTALL-010 (**new, Pass 8**) | CI cross-compiles every default-run binary (`hse`, `hse-ai-daemon`, `gen-oui`, `architecture-audit` — every `[[bin]]` with no `required-features` gate, via `cargo build --bins`, which Cargo itself skips a gated target for) for `aarch64-linux-android`, matching what `install.sh`'s on-device source-build fallback actually compiles (a bare `cargo build`, no `--bin` filter). | none | CI job pass/fail | none | Before this row: CI's `aarch64-android` job built only `--bin hse`, so a change that broke `hse-ai-daemon`/`gen-oui`/`architecture-audit`'s cross-compile for this target would merge clean and only surface as a failed on-device build the first time a real Termux user's install fell through to the source-build path. | `.github/workflows/ci.yml:227-248` (`aarch64-android` job) | The job itself — a compile-only CI check (no aarch64-android emulation exists in `ubuntu-latest`, so nothing here proves runtime correctness, only that the code compiles and links against the NDK's bionic sysroot for this exact target triple). | **Gap found in Pass 8**, triggered by a direct request to critically assess Termux/aarch64/no-root install readiness (not part of the self-directed backlog scan). Read `install.sh:910`'s on-device build invocation and `Cargo.toml`'s `[[bin]]` table directly: confirmed 4 bins ship with no feature gate (`dep-cooldown` is the only gated one, correctly excluded from install.sh's own build too). Widened the CI job's build and `--no-run` test-compile steps from `--bin hse` alone to `--bins` (a Copilot review suggestion, verified locally: `cargo build --bins` rebuilt all 4 ungated bins but left the already-built `dep-cooldown` binary's timestamp untouched, confirming Cargo silently skips a `required-features`-gated target under `--bins` rather than erroring — the same behavior install.sh's own bare `cargo build` relies on, and one that stays correct automatically if a new ungated bin is added later). Sanity-built the 3 newly-added bins natively (x86_64) — all compiled clean — but that was NOT proof of the aarch64 cross-compile itself: this sandbox has no Android NDK (confirmed via `scripts/gate.sh`'s own "SKIPPED (no Android NDK)" line every prior pass). **Confirmed**: this PR's own `aarch64-android` job ran on real CI twice — once explicitly naming all 4 bins (commit `c2a8dbd6c`, run `33579759589`, success) and once after simplifying to `--bins` (commit `e734bc33e`, run `33580302379`, success) — both genuinely cross-compiled and linked all 4 binaries against the NDK's aarch64 bionic sysroot. | VERIFIED |
 
 ---
 
@@ -890,35 +904,116 @@ $ cargo test --test architecture                                          # 56 p
 $ scripts/gate.sh                                                         # 17/17 executed checks PASS
 ```
 
+## Pass 8 findings
+
+Unlike Passes 4-7, this pass was **not** self-directed from the backlog —
+it was triggered by a direct request to critically assess this repo's
+readiness for immediate installation on a real, no-root Termux Android
+aarch64 device. A dedicated read-only investigation (root assumptions,
+Termux package-manager usage, the aarch64 prebuilt-binary path, the
+on-device source-build fallback, CI's actual aarch64 validation, existing
+`tests/install_invariants.rs` coverage, the TLS/libc dependency graph, and
+whether any of Passes 4-7's merged changes touched install-relevant code)
+found **no installation blocker**, and two genuine, fixable gaps:
+
+1. **REQ-INSTALL-001** (`IMPLEMENTED_UNVERIFIED` → `VERIFIED`) — the
+   Play-Store-Termux detection (`install.sh:204-216`, which rejects the
+   abandoned-since-2020 Play Store build with a `die` and an F-Droid
+   remediation link) had **zero** automated coverage — confirmed by
+   grepping `tests/` and `src/` for `termux-build-info`/`playstore` and
+   finding no hits outside `install.sh` itself. Fixed with a new guard,
+   `play_store_termux_is_detected_and_rejected_before_any_package_work`
+   (`tests/install_invariants.rs`), which checks the read sits inside the
+   `IS_TERMUX` branch, the marker match is case-insensitive, the failure
+   is fatal (not a warning), and the message names the actual fix.
+   Mutation-tested before shipping: flipping `grep -qi` to `grep -q`
+   reproducibly failed the new test, then was reverted (confirmed via
+   `git diff` showing zero net change to `install.sh`).
+2. **REQ-INSTALL-010** (new, `IMPLEMENTED_UNVERIFIED`) — CI's
+   `aarch64-android` job (`.github/workflows/ci.yml`) built and
+   test-compiled only `--bin hse` for the `aarch64-linux-android` target,
+   but `install.sh:910`'s on-device source-build fallback runs a bare
+   `cargo build` with no `--bin` filter, which compiles **all 4** default
+   bins (`hse`, `hse-ai-daemon`, `gen-oui`, `architecture-audit` — every
+   `[[bin]]` in `Cargo.toml` with no `required-features` gate; only
+   `dep-cooldown` is gated and correctly excluded from both). A change
+   that broke `hse-ai-daemon`/`gen-oui`/`architecture-audit`'s
+   cross-compile for Termux's exact target triple would have merged clean
+   and only surfaced as a real device's on-device build failing partway
+   through. Widened the CI job's build and `--no-run` test-compile steps
+   to all 4 bins. Sanity-built the 3 newly-added bins natively (x86_64) —
+   clean — but that is not proof of the aarch64 cross-compile itself: this
+   sandbox has no Android NDK (confirmed via `scripts/gate.sh`'s own
+   "SKIPPED (no Android NDK)" line every prior pass), so the real
+   verification is this PR's own CI run, which is what this row is
+   pending on, per the ledger's own "claim ≠ evidence" rule.
+
+Explicitly **not found** to be a blocker, with evidence: exactly one
+`sudo` in the entire 1838-line `install.sh`, structurally unreachable from
+the Termux branch (an `elif`, never falls through); every filesystem write
+confirmed inside `$PREFIX`/`$HOME`; the TLS stack is rustls with zero
+OpenSSL in `Cargo.lock`; no `crt-static`/`target-cpu=native`/glibc
+assumptions; the Android JNI path is deliberately compiled out
+(`hickory-resolver` with `default-features = false`) with DNS resolvers
+hardcoded rather than read from Android's nonexistent `/etc/resolv.conf`;
+the prebuilt-binary validator genuinely executes the downloaded binary
+(not just a checksum) before trusting it; and a real self-healing probe
+exists for Termux's documented broken-`rust`-package issue. What remains
+inherently unverifiable from this sandbox: anything requiring execution on
+physical Termux/Android hardware — this pass's evidence is static/
+code-level analysis, existing and new automated tests, and CI's
+compile-and-link (not runtime) proof for the aarch64 target.
+
+### Verification commands run (Pass 8, in order)
+
+```
+$ bash -n install.sh                                                      # syntax clean
+$ shellcheck --severity=warning install.sh                                # clean
+$ python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"  # YAML valid
+$ cargo build --locked --bin hse-ai-daemon --bin gen-oui --bin architecture-audit  # native x86_64 sanity build, clean
+$ cargo test --test install_invariants -- --nocapture                     # 6 passed (5 pre-existing + 1 new)
+$ # mutation check: grep -qi -> grep -q in install.sh, re-ran the new test -> FAILED as expected, then reverted
+$ git diff --stat install.sh                                              # empty — mutation fully reverted
+$ cargo fmt --all
+$ cargo clippy --all-targets --features dep-cooldown -- -D warnings       # clean
+$ cargo test --lib --features dep-cooldown                                # full suite, 0 failed
+$ cargo test --test architecture                                         # 56 passed, 0 failed
+$ scripts/gate.sh                                                         # 17/17 executed checks PASS
+```
+
 ## Summary statistics
 
-| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 | Pass 6 | Pass 7 |
-|---|---|---|---|---|---|---|---|
-| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 | 56 |
-| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 | 14 |
-| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* | 16 *(REQ-API-SCAN-002 fixed in Pass 7)* |
-| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 | 0 |
-| AMBIGUOUS | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
-| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 | 0 |
-| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* |
-| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** | **88** |
+| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 | Pass 6 | Pass 7 | Pass 8 |
+|---|---|---|---|---|---|---|---|---|
+| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 | 56 | 58 |
+| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 | 14 | 13 *(REQ-INSTALL-001 out, fixed; REQ-INSTALL-010 in as new then confirmed VERIFIED by this PR's own CI run before merge — net -1)* |
+| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* | 16 *(REQ-API-SCAN-002 fixed in Pass 7)* | 16 |
+| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 | 0 | 0 |
+| AMBIGUOUS | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 | 0 | 0 |
+| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* |
+| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** | **88** | **89** |
 
 Pass 4's `VERIFIED` count (53) is Pass 3's 50, plus the REQ-ENV-003 flip
 (+1), plus the two new one-row sections REQ-ENGINE-001/REQ-CORRELATOR-001
 (+2) — both landed `VERIFIED` on first pass, so no row moved through an
 intermediate status this time. Passes 5, 6, and 7 each added no new rows
 (88 unchanged) — just one `PARTIAL` → `VERIFIED` flip apiece
-(REQ-API-MISC-003, then REQ-API-SCAN-007, then REQ-API-SCAN-002).
+(REQ-API-MISC-003, then REQ-API-SCAN-007, then REQ-API-SCAN-002). Pass 8's
+`VERIFIED` count (57) is Pass 7's 56 plus the REQ-INSTALL-001 flip (+1);
+`IMPLEMENTED_UNVERIFIED` stays at 14 (REQ-INSTALL-001 leaves it,
+REQ-INSTALL-010 — new, not yet confirmed by its own PR's CI run — enters
+it), and the new row brings the total from 88 to 89.
 
 Breakdown by section: Module trait contract 14 rows (REQ-CORE-001..014), CLI
-surface 12 rows (REQ-CLI-001..012), `install.sh` 9 rows
-(REQ-INSTALL-001..009), Env/config 6 rows (REQ-ENV-001..006), README claims 10
+surface 12 rows (REQ-CLI-001..012), `install.sh` 10 rows
+(REQ-INSTALL-001..010), Env/config 6 rows (REQ-ENV-001..006), README claims 10
 rows (REQ-README-001..010), HTTP API surface 35 rows (REQ-API-ROUTE-001..007,
 REQ-API-AUTH-001..004, REQ-API-SCAN-001..010, REQ-API-MISC-001..008,
 REQ-API-EXPORT-001..006), Scan engine dispatch 1 row (REQ-ENGINE-001),
 Correlator rule registry 1 row (REQ-CORRELATOR-001) —
-14+12+9+6+10+35+1+1 = 88, matching the total above.
+14+12+10+6+10+35+1+1 = 89, matching the total above.
 Some rows cite tests shared across sections (e.g. REQ-CORE-010 and
 REQ-README-009 both cite `every_module_maps_to_valid_attack_reconnaissance_techniques`),
 which is intentional — the two rows document the same underlying test from
