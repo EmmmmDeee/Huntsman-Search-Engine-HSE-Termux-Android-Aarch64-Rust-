@@ -275,6 +275,13 @@ impl Module for Wigle {
             ..crate::core::module::derive_default_provider_descriptor(self)
         }
     }
+    // `quota_remaining()` deliberately NOT overridden: WiGLE's real budget is
+    // five independent sub-budgets (geo/BSSID/cell/Bluetooth/SSID), and which
+    // one governs a given dispatch depends on the target kind actually being
+    // queried — collapsing that to one bool here would misrepresent the real
+    // state either way. Stays `None` (the trait default) — a documented v1
+    // gap, not a silent wrong answer; `quota_exhausted_blocked` correctly
+    // never fires for WiGLE until this is resolved.
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,

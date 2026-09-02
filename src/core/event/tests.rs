@@ -335,6 +335,13 @@ use crate::core::scan::ScanStatus;
                 value: "1.2.3.4".into(),
                 reason: "r".into(),
             },
+            EventKind::DispatchUtilityComputed {
+                module: "m".into(),
+                target_kind: "email".into(),
+                target_value: "a@b.com".into(),
+                final_utility: 1.5,
+                explanation: vec!["final_utility: 1.500".into()],
+            },
             EventKind::BreachSweep {
                 anchors: 3,
                 probes: 12,
@@ -393,6 +400,7 @@ use crate::core::scan::ScanStatus;
                 | EventKind::ExpansionTick { .. }
                 | EventKind::ExpansionStop { .. }
                 | EventKind::EntityExcluded { .. }
+                | EventKind::DispatchUtilityComputed { .. }
                 | EventKind::BreachSweep { .. }
                 | EventKind::ConsensusAudit { .. }
                 | EventKind::CorrelationFound { .. }
@@ -424,7 +432,7 @@ use crate::core::scan::ScanStatus;
             );
         }
 
-        assert_eq!(every.len(), 17, "one representative per EventKind variant");
+        assert_eq!(every.len(), 18, "one representative per EventKind variant");
     }
 
     // ── Full Event round-trip ───────────────────────────────────────────

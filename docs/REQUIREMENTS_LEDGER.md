@@ -5,7 +5,7 @@ individual scanning modules' business logic — that was the subject of a
 separate, now-complete module-by-module bug audit under
 `src/modules/*/mod.rs` (Phases 0-10, PRs #553-568, merged; every one of the
 188 registered modules read against an established bug-class checklist). The
-areas covered here, across twelve passes:
+areas covered here, across thirteen passes:
 
 1. The `Module` trait contract (`src/core/module/mod.rs`).
 2. The CLI surface (`src/main.rs`, `src/cli/`).
@@ -34,6 +34,11 @@ areas covered here, across twelve passes:
     its derivation/override consistency, the env-configurable cost input,
     the cost-budget eligibility gate, and the CLI/API/Web field-drift fix
     that made the API surface read the same descriptor the engine does.
+12. Dispatch-utility explainability (`src/core/roi/utility.rs`) — the ROI
+    subsystem's fourth, additive-formula lever: the missing-value-robust
+    `DispatchUtility` formula itself, the new quota-exhaustion eligibility
+    gate, and the real-dispatch wiring proving gates fire before the score
+    is ever computed and the lever is off-by-default zero-behavior-change.
 
 **Pass 2** re-verified every row Pass 1 left
 `IMPLEMENTED_UNVERIFIED`/`PARTIAL`/`AMBIGUOUS` by actually running its cited
@@ -157,11 +162,29 @@ enterprise provider from dispatching under an active `max_cost_usd` budget
 unless the operator explicitly opts in via `allow_unknown_cost_dispatch`.
 See "Pass 12 findings" below for the full account.
 
+**Pass 13** (this pass) opened new section 12: the ROI subsystem's fourth
+lever, `DispatchUtility` (`src/core/roi/utility.rs`) — a directive-driven
+extension of the existing `max_roi` ROI bundle (section 10), not a
+replacement or a separate "economic planner." An additive/log-space
+formula folds novelty, source independence, pivot optionality, reliability,
+cost, quota, latency, failure, and duplication signals into one canonical,
+explainable score, provably robust to missing values (no factor can
+multiplicatively collapse the total). A new quota-exhaustion hard
+eligibility gate (`quota_exhausted_blocked`) joins the existing monetary
+one, checked before any ranking. The lever is off by default
+(`ScanOptions::dispatch_utility`) and purely additive telemetry in this
+pass — it computes and surfaces a score without changing which module
+dispatches or in what order, so all three pre-existing ROI levers and both
+pre-existing dispatch-ordering mechanisms (priority/convex) are proven
+unchanged. See "Pass 13 findings" below for the full account, including
+where this implementation deliberately narrows the original design to keep
+every signal real rather than invented.
+
 This still does **not** claim to have reconstructed requirements for the
 *entire* codebase (the correlator's actual rule logic beyond registry-level
 completeness, the scan engine's internals beyond the quarantine gate and the
 ROI levers, the storage layer beyond the `integrity_check()` detector, the
-web/WASM UI, and `hse-ai-daemon` remain out of scope for all twelve passes)
+web/WASM UI, and `hse-ai-daemon` remain out of scope for all thirteen passes)
 — see "Known limitations" for why, and for what a further pass would need
 to cover.
 
@@ -196,26 +219,31 @@ reflected in any row below since it was never a defect in that pass's own
 scope. That module-bug-audit has since completed in full (Phases 0-10,
 188/188 registered modules, PRs #553-568, all merged).
 
-**Known limitations of Pass 12 — what a further pass would need to cover.**
-This ledger's 11 sections are the core contracts, the remote-facing API
-surface, and five registry/detector/lever/descriptor-level guards of a Rust
+**Known limitations of Pass 13 — what a further pass would need to cover.**
+This ledger's 12 sections are the core contracts, the remote-facing API
+surface, and six registry/detector/lever/descriptor-level guards of a Rust
 CLI/module-engine tool: the `Module` trait, the CLI, the installer, the
 env/config template, the README's own claims, `hse serve`'s HTTP API, the
 scan engine's dead-module quarantine gate, the correlator's
 rule-registration completeness, the storage layer's `integrity_check()`
 corruption detector (section 9, added in Pass 10), the ROI-maximising
-expansion levers (section 10, added in Pass 11), and the provider
-capability + economics descriptor (section 11, added in Pass 12). Passes 5,
-6, and 7 each closed one more `PARTIAL` row within the existing HTTP API
-section (section 6); Pass 8 closed one `IMPLEMENTED_UNVERIFIED` row and
-added one new row within the existing `install.sh` section (section 3);
-Pass 9 (PR #577, merged independently of this ledger's own working session)
-closed the one `UNREACHABLE` row, also within the existing HTTP API section
-— none of those five expanded scope to any new subsystem. Pass 10 opened
-new section 9; Pass 11 opened new section 10, narrowing (not closing) the
-ROI bullet below; Pass 12 opened new section 11. Deliberately still **not**
-covered by any of the twelve passes, and not claimed as
-VERIFIED/MISSING/etc. anywhere above:
+expansion levers (section 10, added in Pass 11), the provider capability +
+economics descriptor (section 11, added in Pass 12), and the dispatch-utility
+explainability lever (section 12, added in Pass 13). Passes 5, 6, and 7
+each closed one more `PARTIAL` row within the existing HTTP API section
+(section 6); Pass 8 closed one `IMPLEMENTED_UNVERIFIED` row and added one
+new row within the existing `install.sh` section (section 3); Pass 9
+(PR #577, merged independently of this ledger's own working session) closed
+the one `UNREACHABLE` row, also within the existing HTTP API section — none
+of those five expanded scope to any new subsystem. Pass 10 opened new
+section 9; Pass 11 opened new section 10, narrowing (not closing) the ROI
+bullet below; Pass 12 opened new section 11; Pass 13 opened new section 12,
+further narrowing the scan-engine-internals bullet below (the per-round
+candidate weight computation now has one documented follow-up: threading it
+into `DispatchCx` so `expected_information_value` can use it directly
+instead of the entity-confidence proxy — see section 12's own "deliberate
+v1 narrowing" note). Deliberately still **not** covered by any of the
+thirteen passes, and not claimed as VERIFIED/MISSING/etc. anywhere above:
 
 - **The scan engine's internals beyond the quarantine gate and the ROI
   levers** (`src/core/engine/` past `gate_skips` and the section-10 call
@@ -260,7 +288,7 @@ format, one row each.
 
 None of this is a claim that these areas are broken or unverified in some
 absolute sense — only that this ledger has not yet looked at them, and a
-reader should not infer completeness beyond the 11 sections it actually
+reader should not infer completeness beyond the 12 sections it actually
 covers.
 
 ---
@@ -712,6 +740,50 @@ generic derivation would misrepresent a real provider (`oathnet_pro`,
 | REQ-PROVIDER-003 (**new, Pass 12**) | Per-provider `cost_per_request` is never a compiled-in constant (vendor prices change) — the only way to attach a live figure is the `HSE_PROVIDER_COST_<PROVIDER_ID_UPPERCASED>` env var, and the value is parsed defensively: finite and non-negative only. A negative, non-numeric, `"NaN"`, or `"inf"` value is rejected (falls back to `None`, i.e. `CostModel::Unknown` stays in effect), never silently accepted as a price. | `HSE_PROVIDER_COST_<ID>` env var (string) | `Option<f64>` | none (read-only env access) | An unset or malformed env var yields `None` — never a spurious cost that would wrongly satisfy a cost-budget check. | `src/core/module/provider.rs` (`env_cost_per_request` — thin env wrapper; `parse_cost_per_request` — the pure, directly-testable validation, split out specifically because `#![forbid(unsafe_code)]` blocks `env::set_var` even in `#[cfg(test)]` code) | `env_cost_per_request_is_none_when_unset`, `parse_cost_per_request_accepts_only_finite_nonnegative_numbers` (`src/core/module/provider_tests.rs`) | Ran both tests this pass — passed. `parse_cost_per_request_accepts_only_finite_nonnegative_numbers` directly exercises the negative/`NaN`/`inf`/non-numeric rejection paths without any env mutation. | VERIFIED |
 | REQ-PROVIDER-004 (**new, Pass 12**) | Hard eligibility gate, checked before any ranking: when an operator has set a finite `ScanOptions::max_cost_usd` budget, a module whose provider is `Paid`/`Enterprise` access class AND `CostModel::Unknown` must be skipped at dispatch — UNKNOWN cost is never treated as FREE cost — unless the operator has explicitly set `ScanOptions::allow_unknown_cost_dispatch`. No budget configured ⇒ never blocks, regardless of cost model. | `ProviderDescriptor`, `Option<f64> max_cost_usd`, `bool allow_unknown_cost_dispatch` | `bool` (pure gate); at the dispatch call site, `Some("unknown-cost paid provider blocked...")` from `module_skip_reason`, tallied as a skip | none | A provider with a known/estimated cost, or a non-paid access class, is never blocked by this gate regardless of budget state (enforcing an actual cost cap against a known price is separate, future work). | `src/core/module/provider.rs` (`unknown_cost_paid_provider_blocked`); call site `src/core/engine/dispatch.rs:347-356` (`module_skip_reason`, checked before the `passive_only` gate and all ranking) | `unknown_cost_gate_only_blocks_paid_or_enterprise_unknown_cost_under_a_budget` (pure 6-case truth table, `src/core/module/provider_tests.rs`); `unknown_cost_paid_provider_is_blocked_by_an_active_cost_budget` (new, Pass 12) (`src/core/engine/tests.rs`) — drives a real `ScanEngine::dispatch_target()` call with a stub `Paid`/`Unknown`-cost module across all 3 budget states (none, active without opt-in, active with opt-in) | Ran the pure truth-table test (passed) and the new real-dispatch test this pass — `cargo test --lib core::engine::tests::unknown_cost_paid_provider_is_blocked_by_an_active_cost_budget --features dep-cooldown` — 1/1 passed, proving the gate actually stops dispatch at the real engine call site, not just as an isolated pure function. | VERIFIED |
 | REQ-PROVIDER-005 (**new, Pass 12**) | All CLI/API/Web consumers read the same authoritative `ProviderDescriptor` — no separate, hand-maintained provider metadata anywhere else in the codebase. Found and fixed a real drift along the way: `GET /api/v1/modules`'s handler hand-rolled its JSON per-field and (a) named the seed-type field `"accepts"` where the CLI's own `ModuleInfo` calls the identical data `"consumes"`, and (b) omitted `attack_techniques` entirely — both silently missing from the API surface despite existing on every `ModuleInfo` the engine already builds. | `Arc<dyn Module>` (via `engine.modules()`) | JSON module list (`"provider"` key added; `"accepts"` key name kept for the existing served SPA's own JS compatibility, now sourced from `ModuleInfo.consumes` instead of being hand-duplicated) | none | A future field added to `ModuleInfo` that the handler forgets to forward is now structurally harder to miss — the handler builds from `m.info()` as a whole, not field-by-field. | `src/api/handlers/mod.rs` (`modules_list`, rewritten to build from `Module::info()` instead of a hand-rolled field list) | `modules_list_returns_array` (`tests/api.rs`, extended Pass 12) | **Gap found and fixed in Pass 12.** Extended the existing test to assert `attack_techniques` and `provider` are present in the API response and compare the full response for the API's one synthetic test module against `SyntheticModule.info()` directly (the `test_app` harness always serves a single test-double module, never the real 188-module registry — confirmed via `tests/common/mod.rs`, and a first draft of this test wrongly assumed otherwise before being corrected). Ran `cargo test --test api modules_list_returns_array --features dep-cooldown -- --nocapture` this pass — passed. | VERIFIED |
+
+---
+
+## 12. Dispatch-utility explainability (`src/core/roi/utility.rs`)
+
+Directive-driven: "extend the existing ROI subsystem to reason about
+novelty, source independence, pivot optionality, source reliability,
+expected information gain, monetary cost, quota cost, latency, failure
+probability, and duplication probability — one canonical `DispatchUtility`
+result, additive/log-space, never a naive multiplication that lets one
+uncertain zero-valued factor collapse the whole score; hard eligibility
+gates before ranking; runtime evidence when available, static priors for
+cold start; every decision explainable; preserve the three existing ROI
+levers exactly." A 6-agent research + 1 design-synthesis workflow first
+re-grounded the exact current source (the three existing levers, the
+per-round candidate-weight computation, the just-merged `ProviderDescriptor`
+cost/quota/reliability/optionality metadata, existing reliability/latency/
+novelty/duplication signals, and the complete existing test corpus) before
+any code was written — see "Pass 13 findings" below for what that research
+found and where this implementation deliberately narrows the original
+design for a defensible, fully-real v1 (no invented signals).
+
+| ID | Behavior | Inputs | Outputs | Side effects | Failure behavior | Implementation location | Tests covering it | Runtime verification evidence | Status |
+|---|---|---|---|---|---|---|---|---|---|
+| REQ-ROI-004 (**new, Pass 13**) | `compute_dispatch_utility` maps a `DispatchUtilityInputs` to one canonical `DispatchUtility` via a strictly additive formula (10 named factors, each a bounded `+`/`-` term against a running sum) — a missing/unknown input resolves to a documented neutral default (never a silent `0.0` benefit or `1.0` penalty), so no single uncertain factor can collapse the score the way a `weight *= reliability` multiplication would. | `DispatchUtilityInputs` (source_count, entity_confidence, optionality_prior, novelty_prior, reliability_prior, cost_per_request_usd, quota_remaining, configured_timeout_ms, already_dispatched_this_module_target) | `DispatchUtility { expected_information_value, expected_novelty, expected_independence, expected_optionality, reliability, estimated_cost, quota_cost, latency_penalty, failure_penalty, duplicate_penalty, final_utility, explanation }` | none — pure function, no I/O | An all-unknown input set still yields a positive `final_utility` when `expected_information_value` is high; a zero-valued `reliability_prior` alone cannot zero the total. | `src/core/roi/utility.rs` (`compute_dispatch_utility`, the 10 `W_*` weight constants, `UNKNOWN_COST_PENALTY`, `QUOTA_COST_NEUTRAL`) | `missing_reliability_falls_back_to_neutral_prior_not_zero`, `missing_cost_yields_fixed_penalty_not_infinite_or_zero`, `missing_quota_yields_neutral_default_not_full_exhaustion`, `missing_factors_never_collapse_dominant_term`, `explanation_is_never_empty_and_always_restates_final_utility`, `duplicate_penalty_is_binary_and_dominant`, `expected_independence_is_monotonic_and_bounded` (`src/core/roi/utility_tests.rs`) | Ran `cargo test --lib core::roi::utility --features dep-cooldown` this pass — 8/8 passed, including `missing_factors_never_collapse_dominant_term`, which directly proves the directive's core robustness ask: an all-unknown-input candidate scores strictly higher than an all-known-worst-value one, and a zero `reliability_prior` alone leaves `final_utility > 0`. | VERIFIED |
+| REQ-ROI-005 (**new, Pass 13**) | Quota-budget hard eligibility gate, same family and same call-site position as REQ-PROVIDER-004's monetary gate: a module that tracks a local quota (`ProviderDescriptor::quota_unit.is_some()`) and reports it exhausted (`Module::quota_remaining() == Some(false)`) must never dispatch, checked before any ranking. A module with no local quota, or an unresolvable remaining state, never blocks — unknown is not exhausted. | `Option<&'static str> quota_unit`, `Option<bool> remaining` | `bool` (pure gate); at the dispatch call site, a skip reason from `module_skip_reason`, tallied as a skip | none | A quota-untracked module (`quota_unit: None`, ~184 of 188 registered modules) is never blocked by this gate regardless of `quota_remaining()`'s return value. | `src/core/roi/utility.rs` (`quota_exhausted_blocked`); new `Module::quota_remaining()` default trait method (`src/core/module/mod.rs`, default `None`) overridden by `oathnet_pro` (`oathnet::budget_snapshot().quota_exhausted`) and `see_know` (`see_know::budget_remaining()`); call site `src/core/engine/dispatch.rs` (`module_skip_reason`, immediately after the existing unknown-cost gate) | `quota_exhausted_gate_only_blocks_quota_tracked_modules` (pure 5-case truth table, `src/core/roi/utility_tests.rs`); `quota_exhausted_provider_is_blocked_at_real_dispatch` (new, Pass 13) (`src/core/engine/tests.rs`) — drives a real `dispatch_target()` call across `Some(false)`/`Some(true)`/`None` remaining states | Ran both this pass — `cargo test --lib core::roi::utility::tests::quota_exhausted_gate_only_blocks_quota_tracked_modules` and `cargo test --lib core::engine::tests::quota_exhausted_provider_is_blocked_at_real_dispatch --features dep-cooldown` — both passed. **`wigle` deliberately NOT wired** — its real budget is five independent sub-budgets (geo/BSSID/cell/Bluetooth/SSID) and collapsing that to one bool would misrepresent the real state; documented in `src/modules/wigle/mod.rs` as an explicit, honest v1 gap rather than a wrong answer, matching REQ-ROI-002's own precedent of leaving a genuine gap IMPLEMENTED_UNVERIFIED rather than overclaiming. | VERIFIED |
+| REQ-ROI-006 (**new, Pass 13**) | `DispatchUtility` is computed and surfaced (`EventKind::DispatchUtilityComputed`) ONLY for a candidate that every eligibility gate (allowlist, exclude, live-sensor, category-focus, circuit-open, disabled-in-config, `free_only`, unknown-cost budget, quota-exhausted, `passive_only`, sensor-dedup, high-value cross-correlation, SSRF preflight, quarantine) already cleared — never for one a gate rejected. Purely additive: off by default (`ScanOptions::dispatch_utility`, default `false`), changes no dispatch order, decision, or count when unset. | real per-module `ProviderDescriptor`/`quota_remaining()`/`constrained_timeout_ms()`, the target entity's `c_effective()`/`source_count()`, `crate::core::convex::module_cascade`, `DispatchLog::contains` (read-only) | `EventKind::DispatchUtilityComputed { module, target_kind, target_value, final_utility, explanation }` on the scan's event bus | Emits an event; never mutates dispatch state, `DispatchLog`, or `ModuleStats` | With `dispatch_utility` off (the default), zero events emitted and zero behavior change — the lever cannot fire accidentally. | `src/core/engine/dispatch.rs` (`maybe_emit_dispatch_utility`, called at all 3 `gate_skips` call sites — the sequential path and both concurrent phases — immediately after `gate_skips` returns `false`); new `dispatch_utility: bool` field (`src/core/scan/options.rs`); new `EventKind::DispatchUtilityComputed` variant (`src/core/event/mod.rs`) | `eligibility_gates_fire_before_dispatch_utility_is_ever_computed`, `dispatch_utility_off_by_default_produces_zero_behavior_change`, `dispatch_utility_explanation_is_surfaced_on_a_real_dispatch` (new, Pass 13) (`src/core/engine/tests.rs`) | Ran all three this pass — passed. The first reuses the existing `UnknownCostPaidProbe` (paid, unknown cost) under an active budget WITH `dispatch_utility: true`, and asserts zero `DispatchUtilityComputed` events fire for the gate-blocked module — proving the ordering the directive requires, not just asserting it in prose. The existing pinned-ordering tests (`convex_budget_dispatches_the_highest_query_value_module_first`, `priority_waterfall_seeknow_then_gov_then_free_then_geo`) and all pre-existing ROI/quarantine/cost-budget tests were re-run this pass and still pass unchanged, since this lever computes `DispatchUtility` for telemetry only and never substitutes it for the existing weight/priority/convex ordering. | VERIFIED |
+
+**Deliberate v1 narrowing from the original design** (see "Pass 13 findings"
+below for the full account): `expected_information_value` is grounded in
+the target entity's own `c_effective()` (`1.0 - confidence`, so a wholly
+unconfirmed candidate scores maximally valuable) rather than the per-round
+expansion `weight: f64` the original design's research identified as the
+"more natural" seed — that `weight` is computed earlier in
+`src/core/engine/mod.rs`'s round loop and is not currently threaded into
+`DispatchCx`/`dispatch.rs`'s per-module scope; threading it through is a
+real, scoped, and explicitly NOT-built-here follow-up. `latency_penalty` is
+a configured-timeout-budget proxy, not an observed measurement — no
+`Instant::elapsed()` capture exists around module dispatch today. The live
+circuit-breaker signal is deliberately NOT one of `DispatchUtility`'s
+inputs: `module_skip_reason`'s existing `circuit::is_open` gate already
+runs strictly before ranking, so any candidate reaching the scorer is, by
+construction, circuit-closed — passing it in again would be dead state, not
+a real signal.
 
 ---
 
@@ -1360,19 +1432,123 @@ $ scripts/doc_coverage.sh                                                # held 
 $ scripts/gate.sh                                                        # all executed checks PASS
 ```
 
+## Pass 13 findings
+
+Directive-driven, arriving in two parts: "extend the existing ROI subsystem
+with a canonical `DispatchUtility`" (this pass), sequenced explicitly after
+"unify provider capability + economics metadata" (Pass 12, PR #581,
+merged first) — a deliberate ordering decision, since `DispatchUtility`'s
+cost/reliability/optionality/uniqueness cold-start priors read directly
+from the now-merged `ProviderDescriptor` rather than inventing a parallel
+set.
+
+A 6-agent parallel research workflow first re-grounded the exact current
+source before any code was written, each agent mapping one facet against
+real files/line numbers (not memory or the earlier design conversation):
+the three existing ROI levers' exact functions/constants/call sites; the
+per-round candidate-weight computation (`src/core/engine/expansion.rs`/
+`mod.rs`) and its relationship to `crate::core::convex::module_cascade`;
+the cost/quota infrastructure (the just-merged `ProviderDescriptor`,
+`ScanOptions::max_cost_usd`, `module_skip_reason`'s exact gate chain, and
+each quota-tracked provider's real `budget_snapshot()`-style function);
+reliability/latency signals (`DispatchLog`, the quarantine chain,
+`Module::max_timeout_ms`/`constrained_timeout_ms`, the circuit breaker);
+novelty/independence/duplication signals (`Entity::corroborating_sources`/
+`source_count`, the `DispatchLog` dedup key, `Module::produces()`); and an
+exhaustive enumeration of every existing test this change must not break. A
+7th, high-effort design-synthesis agent then produced a complete,
+citation-grounded implementation plan from those findings.
+
+Implementing the plan surfaced one real structural fact the design's own
+research had flagged as a risk: the per-round `weight: f64` the original
+plan wanted to seed `expected_information_value` from is computed in
+`src/core/engine/mod.rs`'s round loop and is **not** threaded into
+`DispatchCx`/`dispatch.rs`'s per-module scope, where the rest of
+`DispatchUtility`'s inputs (provider descriptor, quota, timeout, dedup
+state) are naturally available. Rather than widen the change to thread a
+new field through `DispatchCx` and every test/call site that constructs
+one (a materially larger, riskier change), this pass grounds
+`expected_information_value` in the target entity's own `c_effective()`
+instead (`1.0 - confidence`, so a wholly unconfirmed candidate scores
+maximally valuable) — a real, distinct signal already available at the
+exact call site, not an invented one. This is documented explicitly, in
+both `src/core/roi/utility.rs`'s module doc and section 12's ledger row, as
+a deliberate v1 narrowing with a named follow-up, not a silent
+simplification.
+
+A second real finding, made while wiring the eligibility gate: the
+directive's "provider reliability, live when available" requirement turns
+out to already be fully satisfied by existing infrastructure in a way that
+made a naive implementation redundant. `module_skip_reason`'s existing
+`circuit::is_open` check already hard-gates a circuit-open module before
+ranking — so any candidate that reaches `compute_dispatch_utility` at all
+is, by construction, circuit-closed. Passing `circuit_open` into
+`DispatchUtilityInputs` as originally planned would therefore always be
+`false` at the one call site that matters, a dead signal masquerading as a
+live one. Dropped from the inputs entirely; `reliability` is driven purely
+by `ProviderDescriptor::reliability_prior` (the cold-start case), with the
+reasoning documented in the module doc so a future reader doesn't
+reintroduce the redundant check.
+
+Third: `wigle`'s real budget is five independent sub-budgets
+(geo/BSSID/cell/Bluetooth/SSID — `WigleBudgets`), so `Module::
+quota_remaining()` (the new trait default method backing the quota-exhaustion
+gate) is deliberately left un-overridden for it rather than collapsing five
+numbers into one bool that would misrepresent the real state either way —
+documented in `src/modules/wigle/mod.rs` as an honest gap, following this
+ledger's own established precedent (REQ-ROI-002) of leaving a genuine gap
+visible rather than overclaiming completeness.
+
+Wiring the new `EventKind::DispatchUtilityComputed` variant surfaced two
+pre-existing compile-time exhaustiveness tripwires this codebase already
+has for exactly this class of change — `event_type_str_matches_serde_tag_for_every_variant`
+(`src/core/event/tests.rs`, an exhaustive match with no `_` arm) and
+`embedded_spa_renders_every_event_kind` (`src/api/routes/tests.rs`, which
+counts `EventKind` variants against a pinned list and checks the served SPA
+JS has a render case for each). Both caught the new variant immediately
+and were updated in the same pass, alongside the actual SPA `mapEvent` case
+(`src/web/js/scan_info/log.js`) and the `hse live` CLI renderer
+(`src/cli/live/mod.rs`) — both genuinely exhaustive matches, not
+optional cosmetic additions.
+
+### Verification commands run (Pass 13, in order)
+
+```
+$ cargo test --lib core::roi::utility --features dep-cooldown            # 8/8 passed
+$ cargo test --lib core::event --features dep-cooldown                   # 19/19 passed
+$ cargo test --lib -- api::routes::tests::embedded_spa_renders_every_event_kind
+                                                                            # 1/1 passed
+$ cargo test --lib core::engine::tests::eligibility_gates_fire_before_dispatch_utility_is_ever_computed --features dep-cooldown
+$ cargo test --lib core::engine::tests::dispatch_utility_off_by_default_produces_zero_behavior_change --features dep-cooldown
+$ cargo test --lib core::engine::tests::dispatch_utility_explanation_is_surfaced_on_a_real_dispatch --features dep-cooldown
+$ cargo test --lib core::engine::tests::quota_exhausted_provider_is_blocked_at_real_dispatch --features dep-cooldown
+                                                                            # all 4 passed
+$ cargo test --lib --features dep-cooldown -- core::engine::tests::max_roi core::engine::tests::quarantined \
+    core::engine::tests::unquarantined core::engine::tests::unknown_cost core::engine::tests::roi_cutoff \
+    core::engine::tests::convex_budget                                   # all pre-existing ROI/gate/ordering tests still pass unchanged
+$ cargo test --features dep-cooldown --test smoke priority_waterfall     # pinned ordering test still passes unchanged
+$ cargo fmt --all
+$ cargo clippy --all-targets --features dep-cooldown -- -D warnings      # clean
+$ cargo test --lib --features dep-cooldown                               # full suite, 0 failed
+$ cargo test --test api                                                  # 0 failed
+$ cargo test --test architecture                                        # 0 failed
+$ scripts/doc_coverage.sh
+$ scripts/gate.sh
+```
+
 ## Summary statistics
 
-| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 | Pass 6 | Pass 7 | Pass 8 | Pass 9 | Pass 10 | Pass 11 | Pass 12 |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 | 56 | 58 | 59 *(REQ-API-SCAN-006 fixed in Pass 9)* | 62 *(REQ-CLI-001, REQ-CLI-007 flipped from PARTIAL; REQ-STORAGE-001 new)* | 64 *(REQ-ROI-001, REQ-ROI-003 new)* | 69 *(REQ-PROVIDER-001..005 new, all landed VERIFIED)* |
-| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 | 14 | 13 *(REQ-INSTALL-001 out, fixed; REQ-INSTALL-010 in as new then confirmed VERIFIED by this PR's own CI run before merge — net -1)* | 13 | 13 | 14 *(REQ-ROI-002 new)* | 14 |
-| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* | 16 *(REQ-API-SCAN-002 fixed in Pass 7)* | 16 | 16 | 14 *(REQ-CLI-001, REQ-CLI-007 out, fixed; REQ-ENV-005 stays, evidence strengthened)* | 14 | 14 |
-| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| AMBIGUOUS | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 0 *(REQ-API-SCAN-006 fixed in Pass 9)* | 0 | 0 | 0 |
-| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** | **88** | **89** | **89** | **90** *(REQ-STORAGE-001, new Section 9)* | **93** *(REQ-ROI-001/002/003, new Section 10)* | **98** *(REQ-PROVIDER-001..005, new Section 11)* |
+| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 | Pass 6 | Pass 7 | Pass 8 | Pass 9 | Pass 10 | Pass 11 | Pass 12 | Pass 13 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 | 56 | 58 | 59 *(REQ-API-SCAN-006 fixed in Pass 9)* | 62 *(REQ-CLI-001, REQ-CLI-007 flipped from PARTIAL; REQ-STORAGE-001 new)* | 64 *(REQ-ROI-001, REQ-ROI-003 new)* | 69 *(REQ-PROVIDER-001..005 new, all landed VERIFIED)* | 72 *(REQ-ROI-004..006 new, all landed VERIFIED)* |
+| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 | 14 | 13 *(REQ-INSTALL-001 out, fixed; REQ-INSTALL-010 in as new then confirmed VERIFIED by this PR's own CI run before merge — net -1)* | 13 | 13 | 14 *(REQ-ROI-002 new)* | 14 | 14 |
+| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* | 16 *(REQ-API-SCAN-002 fixed in Pass 7)* | 16 | 16 | 14 *(REQ-CLI-001, REQ-CLI-007 out, fixed; REQ-ENV-005 stays, evidence strengthened)* | 14 | 14 | 14 |
+| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| AMBIGUOUS | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 0 *(REQ-API-SCAN-006 fixed in Pass 9)* | 0 | 0 | 0 | 0 |
+| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** | **88** | **89** | **89** | **90** *(REQ-STORAGE-001, new Section 9)* | **93** *(REQ-ROI-001/002/003, new Section 10)* | **98** *(REQ-PROVIDER-001..005, new Section 11)* | **101** *(REQ-ROI-004..006, new Section 12)* |
 
 Pass 4's `VERIFIED` count (53) is Pass 3's 50, plus the REQ-ENV-003 flip
 (+1), plus the two new one-row sections REQ-ENGINE-001/REQ-CORRELATOR-001
@@ -1398,7 +1574,10 @@ REQ-ROI-002, +1); the three new rows bring the total from 90 to 93. Pass
 12's `VERIFIED` count (69) is Pass 11's 64, plus one new five-row section,
 REQ-PROVIDER-001..005, all five landing `VERIFIED` on first pass (+5) — no
 row moved through an intermediate status this time; the five new rows bring
-the total from 93 to 98.
+the total from 93 to 98. Pass 13's `VERIFIED` count (72) is Pass 12's 69,
+plus one new three-row section, REQ-ROI-004..006, all three landing
+`VERIFIED` on first pass (+3) — no row moved through an intermediate status
+this time; the three new rows bring the total from 98 to 101.
 
 Breakdown by section: Module trait contract 14 rows (REQ-CORE-001..014), CLI
 surface 12 rows (REQ-CLI-001..012), `install.sh` 10 rows
@@ -1409,8 +1588,9 @@ REQ-API-EXPORT-001..006), Scan engine dispatch 1 row (REQ-ENGINE-001),
 Correlator rule registry 1 row (REQ-CORRELATOR-001), Storage subsystem 1 row
 (REQ-STORAGE-001), ROI-maximising expansion 3 rows
 (REQ-ROI-001..003), Provider capability + economics descriptor 5 rows
-(REQ-PROVIDER-001..005) —
-14+12+10+6+10+35+1+1+1+3+5 = 98, matching the total above.
+(REQ-PROVIDER-001..005), Dispatch-utility explainability 3 rows
+(REQ-ROI-004..006) —
+14+12+10+6+10+35+1+1+1+3+5+3 = 101, matching the total above.
 Some rows cite tests shared across sections (e.g. REQ-CORE-010 and
 REQ-README-009 both cite `every_module_maps_to_valid_attack_reconnaissance_techniques`),
 which is intentional — the two rows document the same underlying test from

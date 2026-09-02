@@ -261,6 +261,10 @@ impl Module for SeekNow {
         }
     }
 
+    fn quota_remaining(&self) -> Option<bool> {
+        Some(see_know::budget_remaining())
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,

@@ -3594,6 +3594,390 @@ async fn unknown_cost_paid_provider_is_blocked_by_an_active_cost_budget() {
     );
 }
 
+/// A `CountingProbe` whose `provider_descriptor()` declares a local quota
+/// and whose `quota_remaining()` is fixed by the test — for proving
+/// `quota_exhausted_blocked` actually stops dispatch at the real engine call
+/// site (not just the pure truth table already covered by
+/// `core::roi::utility::tests::quota_exhausted_gate_only_blocks_quota_tracked_modules`).
+struct QuotaTrackedProbe {
+    calls: Arc<AtomicU64>,
+    remaining: Option<bool>,
+}
+
+#[async_trait::async_trait]
+impl Module for QuotaTrackedProbe {
+    fn name(&self) -> &'static str {
+        "quota_tracked_probe"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, _: &Target) -> bool {
+        true
+    }
+    fn provider_descriptor(&self) -> crate::core::module::ProviderDescriptor {
+        crate::core::module::ProviderDescriptor {
+            quota_unit: Some("lookup"),
+            ..crate::core::module::derive_default_provider_descriptor(self)
+        }
+    }
+    fn quota_remaining(&self) -> Option<bool> {
+        self.remaining
+    }
+    async fn process(
+        &self,
+        _: &Target,
+        _: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        Ok(crate::core::module::ModuleResult::new())
+    }
+}
+
+/// A quota-tracked module reporting its budget exhausted must never
+/// dispatch; one reporting budget remaining, or an unknown remaining state,
+/// must dispatch normally — proven at the real `dispatch_target` call site.
+#[tokio::test]
+async fn quota_exhausted_provider_is_blocked_at_real_dispatch() {
+    use crate::core::test_support::InMemoryStore;
+
+    async fn dispatch_once(remaining: Option<bool>) -> u64 {
+        let calls = Arc::new(AtomicU64::new(0));
+        let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+        let (bus, _rx) = tokio::sync::broadcast::channel(64);
+        let engine = ScanEngine::new(
+            vec![Arc::new(QuotaTrackedProbe {
+                calls: calls.clone(),
+                remaining,
+            })],
+            store,
+            bus.clone(),
+        );
+        let target = Target::new(TargetKind::Username, "quota-gate-target");
+        let opts = ScanOptions::default();
+        let mut ctx = ModuleContext {
+            scan_id: "quota-gate-scan".to_string(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+        let cx = DispatchCx {
+            scan_id: "quota-gate-scan",
+            target: &target,
+            opts: &opts,
+            is_expansion: false,
+            seed_kind: TargetKind::Username,
+            quarantined: no_quarantine(),
+        };
+        let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+        let mut stats = ModuleStats::default();
+        let mut dispatched: DispatchLog = DispatchLog::new();
+        let mut newly_inserted: Vec<String> = Vec::new();
+        let mut state = DispatchState {
+            entity_map: &mut entity_map,
+            stats: &mut stats,
+            dispatched: &mut dispatched,
+            newly_inserted: &mut newly_inserted,
+        };
+
+        engine
+            .dispatch_target(&cx, &mut ctx, &mut state)
+            .await
+            .expect("dispatch runs");
+        calls.load(Ordering::Relaxed)
+    }
+
+    assert_eq!(
+        dispatch_once(Some(false)).await,
+        0,
+        "a module reporting its quota exhausted must never dispatch"
+    );
+    assert_eq!(
+        dispatch_once(Some(true)).await,
+        1,
+        "a module reporting budget remaining must dispatch normally"
+    );
+    assert_eq!(
+        dispatch_once(None).await,
+        1,
+        "an unknown remaining state must never be treated as exhausted"
+    );
+}
+
+/// A `CountingProbe` with configurable eligibility so both the "dispatched"
+/// and "gate-blocked" DispatchUtility scenarios can share one stub — for the
+/// `dispatch_utility` explainability lever's real-dispatch tests below.
+struct DispatchUtilityProbe {
+    calls: Arc<AtomicU64>,
+}
+
+#[async_trait::async_trait]
+impl Module for DispatchUtilityProbe {
+    fn name(&self) -> &'static str {
+        "dispatch_utility_probe"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, _: &Target) -> bool {
+        true
+    }
+    async fn process(
+        &self,
+        _: &Target,
+        _: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        Ok(crate::core::module::ModuleResult::new())
+    }
+}
+
+fn drain_dispatch_utility_events(
+    rx: &mut tokio::sync::broadcast::Receiver<crate::core::event::Event>,
+) -> Vec<crate::core::event::EventKind> {
+    let mut out = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        if matches!(ev.kind, EventKind::DispatchUtilityComputed { .. }) {
+            out.push(ev.kind);
+        }
+    }
+    out
+}
+
+/// The eligibility gate chain (`module_skip_reason`, including the
+/// unknown-cost budget gate) must run strictly BEFORE `DispatchUtility` is
+/// ever computed — a candidate that fails a hard gate must never reach the
+/// scorer, let alone emit its explanation event. Reuses `UnknownCostPaidProbe`
+/// (paid, `CostModel::Unknown`) so the blocked candidate would otherwise
+/// score a high `expected_optionality`/`reliability` (neutral 0.5 priors,
+/// no penalties) if the scorer ran despite the gate.
+#[tokio::test]
+async fn eligibility_gates_fire_before_dispatch_utility_is_ever_computed() {
+    use crate::core::test_support::InMemoryStore;
+
+    let calls = Arc::new(AtomicU64::new(0));
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, mut rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(
+        vec![Arc::new(UnknownCostPaidProbe {
+            calls: calls.clone(),
+        })],
+        store,
+        bus.clone(),
+    );
+    let target = Target::new(TargetKind::Username, "utility-gate-target");
+    let opts = ScanOptions {
+        max_cost_usd: Some(5.0),
+        allow_unknown_cost_dispatch: false,
+        max_roi: true,
+        dispatch_utility: true,
+        ..Default::default()
+    };
+    let mut ctx = ModuleContext {
+        scan_id: "utility-gate-scan".to_string(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let cx = DispatchCx {
+        scan_id: "utility-gate-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed_kind: TargetKind::Username,
+        quarantined: no_quarantine(),
+    };
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+
+    engine
+        .dispatch_target(&cx, &mut ctx, &mut state)
+        .await
+        .expect("dispatch runs");
+
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        0,
+        "the gate-blocked module must never have process() called"
+    );
+    let utility_events = drain_dispatch_utility_events(&mut rx);
+    assert!(
+        utility_events.is_empty(),
+        "no DispatchUtilityComputed event may fire for a candidate the eligibility gates \
+         already rejected, got: {utility_events:?}"
+    );
+}
+
+/// `dispatch_utility` is off by default — a scan run with default
+/// `ScanOptions` must never emit a `DispatchUtilityComputed` event, even
+/// with `max_roi` on, and dispatch must proceed exactly as before this
+/// lever existed.
+#[tokio::test]
+async fn dispatch_utility_off_by_default_produces_zero_behavior_change() {
+    use crate::core::test_support::InMemoryStore;
+
+    let calls = Arc::new(AtomicU64::new(0));
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, mut rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(
+        vec![Arc::new(DispatchUtilityProbe {
+            calls: calls.clone(),
+        })],
+        store,
+        bus.clone(),
+    );
+    let target = Target::new(TargetKind::Username, "utility-off-target");
+    let opts = ScanOptions {
+        max_roi: true,
+        // `dispatch_utility` intentionally omitted — must default to `false`.
+        ..Default::default()
+    };
+    assert!(!opts.dispatch_utility, "sanity: default must be off");
+    let mut ctx = ModuleContext {
+        scan_id: "utility-off-scan".to_string(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let cx = DispatchCx {
+        scan_id: "utility-off-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed_kind: TargetKind::Username,
+        quarantined: no_quarantine(),
+    };
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+
+    engine
+        .dispatch_target(&cx, &mut ctx, &mut state)
+        .await
+        .expect("dispatch runs");
+
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "the eligible module must still dispatch"
+    );
+    let utility_events = drain_dispatch_utility_events(&mut rx);
+    assert!(
+        utility_events.is_empty(),
+        "dispatch_utility=false must never emit a DispatchUtilityComputed event, got: \
+         {utility_events:?}"
+    );
+}
+
+/// With `dispatch_utility` on, a real dispatch of an eligible module must
+/// surface a non-empty, self-consistent explanation via
+/// `EventKind::DispatchUtilityComputed`.
+#[tokio::test]
+async fn dispatch_utility_explanation_is_surfaced_on_a_real_dispatch() {
+    use crate::core::test_support::InMemoryStore;
+
+    let calls = Arc::new(AtomicU64::new(0));
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, mut rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(
+        vec![Arc::new(DispatchUtilityProbe {
+            calls: calls.clone(),
+        })],
+        store,
+        bus.clone(),
+    );
+    let target = Target::new(TargetKind::Username, "utility-on-target");
+    let opts = ScanOptions {
+        max_roi: true,
+        dispatch_utility: true,
+        ..Default::default()
+    };
+    let mut ctx = ModuleContext {
+        scan_id: "utility-on-scan".to_string(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let cx = DispatchCx {
+        scan_id: "utility-on-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed_kind: TargetKind::Username,
+        quarantined: no_quarantine(),
+    };
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+
+    engine
+        .dispatch_target(&cx, &mut ctx, &mut state)
+        .await
+        .expect("dispatch runs");
+
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "the eligible module must dispatch"
+    );
+    let utility_events = drain_dispatch_utility_events(&mut rx);
+    assert_eq!(
+        utility_events.len(),
+        1,
+        "exactly one DispatchUtilityComputed event for the one eligible module"
+    );
+    let EventKind::DispatchUtilityComputed {
+        module,
+        target_kind,
+        target_value,
+        final_utility,
+        explanation,
+    } = &utility_events[0]
+    else {
+        unreachable!("filtered to DispatchUtilityComputed above");
+    };
+    assert_eq!(module, "dispatch_utility_probe");
+    assert_eq!(target_kind, "username");
+    assert_eq!(target_value, "utility-on-target");
+    assert!(final_utility.is_finite());
+    assert!(
+        explanation.len() >= 10,
+        "explanation must have one line per factor plus the final restatement, got {}",
+        explanation.len()
+    );
+    assert!(
+        explanation
+            .last()
+            .is_some_and(|l| l.starts_with("final_utility:"))
+    );
+}
+
 /// A probe whose static metadata (priority / cost / category / declared outputs)
 /// is fully configurable, and whose `process()` emits ONE entity tagged with a
 /// distinctive value — so a truncated dispatch reveals WHICH module ran first.

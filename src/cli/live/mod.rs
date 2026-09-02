@@ -300,6 +300,13 @@ fn render_event(kind: &crate::core::event::EventKind) -> String {
             ),
         },
         E::LiveStop { reason, .. } => format!("live stop — {reason}"),
+        E::DispatchUtilityComputed {
+            module,
+            target_kind,
+            target_value,
+            final_utility,
+            ..
+        } => format!("  utility {final_utility:.2} · {module} -> [{target_kind}] {target_value}"),
     }
 }
 

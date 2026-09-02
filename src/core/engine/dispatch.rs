@@ -280,6 +280,21 @@ pub(super) fn target_distinct_sources(
         .map_or(0, |e| e.corroborating_sources().len())
 }
 
+/// `Entity::c_effective()` for the entity a dispatch target was derived
+/// from, or `None` when no matching entity exists yet — the dispatch-utility
+/// lever's `expected_information_value` input (see
+/// [`crate::core::roi::DispatchUtilityInputs::entity_confidence`]).
+/// Deliberately a sibling of [`target_distinct_sources`], not a change to
+/// it, so that function's existing callers/tests are unaffected.
+pub(super) fn target_c_effective(
+    entity_map: &HashMap<String, Entity>,
+    target: &Target,
+) -> Option<f64> {
+    let entity_kind = target.kind.to_entity_kind();
+    let uid = crate::core::entity::uid_for(&entity_kind, &target.value);
+    entity_map.get(&uid).map(Entity::c_effective)
+}
+
 pub(super) fn module_skip_reason(
     module: &dyn Module,
     target: &Target,
@@ -353,6 +368,18 @@ pub(super) fn module_skip_reason(
             "unknown-cost paid provider blocked by active cost budget — set \
              allow_unknown_cost_dispatch to override",
         );
+    }
+    // Quota-budget eligibility gate — same family as the monetary gate above:
+    // a module that tracks a local quota (`ProviderDescriptor::quota_unit`)
+    // and reports it exhausted (`Module::quota_remaining() == Some(false)`)
+    // must never dispatch, checked before any ranking. A module that tracks
+    // no local quota, or whose remaining state isn't currently knowable,
+    // never blocks here — "unknown" is not "exhausted".
+    if crate::core::roi::quota_exhausted_blocked(
+        module.provider_descriptor().quota_unit,
+        module.quota_remaining(),
+    ) {
+        return Some("quota exhausted — provider-tracked local budget spent for this scan");
     }
     if opts.passive_only && !module.is_passive() {
         return Some("not passive");
@@ -803,6 +830,61 @@ impl super::ScanEngine {
         false
     }
 
+    /// The ROI subsystem's fourth, explainability-only lever
+    /// (`crate::core::roi::DispatchUtility`): computes and emits a
+    /// `DispatchUtilityComputed` event for one eligible (module, target)
+    /// candidate. Never called for a candidate `gate_skips`/`module_skip_reason`
+    /// already rejected — every eligibility gate (allowlist, circuit-open,
+    /// budget/quota, quarantine, ...) runs strictly BEFORE this, at each of
+    /// this method's 3 call sites. No-op unless `cx.opts.dispatch_utility` is
+    /// set — purely additive telemetry, changes no dispatch decision.
+    fn maybe_emit_dispatch_utility(
+        &self,
+        cx: &DispatchCx<'_>,
+        module: &dyn Module,
+        target_sources: usize,
+        entity_confidence: Option<f64>,
+        dispatched: &DispatchLog,
+    ) {
+        if !cx.opts.dispatch_utility {
+            return;
+        }
+        let descriptor = module.provider_descriptor();
+        let cost_per_request_usd = match descriptor.cost_model {
+            crate::core::module::CostModel::Free => Some(0.0),
+            crate::core::module::CostModel::Unknown => None,
+            crate::core::module::CostModel::Exact | crate::core::module::CostModel::Estimated => {
+                descriptor.cost_per_request
+            }
+        };
+        let inputs = crate::core::roi::DispatchUtilityInputs {
+            source_count: u32::try_from(target_sources).unwrap_or(u32::MAX),
+            entity_confidence,
+            optionality_prior: descriptor.optionality_prior,
+            novelty_prior: crate::core::convex::module_cascade(
+                module.produces(),
+                module.category(),
+            ),
+            reliability_prior: descriptor.reliability_prior,
+            cost_per_request_usd,
+            quota_remaining: module.quota_remaining(),
+            configured_timeout_ms: module.constrained_timeout_ms(),
+            already_dispatched_this_module_target: dispatched
+                .contains(&dispatch_key(module.name(), cx.target)),
+        };
+        let utility = crate::core::roi::compute_dispatch_utility(&inputs);
+        self.emit(
+            cx.scan_id,
+            EventKind::DispatchUtilityComputed {
+                module: module.name().to_string(),
+                target_kind: cx.target.kind.canonical_str().to_string(),
+                target_value: cx.target.value.clone(),
+                final_utility: utility.final_utility,
+                explanation: utility.explanation,
+            },
+        );
+    }
+
     /// Sequential dispatcher (max_concurrent == 0).
     async fn dispatch_target_sequential(
         &self,
@@ -822,6 +904,7 @@ impl super::ScanEngine {
         // Distinct-source count of the target entity (for the high-value-API
         // cross-correlation gate); computed once per target, not per module.
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
+        let target_confidence = target_c_effective(state.entity_map, cx.target);
         for &idx in self
             .graph
             .dispatch_order_for(cx.target.kind, cx.opts.convex_budget)
@@ -850,6 +933,13 @@ impl super::ScanEngine {
             if self.gate_skips(cx, &**module, target_sources, state.stats) {
                 continue;
             }
+            self.maybe_emit_dispatch_utility(
+                cx,
+                &**module,
+                target_sources,
+                target_confidence,
+                state.dispatched,
+            );
             if !matches!(module.cost(), ModuleCost::Free)
                 && !state.dispatched.insert(dispatch_key(name, cx.target))
             {
@@ -959,6 +1049,7 @@ impl super::ScanEngine {
         state: &mut DispatchState<'_>,
     ) {
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
+        let target_confidence = target_c_effective(state.entity_map, cx.target);
         for &idx in self
             .graph
             .dispatch_order_for(cx.target.kind, cx.opts.convex_budget)
@@ -989,6 +1080,13 @@ impl super::ScanEngine {
             if self.gate_skips(cx, &**module, target_sources, state.stats) {
                 continue;
             }
+            self.maybe_emit_dispatch_utility(
+                cx,
+                &**module,
+                target_sources,
+                target_confidence,
+                state.dispatched,
+            );
             if !state.dispatched.insert(dispatch_key(name, cx.target)) {
                 state.stats.deduped += 1;
                 self.emit_skipped(cx.scan_id, name, "already dispatched for this target");
@@ -1070,6 +1168,7 @@ impl super::ScanEngine {
         let ctx_shared: Arc<ModuleContext> = Arc::new(ctx.clone());
 
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
+        let target_confidence = target_c_effective(state.entity_map, cx.target);
         for &idx in self
             .graph
             .dispatch_order_for(cx.target.kind, cx.opts.convex_budget)
@@ -1107,6 +1206,13 @@ impl super::ScanEngine {
             if self.gate_skips(cx, &**module, target_sources, state.stats) {
                 continue;
             }
+            self.maybe_emit_dispatch_utility(
+                cx,
+                &**module,
+                target_sources,
+                target_confidence,
+                state.dispatched,
+            );
             if !matches!(module.cost(), ModuleCost::Free)
                 && !state.dispatched.insert(dispatch_key(name, cx.target))
             {

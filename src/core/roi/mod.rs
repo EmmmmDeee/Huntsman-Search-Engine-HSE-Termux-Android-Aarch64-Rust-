@@ -1,26 +1,45 @@
 //! ROI-maximising expansion controls.
 //!
-//! Three orthogonal levers, all opt-in via [`crate::core::scan::ScanOptions::max_roi`]:
+//! Four orthogonal levers, all opt-in:
 //!
 //! 1. **Convergence-pruning** — an entity with ≥2 corroborating sources
 //!    AND `c_eff ≥ 0.85` is considered "saturated" and is *not*
 //!    re-expanded. Saves dispatch budget on entities that further
-//!    queries would only re-confirm.
+//!    queries would only re-confirm. Gated by
+//!    [`crate::core::scan::ScanOptions::max_roi`].
 //!
 //! 2. **Top-K candidate gate** — within an expansion round, keep only
 //!    the top `2 × max_concurrent + 8` candidates by weight. Stops
 //!    long-tail noise (e.g. 80 low-weight domains discovered through a
-//!    single search engine) from consuming the round.
+//!    single search engine) from consuming the round. Gated by `max_roi`.
 //!
 //! 3. **Adaptive-depth termination** — when the prior round produced
 //!    fewer than `min_marginal_yield` entities per dispatched target,
 //!    stop recursing even if `--depth` would allow more rounds. The
 //!    marginal yield collapses near convergence; this captures the
-//!    `dE/dDispatch → 0` boundary.
+//!    `dE/dDispatch → 0` boundary. Gated by `max_roi`.
 //!
-//! All three are pure-functions over the entity map; no I/O.
+//! 4. **Dispatch-utility explainability** ([`DispatchUtility`], `utility`
+//!    submodule) — a canonical, additive-formula score per eligible
+//!    (module, target) candidate folding in novelty, source independence,
+//!    pivot optionality, reliability, cost, quota, latency, failure, and
+//!    duplication signals. Purely additive telemetry in this pass: it does
+//!    not change dispatch order, only surfaces an explainable score
+//!    alongside it. Gated by
+//!    [`crate::core::scan::ScanOptions::dispatch_utility`] (requires
+//!    `max_roi`).
+//!
+//! Levers 1-3 are pure functions over the entity map; no I/O. Lever 4's own
+//! [`compute_dispatch_utility`] is likewise pure — its caller
+//! (`crate::core::engine::dispatch`) resolves real state into
+//! [`DispatchUtilityInputs`] before calling in.
 
 use crate::core::entity::Entity;
+
+mod utility;
+pub use utility::{
+    DispatchUtility, DispatchUtilityInputs, compute_dispatch_utility, quota_exhausted_blocked,
+};
 
 /// Threshold at which an entity is considered "saturated" — corroborated
 /// by enough independent sources at high enough confidence that further
