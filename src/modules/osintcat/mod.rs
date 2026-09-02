@@ -146,6 +146,24 @@ impl Module for OsintCat {
         KINDS
     }
 
+    fn provider_descriptor(&self) -> crate::core::module::ProviderDescriptor {
+        crate::core::module::ProviderDescriptor {
+            // `cost()` reports `KeyGated` (the key itself is free to register),
+            // but the paid `/api/email-osint` call is genuinely pay-per-use —
+            // `OcCredits::price_per_search`, read live from the provider's own
+            // `/api/user` preflight response and checked against
+            // `has_sufficient_credits` before every paid call (see `process`
+            // below). No other module in the registry has this shape.
+            access_class: crate::core::module::AccessClass::Paid,
+            escalation_band: crate::core::module::EscalationBand::L3Microcost,
+            // A precise price IS known — just live/dynamic (the provider's own
+            // response field), not a static figure this descriptor can carry.
+            cost_model: crate::core::module::CostModel::Exact,
+            quota_unit: Some("search"),
+            ..crate::core::module::derive_default_provider_descriptor(self)
+        }
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
         let email = &target.value;

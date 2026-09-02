@@ -397,3 +397,152 @@ fn modules_do_not_collapse_a_non_2xx_into_an_empty_result() {
         violations.join("\n  ")
     );
 }
+
+// ── Provider capability + economics descriptor (REQ-PROVIDER-001/002) ──────
+//
+// `derive_default_provider_descriptor`'s pure derivation logic and the
+// `unknown_cost_paid_provider_blocked` gate have their own unit coverage in
+// `src/core/module/provider_tests.rs` against a local stub module — `core`
+// must stay module-agnostic (`core_does_not_import_modules`, elsewhere in
+// this file), so the REGISTRY-WIDE completeness/consistency checks below
+// (which need the real 188-module `crate::modules::registry()`) live here
+// instead, as an integration test outside `src/core/`.
+
+#[test]
+fn every_registered_module_has_an_internally_consistent_provider_descriptor() {
+    use huntsman_search_engine::core::module::{AccessClass, CachePolicy, CostModel, EscalationBand};
+
+    let mods = huntsman_search_engine::modules::registry();
+    assert!(mods.len() > 100, "sanity: registry should hold ~188 modules");
+    for m in &mods {
+        let d = m.provider_descriptor();
+        assert_eq!(d.module_id, m.name());
+        assert_eq!(d.provider_id, m.name());
+        assert_eq!(
+            d.supported_seed_types,
+            m.consumes(),
+            "{}: supported_seed_types must equal consumes()",
+            d.module_id
+        );
+
+        // access_class <-> requires_key must agree in both directions.
+        match d.access_class {
+            AccessClass::Keyless => assert!(
+                !d.requires_key,
+                "{}: Keyless access_class must not require a key",
+                d.module_id
+            ),
+            AccessClass::FreeAccount
+            | AccessClass::FreeQuota
+            | AccessClass::Paid
+            | AccessClass::Enterprise => assert!(
+                d.requires_key,
+                "{}: {:?} access_class must require a key",
+                d.module_id, d.access_class
+            ),
+        }
+
+        // A Free cost model can never carry a per-request price — there is
+        // nothing to price.
+        if d.cost_model == CostModel::Free {
+            assert!(
+                d.cost_per_request.is_none(),
+                "{}: Free cost_model must not carry a cost_per_request",
+                d.module_id
+            );
+            assert_eq!(d.access_class, AccessClass::Keyless);
+        }
+
+        // L0Local is reserved for genuinely passive (no-network) modules.
+        if d.escalation_band == EscalationBand::L0Local {
+            assert!(
+                m.is_passive(),
+                "{}: L0Local escalation band must only apply to a passive module",
+                d.module_id
+            );
+        }
+        // The inverse also holds: every passive module is L0Local (the
+        // derivation checks `is_passive` before anything else).
+        if m.is_passive() {
+            assert_eq!(
+                d.escalation_band,
+                EscalationBand::L0Local,
+                "{}: a passive module's escalation band must be L0Local",
+                d.module_id
+            );
+        }
+
+        // Cross-correlation-gated modules must land in the specialist band.
+        if m.is_high_value_only() || m.requires_geo_corroboration() {
+            assert_eq!(
+                d.escalation_band,
+                EscalationBand::L4Specialist,
+                "{}: a cross-correlation-gated module must be L4Specialist",
+                d.module_id
+            );
+        }
+
+        // cache_policy must mirror cache_ttl_secs() exactly.
+        match d.cache_policy {
+            CachePolicy::Disabled => assert_eq!(m.cache_ttl_secs(), 0, "{}", d.module_id),
+            CachePolicy::TtlSeconds(secs) => {
+                assert_eq!(secs, m.cache_ttl_secs(), "{}", d.module_id);
+            }
+        }
+
+        // The four [0,1] priors must actually be in range.
+        for (name, v) in [
+            ("provenance_quality_prior", d.provenance_quality_prior),
+            ("uniqueness_prior", d.uniqueness_prior),
+            ("reliability_prior", d.reliability_prior),
+            ("optionality_prior", d.optionality_prior),
+        ] {
+            assert!(
+                (0.0..=1.0).contains(&v),
+                "{}: {name} must be in [0,1], got {v}",
+                d.module_id
+            );
+        }
+    }
+}
+
+#[test]
+fn the_six_overridden_providers_have_their_expected_provider_descriptors() {
+    use huntsman_search_engine::core::module::{AccessClass, CostModel, EscalationBand};
+
+    let mods = huntsman_search_engine::modules::registry();
+    let get = |name: &str| {
+        mods.iter()
+            .find(|m| m.name() == name)
+            .unwrap_or_else(|| panic!("module {name} not in registry"))
+            .provider_descriptor()
+    };
+
+    let oathnet = get("oathnet_pro");
+    assert_eq!(oathnet.escalation_band, EscalationBand::L4Specialist);
+    assert_eq!(oathnet.cost_model, CostModel::Unknown);
+    assert_eq!(oathnet.quota_unit, Some("lookup"));
+
+    let wigle = get("wigle");
+    assert_eq!(wigle.access_class, AccessClass::FreeQuota);
+    assert_eq!(wigle.escalation_band, EscalationBand::L4Specialist);
+    assert_eq!(wigle.quota_unit, Some("query"));
+
+    let see_know = get("see_know");
+    assert_eq!(see_know.access_class, AccessClass::Enterprise);
+    assert_eq!(see_know.escalation_band, EscalationBand::L5Enterprise);
+    assert_eq!(see_know.cost_model, CostModel::Estimated);
+    assert_eq!(see_know.quota_unit, Some("credit"));
+
+    let osintcat = get("osintcat");
+    assert_eq!(osintcat.access_class, AccessClass::Paid);
+    assert_eq!(osintcat.cost_model, CostModel::Exact);
+
+    // The two evidence-based quality-prior overrides — `0.5` is the neutral
+    // default every un-overridden module's `provenance_quality_prior` carries.
+    const NEUTRAL_PRIOR: f64 = 0.5;
+    let hudsonrock = get("hudsonrock");
+    assert!(hudsonrock.provenance_quality_prior > NEUTRAL_PRIOR);
+    let comb = get("comb_search");
+    assert!(comb.provenance_quality_prior < NEUTRAL_PRIOR);
+}

@@ -13,6 +13,14 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 
+mod provider;
+pub use provider::{
+    AccessClass, CachePolicy, CostModel, EscalationBand, HistoricalDepthClass, LicensingPolicy,
+    ProviderDescriptor, RateLimitPolicy, RecursiveUsePolicy,
+    derive_default as derive_default_provider_descriptor, env_cost_per_request,
+    unknown_cost_paid_provider_blocked,
+};
+
 /// Module funding/access cost — drives the `free_only` filter on a scan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -141,6 +149,12 @@ pub struct ModuleInfo {
     /// assessed. Defaults from the module's category; see
     /// [`Module::attack_techniques`].
     pub attack_techniques: Vec<&'static str>,
+    /// The canonical provider capability + economics descriptor — see
+    /// [`ProviderDescriptor`] and [`Module::provider_descriptor`]. Embedding
+    /// it here is what makes every consumer of `ModuleInfo` (CLI, HTTP API)
+    /// read the same authoritative metadata rather than each re-deriving
+    /// its own copy.
+    pub provider: ProviderDescriptor,
 }
 
 /// All modules implement this trait. Default methods give sensible answers
@@ -318,6 +332,25 @@ pub trait Module: Send + Sync {
         crate::core::attack::techniques_for_category(self.category())
     }
 
+    /// The canonical provider capability + economics descriptor for this
+    /// module — see [`ProviderDescriptor`].
+    ///
+    /// Default: mechanically derived from this trait's other methods
+    /// (`cost()`, `category()`, `is_high_value_only()`,
+    /// `requires_geo_corroboration()`, `cache_ttl_secs()`, `consumes()`,
+    /// `produces()`) via [`derive_default_provider_descriptor`] — correct
+    /// for the vast majority of modules with no ceremony, exactly as
+    /// `consumes()`'s default is correct for modules that gate purely on
+    /// `t.kind`. Override only for a module whose real-world economics
+    /// genuinely differ from that mechanical derivation — six do today:
+    /// `src/modules/oathnet_pro`, `src/modules/wigle`, `src/modules/see_know`,
+    /// `src/modules/osintcat` (actual quota/cost tracking), and
+    /// `src/modules/hudsonrock`, `src/modules/comb_search` (asymmetric
+    /// data-quality priors).
+    fn provider_descriptor(&self) -> ProviderDescriptor {
+        derive_default_provider_descriptor(self)
+    }
+
     /// Built from the other methods — don't override.
     fn info(&self) -> ModuleInfo {
         ModuleInfo {
@@ -338,6 +371,7 @@ pub trait Module: Send + Sync {
                 .map(std::string::ToString::to_string)
                 .collect(),
             attack_techniques: self.attack_techniques().to_vec(),
+            provider: self.provider_descriptor(),
         }
     }
 }

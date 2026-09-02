@@ -111,6 +111,17 @@ impl Module for CombSearch {
         KINDS
     }
 
+    fn provider_descriptor(&self) -> crate::core::module::ProviderDescriptor {
+        crate::core::module::ProviderDescriptor {
+            // COMB is an aggregated compilation of older breaches — lower
+            // fidelity than a live stealer-log source (see this module's own
+            // confidence-baseline doc comment above) — so this sits below the
+            // 0.5 neutral default other modules get by default.
+            provenance_quality_prior: 0.35,
+            ..crate::core::module::derive_default_provider_descriptor(self)
+        }
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         // Single public request; the 3s default would clip a slow-but-connected
         // response as a spurious timeout.

@@ -3461,6 +3461,139 @@ async fn unquarantined_module_in_a_nonempty_quarantine_set_still_dispatches() {
     }
 }
 
+/// A `CountingProbe` whose `provider_descriptor()` is overridden to a paid
+/// provider with an UNKNOWN cost model — for proving the cost-budget
+/// eligibility gate (`module_skip_reason`'s `unknown_cost_paid_provider_blocked`
+/// check, `dispatch.rs:347`) actually stops dispatch at the real engine call
+/// site, not just in the pure truth table already covered by
+/// `core::module::provider::tests::unknown_cost_gate_only_blocks_paid_or_enterprise_unknown_cost_under_a_budget`.
+struct UnknownCostPaidProbe {
+    calls: Arc<AtomicU64>,
+}
+
+#[async_trait::async_trait]
+impl Module for UnknownCostPaidProbe {
+    fn name(&self) -> &'static str {
+        "unknown_cost_paid_probe"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn cost(&self) -> ModuleCost {
+        ModuleCost::Paid
+    }
+    fn accepts(&self, _: &Target) -> bool {
+        true
+    }
+    fn provider_descriptor(&self) -> crate::core::module::ProviderDescriptor {
+        crate::core::module::ProviderDescriptor {
+            access_class: crate::core::module::AccessClass::Paid,
+            cost_model: crate::core::module::CostModel::Unknown,
+            ..crate::core::module::derive_default_provider_descriptor(self)
+        }
+    }
+    async fn process(
+        &self,
+        _: &Target,
+        _: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        Ok(crate::core::module::ModuleResult::new())
+    }
+}
+
+/// REQ-PROVIDER: a finite `max_cost_usd` budget must block an unknown-cost
+/// paid provider from dispatching at all — unless the operator explicitly
+/// sets `allow_unknown_cost_dispatch`. Proven at the real `dispatch_target`
+/// call site (not just the pure gate function) so a future refactor that
+/// forgets to wire the check into `module_skip_reason` is caught here.
+#[tokio::test]
+async fn unknown_cost_paid_provider_is_blocked_by_an_active_cost_budget() {
+    use crate::core::test_support::InMemoryStore;
+
+    async fn dispatch_once(opts: ScanOptions) -> u64 {
+        let calls = Arc::new(AtomicU64::new(0));
+        let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+        let (bus, _rx) = tokio::sync::broadcast::channel(64);
+        let engine = ScanEngine::new(
+            vec![Arc::new(UnknownCostPaidProbe {
+                calls: calls.clone(),
+            })],
+            store,
+            bus.clone(),
+        );
+        let target = Target::new(TargetKind::Username, "cost-budget-target");
+        let mut ctx = ModuleContext {
+            scan_id: "cost-budget-scan".to_string(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+        let cx = DispatchCx {
+            scan_id: "cost-budget-scan",
+            target: &target,
+            opts: &opts,
+            is_expansion: false,
+            seed_kind: TargetKind::Username,
+            quarantined: no_quarantine(),
+        };
+        let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+        let mut stats = ModuleStats::default();
+        let mut dispatched: DispatchLog = DispatchLog::new();
+        let mut newly_inserted: Vec<String> = Vec::new();
+        let mut state = DispatchState {
+            entity_map: &mut entity_map,
+            stats: &mut stats,
+            dispatched: &mut dispatched,
+            newly_inserted: &mut newly_inserted,
+        };
+
+        engine
+            .dispatch_target(&cx, &mut ctx, &mut state)
+            .await
+            .expect("dispatch runs");
+        calls.load(Ordering::Relaxed)
+    }
+
+    // No budget configured -> the provider dispatches normally.
+    let unbudgeted = dispatch_once(ScanOptions {
+        max_cost_usd: None,
+        allow_unknown_cost_dispatch: false,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(
+        unbudgeted, 1,
+        "with no active cost budget the unknown-cost provider must still run"
+    );
+
+    // Budget active, no opt-in -> blocked before it ever runs.
+    let blocked = dispatch_once(ScanOptions {
+        max_cost_usd: Some(5.0),
+        allow_unknown_cost_dispatch: false,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(
+        blocked, 0,
+        "an unknown-cost paid provider must never dispatch under an active \
+         cost budget without an explicit operator opt-in"
+    );
+
+    // Budget active, WITH explicit opt-in -> runs.
+    let opted_in = dispatch_once(ScanOptions {
+        max_cost_usd: Some(5.0),
+        allow_unknown_cost_dispatch: true,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(
+        opted_in, 1,
+        "an explicit allow_unknown_cost_dispatch opt-in must override the budget block"
+    );
+}
+
 /// A probe whose static metadata (priority / cost / category / declared outputs)
 /// is fully configurable, and whose `process()` emits ONE entity tagged with a
 /// distinctive value — so a truncated dispatch reveals WHICH module ran first.

@@ -5,7 +5,7 @@ individual scanning modules' business logic — that was the subject of a
 separate, now-complete module-by-module bug audit under
 `src/modules/*/mod.rs` (Phases 0-10, PRs #553-568, merged; every one of the
 188 registered modules read against an established bug-class checklist). The
-areas covered here, across eleven passes:
+areas covered here, across twelve passes:
 
 1. The `Module` trait contract (`src/core/module/mod.rs`).
 2. The CLI surface (`src/main.rs`, `src/cli/`).
@@ -29,6 +29,11 @@ areas covered here, across eleven passes:
     (saturation-pruning, top-K/knee candidate cutoff, adaptive-depth
     termination) at their real dispatch call sites; the levers' own pure
     functions have separate, pre-existing unit coverage not tracked here.
+11. Provider capability + economics descriptor (`src/core/module/provider.rs`)
+    — the canonical `ProviderDescriptor` every registered module exposes,
+    its derivation/override consistency, the env-configurable cost input,
+    the cost-budget eligibility gate, and the CLI/API/Web field-drift fix
+    that made the API surface read the same descriptor the engine does.
 
 **Pass 2** re-verified every row Pass 1 left
 `IMPLEMENTED_UNVERIFIED`/`PARTIAL`/`AMBIGUOUS` by actually running its cited
@@ -136,11 +141,27 @@ proves it firing inside an actual over-budget `engine.run()`), so all three
 levers are now at least represented, two of three VERIFIED at the real
 dispatch call site. See "Pass 11 findings" below for the full account.
 
+**Pass 12** (this pass) opened a new one-row-per-property section, section
+11, for a directive-driven addition: a canonical `ProviderDescriptor` every
+registered module now exposes via `Module::provider_descriptor()`
+(mechanically derived from each module's existing `cost()`/`is_passive()`/
+`cache_ttl_secs()`/`is_high_value_only()`/`requires_geo_corroboration()`/
+`consumes()`/`produces()`, with 6 explicit per-module overrides where the
+generic derivation would misrepresent a real provider's operational
+profile). Also closed a genuine field-naming/completeness drift between the
+engine's own `ModuleInfo` and the HTTP API's hand-rolled `modules_list`
+JSON (the API was missing `attack_techniques` entirely and never exposed
+the new `provider` descriptor), and added the cost-budget eligibility gate
+(`unknown_cost_paid_provider_blocked`) that stops an UNKNOWN-cost paid/
+enterprise provider from dispatching under an active `max_cost_usd` budget
+unless the operator explicitly opts in via `allow_unknown_cost_dispatch`.
+See "Pass 12 findings" below for the full account.
+
 This still does **not** claim to have reconstructed requirements for the
 *entire* codebase (the correlator's actual rule logic beyond registry-level
 completeness, the scan engine's internals beyond the quarantine gate and the
 ROI levers, the storage layer beyond the `integrity_check()` detector, the
-web/WASM UI, and `hse-ai-daemon` remain out of scope for all eleven passes)
+web/WASM UI, and `hse-ai-daemon` remain out of scope for all twelve passes)
 — see "Known limitations" for why, and for what a further pass would need
 to cover.
 
@@ -175,24 +196,26 @@ reflected in any row below since it was never a defect in that pass's own
 scope. That module-bug-audit has since completed in full (Phases 0-10,
 188/188 registered modules, PRs #553-568, all merged).
 
-**Known limitations of Pass 11 — what a further pass would need to cover.**
-This ledger's 10 sections are the core contracts, the remote-facing API
-surface, and four registry/detector/lever-level guards of a Rust
+**Known limitations of Pass 12 — what a further pass would need to cover.**
+This ledger's 11 sections are the core contracts, the remote-facing API
+surface, and five registry/detector/lever/descriptor-level guards of a Rust
 CLI/module-engine tool: the `Module` trait, the CLI, the installer, the
 env/config template, the README's own claims, `hse serve`'s HTTP API, the
 scan engine's dead-module quarantine gate, the correlator's
 rule-registration completeness, the storage layer's `integrity_check()`
-corruption detector (section 9, added in Pass 10), and the ROI-maximising
-expansion levers (section 10, added in Pass 11). Passes 5, 6, and 7 each
-closed one more `PARTIAL` row within the existing HTTP API section
-(section 6); Pass 8 closed one `IMPLEMENTED_UNVERIFIED` row and added one
-new row within the existing `install.sh` section (section 3); Pass 9
-(PR #577, merged independently of this ledger's own working session) closed
-the one `UNREACHABLE` row, also within the existing HTTP API section — none
-of those five expanded scope to any new subsystem. Pass 10 opened new
-section 9; Pass 11 opened new section 10, narrowing (not closing) the ROI
-bullet below. Deliberately still **not** covered by any of the eleven
-passes, and not claimed as VERIFIED/MISSING/etc. anywhere above:
+corruption detector (section 9, added in Pass 10), the ROI-maximising
+expansion levers (section 10, added in Pass 11), and the provider
+capability + economics descriptor (section 11, added in Pass 12). Passes 5,
+6, and 7 each closed one more `PARTIAL` row within the existing HTTP API
+section (section 6); Pass 8 closed one `IMPLEMENTED_UNVERIFIED` row and
+added one new row within the existing `install.sh` section (section 3);
+Pass 9 (PR #577, merged independently of this ledger's own working session)
+closed the one `UNREACHABLE` row, also within the existing HTTP API section
+— none of those five expanded scope to any new subsystem. Pass 10 opened
+new section 9; Pass 11 opened new section 10, narrowing (not closing) the
+ROI bullet below; Pass 12 opened new section 11. Deliberately still **not**
+covered by any of the twelve passes, and not claimed as
+VERIFIED/MISSING/etc. anywhere above:
 
 - **The scan engine's internals beyond the quarantine gate and the ROI
   levers** (`src/core/engine/` past `gate_skips` and the section-10 call
@@ -237,7 +260,7 @@ format, one row each.
 
 None of this is a claim that these areas are broken or unverified in some
 absolute sense — only that this ledger has not yet looked at them, and a
-reader should not infer completeness beyond the 10 sections it actually
+reader should not infer completeness beyond the 11 sections it actually
 covers.
 
 ---
@@ -665,6 +688,30 @@ functions themselves.
 | REQ-ROI-001 | Convergence-pruning: under `max_roi`, an entity with ≥2 corroborating sources AND `c_effective ≥ 0.85` is "saturated" and is never re-selected as an expansion candidate — saves dispatch budget on entities further queries would only re-confirm. | none | `bool` (pure), gates candidate selection at dispatch | Excludes the entity from `next` with `EntityExcluded{reason:"roi_saturated"}` | With `max_roi` off, saturated entities are still re-dispatched (no behavior change) — by design, not a defect. | `src/core/roi/mod.rs:39-47` (`is_saturated`); call site `src/core/engine/mod.rs:2111` (`if opts.max_roi && is_saturated(entity)`) | `saturation_requires_both_corroboration_and_confidence`, `single_source_high_magnitude_is_not_saturated` (`src/core/roi/tests.rs`, pure); `max_roi_excludes_saturated_entity_from_real_dispatch` (`src/core/engine/tests.rs`, real `engine.run()` dispatch — added during the architecture-invariants Phase 2 work, PR #578, not previously cited in this ledger) | Ran `cargo test --lib core::engine::tests::max_roi_excludes_saturated_entity_from_real_dispatch` this pass — passed. Drives a real 2-round chain through `ScanEngine::run()`: with `max_roi` on, a saturated entity's own further expansion never happens (`g1child` absent); with it off, the same entity IS re-dispatched (`g1child` present). | VERIFIED |
 | REQ-ROI-002 | Top-K + relative-knee candidate cutoff: under `max_roi`, an expansion round keeps only the smaller of a concurrency-scaled top-K budget and the candidates within 5% of the round's leading weight — bounds both a flat flood of low-weight leads and long-tail noise trailing a strong lead. | `Vec<(Target, f64 weight, String parent_uid)>`, `max_concurrent` | Truncated candidate vec; releases the `visited` key of every cut candidate (so a cut lead can resurface later if evidence strengthens it) | A round with a weak/absent leader falls back to the top-K budget alone (`effective_cutoff`'s degenerate-all-zero branch). | `src/core/roi/mod.rs:49-92` (`top_k_for_round`/`effective_cutoff`); `src/core/engine/expansion.rs:83` (`apply_roi_cutoff`); call site `src/core/engine/mod.rs:2322` (`if opts.max_roi { apply_roi_cutoff(...) }`) | `top_k_scales_with_concurrency`, `effective_cutoff_*` ×3 (`src/core/roi/tests.rs`, pure); `roi_cutoff_releases_visited_keys_of_truncated_candidates` (`src/core/engine/tests.rs`) — calls the real `apply_roi_cutoff` directly (not the pure `effective_cutoff`) and asserts its `visited`-release side effect, but with a synthetic candidate vec, not through a real `engine.run()` dispatch | Ran `cargo test --lib core::roi::tests` (7/7 passed) and `cargo test --lib core::engine::tests::roi_cutoff_releases_visited_keys_of_truncated_candidates` (passed) this pass. Nothing proves the cutoff actually firing and truncating a real over-budget round inside `engine.run()` — the next gap in this section for a future pass. | IMPLEMENTED_UNVERIFIED |
 | REQ-ROI-003 (**new, Pass 11**) | Adaptive-depth termination: under `max_roi`, if a round's marginal yield (`new_entities / dispatched_targets`) drops below the floor (default 0.75, overridable via `ScanOptions::min_marginal_yield`), the engine stops recursing even though `--depth` would allow more rounds — captures the `dE/dDispatch → 0` convergence boundary. | `bool max_roi`, `usize new_entities`, `usize dispatched_targets`, `f64 floor` | `bool` (pure); at the call site, an early `return StopReason::NoMoreCandidates` plus an `EventKind::ExpansionStop{reason}` naming "adaptive-depth: marginal yield X < floor Y" | Never terminates on the first round of a scan (`dispatched_targets == 0` ⇒ insufficient data, always continues) | With `max_roi` off, a low-yield round is never a stop signal — recursion proceeds to `--depth`, unchanged from pre-lever behavior. | `src/core/roi/mod.rs:107-121` (`should_terminate_adaptive`); call site `src/core/engine/mod.rs:2463-2481` | `adaptive_termination_only_fires_when_enabled_and_below_floor`, `marginal_yield_handles_zero_dispatches` (`src/core/roi/tests.rs`, pure, pre-existing); `max_roi_adaptive_depth_stops_a_real_dispatch_round_on_low_marginal_yield` (new, Pass 11) (`src/core/engine/tests.rs`) | **Gap found and fixed in Pass 11.** The lever had zero coverage above the pure-function level. Added a 3-round real-dispatch test: round 1 (seed → 4 children) yields 4.0 (no stop); round 2 (4 children → the SAME shared entity, so 3 of 4 dispatches merge rather than insert) yields 0.25 (below floor); round 3 only ever runs without the lever. Asserts both the entity outcome (`deep_child` present/absent) AND the `ExpansionStop` event's reason text. **Mutation-tested**: temporarily short-circuited the termination check to always-false, re-ran — the entity-presence assertions alone still passed (a *different*, independent lever — saturation-pruning — also blocks round 3 once the shared entity accumulates 4 corroborating sources by then), but the event-reason assertion correctly failed, confirming that assertion is the one actually discriminating this lever from the others rather than the test being vacuously satisfied by an unrelated mechanism. Restored the real code, re-confirmed passing (5/5 repeated runs, ruling out flakiness from the real concurrent-dispatch path this test exercises at the default `max_concurrent: 2`). Ran `cargo test --lib core::engine::tests::max_roi_adaptive_depth_stops_a_real_dispatch_round_on_low_marginal_yield` this pass — passed. | VERIFIED |
+
+---
+
+## 11. Provider capability + economics descriptor (`src/core/module/provider.rs`)
+
+A directive-driven addition (not backlog-derived): "unify provider
+capability + economics metadata" — extend the nearest existing
+authoritative abstraction (`Module`/`ModuleInfo`) rather than build a
+disconnected registry. `ProviderDescriptor` is mechanically derived for
+every module by `derive_default_provider_descriptor` from properties the
+`Module` trait already exposes (`cost()`, `is_passive()`,
+`cache_ttl_secs()`, `is_high_value_only()`, `requires_geo_corroboration()`,
+`consumes()`, `produces()`, `category()`), with a default trait method
+(`Module::provider_descriptor`) any module can override — 6 do, where the
+generic derivation would misrepresent a real provider (`oathnet_pro`,
+`wigle`, `see_know`, `osintcat`, `hudsonrock`, `comb_search`).
+
+| ID | Behavior | Inputs | Outputs | Side effects | Failure behavior | Implementation location | Tests covering it | Runtime verification evidence | Status |
+|---|---|---|---|---|---|---|---|---|---|
+| REQ-PROVIDER-001 (**new, Pass 12**) | Every one of the 188 registered modules exposes an internally-consistent `ProviderDescriptor`: `access_class` and `requires_key` agree in both directions; a `Free` `cost_model` never carries a `cost_per_request` and implies `Keyless` access; `EscalationBand::L0Local` holds if-and-only-if `Module::is_passive()`; a cross-correlation-gated module (`is_high_value_only()` or `requires_geo_corroboration()`) is always `L4Specialist`; `cache_policy` exactly mirrors `cache_ttl_secs()`; and all 4 `[0,1]` priors (`provenance_quality_prior`, `uniqueness_prior`, `reliability_prior`, `optionality_prior`) stay in range. | none (derived from each module's own trait methods) | `ProviderDescriptor` (`Module::provider_descriptor()`, also exposed on `ModuleInfo.provider`) | none — pure derivation, no I/O | A module whose override breaks any of the above invariants fails this registry-wide test, not just at runtime. | `src/core/module/provider.rs` (`derive_default`, the `ProviderDescriptor` struct + enums); wired via `Module::provider_descriptor()` default method (`src/core/module/mod.rs`) | `every_registered_module_has_an_internally_consistent_provider_descriptor` (`tests/architecture_parts/architecture_part7.rs`) | Ran `cargo test --test architecture every_registered_module_has_an_internally_consistent_provider_descriptor` this pass — passed, iterating all 188 live modules from `crate::modules::registry()` (asserted `mods.len() > 100` as a registry-non-empty sanity floor). **Placed as an integration test, not a `src/core/module/` unit test**: an earlier draft put this directly in `src/core/module/provider_tests.rs`, which failed the pre-existing `core_does_not_import_modules` architecture invariant (`tests/architecture.rs`) — `src/core/` must stay module-agnostic, and this test genuinely needs the real registry. Moved here; `src/core/module/provider_tests.rs` keeps only the pure-function/local-stub-module tests (see REQ-PROVIDER-003/004). | VERIFIED |
+| REQ-PROVIDER-002 (**new, Pass 12**) | The 6 providers whose real operational profile diverges from what the generic derivation alone would produce carry explicit, evidence-grounded overrides via struct-update syntax over `derive_default_provider_descriptor`: `oathnet_pro`/`wigle` → specialist escalation band + a named `quota_unit`; `wigle` → `AccessClass::FreeQuota` (not the generic `KeyGated`-derived class, reflecting its real quota-based free tier); `see_know` → `Enterprise`/`L5Enterprise`/`Estimated` cost model; `osintcat` → `Paid`/`L3Microcost`/`Exact` cost model (a genuinely live, provider-supplied per-search price); `hudsonrock`/`comb_search` → asymmetric `provenance_quality_prior` overrides (above/below the `0.5` neutral default) reflecting each provider's actual data-quality reputation. | none | `ProviderDescriptor` per named module | none | An override that regresses to the generic default, or drifts from its documented value, fails the row's own spot-check test. | `src/modules/oathnet_pro/mod.rs`, `src/modules/wigle/mod.rs`, `src/modules/see_know/mod.rs`, `src/modules/osintcat/mod.rs`, `src/modules/hudsonrock/mod.rs`, `src/modules/comb_search/mod.rs` (each a `provider_descriptor()` override) | `the_six_overridden_providers_have_their_expected_provider_descriptors` (`tests/architecture_parts/architecture_part7.rs`, same layering reason as REQ-PROVIDER-001) | Ran `cargo test --test architecture the_six_overridden_providers_have_their_expected_provider_descriptors` this pass — passed. | VERIFIED |
+| REQ-PROVIDER-003 (**new, Pass 12**) | Per-provider `cost_per_request` is never a compiled-in constant (vendor prices change) — the only way to attach a live figure is the `HSE_PROVIDER_COST_<PROVIDER_ID_UPPERCASED>` env var, and the value is parsed defensively: finite and non-negative only. A negative, non-numeric, `"NaN"`, or `"inf"` value is rejected (falls back to `None`, i.e. `CostModel::Unknown` stays in effect), never silently accepted as a price. | `HSE_PROVIDER_COST_<ID>` env var (string) | `Option<f64>` | none (read-only env access) | An unset or malformed env var yields `None` — never a spurious cost that would wrongly satisfy a cost-budget check. | `src/core/module/provider.rs` (`env_cost_per_request` — thin env wrapper; `parse_cost_per_request` — the pure, directly-testable validation, split out specifically because `#![forbid(unsafe_code)]` blocks `env::set_var` even in `#[cfg(test)]` code) | `env_cost_per_request_is_none_when_unset`, `parse_cost_per_request_accepts_only_finite_nonnegative_numbers` (`src/core/module/provider_tests.rs`) | Ran both tests this pass — passed. `parse_cost_per_request_accepts_only_finite_nonnegative_numbers` directly exercises the negative/`NaN`/`inf`/non-numeric rejection paths without any env mutation. | VERIFIED |
+| REQ-PROVIDER-004 (**new, Pass 12**) | Hard eligibility gate, checked before any ranking: when an operator has set a finite `ScanOptions::max_cost_usd` budget, a module whose provider is `Paid`/`Enterprise` access class AND `CostModel::Unknown` must be skipped at dispatch — UNKNOWN cost is never treated as FREE cost — unless the operator has explicitly set `ScanOptions::allow_unknown_cost_dispatch`. No budget configured ⇒ never blocks, regardless of cost model. | `ProviderDescriptor`, `Option<f64> max_cost_usd`, `bool allow_unknown_cost_dispatch` | `bool` (pure gate); at the dispatch call site, `Some("unknown-cost paid provider blocked...")` from `module_skip_reason`, tallied as a skip | none | A provider with a known/estimated cost, or a non-paid access class, is never blocked by this gate regardless of budget state (enforcing an actual cost cap against a known price is separate, future work). | `src/core/module/provider.rs` (`unknown_cost_paid_provider_blocked`); call site `src/core/engine/dispatch.rs:347-356` (`module_skip_reason`, checked before the `passive_only` gate and all ranking) | `unknown_cost_gate_only_blocks_paid_or_enterprise_unknown_cost_under_a_budget` (pure 6-case truth table, `src/core/module/provider_tests.rs`); `unknown_cost_paid_provider_is_blocked_by_an_active_cost_budget` (new, Pass 12) (`src/core/engine/tests.rs`) — drives a real `ScanEngine::dispatch_target()` call with a stub `Paid`/`Unknown`-cost module across all 3 budget states (none, active without opt-in, active with opt-in) | Ran the pure truth-table test (passed) and the new real-dispatch test this pass — `cargo test --lib core::engine::tests::unknown_cost_paid_provider_is_blocked_by_an_active_cost_budget --features dep-cooldown` — 1/1 passed, proving the gate actually stops dispatch at the real engine call site, not just as an isolated pure function. | VERIFIED |
+| REQ-PROVIDER-005 (**new, Pass 12**) | All CLI/API/Web consumers read the same authoritative `ProviderDescriptor` — no separate, hand-maintained provider metadata anywhere else in the codebase. Found and fixed a real drift along the way: `GET /api/v1/modules`'s handler hand-rolled its JSON per-field and (a) named the seed-type field `"accepts"` where the CLI's own `ModuleInfo` calls the identical data `"consumes"`, and (b) omitted `attack_techniques` entirely — both silently missing from the API surface despite existing on every `ModuleInfo` the engine already builds. | `Arc<dyn Module>` (via `engine.modules()`) | JSON module list (`"provider"` key added; `"accepts"` key name kept for the existing served SPA's own JS compatibility, now sourced from `ModuleInfo.consumes` instead of being hand-duplicated) | none | A future field added to `ModuleInfo` that the handler forgets to forward is now structurally harder to miss — the handler builds from `m.info()` as a whole, not field-by-field. | `src/api/handlers/mod.rs` (`modules_list`, rewritten to build from `Module::info()` instead of a hand-rolled field list) | `modules_list_returns_array` (`tests/api.rs`, extended Pass 12) | **Gap found and fixed in Pass 12.** Extended the existing test to assert `attack_techniques` and `provider` are present in the API response and compare the full response for the API's one synthetic test module against `SyntheticModule.info()` directly (the `test_app` harness always serves a single test-double module, never the real 188-module registry — confirmed via `tests/common/mod.rs`, and a first draft of this test wrongly assumed otherwise before being corrected). Ran `cargo test --test api modules_list_returns_array --features dep-cooldown -- --nocapture` this pass — passed. | VERIFIED |
 
 ---
 
@@ -1220,19 +1267,112 @@ $ cargo test --test architecture                                         # 56 pa
 $ scripts/gate.sh                                                        # 17/17 executed checks PASS
 ```
 
+## Pass 12 findings
+
+Directive-driven (not backlog-derived): "unify provider capability +
+economics metadata," recognized as the natural prerequisite for a second,
+larger directive ("extend ROI to reason about novelty/independence/cost/
+reliability/..." — deferred to a future pass, since a `DispatchUtility`
+model's cost/reliability/uniqueness/optionality inputs should be *read
+from* this descriptor, not invented independently). Two 6-agent research
+workflows first grounded the design in the real codebase before any code
+was written — one surveying existing `Module` trait metadata, cost/quota
+infrastructure, and every candidate reuse point (`crate::core::convex::
+module_cascade` for `optionality_prior`, `cache_ttl_secs()` for
+`cache_policy`, the shared circuit-breaker for `rate_limit_policy`,
+`is_high_value_only()`/`requires_geo_corroboration()` for escalation-band
+derivation), the other identifying which of the 188 modules' real,
+provider-supplied operational details diverge from what a generic
+derivation alone would produce (the 6 modules that ended up with explicit
+overrides — see REQ-PROVIDER-002).
+
+Added `src/core/module/provider.rs`: the `ProviderDescriptor` struct and
+its 8 supporting enums (`AccessClass`, `EscalationBand`, `CostModel`,
+`RecursiveUsePolicy`, `CachePolicy`, `RateLimitPolicy`, `LicensingPolicy`,
+`HistoricalDepthClass`), a generic `derive_default<M: Module + ?Sized>`
+derivation function (generic rather than `&dyn Module` specifically so it
+can be called from the `Module` trait's own default `provider_descriptor()`
+method without an `E0277` `Self: Sized` conflict that would otherwise break
+every existing `dyn Module` call site), and the `unknown_cost_paid_provider_
+blocked` eligibility gate. Wired a `pub provider: ProviderDescriptor` field
+onto `ModuleInfo` and a `provider_descriptor()` default trait method
+delegating to `derive_default`. Added two `ScanOptions` fields
+(`max_cost_usd: Option<f64>`, `allow_unknown_cost_dispatch: bool`, both
+default-off/no-op) and wired the eligibility gate into `module_skip_reason`
+as a hard gate checked before any ranking, per the directive's own
+ordering requirement. Fixed the REQ-PROVIDER-005 API/CLI field-drift bug
+found while wiring the API's `modules_list` handler to read the same
+`ModuleInfo` the engine builds instead of hand-rolling its own JSON.
+
+`#![forbid(unsafe_code)]` (crate-wide, `src/lib.rs:39`, cannot be locally
+overridden even in `#[cfg(test)]` code) ruled out testing `env_cost_per_
+request` via `env::set_var`/`remove_var` — both are `unsafe fn` in current
+Rust. Resolved by splitting the function into a thin env-reading wrapper
+plus a separately-testable pure `parse_cost_per_request(&str) -> Option<f64>`,
+tested directly with string literals instead of environment mutation.
+
+**A real layering violation, caught by the full verification battery before
+push.** The first draft of REQ-PROVIDER-001/002's two registry-wide
+completeness tests lived in `src/core/module/provider_tests.rs` (alongside
+the pure-function tests), each calling `crate::modules::registry()` to walk
+all 188 real modules. That broke the pre-existing `core_does_not_import_
+modules` architecture invariant (`tests/architecture.rs`) — `src/core/`
+must stay module-agnostic; the application layer (`src/modules/`) depends
+on `core`, never the reverse. Fixed by moving both tests to
+`tests/architecture_parts/architecture_part7.rs` (an integration test,
+outside `src/core/`, where `crate::modules::registry()` is the established
+pattern for exactly this kind of registry-wide guard), and replacing
+`provider_tests.rs`'s registry-derived `sample_module()` with a local
+`StubModule` — matching how `src/core/engine/tests.rs` already tests
+dispatch-level behavior without touching the real registry.
+
+**A second real gap, also caught by the full verification battery, not by
+any earlier narrow test run**: `scripts/gate.sh`'s doc-coverage ratchet
+(`scripts/doc_coverage.sh`, `missing_docs` lint count capped at 1028) failed
+at 1036 — 8 new undocumented public items. All 8 were struct fields on the
+new `ProviderDescriptor` (`access_class`, `escalation_band`,
+`recursive_use_policy`, `cache_policy`, `rate_limit_policy`,
+`licensing_policy`, `cost_model`, `historical_depth_class`) that had been
+left without their own doc comment while the struct's other fields and its
+container doc comment were written — confirmed by re-measuring the
+`missing_docs` count against a clean `origin/main` checkout (`git stash`)
+first: exactly 1028, matching the ratchet's baseline, so this was
+genuinely new debt, not a stale baseline (the documented failure mode this
+same script's own history describes). Added a one-line doc comment to each
+of the 8 fields; re-ran `scripts/doc_coverage.sh` — held at 1028.
+
+### Verification commands run (Pass 12, in order)
+
+```
+$ cargo test --lib core::module::provider --features dep-cooldown         # 3/3 passed
+$ cargo test --test architecture -- provider_descriptor                  # 2/2 passed
+$ cargo test --test architecture core_does_not_import_modules             # 1/1 passed (confirms the fix)
+$ cargo test --test api modules_list_returns_array --features dep-cooldown -- --nocapture
+                                                                            # 1/1 passed
+$ cargo test --lib core::engine::tests::unknown_cost_paid_provider_is_blocked_by_an_active_cost_budget --features dep-cooldown
+                                                                            # 1/1 passed
+$ cargo fmt --all
+$ cargo clippy --all-targets --features dep-cooldown -- -D warnings       # clean
+$ cargo test --lib --features dep-cooldown                                # 6861 passed, 0 failed
+$ cargo test --test api                                                   # 127 passed, 0 failed
+$ cargo test --test architecture                                         # 58 passed, 0 failed
+$ scripts/doc_coverage.sh                                                # held at 1028 (after the 8-field doc fix)
+$ scripts/gate.sh                                                        # all executed checks PASS
+```
+
 ## Summary statistics
 
-| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 | Pass 6 | Pass 7 | Pass 8 | Pass 9 | Pass 10 | Pass 11 |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 | 56 | 58 | 59 *(REQ-API-SCAN-006 fixed in Pass 9)* | 62 *(REQ-CLI-001, REQ-CLI-007 flipped from PARTIAL; REQ-STORAGE-001 new)* | 64 *(REQ-ROI-001, REQ-ROI-003 new)* |
-| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 | 14 | 13 *(REQ-INSTALL-001 out, fixed; REQ-INSTALL-010 in as new then confirmed VERIFIED by this PR's own CI run before merge — net -1)* | 13 | 13 | 14 *(REQ-ROI-002 new)* |
-| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* | 16 *(REQ-API-SCAN-002 fixed in Pass 7)* | 16 | 16 | 14 *(REQ-CLI-001, REQ-CLI-007 out, fixed; REQ-ENV-005 stays, evidence strengthened)* | 14 |
-| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| AMBIGUOUS | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 0 *(REQ-API-SCAN-006 fixed in Pass 9)* | 0 | 0 |
-| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** | **88** | **89** | **89** | **90** *(REQ-STORAGE-001, new Section 9)* | **93** *(REQ-ROI-001/002/003, new Section 10)* |
+| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 | Pass 6 | Pass 7 | Pass 8 | Pass 9 | Pass 10 | Pass 11 | Pass 12 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 | 56 | 58 | 59 *(REQ-API-SCAN-006 fixed in Pass 9)* | 62 *(REQ-CLI-001, REQ-CLI-007 flipped from PARTIAL; REQ-STORAGE-001 new)* | 64 *(REQ-ROI-001, REQ-ROI-003 new)* | 69 *(REQ-PROVIDER-001..005 new, all landed VERIFIED)* |
+| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 | 14 | 13 *(REQ-INSTALL-001 out, fixed; REQ-INSTALL-010 in as new then confirmed VERIFIED by this PR's own CI run before merge — net -1)* | 13 | 13 | 14 *(REQ-ROI-002 new)* | 14 |
+| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* | 16 *(REQ-API-SCAN-002 fixed in Pass 7)* | 16 | 16 | 14 *(REQ-CLI-001, REQ-CLI-007 out, fixed; REQ-ENV-005 stays, evidence strengthened)* | 14 | 14 |
+| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| AMBIGUOUS | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 0 *(REQ-API-SCAN-006 fixed in Pass 9)* | 0 | 0 | 0 |
+| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** | **88** | **89** | **89** | **90** *(REQ-STORAGE-001, new Section 9)* | **93** *(REQ-ROI-001/002/003, new Section 10)* | **98** *(REQ-PROVIDER-001..005, new Section 11)* |
 
 Pass 4's `VERIFIED` count (53) is Pass 3's 50, plus the REQ-ENV-003 flip
 (+1), plus the two new one-row sections REQ-ENGINE-001/REQ-CORRELATOR-001
@@ -1254,7 +1394,11 @@ Pass 10's 62, plus two new rows landing `VERIFIED` on first pass
 (REQ-ROI-001, citing pre-existing PR #578 coverage never before cited in
 this ledger; REQ-ROI-003, this pass's own fix, +2);
 `IMPLEMENTED_UNVERIFIED` rises from 13 to 14 (one more new row,
-REQ-ROI-002, +1); the three new rows bring the total from 90 to 93.
+REQ-ROI-002, +1); the three new rows bring the total from 90 to 93. Pass
+12's `VERIFIED` count (69) is Pass 11's 64, plus one new five-row section,
+REQ-PROVIDER-001..005, all five landing `VERIFIED` on first pass (+5) — no
+row moved through an intermediate status this time; the five new rows bring
+the total from 93 to 98.
 
 Breakdown by section: Module trait contract 14 rows (REQ-CORE-001..014), CLI
 surface 12 rows (REQ-CLI-001..012), `install.sh` 10 rows
@@ -1264,8 +1408,9 @@ REQ-API-AUTH-001..004, REQ-API-SCAN-001..010, REQ-API-MISC-001..008,
 REQ-API-EXPORT-001..006), Scan engine dispatch 1 row (REQ-ENGINE-001),
 Correlator rule registry 1 row (REQ-CORRELATOR-001), Storage subsystem 1 row
 (REQ-STORAGE-001), ROI-maximising expansion 3 rows
-(REQ-ROI-001..003) —
-14+12+10+6+10+35+1+1+1+3 = 93, matching the total above.
+(REQ-ROI-001..003), Provider capability + economics descriptor 5 rows
+(REQ-PROVIDER-001..005) —
+14+12+10+6+10+35+1+1+1+3+5 = 98, matching the total above.
 Some rows cite tests shared across sections (e.g. REQ-CORE-010 and
 REQ-README-009 both cite `every_module_maps_to_valid_attack_reconnaissance_techniques`),
 which is intentional — the two rows document the same underlying test from

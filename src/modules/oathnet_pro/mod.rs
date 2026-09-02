@@ -162,6 +162,16 @@ impl Module for OathnetPro {
         KINDS
     }
 
+    fn provider_descriptor(&self) -> crate::core::module::ProviderDescriptor {
+        crate::core::module::ProviderDescriptor {
+            // Billed per-lookup (a page of cursor-paginated breach search), not
+            // per-dollar — no monetary rate is exposed anywhere in the provider's
+            // API, only the quota itself (`util::oathnet::BUDGET`/`RealQuota`).
+            quota_unit: Some("lookup"),
+            ..crate::core::module::derive_default_provider_descriptor(self)
+        }
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = ctx.key(oathnet::KEY_ENV)?;
         // Origin fingerprint of the exact key in use — stamped on every entity so

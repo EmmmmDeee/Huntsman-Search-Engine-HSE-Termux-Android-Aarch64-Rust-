@@ -264,6 +264,17 @@ impl Module for Wigle {
         ];
         KINDS
     }
+    fn provider_descriptor(&self) -> crate::core::module::ProviderDescriptor {
+        crate::core::module::ProviderDescriptor {
+            // Unlike most `KeyGated` modules, WiGLE has real, HSE-enforced
+            // per-scan/session quota tracking — five independent `QuotaBudget`s
+            // (geo/BSSID/cell/Bluetooth/SSID, `src/modules/wigle/mod.rs`), not
+            // just a free key with no local metering.
+            access_class: crate::core::module::AccessClass::FreeQuota,
+            quota_unit: Some("query"),
+            ..crate::core::module::derive_default_provider_descriptor(self)
+        }
+    }
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,

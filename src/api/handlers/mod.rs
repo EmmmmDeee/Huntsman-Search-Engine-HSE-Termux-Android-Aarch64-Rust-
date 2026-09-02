@@ -741,34 +741,31 @@ pub async fn system_debug_bundle(
 }
 
 pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
+    // Built from `Module::info()` — the same `ModuleInfo` the CLI's
+    // `hse modules --json` serializes — so this handler can no longer
+    // independently drift from it on any field's *value* (only the JSON
+    // *key names* below are deliberately kept distinct from `ModuleInfo`'s
+    // own serde names, for backward compatibility with the already-shipped
+    // web SPA, which reads `accepts` where `ModuleInfo` calls the same data
+    // `consumes`). See `modules_list_returns_array` (`tests/api.rs`).
     let mods: Vec<Value> = s
         .engine
         .modules()
         .iter()
         .map(|m| {
-            let cost = serde_json::to_value(m.cost()).unwrap_or(Value::Null);
-            // Pull declared consumes via the trait method — falls back to
-            // the probe-based default for legacy modules. Mirrors what the
-            // dispatch index and dependency graph see.
-            let accepts: Vec<&'static str> = m
-                .consumes()
-                .iter()
-                .map(super::super::core::scan::TargetKind::canonical_str)
-                .collect();
-            let produces: Vec<String> = m
-                .produces()
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect();
+            let info = m.info();
+            let cost = serde_json::to_value(info.cost).unwrap_or(Value::Null);
             json!({
-                "name":        m.name(),
-                "priority":    m.priority(),
-                "cost":        cost,
-                "passive":     m.is_passive(),
-                "category":    m.category().as_str(),
-                "accepts":     accepts,
-                "produces":    produces,
-                "description": m.description(),
+                "name":              info.name,
+                "priority":          info.priority,
+                "cost":              cost,
+                "passive":           info.passive,
+                "category":          info.category.as_str(),
+                "accepts":           info.consumes,
+                "produces":          info.produces,
+                "description":       info.description,
+                "attack_techniques": info.attack_techniques,
+                "provider":          serde_json::to_value(&info.provider).unwrap_or(Value::Null),
             })
         })
         .collect();
