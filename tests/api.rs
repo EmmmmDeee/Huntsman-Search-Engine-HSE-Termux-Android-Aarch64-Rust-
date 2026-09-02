@@ -2263,6 +2263,48 @@ async fn scan_entities_pagination_works() {
     assert_eq!(json["limit"], 10000, "limit should be capped to 10000");
 }
 
+#[tokio::test]
+async fn scan_entities_pagination_rejects_invalid_offset_and_limit() {
+    use huntsman_search_engine::core::scan::{Scan, Target, TargetKind};
+    // The test above only ever exercises valid offset/limit combinations —
+    // the three `bad_request` branches in `scan_entities` (non-numeric
+    // offset, non-numeric limit, and limit=0) had never been driven through
+    // the real HTTP handler (see REQ-API-SCAN-007 in
+    // docs/REQUIREMENTS_LEDGER.md).
+    let (app, store) = test_app_with_store("entities_paginate_invalid");
+    let sid = "s-paginate-invalid";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Test Subject"),
+        ))
+        .unwrap();
+
+    for (query, why) in [
+        (
+            "limit=0",
+            "limit=0 is explicitly rejected, not treated as empty",
+        ),
+        ("limit=abc", "a non-numeric limit must not silently default"),
+        ("limit=-5", "a negative limit must not silently default"),
+        (
+            "offset=abc",
+            "a non-numeric offset must not silently default to 0",
+        ),
+        (
+            "offset=-1",
+            "a negative offset must not silently default to 0",
+        ),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(get(&format!("/api/v1/scans/{sid}/entities?{query}")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400, "{query}: {why}");
+    }
+}
+
 // ── Live list (empty) ───────────────────────────────────────────────────
 
 #[tokio::test]

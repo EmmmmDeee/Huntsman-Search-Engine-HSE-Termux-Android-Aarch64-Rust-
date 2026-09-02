@@ -5,7 +5,7 @@ individual scanning modules' business logic — that was the subject of a
 separate, now-complete module-by-module bug audit under
 `src/modules/*/mod.rs` (Phases 0-10, PRs #553-568, merged; every one of the
 188 registered modules read against an established bug-class checklist). The
-areas covered here, across five passes:
+areas covered here, across six passes:
 
 1. The `Module` trait contract (`src/core/module/mod.rs`).
 2. The CLI surface (`src/main.rs`, `src/cli/`).
@@ -60,11 +60,19 @@ round-trip and an HTTP-level success-path test proving the write actually
 persists (not just the two rejection tests). No production code changed —
 see "Pass 5 findings" below.
 
+**Pass 6** (this pass) closed one more correctness-affecting `PARTIAL`
+row, REQ-API-SCAN-007: `GET /api/v1/scans/{id}/entities`'s pagination
+boundary validation had thorough coverage of every valid offset/limit
+combination but none of its three `bad_request` rejection branches
+(non-numeric offset, non-numeric limit, `limit=0`). Added one new test
+driving all 5 invalid-input cases through the real handler. No production
+code changed — see "Pass 6 findings" below.
+
 This still does **not** claim to have reconstructed requirements for the
 *entire* codebase (the correlator's actual rule logic beyond registry-level
 completeness, the scan engine's internals beyond the quarantine gate, the
 storage layer beyond one fix, the web/WASM UI, and `hse-ai-daemon` remain
-out of scope for all five passes) — see "Known limitations" for why, and
+out of scope for all six passes) — see "Known limitations" for why, and
 for what a further pass would need to cover.
 
 **How to read this ledger.**
@@ -98,16 +106,17 @@ reflected in any row below since it was never a defect in that pass's own
 scope. That module-bug-audit has since completed in full (Phases 0-10,
 188/188 registered modules, PRs #553-568, all merged).
 
-**Known limitations of Pass 5 — what a further pass would need to cover.**
+**Known limitations of Pass 6 — what a further pass would need to cover.**
 This ledger's 8 sections are the core contracts, the remote-facing API
 surface, and two registry-level guards of a Rust CLI/module-engine tool: the
 `Module` trait, the CLI, the installer, the env/config template, the
 README's own claims, `hse serve`'s HTTP API, the scan engine's dead-module
-quarantine gate, and the correlator's rule-registration completeness. Pass 5
-closed one more `PARTIAL` row within the existing HTTP API section (section
-6) without expanding scope to any new subsystem, so the list below is
-unchanged from Pass 4's. Deliberately still **not** covered by any of the
-five passes, and not claimed as VERIFIED/MISSING/etc. anywhere above:
+quarantine gate, and the correlator's rule-registration completeness. Passes
+5 and 6 each closed one more `PARTIAL` row within the existing HTTP API
+section (section 6) without expanding scope to any new subsystem, so the
+list below is unchanged from Pass 4's. Deliberately still **not** covered by
+any of the six passes, and not claimed as VERIFIED/MISSING/etc. anywhere
+above:
 
 - **The scan engine's internals beyond the quarantine gate**
   (`src/core/engine/` past `gate_skips` — expansion, ROI/budget pruning, and
@@ -487,7 +496,7 @@ this pass), 12 PARTIAL, 2 IMPLEMENTED_UNVERIFIED, 1 UNREACHABLE.
 | REQ-API-SCAN-004 | POST /api/v1/scans/batch enforces DoS-relevant caps (empty array -> 400, >50 targets -> 400, exactly 50 -> 202) and, for a batch that mixes a structurally-invalid target among valid ones, records a per-item {"error": msg} entry and continues dispatching the… | Ran `cargo test --test api batch_endpoint_enforces_empty_and_size_limits` this pass — 1/1 passed (empty->400, 51 items->400, 50 items->202). The mixed valid/invalid-item continue-and-record-per-item-error path (core.rs:733-739) was confirmed by reading the code only; grepped tests/api.rs and found no batch request containing a malformed target. | PARTIAL |
 | REQ-API-SCAN-005 | Every state-changing request on this surface (POST /scans, /scans/batch, /scans/{id}/cancel, /scans/{id}/rerun, DELETE /scans/{id}, POST /scans/import, /scan/auto*, /radar*) is blocked with 403 unless it carries a custom X-HSE-CSRF header — closing the… | Ran `cargo test --test api dossier_upload` (6/6 passed, includes CSRF-adjacent import tests) and `cargo test --test api bodyless_mutating_post_requires_csrf_header` this pass — 1/1 passed, confirming POST /api/v1/scans/does-not-exist/cancel is 403'd without the header and not 403'd with it. Confirmed by reading routes/mod.rs that this same middleware, not per-handler code, is what protects scan_cancel/scan_create/scan_batch/etc. | VERIFIED |
 | REQ-API-SCAN-006 | POST /api/v1/scans/import's own in-handler size backstop (`if body.len() > MAX_UPLOAD_BYTES { return bad_request(...) }`, documented in a comment as "the friendly-message backstop" for when the route-level limit doesn't apply) can never actually execute: the… | Verified this pass with a throwaway probe test (appended to tests/api.rs, run once via `cargo test --test api`, then reverted with `git checkout -- tests/api.rs` — tree confirmed clean afterward): POSTing MAX_UPLOAD_BYTES+1024 bytes to /api/v1/scans/import with the CSRF header returned `status=413 Payload Too Large`, `content-type: text/plain; charset=utf-8`, body `"Failed to buffer the request body: length limit exceeded"` (56 bytes) — confirming the in-handler bad_request branch is… | UNREACHABLE |
-| REQ-API-SCAN-007 | GET /api/v1/scans/{id}/entities paginates via ?offset=&?limit=, validating both at the boundary: a non-numeric offset/limit or a limit of 0 is rejected with 400 rather than silently defaulting or panicking; a valid limit above 10000 is clamped down rather… | Ran `cargo test --test api scan_entities_pagination_works` this pass — 1/1 passed, confirming count/total/offset/limit accounting across 5 scenarios including the 10000 cap. Grepped tests/ for "invalid limit"/"invalid offset"/"limit=0"/"limit=abc" and found no matches — the 400 branches (analysis.rs:27,34,36) are read-only-verified, not test-executed. | PARTIAL |
+| REQ-API-SCAN-007 (**fixed in Pass 6**) | GET /api/v1/scans/{id}/entities paginates via ?offset=&?limit=, validating both at the boundary: a non-numeric offset/limit or a limit of 0 is rejected with 400 rather than silently defaulting or panicking; a valid limit above 10000 is clamped down rather… | **Was PARTIAL**: `scan_entities_pagination_works` (1/1 passing) confirmed count/total/offset/limit accounting across 5 valid scenarios including the 10000 cap, but every one of the handler's `bad_request` branches (`analysis.rs:27,34,36` — non-numeric offset, non-numeric limit, limit=0) was read-only-verified, never test-executed. **Fixed in Pass 6**: added `scan_entities_pagination_rejects_invalid_offset_and_limit` (`tests/api.rs`), which drives all 5 invalid-input cases (`limit=0`, `limit=abc`, `limit=-5`, `offset=abc`, `offset=-1`) through the real HTTP handler and asserts 400 for each. Ran `cargo test --test api scan_entities_pagination` this pass — both the pre-existing and new tests passed (2/2). | VERIFIED |
 | REQ-API-SCAN-008 | Several read endpoints validate free-form query params before use: scan_entities_filter caps ?kind (32 chars) and ?q (256 chars); scan_snake_svg's ?depth (positive integer, capped at 8), ?size (finite number, clamped 200-4000) and ?center (must name an entity… | Ran `cargo test --test api scan_snake_svg_renders_and_hides_candidate_nodes_by_default` and `cargo test --test api plan_preview_lists_engaged_modules_for_a_seed` this pass — both 1/1 passed (default-parameter rendering only). Grepped tests/api.rs for these handlers' malformed-input branches and found no coverage of any of the 400 paths listed. | PARTIAL |
 | REQ-API-SCAN-009 | POST /api/v1/radar and POST /api/v1/radar/live are armed by default (a bare call with zero input queues the sensor sweep), but both refuse with 403 when the operator has explicitly switched the feature.live_radar toggle off — a client must be able to trust… | Ran `cargo test --lib api::scan_handlers` this pass, which includes radar_scan_spec_activates_only_the_live_sensors and every_live_sensor_accepts_the_radar_sentinel (both passed) — these confirm the SPEC the radar builds (sentinel target, allow_live_sensors, exact sensor module set), not the 403 kill-switch branch, which has zero automated coverage. | IMPLEMENTED_UNVERIFIED |
 | REQ-API-SCAN-010 | A scan dispatched by this surface (spawn_scan always calls engine.run_panic_safe, never the bare run) that panics anywhere in dispatch, or that persists zero entities due to a store error, is force-marked ScanStatus::Failed with the causing error message and… | Ran `cargo test --lib core::engine::tests::run_panic_safe_force_fails_a_scan_that_panics_outside_process` this pass — 1/1 passed, confirming a scan whose accepts() panics ends with persisted.status == ScanStatus::Failed and persisted.error containing the panic message "kaboom in accepts()", read directly back from the store (not just the in-memory Err returned to the caller). | VERIFIED |
@@ -763,25 +772,61 @@ $ cargo test --test api                                                   # full
 $ scripts/gate.sh                                                         # 17/17 executed checks PASS
 ```
 
+## Pass 6 findings
+
+Continuing the loop after Pass 5's PR merged: re-fetched `origin/main`,
+recomputed the ledger's remaining `PARTIAL` rows fresh, and picked
+**REQ-API-SCAN-007** — `GET /api/v1/scans/{id}/entities`'s pagination
+boundary validation.
+
+The pre-existing `scan_entities_pagination_works` test (1/1 passing)
+thoroughly covers every VALID offset/limit combination — default, custom
+limit, a middle page, an out-of-range page, and the 10000 cap — but the
+handler's three `bad_request` branches (non-numeric offset, non-numeric
+limit, `limit=0`) had never been driven through the real HTTP handler;
+they were read-only-verified in Pass 3 and left that way. A regression
+that silently defaulted an invalid `offset`/`limit` to `0`, instead of
+rejecting it, would have shipped undetected.
+
+Fixed with one new test, `scan_entities_pagination_rejects_invalid_offset_and_limit`
+(`tests/api.rs`), which drives 5 invalid-input cases through the real
+handler in one loop (`limit=0`, `limit=abc`, `limit=-5`, `offset=abc`,
+`offset=-1`) and asserts 400 for each. No production code changed — same
+pure-coverage pattern as REQ-CORRELATOR-001 (Pass 4) and REQ-API-MISC-003
+(Pass 5).
+
+### Verification commands run (Pass 6, in order)
+
+```
+$ cargo test --test api scan_entities_pagination                          # 2 passed (1 pre-existing + 1 new)
+$ cargo fmt --all
+$ cargo clippy --all-targets --features dep-cooldown -- -D warnings       # clean
+$ cargo test --lib --features dep-cooldown                                # full suite, 0 failed
+$ cargo test --test architecture                                          # 56 passed, 0 failed
+$ cargo test --test api                                                   # full suite, 0 failed
+$ scripts/gate.sh                                                         # 17/17 executed checks PASS
+```
+
 ## Summary statistics
 
-| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 |
-|---|---|---|---|---|---|
-| VERIFIED | 23 | 30 | 50 | 53 | 54 |
-| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 |
-| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed this pass)* |
-| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed this pass)* | 0 |
-| AMBIGUOUS | 1 | 0 | 0 | 0 | 0 |
-| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 |
-| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 |
-| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed this pass, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* |
-| **Total rows** | **51** | **51** | **86** | **88** | **88** |
+| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 | Pass 6 |
+|---|---|---|---|---|---|---|
+| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 |
+| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 |
+| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* |
+| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 |
+| AMBIGUOUS | 1 | 0 | 0 | 0 | 0 | 0 |
+| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 |
+| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 |
+| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* |
+| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** |
 
 Pass 4's `VERIFIED` count (53) is Pass 3's 50, plus the REQ-ENV-003 flip
 (+1), plus the two new one-row sections REQ-ENGINE-001/REQ-CORRELATOR-001
 (+2) — both landed `VERIFIED` on first pass, so no row moved through an
-intermediate status this time. Pass 5 added no new rows (88 unchanged) —
-just the REQ-API-MISC-003 `PARTIAL` → `VERIFIED` flip.
+intermediate status this time. Pass 5 and Pass 6 each added no new rows
+(88 unchanged) — just one `PARTIAL` → `VERIFIED` flip apiece
+(REQ-API-MISC-003, then REQ-API-SCAN-007).
 
 Breakdown by section: Module trait contract 14 rows (REQ-CORE-001..014), CLI
 surface 12 rows (REQ-CLI-001..012), `install.sh` 9 rows
