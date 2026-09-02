@@ -9,15 +9,17 @@
 //! methods by default, so all 188 registered modules get a descriptor "for
 //! free" the same way `consumes()` gets correct behaviour for free from
 //! `accepts()`. A handful of modules whose real economics differ from the
-//! mechanical derivation (`oathnet_pro`, `wigle`, `see_know`, `osintcat` —
-//! the four genuinely paid/quota-tracked providers, per a directed audit of
-//! `src/util/{oathnet,see_know,wigle}` and `src/modules/osintcat`) override
-//! it explicitly.
+//! mechanical derivation override it explicitly: `oathnet_pro`, `wigle`,
+//! `see_know`, `osintcat` (the four genuinely paid/quota-tracked providers,
+//! per a directed audit of `src/util/{oathnet,see_know,wigle}` and
+//! `src/modules/osintcat`), plus `hudsonrock` and `comb_search` (whose own
+//! doc comments make an explicit, asymmetric data-quality claim — see
+//! `provenance_quality_prior`).
 //!
 //! `Module::info()` embeds this descriptor, so every consumer that already
 //! reads `ModuleInfo` (CLI `hse modules --json`, `GET /api/v1/modules`) gets
-//! it automatically — see the `provider_capability_metadata_matches_between_cli_and_api`
-//! architecture test for the single-source-of-truth guarantee.
+//! it automatically — see `modules_list_returns_array` (`tests/api.rs`) for
+//! the single-source-of-truth guarantee.
 //!
 //! Vendor prices are never compiled in here as literals: [`cost_per_request`]
 //! is always `None` unless the operator configures it via
@@ -43,8 +45,8 @@ pub enum AccessClass {
     /// tracking (the common case for the majority of key-gated modules).
     FreeAccount,
     /// Requires a free key AND HSE locally tracks/enforces a quota budget
-    /// for it (reserved — no current module needs this; every locally
-    /// quota-tracked provider today is `Paid`).
+    /// for it (e.g. `wigle`'s real per-scan/per-day quota tracking, despite
+    /// its underlying `ModuleCost::KeyGated` classification).
     FreeQuota,
     /// Requires a paid subscription or pay-per-use billing.
     Paid,

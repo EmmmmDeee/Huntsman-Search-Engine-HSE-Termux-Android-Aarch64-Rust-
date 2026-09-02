@@ -747,7 +747,7 @@ pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
     // *key names* below are deliberately kept distinct from `ModuleInfo`'s
     // own serde names, for backward compatibility with the already-shipped
     // web SPA, which reads `accepts` where `ModuleInfo` calls the same data
-    // `consumes`). See `provider_capability_metadata_matches_between_cli_and_api`.
+    // `consumes`). See `modules_list_returns_array` (`tests/api.rs`).
     let mods: Vec<Value> = s
         .engine
         .modules()

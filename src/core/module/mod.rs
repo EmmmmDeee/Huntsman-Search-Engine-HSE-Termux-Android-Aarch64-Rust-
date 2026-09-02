@@ -342,9 +342,11 @@ pub trait Module: Send + Sync {
     /// for the vast majority of modules with no ceremony, exactly as
     /// `consumes()`'s default is correct for modules that gate purely on
     /// `t.kind`. Override only for a module whose real-world economics
-    /// genuinely differ from that mechanical derivation (a handful of
-    /// modules with actual quota/cost tracking — see `src/modules/oathnet_pro`,
-    /// `src/modules/wigle`, `src/modules/see_know`, `src/modules/osintcat`).
+    /// genuinely differ from that mechanical derivation — six do today:
+    /// `src/modules/oathnet_pro`, `src/modules/wigle`, `src/modules/see_know`,
+    /// `src/modules/osintcat` (actual quota/cost tracking), and
+    /// `src/modules/hudsonrock`, `src/modules/comb_search` (asymmetric
+    /// data-quality priors).
     fn provider_descriptor(&self) -> ProviderDescriptor {
         derive_default_provider_descriptor(self)
     }
