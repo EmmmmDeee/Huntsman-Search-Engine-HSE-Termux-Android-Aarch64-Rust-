@@ -5,7 +5,7 @@ individual scanning modules' business logic — that was the subject of a
 separate, now-complete module-by-module bug audit under
 `src/modules/*/mod.rs` (Phases 0-10, PRs #553-568, merged; every one of the
 188 registered modules read against an established bug-class checklist). The
-areas covered here, across ten passes:
+areas covered here, across eleven passes:
 
 1. The `Module` trait contract (`src/core/module/mod.rs`).
 2. The CLI surface (`src/main.rs`, `src/cli/`).
@@ -16,14 +16,19 @@ areas covered here, across ten passes:
    lifecycle handlers, settings/cells/key-harvest/update handlers, scan
    export/redaction.
 7. Scan engine dispatch (`src/core/engine/`) — the dead-module quarantine
-   gate only; expansion, ROI/budget pruning, and the rest of the engine's
-   internals remain out of scope.
+   gate only; expansion and the rest of the engine's internals remain out
+   of scope (the `max_roi` ROI/budget-pruning levers it hosts the call
+   sites for are covered separately, section 10).
 8. Correlator rule registry (`src/core/correlator/`) — registration
    completeness/uniqueness only; individual rules' firing logic remains out
    of scope beyond the pre-existing per-rule test corpus.
 9. Storage subsystem (`src/storage/`) — the `integrity_check()` corruption
    detector only; schema migration, concurrent-open behavior, and the rest
    of the storage layer remain out of scope.
+10. ROI-maximising expansion (`src/core/roi/`) — the three `max_roi` levers
+    (saturation-pruning, top-K/knee candidate cutoff, adaptive-depth
+    termination) at their real dispatch call sites; the levers' own pure
+    functions have separate, pre-existing unit coverage not tracked here.
 
 **Pass 2** re-verified every row Pass 1 left
 `IMPLEMENTED_UNVERIFIED`/`PARTIAL`/`AMBIGUOUS` by actually running its cited
@@ -118,12 +123,26 @@ merged, genuine Pass 9 (REQ-API-SCAN-006) mid-flight and renumbered to avoid
 colliding with it — see "Pass 10 findings" below for the full account,
 including that reconciliation.
 
+**Pass 11** (this pass) closed one new one-row section, REQ-ROI-003
+(`crate::core::roi::should_terminate_adaptive`, the `max_roi` adaptive-depth
+lever — real dispatch, not just the pure function, had zero coverage). While
+scoping it, found the ROI module's other two levers had never been
+represented in the ledger at all despite one (saturation-pruning) already
+having real dispatch-level proof from earlier architecture work — added
+REQ-ROI-001 (VERIFIED, citing that pre-existing test) and REQ-ROI-002
+(IMPLEMENTED_UNVERIFIED — the top-K/knee candidate cutoff has a real
+`apply_roi_cutoff`-level test plus pure-function coverage, but nothing
+proves it firing inside an actual over-budget `engine.run()`), so all three
+levers are now at least represented, two of three VERIFIED at the real
+dispatch call site. See "Pass 11 findings" below for the full account.
+
 This still does **not** claim to have reconstructed requirements for the
 *entire* codebase (the correlator's actual rule logic beyond registry-level
-completeness, the scan engine's internals beyond the quarantine gate, the
-storage layer beyond the `integrity_check()` detector, the web/WASM UI, and
-`hse-ai-daemon` remain out of scope for all ten passes) — see "Known
-limitations" for why, and for what a further pass would need to cover.
+completeness, the scan engine's internals beyond the quarantine gate and the
+ROI levers, the storage layer beyond the `integrity_check()` detector, the
+web/WASM UI, and `hse-ai-daemon` remain out of scope for all eleven passes)
+— see "Known limitations" for why, and for what a further pass would need
+to cover.
 
 **How to read this ledger.**
 
@@ -156,27 +175,30 @@ reflected in any row below since it was never a defect in that pass's own
 scope. That module-bug-audit has since completed in full (Phases 0-10,
 188/188 registered modules, PRs #553-568, all merged).
 
-**Known limitations of Pass 10 — what a further pass would need to cover.**
-This ledger's 9 sections are the core contracts, the remote-facing API
-surface, and three registry/detector-level guards of a Rust CLI/module-engine
-tool: the `Module` trait, the CLI, the installer, the env/config template,
-the README's own claims, `hse serve`'s HTTP API, the scan engine's
-dead-module quarantine gate, the correlator's rule-registration
-completeness, and the storage layer's `integrity_check()` corruption
-detector (section 9, added in Pass 10). Passes 5, 6, and 7 each closed one
-more `PARTIAL` row within the existing HTTP API section (section 6); Pass 8
-closed one `IMPLEMENTED_UNVERIFIED` row and added one new row within the
-existing `install.sh` section (section 3); Pass 9 (PR #577, merged
-independently of this ledger's own working session) closed the one
-`UNREACHABLE` row, also within the existing HTTP API section — none of
-those five expanded scope to any new subsystem. Pass 10 did: it opened new
-section 9, narrowing (not closing) the storage bullet below. Deliberately
-still **not** covered by any of the ten passes, and not claimed as
-VERIFIED/MISSING/etc. anywhere above:
+**Known limitations of Pass 11 — what a further pass would need to cover.**
+This ledger's 10 sections are the core contracts, the remote-facing API
+surface, and four registry/detector/lever-level guards of a Rust
+CLI/module-engine tool: the `Module` trait, the CLI, the installer, the
+env/config template, the README's own claims, `hse serve`'s HTTP API, the
+scan engine's dead-module quarantine gate, the correlator's
+rule-registration completeness, the storage layer's `integrity_check()`
+corruption detector (section 9, added in Pass 10), and the ROI-maximising
+expansion levers (section 10, added in Pass 11). Passes 5, 6, and 7 each
+closed one more `PARTIAL` row within the existing HTTP API section
+(section 6); Pass 8 closed one `IMPLEMENTED_UNVERIFIED` row and added one
+new row within the existing `install.sh` section (section 3); Pass 9
+(PR #577, merged independently of this ledger's own working session) closed
+the one `UNREACHABLE` row, also within the existing HTTP API section — none
+of those five expanded scope to any new subsystem. Pass 10 opened new
+section 9; Pass 11 opened new section 10, narrowing (not closing) the ROI
+bullet below. Deliberately still **not** covered by any of the eleven
+passes, and not claimed as VERIFIED/MISSING/etc. anywhere above:
 
-- **The scan engine's internals beyond the quarantine gate**
-  (`src/core/engine/` past `gate_skips` — expansion, ROI/budget pruning, and
-  the *upstream* wiring that computes the `quarantined` set in production
+- **The scan engine's internals beyond the quarantine gate and the ROI
+  levers** (`src/core/engine/` past `gate_skips` and the section-10 call
+  sites — the rest of expansion (candidate weighting/scoring, budget
+  checks beyond ROI, geo-convergence strategy selection), and the
+  *upstream* wiring that computes the `quarantined` set in production
   (`mod.rs:717-743`'s `skip_dead_modules` → `recent_module_outcome_events`
   → `quarantined_modules` chain — noted as an explicit follow-up in
   REQ-ENGINE-001's row, since `InMemoryStore`'s no-op default for
@@ -215,7 +237,7 @@ format, one row each.
 
 None of this is a claim that these areas are broken or unverified in some
 absolute sense — only that this ledger has not yet looked at them, and a
-reader should not infer completeness beyond the 9 sections it actually
+reader should not infer completeness beyond the 10 sections it actually
 covers.
 
 ---
@@ -624,6 +646,25 @@ changed for this row; the fix is documentary.
 | ID | Behavior | Inputs | Outputs | Side effects | Failure behavior | Implementation location | Tests covering it | Runtime verification evidence | Status |
 |---|---|---|---|---|---|---|---|---|---|
 | REQ-STORAGE-001 (**new, Pass 10**) | `Store::integrity_check()` (`PRAGMA integrity_check`) must surface real on-disk SQLite corruption as a non-`["ok"]` result — trusted by `hse doctor` (critical-exit-code path) and the debug-bundle export API to decide whether the database is healthy (FTA finding E5.1 / top event T5). | none | `Result<Vec<String>>` | Read-only pragma | A healthy DB returns exactly `["ok"]`; a corrupt one returns a row per problem found, OR (severe corruption) the pragma itself errors. | `src/core/port/mod.rs:258-261` (trait), `src/storage/mod.rs:584-591` (impl); consumers `src/app/doctor/mod.rs:63-75`, `src/api/handlers/mod.rs:662-664` | `integrity_check_reports_ok_on_healthy_db` (healthy path, pre-existing), `integrity_check_reports_problems_on_a_corrupted_db` (new, Pass 10) (`src/storage/tests.rs`) | **Gap found and fixed in Pass 10.** The only existing test proved the healthy-DB path; nothing had ever fed `integrity_check()` a genuinely corrupted database to prove it actually detects real corruption rather than always reporting "ok". Added a test that builds a real `Store`, writes 400 entities, checkpoints, then truncates away the trailing ~40% of the file (real row data, since SQLite allocates pages append-only) — a deterministic corruption technique. **Empirical finding along the way**: this reliably fails `Store::open()` itself, not just `integrity_check()` — `open()` is not a bare `sqlite3_open`, it runs an idempotent `entity_observations` backfill and an FTS freshness count that both scan `entities`' real data pages (`src/storage/mod.rs`, right after schema setup), so corruption in the most-written table is caught even earlier than the explicit check. The test accepts either real outcome (open failing, or opening fine and `integrity_check()` then reporting/erroring) as long as some stage surfaces it. **A second, related gap found and fixed in the same investigation**: `hse doctor`'s handling of `integrity_check()` returning `Err` (`src/app/doctor/mod.rs`) printed `"could not run check"` but did **not** set the `critical` flag that drives the command's exit code — meaning severe-enough corruption (the pragma itself failing, exactly the failure mode this test's corruption technique produces) would print an alarming-looking line but still exit 0. Fixed: that branch now sets `critical = true` too, matching the sibling "ran and found problems" arm. Ran `cargo test --lib storage::tests` (108/108 passed, including both integrity_check tests) and `cargo test --lib app::doctor::tests` (14/14 passed, confirming the doctor fix didn't disturb any existing assertion) this pass. **Hardened after this pass's own PR review**: a Copilot finding correctly noted the test's original corruption predicate (matching "corrupt"/"malformed" in the error's Display text) wasn't guaranteed to catch every SQLite corruption-shaped error across versions/platforms; reworked to match the underlying `rusqlite::ErrorCode` (`DatabaseCorrupt`/`NotADatabase`/`SystemIoFailure`) instead, substring matching kept only as a fallback for non-`SqliteFailure` shapes. Re-ran the test after the rework — still passes. | VERIFIED |
+
+---
+
+## 10. ROI-maximising expansion (`src/core/roi/`)
+
+Three orthogonal, `max_roi`-gated levers (see the module's own doc comment,
+`src/core/roi/mod.rs:1-21`): convergence-pruning (`is_saturated`), the
+top-K/knee candidate cutoff (`effective_cutoff`/`apply_roi_cutoff`), and
+adaptive-depth termination (`should_terminate_adaptive`). All three had
+pre-existing pure-function unit coverage (`src/core/roi/tests.rs`) before
+this section existed; the rows below track only whether each lever is also
+proven at its real dispatch call site in `src/core/engine/`, not the pure
+functions themselves.
+
+| ID | Behavior | Inputs | Outputs | Side effects | Failure behavior | Implementation location | Tests covering it | Runtime verification evidence | Status |
+|---|---|---|---|---|---|---|---|---|---|
+| REQ-ROI-001 | Convergence-pruning: under `max_roi`, an entity with ≥2 corroborating sources AND `c_effective ≥ 0.85` is "saturated" and is never re-selected as an expansion candidate — saves dispatch budget on entities further queries would only re-confirm. | none | `bool` (pure), gates candidate selection at dispatch | Excludes the entity from `next` with `EntityExcluded{reason:"roi_saturated"}` | With `max_roi` off, saturated entities are still re-dispatched (no behavior change) — by design, not a defect. | `src/core/roi/mod.rs:39-47` (`is_saturated`); call site `src/core/engine/mod.rs:2111` (`if opts.max_roi && is_saturated(entity)`) | `saturation_requires_both_corroboration_and_confidence`, `single_source_high_magnitude_is_not_saturated` (`src/core/roi/tests.rs`, pure); `max_roi_excludes_saturated_entity_from_real_dispatch` (`src/core/engine/tests.rs`, real `engine.run()` dispatch — added during the architecture-invariants Phase 2 work, PR #578, not previously cited in this ledger) | Ran `cargo test --lib core::engine::tests::max_roi_excludes_saturated_entity_from_real_dispatch` this pass — passed. Drives a real 2-round chain through `ScanEngine::run()`: with `max_roi` on, a saturated entity's own further expansion never happens (`g1child` absent); with it off, the same entity IS re-dispatched (`g1child` present). | VERIFIED |
+| REQ-ROI-002 | Top-K + relative-knee candidate cutoff: under `max_roi`, an expansion round keeps only the smaller of a concurrency-scaled top-K budget and the candidates within 5% of the round's leading weight — bounds both a flat flood of low-weight leads and long-tail noise trailing a strong lead. | `Vec<(Target, f64 weight, String parent_uid)>`, `max_concurrent` | Truncated candidate vec; releases the `visited` key of every cut candidate (so a cut lead can resurface later if evidence strengthens it) | A round with a weak/absent leader falls back to the top-K budget alone (`effective_cutoff`'s degenerate-all-zero branch). | `src/core/roi/mod.rs:49-92` (`top_k_for_round`/`effective_cutoff`); `src/core/engine/expansion.rs:83` (`apply_roi_cutoff`); call site `src/core/engine/mod.rs:2322` (`if opts.max_roi { apply_roi_cutoff(...) }`) | `top_k_scales_with_concurrency`, `effective_cutoff_*` ×3 (`src/core/roi/tests.rs`, pure); `roi_cutoff_releases_visited_keys_of_truncated_candidates` (`src/core/engine/tests.rs`) — calls the real `apply_roi_cutoff` directly (not the pure `effective_cutoff`) and asserts its `visited`-release side effect, but with a synthetic candidate vec, not through a real `engine.run()` dispatch | Ran `cargo test --lib core::roi::tests` (7/7 passed) and `cargo test --lib core::engine::tests::roi_cutoff_releases_visited_keys_of_truncated_candidates` (passed) this pass. Nothing proves the cutoff actually firing and truncating a real over-budget round inside `engine.run()` — the next gap in this section for a future pass. | IMPLEMENTED_UNVERIFIED |
+| REQ-ROI-003 (**new, Pass 11**) | Adaptive-depth termination: under `max_roi`, if a round's marginal yield (`new_entities / dispatched_targets`) drops below the floor (default 0.75, overridable via `ScanOptions::min_marginal_yield`), the engine stops recursing even though `--depth` would allow more rounds — captures the `dE/dDispatch → 0` convergence boundary. | `bool max_roi`, `usize new_entities`, `usize dispatched_targets`, `f64 floor` | `bool` (pure); at the call site, an early `return StopReason::NoMoreCandidates` plus an `EventKind::ExpansionStop{reason}` naming "adaptive-depth: marginal yield X < floor Y" | Never terminates on the first round of a scan (`dispatched_targets == 0` ⇒ insufficient data, always continues) | With `max_roi` off, a low-yield round is never a stop signal — recursion proceeds to `--depth`, unchanged from pre-lever behavior. | `src/core/roi/mod.rs:107-121` (`should_terminate_adaptive`); call site `src/core/engine/mod.rs:2463-2481` | `adaptive_termination_only_fires_when_enabled_and_below_floor`, `marginal_yield_handles_zero_dispatches` (`src/core/roi/tests.rs`, pure, pre-existing); `max_roi_adaptive_depth_stops_a_real_dispatch_round_on_low_marginal_yield` (new, Pass 11) (`src/core/engine/tests.rs`) | **Gap found and fixed in Pass 11.** The lever had zero coverage above the pure-function level. Added a 3-round real-dispatch test: round 1 (seed → 4 children) yields 4.0 (no stop); round 2 (4 children → the SAME shared entity, so 3 of 4 dispatches merge rather than insert) yields 0.25 (below floor); round 3 only ever runs without the lever. Asserts both the entity outcome (`deep_child` present/absent) AND the `ExpansionStop` event's reason text. **Mutation-tested**: temporarily short-circuited the termination check to always-false, re-ran — the entity-presence assertions alone still passed (a *different*, independent lever — saturation-pruning — also blocks round 3 once the shared entity accumulates 4 corroborating sources by then), but the event-reason assertion correctly failed, confirming that assertion is the one actually discriminating this lever from the others rather than the test being vacuously satisfied by an unrelated mechanism. Restored the real code, re-confirmed passing (5/5 repeated runs, ruling out flakiness from the real concurrent-dispatch path this test exercises at the default `max_concurrent: 2`). Ran `cargo test --lib core::engine::tests::max_roi_adaptive_depth_stops_a_real_dispatch_round_on_low_marginal_yield` this pass — passed. | VERIFIED |
 
 ---
 
@@ -1120,19 +1161,78 @@ $ cargo test --lib storage::tests::integrity_check_reports_problems_on_a_corrupt
 $ cargo clippy --lib --features dep-cooldown -- -D warnings               # clean
 ```
 
+## Pass 11 findings
+
+Picked the top item from Pass 10's own "new gaps found, not yet actioned"
+list: `ScanOptions::max_roi`'s adaptive-depth-termination lever
+(`crate::core::roi::should_terminate_adaptive`) had zero coverage above the
+pure-function level. While scoping the fix, re-read the whole `src/core/roi/`
+module (only 3 pure functions plus their dispatch call sites) and found the
+ledger had never represented it at all — not even the saturation-pruning
+lever, despite that one having gained real dispatch-level coverage back in
+the architecture-invariants Phase 2 work (PR #578,
+`max_roi_excludes_saturated_entity_from_real_dispatch`) without ever being
+folded into this ledger. Opened a new Section 10 for all three levers rather
+than a single bare row, so the whole module is now tracked consistently:
+
+- **REQ-ROI-001** (saturation-pruning): already `VERIFIED` by pre-existing
+  coverage — no code or test change this pass, only citing what PR #578
+  already proved.
+- **REQ-ROI-002** (top-K/knee candidate cutoff): `IMPLEMENTED_UNVERIFIED`.
+  `apply_roi_cutoff` has a real, dedicated test
+  (`roi_cutoff_releases_visited_keys_of_truncated_candidates`) proving its
+  own correctness including the `visited`-release side effect, but that
+  test drives the function directly with a synthetic candidate vec, not
+  through a real `engine.run()` dispatch with an actual over-budget round —
+  left as the next natural pick for a future pass, not fixed this pass to
+  keep this one's scope matched to the single lever it set out to close.
+- **REQ-ROI-003** (adaptive-depth termination, the actual target): fixed.
+  Added `max_roi_adaptive_depth_stops_a_real_dispatch_round_on_low_marginal_yield`,
+  a 3-round real-dispatch test through `ScanEngine::run()` — see the row
+  above for the full design and its mutation-testing result. The mutation
+  test surfaced a genuinely useful fact along the way: with the termination
+  check disabled, the entity-absence assertions alone still passed, because
+  the *independent* saturation-pruning lever (REQ-ROI-001) also blocked the
+  would-be round 3 once the shared test entity accumulated enough
+  corroborating sources — proof that an entity-outcome-only assertion would
+  have been an insufficiently discriminating test for this specific lever,
+  and that the added `ExpansionStop`-event assertion was the one actually
+  pinning down *which* mechanism fired.
+
+### Verification commands run (Pass 11, in order)
+
+```
+$ cargo test --lib core::engine::tests::max_roi_adaptive_depth_stops_a_real_dispatch_round_on_low_marginal_yield --features dep-cooldown
+                                                                            # 1/1 passed; repeated 5x, no flakiness
+$ # mutation check: short-circuited should_terminate_adaptive's call site to `if false && ...`,
+$ # re-ran the same test alone -> FAILED on the ExpansionStop-event assertion specifically
+$ # (the two entity-presence assertions still passed - see the finding above), then reverted
+$ git diff --stat src/core/engine/mod.rs                                  # empty - mutation fully reverted
+$ cargo test --lib core::engine::tests::max_roi_adaptive_depth_stops_a_real_dispatch_round_on_low_marginal_yield --features dep-cooldown
+                                                                            # 1/1 passed after revert
+$ cargo test --lib core::roi::tests --features dep-cooldown               # 7/7 passed
+$ cargo test --lib core::engine::tests::roi_cutoff_releases_visited_keys_of_truncated_candidates --features dep-cooldown
+                                                                            # passed
+$ cargo fmt --all
+$ cargo clippy --all-targets --features dep-cooldown -- -D warnings       # clean
+$ cargo test --lib --features dep-cooldown                                # full suite, 0 failed
+$ cargo test --test architecture                                         # 56 passed, 0 failed
+$ scripts/gate.sh                                                        # 17/17 executed checks PASS
+```
+
 ## Summary statistics
 
-| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 | Pass 6 | Pass 7 | Pass 8 | Pass 9 | Pass 10 |
-|---|---|---|---|---|---|---|---|---|---|---|
-| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 | 56 | 58 | 59 *(REQ-API-SCAN-006 fixed in Pass 9)* | 62 *(REQ-CLI-001, REQ-CLI-007 flipped from PARTIAL; REQ-STORAGE-001 new)* |
-| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 | 14 | 13 *(REQ-INSTALL-001 out, fixed; REQ-INSTALL-010 in as new then confirmed VERIFIED by this PR's own CI run before merge — net -1)* | 13 | 13 |
-| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* | 16 *(REQ-API-SCAN-002 fixed in Pass 7)* | 16 | 16 | 14 *(REQ-CLI-001, REQ-CLI-007 out, fixed; REQ-ENV-005 stays, evidence strengthened)* |
-| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 | 0 | 0 | 0 | 0 |
-| AMBIGUOUS | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 0 *(REQ-API-SCAN-006 fixed in Pass 9)* | 0 |
-| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** | **88** | **89** | **89** | **90** *(REQ-STORAGE-001, new Section 9)* |
+| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 | Pass 6 | Pass 7 | Pass 8 | Pass 9 | Pass 10 | Pass 11 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 | 56 | 58 | 59 *(REQ-API-SCAN-006 fixed in Pass 9)* | 62 *(REQ-CLI-001, REQ-CLI-007 flipped from PARTIAL; REQ-STORAGE-001 new)* | 64 *(REQ-ROI-001, REQ-ROI-003 new)* |
+| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 | 14 | 13 *(REQ-INSTALL-001 out, fixed; REQ-INSTALL-010 in as new then confirmed VERIFIED by this PR's own CI run before merge — net -1)* | 13 | 13 | 14 *(REQ-ROI-002 new)* |
+| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* | 16 *(REQ-API-SCAN-002 fixed in Pass 7)* | 16 | 16 | 14 *(REQ-CLI-001, REQ-CLI-007 out, fixed; REQ-ENV-005 stays, evidence strengthened)* | 14 |
+| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| AMBIGUOUS | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 0 *(REQ-API-SCAN-006 fixed in Pass 9)* | 0 | 0 |
+| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** | **88** | **89** | **89** | **90** *(REQ-STORAGE-001, new Section 9)* | **93** *(REQ-ROI-001/002/003, new Section 10)* |
 
 Pass 4's `VERIFIED` count (53) is Pass 3's 50, plus the REQ-ENV-003 flip
 (+1), plus the two new one-row sections REQ-ENGINE-001/REQ-CORRELATOR-001
@@ -1149,7 +1249,12 @@ so `VERIFIED` rises from 58 to 59 and `UNREACHABLE` drops from 1 to 0. Pass
 10's `VERIFIED` count (62) is Pass 9's 59, plus two `PARTIAL` → `VERIFIED`
 flips (REQ-CLI-001, REQ-CLI-007, +2), plus one new row (REQ-STORAGE-001,
 +1); `PARTIAL` drops from 16 to 14 (the same two flips leaving it); the new
-row brings the total from 89 to 90.
+row brings the total from 89 to 90. Pass 11's `VERIFIED` count (64) is
+Pass 10's 62, plus two new rows landing `VERIFIED` on first pass
+(REQ-ROI-001, citing pre-existing PR #578 coverage never before cited in
+this ledger; REQ-ROI-003, this pass's own fix, +2);
+`IMPLEMENTED_UNVERIFIED` rises from 13 to 14 (one more new row,
+REQ-ROI-002, +1); the three new rows bring the total from 90 to 93.
 
 Breakdown by section: Module trait contract 14 rows (REQ-CORE-001..014), CLI
 surface 12 rows (REQ-CLI-001..012), `install.sh` 10 rows
@@ -1158,8 +1263,9 @@ rows (REQ-README-001..010), HTTP API surface 35 rows (REQ-API-ROUTE-001..007,
 REQ-API-AUTH-001..004, REQ-API-SCAN-001..010, REQ-API-MISC-001..008,
 REQ-API-EXPORT-001..006), Scan engine dispatch 1 row (REQ-ENGINE-001),
 Correlator rule registry 1 row (REQ-CORRELATOR-001), Storage subsystem 1 row
-(REQ-STORAGE-001) —
-14+12+10+6+10+35+1+1+1 = 90, matching the total above.
+(REQ-STORAGE-001), ROI-maximising expansion 3 rows
+(REQ-ROI-001..003) —
+14+12+10+6+10+35+1+1+1+3 = 93, matching the total above.
 Some rows cite tests shared across sections (e.g. REQ-CORE-010 and
 REQ-README-009 both cite `every_module_maps_to_valid_attack_reconnaissance_techniques`),
 which is intentional — the two rows document the same underlying test from

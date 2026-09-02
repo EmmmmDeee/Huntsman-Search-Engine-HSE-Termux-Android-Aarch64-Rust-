@@ -2308,6 +2308,141 @@ async fn max_roi_excludes_saturated_entity_from_real_dispatch() {
     );
 }
 
+/// A stub module whose `process()` output depends on the *shape* of its
+/// input value, driving three rounds with three distinct marginal yields:
+/// round 1 (seed -> 4 children) is rich (yield 4.0); round 2 (each of the 4
+/// children -> the SAME shared entity, so 3 of the 4 dispatches merge
+/// rather than insert) is sparse (yield 0.25, below the default 0.75
+/// floor); round 3 (the shared entity -> one more entity) only ever
+/// happens if adaptive-depth termination did NOT fire after round 2.
+struct AdaptiveYieldModule;
+
+#[async_trait::async_trait]
+impl Module for AdaptiveYieldModule {
+    fn name(&self) -> &'static str {
+        "adaptive_yield"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Username)
+    }
+    fn produces(&self) -> &'static [EntityKind] {
+        const K: &[EntityKind] = &[EntityKind::Username];
+        K
+    }
+    async fn process(
+        &self,
+        target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        let mut r = crate::core::module::ModuleResult::new();
+        let children: &[&str] = match target.value.as_str() {
+            "seed" => &["child0", "child1", "child2", "child3"],
+            "child0" | "child1" | "child2" | "child3" => &["sparse_find"],
+            "sparse_find" => &["deep_child"],
+            _ => &[],
+        };
+        for &n in children {
+            let mut e = Entity::new(EntityKind::Username, n, 0.9, &ctx.scan_id);
+            e.tag("chain");
+            r.push(e);
+        }
+        Ok(r)
+    }
+}
+
+/// `max_roi`'s adaptive-depth-termination lever
+/// (`crate::core::roi::should_terminate_adaptive`), proven at the actual
+/// dispatch call site (`src/core/engine/mod.rs`'s post-round check,
+/// `if crate::core::roi::should_terminate_adaptive(opts.max_roi, ...)`),
+/// not just as a bare pure function called with synthetic inputs (its only
+/// prior coverage — see `crate::core::roi::tests`). Round 1 dispatches the
+/// seed and yields 4 new entities from 1 dispatched target (marginal yield
+/// 4.0, comfortably above the default 0.75 floor — no stop). Round 2
+/// dispatches all 4 children, but they all name the SAME next entity
+/// ("sparse_find"), so only the first dispatch to reach it genuinely
+/// inserts — the other 3 merge into it (same deterministic uid, see
+/// `hse_core::derive_uid`) — yielding 1 new entity from 4 dispatched
+/// targets (marginal yield 0.25, below floor). With `max_roi` on, the
+/// engine must stop right there: `deep_child`, which only round 3's
+/// dispatch of `sparse_find` would produce, must never appear, and the bus
+/// must carry the `ExpansionStop` event naming the adaptive-depth reason —
+/// proving the engine actually recognised and named the stop, not merely
+/// that round 3 happened not to run. With `max_roi` off the same low-yield
+/// round is not a stop signal at all, and the chain reaches `deep_child`
+/// in round 3.
+#[tokio::test]
+async fn max_roi_adaptive_depth_stops_a_real_dispatch_round_on_low_marginal_yield() {
+    use crate::core::test_support::InMemoryStore;
+
+    async fn run_chain(max_roi: bool) -> (Vec<Entity>, Vec<EventKind>) {
+        let store = Arc::new(InMemoryStore::new());
+        let store_port: Arc<dyn StoragePort> = store.clone();
+        let (bus, mut rx) = tokio::sync::broadcast::channel(4096);
+        let engine = ScanEngine::new(vec![Arc::new(AdaptiveYieldModule)], store_port, bus.clone());
+
+        let opts = ScanOptions {
+            depth: 3,
+            expand_all_identities: true,
+            max_roi,
+            min_expand_confidence: 0.0,
+            // Pin the floor explicitly rather than relying on the
+            // `effective_min_marginal_yield()` fallback default: the test's
+            // own round-yield math (4.0, then 0.25) is designed against this
+            // exact threshold, so a future change to `DEFAULT_MIN_MARGINAL_YIELD`
+            // must not silently change what this test exercises.
+            min_marginal_yield: Some(crate::core::roi::DEFAULT_MIN_MARGINAL_YIELD),
+            ..Default::default()
+        };
+        let target = Target::new(TargetKind::Username, "seed");
+        let scan = Scan::new(
+            crate::core::entity::scan_id("username", "seed"),
+            target.clone(),
+        )
+        .with_options(opts);
+        let scan_id = scan.id.clone();
+        let ctx = ModuleContext {
+            scan_id: scan.id.clone(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+        engine.run(scan, target, ctx).await.expect("should succeed");
+        let entities = store.entities_for_scan(&scan_id).expect("should succeed");
+        let events = drain_events(&mut rx);
+        (entities, events)
+    }
+
+    let (with_roi, events_with_roi) = run_chain(true).await;
+    assert!(
+        with_roi.iter().any(|e| e.value == "sparse_find"),
+        "round 2's single genuinely-new entity is still recorded"
+    );
+    assert!(
+        !with_roi.iter().any(|e| e.value == "deep_child"),
+        "max_roi must stop recursion before a round 3 that only a low-yield \
+         round 2 would otherwise still trigger"
+    );
+    assert!(
+        events_with_roi.iter().any(|k| matches!(
+            k,
+            EventKind::ExpansionStop { reason } if reason.starts_with("adaptive-depth:")
+        )),
+        "the engine must name the adaptive-depth stop on the event bus, not \
+         just silently under-produce entities: {events_with_roi:?}"
+    );
+
+    let (without_roi, _events_without_roi) = run_chain(false).await;
+    assert!(
+        without_roi.iter().any(|e| e.value == "deep_child"),
+        "with max_roi off, the same low-yield round is not a stop signal \
+         and the chain reaches round 3"
+    );
+}
+
 #[tokio::test]
 async fn expansion_stamps_entity_generation_per_round() {
     use crate::core::test_support::InMemoryStore;
