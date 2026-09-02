@@ -5,7 +5,7 @@ individual scanning modules' business logic — that was the subject of a
 separate, now-complete module-by-module bug audit under
 `src/modules/*/mod.rs` (Phases 0-10, PRs #553-568, merged; every one of the
 188 registered modules read against an established bug-class checklist). The
-areas covered here, across eight passes:
+areas covered here, across nine passes:
 
 1. The `Module` trait contract (`src/core/module/mod.rs`).
 2. The CLI surface (`src/main.rs`, `src/cli/`).
@@ -89,11 +89,25 @@ not the 3 other default binaries `install.sh`'s on-device build fallback
 also compiles — widened, pending this PR's own CI run for VERIFIED status
 per the ledger's own evidence rule). See "Pass 8 findings" below.
 
+**Pass 9** (this pass) closed the ledger's one remaining `UNREACHABLE` row,
+REQ-API-SCAN-006: the `/scans/import` handler's own oversized-upload check
+was genuinely dead code, because the route's `DefaultBodyLimit` was set to
+exactly the handler's own cap — so any body large enough to trip the
+in-handler check had already been rejected one layer up by axum's bare
+plain-text 413, before the handler ever ran. Fixed by giving the route a
+small (1 MiB) headroom over the handler's cap, so a body in that window now
+reaches the handler and gets this API's normal JSON error shape instead;
+anything larger still hits axum's hard backstop, so the underlying
+OOM-protection safety property is unchanged. Added one new test proving the
+branch is reachable, mutation-tested (reverted the fix locally, confirmed
+the new test fails, restored it). No other rows changed this pass — see
+"Pass 9 findings" below.
+
 This still does **not** claim to have reconstructed requirements for the
 *entire* codebase (the correlator's actual rule logic beyond registry-level
 completeness, the scan engine's internals beyond the quarantine gate, the
 storage layer beyond one fix, the web/WASM UI, and `hse-ai-daemon` remain
-out of scope for all eight passes) — see "Known limitations" for why, and
+out of scope for all nine passes) — see "Known limitations" for why, and
 for what a further pass would need to cover.
 
 **How to read this ledger.**
@@ -139,7 +153,7 @@ added one new row within the existing `install.sh` section (section 3),
 triggered by a direct install-readiness request rather than the backlog
 scan — none of the four expanded scope to any new subsystem, so the list
 below is unchanged from Pass 4's. Deliberately still **not** covered by any
-of the eight passes, and not claimed as VERIFIED/MISSING/etc. anywhere
+of the nine passes, and not claimed as VERIFIED/MISSING/etc. anywhere
 above:
 
 - **The scan engine's internals beyond the quarantine gate**
@@ -520,7 +534,7 @@ this pass), 12 PARTIAL, 2 IMPLEMENTED_UNVERIFIED, 1 UNREACHABLE.
 | REQ-API-SCAN-003 | DELETE /api/v1/scans/{id} refuses (409 Conflict) to delete a scan that is still in-flight (present in s.cancellations), instead of racing delete_scan's cascade against the live engine task's own mid-scan writes — which would silently resurrect a "deleted"… | Ran `cargo test --test api scan_delete` this pass — 3/3 passed, including scan_delete_refuses_an_in_flight_scan_then_succeeds_once_it_ends, which seeds s.cancellations directly, confirms the delete call returns 409 while the entry is present, then removes the entry and confirms delete now returns 200. | VERIFIED |
 | REQ-API-SCAN-004 | POST /api/v1/scans/batch enforces DoS-relevant caps (empty array -> 400, >50 targets -> 400, exactly 50 -> 202) and, for a batch that mixes a structurally-invalid target among valid ones, records a per-item {"error": msg} entry and continues dispatching the… | Ran `cargo test --test api batch_endpoint_enforces_empty_and_size_limits` this pass — 1/1 passed (empty->400, 51 items->400, 50 items->202). The mixed valid/invalid-item continue-and-record-per-item-error path (core.rs:733-739) was confirmed by reading the code only; grepped tests/api.rs and found no batch request containing a malformed target. | PARTIAL |
 | REQ-API-SCAN-005 | Every state-changing request on this surface (POST /scans, /scans/batch, /scans/{id}/cancel, /scans/{id}/rerun, DELETE /scans/{id}, POST /scans/import, /scan/auto*, /radar*) is blocked with 403 unless it carries a custom X-HSE-CSRF header — closing the… | Ran `cargo test --test api dossier_upload` (6/6 passed, includes CSRF-adjacent import tests) and `cargo test --test api bodyless_mutating_post_requires_csrf_header` this pass — 1/1 passed, confirming POST /api/v1/scans/does-not-exist/cancel is 403'd without the header and not 403'd with it. Confirmed by reading routes/mod.rs that this same middleware, not per-handler code, is what protects scan_cancel/scan_create/scan_batch/etc. | VERIFIED |
-| REQ-API-SCAN-006 | POST /api/v1/scans/import's own in-handler size backstop (`if body.len() > MAX_UPLOAD_BYTES { return bad_request(...) }`, documented in a comment as "the friendly-message backstop" for when the route-level limit doesn't apply) can never actually execute: the… | Verified this pass with a throwaway probe test (appended to tests/api.rs, run once via `cargo test --test api`, then reverted with `git checkout -- tests/api.rs` — tree confirmed clean afterward): POSTing MAX_UPLOAD_BYTES+1024 bytes to /api/v1/scans/import with the CSRF header returned `status=413 Payload Too Large`, `content-type: text/plain; charset=utf-8`, body `"Failed to buffer the request body: length limit exceeded"` (56 bytes) — confirming the in-handler bad_request branch is… | UNREACHABLE |
+| REQ-API-SCAN-006 (**fixed in Pass 9**) | POST /api/v1/scans/import's own in-handler size backstop (`if body.len() > MAX_UPLOAD_BYTES { return bad_request(...) }`) rejects an oversized upload with this API's normal JSON `{"error": ...}` shape, for any body between `MAX_UPLOAD_BYTES` and the route's `DefaultBodyLimit` ceiling; only a body beyond that ceiling gets axum's own bare plain-text 413 (an intentional, bounded OOM backstop). | **Was UNREACHABLE**: the route's `DefaultBodyLimit` was set to exactly `MAX_UPLOAD_BYTES`, so any body large enough to trip the in-handler check had already been 413'd by axum one layer up — the handler's own check could never run. **Fixed in Pass 9**: added `scan_handlers::IMPORT_ROUTE_BODY_LIMIT_HEADROOM_BYTES` (1 MiB) and raised the route's `DefaultBodyLimit` to `MAX_UPLOAD_BYTES + IMPORT_ROUTE_BODY_LIMIT_HEADROOM_BYTES` (`src/api/routes/mod.rs`), so a body in that 1 MiB window now reaches the handler and gets the friendly JSON rejection instead; anything larger still hits axum's hard backstop, so the OOM-protection intent is unchanged. Added `dossier_upload_between_handler_cap_and_route_headroom_gets_friendly_json_rejection` (`tests/api.rs`), POSTing a 16 MB + 512 KB body and asserting `400` + JSON `error` containing "too large" (not axum's 413/plain-text). Mutation-tested: reverted the route-limit change locally, re-ran the new test — it failed (`left: 413, right: 400`) as expected, then restored the fix and re-confirmed the same test passes. Ran `cargo test --test api` — 127/127 passed (was 126; +1 new). Ran `cargo clippy --all-targets --features dep-cooldown -- -D warnings` — clean. `cargo build --locked` — clean. | VERIFIED |
 | REQ-API-SCAN-007 (**fixed in Pass 6**) | GET /api/v1/scans/{id}/entities paginates via ?offset=&?limit=, validating both at the boundary: a non-numeric offset/limit or a limit of 0 is rejected with 400 rather than silently defaulting or panicking; a valid limit above 10000 is clamped down rather… | **Was PARTIAL**: `scan_entities_pagination_works` (1/1 passing) confirmed count/total/offset/limit accounting across 5 valid scenarios including the 10000 cap, but every one of the handler's `bad_request` branches (`analysis.rs:27,34,36` — non-numeric offset, non-numeric limit, limit=0) was read-only-verified, never test-executed. **Fixed in Pass 6**: added `scan_entities_pagination_rejects_invalid_offset_and_limit` (`tests/api.rs`), which drives all 5 invalid-input cases (`limit=0`, `limit=abc`, `limit=-5`, `offset=abc`, `offset=-1`) through the real HTTP handler and asserts 400 for each. Ran `cargo test --test api scan_entities_pagination` this pass — both the pre-existing and new tests passed (2/2). | VERIFIED |
 | REQ-API-SCAN-008 | Several read endpoints validate free-form query params before use: scan_entities_filter caps ?kind (32 chars) and ?q (256 chars); scan_snake_svg's ?depth (positive integer, capped at 8), ?size (finite number, clamped 200-4000) and ?center (must name an entity… | Ran `cargo test --test api scan_snake_svg_renders_and_hides_candidate_nodes_by_default` and `cargo test --test api plan_preview_lists_engaged_modules_for_a_seed` this pass — both 1/1 passed (default-parameter rendering only). Grepped tests/api.rs for these handlers' malformed-input branches and found no coverage of any of the 400 paths listed. | PARTIAL |
 | REQ-API-SCAN-009 | POST /api/v1/radar and POST /api/v1/radar/live are armed by default (a bare call with zero input queues the sensor sweep), but both refuse with 403 when the operator has explicitly switched the feature.live_radar toggle off — a client must be able to trust… | Ran `cargo test --lib api::scan_handlers` this pass, which includes radar_scan_spec_activates_only_the_live_sensors and every_live_sensor_accepts_the_radar_sentinel (both passed) — these confirm the SPEC the radar builds (sentinel target, allow_live_sensors, exact sensor module set), not the 403 kill-switch branch, which has zero automated coverage. | IMPLEMENTED_UNVERIFIED |
@@ -981,19 +995,34 @@ $ cargo test --test architecture                                         # 56 pa
 $ scripts/gate.sh                                                         # 17/17 executed checks PASS
 ```
 
+### Verification commands run (Pass 9, in order)
+
+```
+$ cargo build --locked                                                    # clean, full workspace build
+$ cargo test --test api dossier_upload -- --nocapture                     # 7 passed (6 pre-existing + 1 new)
+$ # mutation check: reverted DefaultBodyLimit to MAX_UPLOAD_BYTES (no headroom),
+$ # re-ran the new test alone -> FAILED as expected (413 != 400), then restored the fix
+$ cargo test --test api dossier_upload_between_handler_cap -- --nocapture # re-confirmed passing after restore
+$ cargo test --test api                                                   # 127 passed, 0 failed (was 126; +1 new)
+$ cargo fmt --all                                                         # no additional diff
+$ cargo clippy --all-targets --features dep-cooldown -- -D warnings       # clean
+$ cargo test --lib --features dep-cooldown                                # 6852 passed, 0 failed, 22 ignored
+$ cargo test --test architecture                                          # 56 passed, 0 failed
+```
+
 ## Summary statistics
 
-| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 | Pass 6 | Pass 7 | Pass 8 |
-|---|---|---|---|---|---|---|---|---|
-| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 | 56 | 58 |
-| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 | 14 | 13 *(REQ-INSTALL-001 out, fixed; REQ-INSTALL-010 in as new then confirmed VERIFIED by this PR's own CI run before merge — net -1)* |
-| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* | 16 *(REQ-API-SCAN-002 fixed in Pass 7)* | 16 |
-| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 | 0 | 0 |
-| AMBIGUOUS | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 | 0 | 0 |
-| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* |
-| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** | **88** | **89** |
+| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 | Pass 6 | Pass 7 | Pass 8 | Pass 9 |
+|---|---|---|---|---|---|---|---|---|---|
+| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 | 56 | 58 | 59 *(REQ-API-SCAN-006 fixed in Pass 9)* |
+| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 | 14 | 13 *(REQ-INSTALL-001 out, fixed; REQ-INSTALL-010 in as new then confirmed VERIFIED by this PR's own CI run before merge — net -1)* | 13 |
+| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* | 16 *(REQ-API-SCAN-002 fixed in Pass 7)* | 16 | 16 |
+| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 | 0 | 0 | 0 |
+| AMBIGUOUS | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 | 0 | 0 | 0 |
+| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 0 *(REQ-API-SCAN-006 fixed in Pass 9)* |
+| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** | **88** | **89** | **89** |
 
 Pass 4's `VERIFIED` count (53) is Pass 3's 50, plus the REQ-ENV-003 flip
 (+1), plus the two new one-row sections REQ-ENGINE-001/REQ-CORRELATOR-001
@@ -1004,7 +1033,9 @@ intermediate status this time. Passes 5, 6, and 7 each added no new rows
 `VERIFIED` count (57) is Pass 7's 56 plus the REQ-INSTALL-001 flip (+1);
 `IMPLEMENTED_UNVERIFIED` stays at 14 (REQ-INSTALL-001 leaves it,
 REQ-INSTALL-010 — new, not yet confirmed by its own PR's CI run — enters
-it), and the new row brings the total from 88 to 89.
+it), and the new row brings the total from 88 to 89. Pass 9 adds no new
+rows (89 unchanged) — one `UNREACHABLE` → `VERIFIED` flip (REQ-API-SCAN-006),
+so `VERIFIED` rises from 58 to 59 and `UNREACHABLE` drops from 1 to 0.
 
 Breakdown by section: Module trait contract 14 rows (REQ-CORE-001..014), CLI
 surface 12 rows (REQ-CLI-001..012), `install.sh` 10 rows
