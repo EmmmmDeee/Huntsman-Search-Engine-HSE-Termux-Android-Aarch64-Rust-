@@ -2126,6 +2126,11 @@ async fn scan_cancel_stops_a_real_in_flight_scan_and_status_becomes_aborted() {
             .oneshot(get(&format!("/api/v1/scans/{sid}")))
             .await
             .unwrap();
+        assert_eq!(
+            get_resp.status(),
+            200,
+            "the scan must still be gettable while polling for its final status"
+        );
         status = body_json(get_resp).await["status"]
             .as_str()
             .unwrap_or_default()

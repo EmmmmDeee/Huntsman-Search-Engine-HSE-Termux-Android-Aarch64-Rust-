@@ -140,11 +140,14 @@ impl Module for CancelCooperativeProbe {
     fn max_timeout_ms(&self) -> u64 {
         60_000
     }
-    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+    async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut r = ModuleResult::new();
+        // A fixed, always-valid address — NOT derived from `target.value`,
+        // since `accepts()` is true for every TargetKind and a non-email
+        // seed's raw value would make an invalid Email entity.
         r.push(Entity::new(
             EntityKind::Email,
-            &target.value,
+            "cancel-probe@found-host.example.invalid",
             0.9,
             &ctx.scan_id,
         ));
