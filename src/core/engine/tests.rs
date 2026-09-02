@@ -2380,7 +2380,7 @@ async fn max_roi_adaptive_depth_stops_a_real_dispatch_round_on_low_marginal_yiel
     async fn run_chain(max_roi: bool) -> (Vec<Entity>, Vec<EventKind>) {
         let store = Arc::new(InMemoryStore::new());
         let store_port: Arc<dyn StoragePort> = store.clone();
-        let (bus, mut rx) = tokio::sync::broadcast::channel(256);
+        let (bus, mut rx) = tokio::sync::broadcast::channel(4096);
         let engine = ScanEngine::new(vec![Arc::new(AdaptiveYieldModule)], store_port, bus.clone());
 
         let opts = ScanOptions {
@@ -2388,6 +2388,12 @@ async fn max_roi_adaptive_depth_stops_a_real_dispatch_round_on_low_marginal_yiel
             expand_all_identities: true,
             max_roi,
             min_expand_confidence: 0.0,
+            // Pin the floor explicitly rather than relying on the
+            // `effective_min_marginal_yield()` fallback default: the test's
+            // own round-yield math (4.0, then 0.25) is designed against this
+            // exact threshold, so a future change to `DEFAULT_MIN_MARGINAL_YIELD`
+            // must not silently change what this test exercises.
+            min_marginal_yield: Some(crate::core::roi::DEFAULT_MIN_MARGINAL_YIELD),
             ..Default::default()
         };
         let target = Target::new(TargetKind::Username, "seed");
