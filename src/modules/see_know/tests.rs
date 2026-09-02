@@ -191,15 +191,16 @@ mod numeric_identifier_coercion_tests {
     }
 
     #[test]
-    fn is_exempt_from_the_termux_timeout_cap() {
-        // The 45s Termux module cap is BELOW see_know's ~55s server cap, so
-        // without an exemption every phone scan would time it out with zero data
-        // — silently wasting the operator's highest-priority paid source on the
-        // platform HSE targets. see_know must opt out so its budget survives the
-        // clamp, and that budget must still clear the curl outer timeout.
+    fn is_exempt_from_the_constrained_device_timeout_cap() {
+        // The 45s constrained-device module cap is BELOW see_know's ~55s server
+        // cap, so without an exemption every phone scan would time it out with
+        // zero data — silently wasting the operator's highest-priority paid
+        // source on the platform HSE targets. see_know must opt out so its
+        // budget survives the clamp, and that budget must still clear the curl
+        // outer timeout.
         assert!(
             SeekNow.constrained_timeout_cap_exempt(),
-            "see_know must be exempt from the 45s Termux cap (server cap is ~55s)"
+            "see_know must be exempt from the 45s constrained-device cap (server cap is ~55s)"
         );
         assert!(
             SeekNow.constrained_timeout_ms() >= 78_000,

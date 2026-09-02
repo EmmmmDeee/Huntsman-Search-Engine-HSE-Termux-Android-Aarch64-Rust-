@@ -189,7 +189,12 @@ fn emit_footprint_extra_data_scalar_becomes_evidence_without_raw_json_quoting() 
         .find(|e| e.attributes.get("key").map(String::as_str) == Some("location"))
         .expect("location ExtraData should become evidence");
     assert_eq!(ev.attributes.get("value").map(String::as_str), Some("New York"));
-    assert!(!ev.summary.contains('"'), "summary must not carry raw JSON quoting: {}", ev.summary);
+    // Assert the exact summary text rather than a bare "no quotes anywhere"
+    // check — a legitimate value could itself contain a double quote (e.g. a
+    // `5'11" tall` bio field), so the precise regression signal is that THIS
+    // key/value pair renders without the JSON-string quoting `Value`'s
+    // `Display` impl would have added, not an absence of `"` in general.
+    assert_eq!(ev.summary, "[github.com] location: New York");
 }
 
 #[test]

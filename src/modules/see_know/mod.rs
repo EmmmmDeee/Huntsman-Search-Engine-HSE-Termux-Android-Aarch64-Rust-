@@ -282,12 +282,12 @@ impl Module for SeekNow {
     fn constrained_timeout_cap_exempt(&self) -> bool {
         // see_know's /search has a ~55s server-side cap and answers in 50–60s,
         // and a typed miss can now chain into a ~40s /search/deep fallback on
-        // top of that. The 45s Termux module cap would kill EVERY phone scan
-        // with a timeout-exit and zero data — silently wasting the operator's
-        // highest-priority paid source on the very platform HSE targets. As
-        // the operator explicitly enabled this key, keep its full (still-
-        // bounded) 110s budget on Termux too so the upstream response is
-        // actually awaited.
+        // top of that. The 45s constrained-device module cap would kill EVERY
+        // phone scan with a timeout-exit and zero data — silently wasting the
+        // operator's highest-priority paid source on the very platform HSE
+        // targets. As the operator explicitly enabled this key, keep its full
+        // (still-bounded) 110s budget on a constrained device too so the
+        // upstream response is actually awaited.
         true
     }
 

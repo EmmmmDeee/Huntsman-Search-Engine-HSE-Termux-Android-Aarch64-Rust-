@@ -3,10 +3,10 @@ use super::*;
     use crate::core::scan::Target;
 
     #[test]
-    fn termux_cap_bounds_long_modules_only_on_termux_without_override() {
-        // Desktop (not Termux): full timeout preserved, even 120 s.
+    fn constrained_cap_bounds_long_modules_only_when_constrained_without_override() {
+        // Desktop (not constrained): full timeout preserved, even 120 s.
         assert_eq!(apply_constrained_cap(120_000, false, false, false), 120_000);
-        // Termux, no user override, not exempt: the worst offenders clamp to 45 s...
+        // Constrained, no user override, not exempt: the worst offenders clamp to 45 s...
         assert_eq!(
             apply_constrained_cap(120_000, false, true, false),
             CONSTRAINED_MODULE_TIMEOUT_CAP_MS
@@ -24,18 +24,18 @@ use super::*;
         // ...while the common short timeouts pass through unchanged.
         assert_eq!(apply_constrained_cap(8_000, false, true, false), 8_000);
         assert_eq!(apply_constrained_cap(20_000, false, true, false), 20_000);
-        // An explicit --module-timeout is honoured verbatim, even on Termux,
-        // even above the cap (the operator asked for it).
+        // An explicit --module-timeout is honoured verbatim, even when
+        // constrained, even above the cap (the operator asked for it).
         assert_eq!(apply_constrained_cap(120_000, true, true, false), 120_000);
     }
 
     #[test]
-    fn cap_exempt_module_keeps_its_full_termux_budget() {
+    fn cap_exempt_module_keeps_its_full_constrained_budget() {
         // A cap-exempt module (e.g. see_know, whose ~55 s server cap exceeds the
-        // 45 s clamp) keeps its full budget on Termux — clamping it would
-        // guarantee a zero-data timeout on every phone scan. Exemption only
-        // matters on Termux without a user override (the cap's domain); elsewhere
-        // the value already passes through.
+        // 45 s clamp) keeps its full budget on a constrained device — clamping
+        // it would guarantee a zero-data timeout on every phone scan. Exemption
+        // only matters when constrained without a user override (the cap's
+        // domain); elsewhere the value already passes through.
         assert_eq!(apply_constrained_cap(80_000, false, true, true), 80_000);
         // Non-exempt peer with the same budget is still clamped — the exemption
         // is per-module, not a blanket cap raise.
@@ -46,12 +46,13 @@ use super::*;
     }
 
     #[test]
-    fn resolve_timeout_uses_termux_budget_then_cap() {
-        // A module whose Termux budget is below the cap is honoured as-is on a
-        // phone, while its larger desktop budget is what's used off-Termux.
-        // (apply_constrained_cap carries the is_termux branch; here we assert the
-        // base-selection + clamp composition for both a default and an
-        // override module, independent of the runtime environment.)
+    fn resolve_timeout_uses_constrained_budget_then_cap() {
+        // A module whose constrained-device budget is below the cap is honoured
+        // as-is on a phone, while its larger desktop budget is what's used when
+        // unconstrained. (apply_constrained_cap carries the `constrained`
+        // branch; here we assert the base-selection + clamp composition for
+        // both a default and an override module, independent of the runtime
+        // environment.)
         struct DefaultMod; // constrained_timeout_ms defaults to max_timeout_ms
         #[async_trait::async_trait]
         impl Module for DefaultMod {
@@ -75,7 +76,7 @@ use super::*;
                 120_000
             }
         }
-        struct TrimmedMod; // overrides termux budget down
+        struct TrimmedMod; // overrides the constrained-device budget down
         #[async_trait::async_trait]
         impl Module for TrimmedMod {
             fn name(&self) -> &'static str {
@@ -101,8 +102,9 @@ use super::*;
                 30_000
             }
         }
-        // Default module: desktop budget is the full 120 s; the Termux budget
-        // defaults to the same value but is clamped by the cap to 45 s.
+        // Default module: desktop budget is the full 120 s; the constrained-
+        // device budget defaults to the same value but is clamped by the cap
+        // to 45 s.
         assert_eq!(DefaultMod.constrained_timeout_ms(), 120_000);
         assert!(!DefaultMod.constrained_timeout_cap_exempt());
         assert_eq!(
@@ -114,8 +116,9 @@ use super::*;
             ),
             45_000
         );
-        // Trimmed module: its 30 s Termux budget is under the cap, so it is
-        // used verbatim on a phone and is strictly tighter than the default.
+        // Trimmed module: its 30 s constrained-device budget is under the cap,
+        // so it is used verbatim on a phone and is strictly tighter than the
+        // default.
         assert_eq!(TrimmedMod.constrained_timeout_ms(), 30_000);
         assert_eq!(
             apply_constrained_cap(
