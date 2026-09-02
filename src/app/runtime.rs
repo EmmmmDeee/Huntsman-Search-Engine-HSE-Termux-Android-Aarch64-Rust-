@@ -7,7 +7,7 @@ use crate::{
         engine::ScanEngine,
         error::{Error, Result},
         event::EventBus,
-        port::{EVENTS_MAX_ROWS, EVENTS_RETENTION_SECS, RAW_ARCHIVE_MAX_ROWS, StoragePort},
+        port::{EVENTS_MAX_ROWS, EVENTS_RETENTION_SECS, MODULE_RESULT_CACHE_MAX_ROWS, StoragePort},
     },
     default_db_path,
     modules::{module_runtime, registry},
@@ -29,7 +29,7 @@ pub struct ApplicationRuntime {
 pub fn build_runtime(bus_capacity: usize) -> Result<ApplicationRuntime> {
     let db = Store::open(&default_db_path())?;
     let _ = db.prune_events(EVENTS_RETENTION_SECS, EVENTS_MAX_ROWS);
-    let _ = db.prune_raw_archive(RAW_ARCHIVE_MAX_ROWS);
+    let _ = db.prune_module_result_cache(MODULE_RESULT_CACHE_MAX_ROWS);
     let store: Arc<dyn StoragePort> = Arc::new(db);
     let (bus, _rx) = tokio::sync::broadcast::channel(bus_capacity);
     let engine = Arc::new(ScanEngine::with_runtime_and_host(

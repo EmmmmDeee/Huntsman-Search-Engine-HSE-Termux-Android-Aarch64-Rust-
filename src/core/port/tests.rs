@@ -141,7 +141,7 @@ use super::*;
                 .expect("should succeed"),
             0
         );
-        assert_eq!(store.prune_raw_archive(RAW_ARCHIVE_MAX_ROWS).expect("should succeed"), 0);
+        assert_eq!(store.prune_module_result_cache(MODULE_RESULT_CACHE_MAX_ROWS).expect("should succeed"), 0);
     }
 
     #[test]

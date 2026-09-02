@@ -236,6 +236,11 @@ impl Module for Wigle {
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }
+    // GEOINT finaliser gate: waits for free-tier geo corroboration before
+    // spending its query on a Coordinates target; see dispatch::module_skip_reason.
+    fn requires_geo_corroboration(&self) -> bool {
+        true
+    }
     fn category(&self) -> ModuleCategory {
         ModuleCategory::Geo
     }

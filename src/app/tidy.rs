@@ -16,7 +16,7 @@
 //!   and truncates the WAL on every scan (`core::engine::finalise`), so this is
 //!   a *safety net* for the operator who runs `serve` for weeks without ever
 //!   completing a scan: the same canonical [`EVENTS_MAX_ROWS`] /
-//!   [`RAW_ARCHIVE_MAX_ROWS`] bounds and a WAL `TRUNCATE` checkpoint, reusing
+//!   [`MODULE_RESULT_CACHE_MAX_ROWS`] bounds and a WAL `TRUNCATE` checkpoint, reusing
 //!   the storage primitives rather than duplicating a retention policy.
 //! * **Layout** — re-asserts the base dir and its known subdirectories exist
 //!   and are `0700`, the same tightening [`crate::util::paths`] applies on
@@ -33,7 +33,7 @@
 use std::path::Path;
 
 use crate::core::error::Result;
-use crate::core::port::{EVENTS_MAX_ROWS, EVENTS_RETENTION_SECS, RAW_ARCHIVE_MAX_ROWS};
+use crate::core::port::{EVENTS_MAX_ROWS, EVENTS_RETENTION_SECS, MODULE_RESULT_CACHE_MAX_ROWS};
 
 /// Keep at most this many rendered dossier files (newest first). Dossiers are a
 /// regenerable cache of a stored scan, so the cap only bounds disk use — no
@@ -101,7 +101,9 @@ pub fn run(dry_run: bool) -> Result<TidyReport> {
         report.events_pruned = store
             .prune_events(EVENTS_RETENTION_SECS, EVENTS_MAX_ROWS)
             .unwrap_or(0);
-        report.archive_pruned = store.prune_raw_archive(RAW_ARCHIVE_MAX_ROWS).unwrap_or(0);
+        report.archive_pruned = store
+            .prune_module_result_cache(MODULE_RESULT_CACHE_MAX_ROWS)
+            .unwrap_or(0);
         report.wal_truncated = store.checkpoint_truncate().is_ok();
     }
 

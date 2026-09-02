@@ -1150,6 +1150,26 @@ fn add_evidence_appends_to_vec() {
     assert_eq!(e.evidence[1].source, "mod-b");
 }
 
+#[test]
+fn add_evidence_backfills_scan_id_from_entity() {
+    let mut e = email("a@b.com");
+    e.add_evidence(Evidence::new("mod-a", "found via breach db"));
+    assert_eq!(e.evidence[0].scan_id, "scan-test");
+}
+
+#[test]
+fn evidence_missing_scan_id_deserializes_to_empty_string() {
+    // Old persisted evidence JSON predates the `scan_id` field entirely.
+    let json = r#"{
+        "source": "mod-a",
+        "summary": "found via breach db",
+        "attributes": {},
+        "recorded_at": 1
+    }"#;
+    let ev: Evidence = serde_json::from_str(json).unwrap();
+    assert_eq!(ev.scan_id, "");
+}
+
 // ── Evidence::new ───────────────────────────────────────────────────────
 
 #[test]

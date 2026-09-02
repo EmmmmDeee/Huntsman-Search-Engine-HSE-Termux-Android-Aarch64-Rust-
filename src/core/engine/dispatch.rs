@@ -359,10 +359,9 @@ pub(super) fn module_skip_reason(
     // emails that would otherwise trigger fresh fan-out. SeekNow (`see_know`)
     // is intentionally NOT gated here: its own per-scan budget in
     // `util::see_know` bounds the quota while letting it pivot freely.
-    const HIGH_VALUE_ONLY_MODULES: &[&str] = &["oathnet_pro"];
     const CROSS_CORRELATION_MIN_SOURCES: usize = 2;
     if is_expansion
-        && HIGH_VALUE_ONLY_MODULES.contains(&name)
+        && module.is_high_value_only()
         && target_distinct_sources < CROSS_CORRELATION_MIN_SOURCES
     {
         return Some("high-value API — awaiting cross-correlation (>=2 sources)");
@@ -382,7 +381,7 @@ pub(super) fn module_skip_reason(
     // The seed round is exempt (a `Coordinates` seed is the operator's explicit
     // target), exactly as the oathnet gate admits the seed.
     if is_expansion
-        && name == "wigle"
+        && module.requires_geo_corroboration()
         && target.kind == TargetKind::Coordinates
         && target_distinct_sources < CROSS_CORRELATION_MIN_SOURCES
     {

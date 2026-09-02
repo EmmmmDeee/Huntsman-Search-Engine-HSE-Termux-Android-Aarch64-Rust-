@@ -170,6 +170,28 @@ pub trait Module: Send + Sync {
         false
     }
 
+    /// Default: `false`. Override true for the heaviest paid/key-gated
+    /// modules whose per-query cost and low-specificity fan-out risk make
+    /// speculative firing on every freshly-discovered entity wasteful (see
+    /// `dispatch::module_skip_reason`'s high-value-API gate): on an
+    /// expansion round such a module runs only on the seed target or one
+    /// that has reached cross-correlation (>= `CROSS_CORRELATION_MIN_SOURCES`
+    /// distinct evidence sources).
+    fn is_high_value_only(&self) -> bool {
+        false
+    }
+
+    /// Default: `false`. Override true for a paid GEOINT *finaliser* module
+    /// that must wait for free-tier geo corroboration before spending its
+    /// query on a freshly-discovered `Coordinates` target (same
+    /// cross-correlation rule as `is_high_value_only`, but the engine
+    /// scopes it to `Coordinates` only — a module also accepting other
+    /// target kinds where it is the PRIMARY resolver, e.g. wigle on
+    /// `MacAddress`, still runs freely there).
+    fn requires_geo_corroboration(&self) -> bool {
+        false
+    }
+
     /// Maximum time the engine will wait for one `process()` call before
     /// emitting `ModuleError { error: "timeout" }`.
     ///

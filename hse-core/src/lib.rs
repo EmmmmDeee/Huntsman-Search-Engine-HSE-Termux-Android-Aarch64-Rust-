@@ -531,6 +531,12 @@ pub struct Evidence {
     /// and should decay confidence in downstream correlations.
     #[serde(default, skip_serializing_if = "is_false")]
     pub is_inferred: bool,
+    /// Id of the scan that produced this evidence. Backfilled from the owning
+    /// entity in `Entity::add_evidence` when not set explicitly, so per-record
+    /// provenance survives multi-scan merges. Empty for old persisted records
+    /// (pre-dates this field).
+    #[serde(default)]
+    pub scan_id: String,
 }
 
 impl Evidence {
@@ -542,6 +548,7 @@ impl Evidence {
             recorded_at: unix_now(),
             verification: None,
             is_inferred: false,
+            scan_id: String::new(),
         }
     }
 
@@ -942,7 +949,13 @@ impl Entity {
     // ── Evidence ────────────────────────────────────────────────────────────
 
     /// Append evidence. Passwords must be stripped before calling.
-    pub fn add_evidence(&mut self, ev: Evidence) {
+    ///
+    /// Backfills `scan_id` from the owning entity when the evidence wasn't
+    /// stamped with one, so per-record provenance survives multi-scan merges.
+    pub fn add_evidence(&mut self, mut ev: Evidence) {
+        if ev.scan_id.is_empty() {
+            ev.scan_id = self.scan_id.clone();
+        }
         self.evidence.push(ev);
     }
 

@@ -1248,8 +1248,8 @@ impl crate::core::port::StoragePort for Store {
         Store::prune_events(self, max_age_secs, max_rows)
     }
 
-    fn prune_raw_archive(&self, max_rows: usize) -> Result<usize> {
-        Store::prune_raw_archive(self, max_rows)
+    fn prune_module_result_cache(&self, max_rows: usize) -> Result<usize> {
+        Store::prune_module_result_cache(self, max_rows)
     }
 
     fn upsert_scan(&self, scan: &Scan) -> Result<()> {

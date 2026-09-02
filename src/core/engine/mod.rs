@@ -2889,8 +2889,9 @@ fn run_finalise_housekeeping(store: &dyn StoragePort, scan_id: &str) {
     ) {
         warn!(scan_id, error = %e, "events prune deferred");
     }
-    if let Err(e) = store.prune_raw_archive(crate::core::port::RAW_ARCHIVE_MAX_ROWS) {
-        warn!(scan_id, error = %e, "raw_archive prune deferred");
+    if let Err(e) = store.prune_module_result_cache(crate::core::port::MODULE_RESULT_CACHE_MAX_ROWS)
+    {
+        warn!(scan_id, error = %e, "module_result_cache prune deferred");
     }
 }
 

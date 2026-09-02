@@ -740,6 +740,42 @@ fn local_passive_sensor_modules_list_is_exactly_the_matching_registry_subset() {
     );
 }
 
+#[test]
+fn is_high_value_only_registry_membership_is_exactly_oathnet_pro() {
+    let reg = crate::modules::registry();
+    let mut matching: Vec<&str> = reg
+        .iter()
+        .filter(|m| m.is_high_value_only())
+        .map(|m| m.name())
+        .collect();
+    matching.sort_unstable();
+    assert_eq!(
+        matching,
+        vec!["oathnet_pro"],
+        "the set of modules declaring is_high_value_only() has drifted from the \
+         single heaviest paid/key-gated module the dispatch gate was built for — \
+         a new module with the same shape must declare it too, or a removed \
+         override must be cleaned up"
+    );
+}
+
+#[test]
+fn requires_geo_corroboration_registry_membership_is_exactly_wigle() {
+    let reg = crate::modules::registry();
+    let mut matching: Vec<&str> = reg
+        .iter()
+        .filter(|m| m.requires_geo_corroboration())
+        .map(|m| m.name())
+        .collect();
+    matching.sort_unstable();
+    assert_eq!(
+        matching,
+        vec!["wigle"],
+        "the set of modules declaring requires_geo_corroboration() has drifted \
+         from the single paid GEOINT finaliser the dispatch gate was built for"
+    );
+}
+
 #[tokio::test]
 async fn module_panic_is_contained_as_error_not_process_abort() {
     // Error-tree ECS-1: a panicking module (bad/hostile upstream tripping an
@@ -1096,6 +1132,8 @@ struct StubModule {
     name: &'static str,
     cost: ModuleCost,
     passive: bool,
+    high_value_only: bool,
+    requires_geo_corroboration: bool,
 }
 
 #[async_trait::async_trait]
@@ -1114,6 +1152,12 @@ impl Module for StubModule {
     }
     fn is_passive(&self) -> bool {
         self.passive
+    }
+    fn is_high_value_only(&self) -> bool {
+        self.high_value_only
+    }
+    fn requires_geo_corroboration(&self) -> bool {
+        self.requires_geo_corroboration
     }
     async fn process(
         &self,
@@ -1151,6 +1195,8 @@ fn circuit_breaker_trip_skips_the_module_at_the_dispatch_gate() {
         name: "test_circuit_gate",
         cost: ModuleCost::Free,
         passive: false,
+        high_value_only: false,
+        requires_geo_corroboration: false,
     };
     let opts = ScanOptions::default();
 
@@ -1259,6 +1305,8 @@ fn free_active() -> StubModule {
         name: "test_free",
         cost: ModuleCost::Free,
         passive: false,
+        high_value_only: false,
+        requires_geo_corroboration: false,
     }
 }
 
@@ -1267,6 +1315,8 @@ fn keygated() -> StubModule {
         name: "test_keygated",
         cost: ModuleCost::KeyGated,
         passive: false,
+        high_value_only: false,
+        requires_geo_corroboration: false,
     }
 }
 
@@ -1275,6 +1325,8 @@ fn paid_passive() -> StubModule {
         name: "test_paid",
         cost: ModuleCost::Paid,
         passive: true,
+        high_value_only: false,
+        requires_geo_corroboration: false,
     }
 }
 
@@ -1317,6 +1369,8 @@ fn skip_reason_gates_live_sensors_to_radar_only() {
         name: "signal_radar",
         cost: ModuleCost::Free,
         passive: true,
+        high_value_only: false,
+        requires_geo_corroboration: false,
     };
     // Default manual scan → skipped.
     assert_eq!(
@@ -1459,6 +1513,8 @@ fn high_value() -> StubModule {
         name: "oathnet_pro",
         cost: ModuleCost::Paid,
         passive: false,
+        high_value_only: true,
+        requires_geo_corroboration: false,
     }
 }
 
@@ -1514,6 +1570,8 @@ fn wigle() -> StubModule {
         name: "wigle",
         cost: ModuleCost::KeyGated,
         passive: false,
+        high_value_only: false,
+        requires_geo_corroboration: true,
     }
 }
 
@@ -1640,6 +1698,8 @@ fn skip_reason_lets_local_passive_module_see_private_ip() {
         name: "local_net",
         cost: ModuleCost::Free,
         passive: true,
+        high_value_only: false,
+        requires_geo_corroboration: false,
     };
     let private = Target::new(TargetKind::IpAddress, "192.168.1.1");
     // The private-IP preflight bypass only matters when the sensor is actually
@@ -2136,6 +2196,112 @@ impl Module for ChainModule {
         }
         Ok(r)
     }
+}
+
+/// A [`ChainModule`] variant whose emitted child already carries two
+/// corroborating evidence sources at high confidence — i.e. it is born
+/// [`crate::core::roi::is_saturated`] the moment it lands in the store, before
+/// the engine ever considers dispatching it. Used to prove the `max_roi` ROI
+/// gate at the dispatch call site (not just the bare `is_saturated` function)
+/// actually stops a real `engine.run()` from pivoting on a saturated entity.
+struct SaturatedChainModule;
+
+#[async_trait::async_trait]
+impl Module for SaturatedChainModule {
+    fn name(&self) -> &'static str {
+        "saturated_chain"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Username)
+    }
+    fn produces(&self) -> &'static [EntityKind] {
+        const K: &[EntityKind] = &[EntityKind::Username];
+        K
+    }
+    async fn process(
+        &self,
+        target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        let mut r = crate::core::module::ModuleResult::new();
+        let next = match target.value.as_str() {
+            "seed" => Some("g0child"),
+            "g0child" => Some("g1child"),
+            _ => None,
+        };
+        if let Some(n) = next {
+            let mut e = Entity::new(EntityKind::Username, n, 0.95, &ctx.scan_id);
+            e.tag("chain");
+            e.add_evidence(crate::core::entity::Evidence::new("source_a", "synthetic"));
+            e.add_evidence(crate::core::entity::Evidence::new("source_b", "synthetic"));
+            r.push(e);
+        }
+        Ok(r)
+    }
+}
+
+/// `max_roi`'s `is_saturated` lever, proven at the actual dispatch call site
+/// (`src/core/engine/mod.rs`, the `if opts.max_roi &&
+/// crate::core::roi::is_saturated(entity)` gate), not just as a bare unit
+/// function called with synthetic inputs. `g0child` is emitted already
+/// saturated (2 corroborating sources, confidence 0.95), so with `max_roi`
+/// on, the engine must never dispatch it for further expansion — `g1child`
+/// (which only `g0child`'s own expansion would produce) must never appear.
+/// With `max_roi` off, the same saturated entity IS re-dispatched and the
+/// chain continues to `g1child`.
+#[tokio::test]
+async fn max_roi_excludes_saturated_entity_from_real_dispatch() {
+    use crate::core::test_support::InMemoryStore;
+
+    async fn run_chain(max_roi: bool) -> Vec<Entity> {
+        let store = Arc::new(InMemoryStore::new());
+        let store_port: Arc<dyn StoragePort> = store.clone();
+        let (bus, _rx) = tokio::sync::broadcast::channel(256);
+        let engine = ScanEngine::new(vec![Arc::new(SaturatedChainModule)], store_port, bus.clone());
+
+        let opts = ScanOptions {
+            depth: 2,
+            expand_all_identities: true,
+            max_roi,
+            min_expand_confidence: 0.0,
+            ..Default::default()
+        };
+        let target = Target::new(TargetKind::Username, "seed");
+        let scan = Scan::new(
+            crate::core::entity::scan_id("username", "seed"),
+            target.clone(),
+        )
+        .with_options(opts);
+        let scan_id = scan.id.clone();
+        let ctx = ModuleContext {
+            scan_id: scan.id.clone(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+        engine.run(scan, target, ctx).await.expect("should succeed");
+        store.entities_for_scan(&scan_id).expect("should succeed")
+    }
+
+    let with_roi = run_chain(true).await;
+    assert!(
+        with_roi.iter().any(|e| e.value == "g0child"),
+        "the saturated entity is still recorded"
+    );
+    assert!(
+        !with_roi.iter().any(|e| e.value == "g1child"),
+        "max_roi must stop a real dispatch round from pivoting on a saturated entity"
+    );
+
+    let without_roi = run_chain(false).await;
+    assert!(
+        without_roi.iter().any(|e| e.value == "g1child"),
+        "with max_roi off, the same saturated entity is re-dispatched and the chain continues"
+    );
 }
 
 #[tokio::test]
