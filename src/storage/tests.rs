@@ -154,18 +154,35 @@ fn integrity_check_reports_problems_on_a_corrupted_db() {
         f.set_len(len * 3 / 5).expect("should succeed");
     }
 
-    let corrupt = |msg: &str| {
-        let m = msg.to_ascii_lowercase();
-        m.contains("corrupt") || m.contains("malformed")
-    };
+    // Prefer matching the underlying SQLite result code over its Display
+    // text: the exact wording of "malformed"/"not a database"/short-read I/O
+    // messages varies across SQLite versions and platforms, but the codes
+    // below are the stable, documented set SQLite itself uses for a
+    // truncated/corrupted file (Storage(SqliteFailure) is how
+    // `crate::core::error::Error` wraps every rusqlite failure — see
+    // `core::error::Error::Storage`). Fall back to substring matching only
+    // for shapes that aren't a raw `SqliteFailure` (defensive; not expected
+    // to be reached here).
+    fn is_corruption_error(e: &crate::core::error::Error) -> bool {
+        if let crate::core::error::Error::Storage(rusqlite::Error::SqliteFailure(ffi_err, _)) = e {
+            return matches!(
+                ffi_err.code,
+                rusqlite::ErrorCode::DatabaseCorrupt
+                    | rusqlite::ErrorCode::NotADatabase
+                    | rusqlite::ErrorCode::SystemIoFailure
+            );
+        }
+        let m = e.to_string().to_ascii_lowercase();
+        m.contains("corrupt") || m.contains("malformed") || m.contains("not a database")
+    }
     match Store::open(&path) {
         // Caught at open() — see the doc comment above for why this is the
         // common case for `entities` corruption specifically.
         Err(e) => assert!(
-            corrupt(&e.to_string()),
+            is_corruption_error(&e),
             "Store::open() on a truncated file failed, but not with a \
-             corruption-named error (would mask the real cause behind an \
-             unrelated failure message): {e}"
+             corruption-shaped SQLite error code (would mask the real cause \
+             behind an unrelated failure): {e}"
         ),
         // Rarer, but also valid: opens fine, and the explicit check then
         // catches it.
@@ -178,10 +195,9 @@ fn integrity_check_reports_problems_on_a_corrupted_db() {
                  got: {rows:?}"
             ),
             Err(e) => assert!(
-                corrupt(&e.to_string()),
+                is_corruption_error(&e),
                 "integrity_check() erroring is only an acceptable outcome \
-                 here when the error itself names corruption/malformed \
-                 content: {e}"
+                 here when the error itself is corruption-shaped: {e}"
             ),
         },
     }
