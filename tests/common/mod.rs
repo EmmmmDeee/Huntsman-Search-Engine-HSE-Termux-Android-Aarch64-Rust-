@@ -119,6 +119,45 @@ impl Module for SyntheticModule {
     }
 }
 
+/// Accepts everything and blocks in `process()`, cooperatively polling
+/// `ctx.cancel.is_cancelled()` roughly every 100ms for up to 60s — mirrors
+/// `tests/halting.rs`'s `SlowModule`. For tests that need a genuinely
+/// in-flight scan long enough to exercise cancellation (dispatch-time or
+/// HTTP-level) rather than one the module finishes before the test can act.
+pub struct CancelCooperativeProbe;
+
+#[async_trait]
+impl Module for CancelCooperativeProbe {
+    fn name(&self) -> &'static str {
+        "cancel_cooperative_probe"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, _t: &Target) -> bool {
+        true
+    }
+    fn max_timeout_ms(&self) -> u64 {
+        60_000
+    }
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        r.push(Entity::new(
+            EntityKind::Email,
+            &target.value,
+            0.9,
+            &ctx.scan_id,
+        ));
+        for _ in 0..600 {
+            if ctx.cancel.is_cancelled() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        Ok(r)
+    }
+}
+
 /// Accepts Email, produces ONE Username derived from the local part.
 pub struct EmailToUsernameSynth;
 
@@ -488,10 +527,23 @@ pub fn test_app_exposed(suffix: &str, token: &str) -> axum::Router {
 }
 
 fn test_app_with_store_and_state(suffix: &str) -> (axum::Router, Arc<Store>, Arc<AppState>) {
+    test_app_with_modules_and_state(vec![Arc::new(SyntheticModule)], suffix)
+}
+
+/// Like [`test_app`] but with a caller-chosen module set instead of the
+/// default `SyntheticModule` — for tests that need specific module timing or
+/// behavior (e.g. [`CancelCooperativeProbe`], for exercising cancellation).
+pub fn test_app_with_modules(modules: Vec<Arc<dyn Module>>, suffix: &str) -> axum::Router {
+    test_app_with_modules_and_state(modules, suffix).0
+}
+
+fn test_app_with_modules_and_state(
+    modules: Vec<Arc<dyn Module>>,
+    suffix: &str,
+) -> (axum::Router, Arc<Store>, Arc<AppState>) {
     let path = tmp_db_for_api(suffix);
     let store = Arc::new(Store::open(&path).unwrap());
     let (bus, _rx) = tokio::sync::broadcast::channel(256);
-    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
     let engine = Arc::new(ScanEngine::new(
         modules,
         Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,

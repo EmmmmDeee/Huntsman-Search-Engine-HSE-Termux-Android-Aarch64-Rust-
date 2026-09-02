@@ -5,7 +5,7 @@ individual scanning modules' business logic — that was the subject of a
 separate, now-complete module-by-module bug audit under
 `src/modules/*/mod.rs` (Phases 0-10, PRs #553-568, merged; every one of the
 188 registered modules read against an established bug-class checklist). The
-areas covered here, across six passes:
+areas covered here, across seven passes:
 
 1. The `Module` trait contract (`src/core/module/mod.rs`).
 2. The CLI surface (`src/main.rs`, `src/cli/`).
@@ -68,11 +68,22 @@ combination but none of its three `bad_request` rejection branches
 driving all 5 invalid-input cases through the real handler. No production
 code changed — see "Pass 6 findings" below.
 
+**Pass 7** (this pass) closed REQ-API-SCAN-002: real in-flight scan
+cancellation had never been driven through the actual HTTP `scan_cancel`
+handler — the only existing coverage was the 404 branch and a
+deadline-triggered abort driven directly against the engine, bypassing
+HTTP. Added a shared cancellation-cooperative probe module and a small,
+backward-compatible harness refactor (`test_app_with_modules`) so a test
+can inject a caller-chosen module set, then a new test that creates a real
+scan, cancels it mid-flight via `POST /scans/{id}/cancel`, and polls
+`GET /scans/{id}` until it finalizes as `"aborted"`. No production code
+changed — see "Pass 7 findings" below.
+
 This still does **not** claim to have reconstructed requirements for the
 *entire* codebase (the correlator's actual rule logic beyond registry-level
 completeness, the scan engine's internals beyond the quarantine gate, the
 storage layer beyond one fix, the web/WASM UI, and `hse-ai-daemon` remain
-out of scope for all six passes) — see "Known limitations" for why, and
+out of scope for all seven passes) — see "Known limitations" for why, and
 for what a further pass would need to cover.
 
 **How to read this ledger.**
@@ -106,16 +117,16 @@ reflected in any row below since it was never a defect in that pass's own
 scope. That module-bug-audit has since completed in full (Phases 0-10,
 188/188 registered modules, PRs #553-568, all merged).
 
-**Known limitations of Pass 6 — what a further pass would need to cover.**
+**Known limitations of Pass 7 — what a further pass would need to cover.**
 This ledger's 8 sections are the core contracts, the remote-facing API
 surface, and two registry-level guards of a Rust CLI/module-engine tool: the
 `Module` trait, the CLI, the installer, the env/config template, the
 README's own claims, `hse serve`'s HTTP API, the scan engine's dead-module
 quarantine gate, and the correlator's rule-registration completeness. Passes
-5 and 6 each closed one more `PARTIAL` row within the existing HTTP API
+5, 6, and 7 each closed one more `PARTIAL` row within the existing HTTP API
 section (section 6) without expanding scope to any new subsystem, so the
 list below is unchanged from Pass 4's. Deliberately still **not** covered by
-any of the six passes, and not claimed as VERIFIED/MISSING/etc. anywhere
+any of the seven passes, and not claimed as VERIFIED/MISSING/etc. anywhere
 above:
 
 - **The scan engine's internals beyond the quarantine gate**
@@ -491,7 +502,7 @@ this pass), 12 PARTIAL, 2 IMPLEMENTED_UNVERIFIED, 1 UNREACHABLE.
 | ID | Behavior | Runtime verification evidence | Status |
 |---|---|---|---|
 | REQ-API-SCAN-001 | POST /api/v1/scans validates the target at the API boundary (shape check via Target::validate_verbose, e.g. an email kind whose value has no '@') BEFORE the scan is persisted or dispatched to the engine, rejecting with 400 rather than queuing a scan that… | Ran `cargo test --lib api::scan_handlers` this pass — 14/14 passed, including build_scan_from_request_rejects_invalid_target and build_scan_from_request_valid_is_deterministic. Ran `cargo test --test api scan_create` this pass — 4/4 passed, including scan_create_rejects_invalid_target (POST value="not-an-email" kind=email -> 400) and scan_create_accepts_valid_request (-> 202 with a scan_id). | VERIFIED |
-| REQ-API-SCAN-002 | POST /api/v1/scans/{id}/cancel on a scan that is actually in-flight delivers the cancellation signal (via the shared s.cancellations map -> CancelHandle::cancel()) to the running engine task, and the engine honestly reports the outcome as ScanStatus::Aborted… | Ran `cargo test --test api scan_cancel` (1/1 passed, 404 branch only) and `cargo test --test halting wall_time_budget_stops_promptly_and_preserves_findings` (1/1 passed, confirms ScanStatus::Aborted with findings preserved) this pass. No test in tests/api.rs or src/api/scan_handlers/tests.rs drives a real in-flight scan through the actual HTTP scan_cancel handler and then polls GET /scans/{id} to see status become "aborted" — grepped tests/ for "cancelling"/POST .../cancel and found only the… | PARTIAL |
+| REQ-API-SCAN-002 (**fixed in Pass 7**) | POST /api/v1/scans/{id}/cancel on a scan that is actually in-flight delivers the cancellation signal (via the shared s.cancellations map -> CancelHandle::cancel()) to the running engine task, and the engine honestly reports the outcome as ScanStatus::Aborted… | **Was PARTIAL**: `cargo test --test api scan_cancel` (1/1 passed, 404 branch only) and `cargo test --test halting wall_time_budget_stops_promptly_and_preserves_findings` (1/1 passed) proved the downstream engine mechanism (a wall-time deadline → `ScanStatus::Aborted`, findings preserved) driven directly against the engine, never through HTTP — no test drove a real in-flight scan through the actual HTTP `scan_cancel` handler and polled `GET /scans/{id}` to see status become "aborted". **Fixed in Pass 7**: added `CancelCooperativeProbe` (`tests/common/mod.rs`) — a module that blocks in `process()`, cooperatively polling `ctx.cancel.is_cancelled()` every ~100ms for up to 60s (mirrors `tests/halting.rs`'s `SlowModule`) — and a new parameterized harness helper, `test_app_with_modules`, so a test can build the real axum `Router`+`AppState` with a caller-chosen module set instead of the default `SyntheticModule`. New test `scan_cancel_stops_a_real_in_flight_scan_and_status_becomes_aborted` (`tests/api.rs`): `POST /scans` with the probe module (genuinely in-flight — `spawn_scan` registers the real `CancelHandle` into `s.cancellations` synchronously before the 202 response returns), `POST /scans/{id}/cancel` (asserts 200, `"status":"cancelling"`), then polls `GET /scans/{id}` until `"status":"aborted"` (resolves in ~100-200ms in practice, well inside the 5s poll budget). Ran 5 times consecutively — stable, ~0.12s each. Ran `cargo test --test api` (126 passed), `cargo test --test halting` (5 passed) and `cargo test --test smoke` (57 passed) to confirm the shared `tests/common/mod.rs` refactor didn't disturb either sibling test crate. | VERIFIED |
 | REQ-API-SCAN-003 | DELETE /api/v1/scans/{id} refuses (409 Conflict) to delete a scan that is still in-flight (present in s.cancellations), instead of racing delete_scan's cascade against the live engine task's own mid-scan writes — which would silently resurrect a "deleted"… | Ran `cargo test --test api scan_delete` this pass — 3/3 passed, including scan_delete_refuses_an_in_flight_scan_then_succeeds_once_it_ends, which seeds s.cancellations directly, confirms the delete call returns 409 while the entry is present, then removes the entry and confirms delete now returns 200. | VERIFIED |
 | REQ-API-SCAN-004 | POST /api/v1/scans/batch enforces DoS-relevant caps (empty array -> 400, >50 targets -> 400, exactly 50 -> 202) and, for a batch that mixes a structurally-invalid target among valid ones, records a per-item {"error": msg} entry and continues dispatching the… | Ran `cargo test --test api batch_endpoint_enforces_empty_and_size_limits` this pass — 1/1 passed (empty->400, 51 items->400, 50 items->202). The mixed valid/invalid-item continue-and-record-per-item-error path (core.rs:733-739) was confirmed by reading the code only; grepped tests/api.rs and found no batch request containing a malformed target. | PARTIAL |
 | REQ-API-SCAN-005 | Every state-changing request on this surface (POST /scans, /scans/batch, /scans/{id}/cancel, /scans/{id}/rerun, DELETE /scans/{id}, POST /scans/import, /scan/auto*, /radar*) is blocked with 403 unless it carries a custom X-HSE-CSRF header — closing the… | Ran `cargo test --test api dossier_upload` (6/6 passed, includes CSRF-adjacent import tests) and `cargo test --test api bodyless_mutating_post_requires_csrf_header` this pass — 1/1 passed, confirming POST /api/v1/scans/does-not-exist/cancel is 403'd without the header and not 403'd with it. Confirmed by reading routes/mod.rs that this same middleware, not per-handler code, is what protects scan_cancel/scan_create/scan_batch/etc. | VERIFIED |
@@ -807,26 +818,98 @@ $ cargo test --test api                                                   # full
 $ scripts/gate.sh                                                         # 17/17 executed checks PASS
 ```
 
+## Pass 7 findings
+
+Continuing the loop after Pass 6's PR merged: re-fetched `origin/main`,
+surveyed the ledger's remaining 17 `PARTIAL` + 14 `IMPLEMENTED_UNVERIFIED`
+rows fresh, and picked **REQ-API-SCAN-002** — real in-flight scan
+cancellation through the actual HTTP `scan_cancel` handler. This is the
+single most consequential remaining gap surveyed: a broken "stop this
+scan" path is a real safety/usability defect (an operator scanning a
+sensitive subject needs a working abort), not just a documentation or
+edge-case gap.
+
+The row's prior evidence was accurate but incomplete: `scan_cancel_not_found`
+covers the 404 branch, and `wall_time_budget_stops_promptly_and_preserves_
+findings` (`tests/halting.rs`) proves the DOWNSTREAM engine mechanism (a
+deadline expiring → `ScanStatus::Aborted`, findings preserved) — but that
+test drives `engine.run(...)` directly, bypassing HTTP entirely. Nothing
+had ever proven that hitting `POST /api/v1/scans/{id}/cancel` on a
+genuinely in-flight scan actually reaches the SAME `CancelHandle` the
+running scan holds and that the engine then finalizes and persists
+`"aborted"`, visible on a subsequent `GET`.
+
+Closing this properly required a scan that stays in-flight long enough to
+cancel mid-flight — the existing shared test harness
+(`tests/common/mod.rs`, used by `tests/api.rs`/`tests/halting.rs`/
+`tests/smoke.rs`) only builds its `AppState`/router with a fixed,
+near-instant `SyntheticModule`, with no way to inject a different module
+for one test. Rather than duplicate ~40 lines of `AppState` construction
+locally in `tests/api.rs` (the module-list argument is threaded through
+one small refactor, not copied), `test_app_with_store_and_state` was
+split into a new parameterized `test_app_with_modules_and_state(modules,
+suffix)` with the existing function now a thin default-module wrapper
+around it, plus a new `pub fn test_app_with_modules(modules, suffix)` —
+preserving every one of the ~100 existing call sites across all three test
+crates unchanged (confirmed: `cargo test --test halting`/`--test smoke`
+both still fully pass). Added `CancelCooperativeProbe` (`tests/common/
+mod.rs`), a module that blocks in `process()`, cooperatively polling
+`ctx.cancel.is_cancelled()` every ~100ms for up to 60s — mirroring
+`tests/halting.rs`'s own `SlowModule` exactly, the established pattern for
+"a module a test can genuinely interrupt mid-flight."
+
+New test `scan_cancel_stops_a_real_in_flight_scan_and_status_becomes_aborted`
+(`tests/api.rs`): builds a router with the probe module, `POST /scans`
+(202, genuinely in-flight — `spawn_scan` registers the real `CancelHandle`
+into `s.cancellations` synchronously before the response returns, so
+there's no race to seed), `POST /scans/{id}/cancel` (200,
+`"status":"cancelling"`), then polls `GET /scans/{id}` until
+`"status":"aborted"`. One mistake was caught and fixed before the test
+passed: the first attempt used `cancel-target@example.org` as the seed
+value, which `Target::validate`'s `is_placeholder_domain` check rejects
+(any label literally `"example"` is a reserved/placeholder domain per RFC
+2606) — switched to `contoso.com`, matching the domain the pre-existing
+`scan_create_accepts_valid_request` test already uses safely. Ran the new
+test 5 times consecutively for stability (all green, ~0.12s each — the
+cancellation resolves in roughly one poll cycle in practice, well inside
+the 5s budget the assertion loop allows).
+
+### Verification commands run (Pass 7, in order)
+
+```
+$ cargo check --test api --test halting --test smoke --features dep-cooldown  # harness refactor compiles clean everywhere
+$ cargo test --test api scan_cancel -- --nocapture                        # 2 passed (1 pre-existing + 1 new)
+$ for i in 1 2 3 4 5; do cargo test --test api scan_cancel_stops; done    # 5/5 green, ~0.12s each
+$ cargo test --test api                                                   # 126 passed, 0 failed
+$ cargo test --test halting                                               # 5 passed, 0 failed
+$ cargo test --test smoke                                                 # 57 passed, 0 failed
+$ cargo fmt --all
+$ cargo clippy --all-targets --features dep-cooldown -- -D warnings       # clean
+$ cargo test --lib --features dep-cooldown                                # full suite, 0 failed
+$ cargo test --test architecture                                          # 56 passed, 0 failed
+$ scripts/gate.sh                                                         # 17/17 executed checks PASS
+```
+
 ## Summary statistics
 
-| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 | Pass 6 |
-|---|---|---|---|---|---|---|
-| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 |
-| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 |
-| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* |
-| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 |
-| AMBIGUOUS | 1 | 0 | 0 | 0 | 0 | 0 |
-| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 |
-| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 |
-| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* |
-| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** |
+| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 | Pass 6 | Pass 7 |
+|---|---|---|---|---|---|---|---|
+| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 | 56 |
+| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 | 14 |
+| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* | 16 *(REQ-API-SCAN-002 fixed in Pass 7)* |
+| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 | 0 |
+| AMBIGUOUS | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 | 0 |
+| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* |
+| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** | **88** |
 
 Pass 4's `VERIFIED` count (53) is Pass 3's 50, plus the REQ-ENV-003 flip
 (+1), plus the two new one-row sections REQ-ENGINE-001/REQ-CORRELATOR-001
 (+2) — both landed `VERIFIED` on first pass, so no row moved through an
-intermediate status this time. Pass 5 and Pass 6 each added no new rows
+intermediate status this time. Passes 5, 6, and 7 each added no new rows
 (88 unchanged) — just one `PARTIAL` → `VERIFIED` flip apiece
-(REQ-API-MISC-003, then REQ-API-SCAN-007).
+(REQ-API-MISC-003, then REQ-API-SCAN-007, then REQ-API-SCAN-002).
 
 Breakdown by section: Module trait contract 14 rows (REQ-CORE-001..014), CLI
 surface 12 rows (REQ-CLI-001..012), `install.sh` 9 rows
