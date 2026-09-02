@@ -12,12 +12,12 @@
 //!   [`DOSSIER_MAX_FILES`] reclaims disk **without losing intelligence** — the
 //!   one on-disk artifact that both accumulates unboundedly and is safe to
 //!   bound. The newest files are always kept.
-//! * **Database** — the scan path already prunes the event log / raw-archive
-//!   and truncates the WAL on every scan (`core::engine::finalise`), so this is
-//!   a *safety net* for the operator who runs `serve` for weeks without ever
-//!   completing a scan: the same canonical [`EVENTS_MAX_ROWS`] /
-//!   [`RAW_ARCHIVE_MAX_ROWS`] bounds and a WAL `TRUNCATE` checkpoint, reusing
-//!   the storage primitives rather than duplicating a retention policy.
+//! * **Database** — the scan path already prunes the event log / module
+//!   result cache and truncates the WAL on every scan (`core::engine::finalise`),
+//!   so this is a *safety net* for the operator who runs `serve` for weeks
+//!   without ever completing a scan: the same canonical [`EVENTS_MAX_ROWS`] /
+//!   [`MODULE_RESULT_CACHE_MAX_ROWS`] bounds and a WAL `TRUNCATE` checkpoint,
+//!   reusing the storage primitives rather than duplicating a retention policy.
 //! * **Layout** — re-asserts the base dir and its known subdirectories exist
 //!   and are `0700`, the same tightening [`crate::util::paths`] applies on
 //!   demand, so an older install whose tree was created world-readable is
@@ -33,7 +33,7 @@
 use std::path::Path;
 
 use crate::core::error::Result;
-use crate::core::port::{EVENTS_MAX_ROWS, EVENTS_RETENTION_SECS, RAW_ARCHIVE_MAX_ROWS};
+use crate::core::port::{EVENTS_MAX_ROWS, EVENTS_RETENTION_SECS, MODULE_RESULT_CACHE_MAX_ROWS};
 
 /// Keep at most this many rendered dossier files (newest first). Dossiers are a
 /// regenerable cache of a stored scan, so the cap only bounds disk use — no
@@ -56,7 +56,7 @@ pub struct TidyReport {
     pub dossier_bytes_reclaimed: u64,
     /// Event-log rows pruned past the retention bound.
     pub events_pruned: usize,
-    /// Raw-archive rows pruned past the retention bound.
+    /// Module-result-cache rows pruned past the retention bound.
     pub archive_pruned: usize,
     /// Whether the WAL was checkpoint-truncated back to zero bytes.
     pub wal_truncated: bool,
@@ -101,7 +101,9 @@ pub fn run(dry_run: bool) -> Result<TidyReport> {
         report.events_pruned = store
             .prune_events(EVENTS_RETENTION_SECS, EVENTS_MAX_ROWS)
             .unwrap_or(0);
-        report.archive_pruned = store.prune_raw_archive(RAW_ARCHIVE_MAX_ROWS).unwrap_or(0);
+        report.archive_pruned = store
+            .prune_module_result_cache(MODULE_RESULT_CACHE_MAX_ROWS)
+            .unwrap_or(0);
         report.wal_truncated = store.checkpoint_truncate().is_ok();
     }
 
@@ -143,7 +145,7 @@ pub fn cmd_tidy(dry_run: bool, json: bool) -> Result<()> {
     );
     if !dry_run {
         println!("  event log       {} row(s) pruned", report.events_pruned);
-        println!("  raw archive     {} row(s) pruned", report.archive_pruned);
+        println!("  module cache    {} row(s) pruned", report.archive_pruned);
         println!(
             "  sqlite wal      {}",
             if report.wal_truncated {

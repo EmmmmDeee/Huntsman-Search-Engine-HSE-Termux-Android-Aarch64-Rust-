@@ -78,6 +78,12 @@ impl Module for OathnetPro {
         ModuleCost::Paid
     }
 
+    // Gates speculative fan-out on freshly-discovered entities; see the
+    // high-value-API gate in dispatch::module_skip_reason.
+    fn is_high_value_only(&self) -> bool {
+        true
+    }
+
     fn cache_ttl_secs(&self) -> u64 {
         // OathNet has HSE's SCARCEST paid quota (a handful of lookups per scan)
         // and its cursor-paginated breach search bills one lookup per page, so a

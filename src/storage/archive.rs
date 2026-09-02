@@ -1,5 +1,7 @@
 // Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN). Methods on `Store`
-// backed by the `raw_archive` table defined in SCHEMA_DDL.
+// backed by the `raw_archive` SQLite table defined in SCHEMA_DDL — a
+// TTL-pruned parsed-entity cache, distinct from the permanent filesystem
+// archive of raw paid-provider bytes at `crate::util::raw_archive`.
 
 use rusqlite::params;
 
@@ -28,15 +30,16 @@ impl Store {
         Ok(())
     }
 
-    /// Bound the `raw_archive` cache: delete every row past its per-entry TTL,
-    /// then cap the table to the newest `max_rows` by insertion time. Expired
-    /// rows are already ignored on lookup but were never deleted — over weeks of
-    /// scanning distinct `(module, target)` pairs the table (and the DB/WAL) grew
-    /// without bound on a low-disk device, the same way the `events` table would
-    /// without [`Store::prune_events`]. The cache is best-effort, so evicting a
+    /// Bound the `module_result_cache` (SQLite table `raw_archive`): delete
+    /// every row past its per-entry TTL, then cap the table to the newest
+    /// `max_rows` by insertion time. Expired rows are already ignored on
+    /// lookup but were never deleted — over weeks of scanning distinct
+    /// `(module, target)` pairs the table (and the DB/WAL) grew without bound
+    /// on a low-disk device, the same way the `events` table would without
+    /// [`Store::prune_events`]. The cache is best-effort, so evicting a
     /// still-fresh row past the cap only costs a re-query, never correctness.
     /// Returns the number of rows deleted. Called at each scan boundary + startup.
-    pub fn prune_raw_archive(&self, max_rows: usize) -> Result<usize> {
+    pub fn prune_module_result_cache(&self, max_rows: usize) -> Result<usize> {
         let conn = self.conn.lock();
         let expired = conn.execute(
             "DELETE FROM raw_archive WHERE archived_at + ttl_secs <= unixepoch()",

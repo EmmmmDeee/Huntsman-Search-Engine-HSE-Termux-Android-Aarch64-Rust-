@@ -1150,6 +1150,47 @@ fn add_evidence_appends_to_vec() {
     assert_eq!(e.evidence[1].source, "mod-b");
 }
 
+#[test]
+fn add_evidence_backfills_scan_id_from_entity() {
+    let mut e = email("a@b.com");
+    e.add_evidence(Evidence::new("mod-a", "found via breach db"));
+    assert_eq!(e.evidence[0].scan_id, "scan-test");
+}
+
+#[test]
+fn evidence_missing_scan_id_deserializes_to_empty_string() {
+    // Old persisted evidence JSON predates the `scan_id` field entirely.
+    let json = r#"{
+        "source": "mod-a",
+        "summary": "found via breach db",
+        "attributes": {},
+        "recorded_at": 1
+    }"#;
+    let ev: Evidence = serde_json::from_str(json).unwrap();
+    assert_eq!(ev.scan_id, "");
+}
+
+#[test]
+fn evidence_empty_scan_id_is_omitted_from_serialized_json() {
+    // `skip_serializing_if = "String::is_empty"`: a legacy/unattributed
+    // record must not start growing every future read/modify/write cycle
+    // with a `"scan_id":""` key that adds no information.
+    let ev = Evidence::new("mod-a", "found via breach db");
+    let json = serde_json::to_string(&ev).unwrap();
+    assert!(
+        !json.contains("scan_id"),
+        "an empty scan_id must be omitted from the serialized form: {json}"
+    );
+
+    let mut stamped = ev;
+    stamped.scan_id = "scan-real".to_string();
+    let json = serde_json::to_string(&stamped).unwrap();
+    assert!(
+        json.contains(r#""scan_id":"scan-real""#),
+        "a non-empty scan_id must still be serialized: {json}"
+    );
+}
+
 // ── Evidence::new ───────────────────────────────────────────────────────
 
 #[test]

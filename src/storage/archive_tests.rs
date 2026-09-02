@@ -65,7 +65,7 @@ fn prune_deletes_expired_rows_and_caps_to_newest() {
 
     // Cap to the newest 2 fresh rows: prune must delete the expired X AND one
     // excess fresh row (3 fresh − cap 2 = 1), never more.
-    let pruned = store.prune_raw_archive(2).expect("prune");
+    let pruned = store.prune_module_result_cache(2).expect("prune");
     assert_eq!(pruned, 2, "one expired + one excess row deleted");
 
     // The expired entry is gone regardless of which fresh rows the cap kept.
