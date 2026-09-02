@@ -339,6 +339,21 @@ pub(super) fn module_skip_reason(
     if opts.free_only && !matches!(module.cost(), ModuleCost::Free) {
         return Some("requires key/payment");
     }
+    // Cost-budget eligibility gate — checked BEFORE any ranking, per the
+    // provider-capability directive: a finite monetary budget must never let
+    // a paid/enterprise provider with an unknown per-request cost dispatch
+    // silently. UNKNOWN cost is not FREE cost. No-op (returns `false`
+    // immediately) unless the operator has actually set `max_cost_usd`.
+    if crate::core::module::unknown_cost_paid_provider_blocked(
+        &module.provider_descriptor(),
+        opts.effective_max_cost_usd(),
+        opts.allow_unknown_cost_dispatch,
+    ) {
+        return Some(
+            "unknown-cost paid provider blocked by active cost budget — set \
+             allow_unknown_cost_dispatch to override",
+        );
+    }
     if opts.passive_only && !module.is_passive() {
         return Some("not passive");
     }

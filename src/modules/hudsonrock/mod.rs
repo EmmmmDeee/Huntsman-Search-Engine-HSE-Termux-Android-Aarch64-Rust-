@@ -114,6 +114,18 @@ impl Module for HudsonRock {
         KINDS
     }
 
+    fn provider_descriptor(&self) -> crate::core::module::ProviderDescriptor {
+        crate::core::module::ProviderDescriptor {
+            // Stealer logs are high-fidelity — actual malware exfiltration
+            // records, not a compiled/aggregated corpus (see BASE_CONFIDENCE's
+            // own doc comment above) — so this sits above the 0.5 neutral
+            // default other modules get by default.
+            provenance_quality_prior: 0.75,
+            reliability_prior: 0.75,
+            ..crate::core::module::derive_default_provider_descriptor(self)
+        }
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         // Single network request with no per-request timeout; the 3s default
         // would kill a slow-but-connected response as a spurious "timeout".

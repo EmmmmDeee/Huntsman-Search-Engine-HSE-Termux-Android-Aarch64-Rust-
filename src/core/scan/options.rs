@@ -223,6 +223,25 @@ pub struct ScanOptions {
     /// is enforced in `engine::dispatch::module_skip_reason` on every round.
     #[serde(default)]
     pub allow_live_sensors: bool,
+
+    // ── Provider cost budget (v1.4+) ────────────────────────────────────────
+    /// A finite monetary budget (USD) for this scan. `None` (the default) is
+    /// unbounded — no cost-based gating applies. When set, a paid/enterprise
+    /// provider whose [`crate::core::module::ProviderDescriptor::cost_model`]
+    /// is `Unknown` is blocked from dispatch (see
+    /// `crate::core::engine::dispatch::module_skip_reason`) unless
+    /// [`allow_unknown_cost_dispatch`](Self::allow_unknown_cost_dispatch) is
+    /// also set — an unknown cost is never treated as a free one.
+    #[serde(default)]
+    pub max_cost_usd: Option<f64>,
+
+    /// Explicit operator opt-in to dispatch a paid/enterprise provider whose
+    /// per-request cost is unknown, even while
+    /// [`max_cost_usd`](Self::max_cost_usd) is set. **Off by default** — a
+    /// finite budget with an unconfigured provider cost is the one case this
+    /// gate exists to catch.
+    #[serde(default)]
+    pub allow_unknown_cost_dispatch: bool,
 }
 
 /// How the engine orders expansion candidates within a round.
@@ -465,6 +484,16 @@ impl ScanOptions {
     pub fn effective_min_marginal_yield(&self) -> Option<f64> {
         self.min_marginal_yield.filter(|v| v.is_finite())
     }
+
+    /// The effective monetary budget: `max_cost_usd` with a non-finite or
+    /// negative value coerced to `None` (no budget), guarding the same
+    /// NaN/negative-comparison-inversion class as the other floors — a
+    /// negative or NaN "budget" must not silently disable cost gating by
+    /// comparing false against every real cost.
+    #[must_use]
+    pub fn effective_max_cost_usd(&self) -> Option<f64> {
+        self.max_cost_usd.filter(|v| v.is_finite() && *v >= 0.0)
+    }
 }
 
 impl Default for ScanOptions {
@@ -526,6 +555,10 @@ impl Default for ScanOptions {
             gate_speculative: false,
             // Live device sensors are radar-only: never on a default/manual scan.
             allow_live_sensors: false,
+            // Unbounded by default — no cost-based gating unless the operator
+            // opts in to a finite budget.
+            max_cost_usd: None,
+            allow_unknown_cost_dispatch: false,
         }
     }
 }

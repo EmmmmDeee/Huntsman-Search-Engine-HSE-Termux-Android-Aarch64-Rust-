@@ -15,8 +15,8 @@ use huntsman_search_engine::core::{
 };
 
 use common::{
-    CancelCooperativeProbe, test_app, test_app_exposed, test_app_with_modules, test_app_with_state,
-    test_app_with_store,
+    CancelCooperativeProbe, SyntheticModule, test_app, test_app_exposed, test_app_with_modules,
+    test_app_with_state, test_app_with_store,
 };
 
 /// Parse a response body into a `serde_json::Value`.
@@ -213,6 +213,47 @@ async fn modules_list_returns_array() {
     assert!(
         first.get("accepts").is_some(),
         "every module entry must have an accepts array"
+    );
+    // Provider capability + economics descriptor (docs/REQUIREMENTS_LEDGER.md
+    // Section 11): must be present on every entry, and — since this handler
+    // is now built from `Module::info()`, the same struct the CLI's
+    // `hse modules --json` serializes — every field on it must exactly match
+    // what the registry's own `info()` call for that module returns, proving
+    // the API can no longer independently drift from the canonical source.
+    assert!(
+        first.get("attack_techniques").is_some(),
+        "every module entry must have an attack_techniques array (was missing \
+         from this handler before it was rebuilt on Module::info())"
+    );
+    let provider = first
+        .get("provider")
+        .expect("every module entry must have a provider descriptor");
+    assert!(provider.get("access_class").is_some());
+    assert!(provider.get("escalation_band").is_some());
+    assert!(provider.get("cost_model").is_some());
+
+    // `test_app("modules")` runs a single `SyntheticModule` (not the
+    // production registry), so compare directly against that module's own
+    // `Module::info()` — same principle as a registry lookup would prove,
+    // without depending on which real module the production registry
+    // happens to expose at index 0.
+    use huntsman_search_engine::core::module::Module as _;
+    let expected = SyntheticModule.info();
+    assert_eq!(first["name"], expected.name);
+    let expected_provider =
+        serde_json::to_value(&expected.provider).expect("provider descriptor serializes");
+    assert_eq!(
+        provider, &expected_provider,
+        "API's provider descriptor must match SyntheticModule's own \
+         Module::info().provider exactly — same source of truth, no independent copy"
+    );
+    assert_eq!(
+        first["attack_techniques"],
+        serde_json::to_value(expected.attack_techniques).unwrap(),
+    );
+    assert_eq!(
+        first["produces"],
+        serde_json::to_value(expected.produces).unwrap(),
     );
 }
 

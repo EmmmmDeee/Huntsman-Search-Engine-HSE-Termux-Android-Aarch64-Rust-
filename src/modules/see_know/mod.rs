@@ -244,6 +244,23 @@ impl Module for SeekNow {
         KINDS
     }
 
+    fn provider_descriptor(&self) -> crate::core::module::ProviderDescriptor {
+        crate::core::module::ProviderDescriptor {
+            // Backed by a negotiated enterprise budget (`util::see_know::
+            // enterprise_config::ENTERPRISE`), not a self-serve paid plan.
+            access_class: crate::core::module::AccessClass::Enterprise,
+            escalation_band: crate::core::module::EscalationBand::L5Enterprise,
+            // Billed in provider credits with a real, per-endpoint cost table
+            // (`util::see_know::config::ENDPOINT_COSTS`, 0.0-5.0+ credits/call)
+            // — a genuine cost model exists, just not a single static USD
+            // figure (that needs an operator-configured $/credit rate via
+            // `HSE_PROVIDER_COST_SEE_KNOW`, never a compiled-in vendor price).
+            cost_model: crate::core::module::CostModel::Estimated,
+            quota_unit: Some("credit"),
+            ..crate::core::module::derive_default_provider_descriptor(self)
+        }
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,

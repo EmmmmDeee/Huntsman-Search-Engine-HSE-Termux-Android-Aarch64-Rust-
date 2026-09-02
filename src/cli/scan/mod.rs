@@ -290,6 +290,11 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         // `hse scan` is a manual scan: the live device sensors stay off (they are
         // `hse radar`-only). No CLI flag enables them here by design.
         allow_live_sensors: false,
+        // No CLI flag yet for either — unbounded/no-op by default, matching
+        // `ScanOptions::default()`. A future `--max-cost-usd`/
+        // `--allow-unknown-cost` pair can surface these directly.
+        max_cost_usd: None,
+        allow_unknown_cost_dispatch: false,
     }
     .clamp_depth();
 
