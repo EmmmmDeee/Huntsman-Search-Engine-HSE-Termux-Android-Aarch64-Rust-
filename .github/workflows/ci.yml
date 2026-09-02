@@ -224,8 +224,15 @@ jobs:
       - name: Setup Android NDK aarch64 cross-compile env
         uses: ./.github/actions/setup-ndk-aarch64
 
+      # All 4 bins with no `required-features` gate (everything but
+      # `dep-cooldown`, which install.sh never builds on-device either) —
+      # matching install.sh's on-device `cargo build` exactly (no `--bin`
+      # filter there, so Cargo builds every default-run binary). Building
+      # only `hse` here left `hse-ai-daemon`/`gen-oui`/`architecture-audit`
+      # cross-compile-unverified for the one target a real install actually
+      # builds them on.
       - name: Build (aarch64-linux-android)
-        run: cargo build --locked --lib --bin hse --target aarch64-linux-android
+        run: cargo build --locked --lib --bin hse --bin hse-ai-daemon --bin gen-oui --bin architecture-audit --target aarch64-linux-android
 
       # Compile-only (never executed — ubuntu-latest is x86_64, so an
       # aarch64-linux-android test binary can't run here without real device
@@ -234,11 +241,11 @@ jobs:
       # can't: test code gated on `#[cfg(target_arch = "aarch64")]`, or a
       # dependency whose TEST harness (as opposed to its library code) fails
       # to cross-compile for this target. Scoped to match the build step
-      # above (lib + the hse binary) plus the tests/ integration suite —
+      # above (every default bin) plus the tests/ integration suite —
       # deliberately excludes --benches/--doc, which add cross-compile cost
       # for artifacts this job has no way to execute anyway.
       - name: Compile tests (aarch64-linux-android, not executed)
-        run: cargo test --locked --no-run --lib --bin hse --tests --target aarch64-linux-android
+        run: cargo test --locked --no-run --lib --bin hse --bin hse-ai-daemon --bin gen-oui --bin architecture-audit --tests --target aarch64-linux-android
 
   install-script:
     name: install.sh syntax (bash + shellcheck)
