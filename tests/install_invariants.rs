@@ -111,6 +111,7 @@ fn play_store_termux_is_detected_and_rejected_before_any_package_work() {
     let before: String = script
         .lines()
         .take(detect_line)
+        .filter(|l| !is_comment(l))
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
