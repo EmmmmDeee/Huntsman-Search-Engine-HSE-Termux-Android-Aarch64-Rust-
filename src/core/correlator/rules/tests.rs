@@ -422,3 +422,33 @@ use crate::core::entity::Evidence;
         );
         assert_eq!(results[0].rule_id, "AU-123");
     }
+
+#[test]
+fn au_108_counts_every_platform_breach_rich_mints() {
+    // github + tiktok are minted by breach_rich as `platform:handle` breach
+    // Usernames, but AU-108's own hand-copied platform list stopped at snapchat,
+    // so two genuinely distinct breach-listed platforms produced no footprint.
+    // Both consumers now read `core::breach_platforms::BREACH_SOCIAL_PLATFORMS`.
+    let mut gh = Entity::new(EntityKind::Username, "github:alice123", 0.6, "scan-au108");
+    gh.tag("breach");
+    let mut tt = Entity::new(EntityKind::Username, "tiktok:alice123", 0.6, "scan-au108");
+    tt.tag("breach");
+    let results = super::rule_au_108_breach_social_footprint(&RuleContext::new(&[gh, tt]), "scan-au108", 0);
+    assert_eq!(results.len(), 1, "two distinct breach-listed platforms fire AU-108");
+    assert!(results[0].description.contains("github") && results[0].description.contains("tiktok"));
+    // Every platform breach_rich mints is one AU-108 recognises: no drift by construction.
+    for plat in crate::core::breach_platforms::BREACH_SOCIAL_PLATFORMS {
+        let mut a = Entity::new(EntityKind::Username, format!("{plat}:someone"), 0.6, "s");
+        a.tag("breach");
+        let mut b = Entity::new(EntityKind::Username, "telegram:someone", 0.6, "s");
+        b.tag("breach");
+        if *plat == "telegram" {
+            continue;
+        }
+        assert_eq!(
+            super::rule_au_108_breach_social_footprint(&RuleContext::new(&[a, b]), "s", 0).len(),
+            1,
+            "{plat} must count toward the footprint"
+        );
+    }
+}

@@ -6,6 +6,7 @@
 pub mod attack;
 pub mod benchmark;
 pub mod breach_consensus;
+pub mod breach_platforms;
 pub mod breach_sweep;
 pub mod cancel;
 pub mod classifier;

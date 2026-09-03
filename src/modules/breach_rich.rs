@@ -433,24 +433,14 @@ pub fn extract_rich_detail(
     }
 
     // ── Extra social handles → platform-prefixed Username pivots. ──
-    for (k, plat) in [
-        ("telegram", "telegram"),
-        ("skype", "skype"),
-        ("facebook", "facebook"),
-        ("instagram", "instagram"),
-        ("twitter", "twitter"),
-        ("linkedin", "linkedin"),
-        ("vk", "vk"),
-        ("snapchat", "snapchat"),
-        // github/tiktok/reddit are real handle columns in both providers' breach
-        // records; without these they fell to the catch-all as opaque
-        // `Other("github")` junk nodes instead of first-class Username pivots the
-        // github_user/reddit_user/etc. modules can resolve. Runs for SeekNow
-        // (every record) and OathNet's stealer path at zero extra API cost.
-        ("github", "github"),
-        ("tiktok", "tiktok"),
-        ("reddit", "reddit"),
-    ] {
+    // The record column and the minted value prefix are the same word, and the
+    // list is shared with AU-108 (`core::breach_platforms`) so the rule that
+    // counts these platforms can never fall behind the minting again. (github/
+    // tiktok/reddit are real handle columns in both providers' records; before
+    // they were listed they fell to the catch-all as opaque `Other("github")`
+    // junk nodes instead of first-class Username pivots.)
+    for &plat in crate::core::breach_platforms::BREACH_SOCIAL_PLATFORMS {
+        let k = plat;
         if let Some(h) = val_str(item, k)
             && h.len() >= 2
             && !is_absent_marker(&h)

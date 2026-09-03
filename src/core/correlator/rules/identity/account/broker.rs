@@ -251,20 +251,13 @@ pub(in crate::core::correlator) fn rule_au_088_authoritative_register_confirmati
     )]
 }
 
-/// Platforms whose `platform:handle` Username nodes `breach_rich` mints — kept in
-/// lockstep with `breach_rich`'s extra-social-handle list (`breach_rich.rs`). A
-/// breach-listed account on one of these counts toward the cross-platform
-/// footprint; any other value prefix (an epieos `google:<id>`, …) is ignored.
-const BREACH_SOCIAL_PLATFORMS: &[&str] = &[
-    "telegram",
-    "skype",
-    "facebook",
-    "instagram",
-    "twitter",
-    "linkedin",
-    "vk",
-    "snapchat",
-];
+/// Platforms whose `platform:handle` Username nodes `breach_rich` mints — the
+/// SAME constant `breach_rich` iterates (`core::breach_platforms`), so the two
+/// cannot drift: this rule was blind to `github`/`tiktok`/`reddit` for as long
+/// as it kept its own copy. A breach-listed account on one of these counts
+/// toward the cross-platform footprint; any other value prefix (an epieos
+/// `google:<id>`, …) is ignored.
+use crate::core::breach_platforms::BREACH_SOCIAL_PLATFORMS;
 
 /// AU-108 — Breach-listed cross-platform handle footprint.
 ///
