@@ -1543,11 +1543,17 @@ $ scripts/doc_coverage.sh
 $ scripts/gate.sh
 ```
 
-## 13. Test-harness isolation (`src/util/paths.rs`, `tests/common/`)
+## 13. Test-harness isolation and test integrity (`src/util/paths.rs`, `tests/common/`, the architecture tripwires)
 
 | ID | Behavior | Inputs | Outputs | Side effects | Failure behavior | Implementation location | Tests covering it | Runtime verification evidence | Status |
 |---|---|---|---|---|---|---|---|---|---|
 | REQ-TEST-001 (**new, Pass 14**) | No test — unit or integration — writes into the developer's real `~/.huntsman`. Unit tests use the library's `cfg(test)` switch; integration crates (where `cfg!(test)` is `false` in the linked library) go through `paths::isolate_for_tests()`, a `OnceLock` base-dir override (no `unsafe` env mutation — the crate is `#![forbid(unsafe_code)]`) called by every `tests/common` harness constructor via `tmp_db`/`tmp_dir`; `cli_seed_validation`'s spawned binary gets `HOME` set like its sibling helpers. The override only moves the base path, so `huntsman_dir`'s `0700` creation and the single-base derivation of `data_file`/`subdir` are untouched, and production code never calls it. | n/a | per-process `huntsman-test-home-<pid>/.huntsman` under the OS temp dir | temp dir only | n/a | `src/util/paths.rs` (`isolate_for_tests`), `tests/common/mod.rs` (`isolate_home`), `tests/cli_seed_validation.rs` (`run`) | `production_code_never_redirects_the_data_dir` (`tests/architecture_parts/architecture_part3.rs`) | Baseline artefact observed in this environment after `cargo test --test api`: the real `~/.huntsman/module_stats.json` held 102 synthetic `seed` scans (the input to `hse scan --adaptive`) and `settings.json` had been overwritten with `{"feature.depth_decay": false}` by `settings_toggles_put_succeeds_and_persists_the_flip`. With the real directory moved aside, `cargo test --test api --test smoke --test cli_seed_validation` (129/58/9 pass) no longer recreates it; the smoke key-chaining fixture's fake `shodan` key now lands in `/tmp/huntsman-test-home-<pid>/.huntsman/key_pool.json`. | VERIFIED |
+
+| REQ-TEST-002 (**new, Pass 14**) | The architecture lint `modules_do_not_collapse_a_non_2xx_into_an_empty_result` scans BOTH guard shapes — the inline `if !resp.status().is_success()` and the bound-variable `let status = resp.status(); if !status.is_success()` — with a vacuity floor just below the in-tree count. | n/a | n/a | none | fails the gate if any guarded block `return Ok(`s, or if fewer than 35 guards are found | `tests/architecture_parts/architecture_part7.rs` | itself | The trigger was `status().is_success()` only; 17 in-tree guards use the bound-variable form and were never scanned (a collapse written that way shipped green). Widened trigger scans 39 guards (measured with a probe, then removed); floor raised 20 → 35; all 39 comply. `cargo test --test architecture modules_do_not_collapse` passes. | VERIFIED |
+| REQ-TEST-003 (**new, Pass 14**) | `non_huntsman_env_reads_are_known` sees every shape a non-`HUNTSMAN_` knob is read through — direct `env::var("…")`, the typed wrappers `env_i64`/`resolve_env_u64`, a typed constant (`const X: &str = "HSE_…"`) read by identifier, and clap `env = "HSE_…"` attributes — and `KNOWN_HSE_KNOBS` lists every one with its consumer; the anti-rot check still fails on a listed knob nothing reads. | n/a | n/a | none | fails the gate on an unlisted read or a stale entry | `tests/architecture_parts/architecture_part3.rs`; `src/core/module/provider.rs` (`PROVIDER_COST_ENV_PREFIX`, so the `HSE_PROVIDER_COST_<ID>` family is a visible constant, not an inline `format!` literal) | itself | Four live operator knobs — `HSE_SQLITE_CACHE_KB`, `HSE_SQLITE_MMAP` (storage `env_i64`), `HSE_RESOURCE_PROFILE` (typed const), `HSE_PROVIDER_COST_*` (`format!`) — were invisible to the scanner and absent from the list; `HSE_BIND`/`HSE_AUTH_TOKEN` (clap) were documented as deliberately unlisted. All six are now collected and listed; the test passes in both directions (no unknown, no stale). | VERIFIED |
+| REQ-TEST-004 (**new, Pass 14**) | Every `install.sh` heredoc whose body touches the shared Termux wake-lock (`hse_wakelock_*` / `termux-wake-*`) is in `WAKE_LOCK_WRAPPERS` (and, if long-running, `WAKE_LOCK_MANAGERS`), so a new generated program cannot ship outside the no-raw-unlock / registered-acquire / actively-manages guards. | n/a | n/a | none | fails the gate naming the unguarded heredoc | `tests/install_invariants.rs` (`every_wake_lock_touching_heredoc_is_guarded`; `AIW` added to both lists and to the hardcoded-prefix list) | itself | The `hse-ai` wrapper (`<<'AIW'`, `install.sh:1732`, which acquires the refcounted lock) post-dated the hand-maintained lists and sat outside every guard; its body is compliant, so the green was luck. Now guarded and derived; `cargo test --test install_invariants` — 7/7. | VERIFIED |
+| REQ-TEST-005 (**new, Pass 14**) | No production code under `src/ai/` (test modules stripped) constructs an entity, evidence record, relation or correlation or writes one to the store — an Ollama model may summarise a scan (`scan_analysis`) but never add to the evidentiary graph (RULE 1). The crate-level AI guard states exactly what it enforces (no third-party inference/vector crates in the runtime graph) and names this lock as the complement, instead of claiming "no AI/LLM dependency at runtime; AI is a development-time accelerator only" while `src/ai/ollama.rs` is a runtime LLM client. | n/a | n/a | none | fails the gate naming the offending `src/ai` line | `tests/architecture_parts/architecture_part4.rs` (`llm_output_never_becomes_a_finding`; `runtime_carries_no_ai_ml_inference_dependency` doc + failure text corrected) | itself | `cargo test --test architecture -- runtime_carries_no_ai llm_output_never` — both pass; `src/ai` production code's only store write is `upsert_scan_analysis`. | VERIFIED |
+| REQ-TEST-006 (**new, Pass 14**) | `pool_keys_fill_empty_env_slots` asserts the mechanism its name promises — `merge_pool_into_env` fills an empty `HUNTSMAN_SHODAN_KEY` slot from the pool and never overwrites an operator-configured value — over a fresh local `KeyPool`, never the process-global pool. | n/a | n/a | none | n/a | `src/util/keys/tests.rs` | itself | The test injected a fake Active `shodan` key into `global_pool()` and then asserted nothing (`let _ = map;`) — it could not fail if `merge_pool_into_env` were deleted, and every other test consulting `next_key("shodan")` saw a phantom key depending on scheduling order. `cargo test --lib util::keys::tests::pool_keys` passes. | VERIFIED |
 
 ---
 
@@ -1615,6 +1621,13 @@ baseline:
 10. **Stale SPA/wasm after every in-place upgrade** (REQ-API-ROUTE-008) —
     the `/static` ETag was the crate version, which the `main`-tracking
     upgrade path never bumps; it is now a per-asset content hash.
+11. **Five misleading tests** (REQ-TEST-002..006): a lint blind to half the
+    guard shape it polices, an env-knob scanner blind to wrappers and
+    constants (four live knobs undocumented), a wake-lock guard that never
+    saw the `hse-ai` wrapper, an AI-independence test whose stated
+    invariant the product does not satisfy (now says what it enforces, plus
+    a RULE-1 lock that LLM output never becomes a finding), and a key-pool
+    test that asserted nothing while polluting the global pool.
 
 Because the browser build embeds hse-core, the first fix changed
 `wasm-ui/pkg/hse_wasm_ui_bg.wasm` and CI's byte-exact drift check failed on
@@ -1638,8 +1651,12 @@ invalid-key latch and its silent false-negative path, the FOFA module's
 unverified response schema (the provider's spec was not reachable), the
 event-prune of still-running scans, the SPA's wasm-init failure path, the
 `--profile`/`--full` precedence question (documented as intended overlay
-behaviour, so not a defect on current evidence), and the identity-scan email
-admission gate reusing the broad `INFRA_DOMAINS` list.
+behaviour, so not a defect on current evidence), the identity-scan email
+admission gate reusing the broad `INFRA_DOMAINS` list, and the
+`running`/`pending` rows a killed process leaves behind (real, but the
+only safe criterion — the scan's own wall-time budget — defaults to
+unbounded, and a blanket startup reset would abort a sibling process's
+live scan).
 
 ### Verification commands run (Pass 14, in order)
 
@@ -1666,7 +1683,7 @@ $ cargo test --lib --features dep-cooldown -- modules::wigle util::wigle util::o
 
 | Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 | Pass 6 | Pass 7 | Pass 8 | Pass 9 | Pass 10 | Pass 11 | Pass 12 | Pass 13 | Pass 14 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 | 56 | 58 | 59 *(REQ-API-SCAN-006 fixed in Pass 9)* | 62 *(REQ-CLI-001, REQ-CLI-007 flipped from PARTIAL; REQ-STORAGE-001 new)* | 64 *(REQ-ROI-001, REQ-ROI-003 new)* | 69 *(REQ-PROVIDER-001..005 new, all landed VERIFIED)* | 72 *(REQ-ROI-004..006 new, all landed VERIFIED)* | 81 *(REQ-API-SCAN-004 flipped from PARTIAL; REQ-CORE-015, REQ-CLI-013, REQ-API-AUTH-005, REQ-API-ROUTE-008, REQ-API-EXPORT-007, REQ-STORAGE-002, REQ-STORAGE-003, REQ-TEST-001 new, all landed VERIFIED)* |
+| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 | 56 | 58 | 59 *(REQ-API-SCAN-006 fixed in Pass 9)* | 62 *(REQ-CLI-001, REQ-CLI-007 flipped from PARTIAL; REQ-STORAGE-001 new)* | 64 *(REQ-ROI-001, REQ-ROI-003 new)* | 69 *(REQ-PROVIDER-001..005 new, all landed VERIFIED)* | 72 *(REQ-ROI-004..006 new, all landed VERIFIED)* | 86 *(REQ-API-SCAN-004 flipped from PARTIAL; REQ-CORE-015, REQ-CLI-013, REQ-API-AUTH-005, REQ-API-ROUTE-008, REQ-API-EXPORT-007, REQ-STORAGE-002, REQ-STORAGE-003, REQ-TEST-001..006 new, all landed VERIFIED)* |
 | IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 | 14 | 13 *(REQ-INSTALL-001 out, fixed; REQ-INSTALL-010 in as new then confirmed VERIFIED by this PR's own CI run before merge — net -1)* | 13 | 13 | 14 *(REQ-ROI-002 new)* | 14 | 14 | 16 *(REQ-PROVIDER-006, REQ-PROVIDER-007 new — contract verified against the authoritative spec, live call unexercised without credentials)* |
 | PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* | 16 *(REQ-API-SCAN-002 fixed in Pass 7)* | 16 | 16 | 14 *(REQ-CLI-001, REQ-CLI-007 out, fixed; REQ-ENV-005 stays, evidence strengthened)* | 14 | 14 | 14 | 13 *(REQ-API-SCAN-004 out, fixed)* |
 | MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
@@ -1674,7 +1691,7 @@ $ cargo test --lib --features dep-cooldown -- modules::wigle util::wigle util::o
 | OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
 | BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 0 *(REQ-API-SCAN-006 fixed in Pass 9)* | 0 | 0 | 0 | 0 | 0 |
-| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** | **88** | **89** | **89** | **90** *(REQ-STORAGE-001, new Section 9)* | **93** *(REQ-ROI-001/002/003, new Section 10)* | **98** *(REQ-PROVIDER-001..005, new Section 11)* | **101** *(REQ-ROI-004..006, new Section 12)* | **111** *(10 new rows: REQ-CORE-015, REQ-CLI-013, REQ-API-AUTH-005, REQ-API-ROUTE-008, REQ-API-EXPORT-007, REQ-STORAGE-002/003, new Section 13 REQ-TEST-001, new Section 14 REQ-PROVIDER-006/007)* |
+| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** | **88** | **89** | **89** | **90** *(REQ-STORAGE-001, new Section 9)* | **93** *(REQ-ROI-001/002/003, new Section 10)* | **98** *(REQ-PROVIDER-001..005, new Section 11)* | **101** *(REQ-ROI-004..006, new Section 12)* | **116** *(15 new rows: REQ-CORE-015, REQ-CLI-013, REQ-API-AUTH-005, REQ-API-ROUTE-008, REQ-API-EXPORT-007, REQ-STORAGE-002/003, new Section 13 REQ-TEST-001..006, new Section 14 REQ-PROVIDER-006/007)* |
 
 Pass 4's `VERIFIED` count (53) is Pass 3's 50, plus the REQ-ENV-003 flip
 (+1), plus the two new one-row sections REQ-ENGINE-001/REQ-CORRELATOR-001
@@ -1703,14 +1720,14 @@ row moved through an intermediate status this time; the five new rows bring
 the total from 93 to 98. Pass 13's `VERIFIED` count (72) is Pass 12's 69,
 plus one new three-row section, REQ-ROI-004..006, all three landing
 `VERIFIED` on first pass (+3) — no row moved through an intermediate status
-this time; the three new rows bring the total from 98 to 101. Pass 14's `VERIFIED` count (81) is Pass 13's 72, plus the
+this time; the three new rows bring the total from 98 to 101. Pass 14's `VERIFIED` count (86) is Pass 13's 72, plus the
 REQ-API-SCAN-004 flip from `PARTIAL` (+1, so `PARTIAL` drops from 14 to 13),
-plus eight new rows landing `VERIFIED` on first pass (REQ-CORE-015,
+plus thirteen new rows landing `VERIFIED` on first pass (REQ-CORE-015,
 REQ-CLI-013, REQ-API-AUTH-005, REQ-API-ROUTE-008, REQ-API-EXPORT-007,
-REQ-STORAGE-002, REQ-STORAGE-003, REQ-TEST-001, +8); `IMPLEMENTED_UNVERIFIED` rises from 14 to
+REQ-STORAGE-002, REQ-STORAGE-003, REQ-TEST-001..006, +13); `IMPLEMENTED_UNVERIFIED` rises from 14 to
 16 (REQ-PROVIDER-006/007 — contract verified against the authoritative spec,
-live behaviour unexercised without credentials); the ten new rows bring the
-total from 101 to 111.
+live behaviour unexercised without credentials); the fifteen new rows bring the
+total from 101 to 116.
 
 Breakdown by section: Module trait contract 15 rows (REQ-CORE-001..015), CLI
 surface 13 rows (REQ-CLI-001..013), `install.sh` 10 rows
@@ -1722,9 +1739,9 @@ Correlator rule registry 1 row (REQ-CORRELATOR-001), Storage subsystem 3 rows
 (REQ-STORAGE-001..003), ROI-maximising expansion 3 rows
 (REQ-ROI-001..003), Provider capability + economics descriptor 5 rows
 (REQ-PROVIDER-001..005), Dispatch-utility explainability 3 rows
-(REQ-ROI-004..006), Test-harness isolation 1 row (REQ-TEST-001), Provider API
+(REQ-ROI-004..006), Test-harness isolation and test integrity 6 rows (REQ-TEST-001..006), Provider API
 contracts re-verified 2 rows (REQ-PROVIDER-006..007) —
-15+13+10+6+10+38+1+1+3+3+5+3+1+2 = 111, matching the total above.
+15+13+10+6+10+38+1+1+3+3+5+3+6+2 = 116, matching the total above.
 Some rows cite tests shared across sections (e.g. REQ-CORE-010 and
 REQ-README-009 both cite `every_module_maps_to_valid_attack_reconnaissance_techniques`),
 which is intentional — the two rows document the same underlying test from
