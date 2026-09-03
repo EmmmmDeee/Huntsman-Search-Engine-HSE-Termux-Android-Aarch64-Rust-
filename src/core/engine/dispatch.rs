@@ -854,6 +854,27 @@ impl super::ScanEngine {
         if !cx.opts.max_roi || !cx.opts.dispatch_utility {
             return;
         }
+        let utility =
+            Self::dispatch_utility(cx, module, target_sources, entity_confidence, dispatched);
+        self.emit(
+            cx.scan_id,
+            EventKind::DispatchUtilityComputed {
+                module: module.name().to_string(),
+                target_kind: cx.target.kind.canonical_str().to_string(),
+                target_value: cx.target.value.clone(),
+                final_utility: utility.final_utility,
+                explanation: utility.explanation,
+            },
+        );
+    }
+
+    fn dispatch_utility(
+        cx: &DispatchCx<'_>,
+        module: &dyn Module,
+        target_sources: usize,
+        entity_confidence: Option<f64>,
+        dispatched: &DispatchLog,
+    ) -> crate::core::roi::DispatchUtility {
         let descriptor = module.provider_descriptor();
         let cost_per_request_usd = match descriptor.cost_model {
             crate::core::module::CostModel::Free => Some(0.0),
@@ -877,17 +898,7 @@ impl super::ScanEngine {
             already_dispatched_this_module_target: dispatched
                 .contains(&dispatch_key(module.name(), cx.target)),
         };
-        let utility = crate::core::roi::compute_dispatch_utility(&inputs);
-        self.emit(
-            cx.scan_id,
-            EventKind::DispatchUtilityComputed {
-                module: module.name().to_string(),
-                target_kind: cx.target.kind.canonical_str().to_string(),
-                target_value: cx.target.value.clone(),
-                final_utility: utility.final_utility,
-                explanation: utility.explanation,
-            },
-        );
+        crate::core::roi::compute_dispatch_utility(&inputs)
     }
 
     /// Return this target's module indices in the configured static order, or
@@ -928,31 +939,12 @@ impl super::ScanEngine {
                         .is_none()
                         && !cx.quarantined.contains(module.name());
                     eligible.then(|| {
-                        let descriptor = module.provider_descriptor();
-                        let cost_per_request_usd = match descriptor.cost_model {
-                            crate::core::module::CostModel::Free => Some(0.0),
-                            crate::core::module::CostModel::Unknown => None,
-                            crate::core::module::CostModel::Exact
-                            | crate::core::module::CostModel::Estimated => {
-                                descriptor.cost_per_request
-                            }
-                        };
-                        crate::core::roi::compute_dispatch_utility(
-                            &crate::core::roi::DispatchUtilityInputs {
-                                source_count: u32::try_from(target_sources).unwrap_or(u32::MAX),
-                                entity_confidence,
-                                optionality_prior: descriptor.optionality_prior,
-                                novelty_prior: crate::core::convex::module_cascade(
-                                    module.produces(),
-                                    module.category(),
-                                ),
-                                reliability_prior: descriptor.reliability_prior,
-                                cost_per_request_usd,
-                                quota_remaining: module.quota_remaining(),
-                                configured_timeout_ms: module.constrained_timeout_ms(),
-                                already_dispatched_this_module_target: dispatched
-                                    .contains(&dispatch_key(module.name(), cx.target)),
-                            },
+                        Self::dispatch_utility(
+                            cx,
+                            &**module,
+                            target_sources,
+                            entity_confidence,
+                            dispatched,
                         )
                         .final_utility
                     })
