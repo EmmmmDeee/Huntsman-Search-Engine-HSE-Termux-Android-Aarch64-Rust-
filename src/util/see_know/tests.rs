@@ -1145,3 +1145,36 @@ fn deep_search_reuses_the_same_verified_request_body_contract_as_fast_search() {
          fast search uses — no independent, unverified body construction"
     );
 }
+
+#[test]
+fn credits_probe_reports_the_rejection_it_latched() {
+    // `hse doctor` prints the probe's cause and remedy; it must be the same
+    // `KeyRejection` the latch records, so a plan-lacking key is told to fix
+    // its plan and a bad key to swap it — never one generic text for both.
+    use super::budget::KeyRejection;
+    let _guard = BUDGET_TEST_LOCK.lock();
+    for (body, expected) in [
+        (
+            r#"{"error":"invalid_api_key","message":"Invalid API key"}"#,
+            KeyRejection::InvalidKey,
+        ),
+        (
+            r#"{"error":"plan_required","message":"Upgrade required"}"#,
+            KeyRejection::PlanRequired,
+        ),
+    ] {
+        reset_budget();
+        match classify_credits_probe(Ok(body.to_string())) {
+            CreditsProbe::InvalidKey(rejection) => {
+                assert_eq!(rejection, expected, "{body}");
+                assert_eq!(crate::util::see_know::key_rejection(), Some(expected));
+                assert!(rejection.guidance().contains(match expected {
+                    KeyRejection::InvalidKey => "invalid_api_key",
+                    KeyRejection::PlanRequired => "plan_required",
+                }));
+            }
+            other => panic!("{body} must classify as a key rejection, got {other:?}"),
+        }
+    }
+    reset_budget();
+}

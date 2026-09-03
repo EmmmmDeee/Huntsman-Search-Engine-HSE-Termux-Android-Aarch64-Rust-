@@ -441,10 +441,10 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
             remaining,
             daily_limit: None,
         } => println!("  credits remaining: {remaining} (daily limit not reported by this plan)"),
-        CreditsProbe::InvalidKey => println!(
-            "  INVALID — the configured key was rejected. Set a valid, plan-enabled key \
-             via HUNTSMAN_SEEKNOW_KEY or the UI Settings panel."
-        ),
+        // The cause and remedy come from the rejection itself — the ONE text
+        // the scan-time warning and the per-seed module error also use — so a
+        // `plan_required` key is told to fix its plan, not to swap the key.
+        CreditsProbe::InvalidKey(rejection) => println!("  INVALID — {}.", rejection.guidance()),
         // The observed live failure: `curl exited 6` (could not resolve host).
         // Report it as a transport/DNS problem — NOT a key problem — with curl's
         // own detail and the concrete next steps, so an on-device operator can

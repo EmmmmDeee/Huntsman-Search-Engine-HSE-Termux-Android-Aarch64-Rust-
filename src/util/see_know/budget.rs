@@ -281,11 +281,13 @@ pub fn is_key_invalid() -> bool {
     key_rejection().is_some()
 }
 
-/// Latch the rejection `body` describes. `pub(crate)` only so
+/// Latch the rejection `body` describes and return it, so the caller that
+/// saw the body (the `/credits` probe behind `hse doctor`) can report the
+/// same cause and remedy the latch warns with. `pub(crate)` only so
 /// `modules::see_know::tests` can latch one directly (re-exported under
 /// `#[cfg(test)]` from the parent module); production callers are this
-/// module's own client.
-pub(crate) fn mark_key_invalid(body: &str) {
+/// module's own client and endpoints.
+pub(crate) fn mark_key_invalid(body: &str) -> KeyRejection {
     let rejection = KeyRejection::from_body(body);
     // Emit the actionable guidance exactly once (the clear→latched
     // transition), naming the actual cause so the operator knows whether to
@@ -296,4 +298,5 @@ pub(crate) fn mark_key_invalid(body: &str) {
             rejection.guidance()
         );
     }
+    rejection
 }
