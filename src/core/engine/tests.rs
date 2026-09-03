@@ -4120,7 +4120,7 @@ async fn convex_budget_dispatches_the_highest_query_value_module_first() {
 
     // Run one sequential, max_entities=1 dispatch and return the single surviving
     // entity value — i.e. which module the engine fired first.
-    async fn survivor(convex_budget: bool) -> String {
+    async fn survivor(convex_budget: bool, dispatch_utility: bool) -> String {
         let modules: Vec<Arc<dyn Module>> = vec![
             Arc::new(ConvexProbe {
                 name: "hi_prio_paid_terminal",
@@ -4149,6 +4149,8 @@ async fn convex_budget_dispatches_the_highest_query_value_module_first() {
             max_concurrent: 0,
             max_entities: Some(1),
             convex_budget,
+            max_roi: dispatch_utility,
+            dispatch_utility,
             ..Default::default()
         };
         let mut ctx = ModuleContext {
@@ -4191,16 +4193,23 @@ async fn convex_budget_dispatches_the_highest_query_value_module_first() {
 
     // Flag OFF: established priority order — the priority-90 module wins.
     assert_eq!(
-        survivor(false).await,
+        survivor(false, false).await,
         "terminal_hit",
         "with convex_budget off the highest-PRIORITY module must dispatch first"
     );
     // Flag ON: convex order — the cheap, high-optionality query wins despite its
     // far lower priority.
     assert_eq!(
-        survivor(true).await,
+        survivor(true, false).await,
         "cascade_hit",
         "with convex_budget on the highest-QUERY-VALUE module must dispatch first"
+    );
+    // Utility ON: the same evidence-weighted factors dynamically invert plain
+    // priority order, without requiring the static convex ordering.
+    assert_eq!(
+        survivor(false, true).await,
+        "cascade_hit",
+        "dispatch utility must spend a truncated budget on the highest-utility module"
     );
 }
 

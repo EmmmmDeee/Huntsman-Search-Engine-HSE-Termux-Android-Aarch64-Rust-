@@ -11,6 +11,7 @@ use crate::core::{
 
 mod archive; // `impl Store`: inter-scan entity cache (`raw_archive`)
 mod entities; // `impl Store`: entity persistence + FTS query
+mod intelligence; // crash-safe persistence for intelligence frontier checkpoints
 mod signal; // `impl Store`: per-sighting RF (WiGLE + radar) persistence
 mod stealer_rows; // `impl Store`: paired stealer-log credential row persistence
 mod templates; // `impl Store`: cross-scan pathway-template learning

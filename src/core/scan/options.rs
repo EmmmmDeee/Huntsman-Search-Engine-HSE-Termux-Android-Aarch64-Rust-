@@ -248,10 +248,10 @@ pub struct ScanOptions {
     /// the fourth ROI lever — [`crate::core::roi::DispatchUtility`], a
     /// per-(module, target) score folding in novelty, source independence,
     /// pivot optionality, reliability, cost, quota, latency, failure, and
-    /// duplication signals. **Off by default** and purely additive: it never
-    /// changes which modules dispatch or in what order — the existing
-    /// saturation-pruning, top-K/knee cutoff, and adaptive-depth-termination
-    /// levers (and the existing priority/convex ordering) are unaffected.
+    /// duplication signals. **Off by default**; when enabled, eligible modules
+    /// dispatch in descending utility order, with the existing priority/convex
+    /// order as the deterministic tie-break. Hard eligibility gates run before
+    /// scoring and are unaffected.
     /// Requires `max_roi` to have any effect (a candidate that never reaches
     /// the ROI-gated expansion loop has nothing to score).
     #[serde(default)]
