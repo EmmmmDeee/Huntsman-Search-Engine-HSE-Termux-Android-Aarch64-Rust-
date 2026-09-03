@@ -315,18 +315,35 @@ fn bootstrap_redirect(path: &str, rest: &str, token: &str) -> Response {
         .map_or_else(|_| unauthorized(), IntoResponse::into_response)
 }
 
+/// The liveness probe's path — the one route the bearer-token gate lets an
+/// unauthenticated `GET` through (see [`enforce_auth`]). One constant shared by
+/// the route registration and the gate so the two can never name different
+/// paths; `railway.json`'s `healthcheckPath` is pinned to it by
+/// `exposed_bind_still_answers_the_unauthenticated_health_probe` (tests/api.rs).
+pub const HEALTH_PATH: &str = "/api/v1/health";
+
 /// Require a valid token on every request.
 ///
-/// Installed only for a non-loopback bind. `OPTIONS` is exempt: a CORS preflight
-/// carries neither credentials nor side effects, and failing it would surface in
-/// the browser as an opaque CORS error instead of the 401 that tells the
-/// operator what is actually wrong.
+/// Installed only for a non-loopback bind. Two exemptions:
+///
+/// * `OPTIONS` — a CORS preflight carries neither credentials nor side effects,
+///   and failing it would surface in the browser as an opaque CORS error instead
+///   of the 401 that tells the operator what is actually wrong.
+/// * `GET` [`HEALTH_PATH`] — the dependency-free liveness probe (status +
+///   version; nothing operator- or subject-derived). A platform health check
+///   hits it WITHOUT credentials: `railway.json`'s `healthcheckPath` is exactly
+///   this route, and the container's `--bind 0.0.0.0` is exactly the posture
+///   that installs this gate, so without the exemption the Railway deployment
+///   could never pass its own probe (401 → restart loop). Method-restricted so
+///   no other verb on the path slips through.
 pub async fn enforce_auth(
     token: Arc<AuthToken>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    if req.method() == axum::http::Method::OPTIONS {
+    if req.method() == axum::http::Method::OPTIONS
+        || (req.method() == axum::http::Method::GET && req.uri().path() == HEALTH_PATH)
+    {
         return next.run(req).await;
     }
 

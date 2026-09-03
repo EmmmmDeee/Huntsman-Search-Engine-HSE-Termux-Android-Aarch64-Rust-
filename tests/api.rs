@@ -4461,6 +4461,42 @@ async fn exposed_bind_rejects_every_unauthenticated_surface() {
 }
 
 #[tokio::test]
+async fn exposed_bind_still_answers_the_unauthenticated_health_probe() {
+    // The Dockerfile's CMD is `hse serve --bind 0.0.0.0:$PORT` — the posture that
+    // installs the gate — and railway.json points the platform's credential-less
+    // health check at /api/v1/health. Before the exemption the deployment could
+    // never pass its own probe (401 → ON_FAILURE restart loop).
+    use huntsman_search_engine::api::auth::HEALTH_PATH;
+    let app = test_app_exposed("auth_health", EXPOSED_TOKEN);
+    let resp = app.clone().oneshot(get(HEALTH_PATH)).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "the liveness probe must answer without a token on a non-loopback bind"
+    );
+    let body = body_json(resp).await;
+    assert_eq!(body["status"], "ok");
+
+    // The exemption is GET-only; every other verb on the path is still gated.
+    let post = Request::builder()
+        .method("POST")
+        .uri(HEALTH_PATH)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(app.oneshot(post).await.unwrap().status(), 401);
+
+    // The deployment manifest and the gate name the same route — a rename of
+    // either side alone fails here rather than in a failed deploy.
+    let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/railway.json"))
+        .expect("railway.json must be readable");
+    let manifest: Value = serde_json::from_str(&manifest).expect("railway.json must be JSON");
+    assert_eq!(
+        manifest["deploy"]["healthcheckPath"], HEALTH_PATH,
+        "railway.json healthcheckPath must be the gate-exempt liveness route"
+    );
+}
+
+#[tokio::test]
 async fn exposed_bind_rejects_an_unauthenticated_mutation() {
     let app = test_app_exposed("auth_reject_post", EXPOSED_TOKEN);
     // The CSRF header alone must NOT be enough — it is a cross-site control,
