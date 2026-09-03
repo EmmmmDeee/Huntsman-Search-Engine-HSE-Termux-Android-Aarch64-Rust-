@@ -396,16 +396,24 @@ fn readme_correlator_rule_count_matches_registry() {
     );
 }
 
-/// Runtime AI-independence guard (the `RUNTIME_INDEPENDENCE` charter): the
-/// compiled binary must carry NO AI / ML / LLM / cloud-inference / vector /
-/// embedding dependency, so every runtime capability is deterministic Rust that
-/// reproduces identically on Termux aarch64 (no root), Linux and CI with no AI
-/// available. AI is a development-time accelerator only. This turns the principle
-/// into a mechanical CI check — adding e.g. `candle`, `onnxruntime`, an LLM SDK,
-/// `tokenizers`, or `qdrant-client` fails here. External OSINT *data* APIs
-/// (registries, breach corpora, geocoders) are data sources, not AI services,
-/// and are deliberately unaffected. This guard is the authoritative statement of
-/// the rule; the crate root cites it rather than restating it.
+/// The compiled runtime must carry NO third-party AI / ML / inference / vector /
+/// embedding crate: every finding-producing capability is deterministic Rust
+/// that reproduces identically on Termux aarch64 (no root), Linux and CI with
+/// no model available. This turns that into a mechanical CI check — adding
+/// e.g. `candle`, `onnxruntime`, an LLM SDK, `tokenizers`, or `qdrant-client`
+/// fails here. External OSINT *data* APIs (registries, breach corpora,
+/// geocoders) are data sources, not AI services, and are deliberately
+/// unaffected.
+///
+/// What this does NOT claim: that no LLM is ever consulted at runtime. HSE
+/// ships one optional, operator-run integration — the hand-rolled HTTP client
+/// for a local Ollama server in `src/ai` behind `hse analyze` and
+/// `hse-ai-daemon` — which no crate-name denylist can see. Its output is
+/// analysis text persisted to `scan_analysis`, and
+/// [`llm_output_never_becomes_a_finding`] below is the guard that keeps it
+/// there: an LLM may summarise the graph, never add to it (RULE 1). This
+/// guard is the authoritative statement of the crate rule; the crate root
+/// cites it rather than restating it.
 #[test]
 fn runtime_carries_no_ai_ml_inference_dependency() {
     let lock = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"))
@@ -472,9 +480,70 @@ fn runtime_carries_no_ai_ml_inference_dependency() {
     assert!(
         offenders.is_empty(),
         "RUNTIME_INDEPENDENCE violation — AI/ML/inference crate(s) entered the \
-         dependency tree: {offenders:?}. HSE's runtime must stay deterministic \
-         Rust with no AI / LLM / vector / embedding dependency (AI is a \
-         development-time accelerator only)."
+         dependency tree: {offenders:?}. Every finding-producing runtime path \
+         must stay deterministic Rust; the only LLM integration is the optional \
+         local Ollama client in src/ai, whose output never becomes a finding."
+    );
+}
+
+/// RULE 1's line for the one LLM integration HSE has: an Ollama model may
+/// SUMMARISE a scan (`scan_analysis`), it may never ADD to the evidentiary
+/// graph. Nothing under `src/ai/` (production code — test modules are
+/// stripped) may construct an entity, evidence record, relation or
+/// correlation, or write one to the store. A model's output presented as an
+/// observation would be exactly the fabricated finding RULE 1 forbids, and the
+/// crate-name denylist above cannot see a hand-rolled HTTP client.
+#[test]
+fn llm_output_never_becomes_a_finding() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ai");
+    const FORBIDDEN: &[&str] = &[
+        "Entity::new",
+        "Evidence::new",
+        "Relation::new",
+        "Correlation::new",
+        "upsert_entity",
+        "upsert_entities_batch",
+        "upsert_relation",
+        "upsert_correlation",
+        "add_evidence(",
+        "EventKind::EntityFound",
+    ];
+    let mut offenders = Vec::new();
+    let mut scanned = 0usize;
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in fs::read_dir(dir).expect("readable src/ai").flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|e| e == "rs") {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&dir, &mut files);
+    for path in files {
+        let raw = fs::read_to_string(&path).expect("readable source");
+        let prod = production_source(&raw);
+        scanned += 1;
+        for (i, line) in prod.lines().enumerate() {
+            let t = line.trim();
+            if t.starts_with("//") {
+                continue;
+            }
+            for needle in FORBIDDEN {
+                if t.contains(needle) {
+                    offenders.push(format!("{}:{}: {t}", path.display(), i + 1));
+                }
+            }
+        }
+    }
+    assert!(scanned >= 3, "expected the src/ai sources to be scanned, saw {scanned}");
+    assert!(
+        offenders.is_empty(),
+        "src/ai production code must never turn model output into a finding — an \
+         LLM summarises the graph, it does not add to it (RULE 1):\n  {}",
+        offenders.join("\n  ")
     );
 }
 

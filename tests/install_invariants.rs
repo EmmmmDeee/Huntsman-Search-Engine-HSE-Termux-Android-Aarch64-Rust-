@@ -145,13 +145,15 @@ fn play_store_termux_is_detected_and_rejected_before_any_package_work() {
 }
 
 /// Every generated program that must not touch the raw Termux wake-lock.
-const WAKE_LOCK_WRAPPERS: &[&str] = &["WRAPPER", "WATCH", "BOOT"];
+const WAKE_LOCK_WRAPPERS: &[&str] = &["WRAPPER", "WATCH", "BOOT", "AIW"];
 
 /// The long-lived programs that must actively MANAGE the shared lock. The
-/// Termux:Boot script is deliberately absent: it only launches the two below,
+/// Termux:Boot script is deliberately absent: it only launches the others,
 /// each of which registers itself, so a lock of its own would be an unowned
-/// holder nothing ever releases.
-const WAKE_LOCK_MANAGERS: &[&str] = &["WRAPPER", "WATCH"];
+/// holder nothing ever releases. `AIW` is the `hse-ai` wrapper, added after
+/// these lists were first written and unguarded until
+/// `every_wake_lock_touching_heredoc_is_guarded` started deriving the set.
+const WAKE_LOCK_MANAGERS: &[&str] = &["WRAPPER", "WATCH", "AIW"];
 
 #[test]
 fn generated_wrappers_never_release_the_shared_wake_lock_directly() {
@@ -269,7 +271,7 @@ fn generated_wrappers_do_not_hardcode_the_termux_prefix() {
     // than a compiled-in guess.
     let script = install_sh();
     let mut offenders = Vec::new();
-    for tag in ["WRAPPER", "WATCH", "BOOT", "WAKELOCK"] {
+    for tag in ["WRAPPER", "WATCH", "BOOT", "WAKELOCK", "AIW"] {
         // WAKELOCK may not exist yet in older revisions; skip rather than panic.
         if !script.contains(&format!("<<'{tag}'")) {
             continue;
@@ -291,5 +293,48 @@ fn generated_wrappers_do_not_hardcode_the_termux_prefix() {
         "generated wrapper(s) hardcode `/data/data/com.termux`, which breaks Termux \
          forks and non-default prefixes — emit the resolved $PREFIX instead:\n  {}",
         offenders.join("\n  ")
+    );
+}
+
+/// The lists above are hand-maintained; this derives the set from install.sh
+/// itself so a new generated program that touches the shared wake-lock (the
+/// way `hse-ai` was added after the lists were written, and sat unguarded)
+/// cannot ship without joining the guards.
+#[test]
+fn every_wake_lock_touching_heredoc_is_guarded() {
+    let script = install_sh();
+    let mut tags: Vec<String> = script
+        .lines()
+        .filter_map(|l| {
+            let i = l.find("<<'")?;
+            let rest = &l[i + 3..];
+            let end = rest.find('\'')?;
+            Some(rest[..end].to_string())
+        })
+        .collect();
+    tags.sort();
+    tags.dedup();
+    assert!(
+        tags.len() >= 5,
+        "expected install.sh's generated-program heredocs, saw {tags:?}"
+    );
+    let mut unguarded = Vec::new();
+    for tag in &tags {
+        if tag == "WAKELOCK" {
+            continue; // the refcounted helper's own definition
+        }
+        let body = heredoc(&script, tag);
+        let touches = body
+            .lines()
+            .filter(|l| !is_comment(l))
+            .any(|l| l.contains("hse_wakelock_") || l.contains("termux-wake-"));
+        if touches && !WAKE_LOCK_WRAPPERS.contains(&tag.as_str()) {
+            unguarded.push(tag.clone());
+        }
+    }
+    assert!(
+        unguarded.is_empty(),
+        "install.sh heredoc(s) touch the shared wake-lock but are not in \
+         WAKE_LOCK_WRAPPERS (and, if long-running, WAKE_LOCK_MANAGERS): {unguarded:?}"
     );
 }

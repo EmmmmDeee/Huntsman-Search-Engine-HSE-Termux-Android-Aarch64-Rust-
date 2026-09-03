@@ -511,13 +511,33 @@ fn production_purge_list_does_not_match_an_operator_key() {
 
 #[test]
 fn pool_keys_fill_empty_env_slots() {
-    let pool = crate::util::key_pool::global_pool();
-    let mut entry = crate::util::key_pool::KeyEntry::new("test-pool-key-12345");
-    entry.status = crate::util::key_pool::KeyStatus::Active;
-    pool.add("shodan", entry);
+    // Over a FRESH, LOCAL pool — never `global_pool()`: this test used to inject
+    // a fake `shodan` key into the process-global pool and then assert nothing
+    // (`let _ = map;`), so it could not fail if `merge_pool_into_env` were
+    // deleted, while every other test that consulted `next_key("shodan")` saw a
+    // phantom Active key depending on scheduling order.
+    use crate::util::key_pool::{KeyEntry, KeyPool, KeyStatus, merge_pool_into_env};
+    let pool = KeyPool::new();
+    let mut entry = KeyEntry::new("test-pool-key-12345");
+    entry.status = KeyStatus::Active;
+    assert!(pool.add("shodan", entry));
 
-    let map = load();
-    let _ = map;
+    // An empty env slot is filled from the pool …
+    let mut keys = std::collections::HashMap::new();
+    merge_pool_into_env(&pool, &mut keys);
+    assert_eq!(
+        keys.get("HUNTSMAN_SHODAN_KEY").map(String::as_str),
+        Some("test-pool-key-12345"),
+        "the pool must fill the empty HUNTSMAN_SHODAN_KEY slot"
+    );
+
+    // … and an operator-configured value is never overwritten by the pool.
+    let mut configured = std::collections::HashMap::from([(
+        "HUNTSMAN_SHODAN_KEY".to_string(),
+        "operator-configured".to_string(),
+    )]);
+    merge_pool_into_env(&pool, &mut configured);
+    assert_eq!(configured["HUNTSMAN_SHODAN_KEY"], "operator-configured");
 }
 
 // ---- register_configured_keys: the T2.153-root-cause fix ----

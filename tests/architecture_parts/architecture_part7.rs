@@ -352,7 +352,12 @@ fn modules_do_not_collapse_a_non_2xx_into_an_empty_result() {
             let lines: Vec<&str> = scanned_src.lines().collect();
             for (i, line) in lines.iter().enumerate() {
                 let trimmed = line.trim();
-                if !(trimmed.starts_with("if !") && trimmed.contains("status().is_success()")) {
+                // Both guard shapes: the inline `if !resp.status().is_success()`
+                // AND the bound-variable `let status = resp.status();
+                // if !status.is_success()` — 17 in-tree guards used the second
+                // form and were never scanned, so a collapse written that way
+                // shipped green.
+                if !(trimmed.starts_with("if !") && trimmed.contains(".is_success()")) {
                     continue;
                 }
                 scanned += 1;
@@ -383,8 +388,10 @@ fn modules_do_not_collapse_a_non_2xx_into_an_empty_result() {
         }
     }
 
+    // 39 guards in-tree at the time both shapes were first scanned; a floor
+    // just below that keeps the test from passing vacuously if the scan breaks.
     assert!(
-        scanned >= 20,
+        scanned >= 35,
         "expected to scan the known `is_success()` guards; found only {scanned} — the \
          scan is broken and this test would pass vacuously"
     );
