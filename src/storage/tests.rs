@@ -2251,9 +2251,76 @@ fn upsert_entities_batch_merges_on_conflict() {
         (merged.confidence - 0.9).abs() < 1e-9,
         "GREATEST-merge must apply inside the batch path"
     );
+    // The SAME scan re-persisting a uid it already observed is the engine's
+    // checkpoint → finalise re-persist of one accumulated entity, not a second
+    // observation: corroboration is GREATEST-merged (stays 1), never summed.
+    assert_eq!(
+        merged.corroboration, 1,
+        "a same-scan re-persist must not double-count corroboration"
+    );
+    // A conflict from a DIFFERENT scan is a genuinely separate observation and
+    // accumulates through the batch path exactly as before.
+    insert_scan(&store, "bm-scan-2");
+    let other_scan = Entity::new(EntityKind::Email, "dup@x.com", 0.4, "bm-scan-2");
+    store
+        .upsert_entities_batch(std::slice::from_ref(&other_scan))
+        .expect("should succeed");
+    let merged = store
+        .get_entity(&first.uid)
+        .expect("should succeed")
+        .expect("should succeed");
     assert_eq!(
         merged.corroboration, 2,
-        "corroboration must accumulate through the batch path"
+        "corroboration must accumulate across distinct scans through the batch path"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn re_persisting_a_scans_own_entity_keeps_its_corroboration_magnitude() {
+    // A module that seeds a real magnitude (hibp: `corroboration = verified
+    // breach count`) must see exactly that magnitude on disk however many times
+    // the engine checkpoints the entity within the scan — and a later, distinct
+    // scan's observation still adds on top.
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    insert_scan(&store, "mag-scan");
+    let mut e = Entity::new(EntityKind::Email, "mag@x.com", 0.7, "mag-scan");
+    e.corroboration = 3;
+    for _ in 0..4 {
+        store.upsert_entity(&e).expect("should succeed");
+    }
+    let stored = store
+        .get_entity(&e.uid)
+        .expect("should succeed")
+        .expect("should succeed");
+    assert_eq!(
+        stored.corroboration, 3,
+        "four same-scan persists of one entity must leave its magnitude untouched"
+    );
+    // The working set grew (a second module's magnitude merged in memory):
+    // the re-persist carries the larger accumulated value and wins.
+    e.corroboration = 5;
+    store.upsert_entity(&e).expect("should succeed");
+    let stored = store
+        .get_entity(&e.uid)
+        .expect("should succeed")
+        .expect("should succeed");
+    assert_eq!(
+        stored.corroboration, 5,
+        "GREATEST must still let the row grow"
+    );
+    insert_scan(&store, "mag-scan-2");
+    let mut later = Entity::new(EntityKind::Email, "mag@x.com", 0.7, "mag-scan-2");
+    later.corroboration = 2;
+    store.upsert_entity(&later).expect("should succeed");
+    let stored = store
+        .get_entity(&e.uid)
+        .expect("should succeed")
+        .expect("should succeed");
+    assert_eq!(
+        stored.corroboration, 7,
+        "a distinct scan's observation must still accumulate (5 + 2)"
     );
     let _ = std::fs::remove_file(&path);
 }
