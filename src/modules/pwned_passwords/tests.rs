@@ -87,12 +87,22 @@ use crate::core::{confidence, entity::EntityKind};
 
     #[test]
     fn confidence_bands_step_with_count() {
-        assert!((confidence_for(1) - confidence::HIGH_PLUS).abs() < 1e-9);
-        assert!((confidence_for(9) - confidence::HIGH_PLUS).abs() < 1e-9);
-        assert!((confidence_for(10) - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
-        assert!((confidence_for(99) - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
-        assert!((confidence_for(100) - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
-        assert!((confidence_for(50_000) - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
+        assert!((confidence_for(1, TargetKind::Email) - confidence::HIGH_PLUS).abs() < 1e-9);
+        assert!((confidence_for(9, TargetKind::Email) - confidence::HIGH_PLUS).abs() < 1e-9);
+        assert!((confidence_for(10, TargetKind::Email) - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
+        assert!((confidence_for(99, TargetKind::Email) - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
+        assert!((confidence_for(100, TargetKind::Email) - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
+        assert!((confidence_for(50_000, TargetKind::Email) - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
+    }
+
+    #[test]
+    fn username_confidence_is_capped_because_a_handle_is_shared_by_strangers() {
+        // A bare handle in the password corpus was put there by any number of
+        // unrelated people who use it as a password; it says little about this
+        // subject, so no count lifts a Username past HIGH_PLUS.
+        assert!((confidence_for(3, TargetKind::Username) - confidence::HIGH_PLUS).abs() < 1e-9);
+        assert!((confidence_for(50, TargetKind::Username) - confidence::HIGH_PLUS).abs() < 1e-9);
+        assert!((confidence_for(50_000, TargetKind::Username) - confidence::HIGH_PLUS).abs() < 1e-9);
     }
 
     // ── build_entities (pure) ───────────────────────────────────────────
@@ -108,13 +118,20 @@ use crate::core::{confidence, entity::EntityKind};
         assert_eq!(e.kind, EntityKind::Email);
         assert_eq!(e.raw_value, "test@example.com");
         assert!((e.confidence - confidence::VERY_HIGH_PLUS).abs() < 1e-9, "5727 ≥ 100 ⇒ confidence::VERY_HIGH_PLUS");
-        assert!(e.has_tag("pwned-password") && e.has_tag("breach"));
+        assert!(e.has_tag("pwned-password") && e.has_tag("used-as-password"));
+        // A password-corpus hit is NOT a breach of this account: the `breach`
+        // tag drives the correlator's breach rules (AU-016/AU-019/AU-022, the
+        // email-risk rule) and the breach-geo promotion pass, none of which this
+        // evidence supports.
+        assert!(!e.has_tag("breach"), "a k-Anonymity password hit must not be tagged as a breach: {:?}", e.tags);
 
         let ev = &e.evidence[0];
         let attr = |k: &str| ev.attributes.get(k).map(String::as_str);
-        assert_eq!(attr("breach_count"), Some("5727"));
+        assert_eq!(attr("password_occurrences"), Some("5727"));
         assert_eq!(attr("sha1_prefix"), Some("5BAA6"));
-        assert!(ev.summary.contains("5727 breach(es)"));
+        assert!(ev.summary.contains("5727 time(s) as a PASSWORD"), "{}", ev.summary);
+        assert!(ev.summary.contains("not proof this account was breached"), "{}", ev.summary);
+        assert!(!ev.summary.contains("breach(es)"), "the summary must not read as a breach count: {}", ev.summary);
     }
 
     #[test]
