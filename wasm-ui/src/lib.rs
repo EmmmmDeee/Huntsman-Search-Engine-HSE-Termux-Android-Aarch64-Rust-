@@ -78,4 +78,3 @@ pub(crate) fn to_js_error(e: impl std::fmt::Display) -> JsValue {
 pub fn main() {
     theme::wire_toggle_click();
 }
-
