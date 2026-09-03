@@ -1363,8 +1363,9 @@ async fn batch_endpoint_records_per_item_error_and_continues_for_mixed_valid_inv
     assert_eq!(scans.len(), 3);
 
     assert!(
-        scans[0].get("scan_id").is_some() && scans[0].get("error").is_none(),
-        "first valid target must be queued, not errored: {:?}",
+        scans[0]["scan_id"].as_str().is_some_and(|s| !s.is_empty())
+            && scans[0].get("error").is_none(),
+        "first valid target must be queued with a real scan_id, not errored: {:?}",
         scans[0]
     );
     assert_eq!(
@@ -1385,8 +1386,9 @@ async fn batch_endpoint_records_per_item_error_and_continues_for_mixed_valid_inv
     );
 
     assert!(
-        scans[2].get("scan_id").is_some() && scans[2].get("error").is_none(),
-        "third valid target (after the invalid one) must still be queued: {:?}",
+        scans[2]["scan_id"].as_str().is_some_and(|s| !s.is_empty())
+            && scans[2].get("error").is_none(),
+        "third valid target (after the invalid one) must still be queued with a real scan_id: {:?}",
         scans[2]
     );
     assert_eq!(scans[2]["status"], "queued");
