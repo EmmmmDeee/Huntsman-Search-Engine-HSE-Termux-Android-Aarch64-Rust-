@@ -4567,3 +4567,79 @@ async fn loopback_bind_is_unchanged_by_the_auth_work() {
         "the loopback default must not require a token"
     );
 }
+
+#[tokio::test]
+async fn static_assets_carry_a_content_derived_etag_not_the_crate_version() {
+    // Regression: the /static ETag was the crate version, which does not change
+    // across the in-place upgrades install.sh and the updater perform from
+    // `main`. A browser holding the old SPA asked `If-None-Match: "<version>"`
+    // after every upgrade and was told 304 — stale JS/wasm against a new API
+    // until someone bumped the version. The tag must be derived from the bytes.
+    let app = test_app("static-etag");
+    let version_tag = format!("\"{}\"", huntsman_search_engine::VERSION);
+
+    let resp = app
+        .clone()
+        .oneshot(get("/static/js/main.js"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let etag = resp
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .expect("static assets carry an ETag")
+        .to_string();
+    assert_ne!(etag, version_tag, "the ETag must not be the crate version");
+    // A strong, quoted 64-bit hex tag.
+    assert_eq!(etag.len(), 18, "{etag}");
+    assert!(etag.starts_with('"') && etag.ends_with('"'), "{etag}");
+    assert!(etag[1..17].chars().all(|c| c.is_ascii_hexdigit()), "{etag}");
+
+    // Per asset: a different file has a different tag.
+    let css = app
+        .clone()
+        .oneshot(get("/static/css/app.css"))
+        .await
+        .unwrap();
+    let css_etag = css
+        .headers()
+        .get("etag")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(css_etag, etag, "each asset is tagged by its own bytes");
+
+    // Stable across requests (it is a hash, not a timestamp).
+    let again = app
+        .clone()
+        .oneshot(get("/static/js/main.js"))
+        .await
+        .unwrap();
+    assert_eq!(again.headers().get("etag").unwrap().to_str().unwrap(), etag);
+
+    // Conditional GET with the real tag → 304 and no body …
+    let hit = Request::builder()
+        .uri("/static/js/main.js")
+        .header("if-none-match", &etag)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(hit).await.unwrap();
+    assert_eq!(resp.status(), 304);
+
+    // … but a browser still holding the pre-fix version tag is served the
+    // bytes: this is the exact request that used to be answered 304 forever.
+    let stale = Request::builder()
+        .uri("/static/js/main.js")
+        .header("if-none-match", &version_tag)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(stale).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "an old version-based tag must not validate against new bytes"
+    );
+    assert!(!body_text(resp).await.is_empty());
+}

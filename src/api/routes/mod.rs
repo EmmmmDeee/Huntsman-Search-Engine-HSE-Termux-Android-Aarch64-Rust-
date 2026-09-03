@@ -959,16 +959,20 @@ async fn api_not_found(method: Method, OriginalUri(uri): OriginalUri) -> impl In
 async fn vendor_handler(Path(file): Path<String>, headers: HeaderMap) -> Response {
     for (name, ct, bytes) in VENDOR_FILES.iter().chain(APP_FILES.iter()) {
         if *name == file {
-            // ETag is the crate version (which uniquely identifies the
-            // embedded bytes — the bundle ships in-binary). We deliberately
-            // do NOT use `Cache-Control: immutable` because the URL
-            // (e.g. `/static/js/main.js`) is stable across upgrades;
+            // We deliberately do NOT use `Cache-Control: immutable` because
+            // the URL (e.g. `/static/js/main.js`) is stable across upgrades;
             // pairing immutable with a stable URL leaves the browser stuck
             // on old bytes after a binary upgrade. Instead `must-revalidate`
             // plus the conditional-request handling below lets the browser
             // revalidate cheaply via the ETag and pick up new bytes the moment
-            // the binary changes.
-            const ETAG: &str = concat!("\"", env!("CARGO_PKG_VERSION"), "\"");
+            // the served bytes change — see [`asset_etag`] for why the tag is
+            // a content hash and not the crate version.
+            let Some(etag) = asset_etag(name) else {
+                // Unreachable by construction (the map is built from the same
+                // two lists this loop walks); never serve an uncacheable 200
+                // silently — a missing tag is a bug, so say so.
+                return (StatusCode::INTERNAL_SERVER_ERROR, "asset has no ETag").into_response();
+            };
             let cache = HeaderValue::from_static("public, max-age=3600, must-revalidate");
 
             // Conditional GET: if the client already holds these exact bytes
@@ -979,12 +983,12 @@ async fn vendor_handler(Path(file): Path<String>, headers: HeaderMap) -> Respons
             if headers
                 .get(header::IF_NONE_MATCH)
                 .and_then(|v| v.to_str().ok())
-                .is_some_and(|inm| if_none_match_hit(inm, ETAG))
+                .is_some_and(|inm| if_none_match_hit(inm, etag.text))
             {
                 return (
                     StatusCode::NOT_MODIFIED,
                     [
-                        (header::ETAG, HeaderValue::from_static(ETAG)),
+                        (header::ETAG, etag.header.clone()),
                         (header::CACHE_CONTROL, cache),
                     ],
                 )
@@ -996,7 +1000,7 @@ async fn vendor_handler(Path(file): Path<String>, headers: HeaderMap) -> Respons
                 [
                     (header::CONTENT_TYPE, HeaderValue::from_static(ct)),
                     (header::CACHE_CONTROL, cache),
-                    (header::ETAG, HeaderValue::from_static(ETAG)),
+                    (header::ETAG, etag.header.clone()),
                 ],
                 *bytes,
             )
@@ -1004,6 +1008,49 @@ async fn vendor_handler(Path(file): Path<String>, headers: HeaderMap) -> Respons
         }
     }
     (StatusCode::NOT_FOUND, "not found").into_response()
+}
+
+/// A strong per-asset entity tag: `"` + the first 16 hex characters of the
+/// SHA-256 of the embedded bytes + `"`, kept both as text (for the
+/// `If-None-Match` comparison) and as a ready header value.
+pub(crate) struct AssetTag {
+    pub(crate) text: &'static str,
+    pub(crate) header: HeaderValue,
+}
+
+/// One tag per embedded `/static` asset, computed once per process from the
+/// bytes actually served.
+///
+/// It used to be the crate version, on the premise that the version "uniquely
+/// identifies the embedded bytes". It does not, for this project's release
+/// model: `install.sh` (`HSE_REF=main`) and the in-app updater rebuild from
+/// `main` in place, and the SPA and wasm change across commits far more often
+/// than the version string does (88 consecutive `main` commits, 8 touching
+/// the UI, one version). With `must-revalidate` the browser dutifully asked
+/// `If-None-Match: "<version>"` after each upgrade and was told 304 — stale
+/// JS/wasm against a new API and new view code, on every device, until
+/// someone bumped the version. A hash of the bytes changes exactly when the
+/// served bytes do, per file, with no release-process discipline required.
+static ASSET_ETAGS: std::sync::LazyLock<std::collections::HashMap<&'static str, AssetTag>> =
+    std::sync::LazyLock::new(|| {
+        use sha2::{Digest, Sha256};
+        VENDOR_FILES
+            .iter()
+            .chain(APP_FILES.iter())
+            .map(|(name, _, bytes)| {
+                let digest = Sha256::digest(bytes);
+                let text: &'static str =
+                    Box::leak(format!("\"{}\"", hex::encode(&digest[..8])).into_boxed_str());
+                let header = HeaderValue::from_static(text);
+                (*name, AssetTag { text, header })
+            })
+            .collect()
+    });
+
+/// The content-derived ETag for the embedded asset served at `/static/{name}`,
+/// or `None` if no such asset is embedded.
+pub(crate) fn asset_etag(name: &str) -> Option<&'static AssetTag> {
+    ASSET_ETAGS.get(name)
 }
 
 /// RFC 7232 `If-None-Match` test: true if the header is `*` or lists an
