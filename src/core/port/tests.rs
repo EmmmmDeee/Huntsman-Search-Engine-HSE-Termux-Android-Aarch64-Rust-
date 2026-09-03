@@ -85,7 +85,19 @@ use super::*;
             .expect("should succeed");
         assert_eq!(pruned, 0);
         assert_eq!(store.events_for_scan("evt-port").expect("should succeed").len(), 1);
-        // ...but a zero row-cap prunes it as excess.
+        // ...and so does a zero row-cap while the scan is still live: a
+        // pending/running scan's own log is exempt from the excess cut (see
+        // `Store::prune_events`), so a sibling scan's finalise-time prune can
+        // never truncate a scan that has not finished.
+        let pruned = store
+            .prune_events(crate::core::port::EVENTS_RETENTION_SECS, 0)
+            .expect("should succeed");
+        assert_eq!(pruned, 0, "a live scan's events are never pruned as excess");
+        assert_eq!(store.events_for_scan("evt-port").expect("should succeed").len(), 1);
+        // Once the scan has finished, the same zero cap prunes it as excess.
+        let mut finished = Scan::new("evt-port", Target::new(TargetKind::Email, "x@y.com"));
+        finished.status = crate::core::scan::ScanStatus::Complete;
+        store.upsert_scan(&finished).expect("should succeed");
         let pruned = store
             .prune_events(crate::core::port::EVENTS_RETENTION_SECS, 0)
             .expect("should succeed");
