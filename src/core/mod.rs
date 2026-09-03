@@ -41,6 +41,7 @@ pub mod gap;
 pub mod geo_family;
 pub mod gexf;
 pub mod graph;
+pub mod intelligence;
 pub mod leads;
 pub mod live;
 pub mod metrics;

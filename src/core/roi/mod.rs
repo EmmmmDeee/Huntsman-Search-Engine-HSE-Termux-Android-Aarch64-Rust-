@@ -19,13 +19,13 @@
 //!    marginal yield collapses near convergence; this captures the
 //!    `dE/dDispatch → 0` boundary. Gated by `max_roi`.
 //!
-//! 4. **Dispatch-utility explainability** ([`DispatchUtility`], `utility`
+//! 4. **Dispatch-utility ordering and explainability** ([`DispatchUtility`], `utility`
 //!    submodule) — a canonical, additive-formula score per eligible
 //!    (module, target) candidate folding in novelty, source independence,
 //!    pivot optionality, reliability, cost, quota, latency, failure, and
-//!    duplication signals. Purely additive telemetry in this pass: it does
-//!    not change dispatch order, only surfaces an explainable score
-//!    alongside it. Gated by
+//!    duplication signals. Eligible modules dispatch by descending utility,
+//!    with the configured static order as a deterministic tie-break, and each
+//!    score is surfaced with its explanation. Gated by
 //!    [`crate::core::scan::ScanOptions::dispatch_utility`] (requires
 //!    `max_roi`).
 //!
