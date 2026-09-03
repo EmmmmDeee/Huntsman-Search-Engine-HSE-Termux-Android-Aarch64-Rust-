@@ -233,3 +233,34 @@ fn build_entities_empty_response_is_empty() {
     let result = build_entities(&resp, "x.com", "test-scan");
     assert!(result.entities.is_empty());
 }
+
+#[test]
+fn a_wrong_key_or_exhausted_credits_error_is_a_key_error_not_a_clean_miss() {
+    // BuiltWith's documented (api.builtwith.com/errorCodes) key-class errors
+    // arrive on HTTP 200 in `Errors[]`; before this fix they were logged and
+    // folded into Ok(empty), so a dead or credit-less key read as "no tech
+    // profile" on every scan and the pool was never told.
+    let body = |json: &str| serde_json::from_str::<BwResp>(json).expect("fixture");
+    for raw in [
+        r#"{"Errors":[{"Message":"API Key is wrong - it needs to be a Guid.","Code":-2}]}"#,
+        r#"{"Errors":[{"Message":"You've run out of API Credits.","Code":-3}]}"#,
+        r#"{"Errors":[{"Message":"Plan upgrade needed as maximum technologies reached.","Code":-5}]}"#,
+        // Message text alone (the provider says the text cannot be guaranteed;
+        // the code may be absent in an older/edge response).
+        r#"{"Errors":[{"Message":"You've run out of API Credits."}]}"#,
+        // Code alone.
+        r#"{"Errors":[{"Code":-2}]}"#,
+    ] {
+        let b = body(raw);
+        let errors = b.errors.as_deref().expect("Errors present");
+        assert!(
+            builtwith_key_error(errors).is_some(),
+            "{raw} must classify as a key/credit/plan failure"
+        );
+    }
+    // A per-lookup error is a clean miss for this target, not a key problem.
+    let b =
+        body(r#"{"Errors":[{"Message":"Invalid root domain name or unsupported.","Code":-8}]}"#);
+    assert!(builtwith_key_error(b.errors.as_deref().unwrap()).is_none());
+    assert!(builtwith_key_error(&[]).is_none());
+}

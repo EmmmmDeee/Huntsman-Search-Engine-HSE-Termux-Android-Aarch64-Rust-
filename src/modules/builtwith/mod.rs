@@ -47,6 +47,35 @@ struct BwResp {
 struct BwError {
     #[serde(rename = "Message")]
     message: Option<String>,
+    /// BuiltWith's documented error code (api.builtwith.com/errorCodes): `-2`
+    /// "API Key is wrong", `-3` "You've run out of API Credits", `-5` "Plan
+    /// upgrade needed". Captured alongside `Message` so either signal can
+    /// classify the failure (the provider's own page says the message text
+    /// "cannot be guaranteed").
+    #[serde(rename = "Code")]
+    code: Option<i64>,
+}
+
+/// The documented BuiltWith errors that mean the CONFIGURED KEY itself is the
+/// problem — wrong key (`-2`), no API credits left (`-3`), plan ceiling (`-5`)
+/// — as opposed to a per-lookup error (`-8` invalid domain, `-4` unknown
+/// technology, …) that is a clean miss for this one target. Matched on the
+/// documented code first and the documented message text second (the
+/// provider warns the text cannot be guaranteed; the code is the contract).
+/// Returns the provider's own message for the operator. **Pure.**
+fn builtwith_key_error(errors: &[BwError]) -> Option<String> {
+    errors.iter().find_map(|e| {
+        let msg = e.message.as_deref().unwrap_or_default();
+        let lower = msg.to_ascii_lowercase();
+        let keyed = matches!(e.code, Some(-2 | -3 | -5))
+            || lower.contains("api key is wrong")
+            || lower.contains("run out of api credits")
+            || lower.contains("plan upgrade needed");
+        keyed.then(|| match e.code {
+            Some(code) => format!("{msg} (code {code})"),
+            None => msg.to_string(),
+        })
+    })
 }
 
 #[derive(Deserialize, Default)]
@@ -190,11 +219,25 @@ impl Module for BuiltWith {
 
         let body: BwResp = crate::util::http::json_decode(SRC, resp).await?;
 
-        if let Some(errors) = &body.errors
-            && let Some(first) = errors.iter().find_map(|e| e.message.as_deref())
-        {
-            tracing::warn!(target: "module.builtwith", "BuiltWith error: {}", first);
-            return Ok(ModuleResult::new());
+        if let Some(errors) = &body.errors {
+            // BuiltWith answers a wrong key / exhausted credits / plan ceiling
+            // with HTTP 200 and an `Errors[]` body (codes -2/-3/-5), so
+            // `keyed_ok_or_404` above never sees it. This used to log a warning
+            // and return Ok(empty) — a dead credential read exactly like "no
+            // tech profile for this domain", the pool was never told, and a
+            // second pooled key never got its turn. Same in-body-200 rule
+            // hibp/hunter_io/whoisxml/ipqs apply.
+            if let Some(detail) = builtwith_key_error(errors) {
+                ctx.report_key_exhausted(SRC, key, 200);
+                return Err(crate::core::error::Error::module(
+                    SRC,
+                    format!("api 200 error: {detail}"),
+                ));
+            }
+            if let Some(first) = errors.iter().find_map(|e| e.message.as_deref()) {
+                tracing::warn!(target: "module.builtwith", "BuiltWith error: {}", first);
+                return Ok(ModuleResult::new());
+            }
         }
 
         Ok(build_entities(&body, domain, &ctx.scan_id))
