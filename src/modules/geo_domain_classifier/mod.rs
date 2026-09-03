@@ -42,6 +42,13 @@ impl Module for GeoDomainClassifier {
         true
     }
 
+    /// Pure transform of data already in the graph — no observation of its
+    /// own, so its evidence never counts as a corroborating source (see
+    /// `Module::is_derivation` / `ENRICHMENT_ONLY_SOURCES`).
+    fn is_derivation(&self) -> bool {
+        true
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         // Email too: a `@uni.edu.au` / `@*.gov.au` address geolocates the person
         // who uses it (see the institutional gate in `process`). Domain/Url
