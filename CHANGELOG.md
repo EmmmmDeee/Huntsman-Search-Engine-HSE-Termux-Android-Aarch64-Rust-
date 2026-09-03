@@ -9,14 +9,26 @@ All notable changes to this project are documented here. Format per [Keep a Chan
 ### Added
 
 - T3 quality: AU-002 identity-cluster implausibility rejection signaling as AU-002-REJECT finding
+- `Module::is_derivation()`: a module declares that its output is a deterministic transform of data already in the graph (parser, canonicaliser, permutation generator, offline decoder). An architecture test pins the declaration to `hse_core::ENRICHMENT_ONLY_SOURCES` in both directions, so the "does this source corroborate?" fact has one enforced authority instead of a hand-maintained list.
+- `util::paths::isolate_for_tests()` + `tests/common::isolate_home()`: integration-test crates (where `cfg!(test)` is false in the linked library) now redirect the whole `~/.huntsman` layout at a per-process temp dir; an architecture test pins that no production code can call it.
 
 ### Changed
 
 - AU-002 rule now surfaces MAX_PER_KIND limit-exceeded cases as Medium-severity rejection findings instead of silent drops
 - AU-092 rule now distinguishes conflict case with separate rule_id "AU-092-CONFLICT" (was previously reusing "AU-092")
+- `GET /api/v1/health` is exempt from the non-loopback bearer-token gate (GET only; every other verb on the path stays gated). The Railway/container deployment (`hse serve --bind 0.0.0.0`) could never pass its own credential-less `healthcheckPath` probe before this; `railway.json` is now pinned to `api::auth::HEALTH_PATH` by test.
+- `hse config <key> on|off` now validates the key with the same `modules::is_known_toggle_key` the `PUT /api/v1/settings/toggles` handler uses (its private duplicate is gone) and exits non-zero on an unknown key instead of persisting a silent no-op.
+- WiGLE BSSID lookups probe the two corpora an address can belong to (WiFi via `network/detail?type=WIFI`, Bluetooth via its own `/api/v2/bluetooth/detail`) — two billed requests per dispatch, not three.
+- `Store::checkpoint_truncate()` now returns `Err` when SQLite reports the TRUNCATE checkpoint blocked by a concurrent reader; `hse tidy` and the finalise housekeeping no longer report a WAL truncation that did not happen.
 
 ### Fixed
 
+- WiGLE cell/Bluetooth intelligence was fabricated from WiFi rows (RULE.md's own cautionary case, still live): `/api/v2/network/search` has no `type` parameter, so `?type=cell` / `?type=bluetooth` were ignored and WiFi results were labelled as cell-carrier and Bluetooth-beacon findings. Each corpus now goes to its own documented endpoint (`/api/v2/cell/search`, `/api/v2/bluetooth/search`) with only documented parameters, verified against `https://api.wigle.net/swagger.json` and pinned by test.
+- OathNet search sessions never engaged: `init_session` parsed `session.id`, a field the documented `POST /service/search/init` response (`{ "search_id": "…" }`) does not carry, so every breach+stealer pair cost two lookups of the paid quota instead of one. The documented field is parsed and the assumed shape is pinned as rejected.
+- Customer exports leaked provider brands spelled as prose: the redactor matched `pwned_passwords` but not "Pwned Passwords" in the evidence summary. Every breach-category source is now matched in its snake_case, spaced and hyphenated spellings.
+- Offline derivation modules counted as independent corroborating sources: `phone_intl` + `phone_au` + `phone_geo` re-emitting a seed phone gave it `source_count() == 3` and a "corroborated by 3 independent source(s)" finding from zero external observations. All twelve offline derivation modules (`email_parse`, `username_variants`, `email_canonical`, `phone_*`, `email_locale`, `email_header_geo`, `geo_domain_classifier`, `discord_snowflake`, `structured_id`, `breach_timezone`) are now `ENRICHMENT_ONLY_SOURCES`; their evidence is kept and shown but never inflates `source_count`/`c_effective`.
+- Persisted `corroboration` double-counted on every re-persist: the store merged a re-persisted entity with `Entity::merge`, whose `absorb` sums the magnitude, and the engine re-persists the same accumulated entity several times per scan (seed checkpoint, per-round dirty set, finalise, promotion pass). A seed observed exactly once reached disk with corroboration 4. Same-scan re-persists are now GREATEST-merged (idempotent); a distinct scan's observation still accumulates.
+- Integration tests wrote into the developer's real `~/.huntsman`: every completed `tests/api.rs` scan appended synthetic module statistics to the real `module_stats.json` (observed: 102 fixture "seed" scans, the input to `hse scan --adaptive`), one test overwrote the real `settings.json`, and the smoke key-chaining fixture banked a fake `shodan` key into the real `key_pool.json` — a test fixture escaping the harness. `tests/cli_seed_validation.rs`'s `run` helper now also isolates `HOME` like its siblings.
 - AU-002 silent drop when entity counts exceed plausibility limits: now signals rejection per Rule 0.7 priority 2 (Evidence Integrity)
 - AU-092 rule_id reuse: breach-locality-footprint-conflict findings now use distinct "AU-092-CONFLICT" to prevent evidence integrity violation of using same rule_id for fundamentally different claims (agreement vs disagreement)
 - AU-031 adjacency silent entity truncation: rule now includes all neighbors in entity_uids instead of silently truncating to first 12 (AGG_SAMPLE) when reporting fan-out aggregates

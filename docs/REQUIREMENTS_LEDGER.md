@@ -311,6 +311,7 @@ covers.
 | REQ-CORE-012 | `ModuleContext::key()`/`key_opt()` are the sole sanctioned way a module reads a `HUNTSMAN_*` credential; a present-but-blank value or an un-edited `hse provision` template placeholder (`insert_<svc>_key_here`) must resolve as absent, never forwarded to a provider. | env var value | `Result<&str>` / `Option<&str>` | none | `key()` → `Error::MissingKey`; `key_opt()` → `None` | `src/core/module/mod.rs:334-398`; filter `src/util/keys/mod.rs::resolve_key` | `key_returns_ok_when_present`, `key_returns_missing_key_error_when_absent`, `key_treats_a_blank_value_as_missing`, `key_opt_returns_some_when_present`, `key_opt_returns_none_when_absent`, `key_opt_filters_blank_and_placeholder_slots` (`src/core/module/tests.rs`); structural guard `modules_never_read_credentials_via_raw_env` (`tests/architecture_parts/architecture_part3.rs:820`) | Ran `cargo test --lib core::module::tests` and `cargo test --test architecture modules_never_read_credentials_via_raw_env` this pass — all passed. | VERIFIED |
 | REQ-CORE-013 | `ModuleContext::next_pooled_key()` / `report_key_exhausted()` implement the in-scan key cascade: a module whose key hits 401/403/429 can fetch the next untried pooled key for the same service and retry within one `process()` call. | `service: &str`, `tried: &HashSet<String>` (cascade); `service`, `key_value`, `status` (report) | `Option<String>` (cascade) | Mutates the global key pool's status + persists off-thread | `next_pooled_key` returns `None` once the pool is exhausted — caller must stop retrying, not loop. | `src/core/module/mod.rs:366-398`; pool `src/util/key_pool/mod.rs` | Key-pool unit tests exist under `src/util/key_pool/tests.rs` (55 tests, including `next_key_excluding_cascades_past_tried_keys`, the direct cascade contract). | Ran `cargo test --lib key_pool` this pass (Pass 2) — 55/55 passed. | VERIFIED |
 | REQ-CORE-014 | `ModuleCategory`/`ModuleCost` round-trip serde exactly (their `as_str()` identifier must equal the serde snake_case wire form for every variant), so the API and the SPA never disagree on a category/cost string. | none | `&'static str` | none | A new enum variant that fails to update the drift-guard match arms fails to *compile* (arm-less match, no wildcard). | `src/core/module/mod.rs:19-106` | `module_cost_as_str_matches_serde`, `module_category_as_str_round_trips_serde` (`src/core/module/tests.rs`) | Ran `cargo test --lib core::module::tests` this pass — passed. | VERIFIED |
+| REQ-CORE-015 (**new, Pass 14**) | `Module::is_derivation()` (default `false`) declares a module whose output is a deterministic transform of data already in the graph (parser, canonicaliser, permutation generator, offline decoder). Every module for which it is `true` must be listed in `hse_core::ENRICHMENT_ONLY_SOURCES` and vice-versa, every derivation must also be `is_passive()`, and every list entry that is not a registered module must be an engine pass (`geo_normalize`, `seed`). | `&self` | `bool` | none | Compile-time default `false`; the architecture tripwire fails the gate if the two declarations disagree or a list entry names neither a module nor an engine pass (a typo'd module name would otherwise silently re-enable corroboration for that module). | `src/core/module/mod.rs` (`is_derivation`), `hse-core/src/lib.rs` (`ENRICHMENT_ONLY_SOURCES`, 5 → 17 entries), the 15 module `impl`s | `derivation_modules_are_exactly_the_enrichment_only_sources` (`tests/architecture_parts/architecture_part2.rs`); `offline_derivation_sources_cannot_corroborate_the_seed_they_were_derived_from`, `is_enrichment_source_only_for_deterministic_passes`, `derived_entity_promotion_source_is_not_an_independent_source` (`hse-core/src/tests.rs`) | Ran `cargo test --test architecture` — 60/60 including the new tripwire; `cargo test --manifest-path hse-core/Cargo.toml` — 150/150; full lib suite 6876/6876. Before the fix a Phone entity carrying evidence from `seed` + `phone_intl` + `phone_au` + `phone_geo` reported `source_count() == 3` (three offline prefix-table lookups presented as three independent sightings); now 1, with `corroborating_sources()` empty and `c_effective() == confidence`. The browser build embeds this list, so `wasm-ui/pkg/hse_wasm_ui_bg.wasm` was regenerated with the pinned pipeline (toolchain parity proven first: the same pipeline reproduces the pre-change `pkg/` byte-for-byte) and `scripts/wasm_ui_drift_check.sh` passes. | VERIFIED |
 
 ---
 
@@ -330,6 +331,7 @@ covers.
 | REQ-CLI-010 | `hse modules --category <cat> --json` filters the registry by category and emits the same JSON shape as `GET /api/v1/modules`. | `--category`, `--json` | stdout JSON or table | none | Unknown category presumably yields an empty filtered list (not explicitly checked this pass). | `src/cli/modules.rs`; `Command::Modules` in `src/cli/command.rs:276-283` | Not individually checked this pass. | Ran `./target/debug/hse modules --json` this pass — returned `{"count":188,"modules":[...]}` with per-module `consumes`/`category`/`cost` fields, confirming the JSON shape and that the registry currently holds 188 entries (used to derive REQ-README rows below). | VERIFIED |
 | REQ-CLI-011 | `hse tidy`'s `--help` text quotes the dossier-cache retention cap ("newest N files") as a literal number that must equal `DOSSIER_MAX_FILES`, since clap renders doc-comment intra-doc links as raw unresolved markup rather than resolving them. | none | Help text string | none | Test failure on drift (not a runtime failure — an operator would just see a stale number in `--help`). | `src/cli/command.rs:866-874` (doc comment), constant `src/app/tidy/mod.rs` | `tidy_help_quotes_the_real_dossier_cap` (`src/cli/command.rs:920`) | Ran `cargo test --lib cli::command::tests::tidy_help_quotes_the_real_dossier_cap` this pass — passed. | VERIFIED |
 | REQ-CLI-012 | `hse ingest`/`hse investigate --min-confidence` reuse the same `confidence_floor` parser as `hse scan`, so the "silent total data loss on NaN" regression is closed for every subcommand that takes a confidence floor, not just `scan`. | CLI string | `Result<f64, String>` | none | Same as REQ-CLI-004. | `src/cli/command.rs:508,545` | Same tests as REQ-CLI-004 (shared parser function) — no per-subcommand-wiring test confirms `ingest`/`investigate` actually pass the parsed value through unmodified to the extractor's filter. | Read-only for the wiring; the parser itself is VERIFIED (REQ-CLI-004). | PARTIAL |
+| REQ-CLI-013 (**new, Pass 14**) | `hse config <key> on|off` validates `<key>` with the same `modules::is_known_toggle_key` the HTTP `PUT /api/v1/settings/toggles` handler uses (a registered `feature.*` switch, an `engine.<name>` from the search-engine catalogue, or a `module.<name>` in the registry) and exits non-zero on an unknown key instead of persisting a silent no-op. | CLI strings | `Result<()>` | `settings.json` written only for a known key | `Error::Other("unknown toggle key '<k>' …")`, nothing persisted | `src/cli/config.rs` (`cmd_config`), `src/modules/mod.rs` (`is_known_toggle_key` — the one validator, in the layer that owns the engine catalogue and the registry; the API handler's private duplicate `toggle_key_is_known` is deleted and it now calls the same function) | `config_set_rejects_an_unknown_toggle_key_instead_of_persisting_it` (`src/cli/tests.rs`), `is_known_toggle_key_accepts_exactly_the_three_real_key_families` (`src/modules/tests.rs`), the pre-existing `settings_toggles_put_*` API tests | Ran `cargo test --lib modules::tests::is_known_toggle_key cli::tests::config api::settings_handlers` — all pass. Before the fix `hse config module.shodann off` printed `module.shodann = ○ off`, persisted a key nothing reads, and exited 0. | VERIFIED |
 
 ---
 
@@ -617,6 +619,7 @@ this pass), 12 PARTIAL, 2 IMPLEMENTED_UNVERIFIED, 1 UNREACHABLE.
 | REQ-API-AUTH-002 | When a token is resolved, `enforce_auth` is layered as the outermost-but-one middleware (only `set_security_headers` sits further out) so it runs before the Host allowlist, CORS, CSRF, and every handler/SPA/static asset — an unauthenticated non-loopback… | Ran `cargo test --lib api::auth`: 21/21 passed (includes all 9 middleware tests). Ran `cargo test --test api exposed_bind -- --test-threads=4` separately: `running 4 tests / test exposed_bind_bootstraps_a_browser_then_drops_the_token_from_the_url ... ok / test exposed_bind_rejects_every_unauthenticated_surface ... ok / test exposed_bind_rejects_an_unauthenticated_mutation ... ok / test exposed_bind_admits_a_valid_token ... ok / test result: ok. 4 passed; 0 failed`. Ran… | VERIFIED |
 | REQ-API-AUTH-003 | `AuthToken::matches` hashes the presented credential with SHA-256 and compares digests via `ct_eq`, which XOR-accumulates every byte pair and checks once at the end rather than short-circuiting on the first mismatch, so response timing cannot leak the token's… | Ran `cargo test --lib api::auth` this pass — all 4 tests pass (part of 21/21). These tests confirm ct_eq's functional correctness (right/wrong tokens match/reject as expected, near-misses at every position rejected) and that Debug never leaks the plaintext. They do NOT and cannot measure that the comparison is actually constant-time on real hardware — no timing/statistical test exists in the suite; the constant-time guarantee itself rests on reading the loop's structure (no early return), not… | PARTIAL |
 | REQ-API-AUTH-004 | On a non-loopback bind, presenting a valid `X-HSE-CSRF` header with NO bearer credential must still 401 — CSRF and bearer-auth are independent, both-required (AND-ed) controls, not substitutes for each other, because `enforce_auth` is layered OUTSIDE… | Ran `cargo test --test api exposed_bind -- --test-threads=4` this pass (part of the 4-test group reported above): `test exposed_bind_rejects_an_unauthenticated_mutation ... ok` — a POST to /api/v1/radar carrying X-HSE-CSRF but no bearer token still returned 401. | VERIFIED |
+| REQ-API-AUTH-005 (**new, Pass 14**) | On a non-loopback bind, `GET /api/v1/health` (`api::auth::HEALTH_PATH`) is admitted without a credential — it is the dependency-free liveness probe (status + version, nothing operator- or subject-derived) that `railway.json`'s `healthcheckPath` hits with none — while every other verb on that path and every other route stays gated; `railway.json`'s `healthcheckPath` is pinned to the constant by test. | Ran `cargo test --lib api::auth` including `health_probe_is_exempt_from_the_gate_for_get_only` (GET → 200, POST → 401, look-alike path → 401) and `cargo test --test api exposed_bind_still_answers_the_unauthenticated_health_probe` (the real `--bind 0.0.0.0` router: 200 without a token, POST 401, manifest path == constant) — all pass; `exposed_bind_rejects_every_unauthenticated_surface` is unchanged and still passes. Before the fix the same request returned 401, so the Dockerfile's `hse serve --bind 0.0.0.0:$PORT` could never pass its own Railway probe (`restartPolicyType: ON_FAILURE` → restart loop). | VERIFIED |
 
 ### Scan lifecycle handlers
 
@@ -656,6 +659,7 @@ this pass), 12 PARTIAL, 2 IMPLEMENTED_UNVERIFIED, 1 UNREACHABLE.
 | REQ-API-EXPORT-004 | End-to-end: a real Breach-category module's evidence (Evidence{source: module name(), summary: the module's own capitalised-brand text, e.g. "DeHashed record from Adobe"}) and its ModuleDone scan event, once persisted and downloaded through the live HTTP… | Ran `cargo test --test api temp_probe_end_to_end_redaction_across_all_four_download_formats -- --nocapture` this pass (test added then reverted). Real output: entities.csv `sources` column = `breach-source\|breach-source`, `evidence` column = `[breach-source] breach-source record from Adobe \|\| [breach-source] breach-source record from MyFitnessPal`; report.json `"source": "breach-source"`, `"summary": "breach-source record from Adobe"` / `"...MyFitnessPal"`; events.log both lines read… | VERIFIED |
 | REQ-API-EXPORT-005 | Candidate quarantine (speculative breach-victim entities tagged CANDIDATE) is excluded by default from both scan_entities_csv and scan_export_gexf, opt-in via `?include_candidates=1` — matching the same policy the `/entities` JSON endpoint and report.json… | Ran `cargo test --test api scan_gexf_quarantines_candidate_nodes_by_default -- --nocapture` this pass — `test result: ok. 1 passed`. Separately wrote and ran (then reverted via `git checkout -- tests/api.rs`) a temporary CSV-equivalent probe: default entities.csv response omitted `stranger@breach.example` entirely while including `subject@real.example`; `?include_candidates=1` response included the candidate row with `tags` column `candidate`. `test result: ok. 1 passed`. | PARTIAL |
 | REQ-API-EXPORT-006 | Every scan-scoped export (CSV/JSON/GEXF via download_response; the debug bundle via download_response_operator) names its download `hse-<stem>-<short_id>.<ext>` with the scan id truncated to 12 characters, and every download (scan-scoped or system-scoped)… | Ran `cargo test --lib api::scan_export -- --nocapture` this pass: `test api::scan_export::tests::download_response_sets_attachment_disposition_with_scan_scoped_filename ... ok` / `test api::scan_export::tests::attachment_response_uses_the_filename_verbatim_for_system_downloads ... ok` (part of the 8/8 passing run). | VERIFIED |
+| REQ-API-EXPORT-007 (**new, Pass 14**) | The shareable-export redactor (`redact_sensitive_sources`) matches every `Breach`-category module name (plus `EXTRA_SENSITIVE`) in its `snake_case`, spaced and hyphenated spellings, case-insensitively and whole-token, so the prose brand in an evidence summary ("HIBP Pwned Passwords: value seen in …") is hidden, not just the `pwned_passwords` token; `EXTRA_SENSITIVE` lists each provider once (the hyphenated duplicates are derived, not hand-listed). | Ran `cargo test --lib api::scan_export::redact` — all pass, including the new `every_breach_source_is_redacted_in_its_spaced_and_hyphenated_spellings_too` (every multi-word breach-category module, both spellings, title-cased as a summary prints them) and the pre-existing whole-token / idempotency / every-spelling tests. Before the fix `redact_sensitive_sources("HIBP Pwned Passwords: …")` returned `breach-source Pwned Passwords: …`. | VERIFIED |
 
 ---
 
@@ -697,6 +701,8 @@ changed for this row; the fix is documentary.
 | ID | Behavior | Inputs | Outputs | Side effects | Failure behavior | Implementation location | Tests covering it | Runtime verification evidence | Status |
 |---|---|---|---|---|---|---|---|---|---|
 | REQ-STORAGE-001 (**new, Pass 10**) | `Store::integrity_check()` (`PRAGMA integrity_check`) must surface real on-disk SQLite corruption as a non-`["ok"]` result — trusted by `hse doctor` (critical-exit-code path) and the debug-bundle export API to decide whether the database is healthy (FTA finding E5.1 / top event T5). | none | `Result<Vec<String>>` | Read-only pragma | A healthy DB returns exactly `["ok"]`; a corrupt one returns a row per problem found, OR (severe corruption) the pragma itself errors. | `src/core/port/mod.rs:258-261` (trait), `src/storage/mod.rs:584-591` (impl); consumers `src/app/doctor/mod.rs:63-75`, `src/api/handlers/mod.rs:662-664` | `integrity_check_reports_ok_on_healthy_db` (healthy path, pre-existing), `integrity_check_reports_problems_on_a_corrupted_db` (new, Pass 10) (`src/storage/tests.rs`) | **Gap found and fixed in Pass 10.** The only existing test proved the healthy-DB path; nothing had ever fed `integrity_check()` a genuinely corrupted database to prove it actually detects real corruption rather than always reporting "ok". Added a test that builds a real `Store`, writes 400 entities, checkpoints, then truncates away the trailing ~40% of the file (real row data, since SQLite allocates pages append-only) — a deterministic corruption technique. **Empirical finding along the way**: this reliably fails `Store::open()` itself, not just `integrity_check()` — `open()` is not a bare `sqlite3_open`, it runs an idempotent `entity_observations` backfill and an FTS freshness count that both scan `entities`' real data pages (`src/storage/mod.rs`, right after schema setup), so corruption in the most-written table is caught even earlier than the explicit check. The test accepts either real outcome (open failing, or opening fine and `integrity_check()` then reporting/erroring) as long as some stage surfaces it. **A second, related gap found and fixed in the same investigation**: `hse doctor`'s handling of `integrity_check()` returning `Err` (`src/app/doctor/mod.rs`) printed `"could not run check"` but did **not** set the `critical` flag that drives the command's exit code — meaning severe-enough corruption (the pragma itself failing, exactly the failure mode this test's corruption technique produces) would print an alarming-looking line but still exit 0. Fixed: that branch now sets `critical = true` too, matching the sibling "ran and found problems" arm. Ran `cargo test --lib storage::tests` (108/108 passed, including both integrity_check tests) and `cargo test --lib app::doctor::tests` (14/14 passed, confirming the doctor fix didn't disturb any existing assertion) this pass. **Hardened after this pass's own PR review**: a Copilot finding correctly noted the test's original corruption predicate (matching "corrupt"/"malformed" in the error's Display text) wasn't guaranteed to catch every SQLite corruption-shaped error across versions/platforms; reworked to match the underlying `rusqlite::ErrorCode` (`DatabaseCorrupt`/`NotADatabase`/`SystemIoFailure`) instead, substring matching kept only as a fallback for non-`SqliteFailure` shapes. Re-ran the test after the rework — still passes. | VERIFIED |
+| REQ-STORAGE-002 (**new, Pass 14**) | Persisting an entity a scan has already observed (an `entity_observations` row for `(uid, scan_id)` exists) GREATEST-merges `corroboration` instead of summing it. The engine re-persists the same accumulated working-set entity several times per scan (seed-round checkpoint, every productive round's dirty set, the finalise persist, the promotion-pass re-persist), so summing counted each observation once per pass. A conflict from a different scan is a separate observation and still sums. | `&Entity` | `Result<()>` | `entities` row update | rusqlite error propagates | `src/storage/entities.rs` (`merge_and_persist_entity`) | `re_persisting_a_scans_own_entity_keeps_its_corroboration_magnitude`, `upsert_entities_batch_merges_on_conflict` (`src/storage/tests.rs`); engine-boundary lock `persisted_corroboration_never_exceeds_the_observations_that_produced_it` (`tests/smoke.rs`) | Baseline reproduced at the engine boundary: a seed observed twice (the `seed` anchor + one echo module, magnitude 2 in memory) persisted with corroboration **4**; after the fix **2**. Falsified by stashing only `src/storage/entities.rs`: the smoke test fails again with `4 > 2`. Full lib suite 6876/6876, smoke 58/58. | VERIFIED |
+| REQ-STORAGE-003 (**new, Pass 14**) | `Store::checkpoint_truncate()` returns `Err` when SQLite reports the TRUNCATE checkpoint blocked (`busy = 1` in the pragma's `(busy, log, checkpointed)` result row), so `hse tidy`'s `wal_truncated` and the finalise-housekeeping log never claim a truncation that did not happen. | none | `Result<()>` | WAL fold-back + `-wal` truncate | `Error::Other("WAL checkpoint blocked by a concurrent reader …")`, `-wal` untouched | `src/storage/mod.rs` (`checkpoint_truncate`) | `checkpoint_truncate_reports_a_blocked_checkpoint_instead_of_claiming_success` (a second connection holds an open read transaction; 100 ms busy timeout; then released and re-checkpointed) plus the pre-existing `checkpoint_truncate_resets_wal_file_and_keeps_data` (`src/storage/tests.rs`) | Ran `cargo test --lib storage::tests::checkpoint` — both pass. The old `execute_batch` form discarded the result row: the pragma never raises for a blocked checkpoint, so the doc comment's "returns `SQLITE_BUSY`, surfaced as `Err`" was false and `hse tidy` reported `wal_truncated = true` while the `-wal` still held every frame. | VERIFIED |
 
 ---
 
@@ -1536,19 +1542,129 @@ $ scripts/doc_coverage.sh
 $ scripts/gate.sh
 ```
 
+## 13. Test-harness isolation (`src/util/paths.rs`, `tests/common/`)
+
+| ID | Behavior | Inputs | Outputs | Side effects | Failure behavior | Implementation location | Tests covering it | Runtime verification evidence | Status |
+|---|---|---|---|---|---|---|---|---|---|
+| REQ-TEST-001 (**new, Pass 14**) | No test — unit or integration — writes into the developer's real `~/.huntsman`. Unit tests use the library's `cfg(test)` switch; integration crates (where `cfg!(test)` is `false` in the linked library) go through `paths::isolate_for_tests()`, a `OnceLock` base-dir override (no `unsafe` env mutation — the crate is `#![forbid(unsafe_code)]`) called by every `tests/common` harness constructor via `tmp_db`/`tmp_dir`; `cli_seed_validation`'s spawned binary gets `HOME` set like its sibling helpers. The override only moves the base path, so `huntsman_dir`'s `0700` creation and the single-base derivation of `data_file`/`subdir` are untouched, and production code never calls it. | n/a | per-process `huntsman-test-home-<pid>/.huntsman` under the OS temp dir | temp dir only | n/a | `src/util/paths.rs` (`isolate_for_tests`), `tests/common/mod.rs` (`isolate_home`), `tests/cli_seed_validation.rs` (`run`) | `production_code_never_redirects_the_data_dir` (`tests/architecture_parts/architecture_part3.rs`) | Baseline artefact observed in this environment after `cargo test --test api`: the real `~/.huntsman/module_stats.json` held 102 synthetic `seed` scans (the input to `hse scan --adaptive`) and `settings.json` had been overwritten with `{"feature.depth_decay": false}` by `settings_toggles_put_succeeds_and_persists_the_flip`. With the real directory moved aside, `cargo test --test api --test smoke --test cli_seed_validation` (129/58/9 pass) no longer recreates it; the smoke key-chaining fixture's fake `shodan` key now lands in `/tmp/huntsman-test-home-<pid>/.huntsman/key_pool.json`. | VERIFIED |
+
+---
+
+## 14. Provider API contracts re-verified against the authoritative spec
+
+| ID | Behavior | Runtime verification evidence | Status |
+|---|---|---|---|
+| REQ-PROVIDER-006 (**new, Pass 14**) | WiGLE: each observation corpus is queried on its own documented endpoint — `/api/v2/network/search` (WiFi), `/api/v2/cell/search`, `/api/v2/bluetooth/search` — with only parameters the Swagger lists for it (`latrange1/2`, `longrange1/2`, `resultsPerPage`; `ssid` on the WiFi SSID search). The BSSID detail path sends the documented `type=WIFI` to `network/detail` and uses `/api/v2/bluetooth/detail` for Bluetooth; it no longer probes a non-existent address-keyed cell lookup, so one dispatch is billed the two requests it makes. | Authoritative source retrieved and parsed 2026-09-03: `https://api.wigle.net/swagger.json` (Swagger 2.0, "WiGLE API"). `/api/v2/network/search` lists **no** `type` parameter — RULE.md's own cautionary case was still live in `src/modules/wigle/fetch.rs` (`&type={kind}`): `?type=cell` / `?type=bluetooth` were ignored and WiFi rows were labelled as cell-carrier and Bluetooth-beacon intelligence. `cell/search` and `bluetooth/search` document the same bbox parameters, and their result objects carry every field the extractors read (`ssid`, `city`/`region`/`country`/`postalcode`; `netid` for Bluetooth). `bbox_search_hits_each_corpus_own_endpoint_with_documented_params_only` (`src/modules/wigle/tests.rs`) asserts every emitted query key is in the documented-on-all-three set and no `type=` is sent; `one_bssid_dispatch_is_billed_for_every_corpus_it_probes` now pins two probes; `util::wigle` tests pin `type=WIFI` and the Bluetooth detail URL. `cargo test --lib modules::wigle util::wigle modules::wifi_intel` — all pass. Not exercised live from this environment (no WiGLE credential): the documented contract is the authority (RULE 1), the live response shape is unconfirmed here. | IMPLEMENTED_UNVERIFIED |
+| REQ-PROVIDER-007 (**new, Pass 14**) | OathNet: `init_session` parses the search-session id from the documented `POST /service/search/init` response `{ "search_id": "…" }` (`docs/OATHNET_API_GUIDE.txt`, "Search Sessions" and §9), so the id threads into every subsequent breach/stealer query and the pair costs one lookup, not two. | The previous parse read `session.id` / `data.session.id` — a shape no documented or captured response carries — so against the documented service it always returned `None`, no session was ever threaded, and every breach+stealer pair cost two full lookups of the paid quota. `session_init_response_is_parsed_in_its_documented_shape` (`src/util/oathnet/tests.rs`) decodes the documented body and pins that the previously-assumed shapes, an empty id, a non-string id and non-JSON all yield `None`. `cargo test --lib util::oathnet` passes. Live session engagement is unexercised here (no OathNet credential). | IMPLEMENTED_UNVERIFIED |
+
+---
+
+## Pass 14 findings
+
+Directive-driven ("autonomous project-execution contract … use a very
+critical lens, high-value corrections that are high confidence, remove
+redundancies and consolidate"). Two rounds.
+
+**Round 1** closed the one remaining code-reading-only row in the API section
+(REQ-API-SCAN-004, the mixed valid/invalid batch path, now VERIFIED by a
+direct test — PR #583's first commit).
+
+**Round 2** ran an 11-finder parallel discovery workflow (one finder per
+subsystem/lens: engine, entity/correlator, API, storage, CLI, util, two
+module halves, lifecycle, test integrity, web/wasm, docs-vs-reality) followed
+by a 3-lens adversarial verification of each finding (reproduce /
+already-handled / materiality, majority-refute). 31 raw findings. Every fix
+below was additionally re-derived by hand from the source before it was
+touched, and each carries a regression lock that was shown to fail on the
+baseline:
+
+1. **Offline derivation modules counted as independent sources**
+   (REQ-CORE-015). Root cause: `ENRICHMENT_ONLY_SOURCES` listed 5 sources
+   while 12 more registry modules are pure transforms of graph data.
+   Consolidation: the fact is now declared once per module
+   (`Module::is_derivation`) and pinned to the hse-core list in both
+   directions by an architecture test, so the list can no longer drift from
+   the registry. One hse-core test that asserted `email_parse` *was* a
+   corroborating source was corrected to test its stated purpose (a
+   promotion pass cannot ground a derived entity) with a real observing
+   source, and now also pins the generator-only case.
+2. **Persisted `corroboration` double-counted** (REQ-STORAGE-002). Baseline:
+   seed observed twice → corroboration 4 on disk. Same-scan re-persists are
+   idempotent; the storage test that had pinned same-scan summing was
+   corrected (with its cross-scan accumulation assertion kept).
+3. **Integration tests wrote into the real `~/.huntsman`** (REQ-TEST-001) —
+   observed directly in this environment, 102 fixture scans in the real
+   adaptive-scan ledger. A fixture escaping the harness is the exact thing
+   RULE 1 forbids.
+4. **Railway deployment could never pass its own health probe**
+   (REQ-API-AUTH-005).
+5. **WiGLE cell/Bluetooth fabrication — RULE.md's cautionary case, still
+   live** (REQ-PROVIDER-006). The authoritative Swagger was retrieved and
+   parsed rather than assumed; the fix is pinned to the documented parameter
+   sets. This also removed a third, undocumented BSSID probe.
+6. **OathNet session id parsed from an undocumented field**
+   (REQ-PROVIDER-007) — a paid-quota defect.
+7. **`checkpoint_truncate` reported success when blocked**
+   (REQ-STORAGE-003).
+8. **Two toggle-key validators that disagreed** (REQ-CLI-013) — consolidated
+   to one; the API's private duplicate deleted.
+9. **Export redaction leaked prose-spelled brands** (REQ-API-EXPORT-007) —
+   fixed systematically (spelling variants derived from the registry), and
+   `EXTRA_SENSITIVE`'s hand-listed hyphenated duplicates removed.
+
+Because the browser build embeds hse-core, the first fix changed
+`wasm-ui/pkg/hse_wasm_ui_bg.wasm` and CI's byte-exact drift check failed on
+the first push; the artifact was regenerated with the pinned pipeline after
+proving toolchain parity (the same local pipeline reproduces the pre-change
+`pkg/` byte-for-byte).
+
+**Deliberately not done this pass** (verified real, lower return or lower
+confidence — recorded so they are not re-discovered): a per-scan
+reconciliation of `running`/`pending` scan rows left by a killed process
+(recovery; real but a schema/lifecycle design choice), the crate-version
+`/static` ETag that keeps a stale SPA after an in-place upgrade (needs a
+content hash threaded through `build.rs`), `see_know`'s process-wide
+invalid-key latch and its silent false-negative path, the FOFA module's
+unverified response schema (the provider's spec was not reachable), the
+event-prune of still-running scans, the SPA's wasm-init failure path, the
+`--profile`/`--full` precedence question (documented as intended overlay
+behaviour, so not a defect on current evidence), and the identity-scan email
+admission gate reusing the broad `INFRA_DOMAINS` list.
+
+### Verification commands run (Pass 14, in order)
+
+```
+$ cargo test --test smoke persisted_corroboration_never_exceeds…   # baseline: FAILED (4 > 1), then (4 > 2)
+$ cargo test --manifest-path hse-core/Cargo.toml                    # 150 passed
+$ cargo test --lib --features dep-cooldown                          # 6876 passed, 0 failed, 22 ignored
+$ cargo test --features dep-cooldown --test api --test smoke --test architecture \
+    --test cli_seed_validation --test halting                       # 129 / 58 / 60 / 9 / 5, 0 failed
+$ git stash push -- src/storage/entities.rs && cargo test --test smoke persisted_corroboration…
+                                                                    # FAILED again (4 > 2) — the lock discriminates
+$ mv ~/.huntsman ~/.huntsman.pre-fix && cargo test --test api --test smoke --test cli_seed_validation
+$ ls ~/.huntsman                                                    # No such file or directory
+$ cargo fmt --all --check && cargo clippy --all-targets --features dep-cooldown -- -D warnings   # clean
+$ curl https://api.wigle.net/swagger.json                           # 107 558 bytes, parsed for the three search endpoints
+$ scripts/wasm_ui_drift_check.sh   (at a384354)                     # no drift — toolchain parity
+$ scripts/wasm_ui_drift_check.sh   (regenerated)                    # no drift
+$ cargo test --lib --features dep-cooldown -- modules::wigle util::wigle util::oathnet util::settings \
+    cli::tests::config storage::tests::checkpoint api::scan_export::redact api::settings_handlers modules::wifi_intel
+                                                                    # 168 passed, 0 failed
+```
+
 ## Summary statistics
 
-| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 | Pass 6 | Pass 7 | Pass 8 | Pass 9 | Pass 10 | Pass 11 | Pass 12 | Pass 13 |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 | 56 | 58 | 59 *(REQ-API-SCAN-006 fixed in Pass 9)* | 62 *(REQ-CLI-001, REQ-CLI-007 flipped from PARTIAL; REQ-STORAGE-001 new)* | 64 *(REQ-ROI-001, REQ-ROI-003 new)* | 69 *(REQ-PROVIDER-001..005 new, all landed VERIFIED)* | 72 *(REQ-ROI-004..006 new, all landed VERIFIED)* |
-| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 | 14 | 13 *(REQ-INSTALL-001 out, fixed; REQ-INSTALL-010 in as new then confirmed VERIFIED by this PR's own CI run before merge — net -1)* | 13 | 13 | 14 *(REQ-ROI-002 new)* | 14 | 14 |
-| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* | 16 *(REQ-API-SCAN-002 fixed in Pass 7)* | 16 | 16 | 14 *(REQ-CLI-001, REQ-CLI-007 out, fixed; REQ-ENV-005 stays, evidence strengthened)* | 14 | 14 | 14 |
-| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| AMBIGUOUS | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
-| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 0 *(REQ-API-SCAN-006 fixed in Pass 9)* | 0 | 0 | 0 | 0 |
-| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** | **88** | **89** | **89** | **90** *(REQ-STORAGE-001, new Section 9)* | **93** *(REQ-ROI-001/002/003, new Section 10)* | **98** *(REQ-PROVIDER-001..005, new Section 11)* | **101** *(REQ-ROI-004..006, new Section 12)* |
+| Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 | Pass 6 | Pass 7 | Pass 8 | Pass 9 | Pass 10 | Pass 11 | Pass 12 | Pass 13 | Pass 14 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 | 56 | 58 | 59 *(REQ-API-SCAN-006 fixed in Pass 9)* | 62 *(REQ-CLI-001, REQ-CLI-007 flipped from PARTIAL; REQ-STORAGE-001 new)* | 64 *(REQ-ROI-001, REQ-ROI-003 new)* | 69 *(REQ-PROVIDER-001..005 new, all landed VERIFIED)* | 72 *(REQ-ROI-004..006 new, all landed VERIFIED)* | 80 *(REQ-API-SCAN-004 flipped from PARTIAL; REQ-CORE-015, REQ-CLI-013, REQ-API-AUTH-005, REQ-API-EXPORT-007, REQ-STORAGE-002, REQ-STORAGE-003, REQ-TEST-001 new, all landed VERIFIED)* |
+| IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 | 14 | 13 *(REQ-INSTALL-001 out, fixed; REQ-INSTALL-010 in as new then confirmed VERIFIED by this PR's own CI run before merge — net -1)* | 13 | 13 | 14 *(REQ-ROI-002 new)* | 14 | 14 | 16 *(REQ-PROVIDER-006, REQ-PROVIDER-007 new — contract verified against the authoritative spec, live call unexercised without credentials)* |
+| PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* | 16 *(REQ-API-SCAN-002 fixed in Pass 7)* | 16 | 16 | 14 *(REQ-CLI-001, REQ-CLI-007 out, fixed; REQ-ENV-005 stays, evidence strengthened)* | 14 | 14 | 14 | 13 *(REQ-API-SCAN-004 out, fixed)* |
+| MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| AMBIGUOUS | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 0 *(REQ-API-SCAN-006 fixed in Pass 9)* | 0 | 0 | 0 | 0 | 0 |
+| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** | **88** | **89** | **89** | **90** *(REQ-STORAGE-001, new Section 9)* | **93** *(REQ-ROI-001/002/003, new Section 10)* | **98** *(REQ-PROVIDER-001..005, new Section 11)* | **101** *(REQ-ROI-004..006, new Section 12)* | **110** *(9 new rows: REQ-CORE-015, REQ-CLI-013, REQ-API-AUTH-005, REQ-API-EXPORT-007, REQ-STORAGE-002/003, new Section 13 REQ-TEST-001, new Section 14 REQ-PROVIDER-006/007)* |
 
 Pass 4's `VERIFIED` count (53) is Pass 3's 50, plus the REQ-ENV-003 flip
 (+1), plus the two new one-row sections REQ-ENGINE-001/REQ-CORRELATOR-001
@@ -1577,20 +1693,28 @@ row moved through an intermediate status this time; the five new rows bring
 the total from 93 to 98. Pass 13's `VERIFIED` count (72) is Pass 12's 69,
 plus one new three-row section, REQ-ROI-004..006, all three landing
 `VERIFIED` on first pass (+3) — no row moved through an intermediate status
-this time; the three new rows bring the total from 98 to 101.
+this time; the three new rows bring the total from 98 to 101. Pass 14's `VERIFIED` count (80) is Pass 13's 72, plus the
+REQ-API-SCAN-004 flip from `PARTIAL` (+1, so `PARTIAL` drops from 14 to 13),
+plus seven new rows landing `VERIFIED` on first pass (REQ-CORE-015,
+REQ-CLI-013, REQ-API-AUTH-005, REQ-API-EXPORT-007, REQ-STORAGE-002,
+REQ-STORAGE-003, REQ-TEST-001, +7); `IMPLEMENTED_UNVERIFIED` rises from 14 to
+16 (REQ-PROVIDER-006/007 — contract verified against the authoritative spec,
+live behaviour unexercised without credentials); the nine new rows bring the
+total from 101 to 110.
 
-Breakdown by section: Module trait contract 14 rows (REQ-CORE-001..014), CLI
-surface 12 rows (REQ-CLI-001..012), `install.sh` 10 rows
+Breakdown by section: Module trait contract 15 rows (REQ-CORE-001..015), CLI
+surface 13 rows (REQ-CLI-001..013), `install.sh` 10 rows
 (REQ-INSTALL-001..010), Env/config 6 rows (REQ-ENV-001..006), README claims 10
-rows (REQ-README-001..010), HTTP API surface 35 rows (REQ-API-ROUTE-001..007,
-REQ-API-AUTH-001..004, REQ-API-SCAN-001..010, REQ-API-MISC-001..008,
-REQ-API-EXPORT-001..006), Scan engine dispatch 1 row (REQ-ENGINE-001),
-Correlator rule registry 1 row (REQ-CORRELATOR-001), Storage subsystem 1 row
-(REQ-STORAGE-001), ROI-maximising expansion 3 rows
+rows (REQ-README-001..010), HTTP API surface 37 rows (REQ-API-ROUTE-001..007,
+REQ-API-AUTH-001..005, REQ-API-SCAN-001..010, REQ-API-MISC-001..008,
+REQ-API-EXPORT-001..007), Scan engine dispatch 1 row (REQ-ENGINE-001),
+Correlator rule registry 1 row (REQ-CORRELATOR-001), Storage subsystem 3 rows
+(REQ-STORAGE-001..003), ROI-maximising expansion 3 rows
 (REQ-ROI-001..003), Provider capability + economics descriptor 5 rows
 (REQ-PROVIDER-001..005), Dispatch-utility explainability 3 rows
-(REQ-ROI-004..006) —
-14+12+10+6+10+35+1+1+1+3+5+3 = 101, matching the total above.
+(REQ-ROI-004..006), Test-harness isolation 1 row (REQ-TEST-001), Provider API
+contracts re-verified 2 rows (REQ-PROVIDER-006..007) —
+15+13+10+6+10+37+1+1+3+3+5+3+1+2 = 110, matching the total above.
 Some rows cite tests shared across sections (e.g. REQ-CORE-010 and
 REQ-README-009 both cite `every_module_maps_to_valid_attack_reconnaissance_techniques`),
 which is intentional — the two rows document the same underlying test from
