@@ -976,3 +976,55 @@ fn non_huntsman_env_reads_are_known() {
          (remove them): {stale:?}"
     );
 }
+
+/// `util::paths::isolate_for_tests` redirects the entire `~/.huntsman` layout
+/// at a temp directory for the rest of the process. It exists for the
+/// integration-test harness (`tests/common`) — the one place `cfg!(test)` does
+/// not reach — and must never be reachable from a production code path, where
+/// it would silently relocate the operator's key pool, vault and scan DB.
+/// `paths.rs`'s own doc rules out an env-var escape hatch for the same reason;
+/// this pins that the function-shaped one is not called from `src/` either.
+#[test]
+fn production_code_never_redirects_the_data_dir() {
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("readable src dir").flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|e| e == "rs") {
+                out.push(p);
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    walk(&root.join("src"), &mut files);
+    assert!(!files.is_empty());
+
+    let mut offenders = Vec::new();
+    for f in &files {
+        let text = std::fs::read_to_string(f).expect("readable source");
+        let rel = f.strip_prefix(root).unwrap_or(f).display().to_string();
+        if rel.ends_with("util/paths.rs") {
+            assert_eq!(
+                text.matches("fn isolate_for_tests").count(),
+                1,
+                "paths.rs must define isolate_for_tests exactly once"
+            );
+            // Its only appearance as a CALL must be its own definition — the
+            // doc comments refer to it without parentheses.
+            assert_eq!(
+                text.matches("isolate_for_tests()").count(),
+                1,
+                "paths.rs must not call isolate_for_tests() itself"
+            );
+        } else if text.contains("isolate_for_tests") {
+            offenders.push(rel);
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "isolate_for_tests must only be reachable from the test harness, never from \
+         production code under src/: {offenders:?}"
+    );
+}

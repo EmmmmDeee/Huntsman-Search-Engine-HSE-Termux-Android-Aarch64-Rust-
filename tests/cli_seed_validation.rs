@@ -12,10 +12,16 @@ use std::process::Command;
 const BIN: &str = env!("CARGO_BIN_EXE_hse");
 
 /// Run `hse <args>` with logging off; return (success, stderr).
+///
+/// `HOME` is pointed at a per-process scratch dir: even a run that is rejected
+/// at the seed boundary opens the store / key pool at startup, and without this
+/// those writes landed in the developer's real `~/.huntsman` (the same isolation
+/// `run_streams` and the diff tests below already apply).
 fn run(args: &[&str]) -> (bool, String) {
     let out = Command::new(BIN)
         .args(args)
         .env("RUST_LOG", "off")
+        .env("HOME", common::tmp_dir("seed-run"))
         .output()
         .expect("spawn hse");
     (
