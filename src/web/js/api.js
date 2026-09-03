@@ -105,7 +105,7 @@ export const API = {
   keysGet:   ()=>API._req('/api/v1/settings/keys'),
   keysPut:   body=>API._req('/api/v1/settings/keys',{method:'PUT',body}),
   // Key POOL (multi-key per service): masked list + revoke-by-non-secret-id.
-  // Loopback-only; revoke also needs --allow-key-write. Plaintext never leaves
+  // Loopback-only; writes are refused under `hse serve --no-key-write`. Plaintext never leaves
   // the device — the raw values come from `hse keys export` in the shell.
   poolGet:    ()=>API._req('/api/v1/keys/pool'),
   poolAdd:    body=>API._req('/api/v1/keys/pool/add',{method:'POST',body}),

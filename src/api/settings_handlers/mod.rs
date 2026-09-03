@@ -246,27 +246,39 @@ pub struct KeysPoolAddRequest {
     pub env: Option<String>,
 }
 
+/// The 403 every key-writing endpoint returns when the operator started
+/// `hse serve --no-key-write`. One body in one place, and the remedy it
+/// names must be a switch `hse serve` actually accepts: an earlier version
+/// told operators to restart with `--allow-key-write`, a flag that never
+/// existed (writes are on by default; the real switch is `--no-key-write`),
+/// so the one operator-facing instruction was a dead end.
+/// `keys_pool_add_is_write_gated` (tests/api.rs) checks the named flags
+/// against the CLI definition.
+fn key_writes_disabled() -> axum::response::Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": "key writes are disabled by `--no-key-write`; restart `hse serve` without it (writes are on by default and always loopback-only)"
+        })),
+    )
+        .into_response()
+}
+
 /// `POST /api/v1/keys/pool/add` — add a NEW key to a service's rotation pool.
 /// The web Settings page's key editor (`settings/keys` PUT) already lets an
 /// operator set the PRIMARY `HUNTSMAN_*_KEY` env var for any service; this is
 /// the pool's own "add" (`hse keys add`), for operators who want to add a
 /// second/backup key for load-balancing across quota limits — previously the
 /// only way to do this was the CLI. Gated exactly like the sibling pool
-/// writes (`revoke`/`rotate`): loopback-only AND requires
-/// `--allow-key-write`.
+/// writes (`revoke`/`rotate`): loopback-only AND key writes not switched off
+/// (`hse serve --no-key-write`).
 pub async fn keys_pool_add(
     State(s): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(req): Json<KeysPoolAddRequest>,
 ) -> impl IntoResponse {
     if !s.allow_key_write {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({
-                "error": "key writes disabled; restart with `hse serve --allow-key-write`"
-            })),
-        )
-            .into_response();
+        return key_writes_disabled();
     }
     if let Some(rejection) = reject_non_loopback(&peer, "key writes are loopback-only") {
         return rejection;
@@ -339,13 +351,7 @@ pub async fn settings_keys_put(
     Json(req): Json<KeysPutRequest>,
 ) -> impl IntoResponse {
     if !s.allow_key_write {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({
-                "error": "key writes disabled; restart with `hse serve --allow-key-write`"
-            })),
-        )
-            .into_response();
+        return key_writes_disabled();
     }
     if let Some(rejection) = reject_non_loopback(&peer, "key writes are loopback-only") {
         return rejection;
@@ -411,21 +417,15 @@ pub async fn keys_pool_get(ConnectInfo(peer): ConnectInfo<SocketAddr>) -> impl I
 
 /// `POST /api/v1/keys/pool/revoke` — revoke a pooled key by its non-secret `id`
 /// (from `keys_pool_get`). A write, so it's gated exactly like `settings/keys`:
-/// loopback-only AND requires the operator to have started with
-/// `--allow-key-write`. The key is retained for audit, never used again.
+/// loopback-only AND key writes not switched off (`hse serve --no-key-write`).
+/// The key is retained for audit, never used again.
 pub async fn keys_pool_revoke(
     State(s): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(req): Json<KeysPoolRevokeRequest>,
 ) -> impl IntoResponse {
     if !s.allow_key_write {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({
-                "error": "key writes disabled; restart with `hse serve --allow-key-write`"
-            })),
-        )
-            .into_response();
+        return key_writes_disabled();
     }
     if let Some(rejection) = reject_non_loopback(&peer, "key writes are loopback-only") {
         return rejection;
@@ -454,7 +454,7 @@ pub async fn keys_pool_revoke(
 /// `POST /api/v1/keys/pool/rotate` — rotate a pooled key (identified by its
 /// non-secret `id`) to a new value: the old key is revoked (kept for audit) and
 /// the new one added in the same environment. A write, gated exactly like
-/// `settings/keys` (loopback + `--allow-key-write`). The new value is sent in the
+/// `settings/keys` (loopback, and not `--no-key-write`). The new value is sent in the
 /// body — the same loopback channel `settings/keys` PUT already uses for new keys.
 pub async fn keys_pool_rotate(
     State(s): State<Arc<AppState>>,
@@ -462,13 +462,7 @@ pub async fn keys_pool_rotate(
     Json(req): Json<KeysPoolRotateRequest>,
 ) -> impl IntoResponse {
     if !s.allow_key_write {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({
-                "error": "key writes disabled; restart with `hse serve --allow-key-write`"
-            })),
-        )
-            .into_response();
+        return key_writes_disabled();
     }
     if let Some(rejection) = reject_non_loopback(&peer, "key writes are loopback-only") {
         return rejection;
@@ -557,7 +551,7 @@ pub struct TogglePutRequest {
 /// `PUT /api/v1/settings/toggles` — flip one capability toggle and persist it.
 /// Loopback-only (the dashboard is a local operator tool) and bounded to known
 /// engine/module keys so a typo can't persist junk. No secret is involved, so —
-/// unlike key writes — this does NOT require `--allow-key-write`.
+/// unlike key writes — `hse serve --no-key-write` does not affect it.
 pub async fn settings_toggles_put(
     State(s): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,

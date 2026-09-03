@@ -3376,7 +3376,7 @@ async fn keys_pool_get_is_masked_and_revoke_is_write_gated() {
         "pool returns a services list"
     );
 
-    // Revoke without --allow-key-write (test_app default) must be forbidden.
+    // Revoke with key writes off (test_app default) must be forbidden.
     let mut post = Request::builder()
         .method("POST")
         .uri("/api/v1/keys/pool/revoke")
@@ -3390,13 +3390,13 @@ async fn keys_pool_get_is_masked_and_revoke_is_write_gated() {
     assert_eq!(
         resp.status(),
         http::StatusCode::FORBIDDEN,
-        "pool revoke must require --allow-key-write"
+        "pool revoke must be refused while key writes are off"
     );
 }
 
 #[tokio::test]
 async fn keys_pool_add_is_write_gated() {
-    // Adding a new pooled key is a write — refused without --allow-key-write
+    // Adding a new pooled key is a write — refused while key writes are off
     // (test_app default), same policy as revoke/rotate. This is the web
     // equivalent of `hse keys add`, previously CLI-only.
     use std::net::SocketAddr;
@@ -3413,11 +3413,45 @@ async fn keys_pool_add_is_write_gated() {
         .insert(axum::extract::ConnectInfo(loopback));
     let resp = app.oneshot(post).await.unwrap();
     assert_eq!(resp.status(), http::StatusCode::FORBIDDEN);
+
+    // The remedy the 403 names must be a switch `hse serve` actually accepts.
+    // This text used to tell operators to restart with `--allow-key-write`, a
+    // flag that never existed (writes are on by default; the real switch is
+    // `--no-key-write`), so the one operator-facing instruction was a dead
+    // end. Every `--flag` token in the error is checked against the CLI
+    // definition itself, so the message cannot drift from the CLI again.
+    let body = body_json(resp).await;
+    let error = body["error"]
+        .as_str()
+        .expect("the 403 carries an error text");
+    let serve_flags: std::collections::HashSet<String> = {
+        use clap::CommandFactory;
+        huntsman_search_engine::cli::Cli::command()
+            .find_subcommand("serve")
+            .expect("`hse serve` exists")
+            .get_arguments()
+            .filter_map(|a| a.get_long().map(|l| format!("--{l}")))
+            .collect()
+    };
+    let named: Vec<&str> = error
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .filter(|t| t.starts_with("--"))
+        .collect();
+    assert!(
+        !named.is_empty(),
+        "the 403 must name the switch that controls key writes: {error}"
+    );
+    for flag in named {
+        assert!(
+            serve_flags.contains(flag),
+            "the 403 names `{flag}`, which `hse serve` does not accept: {error}"
+        );
+    }
 }
 
 #[tokio::test]
 async fn keys_pool_rotate_is_write_gated() {
-    // Rotation is a write — refused without --allow-key-write (test_app default),
+    // Rotation is a write — refused while key writes are off (test_app default),
     // never a silent no-op.
     use std::net::SocketAddr;
     let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
