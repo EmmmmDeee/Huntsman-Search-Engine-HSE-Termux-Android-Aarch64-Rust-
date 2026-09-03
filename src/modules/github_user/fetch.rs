@@ -61,25 +61,49 @@ pub(super) fn ssh_key_entities(keys: &[SshKey], scan_id: &str, login: &str) -> V
         .collect()
 }
 
-pub(super) async fn fetch_ssh_keys(login: &str, ctx: &ModuleContext, result: &mut ModuleResult) {
-    let url = format!("https://api.github.com/users/{login}/keys");
-    let resp = match ctx
+/// One authenticated GitHub GET for the best-effort side-calls: the operator's
+/// token rides along when present (so the call spends the token's 5 000 req/h,
+/// not the shared-IP anonymous 60), and a rejected/throttled token is reported
+/// to the pool exactly as `fetch_orgs`/`fetch_gists` report theirs — these two
+/// side-calls used to send no token and swallow every non-2xx without a word.
+/// `None` on a transport error or any non-2xx (the side-call is best-effort).
+pub(super) async fn github_get(
+    ctx: &ModuleContext,
+    url: &str,
+    token: Option<&str>,
+) -> Option<reqwest::Response> {
+    let mut req = ctx
         .http
-        .get(&url)
+        .get(url)
         .header("Accept", "application/vnd.github+json")
         .header(
             "X-GitHub-Api-Version",
             crate::modules::github_api::API_VERSION,
-        )
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(_) => return,
-    };
-    if !resp.status().is_success() {
-        return;
+        );
+    if let Some(t) = token {
+        req = req.bearer_auth(t);
     }
+    let resp = req.send().await.ok()?;
+    let status = resp.status();
+    if !status.is_success() {
+        if let Some(t) = token {
+            crate::util::http::note_keyed_error(status.as_u16(), "github", t, ctx);
+        }
+        return None;
+    }
+    Some(resp)
+}
+
+pub(super) async fn fetch_ssh_keys(
+    login: &str,
+    ctx: &ModuleContext,
+    token: Option<&str>,
+    result: &mut ModuleResult,
+) {
+    let url = format!("https://api.github.com/users/{login}/keys");
+    let Some(resp) = github_get(ctx, &url, token).await else {
+        return;
+    };
 
     let keys: Vec<SshKey> = match crate::util::http::json_scanned(resp, SRC).await {
         Ok(k) => k,
@@ -345,25 +369,16 @@ pub(super) fn commit_email_entities(events: &[GhEvent], scan_id: &str, login: &s
         .collect()
 }
 
-pub(super) async fn fetch_events(login: &str, ctx: &ModuleContext, result: &mut ModuleResult) {
+pub(super) async fn fetch_events(
+    login: &str,
+    ctx: &ModuleContext,
+    token: Option<&str>,
+    result: &mut ModuleResult,
+) {
     let url = format!("https://api.github.com/users/{login}/events/public?per_page=30");
-    let resp = match ctx
-        .http
-        .get(&url)
-        .header("Accept", "application/vnd.github+json")
-        .header(
-            "X-GitHub-Api-Version",
-            crate::modules::github_api::API_VERSION,
-        )
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(_) => return,
-    };
-    if !resp.status().is_success() {
+    let Some(resp) = github_get(ctx, &url, token).await else {
         return;
-    }
+    };
 
     let events: Vec<GhEvent> = match crate::util::http::json_scanned(resp, SRC).await {
         Ok(e) => e,
