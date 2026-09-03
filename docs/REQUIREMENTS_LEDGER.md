@@ -1795,6 +1795,12 @@ $ cargo test --lib -- modules::builtwith modules::domainsdb modules::github_user
     app::export::tests::report_                                          # see the Pass 16 commits
 $ cargo clippy --all-targets --features dep-cooldown -- -D warnings      # clean
 $ cargo test --lib --features dep-cooldown && cargo test --test api --test architecture --test smoke
+                                                                    # 6903 / 134 / 62 / 58, 0 failed
+$ # CI on bcc913c3: rustdoc lint FAILED — an intra-doc link to a private fn from a sibling file
+$ #   (src/modules/seon/types.rs). Caught by CI, not locally: gate.sh's "rustdoc lints" step
+$ #   was skipped for an ad-hoc fmt/clippy/test subset. Fixed; the rustdoc command run locally.
+$ RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::bare_urls -D rustdoc::invalid_html_tags" \
+    cargo doc --no-deps --document-private-items --locked --features dep-cooldown   # clean
 ```
 
 ### Verification commands run (Pass 15, in order)

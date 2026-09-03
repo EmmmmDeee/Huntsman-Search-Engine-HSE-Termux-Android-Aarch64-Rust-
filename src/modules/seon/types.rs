@@ -15,7 +15,7 @@ pub(super) struct SeonEmailResp {
     /// carries an empty `"error": {}` field — SEON reuses one envelope
     /// across its API family. A dead key, an out-of-credits account, or a
     /// plan-scope rejection answers HTTP 200 with this shape, so the status
-    /// check alone can't see it; see [`seon_key_error_detail`].
+    /// check alone can't see it; see `seon_key_error_detail` in the parent module.
     #[serde(default)]
     pub(super) error: Option<SeonError>,
 }
