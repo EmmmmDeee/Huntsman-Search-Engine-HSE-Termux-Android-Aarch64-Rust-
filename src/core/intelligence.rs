@@ -5,7 +5,6 @@
 //! and bounded, deterministic path frontier used by higher-level planners.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -714,29 +713,16 @@ impl BoundedFrontier {
         self.dispatched
     }
 
-    /// Crash-safe Termux-compatible checkpoint: serialize, fsync a private
-    /// sibling temp file, atomically rename, then fsync the parent directory.
-    pub fn save_checkpoint(&self, path: &Path) -> Result<(), CheckpointError> {
-        let bytes = serde_json::to_vec(self)?;
-        crate::util::atomic_file::write(path, &bytes)?;
-        Ok(())
-    }
-
-    pub fn load_checkpoint(path: &Path) -> Result<Self, CheckpointError> {
-        let bytes = std::fs::read(path)?;
-        let checkpoint: Self = serde_json::from_slice(&bytes)?;
-        if !checkpoint.budget.is_valid()
-            || checkpoint.pending.len() > checkpoint.budget.max_pending
-            || checkpoint.dispatched > checkpoint.budget.max_dispatches
-            || checkpoint.pending.iter().any(|candidate| {
-                !candidate.is_valid()
-                    || candidate.depth > checkpoint.budget.max_depth
-                    || !checkpoint.seen.contains(&candidate.id)
+    #[must_use]
+    pub(crate) fn checkpoint_is_valid(&self) -> bool {
+        self.budget.is_valid()
+            && self.pending.len() <= self.budget.max_pending
+            && self.dispatched <= self.budget.max_dispatches
+            && self.pending.iter().all(|candidate| {
+                candidate.is_valid()
+                    && candidate.depth <= self.budget.max_depth
+                    && self.seen.contains(&candidate.id)
             })
-        {
-            return Err(CheckpointError::InvalidBudget);
-        }
-        Ok(checkpoint)
     }
 }
 
