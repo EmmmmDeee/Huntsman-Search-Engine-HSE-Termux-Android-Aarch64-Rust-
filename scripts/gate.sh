@@ -124,6 +124,12 @@ elif [ "$WASM_BINDGEN_HAVE" != "$WASM_BINDGEN_PIN" ]; then
     skip "wasm-ui/pkg drift check" "installed wasm-bindgen-cli $WASM_BINDGEN_HAVE != wasm-ui/Cargo.toml's pinned $WASM_BINDGEN_PIN (a mismatched CLI produces spurious diffs, not real drift) — cargo install wasm-bindgen-cli --version $WASM_BINDGEN_PIN --locked --force"
 elif ! command -v wasm-opt >/dev/null 2>&1; then
     skip "wasm-ui/pkg drift check" "wasm-opt (binaryen) not installed — CI is the authority for this check on hosts without it"
+elif ! mkdir -p /tmp/hse-wasm-ui-build-root 2>/dev/null; then
+    # The check builds from that ONE fixed absolute path on every host (cargo's
+    # metadata hash includes an out-of-workspace path dependency's absolute
+    # path, so the same source built from two locations can differ — see the
+    # script's header). Termux has no /tmp; CI is the authority there.
+    skip "wasm-ui/pkg drift check" "cannot create the fixed build root /tmp/hse-wasm-ui-build-root on this host — CI is the authority for this check here"
 else
     run "wasm-ui/pkg drift check" scripts/wasm_ui_drift_check.sh
 fi
