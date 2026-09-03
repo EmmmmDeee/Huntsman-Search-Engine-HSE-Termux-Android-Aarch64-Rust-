@@ -262,28 +262,61 @@ use super::*;
 
     #[test]
     fn session_init_response_is_parsed_in_its_documented_shape() {
-        // docs/OATHNET_API_GUIDE.txt: `POST /service/search/init` →
-        // `{ "search_id": "abc123..." }`. This is the only documented shape.
+        // The live reference (docs.oathnet.org/api-reference/search-session/
+        // initialize-a-search-session.md, retrieved 2026-09-03) documents the
+        // init response as `{ success, message, data: { session: { id, … },
+        // user, services, summary } }` and says the returned `session.id` is
+        // what later calls pass as `search_id`. This body is its example,
+        // trimmed to the documented fields.
+        let documented = r#"{
+          "success": true,
+          "message": "Search session initialized successfully",
+          "data": {
+            "session": {
+              "id": "sess_abc123",
+              "query": "user@example.com",
+              "search_type": "email",
+              "status": "active",
+              "created_at": "2024-01-15T10:30:00Z",
+              "expires_at": "2024-01-15T11:30:00Z",
+              "duration_minutes": 60
+            },
+            "user": { "plan": "Pro", "daily_lookups": { "used": 450, "remaining": 550, "limit": 1000 } },
+            "services": {},
+            "summary": { "total_services": 2, "available_services": 2, "session_expires_in_minutes": 60 }
+          }
+        }"#;
         assert_eq!(
-            search_id_from_init_response(r#"{ "search_id": "sess_abc123" }"#).as_deref(),
+            session_id_from_init_response(documented).as_deref(),
             Some("sess_abc123")
         );
-        // The previously-assumed `session.id` shape appears in no documented or
-        // captured response; parsing it would be an assumed contract (RULE 1),
-        // and it must not resurrect as a silent fallback.
+        // Shapes no documented response carries — a flat `search_id` (what an
+        // earlier revision of the in-repo guide showed, and what this parser
+        // briefly read) and a top-level `session.id` — must not be accepted:
+        // an assumed contract must not resurrect as a silent fallback.
         assert_eq!(
-            search_id_from_init_response(r#"{ "session": { "id": "x" } }"#),
+            session_id_from_init_response(r#"{ "search_id": "sess_abc123" }"#),
             None
         );
         assert_eq!(
-            search_id_from_init_response(r#"{ "data": { "session": { "id": "x" } } }"#),
+            session_id_from_init_response(r#"{ "session": { "id": "sess_abc123" } }"#),
             None
         );
         // Degenerate bodies never yield a session that would then be threaded
         // into every subsequent query URL.
-        assert_eq!(search_id_from_init_response(r#"{ "search_id": "" }"#), None);
-        assert_eq!(search_id_from_init_response(r#"{ "search_id": 42 }"#), None);
-        assert_eq!(search_id_from_init_response("not json"), None);
+        assert_eq!(
+            session_id_from_init_response(r#"{ "data": { "session": { "id": "" } } }"#),
+            None
+        );
+        assert_eq!(
+            session_id_from_init_response(r#"{ "data": { "session": { "id": 42 } } }"#),
+            None
+        );
+        assert_eq!(
+            session_id_from_init_response(r#"{ "success": false, "message": "Unauthorized", "data": null }"#),
+            None
+        );
+        assert_eq!(session_id_from_init_response("not json"), None);
     }
 
     #[test]

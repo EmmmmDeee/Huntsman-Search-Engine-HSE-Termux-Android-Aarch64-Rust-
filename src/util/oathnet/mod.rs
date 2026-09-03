@@ -1056,18 +1056,22 @@ fn session_init_body(value: &str) -> String {
 
 /// The search-session id from a `POST /service/search/init` response body.
 ///
-/// The documented response is `{ "search_id": "abc123..." }` — the in-repo API
-/// guide (`docs/OATHNET_API_GUIDE.txt`, "Search Sessions" and §9) shows exactly
-/// that shape and nothing else. This used to read `session.id` /
-/// `data.session.id`, fields no documented or captured response carries, so
-/// against the real service it always returned `None`: no session was ever
-/// threaded, and every breach+stealer pair cost two full lookups of HSE's
-/// scarcest paid quota instead of the one a session makes it. Pure, so the
-/// parse is unit-tested against the documented body.
-pub(crate) fn search_id_from_init_response(text: &str) -> Option<String> {
+/// The documented response nests it: `{ "success": true, "message": "…",
+/// "data": { "session": { "id": "sess_…", … }, "user": …, "services": …,
+/// "summary": … } }` — "The returned `session.id` should be passed as
+/// `search_id` to all subsequent service calls" (the live reference,
+/// `docs.oathnet.org/api-reference/search-session/initialize-a-search-session.md`,
+/// retrieved 2026-09-03; mirrored in `docs/OATHNET_API_GUIDE.txt` §9). Only
+/// that path is read: a flat top-level `search_id` (what an earlier revision
+/// of the in-repo guide showed, and what this parser briefly read) or a
+/// top-level `session.id` appears in no documented response, so accepting
+/// either would be an assumed contract that could thread a wrong value into
+/// every later query URL. Pure, so the parse is unit-tested against the
+/// documented body.
+pub(crate) fn session_id_from_init_response(text: &str) -> Option<String> {
     let parsed: Value = serde_json::from_str(text).ok()?;
     parsed
-        .get("search_id")?
+        .pointer("/data/session/id")?
         .as_str()
         .filter(|s| !s.trim().is_empty())
         .map(str::to_string)
@@ -1091,7 +1095,7 @@ pub async fn init_session(key: &str, value: &str) -> Option<String> {
     // Routed through the shared CurlClient — same UA / Accept /
     // auth-header layout as the GET path, just with a JSON body.
     let text = CLIENT.post_json(&url, key, &body).await.ok()?;
-    let sid = search_id_from_init_response(&text)?;
+    let sid = session_id_from_init_response(&text)?;
     // `debug!`, not `info!`: `value` is the raw scan target (email / username /
     // phone = PII). Every other target-bearing detail in the system lives at the
     // debug/trace "raw logs" tier so `RUST_LOG=info` never surfaces the subject's
