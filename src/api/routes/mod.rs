@@ -358,14 +358,6 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         "application/javascript",
         include_bytes!("../../web/js/views/search.js"),
     ),
-    // TEMPORARY diagnostic page proving the JS -> Rust/WASM port's pipeline
-    // in isolation (not linked from spa.html). Remove once enough real view
-    // ports make it clearly redundant.
-    (
-        "wasm_test.html",
-        "text/html; charset=utf-8",
-        include_bytes!("../../../wasm-ui/pkg/wasm_test.html"),
-    ),
     // The wasm-ui crate's compiled output (see wasm-ui/Cargo.toml) — real,
     // growing production content, imported by main.js the same way every JS
     // module above is imported. Currently provides the theme toggle

@@ -76,6 +76,20 @@ esac
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
 
+# The ONE place the binaryen (wasm-opt) version is pinned. ci.yml installs
+# exactly this build (sha256-pinned tarball) and gate.sh reads this line to
+# skip — rather than cry wolf — on a host whose wasm-opt is a different build:
+# a different build can legitimately re-optimise identical input to
+# different bytes, which a byte-exact check cannot tell from real drift.
+# Verified here too, so no environment (CI included) can silently run the
+# check with another build.
+WASM_OPT_PIN=108
+if ! wasm-opt --version 2>/dev/null | grep -q "version ${WASM_OPT_PIN}\b"; then
+    echo "wasm_ui_drift_check: wasm-opt is not binaryen version_${WASM_OPT_PIN} ($(wasm-opt --version 2>/dev/null || echo 'not installed'))" >&2
+    echo "  (the committed wasm-ui/pkg/ was produced by that exact build; another build yields different bytes from identical source)" >&2
+    exit 1
+fi
+
 # Fixed on every host — see the header. Never derive this from $TMPDIR, $PWD
 # or mktemp: the point is that it is the same string everywhere.
 BUILD_ROOT=/tmp/hse-wasm-ui-build-root
@@ -127,8 +141,10 @@ wasm-opt -Os --enable-sign-ext --enable-bulk-memory --enable-mutable-globals \
     -o "$BUILD_ROOT/pkg/hse_wasm_ui_bg.wasm.opt" "$BUILD_ROOT/pkg/hse_wasm_ui_bg.wasm"
 mv "$BUILD_ROOT/pkg/hse_wasm_ui_bg.wasm.opt" "$BUILD_ROOT/pkg/hse_wasm_ui_bg.wasm"
 
-# Only these two files are pipeline output — wasm-ui/pkg/ also holds
-# wasm_test.html, a hand-authored diagnostic page the pipeline never touches.
+# These two files are the pipeline's whole output — nothing else lives in
+# wasm-ui/pkg/ (the hand-authored wasm_test.html diagnostic page that used to
+# sit beside them, and ship in every binary, was removed once every view was
+# ported and its checks lived in wasm-ui's unit tests).
 if [ "$WRITE" -eq 1 ]; then
     cp "$BUILD_ROOT/pkg/hse_wasm_ui.js" "$BUILD_ROOT/pkg/hse_wasm_ui_bg.wasm" wasm-ui/pkg/
     echo "wasm-ui/pkg/ regenerated from source (commit it if git reports a change)."
