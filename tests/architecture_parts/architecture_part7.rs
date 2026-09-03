@@ -604,3 +604,63 @@ fn see_know_errors_carry_the_registered_module_name_not_a_phantom_one() {
         "`util::see_know::SRC` must be a registered module name"
     );
 }
+
+/// A transport failure while streaming a response body must never be mapped to
+/// an empty `ModuleResult`.
+///
+/// `read_body_capped` returns `None` ONLY on a transport error (hitting the cap
+/// returns `Some`, truncated), so `None => return Ok(ModuleResult::new())` is
+/// the fail-open shape that turns a connection reset into a NEGATIVE CLAIM
+/// about the subject — "holds no licence", "is not a registered practitioner",
+/// "has no legal records". An analyst acts on those. This is the contract's
+/// ABSENCE OF EASY EVIDENCE ≠ ABSENCE OF A NEXUS at the transport layer, and
+/// the class this codebase has now fixed in acma_rrl, ahpra, asic_director,
+/// au_electoral, au_property and app_links.
+///
+/// `util::http::read_body_capped_or_fail` is the shared fail-closed helper; a
+/// module that genuinely wants the permissive read (a best-effort enrichment
+/// where an empty answer asserts nothing about the subject) may still call
+/// `read_body_capped` — it just may not pair it with an immediate empty-Ok
+/// return.
+#[test]
+fn no_module_maps_an_unreadable_body_to_an_empty_result() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    collect_rs_files(&root.join("src").join("modules"), &mut files);
+    let is_test_file = |p: &Path| {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        name == "tests.rs"
+            || name.ends_with("_tests.rs")
+            || p.components().any(|c| c.as_os_str() == "tests")
+    };
+    // The fail-open shape, tolerant of rustfmt's line breaking: a
+    // `read_body_capped` call whose `None` arm returns an empty ModuleResult.
+    let offenders: Vec<String> = files
+        .iter()
+        .filter(|p| !is_test_file(p))
+        .filter_map(|p| {
+            let src = fs::read_to_string(p).unwrap();
+            let flat: String = src.split_whitespace().collect::<Vec<_>>().join(" ");
+            let mut from = 0usize;
+            while let Some(hit) = flat[from..].find("read_body_capped(") {
+                let start = from + hit;
+                // Look only at the ~200 chars following the call — far enough to
+                // cover the match/let-else that consumes it, short enough not to
+                // catch an unrelated empty-Ok later in the function.
+                let window = &flat[start..flat.len().min(start + 200)];
+                if window.contains("None => return Ok(ModuleResult::new())")
+                    || window.contains("else { return Ok(ModuleResult::new()) }")
+                {
+                    return Some(p.strip_prefix(root).unwrap().display().to_string());
+                }
+                from = start + "read_body_capped(".len();
+            }
+            None
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "a body-read transport failure must not read as a clean negative — use \
+         `util::http::read_body_capped_or_fail`: {offenders:?}"
+    );
+}

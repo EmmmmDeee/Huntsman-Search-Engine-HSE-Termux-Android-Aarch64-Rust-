@@ -179,10 +179,13 @@ impl Module for AcmaRrl {
         let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
             return Ok(ModuleResult::new());
         };
-        let html = match crate::util::http::read_body_capped(resp, 512 * 1024).await {
-            Some(s) => s,
-            None => return Ok(ModuleResult::new()),
-        };
+        // An empty result from this registry is a NEGATIVE CLAIM about the
+        // subject, which an analyst will act on, so a connection reset while
+        // streaming the body must never be able to produce one — see
+        // `read_body_capped_or_fail`. Fail closed, as the sibling AU scrapers
+        // already do (`asic_director::request_failed`, `au_electoral`'s
+        // `RollOutcome::Unreachable`, `app_links`' `FetchOutcome::TransportFailed`).
+        let html = crate::util::http::read_body_capped_or_fail(SRC, resp, 512 * 1024).await?;
 
         let licences = parse_acma_html(&html);
         let mut result = ModuleResult::new();

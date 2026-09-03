@@ -128,14 +128,21 @@ impl Module for AustLii {
         );
 
         let resp = ctx.http.get(&url).send_tagged(SRC).await?;
-        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[404]).await? else {
+        // NOT `ok_or_absent(.., &[404])`: `SEARCH_URL` is a FIXED endpoint path,
+        // not a per-subject resource, so a 404 here means the endpoint moved or
+        // the CGI was withdrawn — never "this subject has no legal records".
+        // Treating it as a clean miss made an AustLII outage indistinguishable
+        // from a subject with a clean record, silently and on every scan.
+        // `&[]`, not `&[404]`: AustLII signals "no results" in the body of a
+        // 200 (an empty results table), so per `ok_or_absent`'s own contract
+        // every non-2xx here is a failure.
+        let Some(resp) = crate::util::http::ok_or_absent(SRC, resp, &[]).await? else {
             return Ok(ModuleResult::new());
         };
 
-        let html = match crate::util::http::read_body_capped(resp, 512 * 1024).await {
-            Some(s) => s,
-            None => return Ok(ModuleResult::new()),
-        };
+        // "No AustLII legal records for this subject" is a negative claim an
+        // analyst acts on; a connection reset mid-body must not manufacture one.
+        let html = crate::util::http::read_body_capped_or_fail(SRC, resp, 512 * 1024).await?;
 
         let links = extract_case_links(&html);
         if links.is_empty() {

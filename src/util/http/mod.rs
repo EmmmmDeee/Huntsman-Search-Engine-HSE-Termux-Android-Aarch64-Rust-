@@ -33,7 +33,7 @@ pub use fetch::{
     handle_keyed_error, http_status_error, is_auth_failure_400_body, is_key_or_quota_message,
     is_keyed_error_status, keyed_cascade, keyed_cascade_json, keyed_cascade_with_key,
     keyed_ok_or_404, note_keyed_error, ok_or_absent, parse_retry_after_secs, read_body_capped,
-    read_text, retry_after_secs,
+    read_body_capped_or_fail, read_text, retry_after_secs,
 };
 pub use keys::{scan_for_api_keys, scan_for_api_keys_with_source};
 pub(crate) use redact::redact_credentials;
