@@ -1331,6 +1331,68 @@ async fn batch_endpoint_enforces_empty_and_size_limits() {
 }
 
 #[tokio::test]
+async fn batch_endpoint_records_per_item_error_and_continues_for_mixed_valid_invalid_targets() {
+    // scan_batch's per-item error path (core.rs `Err(msg) => { scan_ids.push(json!({
+    // "error": msg })); continue; }`) is only reachable when a structurally-valid
+    // JSON array contains a target that fails `validated_target` (e.g. a malformed
+    // email). This pins that the batch as a whole still 202s, the invalid entry
+    // gets an `{"error": ...}` slot instead of aborting the request, and the valid
+    // entries alongside it are still queued.
+    let app = test_app("batch-mixed");
+
+    let body = r#"[
+        {"kind":"email","value":"valid1@huntsman-test.io"},
+        {"kind":"email","value":"not-an-email"},
+        {"kind":"email","value":"valid2@huntsman-test.io"}
+    ]"#;
+    let resp = app
+        .oneshot(post_json("/api/v1/scans/batch", body))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        http::StatusCode::ACCEPTED,
+        "a batch with one invalid target among valid ones must still 202, not abort"
+    );
+    let body = axum::body::to_bytes(resp.into_body(), 100_000)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let scans = json["scans"].as_array().expect("scans array");
+    assert_eq!(json["count"], 3, "all 3 items must produce a result slot");
+    assert_eq!(scans.len(), 3);
+
+    assert!(
+        scans[0].get("scan_id").is_some() && scans[0].get("error").is_none(),
+        "first valid target must be queued, not errored: {:?}",
+        scans[0]
+    );
+    assert_eq!(
+        scans[0]["status"], "queued",
+        "valid entries are queued: {:?}",
+        scans[0]
+    );
+
+    assert!(
+        scans[1].get("error").is_some() && scans[1].get("scan_id").is_none(),
+        "malformed target must record a per-item error, not a scan_id: {:?}",
+        scans[1]
+    );
+    let err_msg = scans[1]["error"].as_str().expect("error is a string");
+    assert!(
+        err_msg.contains("invalid target"),
+        "error message must explain the rejection: {err_msg}"
+    );
+
+    assert!(
+        scans[2].get("scan_id").is_some() && scans[2].get("error").is_none(),
+        "third valid target (after the invalid one) must still be queued: {:?}",
+        scans[2]
+    );
+    assert_eq!(scans[2]["status"], "queued");
+}
+
+#[tokio::test]
 async fn search_endpoint_rejects_overlong_query() {
     // The 256-char query cap bounds work per request; it fires before any FTS
     // query, so no entities need seeding. A normal query is fine; a 300-char one
