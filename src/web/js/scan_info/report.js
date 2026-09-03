@@ -1,7 +1,7 @@
 import { $, esc } from '/static/js/helpers.js';
 import { nav } from '/static/js/router.js';
 import { S } from '/static/js/state.js';
-import { renderExposure } from '/static/js/scan_info/info.js';
+import { renderExposure, renderProviderCoverage } from '/static/js/scan_info/info.js';
 import { renderMetrics } from '/static/js/scan_info/metrics.js';
 import { renderNetwork } from '/static/js/scan_info/network.js';
 import { renderLocation } from '/static/js/scan_info/location.js';
@@ -22,14 +22,19 @@ export async function renderSummary(host, id, scan){
   const corrN = S.correlations.length;
   host.innerHTML = `
     <div id="sum-exposure"></div>
+    <div id="sum-coverage" style="margin-top:18px"></div>
     <div id="sum-metrics"  style="margin-top:18px"></div>
     <div id="sum-network"  style="margin-top:18px"></div>
     <div id="sum-location" style="margin-top:18px"></div>
     <div id="sum-leads"    style="margin-top:18px"></div>
     <div id="sum-corr"     style="margin-top:18px"></div>`;
   // Each renderer owns its own async fetch; the Summary only composes the few
-  // highest-value ones (5 fetches, not the old ~17).
+  // highest-value ones (6 fetches, not the old ~17).
   renderExposure($('#sum-exposure'), id);
+  // Directly under the headline verdict: the Exposure Index says how exposed
+  // the subject is, and this says how much of the sweep behind it actually
+  // ran. A low score from an incomplete sweep is not the same finding.
+  renderProviderCoverage($('#sum-coverage'), id);
   renderMetrics($('#sum-metrics'), id);
   renderNetwork($('#sum-network'), id);
   renderLocation($('#sum-location'), id);

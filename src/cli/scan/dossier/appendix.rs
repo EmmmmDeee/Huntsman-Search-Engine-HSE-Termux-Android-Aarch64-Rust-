@@ -123,6 +123,56 @@ impl Collection {
         }
     }
 
+    /// Which providers actually answered — and which the operator must not
+    /// read this dossier's silence as a negative from.
+    ///
+    /// A thin dossier is ambiguous without this: a scan that asked everything
+    /// and found little looks the same as one where a third of its sources
+    /// broke or were never configured, and only the first is evidence of
+    /// absence. Derived from this scan's own dispatch events by
+    /// [`crate::core::intelligence::provider_coverage_from_events`], the same
+    /// derivation `report.json` carries, so the on-device and over-the-wire
+    /// dossiers cannot disagree about what was covered.
+    fn print_coverage(&self) {
+        let rows = crate::core::intelligence::provider_coverage_from_events(&self.events);
+        if rows.is_empty() {
+            // Not "everything answered" — nothing is known about coverage.
+            println!("  Coverage: no dispatch events retained for this scan.");
+            return;
+        }
+        let unresolved: Vec<&crate::core::intelligence::ProviderCoverage> = rows
+            .iter()
+            .filter(|row| !row.outcome.is_resolved())
+            .collect();
+        if unresolved.is_empty() {
+            println!(
+                "  Coverage: all {} provider(s) answered — a thin result here is a real negative.",
+                rows.len()
+            );
+            println!();
+            return;
+        }
+        println!(
+            "  Coverage: {} of {} provider(s) never answered — this dossier's silence about \
+             what they cover is NOT evidence of absence:",
+            unresolved.len(),
+            rows.len()
+        );
+        const UNRESOLVED_SHOWN: usize = 10;
+        for row in unresolved.iter().take(UNRESOLVED_SHOWN) {
+            println!(
+                "    {:<14} {:<22} {}",
+                row.outcome.as_str(),
+                row.provider_id,
+                row.outcome.reason().unwrap_or("")
+            );
+        }
+        if let Some(note) = truncation_note(UNRESOLVED_SHOWN, unresolved.len()) {
+            println!("{note}");
+        }
+        println!();
+    }
+
     /// What ran, what it cost, what it yielded, and which paid keys were
     /// wasted.
     pub(super) fn print_collection(&self) {
@@ -147,6 +197,8 @@ impl Collection {
         if let Some(note) = truncation_note(MODULES_SHOWN, self.diag.modules_by_yield.len()) {
             println!("{note}");
         }
+
+        self.print_coverage();
 
         let wasted =
             crate::util::diagnostics::keyed_or_paid_zero_yield_modules(&self.events, &self.costs);

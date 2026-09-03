@@ -38,6 +38,7 @@
 //! | GET    | `/api/v1/scans/{id}/entities/facets`     | `scan_entities_facets`         |
 //! | GET    | `/api/v1/scans/{id}/diamond`             | `scan_diamond`                 |
 //! | GET    | `/api/v1/scans/{id}/exposure`            | `scan_exposure`                |
+//! | GET    | `/api/v1/scans/{id}/coverage`            | `scan_coverage`                |
 //! | GET    | `/api/v1/scans/{id}/attack`              | `scan_attack` (v1.13+)         |
 //! | GET    | `/api/v1/scans/{id}/entities.csv`        | `scan_entities_csv`            |
 //! | GET    | `/api/v1/scans/{id}/report.json`         | `scan_report_json`             |
@@ -507,6 +508,7 @@ pub fn router(
         )
         .route("/scans/{id}/diamond", get(scan_handlers::scan_diamond))
         .route("/scans/{id}/exposure", get(scan_handlers::scan_exposure))
+        .route("/scans/{id}/coverage", get(scan_handlers::scan_coverage))
         .route("/scans/{id}/attack", get(scan_handlers::scan_attack))
         .route(
             "/scans/{id}/entities.csv",

@@ -678,6 +678,91 @@ async fn scan_network_synthesises_subject_graph() {
 }
 
 #[tokio::test]
+async fn scan_coverage_never_reports_an_unknown_sweep_as_a_complete_one() {
+    // Unknown scan → 404, like the other `/scans/{id}/...` sub-resources.
+    let app = test_app("coverage_nf");
+    let resp = app
+        .oneshot(get("/api/v1/scans/nope/coverage"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    // A known scan → 200. The engine is asynchronous, so a freshly created
+    // scan may have no retained dispatch events yet — and THAT is the case
+    // that matters: `providers` must be null and `complete` must be null, not
+    // an empty list and `true`. An empty list would read as "every provider
+    // answered", which is the false clean negative this endpoint exists to
+    // prevent, and it is the reading a caller would take on the thinnest
+    // possible scan.
+    let (app, sid) = create_scan("coverage_ok").await;
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/coverage")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = body_json(resp).await;
+    for key in [
+        "complete",
+        "unresolved_count",
+        "provider_count",
+        "providers",
+    ] {
+        assert!(body.get(key).is_some(), "coverage carries {key}: {body}");
+    }
+    assert!(
+        !body["providers"].is_array() || !body["providers"].as_array().unwrap().is_empty(),
+        "an empty provider list must never be returned — null means unknown: {body}"
+    );
+    if body["providers"].is_null() {
+        assert!(
+            body["complete"].is_null(),
+            "unknown coverage is not a complete one: {body}"
+        );
+        assert_eq!(body["provider_count"].as_u64(), Some(0));
+    } else {
+        // The scan got far enough to dispatch: every row names its provider and
+        // an outcome, and an unresolved outcome always says why.
+        let rows = body["providers"].as_array().unwrap();
+        assert_eq!(
+            body["provider_count"].as_u64(),
+            Some(rows.len() as u64),
+            "the count matches the rows: {body}"
+        );
+        let unresolved = rows
+            .iter()
+            .filter(|row| {
+                !matches!(
+                    row["outcome"]["kind"].as_str(),
+                    Some("observed" | "clean_negative")
+                )
+            })
+            .count();
+        assert_eq!(body["unresolved_count"].as_u64(), Some(unresolved as u64));
+        assert_eq!(body["complete"].as_bool(), Some(unresolved == 0));
+        for row in rows {
+            assert!(
+                row["provider_id"].as_str().is_some_and(|v| !v.is_empty()),
+                "every row names its provider: {row}"
+            );
+            let kind = row["outcome"]["kind"].as_str().unwrap_or_default();
+            assert!(
+                ["observed", "clean_negative", "failed", "not_attempted"].contains(&kind),
+                "unexpected outcome kind {kind}: {row}"
+            );
+            if kind == "failed" || kind == "not_attempted" {
+                assert!(
+                    row["outcome"]["reason"]
+                        .as_str()
+                        .is_some_and(|v| !v.trim().is_empty()),
+                    "an unresolved outcome always says why: {row}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn scan_identities_resolves_coreferences() {
     // Unknown scan → 404, like the other `/scans/{id}/...` sub-resources.
     let app = test_app("identities_nf");

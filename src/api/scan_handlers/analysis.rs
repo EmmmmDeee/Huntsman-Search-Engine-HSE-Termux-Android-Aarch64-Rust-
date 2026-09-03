@@ -107,6 +107,53 @@ pub async fn scan_exposure(
     .into_response()
 }
 
+/// `GET /api/v1/scans/{id}/coverage` — which providers actually answered.
+///
+/// The one distinction a thin scan result cannot be read without: a sweep that
+/// asked everything and found little is a real negative; a sweep where a third
+/// of its providers broke or were never configured is not. Both render
+/// identically in every other view, so the web console — the primary interface
+/// on a Termux/Android device — gets the same derivation `report.json` and the
+/// CLI dossier carry, from the same
+/// [`crate::core::intelligence::provider_coverage_from_events`], rather than a
+/// second opinion assembled client-side.
+///
+/// `providers` is `null`, not `[]`, when no dispatch events are retained for
+/// the scan (an old scan whose event log has been pruned): an empty list would
+/// read as "every provider answered", which is exactly the false clean
+/// negative this endpoint exists to prevent.
+pub async fn scan_coverage(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let events = match super::offload_store(move || store.events_for_scan(&id2)).await {
+        Ok(events) => events,
+        Err(resp) => return resp,
+    };
+    let rows = crate::core::intelligence::provider_coverage_from_events(&events);
+    if rows.is_empty() {
+        return Json(json!({
+            "complete": serde_json::Value::Null,
+            "unresolved_count": 0,
+            "provider_count": 0,
+            "providers": serde_json::Value::Null,
+        }))
+        .into_response();
+    }
+    Json(json!({
+        "complete": crate::core::intelligence::coverage_is_complete(&rows),
+        "unresolved_count": rows.iter().filter(|row| !row.outcome.is_resolved()).count(),
+        "provider_count": rows.len(),
+        "providers": rows,
+    }))
+    .into_response()
+}
+
 /// `GET /api/v1/scans/{id}/diamond` — the scan's entities rolled up by **Diamond
 /// Model vertex** (`victim` / `infrastructure` / `capability`; `adversary` is a
 /// relational role the kind classifier never produces — see [`crate::core::diamond`]).

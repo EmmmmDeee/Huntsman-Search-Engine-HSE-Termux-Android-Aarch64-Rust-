@@ -1874,6 +1874,28 @@ pub(crate) fn build_scan_report(
     // identical whether or not this envelope filtered candidates above, and the
     // determinism audit still holds (nothing here varies but `exported_at`).
     let exposure = crate::core::exposure::assess(&entities, &correlations);
+    // Provider coverage: what the engine actually managed to ask, derived from
+    // this scan's own dispatch events. Without it a MINIMAL report is
+    // ambiguous — a clean sweep that found nothing and a sweep where twelve
+    // providers never answered render identically, and only the first is
+    // evidence of absence. `null` when the scan has no retained module events
+    // (an old scan whose log has been pruned), because an EMPTY coverage list
+    // would read as "every provider answered", which is precisely the false
+    // clean negative this block exists to prevent.
+    let coverage =
+        crate::core::intelligence::provider_coverage_from_events(&store.events_for_scan(scan_id)?);
+    let provider_coverage = if coverage.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::json!({
+            "complete": crate::core::intelligence::coverage_is_complete(&coverage),
+            "unresolved_count": coverage
+                .iter()
+                .filter(|row| !row.outcome.is_resolved())
+                .count(),
+            "providers": coverage,
+        })
+    };
     Ok(Some(serde_json::json!({
         "scan": scan,
         "entities": entities,
@@ -1885,6 +1907,10 @@ pub(crate) fn build_scan_report(
         // `null` when no AU-059 fired; present with full structured fields when
         // ≥2 orthogonal AU source classes converged on a location.
         "best_location": best_location,
+        // Which providers answered, which broke, and which were never asked —
+        // so a thin report can be read as a thin result rather than as a clean
+        // one. See the derivation above for the failure-dominant aggregation.
+        "provider_coverage": provider_coverage,
         // DETERMINISM: `exported_at` is the SOLE intentional source of
         // non-determinism in any export. It is meaningful here — report.json is a
         // point-in-time snapshot whose "when was this pulled" is part of its

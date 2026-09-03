@@ -7,6 +7,7 @@ pub mod benchmark;
 pub mod browse;
 pub mod communities;
 pub mod correlations;
+pub mod coverage;
 pub mod duplicates;
 pub mod gaps;
 pub mod identities;

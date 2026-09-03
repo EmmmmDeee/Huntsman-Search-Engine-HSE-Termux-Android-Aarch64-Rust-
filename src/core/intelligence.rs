@@ -962,6 +962,147 @@ impl IntelligenceLedger {
     }
 }
 
+/// One provider's coverage of one scan, aggregated from the engine's own
+/// dispatch events.
+///
+/// The counts are kept alongside the verdict because they are not recoverable
+/// from it: a provider that answered on four targets and broke on a fifth has
+/// the same [`ProviderOutcome`] as one that broke on its only attempt, and an
+/// operator deciding whether to re-run needs to tell those apart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCoverage {
+    /// The module this row is about.
+    pub provider_id: String,
+    /// The aggregate verdict — see [`provider_coverage_from_events`] for how
+    /// several dispatches collapse into one.
+    pub outcome: ProviderOutcome,
+    /// Dispatches that completed, failed, or were skipped.
+    pub dispatches: u32,
+    /// Entities produced across all of them.
+    pub findings: u32,
+    /// Dispatches that failed.
+    pub failures: u32,
+    /// Dispatches that were never made.
+    pub skips: u32,
+}
+
+/// Aggregate a scan's provider coverage from its event log.
+///
+/// This is the bridge from what the engine DID to what may be concluded from
+/// its silence. Each module's dispatches collapse to one verdict,
+/// **failure-dominant**: any failed dispatch makes the row `Failed`, then any
+/// skipped one makes it `NotAttempted`, and only a module whose every dispatch
+/// completed can be `Observed` (it produced something) or `CleanNegative` (it
+/// did not). A module that found five entities on one target and broke on
+/// another is reported as failed, because the question this answers is not
+/// "did it find anything" — the findings are in the report either way — but
+/// "is this module's silence about the rest of the target set trustworthy".
+/// It is not.
+///
+/// Rows are sorted by provider id, so the derivation is deterministic and safe
+/// to embed in a byte-reproducible export.
+#[must_use]
+pub fn provider_coverage_from_events(
+    events: &[crate::core::event::Event],
+) -> Vec<ProviderCoverage> {
+    use crate::core::event::EventKind;
+
+    struct Tally {
+        dispatches: u32,
+        findings: u32,
+        failures: u32,
+        skips: u32,
+        first_error: Option<String>,
+        first_skip: Option<String>,
+    }
+
+    let mut tallies: BTreeMap<&str, Tally> = BTreeMap::new();
+    for event in events {
+        let (EventKind::ModuleDone { module, .. }
+        | EventKind::ModuleError { module, .. }
+        | EventKind::ModuleSkipped { module, .. }) = &event.kind
+        else {
+            continue;
+        };
+        let module = module.as_str();
+        let tally = tallies.entry(module).or_insert(Tally {
+            dispatches: 0,
+            findings: 0,
+            failures: 0,
+            skips: 0,
+            first_error: None,
+            first_skip: None,
+        });
+        tally.dispatches = tally.dispatches.saturating_add(1);
+        match &event.kind {
+            EventKind::ModuleDone { found, .. } => {
+                tally.findings = tally
+                    .findings
+                    .saturating_add(u32::try_from(*found).unwrap_or(u32::MAX));
+            }
+            EventKind::ModuleError { error, .. } => {
+                tally.failures = tally.failures.saturating_add(1);
+                if tally.first_error.is_none() {
+                    tally.first_error = Some(error.clone());
+                }
+            }
+            EventKind::ModuleSkipped { reason, .. } => {
+                tally.skips = tally.skips.saturating_add(1);
+                if tally.first_skip.is_none() {
+                    tally.first_skip = Some(reason.clone());
+                }
+            }
+            _ => unreachable!("filtered above"),
+        }
+    }
+
+    tallies
+        .into_iter()
+        .map(|(provider_id, tally)| {
+            // A reason is always present for the branch that reads it, but an
+            // event carrying an empty string must not produce an outcome that
+            // `record_provider` would then reject as unreasoned.
+            let outcome = if tally.failures > 0 {
+                ProviderOutcome::Failed {
+                    reason: non_empty(tally.first_error, "module reported an error"),
+                }
+            } else if tally.skips > 0 {
+                ProviderOutcome::NotAttempted {
+                    reason: non_empty(tally.first_skip, "module was not dispatched"),
+                }
+            } else if tally.findings > 0 {
+                ProviderOutcome::Observed
+            } else {
+                ProviderOutcome::CleanNegative
+            };
+            ProviderCoverage {
+                provider_id: provider_id.to_string(),
+                outcome,
+                dispatches: tally.dispatches,
+                findings: tally.findings,
+                failures: tally.failures,
+                skips: tally.skips,
+            }
+        })
+        .collect()
+}
+
+/// Substitute `fallback` for a missing or blank reason.
+fn non_empty(value: Option<String>, fallback: &str) -> String {
+    value
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// Whether every provider in `rows` actually answered.
+///
+/// False means at least one source was unqueried or broken, so the scan's
+/// silence about whatever that source covers is not evidence of absence.
+#[must_use]
+pub fn coverage_is_complete(rows: &[ProviderCoverage]) -> bool {
+    rows.iter().all(|row| row.outcome.is_resolved())
+}
+
 /// Evidence-bearing path candidate. The scheduler never assigns a global score
 /// to a person or organization.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1774,6 +1915,129 @@ mod tests {
             serde_json::from_str(r#"{"evidence":{},"claims":{},"inferences":{},"hypotheses":{}}"#)
                 .expect("older checkpoints remain readable");
         assert!(legacy.provider_coverage.is_empty());
+    }
+
+    fn module_event(kind: crate::core::event::EventKind) -> crate::core::event::Event {
+        crate::core::event::Event {
+            scan_id: "scan-1".to_string(),
+            ts: 0,
+            kind,
+        }
+    }
+
+    #[test]
+    fn a_broken_provider_never_reads_as_a_clean_negative_in_coverage() {
+        use crate::core::event::EventKind;
+        let events = vec![
+            module_event(EventKind::ModuleDone {
+                module: "quiet".to_string(),
+                found: 0,
+            }),
+            module_event(EventKind::ModuleError {
+                module: "broken".to_string(),
+                error: "upstream 502".to_string(),
+            }),
+            module_event(EventKind::ModuleSkipped {
+                module: "unasked".to_string(),
+                reason: "no credential configured".to_string(),
+            }),
+            module_event(EventKind::ModuleDone {
+                module: "productive".to_string(),
+                found: 3,
+            }),
+            // Not a dispatch outcome: it must not create a coverage row.
+            module_event(EventKind::ExpansionStop {
+                reason: "budget".to_string(),
+            }),
+        ];
+        let rows = provider_coverage_from_events(&events);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.provider_id.as_str())
+                .collect::<Vec<_>>(),
+            ["broken", "productive", "quiet", "unasked"],
+            "rows are sorted by provider id, so the derivation is deterministic"
+        );
+        assert_eq!(
+            rows[0].outcome,
+            ProviderOutcome::Failed {
+                reason: "upstream 502".to_string()
+            }
+        );
+        assert_eq!(rows[1].outcome, ProviderOutcome::Observed);
+        assert_eq!(
+            rows[2].outcome,
+            ProviderOutcome::CleanNegative,
+            "a module that completed and found nothing IS a real negative"
+        );
+        assert_eq!(
+            rows[3].outcome,
+            ProviderOutcome::NotAttempted {
+                reason: "no credential configured".to_string()
+            }
+        );
+        assert!(
+            !coverage_is_complete(&rows),
+            "two providers never answered, so the scan's silence is not evidence of absence"
+        );
+        assert!(coverage_is_complete(&rows[1..3]));
+    }
+
+    #[test]
+    fn a_partial_outage_dominates_the_findings_it_sits_beside() {
+        use crate::core::event::EventKind;
+        let events = vec![
+            module_event(EventKind::ModuleDone {
+                module: "registry".to_string(),
+                found: 5,
+            }),
+            module_event(EventKind::ModuleError {
+                module: "registry".to_string(),
+                error: "connection reset".to_string(),
+            }),
+            module_event(EventKind::ModuleSkipped {
+                module: "registry".to_string(),
+                reason: "quota spent".to_string(),
+            }),
+        ];
+        let rows = provider_coverage_from_events(&events);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].outcome,
+            ProviderOutcome::Failed {
+                reason: "connection reset".to_string()
+            },
+            "finding something on one target says nothing about the targets it broke on"
+        );
+        assert_eq!(rows[0].dispatches, 3);
+        assert_eq!(rows[0].findings, 5);
+        assert_eq!(rows[0].failures, 1);
+        assert_eq!(rows[0].skips, 1);
+    }
+
+    #[test]
+    fn an_unreasoned_outage_still_produces_a_recordable_observation() {
+        use crate::core::event::EventKind;
+        // An event carrying a blank reason must not yield an outcome that
+        // `record_provider` would then reject as unreasoned — the coverage row
+        // and the ledger have to agree on what is well-formed.
+        let rows = provider_coverage_from_events(&[module_event(EventKind::ModuleError {
+            module: "terse".to_string(),
+            error: "   ".to_string(),
+        })]);
+        let mut ledger = IntelligenceLedger::default();
+        ledger.insert_claim(claim()).expect("valid");
+        ledger
+            .record_provider(
+                &"claim-1".into(),
+                ProviderObservation {
+                    provider_id: rows[0].provider_id.clone(),
+                    outcome: rows[0].outcome.clone(),
+                    observed_at_unix: None,
+                },
+            )
+            .expect("a derived outcome is always well-formed enough to record");
+        assert_eq!(ledger.coverage_gaps(&"claim-1".into()).len(), 1);
     }
 
     #[test]

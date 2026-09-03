@@ -1644,6 +1644,79 @@ fn provenance_names_the_modules_when_no_provider_attributes_exist() {
 // ── build_scan_report ───────────────────────────────────────────────────
 
 #[test]
+fn report_distinguishes_a_clean_sweep_from_one_nobody_answered() {
+    // A thin report is ambiguous without this: a scan that asked everything and
+    // found nothing renders identically to one where every provider broke, and
+    // only the first is evidence of absence.
+    use crate::core::event::{Event, EventKind};
+    use crate::core::scan::{Scan, Target, TargetKind};
+    let dir = tempfile::tempdir().expect("should succeed");
+    let db = dir.path().join("coverage.db");
+    let store =
+        crate::storage::Store::open(db.to_str().expect("should succeed")).expect("should succeed");
+    let sid = "coverage-scan";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .expect("should succeed");
+    let port = &store as &dyn crate::core::port::StoragePort;
+
+    // No retained events: NULL, never an empty list that would read as
+    // "every provider answered".
+    let bare = build_scan_report(port, sid, false, false)
+        .expect("should succeed")
+        .expect("should succeed");
+    assert!(
+        bare["provider_coverage"].is_null(),
+        "an unknown coverage must not render as a complete one: {}",
+        bare["provider_coverage"]
+    );
+
+    for kind in [
+        EventKind::ModuleDone {
+            module: "asked_and_answered".to_string(),
+            found: 0,
+        },
+        EventKind::ModuleError {
+            module: "broke".to_string(),
+            error: "upstream 502".to_string(),
+        },
+    ] {
+        store
+            .insert_event(&Event::new(sid, kind))
+            .expect("should succeed");
+    }
+
+    let report = build_scan_report(port, sid, false, false)
+        .expect("should succeed")
+        .expect("should succeed");
+    let coverage = &report["provider_coverage"];
+    assert_eq!(coverage["complete"].as_bool(), Some(false));
+    assert_eq!(coverage["unresolved_count"].as_u64(), Some(1));
+    let providers = coverage["providers"]
+        .as_array()
+        .expect("provider rows are a list");
+    assert_eq!(providers.len(), 2);
+    assert_eq!(
+        providers[0]["provider_id"].as_str(),
+        Some("asked_and_answered")
+    );
+    assert_eq!(
+        providers[0]["outcome"]["kind"].as_str(),
+        Some("clean_negative")
+    );
+    assert_eq!(providers[1]["provider_id"].as_str(), Some("broke"));
+    assert_eq!(providers[1]["outcome"]["kind"].as_str(), Some("failed"));
+    assert_eq!(
+        providers[1]["outcome"]["reason"].as_str(),
+        Some("upstream 502"),
+        "the operator is told what to re-run and why"
+    );
+}
+
+#[test]
 fn report_hides_candidates_by_default_and_includes_on_request() {
     use crate::core::entity::{Entity, EntityKind};
     use crate::core::scan::{Scan, Target, TargetKind};
