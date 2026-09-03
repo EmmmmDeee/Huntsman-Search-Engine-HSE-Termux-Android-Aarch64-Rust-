@@ -568,6 +568,50 @@ pub(in crate::core::correlator) fn precision_radius_m(class: GeoSourceClass) -> 
     }
 }
 
+/// Whether a [`GeoSourceClass`] observes the SUBJECT's own position, or a place
+/// merely ASSOCIATED with them.
+///
+/// INFRASTRUCTURE LOCATION ≠ HUMAN LOCATION, and REGISTERED LOCATION ≠ PHYSICAL
+/// PRESENCE. A handset GNSS fix, a photo's EXIF GPS and the access points the
+/// subject's device can see are sightings of the device in their hand. A
+/// registered office, a land-title parcel, a people-finder listing, a social bio
+/// naming a city, a search snippet and a carrier region are all real places, and
+/// every one of them can be right about the address while being wrong about
+/// where the person is. A geocoded street address is on the associated side too:
+/// geocoding resolves a REPORTED address precisely, which says nothing about
+/// whether the subject was ever standing at it.
+///
+/// This is orthogonal to precision: a registered office is known to ~500 m and
+/// still is not the subject, while a Wi-Fi survey is coarser at ~75 m and is.
+/// Collapsing the two is how a filing agent's PO box becomes a residence.
+#[must_use]
+pub(crate) fn class_locates_subject_directly(class: GeoSourceClass) -> bool {
+    match class {
+        GeoSourceClass::DeviceGps | GeoSourceClass::PhotoGps | GeoSourceClass::WifiSensor => true,
+        GeoSourceClass::Geocode
+        | GeoSourceClass::Property
+        | GeoSourceClass::Electoral
+        | GeoSourceClass::Registry
+        | GeoSourceClass::Directory
+        | GeoSourceClass::Enrichment
+        | GeoSourceClass::Social
+        | GeoSourceClass::Search
+        | GeoSourceClass::NetworkIp
+        | GeoSourceClass::Phone
+        | GeoSourceClass::Other => false,
+    }
+}
+
+/// Whether ANY of an entity's anchoring geo sources observed the subject
+/// directly ([`class_locates_subject_directly`]).
+#[must_use]
+pub(crate) fn entity_locates_subject_directly(e: &Entity) -> bool {
+    e.corroborating_sources()
+        .into_iter()
+        .filter(|s| is_anchoring_geo_source(s))
+        .any(|s| class_locates_subject_directly(geo_source_class(s)))
+}
+
 /// The finest (smallest) precision radius among an entity's anchoring geo
 /// sources. If ANY corroborating source pinpointed the subject precisely, the
 /// entity's position is known to that precision — a coarser corroborating
@@ -670,7 +714,10 @@ pub(crate) struct SynergyFix {
     pub lon: f64,
     /// Robust confidence radius (km): the median great-circle distance from the
     /// fix point to the contributing coordinates — half the sightings fall
-    /// within it, so it degrades gracefully under outliers (0.5 breakdown point).
+    /// within it, so it degrades gracefully under outliers (0.5 breakdown
+    /// point) — raised to the finest contributing observation's own precision
+    /// ([`best_precision_radius_m`]) so agreement between coarse sightings can
+    /// never report resolution none of them had.
     pub radius_km: f64,
     pub geohash: String,
     pub state: &'static str,
@@ -678,6 +725,12 @@ pub(crate) struct SynergyFix {
     pub severity: Severity,
     /// UIDs of the contributing coordinate entities (sorted, deduped).
     pub uids: Vec<String>,
+    /// Whether any contributing sighting observed the SUBJECT rather than a
+    /// place merely associated with them — see
+    /// [`class_locates_subject_directly`]. False means every contributor was a
+    /// registered, reported or inferred location: real places that need not be
+    /// where the person is.
+    pub locates_subject_directly: bool,
 }
 
 impl SynergyFix {
@@ -858,7 +911,37 @@ pub(crate) fn au059_synergy_fix(entities: &[Entity]) -> Option<SynergyFix> {
 
     // Robust spread: median distance from the fix to the contributing points.
     let points: Vec<(f64, f64)> = parsed.iter().map(|(_, ll)| *ll).collect();
-    let radius_km = crate::util::geometry::median_distance_km((lat, lon), &points);
+    let spread_km = crate::util::geometry::median_distance_km((lat, lon), &points);
+    // ...floored at the FINEST contributing observation's own precision.
+    //
+    // The spread alone measures how closely the sightings agree, which is not
+    // the same quantity as how precisely any of them located the subject.
+    // A `search_engines` snippet geocode (15 km grain) and a `social_location`
+    // bio (5 km grain) that both name the same city resolve to coordinates a few
+    // hundred metres apart, and the median distance between them is a few
+    // hundred metres — so the fused fix claimed street-level precision built
+    // from nothing but two city-grain guesses agreeing. This is the export's
+    // headline `best_location` and the dossier's geo line, so that false
+    // precision reached the operator as the tool's best answer.
+    //
+    // Agreement corroborates the AREA, it does not synthesise resolution no
+    // contributing source ever had. Nor is this the textbook inverse-variance
+    // case where independent measurements of one point narrow with N: an IP
+    // egress or a carrier-region centroid carries a systematic offset, not
+    // zero-mean noise, and averaging several of them reduces no bias at all.
+    // So the floor is the tightest single observation, never below it.
+    // Rung 2 of `best_au_location_estimate` already reported its radius this
+    // way; the synergy rung that outranks it did not.
+    let finest_km = parsed
+        .iter()
+        .filter_map(|(e, _)| best_precision_radius_m(e))
+        .fold(f64::INFINITY, f64::min)
+        / 1000.0;
+    let radius_km = if finest_km.is_finite() {
+        spread_km.max(finest_km)
+    } else {
+        spread_km
+    };
 
     Some(SynergyFix {
         count: parsed.len(),
@@ -871,6 +954,9 @@ pub(crate) fn au059_synergy_fix(entities: &[Entity]) -> Option<SynergyFix> {
         synergy_confidence,
         severity,
         uids,
+        locates_subject_directly: parsed
+            .iter()
+            .any(|(e, _)| entity_locates_subject_directly(e)),
     })
 }
 
@@ -901,6 +987,9 @@ pub(crate) struct AuLocationEstimate {
     pub geohash: String,
     /// UID(s) of the contributing entity/entities.
     pub uids: Vec<String>,
+    /// Whether the fix observed the SUBJECT or a place merely associated with
+    /// them — see [`class_locates_subject_directly`].
+    pub locates_subject_directly: bool,
 }
 
 /// Offline anchor for an Australian fixed-line **area-code region**: the
@@ -971,6 +1060,7 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
             confidence: fix.synergy_confidence,
             geohash: fix.geohash,
             uids: fix.uids,
+            locates_subject_directly: fix.locates_subject_directly,
         });
     }
 
@@ -1011,6 +1101,7 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
             confidence: e.c_effective(),
             geohash: crate::util::geohash::geohash(lat, lon, 6),
             uids: vec![e.uid.clone()],
+            locates_subject_directly: entity_locates_subject_directly(e),
         });
     }
 
@@ -1061,6 +1152,10 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
             confidence: e.c_effective(),
             geohash: crate::util::geohash::geohash(lat, lon, 6),
             uids: vec![e.uid.clone()],
+            // A postcode centroid resolved from a name-matched or breached
+            // address: a real place the subject is on record at, never an
+            // observation of the subject standing there.
+            locates_subject_directly: false,
         });
     }
 
@@ -1090,6 +1185,9 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
             confidence: (e.c_effective() * 0.7).min(0.50),
             geohash: crate::util::geohash::geohash(lat, lon, 5),
             uids: vec![e.uid.clone()],
+            // An ISP allocation block — a real place a VPN egress or a
+            // carrier-grade NAT routinely puts nowhere near the subject.
+            locates_subject_directly: false,
         });
     }
 
@@ -1131,6 +1229,8 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
             confidence: (e.c_effective() * 0.5).min(0.35),
             geohash: crate::util::geohash::geohash(lat, lon, 4),
             uids: vec![e.uid.clone()],
+            // An ACMA area-code region: where the LINE is provisioned.
+            locates_subject_directly: false,
         });
     }
 

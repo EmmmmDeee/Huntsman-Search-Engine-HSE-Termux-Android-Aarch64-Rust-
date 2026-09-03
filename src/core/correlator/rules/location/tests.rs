@@ -22,6 +22,142 @@ use super::*;
     }
 
     #[test]
+    fn agreeing_coarse_sightings_never_synthesise_a_precision_neither_had() {
+        // A search-snippet geocode (~15 km grain) and a self-reported social bio
+        // (~5 km grain) that both name the same city resolve a few hundred
+        // metres apart. The median distance between them is a few hundred
+        // metres — and reporting THAT as the fix's radius turns two city-grain
+        // guesses agreeing into a street-level claim, which then leaves the tool
+        // as `best_location` in report.json and as the dossier's geo line.
+        let ents = vec![
+            au_coord("-33.8688,151.2093", 0.70, "search_engines", "NSW"),
+            au_coord("-33.8724,151.2093", 0.70, "social_location", "NSW"),
+        ];
+        let fix = au059_synergy_fix(&ents).expect("two orthogonal classes fuse");
+        let spread_km = crate::util::geometry::median_distance_km(
+            (fix.lat, fix.lon),
+            &[(-33.8688, 151.2093), (-33.8724, 151.2093)],
+        );
+        assert!(
+            spread_km < 1.0,
+            "fixture precondition: the sightings agree closely ({spread_km} km)"
+        );
+        let finest_km = precision_radius_m(GeoSourceClass::Social) / 1000.0;
+        assert!(
+            fix.radius_km >= finest_km - 1e-9,
+            "agreement corroborates the AREA; it cannot report {} km when the \
+             tightest contributing source was only good to {finest_km} km",
+            fix.radius_km
+        );
+        // The prose and the field are one and the same, so the description
+        // cannot report the pre-floor number either.
+        assert!(
+            fix.description().contains(&format!("{:.1} km", fix.radius_km)),
+            "{}",
+            fix.description()
+        );
+    }
+
+    #[test]
+    fn a_genuine_disagreement_still_widens_the_radius_beyond_the_floor() {
+        // The floor raises a too-tight radius; it must never CAP a legitimately
+        // wide one. Two sightings ~8 km apart are further apart than the finest
+        // contributing precision, so the spread still governs.
+        let ents = vec![
+            au_coord("-33.8688,151.2093", 0.70, "exif_geo", "NSW"),
+            au_coord("-33.9400,151.2093", 0.70, "geocode", "NSW"),
+        ];
+        let fix = au059_synergy_fix(&ents).expect("two orthogonal classes fuse");
+        let finest_km = precision_radius_m(GeoSourceClass::PhotoGps) / 1000.0;
+        assert!(
+            fix.radius_km > finest_km,
+            "a real disagreement of several km must not be reported as {} km",
+            fix.radius_km
+        );
+        assert!(
+            fix.radius_km > 1.0,
+            "the spread governs when it exceeds the floor: {}",
+            fix.radius_km
+        );
+    }
+
+    #[test]
+    fn a_registered_or_inferred_place_is_never_the_subjects_own_position() {
+        // INFRASTRUCTURE LOCATION != HUMAN LOCATION, REGISTERED LOCATION !=
+        // PHYSICAL PRESENCE. Only a sighting of the subject's own device counts
+        // as observing them; every other class names a real place that can be
+        // right about the address and wrong about the person.
+        for class in [
+            GeoSourceClass::DeviceGps,
+            GeoSourceClass::PhotoGps,
+            GeoSourceClass::WifiSensor,
+        ] {
+            assert!(class_locates_subject_directly(class), "{class:?}");
+        }
+        for class in [
+            GeoSourceClass::Geocode,
+            GeoSourceClass::Property,
+            GeoSourceClass::Electoral,
+            GeoSourceClass::Registry,
+            GeoSourceClass::Directory,
+            GeoSourceClass::Enrichment,
+            GeoSourceClass::Social,
+            GeoSourceClass::Search,
+            GeoSourceClass::NetworkIp,
+            GeoSourceClass::Phone,
+            GeoSourceClass::Other,
+        ] {
+            assert!(
+                !class_locates_subject_directly(class),
+                "{class:?} names a place associated with the subject, not the subject"
+            );
+        }
+        // It is orthogonal to precision: a registered office is known to ~500 m
+        // and still is not the subject; a Wi-Fi survey is coarser at ~75 m and
+        // is. Collapsing the two turns a filing agent's PO box into a residence.
+        assert!(
+            precision_radius_m(GeoSourceClass::Registry)
+                < precision_radius_m(GeoSourceClass::WifiSensor) * 10.0
+        );
+        assert!(!class_locates_subject_directly(GeoSourceClass::Registry));
+        assert!(class_locates_subject_directly(GeoSourceClass::WifiSensor));
+    }
+
+    #[test]
+    fn a_fix_built_only_from_records_is_marked_as_an_associated_location() {
+        // A registry office and a search snippet: two orthogonal classes, so
+        // AU-059 fires — and nothing in it observed the subject.
+        let records = vec![
+            au_coord("-33.8688,151.2093", 0.80, "abn_lookup", "NSW"),
+            au_coord("-33.8700,151.2100", 0.70, "search_engines", "NSW"),
+        ];
+        let fix = au059_synergy_fix(&records).expect("two orthogonal classes fuse");
+        assert!(
+            !fix.locates_subject_directly,
+            "a registered office and a search snippet locate records, not a person"
+        );
+        assert!(
+            !best_au_location_estimate(&records)
+                .expect("a headline estimate exists")
+                .locates_subject_directly,
+            "the headline estimate must carry the same verdict as the fix behind it"
+        );
+
+        // One photo GPS among them and the fix DID observe the subject's device.
+        let sighted = vec![
+            au_coord("-33.8688,151.2093", 0.80, "abn_lookup", "NSW"),
+            au_coord("-33.8700,151.2100", 0.70, "exif_geo", "NSW"),
+        ];
+        let fix = au059_synergy_fix(&sighted).expect("two orthogonal classes fuse");
+        assert!(fix.locates_subject_directly);
+        assert!(
+            best_au_location_estimate(&sighted)
+                .expect("a headline estimate exists")
+                .locates_subject_directly
+        );
+    }
+
+    #[test]
     fn does_not_fire_on_single_class() {
         // Two registry sources are the SAME class — no orthogonal synergy.
         let ents = vec![

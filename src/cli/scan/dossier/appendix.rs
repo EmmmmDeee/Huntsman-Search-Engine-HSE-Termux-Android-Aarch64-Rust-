@@ -54,6 +54,29 @@ pub(super) fn tenure_headline(
     )
 }
 
+/// Print the associated-location caveat under a headline fix that did not
+/// observe the subject.
+///
+/// INFRASTRUCTURE LOCATION ≠ HUMAN LOCATION, and REGISTERED LOCATION ≠ PHYSICAL
+/// PRESENCE. A registered office, a breached postcode, an ISP allocation block
+/// and an area-code region are all real places, and every one of them can be
+/// right about the address while being wrong about where the person is. The
+/// dossier's headline geo line reads as "where the subject is" whether or not
+/// anything ever observed them there, so the distinction is printed rather than
+/// left for the reader to infer from the basis string.
+///
+/// Nothing is printed for a fix that DID observe the subject: the absence of a
+/// caveat is not a claim, so only the weaker case needs saying.
+fn print_association_caveat(locates_subject_directly: bool) {
+    if !locates_subject_directly {
+        println!(
+            "    NOTE: associated location — every contributing source records a place \
+             linked to the subject (registered, reported, or inferred), not an observation \
+             of the subject there."
+        );
+    }
+}
+
 /// Everything the collection/geo/lineage/hints appendices render, computed
 /// once up front.
 ///
@@ -248,6 +271,7 @@ impl Collection {
                 fix.class_names.join(", "),
                 fix.synergy_confidence
             );
+            print_association_caveat(fix.locates_subject_directly);
             println!();
         } else if let Some(est) = crate::core::correlator::best_au_location_estimate(entities) {
             // Single-signal fallback: the common scan has one location signal,
@@ -271,6 +295,7 @@ impl Collection {
                 "    basis: {} (confidence {:.2}) — single-signal fix",
                 est.basis, est.confidence
             );
+            print_association_caveat(est.locates_subject_directly);
             println!();
         }
 

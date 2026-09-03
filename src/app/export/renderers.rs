@@ -1986,6 +1986,12 @@ pub(crate) fn extract_au_location_fix(
             "rank": c.rank,
             "source_count": synergy.count,
             "class_count": synergy.class_names.len(),
+            // INFRASTRUCTURE LOCATION != HUMAN LOCATION. False means every
+            // contributing sighting was a registered, reported or inferred
+            // place — real addresses that need not be where the person is —
+            // so a consumer plotting this pin knows what it does and does not
+            // assert about the subject's own position.
+            "locates_subject_directly": synergy.locates_subject_directly,
             "rule_id": "AU-059",
         })
     } else {
@@ -2004,6 +2010,9 @@ pub(crate) fn extract_au_location_fix(
                 "locality": est.locality,
                 "confidence": est.confidence,
                 "basis": est.basis,
+                // As above: whether this pin observed the SUBJECT or a place
+                // merely associated with them.
+                "locates_subject_directly": est.locates_subject_directly,
                 "source": "single-signal",
             }),
             None => serde_json::Value::Null,
