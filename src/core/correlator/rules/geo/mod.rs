@@ -586,6 +586,19 @@ mod tests {
     }
 
     #[test]
+    fn extract_ratemyagent_suburb_accepts_a_single_token_name() {
+        // `<name>` is documented as one OR MORE tokens; the old `< 4` floor
+        // required two, so this well-formed slug returned None and AU-058 never
+        // fired for it.
+        assert_eq!(
+            extract_ratemyagent_suburb(
+                "https://www.ratemyagent.com.au/real-estate-agent/century21-bondi-12345/"
+            ),
+            Some("bondi".to_string())
+        );
+    }
+
+    #[test]
     fn extract_ratemyagent_suburb_rejects_malformed_slugs() {
         // No agent path at all.
         assert_eq!(
