@@ -876,6 +876,10 @@ impl super::ScanEngine {
             configured_timeout_ms: module.constrained_timeout_ms(),
             already_dispatched_this_module_target: dispatched
                 .contains(&dispatch_key(module.name(), cx.target)),
+            geoint_bearing: crate::core::roi::is_geoint_bearing(
+                module.produces(),
+                module.category(),
+            ),
         };
         let utility = crate::core::roi::compute_dispatch_utility(&inputs);
         self.emit(

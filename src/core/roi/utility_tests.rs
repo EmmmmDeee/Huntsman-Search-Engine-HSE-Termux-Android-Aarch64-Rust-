@@ -11,6 +11,7 @@ fn baseline_inputs() -> DispatchUtilityInputs {
         quota_remaining: None,
         configured_timeout_ms: 5_000,
         already_dispatched_this_module_target: false,
+        geoint_bearing: false,
     }
 }
 
@@ -246,4 +247,81 @@ fn quota_exhausted_gate_only_blocks_quota_tracked_modules() {
         !quota_exhausted_blocked(Some("query"), None),
         "an unknown remaining state must never be treated as exhausted"
     );
+}
+
+#[test]
+fn geoint_preference_orders_two_otherwise_identical_candidates() {
+    // The engine attempts geolocation for every materially geolocatable
+    // entity; between two otherwise equal candidates the geo one goes first.
+    let plain = baseline_inputs();
+    let geo = DispatchUtilityInputs {
+        geoint_bearing: true,
+        ..baseline_inputs()
+    };
+    let a = compute_dispatch_utility(&plain);
+    let b = compute_dispatch_utility(&geo);
+    assert!(
+        b.final_utility > a.final_utility,
+        "a geo-bearing module must outrank an otherwise identical non-geo one"
+    );
+    assert!(
+        (b.final_utility - a.final_utility - W_GEO).abs() < 1e-9,
+        "and by exactly W_GEO"
+    );
+    assert!(
+        b.explanation.iter().any(|e| e.contains("geoint_preference")),
+        "the tilt must be visible in the explanation, not hidden in the score"
+    );
+}
+
+#[test]
+fn geoint_preference_cannot_outrank_stronger_evidence() {
+    // GEOINT is preferred SLIGHTLY. It must never lift a low-information geo
+    // lookup above a high-information non-geo one: W_GEO (0.25) is an order of
+    // magnitude below W_INFO (3.0), so the information term always dominates.
+    let low_info_geo = DispatchUtilityInputs {
+        entity_confidence: Some(0.95), // little left to learn
+        geoint_bearing: true,
+        ..baseline_inputs()
+    };
+    let high_info_plain = DispatchUtilityInputs {
+        entity_confidence: Some(0.05), // much left to learn
+        geoint_bearing: false,
+        ..baseline_inputs()
+    };
+    assert!(
+        compute_dispatch_utility(&high_info_plain).final_utility
+            > compute_dispatch_utility(&low_info_geo).final_utility,
+        "geolocation must not override stronger evidence"
+    );
+}
+
+/// The GEOINT tilt is bounded at COMPILE time, not merely observed at runtime:
+/// raising `W_GEO` to or above `W_INFO` would let a low-information geo lookup
+/// outrank a high-information non-geo one, which the contract forbids
+/// ("without allowing geolocation to override stronger evidence"). A build that
+/// tries it fails here rather than shipping a subtly re-ordered frontier.
+const _: () = assert!(
+    W_GEO * 4.0 < W_INFO,
+    "W_GEO must stay well below W_INFO — a tilt, never an override"
+);
+
+#[test]
+fn geoint_bearing_is_derived_from_a_modules_own_declarations() {
+    use crate::core::entity::EntityKind;
+    use crate::core::module::ModuleCategory;
+    assert!(is_geoint_bearing(&[], ModuleCategory::Geo));
+    assert!(is_geoint_bearing(&[], ModuleCategory::Sensor));
+    assert!(is_geoint_bearing(
+        &[EntityKind::Coordinates],
+        ModuleCategory::Social
+    ));
+    assert!(is_geoint_bearing(
+        &[EntityKind::Address],
+        ModuleCategory::Corporate
+    ));
+    assert!(!is_geoint_bearing(
+        &[EntityKind::Email, EntityKind::Username],
+        ModuleCategory::Social
+    ));
 }
