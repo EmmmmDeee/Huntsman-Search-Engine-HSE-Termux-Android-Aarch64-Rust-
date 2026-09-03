@@ -261,6 +261,32 @@ use super::*;
     }
 
     #[test]
+    fn session_init_response_is_parsed_in_its_documented_shape() {
+        // docs/OATHNET_API_GUIDE.txt: `POST /service/search/init` →
+        // `{ "search_id": "abc123..." }`. This is the only documented shape.
+        assert_eq!(
+            search_id_from_init_response(r#"{ "search_id": "sess_abc123" }"#).as_deref(),
+            Some("sess_abc123")
+        );
+        // The previously-assumed `session.id` shape appears in no documented or
+        // captured response; parsing it would be an assumed contract (RULE 1),
+        // and it must not resurrect as a silent fallback.
+        assert_eq!(
+            search_id_from_init_response(r#"{ "session": { "id": "x" } }"#),
+            None
+        );
+        assert_eq!(
+            search_id_from_init_response(r#"{ "data": { "session": { "id": "x" } } }"#),
+            None
+        );
+        // Degenerate bodies never yield a session that would then be threaded
+        // into every subsequent query URL.
+        assert_eq!(search_id_from_init_response(r#"{ "search_id": "" }"#), None);
+        assert_eq!(search_id_from_init_response(r#"{ "search_id": 42 }"#), None);
+        assert_eq!(search_id_from_init_response("not json"), None);
+    }
+
+    #[test]
     fn top_dbnames_skips_items_without_dbname() {
         let items = vec![json!({"other": "val"}), json!({"dbname": "x"})];
         let top = top_dbnames(&items, 10);

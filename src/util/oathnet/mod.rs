@@ -1054,6 +1054,25 @@ fn session_init_body(value: &str) -> String {
     serde_json::json!({ "query": value }).to_string()
 }
 
+/// The search-session id from a `POST /service/search/init` response body.
+///
+/// The documented response is `{ "search_id": "abc123..." }` — the in-repo API
+/// guide (`docs/OATHNET_API_GUIDE.txt`, "Search Sessions" and §9) shows exactly
+/// that shape and nothing else. This used to read `session.id` /
+/// `data.session.id`, fields no documented or captured response carries, so
+/// against the real service it always returned `None`: no session was ever
+/// threaded, and every breach+stealer pair cost two full lookups of HSE's
+/// scarcest paid quota instead of the one a session makes it. Pure, so the
+/// parse is unit-tested against the documented body.
+pub(crate) fn search_id_from_init_response(text: &str) -> Option<String> {
+    let parsed: Value = serde_json::from_str(text).ok()?;
+    parsed
+        .get("search_id")?
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string)
+}
+
 /// Initialise a search session for `value`. Returns the session ID on
 /// success, or None if the init call fails (non-fatal — queries still
 /// work without a session, they just cost more quota).
@@ -1072,12 +1091,7 @@ pub async fn init_session(key: &str, value: &str) -> Option<String> {
     // Routed through the shared CurlClient — same UA / Accept /
     // auth-header layout as the GET path, just with a JSON body.
     let text = CLIENT.post_json(&url, key, &body).await.ok()?;
-    let parsed: Value = serde_json::from_str(&text).ok()?;
-    let sid = parsed
-        .pointer("/session/id")
-        .or_else(|| parsed.pointer("/data/session/id"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string)?;
+    let sid = search_id_from_init_response(&text)?;
     // `debug!`, not `info!`: `value` is the raw scan target (email / username /
     // phone = PII). Every other target-bearing detail in the system lives at the
     // debug/trace "raw logs" tier so `RUST_LOG=info` never surfaces the subject's
