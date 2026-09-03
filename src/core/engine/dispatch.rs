@@ -832,14 +832,14 @@ impl super::ScanEngine {
         false
     }
 
-    /// The ROI subsystem's fourth, explainability-only lever
+    /// The ROI subsystem's fourth lever
     /// (`crate::core::roi::DispatchUtility`): computes and emits a
     /// `DispatchUtilityComputed` event for one eligible (module, target)
     /// candidate. Never called for a candidate `gate_skips`/`module_skip_reason`
     /// already rejected — every eligibility gate (allowlist, circuit-open,
     /// budget/quota, quarantine, ...) runs strictly BEFORE this, at each of
     /// this method's 3 call sites. No-op unless `cx.opts.dispatch_utility` is
-    /// set — purely additive telemetry, changes no dispatch decision.
+    /// set.
     fn maybe_emit_dispatch_utility(
         &self,
         cx: &DispatchCx<'_>,
@@ -890,6 +890,87 @@ impl super::ScanEngine {
         );
     }
 
+    /// Return this target's module indices in the configured static order, or
+    /// in descending dispatch-utility order when the opt-in ROI lever is active.
+    ///
+    /// Hard gates are evaluated before scoring. Gate-rejected candidates remain
+    /// at the end of the returned list so the normal dispatch loop can emit its
+    /// established skip event and update skip statistics without ever computing
+    /// utility for that candidate.
+    fn dispatch_order_for_target(
+        &self,
+        cx: &DispatchCx<'_>,
+        target_sources: usize,
+        entity_confidence: Option<f64>,
+        dispatched: &DispatchLog,
+    ) -> Vec<usize> {
+        let base = self
+            .graph
+            .dispatch_order_for(cx.target.kind, cx.opts.convex_budget);
+        if !cx.opts.max_roi || !cx.opts.dispatch_utility {
+            return base.to_vec();
+        }
+
+        let mut ranked: Vec<(usize, usize, Option<f64>)> = base
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(position, idx)| {
+                let score = self.modules.get(idx).and_then(|module| {
+                    let eligible = module.accepts(cx.target)
+                        && module_skip_reason(
+                            &**module,
+                            cx.target,
+                            cx.opts,
+                            cx.is_expansion,
+                            target_sources,
+                        )
+                        .is_none()
+                        && !cx.quarantined.contains(module.name());
+                    eligible.then(|| {
+                        let descriptor = module.provider_descriptor();
+                        let cost_per_request_usd = match descriptor.cost_model {
+                            crate::core::module::CostModel::Free => Some(0.0),
+                            crate::core::module::CostModel::Unknown => None,
+                            crate::core::module::CostModel::Exact
+                            | crate::core::module::CostModel::Estimated => {
+                                descriptor.cost_per_request
+                            }
+                        };
+                        crate::core::roi::compute_dispatch_utility(
+                            &crate::core::roi::DispatchUtilityInputs {
+                                source_count: u32::try_from(target_sources).unwrap_or(u32::MAX),
+                                entity_confidence,
+                                optionality_prior: descriptor.optionality_prior,
+                                novelty_prior: crate::core::convex::module_cascade(
+                                    module.produces(),
+                                    module.category(),
+                                ),
+                                reliability_prior: descriptor.reliability_prior,
+                                cost_per_request_usd,
+                                quota_remaining: module.quota_remaining(),
+                                configured_timeout_ms: module.constrained_timeout_ms(),
+                                already_dispatched_this_module_target: dispatched
+                                    .contains(&dispatch_key(module.name(), cx.target)),
+                            },
+                        )
+                        .final_utility
+                    })
+                });
+                (position, idx, score)
+            })
+            .collect();
+        ranked.sort_by(|a, b| match (a.2, b.2) {
+            (Some(a_score), Some(b_score)) => b_score
+                .total_cmp(&a_score)
+                .then_with(|| a.0.cmp(&b.0)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.0.cmp(&b.0),
+        });
+        ranked.into_iter().map(|(_, idx, _)| idx).collect()
+    }
+
     /// Sequential dispatcher (max_concurrent == 0).
     async fn dispatch_target_sequential(
         &self,
@@ -910,10 +991,13 @@ impl super::ScanEngine {
         // cross-correlation gate); computed once per target, not per module.
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
         let target_confidence = target_c_effective(state.entity_map, cx.target);
-        for &idx in self
-            .graph
-            .dispatch_order_for(cx.target.kind, cx.opts.convex_budget)
-        {
+        let dispatch_order = self.dispatch_order_for_target(
+            cx,
+            target_sources,
+            target_confidence,
+            state.dispatched,
+        );
+        for idx in dispatch_order {
             let Some(module) = self.modules.get(idx) else {
                 continue;
             };
@@ -1055,10 +1139,13 @@ impl super::ScanEngine {
     ) {
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
         let target_confidence = target_c_effective(state.entity_map, cx.target);
-        for &idx in self
-            .graph
-            .dispatch_order_for(cx.target.kind, cx.opts.convex_budget)
-        {
+        let dispatch_order = self.dispatch_order_for_target(
+            cx,
+            target_sources,
+            target_confidence,
+            state.dispatched,
+        );
+        for idx in dispatch_order {
             let Some(module) = self.modules.get(idx) else {
                 continue;
             };
@@ -1174,10 +1261,13 @@ impl super::ScanEngine {
 
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
         let target_confidence = target_c_effective(state.entity_map, cx.target);
-        for &idx in self
-            .graph
-            .dispatch_order_for(cx.target.kind, cx.opts.convex_budget)
-        {
+        let dispatch_order = self.dispatch_order_for_target(
+            cx,
+            target_sources,
+            target_confidence,
+            state.dispatched,
+        );
+        for idx in dispatch_order {
             // Opportunistically absorb any modules that already finished so
             // `entity_map.len()` below is live, not the round-start snapshot —
             // otherwise every module accepted for this target gets spawned
