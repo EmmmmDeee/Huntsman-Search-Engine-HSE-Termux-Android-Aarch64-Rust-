@@ -82,7 +82,10 @@ use pivots::{
     discover_discord_pivots, discover_steam_pivots, dispatch_discord_pivots, dispatch_steam_pivots,
 };
 
-pub(super) const SRC: &str = "see_know";
+// The ONE registered provider name, shared with the transport/parse layer so
+// every error and every entity from this provider carries the same label —
+// see `util::see_know::SRC`.
+pub(super) use crate::util::see_know::SRC;
 
 /// Fold one endpoint sub-fetch's `Result` into a `(label, items)` pair.
 ///

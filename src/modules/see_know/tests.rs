@@ -28,7 +28,7 @@ mod fold_endpoint_result_tests {
         let mut first_failure = None;
         let (label, items) = fold_endpoint_result(
             "email_check",
-            Err(Error::module("seek_now", "HTTP 503")),
+            Err(Error::module(SRC, "HTTP 503")),
             &mut first_failure,
         );
         assert_eq!(label, "email_check");
@@ -52,12 +52,12 @@ mod fold_endpoint_result_tests {
         let mut first_failure = None;
         fold_endpoint_result(
             "a",
-            Err(Error::module("seek_now", "first")),
+            Err(Error::module(SRC, "first")),
             &mut first_failure,
         );
         fold_endpoint_result(
             "b",
-            Err(Error::module("seek_now", "second")),
+            Err(Error::module(SRC, "second")),
             &mut first_failure,
         );
         assert!(
@@ -75,7 +75,7 @@ mod fold_endpoint_result_tests {
         let mut first_failure = None;
         fold_endpoint_result(
             "a",
-            Err(Error::module("seek_now", "boom")),
+            Err(Error::module(SRC, "boom")),
             &mut first_failure,
         );
         fold_endpoint_result("b", Ok(vec![serde_json::json!({})]), &mut first_failure);

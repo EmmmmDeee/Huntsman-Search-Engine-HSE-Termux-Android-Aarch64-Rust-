@@ -28,7 +28,7 @@ pub(super) static RESPONSE_CACHE: ResponseCache<Vec<Value>> =
 // 78s outer (curl < outer so curl's own exit code is observed), paired with an
 // 80s module max_timeout in `modules::see_know`.
 pub(super) static CLIENT: CurlClient = CurlClient::new(
-    "seek_now",
+    super::SRC,
     AuthScheme::XApiKey,
     ENTERPRISE.curl_timeout_secs,
     ENTERPRISE.tokio_timeout_millis,
@@ -41,7 +41,7 @@ pub(super) static CLIENT: CurlClient = CurlClient::new(
 /// would otherwise burn up to 75 s of the module's per-scan timeout budget before
 /// failing. `POST /search`/`/search/deep` keep the wide [`CLIENT`].
 pub(super) static CLIENT_FAST: CurlClient = CurlClient::new(
-    "seek_now",
+    super::SRC,
     AuthScheme::XApiKey,
     ENTERPRISE.get_timeout_secs,
     ENTERPRISE.get_tokio_timeout_millis,
@@ -288,7 +288,7 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
     // auth/quota marker cannot disable the provider for the whole scan. A body that
     // looks like JSON but won't parse is genuine schema drift → surfaced as an error.
     let value: Value =
-        serde_json::from_str(body).map_err(|e| Error::module("seek_now", e.to_string()))?;
+        serde_json::from_str(body).map_err(|e| Error::module(super::SRC, e.to_string()))?;
     match classify_terminal(&value) {
         Some(Terminal::Auth) => {
             mark_key_invalid(body);
@@ -306,7 +306,8 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
         // `Error::RateLimited`'s Display reaches operator-facing sinks, so a
         // credential echoed in a provider error body must never ride along.
         Some(Terminal::RateLimited) => Err(Error::RateLimited(format!(
-            "seek_now: {}",
+            "{}: {}",
+            super::SRC,
             crate::util::http::redact_credentials(body)
                 .chars()
                 .take(120)
@@ -405,7 +406,8 @@ pub(super) fn classify_status(body: &str, status: u16) -> Result<Value> {
             }
         }
         return Err(Error::RateLimited(format!(
-            "seek_now: HTTP {status} transient upstream failure"
+            "{}: HTTP {status} transient upstream failure",
+            super::SRC
         )));
     }
     // HTTP 401 is unambiguous per both HTTP semantics and SeekNow's own
@@ -440,7 +442,7 @@ pub(super) fn classify_status(body: &str, status: u16) -> Result<Value> {
     // through to the existing, already-tested body-based latch below.
     if status == 403 && !is_auth_error(body) {
         return Err(Error::module(
-            "seek_now",
+            super::SRC,
             "HTTP 403 (endpoint not covered by the account's plan)",
         ));
     }
@@ -456,9 +458,10 @@ pub(super) fn classify_status(body: &str, status: u16) -> Result<Value> {
     if status == 429 {
         let trimmed = body.trim_start();
         if !trimmed.starts_with('{') && !trimmed.starts_with('[') && !is_auth_error(body) {
-            return Err(Error::RateLimited(
-                "seek_now: HTTP 429 rate limited (non-JSON body)".into(),
-            ));
+            return Err(Error::RateLimited(format!(
+                "{}: HTTP 429 rate limited (non-JSON body)",
+                super::SRC
+            )));
         }
     }
     parse_response(body)

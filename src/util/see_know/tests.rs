@@ -688,8 +688,8 @@ fn rate_limited_error_redacts_credentials_from_the_provider_body() {
         "the credential must be redacted out of the error: {msg}"
     );
     assert!(
-        msg.contains("seek_now:"),
-        "the error must still identify its provider: {msg}"
+        msg.contains("see_know:"),
+        "the error must still identify its provider by its registered name: {msg}"
     );
 }
 

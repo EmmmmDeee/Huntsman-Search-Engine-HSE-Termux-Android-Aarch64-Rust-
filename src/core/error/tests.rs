@@ -82,7 +82,7 @@ use super::*;
         assert_display(&Error::InvalidTarget("1.2.3".into()));
         assert_display(&Error::MissingKey("HUNTSMAN_X".into()));
         assert_display(&Error::module("m", "msg"));
-        assert_display(&Error::RateLimited("seek_now: throttled".into()));
+        assert_display(&Error::RateLimited("see_know: throttled".into()));
         assert_display(&Error::Other("plain".into()));
     }
 

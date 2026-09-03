@@ -553,3 +553,54 @@ fn the_six_overridden_providers_have_their_expected_provider_descriptors() {
     let comb = get("comb_search");
     assert!(comb.provenance_quality_prior < NEUTRAL_PRIOR);
 }
+
+/// One provider, one name. `see_know`'s transport/parse layer used to label
+/// its errors `seek_now` — a second name for a module the registry calls
+/// `see_know`. Beyond the mislabelled `[seek_now] …` event-log rows, the
+/// shareable-export redactor derives its brand list from the REGISTRY, so
+/// `[seek_now] HTTP 503` in an exported events log escaped redaction while
+/// `[see_know]` would have been masked. The registered name is one constant
+/// (`util::see_know::SRC`, re-exported by the module as its `SRC`), and no
+/// production source may spell the phantom one.
+#[test]
+fn see_know_errors_carry_the_registered_module_name_not_a_phantom_one() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    collect_rs_files(&root.join("src"), &mut files);
+    // Dedicated test files are `#[cfg(test)]` at their declaration site, so
+    // `production_source` cannot see the gate from inside them — skip them
+    // whole, the same rule `collect_bare_confidence` applies.
+    let is_test_file = |p: &Path| {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        name == "tests.rs"
+            || name.ends_with("_tests.rs")
+            || p.components().any(|c| c.as_os_str() == "tests")
+    };
+    // Raw source, not `production_source` (which blanks string literals —
+    // exactly where a label lives). The quoted form is what an error label,
+    // a client tag or a format string carries; prose in a doc comment names
+    // the phantom in backticks and is not a label.
+    let offenders: Vec<String> = files
+        .iter()
+        .filter(|p| !is_test_file(p))
+        .filter_map(|p| {
+            let src = fs::read_to_string(p).unwrap();
+            src.contains("\"seek_now")
+                .then(|| p.strip_prefix(root).unwrap().display().to_string())
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "the phantom provider name `seek_now` must not appear in production source — the \
+         registered name is `see_know` (`util::see_know::SRC`): {offenders:?}"
+    );
+    // The constant IS the registered name, so an error label and the module's
+    // `name()` (what the redactor derives its brand list from) cannot diverge.
+    let registry = huntsman_search_engine::modules::registry();
+    assert!(
+        registry
+            .iter()
+            .any(|m| m.name() == huntsman_search_engine::util::see_know::SRC),
+        "`util::see_know::SRC` must be a registered module name"
+    );
+}

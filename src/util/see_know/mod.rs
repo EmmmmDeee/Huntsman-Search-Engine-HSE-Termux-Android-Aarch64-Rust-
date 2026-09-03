@@ -97,3 +97,13 @@ pub use crate::util::json::val_str;
 pub use crate::util::json::{val_str_coerce, val_str_or_coerce};
 
 pub const KEY_ENV: &str = "HUNTSMAN_SEEKNOW_KEY";
+
+/// The provider's ONE registered name — `modules::see_know`'s `Module::name()`
+/// and the `source` on every entity it emits — used as the module label on
+/// every error this layer raises. It used to be a second name, `seek_now`,
+/// so the transport/parse errors surfaced as `[seek_now] …` for a module the
+/// registry calls `see_know`, and because the shareable-export redactor
+/// derives its brand list from the registry, `[seek_now] HTTP 503` in an
+/// exported events log escaped redaction while `[see_know]` would have been
+/// masked. An architecture test pins that the phantom name is gone.
+pub const SRC: &str = "see_know";
