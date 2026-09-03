@@ -47,9 +47,32 @@ pub struct ContactEnrich;
 pub(super) const NUMVERIFY_KEY_ENV: &str = "HUNTSMAN_NUMVERIFY_KEY";
 
 #[derive(Deserialize)]
+pub(super) struct NumverifyError {
+    #[serde(default)]
+    pub(super) code: Option<i64>,
+    #[serde(rename = "type", default)]
+    pub(super) kind: Option<String>,
+    #[serde(default)]
+    pub(super) info: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub(super) struct NumverifyResp {
     #[serde(default)]
     pub(super) valid: Option<bool>,
+    /// apilayer.net's SHARED error envelope, common to every API on that
+    /// platform: an invalid/expired access_key, a plan/scope restriction, or
+    /// an exhausted monthly quota all answer with HTTP 200 and
+    /// `{"success":false,"error":{...}}` — never a 401/403/429, so the status
+    /// check in `try_url` cannot see it. Distinct from `valid:false`, which is
+    /// the API's NORMAL answer for "this is not a real phone number" and
+    /// carries no `success`/`error` field at all. Capture so a dead/exhausted
+    /// key is reported to the pool instead of silently reading as "no phone
+    /// metadata" forever.
+    #[serde(default)]
+    pub(super) success: Option<bool>,
+    #[serde(default)]
+    pub(super) error: Option<NumverifyError>,
     #[serde(default)]
     pub(super) number: Option<String>,
     #[serde(default)]
@@ -196,6 +219,18 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
             return Err(crate::util::http::http_status_error("contact_enrich", resp).await);
         }
         let data: NumverifyResp = crate::util::http::json_decode(SRC, resp).await?;
+        // apilayer.net's shared error envelope (see NumverifyResp::success's doc):
+        // never the "not a valid number" answer, always a dead/plan-restricted/
+        // exhausted key. Report it exactly like whoisxml/hunter_io's identical
+        // in-body-200 pattern, instead of falling through to the `valid !=
+        // Some(true)` empty-result path below.
+        if let Some(detail) = numverify_key_error_detail(&data) {
+            ctx.report_key_exhausted("numverify", key, 200);
+            return Err(crate::core::error::Error::module(
+                SRC,
+                format!("api 200 error: {detail}"),
+            ));
+        }
         Ok(Some(data))
     };
 
@@ -215,6 +250,27 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
     let mut result = ModuleResult::new();
     result.entities = build_phone_entities(&body, target, transport, &ctx.scan_id);
     Ok(result)
+}
+
+/// Classify a decoded Numverify response for apilayer.net's shared in-body-200
+/// error envelope (see [`NumverifyResp::success`]'s doc): `None` for a normal
+/// validation result (`valid: true` or `valid: false`), `Some(detail)` when
+/// `success == false` — always a dead/expired/plan-restricted/exhausted key,
+/// never a "not a real phone number" answer. **Pure**, so the classification
+/// is unit-tested directly off JSON fixtures without a network call.
+pub(super) fn numverify_key_error_detail(body: &NumverifyResp) -> Option<String> {
+    if body.success != Some(false) {
+        return None;
+    }
+    Some(body.error.as_ref().map_or_else(
+        || "api error".to_string(),
+        |e| match (e.info.as_deref().or(e.kind.as_deref()), e.code) {
+            (Some(msg), Some(code)) => format!("{msg} (code {code})"),
+            (Some(msg), None) => msg.to_string(),
+            (None, Some(code)) => format!("code {code}"),
+            (None, None) => "api error".to_string(),
+        },
+    ))
 }
 
 /// Map a decoded Numverify validation to its entities. **Pure** (no
