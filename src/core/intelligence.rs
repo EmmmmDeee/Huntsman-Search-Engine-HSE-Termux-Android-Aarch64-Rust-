@@ -5,14 +5,13 @@
 //! and bounded, deterministic path frontier used by higher-level planners.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 macro_rules! string_id {
     ($name:ident) => {
-        #[derive(
-            Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-        )]
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
         #[serde(transparent)]
         pub struct $name(pub String);
 
@@ -166,10 +165,7 @@ impl EvidenceRecord {
             && (0.0..=1.0).contains(&self.source_confidence)
             && !self.lineage.source_id.trim().is_empty()
             && !self.lineage.publisher_id.trim().is_empty()
-            && self
-                .location
-                .as_ref()
-                .is_none_or(GeoAssertion::is_valid)
+            && self.location.as_ref().is_none_or(GeoAssertion::is_valid)
     }
 }
 
@@ -331,10 +327,7 @@ impl IntelligenceLedger {
     /// Insert evidence, collapsing only an exact same-source/content duplicate.
     /// Reports with shared origins but different content remain preserved while
     /// source-independence counting correctly treats them as dependent.
-    pub fn insert_evidence(
-        &mut self,
-        evidence: EvidenceRecord,
-    ) -> Result<EvidenceId, LedgerError> {
+    pub fn insert_evidence(&mut self, evidence: EvidenceRecord) -> Result<EvidenceId, LedgerError> {
         if !evidence.is_valid() {
             return Err(LedgerError::InvalidEvidence);
         }
@@ -361,9 +354,10 @@ impl IntelligenceLedger {
         {
             return Err(LedgerError::InvalidClaim);
         }
-        if self.claims.insert(claim.id.clone(), claim).is_some() {
+        if self.claims.contains_key(&claim.id) {
             return Err(LedgerError::DuplicateId);
         }
+        self.claims.insert(claim.id.clone(), claim);
         Ok(())
     }
 
@@ -451,10 +445,7 @@ impl IntelligenceLedger {
         Ok(())
     }
 
-    pub fn recompute_claim_state(
-        &mut self,
-        claim_id: &ClaimId,
-    ) -> Result<ClaimState, LedgerError> {
+    pub fn recompute_claim_state(&mut self, claim_id: &ClaimId) -> Result<ClaimState, LedgerError> {
         let claim = self
             .claims
             .get(claim_id)
@@ -483,23 +474,40 @@ impl IntelligenceLedger {
         Ok(next)
     }
 
-    /// Greedy deterministic maximum independent subset. Evidence is sorted by
-    /// ID, so persisted/reloaded ledgers produce the same answer.
+    /// Count independent lineage components. Transitive copy chains remain one
+    /// source: if A shares an origin with B and B shares another with C, A/B/C
+    /// are one reporting family even when A and C do not directly overlap.
     #[must_use]
     pub fn independent_source_count(&self, ids: &BTreeSet<EvidenceId>) -> usize {
-        let mut independent: Vec<&SourceLineage> = Vec::new();
-        for id in ids {
-            let Some(candidate) = self.evidence.get(id) else {
-                continue;
-            };
-            if independent
-                .iter()
-                .all(|accepted| candidate.lineage.is_independent_of(accepted))
-            {
-                independent.push(&candidate.lineage);
+        let lineages: Vec<&SourceLineage> = ids
+            .iter()
+            .filter_map(|id| self.evidence.get(id).map(|e| &e.lineage))
+            .collect();
+        let mut parent: Vec<usize> = (0..lineages.len()).collect();
+
+        fn root(parent: &mut [usize], mut index: usize) -> usize {
+            while parent[index] != index {
+                parent[index] = parent[parent[index]];
+                index = parent[index];
+            }
+            index
+        }
+
+        for left in 0..lineages.len() {
+            for right in left + 1..lineages.len() {
+                if !lineages[left].is_independent_of(lineages[right]) {
+                    let left_root = root(&mut parent, left);
+                    let right_root = root(&mut parent, right);
+                    if left_root != right_root {
+                        parent[right_root] = left_root;
+                    }
+                }
             }
         }
-        independent.len()
+        (0..lineages.len())
+            .map(|index| root(&mut parent, index))
+            .collect::<BTreeSet<_>>()
+            .len()
     }
 }
 
@@ -596,6 +604,25 @@ pub struct BoundedFrontier {
     dispatched: usize,
 }
 
+#[derive(Debug)]
+pub enum CheckpointError {
+    Io(std::io::Error),
+    Serialization(serde_json::Error),
+    InvalidBudget,
+}
+
+impl From<std::io::Error> for CheckpointError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+impl From<serde_json::Error> for CheckpointError {
+    fn from(value: serde_json::Error) -> Self {
+        Self::Serialization(value)
+    }
+}
+
 impl BoundedFrontier {
     pub fn new(budget: FrontierBudget) -> Result<Self, EnqueueDecision> {
         if !budget.is_valid() {
@@ -686,6 +713,31 @@ impl BoundedFrontier {
     pub fn dispatched(&self) -> usize {
         self.dispatched
     }
+
+    /// Crash-safe Termux-compatible checkpoint: serialize, fsync a private
+    /// sibling temp file, atomically rename, then fsync the parent directory.
+    pub fn save_checkpoint(&self, path: &Path) -> Result<(), CheckpointError> {
+        let bytes = serde_json::to_vec(self)?;
+        crate::util::atomic_file::write(path, &bytes)?;
+        Ok(())
+    }
+
+    pub fn load_checkpoint(path: &Path) -> Result<Self, CheckpointError> {
+        let bytes = std::fs::read(path)?;
+        let checkpoint: Self = serde_json::from_slice(&bytes)?;
+        if !checkpoint.budget.is_valid()
+            || checkpoint.pending.len() > checkpoint.budget.max_pending
+            || checkpoint.dispatched > checkpoint.budget.max_dispatches
+            || checkpoint.pending.iter().any(|candidate| {
+                !candidate.is_valid()
+                    || candidate.depth > checkpoint.budget.max_depth
+                    || !checkpoint.seen.contains(&candidate.id)
+            })
+        {
+            return Err(CheckpointError::InvalidBudget);
+        }
+        Ok(checkpoint)
+    }
 }
 
 #[cfg(test)]
@@ -758,15 +810,27 @@ mod tests {
     }
 
     #[test]
+    fn transitive_copy_chain_counts_as_one_source_family() {
+        let mut ledger = IntelligenceLedger::default();
+        let a = evidence("a", "publisher-a", "origin-x");
+        let mut b = evidence("b", "publisher-b", "origin-x");
+        b.lineage.origin_ids.insert("origin-y".to_string());
+        let c = evidence("c", "publisher-c", "origin-y");
+        let ids = [a.id.clone(), b.id.clone(), c.id.clone()]
+            .into_iter()
+            .collect();
+        ledger.insert_evidence(a).expect("valid");
+        ledger.insert_evidence(b).expect("valid");
+        ledger.insert_evidence(c).expect("valid");
+        assert_eq!(ledger.independent_source_count(&ids), 1);
+    }
+
+    #[test]
     fn independent_support_promotes_but_contradiction_is_preserved() {
         let mut ledger = IntelligenceLedger::default();
         let ids: Vec<EvidenceId> = ["a", "b", "c", "d"]
             .into_iter()
-            .map(|id| {
-                ledger
-                    .insert_evidence(evidence(id, id, id))
-                    .expect("valid")
-            })
+            .map(|id| ledger.insert_evidence(evidence(id, id, id)).expect("valid"))
             .collect();
         ledger.insert_claim(claim()).expect("valid");
         assert_eq!(
@@ -884,9 +948,13 @@ mod tests {
             EnqueueDecision::Accepted
         );
         assert!(frontier.pop_best().is_some());
-        let bytes = serde_json::to_vec(&frontier).expect("serialize checkpoint");
-        let mut resumed: BoundedFrontier =
-            serde_json::from_slice(&bytes).expect("restore checkpoint");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let checkpoint_path = dir.path().join("frontier.json");
+        frontier
+            .save_checkpoint(&checkpoint_path)
+            .expect("durable checkpoint");
+        let mut resumed =
+            BoundedFrontier::load_checkpoint(&checkpoint_path).expect("restore checkpoint");
         assert_eq!(resumed.dispatched(), 1);
         assert_eq!(
             resumed.enqueue(candidate),
@@ -898,7 +966,10 @@ mod tests {
             EnqueueDecision::Accepted
         );
         assert!(resumed.pop_best().is_some());
-        assert!(resumed.pop_best().is_none(), "dispatch budget survives restart");
+        assert!(
+            resumed.pop_best().is_none(),
+            "dispatch budget survives restart"
+        );
     }
 
     #[test]
