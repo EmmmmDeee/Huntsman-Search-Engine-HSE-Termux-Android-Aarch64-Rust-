@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
 };
@@ -179,6 +179,7 @@ pub async fn scan_pivots(
 pub async fn scan_gaps(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
@@ -187,6 +188,14 @@ pub async fn scan_gaps(
         Ok(pair) => pair,
         Err(resp) => return resp,
     };
+    // `gap::analyze`'s own doc states its whole precondition: "every input is a
+    // validated seed". A candidate-tagged (unconfirmed/quarantined) entity is the
+    // opposite of that, so it must be excluded here exactly as every other
+    // entity-serving read endpoint excludes it by default — otherwise an
+    // unverified namesake with no relation edges yet gets reported as an
+    // actionable "orphan" with its raw value and a re-scan recommendation.
+    let (entities, relations) =
+        super::EntityViewGate::from_params(&params).apply_to_graph(entities, relations);
 
     let report = crate::core::gap::analyze(&entities, &relations);
 

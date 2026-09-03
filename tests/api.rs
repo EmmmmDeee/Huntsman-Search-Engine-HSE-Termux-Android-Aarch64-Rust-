@@ -2019,6 +2019,246 @@ async fn scan_network_quarantines_candidate_nodes_by_default() {
     );
 }
 
+#[tokio::test]
+async fn scan_path_connects_two_endpoints_through_a_relation() {
+    // /path had zero prior test coverage. Baseline: two endpoints joined by one
+    // relation must resolve to a 1-hop path naming both by their real value.
+    let (app, store) = test_app_with_store("path_basic");
+    let sid = "s-path-basic";
+    store
+        .upsert_scan(&Scan::new(sid, Target::new(TargetKind::FullName, "A B")))
+        .unwrap();
+    let a = Entity::new(EntityKind::Email, "a@real.example", 0.9, sid);
+    let b = Entity::new(EntityKind::Email, "b@real.example", 0.9, sid);
+    store.upsert_entity(&a).unwrap();
+    store.upsert_entity(&b).unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            a.uid.as_str(),
+            b.uid.as_str(),
+            RelationKind::AssociatedWith,
+            0.6,
+            sid,
+        ))
+        .unwrap();
+
+    let resp = app
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/path?from=a%40real.example&to=b%40real.example"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["connected"].as_bool(), Some(true));
+    let nodes = json["nodes"].as_object().expect("nodes is an object");
+    assert!(
+        nodes.values().any(|n| n["value"] == "a@real.example")
+            && nodes.values().any(|n| n["value"] == "b@real.example"),
+        "both endpoints must resolve to display labels: {json}"
+    );
+}
+
+#[tokio::test]
+async fn scan_path_quarantines_a_candidate_bridge_by_default() {
+    // The bug this fix closes: /path ran the raw, ungated entity/relation set
+    // through connect_values, so a candidate-tagged (unconfirmed) intermediate
+    // could still be routed through and its real value returned in "nodes" —
+    // exactly the PII leak every sibling entity-view endpoint's default
+    // quarantine exists to prevent.
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("path_candidate");
+    let sid = "s-path-cand";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+    let from_e = Entity::new(EntityKind::Email, "pfrom@real.example", 0.9, sid);
+    let mut bridge = Entity::new(EntityKind::Person, "Namesake Stranger", 0.4, sid);
+    bridge.tag(CANDIDATE);
+    let to_e = Entity::new(EntityKind::Email, "pto@real.example", 0.9, sid);
+    store.upsert_entity(&from_e).unwrap();
+    store.upsert_entity(&bridge).unwrap();
+    store.upsert_entity(&to_e).unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            from_e.uid.as_str(),
+            bridge.uid.as_str(),
+            RelationKind::AssociatedWith,
+            0.6,
+            sid,
+        ))
+        .unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            to_e.uid.as_str(),
+            bridge.uid.as_str(),
+            RelationKind::AssociatedWith,
+            0.6,
+            sid,
+        ))
+        .unwrap();
+
+    // Default: the candidate bridge must not connect the two endpoints, and its
+    // real value must never appear in the response body.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/path?from=pfrom%40real.example&to=pto%40real.example"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = axum::body::to_bytes(resp.into_body(), 5_000_000)
+        .await
+        .unwrap();
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        !body.contains("Namesake Stranger"),
+        "a quarantined candidate bridge must not leak into /path by default: {body}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        json["connected"].as_bool(),
+        Some(false),
+        "the two endpoints must not connect through an unopted-in candidate bridge: {json}"
+    );
+
+    // Opt-in restores the connection and surfaces the candidate's real value.
+    let resp2 = app
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/path?from=pfrom%40real.example&to=pto%40real.example&include_candidates=1"
+        )))
+        .await
+        .unwrap();
+    let bytes2 = axum::body::to_bytes(resp2.into_body(), 5_000_000)
+        .await
+        .unwrap();
+    let body2 = String::from_utf8_lossy(&bytes2);
+    assert!(
+        body2.contains("Namesake Stranger"),
+        "include_candidates=1 must restore the connection through the candidate bridge: {body2}"
+    );
+}
+
+#[tokio::test]
+async fn scan_communities_quarantines_candidate_entities_by_default() {
+    // scan_communities ran entities_and_relations() straight into community::detect
+    // with no EntityViewGate, so a candidate could be folded into (and, via
+    // Community::label's raw-value naming, even NAME) a cluster alongside
+    // confirmed relatives.
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("communities_candidate");
+    let sid = "s-comm-cand";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+    let subject = Entity::new(EntityKind::Email, "subject@real.example", 0.9, sid);
+    let mut candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, sid);
+    candidate.tag(CANDIDATE);
+    store.upsert_entity(&subject).unwrap();
+    store.upsert_entity(&candidate).unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            subject.uid.as_str(),
+            candidate.uid.as_str(),
+            RelationKind::AssociatedWith,
+            0.5,
+            sid,
+        ))
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/communities")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let member_uids = |json: &serde_json::Value| -> Vec<String> {
+        json["communities"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|c| c["uids"].as_array().into_iter().flatten())
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    };
+    assert!(
+        !member_uids(&json).contains(&candidate.uid),
+        "a quarantined candidate must not be a community member by default: {json}"
+    );
+
+    let resp2 = app
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/communities?include_candidates=1"
+        )))
+        .await
+        .unwrap();
+    let json2 = body_json(resp2).await;
+    assert!(
+        member_uids(&json2).contains(&candidate.uid),
+        "include_candidates=1 restores the candidate as a community member: {json2}"
+    );
+}
+
+#[tokio::test]
+async fn scan_gaps_quarantines_candidate_entities_by_default() {
+    // gap::analyze's own doc states its precondition: "every input is a validated
+    // seed". scan_gaps fed it the raw, ungated set, so a candidate with no
+    // relation edges yet could be reported as an actionable "orphan" carrying its
+    // real value plus a re-scan recommendation — an unverified stranger presented
+    // as a legitimate discovery gap in the subject's own investigation.
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("gaps_candidate");
+    let sid = "s-gaps-cand";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+    let mut candidate = Entity::new(EntityKind::Phone, "+15559990000", 0.5, sid);
+    candidate.tag(CANDIDATE);
+    store.upsert_entity(&candidate).unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/gaps")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(
+        json["total_seeds"].as_u64(),
+        Some(0),
+        "a quarantined candidate must not count as a validated seed by default: {json}"
+    );
+    let orphans = json["orphans"].as_array().expect("orphans is a list");
+    assert!(
+        orphans.is_empty(),
+        "a quarantined candidate must not be reported as an actionable orphan by default: {json}"
+    );
+
+    let resp2 = app
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/gaps?include_candidates=1"
+        )))
+        .await
+        .unwrap();
+    let json2 = body_json(resp2).await;
+    assert_eq!(
+        json2["total_seeds"].as_u64(),
+        Some(1),
+        "include_candidates=1 restores it as a validated seed: {json2}"
+    );
+}
+
 // ── JSON report ─────────────────────────────────────────────────────────
 
 #[tokio::test]

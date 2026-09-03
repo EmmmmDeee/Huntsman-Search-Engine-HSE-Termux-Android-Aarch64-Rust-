@@ -87,6 +87,7 @@ pub async fn scan_timeline(
 pub async fn scan_communities(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
@@ -95,6 +96,13 @@ pub async fn scan_communities(
         Ok(pair) => pair,
         Err(resp) => return resp,
     };
+    // Same quarantine gate every other entity-serving read endpoint enforces by
+    // default: a candidate-tagged (unconfirmed) entity's raw value must not be
+    // able to name or join a community — `Community::label` uses a member's raw
+    // value verbatim, so an ungated candidate could surface as, or inside, a
+    // "family cluster" alongside confirmed relatives with no distinguishing mark.
+    let (entities, relations) =
+        super::EntityViewGate::from_params(&params).apply_to_graph(entities, relations);
     let communities = crate::core::community::detect(&entities, &relations);
     ok_list("communities", communities)
 }
@@ -108,6 +116,7 @@ pub async fn scan_communities(
 pub async fn scan_trust(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
@@ -116,6 +125,10 @@ pub async fn scan_trust(
         Ok(pair) => pair,
         Err(resp) => return resp,
     };
+    // Same quarantine gate as scan_communities above: an unconfirmed candidate must
+    // not be ranked (or lend its raw value to propagation) alongside verified entities.
+    let (entities, relations) =
+        super::EntityViewGate::from_params(&params).apply_to_graph(entities, relations);
     let scores = crate::core::trust::propagate(&entities, &relations);
     ok_list("trust", scores)
 }
@@ -144,10 +157,18 @@ pub async fn scan_path(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
     Query(q): Query<PathQuery>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
+    // Same quarantine gate every other entity-serving read endpoint enforces by
+    // default (`?include_candidates=1` to opt in) — /path previously ran the raw,
+    // ungated entity/relation set through connect_values/connect_cross_scan, so a
+    // same-name-stranger record the correlator quarantined as unconfirmed could
+    // still surface by value, or as a labelled intermediate hop, in the returned
+    // chain. See `EntityViewGate`'s own doc for why this must not be optional.
+    let include_candidates = super::EntityViewGate::from_params(&params).include_candidates;
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
     let from = q.from.clone();
@@ -166,9 +187,18 @@ pub async fn scan_path(
     let (paths, nodes) =
         match super::offload_store(move || -> Result<PathResult, crate::core::error::Error> {
             let paths = if cross {
-                crate::core::path::connect_cross_scan(store.as_ref(), &from, &to, max_paths)
+                crate::core::path::connect_cross_scan(
+                    store.as_ref(),
+                    &from,
+                    &to,
+                    max_paths,
+                    include_candidates,
+                )
             } else {
-                let entities = store.entities_for_scan(&id2)?;
+                let mut entities = store.entities_for_scan(&id2)?;
+                if !include_candidates {
+                    entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+                }
                 let relations = store.relations_for_scan(&id2)?;
                 crate::core::path::connect_values(&entities, &relations, &from, &to, max_paths)
             };
