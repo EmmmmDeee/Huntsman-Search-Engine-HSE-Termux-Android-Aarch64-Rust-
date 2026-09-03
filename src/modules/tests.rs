@@ -100,3 +100,34 @@ use super::{registry, technique_module_index};
             assert!(!mods.is_empty(), "a keyed technique has ≥1 module");
         }
     }
+
+    #[test]
+    fn is_known_toggle_key_accepts_exactly_the_three_real_key_families() {
+        // The one validator behind both `PUT /api/v1/settings/toggles` and
+        // `hse config <key> on|off`.
+        let modules = registry();
+        let (feature, _) = crate::util::settings::FEATURE_TOGGLES[0];
+        assert!(super::is_known_toggle_key(feature, &modules));
+        assert!(!super::is_known_toggle_key("feature.no_such_feature", &modules));
+
+        let some_module = modules[0].name();
+        assert!(super::is_known_toggle_key(&format!("module.{some_module}"), &modules));
+        assert!(
+            !super::is_known_toggle_key("module.no_such_module_xyz", &modules),
+            "a typo must not validate"
+        );
+        assert!(!super::is_known_toggle_key("module.", &modules));
+        // The registry view is the caller's: an empty view knows no module.
+        assert!(!super::is_known_toggle_key(&format!("module.{some_module}"), &[]));
+
+        let (engine, _) = super::search_engines::engine_toggles()
+            .into_iter()
+            .next()
+            .expect("at least one search engine");
+        assert!(super::is_known_toggle_key(&engine, &modules));
+        assert!(!super::is_known_toggle_key("engine.no_such_engine", &modules));
+
+        // Anything outside the three families is unknown, whatever it names.
+        assert!(!super::is_known_toggle_key("shodan", &modules));
+        assert!(!super::is_known_toggle_key("", &modules));
+    }

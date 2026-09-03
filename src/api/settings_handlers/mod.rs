@@ -566,9 +566,11 @@ pub async fn settings_toggles_put(
     if let Some(rejection) = reject_non_loopback(&peer, "toggle writes are loopback-only") {
         return rejection;
     }
-    if !toggle_key_is_known(&s, &req.key) {
+    // One validator shared with `hse config` (`modules::is_known_toggle_key`)
+    // so the two write paths can never disagree on what a valid key is.
+    if !crate::modules::is_known_toggle_key(&req.key, s.engine.modules()) {
         return bad_request(format!(
-            "unknown toggle key '{}' (expected engine.<name> or module.<name>)",
+            "unknown toggle key '{}' (expected feature.<name>, engine.<name> or module.<name>)",
             req.key
         ));
     }
@@ -583,20 +585,6 @@ pub async fn settings_toggles_put(
         }
         Err(e) => bad_request(e.to_string()),
     }
-}
-
-/// True if `key` names a real engine (`engine.<name>`) or registered module
-/// (`module.<name>`) — bounds web toggle writes to actual capabilities.
-fn toggle_key_is_known(s: &AppState, key: &str) -> bool {
-    if let Some(name) = key.strip_prefix("module.") {
-        return s.engine.modules().iter().any(|m| m.name() == name);
-    }
-    if key.starts_with("engine.") {
-        return crate::modules::search_engines::engine_toggles()
-            .iter()
-            .any(|(k, _)| k == key);
-    }
-    crate::util::settings::is_feature_key(key)
 }
 
 #[cfg(test)]

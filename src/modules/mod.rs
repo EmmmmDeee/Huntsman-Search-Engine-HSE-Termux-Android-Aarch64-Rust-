@@ -582,6 +582,30 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
     MODULE_REGISTRY.clone()
 }
 
+/// True if `key` names a capability toggle that actually exists: a registered
+/// `feature.*` switch (`util::settings::FEATURE_TOGGLES`), a search engine
+/// (`engine.<name>`, from [`search_engines::engine_toggles`]) or a module
+/// (`module.<name>`) present in `modules` — the caller's live registry view
+/// (`ScanEngine::modules()` for the API handler, [`registry`] for the CLI).
+///
+/// The ONE validator behind both write paths, `PUT /api/v1/settings/toggles`
+/// and `hse config <key> on|off`. The CLI used to skip validation entirely and
+/// persist whatever key it was given, so a typo'd `hse config module.shodann
+/// off` printed "○ off", changed nothing, and left the operator believing the
+/// module was disabled. Lives in this layer (not `util::settings`) because it
+/// needs the engine catalogue and the registry, which `util` must not import.
+pub fn is_known_toggle_key(key: &str, modules: &[Arc<dyn Module>]) -> bool {
+    if let Some(name) = key.strip_prefix("module.") {
+        return modules.iter().any(|m| m.name() == name);
+    }
+    if key.starts_with("engine.") {
+        return search_engines::engine_toggles()
+            .iter()
+            .any(|(k, _)| k == key);
+    }
+    crate::util::settings::is_feature_key(key)
+}
+
 /// Module name → its ATT&CK technique IDs. The mapping is constant (the registry
 /// and each module's `attack_techniques()` are `'static`), so it is built once
 /// and reused — every per-request technique lookup avoids reconstructing the
