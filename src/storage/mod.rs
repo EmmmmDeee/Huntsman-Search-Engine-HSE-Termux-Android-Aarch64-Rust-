@@ -564,12 +564,29 @@ impl Store {
     /// file — so under a long-lived process the file high-water-marks and
     /// stays there. This runs an explicit `TRUNCATE` checkpoint at a safe
     /// boundary (a completed scan), resetting the `-wal` to zero and bounding
-    /// its footprint. Best-effort: a busy checkpoint (a concurrent reader
-    /// holding the WAL) returns `SQLITE_BUSY`, which is surfaced as `Err` for
-    /// the caller to log and ignore — the next boundary will retry.
+    /// its footprint. Best-effort: a blocked checkpoint (a concurrent reader
+    /// still pinning WAL frames when the connection's busy timeout expires) is
+    /// surfaced as `Err` for the caller to log and ignore — the next boundary
+    /// will retry.
+    ///
+    /// The pragma never *raises* for a blocked checkpoint: it returns one row
+    /// `(busy, log, checkpointed)` with `busy = 1` and leaves the `-wal`
+    /// untouched. `execute_batch` discarded that row, so a blocked TRUNCATE
+    /// came back `Ok(())` and `hse tidy` / the finalise housekeeping reported a
+    /// truncation that never happened. Reading the row is what makes the
+    /// documented contract above true.
     pub fn checkpoint_truncate(&self) -> Result<()> {
         let conn = self.conn.lock();
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        let (busy, log_frames, checkpointed): (i64, i64, i64) =
+            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE);", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?;
+        if busy != 0 {
+            return Err(crate::core::error::Error::Other(format!(
+                "WAL checkpoint blocked by a concurrent reader ({checkpointed}/{log_frames} \
+                 frames checkpointed; -wal not truncated)"
+            )));
+        }
         Ok(())
     }
 

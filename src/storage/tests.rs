@@ -2943,3 +2943,58 @@ fn upsert_correlation_never_deletes_a_row_whose_uid_list_will_not_parse() {
     assert_eq!(got.len(), 2, "both findings must survive, got {got:?}");
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn checkpoint_truncate_reports_a_blocked_checkpoint_instead_of_claiming_success() {
+    // `PRAGMA wal_checkpoint(TRUNCATE)` does not raise when a concurrent
+    // reader pins the WAL — it returns a `(busy=1, …)` row and leaves the -wal
+    // alone. The old `execute_batch` dropped that row, so a blocked checkpoint
+    // was reported as `Ok(())` (and `hse tidy` claimed "WAL truncated").
+    let path = tmp_db();
+    let wal = format!("{path}-wal");
+    let store = Store::open(&path).expect("should succeed");
+    insert_scan(&store, "wal-busy");
+    for i in 0..50 {
+        store
+            .upsert_entity(&Entity::new(
+                EntityKind::Email,
+                format!("busy{i}@example.com"),
+                0.5,
+                "wal-busy",
+            ))
+            .expect("should succeed");
+    }
+    assert!(std::fs::metadata(&wal).map_or(0, |m| m.len()) > 0);
+
+    // A second connection holding an open read transaction reads those frames
+    // from the WAL, so a TRUNCATE checkpoint cannot complete until it ends.
+    let reader = rusqlite::Connection::open(&path).expect("open a second connection");
+    reader
+        .execute_batch("BEGIN; SELECT count(*) FROM entities;")
+        .expect("reader transaction");
+    // Keep the test fast: the pragma waits out the busy timeout before it
+    // reports `busy = 1`.
+    store
+        .conn
+        .lock()
+        .busy_timeout(std::time::Duration::from_millis(100))
+        .expect("busy timeout");
+
+    let err = store
+        .checkpoint_truncate()
+        .expect_err("a blocked TRUNCATE checkpoint must be an Err, not a silent Ok");
+    assert!(err.to_string().contains("blocked"), "{err}");
+    assert!(
+        std::fs::metadata(&wal).map_or(0, |m| m.len()) > 0,
+        "the -wal must still hold frames while the reader pins them"
+    );
+
+    // Once the reader is gone the same call succeeds and truncates for real.
+    reader.execute_batch("COMMIT;").expect("release reader");
+    drop(reader);
+    store
+        .checkpoint_truncate()
+        .expect("unblocked checkpoint succeeds");
+    assert_eq!(std::fs::metadata(&wal).map_or(0, |m| m.len()), 0);
+    let _ = std::fs::remove_file(&path);
+}
