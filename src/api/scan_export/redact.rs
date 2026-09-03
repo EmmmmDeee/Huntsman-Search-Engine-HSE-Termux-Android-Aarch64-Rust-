@@ -40,16 +40,16 @@ pub const REDACTED_LABEL: &str = "breach-source";
 /// both is listed. Add any other paid provider here as it is integrated; the
 /// `every_breach_category_source_is_redacted` test guards the `Breach`-category
 /// set automatically.
+// Spelled once each in `snake_case`: the `_` → ` ` / `-` expansion below derives
+// "oathnet pro" / "oathnet-pro", "see know" / "see-know" and "seek-know" from
+// these, so the hyphenated forms are not listed a second time.
 const EXTRA_SENSITIVE: &[&str] = &[
     "oathnet_pro",
-    "oathnet-pro",
     "oathnet",
     "see_know",
-    "see-know",
     "seeknow",
     // The "SeekNow" brand as the operator spells it, defensively — matched
     // case-insensitively, so "Seek-Know" / "SeekNow" are covered too.
-    "seek-know",
     "seek_know",
 ];
 
@@ -69,6 +69,20 @@ static SENSITIVE_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
         .map(|m| m.name().to_string())
         .collect();
     names.extend(EXTRA_SENSITIVE.iter().map(|&e| e.to_string()));
+    // A module `name()` is `snake_case`, but the evidence SUMMARIES that land
+    // in the exported artifacts spell the same provider with spaces or hyphens
+    // — `pwned_passwords` writes "HIBP Pwned Passwords: value seen in …", and
+    // `\bpwned_passwords\b` left "Pwned Passwords" in the customer CSV. Each
+    // name is therefore matched in all three spellings; still whole-token,
+    // still derived from the registry rather than hand-listed per provider.
+    let names: BTreeSet<String> = names
+        .into_iter()
+        .flat_map(|n| {
+            let spaced = n.replace('_', " ");
+            let hyphenated = n.replace('_', "-");
+            [n, spaced, hyphenated]
+        })
+        .collect();
     if names.is_empty() {
         return None;
     }
@@ -209,5 +223,45 @@ mod tests {
     fn idempotent() {
         let once = redact_sensitive_sources("source: oathnet_pro");
         assert_eq!(redact_sensitive_sources(&once), once);
+    }
+
+    #[test]
+    fn every_breach_source_is_redacted_in_its_spaced_and_hyphenated_spellings_too() {
+        // Evidence summaries carry the brand as prose ("HIBP Pwned Passwords:
+        // …"), not the snake_case module name. Every multi-word breach source
+        // must be hidden in all three spellings, case-insensitively.
+        let multiword: Vec<String> = crate::modules::registry()
+            .iter()
+            .filter(|m| m.category() == ModuleCategory::Breach && m.name().contains('_'))
+            .map(|m| m.name().to_string())
+            .collect();
+        assert!(
+            !multiword.is_empty(),
+            "expected at least one multi-word breach-category module"
+        );
+        for name in &multiword {
+            for spelling in [name.replace('_', " "), name.replace('_', "-")] {
+                // Title-case the words the way a summary would print them.
+                let prose: String = spelling
+                    .split(' ')
+                    .map(|w| {
+                        let mut c = w.chars();
+                        c.next().map_or(String::new(), |f| {
+                            f.to_uppercase().collect::<String>() + c.as_str()
+                        })
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let out =
+                    redact_sensitive_sources(&format!("HIBP {prose}: value seen in 3 breach(es)"));
+                assert!(
+                    !out.to_lowercase().contains(&spelling.to_lowercase()),
+                    "`{prose}` (from `{name}`) leaked through redaction: {out}"
+                );
+            }
+        }
+        // The concrete case that motivated this.
+        let out = redact_sensitive_sources("HIBP Pwned Passwords: value seen in 3 breach(es)");
+        assert!(!out.contains("Pwned Passwords"), "{out}");
     }
 }
