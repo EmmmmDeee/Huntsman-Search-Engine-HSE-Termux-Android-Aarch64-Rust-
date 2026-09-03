@@ -229,8 +229,80 @@ fn resp_deserializes_with_full_fields() {
     assert_eq!(net.netid.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
 }
 
+/// Query parameters documented on ALL THREE WiGLE v2 bbox search endpoints
+/// (`/api/v2/network/search`, `/api/v2/cell/search`,
+/// `/api/v2/bluetooth/search`) — transcribed from
+/// `https://api.wigle.net/swagger.json`, retrieved 2026-09-03. `type` is on
+/// none of them (it exists only on `/api/v2/network/detail`).
+const DOCUMENTED_ON_EVERY_SEARCH_ENDPOINT: &[&str] = &[
+    "onlymine",
+    "notmine",
+    "latrange1",
+    "latrange2",
+    "longrange1",
+    "longrange2",
+    "closestLat",
+    "closestLong",
+    "lastupdt",
+    "firsttime",
+    "lasttime",
+    "startTransID",
+    "endTransID",
+    "minQoS",
+    "variance",
+    "houseNumber",
+    "road",
+    "city",
+    "region",
+    "postalCode",
+    "country",
+    "resultsPerPage",
+    "searchAfter",
+];
+
 #[test]
-fn network_kind_emits_wigle_typed_query_param() {
+fn bbox_search_hits_each_corpus_own_endpoint_with_documented_params_only() {
+    // RULE.md's cautionary case, pinned: `/network/search` has no `type`
+    // parameter, so `?type=cell` returned WiFi rows relabelled as cell-tower
+    // intelligence. Each corpus must go to its own documented endpoint, and
+    // every parameter sent must be one the spec lists for that endpoint.
+    for (kind, path) in [
+        (NetworkKind::Wifi, "/api/v2/network/search"),
+        (NetworkKind::Cell, "/api/v2/cell/search"),
+        (NetworkKind::Bluetooth, "/api/v2/bluetooth/search"),
+    ] {
+        let url = fetch::search_bbox_url(kind, -27.4766, 153.0166, 0.01);
+        let (base, query) = url.split_once('?').expect("url has a query");
+        assert_eq!(base, format!("https://api.wigle.net{path}"), "{kind:?}");
+        for kv in query.split('&') {
+            let (k, v) = kv.split_once('=').expect("key=value");
+            assert!(
+                DOCUMENTED_ON_EVERY_SEARCH_ENDPOINT.contains(&k),
+                "{kind:?}: `{k}` is not a documented parameter of {path}"
+            );
+            assert!(!v.is_empty(), "{kind:?}: `{k}` sent empty");
+        }
+        assert!(
+            !query.contains("type="),
+            "{kind:?}: `type` is not a search parameter"
+        );
+        // The box is what was asked for, in both axes.
+        assert!(query.contains("latrange1=-27.486600&latrange2=-27.466600"));
+        assert!(query.contains("longrange1=153.006600&longrange2=153.026600"));
+    }
+
+    // The SSID search is WiFi-only and `ssid` is documented on that endpoint.
+    let url = fetch::ssid_search_url("Smith Family 5G");
+    let expected_prefix = format!(
+        "https://api.wigle.net/api/v2/network/search?ssid={}&",
+        crate::util::http::urlencode("Smith Family 5G")
+    );
+    assert!(url.starts_with(&expected_prefix), "{url}");
+    assert!(!url.contains("type="));
+}
+
+#[test]
+fn network_kind_labels_are_internal_evidence_labels() {
     assert_eq!(NetworkKind::Wifi.as_str(), "wifi");
     assert_eq!(NetworkKind::Cell.as_str(), "cell");
     assert_eq!(NetworkKind::Bluetooth.as_str(), "bluetooth");
@@ -1367,10 +1439,13 @@ async fn a_generic_ssid_dispatch_spends_nothing() {
     );
 }
 
-/// Regression: one `MacAddress` dispatch probes the WiFi, cell and Bluetooth
-/// corpora in sequence — three billable requests — and was charged a single
-/// unit, so the documented "5 BSSID lookups per scan" could spend fifteen
-/// against an allowance denominated in requests.
+/// Regression: one `MacAddress` dispatch probes the WiFi and Bluetooth
+/// corpora in sequence — two billable requests — and was charged a single
+/// unit, so the documented "5 BSSID lookups per scan" could spend more than
+/// five against an allowance denominated in requests. (It used to probe a
+/// third, "cell", corpus with an undocumented `type=cell` on
+/// `network/detail`; WiGLE has no address-keyed cell lookup, so that probe
+/// is gone and a dispatch costs exactly the two documented requests.)
 ///
 /// The probes fail here (the host resolves to a closed port), which is the
 /// point: each is charged *before* it is issued, so the accounting holds
@@ -1390,8 +1465,8 @@ async fn one_bssid_dispatch_is_billed_for_every_corpus_it_probes() {
 
     assert_eq!(
         before - BSSID_BUDGET.scan_remaining(),
-        3,
-        "three corpora probed must cost three units, not one"
+        2,
+        "the two documented corpora probed (WiFi, Bluetooth) must cost two units, not one"
     );
 
     BSSID_BUDGET.reset_scan();

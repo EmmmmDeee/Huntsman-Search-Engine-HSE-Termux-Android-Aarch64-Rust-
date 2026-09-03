@@ -14,12 +14,23 @@ use crate::util::http::RequestBuilderExt;
 /// WiGLE API base. Endpoint paths are appended by the URL builders below.
 const API_BASE: &str = "https://api.wigle.net/api/v2";
 
-/// Build the `network/detail` URL for a `netid` (BSSID / cell id) and `type`
-/// (`"wifi"`, `"cell"`, `"bt"`). The id is percent-encoded.
+/// Build the `network/detail` URL for a WiFi/cell `netid` and network `type`.
+/// The documented `type` values (`https://api.wigle.net/swagger.json`,
+/// retrieved 2026-09-03) are `CDMA` / `GSM` / `LTE` / `WCDMA` / `NR` / `WIFI`;
+/// a BSSID lookup passes `"WIFI"`. The id is percent-encoded.
 #[must_use]
 pub fn detail_url(netid: &str, kind: &str) -> String {
     let encoded = crate::util::http::urlencode(netid);
     format!("{API_BASE}/network/detail?netid={encoded}&type={kind}")
+}
+
+/// Build the `bluetooth/detail` URL for a Bluetooth device address — its own
+/// documented endpoint (`netid` is its only lookup parameter), NOT
+/// `network/detail`, which has no Bluetooth `type`. The id is percent-encoded.
+#[must_use]
+pub fn bluetooth_detail_url(netid: &str) -> String {
+    let encoded = crate::util::http::urlencode(netid);
+    format!("{API_BASE}/bluetooth/detail?netid={encoded}")
 }
 
 /// Issue an authenticated GET to a WiGLE API `url` and classify the response by
@@ -168,10 +179,18 @@ mod tests {
     #[test]
     fn detail_url_encodes_netid_and_sets_type() {
         assert_eq!(
-            detail_url("AA:BB:CC:DD:EE:FF", "wifi"),
-            "https://api.wigle.net/api/v2/network/detail?netid=AA%3ABB%3ACC%3ADD%3AEE%3AFF&type=wifi"
+            detail_url("AA:BB:CC:DD:EE:FF", "WIFI"),
+            "https://api.wigle.net/api/v2/network/detail?netid=AA%3ABB%3ACC%3ADD%3AEE%3AFF&type=WIFI"
         );
-        // type is passed through verbatim for the cell/bt corpora.
-        assert!(detail_url("123", "cell").ends_with("netid=123&type=cell"));
+        // A cell type is one of the documented network types, passed verbatim.
+        assert!(detail_url("123", "LTE").ends_with("netid=123&type=LTE"));
+    }
+
+    #[test]
+    fn bluetooth_detail_has_its_own_endpoint_and_no_type() {
+        assert_eq!(
+            bluetooth_detail_url("DD:EE:FF:00:11:22"),
+            "https://api.wigle.net/api/v2/bluetooth/detail?netid=DD%3AEE%3AFF%3A00%3A11%3A22"
+        );
     }
 }

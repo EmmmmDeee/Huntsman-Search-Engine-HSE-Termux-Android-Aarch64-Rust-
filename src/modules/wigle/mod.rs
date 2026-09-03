@@ -546,9 +546,9 @@ impl Module for Wigle {
     }
 }
 
-/// Observation type for the WiGLE `/network/search` `type` query
-/// parameter. WiGLE v2 indexes three; we expose all three so a
-/// single Coordinates dispatch can fan out across the full corpus.
+/// One of WiGLE's three observation corpora. WiGLE v2 serves each from its
+/// OWN search endpoint (see [`Self::search_endpoint`]); a single Coordinates
+/// dispatch fans out across all three.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum NetworkKind {
     Wifi,
@@ -557,11 +557,24 @@ pub(super) enum NetworkKind {
 }
 
 impl NetworkKind {
+    /// HSE's own label for the corpus — used in evidence attributes and tags
+    /// (`observation_type`, `cell-located`), never sent to WiGLE.
     pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::Wifi => "wifi",
             Self::Cell => "cell",
             Self::Bluetooth => "bluetooth",
+        }
+    }
+
+    /// The documented bounding-box search endpoint for this corpus
+    /// (`https://api.wigle.net/swagger.json`, retrieved 2026-09-03). Three
+    /// separate paths: `/network/search` is WiFi only and takes no `type`.
+    pub(super) fn search_endpoint(self) -> &'static str {
+        match self {
+            Self::Wifi => "https://api.wigle.net/api/v2/network/search",
+            Self::Cell => "https://api.wigle.net/api/v2/cell/search",
+            Self::Bluetooth => "https://api.wigle.net/api/v2/bluetooth/search",
         }
     }
 }
@@ -792,10 +805,14 @@ impl Wigle {
         ctx: &ModuleContext,
     ) -> Result<ModuleResult> {
         // One unit per kind actually probed, not one per dispatch: a BSSID absent
-        // from the WiFi and cell corpora costs three requests before the
-        // Bluetooth probe answers, and the caller used to be billed for one.
+        // from the WiFi corpus costs two requests before the Bluetooth probe
+        // answers, and the caller used to be billed for one. A MAC address is
+        // a WiFi BSSID or a Bluetooth device address; it is never a cell-tower
+        // id (operator/LAC/CID), and WiGLE documents no address-keyed cell
+        // lookup — the former `Cell` probe here sent an undocumented
+        // `type=cell` to `network/detail` (see `fetch_detail`).
         let mut last_error = None;
-        for kind in [NetworkKind::Wifi, NetworkKind::Cell, NetworkKind::Bluetooth] {
+        for kind in [NetworkKind::Wifi, NetworkKind::Bluetooth] {
             if !BSSID_BUDGET.try_increment() {
                 break;
             }
