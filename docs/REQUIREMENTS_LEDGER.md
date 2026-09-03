@@ -615,6 +615,7 @@ this pass), 12 PARTIAL, 2 IMPLEMENTED_UNVERIFIED, 1 UNREACHABLE.
 | REQ-API-ROUTE-005 | On a LOOPBACK bind only, `enforce_host_allowlist` rejects (403, before any handler) a request whose `Host` header is present AND not a loopback alias (the bind string itself, or localhost/127.0.0.1/[::1] with the bound port) — defeating DNS rebinding, where a… | Ran `cargo test --lib api::routes -- --test-threads=4` this pass: 33/33 passed (includes both routes/tests.rs cases: `host_allowlist_covers_loopback_aliases_and_rejects_rebind ... ok`, `host_allowlist_is_none_for_non_loopback_bind ... ok`). Ran `cargo test --test api dns_rebind_host_header_is_rejected --exact` separately: `test result: ok. 1 passed; 0 failed`. | VERIFIED |
 | REQ-API-ROUTE-006 | build_cors_layer's docstring states it fixes a real, previously-flagged vulnerability (PR #9): CORS is bound to the bind's own explicit `http(s)://<bind>` origin (plus localhost/127.0.0.1/[::1] aliases, loopback only) — never `Access-Control-Allow-Origin:… | Ran `cargo test --lib api::routes` this pass — the 3 named CORS tests pass (part of 33/33), which is exactly the finding: a test that cannot fail carries no verification value regardless of pass/fail. Read build_cors_layer directly and confirmed it constructs an explicit Vec<HeaderValue> origin list via `push()`, never `Any` — the underlying behavior is genuinely implemented, but nothing in the test suite would catch a future regression to Any. | IMPLEMENTED_UNVERIFIED |
 | REQ-API-ROUTE-007 | `/api/v1/scans/import` alone gets `DefaultBodyLimit::max(scan_handlers::MAX_UPLOAD_BYTES)` (16 MB) layered onto just that one `.route()` registration, raising it above axum's 2 MB default so a legitimate 2-16 MB breach dossier isn't 413'd before reaching the… | Ran `cargo test --test api dossier_upload_accepts_body_larger_than_axum_default_limit --exact --test-threads=4` this pass: `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 122 filtered out; finished in 3.38s` — a real >2.2MB body was POSTed through the actual router and confirmed NOT rejected with 413. | VERIFIED |
+| REQ-API-ROUTE-008 (**new, Pass 14**) | Every embedded `/static` asset is served with a strong, content-derived `ETag` (`"` + first 16 hex of SHA-256 over the served bytes + `"`, computed once per process) under `Cache-Control: public, max-age=3600, must-revalidate`; a conditional `GET` whose `If-None-Match` carries that tag gets `304`, any other tag — including the crate-version tag the pre-fix handler emitted — gets `200` with the bytes. | The tag used to be `env!("CARGO_PKG_VERSION")` on the premise that the version identifies the embedded bytes; it does not for this project's release model (`install.sh` `HSE_REF=main` and the in-app updater rebuild from `main` in place; the SPA/wasm changed in 8 of 88 consecutive `main` commits under one version), so after every upgrade a browser revalidated with the old tag and was told `304` — stale JS/wasm until someone bumped the version. Ran `cargo test --lib api::routes` (34, incl. `every_embedded_asset_etag_is_the_hash_of_its_bytes`: every `APP_FILES`/`VENDOR_FILES` entry's tag equals the SHA-256 of its bytes and is not the version tag) and `cargo test --test api static_assets_carry_a_content_derived_etag_not_the_crate_version` (tag ≠ version, 18-char quoted hex, distinct per asset, stable across requests, `304` on the real tag, `200` + body on the stale version tag) — all pass. | VERIFIED |
 | REQ-API-AUTH-001 | `auth::resolve(bind, supplied, allow_unauthenticated)` returns `Ok(None)` (no gate) for a loopback bind unless a token was explicitly supplied (honored anyway, for defence-in-depth); for a non-loopback bind, returns `Ok(Some(token))` — the supplied token if… | Ran `cargo test --lib api::auth -- --test-threads=4` this pass: `running 21 tests ... test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 6836 filtered out`, including all 6 posture-resolution tests listed above. | VERIFIED |
 | REQ-API-AUTH-002 | When a token is resolved, `enforce_auth` is layered as the outermost-but-one middleware (only `set_security_headers` sits further out) so it runs before the Host allowlist, CORS, CSRF, and every handler/SPA/static asset — an unauthenticated non-loopback… | Ran `cargo test --lib api::auth`: 21/21 passed (includes all 9 middleware tests). Ran `cargo test --test api exposed_bind -- --test-threads=4` separately: `running 4 tests / test exposed_bind_bootstraps_a_browser_then_drops_the_token_from_the_url ... ok / test exposed_bind_rejects_every_unauthenticated_surface ... ok / test exposed_bind_rejects_an_unauthenticated_mutation ... ok / test exposed_bind_admits_a_valid_token ... ok / test result: ok. 4 passed; 0 failed`. Ran… | VERIFIED |
 | REQ-API-AUTH-003 | `AuthToken::matches` hashes the presented credential with SHA-256 and compares digests via `ct_eq`, which XOR-accumulates every byte pair and checks once at the end rather than short-circuiting on the first mismatch, so response timing cannot leak the token's… | Ran `cargo test --lib api::auth` this pass — all 4 tests pass (part of 21/21). These tests confirm ct_eq's functional correctness (right/wrong tokens match/reject as expected, near-misses at every position rejected) and that Debug never leaks the plaintext. They do NOT and cannot measure that the comparison is actually constant-time on real hardware — no timing/statistical test exists in the suite; the constant-time guarantee itself rests on reading the loop's structure (no early return), not… | PARTIAL |
@@ -1611,19 +1612,28 @@ baseline:
 9. **Export redaction leaked prose-spelled brands** (REQ-API-EXPORT-007) —
    fixed systematically (spelling variants derived from the registry), and
    `EXTRA_SENSITIVE`'s hand-listed hyphenated duplicates removed.
+10. **Stale SPA/wasm after every in-place upgrade** (REQ-API-ROUTE-008) —
+    the `/static` ETag was the crate version, which the `main`-tracking
+    upgrade path never bumps; it is now a per-asset content hash.
 
 Because the browser build embeds hse-core, the first fix changed
 `wasm-ui/pkg/hse_wasm_ui_bg.wasm` and CI's byte-exact drift check failed on
 the first push; the artifact was regenerated with the pinned pipeline after
 proving toolchain parity (the same local pipeline reproduces the pre-change
-`pkg/` byte-for-byte).
+`pkg/` byte-for-byte). It failed a second time on the regenerated artifact:
+the build is checkout-path-dependent — cargo's metadata hash includes the
+absolute path of `hse-core`, an out-of-workspace path dependency of `wasm-ui`,
+and under `lto = true` the item/data order follows it (measured: two builds
+from one path byte-identical, from two paths not, already in cargo's raw
+`.wasm`). `scripts/wasm_ui_drift_check.sh` now builds from one fixed absolute
+path on every host and gained `--write` as the single regeneration procedure
+(the hand-run recipe duplicated in `wasm-ui/src/lib.rs` is gone); verified by
+the check passing from two different checkout paths.
 
 **Deliberately not done this pass** (verified real, lower return or lower
 confidence — recorded so they are not re-discovered): a per-scan
 reconciliation of `running`/`pending` scan rows left by a killed process
-(recovery; real but a schema/lifecycle design choice), the crate-version
-`/static` ETag that keeps a stale SPA after an in-place upgrade (needs a
-content hash threaded through `build.rs`), `see_know`'s process-wide
+(recovery; real but a schema/lifecycle design choice), `see_know`'s process-wide
 invalid-key latch and its silent false-negative path, the FOFA module's
 unverified response schema (the provider's spec was not reachable), the
 event-prune of still-running scans, the SPA's wasm-init failure path, the
@@ -1656,7 +1666,7 @@ $ cargo test --lib --features dep-cooldown -- modules::wigle util::wigle util::o
 
 | Status | Pass 1 | Pass 2 | Pass 3 | Pass 4 | Pass 5 | Pass 6 | Pass 7 | Pass 8 | Pass 9 | Pass 10 | Pass 11 | Pass 12 | Pass 13 | Pass 14 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 | 56 | 58 | 59 *(REQ-API-SCAN-006 fixed in Pass 9)* | 62 *(REQ-CLI-001, REQ-CLI-007 flipped from PARTIAL; REQ-STORAGE-001 new)* | 64 *(REQ-ROI-001, REQ-ROI-003 new)* | 69 *(REQ-PROVIDER-001..005 new, all landed VERIFIED)* | 72 *(REQ-ROI-004..006 new, all landed VERIFIED)* | 80 *(REQ-API-SCAN-004 flipped from PARTIAL; REQ-CORE-015, REQ-CLI-013, REQ-API-AUTH-005, REQ-API-EXPORT-007, REQ-STORAGE-002, REQ-STORAGE-003, REQ-TEST-001 new, all landed VERIFIED)* |
+| VERIFIED | 23 | 30 | 50 | 53 | 54 | 55 | 56 | 58 | 59 *(REQ-API-SCAN-006 fixed in Pass 9)* | 62 *(REQ-CLI-001, REQ-CLI-007 flipped from PARTIAL; REQ-STORAGE-001 new)* | 64 *(REQ-ROI-001, REQ-ROI-003 new)* | 69 *(REQ-PROVIDER-001..005 new, all landed VERIFIED)* | 72 *(REQ-ROI-004..006 new, all landed VERIFIED)* | 81 *(REQ-API-SCAN-004 flipped from PARTIAL; REQ-CORE-015, REQ-CLI-013, REQ-API-AUTH-005, REQ-API-ROUTE-008, REQ-API-EXPORT-007, REQ-STORAGE-002, REQ-STORAGE-003, REQ-TEST-001 new, all landed VERIFIED)* |
 | IMPLEMENTED_UNVERIFIED | 17 | 12 | 14 | 14 | 14 | 14 | 14 | 13 *(REQ-INSTALL-001 out, fixed; REQ-INSTALL-010 in as new then confirmed VERIFIED by this PR's own CI run before merge — net -1)* | 13 | 13 | 14 *(REQ-ROI-002 new)* | 14 | 14 | 16 *(REQ-PROVIDER-006, REQ-PROVIDER-007 new — contract verified against the authoritative spec, live call unexercised without credentials)* |
 | PARTIAL | 8 | 7 | 19 | 19 | 18 *(REQ-API-MISC-003 fixed in Pass 5)* | 17 *(REQ-API-SCAN-007 fixed in Pass 6)* | 16 *(REQ-API-SCAN-002 fixed in Pass 7)* | 16 | 16 | 14 *(REQ-CLI-001, REQ-CLI-007 out, fixed; REQ-ENV-005 stays, evidence strengthened)* | 14 | 14 | 14 | 13 *(REQ-API-SCAN-004 out, fixed)* |
 | MISSING | 1 | 1 *(REQ-ENV-003, unchanged — see Pass 1's "Fix selection rationale")* | 1 | 0 *(REQ-ENV-003 fixed in Pass 4)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
@@ -1664,7 +1674,7 @@ $ cargo test --lib --features dep-cooldown -- modules::wigle util::wigle util::o
 | OBSOLETE (by design, not a gap) | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
 | BROKEN | 0 | 0 | 0 *(REQ-API-MISC-004 was BROKEN before Pass 3's fix; now VERIFIED, counted above)* | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | UNREACHABLE | 0 | 0 | 1 *(REQ-API-SCAN-006 — real, but lower-severity than the BROKEN finding; not fixed in Pass 3, see section 6)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 1 *(REQ-API-SCAN-006, unchanged)* | 0 *(REQ-API-SCAN-006 fixed in Pass 9)* | 0 | 0 | 0 | 0 | 0 |
-| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** | **88** | **89** | **89** | **90** *(REQ-STORAGE-001, new Section 9)* | **93** *(REQ-ROI-001/002/003, new Section 10)* | **98** *(REQ-PROVIDER-001..005, new Section 11)* | **101** *(REQ-ROI-004..006, new Section 12)* | **110** *(9 new rows: REQ-CORE-015, REQ-CLI-013, REQ-API-AUTH-005, REQ-API-EXPORT-007, REQ-STORAGE-002/003, new Section 13 REQ-TEST-001, new Section 14 REQ-PROVIDER-006/007)* |
+| **Total rows** | **51** | **51** | **86** | **88** | **88** | **88** | **88** | **89** | **89** | **90** *(REQ-STORAGE-001, new Section 9)* | **93** *(REQ-ROI-001/002/003, new Section 10)* | **98** *(REQ-PROVIDER-001..005, new Section 11)* | **101** *(REQ-ROI-004..006, new Section 12)* | **111** *(10 new rows: REQ-CORE-015, REQ-CLI-013, REQ-API-AUTH-005, REQ-API-ROUTE-008, REQ-API-EXPORT-007, REQ-STORAGE-002/003, new Section 13 REQ-TEST-001, new Section 14 REQ-PROVIDER-006/007)* |
 
 Pass 4's `VERIFIED` count (53) is Pass 3's 50, plus the REQ-ENV-003 flip
 (+1), plus the two new one-row sections REQ-ENGINE-001/REQ-CORRELATOR-001
@@ -1693,19 +1703,19 @@ row moved through an intermediate status this time; the five new rows bring
 the total from 93 to 98. Pass 13's `VERIFIED` count (72) is Pass 12's 69,
 plus one new three-row section, REQ-ROI-004..006, all three landing
 `VERIFIED` on first pass (+3) — no row moved through an intermediate status
-this time; the three new rows bring the total from 98 to 101. Pass 14's `VERIFIED` count (80) is Pass 13's 72, plus the
+this time; the three new rows bring the total from 98 to 101. Pass 14's `VERIFIED` count (81) is Pass 13's 72, plus the
 REQ-API-SCAN-004 flip from `PARTIAL` (+1, so `PARTIAL` drops from 14 to 13),
-plus seven new rows landing `VERIFIED` on first pass (REQ-CORE-015,
-REQ-CLI-013, REQ-API-AUTH-005, REQ-API-EXPORT-007, REQ-STORAGE-002,
-REQ-STORAGE-003, REQ-TEST-001, +7); `IMPLEMENTED_UNVERIFIED` rises from 14 to
+plus eight new rows landing `VERIFIED` on first pass (REQ-CORE-015,
+REQ-CLI-013, REQ-API-AUTH-005, REQ-API-ROUTE-008, REQ-API-EXPORT-007,
+REQ-STORAGE-002, REQ-STORAGE-003, REQ-TEST-001, +8); `IMPLEMENTED_UNVERIFIED` rises from 14 to
 16 (REQ-PROVIDER-006/007 — contract verified against the authoritative spec,
-live behaviour unexercised without credentials); the nine new rows bring the
-total from 101 to 110.
+live behaviour unexercised without credentials); the ten new rows bring the
+total from 101 to 111.
 
 Breakdown by section: Module trait contract 15 rows (REQ-CORE-001..015), CLI
 surface 13 rows (REQ-CLI-001..013), `install.sh` 10 rows
 (REQ-INSTALL-001..010), Env/config 6 rows (REQ-ENV-001..006), README claims 10
-rows (REQ-README-001..010), HTTP API surface 37 rows (REQ-API-ROUTE-001..007,
+rows (REQ-README-001..010), HTTP API surface 38 rows (REQ-API-ROUTE-001..008,
 REQ-API-AUTH-001..005, REQ-API-SCAN-001..010, REQ-API-MISC-001..008,
 REQ-API-EXPORT-001..007), Scan engine dispatch 1 row (REQ-ENGINE-001),
 Correlator rule registry 1 row (REQ-CORRELATOR-001), Storage subsystem 3 rows
@@ -1714,7 +1724,7 @@ Correlator rule registry 1 row (REQ-CORRELATOR-001), Storage subsystem 3 rows
 (REQ-PROVIDER-001..005), Dispatch-utility explainability 3 rows
 (REQ-ROI-004..006), Test-harness isolation 1 row (REQ-TEST-001), Provider API
 contracts re-verified 2 rows (REQ-PROVIDER-006..007) —
-15+13+10+6+10+37+1+1+3+3+5+3+1+2 = 110, matching the total above.
+15+13+10+6+10+38+1+1+3+3+5+3+1+2 = 111, matching the total above.
 Some rows cite tests shared across sections (e.g. REQ-CORE-010 and
 REQ-README-009 both cite `every_module_maps_to_valid_attack_reconnaissance_techniques`),
 which is intentional — the two rows document the same underlying test from
