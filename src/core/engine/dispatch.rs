@@ -961,9 +961,9 @@ impl super::ScanEngine {
             })
             .collect();
         ranked.sort_by(|a, b| match (a.2, b.2) {
-            (Some(a_score), Some(b_score)) => b_score
-                .total_cmp(&a_score)
-                .then_with(|| a.0.cmp(&b.0)),
+            (Some(a_score), Some(b_score)) => {
+                b_score.total_cmp(&a_score).then_with(|| a.0.cmp(&b.0))
+            }
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => a.0.cmp(&b.0),
@@ -991,12 +991,8 @@ impl super::ScanEngine {
         // cross-correlation gate); computed once per target, not per module.
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
         let target_confidence = target_c_effective(state.entity_map, cx.target);
-        let dispatch_order = self.dispatch_order_for_target(
-            cx,
-            target_sources,
-            target_confidence,
-            state.dispatched,
-        );
+        let dispatch_order =
+            self.dispatch_order_for_target(cx, target_sources, target_confidence, state.dispatched);
         for idx in dispatch_order {
             let Some(module) = self.modules.get(idx) else {
                 continue;
@@ -1139,12 +1135,8 @@ impl super::ScanEngine {
     ) {
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
         let target_confidence = target_c_effective(state.entity_map, cx.target);
-        let dispatch_order = self.dispatch_order_for_target(
-            cx,
-            target_sources,
-            target_confidence,
-            state.dispatched,
-        );
+        let dispatch_order =
+            self.dispatch_order_for_target(cx, target_sources, target_confidence, state.dispatched);
         for idx in dispatch_order {
             let Some(module) = self.modules.get(idx) else {
                 continue;
@@ -1261,12 +1253,8 @@ impl super::ScanEngine {
 
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
         let target_confidence = target_c_effective(state.entity_map, cx.target);
-        let dispatch_order = self.dispatch_order_for_target(
-            cx,
-            target_sources,
-            target_confidence,
-            state.dispatched,
-        );
+        let dispatch_order =
+            self.dispatch_order_for_target(cx, target_sources, target_confidence, state.dispatched);
         for idx in dispatch_order {
             // Opportunistically absorb any modules that already finished so
             // `entity_map.len()` below is live, not the round-start snapshot —
