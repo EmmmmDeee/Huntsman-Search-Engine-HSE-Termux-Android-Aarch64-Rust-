@@ -1146,14 +1146,35 @@ impl Store {
 
     /// Prune events older than `max_age_secs` and limit total rows to
     /// `max_rows`. Prevents unbounded database growth from long-running
-    /// or repeated scans. Called automatically at startup.
+    /// or repeated scans. Called automatically at startup, by `hse tidy`, and
+    /// at every scan's finalise housekeeping.
+    ///
+    /// Events of a scan that is still `pending`/`running` and started within
+    /// the retention window are exempt from both cuts. Under a long-lived
+    /// `hse serve`, one scan's finalise-time prune cut the OLDEST rows
+    /// globally, and once more than `max_rows` newer rows existed (another
+    /// large scan, or the running scan's own volume) those were the running
+    /// scan's own beginning — its `ScanStart` / early `ModuleDone` rows, which
+    /// `events_for_scan` feeds to the export's module tally, the diagnostics
+    /// view and the events log — for a scan that had not finished. A
+    /// `running` row older than the window (left behind by a killed process)
+    /// is not exempt, so a zombie cannot make its events immortal.
     pub fn prune_events(&self, max_age_secs: u64, max_rows: usize) -> Result<usize> {
         let conn = self.conn.lock();
         let cutoff = crate::core::entity::unix_now().saturating_sub(max_age_secs);
-        let aged = conn.execute("DELETE FROM events WHERE ts < ?1", params![cutoff as i64])?;
+        let aged = conn.execute(
+            "DELETE FROM events
+             WHERE ts < ?1
+               AND scan_id NOT IN (SELECT id FROM scans
+                                   WHERE status IN ('pending', 'running') AND started_at >= ?1)",
+            params![cutoff as i64],
+        )?;
         let excess = conn.execute(
-            "DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT ?1)",
-            params![max_rows as i64],
+            "DELETE FROM events
+             WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT ?1)
+               AND scan_id NOT IN (SELECT id FROM scans
+                                   WHERE status IN ('pending', 'running') AND started_at >= ?2)",
+            params![max_rows as i64, cutoff as i64],
         )?;
         let total = aged + excess;
         if total > 0 {

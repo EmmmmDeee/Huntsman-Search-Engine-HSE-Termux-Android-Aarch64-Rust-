@@ -2998,3 +2998,66 @@ fn checkpoint_truncate_reports_a_blocked_checkpoint_instead_of_claiming_success(
     assert_eq!(std::fs::metadata(&wal).map_or(0, |m| m.len()), 0);
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn prune_events_spares_a_live_scans_events_but_not_a_finished_or_zombie_scans() {
+    // Under a long-lived `hse serve`, scan B's finalise-time prune used to cut
+    // the globally-oldest rows beyond `max_rows` — scan A's own beginning
+    // while A was still running. A live scan (running, started within the
+    // retention window) is now exempt from both cuts; a finished scan and a
+    // `running` row older than the window (a killed process's leftover) are
+    // pruned exactly as before.
+    use crate::core::scan::ScanStatus;
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    let now = crate::core::entity::unix_now();
+    let retention = 7 * 86_400;
+    let mk_scan = |id: &str, status: ScanStatus, started_at: u64| {
+        let mut s = Scan::new(id, Target::new(TargetKind::Email, "x@y.com"));
+        s.status = status;
+        s.started_at = started_at;
+        store.upsert_scan(&s).expect("should succeed");
+    };
+    let mk_events = |scan_id: &str, first_ts: u64, n: usize| {
+        for i in 0..n {
+            let mut ev = Event::new(
+                scan_id,
+                EventKind::ModuleDone {
+                    module: format!("m{i}"),
+                    found: i,
+                },
+            );
+            ev.ts = first_ts + i as u64;
+            store.insert_event(&ev).expect("should succeed");
+        }
+    };
+    // Inserted first, so its rows are the oldest ids the row cap would cut.
+    mk_scan("live", ScanStatus::Running, now - 3_600);
+    mk_events("live", now - 3_600, 5);
+    mk_scan("done", ScanStatus::Complete, now - 7_200);
+    mk_events("done", now - 7_000, 5);
+    mk_scan("zombie", ScanStatus::Running, now - 30 * 86_400);
+    mk_events("zombie", now - 30 * 86_400, 3);
+
+    // Cap at 4 rows: the newest four ids are all `done`'s, so without the
+    // exemption every one of `live`'s rows would go.
+    let pruned = store.prune_events(retention, 4).expect("should succeed");
+
+    let count = |id: &str| store.events_for_scan(id).expect("should succeed").len();
+    assert_eq!(count("live"), 5, "a live scan keeps its whole event log");
+    assert_eq!(
+        count("done"),
+        4,
+        "a finished scan is cut to the row cap as before"
+    );
+    assert_eq!(
+        count("zombie"),
+        0,
+        "a running row older than the window is not exempt"
+    );
+    assert_eq!(
+        pruned,
+        3 + 1,
+        "3 aged zombie rows + 1 excess finished-scan row"
+    );
+}
