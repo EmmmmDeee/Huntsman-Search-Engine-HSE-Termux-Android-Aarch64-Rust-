@@ -145,7 +145,7 @@ fn html_error_summary(body: &str) -> Option<String> {
 /// connection reset must never be able to manufacture one.
 ///
 /// ABSENCE OF EASY EVIDENCE ≠ ABSENCE OF A NEXUS, at the transport layer.
-/// `core::claim::Support::Failed` is the type that carries the same distinction
+/// `core::intelligence::ProviderOutcome::Failed` carries the same distinction
 /// once a module has a claim to attach it to.
 ///
 /// # Errors
@@ -164,6 +164,13 @@ pub async fn read_body_capped_or_fail(
     })
 }
 
+/// Read at most `cap` bytes of a response body, or `None` if the transfer
+/// failed part-way.
+///
+/// `None` means the body could not be read, NOT that it was empty. A caller
+/// that maps it to an empty result reports a clean negative it never
+/// established — use [`read_body_capped_or_fail`] unless the distinction is
+/// genuinely irrelevant at the call site.
 pub async fn read_body_capped(resp: reqwest::Response, cap: usize) -> Option<String> {
     use futures::StreamExt as _;
     let mut stream = resp.bytes_stream();

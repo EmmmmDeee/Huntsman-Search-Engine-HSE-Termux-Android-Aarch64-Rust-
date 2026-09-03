@@ -698,9 +698,9 @@ wiring that populates it in production.
 | REQ-CORRELATOR-001 | Every correlation rule function defined under `src/core/correlator/rules/` is (a) registered in exactly one of `RULES`/`RELATION_RULES` — no orphan that compiles but silently never fires; (b) claims a distinct `AU-<N>` number — no two different rule functions collide on the same id, which is the dedup/supersede key `storage::upsert_correlation` queries on; (c) internally consistent — a rule's own emitted `rule_id` string matches its own function-name number; and (d) has at least one positive firing test in the correlator test suite — a dispatched rule with no firing fixture is indistinguishable from a correctly-absent result. | n/a (static analysis of `RULES`/`RELATION_RULES` + `rules/*.rs` + the correlator test corpus) | Pass/fail assertions | none | A regression in any of the four properties fails CI, not just code review. | `RULES`/`RELATION_RULES` (`src/core/correlator/mod.rs:354-569,793-813`, 107 + 14 = 121 bare `fn` pointers) | `every_defined_correlation_rule_is_dispatched`, `no_two_correlation_rule_functions_share_a_number`, `correlation_rule_ids_match_their_function_number` (`tests/architecture_parts/architecture_part4.rs`), `every_dispatched_correlation_rule_has_a_firing_test` (`tests/architecture_parts/architecture_part5.rs`) | **This row was planned as new work and became pure documentation instead** — a genuine example of the ledger's own "do not rediscover already-covered behaviour" principle catching itself in real time. Two independent exploration passes plus a design pass all concluded no completeness/uniqueness guard existed for this registry (citing the `AU-121`/`AU-122` renumbering-after-merge doc comments as motivating evidence) and a new test was drafted and about to be added. Before committing it, a direct read of `tests/architecture_parts/architecture_part4.rs` surfaced FOUR pre-existing tests already covering exactly this — including `no_two_correlation_rule_functions_share_a_number`, whose own doc comment cites the identical AU-114/AU-115 incident. The drafted new test was reverted (confirmed via `git diff` — zero net change) rather than shipped as a duplicate. Ran all four cited tests fresh this pass: `cargo test --test architecture correlat` and `cargo test --test architecture rule` — 5/5 passed each run (both filters overlap on the 4 rule-registry tests plus `readme_correlator_rule_count_matches_registry`). | VERIFIED |
 | REQ-CORRELATOR-002 (**new, Pass 16**) | AU-108 (breach-listed cross-platform handle footprint) recognises every platform `breach_rich` mints as a `platform:handle` breach Username: both read the ONE `core::breach_platforms::BREACH_SOCIAL_PLATFORMS` (telegram, skype, facebook, instagram, twitter, linkedin, vk, snapchat, github, tiktok, reddit). | The rule kept its own 8-entry copy whose doc claimed it was "kept in lockstep with breach_rich" while `breach_rich` had since added github/tiktok/reddit, so a subject whose breach data named exactly those platforms produced no footprint finding (`platforms.len() < 2` never satisfied). Consolidated to one constant; `au_108_counts_every_platform_breach_rich_mints` (`src/core/correlator/rules/tests.rs`) fires the rule on github+tiktok (FAILS on the old list) and iterates the shared list so a future addition cannot drift. | VERIFIED |
 | REQ-CORRELATOR-003 (**new, Pass 16**) | AU-058's `extract_ratemyagent_suburb` accepts the smallest well-formed slug its own doc defines, `<name(1)>-<suburb(1)>-<id>` (three hyphen parts), so a single-token agent/business name resolves its suburb. | The guard was `parts.len() < 4` — requiring a two-token name, contradicting the documented "one or more" — so `/real-estate-agent/century21-bondi-12345/` returned `None` before the suburb window/fallback ever ran and the geographic signal was silently lost. Floor is 3; the id must still be ≥2 alphanumerics, so the existing malformed-slug cases (`a-b-c`) stay rejected. `extract_ratemyagent_suburb_accepts_a_single_token_name` (`src/core/correlator/rules/geo/mod.rs`) FAILS on the old floor. | VERIFIED |
-| REQ-CLAIM-001 (**new, Pass 17**) | The assertion layer exists as types: `core::claim` separates ENTITY / CLAIM / EVIDENCE / INFERENCE, computes a `ClaimState` lifecycle (Hypothesised → Supported → Corroborated → Established, plus Contested / Refuted / Withdrawn) from the record rather than assigning it, and counts corroboration by INDEPENDENT LINEAGE (`SourceLineage::witness_key`) so one corpus resold by several providers is one witness and an `Inferred` provenance is never a witness at all. | Eight acceptance tests, each named for the contract invariant it pins, in `src/core/claim/tests.rs`: `entity_claim_evidence_inference_are_not_interchangeable`, `source_count_is_not_source_independence`, `identifier_match_is_not_entity_identity`, `absence_of_easy_evidence_is_not_absence_of_a_nexus`, `hard_target_is_not_a_lower_standard`, `explore_aggressively_but_promote_conservatively`, `every_node_is_eligible_for_expansion_but_not_every_node_must_be_expanded`, `expand_broadly_is_not_conclude_broadly`. 22 tests pass. Pure (no I/O, no clock), so state is reproducible from the record: `state_is_independent_of_the_order_evidence_arrived` pins that. **Not yet wired into the live scan pipeline** — the engine still promotes on `Entity::confidence`; this pass lands the layer and its proofs, adoption is REQ-CLAIM-002. | IMPLEMENTED_UNVERIFIED |
-| REQ-CLAIM-002 (**new, Pass 17**) | Contradictions are PRESERVED, never collapsed: `Contradiction` holds every competing value with the lineages that asserted it, weight of numbers cannot resolve one, a resolution is refused unless some source actually asserted that value, and the historical disagreement is retained after resolution. A claim carrying an unresolved contradiction is `Contested` — reportable, not assertable. `CompetingHypotheses::concluded` refuses premature closure: a lone survivor whose rivals were merely never investigated is not a conclusion. | `conflicting_values_are_preserved_not_overwritten`, `weight_of_numbers_never_resolves_a_contradiction`, `a_resolved_contradiction_stops_contesting_the_claim`, `premature_closure_is_refused_when_rivals_were_merely_never_investigated`, `a_hypothesis_set_stays_open_while_rivals_survive` (`src/core/claim/tests.rs`). Wiring the correlator and storage onto this layer is the next pass. | IMPLEMENTED_UNVERIFIED |
-| REQ-GEO-001 (**new, Pass 17**) | A coordinate never leaves its producing module without its uncertainty: `core::geo_confidence::GeoFix` carries `radius_km`, the `GeoMethod` that produced it (whose `floor_km` the radius can never go below), the observing lineage and the observation time. Two fixes are never averaged — `intersect` narrows to the tighter fix only when the discs overlap and returns `GeoCombination::Conflict` (both preserved) when they do not — and agreement never manufactures resolution neither source had. An invalid coordinate is refused, not clamped. `locates_subject_directly` separates the subject's own position (instrument, radio survey) from a merely associated one (IP egress, registry service address, country). | 8 tests in `src/core/geo_confidence/tests.rs`, incl. `disjoint_fixes_conflict_and_are_never_averaged` (Sydney/Melbourne, ~713 km), `two_agreeing_city_fixes_corroborate_the_city_not_a_street`, `a_radius_is_never_finer_than_its_method_can_support`, `an_invalid_coordinate_is_refused_not_clamped`. Existing geo modules do not yet emit `GeoFix` — migration is tracked as the next pass. | IMPLEMENTED_UNVERIFIED |
+| REQ-CLAIM-001 (**new, Pass 17; reconciled Pass 17b**) | The assertion layer exists as types, and there is exactly ONE of it. `core::intelligence` (landed on `main` in #584) separates ENTITY / CLAIM / EVIDENCE / INFERENCE, computes `ClaimState` from the record via `IntelligenceLedger::recompute_claim_state`, and counts corroboration by INDEPENDENT LINEAGE — a union-find over `SourceLineage::is_independent_of` that collapses transitive copy chains, so one corpus resold by several publishers is one witness. Pass 17 originally landed a second, parallel model (`core::claim`); this pass DELETES it and folds only its genuinely additive parts into `core::intelligence`, because a duplicated authority for the same capability is itself a defect. | `copied_reporting_does_not_promote_claim`, `transitive_copy_chain_counts_as_one_source_family`, `independent_support_promotes_but_contradiction_is_preserved`, `inference_never_self_promotes_to_fact` (`src/core/intelligence.rs`). `git grep core::claim` returns nothing outside history. **Not yet wired into the live scan pipeline** — the engine still promotes on `Entity::confidence`; adoption is REQ-CLAIM-003. | IMPLEMENTED_UNVERIFIED |
+| REQ-CLAIM-002 (**new, Pass 17b**) | PROVIDER FAILURE ≠ ZERO EVIDENCE, enforced rather than documented. `ProviderOutcome` distinguishes `Observed` / `CleanNegative` / `NotAttempted{reason}` / `Failed{reason}`, and only the first two are `is_resolved()`. `IntelligenceLedger::record_provider` stores one observation per (claim, provider) — a later attempt supersedes an earlier one, and an unresolved outcome MUST name a reason. `reject_claim` then REFUSES with `LedgerError::UnresolvedCoverageGap(providers)` while any provider bearing on the claim never answered: a source that broke or was never queried can no longer be counted as having said no. Coverage is serialised with the ledger, so a resumed scan still knows what it is owed; a pre-coverage checkpoint still loads (`#[serde(default)]`). Gaps constrain conclusions from SILENCE only — three independent sources speaking still promote to `Verified` with a fourth outstanding. | `a_provider_outage_is_not_a_clean_negative`, `an_unqueried_provider_blocks_rejection_and_names_itself`, `a_coverage_gap_never_blocks_positive_corroboration`, `provider_coverage_survives_a_ledger_round_trip` (`src/core/intelligence.rs`). Falsified: removing the gap check from `reject_claim` fails 3 of the 4 while the other 11 tests in the module keep passing. | IMPLEMENTED_UNVERIFIED |
+| REQ-GEO-001 (**new, Pass 17; reconciled Pass 17b**) | A coordinate can no longer claim precision its basis never had. `LocationBasis::min_uncertainty_m` gives every basis an honest floor (observed 10 m … administrative 5 km … **network-derived 25 km**) and `GeoAssertion::is_valid` now REJECTS a radius below it — previously an IP-derived fix asserting 50 m validated and was thereafter indistinguishable from a doorway. `locates_subject_directly` marks the bases that locate the SUBJECT (observed, independently verified) apart from those that locate something merely associated with them (an egress, a registered office, an administrative area): INFRASTRUCTURE LOCATION ≠ HUMAN LOCATION. `GeoAssertion::reconcile` never averages — it narrows to the tighter constraint when the discs overlap, returns `Conflict{separation_m}` when they do not, and `Undecidable` when either side is label-only rather than silently reading that as agreement. `IntelligenceLedger::reconcile_locations` cross-links a conflict into `competing_location_ids` (a field #584 declared but nothing populated), so the disagreement is preserved in the ledger. The Pass 17 parallel module `core::geo_confidence` is DELETED. | `a_precision_claim_never_exceeds_what_its_basis_can_support`, `an_associated_location_is_never_the_subjects_own`, `disjoint_locations_conflict_and_are_never_averaged` (Sydney/Melbourne, ~713 km, both preserved and cross-linked), `agreeing_coarse_locations_corroborate_the_area_not_a_street`, `a_label_only_location_is_undecidable_not_agreement` (`src/core/intelligence.rs`). Falsified: restoring `radius >= 0.0` fails the precision lock; deleting the `Conflict` arm fails the disjoint lock. Existing geo modules do not yet emit `GeoAssertion` — migration is the next pass. | IMPLEMENTED_UNVERIFIED |
 
 This section exists purely to close the ledger's own blind spot — the
 correlator subsystem had no representation here at all before Pass 4, even
@@ -1850,22 +1850,67 @@ by contrast, was already an explainable expected-information-value model
 
 Landed this pass:
 
-1. **`core::claim`** (REQ-CLAIM-001/002) — the assertion layer. Claim-state
-   transitions computed from the record; corroboration counted by independent
-   LINEAGE; contradictions preserved with their discriminators; competing
-   hypotheses that refuse premature closure; difficulty-scaled expansion
-   budgets whose promotion thresholds are provably constant in difficulty.
-2. **`core::geo_confidence`** (REQ-GEO-001) — fixes carry uncertainty, method
-   floors, and provenance; disjoint fixes conflict rather than average.
+1. **`core::claim`** — the assertion layer (claim-state transitions computed
+   from the record, corroboration by independent lineage, contradictions
+   preserved, competing hypotheses that refuse premature closure).
+2. **`core::geo_confidence`** — fixes carrying uncertainty, method floors and
+   provenance; disjoint fixes conflict rather than average.
 3. **GEOINT frontier preference** (REQ-ROI-007) — a bounded tilt, wired at the
    live dispatch call site.
 
-**Honest scope limit.** The two new layers are landed WITH their proofs but are
-not yet consumed by the live scan pipeline (the engine still promotes on
-`Entity::confidence`, and geo modules still emit bare coordinates). They are
-recorded IMPLEMENTED_UNVERIFIED for exactly that reason; adoption — migrating
-the correlator, storage schema and geo modules onto them — is the next pass,
-and until it lands these types govern nothing at runtime.
+### Pass 17b — reconciliation with `core::intelligence`
+
+While this branch was in review, `main` merged #584, which landed
+`src/core/intelligence.rs`: an evidence-preserving intelligence model with an
+`IntelligenceLedger`, `EvidenceRecord`, `Claim`, `Inference`, `Hypothesis`,
+`GeoAssertion`, a union-find `independent_source_count`, and a checkpointable
+`BoundedFrontier`. It covers most of what items 1 and 2 above covered, and it
+covers some of it better — its lineage model collapses *transitive* copy chains,
+which `core::claim`'s per-witness key did not.
+
+Two models for one capability is a defect regardless of which is better, so
+Pass 17b resolves it in `main`'s favour rather than defending this branch's
+work:
+
+* **`core::claim` and `core::geo_confidence` are deleted.** Not deprecated,
+  not shimmed — removed, with `core::mod.rs` and the one doc-link in
+  `util::http::fetch` updated. `git grep core::claim` finds nothing outside
+  history.
+* **Only what was genuinely additive was folded into `core::intelligence`**,
+  as extensions of its existing types rather than new parallel ones:
+  * `ProviderOutcome` / `ProviderObservation` / `record_provider` /
+    `coverage_gaps`, and a `reject_claim` that refuses while a bearing provider
+    never answered (REQ-CLAIM-002). #584 had no representation of provider
+    state at all: a claim with no support looked identical whether the source
+    was unasked, broken, or genuinely empty.
+  * `LocationBasis::min_uncertainty_m` / `locates_subject_directly`, the floor
+    enforced in `GeoAssertion::is_valid`, plus `separation_m`, `reconcile` and
+    `IntelligenceLedger::reconcile_locations` (REQ-GEO-001).
+* **Everything else was dropped, deliberately**: `TargetDifficulty`,
+  `PromotionThresholds`, `ExpansionBudget`, `ClaimKind`, `Validity`,
+  `CompetingHypotheses`, and this branch's own `SourceLineage` and `ClaimState`.
+  Each was either already covered by `core::intelligence` or had no production
+  caller, and dormant code with no caller is not an upgrade.
+
+The GEOINT tilt survives unchanged and is now consistent at both layers: the
+live dispatch model carries `W_GEO = 0.25` against `W_INFO = 3.0`, and #584's
+`PathCandidate::score` carries `0.15 × geo_relevance` against its own `3.0`
+information term.
+
+**A real defect was found in the merged code and fixed.**
+`GeoAssertion::is_valid` accepted any non-negative radius, so a
+`NetworkDerived` (IP-geolocated) assertion claiming 50 m validated and was
+thereafter indistinguishable from an instrument fix. `min_uncertainty_m` now
+floors it at 25 km. The lock (`a_precision_claim_never_exceeds_what_its_basis_can_support`)
+fails against `main` as merged.
+
+**Honest scope limit, unchanged.** `core::intelligence` is still not consumed
+by the live scan pipeline — `git grep` shows its only caller outside itself is
+`storage::intelligence`, which just adds checkpoint save/load. The engine still
+promotes on `Entity::confidence` and geo modules still emit bare coordinates.
+Everything in this section is recorded IMPLEMENTED_UNVERIFIED for exactly that
+reason: these types govern nothing at runtime until adoption lands, and
+adoption — not more model surface — is the next pass's highest-return work.
 
 **Termux runtime evidence is NOT claimed for this pass.** CI cross-builds
 `aarch64-linux-android` on every push (the "Build (aarch64-linux-android,
@@ -1878,8 +1923,11 @@ that evidence before these features count as complete, so they do not.
 ### Verification commands run (Pass 17, in order)
 
 ```
-$ cargo test --lib --features dep-cooldown -- core::claim core::geo_confidence core::roi
-                                                                    # 31 new acceptance tests, all pass
+$ cargo test --lib --features dep-cooldown -- core::intelligence core::roi
+                                                    # 16 tests (6 from #584 + 10 new), all pass
+$ # Falsification (Pass 17b): three mutations back to #584's behaviour, run together —
+$ #   is_valid floor removed, reject_claim gap check removed, reconcile Conflict arm removed
+$ #   => 5 failed / 11 passed, exactly the five locks the fixes own. Restored, 16/16 pass.
 $ cargo clippy --all-targets --features dep-cooldown -- -D warnings # clean
 $ RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links ..." cargo doc --no-deps --document-private-items
 $ cargo test --lib --features dep-cooldown                          # full suite

@@ -9,13 +9,14 @@ pub mod breach_consensus;
 pub mod breach_platforms;
 pub mod breach_sweep;
 pub mod cancel;
-pub mod claim;
 pub mod classifier;
 pub mod classify_module;
 pub mod community;
 pub mod confidence;
 pub mod convex;
 pub mod coref;
+/// Cross-entity correlation rules: the findings the engine derives from
+/// entities it has already collected, rather than from any single source.
 pub mod correlator;
 pub mod cross_scan;
 pub mod crypto;
@@ -40,7 +41,6 @@ pub mod error;
 pub mod event;
 pub mod exposure;
 pub mod gap;
-pub mod geo_confidence;
 pub mod geo_family;
 pub mod gexf;
 pub mod graph;
