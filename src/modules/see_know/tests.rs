@@ -1864,3 +1864,122 @@ fn seeknow_dispatching_nothing_is_not_a_failure() {
     assert!(!seeknow_never_answered(0, 0, false));
     assert!(!seeknow_never_answered(0, 0, true));
 }
+
+// ── Fail-closed: a rejected key is not "no records" either ───────────────────
+
+/// A key SeekNow rejects (`invalid_api_key` / `plan_required`) must surface as
+/// an error, never as the clean negative "SeekNow found nothing" — see
+/// `key_rejected_failure`'s doc for why the endpoint layer's `Ok(empty)`
+/// answer to a rejection made every seed of a rejected-key scan read as a
+/// genuine miss.
+mod key_rejection_tests {
+    use super::*;
+    use crate::core::error::Error;
+    use crate::util::see_know::{KeyRejection, key_rejection, mark_key_invalid, reset_budget};
+
+    fn ctx_with_key() -> ModuleContext {
+        let (bus, _rx) = tokio::sync::broadcast::channel(1);
+        let mut keys = std::collections::HashMap::new();
+        keys.insert(see_know::KEY_ENV.to_string(), "sk-test-rejected-key".to_string());
+        ModuleContext {
+            scan_id: "s".into(),
+            bus,
+            http: reqwest::Client::new(),
+            keys,
+            cancel: crate::core::cancel::CancelHandle::new(),
+        }
+    }
+
+    /// Run one seed through `process()` with `body`'s rejection already
+    /// latched. Makes NO network call: the once-per-scan quota probe is
+    /// claimed here, and every SeekNow endpoint short-circuits on the latch
+    /// (`endpoints.rs`, `is_key_invalid() || …`).
+    fn seed_under_rejection(body: &str) -> Result<ModuleResult> {
+        reset_budget();
+        assert!(
+            crate::util::see_know::should_probe_quota(),
+            "claim the once-per-scan /credits probe so process() never dials it"
+        );
+        mark_key_invalid(body);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(SeekNow.process(&Target::new(TargetKind::Email, "alice@huntsman-test.io"), &ctx_with_key()))
+    }
+
+    #[test]
+    fn a_rejected_key_is_an_error_not_a_clean_negative() {
+        // The whole test under BUDGET_TEST_LOCK: the latch is the same
+        // process-wide state every budget test resets. A plain `#[test]`
+        // driving its own current-thread runtime so the guard is never held
+        // across an `.await` (see `resolve_identity_pivots_is_noop_…` for the
+        // hazard); `process()` completes without I/O here.
+        let _guard = crate::util::see_know::BUDGET_TEST_LOCK.lock();
+
+        for (body, expected, marker) in [
+            (
+                r#"{"error":"invalid_api_key","message":"Invalid API key"}"#,
+                KeyRejection::InvalidKey,
+                "invalid_api_key",
+            ),
+            (
+                r#"{"error":"plan_required","message":"A paid plan is required"}"#,
+                KeyRejection::PlanRequired,
+                "plan_required",
+            ),
+        ] {
+            let outcome = seed_under_rejection(body);
+            assert_eq!(key_rejection(), Some(expected), "{body} must latch {expected:?}");
+            match outcome {
+                Err(Error::Module { module, message }) => {
+                    assert_eq!(module, SRC);
+                    assert!(
+                        message.contains("rejected") && message.contains(marker),
+                        "the error must name the cause ({marker}) and its remedy: {message}"
+                    );
+                    assert!(
+                        message.contains(expected.guidance()),
+                        "the module error and the latch-time warning share one guidance text: {message}"
+                    );
+                }
+                Err(other) => panic!("expected a module error naming the rejection, got {other}"),
+                Ok(r) => panic!(
+                    "a rejected key must not read as a clean negative, got Ok with {} entities",
+                    r.entities.len()
+                ),
+            }
+        }
+
+        // And with no rejection latched, the same seed under the same
+        // budget state is the clean negative it always was — the fix adds no
+        // false alarm.
+        reset_budget();
+        assert!(crate::util::see_know::should_probe_quota());
+        // Exhaust the per-scan budget so every endpoint short-circuits without
+        // a call, exactly as the latch did above, but with nothing to report.
+        crate::util::see_know::set_scan_cap_override(1);
+        while crate::util::see_know::budget_remaining() {
+            crate::util::see_know::budget_increment();
+        }
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let clean = rt.block_on(SeekNow.process(&Target::new(TargetKind::Email, "alice@huntsman-test.io"), &ctx_with_key()));
+        assert!(
+            matches!(&clean, Ok(r) if r.entities.is_empty()),
+            "no rejection and nothing found must stay a clean negative"
+        );
+        crate::util::see_know::set_scan_cap_override(0);
+        reset_budget();
+    }
+
+    #[test]
+    fn key_rejected_failure_is_none_without_a_rejection() {
+        assert!(key_rejected_failure(None).is_none());
+        let err = key_rejected_failure(Some(KeyRejection::PlanRequired)).expect("a rejection is a failure");
+        assert!(matches!(&err, Error::Module { module, .. } if module == SRC));
+        assert!(err.to_string().contains("plan_required"), "{err}");
+    }
+}

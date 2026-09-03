@@ -2,7 +2,7 @@
 //! key-invalid latch that fast-fails the remaining lookups once a bad key is
 //! detected.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use crate::util::budget::QuotaBudget;
 
@@ -115,16 +115,56 @@ pub fn scale_scan_cap_from_daily(daily_limit: u32) {
     );
 }
 
-/// Latched once per process when SeekNow rejects the configured API key.
+/// Why SeekNow refuses to answer with the configured key — the two terminal
+/// causes [`mark_key_invalid`] latches for the rest of the scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum KeyRejection {
+    /// `{"error":"invalid_api_key"}` / "Invalid API key": the key itself is
+    /// wrong (or the header was missing).
+    InvalidKey = 1,
+    /// `{"error":"plan_required"}`: the key is recognised but its account has
+    /// no paid plan, so no data endpoint will answer until it does.
+    PlanRequired = 2,
+}
+
+impl KeyRejection {
+    fn from_body(body: &str) -> Self {
+        if body.contains("plan_required") {
+            Self::PlanRequired
+        } else {
+            Self::InvalidKey
+        }
+    }
+
+    /// The cause and its remedy, worded for the operator. The ONE text behind
+    /// both the once-per-scan warning and the per-seed module error, so the
+    /// two can never disagree about what to fix.
+    pub fn guidance(self) -> &'static str {
+        match self {
+            Self::InvalidKey => {
+                "the API key was rejected (invalid_api_key): set a valid, plan-enabled key via HUNTSMAN_SEEKNOW_KEY or the UI Settings panel"
+            }
+            Self::PlanRequired => {
+                "the account has no paid plan (plan_required): upgrade at https://see-know.ru/pricing, or set a plan-enabled key via HUNTSMAN_SEEKNOW_KEY or the UI Settings panel"
+            }
+        }
+    }
+}
+
+/// Latched once per scan when SeekNow rejects the configured API key: `0` =
+/// not rejected, otherwise the [`KeyRejection`] discriminant.
 ///
 /// curl exits 0 on an HTTP 401 (it got a response), so the shared curl client
 /// reports success and the `{"error":"invalid_api_key"}` body parses to zero
-/// items — which previously made SeekNow look like it "found nothing" on every
-/// seed instead of "the key is bad". This latch makes the failure explicit and
-/// fast-fails the remaining ~160 doomed lookups for the rest of the scan. It is
-/// cleared by [`reset_budget`] at the start of each scan so a corrected key
-/// (UI Settings / `HUNTSMAN_SEEKNOW_KEY`) recovers without a process restart.
-pub(super) static KEY_INVALID: AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// items — which made SeekNow look like it "found nothing" on every seed
+/// instead of "the key is bad". This latch makes the failure explicit,
+/// fast-fails the remaining ~160 doomed lookups for the rest of the scan, and
+/// (through [`key_rejection`]) lets the module report each seed as failed
+/// rather than as a clean negative. It is cleared by [`reset_budget`] at the
+/// start of each scan so a corrected key (UI Settings / `HUNTSMAN_SEEKNOW_KEY`)
+/// recovers without a process restart.
+static KEY_REJECTED: AtomicU8 = AtomicU8::new(0);
 
 /// Install a runtime per-scan cap. `0` clears the override (falls back
 /// to env + static default). The engine calls this once at scan start
@@ -153,8 +193,10 @@ pub fn budget_snapshot() -> BudgetSnapshot {
 }
 
 // Test-only now: production reserves atomically via `budget_try_increment`.
+// `pub(crate)` so `modules::see_know::tests` can drain the budget (re-exported
+// under `#[cfg(test)]` from the parent module).
 #[cfg(test)]
-pub(super) fn budget_increment() {
+pub(crate) fn budget_increment() {
     BUDGET.increment();
 }
 
@@ -184,7 +226,7 @@ pub fn reset_budget() {
     // HUNTSMAN_SEEKNOW_KEY) since the last scan, SeekNow recovers immediately;
     // if it's still bad, the first call this scan re-latches (one warning, then
     // the remaining lookups fast-fail).
-    KEY_INVALID.store(false, Ordering::Relaxed);
+    KEY_REJECTED.store(0, Ordering::Relaxed);
     // Allow the quota probe to fire again on the next scan.
     QUOTA_PROBED.store(false, Ordering::Relaxed);
     // Clear the cross-module response cache: it dedups identical endpoint
@@ -219,28 +261,39 @@ pub(super) fn mark_quota_exhausted() {
     tracing::warn!("SeekNow daily quota exhausted — skipping remaining queries");
 }
 
-/// True once SeekNow has rejected the key. The diagnostic accessor
-/// `hse doctor`'s "SeekNow account" section reads after probing `/credits` —
-/// that probe (`endpoints::query_credits`) is the one call site that can
-/// classify+latch this from a FRESH process (before any data-bearing
-/// `search`/`get_path` call has had the chance to).
-pub fn is_key_invalid() -> bool {
-    KEY_INVALID.load(Ordering::Relaxed)
+/// The latched rejection, if SeekNow has rejected the key this scan. The
+/// module reads it after its seed's calls to turn the endpoint layer's empty
+/// answers into an explicit error; `hse doctor`'s "SeekNow account" section
+/// reads [`is_key_invalid`] after probing `/credits` — that probe
+/// (`endpoints::query_credits`) is the one call site that can classify+latch
+/// this from a FRESH process (before any data-bearing `search`/`get_path`
+/// call has had the chance to).
+pub fn key_rejection() -> Option<KeyRejection> {
+    match KEY_REJECTED.load(Ordering::Relaxed) {
+        1 => Some(KeyRejection::InvalidKey),
+        2 => Some(KeyRejection::PlanRequired),
+        _ => None,
+    }
 }
 
-pub(super) fn mark_key_invalid(body: &str) {
-    // Emit the actionable guidance exactly once (the false→true transition),
-    // naming the actual cause so the operator knows whether to swap the key or
-    // upgrade the plan.
-    if !KEY_INVALID.swap(true, Ordering::Relaxed) {
-        let reason = if body.contains("plan_required") {
-            "the account has no paid plan (plan_required) — upgrade at https://see-know.ru/pricing"
-        } else {
-            "the API key was rejected (invalid_api_key)"
-        };
+/// True once SeekNow has rejected the key — [`key_rejection`] as a flag.
+pub fn is_key_invalid() -> bool {
+    key_rejection().is_some()
+}
+
+/// Latch the rejection `body` describes. `pub(crate)` only so
+/// `modules::see_know::tests` can latch one directly (re-exported under
+/// `#[cfg(test)]` from the parent module); production callers are this
+/// module's own client.
+pub(crate) fn mark_key_invalid(body: &str) {
+    let rejection = KeyRejection::from_body(body);
+    // Emit the actionable guidance exactly once (the clear→latched
+    // transition), naming the actual cause so the operator knows whether to
+    // swap the key or upgrade the plan.
+    if KEY_REJECTED.swap(rejection as u8, Ordering::Relaxed) == 0 {
         tracing::warn!(
-            "SeekNow lookups disabled: {reason}. Set a valid, \
-             plan-enabled key via HUNTSMAN_SEEKNOW_KEY or the UI Settings panel."
+            "SeekNow lookups disabled for this scan: {}.",
+            rejection.guidance()
         );
     }
 }
