@@ -1,6 +1,7 @@
 use super::{
     Seon,
     entity_builders::{build_email_entities, build_phone_entities},
+    seon_key_error_detail,
     types::{SeonEmailResp, SeonPhoneResp},
 };
 use crate::core::{
@@ -642,4 +643,51 @@ fn phone_too_short_carrier_and_cnam_name_skip_the_pivots() {
     );
     assert!(es.iter().all(|e| e.kind != EntityKind::Organisation));
     assert!(es.iter().all(|e| e.kind != EntityKind::Person));
+}
+
+// ── In-body-200 key/quota failure envelope ──────────────────────────────────
+
+#[test]
+fn a_dead_or_exhausted_key_envelope_is_classified_as_a_key_error() {
+    // SEON answers a dead key, an out-of-credits account or a plan-scope
+    // rejection with HTTP 200 and its shared `{success:false, error:{code,
+    // message}, data:{}}` envelope, so the status check alone never saw it and
+    // both lookups returned Ok(empty) — "no SEON findings" — with the key pool
+    // never told. The classifier must recognise the key/quota message and carry
+    // the provider's own code + message through for the operator.
+    for raw in [
+        r#"{"success": false, "error": {"code": "20003", "message": "Insufficient credits"}, "data": {}}"#,
+        r#"{"success": false, "error": {"code": "1001", "message": "Invalid API key"}, "data": {}}"#,
+        r#"{"success": false, "error": {"code": "1002", "message": "Unauthorized"}, "data": {}}"#,
+    ] {
+        let email: SeonEmailResp = serde_json::from_str(raw).expect("valid fixture");
+        assert_eq!(email.success, Some(false));
+        let detail = seon_key_error_detail(email.error.as_ref())
+            .unwrap_or_else(|| panic!("{raw} must classify as a key/quota failure"));
+        assert!(
+            detail.contains("(code "),
+            "the provider's code rides along: {detail}"
+        );
+        // Both endpoints share the envelope.
+        let phone: SeonPhoneResp = serde_json::from_str(raw).expect("valid fixture");
+        assert!(seon_key_error_detail(phone.error.as_ref()).is_some());
+    }
+}
+
+#[test]
+fn a_non_key_failure_or_a_success_body_is_not_a_key_error() {
+    // The documented non-key failure (SEON's own Fraud API v2 example): a
+    // malformed request. success:false alone is NOT a key signal.
+    let bad_input: SeonEmailResp = serde_json::from_str(
+        r#"{"success": false, "error": {"code": "3000", "message": "Incorrect type: 'transaction_amount' should be sent as number"}, "data": {}}"#,
+    )
+    .expect("valid fixture");
+    assert!(seon_key_error_detail(bad_input.error.as_ref()).is_none());
+    // A success body carries an EMPTY error object (per the endpoint's own
+    // success example) — never a key error.
+    let ok: SeonEmailResp = serde_json::from_str(r#"{"success": true, "error": {}, "data": {}}"#)
+        .expect("valid fixture");
+    assert!(seon_key_error_detail(ok.error.as_ref()).is_none());
+    // No error object at all.
+    assert!(seon_key_error_detail(None).is_none());
 }
