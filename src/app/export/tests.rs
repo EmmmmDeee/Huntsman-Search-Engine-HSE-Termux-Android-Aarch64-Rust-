@@ -1744,6 +1744,105 @@ fn report_hides_platform_infra_by_default_and_includes_on_request() {
 }
 
 #[test]
+fn report_correlations_always_resolve_against_its_own_entities() {
+    // The correlator runs over the infra-inclusive set, so a Critical finding
+    // on a platform-infra entity (AU-004 on a compromised hosting IP) used to
+    // reference a UID the default (`include_infra=false`) envelope had
+    // filtered out of `entities` — the report's top finding was unexplainable
+    // from the document itself. Referenced infra entities are unioned back; a
+    // finding on a hidden CANDIDATE is dropped (quarantine wins).
+    use crate::core::correlator::{Correlation, Severity};
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::scan::{Scan, Target, TargetKind};
+    let dir = tempfile::tempdir().expect("should succeed");
+    let db = dir.path().join("resolve.db");
+    let store =
+        crate::storage::Store::open(db.to_str().expect("should succeed")).expect("should succeed");
+    let sid = "resolve-scan";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::Username, "testuser"),
+        ))
+        .expect("should succeed");
+    store
+        .upsert_entity(&Entity::new(EntityKind::Email, "me@real.com", 0.85, sid))
+        .expect("should succeed");
+    let mut infra = Entity::new(EntityKind::IpAddress, "203.0.113.9", 0.7, sid);
+    infra.tag("platform-infra");
+    infra.tag("malicious");
+    store.upsert_entity(&infra).expect("should succeed");
+    let mut candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.4, sid);
+    candidate.tag(crate::core::tags::CANDIDATE);
+    store.upsert_entity(&candidate).expect("should succeed");
+    store
+        .upsert_correlation(&Correlation::new(
+            "AU-004",
+            "Malicious infrastructure",
+            Severity::Critical,
+            "compromised hosting IP".into(),
+            vec![infra.uid.clone()],
+            sid,
+            0,
+        ))
+        .expect("should succeed");
+    store
+        .upsert_correlation(&Correlation::new(
+            "AU-999",
+            "Finding on a quarantined row",
+            Severity::Low,
+            "must not surface by default".into(),
+            vec![candidate.uid.clone()],
+            sid,
+            0,
+        ))
+        .expect("should succeed");
+
+    let port = &store as &dyn crate::core::port::StoragePort;
+    let check = |report: &serde_json::Value, label: &str| {
+        let uids: std::collections::HashSet<String> = report["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["uid"].as_str().unwrap().to_string())
+            .collect();
+        for c in report["correlations"].as_array().unwrap() {
+            for u in c["entity_uids"].as_array().unwrap() {
+                assert!(
+                    uids.contains(u.as_str().unwrap()),
+                    "{label}: correlation {} references a UID absent from entities",
+                    c["rule_id"]
+                );
+            }
+        }
+    };
+    let default = build_scan_report(port, sid, false, false)
+        .expect("should succeed")
+        .expect("should succeed");
+    check(&default, "default");
+    let rules: Vec<&str> = default["correlations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["rule_id"].as_str().unwrap())
+        .collect();
+    assert!(
+        rules.contains(&"AU-004"),
+        "the Critical infra finding is kept, with its entity restored: {rules:?}"
+    );
+    assert!(
+        !rules.contains(&"AU-999"),
+        "a finding on a hidden candidate is dropped: {rules:?}"
+    );
+    assert_eq!(default["correlation_count"].as_u64(), Some(1));
+    let full = build_scan_report(port, sid, true, true)
+        .expect("should succeed")
+        .expect("should succeed");
+    check(&full, "include_candidates+include_infra");
+    assert_eq!(full["correlation_count"].as_u64(), Some(2));
+}
+
+#[test]
 fn default_report_always_keeps_the_seed_even_if_it_is_infrastructure() {
     // A scan seeded with a datacenter/CDN IP: an IP module re-emits the seed
     // as `hosting`, merging `platform-infra` onto the seed anchor. The

@@ -1826,7 +1826,43 @@ pub(crate) fn build_scan_report(
         // `hosting`, which then merges `platform-infra` onto the seed anchor).
         entities.retain(|e| !e.has_tag(crate::core::tags::PLATFORM_INFRA) || e.has_tag("seed"));
     }
-    let correlations = store.correlations_for_scan(scan_id)?;
+    // Self-resolving document: every `correlations[].entity_uids` entry must
+    // name an entity present in this same envelope. The correlator runs over
+    // the full infra-inclusive set (only candidates are excluded), so under the
+    // default `include_infra=false` a finding on a platform-infra entity — a
+    // compromised hosting IP that AU-004 fires Critical on — referenced a UID
+    // the `entities` array no longer carried, and the report's highest-severity
+    // finding could not be explained from the document itself. Union the
+    // referenced infra entities back (they are part of a finding, so they are
+    // subject-relevant by definition); a correlation that references a hidden
+    // CANDIDATE is dropped instead — the quarantine wins over completeness.
+    // `entities_to_gexf` enforces the same both-endpoints-present invariant for
+    // relation edges.
+    let mut correlations = store.correlations_for_scan(scan_id)?;
+    {
+        let present: std::collections::HashSet<&str> =
+            entities.iter().map(|e| e.uid.as_str()).collect();
+        let mut missing: Vec<String> = correlations
+            .iter()
+            .flat_map(|c| c.entity_uids.iter())
+            .filter(|uid| !present.contains(uid.as_str()))
+            .cloned()
+            .collect();
+        missing.sort_unstable();
+        missing.dedup();
+        for uid in missing {
+            if let Some(e) = store.get_entity(&uid)? {
+                let hidden_candidate =
+                    !include_candidates && e.has_tag(crate::core::tags::CANDIDATE);
+                if !hidden_candidate {
+                    entities.push(e);
+                }
+            }
+        }
+        let present: std::collections::HashSet<&str> =
+            entities.iter().map(|e| e.uid.as_str()).collect();
+        correlations.retain(|c| c.entity_uids.iter().all(|u| present.contains(u.as_str())));
+    }
     let best_location = extract_au_location_fix(&correlations, &entities);
     // The calibrated 0–100 Exposure Index — the SAME headline verdict the CLI
     // `print_dossier` and the debug bundle both open with. This envelope is the
