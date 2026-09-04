@@ -165,12 +165,43 @@ pub const CANDIDATE_CONF: f64 = 0.25;
 /// In that same scan it was counted among the five "independent sources" AU-003
 /// reported for the apex domain, and among the five "infrastructure sources"
 /// AU-010 listed as confirming it.
+///
+/// The remaining entries are the registry's other **offline derivation
+/// modules** — every one a pure, deterministic transform of the seed or of an
+/// entity already in the graph, with no external observation of its own
+/// (`email_parse` splits an address into local-part/domain, `phone_intl` /
+/// `phone_au` / `phone_geo` classify a number from embedded prefix tables,
+/// `username_variants` permutes a handle, `email_canonical` folds
+/// dot/plus-aliases, `email_locale` / `email_header_geo` /
+/// `geo_domain_classifier` infer a locale from the string, `discord_snowflake` /
+/// `structured_id` decode what an identifier itself encodes, `breach_timezone`
+/// aggregates evidence other modules already attached). Before they were
+/// listed, three of them re-emitting a seed phone — `phone_intl` + `phone_au` +
+/// `phone_geo`, zero network calls between them — gave the seed
+/// `source_count() == 3` and a "corroborated by 3 independent source(s)"
+/// finding from nothing but the digits the operator typed in. Each module
+/// declares this same fact as `Module::is_derivation() == true`, and
+/// `derivation_modules_are_exactly_the_enrichment_only_sources`
+/// (tests/architecture_parts) pins the two declarations to each other in both
+/// directions.
 pub const ENRICHMENT_ONLY_SOURCES: &[&str] = &[
+    "breach_timezone",
+    "discord_snowflake",
+    "email_canonical",
+    "email_header_geo",
+    "email_locale",
+    "email_parse",
+    "geo_domain_classifier",
     "geo_normalize",
     "name_intel",
     "payid",
+    "phone_au",
+    "phone_geo",
+    "phone_intl",
     "seed",
+    "structured_id",
     "url_extract",
+    "username_variants",
 ];
 
 /// True if `source` is a deterministic self-enrichment pass rather than an

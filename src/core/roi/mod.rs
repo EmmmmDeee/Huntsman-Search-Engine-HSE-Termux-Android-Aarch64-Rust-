@@ -38,7 +38,8 @@ use crate::core::entity::Entity;
 
 mod utility;
 pub use utility::{
-    DispatchUtility, DispatchUtilityInputs, compute_dispatch_utility, quota_exhausted_blocked,
+    DispatchUtility, DispatchUtilityInputs, compute_dispatch_utility, is_geoint_bearing,
+    quota_exhausted_blocked,
 };
 
 /// Threshold at which an entity is considered "saturated" — corroborated

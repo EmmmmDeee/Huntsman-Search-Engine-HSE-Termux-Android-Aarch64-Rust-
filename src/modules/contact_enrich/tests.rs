@@ -44,6 +44,51 @@ fn parse_numverify_response() {
 }
 
 #[test]
+fn a_normal_validation_result_is_never_a_key_error() {
+    // valid:true and valid:false are both apilayer.net's ordinary answers
+    // ("this is/isn't a real phone number") and carry no success/error field —
+    // neither may be misread as a dead-key signal.
+    assert!(numverify_key_error_detail(&numverify(r#"{"valid": true}"#)).is_none());
+    assert!(numverify_key_error_detail(&numverify(r#"{"valid": false}"#)).is_none());
+}
+
+#[test]
+fn an_in_body_200_error_envelope_is_classified_as_a_key_error_with_its_detail() {
+    // This is the bug: apilayer.net answers an invalid/expired access_key, a
+    // plan/scope restriction, or an exhausted quota with HTTP 200 and
+    // {"success":false,"error":{...}} — never a 401/403/429 — so the status
+    // check alone can't see it. Before this fix the whole envelope
+    // deserialized to an all-None NumverifyResp and build_phone_entities
+    // silently returned empty, indistinguishable from a real "not a valid
+    // number" answer, forever, with no signal the key needed attention.
+    let body = numverify(
+        r#"{"success": false, "error": {"code": 101, "type": "invalid_access_key", "info": "You have not supplied a valid API Access Key."}}"#,
+    );
+    assert_eq!(
+        body.valid, None,
+        "the error envelope carries no valid field"
+    );
+    let detail =
+        numverify_key_error_detail(&body).expect("success:false must classify as a key error");
+    assert!(detail.contains("You have not supplied a valid API Access Key."));
+    assert!(detail.contains("101"));
+}
+
+#[test]
+fn an_in_body_200_error_with_no_message_still_classifies_as_a_key_error() {
+    let body = numverify(r#"{"success": false}"#);
+    assert_eq!(
+        numverify_key_error_detail(&body).as_deref(),
+        Some("api error")
+    );
+    let body_empty_error = numverify(r#"{"success": false, "error": {}}"#);
+    assert_eq!(
+        numverify_key_error_detail(&body_empty_error).as_deref(),
+        Some("api error")
+    );
+}
+
+#[test]
 fn parse_gravatar_response() {
     let raw = r#"{
       "entry": [{

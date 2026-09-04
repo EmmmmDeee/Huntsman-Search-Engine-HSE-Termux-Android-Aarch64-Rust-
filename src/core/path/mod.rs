@@ -362,12 +362,24 @@ fn resolve_across(store: &dyn StoragePort, value: &str, cap: usize) -> Vec<Strin
 /// the same pure, deterministic, [`MAX_HOPS`]-bounded breadth-first search as
 /// [`connect_values`] — only the graph it runs over is wider. Empty if either endpoint
 /// is unknown or they are unconnected across the loaded scans.
+///
+/// `include_candidates` mirrors `api::scan_handlers::EntityViewGate`'s quarantine gate:
+/// with it `false` (the default every caller should pass unless the operator opted in),
+/// every `tags::CANDIDATE`-tagged entity is dropped from the merged graph before the
+/// search runs — as an endpoint (an unverified value simply resolves to no path) and as
+/// an intermediate hop (`present_uids`/`build_adjacency` in [`paths_between`] only ever
+/// walk an edge whose BOTH endpoints are still present, so a dropped candidate can't be
+/// routed through either). Without this, a same-name-stranger record quarantined by the
+/// correlator as unconfirmed could still surface — by value or as a labelled hop — in a
+/// path this function returns, defeating the quarantine every other entity-serving read
+/// endpoint enforces by default.
 #[must_use]
 pub fn connect_cross_scan(
     store: &dyn StoragePort,
     from_value: &str,
     to_value: &str,
     max_paths: usize,
+    include_candidates: bool,
 ) -> Vec<ConnectionPath> {
     if max_paths == 0 {
         return Vec::new();
@@ -415,6 +427,9 @@ pub fn connect_cross_scan(
 
     // Deterministic merged graph (sorted), then the pure BFS over the wider graph.
     let mut merged_entities: Vec<Entity> = entities.into_values().collect();
+    if !include_candidates {
+        merged_entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+    }
     merged_entities.sort_by(|a, b| a.uid.cmp(&b.uid));
     let mut merged_relations: Vec<Relation> = relations.into_values().collect();
     merged_relations.sort_by(|a, b| a.id.cmp(&b.id));

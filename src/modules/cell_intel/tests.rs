@@ -358,3 +358,68 @@ fn opencellid_resp_status_error_is_distinct_from_the_body_error_field() {
     assert_eq!(resp.status.as_deref(), Some("error"));
     assert_eq!(resp.error, None);
 }
+
+// ---- source attribution: one corpus retrieved twice is one source ----
+
+#[test]
+fn an_opencellid_position_is_attributed_to_opencellid_not_to_this_module() {
+    use super::helpers::{build_opencellid_coordinate, build_tower_device};
+    use crate::core::entity::Entity;
+
+    let cell = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","cid":12345,"lac":42}"#);
+    let key = TowerKey::from_cell(&cell).expect("a well-formed tower");
+
+    // What THIS module mints from an OpenCelliD `cell/get` response...
+    let ours = build_opencellid_coordinate(&cell, &key, "lte", -33.865143, 151.209900, 1500, "s1");
+    // ...and what the standalone `opencellid` module mints from the SAME
+    // response for the same tower: identical kind, identical `{lat:.6},{lon:.6}`
+    // value, so identical UID.
+    let mut theirs = Entity::new(
+        crate::core::entity::EntityKind::Coordinates,
+        "-33.865143,151.209900",
+        0.5,
+        "s1",
+    );
+    theirs.add_evidence(crate::core::entity::Evidence::new(
+        crate::modules::opencellid::SRC,
+        "OpenCelliD tower 505-1-42-12345",
+    ));
+    assert_eq!(
+        ours.uid, theirs.uid,
+        "both paths mint the same coordinate, so the entities merge"
+    );
+
+    // The merge must leave ONE corroborating source. Attributed to this module
+    // instead, it left two — and `source_count` feeds `c_effective` directly,
+    // so the same OpenCelliD row retrieved twice bought a confidence boost it
+    // never earned. Repeated retrieval of one corpus is not corroboration.
+    let mut merged = ours.clone();
+    merged.merge(theirs);
+    assert_eq!(
+        merged.source_count(),
+        1,
+        "one corpus retrieved by two paths is one source, not two: {:?}",
+        merged.corroborating_sources()
+    );
+    assert!(
+        merged
+            .corroborating_sources()
+            .contains(crate::modules::opencellid::SRC)
+    );
+    assert!(
+        !merged.corroborating_sources().contains(super::SRC),
+        "this module did not independently observe the position; OpenCelliD did"
+    );
+
+    // The MCC-centroid fallback and the radio observation are this module's
+    // own, and keep its name: the tower really was detected on the air, which
+    // is what AU-084 treats as independent of the database.
+    let device = build_tower_device(&cell, &key, "s1");
+    assert!(device.corroborating_sources().contains(super::SRC));
+    assert!(
+        !device
+            .corroborating_sources()
+            .contains(crate::modules::opencellid::SRC),
+        "a hardware radio sighting is not an OpenCelliD record"
+    );
+}

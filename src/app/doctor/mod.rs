@@ -13,9 +13,7 @@
 //! silently truncating result sets, a live SeekNow account probe that
 //! catches a dead/plan-lacking key before it silently zeroes out HSE's
 //! highest-priority paid source (and its proactive API-key-harvesting
-//! reach — see [`crate::util::key_harvest`]) on every scan, and — when
-//! `feature.ai_daemon` is armed — an Ollama reachability/model probe so
-//! `hse analyze`/`hse-ai-daemon` setup issues surface here first.
+//! reach — see [`crate::util::key_harvest`]) on every scan.
 
 use crate::core::error::Result;
 use crate::{
@@ -130,7 +128,16 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
     // nothing extra), surfacing only sources actually worth investigating.
     let unhealthy = crate::core::engine::module_health_report();
     if unhealthy.is_empty() {
-        println!("\nModule health: no modules currently show a failure streak");
+        // An empty tracker means one of two very different things, and saying
+        // "no failure streak" for both is a false reassurance: this section is
+        // per-process and reactive, and a standalone `hse doctor` dispatches
+        // nothing, so the tracker is ALWAYS empty here. On a real device that
+        // printed a clean bill of health immediately above the Scraper health
+        // section reporting 22 sources in a failure streak.
+        println!(
+            "\n{}",
+            empty_module_health_line(crate::core::engine::module_health_observed())
+        );
     } else {
         println!(
             "\nModule health ({} with a failure streak this process):",
@@ -188,7 +195,11 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
     // optional providers, which skip cleanly rather than erroring. Ranked by
     // ROI tier (see `rank_unset_keys`) so the operator registers the keys that
     // unlock the most collection first, each with its free-signup hint.
-    let missing = rank_unset_keys(|k| loaded.contains_key(k));
+    // A slot holding the unedited placeholder is UNSET, not set. Testing only
+    // `contains_key` meant a freshly provisioned device — where every one of
+    // these names is present as a template slot — had this entire section
+    // suppressed, so the operator was shown no keys to acquire at all.
+    let missing = rank_unset_keys(|k| key_slot_is_filled(&loaded, k));
     if !missing.is_empty() {
         println!(
             "\nUnset keys ({}), ranked by acquisition value — modules needing \
@@ -441,10 +452,10 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
             remaining,
             daily_limit: None,
         } => println!("  credits remaining: {remaining} (daily limit not reported by this plan)"),
-        CreditsProbe::InvalidKey => println!(
-            "  INVALID — the configured key was rejected. Set a valid, plan-enabled key \
-             via HUNTSMAN_SEEKNOW_KEY or the UI Settings panel."
-        ),
+        // The cause and remedy come from the rejection itself — the ONE text
+        // the scan-time warning and the per-seed module error also use — so a
+        // `plan_required` key is told to fix its plan, not to swap the key.
+        CreditsProbe::InvalidKey(rejection) => println!("  INVALID — {}.", rejection.guidance()),
         // The observed live failure: `curl exited 6` (could not resolve host).
         // Report it as a transport/DNS problem — NOT a key problem — with curl's
         // own detail and the concrete next steps, so an on-device operator can
@@ -463,42 +474,6 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
             "  reachable, but the response carried no recognised credits field — the key \
              may lack a paid plan, or the API schema changed."
         ),
-    }
-
-    // ── AI-daemon (Ollama) health (network call, best-effort) ──────────────
-    // feature.ai_daemon is off by default. When armed, this is the fastest
-    // way for an operator to confirm the whole `hse analyze`/`hse-ai-daemon`
-    // setup — armed, Ollama reachable, model pulled — before running `hse
-    // analyze` for the first time, mirroring the WiGLE/SeekNow account
-    // probes above. Reuses `OllamaClient::health_check`, the exact
-    // reachability+model check `hse analyze`/`hse-ai-daemon` themselves run
-    // at startup, so this section can never disagree with what those
-    // commands see.
-    println!("\nAI-daemon (Ollama):");
-    if !crate::util::settings::ai_daemon_enabled() {
-        println!(
-            "  armed: no — feature.ai_daemon is off. Enable with `hse config feature.ai_daemon on`."
-        );
-    } else {
-        println!("  armed: yes");
-        let base_url = loaded
-            .get("HUNTSMAN_OLLAMA_URL")
-            .map_or(crate::ai::ollama::DEFAULT_BASE_URL, String::as_str)
-            .to_string();
-        println!("  base url: {base_url}");
-        match loaded.get("HUNTSMAN_OLLAMA_MODEL") {
-            None => println!(
-                "  model: none configured — set HUNTSMAN_OLLAMA_MODEL or pass --model to \
-                 `hse analyze`"
-            ),
-            Some(model) => {
-                let client = crate::ai::ollama::OllamaClient::new(base_url, model.clone());
-                match client.health_check().await {
-                    Ok(()) => println!("  model '{model}': reachable and pulled"),
-                    Err(e) => println!("  model '{model}': {e}"),
-                }
-            }
-        }
     }
 
     finish(critical)
@@ -588,11 +563,54 @@ fn seeknow_unreachable_guidance(detail: &str) -> String {
 ///
 /// Pure over the loaded map so it is unit-testable without touching the real
 /// environment.
+/// Whether `loaded` holds a USABLE credential for `k` — the predicate the
+/// unset-keys listing ranks by.
+///
+/// Named rather than inline so the production call site and its regression test
+/// exercise the same code. As a closure at the call site it read
+/// `loaded.contains_key(k)`, i.e. name presence, and since every one of these
+/// names ships in the env template that suppressed the entire remediation
+/// section on any freshly provisioned device.
+fn key_slot_is_filled(loaded: &std::collections::HashMap<String, String>, k: &str) -> bool {
+    loaded.get(k).is_some_and(|v| keys::is_configured_value(v))
+}
+
+/// What to say when the reactive module-health tracker is empty.
+///
+/// Empty means one of two very different things and the code said the same
+/// thing for both. The section is per-process and reactive — `record_success` /
+/// `record_failure` fire only from `core::engine::dispatch` — and a standalone
+/// `hse doctor` dispatches nothing, so the tracker is ALWAYS empty there and
+/// "no modules currently show a failure streak" was a constant, not a
+/// measurement. On a real device it printed that clean bill of health directly
+/// above the Scraper health section listing 22 sources in a failure streak.
+///
+/// `observed` distinguishes them: both recorders `entry(name).or_default()`, so
+/// `0` means nothing ran, and non-zero with no unhealthy entries means
+/// everything that ran is genuinely healthy — which IS a verdict worth stating.
+///
+/// Named rather than inline so the production caller and its test exercise the
+/// same code.
+fn empty_module_health_line(observed: usize) -> &'static str {
+    if observed == 0 {
+        "Module health: not measured — no modules ran in this process. \
+         See `Scraper health` below for outcomes recorded across recent scans."
+    } else {
+        "Module health: no modules currently show a failure streak"
+    }
+}
+
 fn sorted_huntsman_keys(loaded: &std::collections::HashMap<String, String>) -> Vec<&str> {
     let mut keys: Vec<&str> = loaded
-        .keys()
-        .filter(|k| k.starts_with("HUNTSMAN_"))
-        .map(String::as_str)
+        .iter()
+        // The VALUE decides, not the name. `hse provision` writes a full
+        // template of `insert_..._here` slots, so a name-only filter reported
+        // every unfilled slot as a loaded key: on a freshly provisioned device
+        // this line said "62 keys loaded" while provision had just said
+        // "real values: 0" and the WiGLE/SeekNow sections below — which go
+        // through `keys::resolve_key` — correctly said NOT CONFIGURED.
+        .filter(|(k, v)| k.starts_with("HUNTSMAN_") && keys::is_configured_value(v))
+        .map(|(k, _)| k.as_str())
         .collect();
     keys.sort_unstable();
     keys

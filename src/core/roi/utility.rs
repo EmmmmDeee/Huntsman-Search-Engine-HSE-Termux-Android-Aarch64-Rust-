@@ -150,6 +150,11 @@ pub struct DispatchUtilityInputs {
     /// Whether this exact (module, target) pair has already been dispatched
     /// this scan (a read of `DispatchLog`, not a mutation).
     pub already_dispatched_this_module_target: bool,
+    /// Whether this module produces a materially geolocatable observation
+    /// (coordinates, an address, a radio survey, a jurisdiction-bearing
+    /// registry record). Drives the small [`W_GEO`] frontier preference — see
+    /// that constant for why it is deliberately small.
+    pub geoint_bearing: bool,
 }
 
 // ── Tunable weights — additive, never multiplied against `final_utility` ───
@@ -172,6 +177,17 @@ pub const W_COST: f64 = 1.0;
 pub const W_QUOTA: f64 = 0.5;
 /// Weight on `latency_penalty`.
 pub const W_LAT: f64 = 0.5;
+/// GEOINT frontier preference: a SLIGHT tilt toward geolocatable work, applied
+/// so that the engine attempts geolocation for every materially geolocatable
+/// entity rather than leaving it to whatever the ranking happens to surface.
+///
+/// Deliberately an order of magnitude below [`W_INFO`] (3.0). Geolocation must
+/// never outrank stronger evidence: this can only order two otherwise
+/// comparable candidates, and cannot lift a low-information geo lookup above a
+/// high-information non-geo one. `geoint_preference_cannot_outrank_stronger_evidence`
+/// pins that bound, so a future weight increase has to break a test that says
+/// why it must not.
+pub const W_GEO: f64 = 0.25;
 /// Weight on `failure_penalty`.
 pub const W_FAIL: f64 = 1.0;
 /// Near-veto weight — still additive/subtractive, never multiplicative, so
@@ -244,6 +260,7 @@ pub fn compute_dispatch_utility(inputs: &DispatchUtilityInputs) -> DispatchUtili
     let latency_penalty =
         (inputs.configured_timeout_ms as f64 / MAX_REASONABLE_TIMEOUT_MS).clamp(0.0, 1.0);
     let duplicate_penalty = f64::from(u8::from(inputs.already_dispatched_this_module_target));
+    let geoint_preference = f64::from(u8::from(inputs.geoint_bearing));
 
     let final_utility = W_INFO.mul_add(
         expected_information_value,
@@ -251,7 +268,10 @@ pub fn compute_dispatch_utility(inputs: &DispatchUtilityInputs) -> DispatchUtili
             expected_novelty,
             W_INDEP.mul_add(
                 expected_independence,
-                W_OPT.mul_add(expected_optionality, W_REL * reliability),
+                W_OPT.mul_add(
+                    expected_optionality,
+                    W_GEO.mul_add(geoint_preference, W_REL * reliability),
+                ),
             ),
         ),
     ) - W_COST.mul_add(
@@ -289,6 +309,11 @@ pub fn compute_dispatch_utility(inputs: &DispatchUtilityInputs) -> DispatchUtili
         format!(
             "reliability: +{:.3} (cold-start prior={reliability:.3} — circuit-open already gated upstream, x W_REL={W_REL})",
             W_REL * reliability
+        ),
+        format!(
+            "geoint_preference: +{:.3} (geoint_bearing={}, x W_GEO={W_GEO})",
+            W_GEO * geoint_preference,
+            inputs.geoint_bearing
         ),
         format!(
             "estimated_cost: -{:.3} ({cost_note}, x W_COST={W_COST})",
@@ -335,6 +360,29 @@ pub fn compute_dispatch_utility(inputs: &DispatchUtilityInputs) -> DispatchUtili
         final_utility,
         explanation,
     }
+}
+
+/// Whether a module produces a materially GEOLOCATABLE observation, and so
+/// earns the small [`W_GEO`] frontier preference.
+///
+/// Derived from the module's own declared outputs and category rather than a
+/// hand-kept list, so a new geo-bearing module is preferred the moment it
+/// declares what it produces — the same derive-don't-list discipline
+/// `module_cascade` applies to novelty. `Coordinates`/`Address` are the direct
+/// geo outputs; the `Geo` and `Sensor` categories bear position even when a
+/// particular module's `produces()` is coarser than its category implies.
+/// **Pure.**
+#[must_use]
+pub fn is_geoint_bearing(
+    produces: &[crate::core::entity::EntityKind],
+    category: crate::core::module::ModuleCategory,
+) -> bool {
+    use crate::core::entity::EntityKind;
+    use crate::core::module::ModuleCategory;
+    matches!(category, ModuleCategory::Geo | ModuleCategory::Sensor)
+        || produces
+            .iter()
+            .any(|k| matches!(k, EntityKind::Coordinates | EntityKind::Address))
 }
 
 /// Hard eligibility gate: true iff the module tracks a local quota

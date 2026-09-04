@@ -8,6 +8,24 @@ pub(super) struct SeonEmailResp {
     pub(super) success: Option<bool>,
     #[serde(default)]
     pub(super) data: Option<SeonEmailData>,
+    /// SEON's shared error envelope: `{"success": false, "error": {"code":
+    /// "...", "message": "..."}, "data": {}}`. Documented explicitly for
+    /// Fraud API v2 (docs.seon.io/api-reference/errors) and structurally
+    /// consistent with this endpoint's own success example, which already
+    /// carries an empty `"error": {}` field — SEON reuses one envelope
+    /// across its API family. A dead key, an out-of-credits account, or a
+    /// plan-scope rejection answers HTTP 200 with this shape, so the status
+    /// check alone can't see it; see `seon_key_error_detail` in the parent module.
+    #[serde(default)]
+    pub(super) error: Option<SeonError>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct SeonError {
+    #[serde(default)]
+    pub(super) code: Option<String>,
+    #[serde(default)]
+    pub(super) message: Option<String>,
 }
 
 /// Matches SEON's `email-api/v3` response shape exactly (verified against
@@ -193,6 +211,10 @@ pub(super) struct SeonPhoneResp {
     pub(super) success: Option<bool>,
     #[serde(default)]
     pub(super) data: Option<SeonPhoneData>,
+    /// Same shared error envelope as [`SeonEmailResp::error`] — SEON reuses
+    /// one `{success, error, data}` shape across its API family.
+    #[serde(default)]
+    pub(super) error: Option<SeonError>,
 }
 
 /// Matches SEON's `phone-api/v2` response shape exactly (verified against

@@ -32,6 +32,11 @@ struct BenchmarkReport {
     modules_timed_out: u64,
     pivot_count: u64,
     scorecard: Scorecard,
+    /// Why this scorecard is not straightforwardly comparable to another run's
+    /// — see `crate::core::benchmark::BenchmarkReport::comparability_caveat`
+    /// server-side. Absent when the run asked everything.
+    #[serde(default)]
+    comparability_caveat: Option<String>,
 }
 
 fn row(k: &str, v: &str) -> String {
@@ -56,6 +61,7 @@ pub fn render_benchmark_html(data: JsValue) -> Result<String, JsValue> {
     let sc = &data.scorecard;
     Ok(format!(
         "<h4 style=\"margin-top:0\"><i class=\"glyphicon glyphicon-dashboard\"></i>&nbsp;Benchmark scorecard</h4>\n    \
+         {caveat}\
          <div class=\"table-responsive\"><table class=\"table table-condensed\"><tbody>\n      \
          {r1}\n      {r2}\n      {r3}\n      {r4}\n      {r5}\n      {r6}\n      {r7}\n      {r8}\n      {r9}\n      {r10}\n    \
          </tbody></table></div>",
@@ -69,5 +75,49 @@ pub fn render_benchmark_html(data: JsValue) -> Result<String, JsValue> {
         r8 = row("Multi-hop depth", &sc.multi_hop_depth.to_string()),
         r9 = row("Graph coverage", &pct(sc.graph_coverage)),
         r10 = row("Corroborated fraction", &pct(sc.corroborated_fraction)),
+        // Above the numbers, not below them: this scorecard exists to be set
+        // against another run's, and a reader who has already absorbed the
+        // figures has drawn the comparison the caveat exists to qualify.
+        caveat = caveat_banner(data.comparability_caveat.as_deref()),
     ))
+}
+
+/// The comparability banner, or nothing when the run asked everything.
+///
+/// Silence is the claim that the comparison is sound, so the banner is only
+/// omitted when there is genuinely no caveat — never merely because the field
+/// was missing from an older response, which deserialises to `None` and would
+/// then read as a clean run. That is why the server always sends the field.
+fn caveat_banner(caveat: Option<&str>) -> String {
+    match caveat {
+        Some(text) => format!(
+            "<div class=\"alert alert-warning\" style=\"padding:8px;font-size:12px\">\n      \
+             <b>Not directly comparable:</b> {}\n    </div>\n    ",
+            escape_html(text)
+        ),
+        None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_scorecard_without_a_caveat_shows_no_banner() {
+        // The absence of a banner is itself the claim that the comparison is
+        // sound, so it must appear only when the run really asked everything.
+        assert!(caveat_banner(None).is_empty());
+        let banner = caveat_banner(Some("3 of 40 provider(s) could not be used"));
+        assert!(banner.contains("Not directly comparable"));
+        assert!(banner.contains("alert-warning"));
+        assert!(banner.contains("3 of 40"));
+    }
+
+    #[test]
+    fn a_caveat_from_the_wire_is_escaped() {
+        let banner = caveat_banner(Some("<img src=x onerror=1>"));
+        assert!(!banner.contains("<img"));
+        assert!(banner.contains("&lt;img"));
+    }
 }

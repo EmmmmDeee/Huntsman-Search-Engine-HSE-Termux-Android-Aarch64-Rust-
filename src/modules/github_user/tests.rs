@@ -382,3 +382,60 @@ fn module_metadata() {
     assert_eq!(m.max_timeout_ms(), 5_000);
     assert!(!m.description().is_empty());
 }
+
+#[tokio::test]
+async fn ssh_key_side_call_sends_the_configured_token_and_survives_a_rejection() {
+    // Before this fix `fetch_ssh_keys`/`fetch_events` never received the
+    // operator's token: they went out anonymous (the shared-IP 60 req/h budget)
+    // while `fetch_orgs`/`fetch_gists` used the token's 5 000 req/h, and any
+    // non-2xx was swallowed without a word. Hermetic loopback listener; the
+    // request line + headers are captured so the Authorization header can be
+    // asserted directly.
+    use std::sync::{Arc, Mutex};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    let captured: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let cap = Arc::clone(&captured);
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 4096];
+        let n = sock.read(&mut buf).await.unwrap_or(0);
+        *cap.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).into_owned();
+        let _ = sock
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
+            )
+            .await;
+        let _ = sock.flush().await;
+    });
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = crate::core::module::ModuleContext {
+        scan_id: "s".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let resp = super::fetch::github_get(
+        &ctx,
+        &format!("http://{addr}/users/octocat/keys"),
+        Some("ghp_test_token_0123456789"),
+    )
+    .await;
+    assert!(
+        resp.is_some(),
+        "a 200 side-call answer is returned to the caller"
+    );
+    let req = captured.lock().unwrap().clone();
+    assert!(
+        req.to_ascii_lowercase()
+            .contains("authorization: bearer ghp_test_token_0123456789"),
+        "the configured token must ride on the side-call: {req}"
+    );
+}

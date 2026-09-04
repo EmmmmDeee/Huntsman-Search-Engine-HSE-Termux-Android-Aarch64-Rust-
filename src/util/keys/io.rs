@@ -167,7 +167,10 @@ pub(super) fn register_configured_keys(
             let keys: Vec<&str> = val
                 .split(',')
                 .map(str::trim)
-                .filter(|k| !k.is_empty())
+                // Not merely non-empty: an unedited `insert_..._here` slot is
+                // not a credential, and registering one as Active makes
+                // `hse keys validate` spend a real request probing it.
+                .filter(|k| super::is_configured_value(k))
                 .collect();
             if keys.len() > 1 {
                 map.insert(svc.env_var.to_string(), keys[0].to_string());
@@ -183,7 +186,7 @@ pub(super) fn register_configured_keys(
                     keys.len()
                 );
             }
-        } else if !raw.is_empty() {
+        } else if super::is_configured_value(raw) {
             let mut entry = crate::util::key_pool::KeyEntry::new(raw.clone());
             entry.status = crate::util::key_pool::KeyStatus::Active;
             pool.add(svc.name, entry);

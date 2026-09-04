@@ -424,7 +424,14 @@ fn build_asn_entities(body: &AsnResp, asn: u64, scan_id: &str) -> Vec<Entity> {
         oe.tag("bgpview");
         oe.tag("asn-operator");
         oe.add_evidence(
-            Evidence::new(SRC, format!("Operator of {asn_label}")).with_attr("asn", &asn_str),
+            // Same BGPView response as the contacts below, and attributed the
+            // same way — the comment above already says this is sourced from
+            // BGPView rather than RDAP.
+            Evidence::new(
+                crate::modules::bgpview::SRC,
+                format!("Operator of {asn_label}"),
+            )
+            .with_attr("asn", &asn_str),
         );
         result.push(oe);
     }
@@ -487,10 +494,21 @@ fn contact_emails(
             e.tag("asn-contact");
             e.tag(format!("role:{role}"));
             e.add_evidence(
-                Evidence::new(SRC, format!("Contact for {asn_label}"))
-                    .with_attr("source", "bgpview")
-                    .with_attr("asn", asn_str)
-                    .with_attr("contact_role", role),
+                // Attributed to the corpus it came from: this contact is a row
+                // from `api.bgpview.io/asn/{n}`, the same endpoint the
+                // standalone `bgpview` module queries. Stamped with this
+                // module's own name, a future `bgpview` that emits contacts
+                // would merge with these and read as two independent sources
+                // for one BGPView record. It also makes the RDAP contacts above
+                // — a genuinely different registry corpus — properly countable
+                // as a second source when the same address appears in both.
+                Evidence::new(
+                    crate::modules::bgpview::SRC,
+                    format!("Contact for {asn_label}"),
+                )
+                .with_attr("source", "bgpview")
+                .with_attr("asn", asn_str)
+                .with_attr("contact_role", role),
             );
             e
         })

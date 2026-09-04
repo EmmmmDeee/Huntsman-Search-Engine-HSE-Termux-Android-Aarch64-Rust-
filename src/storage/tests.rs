@@ -1032,6 +1032,7 @@ fn recent_module_outcome_events_filters_orders_and_bounds_across_scans() {
             EventKind::ModuleSkipped {
                 module: "crtsh".into(),
                 reason: "no key".into(),
+                class: Some(crate::core::event::SkipClass::Unavailable),
             },
         ),
     ];
@@ -2251,9 +2252,76 @@ fn upsert_entities_batch_merges_on_conflict() {
         (merged.confidence - 0.9).abs() < 1e-9,
         "GREATEST-merge must apply inside the batch path"
     );
+    // The SAME scan re-persisting a uid it already observed is the engine's
+    // checkpoint → finalise re-persist of one accumulated entity, not a second
+    // observation: corroboration is GREATEST-merged (stays 1), never summed.
+    assert_eq!(
+        merged.corroboration, 1,
+        "a same-scan re-persist must not double-count corroboration"
+    );
+    // A conflict from a DIFFERENT scan is a genuinely separate observation and
+    // accumulates through the batch path exactly as before.
+    insert_scan(&store, "bm-scan-2");
+    let other_scan = Entity::new(EntityKind::Email, "dup@x.com", 0.4, "bm-scan-2");
+    store
+        .upsert_entities_batch(std::slice::from_ref(&other_scan))
+        .expect("should succeed");
+    let merged = store
+        .get_entity(&first.uid)
+        .expect("should succeed")
+        .expect("should succeed");
     assert_eq!(
         merged.corroboration, 2,
-        "corroboration must accumulate through the batch path"
+        "corroboration must accumulate across distinct scans through the batch path"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn re_persisting_a_scans_own_entity_keeps_its_corroboration_magnitude() {
+    // A module that seeds a real magnitude (hibp: `corroboration = verified
+    // breach count`) must see exactly that magnitude on disk however many times
+    // the engine checkpoints the entity within the scan — and a later, distinct
+    // scan's observation still adds on top.
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    insert_scan(&store, "mag-scan");
+    let mut e = Entity::new(EntityKind::Email, "mag@x.com", 0.7, "mag-scan");
+    e.corroboration = 3;
+    for _ in 0..4 {
+        store.upsert_entity(&e).expect("should succeed");
+    }
+    let stored = store
+        .get_entity(&e.uid)
+        .expect("should succeed")
+        .expect("should succeed");
+    assert_eq!(
+        stored.corroboration, 3,
+        "four same-scan persists of one entity must leave its magnitude untouched"
+    );
+    // The working set grew (a second module's magnitude merged in memory):
+    // the re-persist carries the larger accumulated value and wins.
+    e.corroboration = 5;
+    store.upsert_entity(&e).expect("should succeed");
+    let stored = store
+        .get_entity(&e.uid)
+        .expect("should succeed")
+        .expect("should succeed");
+    assert_eq!(
+        stored.corroboration, 5,
+        "GREATEST must still let the row grow"
+    );
+    insert_scan(&store, "mag-scan-2");
+    let mut later = Entity::new(EntityKind::Email, "mag@x.com", 0.7, "mag-scan-2");
+    later.corroboration = 2;
+    store.upsert_entity(&later).expect("should succeed");
+    let stored = store
+        .get_entity(&e.uid)
+        .expect("should succeed")
+        .expect("should succeed");
+    assert_eq!(
+        stored.corroboration, 7,
+        "a distinct scan's observation must still accumulate (5 + 2)"
     );
     let _ = std::fs::remove_file(&path);
 }
@@ -2474,7 +2542,6 @@ fn open_produces_exact_schema_and_pragmas() {
         "index|sqlite_autoindex_pathway_templates_1",
         "index|sqlite_autoindex_raw_archive_1",
         "index|sqlite_autoindex_relations_1",
-        "index|sqlite_autoindex_scan_analysis_1",
         "index|sqlite_autoindex_scans_1",
         "table|correlations",
         "table|entities",
@@ -2489,7 +2556,6 @@ fn open_produces_exact_schema_and_pragmas() {
         "table|raw_archive",
         "table|relations",
         "table|rf_sightings",
-        "table|scan_analysis",
         "table|scans",
         "table|sqlite_sequence",
         // `PRAGMA optimize` (run at open — see `Store::open`) materialises
@@ -2875,4 +2941,122 @@ fn upsert_correlation_never_deletes_a_row_whose_uid_list_will_not_parse() {
     );
     assert_eq!(got.len(), 2, "both findings must survive, got {got:?}");
     let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn checkpoint_truncate_reports_a_blocked_checkpoint_instead_of_claiming_success() {
+    // `PRAGMA wal_checkpoint(TRUNCATE)` does not raise when a concurrent
+    // reader pins the WAL — it returns a `(busy=1, …)` row and leaves the -wal
+    // alone. The old `execute_batch` dropped that row, so a blocked checkpoint
+    // was reported as `Ok(())` (and `hse tidy` claimed "WAL truncated").
+    let path = tmp_db();
+    let wal = format!("{path}-wal");
+    let store = Store::open(&path).expect("should succeed");
+    insert_scan(&store, "wal-busy");
+    for i in 0..50 {
+        store
+            .upsert_entity(&Entity::new(
+                EntityKind::Email,
+                format!("busy{i}@example.com"),
+                0.5,
+                "wal-busy",
+            ))
+            .expect("should succeed");
+    }
+    assert!(std::fs::metadata(&wal).map_or(0, |m| m.len()) > 0);
+
+    // A second connection holding an open read transaction reads those frames
+    // from the WAL, so a TRUNCATE checkpoint cannot complete until it ends.
+    let reader = rusqlite::Connection::open(&path).expect("open a second connection");
+    reader
+        .execute_batch("BEGIN; SELECT count(*) FROM entities;")
+        .expect("reader transaction");
+    // Keep the test fast: the pragma waits out the busy timeout before it
+    // reports `busy = 1`.
+    store
+        .conn
+        .lock()
+        .busy_timeout(std::time::Duration::from_millis(100))
+        .expect("busy timeout");
+
+    let err = store
+        .checkpoint_truncate()
+        .expect_err("a blocked TRUNCATE checkpoint must be an Err, not a silent Ok");
+    assert!(err.to_string().contains("blocked"), "{err}");
+    assert!(
+        std::fs::metadata(&wal).map_or(0, |m| m.len()) > 0,
+        "the -wal must still hold frames while the reader pins them"
+    );
+
+    // Once the reader is gone the same call succeeds and truncates for real.
+    reader.execute_batch("COMMIT;").expect("release reader");
+    drop(reader);
+    store
+        .checkpoint_truncate()
+        .expect("unblocked checkpoint succeeds");
+    assert_eq!(std::fs::metadata(&wal).map_or(0, |m| m.len()), 0);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn prune_events_spares_a_live_scans_events_but_not_a_finished_or_zombie_scans() {
+    // Under a long-lived `hse serve`, scan B's finalise-time prune used to cut
+    // the globally-oldest rows beyond `max_rows` — scan A's own beginning
+    // while A was still running. A live scan (running, started within the
+    // retention window) is now exempt from both cuts; a finished scan and a
+    // `running` row older than the window (a killed process's leftover) are
+    // pruned exactly as before.
+    use crate::core::scan::ScanStatus;
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    let now = crate::core::entity::unix_now();
+    let retention = 7 * 86_400;
+    let mk_scan = |id: &str, status: ScanStatus, started_at: u64| {
+        let mut s = Scan::new(id, Target::new(TargetKind::Email, "x@y.com"));
+        s.status = status;
+        s.started_at = started_at;
+        store.upsert_scan(&s).expect("should succeed");
+    };
+    let mk_events = |scan_id: &str, first_ts: u64, n: usize| {
+        for i in 0..n {
+            let mut ev = Event::new(
+                scan_id,
+                EventKind::ModuleDone {
+                    module: format!("m{i}"),
+                    found: i,
+                },
+            );
+            ev.ts = first_ts + i as u64;
+            store.insert_event(&ev).expect("should succeed");
+        }
+    };
+    // Inserted first, so its rows are the oldest ids the row cap would cut.
+    mk_scan("live", ScanStatus::Running, now - 3_600);
+    mk_events("live", now - 3_600, 5);
+    mk_scan("done", ScanStatus::Complete, now - 7_200);
+    mk_events("done", now - 7_000, 5);
+    mk_scan("zombie", ScanStatus::Running, now - 30 * 86_400);
+    mk_events("zombie", now - 30 * 86_400, 3);
+
+    // Cap at 4 rows: the newest four ids are all `done`'s, so without the
+    // exemption every one of `live`'s rows would go.
+    let pruned = store.prune_events(retention, 4).expect("should succeed");
+
+    let count = |id: &str| store.events_for_scan(id).expect("should succeed").len();
+    assert_eq!(count("live"), 5, "a live scan keeps its whole event log");
+    assert_eq!(
+        count("done"),
+        4,
+        "a finished scan is cut to the row cap as before"
+    );
+    assert_eq!(
+        count("zombie"),
+        0,
+        "a running row older than the window is not exempt"
+    );
+    assert_eq!(
+        pruned,
+        3 + 1,
+        "3 aged zombie rows + 1 excess finished-scan row"
+    );
 }

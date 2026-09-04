@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use huntsman_search_engine::{
     core::{
         engine::ScanEngine,
-        entity::{Entity, EntityKind},
+        entity::{Entity, EntityKind, Evidence},
         error::Result,
         module::{Module, ModuleContext, ModuleResult},
         scan::{Scan, ScanOptions, ScanStatus, Target, TargetKind},
@@ -2647,5 +2647,75 @@ async fn missing_key_releases_the_dispatch_ledger_entry() {
         ledger.is_empty(),
         "a MissingKey opt-out spent no query — its ledger entry must be \
          released so a hot-injected key can retry the target"
+    );
+}
+
+/// Echoes the seed back with ONE evidence record of its own — so every
+/// observation of the seed (the `seed` anchor, this echo) is visible as exactly
+/// one evidence record, and the persisted magnitude can be checked against it.
+struct EvidencedEcho;
+
+#[async_trait]
+impl Module for EvidencedEcho {
+    fn name(&self) -> &'static str {
+        "evidenced_echo"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn description(&self) -> &'static str {
+        "test-only echo that attaches evidence"
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        let mut e = Entity::new(EntityKind::Email, &target.value, 0.9, &ctx.scan_id);
+        e.add_evidence(Evidence::new("evidenced_echo", "echoed the seed"));
+        r.push(e);
+        Ok(r)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn persisted_corroboration_never_exceeds_the_observations_that_produced_it() {
+    // Regression: the engine persists the SAME in-memory entity through
+    // `Store::upsert_entities_batch` more than once per scan (the seed-round
+    // checkpoint, every productive round's dirty set, and the finalise persist).
+    // The store's conflict path merged the incoming entity into the stored row
+    // with `Entity::merge`, whose `absorb` SUMS `corroboration` — so each
+    // re-persist of an unchanged entity added its whole magnitude again, and a
+    // seed observed exactly twice (once as the seed, once by the echo, each with
+    // magnitude 1 — in-memory magnitude 2) landed on disk with corroboration 4.
+    //
+    // Invariant pinned here: when every observation of an entity carried
+    // magnitude 1, the persisted `corroboration` can never exceed the number of
+    // evidence records — the only way it can is by counting one observation
+    // more than once.
+    let (engine, store, sid, target, ctx) = setup(
+        vec![Arc::new(EvidencedEcho)],
+        "corr-idem",
+        TargetKind::Email,
+        "corr-idem@contoso.com",
+    );
+    let scan = Scan::new(sid.clone(), target.clone());
+    let _ = engine.run(scan, target, ctx).await.unwrap();
+
+    let entities = store.entities_for_scan(&sid).unwrap();
+    let seed = entities
+        .iter()
+        .find(|e| e.value == "corr-idem@contoso.com")
+        .expect("the seed email must be persisted");
+    assert!(
+        seed.corroboration as usize <= seed.evidence.len(),
+        "persisted corroboration ({}) exceeds the {} observation(s) that produced it \
+         (sources: {:?}) — the store double-counted a re-persisted entity",
+        seed.corroboration,
+        seed.evidence.len(),
+        seed.evidence
+            .iter()
+            .map(|e| e.source.as_str())
+            .collect::<Vec<_>>()
     );
 }

@@ -678,6 +678,117 @@ async fn scan_network_synthesises_subject_graph() {
 }
 
 #[tokio::test]
+async fn scan_coverage_never_reports_an_unknown_sweep_as_a_complete_one() {
+    // Unknown scan → 404, like the other `/scans/{id}/...` sub-resources.
+    let app = test_app("coverage_nf");
+    let resp = app
+        .oneshot(get("/api/v1/scans/nope/coverage"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    // A known scan → 200. The engine is asynchronous, so a freshly created
+    // scan may have no retained dispatch events yet — and THAT is the case
+    // that matters: `providers` must be null and `complete` must be null, not
+    // an empty list and `true`. An empty list would read as "every provider
+    // answered", which is the false clean negative this endpoint exists to
+    // prevent, and it is the reading a caller would take on the thinnest
+    // possible scan.
+    let (app, sid) = create_scan("coverage_ok").await;
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/coverage")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = body_json(resp).await;
+    for key in [
+        "all_available_providers_answered",
+        "exhaustive",
+        "unavailable_count",
+        "out_of_scope_count",
+        "provider_count",
+        "providers",
+    ] {
+        assert!(body.get(key).is_some(), "coverage carries {key}: {body}");
+    }
+    assert!(
+        !body["providers"].is_array() || !body["providers"].as_array().unwrap().is_empty(),
+        "an empty provider list must never be returned — null means unknown: {body}"
+    );
+    if body["providers"].is_null() {
+        assert!(
+            body["all_available_providers_answered"].is_null() && body["exhaustive"].is_null(),
+            "unknown coverage is not a clean one: {body}"
+        );
+        assert_eq!(body["provider_count"].as_u64(), Some(0));
+    } else {
+        // The scan got far enough to dispatch: every row names its provider and
+        // an outcome, and an unresolved outcome always says why.
+        let rows = body["providers"].as_array().unwrap();
+        assert_eq!(
+            body["provider_count"].as_u64(),
+            Some(rows.len() as u64),
+            "the count matches the rows: {body}"
+        );
+        let unavailable = rows
+            .iter()
+            .filter(|row| row["skip_class"].as_str() == Some("unavailable"))
+            .count();
+        let out_of_scope = rows
+            .iter()
+            .filter(|row| row["skip_class"].as_str() == Some("scoped"))
+            .count();
+        assert_eq!(body["unavailable_count"].as_u64(), Some(unavailable as u64));
+        assert_eq!(
+            body["out_of_scope_count"].as_u64(),
+            Some(out_of_scope as u64)
+        );
+        assert_eq!(
+            body["all_available_providers_answered"].as_bool(),
+            Some(unavailable == 0),
+            "the headline verdict is about what BROKE, not what the scan chose not to ask"
+        );
+        assert_eq!(
+            body["exhaustive"].as_bool(),
+            Some(unavailable == 0 && out_of_scope == 0)
+        );
+        // Every unresolved row names which axis it belongs to, so a consumer
+        // never has to infer it from the reason prose.
+        for row in rows {
+            let resolved = matches!(
+                row["outcome"]["kind"].as_str(),
+                Some("observed" | "clean_negative")
+            );
+            assert_eq!(
+                row["skip_class"].is_null(),
+                resolved,
+                "an unresolved row must carry its class: {row}"
+            );
+        }
+        for row in rows {
+            assert!(
+                row["provider_id"].as_str().is_some_and(|v| !v.is_empty()),
+                "every row names its provider: {row}"
+            );
+            let kind = row["outcome"]["kind"].as_str().unwrap_or_default();
+            assert!(
+                ["observed", "clean_negative", "failed", "not_attempted"].contains(&kind),
+                "unexpected outcome kind {kind}: {row}"
+            );
+            if kind == "failed" || kind == "not_attempted" {
+                assert!(
+                    row["outcome"]["reason"]
+                        .as_str()
+                        .is_some_and(|v| !v.trim().is_empty()),
+                    "an unresolved outcome always says why: {row}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn scan_identities_resolves_coreferences() {
     // Unknown scan → 404, like the other `/scans/{id}/...` sub-resources.
     let app = test_app("identities_nf");
@@ -1331,6 +1442,70 @@ async fn batch_endpoint_enforces_empty_and_size_limits() {
 }
 
 #[tokio::test]
+async fn batch_endpoint_records_per_item_error_and_continues_for_mixed_valid_invalid_targets() {
+    // scan_batch's per-item error path (core.rs `Err(msg) => { scan_ids.push(json!({
+    // "error": msg })); continue; }`) is only reachable when a structurally-valid
+    // JSON array contains a target that fails `validated_target` (e.g. a malformed
+    // email). This pins that the batch as a whole still 202s, the invalid entry
+    // gets an `{"error": ...}` slot instead of aborting the request, and the valid
+    // entries alongside it are still queued.
+    let app = test_app("batch-mixed");
+
+    let body = r#"[
+        {"kind":"email","value":"valid1@huntsman-test.io"},
+        {"kind":"email","value":"not-an-email"},
+        {"kind":"email","value":"valid2@huntsman-test.io"}
+    ]"#;
+    let resp = app
+        .oneshot(post_json("/api/v1/scans/batch", body))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        http::StatusCode::ACCEPTED,
+        "a batch with one invalid target among valid ones must still 202, not abort"
+    );
+    let body = axum::body::to_bytes(resp.into_body(), 100_000)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let scans = json["scans"].as_array().expect("scans array");
+    assert_eq!(json["count"], 3, "all 3 items must produce a result slot");
+    assert_eq!(scans.len(), 3);
+
+    assert!(
+        scans[0]["scan_id"].as_str().is_some_and(|s| !s.is_empty())
+            && scans[0].get("error").is_none(),
+        "first valid target must be queued with a real scan_id, not errored: {:?}",
+        scans[0]
+    );
+    assert_eq!(
+        scans[0]["status"], "queued",
+        "valid entries are queued: {:?}",
+        scans[0]
+    );
+
+    assert!(
+        scans[1].get("error").is_some() && scans[1].get("scan_id").is_none(),
+        "malformed target must record a per-item error, not a scan_id: {:?}",
+        scans[1]
+    );
+    let err_msg = scans[1]["error"].as_str().expect("error is a string");
+    assert!(
+        err_msg.contains("invalid target"),
+        "error message must explain the rejection: {err_msg}"
+    );
+
+    assert!(
+        scans[2]["scan_id"].as_str().is_some_and(|s| !s.is_empty())
+            && scans[2].get("error").is_none(),
+        "third valid target (after the invalid one) must still be queued with a real scan_id: {:?}",
+        scans[2]
+    );
+    assert_eq!(scans[2]["status"], "queued");
+}
+
+#[tokio::test]
 async fn search_endpoint_rejects_overlong_query() {
     // The 256-char query cap bounds work per request; it fires before any FTS
     // query, so no entities need seeding. A normal query is fine; a 300-char one
@@ -1952,6 +2127,246 @@ async fn scan_network_quarantines_candidate_nodes_by_default() {
     assert!(
         body2.contains("stranger@breach.example"),
         "include_candidates=1 surfaces the candidate node: {body2}"
+    );
+}
+
+#[tokio::test]
+async fn scan_path_connects_two_endpoints_through_a_relation() {
+    // /path had zero prior test coverage. Baseline: two endpoints joined by one
+    // relation must resolve to a 1-hop path naming both by their real value.
+    let (app, store) = test_app_with_store("path_basic");
+    let sid = "s-path-basic";
+    store
+        .upsert_scan(&Scan::new(sid, Target::new(TargetKind::FullName, "A B")))
+        .unwrap();
+    let a = Entity::new(EntityKind::Email, "a@real.example", 0.9, sid);
+    let b = Entity::new(EntityKind::Email, "b@real.example", 0.9, sid);
+    store.upsert_entity(&a).unwrap();
+    store.upsert_entity(&b).unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            a.uid.as_str(),
+            b.uid.as_str(),
+            RelationKind::AssociatedWith,
+            0.6,
+            sid,
+        ))
+        .unwrap();
+
+    let resp = app
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/path?from=a%40real.example&to=b%40real.example"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["connected"].as_bool(), Some(true));
+    let nodes = json["nodes"].as_object().expect("nodes is an object");
+    assert!(
+        nodes.values().any(|n| n["value"] == "a@real.example")
+            && nodes.values().any(|n| n["value"] == "b@real.example"),
+        "both endpoints must resolve to display labels: {json}"
+    );
+}
+
+#[tokio::test]
+async fn scan_path_quarantines_a_candidate_bridge_by_default() {
+    // The bug this fix closes: /path ran the raw, ungated entity/relation set
+    // through connect_values, so a candidate-tagged (unconfirmed) intermediate
+    // could still be routed through and its real value returned in "nodes" —
+    // exactly the PII leak every sibling entity-view endpoint's default
+    // quarantine exists to prevent.
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("path_candidate");
+    let sid = "s-path-cand";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+    let from_e = Entity::new(EntityKind::Email, "pfrom@real.example", 0.9, sid);
+    let mut bridge = Entity::new(EntityKind::Person, "Namesake Stranger", 0.4, sid);
+    bridge.tag(CANDIDATE);
+    let to_e = Entity::new(EntityKind::Email, "pto@real.example", 0.9, sid);
+    store.upsert_entity(&from_e).unwrap();
+    store.upsert_entity(&bridge).unwrap();
+    store.upsert_entity(&to_e).unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            from_e.uid.as_str(),
+            bridge.uid.as_str(),
+            RelationKind::AssociatedWith,
+            0.6,
+            sid,
+        ))
+        .unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            to_e.uid.as_str(),
+            bridge.uid.as_str(),
+            RelationKind::AssociatedWith,
+            0.6,
+            sid,
+        ))
+        .unwrap();
+
+    // Default: the candidate bridge must not connect the two endpoints, and its
+    // real value must never appear in the response body.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/path?from=pfrom%40real.example&to=pto%40real.example"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = axum::body::to_bytes(resp.into_body(), 5_000_000)
+        .await
+        .unwrap();
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        !body.contains("Namesake Stranger"),
+        "a quarantined candidate bridge must not leak into /path by default: {body}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        json["connected"].as_bool(),
+        Some(false),
+        "the two endpoints must not connect through an unopted-in candidate bridge: {json}"
+    );
+
+    // Opt-in restores the connection and surfaces the candidate's real value.
+    let resp2 = app
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/path?from=pfrom%40real.example&to=pto%40real.example&include_candidates=1"
+        )))
+        .await
+        .unwrap();
+    let bytes2 = axum::body::to_bytes(resp2.into_body(), 5_000_000)
+        .await
+        .unwrap();
+    let body2 = String::from_utf8_lossy(&bytes2);
+    assert!(
+        body2.contains("Namesake Stranger"),
+        "include_candidates=1 must restore the connection through the candidate bridge: {body2}"
+    );
+}
+
+#[tokio::test]
+async fn scan_communities_quarantines_candidate_entities_by_default() {
+    // scan_communities ran entities_and_relations() straight into community::detect
+    // with no EntityViewGate, so a candidate could be folded into (and, via
+    // Community::label's raw-value naming, even NAME) a cluster alongside
+    // confirmed relatives.
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("communities_candidate");
+    let sid = "s-comm-cand";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+    let subject = Entity::new(EntityKind::Email, "subject@real.example", 0.9, sid);
+    let mut candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, sid);
+    candidate.tag(CANDIDATE);
+    store.upsert_entity(&subject).unwrap();
+    store.upsert_entity(&candidate).unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            subject.uid.as_str(),
+            candidate.uid.as_str(),
+            RelationKind::AssociatedWith,
+            0.5,
+            sid,
+        ))
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/communities")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let member_uids = |json: &serde_json::Value| -> Vec<String> {
+        json["communities"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|c| c["uids"].as_array().into_iter().flatten())
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    };
+    assert!(
+        !member_uids(&json).contains(&candidate.uid),
+        "a quarantined candidate must not be a community member by default: {json}"
+    );
+
+    let resp2 = app
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/communities?include_candidates=1"
+        )))
+        .await
+        .unwrap();
+    let json2 = body_json(resp2).await;
+    assert!(
+        member_uids(&json2).contains(&candidate.uid),
+        "include_candidates=1 restores the candidate as a community member: {json2}"
+    );
+}
+
+#[tokio::test]
+async fn scan_gaps_quarantines_candidate_entities_by_default() {
+    // gap::analyze's own doc states its precondition: "every input is a validated
+    // seed". scan_gaps fed it the raw, ungated set, so a candidate with no
+    // relation edges yet could be reported as an actionable "orphan" carrying its
+    // real value plus a re-scan recommendation — an unverified stranger presented
+    // as a legitimate discovery gap in the subject's own investigation.
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("gaps_candidate");
+    let sid = "s-gaps-cand";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+    let mut candidate = Entity::new(EntityKind::Phone, "+15559990000", 0.5, sid);
+    candidate.tag(CANDIDATE);
+    store.upsert_entity(&candidate).unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/gaps")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(
+        json["total_seeds"].as_u64(),
+        Some(0),
+        "a quarantined candidate must not count as a validated seed by default: {json}"
+    );
+    let orphans = json["orphans"].as_array().expect("orphans is a list");
+    assert!(
+        orphans.is_empty(),
+        "a quarantined candidate must not be reported as an actionable orphan by default: {json}"
+    );
+
+    let resp2 = app
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/gaps?include_candidates=1"
+        )))
+        .await
+        .unwrap();
+    let json2 = body_json(resp2).await;
+    assert_eq!(
+        json2["total_seeds"].as_u64(),
+        Some(1),
+        "include_candidates=1 restores it as a validated seed: {json2}"
     );
 }
 
@@ -3312,7 +3727,7 @@ async fn keys_pool_get_is_masked_and_revoke_is_write_gated() {
         "pool returns a services list"
     );
 
-    // Revoke without --allow-key-write (test_app default) must be forbidden.
+    // Revoke with key writes off (test_app default) must be forbidden.
     let mut post = Request::builder()
         .method("POST")
         .uri("/api/v1/keys/pool/revoke")
@@ -3326,13 +3741,13 @@ async fn keys_pool_get_is_masked_and_revoke_is_write_gated() {
     assert_eq!(
         resp.status(),
         http::StatusCode::FORBIDDEN,
-        "pool revoke must require --allow-key-write"
+        "pool revoke must be refused while key writes are off"
     );
 }
 
 #[tokio::test]
 async fn keys_pool_add_is_write_gated() {
-    // Adding a new pooled key is a write — refused without --allow-key-write
+    // Adding a new pooled key is a write — refused while key writes are off
     // (test_app default), same policy as revoke/rotate. This is the web
     // equivalent of `hse keys add`, previously CLI-only.
     use std::net::SocketAddr;
@@ -3349,11 +3764,45 @@ async fn keys_pool_add_is_write_gated() {
         .insert(axum::extract::ConnectInfo(loopback));
     let resp = app.oneshot(post).await.unwrap();
     assert_eq!(resp.status(), http::StatusCode::FORBIDDEN);
+
+    // The remedy the 403 names must be a switch `hse serve` actually accepts.
+    // This text used to tell operators to restart with `--allow-key-write`, a
+    // flag that never existed (writes are on by default; the real switch is
+    // `--no-key-write`), so the one operator-facing instruction was a dead
+    // end. Every `--flag` token in the error is checked against the CLI
+    // definition itself, so the message cannot drift from the CLI again.
+    let body = body_json(resp).await;
+    let error = body["error"]
+        .as_str()
+        .expect("the 403 carries an error text");
+    let serve_flags: std::collections::HashSet<String> = {
+        use clap::CommandFactory;
+        huntsman_search_engine::cli::Cli::command()
+            .find_subcommand("serve")
+            .expect("`hse serve` exists")
+            .get_arguments()
+            .filter_map(|a| a.get_long().map(|l| format!("--{l}")))
+            .collect()
+    };
+    let named: Vec<&str> = error
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .filter(|t| t.starts_with("--"))
+        .collect();
+    assert!(
+        !named.is_empty(),
+        "the 403 must name the switch that controls key writes: {error}"
+    );
+    for flag in named {
+        assert!(
+            serve_flags.contains(flag),
+            "the 403 names `{flag}`, which `hse serve` does not accept: {error}"
+        );
+    }
 }
 
 #[tokio::test]
 async fn keys_pool_rotate_is_write_gated() {
-    // Rotation is a write — refused without --allow-key-write (test_app default),
+    // Rotation is a write — refused while key writes are off (test_app default),
     // never a silent no-op.
     use std::net::SocketAddr;
     let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
@@ -4397,6 +4846,42 @@ async fn exposed_bind_rejects_every_unauthenticated_surface() {
 }
 
 #[tokio::test]
+async fn exposed_bind_still_answers_the_unauthenticated_health_probe() {
+    // The Dockerfile's CMD is `hse serve --bind 0.0.0.0:$PORT` — the posture that
+    // installs the gate — and railway.json points the platform's credential-less
+    // health check at /api/v1/health. Before the exemption the deployment could
+    // never pass its own probe (401 → ON_FAILURE restart loop).
+    use huntsman_search_engine::api::auth::HEALTH_PATH;
+    let app = test_app_exposed("auth_health", EXPOSED_TOKEN);
+    let resp = app.clone().oneshot(get(HEALTH_PATH)).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "the liveness probe must answer without a token on a non-loopback bind"
+    );
+    let body = body_json(resp).await;
+    assert_eq!(body["status"], "ok");
+
+    // The exemption is GET-only; every other verb on the path is still gated.
+    let post = Request::builder()
+        .method("POST")
+        .uri(HEALTH_PATH)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(app.oneshot(post).await.unwrap().status(), 401);
+
+    // The deployment manifest and the gate name the same route — a rename of
+    // either side alone fails here rather than in a failed deploy.
+    let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/railway.json"))
+        .expect("railway.json must be readable");
+    let manifest: Value = serde_json::from_str(&manifest).expect("railway.json must be JSON");
+    assert_eq!(
+        manifest["deploy"]["healthcheckPath"], HEALTH_PATH,
+        "railway.json healthcheckPath must be the gate-exempt liveness route"
+    );
+}
+
+#[tokio::test]
 async fn exposed_bind_rejects_an_unauthenticated_mutation() {
     let app = test_app_exposed("auth_reject_post", EXPOSED_TOKEN);
     // The CSRF header alone must NOT be enough — it is a cross-site control,
@@ -4466,4 +4951,80 @@ async fn loopback_bind_is_unchanged_by_the_auth_work() {
         200,
         "the loopback default must not require a token"
     );
+}
+
+#[tokio::test]
+async fn static_assets_carry_a_content_derived_etag_not_the_crate_version() {
+    // Regression: the /static ETag was the crate version, which does not change
+    // across the in-place upgrades install.sh and the updater perform from
+    // `main`. A browser holding the old SPA asked `If-None-Match: "<version>"`
+    // after every upgrade and was told 304 — stale JS/wasm against a new API
+    // until someone bumped the version. The tag must be derived from the bytes.
+    let app = test_app("static-etag");
+    let version_tag = format!("\"{}\"", huntsman_search_engine::VERSION);
+
+    let resp = app
+        .clone()
+        .oneshot(get("/static/js/main.js"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let etag = resp
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .expect("static assets carry an ETag")
+        .to_string();
+    assert_ne!(etag, version_tag, "the ETag must not be the crate version");
+    // A strong, quoted 64-bit hex tag.
+    assert_eq!(etag.len(), 18, "{etag}");
+    assert!(etag.starts_with('"') && etag.ends_with('"'), "{etag}");
+    assert!(etag[1..17].chars().all(|c| c.is_ascii_hexdigit()), "{etag}");
+
+    // Per asset: a different file has a different tag.
+    let css = app
+        .clone()
+        .oneshot(get("/static/css/app.css"))
+        .await
+        .unwrap();
+    let css_etag = css
+        .headers()
+        .get("etag")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(css_etag, etag, "each asset is tagged by its own bytes");
+
+    // Stable across requests (it is a hash, not a timestamp).
+    let again = app
+        .clone()
+        .oneshot(get("/static/js/main.js"))
+        .await
+        .unwrap();
+    assert_eq!(again.headers().get("etag").unwrap().to_str().unwrap(), etag);
+
+    // Conditional GET with the real tag → 304 and no body …
+    let hit = Request::builder()
+        .uri("/static/js/main.js")
+        .header("if-none-match", &etag)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(hit).await.unwrap();
+    assert_eq!(resp.status(), 304);
+
+    // … but a browser still holding the pre-fix version tag is served the
+    // bytes: this is the exact request that used to be answered 304 forever.
+    let stale = Request::builder()
+        .uri("/static/js/main.js")
+        .header("if-none-match", &version_tag)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(stale).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "an old version-based tag must not validate against new bytes"
+    );
+    assert!(!body_text(resp).await.is_empty());
 }

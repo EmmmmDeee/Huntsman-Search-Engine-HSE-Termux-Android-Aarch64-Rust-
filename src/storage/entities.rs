@@ -222,7 +222,30 @@ impl super::Store {
                 stmt.query_row(params![entity.uid], |r| Ok((r.get(0)?, r.get(1)?)))?;
             let mut merged = serde_json::from_str::<Entity>(&existing_json)?;
             let old_value = merged.value.clone();
+            // `Entity::absorb` SUMS `corroboration`. That is right when two
+            // DISTINCT observations of one uid meet (a second scan, or two
+            // modules' emissions merged in memory) and wrong when the engine
+            // re-persists the SAME accumulated working-set entity — which it
+            // does several times per scan (the seed-round checkpoint, every
+            // productive round's dirty set, the finalise persist, the
+            // promotion-pass re-persist). Each pass added the entity's whole
+            // magnitude to the row again: a seed observed exactly once reached
+            // disk with corroboration 4. If THIS scan has already recorded an
+            // observation of this uid, the incoming entity is the accumulated
+            // superset of what the scan wrote before, so the honest merge of
+            // the magnitude is GREATEST (idempotent), not SUM. A conflict with
+            // no observation row for this scan is a genuinely separate
+            // observation and keeps summing.
+            let already_observed_by_this_scan = tx
+                .prepare_cached(
+                    "SELECT 1 FROM entity_observations WHERE entity_uid = ?1 AND scan_id = ?2",
+                )?
+                .exists(params![entity.uid, entity.scan_id])?;
+            let (stored_corr, incoming_corr) = (merged.corroboration, entity.corroboration);
             merged.merge(entity.clone());
+            if already_observed_by_this_scan {
+                merged.corroboration = stored_corr.max(incoming_corr).max(1);
+            }
             // `merge`'s evidence/tag Vecs are appended in whatever order the two
             // sides happened to be in (see `Entity::absorb`) — that order depends
             // on which of the two same-uid entities reached storage first, so

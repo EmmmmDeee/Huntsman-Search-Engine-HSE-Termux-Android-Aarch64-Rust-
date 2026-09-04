@@ -148,9 +148,10 @@ fn play_store_termux_is_detected_and_rejected_before_any_package_work() {
 const WAKE_LOCK_WRAPPERS: &[&str] = &["WRAPPER", "WATCH", "BOOT"];
 
 /// The long-lived programs that must actively MANAGE the shared lock. The
-/// Termux:Boot script is deliberately absent: it only launches the two below,
+/// Termux:Boot script is deliberately absent: it only launches the others,
 /// each of which registers itself, so a lock of its own would be an unowned
-/// holder nothing ever releases.
+/// these lists were first written and unguarded until
+/// `every_wake_lock_touching_heredoc_is_guarded` started deriving the set.
 const WAKE_LOCK_MANAGERS: &[&str] = &["WRAPPER", "WATCH"];
 
 #[test]
@@ -291,5 +292,188 @@ fn generated_wrappers_do_not_hardcode_the_termux_prefix() {
         "generated wrapper(s) hardcode `/data/data/com.termux`, which breaks Termux \
          forks and non-default prefixes — emit the resolved $PREFIX instead:\n  {}",
         offenders.join("\n  ")
+    );
+}
+
+/// The lists above are hand-maintained; this derives the set from install.sh
+/// itself so a new generated program that touches the shared wake-lock (the
+/// cannot ship without joining the guards.
+#[test]
+fn every_wake_lock_touching_heredoc_is_guarded() {
+    let script = install_sh();
+    let mut tags: Vec<String> = script
+        .lines()
+        .filter_map(|l| {
+            let i = l.find("<<'")?;
+            let rest = &l[i + 3..];
+            let end = rest.find('\'')?;
+            Some(rest[..end].to_string())
+        })
+        .collect();
+    tags.sort();
+    tags.dedup();
+    assert!(
+        tags.len() >= 5,
+        "expected install.sh's generated-program heredocs, saw {tags:?}"
+    );
+    let mut unguarded = Vec::new();
+    for tag in &tags {
+        if tag == "WAKELOCK" {
+            continue; // the refcounted helper's own definition
+        }
+        let body = heredoc(&script, tag);
+        let touches = body
+            .lines()
+            .filter(|l| !is_comment(l))
+            .any(|l| l.contains("hse_wakelock_") || l.contains("termux-wake-"));
+        if touches && !WAKE_LOCK_WRAPPERS.contains(&tag.as_str()) {
+            unguarded.push(tag.clone());
+        }
+    }
+    assert!(
+        unguarded.is_empty(),
+        "install.sh heredoc(s) touch the shared wake-lock but are not in \
+         WAKE_LOCK_WRAPPERS (and, if long-running, WAKE_LOCK_MANAGERS): {unguarded:?}"
+    );
+}
+
+/// `df -m` is not portable to the target platform, and using it kills the
+/// installer outright.
+///
+/// Observed on a real Termux aarch64 device: an install whose every step
+/// succeeded — binary written, revision verified, wrappers installed, keys
+/// provisioned, `hse doctor` run — ended in `Installation failed (exit 1)`, and
+/// `hse update` reported `error: installer exited 1`. The cause was a single
+/// `df -Pm` in the OPTIONAL local-AI step. Termux's toybox `df` has no `-m`, so
+/// it exits 1; `2>/dev/null` hides the diagnostic; `set -o pipefail` promotes it
+/// to a failed pipeline; a bare assignment inherits that status; and `set -e`
+/// kills the shell before any of that function's `return 0` guards can run.
+///
+/// The installer had already learned this once — its preflight disk check
+/// carries a comment saying toybox "does NOT implement `-m`" and uses `-Pk`
+/// with an `NF >= 4` guard and a `|| true`. This pins that lesson so the
+/// portable form cannot silently regress at a second call site.
+#[test]
+fn no_df_invocation_uses_the_non_portable_megabyte_flag() {
+    let script = install_sh();
+    // Find `df` as a COMMAND word, then read the option bundle after it.
+    //
+    // The command word is rarely the bare token `df`: in this script the real
+    // call site reads `avail=$(df -Pk ...`, so the token is `avail=$(df`. An
+    // earlier version of this check compared tokens against `"df"` and so
+    // passed happily on a file that still contained `df -Pm` — a lock that
+    // locked nothing. Match on the boundary character before `df` instead.
+    fn df_options(line: &str) -> Vec<&str> {
+        let mut out = Vec::new();
+        for (i, _) in line.match_indices("df") {
+            let before_ok = line[..i]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.');
+            let rest = &line[i + 2..];
+            // A command word is followed by whitespace, and `df` must not be a
+            // suffix of a longer word (`pdf`, `dfu`) nor a path component.
+            if !before_ok || !rest.starts_with(char::is_whitespace) {
+                continue;
+            }
+            out.extend(
+                rest.split_whitespace()
+                    .take_while(|w| w.starts_with('-'))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        out
+    }
+    let offenders: Vec<String> = script
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| !is_comment(l))
+        // A `df` call whose option bundle carries `m`: `-m`, `-Pm`, `-hm`, …
+        .filter(|(_, l)| df_options(l).iter().any(|w| w.contains('m')))
+        .map(|(n, l)| format!("install.sh:{}: {}", n + 1, l.trim()))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "toybox `df` (Termux) has no `-m`, and under `set -euo pipefail` that \
+         exits the whole installer — use the `df -Pk` + `NF >= 4` + `|| true` \
+         form the preflight check already established: {offenders:?}"
+    );
+}
+
+/// Revision resolution runs before git is installed, so it must not need git.
+///
+/// Observed on a fresh Termux device: `git unavailable — cannot resolve the
+/// target revision`, then a sha256-verified prebuilt rejected, then a full
+/// on-device Rust build — the one outcome the prebuilt path exists to avoid.
+/// The cause is ordering: `resolve_target_sha` runs at the top of the script
+/// while the `pkg install` that provides git is ~20 lines further down, so on a
+/// first install `git ls-remote` could never succeed.
+///
+/// Moving the package install earlier would be the wrong fix — it forces the
+/// whole toolchain on someone a prebuilt would have served. So the resolver
+/// gained a curl-based GitHub API path, and this pins both halves of the
+/// invariant: the ordering that makes git unavailable, and the git-free
+/// fallback that copes with it.
+#[test]
+fn revision_resolution_does_not_depend_on_a_package_installed_later() {
+    let script = install_sh();
+    let line_of = |needle: &str| {
+        script
+            .lines()
+            .position(|l| l.contains(needle) && !is_comment(l))
+            .unwrap_or_else(|| panic!("install.sh no longer contains `{needle}`"))
+    };
+    let resolve_at = line_of("resolve_target_sha || true");
+    let git_installed_at = line_of("Installing Termux packages");
+    assert!(
+        resolve_at < git_installed_at,
+        "sanity: this guard exists because resolution (line {}) precedes the \
+         package install that provides git (line {})",
+        resolve_at + 1,
+        git_installed_at + 1
+    );
+
+    // Therefore the resolver must have a path that works without git.
+    assert!(
+        script.contains("_sha_via_github_api"),
+        "resolve_target_sha runs before git exists, so it needs a git-free \
+         fallback — otherwise every first install rejects its prebuilt and pays \
+         for a full source build"
+    );
+    let api_fn = script
+        .split_once("_sha_via_github_api() {")
+        .expect("the fallback must be a real function")
+        .1;
+    assert!(
+        api_fn.contains("api.github.com"),
+        "the git-free fallback must actually resolve the ref remotely"
+    );
+}
+
+/// Never claim a revision MISMATCH when the revision was never resolved.
+///
+/// The device transcript said `built from a different commit than main` on a run
+/// whose previous line was `cannot resolve the target revision` — asserting the
+/// result of a comparison that never happened. Same class as `hse doctor`
+/// reporting "no failure streak" from a tracker it never populated.
+#[test]
+fn a_prebuilt_is_never_called_wrong_when_the_target_is_unknown() {
+    let script = install_sh();
+    // The LOG LINE, not the comment above it that quotes the same text — an
+    // earlier version of this check matched its own explanatory comment and
+    // passed regardless of the code.
+    let (n, _) = script
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("built from a different commit than") && !is_comment(l))
+        .expect("install.sh no longer emits the mismatch message");
+    // The claim must sit behind a check that the target is actually known.
+    let all: Vec<&str> = script.lines().collect();
+    let window = all[n.saturating_sub(6)..n].join("\n");
+    assert!(
+        window.contains("-n \"$TARGET_SHA\""),
+        "the mismatch message must sit behind a `[[ -n \"$TARGET_SHA\" ]]` guard: \
+         with no resolved target the honest statement is that it could not be \
+         checked, not that the binary is wrong"
     );
 }

@@ -170,6 +170,7 @@ mod tests {
             kind: EventKind::ModuleSkipped {
                 module: module.into(),
                 reason: "excluded".into(),
+                class: Some(crate::core::event::SkipClass::Scoped),
             },
         }
     }

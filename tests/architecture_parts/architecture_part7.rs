@@ -352,7 +352,12 @@ fn modules_do_not_collapse_a_non_2xx_into_an_empty_result() {
             let lines: Vec<&str> = scanned_src.lines().collect();
             for (i, line) in lines.iter().enumerate() {
                 let trimmed = line.trim();
-                if !(trimmed.starts_with("if !") && trimmed.contains("status().is_success()")) {
+                // Both guard shapes: the inline `if !resp.status().is_success()`
+                // AND the bound-variable `let status = resp.status();
+                // if !status.is_success()` — 17 in-tree guards used the second
+                // form and were never scanned, so a collapse written that way
+                // shipped green.
+                if !(trimmed.starts_with("if !") && trimmed.contains(".is_success()")) {
                     continue;
                 }
                 scanned += 1;
@@ -383,8 +388,10 @@ fn modules_do_not_collapse_a_non_2xx_into_an_empty_result() {
         }
     }
 
+    // 39 guards in-tree at the time both shapes were first scanned; a floor
+    // just below that keeps the test from passing vacuously if the scan breaks.
     assert!(
-        scanned >= 20,
+        scanned >= 35,
         "expected to scan the known `is_success()` guards; found only {scanned} — the \
          scan is broken and this test would pass vacuously"
     );
@@ -545,4 +552,213 @@ fn the_six_overridden_providers_have_their_expected_provider_descriptors() {
     assert!(hudsonrock.provenance_quality_prior > NEUTRAL_PRIOR);
     let comb = get("comb_search");
     assert!(comb.provenance_quality_prior < NEUTRAL_PRIOR);
+}
+
+/// One provider, one name. `see_know`'s transport/parse layer used to label
+/// its errors `seek_now` — a second name for a module the registry calls
+/// `see_know`. Beyond the mislabelled `[seek_now] …` event-log rows, the
+/// shareable-export redactor derives its brand list from the REGISTRY, so
+/// `[seek_now] HTTP 503` in an exported events log escaped redaction while
+/// `[see_know]` would have been masked. The registered name is one constant
+/// (`util::see_know::SRC`, re-exported by the module as its `SRC`), and no
+/// production source may spell the phantom one.
+#[test]
+fn see_know_errors_carry_the_registered_module_name_not_a_phantom_one() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    collect_rs_files(&root.join("src"), &mut files);
+    // Dedicated test files are `#[cfg(test)]` at their declaration site, so
+    // `production_source` cannot see the gate from inside them — skip them
+    // whole, the same rule `collect_bare_confidence` applies.
+    let is_test_file = |p: &Path| {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        name == "tests.rs"
+            || name.ends_with("_tests.rs")
+            || p.components().any(|c| c.as_os_str() == "tests")
+    };
+    // Raw source, not `production_source` (which blanks string literals —
+    // exactly where a label lives). The quoted form is what an error label,
+    // a client tag or a format string carries; prose in a doc comment names
+    // the phantom in backticks and is not a label.
+    let offenders: Vec<String> = files
+        .iter()
+        .filter(|p| !is_test_file(p))
+        .filter_map(|p| {
+            let src = fs::read_to_string(p).unwrap();
+            src.contains("\"seek_now")
+                .then(|| p.strip_prefix(root).unwrap().display().to_string())
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "the phantom provider name `seek_now` must not appear in production source — the \
+         registered name is `see_know` (`util::see_know::SRC`): {offenders:?}"
+    );
+    // The constant IS the registered name, so an error label and the module's
+    // `name()` (what the redactor derives its brand list from) cannot diverge.
+    let registry = huntsman_search_engine::modules::registry();
+    assert!(
+        registry
+            .iter()
+            .any(|m| m.name() == huntsman_search_engine::util::see_know::SRC),
+        "`util::see_know::SRC` must be a registered module name"
+    );
+}
+
+/// A transport failure while streaming a response body must never be mapped to
+/// an empty `ModuleResult`.
+///
+/// `read_body_capped` returns `None` ONLY on a transport error (hitting the cap
+/// returns `Some`, truncated), so `None => return Ok(ModuleResult::new())` is
+/// the fail-open shape that turns a connection reset into a NEGATIVE CLAIM
+/// about the subject — "holds no licence", "is not a registered practitioner",
+/// "has no legal records". An analyst acts on those. This is the contract's
+/// ABSENCE OF EASY EVIDENCE ≠ ABSENCE OF A NEXUS at the transport layer, and
+/// the class this codebase has now fixed in acma_rrl, ahpra, asic_director,
+/// au_electoral, au_property and app_links.
+///
+/// `util::http::read_body_capped_or_fail` is the shared fail-closed helper; a
+/// module that genuinely wants the permissive read (a best-effort enrichment
+/// where an empty answer asserts nothing about the subject) may still call
+/// `read_body_capped` — it just may not pair it with an immediate empty-Ok
+/// return.
+#[test]
+fn a_module_never_claims_another_providers_corpus_as_its_own_source() {
+    // SOURCE COUNT != SOURCE INDEPENDENCE, at the point where a source name is
+    // chosen. Several modules retrieve from a corpus that another registered
+    // module also serves — `cell_intel` geolocates towers through OpenCelliD,
+    // `wifi_intel` resolves BSSIDs through WiGLE, both with that provider's own
+    // credentials. When such a module stamps its OWN name on what comes back,
+    // and the standalone provider module later returns the same record, the two
+    // entities merge and carry two distinct corroborating sources for one row
+    // from one corpus. `Entity::source_count` feeds `c_effective`, so the same
+    // record retrieved twice buys a confidence boost it never earned.
+    //
+    // The tell is self-declared and precise: the evidence names the foreign
+    // corpus in a `source` attribute while being attributed to the module that
+    // fetched it. Both known instances did exactly that, and this fails on the
+    // next one rather than waiting for someone to read the module again.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    collect_rs_files(&root.join("src").join("modules"), &mut files);
+    let is_test_file = |p: &Path| {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        name == "tests.rs"
+            || name.ends_with("_tests.rs")
+            || p.components().any(|c| c.as_os_str() == "tests")
+    };
+    // Registered module names, lowercased and stripped of separators, so a
+    // `source` attribute spelled "OpenCelliD" matches the `opencellid` module.
+    let squash = |s: &str| -> String {
+        s.chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect::<String>()
+            .to_ascii_lowercase()
+    };
+    let registered: std::collections::HashSet<String> =
+        huntsman_search_engine::modules::registry()
+            .iter()
+            .map(|m| squash(m.name()))
+            .collect();
+
+    let mut offenders: Vec<String> = Vec::new();
+    for path in files.iter().filter(|p| !is_test_file(p)) {
+        // The module this file belongs to, from its directory (or file stem for
+        // a single-file module) — what its own `SRC`/`SOURCE` constant spells.
+        let own = squash(
+            path.parent()
+                .filter(|d| d.file_name().and_then(|n| n.to_str()) != Some("modules"))
+                .and_then(|d| d.file_name())
+                .or_else(|| path.file_stem())
+                .and_then(|n| n.to_str())
+                .unwrap_or(""),
+        );
+        let src = fs::read_to_string(path).unwrap();
+        let flat: String = src.split_whitespace().collect::<Vec<_>>().join(" ");
+        let needle = "with_attr(\"source\", \"";
+        let mut from = 0usize;
+        while let Some(hit) = flat[from..].find(needle) {
+            let start = from + hit + needle.len();
+            from = start;
+            let Some(end) = flat[start..].find('"') else {
+                break;
+            };
+            let declared = squash(&flat[start..start + end]);
+            // Only a value naming ANOTHER registered module matters: "OpenCelliD"
+            // does, "mcc-centroid" (this module's own offline derivation) does
+            // not, and neither does a module naming itself.
+            if declared == own || !registered.contains(&declared) {
+                continue;
+            }
+            // Walk back to the `Evidence::new(` this attribute hangs off and
+            // read the source argument it was given.
+            let Some(ev) = flat[..start].rfind("Evidence::new(") else {
+                continue;
+            };
+            let arg = &flat[ev + "Evidence::new(".len()..start];
+            // Attributed correctly when it names the foreign module's own SRC
+            // (`crate::modules::<name>::SRC`) or spells the provider literally.
+            let attributed = arg.contains(&format!("modules :: {declared} :: SRC"))
+                || arg.contains(&format!("modules::{declared}::SRC"))
+                || arg.contains(&format!("\"{declared}\""));
+            if !attributed {
+                offenders.push(format!(
+                    "{} claims `{}`'s corpus under its own source name",
+                    path.strip_prefix(root).unwrap().display(),
+                    declared
+                ));
+            }
+        }
+    }
+    offenders.sort();
+    offenders.dedup();
+    assert!(
+        offenders.is_empty(),
+        "evidence derived from another provider's corpus must carry THAT provider's \
+         source name, or one record retrieved twice counts as two independent \
+         sources: {offenders:?}"
+    );
+}
+
+#[test]
+fn no_module_maps_an_unreadable_body_to_an_empty_result() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    collect_rs_files(&root.join("src").join("modules"), &mut files);
+    let is_test_file = |p: &Path| {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        name == "tests.rs"
+            || name.ends_with("_tests.rs")
+            || p.components().any(|c| c.as_os_str() == "tests")
+    };
+    // The fail-open shape, tolerant of rustfmt's line breaking: a
+    // `read_body_capped` call whose `None` arm returns an empty ModuleResult.
+    let offenders: Vec<String> = files
+        .iter()
+        .filter(|p| !is_test_file(p))
+        .filter_map(|p| {
+            let src = fs::read_to_string(p).unwrap();
+            let flat: String = src.split_whitespace().collect::<Vec<_>>().join(" ");
+            let mut from = 0usize;
+            while let Some(hit) = flat[from..].find("read_body_capped(") {
+                let start = from + hit;
+                // Look only at the ~200 chars following the call — far enough to
+                // cover the match/let-else that consumes it, short enough not to
+                // catch an unrelated empty-Ok later in the function.
+                let window = &flat[start..flat.len().min(start + 200)];
+                if window.contains("None => return Ok(ModuleResult::new())")
+                    || window.contains("else { return Ok(ModuleResult::new()) }")
+                {
+                    return Some(p.strip_prefix(root).unwrap().display().to_string());
+                }
+                from = start + "read_body_capped(".len();
+            }
+            None
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "a body-read transport failure must not read as a clean negative — use \
+         `util::http::read_body_capped_or_fail`: {offenders:?}"
+    );
 }

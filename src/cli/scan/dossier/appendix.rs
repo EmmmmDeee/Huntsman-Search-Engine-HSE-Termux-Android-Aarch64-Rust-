@@ -54,6 +54,29 @@ pub(super) fn tenure_headline(
     )
 }
 
+/// Print the associated-location caveat under a headline fix that did not
+/// observe the subject.
+///
+/// INFRASTRUCTURE LOCATION ≠ HUMAN LOCATION, and REGISTERED LOCATION ≠ PHYSICAL
+/// PRESENCE. A registered office, a breached postcode, an ISP allocation block
+/// and an area-code region are all real places, and every one of them can be
+/// right about the address while being wrong about where the person is. The
+/// dossier's headline geo line reads as "where the subject is" whether or not
+/// anything ever observed them there, so the distinction is printed rather than
+/// left for the reader to infer from the basis string.
+///
+/// Nothing is printed for a fix that DID observe the subject: the absence of a
+/// caveat is not a claim, so only the weaker case needs saying.
+fn print_association_caveat(locates_subject_directly: bool) {
+    if !locates_subject_directly {
+        println!(
+            "    NOTE: associated location — every contributing source records a place \
+             linked to the subject (registered, reported, or inferred), not an observation \
+             of the subject there."
+        );
+    }
+}
+
 /// Everything the collection/geo/lineage/hints appendices render, computed
 /// once up front.
 ///
@@ -123,6 +146,74 @@ impl Collection {
         }
     }
 
+    /// Which providers actually answered — and which the operator must not
+    /// read this dossier's silence as a negative from.
+    ///
+    /// A thin dossier is ambiguous without this: a scan that asked everything
+    /// and found little looks the same as one where a third of its sources
+    /// broke or were never configured, and only the first is evidence of
+    /// absence. Derived from this scan's own dispatch events by
+    /// [`crate::core::intelligence::provider_coverage_from_events`], the same
+    /// derivation `report.json` carries, so the on-device and over-the-wire
+    /// dossiers cannot disagree about what was covered.
+    fn print_coverage(&self) {
+        let rows = crate::core::intelligence::provider_coverage_from_events(&self.events);
+        if rows.is_empty() {
+            // Not "everything answered" — nothing is known about coverage.
+            println!("  Coverage: no dispatch events retained for this scan.");
+            return;
+        }
+        let verdict = crate::core::intelligence::coverage_verdict(&rows);
+        if verdict.is_exhaustive() {
+            println!(
+                "  Coverage: all {} provider(s) answered — a thin result here is a real negative.",
+                verdict.provider_count
+            );
+            println!();
+            return;
+        }
+        // The two axes are reported apart. An ordinary narrowed scan leaves
+        // dozens of providers out of scope, and folding those in with the ones
+        // that broke would make every dossier's coverage line read as alarming.
+        if verdict.all_available_providers_answered() {
+            println!(
+                "  Coverage: every available provider answered; {} of {} were out of scope for \
+                 this scan. Silence about what THOSE cover is not evidence of absence.",
+                verdict.out_of_scope_count, verdict.provider_count
+            );
+        } else {
+            println!(
+                "  Coverage: {} of {} provider(s) could not be used ({} more were out of scope). \
+                 This dossier's silence about what they cover is NOT evidence of absence:",
+                verdict.unavailable_count, verdict.provider_count, verdict.out_of_scope_count
+            );
+        }
+        // Only the unusable ones are listed: they are what the operator can act
+        // on, and an out-of-scope provider is already explained by the options.
+        let unavailable: Vec<&crate::core::intelligence::ProviderCoverage> = rows
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row.skip_class,
+                    Some(crate::core::event::SkipClass::Unavailable)
+                )
+            })
+            .collect();
+        const UNAVAILABLE_SHOWN: usize = 10;
+        for row in unavailable.iter().take(UNAVAILABLE_SHOWN) {
+            println!(
+                "    {:<14} {:<22} {}",
+                row.outcome.as_str(),
+                row.provider_id,
+                row.outcome.reason().unwrap_or("")
+            );
+        }
+        if let Some(note) = truncation_note(UNAVAILABLE_SHOWN, unavailable.len()) {
+            println!("{note}");
+        }
+        println!();
+    }
+
     /// What ran, what it cost, what it yielded, and which paid keys were
     /// wasted.
     pub(super) fn print_collection(&self) {
@@ -147,6 +238,8 @@ impl Collection {
         if let Some(note) = truncation_note(MODULES_SHOWN, self.diag.modules_by_yield.len()) {
             println!("{note}");
         }
+
+        self.print_coverage();
 
         let wasted =
             crate::util::diagnostics::keyed_or_paid_zero_yield_modules(&self.events, &self.costs);
@@ -196,6 +289,7 @@ impl Collection {
                 fix.class_names.join(", "),
                 fix.synergy_confidence
             );
+            print_association_caveat(fix.locates_subject_directly);
             println!();
         } else if let Some(est) = crate::core::correlator::best_au_location_estimate(entities) {
             // Single-signal fallback: the common scan has one location signal,
@@ -219,6 +313,7 @@ impl Collection {
                 "    basis: {} (confidence {:.2}) — single-signal fix",
                 est.basis, est.confidence
             );
+            print_association_caveat(est.locates_subject_directly);
             println!();
         }
 

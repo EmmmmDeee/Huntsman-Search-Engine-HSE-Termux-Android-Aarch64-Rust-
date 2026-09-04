@@ -212,3 +212,27 @@ use super::*;
         // A genuinely-absent scan still errors loudly.
         assert!(crate::app::runtime::resolve_scan_id(&store, "no-such-scan").is_err());
     }
+
+    #[test]
+    fn config_set_rejects_an_unknown_toggle_key_instead_of_persisting_it() {
+        // `hse config module.shodann off` used to print "○ off" and persist a
+        // key nothing reads — a silent no-op the operator took as "disabled".
+        // The same validator the web toggle endpoint uses now rejects it, and
+        // the command exits non-zero without touching settings.json.
+        let err = crate::cli::config::cmd_config(
+            Some("module.no_such_module_xyz".to_string()),
+            Some("off".to_string()),
+        )
+        .expect_err("an unknown toggle key must be an error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown toggle key") && msg.contains("module.no_such_module_xyz"),
+            "{msg}"
+        );
+        // An unset key resolves to the caller's default; had `off` been
+        // persisted, this would read back `false`.
+        assert!(
+            crate::util::settings::get_bool("module.no_such_module_xyz", true),
+            "nothing may have been persisted for the rejected key"
+        );
+    }

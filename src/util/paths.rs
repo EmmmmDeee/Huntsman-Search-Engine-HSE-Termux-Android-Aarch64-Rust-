@@ -40,6 +40,12 @@ use std::path::PathBuf;
 /// every call site agrees on one location, matching a real `$HOME`'s
 /// single-location semantics — and still ends in `.huntsman`, so this is
 /// invisible to callers and to this module's own path-shape tests below.
+///
+/// That `cfg(test)` switch covers the library's OWN unit tests only. An
+/// integration crate under `tests/` links the ordinary non-test build of the
+/// library, where `cfg!(test)` is `false` — so those crates use
+/// [`isolate_for_tests`] (via `tests/common`) to get the same redirection at
+/// runtime, without `unsafe` and without touching the process environment.
 #[must_use]
 pub fn huntsman_dir() -> PathBuf {
     let dir = huntsman_dir_path();
@@ -66,13 +72,58 @@ pub fn huntsman_dir() -> PathBuf {
 #[must_use]
 pub fn huntsman_dir_path() -> PathBuf {
     if cfg!(test) {
-        std::env::temp_dir()
+        return std::env::temp_dir()
             .join("huntsman-test-home")
-            .join(".huntsman")
-    } else {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        PathBuf::from(home).join(".huntsman")
+            .join(".huntsman");
     }
+    if let Some(dir) = TEST_BASE_DIR.get() {
+        return dir.clone();
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home).join(".huntsman")
+}
+
+/// Set once by [`isolate_for_tests`]; consulted by [`huntsman_dir_path`], the
+/// single computation every accessor in this module derives from.
+static TEST_BASE_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Route **every** accessor in this module at an isolated, per-process
+/// directory under the OS temp dir for the rest of the process, and return it.
+/// The integration-test harness's (`tests/common`) counterpart of the
+/// `cfg(test)` switch in [`huntsman_dir`].
+///
+/// Why it exists: `cfg!(test)` is `false` in the library as linked by a crate
+/// under `tests/`, so before this every `tests/api.rs` scan that completed
+/// wrote its synthetic `module_stats.json` into the developer's **real**
+/// `~/.huntsman` (observed: a real ledger carrying 102 fixture "seed" scans,
+/// feeding `hse scan --adaptive`), one test overwrote the real `settings.json`,
+/// and the smoke suite's key-chaining fixture banked a fake `shodan` key into
+/// the real `key_pool.json` — a labelled test fixture escaping the harness,
+/// exactly what RULE 1 forbids.
+///
+/// Why this shape: `std::env::set_var("HOME", …)` is `unsafe` and this crate
+/// is `#![forbid(unsafe_code)]`; a `OnceLock` is safe, needs no env mutation,
+/// and `get_or_init` blocks concurrent callers until the first has set it, so
+/// parallel test threads that all go through the harness see one location.
+/// Idempotent: the first call fixes the location for the process; later calls
+/// return the same path. Per-process (`huntsman-test-home-<pid>`) so the api,
+/// smoke and halting binaries `cargo test` runs concurrently never share a
+/// settings/ledger file.
+///
+/// This is deliberately **not** the env-var escape hatch [`data_file`]'s doc
+/// rules out: it changes only the base-path computation, so [`huntsman_dir`]'s
+/// `0700` creation still runs and [`data_file`]/[`subdir`] still derive from the
+/// one base. `production_code_never_redirects_the_data_dir`
+/// (tests/architecture_parts) pins that nothing under `src/` calls it.
+#[must_use]
+pub fn isolate_for_tests() -> PathBuf {
+    TEST_BASE_DIR
+        .get_or_init(|| {
+            std::env::temp_dir()
+                .join(format!("huntsman-test-home-{}", std::process::id()))
+                .join(".huntsman")
+        })
+        .clone()
 }
 
 /// `$HOME/.huntsman/<name>` — a file directly under the base data directory,
@@ -86,8 +137,9 @@ pub fn huntsman_dir_path() -> PathBuf {
 /// exists to close, see above). It would also desynchronise this accessor from
 /// [`subdir`]: `huntsman.db` would move while the `raw/` archive it indexes
 /// stayed behind. Tests get their isolation from the `cfg(test)` switch in
-/// [`huntsman_dir`] instead, which is compile-time and applies to every accessor
-/// uniformly.
+/// [`huntsman_dir`] (unit tests) or [`isolate_for_tests`] (integration crates)
+/// instead — both only move the base every accessor shares, so the `0700`
+/// creation and the single-base derivation hold uniformly.
 #[must_use]
 pub fn data_file(name: &str) -> PathBuf {
     huntsman_dir().join(name)

@@ -136,6 +136,7 @@ fn guarded() -> Router {
     let token = Arc::new(AuthToken::new(TOKEN.to_string()));
     Router::new()
         .route("/api/v1/scans", get(|| async { "scan list" }))
+        .route(HEALTH_PATH, get(|| async { "ok" }))
         .route("/", get(|| async { "spa" }))
         .layer(axum::middleware::from_fn(
             move |req: axum::extract::Request, next: axum::middleware::Next| {
@@ -146,6 +147,42 @@ fn guarded() -> Router {
 
 async fn send(req: axum::http::Request<Body>) -> axum::http::Response<Body> {
     guarded().oneshot(req).await.expect("router must respond")
+}
+
+#[tokio::test]
+async fn health_probe_is_exempt_from_the_gate_for_get_only() {
+    // A platform health check (railway.json → /api/v1/health) sends no
+    // credentials; the probe must answer 200 through the gate …
+    let resp = send(
+        axum::http::Request::builder()
+            .uri(HEALTH_PATH)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK, "GET health must bypass the gate");
+
+    // … but ONLY as a GET: any other verb on the same path is still gated, so
+    // the exemption cannot become a wedge for a mutating request.
+    let resp = send(
+        axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri(HEALTH_PATH)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // And a look-alike path is not the probe.
+    let resp = send(
+        axum::http::Request::builder()
+            .uri("/api/v1/health/../scans")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

@@ -1826,7 +1826,43 @@ pub(crate) fn build_scan_report(
         // `hosting`, which then merges `platform-infra` onto the seed anchor).
         entities.retain(|e| !e.has_tag(crate::core::tags::PLATFORM_INFRA) || e.has_tag("seed"));
     }
-    let correlations = store.correlations_for_scan(scan_id)?;
+    // Self-resolving document: every `correlations[].entity_uids` entry must
+    // name an entity present in this same envelope. The correlator runs over
+    // the full infra-inclusive set (only candidates are excluded), so under the
+    // default `include_infra=false` a finding on a platform-infra entity — a
+    // compromised hosting IP that AU-004 fires Critical on — referenced a UID
+    // the `entities` array no longer carried, and the report's highest-severity
+    // finding could not be explained from the document itself. Union the
+    // referenced infra entities back (they are part of a finding, so they are
+    // subject-relevant by definition); a correlation that references a hidden
+    // CANDIDATE is dropped instead — the quarantine wins over completeness.
+    // `entities_to_gexf` enforces the same both-endpoints-present invariant for
+    // relation edges.
+    let mut correlations = store.correlations_for_scan(scan_id)?;
+    {
+        let present: std::collections::HashSet<&str> =
+            entities.iter().map(|e| e.uid.as_str()).collect();
+        let mut missing: Vec<String> = correlations
+            .iter()
+            .flat_map(|c| c.entity_uids.iter())
+            .filter(|uid| !present.contains(uid.as_str()))
+            .cloned()
+            .collect();
+        missing.sort_unstable();
+        missing.dedup();
+        for uid in missing {
+            if let Some(e) = store.get_entity(&uid)? {
+                let hidden_candidate =
+                    !include_candidates && e.has_tag(crate::core::tags::CANDIDATE);
+                if !hidden_candidate {
+                    entities.push(e);
+                }
+            }
+        }
+        let present: std::collections::HashSet<&str> =
+            entities.iter().map(|e| e.uid.as_str()).collect();
+        correlations.retain(|c| c.entity_uids.iter().all(|u| present.contains(u.as_str())));
+    }
     let best_location = extract_au_location_fix(&correlations, &entities);
     // The calibrated 0–100 Exposure Index — the SAME headline verdict the CLI
     // `print_dossier` and the debug bundle both open with. This envelope is the
@@ -1838,6 +1874,32 @@ pub(crate) fn build_scan_report(
     // identical whether or not this envelope filtered candidates above, and the
     // determinism audit still holds (nothing here varies but `exported_at`).
     let exposure = crate::core::exposure::assess(&entities, &correlations);
+    // Provider coverage: what the engine actually managed to ask, derived from
+    // this scan's own dispatch events. Without it a MINIMAL report is
+    // ambiguous — a clean sweep that found nothing and a sweep where twelve
+    // providers never answered render identically, and only the first is
+    // evidence of absence. `null` when the scan has no retained module events
+    // (an old scan whose log has been pruned), because an EMPTY coverage list
+    // would read as "every provider answered", which is precisely the false
+    // clean negative this block exists to prevent.
+    let coverage =
+        crate::core::intelligence::provider_coverage_from_events(&store.events_for_scan(scan_id)?);
+    let provider_coverage = if coverage.is_empty() {
+        serde_json::Value::Null
+    } else {
+        let verdict = crate::core::intelligence::coverage_verdict(&coverage);
+        serde_json::json!({
+            // Two axes, never summed: what BROKE and what the scan's own
+            // options put out of reach. Mixing them makes every ordinary
+            // narrowed scan read as alarming, which buries the failures.
+            "all_available_providers_answered": verdict.all_available_providers_answered(),
+            "exhaustive": verdict.is_exhaustive(),
+            "unavailable_count": verdict.unavailable_count,
+            "out_of_scope_count": verdict.out_of_scope_count,
+            "provider_count": verdict.provider_count,
+            "providers": coverage,
+        })
+    };
     Ok(Some(serde_json::json!({
         "scan": scan,
         "entities": entities,
@@ -1849,6 +1911,10 @@ pub(crate) fn build_scan_report(
         // `null` when no AU-059 fired; present with full structured fields when
         // ≥2 orthogonal AU source classes converged on a location.
         "best_location": best_location,
+        // Which providers answered, which broke, and which were never asked —
+        // so a thin report can be read as a thin result rather than as a clean
+        // one. See the derivation above for the failure-dominant aggregation.
+        "provider_coverage": provider_coverage,
         // DETERMINISM: `exported_at` is the SOLE intentional source of
         // non-determinism in any export. It is meaningful here — report.json is a
         // point-in-time snapshot whose "when was this pulled" is part of its
@@ -1924,6 +1990,12 @@ pub(crate) fn extract_au_location_fix(
             "rank": c.rank,
             "source_count": synergy.count,
             "class_count": synergy.class_names.len(),
+            // INFRASTRUCTURE LOCATION != HUMAN LOCATION. False means every
+            // contributing sighting was a registered, reported or inferred
+            // place — real addresses that need not be where the person is —
+            // so a consumer plotting this pin knows what it does and does not
+            // assert about the subject's own position.
+            "locates_subject_directly": synergy.locates_subject_directly,
             "rule_id": "AU-059",
         })
     } else {
@@ -1942,6 +2014,9 @@ pub(crate) fn extract_au_location_fix(
                 "locality": est.locality,
                 "confidence": est.confidence,
                 "basis": est.basis,
+                // As above: whether this pin observed the SUBJECT or a place
+                // merely associated with them.
+                "locates_subject_directly": est.locates_subject_directly,
                 "source": "single-signal",
             }),
             None => serde_json::Value::Null,

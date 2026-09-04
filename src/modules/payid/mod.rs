@@ -64,6 +64,13 @@ impl Module for PayId {
         true
     }
 
+    /// Pure transform of data already in the graph — no observation of its
+    /// own, so its evidence never counts as a corroborating source (see
+    /// `Module::is_derivation` / `ENRICHMENT_ONLY_SOURCES`).
+    fn is_derivation(&self) -> bool {
+        true
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,

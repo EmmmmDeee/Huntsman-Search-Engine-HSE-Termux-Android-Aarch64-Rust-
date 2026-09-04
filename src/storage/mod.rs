@@ -99,19 +99,6 @@ const SCHEMA_DDL: &str = "
                 data_json   TEXT NOT NULL
             );
 
-            -- Opt-in AI-daemon analysis (`src/ai/`, `hse analyze` / `hse-ai-daemon`).
-            -- One row per scan (a re-run overwrites); an absent row means not
-            -- yet analysed, never a failed analysis attempt -- a failed
-            -- attempt is simply retried at the daemon's next poll rather than
-            -- latched here. See the Runtime AI-independence invariant in
-            -- src/lib.rs.
-            CREATE TABLE IF NOT EXISTS scan_analysis (
-                scan_id     TEXT PRIMARY KEY,
-                model       TEXT NOT NULL,
-                created_at  INTEGER NOT NULL,
-                data_json   TEXT NOT NULL
-            );
-
             CREATE INDEX IF NOT EXISTS idx_entities_scan ON entities(scan_id);
             CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind);
             CREATE INDEX IF NOT EXISTS idx_scans_started ON scans(started_at DESC);
@@ -221,8 +208,8 @@ const SCHEMA_DDL: &str = "
             -- that for a single connection's own sequential open) but so
             -- two connections racing to open this same file concurrently
             -- (expected under cfg(test), where every test shares one
-            -- store, and possible in production between hse and
-            -- hse-ai-daemon) can't have the loser's CREATE fail because
+            -- store, and possible in production between two hse
+            -- processes) can't have the loser's CREATE fail because
             -- the winner's DROP+CREATE ran in between the loser's own
             -- DROP and CREATE. Both sides run the same schema, so
             -- whichever wins defines an identical view.
@@ -565,12 +552,29 @@ impl Store {
     /// file — so under a long-lived process the file high-water-marks and
     /// stays there. This runs an explicit `TRUNCATE` checkpoint at a safe
     /// boundary (a completed scan), resetting the `-wal` to zero and bounding
-    /// its footprint. Best-effort: a busy checkpoint (a concurrent reader
-    /// holding the WAL) returns `SQLITE_BUSY`, which is surfaced as `Err` for
-    /// the caller to log and ignore — the next boundary will retry.
+    /// its footprint. Best-effort: a blocked checkpoint (a concurrent reader
+    /// still pinning WAL frames when the connection's busy timeout expires) is
+    /// surfaced as `Err` for the caller to log and ignore — the next boundary
+    /// will retry.
+    ///
+    /// The pragma never *raises* for a blocked checkpoint: it returns one row
+    /// `(busy, log, checkpointed)` with `busy = 1` and leaves the `-wal`
+    /// untouched. `execute_batch` discarded that row, so a blocked TRUNCATE
+    /// came back `Ok(())` and `hse tidy` / the finalise housekeeping reported a
+    /// truncation that never happened. Reading the row is what makes the
+    /// documented contract above true.
     pub fn checkpoint_truncate(&self) -> Result<()> {
         let conn = self.conn.lock();
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        let (busy, log_frames, checkpointed): (i64, i64, i64) =
+            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE);", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?;
+        if busy != 0 {
+            return Err(crate::core::error::Error::Other(format!(
+                "WAL checkpoint blocked by a concurrent reader ({checkpointed}/{log_frames} \
+                 frames checkpointed; -wal not truncated)"
+            )));
+        }
         Ok(())
     }
 
@@ -1002,14 +1006,6 @@ impl Store {
         )?;
         tx.execute("DELETE FROM events WHERE scan_id = ?1", params![scan_id])?;
         tx.execute("DELETE FROM relations WHERE scan_id = ?1", params![scan_id])?;
-        // AI-daemon analysis (`scan_analysis`) is scan-scoped like every table
-        // above; omitting it here would leave an orphaned analysis referencing a
-        // deleted scan_id on disk after `hse delete` — the exact PII-retention
-        // gap `delete_scan` exists to close.
-        tx.execute(
-            "DELETE FROM scan_analysis WHERE scan_id = ?1",
-            params![scan_id],
-        )?;
         // `stealer_rows` is scan-scoped like every table above and holds the most
         // sensitive payload in the store — stolen login/password pairs. It has no
         // other prune path, so omitting it here left a deleted scan's credentials
@@ -1073,71 +1069,37 @@ impl Store {
         Ok(true)
     }
 
-    // ── AI-daemon scan analysis (see `src/ai/`, `core::port::StoragePort`) ──
-
-    /// Persist (or overwrite) the AI-daemon's analysis for one scan.
-    pub fn upsert_scan_analysis(
-        &self,
-        analysis: &crate::core::scan_analysis::ScanAnalysis,
-    ) -> Result<()> {
-        let json = serde_json::to_string(analysis)?;
-        let conn = self.conn.lock();
-        conn.prepare_cached(
-            "INSERT INTO scan_analysis(scan_id, model, created_at, data_json)
-             VALUES(?1, ?2, ?3, ?4)
-             ON CONFLICT(scan_id) DO UPDATE SET
-               model      = excluded.model,
-               created_at = excluded.created_at,
-               data_json  = excluded.data_json",
-        )?
-        .execute(params![
-            analysis.scan_id,
-            analysis.model,
-            analysis.created_at as i64,
-            json,
-        ])?;
-        Ok(())
-    }
-
-    /// The persisted AI-daemon analysis for one scan, if any.
-    pub fn get_scan_analysis(
-        &self,
-        scan_id: &str,
-    ) -> Result<Option<crate::core::scan_analysis::ScanAnalysis>> {
-        self.query_one_json(
-            "SELECT data_json FROM scan_analysis WHERE scan_id = ?1",
-            params![scan_id],
-        )
-    }
-
-    /// Terminal (`complete`/`aborted`) scans with no persisted analysis yet,
-    /// oldest-first, bounded to `limit` — the AI daemon's poll query. A plain
-    /// `NOT IN (SELECT scan_id FROM scan_analysis)` anti-join, cheap at this
-    /// table's scale (one row per analysed scan) and avoids deserialising any
-    /// `data_json` just to get an id.
-    pub fn scans_pending_analysis(&self, limit: usize) -> Result<Vec<String>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare_cached(
-            "SELECT id FROM scans
-             WHERE status IN ('complete', 'aborted')
-               AND id NOT IN (SELECT scan_id FROM scan_analysis)
-             ORDER BY started_at ASC, id ASC
-             LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
-        Ok(collect_rows(rows, "scans_pending_analysis"))
-    }
-
     /// Prune events older than `max_age_secs` and limit total rows to
     /// `max_rows`. Prevents unbounded database growth from long-running
-    /// or repeated scans. Called automatically at startup.
+    /// or repeated scans. Called automatically at startup, by `hse tidy`, and
+    /// at every scan's finalise housekeeping.
+    ///
+    /// Events of a scan that is still `pending`/`running` and started within
+    /// the retention window are exempt from both cuts. Under a long-lived
+    /// `hse serve`, one scan's finalise-time prune cut the OLDEST rows
+    /// globally, and once more than `max_rows` newer rows existed (another
+    /// large scan, or the running scan's own volume) those were the running
+    /// scan's own beginning — its `ScanStart` / early `ModuleDone` rows, which
+    /// `events_for_scan` feeds to the export's module tally, the diagnostics
+    /// view and the events log — for a scan that had not finished. A
+    /// `running` row older than the window (left behind by a killed process)
+    /// is not exempt, so a zombie cannot make its events immortal.
     pub fn prune_events(&self, max_age_secs: u64, max_rows: usize) -> Result<usize> {
         let conn = self.conn.lock();
         let cutoff = crate::core::entity::unix_now().saturating_sub(max_age_secs);
-        let aged = conn.execute("DELETE FROM events WHERE ts < ?1", params![cutoff as i64])?;
+        let aged = conn.execute(
+            "DELETE FROM events
+             WHERE ts < ?1
+               AND scan_id NOT IN (SELECT id FROM scans
+                                   WHERE status IN ('pending', 'running') AND started_at >= ?1)",
+            params![cutoff as i64],
+        )?;
         let excess = conn.execute(
-            "DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT ?1)",
-            params![max_rows as i64],
+            "DELETE FROM events
+             WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT ?1)
+               AND scan_id NOT IN (SELECT id FROM scans
+                                   WHERE status IN ('pending', 'running') AND started_at >= ?2)",
+            params![max_rows as i64, cutoff as i64],
         )?;
         let total = aged + excess;
         if total > 0 {
@@ -1271,24 +1233,6 @@ impl crate::core::port::StoragePort for Store {
 
     fn delete_scan(&self, scan_id: &str) -> Result<bool> {
         Store::delete_scan(self, scan_id)
-    }
-
-    fn upsert_scan_analysis(
-        &self,
-        analysis: &crate::core::scan_analysis::ScanAnalysis,
-    ) -> Result<()> {
-        Store::upsert_scan_analysis(self, analysis)
-    }
-
-    fn get_scan_analysis(
-        &self,
-        scan_id: &str,
-    ) -> Result<Option<crate::core::scan_analysis::ScanAnalysis>> {
-        Store::get_scan_analysis(self, scan_id)
-    }
-
-    fn scans_pending_analysis(&self, limit: usize) -> Result<Vec<String>> {
-        Store::scans_pending_analysis(self, limit)
     }
 
     fn upsert_entity(&self, entity: &Entity) -> Result<()> {

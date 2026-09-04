@@ -466,7 +466,9 @@ pub enum CreditsProbe {
     },
     /// A classified auth/plan rejection (`invalid_api_key` / `plan_required`).
     /// [`mark_key_invalid`] has been latched.
-    InvalidKey,
+    /// The key was rejected; carries the cause so the caller reports the
+    /// same remedy the latch warns with (`KeyRejection::guidance`).
+    InvalidKey(super::budget::KeyRejection),
     /// The API host could not be reached at all — DNS resolution, connection,
     /// or timeout failure. Carries curl's own one-line diagnostic (e.g.
     /// `curl exited 6: curl: (6) Could not resolve host: see-know.eu`) so the
@@ -516,10 +518,7 @@ pub(super) fn classify_credits_probe(result: std::result::Result<String, String>
             remaining,
             daily_limit,
         },
-        CreditsOutcome::AuthError => {
-            mark_key_invalid(&body);
-            CreditsProbe::InvalidKey
-        }
+        CreditsOutcome::AuthError => CreditsProbe::InvalidKey(mark_key_invalid(&body)),
         CreditsOutcome::Unparseable => CreditsProbe::Unparseable,
     }
 }

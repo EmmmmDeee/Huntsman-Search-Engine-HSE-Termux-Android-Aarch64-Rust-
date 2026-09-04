@@ -486,12 +486,19 @@ impl ScanEngine {
 
     /// Emit a `ModuleSkipped` event — the gate-rejection path shared by
     /// `run_expansion` and both dispatchers (cancel/quota/cost-dedup/skip-rule).
-    fn emit_skipped(&self, scan_id: &str, module: &str, reason: &str) {
+    fn emit_skipped(
+        &self,
+        scan_id: &str,
+        module: &str,
+        reason: &str,
+        class: crate::core::event::SkipClass,
+    ) {
         self.emit(
             scan_id,
             EventKind::ModuleSkipped {
                 module: module.into(),
                 reason: reason.into(),
+                class: Some(class),
             },
         );
     }
@@ -2939,6 +2946,13 @@ pub(crate) use health::ModuleHealth;
 #[must_use]
 pub(crate) fn module_health_report() -> Vec<ModuleHealth> {
     health::unhealthy_modules()
+}
+
+/// How many modules this process has recorded a dispatch outcome for — `0` when
+/// none have run. See [`health::modules_observed`] for why the distinction
+/// matters to `hse doctor`.
+pub(crate) fn module_health_observed() -> usize {
+    health::modules_observed()
 }
 
 /// Rank recalled entities strongest-first and cap to `max` (`recall_prior_entities`'s

@@ -497,6 +497,7 @@ fn event_log_renders_a_readable_aligned_timeline() {
             EventKind::ModuleSkipped {
                 module: "psbdmp".into(),
                 reason: "capability-quarantined".into(),
+                class: Some(crate::core::event::SkipClass::Unavailable),
             },
         ),
         Event::new(
@@ -1539,6 +1540,7 @@ fn render_full_shows_the_live_event_tally_while_a_scan_is_still_running() {
             EventKind::ModuleSkipped {
                 module: "shodan".into(),
                 reason: "needs API key".into(),
+                class: Some(crate::core::event::SkipClass::Unavailable),
             },
         ))
         .expect("module_skipped should persist");
@@ -1644,6 +1646,89 @@ fn provenance_names_the_modules_when_no_provider_attributes_exist() {
 // ── build_scan_report ───────────────────────────────────────────────────
 
 #[test]
+fn report_distinguishes_a_clean_sweep_from_one_nobody_answered() {
+    // A thin report is ambiguous without this: a scan that asked everything and
+    // found nothing renders identically to one where every provider broke, and
+    // only the first is evidence of absence.
+    use crate::core::event::{Event, EventKind};
+    use crate::core::scan::{Scan, Target, TargetKind};
+    let dir = tempfile::tempdir().expect("should succeed");
+    let db = dir.path().join("coverage.db");
+    let store =
+        crate::storage::Store::open(db.to_str().expect("should succeed")).expect("should succeed");
+    let sid = "coverage-scan";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .expect("should succeed");
+    let port = &store as &dyn crate::core::port::StoragePort;
+
+    // No retained events: NULL, never an empty list that would read as
+    // "every provider answered".
+    let bare = build_scan_report(port, sid, false, false)
+        .expect("should succeed")
+        .expect("should succeed");
+    assert!(
+        bare["provider_coverage"].is_null(),
+        "an unknown coverage must not render as a complete one: {}",
+        bare["provider_coverage"]
+    );
+
+    for kind in [
+        EventKind::ModuleDone {
+            module: "asked_and_answered".to_string(),
+            found: 0,
+        },
+        EventKind::ModuleError {
+            module: "broke".to_string(),
+            error: "upstream 502".to_string(),
+        },
+    ] {
+        store
+            .insert_event(&Event::new(sid, kind))
+            .expect("should succeed");
+    }
+
+    let report = build_scan_report(port, sid, false, false)
+        .expect("should succeed")
+        .expect("should succeed");
+    let coverage = &report["provider_coverage"];
+    assert_eq!(
+        coverage["all_available_providers_answered"].as_bool(),
+        Some(false),
+        "a provider that broke is a fault, reported as one"
+    );
+    assert_eq!(coverage["exhaustive"].as_bool(), Some(false));
+    assert_eq!(coverage["unavailable_count"].as_u64(), Some(1));
+    assert_eq!(
+        coverage["out_of_scope_count"].as_u64(),
+        Some(0),
+        "nothing here was narrowed out; the two axes are never summed"
+    );
+    let providers = coverage["providers"]
+        .as_array()
+        .expect("provider rows are a list");
+    assert_eq!(providers.len(), 2);
+    assert_eq!(
+        providers[0]["provider_id"].as_str(),
+        Some("asked_and_answered")
+    );
+    assert_eq!(
+        providers[0]["outcome"]["kind"].as_str(),
+        Some("clean_negative")
+    );
+    assert_eq!(providers[1]["provider_id"].as_str(), Some("broke"));
+    assert_eq!(providers[1]["outcome"]["kind"].as_str(), Some("failed"));
+    assert_eq!(
+        providers[1]["outcome"]["reason"].as_str(),
+        Some("upstream 502"),
+        "the operator is told what to re-run and why"
+    );
+}
+
+#[test]
 fn report_hides_candidates_by_default_and_includes_on_request() {
     use crate::core::entity::{Entity, EntityKind};
     use crate::core::scan::{Scan, Target, TargetKind};
@@ -1741,6 +1826,105 @@ fn report_hides_platform_infra_by_default_and_includes_on_request() {
         Some(2),
         "include_infra=true returns the infra entity"
     );
+}
+
+#[test]
+fn report_correlations_always_resolve_against_its_own_entities() {
+    // The correlator runs over the infra-inclusive set, so a Critical finding
+    // on a platform-infra entity (AU-004 on a compromised hosting IP) used to
+    // reference a UID the default (`include_infra=false`) envelope had
+    // filtered out of `entities` — the report's top finding was unexplainable
+    // from the document itself. Referenced infra entities are unioned back; a
+    // finding on a hidden CANDIDATE is dropped (quarantine wins).
+    use crate::core::correlator::{Correlation, Severity};
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::scan::{Scan, Target, TargetKind};
+    let dir = tempfile::tempdir().expect("should succeed");
+    let db = dir.path().join("resolve.db");
+    let store =
+        crate::storage::Store::open(db.to_str().expect("should succeed")).expect("should succeed");
+    let sid = "resolve-scan";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::Username, "testuser"),
+        ))
+        .expect("should succeed");
+    store
+        .upsert_entity(&Entity::new(EntityKind::Email, "me@real.com", 0.85, sid))
+        .expect("should succeed");
+    let mut infra = Entity::new(EntityKind::IpAddress, "203.0.113.9", 0.7, sid);
+    infra.tag("platform-infra");
+    infra.tag("malicious");
+    store.upsert_entity(&infra).expect("should succeed");
+    let mut candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.4, sid);
+    candidate.tag(crate::core::tags::CANDIDATE);
+    store.upsert_entity(&candidate).expect("should succeed");
+    store
+        .upsert_correlation(&Correlation::new(
+            "AU-004",
+            "Malicious infrastructure",
+            Severity::Critical,
+            "compromised hosting IP".into(),
+            vec![infra.uid.clone()],
+            sid,
+            0,
+        ))
+        .expect("should succeed");
+    store
+        .upsert_correlation(&Correlation::new(
+            "AU-999",
+            "Finding on a quarantined row",
+            Severity::Low,
+            "must not surface by default".into(),
+            vec![candidate.uid.clone()],
+            sid,
+            0,
+        ))
+        .expect("should succeed");
+
+    let port = &store as &dyn crate::core::port::StoragePort;
+    let check = |report: &serde_json::Value, label: &str| {
+        let uids: std::collections::HashSet<String> = report["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["uid"].as_str().unwrap().to_string())
+            .collect();
+        for c in report["correlations"].as_array().unwrap() {
+            for u in c["entity_uids"].as_array().unwrap() {
+                assert!(
+                    uids.contains(u.as_str().unwrap()),
+                    "{label}: correlation {} references a UID absent from entities",
+                    c["rule_id"]
+                );
+            }
+        }
+    };
+    let default = build_scan_report(port, sid, false, false)
+        .expect("should succeed")
+        .expect("should succeed");
+    check(&default, "default");
+    let rules: Vec<&str> = default["correlations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["rule_id"].as_str().unwrap())
+        .collect();
+    assert!(
+        rules.contains(&"AU-004"),
+        "the Critical infra finding is kept, with its entity restored: {rules:?}"
+    );
+    assert!(
+        !rules.contains(&"AU-999"),
+        "a finding on a hidden candidate is dropped: {rules:?}"
+    );
+    assert_eq!(default["correlation_count"].as_u64(), Some(1));
+    let full = build_scan_report(port, sid, true, true)
+        .expect("should succeed")
+        .expect("should succeed");
+    check(&full, "include_candidates+include_infra");
+    assert_eq!(full["correlation_count"].as_u64(), Some(2));
 }
 
 #[test]

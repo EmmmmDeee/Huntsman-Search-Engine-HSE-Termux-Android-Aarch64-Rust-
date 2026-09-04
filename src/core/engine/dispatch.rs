@@ -17,7 +17,7 @@ use tracing::{Instrument, debug, warn};
 use super::{DispatchLog, ModuleStats};
 use crate::core::entity::{Entity, normalise};
 use crate::core::error::{Error, Result};
-use crate::core::event::EventKind;
+use crate::core::event::{EventKind, SkipClass};
 use crate::core::module::{Module, ModuleContext, ModuleCost, ModuleResult};
 use crate::core::scan::{ScanOptions, Target, TargetKind};
 
@@ -301,7 +301,7 @@ pub(super) fn module_skip_reason(
     opts: &ScanOptions,
     is_expansion: bool,
     target_distinct_sources: usize,
-) -> Option<&'static str> {
+) -> Option<(SkipClass, &'static str)> {
     let name = module.name();
     // The allowlist means "ONLY these modules run" (`hse --help`) — and that
     // must hold on EVERY round, not just the seed. Gating it with `!is_expansion`
@@ -313,10 +313,10 @@ pub(super) fn module_skip_reason(
     if let Some(allow) = &opts.modules
         && !allow.iter().any(|n| n == name)
     {
-        return Some("not in allowlist");
+        return Some((SkipClass::Scoped, "not in allowlist"));
     }
     if opts.exclude_modules.iter().any(|n| n == name) {
-        return Some("excluded");
+        return Some((SkipClass::Scoped, "excluded"));
     }
     // Live device-sensor modules read the OPERATOR's own real-time RF/network
     // environment (GPS fix, visible Wi-Fi APs, serving cell towers, LAN ARP) — so
@@ -325,7 +325,7 @@ pub(super) fn module_skip_reason(
     // `hse radar` opts in via `allow_live_sensors`, never on an ordinary
     // `hse scan` / API / `hse live` run, on any round (seed or expansion).
     if super::LOCAL_PASSIVE_MODULES.contains(&name) && !opts.allow_live_sensors {
-        return Some("live sensor — radar-only activation");
+        return Some((SkipClass::Scoped, "live sensor — radar-only activation"));
     }
     // Category focus: when a profile restricts the scan to a set of functional
     // categories (e.g. `skiptrace` → person-locating: People/Phone/Geo/Email/
@@ -334,7 +334,7 @@ pub(super) fn module_skip_reason(
     // `module.category()`, so the focus follows module renames and automatically
     // picks up new in-category modules.
     if !opts.category_focus.is_empty() && !opts.category_focus.contains(&module.category()) {
-        return Some("outside category focus");
+        return Some((SkipClass::Scoped, "outside category focus"));
     }
     // Circuit breaker: a module that already hit a rate-limit/quota wall or
     // failed repeatedly this run is skipped until its cooldown elapses. Retrying
@@ -343,16 +343,19 @@ pub(super) fn module_skip_reason(
     // that still works — the budget the alias scan needs to find more. Checked
     // here (not as a hard exclusion) so it auto-recovers when the window passes.
     if super::circuit::is_open(name) {
-        return Some("circuit-open — rate-limited/quota/repeated failure (cooling down)");
+        return Some((
+            SkipClass::Unavailable,
+            "circuit-open — rate-limited/quota/repeated failure (cooling down)",
+        ));
     }
     // Persistent per-module toggle (universal toggleability): `hse config
     // module.<name> off` disables a module across ALL scans until re-enabled.
     // Default on, so an unset module behaves exactly as before.
     if !crate::util::settings::get_bool(&format!("module.{name}"), true) {
-        return Some("disabled in config");
+        return Some((SkipClass::Scoped, "disabled in config"));
     }
     if opts.free_only && !matches!(module.cost(), ModuleCost::Free) {
-        return Some("requires key/payment");
+        return Some((SkipClass::Scoped, "requires key/payment"));
     }
     // Built once and reused by both economics gates below — `ProviderDescriptor`
     // carries a `Vec<TargetKind>` field, so constructing it twice per module per
@@ -369,10 +372,11 @@ pub(super) fn module_skip_reason(
         opts.effective_max_cost_usd(),
         opts.allow_unknown_cost_dispatch,
     ) {
-        return Some(
+        return Some((
+            SkipClass::Unavailable,
             "unknown-cost paid provider blocked by active cost budget — set \
              allow_unknown_cost_dispatch to override",
-        );
+        ));
     }
     // Quota-budget eligibility gate — same family as the monetary gate above:
     // a module that tracks a local quota (`ProviderDescriptor::quota_unit`)
@@ -381,13 +385,19 @@ pub(super) fn module_skip_reason(
     // no local quota, or whose remaining state isn't currently knowable,
     // never blocks here — "unknown" is not "exhausted".
     if crate::core::roi::quota_exhausted_blocked(descriptor.quota_unit, module.quota_remaining()) {
-        return Some("quota exhausted — provider-tracked local budget spent for this scan");
+        return Some((
+            SkipClass::Unavailable,
+            "quota exhausted — provider-tracked local budget spent for this scan",
+        ));
     }
     if opts.passive_only && !module.is_passive() {
-        return Some("not passive");
+        return Some((SkipClass::Scoped, "not passive"));
     }
     if is_expansion && module.is_passive() && super::LOCAL_PASSIVE_MODULES.contains(&name) {
-        return Some("sensor (already ran on seed round)");
+        return Some((
+            SkipClass::AlreadyCovered,
+            "sensor (already ran on seed round)",
+        ));
     }
     // High-value-only modules: the heaviest paid API (oathnet_pro, priority
     // 127, Paid, 30s) burns one query per target and a low-specificity seed
@@ -408,7 +418,10 @@ pub(super) fn module_skip_reason(
         && module.is_high_value_only()
         && target_distinct_sources < CROSS_CORRELATION_MIN_SOURCES
     {
-        return Some("high-value API — awaiting cross-correlation (>=2 sources)");
+        return Some((
+            SkipClass::Scoped,
+            "high-value API — awaiting cross-correlation (>=2 sources)",
+        ));
     }
     // WiGLE is the paid GEOINT *finaliser*: it spends a query to confirm and
     // enrich a coordinate with real WiFi-density observations. On a discovered
@@ -429,7 +442,10 @@ pub(super) fn module_skip_reason(
         && target.kind == TargetKind::Coordinates
         && target_distinct_sources < CROSS_CORRELATION_MIN_SOURCES
     {
-        return Some("WiGLE finaliser — awaiting GEOINT corroboration (>=2 geo sources)");
+        return Some((
+            SkipClass::Scoped,
+            "WiGLE finaliser — awaiting GEOINT corroboration (>=2 geo sources)",
+        ));
     }
     // ── Universal preflight: reject private IPs / local domains for
     // modules that talk to external APIs. Sensor modules opt out via
@@ -451,10 +467,16 @@ pub(super) fn module_skip_reason(
             // modules (ip-api.com, ipinfo.io, ipquery.io)
             // that route through it inside their own `process`.
             TargetKind::IpAddress if preflight::should_skip_external_ip(&target.value) => {
-                return Some("private/reserved IP — external API would reject");
+                return Some((
+                    SkipClass::NotApplicable,
+                    "private/reserved IP — external API would reject",
+                ));
             }
             TargetKind::Domain if preflight::is_local_domain(&target.value) => {
-                return Some("local/reserved domain — external API would reject");
+                return Some((
+                    SkipClass::NotApplicable,
+                    "local/reserved domain — external API would reject",
+                ));
             }
             // SSRF gate: a URL whose host is a private IP or local
             // domain must not reach a URL-accepting external module
@@ -463,7 +485,10 @@ pub(super) fn module_skip_reason(
             // `http://192.168.1.1/admin` would coerce HSE into
             // hitting the operator's internal network.
             TargetKind::Url if crate::util::preflight::url_host_is_private(&target.value) => {
-                return Some("URL with private host — external API would reject (SSRF gate)");
+                return Some((
+                    SkipClass::NotApplicable,
+                    "URL with private host — external API would reject (SSRF gate)",
+                ));
             }
             _ => {}
         }
@@ -591,6 +616,9 @@ impl super::ScanEngine {
                     EventKind::ModuleSkipped {
                         module: name.into(),
                         reason,
+                        // A configured-away credential is a provider the scan
+                        // could not use, not one the operator ruled out.
+                        class: Some(SkipClass::Unavailable),
                     },
                 );
             }
@@ -800,11 +828,11 @@ impl super::ScanEngine {
         target_sources: usize,
         stats: &mut ModuleStats,
     ) -> bool {
-        if let Some(reason) =
+        if let Some((class, reason)) =
             module_skip_reason(module, cx.target, cx.opts, cx.is_expansion, target_sources)
         {
             stats.skipped += 1;
-            self.emit_skipped(cx.scan_id, module.name(), reason);
+            self.emit_skipped(cx.scan_id, module.name(), reason, class);
             return true;
         }
         // Capability-aware dispatch — the cross-scan, persisted counterpart of
@@ -826,6 +854,7 @@ impl super::ScanEngine {
                 cx.scan_id,
                 module.name(),
                 "capability-quarantined — persistent drift (auto-retries once it recovers)",
+                SkipClass::Unavailable,
             );
             return true;
         }
@@ -897,6 +926,10 @@ impl super::ScanEngine {
             configured_timeout_ms: module.constrained_timeout_ms(),
             already_dispatched_this_module_target: dispatched
                 .contains(&dispatch_key(module.name(), cx.target)),
+            geoint_bearing: crate::core::roi::is_geoint_bearing(
+                module.produces(),
+                module.category(),
+            ),
         };
         crate::core::roi::compute_dispatch_utility(&inputs)
     }
@@ -1021,7 +1054,12 @@ impl super::ScanEngine {
                 && !state.dispatched.insert(dispatch_key(name, cx.target))
             {
                 state.stats.deduped += 1;
-                self.emit_skipped(cx.scan_id, name, "already dispatched for this target");
+                self.emit_skipped(
+                    cx.scan_id,
+                    name,
+                    "already dispatched for this target",
+                    SkipClass::AlreadyCovered,
+                );
                 continue;
             }
 
@@ -1165,7 +1203,12 @@ impl super::ScanEngine {
             );
             if !state.dispatched.insert(dispatch_key(name, cx.target)) {
                 state.stats.deduped += 1;
-                self.emit_skipped(cx.scan_id, name, "already dispatched for this target");
+                self.emit_skipped(
+                    cx.scan_id,
+                    name,
+                    "already dispatched for this target",
+                    SkipClass::AlreadyCovered,
+                );
                 continue;
             }
             // Inter-scan entity cache (C9): check before dispatching.
@@ -1292,7 +1335,12 @@ impl super::ScanEngine {
                 && !state.dispatched.insert(dispatch_key(name, cx.target))
             {
                 state.stats.deduped += 1;
-                self.emit_skipped(cx.scan_id, name, "already dispatched for this target");
+                self.emit_skipped(
+                    cx.scan_id,
+                    name,
+                    "already dispatched for this target",
+                    SkipClass::AlreadyCovered,
+                );
                 continue;
             }
 

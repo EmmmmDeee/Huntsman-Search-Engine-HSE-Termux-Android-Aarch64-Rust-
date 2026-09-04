@@ -92,6 +92,18 @@ impl<T: Clone + Send + 'static> ResponseCache<T> {
         self.cap
     }
 
+    /// Drop every entry whose key starts with `prefix`.
+    ///
+    /// The production per-scan flush: callers namespace their keys by scan id
+    /// (see `see_know::client::cache_get`), so a scan starting drops its own
+    /// entries and leaves a concurrently-running sibling's cache intact. A bare
+    /// [`Self::clear`] cannot do that — it discards every scan's.
+    pub fn clear_prefix(&self, prefix: &str) {
+        if let Ok(mut c) = self.lock().lock() {
+            c.retain(|k, _| !k.starts_with(prefix));
+        }
+    }
+
     /// Drop every entry. Intended for tests and operator-initiated
     /// flushes (e.g. after detecting API contract drift); the
     /// production code path doesn't call this.

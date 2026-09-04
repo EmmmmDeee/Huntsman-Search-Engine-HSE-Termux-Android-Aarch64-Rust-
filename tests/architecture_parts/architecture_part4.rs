@@ -396,16 +396,21 @@ fn readme_correlator_rule_count_matches_registry() {
     );
 }
 
-/// Runtime AI-independence guard (the `RUNTIME_INDEPENDENCE` charter): the
-/// compiled binary must carry NO AI / ML / LLM / cloud-inference / vector /
-/// embedding dependency, so every runtime capability is deterministic Rust that
-/// reproduces identically on Termux aarch64 (no root), Linux and CI with no AI
-/// available. AI is a development-time accelerator only. This turns the principle
-/// into a mechanical CI check — adding e.g. `candle`, `onnxruntime`, an LLM SDK,
-/// `tokenizers`, or `qdrant-client` fails here. External OSINT *data* APIs
-/// (registries, breach corpora, geocoders) are data sources, not AI services,
-/// and are deliberately unaffected. This guard is the authoritative statement of
-/// the rule; the crate root cites it rather than restating it.
+/// The compiled runtime must carry NO third-party AI / ML / inference / vector /
+/// embedding crate: every finding-producing capability is deterministic Rust
+/// that reproduces identically on Termux aarch64 (no root), Linux and CI with
+/// no model available. This turns that into a mechanical CI check — adding
+/// e.g. `candle`, `onnxruntime`, an LLM SDK, `tokenizers`, or `qdrant-client`
+/// fails here. External OSINT *data* APIs (registries, breach corpora,
+/// geocoders) are data sources, not AI services, and are deliberately
+/// unaffected.
+///
+/// This claim is now UNCONDITIONAL. It previously carved out one exception —
+/// `src/ai`, a hand-rolled HTTP client for a local Ollama server behind
+/// `hse analyze` and `hse-ai-daemon`, which no crate-name denylist could see —
+/// guarded by a companion test that kept its output out of the evidence graph.
+/// That integration was removed wholesale, so there is no runtime LLM path left
+/// to carve out; `no_llm_inference_integration_exists` pins that it stays gone.
 #[test]
 fn runtime_carries_no_ai_ml_inference_dependency() {
     let lock = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"))
@@ -472,11 +477,12 @@ fn runtime_carries_no_ai_ml_inference_dependency() {
     assert!(
         offenders.is_empty(),
         "RUNTIME_INDEPENDENCE violation — AI/ML/inference crate(s) entered the \
-         dependency tree: {offenders:?}. HSE's runtime must stay deterministic \
-         Rust with no AI / LLM / vector / embedding dependency (AI is a \
-         development-time accelerator only)."
+         dependency tree: {offenders:?}. Every finding-producing runtime path \
+         must stay deterministic Rust; the only LLM integration is the optional \
+         local Ollama client in src/ai, whose output never becomes a finding."
     );
 }
+
 
 /// Every coarse IP/WiFi-geolocation provider must gate its emitted coordinates
 /// on `is_plausible_provider_coord`, not the precise `is_valid_coords`.

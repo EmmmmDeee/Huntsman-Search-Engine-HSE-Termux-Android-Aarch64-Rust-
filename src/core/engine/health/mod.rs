@@ -71,6 +71,26 @@ pub(crate) struct ModuleHealth {
     pub(crate) last_success_at: Option<u64>,
 }
 
+/// How many modules this process has recorded ANY dispatch outcome for.
+///
+/// Distinguishes "nothing has run yet" from "everything that ran is healthy" —
+/// both leave [`unhealthy_modules`] empty, but only the second is a health
+/// verdict. Both recorders `entry(name).or_default()`, so a module appears here
+/// after its first success OR failure, and `0` means no dispatch has happened
+/// in this process at all.
+///
+/// `hse doctor` needs the distinction because it dispatches nothing: the
+/// tracker is empty in every standalone `doctor` run, so an unqualified "no
+/// failure streak" line there is a constant, not a measurement — and on a real
+/// device it printed directly above 22 sources the persistent store had
+/// recorded as being in a failure streak.
+pub(super) fn modules_observed() -> usize {
+    state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .len()
+}
+
 /// Every module currently showing a failure streak, worst-first (ties broken
 /// by name for deterministic output — the underlying map is a `HashMap`).
 /// Empty on a freshly-started or fully healthy process — the common case,

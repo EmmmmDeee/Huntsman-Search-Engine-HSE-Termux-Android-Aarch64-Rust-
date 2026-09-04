@@ -23,11 +23,6 @@
 #                     `fast` ≈4-6 min build; `release` ≈15-20 min, smallest binary
 #   HSE_FULL_BUILD    Set to 1 to force the size-optimised `release` profile
 #   HSE_PREBUILT      Abs path to a precompiled aarch64 `hse` to install directly
-#   HSE_WITH_AI       1 to install Ollama + a local Qwen model and enable the
-#                     AI analysis surface; 0 to skip. Default: 1 on Termux
-#                     aarch64, 0 elsewhere (Termux ships no 32-bit arm ollama).
-#   HSE_AI_MODEL      Ollama model tag to pull. Default: auto-sized to device
-#                     RAM (qwen2.5:1.5b / :3b / :7b).
 #                     (validated + run-tested) instead of building. By default the
 #                     installer auto-scans Downloads / shared storage for one.
 #   HSE_DOWNLOADS     Extra dir to add to the prebuilt scan (before the defaults)
@@ -322,9 +317,42 @@ STAGED=""
 #                              bug this exists to prevent.
 TARGET_SHA="${HSE_REQUIRE_SHA:-}"
 
+# Resolve $1 (a branch, tag or SHA) to a commit SHA using the GitHub REST API
+# over curl — no git required.
+#
+# This exists because of the ordering on a FRESH Termux: revision resolution runs
+# BEFORE the `pkg install` that provides git, so `git ls-remote` was guaranteed to
+# fail on a first install, leaving TARGET_SHA empty, which made every prebuilt
+# unverifiable and forced a full on-device Rust build — the one thing the prebuilt
+# path exists to avoid. Observed on a real device: sha256 verified, then
+# "skip … (built from a different commit than main)", then a source build.
+#
+# curl is always present here: the documented install is `curl … | bash`, so it
+# ran this script. `Accept: application/vnd.github.sha` makes the API answer with
+# the bare 40-char SHA, so no JSON parsing is needed. Unauthenticated calls are
+# rate-limited per IP (60/hour), which one lookup per install never approaches; a
+# throttled or offline call simply returns non-zero and we fall back as before.
+_sha_via_github_api() {
+    local ref="$1" slug api out
+    command -v curl >/dev/null 2>&1 || return 1
+    # github.com/OWNER/REPO(.git) -> OWNER/REPO. Anything else (a fork on another
+    # host, a local path) is not a GitHub repo and gets no API attempt.
+    case "$HSE_REPO_URL" in
+        https://github.com/*) slug="${HSE_REPO_URL#https://github.com/}" ;;
+        *) return 1 ;;
+    esac
+    slug="${slug%.git}"
+    slug="${slug%/}"
+    [[ -n "$slug" ]] || return 1
+    api="https://api.github.com/repos/$slug/commits/$ref"
+    out="$(curl -fsSL -m 20 -H 'Accept: application/vnd.github.sha' "$api" 2>>"$LOG_FILE" || true)"
+    out="$(printf '%s' "$out" | tr -d '[:space:]' | tr 'A-F' 'a-f')"
+    [[ "$out" =~ ^[0-9a-f]{40}$ ]] || return 1
+    printf '%s' "$out"
+}
+
 resolve_target_sha() {
     [[ -n "$TARGET_SHA" ]] && { hint "Target revision pinned by caller: ${TARGET_SHA:0:7}"; return 0; }
-    command -v git >/dev/null 2>&1 || { log_warn "git unavailable — cannot resolve the target revision"; return 1; }
 
     local ref="$HSE_REF" out
     # `git ls-remote` resolves a branch, a tag (peeled via ^{}), or echoes back a
@@ -339,8 +367,15 @@ resolve_target_sha() {
 
     # Prefer the peeled (^{}) line for annotated tags: that is the commit the
     # binary is built from; the bare line would be the tag object's own SHA.
-    out="$(git ls-remote "$HSE_REPO_URL" "refs/heads/$ref" "refs/tags/$ref" "refs/tags/$ref^{}" 2>>"$LOG_FILE" || true)"
-    TARGET_SHA="$(printf '%s\n' "$out" | awk '/\^\{\}$/{print $1; found=1; exit} {last=$1} END{if(!found) print last}')"
+    if command -v git >/dev/null 2>&1; then
+        out="$(git ls-remote "$HSE_REPO_URL" "refs/heads/$ref" "refs/tags/$ref" "refs/tags/$ref^{}" 2>>"$LOG_FILE" || true)"
+        TARGET_SHA="$(printf '%s\n' "$out" | awk '/\^\{\}$/{print $1; found=1; exit} {last=$1} END{if(!found) print last}')"
+    else
+        # Fresh Termux: git is not installed until later in this script. Ask
+        # GitHub directly rather than giving up, or the prebuilt can never be
+        # verified and a first install always pays for a full source build.
+        TARGET_SHA="$(_sha_via_github_api "$ref" || true)"
+    fi
     if [[ ! "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
         TARGET_SHA=""
         log_warn "could not resolve $HSE_REF at $HSE_REPO_URL — will build from source"
@@ -437,7 +472,16 @@ _validate_prebuilt() {
     # "an hse that runs" is exactly what used to get installed in place of the
     # commit the operator asked for.
     if ! _prebuilt_sha_matches "$staged"; then
-        log_warn "skip $base (built from a different commit than $HSE_REF)"
+        # "different commit" is only true when we KNOW the target. With an
+        # unresolved TARGET_SHA the honest statement is that it could not be
+        # checked — the device transcript said "built from a different commit
+        # than main" in a run whose previous line was "cannot resolve the target
+        # revision", which asserts a comparison that never happened.
+        if [[ -n "$TARGET_SHA" ]]; then
+            log_warn "skip $base (built from a different commit than $HSE_REF)"
+        else
+            log_warn "skip $base (target revision unknown — cannot verify it is $HSE_REF)"
+        fi
         rm -f "$staged" 2>/dev/null || true
         return 1
     fi
@@ -562,7 +606,12 @@ _try_download_release() {
         ok "Using downloaded prebuilt — skipping toolchain + source build"
         return 0
     fi
-    log_warn "Downloaded binary failed validation (wrong revision, or corrupt)"
+    if [[ -n "$TARGET_SHA" ]]; then
+        log_warn "Downloaded binary failed validation (wrong revision, or corrupt)"
+    else
+        log_warn "Downloaded binary could not be validated (target revision unresolved)"
+        hint "Set HSE_REQUIRE_SHA=<sha> to pin it, or HSE_ALLOW_SHA_MISMATCH=1 to accept unverified"
+    fi
     return 1
 }
 
@@ -1227,7 +1276,6 @@ hse_wakelock_gc() {
         case "${_h##*/}" in
             hse-bg)    hse_pid_matches "$_p" hse ''         || rm -f "$_h" ;;
             hse-watch) hse_pid_matches "$_p" ''  hse-watch  || rm -f "$_h" ;;
-            hse-ai)    hse_pid_matches "$_p" ollama ''      || rm -f "$_h" ;;
             *)         hse_pid_matches "$_p" ''  ''         || rm -f "$_h" ;;
         esac
     done
@@ -1627,194 +1675,6 @@ elif [[ "${RESTART_BG:-0}" -eq 1 || "${RESTART_BARE:-0}" -eq 1 ]]; then
     hint "  press Ctrl-C in its terminal, then re-run:  hse serve"
 fi
 
-# ─── Local AI (Ollama + Qwen) ────────────────────────────────────────────────
-# Optional, opt-out-able. Everything here is additive: if it is skipped or
-# fails, HSE is fully functional without it — the AI surface is gated behind
-# `feature.ai_daemon` and is never reached by `hse scan`/`hse serve`.
-#
-# Termux ships an official `ollama` package for aarch64 ONLY (no 32-bit arm
-# build exists in the repo), so armv7 devices get a clear skip rather than a
-# confusing package error.
-
-# Choose a model that fits the device rather than a fixed default. A phone
-# running a model too large for its RAM does not run slowly — Android's
-# low-memory killer terminates it, which looks to the operator like Ollama
-# randomly dying. These thresholds leave headroom for the OS and for HSE's own
-# scan working set, which runs concurrently.
-ai_pick_model() {
-    if [[ -n "${HSE_AI_MODEL:-}" ]]; then
-        printf '%s' "$HSE_AI_MODEL"
-        return 0
-    fi
-    local mem=0
-    [[ -r /proc/meminfo ]] && mem=$(awk '/^MemTotal/ {print int($2/1024)}' /proc/meminfo)
-    if   [[ "$mem" -ge 7500 ]]; then printf 'qwen2.5:7b'
-    elif [[ "$mem" -ge 4500 ]]; then printf 'qwen2.5:3b'
-    elif [[ "$mem" -ge 2800 ]]; then printf 'qwen2.5:1.5b'
-    else printf ''
-    fi
-}
-
-# Approximate on-disk size of a model tag, so the pull fails fast with a clear
-# message instead of filling the device and leaving a half-written blob.
-ai_model_mb() {
-    case "$1" in
-        *:7b)   printf '5200' ;;
-        *:3b)   printf '2200' ;;
-        *:1.5b) printf '1200' ;;
-        *)      printf '5200' ;;   # unknown tag: assume large
-    esac
-}
-
-setup_ai() {
-    local want="${HSE_WITH_AI:-}"
-    if [[ -z "$want" ]]; then
-        # Default on only where the package actually exists.
-        if [[ $IS_TERMUX -eq 1 && ( "$ARCH" == "aarch64" || "$ARCH" == "arm64" ) ]]; then
-            want=1
-        else
-            want=0
-        fi
-    fi
-    [[ "$want" == "1" ]] || { ok "Local AI: skipped (HSE_WITH_AI=0)"; return 0; }
-
-    step "Local AI (Ollama + Qwen)"
-
-    if [[ $IS_TERMUX -eq 1 && "$ARCH" != "aarch64" && "$ARCH" != "arm64" ]]; then
-        log_warn "Termux publishes no ollama package for $ARCH (aarch64 only) — skipping AI."
-        hint "HSE itself is unaffected; everything except 'hse analyze' works."
-        return 0
-    fi
-
-    local model
-    model="$(ai_pick_model)"
-    if [[ -z "$model" ]]; then
-        log_warn "Under ~2.8GB RAM — too little for a useful local model. Skipping AI."
-        hint "Override with: HSE_AI_MODEL=qwen2.5:1.5b HSE_WITH_AI=1 ./install.sh"
-        return 0
-    fi
-
-    # Storage check before the pull, not after.
-    local need avail
-    need="$(ai_model_mb "$model")"
-    avail=$(df -Pm "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
-    if [[ -n "$avail" && "$avail" -lt "$need" ]]; then
-        log_warn "Need ~${need}MB for $model, only ${avail}MB free — skipping the model pull."
-        hint "Free space, then: hse-ai pull $model"
-        return 0
-    fi
-
-    if ! command -v ollama >/dev/null 2>&1; then
-        if [[ $IS_TERMUX -eq 1 && "${HSE_NO_PKG:-0}" != "1" ]]; then
-            pkg install -y ollama >>"$LOG_FILE" 2>&1 \
-                || { log_warn "pkg install ollama failed — skipping AI (see $LOG_FILE)"; return 0; }
-        else
-            log_warn "ollama not installed and not installable here — skipping AI."
-            hint "Install Ollama yourself, then: hse-ai start && hse-ai pull $model"
-            return 0
-        fi
-    fi
-    ok "ollama $(ollama --version 2>/dev/null | head -1 || echo present)"
-
-    install_ai_wrapper
-
-    # Start the server and pull the model now, so the first `hse analyze` is
-    # instant rather than a surprise multi-GB download.
-    "$HSE_BIN_DIR/hse-ai" start >>"$LOG_FILE" 2>&1 || true
-    step "Pulling $model (one-time, ~${need}MB)"
-    if "$HSE_BIN_DIR/hse-ai" pull "$model" >>"$LOG_FILE" 2>&1; then
-        ok "Model $model ready"
-    else
-        log_warn "Model pull failed — HSE works without it; retry with: hse-ai pull $model"
-        return 0
-    fi
-
-    # Persist the choice so `hse analyze` and `hse-ai-daemon` need no flags, and
-    # enable the opt-in feature gate.
-    if [[ -f "$KEYS_PATH" ]] && grep -q '^HUNTSMAN_OLLAMA_MODEL=' "$KEYS_PATH" 2>/dev/null; then
-        sed -i "s|^HUNTSMAN_OLLAMA_MODEL=.*|HUNTSMAN_OLLAMA_MODEL=$model|" "$KEYS_PATH"
-    else
-        printf 'HUNTSMAN_OLLAMA_MODEL=%s\n' "$model" >> "$KEYS_PATH"
-    fi
-    chmod 600 "$KEYS_PATH" 2>/dev/null || true
-    "$HSE_BIN_DIR/hse" config feature.ai_daemon on >>"$LOG_FILE" 2>&1 \
-        && ok "Enabled feature.ai_daemon (model $model)" \
-        || log_warn "Could not enable feature.ai_daemon — run: hse config feature.ai_daemon on"
-    AI_MODEL_INSTALLED="$model"
-}
-
-# hse-ai — lifecycle for the local model server, mirroring hse-bg so the two
-# behave identically (wake-lock, pid identity check, same log convention).
-install_ai_wrapper() {
-    local W="$HSE_BIN_DIR/hse-ai"
-    printf '#!%s/bin/bash\n' "$PREFIX" > "$W"
-    printf '# %s\n' "$HSE_MANAGED_MARKER" >> "$W"
-    printf 'HSE_WAKELOCK_HELPER="%s/hse-wakelock"\n' "$HSE_BIN_DIR" >> "$W"
-    cat >> "$W" <<'AIW'
-# hse-ai — start/stop the local Ollama server that backs `hse analyze`.
-# Holds the same refcounted wake-lock as hse-bg: Android will otherwise kill
-# the model server the moment the screen turns off, and a half-killed server
-# looks identical to a hung one.
-set -e
-PID_FILE="$HOME/.cache/hse-ai.pid"
-LOG_FILE="$HOME/.cache/hse-ai.log"
-mkdir -p "$(dirname "$PID_FILE")"
-[ -f "$HSE_WAKELOCK_HELPER" ] && . "$HSE_WAKELOCK_HELPER"
-# hse_pid_matches is the only pid-identity check below; without the helper it
-# is undefined, `ai_running` always fails, and `start` would launch a SECOND
-# `ollama serve` against a live one holding the port.
-if ! command -v hse_pid_matches >/dev/null 2>&1; then
-    echo "hse-wakelock helper missing ($HSE_WAKELOCK_HELPER) — re-run install.sh" >&2
-    exit 1
-fi
-
-ai_running() {
-    [ -f "$PID_FILE" ] || return 1
-    hse_pid_matches "$(cat "$PID_FILE" 2>/dev/null)" ollama '' 2>/dev/null
-}
-
-# Reachability is the real readiness test — a live pid does not mean the HTTP
-# API is accepting requests yet.
-ai_ready() {
-    curl -sS --max-time 3 "${HUNTSMAN_OLLAMA_URL:-http://127.0.0.1:11434}/api/tags" >/dev/null 2>&1
-}
-
-case "${1:-start}" in
-    start)
-        if ai_ready; then echo "ollama already serving"; exit 0; fi
-        if ai_running; then echo "ollama starting (pid $(cat "$PID_FILE"))"; exit 0; fi
-        nohup ollama serve >> "$LOG_FILE" 2>&1 &
-        echo $! > "$PID_FILE"
-        command -v hse_wakelock_acquire >/dev/null 2>&1 && \
-            hse_wakelock_acquire hse-ai "$(cat "$PID_FILE")" || true
-        for _ in $(seq 1 30); do ai_ready && break; sleep 1; done
-        if ai_ready; then echo "Started ollama (pid $(cat "$PID_FILE"))"
-        else echo "ollama did not become ready in 30s — see $LOG_FILE"; exit 1; fi
-        ;;
-    stop)
-        if [ -f "$PID_FILE" ]; then kill "$(cat "$PID_FILE")" 2>/dev/null || true; rm -f "$PID_FILE"; fi
-        command -v hse_wakelock_release >/dev/null 2>&1 && hse_wakelock_release hse-ai || true
-        echo "Stopped ollama"
-        ;;
-    status)
-        if ai_ready; then echo "ollama: serving at ${HUNTSMAN_OLLAMA_URL:-http://127.0.0.1:11434}"
-        elif ai_running; then echo "ollama: process alive but not answering yet"
-        else echo "ollama: not running"; fi
-        echo "model:  ${HUNTSMAN_OLLAMA_MODEL:-$(grep -h '^HUNTSMAN_OLLAMA_MODEL=' "$HOME/.huntsman.env" 2>/dev/null | cut -d= -f2)}"
-        ollama list 2>/dev/null || true
-        ;;
-    log)   tail -f "$LOG_FILE" ;;
-    pull)  "${0%/*}/hse-ai" start >/dev/null 2>&1 || true; ollama pull "${2:?usage: hse-ai pull <model>}" ;;
-    *) echo "usage: hse-ai {start|stop|status|log|pull <model>}"; exit 1 ;;
-esac
-AIW
-    chmod 0755 "$W"
-    ok "Installed hse-ai (start|stop|status|log|pull)"
-}
-
-AI_MODEL_INSTALLED=""
-setup_ai
-
 # ─── Done ────────────────────────────────────────────────────────────────────
 echo
 printf '%s%sInstallation complete!%s\n\n' "$GREEN" "$BOLD" "$NC"
@@ -1832,14 +1692,6 @@ if [[ $IS_TERMUX -eq 1 ]]; then
     printf '  hse-bg log                                          # tail the log\n'
     printf '  hse-bg stop                                         # release wake-lock\n'
     printf '  Then open: %shttp://127.0.0.1:8080%s in Chrome on the device\n\n' "$BOLD" "$NC"
-    if [[ -n "$AI_MODEL_INSTALLED" ]]; then
-        printf '%sLocal AI analysis (%s, on-device, no network):%s\n' "$CYAN" "$AI_MODEL_INSTALLED" "$NC"
-        printf '  hse-ai status                                       # is the model server up?\n'
-        printf '  hse-ai start                                        # start it (wake-locked)\n'
-        printf '  hse scan -k name -v "Jane Roe" && hse analyze --scan-id latest\n'
-        printf '  hse-ai stop                                         # free the RAM\n'
-        printf '  %sModels run entirely on-device; nothing is sent off the phone.%s\n\n' "$DIM" "$NC"
-    fi
     printf '%sUnattended recurring collection (Termux):%s\n' "$CYAN" "$NC"
     printf '  Add seeds to %s~/.huntsman/watchlist.txt%s (one per line), then:\n' "$BOLD" "$NC"
     printf '  hse-watch start                                     # sweep the watchlist hourly\n'

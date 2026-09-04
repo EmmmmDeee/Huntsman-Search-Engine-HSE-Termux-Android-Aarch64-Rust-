@@ -27,11 +27,27 @@ use huntsman_search_engine::{
     util::{http::build_client, uid::scan_id},
 };
 
+/// Redirect the library's whole `$HOME/.huntsman` layout (key pool, settings,
+/// diagnostics ledger, raw archive, …) at an isolated per-process temp
+/// directory for the rest of this test binary, and return that base.
+///
+/// `cfg!(test)` is `false` in the library as these crates link it, so without
+/// this every scan a test completes persists its synthetic module statistics —
+/// and one test its feature-toggle flip, and the key-chaining fixture its fake
+/// `shodan` key — into the developer's REAL `~/.huntsman`. Every harness
+/// constructor below funnels through [`tmp_db`]/[`tmp_dir`], which call this
+/// first, so a test that builds its store or engine through `common` is
+/// isolated without having to remember to. Idempotent and cheap.
+pub fn isolate_home() -> std::path::PathBuf {
+    huntsman_search_engine::util::paths::isolate_for_tests()
+}
+
 /// Fresh per-test SQLite path under the OS temp dir: `hse-<prefix>-<pid>-<suffix>.db`.
 /// Removes the main DB **and** its WAL/SHM sidecars — in WAL mode a stale
 /// `-wal`/`-shm` left from a prior run can resurrect old state or corrupt the
 /// fresh handle, making tests flaky.
 pub fn tmp_db(prefix: &str, suffix: &str) -> String {
+    isolate_home();
     let mut p = std::env::temp_dir();
     p.push(format!("hse-{prefix}-{}-{suffix}.db", std::process::id()));
     let s = p.to_string_lossy().into_owned();
@@ -86,6 +102,7 @@ pub fn engine_setup(
 /// `hse-<prefix>-<pid>/`. For tests that write output files (exports,
 /// dossiers) rather than a database; created if absent.
 pub fn tmp_dir(prefix: &str) -> std::path::PathBuf {
+    isolate_home();
     let dir = std::env::temp_dir().join(format!("hse-{prefix}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir

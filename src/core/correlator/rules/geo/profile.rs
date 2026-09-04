@@ -133,7 +133,11 @@ pub(super) fn extract_ratemyagent_suburb(url: &str) -> Option<String> {
         .next()
         .unwrap_or(slug_area);
     let parts: Vec<&str> = slug.split('-').collect();
-    if parts.len() < 4 {
+    // `<name>-<suburb>-<id>`: the name is "one or more" tokens per the doc above,
+    // so three parts is the smallest well-formed slug. The floor used to be 4,
+    // which silently rejected every single-token agent/business name
+    // (`century21-bondi-12345`) before the suburb logic ever ran.
+    if parts.len() < 3 {
         return None;
     }
     let id = *parts.last()?;

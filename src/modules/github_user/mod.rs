@@ -366,23 +366,38 @@ impl Module for GithubUser {
             return Ok(ModuleResult::new());
         }
 
+        // The operator's token, fetched ONCE up front and sent on every GitHub
+        // call this module makes. It used to be read only after the primary
+        // profile GET and the SSH-key/events side-calls had already gone out
+        // unauthenticated, so three of this module's five requests — the
+        // profile lookup everything else depends on included — stayed on the
+        // shared-IP 60 req/h anonymous budget while the token's 5 000 req/h
+        // sat unused, and a scan resolving many logins ran dry mid-way.
+        let token = ctx.key_opt("HUNTSMAN_GITHUB_TOKEN");
         let url = format!("https://api.github.com/users/{login}");
-        let resp = ctx
+        let mut req = ctx
             .http
             .get(&url)
             .header("Accept", "application/vnd.github+json")
             .header(
                 "X-GitHub-Api-Version",
                 crate::modules::github_api::API_VERSION,
-            )
-            .send_tagged(SRC)
-            .await?;
+            );
+        if let Some(t) = token {
+            req = req.bearer_auth(t);
+        }
+        let resp = req.send_tagged(SRC).await?;
 
         let status = resp.status();
         if status.as_u16() == 404 {
             return Ok(ModuleResult::new());
         }
         if !status.is_success() {
+            // A present token that is rejected/throttled must reach the pool
+            // (same rule `fetch_orgs`/`fetch_gists` already apply).
+            if let Some(t) = token {
+                crate::util::http::note_keyed_error(status.as_u16(), "github", t, ctx);
+            }
             return Err(crate::util::http::http_status_error("github_user", resp).await);
         }
 
@@ -396,13 +411,12 @@ impl Module for GithubUser {
         result.entities = build_entities(&user, &ctx.scan_id);
 
         // SSH public keys → evidence on the username entity.
-        fetch::fetch_ssh_keys(login, ctx, &mut result).await;
+        fetch::fetch_ssh_keys(login, ctx, token, &mut result).await;
 
         // Public events → extract active working hours.
-        fetch::fetch_events(login, ctx, &mut result).await;
+        fetch::fetch_events(login, ctx, token, &mut result).await;
 
         // GitHub organisations this user belongs to → Organisation entities.
-        let token = ctx.key_opt("HUNTSMAN_GITHUB_TOKEN");
         let org_logins = fetch::fetch_orgs(ctx, login, token).await;
         for org_login in org_logins {
             let mut org = Entity::new(

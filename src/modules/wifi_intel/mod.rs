@@ -224,8 +224,25 @@ impl Module for WifiIntel {
                 e.tag(crate::core::tags::WIFI_AP);
                 e.tag("bssid-located");
 
+                // Attributed to the CORPUS this position came from, not to the
+                // module that fetched it.
+                //
+                // The standalone `wigle` module is the PRIMARY resolver for
+                // `MacAddress` targets and reaches the same records with the
+                // same credentials. This module emits those `MacAddress`
+                // entities, so the engine expands them straight into it — the
+                // designed pivot, not a corner case — and both mint the AP's
+                // position as `{lat:.6},{lon:.6}`. Same value, same kind, so the
+                // two entities share a UID and merge. Stamped with this module's
+                // own name, that merge produced TWO distinct corroborating
+                // sources for ONE record from ONE corpus, and `source_count()`
+                // fed it straight into `c_effective`.
+                //
+                // The `MacAddress` entities above keep `SOURCE`: seeing an AP on
+                // the air really is this module's own observation, independent
+                // of whether WiGLE has ever recorded it.
                 let mut ev = Evidence::new(
-                    SOURCE,
+                    crate::modules::wigle::SRC,
                     format!("BSSID {} ({ssid}) \u{2192} {coords}", ap.bssid),
                 )
                 .with_attr("bssid", &ap.bssid)
@@ -286,8 +303,15 @@ impl Module for WifiIntel {
                     addr.tag("geoint");
                     addr.tag("bssid-derived");
                     addr.add_evidence(
-                        Evidence::new(SOURCE, format!("Address from BSSID {} location", ap.bssid))
-                            .with_attr("bssid", &ap.bssid),
+                        // Same corpus as the coordinate above: this locality is
+                        // WiGLE's city/region/country for the AP, and `wigle`
+                        // builds the identical `city, region, country postcode`
+                        // string from the same fields.
+                        Evidence::new(
+                            crate::modules::wigle::SRC,
+                            format!("Address from BSSID {} location", ap.bssid),
+                        )
+                        .with_attr("bssid", &ap.bssid),
                     );
                     result.push(addr);
                 }

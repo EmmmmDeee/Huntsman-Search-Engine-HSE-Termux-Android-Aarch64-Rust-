@@ -87,6 +87,95 @@ use super::*;
     }
 
     #[test]
+    fn an_unfilled_template_slot_is_not_a_loaded_key() {
+        // Observed on a real Termux install. `hse provision` had just reported
+        // "template keys: 61, real values: 0", and `hse doctor` in the SAME run
+        // reported "HUNTSMAN_* keys loaded: 62", listed no unset keys at all,
+        // and then said WiGLE and SeekNow were NOT CONFIGURED — because those
+        // two sections resolve through `keys::resolve_key` (which rejects a
+        // placeholder) while this listing tested only the NAME.
+        //
+        // An operator reading "62 keys loaded" with zero usable credentials is
+        // being told they are provisioned when they are not.
+        let mut loaded = std::collections::HashMap::new();
+        loaded.insert(
+            "HUNTSMAN_HIBP_KEY".to_string(),
+            "insert_haveibeenpwned_key_here".to_string(),
+        );
+        loaded.insert("HUNTSMAN_WIGLE_TOKEN".to_string(), "   ".to_string());
+        loaded.insert("HUNTSMAN_ONYPHE_KEY".to_string(), "real-value".to_string());
+
+        assert_eq!(
+            sorted_huntsman_keys(&loaded),
+            vec!["HUNTSMAN_ONYPHE_KEY"],
+            "only a slot holding a usable credential counts as loaded"
+        );
+    }
+
+    #[test]
+    fn a_placeholder_slot_still_appears_in_the_unset_keys_remediation() {
+        // The same name-only test drove the "Unset keys, ranked by acquisition
+        // value" section. Every one of those names ships in the env template,
+        // so on a freshly provisioned device the ENTIRE remediation section was
+        // suppressed: the operator was told 62 keys were loaded and shown
+        // nothing to go and acquire. That section is the one thing on the page
+        // that tells them how to fix it.
+        let first = keys::KNOWN_KEYS[0];
+        let mut loaded = std::collections::HashMap::new();
+        loaded.insert(first.to_string(), "insert_something_here".to_string());
+
+        // The PRODUCTION predicate, not a copy of it: an earlier version of this
+        // test passed its own closure and so still passed with the defect fully
+        // restored — a lock that locked nothing.
+        assert!(
+            !key_slot_is_filled(&loaded, first),
+            "a slot holding the template placeholder is not filled"
+        );
+        let ranked = rank_unset_keys(|k| key_slot_is_filled(&loaded, k));
+        assert!(
+            ranked.iter().any(|(name, _)| *name == first),
+            "a slot still holding the template placeholder is UNSET and must \
+             remain listed for acquisition: {first}"
+        );
+    }
+
+    #[test]
+    fn an_unmeasured_module_health_tracker_never_claims_health() {
+        // The tracker is per-process and reactive: record_success/record_failure
+        // fire only from core::engine::dispatch, and a standalone `hse doctor`
+        // dispatches nothing. So in every plain `doctor` run the tracker is
+        // empty — and the line asserting "no modules currently show a failure
+        // streak" was a constant, not a measurement.
+        //
+        // On a real Termux device it printed exactly that reassurance directly
+        // above the Scraper health section reporting 22 sources with >= 3
+        // consecutive failures. Two sections of one report contradicting each
+        // other about whether anything was failing.
+        let nothing_ran = empty_module_health_line(0);
+        assert!(
+            !nothing_ran.contains("no modules currently show a failure streak"),
+            "an empty tracker with nothing dispatched must not read as a health \
+             verdict: {nothing_ran}"
+        );
+        assert!(
+            nothing_ran.contains("not measured"),
+            "it must say so plainly: {nothing_ran}"
+        );
+        assert!(
+            nothing_ran.contains("Scraper health"),
+            "and point at the section that DOES have recorded outcomes: {nothing_ran}"
+        );
+
+        // But a process that actually dispatched and saw no failures has earned
+        // the verdict — the fix must not suppress a real one.
+        let ran_clean = empty_module_health_line(7);
+        assert!(
+            ran_clean.contains("no modules currently show a failure streak"),
+            "a genuinely healthy process still reports health: {ran_clean}"
+        );
+    }
+
+    #[test]
     fn curl_missing_message_names_every_curl_only_no_fallback_surface() {
         let msg = curl_missing_message();
         // The six curl-only (no reqwest path) modules.

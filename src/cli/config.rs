@@ -22,6 +22,14 @@ pub fn cmd_config(key: Option<String>, value: Option<String>) -> Result<()> {
         (Some(k), Some(v)) => {
             let on = parse_on_off(&v)
                 .ok_or_else(|| Error::Other(format!("value must be on/off (got '{v}')")))?;
+            // The same validator the web toggle endpoint applies: an unknown
+            // key is an error (non-zero exit), never a silently-persisted no-op.
+            if !crate::modules::is_known_toggle_key(&k, &crate::modules::registry()) {
+                return Err(Error::Other(format!(
+                    "unknown toggle key '{k}' (expected feature.<name>, engine.<name> or \
+                     module.<name> — run `hse config` to list them)"
+                )));
+            }
             crate::util::settings::set_bool(&k, on)
                 .map_err(|e| Error::Other(format!("could not persist setting: {e}")))?;
             println!("{k} = {}", mark(on));

@@ -51,6 +51,13 @@ impl Module for NameIntel {
     fn is_passive(&self) -> bool {
         true
     }
+
+    /// Pure transform of data already in the graph — no observation of its
+    /// own, so its evidence never counts as a corroborating source (see
+    /// `Module::is_derivation` / `ENRICHMENT_ONLY_SOURCES`).
+    fn is_derivation(&self) -> bool {
+        true
+    }
     fn category(&self) -> ModuleCategory {
         ModuleCategory::People
     }

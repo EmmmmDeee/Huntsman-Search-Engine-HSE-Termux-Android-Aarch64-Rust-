@@ -1115,3 +1115,26 @@ use super::*;
             "expected the SPA scan presets to name many modules, saw {checked}"
         );
     }
+
+    #[test]
+    fn every_embedded_asset_etag_is_the_hash_of_its_bytes() {
+        // The tag must be derived from the bytes actually served — not the
+        // crate version, which does not change across in-place upgrades from
+        // `main` — so a browser revalidating after an upgrade gets new bytes
+        // exactly when the bytes changed.
+        use sha2::{Digest, Sha256};
+        let mut tags = Vec::new();
+        for (name, _, bytes) in VENDOR_FILES.iter().chain(APP_FILES.iter()) {
+            let tag = asset_etag(name).unwrap_or_else(|| panic!("{name} has no ETag"));
+            let expected = format!("\"{}\"", hex::encode(&Sha256::digest(bytes)[..8]));
+            assert_eq!(tag.text, expected, "{name}");
+            assert_eq!(tag.header.to_str().expect("ascii"), expected, "{name}");
+            tags.push(tag.text);
+        }
+        assert!(tags.len() >= 2, "expected several embedded assets");
+        tags.sort_unstable();
+        tags.dedup();
+        assert!(tags.len() >= 2, "distinct assets must carry distinct tags");
+        assert!(!tags.contains(&concat!("\"", env!("CARGO_PKG_VERSION"), "\"")));
+        assert!(asset_etag("no/such/asset.js").is_none());
+    }

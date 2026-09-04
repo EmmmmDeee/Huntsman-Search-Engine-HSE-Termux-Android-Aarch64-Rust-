@@ -6,6 +6,7 @@
 pub mod attack;
 pub mod benchmark;
 pub mod breach_consensus;
+pub mod breach_platforms;
 pub mod breach_sweep;
 pub mod cancel;
 pub mod classifier;
@@ -14,6 +15,8 @@ pub mod community;
 pub mod confidence;
 pub mod convex;
 pub mod coref;
+/// Cross-entity correlation rules: the findings the engine derives from
+/// entities it has already collected, rather than from any single source.
 pub mod correlator;
 pub mod cross_scan;
 pub mod crypto;
@@ -60,7 +63,6 @@ pub mod resolve;
 pub mod rf;
 pub mod roi;
 pub mod scan;
-pub mod scan_analysis;
 pub mod snake_graph;
 pub mod stealer_row;
 /// Re-export of `hse-core`'s `tags` module (moved alongside `core::entity` —

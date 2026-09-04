@@ -2024,8 +2024,48 @@ fn evidence_sources_dedups_sorts_and_spans_entities() {
 #[test]
 fn is_enrichment_source_only_for_deterministic_passes() {
     assert!(is_enrichment_source("geo_normalize"));
+    assert!(is_enrichment_source("phone_intl"));
+    assert!(is_enrichment_source("email_parse"));
     assert!(!is_enrichment_source("hibp"));
+    // Passive but OBSERVING (a local sensor) is not a derivation.
+    assert!(!is_enrichment_source("arp_scan"));
     assert!(!is_enrichment_source(""));
+}
+
+#[test]
+fn offline_derivation_sources_cannot_corroborate_the_seed_they_were_derived_from() {
+    // Regression: `phone_intl`, `phone_au` and `phone_geo` each re-emit the
+    // seed phone with their own evidence record — three deterministic
+    // prefix-table lookups, zero external observations. They used to count as
+    // three independent corroborating sources, lifting the seed's c_effective
+    // and firing "corroborated by 3 independent source(s)". A derivation adds
+    // useful evidence (kept and shown) but never a source.
+    let mut e = Entity::new(EntityKind::Phone, "+61412345678", 0.7, "scan-test");
+    for src in ["seed", "phone_intl", "phone_au", "phone_geo"] {
+        e.add_evidence(Evidence::new(src, format!("{src} record")));
+    }
+    assert_eq!(e.source_count(), 1, "no external source → exactly one");
+    assert!(
+        e.corroborating_sources().is_empty(),
+        "derivations must not appear in the corroborating set: {:?}",
+        e.corroborating_sources()
+    );
+    assert!(
+        (e.c_effective() - 0.7).abs() < 1e-9,
+        "with n = 1 the cross-source boost must be a no-op, got {}",
+        e.c_effective()
+    );
+
+    // One genuine external sighting is exactly one corroborating source, not
+    // four — the derivations still do not stack on top of it.
+    e.add_evidence(Evidence::new("truecaller", "carrier lookup"));
+    assert_eq!(e.source_count(), 1);
+    assert_eq!(
+        e.corroborating_sources(),
+        std::collections::HashSet::from(["truecaller"])
+    );
+    // And the evidence itself is retained for display in full.
+    assert_eq!(e.evidence.len(), 5);
 }
 
 // ── has_evidence_from ─────────────────────────────────────────────────────────
@@ -2184,28 +2224,47 @@ fn absorb_dedups_identically_on_both_branches() {
 
 #[test]
 fn derived_entity_promotion_source_is_not_an_independent_source() {
-    // A `derived` entity whose only real source is its own generator
-    // (`email_parse`) must NOT be lifted to two-source agreement by a promotion
-    // pass. `source_count` already gated this; `corroborating_sources` did not,
-    // so ~20 correlator gates counted it as two independent sources.
+    // A `derived` entity with exactly ONE real observing source must NOT be
+    // lifted to two-source agreement by a promotion pass. `source_count`
+    // already gated this; `corroborating_sources` did not, so ~20 correlator
+    // gates counted it as two independent sources.
     let mut e = Entity::new(EntityKind::Username, "example-user", 0.55, "s");
     e.tag("derived");
-    e.add_evidence(Evidence::new(
-        "email_parse",
-        "Derived from example-user@protonmail.com",
-    ));
+    e.add_evidence(Evidence::new("github_user", "Profile exists"));
     e.add_evidence(Evidence::new(
         "multipath_corroboration",
         "Linked across 3 independent pathways",
     ));
     assert_eq!(e.corroborating_sources().len(), 1);
-    assert!(e.corroborating_sources().contains("email_parse"));
+    assert!(e.corroborating_sources().contains("github_user"));
     assert!(
         !e.corroborating_sources()
             .contains("multipath_corroboration")
     );
     // The SET and the COUNT must agree.
     assert_eq!(e.corroborating_sources().len() as u32, e.source_count());
+
+    // When the derived entity's ONLY source is its own generator — an offline
+    // derivation such as `email_parse` — it has no corroborating source at
+    // all (the generator is not an observation, see ENRICHMENT_ONLY_SOURCES),
+    // and the promotion pass still cannot ground it. `source_count` floors at
+    // 1 (its all-non-corroborating branch); the set is honestly empty.
+    let mut g = Entity::new(EntityKind::Username, "example-user", 0.55, "s");
+    g.tag("derived");
+    g.add_evidence(Evidence::new(
+        "email_parse",
+        "Derived from example-user@protonmail.com",
+    ));
+    g.add_evidence(Evidence::new(
+        "multipath_corroboration",
+        "Linked across 3 independent pathways",
+    ));
+    assert!(
+        g.corroborating_sources().is_empty(),
+        "generator-only derived entity must have no corroborating source: {:?}",
+        g.corroborating_sources()
+    );
+    assert_eq!(g.source_count(), 1);
 }
 
 #[test]

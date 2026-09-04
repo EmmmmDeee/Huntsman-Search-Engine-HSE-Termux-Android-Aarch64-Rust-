@@ -60,6 +60,61 @@ impl Event {
     }
 }
 
+/// Why a module was not dispatched — decided by the engine at the gate that
+/// rejected it, so no consumer has to re-derive it by parsing the prose reason.
+///
+/// The split that matters is whether the module's silence is a coverage GAP.
+/// [`Self::Scoped`] and [`Self::Unavailable`] are gaps: a provider that could
+/// have spoken about this target did not, so nothing it covers can be read as
+/// absent. [`Self::NotApplicable`] and [`Self::AlreadyCovered`] are not: the
+/// first had nothing to say about this target, and the second already answered
+/// earlier in the same scan. Counting those two as gaps reports an outage that
+/// never happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkipClass {
+    /// Narrowed by configuration or policy: an allowlist, an exclusion, a
+    /// category focus, `--free-only` / `--passive-only`, a per-module config
+    /// toggle, a radar-only live sensor, or an engine budget rule holding a
+    /// costly provider back until the target is better corroborated. The
+    /// provider could have answered; it was not asked.
+    Scoped,
+    /// The provider could not be used: a missing credential, an open circuit, a
+    /// spent quota or cost budget, or a capability quarantine.
+    Unavailable,
+    /// The provider had nothing to say about this target at all — a private or
+    /// reserved IP, a local domain, a URL with a private host. Asking would
+    /// have been rejected upstream, so its silence carries no information about
+    /// the subject either way.
+    NotApplicable,
+    /// Already dispatched for this target earlier in the same scan (or, for a
+    /// local sensor, already run on the seed round), so its answer is already
+    /// in the results.
+    AlreadyCovered,
+}
+
+impl SkipClass {
+    /// Whether this skip leaves a provider owing an answer.
+    #[must_use]
+    pub fn is_coverage_gap(self) -> bool {
+        match self {
+            Self::Scoped | Self::Unavailable => true,
+            Self::NotApplicable | Self::AlreadyCovered => false,
+        }
+    }
+
+    /// Canonical wire spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Scoped => "scoped",
+            Self::Unavailable => "unavailable",
+            Self::NotApplicable => "not_applicable",
+            Self::AlreadyCovered => "already_covered",
+        }
+    }
+}
+
 /// Event variants. JSON tag = `type`, snake_case — matches the future SPA's
 /// `evt.type === 'module_start'` checks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +138,12 @@ pub enum EventKind {
     ModuleSkipped {
         module: String,
         reason: String,
+        /// Which kind of skip this was — see [`SkipClass`]. `None` on an event
+        /// persisted before the class was recorded; a consumer deciding
+        /// coverage must treat that as a possible gap rather than assume the
+        /// harmless case.
+        #[serde(default)]
+        class: Option<SkipClass>,
     },
     EntityFound {
         entity: Entity,
@@ -265,9 +326,15 @@ impl EventKind {
             Self::ModuleError { module, error } => {
                 vec![("module", json!(module)), ("error", json!(error))]
             }
-            Self::ModuleSkipped { module, reason } => {
-                vec![("module", json!(module)), ("reason", json!(reason))]
-            }
+            Self::ModuleSkipped {
+                module,
+                reason,
+                class,
+            } => vec![
+                ("module", json!(module)),
+                ("reason", json!(reason)),
+                ("skip_class", json!(class.map(SkipClass::as_str))),
+            ],
             Self::EntityFound { entity } => vec![
                 ("entity_kind", json!(entity.kind.to_string())),
                 ("value", json!(entity.value)),
@@ -398,7 +465,9 @@ impl EventKind {
                 ("module", format!("✓ {module}  ({found} found)"))
             }
             Self::ModuleError { module, error } => ("module", format!("✗ {module}  {error}")),
-            Self::ModuleSkipped { module, reason } => ("module", format!("◌ {module}  {reason}")),
+            Self::ModuleSkipped { module, reason, .. } => {
+                ("module", format!("◌ {module}  {reason}"))
+            }
             Self::EntityFound { entity } => {
                 let cand = if entity.has_tag(crate::core::tags::CANDIDATE) {
                     "  (candidate)"

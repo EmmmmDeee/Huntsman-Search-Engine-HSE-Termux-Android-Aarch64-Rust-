@@ -20,7 +20,10 @@ pub fn cmd_benchmark(scan_id: Option<String>, json: bool) -> Result<()> {
         .ok_or_else(|| Error::Other(format!("scan {id} not found")))?;
     let entities = store.entities_for_scan(&id)?;
     let relations = store.relations_for_scan(&id)?;
-    let report = benchmark::report(&scan, &entities, &relations);
+    // The dispatch event log is what lets the report say whether its own
+    // scorecard is safe to compare against another run's.
+    let events = store.events_for_scan(&id)?;
+    let report = benchmark::report(&scan, &entities, &relations, &events);
 
     if json {
         let out = serde_json::to_string_pretty(&report).map_err(|e| Error::Other(e.to_string()))?;
@@ -33,6 +36,12 @@ pub fn cmd_benchmark(scan_id: Option<String>, json: bool) -> Result<()> {
         "Benchmark — scan {} (seed: {} [{}], {})",
         report.scan_id, report.seed, report.seed_kind, report.status
     );
+    // Printed before the numbers, not after them: this scorecard exists to be
+    // set against another run's, and a reader who has already absorbed the
+    // figures has drawn the comparison the caveat exists to qualify.
+    if let Some(caveat) = &report.comparability_caveat {
+        println!("  NOT DIRECTLY COMPARABLE: {caveat}");
+    }
     match report.duration_secs {
         Some(d) => println!(
             "  duration          {d}s  ({:.2} entities/s)",

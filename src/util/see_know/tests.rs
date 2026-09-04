@@ -248,27 +248,19 @@ fn reset_budget_clears_the_cross_module_response_cache() {
     // same email/username/phone, forever, with no live re-check.
     // reset_budget() must also clear the cache.
     //
-    // Isolation note: RESPONSE_CACHE is a process-global `static` that ANY
-    // concurrent scan-running test clears via `reset_per_scan` →
-    // `see_know::reset_budget` — a lock inside this file cannot serialise
-    // against those. So the "value present" sanity below can be cleared out
-    // from under us by an unrelated test (an observed CI flake). Retry the put
-    // until we observe our own UNIQUE entry (tolerating a rare external clear
-    // landing in the window); the real contract — that reset_budget() then
-    // clears it — is the final assertion, which no external test can spuriously
-    // satisfy for this unique key (nothing else ever puts it).
+    // This used to need a 200-iteration retry loop: RESPONSE_CACHE was keyed
+    // globally, so ANY concurrent scan-running test clearing it via
+    // `reset_per_scan` → `see_know::reset_budget` could wipe this entry between
+    // the put and the read, and a lock inside this file could not serialise
+    // against that. The cache is now namespaced by the engine's scan ambient
+    // and the flush drops only the current scan's entries, so a single put is
+    // observable and the retry loop — a workaround for the defect, not a test
+    // of anything — is gone with it.
     let key = "reset_budget_clears_cache_test_key";
-    let mut observed_present = false;
-    for _ in 0..200 {
-        cache_put(key.to_string(), vec![json!({"stale": true})]);
-        if cache_get(key).is_some() {
-            observed_present = true;
-            break;
-        }
-    }
+    cache_put(key.to_string(), vec![json!({"stale": true})]);
     assert!(
-        observed_present,
-        "sanity: a non-empty put must be observable at least once in 200 tries"
+        cache_get(key).is_some(),
+        "a non-empty put is observable: no other scan shares this namespace"
     );
     reset_budget();
     assert!(
@@ -688,8 +680,8 @@ fn rate_limited_error_redacts_credentials_from_the_provider_body() {
         "the credential must be redacted out of the error: {msg}"
     );
     assert!(
-        msg.contains("seek_now:"),
-        "the error must still identify its provider: {msg}"
+        msg.contains("see_know:"),
+        "the error must still identify its provider by its registered name: {msg}"
     );
 }
 
@@ -1144,4 +1136,78 @@ fn deep_search_reuses_the_same_verified_request_body_contract_as_fast_search() {
         "search_deep must build its request body with the exact same function \
          fast search uses — no independent, unverified body construction"
     );
+}
+
+#[test]
+fn credits_probe_reports_the_rejection_it_latched() {
+    // `hse doctor` prints the probe's cause and remedy; it must be the same
+    // `KeyRejection` the latch records, so a plan-lacking key is told to fix
+    // its plan and a bad key to swap it — never one generic text for both.
+    use super::budget::KeyRejection;
+    let _guard = BUDGET_TEST_LOCK.lock();
+    for (body, expected) in [
+        (
+            r#"{"error":"invalid_api_key","message":"Invalid API key"}"#,
+            KeyRejection::InvalidKey,
+        ),
+        (
+            r#"{"error":"plan_required","message":"Upgrade required"}"#,
+            KeyRejection::PlanRequired,
+        ),
+    ] {
+        reset_budget();
+        match classify_credits_probe(Ok(body.to_string())) {
+            CreditsProbe::InvalidKey(rejection) => {
+                assert_eq!(rejection, expected, "{body}");
+                assert_eq!(crate::util::see_know::key_rejection(), Some(expected));
+                assert!(rejection.guidance().contains(match expected {
+                    KeyRejection::InvalidKey => "invalid_api_key",
+                    KeyRejection::PlanRequired => "plan_required",
+                }));
+            }
+            other => panic!("{body} must classify as a key rejection, got {other:?}"),
+        }
+    }
+    reset_budget();
+}
+
+#[test]
+fn one_scans_cached_responses_are_never_served_to_another() {
+    use crate::util::budget::with_scan_sync;
+
+    // The cache dedups identical endpoint queries WITHIN one scan — that is its
+    // stated purpose. Keyed globally it was a BETWEEN-scan cache, and under
+    // `hse serve`'s concurrent scans that meant scan B was handed records scan A
+    // had retrieved, as though B had retrieved them itself: provider output
+    // attributed to a scan that never made the call.
+    let key = "shared_endpoint_query";
+    with_scan_sync("cache-scan-a", || {
+        cache_put(key.to_string(), vec![json!({"owner": "a"})]);
+        assert!(cache_get(key).is_some(), "scan-a sees its own entry");
+    });
+    with_scan_sync("cache-scan-b", || {
+        assert!(
+            cache_get(key).is_none(),
+            "scan-b must not be served scan-a's retrieval"
+        );
+        cache_put(key.to_string(), vec![json!({"owner": "b"})]);
+    });
+    with_scan_sync("cache-scan-a", || {
+        let cached = cache_get(key).expect("scan-a's own entry survives");
+        assert_eq!(
+            cached[0]["owner"], "a",
+            "each scan reads back what IT cached"
+        );
+    });
+
+    // And the scan-start flush drops only the starting scan's entries, instead
+    // of wiping a running sibling's cache.
+    with_scan_sync("cache-scan-b", reset_budget);
+    with_scan_sync("cache-scan-a", || {
+        assert!(
+            cache_get(key).is_some(),
+            "scan-a's cache survives scan-b starting"
+        );
+        reset_budget();
+    });
 }

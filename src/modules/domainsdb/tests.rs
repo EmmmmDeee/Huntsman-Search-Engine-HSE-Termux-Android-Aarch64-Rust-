@@ -223,3 +223,32 @@ use super::*;
     fn blank_domain_is_skipped() {
         assert!(build_domain_entity(&entry(r#"{"domain":"  "}"#), false, "s").is_none());
     }
+
+#[test]
+fn zone_sweep_stops_on_rejection_and_rate_limit_only() {
+    // 429 was previously swallowed by the generic non-2xx `continue`, so a
+    // rate-limited key produced a clean "no look-alike domains" across all six
+    // zones and was never reported to the pool. Same routing as
+    // `opencorporates::should_report_key_status`.
+    for status in [401u16, 403, 429] {
+        assert!(super::zone_sweep_stops_on(status), "{status} ends the sweep");
+    }
+    for status in [200u16, 204, 400, 404, 500, 502, 503] {
+        assert!(
+            !super::zone_sweep_stops_on(status),
+            "{status} is a per-zone miss, not a key signal"
+        );
+    }
+}
+
+#[test]
+fn description_no_longer_contradicts_the_key_gated_cost() {
+    use crate::core::module::Module;
+    let d = super::DomainsDb.description();
+    assert!(
+        !d.contains("no key") && !d.contains("(free"),
+        "the module-listing API shows cost next to description; a KeyGated module \
+         must not describe itself as free/no-key: {d}"
+    );
+    assert!(d.contains("key-gated"), "{d}");
+}

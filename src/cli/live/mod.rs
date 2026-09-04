@@ -229,7 +229,9 @@ fn render_event(kind: &crate::core::event::EventKind) -> String {
             }
         }
         E::ModuleError { module, error } => format!("  module {module}: error: {error}"),
-        E::ModuleSkipped { module, reason } => format!("  module {module}: skipped: {reason}"),
+        E::ModuleSkipped { module, reason, .. } => {
+            format!("  module {module}: skipped: {reason}")
+        }
         E::EntityFound { entity } => render_entity(entity),
         E::ExpansionTick {
             depth,

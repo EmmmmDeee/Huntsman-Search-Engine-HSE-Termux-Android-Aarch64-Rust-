@@ -133,6 +133,44 @@ fn html_error_summary(body: &str) -> Option<String> {
 /// risk under the username_search 32-way probe fan-out. Returns lossy UTF-8 of
 /// what was read (sufficient for substring/needle checks), or `None` on a
 /// transport error.
+/// Read a capped body, turning a transport failure into an `Err` instead of an
+/// empty read.
+///
+/// [`read_body_capped`] returns `None` ONLY when the connection failed while
+/// streaming (hitting `cap` returns `Some`, truncated). For a module that
+/// reports a REGISTRY result, mapping that `None` to an empty `ModuleResult` is
+/// the fail-open bug this codebase has fixed repeatedly: an empty registry
+/// result is a negative claim about the subject ("holds no licence", "is not a
+/// registered practitioner") that an analyst will act on, and a mid-body
+/// connection reset must never be able to manufacture one.
+///
+/// ABSENCE OF EASY EVIDENCE ≠ ABSENCE OF A NEXUS, at the transport layer.
+/// `core::intelligence::ProviderOutcome::Failed` carries the same distinction
+/// once a module has a claim to attach it to.
+///
+/// # Errors
+/// Returns `Error::module(module, …)` when the body could not be read.
+pub async fn read_body_capped_or_fail(
+    module: &'static str,
+    resp: reqwest::Response,
+    cap: usize,
+) -> Result<String> {
+    read_body_capped(resp, cap).await.ok_or_else(|| {
+        Error::module(
+            module,
+            "response body was unreadable (transport failure mid-stream) — \
+             not a finding that the subject has no record",
+        )
+    })
+}
+
+/// Read at most `cap` bytes of a response body, or `None` if the transfer
+/// failed part-way.
+///
+/// `None` means the body could not be read, NOT that it was empty. A caller
+/// that maps it to an empty result reports a clean negative it never
+/// established — use [`read_body_capped_or_fail`] unless the distinction is
+/// genuinely irrelevant at the call site.
 pub async fn read_body_capped(resp: reqwest::Response, cap: usize) -> Option<String> {
     use futures::StreamExt as _;
     let mut stream = resp.bytes_stream();

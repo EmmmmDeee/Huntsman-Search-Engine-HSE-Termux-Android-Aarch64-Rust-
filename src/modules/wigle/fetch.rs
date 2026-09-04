@@ -121,9 +121,46 @@ pub(super) async fn fetch_wigle(
     fetch_wigle_typed(http, user, token, lat, lon, d, NetworkKind::Wifi).await
 }
 
-/// Type-parameterised WiGLE bbox search. `kind=Wifi` is the legacy
-/// path; `Cell` and `Bluetooth` exercise the previously-unused
-/// observation corpora.
+/// Bounding-box search URL for `kind`'s corpus. Pure, so the exact parameter
+/// set is unit-tested against the documented one.
+///
+/// Authoritative source: WiGLE's Swagger, `https://api.wigle.net/swagger.json`
+/// (retrieved 2026-09-03). The three corpora are three SEPARATE endpoints —
+/// see [`NetworkKind::search_endpoint`] — each documenting `latrange1` /
+/// `latrange2` / `longrange1` / `longrange2` and `resultsPerPage`, which is all
+/// this sends. `onlymine` ("leave unset for general search") and the WiFi-only
+/// `freenet`/`paynet` booleans (default `false`) are left unset rather than
+/// sent as `false`, exactly as the spec describes the general search.
+///
+/// `/api/v2/network/search` has NO `type` parameter. This used to send
+/// `?type=cell` / `?type=bluetooth` to it: the server ignored the parameter and
+/// returned WiFi rows, which the cell/Bluetooth extractors then labelled as
+/// cell-carrier and Bluetooth-beacon intelligence — RULE.md's own cautionary
+/// case, still live in the code until this.
+pub(super) fn search_bbox_url(kind: NetworkKind, lat: f64, lon: f64, d: f64) -> String {
+    format!(
+        "{}?latrange1={:.6}&latrange2={:.6}&longrange1={:.6}&longrange2={:.6}&resultsPerPage=100",
+        kind.search_endpoint(),
+        lat - d,
+        lat + d,
+        lon - d,
+        lon + d,
+    )
+}
+
+/// WiFi SSID search URL — `ssid` is a documented `/api/v2/network/search`
+/// parameter ("Include only networks exactly matching the string network
+/// name"). Pure; see [`search_bbox_url`] for the source and parameter policy.
+pub(super) fn ssid_search_url(ssid: &str) -> String {
+    format!(
+        "{}?ssid={}&resultsPerPage=100",
+        NetworkKind::Wifi.search_endpoint(),
+        crate::util::http::urlencode(ssid)
+    )
+}
+
+/// Bounding-box search of `kind`'s corpus (WiFi, cell tower or Bluetooth),
+/// each against its own documented endpoint — see [`search_bbox_url`].
 pub(super) async fn fetch_wigle_typed(
     http: &reqwest::Client,
     user: &str,
@@ -133,19 +170,7 @@ pub(super) async fn fetch_wigle_typed(
     d: f64,
     kind: NetworkKind,
 ) -> crate::core::error::Result<Resp> {
-    let url = format!(
-        "https://api.wigle.net/api/v2/network/search?\
-         latrange1={lat_lo:.6}&latrange2={lat_hi:.6}\
-         &longrange1={lon_lo:.6}&longrange2={lon_hi:.6}\
-         &onlymine=false&freenet=false&paynet=false\
-         &resultsPerPage=100&type={kind}",
-        lat_lo = lat - d,
-        lat_hi = lat + d,
-        lon_lo = lon - d,
-        lon_hi = lon + d,
-        kind = kind.as_str(),
-    );
-
+    let url = search_bbox_url(kind, lat, lon, d);
     let resp = get_with_retry(http, user, token, &url).await?;
     classify_and_decode(resp).await
 }
@@ -159,13 +184,7 @@ pub(super) async fn fetch_wigle_ssid(
     token: &str,
     ssid: &str,
 ) -> crate::core::error::Result<Resp> {
-    use crate::util::http::urlencode;
-
-    let url = format!(
-        "https://api.wigle.net/api/v2/network/search?\
-         ssid={}&onlymine=false&freenet=false&paynet=false&resultsPerPage=100",
-        urlencode(ssid)
-    );
+    let url = ssid_search_url(ssid);
     let resp = get_with_retry(http, user, token, &url).await?;
     classify_and_decode(resp).await
 }
@@ -178,13 +197,20 @@ pub(super) struct DetailResp {
     pub(super) results: Vec<Network>,
 }
 
-/// Fetch one BSSID's detail record for `kind` (wifi/cell/bt). `Ok(None)` is
-/// the genuine WiGLE "no such network" answer (a 404, per `util::wigle::get`);
-/// every other failure — rate-limit, auth, other non-2xx, transport, or a
-/// body-read/JSON-decode failure — propagates as `Err` instead of collapsing
-/// into the same `None`, so the caller can tell a real outage apart from a
-/// confirmed absence. Mirrors the sibling `wifi_intel::wigle::query_wigle_detail`,
-/// which already gets this right against the same `util::wigle::get` helper.
+/// Fetch one device address's detail record from `kind`'s corpus. `Ok(None)`
+/// is the genuine WiGLE "no such network" answer (a 404, per
+/// `util::wigle::get`); every other failure — rate-limit, auth, other non-2xx,
+/// transport, or a body-read/JSON-decode failure — propagates as `Err` instead
+/// of collapsing into the same `None`, so the caller can tell a real outage
+/// apart from a confirmed absence. Mirrors the sibling
+/// `wifi_intel::wigle::query_wigle_detail`, which already gets this right
+/// against the same `util::wigle::get` helper.
+///
+/// Per the Swagger (see [`search_bbox_url`]): a WiFi BSSID is looked up on
+/// `/api/v2/network/detail?netid=…&type=WIFI`, a Bluetooth address on its own
+/// `/api/v2/bluetooth/detail?netid=…`. There is no address-keyed cell lookup —
+/// a cell tower is identified by operator/LAC/CID, never by a MAC — so
+/// [`NetworkKind::Cell`] is a caller error here, not a silently-empty answer.
 pub(super) async fn fetch_detail(
     http: &reqwest::Client,
     user: &str,
@@ -192,7 +218,16 @@ pub(super) async fn fetch_detail(
     bssid: &str,
     kind: NetworkKind,
 ) -> crate::core::error::Result<Option<DetailResp>> {
-    let url = crate::util::wigle::detail_url(bssid, kind.as_str());
+    let url = match kind {
+        NetworkKind::Wifi => crate::util::wigle::detail_url(bssid, "WIFI"),
+        NetworkKind::Bluetooth => crate::util::wigle::bluetooth_detail_url(bssid),
+        NetworkKind::Cell => {
+            return Err(crate::core::error::Error::module(
+                SRC,
+                "a cell tower has no address-keyed detail lookup (operator/LAC/CID only)",
+            ));
+        }
+    };
     let Some(resp) = crate::util::wigle::get(http, user, token, &url, SRC).await? else {
         return Ok(None);
     };

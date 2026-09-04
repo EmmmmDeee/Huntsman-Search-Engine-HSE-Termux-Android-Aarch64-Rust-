@@ -124,7 +124,7 @@ impl Module for DomainsDb {
         "domainsdb"
     }
     fn description(&self) -> &'static str {
-        "Domain-registration recon via domainsdb.info — sweeps registered domains for infrastructure pivots (free, no key)"
+        "Domain-registration recon via domainsdb.info — sweeps registered domains for infrastructure pivots (key-gated: the provider disabled anonymous access in 2026)"
     }
     fn priority(&self) -> u8 {
         19
@@ -279,7 +279,15 @@ async fn collect_zones(
         // rotates to another), then stop — the surfaced error is the operator's
         // signal that the configured domainsdb key is bad/expired, not that the
         // subject has no look-alike domains.
-        if status == 401 || status == 403 {
+        // A 429 is the same shape of retry-futile failure for the rest of the
+        // sweep (six back-to-back requests on one key: once it is throttled,
+        // every remaining zone is too) and was previously swallowed by the
+        // generic non-2xx `continue` below — so a rate-limited key produced a
+        // clean "no look-alike domains" and was never told to the pool. Same
+        // fix the sibling `opencorporates::should_report_key_status` applies;
+        // `report_key_exhausted` maps 429 to `RateLimited` (its own cooldown)
+        // rather than `Invalid`, so the key recovers on its own.
+        if zone_sweep_stops_on(status) {
             *auth_rejected = Some(status);
             break;
         }
@@ -302,9 +310,22 @@ async fn collect_zones(
     result.or_hard_failure(auth_rejected.map(|s| {
         crate::core::error::Error::module(
             SRC,
-            format!("HTTP {s} — the configured domainsdb key was rejected"),
+            if s == 429 {
+                format!("HTTP {s} — the configured domainsdb key is rate-limited")
+            } else {
+                format!("HTTP {s} — the configured domainsdb key was rejected")
+            },
         )
     }))
+}
+
+/// Whether this HTTP status ends the zone sweep and reports the configured
+/// key to the pool: 401/403 (bad/expired key → `Invalid`) or 429 (throttled
+/// → `RateLimited`, a recoverable cooldown). Any other non-2xx is a per-zone
+/// miss. Pure so the three-way routing is unit-testable without a live call,
+/// mirroring `opencorporates::should_report_key_status`.
+pub(super) fn zone_sweep_stops_on(status: u16) -> bool {
+    matches!(status, 401 | 403 | 429)
 }
 
 #[cfg(test)]

@@ -184,6 +184,26 @@ pub trait Module: Send + Sync {
         false
     }
 
+    /// Default: `false`. Override `true` for a module whose output is a
+    /// deterministic transform of data already in the graph — the seed, or an
+    /// entity another module observed — with no external observation of its
+    /// own: parsers, canonicalisers, permutation generators and offline decoders
+    /// (`email_parse`, `phone_intl`, `username_variants`, `structured_id`, …).
+    ///
+    /// A derivation's evidence must never count as an independent corroborating
+    /// source. `hse_core::ENRICHMENT_ONLY_SOURCES` is the runtime authority for
+    /// that exclusion (it is evaluated over evidence source strings, in the
+    /// core crate the browser build also ships, so it cannot consult this
+    /// registry), and `derivation_modules_are_exactly_the_enrichment_only_sources`
+    /// (tests/architecture_parts) pins this declaration to that list in both
+    /// directions — a new derivation module cannot silently start
+    /// "corroborating" the seed it was derived from. Distinct from
+    /// [`Self::is_passive`]: a local-sensor module (`arp_scan`, `gps_fix`) is
+    /// passive but DOES observe the world. Every derivation is passive.
+    fn is_derivation(&self) -> bool {
+        false
+    }
+
     /// Default: `false`. Override true for the heaviest paid/key-gated
     /// modules whose per-query cost and low-specificity fan-out risk make
     /// speculative firing on every freshly-discovered entity wasteful (see

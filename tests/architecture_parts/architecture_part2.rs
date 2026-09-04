@@ -649,3 +649,64 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         }
     }
 }
+
+/// `Module::is_derivation()` and `hse_core::ENRICHMENT_ONLY_SOURCES` are two
+/// declarations of ONE fact — "this module's evidence is a deterministic
+/// derivation of data already in the graph, not an independent observation" —
+/// held in two crates because `hse_core` (which computes `source_count` /
+/// `c_effective` over evidence *source strings*, and is also what the browser
+/// wasm build ships) cannot see the module registry. This pins the two to each
+/// other in BOTH directions, so a new derivation module cannot silently start
+/// "corroborating" the seed it was derived from, and a module cannot be
+/// excluded from corroboration without declaring why.
+///
+/// Background: `phone_intl` + `phone_au` + `phone_geo` — three offline
+/// prefix-table lookups — re-emitted a seed phone with their own evidence and
+/// were counted as "3 independent source(s)" before either declaration
+/// existed for them.
+#[test]
+fn derivation_modules_are_exactly_the_enrichment_only_sources() {
+    use huntsman_search_engine::core::entity::{ENRICHMENT_ONLY_SOURCES, is_enrichment_source};
+    let modules = huntsman_search_engine::modules::registry();
+
+    for m in &modules {
+        assert_eq!(
+            m.is_derivation(),
+            is_enrichment_source(m.name()),
+            "module `{}`: is_derivation() = {} but ENRICHMENT_ONLY_SOURCES {} it — \
+             the two declarations must agree (hse-core/src/lib.rs vs the module's \
+             `Module` impl)",
+            m.name(),
+            m.is_derivation(),
+            if is_enrichment_source(m.name()) { "lists" } else { "omits" },
+        );
+        if m.is_derivation() {
+            // A derivation never reaches the network — if it did, it would be
+            // observing, and its evidence would deserve to count.
+            assert!(
+                m.is_passive(),
+                "module `{}` declares is_derivation() but not is_passive(): a \
+                 derivation is by definition offline",
+                m.name()
+            );
+        }
+    }
+
+    // Every list entry that is NOT a registered module must be one of the
+    // engine's own evidence sources — pinned explicitly so a typo'd module name
+    // in the list (which `is_enrichment_source` would silently never match) is
+    // caught here instead of quietly re-enabling corroboration for that module.
+    let names: std::collections::BTreeSet<&str> = modules.iter().map(|m| m.name()).collect();
+    let engine_sources: Vec<&str> = ENRICHMENT_ONLY_SOURCES
+        .iter()
+        .copied()
+        .filter(|s| !names.contains(s))
+        .collect();
+    assert_eq!(
+        engine_sources,
+        ["geo_normalize", "seed"],
+        "ENRICHMENT_ONLY_SOURCES entries that are not registered modules must be \
+         exactly the engine's own passes (src/core/engine/enrich.rs `geo_normalize`, \
+         the seed anchor); anything else is a stale or misspelled module name"
+    );
+}

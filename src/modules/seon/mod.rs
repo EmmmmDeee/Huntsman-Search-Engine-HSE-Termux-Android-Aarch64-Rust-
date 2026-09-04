@@ -65,7 +65,7 @@ use crate::core::{
 use crate::util::http::RequestBuilderExt;
 
 use entity_builders::{build_email_entities, build_phone_entities};
-use types::{SeonEmailResp, SeonPhoneResp};
+use types::{SeonEmailResp, SeonError, SeonPhoneResp};
 
 pub(crate) const KEY_ENV: &str = "HUNTSMAN_SEON_KEY";
 pub(crate) const SRC: &str = "seon";
@@ -159,6 +159,29 @@ impl Module for Seon {
     }
 }
 
+/// Classify SEON's shared `{success, error, data}` error envelope (see
+/// [`SeonError`]'s doc): `None` when there is no error object (a genuine
+/// non-key failure — an invalid target, malformed input), `Some(detail)`
+/// when the error message names a key/quota problem (`success == false`
+/// alone is not enough — SEON also answers a merely-invalid request that
+/// way, per the documented Fraud API v2 example, `"Incorrect type:
+/// 'transaction_amount' should be sent as number"`, which is not a key
+/// failure). **Pure**, so the classification is unit-tested off JSON
+/// fixtures without a live call.
+fn seon_key_error_detail(error: Option<&SeonError>) -> Option<String> {
+    let error = error?;
+    let message = error.message.as_deref().unwrap_or_default();
+    if !crate::util::http::is_key_or_quota_message(message) {
+        return None;
+    }
+    Some(match (error.message.as_deref(), error.code.as_deref()) {
+        (Some(msg), Some(code)) => format!("{msg} (code {code})"),
+        (Some(msg), None) => msg.to_string(),
+        (None, Some(code)) => format!("code {code}"),
+        (None, None) => "api error".to_string(),
+    })
+}
+
 impl Seon {
     async fn email_lookup(
         &self,
@@ -190,6 +213,13 @@ impl Seon {
             .map_err(|e| crate::core::error::Error::module(SRC, e))?;
 
         if body.success != Some(true) {
+            if let Some(detail) = seon_key_error_detail(body.error.as_ref()) {
+                ctx.report_key_exhausted(SRC, key, 200);
+                return Err(crate::core::error::Error::module(
+                    SRC,
+                    format!("api 200 error: {detail}"),
+                ));
+            }
             return Ok(ModuleResult::new());
         }
         let Some(data) = body.data else {
@@ -231,6 +261,13 @@ impl Seon {
             .map_err(|e| crate::core::error::Error::module(SRC, e))?;
 
         if body.success != Some(true) {
+            if let Some(detail) = seon_key_error_detail(body.error.as_ref()) {
+                ctx.report_key_exhausted(SRC, key, 200);
+                return Err(crate::core::error::Error::module(
+                    SRC,
+                    format!("api 200 error: {detail}"),
+                ));
+            }
             return Ok(ModuleResult::new());
         }
         let Some(data) = body.data else {

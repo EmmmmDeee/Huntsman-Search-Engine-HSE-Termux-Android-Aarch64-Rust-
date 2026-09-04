@@ -308,6 +308,13 @@ pub fn derive_default<M: Module + ?Sized>(module: &M) -> ProviderDescriptor {
     }
 }
 
+/// The operator-configured per-request cost family: `HSE_PROVIDER_COST_` +
+/// the upper-cased provider id (`HSE_PROVIDER_COST_SEE_KNOW`, …). A named
+/// constant, not an inline `format!` literal, so the env-read guard
+/// (`non_huntsman_env_reads_are_known`, tests/architecture_parts) can see the
+/// family and keep it documented.
+pub const PROVIDER_COST_ENV_PREFIX: &str = "HSE_PROVIDER_COST_";
+
 /// Operator-configured USD cost per request for `provider_id`, read from
 /// `HSE_PROVIDER_COST_<PROVIDER_ID_UPPERCASED>` (e.g. `HSE_PROVIDER_COST_SEE_KNOW`
 /// for `see_know`). `None` when unset or [`parse_cost_per_request`] rejects
@@ -315,7 +322,10 @@ pub fn derive_default<M: Module + ?Sized>(module: &M) -> ProviderDescriptor {
 /// the codebase, deliberately never a compiled-in literal, since vendor
 /// prices change (see the module doc comment).
 pub fn env_cost_per_request(provider_id: &str) -> Option<f64> {
-    let var = format!("HSE_PROVIDER_COST_{}", provider_id.to_ascii_uppercase());
+    let var = format!(
+        "{PROVIDER_COST_ENV_PREFIX}{}",
+        provider_id.to_ascii_uppercase()
+    );
     std::env::var(var)
         .ok()
         .and_then(|v| parse_cost_per_request(&v))

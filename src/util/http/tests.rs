@@ -4,7 +4,7 @@ use super::fetch::{
     is_keyed_error_status, key_tail, keyed_cascade, keyed_cascade_json, keyed_ok_or_404,
     ok_or_absent, parse_retry_after_secs, retry_after_secs,
 };
-use super::redact::{redact_credentials, redact_literal_secrets};
+use super::redact::{pool_secret_values, redact_credentials, redact_literal_secrets};
 use super::ssrf::{filter_public, redirect_to_private_ip};
 use super::url::json_decode;
 use super::url::{RequestBuilderExt, urlencode};
@@ -1249,4 +1249,33 @@ fn transport_failure_names_the_url_exactly_once() {
         "an error without the URL must have it appended: {bare}"
     );
     assert!(bare.contains("curl fallback failed for"));
+}
+
+#[test]
+fn pooled_keys_are_masked_wherever_they_appear_whatever_their_status() {
+    // Over a FRESH, LOCAL pool — never `global_pool()` — for the same reason
+    // as `keys::tests::pool_keys_fill_empty_env_slots`. Before pooled keys
+    // were fed to the literal pass, only `HUNTSMAN_*` env values were masked,
+    // so a pooled key (which never lives in the environment) echoed by an
+    // upstream error body reached the persisted events table and the SSE
+    // stream verbatim.
+    use crate::util::key_pool::{KeyEntry, KeyPool, KeyStatus};
+    let pool = KeyPool::new();
+    let mut active = KeyEntry::new("pooled-active-key-0123456789");
+    active.status = KeyStatus::Active;
+    assert!(pool.add("shodan", active));
+    let mut revoked = KeyEntry::new("pooled-revoked-key-9876543210");
+    revoked.status = KeyStatus::Revoked;
+    assert!(pool.add("ipqs", revoked));
+    let snapshot = pool.snapshot();
+
+    let body = "GET /api/json/ip/pooled-active-key-0123456789/1.2.3.4 failed; \
+                the retired key pooled-revoked-key-9876543210 was echoed too";
+    let masked = redact_literal_secrets(body, pool_secret_values(&snapshot));
+    assert_eq!(
+        masked,
+        "GET /api/json/ip/***/1.2.3.4 failed; the retired key *** was echoed too"
+    );
+    // Two services, one value each: the snapshot is walked in full.
+    assert_eq!(pool_secret_values(&snapshot).count(), 2);
 }

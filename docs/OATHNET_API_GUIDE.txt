@@ -1,10 +1,17 @@
 OATHNET PRO API — LLM INTEGRATION GUIDE
 ========================================
 
-This document is the authoritative reference for LLMs interacting with
-the OathNet Pro API. It incorporates every endpoint, parameter, response
-format, quota rule, error code, and best practice from the official
-OathNet documentation (https://docs.oathnet.org).
+This document is a DERIVED summary, for LLMs interacting with the OathNet
+Pro API, of the official OathNet documentation (https://docs.oathnet.org):
+endpoints, parameters, response formats, quota rules, error codes and best
+practices. It is not the authority. Where this guide and the official
+documentation differ, the official documentation wins, and the code must
+follow the official documentation (RULE.md: the authoritative spec
+outranks any in-repo description of it). §9 records one such case: this
+guide showed the search-session init response as { "search_id": ... } and
+the code was briefly changed to match it, against the documented
+data.session.id — verify a response shape against the live reference
+before relying on this text.
 
 
 1. OVERVIEW
@@ -267,11 +274,38 @@ With sessions: the same 3 searches cost 1 lookup.
     Body: { "query": "user@example.com" }
     Header: x-api-key: YOUR_KEY
 
-    Response: { "search_id": "abc123..." }
+    Response (the live reference's documented shape — the session id is
+    nested, NOT a top-level "search_id" field):
 
-Usage: Add search_id to all subsequent requests for that query:
+    {
+      "success": true,
+      "message": "Search session initialized successfully",
+      "data": {
+        "session": {
+          "id": "sess_abc123",
+          "query": "user@example.com",
+          "search_type": "email",
+          "status": "active",
+          "created_at": "2024-01-15T10:30:00Z",
+          "expires_at": "2024-01-15T11:30:00Z",
+          "duration_minutes": 60
+        },
+        "user": { "plan": "Pro", "daily_lookups": { "used": 450, "remaining": 550, "limit": 1000 } },
+        "services": { "<service_key>": { "is_available": true, "session_quota": 100, ... } },
+        "summary": { "total_services": 2, "available_services": 2, "session_expires_in_minutes": 60 }
+      }
+    }
 
-    GET /service/v2/breach/search?email[]=user@example.com&search_id=abc123
+    Source: https://docs.oathnet.org/api-reference/search-session/initialize-a-search-session.md
+    (retrieved 2026-09-03): "The returned session.id should be passed as
+    search_id to all subsequent service calls." An earlier revision of this
+    guide showed the response as a flat { "search_id": ... } object; no
+    documented response carries that field.
+
+Usage: Pass data.session.id as the search_id query parameter on all
+subsequent requests for that query:
+
+    GET /service/v2/breach/search?email[]=user@example.com&search_id=sess_abc123
 
 Rules:
 - Sessions are valid for 60 MINUTES.
@@ -531,7 +565,8 @@ Step 1 — Create a search session:
     Content-Type: application/json
     { "query": "user@example.com" }
 
-    → { "search_id": "sess_abc123" }
+    → { "success": true, "data": { "session": { "id": "sess_abc123", ... }, ... } }
+      (data.session.id is the search_id for every later call — see §9)
 
 Step 2 — Breach search (highest value endpoint):
 
@@ -698,11 +733,11 @@ Common fields returned in stealer search items:
 
     Step 1: Init session for the target
     POST /service/search/init  {"query":"user@example.com"}
-    → session_id
+    → data.session.id  (the session id; see §9 for the full response)
 
-    Step 2: Use session_id + filters together
+    Step 2: Use that id + filters together
     GET /service/v2/breach/search?email[]=user@example.com
-        &dbname[]=linkedin&search_id=<session_id>
+        &dbname[]=linkedin&search_id=<data.session.id>
 
     All queries with the same search_id cost only 1 lookup total.
 
@@ -813,7 +848,7 @@ sessions, cookies, or autofill data.
     → session_id
 
     GET /service/v2/stealer/search?domain[]=shodan.io
-        &search_id=<session_id>&page_size=25
+        &search_id=<data.session.id>&page_size=25
 
     For each result, extract username + password + URL.
     If the password matches a known prefix pattern → API key found.

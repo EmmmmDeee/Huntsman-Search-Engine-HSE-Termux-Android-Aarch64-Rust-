@@ -726,6 +726,50 @@ export function renderPivotsHtml(data, entities_js) {
 }
 
 /**
+ * Builds the "Provider Coverage" panel fragment for a `/scans/{id}/coverage`
+ * response.
+ *
+ * Four distinct states, deliberately not collapsed:
+ *
+ * * **Unknown** (`providers` is `null`) — no dispatch events are retained, so
+ *   nothing at all can be said about coverage. Rendered as an explicit
+ *   "not known", never as a clean bill of health.
+ * * **Exhaustive** — every provider answered and none was out of scope, so a
+ *   thin result here IS evidence of absence, and the panel says so.
+ * * **Narrowed** — nothing broke, but the scan's own options put providers out
+ *   of reach. Reported calmly: this is the ordinary case, and styling it as a
+ *   fault on every scan is how a warning stops being read.
+ * * **Degraded** — providers that could not be used. The only state that
+ *   demands action, so it is the only one styled as a fault.
+ * @param {any} data
+ * @returns {string}
+ */
+export function renderProviderCoverageHtml(data) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.renderProviderCoverageHtml(retptr, addHeapObject(data));
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        var ptr1 = r0;
+        var len1 = r1;
+        if (r3) {
+            ptr1 = 0; len1 = 0;
+            throw takeObject(r2);
+        }
+        deferred2_0 = ptr1;
+        deferred2_1 = len1;
+        return getStringFromWasm0(ptr1, len1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export5(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * Builds the "Scan settings" panel fragment. `scan_js` is the JS side's
  * already-resolved `scan || S.scan || {}` — see the module doc comment.
  * @param {any} scan_js
@@ -1164,8 +1208,8 @@ function __wbg_get_imports() {
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 17, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
-            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_293);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 16, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
+            const ret = makeClosure(arg0, arg1, __wasm_bindgen_func_elem_315);
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000002: function(arg0) {
@@ -1197,8 +1241,8 @@ function __wbg_get_imports() {
     };
 }
 
-function __wasm_bindgen_func_elem_293(arg0, arg1, arg2) {
-    wasm.__wasm_bindgen_func_elem_293(arg0, arg1, addHeapObject(arg2));
+function __wasm_bindgen_func_elem_315(arg0, arg1, arg2) {
+    wasm.__wasm_bindgen_func_elem_315(arg0, arg1, addHeapObject(arg2));
 }
 
 function addHeapObject(obj) {

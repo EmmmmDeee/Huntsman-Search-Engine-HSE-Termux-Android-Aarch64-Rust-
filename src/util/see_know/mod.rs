@@ -49,6 +49,11 @@ mod tests;
 #[cfg(test)]
 pub(crate) use budget::BUDGET_TEST_LOCK;
 
+// Same reason: `modules::see_know::tests` latches a key rejection directly to
+// prove `process()` reports it, without a live rejected call.
+#[cfg(test)]
+pub(crate) use budget::{budget_increment, mark_key_invalid};
+
 // Honest coverage ledger for SeekNow's documented API surface vs. what HSE
 // actually calls (see the file's own doc comment for the "previously made a
 // false comprehensive-coverage claim, now self-consistency-checked with
@@ -62,8 +67,8 @@ mod integration_tests;
 // Budget / quota management — includes BudgetSnapshot re-export so external
 // consumers (`api::handlers::stats`) keep working through the original path.
 pub use budget::{
-    BudgetSnapshot, budget_remaining, budget_snapshot, cleanup_scan, is_key_invalid,
-    is_quota_exhausted, refresh_round_budget, release_quota_probe, reset_budget,
+    BudgetSnapshot, KeyRejection, budget_remaining, budget_snapshot, cleanup_scan, is_key_invalid,
+    is_quota_exhausted, key_rejection, refresh_round_budget, release_quota_probe, reset_budget,
     scale_scan_cap_from_daily, scan_budget_remaining, set_scan_cap_override, should_probe_quota,
 };
 
@@ -92,3 +97,13 @@ pub use crate::util::json::val_str;
 pub use crate::util::json::{val_str_coerce, val_str_or_coerce};
 
 pub const KEY_ENV: &str = "HUNTSMAN_SEEKNOW_KEY";
+
+/// The provider's ONE registered name — `modules::see_know`'s `Module::name()`
+/// and the `source` on every entity it emits — used as the module label on
+/// every error this layer raises. It used to be a second name, `seek_now`,
+/// so the transport/parse errors surfaced as `[seek_now] …` for a module the
+/// registry calls `see_know`, and because the shareable-export redactor
+/// derives its brand list from the registry, `[seek_now] HTTP 503` in an
+/// exported events log escaped redaction while `[see_know]` would have been
+/// masked. An architecture test pins that the phantom name is gone.
+pub const SRC: &str = "see_know";

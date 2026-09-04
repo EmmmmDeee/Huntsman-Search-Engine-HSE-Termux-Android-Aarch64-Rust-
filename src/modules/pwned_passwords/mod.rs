@@ -3,9 +3,18 @@
 //! Endpoint: `GET https://api.pwnedpasswords.com/range/{first_5_chars_of_sha1}`
 //! Auth:     None (100% free, no rate limit).
 //!
-//! Securely verifies if a credential's password hash exists in known
-//! breach datasets using k-Anonymity (only the first 5 chars of the
-//! SHA-1 hash are sent).
+//! Checks whether the TARGET STRING ITSELF (the email address or handle) is
+//! a known leaked password — HIBP's corpus of passwords seen in breaches —
+//! without transmitting it (k-Anonymity: only the first 5 chars of its SHA-1
+//! are sent). This is a password-corpus lookup, not a per-account breach
+//! lookup: a hit says "this exact string is a (re)used password", never
+//! "this account was breached" — that is HIBP's per-account breach/paste
+//! endpoint, a different module. The finding is therefore tagged
+//! `pwned-password` + `used-as-password`, NOT `breach`: the `breach` tag is
+//! what the correlator's breach rules (AU-016/AU-019/AU-022, the email-risk
+//! rule, the breach-geo promotion pass) and the export's breach views key
+//! on, and a subject whose address merely appears in a password list has not
+//! been shown to be in any breach.
 
 use async_trait::async_trait;
 use sha1::{Digest, Sha1};
@@ -51,25 +60,35 @@ fn is_signal_free(value: &str) -> bool {
     crate::util::hashcat::is_common_password(value)
 }
 
-/// Confidence band for a pwned-password hit: more breach occurrences ⇒ higher
-/// confidence the credential is genuinely compromised. **Pure.**
-fn confidence_for(count: u64) -> f64 {
-    if count >= 100 {
+/// Confidence band for a pwned-password hit: the more times the exact string
+/// appears as a password in the corpus, the more certainly it is a known,
+/// reused password. A Username is capped at `HIGH_PLUS`: a bare handle is
+/// shared by many unrelated people, so its appearance in the password corpus
+/// says little about THIS subject, whereas an email address is specific to
+/// its owner. **Pure.**
+fn confidence_for(count: u64, kind: TargetKind) -> f64 {
+    let banded = if count >= 100 {
         confidence::VERY_HIGH_PLUS
     } else if count >= 10 {
         confidence::HIGH_PLUSPLUS
     } else {
         confidence::HIGH_PLUS
+    };
+    match kind {
+        TargetKind::Username => banded.min(confidence::HIGH_PLUS),
+        _ => banded,
     }
 }
 
-/// Map a k-Anonymity breach `count` for `target` to its entities. **Pure** (no
+/// Map the k-Anonymity `count` (how many times the target string appears as a
+/// password in the corpus) for `target` to its entities. **Pure** (no
 /// network), so the count→confidence→tag→evidence mapping is unit-testable.
 ///
 /// Emits a single subject entity (the queried Email/Username) tagged
-/// `pwned-password` + `breach`, carrying the breach count and the SHA-1 prefix
-/// as evidence. Returns an empty `Vec` when `count == 0` (the API's "not found"
-/// signal — padding rows report a zero count), so a non-hit produces nothing.
+/// `pwned-password` + `used-as-password` — never `breach`, see the module
+/// doc — carrying the occurrence count and the SHA-1 prefix as evidence.
+/// Returns an empty `Vec` when `count == 0` (the API's "not found" signal —
+/// padding rows report a zero count), so a non-hit produces nothing.
 fn build_entities(target: &Target, count: u64, prefix: &str, scan_id: &str) -> Vec<Entity> {
     if count == 0 {
         return Vec::new();
@@ -77,17 +96,19 @@ fn build_entities(target: &Target, count: u64, prefix: &str, scan_id: &str) -> V
     let mut entity = Entity::new(
         target.kind.to_entity_kind(),
         &target.value,
-        confidence_for(count),
+        confidence_for(count, target.kind),
         scan_id,
     );
     entity.tag("pwned-password");
-    entity.tag("breach");
+    entity.tag("used-as-password");
     entity.add_evidence(
         Evidence::new(
             SRC,
-            format!("HIBP Pwned Passwords: value seen in {count} breach(es) (k-Anonymity check)"),
+            format!(
+                "HIBP Pwned Passwords: this exact string appears {count} time(s) as a PASSWORD in the corpus (k-Anonymity range check) — a known, reused password, not proof this account was breached"
+            ),
         )
-        .with_attr("breach_count", count.to_string())
+        .with_attr("password_occurrences", count.to_string())
         .with_attr("sha1_prefix", prefix),
     );
     vec![entity]
@@ -124,7 +145,7 @@ impl Module for PwnedPasswords {
         "pwned_passwords"
     }
     fn description(&self) -> &'static str {
-        "HIBP Pwned Passwords recon — k-Anonymity check that surfaces a credential's breach exposure without transmitting it"
+        "HIBP Pwned Passwords — k-Anonymity check of whether the target string itself is a known leaked password (never transmitted); a password-corpus lookup, not a per-account breach lookup"
     }
     fn priority(&self) -> u8 {
         115

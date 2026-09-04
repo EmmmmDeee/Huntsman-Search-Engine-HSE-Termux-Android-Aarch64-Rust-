@@ -32,8 +32,7 @@ use crate::core::{
 };
 use crate::modules::termux_sensor;
 
-use crate::util::geo::cell_range_to_confidence;
-use helpers::{build_tower_device, mcc_to_centroid, query_opencellid};
+use helpers::{build_opencellid_coordinate, build_tower_device, mcc_to_centroid, query_opencellid};
 use types::TowerKey;
 
 const OPENCELLID_KEY_ENV: &str = "HUNTSMAN_OPENCELLID_KEY";
@@ -139,28 +138,15 @@ impl Module for CellIntel {
             if let Some(api) = api_key
                 && let Some((lat, lon, range)) = query_opencellid(ctx, api, &key, radio).await
             {
-                let coords = format!("{lat:.6},{lon:.6}");
-                let confidence = cell_range_to_confidence(range);
-                let mut e = Entity::new(EntityKind::Coordinates, &coords, confidence, &ctx.scan_id);
-                e.tag("geoint");
-                e.tag(crate::core::tags::CELL_TOWER);
-                e.tag(format!("radio:{}", key.ctype.to_lowercase()));
-                crate::util::geo::tag_au_state(&mut e, lat, lon);
-                e.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!("Cell tower {radio} {} -> {coords}", key.tower_id),
-                    )
-                    .with_attr("tower_id", &key.tower_id)
-                    .with_attr("radio", radio)
-                    .with_attr("mcc", key.mcc.as_ref())
-                    .with_attr("mnc", key.mnc.as_ref())
-                    .with_attr("range_m", range.to_string())
-                    .with_attr("source", "OpenCelliD")
-                    .with_attr("dbm", cell.dbm.unwrap_or(0).to_string())
-                    .with_attr("registered", cell.registered.unwrap_or(false).to_string()),
-                );
-                result.push(e);
+                result.push(build_opencellid_coordinate(
+                    cell,
+                    &key,
+                    radio,
+                    lat,
+                    lon,
+                    range,
+                    &ctx.scan_id,
+                ));
                 continue;
             }
 

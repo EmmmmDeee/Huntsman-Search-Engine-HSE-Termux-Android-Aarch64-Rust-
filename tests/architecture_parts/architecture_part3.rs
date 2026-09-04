@@ -884,7 +884,10 @@ fn collect_all_raw_env_reads(dir: &Path, out: &mut std::collections::HashSet<Str
         } else if path.extension().is_some_and(|e| e == "rs") {
             let content = fs::read_to_string(&path).unwrap();
             for line in content.lines() {
-                for pat in ["env::var(", "env::var_os("] {
+                // Direct reads, and the two typed wrappers a literal is handed to
+                // (`storage::env_i64`, `ai::resolve_env_u64`) — a knob read through
+                // a wrapper is still a knob.
+                for pat in ["env::var(", "env::var_os(", "env_i64(", "resolve_env_u64("] {
                     let mut from = 0;
                     while let Some(i) = line[from..].find(pat) {
                         let after = from + i + pat.len();
@@ -892,6 +895,18 @@ fn collect_all_raw_env_reads(dir: &Path, out: &mut std::collections::HashSet<Str
                             push_env_literal(line, after, out);
                         }
                         from = after;
+                    }
+                }
+                // A variable named by a typed constant and read elsewhere by
+                // identifier (`const RESOURCE_PROFILE_ENV: &str = "HSE_…"` →
+                // `env::var(RESOURCE_PROFILE_ENV)`), or by clap's own
+                // `#[arg(env = "HSE_…")]` attribute: the literal never follows
+                // `env::var(`, so the loop above is blind to it. Catch the
+                // definition instead — precisely these two shapes, so an
+                // `== "HSE_…"` comparison is not mistaken for a read.
+                for pat in [": &str = \"HSE_", "env = \"HSE_"] {
+                    if let Some(i) = line.find(pat) {
+                        push_env_literal(line, i + pat.len() - "HSE_".len() - 1, out);
                     }
                 }
             }
@@ -928,17 +943,23 @@ fn non_huntsman_env_reads_are_known() {
     // Every other non-HUNTSMAN_ knob genuinely read anywhere in src/, each
     // annotated with whether it actually does anything today. Extend this
     // when a real new one is added; a var appearing here that is NOT
-    // consumed anywhere is caught by the staleness check below.
-    // `HSE_BIND`/`HSE_AUTH_TOKEN` (`hse serve`'s bind address / bearer token)
-    // are NOT in this list: they're read via clap's own `#[arg(env = "...")]`
-    // derive attribute (`src/cli/command.rs:554,569`), never a literal
-    // `env::var(...)` call this scanner's source-text match can see — a
-    // different, already-covered mechanism (REQ-ENV-006 in the ledger).
+    // consumed anywhere is caught by the staleness check below. The
+    // collector sees direct `env::var("…")` reads, the typed wrappers
+    // (`env_i64`, `resolve_env_u64`), typed-constant definitions
+    // (`const X: &str = "HSE_…"`) and clap `env = "HSE_…"` attributes — four
+    // of the knobs below were read through shapes the scanner could not see
+    // and were undocumented for exactly that reason.
     const KNOWN_HSE_KNOBS: &[&str] = &[
         "HSE_OATHNET_PER_SCAN_LIMIT",  // quota_config.rs — LIVE (oathnet::BUDGET)
         "HSE_OATHNET_DAILY_LIMIT",     // quota_config.rs — parsed, not consumed
         "HSE_SEE_KNOW_PER_SCAN_LIMIT", // quota_config.rs — parsed, not consumed
         "HSE_WIGLE_PER_SCAN_LIMIT",    // quota_config.rs — parsed, not consumed
+        "HSE_BIND",                    // cli/command.rs clap `env` — LIVE (`hse serve --bind`, REQ-ENV-006)
+        "HSE_AUTH_TOKEN",              // cli/command.rs clap `env` — LIVE (`hse serve --auth-token`, REQ-ENV-006)
+        "HSE_SQLITE_CACHE_KB",         // storage/mod.rs `env_i64` — LIVE (PRAGMA cache_size)
+        "HSE_SQLITE_MMAP",             // storage/mod.rs `env_i64` — LIVE (PRAGMA mmap_size)
+        "HSE_RESOURCE_PROFILE",        // core/platform/mod.rs const — LIVE (resource-profile override)
+        "HSE_PROVIDER_COST_",          // core/module/provider.rs const prefix — LIVE family, `HSE_PROVIDER_COST_<PROVIDER_ID>`
     ];
 
     let mut raw = std::collections::HashSet::new();
@@ -974,5 +995,57 @@ fn non_huntsman_env_reads_are_known() {
         stale.is_empty(),
         "allow-list above lists env var(s) no longer read anywhere in src/ \
          (remove them): {stale:?}"
+    );
+}
+
+/// `util::paths::isolate_for_tests` redirects the entire `~/.huntsman` layout
+/// at a temp directory for the rest of the process. It exists for the
+/// integration-test harness (`tests/common`) — the one place `cfg!(test)` does
+/// not reach — and must never be reachable from a production code path, where
+/// it would silently relocate the operator's key pool, vault and scan DB.
+/// `paths.rs`'s own doc rules out an env-var escape hatch for the same reason;
+/// this pins that the function-shaped one is not called from `src/` either.
+#[test]
+fn production_code_never_redirects_the_data_dir() {
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("readable src dir").flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|e| e == "rs") {
+                out.push(p);
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    walk(&root.join("src"), &mut files);
+    assert!(!files.is_empty());
+
+    let mut offenders = Vec::new();
+    for f in &files {
+        let text = std::fs::read_to_string(f).expect("readable source");
+        let rel = f.strip_prefix(root).unwrap_or(f).display().to_string();
+        if rel.ends_with("util/paths.rs") {
+            assert_eq!(
+                text.matches("fn isolate_for_tests").count(),
+                1,
+                "paths.rs must define isolate_for_tests exactly once"
+            );
+            // Its only appearance as a CALL must be its own definition — the
+            // doc comments refer to it without parentheses.
+            assert_eq!(
+                text.matches("isolate_for_tests()").count(),
+                1,
+                "paths.rs must not call isolate_for_tests() itself"
+            );
+        } else if text.contains("isolate_for_tests") {
+            offenders.push(rel);
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "isolate_for_tests must only be reachable from the test harness, never from \
+         production code under src/: {offenders:?}"
     );
 }

@@ -170,7 +170,7 @@ fn connect_cross_scan_bridges_two_separate_investigations() {
         ))
         .expect("should succeed");
 
-    let paths = connect_cross_scan(&store, "from@example.com", "to@example.com", 3);
+    let paths = connect_cross_scan(&store, "from@example.com", "to@example.com", 3, false);
     assert!(
         !paths.is_empty(),
         "the two emails connect through the shared bridge across scans"
@@ -206,8 +206,57 @@ fn connect_cross_scan_is_empty_without_a_bridge_or_endpoint() {
         .expect("should succeed");
     // No shared bridge ⇒ no connection.
     assert!(
-        connect_cross_scan(&store, "lonely-a@example.com", "lonely-b@example.com", 3).is_empty()
+        connect_cross_scan(&store, "lonely-a@example.com", "lonely-b@example.com", 3, false)
+            .is_empty()
     );
     // An unknown endpoint ⇒ empty, never a panic.
-    assert!(connect_cross_scan(&store, "lonely-a@example.com", "ghost@example.com", 3).is_empty());
+    assert!(
+        connect_cross_scan(&store, "lonely-a@example.com", "ghost@example.com", 3, false)
+            .is_empty()
+    );
+}
+
+#[test]
+fn connect_cross_scan_hides_a_candidate_bridge_unless_opted_in() {
+    // The quarantine gate this fix adds: a candidate-tagged intermediate must not be
+    // routable through by default, and opting in (include_candidates = true) restores
+    // the pre-fix behaviour exactly.
+    use crate::core::test_support::InMemoryStore;
+    use crate::core::tags;
+    let store = InMemoryStore::new();
+    let from_e = Entity::new(EntityKind::Email, "cfrom@example.com", 0.7, "scan-a");
+    let mut bridge = Entity::new(EntityKind::Person, "Namesake Stranger", 0.4, "scan-a");
+    bridge.tag(tags::CANDIDATE);
+    let to_e = Entity::new(EntityKind::Email, "cto@example.com", 0.7, "scan-b");
+    store.upsert_entity(&from_e).expect("should succeed");
+    store.upsert_entity(&bridge).expect("should succeed");
+    store.upsert_entity(&to_e).expect("should succeed");
+    store
+        .upsert_relation(&Relation::new(
+            from_e.uid.as_str(),
+            bridge.uid.as_str(),
+            RelationKind::AssociatedWith,
+            0.6,
+            "scan-a",
+        ))
+        .expect("should succeed");
+    store
+        .upsert_relation(&Relation::new(
+            to_e.uid.as_str(),
+            bridge.uid.as_str(),
+            RelationKind::AssociatedWith,
+            0.6,
+            "scan-b",
+        ))
+        .expect("should succeed");
+
+    assert!(
+        connect_cross_scan(&store, "cfrom@example.com", "cto@example.com", 3, false).is_empty(),
+        "a candidate-tagged bridge must not be routable through by default"
+    );
+    let opted_in = connect_cross_scan(&store, "cfrom@example.com", "cto@example.com", 3, true);
+    assert!(
+        !opted_in.is_empty() && opted_in[0].nodes.contains(&bridge.uid),
+        "include_candidates = true restores the connection through the candidate bridge"
+    );
 }

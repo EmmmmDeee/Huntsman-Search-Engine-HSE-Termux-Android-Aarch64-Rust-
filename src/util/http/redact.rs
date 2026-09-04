@@ -85,7 +85,29 @@ pub(crate) fn redact_credentials(text: &str) -> String {
     // `/api/json/ip/<KEY>/...`) is echoed back by an upstream error body — the
     // query-param pass above only catches `name=value` shapes, so a path key
     // would otherwise survive into the persisted `events` table and SSE stream.
-    redact_literal_secrets(&query_masked, env_secret_values())
+    // Pooled keys too: a key added via `hse keys add` / the Settings page's
+    // pool endpoints lives only in `~/.huntsman/keys.json`, never in the
+    // process environment, yet it is exactly what a module sends once the
+    // pool fills its slot (`merge_pool_into_env`, `ctx.next_pool_key`) — so
+    // the env pass alone let a pooled key echoed by an upstream error body
+    // through verbatim.
+    let pool = crate::util::key_pool::global_pool().snapshot();
+    redact_literal_secrets(
+        &query_masked,
+        env_secret_values().chain(pool_secret_values(&pool)),
+    )
+}
+
+/// Every key value `pool` holds, whatever its status — a revoked or exhausted
+/// key is still a secret. Pure over a snapshot so it is unit-tested over a
+/// local pool, never the process-global one.
+pub(super) fn pool_secret_values(
+    pool: &crate::util::key_pool::PoolData,
+) -> impl Iterator<Item = String> + '_ {
+    pool.services
+        .values()
+        .flatten()
+        .map(|entry| entry.value.clone())
 }
 
 /// `HUNTSMAN_*` values from the process environment — the operator's configured

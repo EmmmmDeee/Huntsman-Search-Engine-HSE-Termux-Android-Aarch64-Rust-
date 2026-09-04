@@ -82,7 +82,10 @@ use pivots::{
     discover_discord_pivots, discover_steam_pivots, dispatch_discord_pivots, dispatch_steam_pivots,
 };
 
-pub(super) const SRC: &str = "see_know";
+// The ONE registered provider name, shared with the transport/parse layer so
+// every error and every entity from this provider carries the same label —
+// see `util::see_know::SRC`.
+pub(super) use crate::util::see_know::SRC;
 
 /// Fold one endpoint sub-fetch's `Result` into a `(label, items)` pair.
 ///
@@ -546,14 +549,45 @@ impl Module for SeekNow {
         // A total outage across this seed's endpoint matrix and pivot hops must
         // never read the same as "SeekNow legitimately found nothing" — see
         // `ModuleResult::or_hard_failure`'s own doc for the tolerance rule this
-        // applies: any real evidence gathered above is kept regardless.
-        result.or_hard_failure(hard_failure)
+        // applies: any real evidence gathered above is kept regardless. A
+        // rejected key is the other way to have asked SeekNow nothing at all —
+        // see `key_rejected_failure`.
+        result.or_hard_failure(
+            hard_failure.or_else(|| key_rejected_failure(see_know::key_rejection())),
+        )
     }
 }
 
 /// Whether this scan's SeekNow fan-out should surface as a real
 /// [`Error::module`] rather than its ordinary empty success.
 ///
+/// The failure a seed reports when SeekNow has rejected the configured key
+/// (`invalid_api_key` / `plan_required`, latched by the client on the first
+/// such body — see `util::see_know::key_rejection`). **Pure.**
+///
+/// A rejection is answered at the transport layer with an empty item list,
+/// not an `Err` (a 401 is a response, so curl exits 0, and the endpoint layer
+/// then short-circuits every later call on the latch), so nothing in
+/// `process` sets `hard_failure` and the seed returned `Ok(empty)` —
+/// indistinguishable from "SeekNow searched and found nothing", this
+/// module's most consequential answer. The one warning logged at latch time
+/// is not a finding: the per-seed result is what the engine records, the UI
+/// shows and the export carries. So a rejected key becomes the seed's hard
+/// failure, folded in through `ModuleResult::or_hard_failure` exactly like a
+/// total outage (kept only when the seed has no evidence — which a rejected
+/// key guarantees).
+fn key_rejected_failure(rejection: Option<see_know::KeyRejection>) -> Option<Error> {
+    rejection.map(|r| {
+        Error::module(
+            SRC,
+            format!(
+                "SeekNow rejected the configured key — {}; no lookup for this seed was answered, so this is not a clean negative",
+                r.guidance()
+            ),
+        )
+    })
+}
+
 /// True precisely when every endpoint that was dispatched failed AND nothing was
 /// found. A fan-out where some endpoints answered — even if every one of them
 /// answered with nothing — is a genuine negative about the subject and must stay
