@@ -95,7 +95,10 @@ HB_PID=""
 on_exit() {
     local rc=$?
     # Stop the build heartbeat ticker if it's still running (any exit path).
-    [[ -n "$HB_PID" ]] && kill "$HB_PID" 2>/dev/null
+    # `|| true`: a stale, already-reaped HB_PID makes kill exit 1, and a trap
+    # handler's last command replaces the pending exit code — without the
+    # guard a SUCCESSFUL install would exit 1.
+    [[ -n "$HB_PID" ]] && kill "$HB_PID" 2>/dev/null || true
     if [[ $rc -ne 0 ]]; then
         printf '\n%sInstallation failed (exit %d).%s\n  Full log: %s\n' "$RED" "$rc" "$NC" "$LOG_FILE" >&2
     fi
@@ -1289,7 +1292,25 @@ case "${1:-start}" in
         # launcher's — the launcher exits immediately and would otherwise be
         # garbage-collected as a dead holder on the next release.
         hse_wakelock_acquire hse-bg "$(cat "$PID_FILE")"
-        echo "Started hse serve (pid $(cat "$PID_FILE"))"
+        # Readiness probe: `nohup … &` succeeds even when `hse serve` dies
+        # milliseconds later (port in use, bad config, DB perms), which would
+        # otherwise print "Started" for a dead server and strand the wake-lock
+        # holder until the next release call. Give it a moment, then confirm
+        # the pid is alive and the HTTP listener is answering.
+        sleep 1
+        if ! hse_pid_matches "$(cat "$PID_FILE")" hse 'hse serve'; then
+            echo "hse serve died at startup — see $LOG_FILE"
+            rm -f "$PID_FILE"
+            hse_wakelock_release hse-bg
+            exit 1
+        fi
+        bg_ready() { curl -sS --max-time 2 -o /dev/null "http://127.0.0.1:8080/" 2>/dev/null; }
+        for _ in $(seq 1 10); do bg_ready && break; sleep 1; done
+        if bg_ready; then
+            echo "Started hse serve (pid $(cat "$PID_FILE"))"
+        else
+            echo "hse serve alive but not answering on :8080 yet — see $LOG_FILE"
+        fi
         echo "Logs: $LOG_FILE"
         echo "Open: http://127.0.0.1:8080"
         ;;
@@ -1520,9 +1541,9 @@ BOOT
     # the actual install when package installs aren't suppressed.
     if ! command -v termux-info >/dev/null 2>&1; then
         if [[ "${HSE_NO_PKG:-0}" != "1" ]]; then
-            pkg install -y termux-api 2>/dev/null \
+            pkg install -y termux-api >>"$LOG_FILE" 2>&1 \
                 && ok "Installed termux-api package" \
-                || log_warn "Could not install termux-api (sensor modules will no-op)"
+                || { log_warn "Could not install termux-api (sensor modules will no-op)"; hint "See $LOG_FILE"; }
         else
             log_warn "termux-api is not installed — sensor modules (v0.6+) will no-op"
             hint "Install later: pkg install termux-api"
@@ -1739,6 +1760,13 @@ PID_FILE="$HOME/.cache/hse-ai.pid"
 LOG_FILE="$HOME/.cache/hse-ai.log"
 mkdir -p "$(dirname "$PID_FILE")"
 [ -f "$HSE_WAKELOCK_HELPER" ] && . "$HSE_WAKELOCK_HELPER"
+# hse_pid_matches is the only pid-identity check below; without the helper it
+# is undefined, `ai_running` always fails, and `start` would launch a SECOND
+# `ollama serve` against a live one holding the port.
+if ! command -v hse_pid_matches >/dev/null 2>&1; then
+    echo "hse-wakelock helper missing ($HSE_WAKELOCK_HELPER) — re-run install.sh" >&2
+    exit 1
+fi
 
 ai_running() {
     [ -f "$PID_FILE" ] || return 1

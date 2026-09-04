@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # HSE diagnostic — run this in Termux, paste the full output back to Claude.
 # Usage: bash diagnose.sh [path/to/prebuilt hse-aarch64-linux-android binary]
+# shellcheck disable=SC2088  # quoted tildes below are display labels, not paths
 set -uo pipefail
 
 PREBUILT_ARG="${1:-}"
@@ -9,7 +10,8 @@ SEP="━━━━━━━━━━━━━━━━━━━━━━━━━
 sec()  { echo; echo "$SEP"; echo "  $*"; echo "$SEP"; }
 kv()   { printf "  %-34s %s\n" "$1:" "$2"; }
 ok()   { printf "  %-34s %s\n" "$1:" "[OK] $2"; }
-fail() { printf "  %-34s %s\n" "$1:" "[FAIL] $2"; }
+FAILURES=0
+fail() { FAILURES=$((FAILURES + 1)); printf "  %-34s %s\n" "$1:" "[FAIL] $2"; }
 na()   { printf "  %-34s %s\n" "$1:" "(not found)"; }
 
 echo
@@ -90,7 +92,8 @@ sec "5. STORAGE PERMISSION PROBE"
 # This is the critical section — tests stat vs open (the EACCES issue)
 
 _probe_dir() {
-    local label="$1" dir="$2"
+    # $1 (label) kept in the signature for call-site readability; only $2 used.
+    local dir="$2"
     printf "\n  Testing: %s\n" "$dir"
 
     # a) directory exists?
@@ -194,8 +197,11 @@ HSE_BIN=$(command -v hse 2>/dev/null || echo "")
 if [[ -n "$HSE_BIN" ]]; then
     ok  "hse binary"  "$HSE_BIN"
     kv  "hse --version" "$(hse --version 2>/dev/null || echo '(failed)')"
-    kv  "hse doctor"    ""
-    hse doctor 2>&1 | sed 's/^/    /' || true
+    DOCTOR_OUT="$(hse doctor 2>&1)"
+    DOCTOR_RC=$?
+    kv  "hse doctor exit" "$DOCTOR_RC"
+    printf '%s\n' "$DOCTOR_OUT" | sed 's/^/    /'
+    [[ $DOCTOR_RC -eq 0 ]] || fail "hse doctor" "reported faults (exit $DOCTOR_RC)"
 else
     fail "hse binary" "not found in PATH"
 fi
@@ -280,6 +286,14 @@ fi
 # ── Done ─────────────────────────────────────────────────────────────────────
 echo
 echo "$SEP"
-echo "  END OF REPORT — paste everything above back to Claude"
+if [[ $FAILURES -eq 0 ]]; then
+    echo "  END OF REPORT — no failures detected"
+else
+    echo "  END OF REPORT — $FAILURES check(s) FAILED (see [FAIL] lines above)"
+fi
+echo "  Paste everything above back to Claude"
 echo "$SEP"
 echo
+# Non-zero exit when any section failed, so the script is usable as a smoke
+# gate as well as a human-readable report.
+[[ $FAILURES -eq 0 ]]

@@ -66,6 +66,16 @@ install_system_deps() {
   else
     warn "no known package manager (pkg/apt/brew) found — please ensure a C compiler, pkg-config, git, make, perl and curl are installed"
   fi
+  # The install branches above tolerate individual package failures (`|| true`)
+  # so a missing optional package can't abort the run — but a TOTAL failure
+  # (broken mirror, no network, no privileges) must not pass silently, or the
+  # first real signal would be a confusing cargo error much later (or, with
+  # --deps-only, no signal at all). Re-probe and say it plainly.
+  if deps_present; then
+    log "system build dependencies present"
+  else
+    warn "build dependencies are STILL missing after the install step (need: cc, pkg-config, git, make, perl)"
+  fi
 }
 
 ensure_rust() {

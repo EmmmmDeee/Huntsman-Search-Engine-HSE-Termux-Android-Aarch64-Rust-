@@ -18,6 +18,9 @@ if [ "$(stat -c '%u' "$HOME")" != "$(id -u hse)" ]; then
     # Reconcile any content a previous run already left on the volume (e.g.
     # a volume attached mid-life, or restored from a snapshot) — but not on
     # every startup, only when the top-level directory itself needed it.
+    # This walk is unbounded: on a large volume it can take minutes with no
+    # output, which looks like a hung container to healthchecks — say so.
+    echo "docker-entrypoint: reconciling ownership of $HOME (large volumes can take a while)…" >&2
     find "$HOME" -mindepth 1 -not -user hse -exec chown hse:hse {} +
 fi
 

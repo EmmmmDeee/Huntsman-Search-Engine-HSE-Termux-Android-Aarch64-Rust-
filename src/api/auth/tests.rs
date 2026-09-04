@@ -69,9 +69,13 @@ fn non_loopback_bind_honours_a_supplied_token() {
 fn an_empty_supplied_token_is_an_error_not_an_open_door() {
     // The dangerous silent-success case: `HSE_AUTH_TOKEN=` in a shell profile
     // must not resolve to "authentication enabled with the empty token".
-    for empty in ["", "   ", "\t"] {
-        let err = resolve("0.0.0.0:8080", Some(empty.to_string()), false);
-        assert!(err.is_err(), "{empty:?} must be rejected outright");
+    // Applies on loopback too — otherwise the server starts, 401s every plain
+    // request, and prints no recoverable token.
+    for bind in ["0.0.0.0:8080", "127.0.0.1:8080"] {
+        for empty in ["", "   ", "\t"] {
+            let err = resolve(bind, Some(empty.to_string()), false);
+            assert!(err.is_err(), "{bind} with {empty:?} must be rejected outright");
+        }
     }
 }
 
