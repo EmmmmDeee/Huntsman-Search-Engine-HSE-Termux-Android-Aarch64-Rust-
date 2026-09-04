@@ -224,6 +224,12 @@ if [ "${#FAIL[@]}" -gt 0 ]; then
     printf '\n\033[1;31m%d check(s) FAILED — do not commit.\033[0m\n' "${#FAIL[@]}"
     exit 1
 fi
+# A gate that ran nothing proves nothing — report success only for work that
+# actually executed, never for an empty pass list.
+if [ "${#PASS[@]}" -eq 0 ]; then
+    printf '\n\033[1;31m0 checks executed (%d skipped) — nothing was verified.\033[0m\n' "${#SKIP[@]}"
+    exit 2
+fi
 if [ "${#SKIP[@]}" -gt 0 ]; then
     printf '\n\033[1;33mAll %d executed check(s) passed; %d could not run here (listed above).\033[0m\n' \
         "${#PASS[@]}" "${#SKIP[@]}"

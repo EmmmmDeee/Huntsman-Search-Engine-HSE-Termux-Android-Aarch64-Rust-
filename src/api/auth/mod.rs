@@ -195,8 +195,18 @@ pub fn resolve(
 ) -> Result<Option<AuthToken>> {
     if super::routes::is_loopback_bind(bind) {
         // The default path. A token supplied anyway is honoured — an operator
-        // may want it for defence in depth behind a reverse proxy.
-        return Ok(supplied.map(AuthToken::new));
+        // may want it for defence in depth behind a reverse proxy. An EMPTY
+        // token (a stale `HSE_AUTH_TOKEN=` in a shell profile) is still
+        // rejected: it would install a gate whose secret is the empty string,
+        // 401 every plain request, and print no token the operator could
+        // recover — the server would be up and look broken.
+        return match supplied {
+            Some(t) if t.trim().is_empty() => Err(Error::Other(
+                "--auth-token / HSE_AUTH_TOKEN is empty. Unset it, or supply a real token."
+                    .to_string(),
+            )),
+            other => Ok(other.map(AuthToken::new)),
+        };
     }
     if allow_unauthenticated {
         return Ok(None);
