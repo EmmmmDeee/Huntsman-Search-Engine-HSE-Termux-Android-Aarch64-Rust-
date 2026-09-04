@@ -834,3 +834,45 @@ fn harvested_keys_are_pooled_but_never_authenticate() {
     pool.add("shodan", KeyEntry::new("operator-key"));
     assert_eq!(pool.next_key("shodan").as_deref(), Some("operator-key"));
 }
+
+#[test]
+fn a_pooled_placeholder_is_never_handed_out_as_a_credential() {
+    // Defence in depth behind `register_configured_keys`: that guard keeps the
+    // env sweep from ingesting placeholders, but `hse keys add`,
+    // `keys import-json` and `keys import-tsv` reach the pool too. This is the
+    // single chokepoint every pooled key passes through on its way to a
+    // provider, so guarding here makes the invariant hold whatever the ingest
+    // path.
+    //
+    // The harm is not hypothetical. On a real Termux device with
+    // `real values: 0`, the pool held 49 placeholders as Active; the cascade
+    // handed them out; providers answered 401/403; and `hse doctor` then told
+    // the operator that 10 CONFIGURED KEYS had been REJECTED and to "replace or
+    // renew" credentials they had never set.
+    let pool = KeyPool::new();
+    let mut placeholder = KeyEntry::new("insert_censys_id_here");
+    placeholder.status = KeyStatus::Active;
+    pool.add("censys", placeholder);
+
+    assert_eq!(
+        pool.total_keys(),
+        1,
+        "the entry is retained for inspection (`hse keys list`)"
+    );
+    assert_eq!(
+        pool.next_key("censys"),
+        None,
+        "but it must never be handed out as a credential"
+    );
+
+    // A real credential in the same pool is still served, so the guard has not
+    // simply disabled selection.
+    let mut real = KeyEntry::new("a-real-looking-key");
+    real.status = KeyStatus::Active;
+    pool.add("censys", real);
+    assert_eq!(
+        pool.next_key("censys").as_deref(),
+        Some("a-real-looking-key"),
+        "a real credential is still selected past the placeholder"
+    );
+}

@@ -287,7 +287,27 @@ impl KeyPool {
             // investigation's targets to the key's owner. Harvested keys remain
             // pooled as portfolio intelligence but are not auth-eligible; reuse
             // requires a deliberate `hse keys add` (see `KeyEntry::is_harvested`).
-            if !entry.is_usable() || entry.is_harvested() || exclude.contains(&entry.value) {
+            // An unedited `insert_..._here` template slot is not a credential
+            // either, and this is the single chokepoint every pooled key passes
+            // through on its way to a provider — so the invariant holds no
+            // matter which ingest path (`keys add`, `import-json`,
+            // `import-tsv`, the env sweep) put the value in the pool.
+            //
+            // Observed on a real Termux device with `real values: 0`: the pool
+            // held 49 placeholders as Active, the cascade handed them out as
+            // credentials, providers answered 401/403, and `report_key_exhausted`
+            // marked them Invalid — so `hse doctor` reported "10 CONFIGURED
+            // KEY(S) REJECTED by the upstream — replace or renew" for keys the
+            // operator had never set. `is_template_placeholder`'s own doc
+            // comment predicted exactly this: "a module sending the literal
+            // string `insert_haveibeenpwned_key_here` as its credential and
+            // reporting the resulting 401 as a rejected key, instead of telling
+            // the operator they never filled the slot in."
+            if !entry.is_usable()
+                || entry.is_harvested()
+                || !crate::util::keys::is_configured_value(&entry.value)
+                || exclude.contains(&entry.value)
+            {
                 continue;
             }
             let rank = entry.selection_rank(now);
