@@ -15,7 +15,6 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::core::{
@@ -209,12 +208,24 @@ fn inject_discovered(existing: &str, discovered: &[(String, String)]) -> String 
     s
 }
 
-/// Write the merged content to `path` atomically (temp-file + rename),
-/// after first backing up any pre-existing file to `path + .bak.<ts>`.
-/// File mode is 0600 on Unix; on non-Unix the OS-default mode applies.
+/// Write the merged content to `path` atomically (unique temp + fsync +
+/// rename), after first backing up any pre-existing file to
+/// `path + .bak.<ts>.<pid>`. File mode is 0600 on Unix; on non-Unix the
+/// OS-default mode applies.
+///
+/// This goes through `util::atomic_file::write` — the same hardened writer
+/// `keys::write_keys_at` uses — because a FIXED temp name is fatal for this
+/// exact file: two concurrent `hse provision` runs (or provision overlapping
+/// an installer hook) would open, truncate and interleave into the one shared
+/// temp, then rename a corrupt snapshot over `~/.huntsman.env`, silently
+/// dropping every key. The unique pid+seq temp also means a failed write
+/// leaves no straggler behind.
 fn write_env_file(path: &Path, contents: &str) -> Result<Option<PathBuf>> {
     let backup = if path.exists() {
-        let bak = path.with_extension(format!("env.bak.{}", unix_now()));
+        // Second-granularity alone collides on two runs in the same second
+        // (the second copy would silently overwrite the first backup), so
+        // disambiguate with the pid.
+        let bak = path.with_extension(format!("env.bak.{}.{}", unix_now(), std::process::id()));
         fs::copy(path, &bak).map_err(|e| {
             Error::Other(format!(
                 "backup {} → {}: {e}",
@@ -227,32 +238,8 @@ fn write_env_file(path: &Path, contents: &str) -> Result<Option<PathBuf>> {
         None
     };
 
-    let tmp = path.with_extension("env.provision.tmp");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)
-            .map_err(|e| Error::Other(format!("open {}: {e}", tmp.display())))?;
-        f.write_all(contents.as_bytes())
-            .map_err(|e| Error::Other(format!("write {}: {e}", tmp.display())))?;
-    }
-    #[cfg(not(unix))]
-    {
-        fs::write(&tmp, contents.as_bytes())
-            .map_err(|e| Error::Other(format!("write {}: {e}", tmp.display())))?;
-    }
-    fs::rename(&tmp, path).map_err(|e| {
-        Error::Other(format!(
-            "rename {} → {}: {e}",
-            tmp.display(),
-            path.display()
-        ))
-    })?;
+    crate::util::atomic_file::write(path, contents.as_bytes())
+        .map_err(|e| Error::Other(format!("write {}: {e}", path.display())))?;
     Ok(backup)
 }
 

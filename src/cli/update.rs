@@ -38,7 +38,21 @@ pub(super) async fn cmd_update(check: bool, ref_: Option<String>) -> Result<()> 
 }
 
 pub(super) async fn maybe_auto_update(command: &Command) {
-    if matches!(command, Command::Serve { .. } | Command::Update { .. }) {
+    // Read-only/hidden commands must never trigger a background reinstall:
+    // install.sh itself invokes `hse build-sha` (prebuilt check + post-install
+    // verification), so gating on it would re-enter a SECOND detached
+    // install.sh into the same source dir — racing the foreground installer's
+    // git checkout, cargo build, binary swap, and rollback copy. Doctor /
+    // selftest are diagnostics: they must observe the current install, never
+    // mutate it.
+    if matches!(
+        command,
+        Command::Serve { .. }
+            | Command::Update { .. }
+            | Command::BuildSha { .. }
+            | Command::Doctor { .. }
+            | Command::Selftest { .. }
+    ) {
         return;
     }
 
@@ -61,27 +75,39 @@ pub(super) async fn maybe_auto_update(command: &Command) {
 mod tests {
     use super::*;
 
+    /// Mirrors the skip predicate in `maybe_auto_update` — keep in sync.
+    fn skips_auto_update(command: &Command) -> bool {
+        matches!(
+            command,
+            Command::Serve { .. }
+                | Command::Update { .. }
+                | Command::BuildSha { .. }
+                | Command::Doctor { .. }
+                | Command::Selftest { .. }
+        )
+    }
+
     #[test]
     fn update_owners_skip_opportunistic_check() {
-        assert!(matches!(
-            Command::Serve {
-                bind: "127.0.0.1:8080".into(),
-                no_key_write: false,
-                auth_token: None,
-                allow_unauthenticated: false,
-            },
-            Command::Serve { .. } | Command::Update { .. }
-        ));
-        assert!(matches!(
-            Command::Update {
-                check: false,
-                r#ref: None,
-            },
-            Command::Serve { .. } | Command::Update { .. }
-        ));
-        assert!(!matches!(
-            Command::Doctor { live: false },
-            Command::Serve { .. } | Command::Update { .. }
-        ));
+        assert!(skips_auto_update(&Command::Serve {
+            bind: "127.0.0.1:8080".into(),
+            no_key_write: false,
+            auth_token: None,
+            allow_unauthenticated: false,
+        }));
+        assert!(skips_auto_update(&Command::Update {
+            check: false,
+            r#ref: None,
+        }));
+    }
+
+    #[test]
+    fn installer_invoked_readonly_commands_skip_opportunistic_check() {
+        // install.sh runs `hse build-sha` mid-install; gating on it would
+        // spawn a second, detached install.sh racing the foreground one.
+        assert!(skips_auto_update(&Command::BuildSha { json: false }));
+        assert!(skips_auto_update(&Command::Doctor { live: false }));
+        assert!(skips_auto_update(&Command::Selftest { json: false }));
+        assert!(!skips_auto_update(&Command::Engines { json: false }));
     }
 }

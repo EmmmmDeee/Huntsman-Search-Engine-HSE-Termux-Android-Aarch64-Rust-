@@ -184,6 +184,7 @@ async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result
     oathnet::set_scan_cap_override(plan.len().min(u32::MAX as usize) as u32);
 
     let mut dispatched = 0usize;
+    let mut failed = 0usize;
     let mut total_hits = 0usize;
     let mut stopped_on_budget = false;
     let mut rows: Vec<(usize, &BatchQuery, usize)> = Vec::new();
@@ -293,6 +294,7 @@ async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result
                     }
                 }
                 Err(e) => {
+                    failed += 1;
                     tracing::warn!(
                         surface = q.surface.label(),
                         field = q.field,
@@ -320,12 +322,22 @@ async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result
         let doc = serde_json::json!({
             "planned":           plan.len(),
             "dispatched":        dispatched,
+            "failed":            failed,
             "queries_with_hits": rows.len(),
             "total_records":     total_hits,
             "stopped_on_budget": stopped_on_budget,
             "hits":              hits,
         });
         println!("{}", serde_json::to_string_pretty(&doc).unwrap_or_default());
+        // Total failure must exit non-zero so `&&`-chained automation does not
+        // proceed on an empty result set (mirrors `run_batch`'s contract).
+        if dispatched == 0 && !plan.is_empty() {
+            return Err(crate::core::error::Error::Other(format!(
+                "oathnet-batch: all {} planned quer{} failed",
+                plan.len(),
+                if plan.len() == 1 { "y" } else { "ies" }
+            )));
+        }
         return Ok(());
     }
 
@@ -356,6 +368,15 @@ async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result
             "\n  stopped early at the OathNet per-session budget. Raise HUNTSMAN_OATHNET_SESSION_CAP \
              to run more of the plan."
         );
+    }
+    // Total failure must exit non-zero so `&&`-chained automation does not
+    // proceed on an empty result set (mirrors `run_batch`'s contract).
+    if dispatched == 0 && !plan.is_empty() {
+        return Err(crate::core::error::Error::Other(format!(
+            "oathnet-batch: all {} planned quer{} failed",
+            plan.len(),
+            if plan.len() == 1 { "y" } else { "ies" }
+        )));
     }
     Ok(())
 }

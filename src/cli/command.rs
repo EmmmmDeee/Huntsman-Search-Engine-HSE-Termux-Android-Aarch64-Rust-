@@ -883,7 +883,7 @@ pub enum Command {
     #[command(visible_alias = "upgrade")]
     Update {
         /// Check for available updates without installing.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "ref")]
         check: bool,
         /// Install a specific branch/tag/SHA instead of the current ref.
         #[arg(long, value_name = "REF")]

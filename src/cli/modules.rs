@@ -81,10 +81,13 @@ pub(super) fn cmd_modules(category_filter: Option<String>, as_json: bool) -> Res
     }
     if filtered.is_empty() {
         if let Some(f) = category_filter {
-            eprintln!("\nNo modules in category '{f}'.");
-            eprintln!(
-                "Valid: dns_recon / breach / infrastructure / search / geo / social /\n       email / phone / corporate / threat / sensor / people / web / other"
-            );
+            // An unknown category is operator error, not an empty result —
+            // return Err so scripts see failure instead of "success, no rows".
+            return Err(crate::core::error::Error::Other(format!(
+                "no modules in category '{f}'. Valid: dns_recon / breach / infrastructure / \
+                 search / geo / social / email / phone / corporate / threat / sensor / \
+                 people / web / other"
+            )));
         }
     } else {
         println!("\n{} module(s) total.", filtered.len());
