@@ -2948,6 +2948,13 @@ pub(crate) fn module_health_report() -> Vec<ModuleHealth> {
     health::unhealthy_modules()
 }
 
+/// How many modules this process has recorded a dispatch outcome for — `0` when
+/// none have run. See [`health::modules_observed`] for why the distinction
+/// matters to `hse doctor`.
+pub(crate) fn module_health_observed() -> usize {
+    health::modules_observed()
+}
+
 /// Rank recalled entities strongest-first and cap to `max` (`recall_prior_entities`'s
 /// sort+truncate step, split out so it's directly testable). Deterministic uid
 /// tie-break (CONVENTIONS.md §5): the incoming `Vec`'s order inherits a `HashMap`'s

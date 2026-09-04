@@ -130,7 +130,16 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
     // nothing extra), surfacing only sources actually worth investigating.
     let unhealthy = crate::core::engine::module_health_report();
     if unhealthy.is_empty() {
-        println!("\nModule health: no modules currently show a failure streak");
+        // An empty tracker means one of two very different things, and saying
+        // "no failure streak" for both is a false reassurance: this section is
+        // per-process and reactive, and a standalone `hse doctor` dispatches
+        // nothing, so the tracker is ALWAYS empty here. On a real device that
+        // printed a clean bill of health immediately above the Scraper health
+        // section reporting 22 sources in a failure streak.
+        println!(
+            "\n{}",
+            empty_module_health_line(crate::core::engine::module_health_observed())
+        );
     } else {
         println!(
             "\nModule health ({} with a failure streak this process):",
@@ -602,6 +611,31 @@ fn seeknow_unreachable_guidance(detail: &str) -> String {
 /// section on any freshly provisioned device.
 fn key_slot_is_filled(loaded: &std::collections::HashMap<String, String>, k: &str) -> bool {
     loaded.get(k).is_some_and(|v| keys::is_configured_value(v))
+}
+
+/// What to say when the reactive module-health tracker is empty.
+///
+/// Empty means one of two very different things and the code said the same
+/// thing for both. The section is per-process and reactive — `record_success` /
+/// `record_failure` fire only from `core::engine::dispatch` — and a standalone
+/// `hse doctor` dispatches nothing, so the tracker is ALWAYS empty there and
+/// "no modules currently show a failure streak" was a constant, not a
+/// measurement. On a real device it printed that clean bill of health directly
+/// above the Scraper health section listing 22 sources in a failure streak.
+///
+/// `observed` distinguishes them: both recorders `entry(name).or_default()`, so
+/// `0` means nothing ran, and non-zero with no unhealthy entries means
+/// everything that ran is genuinely healthy — which IS a verdict worth stating.
+///
+/// Named rather than inline so the production caller and its test exercise the
+/// same code.
+fn empty_module_health_line(observed: usize) -> &'static str {
+    if observed == 0 {
+        "Module health: not measured — no modules ran in this process. \
+         See `Scraper health` below for outcomes recorded across recent scans."
+    } else {
+        "Module health: no modules currently show a failure streak"
+    }
 }
 
 fn sorted_huntsman_keys(loaded: &std::collections::HashMap<String, String>) -> Vec<&str> {

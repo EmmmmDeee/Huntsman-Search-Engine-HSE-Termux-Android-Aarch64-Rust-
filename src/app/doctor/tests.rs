@@ -140,6 +140,42 @@ use super::*;
     }
 
     #[test]
+    fn an_unmeasured_module_health_tracker_never_claims_health() {
+        // The tracker is per-process and reactive: record_success/record_failure
+        // fire only from core::engine::dispatch, and a standalone `hse doctor`
+        // dispatches nothing. So in every plain `doctor` run the tracker is
+        // empty — and the line asserting "no modules currently show a failure
+        // streak" was a constant, not a measurement.
+        //
+        // On a real Termux device it printed exactly that reassurance directly
+        // above the Scraper health section reporting 22 sources with >= 3
+        // consecutive failures. Two sections of one report contradicting each
+        // other about whether anything was failing.
+        let nothing_ran = empty_module_health_line(0);
+        assert!(
+            !nothing_ran.contains("no modules currently show a failure streak"),
+            "an empty tracker with nothing dispatched must not read as a health \
+             verdict: {nothing_ran}"
+        );
+        assert!(
+            nothing_ran.contains("not measured"),
+            "it must say so plainly: {nothing_ran}"
+        );
+        assert!(
+            nothing_ran.contains("Scraper health"),
+            "and point at the section that DOES have recorded outcomes: {nothing_ran}"
+        );
+
+        // But a process that actually dispatched and saw no failures has earned
+        // the verdict — the fix must not suppress a real one.
+        let ran_clean = empty_module_health_line(7);
+        assert!(
+            ran_clean.contains("no modules currently show a failure streak"),
+            "a genuinely healthy process still reports health: {ran_clean}"
+        );
+    }
+
+    #[test]
     fn curl_missing_message_names_every_curl_only_no_fallback_surface() {
         let msg = curl_missing_message();
         // The six curl-only (no reqwest path) modules.
