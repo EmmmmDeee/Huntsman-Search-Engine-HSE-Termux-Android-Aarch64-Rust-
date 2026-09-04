@@ -1625,8 +1625,15 @@ ai_pick_model() {
         printf '%s' "$HSE_AI_MODEL"
         return 0
     fi
+    # Same hazard as the `df` line below, guarded the same way: under `set -e`
+    # an unguarded `awk` failure here would exit this command substitution's
+    # subshell non-zero and take the installer down with it. The preflight reads
+    # /proc/meminfo behind a real `if` for the same reason.
     local mem=0
-    [[ -r /proc/meminfo ]] && mem=$(awk '/^MemTotal/ {print int($2/1024)}' /proc/meminfo)
+    if [[ -r /proc/meminfo ]]; then
+        mem=$(awk '/^MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || true)
+        [[ "$mem" =~ ^[0-9]+$ ]] || mem=0
+    fi
     if   [[ "$mem" -ge 7500 ]]; then printf 'qwen2.5:7b'
     elif [[ "$mem" -ge 4500 ]]; then printf 'qwen2.5:3b'
     elif [[ "$mem" -ge 2800 ]]; then printf 'qwen2.5:1.5b'
@@ -1674,9 +1681,23 @@ setup_ai() {
     fi
 
     # Storage check before the pull, not after.
+    #
+    # `df -Pk`, NOT `df -Pm`: Termux's toybox `df` does not implement `-m` —
+    # the same fact the preflight check documents at the top of this file, where
+    # this exact portable form (POSIX `-P` + `-k`, an `NF >= 4` guard, and a
+    # `|| true`) was already worked out. This site was still on `-Pm`, and on a
+    # real device that cost the whole installer: toybox exits 1, `2>/dev/null`
+    # swallows the diagnostic, `set -o pipefail` promotes it to a failed
+    # pipeline, a bare assignment inherits that status, and `set -e` kills the
+    # shell — before ANY of this function's `return 0` guards can run. Every
+    # anticipated failure inside `setup_ai` was made non-fatal; this
+    # unanticipated one bypassed all of them, so an install where every step
+    # succeeded ended in "Installation failed (exit 1)" and `hse update` in
+    # "error: installer exited 1".
     local need avail
     need="$(ai_model_mb "$model")"
-    avail=$(df -Pm "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
+    avail=$({ df -Pk "$HOME" 2>/dev/null \
+        | awk 'END { if (NF >= 4) print int($(NF-2)/1024) }' 2>/dev/null; } || true)
     if [[ -n "$avail" && "$avail" -lt "$need" ]]; then
         log_warn "Need ~${need}MB for $model, only ${avail}MB free — skipping the model pull."
         hint "Free space, then: hse-ai pull $model"
@@ -1785,7 +1806,12 @@ AIW
 }
 
 AI_MODEL_INSTALLED=""
-setup_ai
+# Local AI is OPTIONAL — every failure mode inside `setup_ai` already returns 0
+# with a warning. The call itself is guarded too, so an UNANTICIPATED failure in
+# there (the `df -Pm` one this guard was added for) degrades to a warning
+# instead of failing an install whose every other step succeeded. Reported, not
+# swallowed: a real bug in `setup_ai` still shows up in the log.
+setup_ai || log_warn "Local AI setup did not complete — hse itself is installed and usable."
 
 # ─── Done ────────────────────────────────────────────────────────────────────
 echo

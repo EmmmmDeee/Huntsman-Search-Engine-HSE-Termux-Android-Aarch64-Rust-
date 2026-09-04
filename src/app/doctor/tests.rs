@@ -87,6 +87,59 @@ use super::*;
     }
 
     #[test]
+    fn an_unfilled_template_slot_is_not_a_loaded_key() {
+        // Observed on a real Termux install. `hse provision` had just reported
+        // "template keys: 61, real values: 0", and `hse doctor` in the SAME run
+        // reported "HUNTSMAN_* keys loaded: 62", listed no unset keys at all,
+        // and then said WiGLE and SeekNow were NOT CONFIGURED — because those
+        // two sections resolve through `keys::resolve_key` (which rejects a
+        // placeholder) while this listing tested only the NAME.
+        //
+        // An operator reading "62 keys loaded" with zero usable credentials is
+        // being told they are provisioned when they are not.
+        let mut loaded = std::collections::HashMap::new();
+        loaded.insert(
+            "HUNTSMAN_HIBP_KEY".to_string(),
+            "insert_haveibeenpwned_key_here".to_string(),
+        );
+        loaded.insert("HUNTSMAN_WIGLE_TOKEN".to_string(), "   ".to_string());
+        loaded.insert("HUNTSMAN_ONYPHE_KEY".to_string(), "real-value".to_string());
+
+        assert_eq!(
+            sorted_huntsman_keys(&loaded),
+            vec!["HUNTSMAN_ONYPHE_KEY"],
+            "only a slot holding a usable credential counts as loaded"
+        );
+    }
+
+    #[test]
+    fn a_placeholder_slot_still_appears_in_the_unset_keys_remediation() {
+        // The same name-only test drove the "Unset keys, ranked by acquisition
+        // value" section. Every one of those names ships in the env template,
+        // so on a freshly provisioned device the ENTIRE remediation section was
+        // suppressed: the operator was told 62 keys were loaded and shown
+        // nothing to go and acquire. That section is the one thing on the page
+        // that tells them how to fix it.
+        let first = keys::KNOWN_KEYS[0];
+        let mut loaded = std::collections::HashMap::new();
+        loaded.insert(first.to_string(), "insert_something_here".to_string());
+
+        // The PRODUCTION predicate, not a copy of it: an earlier version of this
+        // test passed its own closure and so still passed with the defect fully
+        // restored — a lock that locked nothing.
+        assert!(
+            !key_slot_is_filled(&loaded, first),
+            "a slot holding the template placeholder is not filled"
+        );
+        let ranked = rank_unset_keys(|k| key_slot_is_filled(&loaded, k));
+        assert!(
+            ranked.iter().any(|(name, _)| *name == first),
+            "a slot still holding the template placeholder is UNSET and must \
+             remain listed for acquisition: {first}"
+        );
+    }
+
+    #[test]
     fn curl_missing_message_names_every_curl_only_no_fallback_surface() {
         let msg = curl_missing_message();
         // The six curl-only (no reqwest path) modules.

@@ -188,7 +188,11 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
     // optional providers, which skip cleanly rather than erroring. Ranked by
     // ROI tier (see `rank_unset_keys`) so the operator registers the keys that
     // unlock the most collection first, each with its free-signup hint.
-    let missing = rank_unset_keys(|k| loaded.contains_key(k));
+    // A slot holding the unedited placeholder is UNSET, not set. Testing only
+    // `contains_key` meant a freshly provisioned device — where every one of
+    // these names is present as a template slot — had this entire section
+    // suppressed, so the operator was shown no keys to acquire at all.
+    let missing = rank_unset_keys(|k| key_slot_is_filled(&loaded, k));
     if !missing.is_empty() {
         println!(
             "\nUnset keys ({}), ranked by acquisition value — modules needing \
@@ -588,11 +592,29 @@ fn seeknow_unreachable_guidance(detail: &str) -> String {
 ///
 /// Pure over the loaded map so it is unit-testable without touching the real
 /// environment.
+/// Whether `loaded` holds a USABLE credential for `k` — the predicate the
+/// unset-keys listing ranks by.
+///
+/// Named rather than inline so the production call site and its regression test
+/// exercise the same code. As a closure at the call site it read
+/// `loaded.contains_key(k)`, i.e. name presence, and since every one of these
+/// names ships in the env template that suppressed the entire remediation
+/// section on any freshly provisioned device.
+fn key_slot_is_filled(loaded: &std::collections::HashMap<String, String>, k: &str) -> bool {
+    loaded.get(k).is_some_and(|v| keys::is_configured_value(v))
+}
+
 fn sorted_huntsman_keys(loaded: &std::collections::HashMap<String, String>) -> Vec<&str> {
     let mut keys: Vec<&str> = loaded
-        .keys()
-        .filter(|k| k.starts_with("HUNTSMAN_"))
-        .map(String::as_str)
+        .iter()
+        // The VALUE decides, not the name. `hse provision` writes a full
+        // template of `insert_..._here` slots, so a name-only filter reported
+        // every unfilled slot as a loaded key: on a freshly provisioned device
+        // this line said "62 keys loaded" while provision had just said
+        // "real values: 0" and the WiGLE/SeekNow sections below — which go
+        // through `keys::resolve_key` — correctly said NOT CONFIGURED.
+        .filter(|(k, v)| k.starts_with("HUNTSMAN_") && keys::is_configured_value(v))
+        .map(|(k, _)| k.as_str())
         .collect();
     keys.sort_unstable();
     keys

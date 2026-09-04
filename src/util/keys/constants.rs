@@ -330,7 +330,32 @@ pub fn is_template_placeholder(value: &str) -> bool {
 /// credential belonging to whoever built the binary.
 #[must_use]
 pub fn resolve_key(ctx_key: Option<&str>) -> Option<&str> {
-    ctx_key.filter(|k| !k.trim().is_empty() && !is_template_placeholder(k))
+    ctx_key.filter(|k| is_configured_value(k))
+}
+
+/// True when an env slot actually holds a usable credential — neither blank nor
+/// the unedited template placeholder.
+///
+/// [`resolve_key`] is the module-facing form of this test, but the same
+/// question is asked by surfaces that never resolve a key: the key pool decides
+/// what to register for rotation, and `hse doctor` decides what to report as
+/// loaded and what to list as still unset. Those asked only "is it non-empty?",
+/// and `hse provision` writes a full template of `insert_..._here` slots, so on
+/// a freshly provisioned device every one of them counted as configured.
+///
+/// Observed on a real Termux install: provision reported `real values: 0`, and
+/// `hse doctor` in the same run reported `HUNTSMAN_* keys loaded: 62`, listed
+/// no unset keys at all, and then said WiGLE and SeekNow were NOT CONFIGURED —
+/// because those two sections go through [`resolve_key`] and the rest did not.
+/// Meanwhile the pool had registered 49 placeholders as Active, and
+/// `hse keys validate` spent real network requests probing `insert_..._here`
+/// against live provider endpoints and reported them INVALID.
+///
+/// One predicate, so presence of a NAME can never again be mistaken for
+/// possession of a CREDENTIAL.
+#[must_use]
+pub fn is_configured_value(value: &str) -> bool {
+    !value.trim().is_empty() && !is_template_placeholder(value)
 }
 
 /// Resolve the WiGLE HTTP-Basic credentials (API name + token) from the module

@@ -773,3 +773,76 @@ fn concurrent_vault_writes_never_corrupt_or_strand() {
         .count();
     assert_eq!(strays, 0, "no temp straggler after concurrent vault writes");
 }
+
+#[test]
+fn the_key_pool_never_registers_an_unfilled_template_slot() {
+    // Observed on a real Termux install: `hse keys validate` printed lines like
+    // `censys: testing insert_c… UNKNOWN` and `wigle: testing insert_w… INVALID`
+    // and finished "Validated 49 keys: 8 active". Those previews are the first
+    // eight characters of the stored value — the pool had ingested 49 unedited
+    // `insert_..._here` template slots as ACTIVE keys, and validation was
+    // spending real network requests probing them against live provider
+    // endpoints, then reporting a provider as having rejected a credential the
+    // operator never supplied.
+    //
+    // Exercise the REAL ingest function. An earlier version of this test only
+    // called `is_configured_value` directly and so still passed with the defect
+    // fully restored — a lock that locked nothing.
+    let pool = crate::util::key_pool::KeyPool::new();
+    let mut env = std::collections::HashMap::new();
+    for svc in crate::util::key_pool::service_defs() {
+        env.insert(svc.env_var.to_string(), "insert_a_key_here".to_string());
+    }
+    let placeholder_slots = env.len();
+    assert!(
+        placeholder_slots > 10,
+        "sanity: the template covers many services"
+    );
+    super::io::register_configured_keys(&mut env, &pool);
+    assert_eq!(
+        pool.total_keys(),
+        0,
+        "not one unedited template slot may enter the rotation pool; on a real \
+         device {placeholder_slots} such slots were registered Active and \
+         `hse keys validate` probed them against live provider endpoints"
+    );
+
+    // A real value in the same shape still registers, so the guard has not
+    // simply disabled ingest.
+    let mut env2 = std::collections::HashMap::new();
+    let first = &crate::util::key_pool::service_defs()[0];
+    env2.insert(first.env_var.to_string(), "a-real-looking-key".to_string());
+    super::io::register_configured_keys(&mut env2, &pool);
+    assert_eq!(pool.total_keys(), 1, "a real credential still registers");
+
+    assert!(
+        !super::is_configured_value("insert_censys_id_here"),
+        "an unedited template slot is not a credential"
+    );
+    assert!(!super::is_configured_value(""), "blank is not a credential");
+    assert!(
+        !super::is_configured_value("   "),
+        "whitespace is not a credential"
+    );
+    assert!(
+        super::is_configured_value("a-real-looking-key"),
+        "a real value is a credential"
+    );
+
+    // The policy `resolve_key` applies and the policy the pool and doctor apply
+    // are now the same function, so they cannot drift apart again — which is
+    // exactly what `is_template_placeholder`'s own doc comment warned about.
+    for v in [
+        "insert_censys_id_here",
+        "",
+        "   ",
+        "a-real-looking-key",
+        "insert_wigle_api_key_here",
+    ] {
+        assert_eq!(
+            super::resolve_key(Some(v)).is_some(),
+            super::is_configured_value(v),
+            "resolve_key and is_configured_value must agree on {v:?}"
+        );
+    }
+}

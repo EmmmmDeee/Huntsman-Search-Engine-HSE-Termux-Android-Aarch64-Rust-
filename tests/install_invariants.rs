@@ -338,3 +338,93 @@ fn every_wake_lock_touching_heredoc_is_guarded() {
          WAKE_LOCK_WRAPPERS (and, if long-running, WAKE_LOCK_MANAGERS): {unguarded:?}"
     );
 }
+
+/// `df -m` is not portable to the target platform, and using it kills the
+/// installer outright.
+///
+/// Observed on a real Termux aarch64 device: an install whose every step
+/// succeeded — binary written, revision verified, wrappers installed, keys
+/// provisioned, `hse doctor` run — ended in `Installation failed (exit 1)`, and
+/// `hse update` reported `error: installer exited 1`. The cause was a single
+/// `df -Pm` in the OPTIONAL local-AI step. Termux's toybox `df` has no `-m`, so
+/// it exits 1; `2>/dev/null` hides the diagnostic; `set -o pipefail` promotes it
+/// to a failed pipeline; a bare assignment inherits that status; and `set -e`
+/// kills the shell before any of that function's `return 0` guards can run.
+///
+/// The installer had already learned this once — its preflight disk check
+/// carries a comment saying toybox "does NOT implement `-m`" and uses `-Pk`
+/// with an `NF >= 4` guard and a `|| true`. This pins that lesson so the
+/// portable form cannot silently regress at a second call site.
+#[test]
+fn no_df_invocation_uses_the_non_portable_megabyte_flag() {
+    let script = install_sh();
+    // Find `df` as a COMMAND word, then read the option bundle after it.
+    //
+    // The command word is rarely the bare token `df`: in this script the real
+    // call site reads `avail=$(df -Pk ...`, so the token is `avail=$(df`. An
+    // earlier version of this check compared tokens against `"df"` and so
+    // passed happily on a file that still contained `df -Pm` — a lock that
+    // locked nothing. Match on the boundary character before `df` instead.
+    fn df_options(line: &str) -> Vec<&str> {
+        let mut out = Vec::new();
+        for (i, _) in line.match_indices("df") {
+            let before_ok = line[..i]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.');
+            let rest = &line[i + 2..];
+            // A command word is followed by whitespace, and `df` must not be a
+            // suffix of a longer word (`pdf`, `dfu`) nor a path component.
+            if !before_ok || !rest.starts_with(char::is_whitespace) {
+                continue;
+            }
+            out.extend(
+                rest.split_whitespace()
+                    .take_while(|w| w.starts_with('-'))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        out
+    }
+    let offenders: Vec<String> = script
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| !is_comment(l))
+        // A `df` call whose option bundle carries `m`: `-m`, `-Pm`, `-hm`, …
+        .filter(|(_, l)| df_options(l).iter().any(|w| w.contains('m')))
+        .map(|(n, l)| format!("install.sh:{}: {}", n + 1, l.trim()))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "toybox `df` (Termux) has no `-m`, and under `set -euo pipefail` that \
+         exits the whole installer — use the `df -Pk` + `NF >= 4` + `|| true` \
+         form the preflight check already established: {offenders:?}"
+    );
+}
+
+/// The optional local-AI step must not be able to fail the installer.
+///
+/// Every anticipated failure inside `setup_ai` already returns 0 with a
+/// warning, but an UNanticipated one (the `df -Pm` above) bypassed all of them,
+/// because `set -e` fires before a function's own guards can run. The call site
+/// is therefore guarded too: an optional component degrades to a warning, and
+/// an install whose every other step succeeded reports success.
+#[test]
+fn the_optional_local_ai_step_cannot_fail_the_install() {
+    let script = install_sh();
+    // The CALL, not the definition (`setup_ai() {`) — invoking it is what has
+    // to be guarded.
+    let call = script
+        .lines()
+        .find(|l| {
+            let t = l.trim_start();
+            t.starts_with("setup_ai") && !t.starts_with("setup_ai()") && !is_comment(l)
+        })
+        .expect("install.sh no longer calls setup_ai");
+    assert!(
+        call.contains("||"),
+        "the optional local-AI step must be invoked with a `||` fallback so an \
+         unanticipated failure inside it cannot fail an otherwise-successful \
+         install: {call}"
+    );
+}

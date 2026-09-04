@@ -11,8 +11,8 @@ mod io;
 mod tests;
 
 pub use constants::{
-    DEFAULT_SEED_ENV, KNOWN_KEYS, is_compromised_embedded, is_template_placeholder, own_api_keys,
-    resolve_key, signup_hint, wigle_credentials,
+    DEFAULT_SEED_ENV, KNOWN_KEYS, is_compromised_embedded, is_configured_value,
+    is_template_placeholder, own_api_keys, resolve_key, signup_hint, wigle_credentials,
 };
 pub use io::{
     compromised_key_purges, default_seed, env_path, load, load_from_file_only, populate_and_load,
