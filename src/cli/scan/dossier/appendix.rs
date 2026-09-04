@@ -163,26 +163,44 @@ impl Collection {
             println!("  Coverage: no dispatch events retained for this scan.");
             return;
         }
-        let unresolved: Vec<&crate::core::intelligence::ProviderCoverage> = rows
-            .iter()
-            .filter(|row| !row.outcome.is_resolved())
-            .collect();
-        if unresolved.is_empty() {
+        let verdict = crate::core::intelligence::coverage_verdict(&rows);
+        if verdict.is_exhaustive() {
             println!(
                 "  Coverage: all {} provider(s) answered — a thin result here is a real negative.",
-                rows.len()
+                verdict.provider_count
             );
             println!();
             return;
         }
-        println!(
-            "  Coverage: {} of {} provider(s) never answered — this dossier's silence about \
-             what they cover is NOT evidence of absence:",
-            unresolved.len(),
-            rows.len()
-        );
-        const UNRESOLVED_SHOWN: usize = 10;
-        for row in unresolved.iter().take(UNRESOLVED_SHOWN) {
+        // The two axes are reported apart. An ordinary narrowed scan leaves
+        // dozens of providers out of scope, and folding those in with the ones
+        // that broke would make every dossier's coverage line read as alarming.
+        if verdict.all_available_providers_answered() {
+            println!(
+                "  Coverage: every available provider answered; {} of {} were out of scope for \
+                 this scan. Silence about what THOSE cover is not evidence of absence.",
+                verdict.out_of_scope_count, verdict.provider_count
+            );
+        } else {
+            println!(
+                "  Coverage: {} of {} provider(s) could not be used ({} more were out of scope). \
+                 This dossier's silence about what they cover is NOT evidence of absence:",
+                verdict.unavailable_count, verdict.provider_count, verdict.out_of_scope_count
+            );
+        }
+        // Only the unusable ones are listed: they are what the operator can act
+        // on, and an out-of-scope provider is already explained by the options.
+        let unavailable: Vec<&crate::core::intelligence::ProviderCoverage> = rows
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row.skip_class,
+                    Some(crate::core::event::SkipClass::Unavailable)
+                )
+            })
+            .collect();
+        const UNAVAILABLE_SHOWN: usize = 10;
+        for row in unavailable.iter().take(UNAVAILABLE_SHOWN) {
             println!(
                 "    {:<14} {:<22} {}",
                 row.outcome.as_str(),
@@ -190,7 +208,7 @@ impl Collection {
                 row.outcome.reason().unwrap_or("")
             );
         }
-        if let Some(note) = truncation_note(UNRESOLVED_SHOWN, unresolved.len()) {
+        if let Some(note) = truncation_note(UNAVAILABLE_SHOWN, unavailable.len()) {
             println!("{note}");
         }
         println!();

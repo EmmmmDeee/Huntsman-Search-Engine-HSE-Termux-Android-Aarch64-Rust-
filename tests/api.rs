@@ -703,8 +703,10 @@ async fn scan_coverage_never_reports_an_unknown_sweep_as_a_complete_one() {
     assert_eq!(resp.status(), 200);
     let body = body_json(resp).await;
     for key in [
-        "complete",
-        "unresolved_count",
+        "all_available_providers_answered",
+        "exhaustive",
+        "unavailable_count",
+        "out_of_scope_count",
         "provider_count",
         "providers",
     ] {
@@ -716,8 +718,8 @@ async fn scan_coverage_never_reports_an_unknown_sweep_as_a_complete_one() {
     );
     if body["providers"].is_null() {
         assert!(
-            body["complete"].is_null(),
-            "unknown coverage is not a complete one: {body}"
+            body["all_available_providers_answered"].is_null() && body["exhaustive"].is_null(),
+            "unknown coverage is not a clean one: {body}"
         );
         assert_eq!(body["provider_count"].as_u64(), Some(0));
     } else {
@@ -729,17 +731,41 @@ async fn scan_coverage_never_reports_an_unknown_sweep_as_a_complete_one() {
             Some(rows.len() as u64),
             "the count matches the rows: {body}"
         );
-        let unresolved = rows
+        let unavailable = rows
             .iter()
-            .filter(|row| {
-                !matches!(
-                    row["outcome"]["kind"].as_str(),
-                    Some("observed" | "clean_negative")
-                )
-            })
+            .filter(|row| row["skip_class"].as_str() == Some("unavailable"))
             .count();
-        assert_eq!(body["unresolved_count"].as_u64(), Some(unresolved as u64));
-        assert_eq!(body["complete"].as_bool(), Some(unresolved == 0));
+        let out_of_scope = rows
+            .iter()
+            .filter(|row| row["skip_class"].as_str() == Some("scoped"))
+            .count();
+        assert_eq!(body["unavailable_count"].as_u64(), Some(unavailable as u64));
+        assert_eq!(
+            body["out_of_scope_count"].as_u64(),
+            Some(out_of_scope as u64)
+        );
+        assert_eq!(
+            body["all_available_providers_answered"].as_bool(),
+            Some(unavailable == 0),
+            "the headline verdict is about what BROKE, not what the scan chose not to ask"
+        );
+        assert_eq!(
+            body["exhaustive"].as_bool(),
+            Some(unavailable == 0 && out_of_scope == 0)
+        );
+        // Every unresolved row names which axis it belongs to, so a consumer
+        // never has to infer it from the reason prose.
+        for row in rows {
+            let resolved = matches!(
+                row["outcome"]["kind"].as_str(),
+                Some("observed" | "clean_negative")
+            );
+            assert_eq!(
+                row["skip_class"].is_null(),
+                resolved,
+                "an unresolved row must carry its class: {row}"
+            );
+        }
         for row in rows {
             assert!(
                 row["provider_id"].as_str().is_some_and(|v| !v.is_empty()),

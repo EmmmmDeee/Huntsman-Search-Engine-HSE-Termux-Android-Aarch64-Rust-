@@ -729,15 +729,18 @@ export function renderPivotsHtml(data, entities_js) {
  * Builds the "Provider Coverage" panel fragment for a `/scans/{id}/coverage`
  * response.
  *
- * Three distinct states, deliberately not collapsed:
+ * Four distinct states, deliberately not collapsed:
  *
  * * **Unknown** (`providers` is `null`) — no dispatch events are retained, so
  *   nothing at all can be said about coverage. Rendered as an explicit
  *   "not known", never as a clean bill of health.
- * * **Complete** — every provider answered, so a thin result here IS evidence
- *   of absence, and the panel says so.
- * * **Incomplete** — the unresolved providers are listed first with their
- *   reasons, because those are the ones an operator can act on.
+ * * **Exhaustive** — every provider answered and none was out of scope, so a
+ *   thin result here IS evidence of absence, and the panel says so.
+ * * **Narrowed** — nothing broke, but the scan's own options put providers out
+ *   of reach. Reported calmly: this is the ordinary case, and styling it as a
+ *   fault on every scan is how a warning stops being read.
+ * * **Degraded** — providers that could not be used. The only state that
+ *   demands action, so it is the only one styled as a fault.
  * @param {any} data
  * @returns {string}
  */

@@ -45,16 +45,27 @@ struct Row {
     dispatches: u32,
     #[serde(default)]
     findings: u32,
+    /// `"unavailable"` or `"scoped"` on an unresolved row; absent otherwise.
+    #[serde(default)]
+    skip_class: Option<String>,
 }
 
 /// The `/scans/{id}/coverage` response.
 #[derive(Deserialize)]
 struct CoverageResponse {
-    /// `None` when coverage is unknown — see [`render_coverage_html`].
+    /// Nothing broke. `None` when coverage is unknown — see
+    /// [`render_coverage_html`].
     #[serde(default)]
-    complete: Option<bool>,
+    all_available_providers_answered: Option<bool>,
+    /// Nothing broke AND nothing was out of scope.
     #[serde(default)]
-    unresolved_count: u32,
+    exhaustive: Option<bool>,
+    /// Providers that could not be used — the actionable gaps.
+    #[serde(default)]
+    unavailable_count: u32,
+    /// Providers the scan's own options put out of reach.
+    #[serde(default)]
+    out_of_scope_count: u32,
     #[serde(default)]
     provider_count: u32,
     /// `None`, never `[]`, when no dispatch events are retained.
@@ -88,15 +99,18 @@ fn outcome_label(kind: &str) -> &'static str {
 /// Builds the "Provider Coverage" panel fragment for a `/scans/{id}/coverage`
 /// response.
 ///
-/// Three distinct states, deliberately not collapsed:
+/// Four distinct states, deliberately not collapsed:
 ///
 /// * **Unknown** (`providers` is `null`) — no dispatch events are retained, so
 ///   nothing at all can be said about coverage. Rendered as an explicit
 ///   "not known", never as a clean bill of health.
-/// * **Complete** — every provider answered, so a thin result here IS evidence
-///   of absence, and the panel says so.
-/// * **Incomplete** — the unresolved providers are listed first with their
-///   reasons, because those are the ones an operator can act on.
+/// * **Exhaustive** — every provider answered and none was out of scope, so a
+///   thin result here IS evidence of absence, and the panel says so.
+/// * **Narrowed** — nothing broke, but the scan's own options put providers out
+///   of reach. Reported calmly: this is the ordinary case, and styling it as a
+///   fault on every scan is how a warning stops being read.
+/// * **Degraded** — providers that could not be used. The only state that
+///   demands action, so it is the only one styled as a fault.
 #[wasm_bindgen(js_name = renderProviderCoverageHtml)]
 pub fn render_coverage_html(data: JsValue) -> Result<String, JsValue> {
     let data: CoverageResponse = serde_wasm_bindgen::from_value(data).map_err(to_js_error)?;
@@ -110,14 +124,17 @@ pub fn render_coverage_html(data: JsValue) -> Result<String, JsValue> {
         ));
     };
 
-    // Unresolved first — they are what the operator can act on — then by
-    // provider id within each group, matching the server's own ordering.
+    // Unusable first, then out of scope, then the providers that answered —
+    // most actionable at the top; provider id within each group, matching the
+    // server's own ordering.
     let mut ordered: Vec<&Row> = rows.iter().collect();
     ordered.sort_by_key(|row| {
-        (
-            matches!(row.outcome.kind.as_str(), "observed" | "clean_negative"),
-            row.provider_id.clone(),
-        )
+        let rank = match row.skip_class.as_deref() {
+            Some("unavailable") => 0,
+            Some("scoped") => 1,
+            _ => 2,
+        };
+        (rank, row.provider_id.clone())
     });
 
     let body: String = ordered
@@ -142,10 +159,10 @@ pub fn render_coverage_html(data: JsValue) -> Result<String, JsValue> {
         "<table class=\"table table-condensed\" style=\"margin-top:8px\">\n      <tbody>{body}</tbody>\n    </table>"
     );
 
-    if data.complete == Some(true) {
+    if data.exhaustive == Some(true) {
         return Ok(panel(
             "label-success",
-            "complete",
+            "exhaustive",
             &format!(
                 "All {} provider(s) answered \u{2014} a thin result here is a real negative.",
                 data.provider_count
@@ -153,13 +170,28 @@ pub fn render_coverage_html(data: JsValue) -> Result<String, JsValue> {
             table,
         ));
     }
+    if data.all_available_providers_answered == Some(true) {
+        // Nothing broke. Reported calmly: narrowing the sweep is the ordinary
+        // case, and styling it as a fault on every scan is how a warning stops
+        // being read.
+        return Ok(panel(
+            "label-info",
+            "narrowed",
+            &format!(
+                "Every available provider answered. {} of {} were out of scope for this scan \u{2014} \
+                 silence about what THOSE cover is not evidence of absence.",
+                data.out_of_scope_count, data.provider_count
+            ),
+            table,
+        ));
+    }
     Ok(panel(
         "label-danger",
-        "incomplete",
+        "degraded",
         &format!(
-            "{} of {} provider(s) never answered. This scan's silence about what they cover \
-             is NOT evidence of absence.",
-            data.unresolved_count, data.provider_count
+            "{} of {} provider(s) could not be used ({} more were out of scope). This scan's \
+             silence about what they cover is NOT evidence of absence.",
+            data.unavailable_count, data.provider_count, data.out_of_scope_count
         ),
         table,
     ))
@@ -190,6 +222,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_ordinary_narrowed_scan_is_not_styled_as_a_fault() {
+        // Every real scan narrows the sweep, so styling that as a fault would
+        // make the panel alarming on every scan and therefore read on none.
+        let narrowed = panel(
+            "label-info",
+            "narrowed",
+            "Every available provider answered. 40 of 120 were out of scope for this scan.",
+            String::new(),
+        );
+        assert!(narrowed.contains("label-info"));
+        assert!(!narrowed.contains("label-danger"));
+        // A provider that could not be used is the one state that IS a fault.
+        let degraded = panel(
+            "label-danger",
+            "degraded",
+            "3 of 120 provider(s) could not be used.",
+            String::new(),
+        );
+        assert!(degraded.contains("label-danger"));
+        assert_ne!(
+            narrowed, degraded,
+            "the two states must not render alike: only one needs acting on"
+        );
+    }
+
+    #[test]
     fn an_unknown_coverage_never_renders_as_a_clean_bill_of_health() {
         let html = panel(
             "label-default",
@@ -199,7 +257,8 @@ mod tests {
             String::new(),
         );
         assert!(html.contains("coverage not known"));
-        assert!(!html.contains("complete"));
+        assert!(!html.contains("exhaustive"));
+        assert!(!html.contains("narrowed"));
         assert!(html.contains("not evidence of absence"));
     }
 

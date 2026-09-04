@@ -118,6 +118,13 @@ pub async fn scan_exposure(
 /// [`crate::core::intelligence::provider_coverage_from_events`], rather than a
 /// second opinion assembled client-side.
 ///
+/// The two coverage axes are reported apart and never summed: `unavailable_count`
+/// is what broke — a missing credential, an open circuit, a spent quota — and
+/// `out_of_scope_count` is what the scan's own options put out of reach. Silence
+/// from either is equally uninformative about the subject, but only the first is
+/// a fault, and folding them together would make every ordinary narrowed scan
+/// read as alarming.
+///
 /// `providers` is `null`, not `[]`, when no dispatch events are retained for
 /// the scan (an old scan whose event log has been pruned): an empty list would
 /// read as "every provider answered", which is exactly the false clean
@@ -138,17 +145,22 @@ pub async fn scan_coverage(
     let rows = crate::core::intelligence::provider_coverage_from_events(&events);
     if rows.is_empty() {
         return Json(json!({
-            "complete": serde_json::Value::Null,
-            "unresolved_count": 0,
+            "all_available_providers_answered": serde_json::Value::Null,
+            "exhaustive": serde_json::Value::Null,
+            "unavailable_count": 0,
+            "out_of_scope_count": 0,
             "provider_count": 0,
             "providers": serde_json::Value::Null,
         }))
         .into_response();
     }
+    let verdict = crate::core::intelligence::coverage_verdict(&rows);
     Json(json!({
-        "complete": crate::core::intelligence::coverage_is_complete(&rows),
-        "unresolved_count": rows.iter().filter(|row| !row.outcome.is_resolved()).count(),
-        "provider_count": rows.len(),
+        "all_available_providers_answered": verdict.all_available_providers_answered(),
+        "exhaustive": verdict.is_exhaustive(),
+        "unavailable_count": verdict.unavailable_count,
+        "out_of_scope_count": verdict.out_of_scope_count,
+        "provider_count": verdict.provider_count,
         "providers": rows,
     }))
     .into_response()

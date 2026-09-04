@@ -1695,8 +1695,18 @@ fn report_distinguishes_a_clean_sweep_from_one_nobody_answered() {
         .expect("should succeed")
         .expect("should succeed");
     let coverage = &report["provider_coverage"];
-    assert_eq!(coverage["complete"].as_bool(), Some(false));
-    assert_eq!(coverage["unresolved_count"].as_u64(), Some(1));
+    assert_eq!(
+        coverage["all_available_providers_answered"].as_bool(),
+        Some(false),
+        "a provider that broke is a fault, reported as one"
+    );
+    assert_eq!(coverage["exhaustive"].as_bool(), Some(false));
+    assert_eq!(coverage["unavailable_count"].as_u64(), Some(1));
+    assert_eq!(
+        coverage["out_of_scope_count"].as_u64(),
+        Some(0),
+        "nothing here was narrowed out; the two axes are never summed"
+    );
     let providers = coverage["providers"]
         .as_array()
         .expect("provider rows are a list");

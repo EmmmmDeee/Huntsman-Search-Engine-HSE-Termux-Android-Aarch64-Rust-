@@ -984,6 +984,13 @@ pub struct ProviderCoverage {
     pub failures: u32,
     /// Dispatches that were never made.
     pub skips: u32,
+    /// For an unresolved row, whether the provider was OUT OF SCOPE for this
+    /// scan or genuinely UNAVAILABLE — see [`crate::core::event::SkipClass`].
+    /// `None` on a resolved
+    /// row, and on one whose only gaps came from events recorded before the
+    /// class existed (treated as unavailable in the counts, since unknown is
+    /// not harmless).
+    pub skip_class: Option<crate::core::event::SkipClass>,
 }
 
 /// Aggregate a scan's provider coverage from its event log.
@@ -1014,6 +1021,9 @@ pub fn provider_coverage_from_events(
         skips: u32,
         first_error: Option<String>,
         first_skip: Option<String>,
+        /// True once any gap-bearing skip was NOT merely the operator's own
+        /// narrowing — an unusable provider, or an event too old to say.
+        unavailable: bool,
     }
 
     let mut tallies: BTreeMap<&str, Tally> = BTreeMap::new();
@@ -1044,6 +1054,7 @@ pub fn provider_coverage_from_events(
             skips: 0,
             first_error: None,
             first_skip: None,
+            unavailable: false,
         });
         tally.dispatches = tally.dispatches.saturating_add(1);
         match &event.kind {
@@ -1058,8 +1069,12 @@ pub fn provider_coverage_from_events(
                     tally.first_error = Some(error.clone());
                 }
             }
-            EventKind::ModuleSkipped { reason, .. } => {
+            EventKind::ModuleSkipped { reason, class, .. } => {
                 tally.skips = tally.skips.saturating_add(1);
+                // An unclassified skip counts as unavailable: an old event
+                // cannot vouch for itself, and under-reporting an unusable
+                // provider is the failure that matters.
+                tally.unavailable |= class != &Some(crate::core::event::SkipClass::Scoped);
                 if tally.first_skip.is_none() {
                     tally.first_skip = Some(reason.clone());
                 }
@@ -1087,6 +1102,13 @@ pub fn provider_coverage_from_events(
             } else {
                 ProviderOutcome::CleanNegative
             };
+            let skip_class = if outcome.is_resolved() {
+                None
+            } else if tally.failures > 0 || tally.unavailable {
+                Some(crate::core::event::SkipClass::Unavailable)
+            } else {
+                Some(crate::core::event::SkipClass::Scoped)
+            };
             ProviderCoverage {
                 provider_id: provider_id.to_string(),
                 outcome,
@@ -1094,6 +1116,7 @@ pub fn provider_coverage_from_events(
                 findings: tally.findings,
                 failures: tally.failures,
                 skips: tally.skips,
+                skip_class,
             }
         })
         .collect()
@@ -1106,13 +1129,67 @@ fn non_empty(value: Option<String>, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
-/// Whether every provider in `rows` actually answered.
+/// How a scan's coverage broke down: what could not be used, and what the
+/// operator's own scan options put out of reach.
 ///
-/// False means at least one source was unqueried or broken, so the scan's
-/// silence about whatever that source covers is not evidence of absence.
+/// The two must not be summed into one "incomplete" number. On a real scan the
+/// operator narrows the sweep as a matter of course — an allowlist, a category
+/// focus, `--free-only` — so dozens of providers are legitimately out of scope
+/// every time. A single count mixing those with the three that actually broke
+/// reads as alarming on every scan and is therefore read on none, burying the
+/// failures it exists to surface.
+///
+/// Both axes still bear on what may be concluded: silence from an out-of-scope
+/// provider is no more informative than silence from a broken one. Only the
+/// ACTION differs — widen the scan, versus fix a credential or wait out a
+/// quota — which is exactly why they are reported apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoverageVerdict {
+    /// Providers with a coverage row.
+    pub provider_count: usize,
+    /// Providers that could not be used: a missing credential, an open circuit,
+    /// a spent quota or cost budget, a capability quarantine, or an outright
+    /// failure. The actionable gaps.
+    pub unavailable_count: usize,
+    /// Providers the scan's own options or the engine's budget policy put out
+    /// of reach. Not a fault; still not a negative.
+    pub out_of_scope_count: usize,
+}
+
+impl CoverageVerdict {
+    /// Whether every provider that COULD have been used answered.
+    ///
+    /// True with a non-zero [`Self::out_of_scope_count`] means nothing broke —
+    /// the sweep was simply narrower than the whole registry.
+    #[must_use]
+    pub fn all_available_providers_answered(self) -> bool {
+        self.unavailable_count == 0
+    }
+
+    /// Whether every provider answered, with nothing out of scope and nothing
+    /// unusable. Only here is a thin result unambiguously a real negative.
+    #[must_use]
+    pub fn is_exhaustive(self) -> bool {
+        self.unavailable_count == 0 && self.out_of_scope_count == 0
+    }
+}
+
+/// Split `rows` into the two coverage axes — see [`CoverageVerdict`].
 #[must_use]
-pub fn coverage_is_complete(rows: &[ProviderCoverage]) -> bool {
-    rows.iter().all(|row| row.outcome.is_resolved())
+pub fn coverage_verdict(rows: &[ProviderCoverage]) -> CoverageVerdict {
+    let mut verdict = CoverageVerdict {
+        provider_count: rows.len(),
+        unavailable_count: 0,
+        out_of_scope_count: 0,
+    };
+    for row in rows {
+        match row.skip_class {
+            Some(crate::core::event::SkipClass::Scoped) => verdict.out_of_scope_count += 1,
+            Some(_) => verdict.unavailable_count += 1,
+            None => {}
+        }
+    }
+    verdict
 }
 
 /// Evidence-bearing path candidate. The scheduler never assigns a global score
@@ -1954,6 +2031,11 @@ mod tests {
                 reason: "no credential configured".to_string(),
                 class: Some(crate::core::event::SkipClass::Unavailable),
             }),
+            module_event(EventKind::ModuleSkipped {
+                module: "narrowed".to_string(),
+                reason: "requires key/payment".to_string(),
+                class: Some(crate::core::event::SkipClass::Scoped),
+            }),
             module_event(EventKind::ModuleDone {
                 module: "productive".to_string(),
                 found: 3,
@@ -1968,7 +2050,7 @@ mod tests {
             rows.iter()
                 .map(|row| row.provider_id.as_str())
                 .collect::<Vec<_>>(),
-            ["broken", "productive", "quiet", "unasked"],
+            ["broken", "narrowed", "productive", "quiet", "unasked"],
             "rows are sorted by provider id, so the derivation is deterministic"
         );
         assert_eq!(
@@ -1977,23 +2059,47 @@ mod tests {
                 reason: "upstream 502".to_string()
             }
         );
-        assert_eq!(rows[1].outcome, ProviderOutcome::Observed);
         assert_eq!(
-            rows[2].outcome,
+            rows[1].outcome,
+            ProviderOutcome::NotAttempted {
+                reason: "requires key/payment".to_string()
+            }
+        );
+        assert_eq!(rows[2].outcome, ProviderOutcome::Observed);
+        assert_eq!(
+            rows[3].outcome,
             ProviderOutcome::CleanNegative,
             "a module that completed and found nothing IS a real negative"
         );
         assert_eq!(
-            rows[3].outcome,
+            rows[4].outcome,
             ProviderOutcome::NotAttempted {
                 reason: "no credential configured".to_string()
             }
         );
+        let verdict = coverage_verdict(&rows);
         assert!(
-            !coverage_is_complete(&rows),
-            "two providers never answered, so the scan's silence is not evidence of absence"
+            !verdict.is_exhaustive(),
+            "three providers never answered, so the scan's silence is not evidence of absence"
         );
-        assert!(coverage_is_complete(&rows[1..3]));
+        assert_eq!(verdict.provider_count, 5);
+        assert_eq!(
+            verdict.unavailable_count, 2,
+            "`broken` failed and `unasked` has no credential — both are unusable, and a \
+             missing credential is emphatically not the operator choosing to narrow the sweep"
+        );
+        assert_eq!(
+            verdict.out_of_scope_count, 1,
+            "only `narrowed` was ruled out by the scan's own options"
+        );
+        assert!(
+            !verdict.all_available_providers_answered(),
+            "a failed provider means something broke"
+        );
+        assert!(
+            coverage_verdict(&rows[2..4]).is_exhaustive(),
+            "the two providers that answered are, between them, an exhaustive sweep"
+        );
     }
 
     #[test]
@@ -2034,7 +2140,65 @@ mod tests {
             "a provider that answered and was then deduped is not an outage"
         );
         assert_eq!(rows[0].skips, 0);
-        assert!(coverage_is_complete(&rows));
+        assert!(coverage_verdict(&rows).is_exhaustive());
+    }
+
+    #[test]
+    fn a_narrowed_sweep_is_reported_apart_from_a_broken_one() {
+        use crate::core::event::{EventKind, SkipClass};
+        // Every real scan narrows the sweep — an allowlist, a category focus,
+        // --free-only — so dozens of providers are legitimately out of scope
+        // each time. Summing those with the ones that actually broke gives an
+        // alarming number on every scan, which is how a warning stops being
+        // read and the three real failures get buried under forty ordinary
+        // exclusions.
+        let mut events = vec![module_event(EventKind::ModuleError {
+            module: "broken".to_string(),
+            error: "upstream 502".to_string(),
+        })];
+        for n in 0..40 {
+            events.push(module_event(EventKind::ModuleSkipped {
+                module: format!("scoped_{n:02}"),
+                reason: "requires key/payment".to_string(),
+                class: Some(SkipClass::Scoped),
+            }));
+        }
+        for n in 0..2 {
+            events.push(module_event(EventKind::ModuleSkipped {
+                module: format!("unusable_{n}"),
+                reason: "circuit-open".to_string(),
+                class: Some(SkipClass::Unavailable),
+            }));
+        }
+        let rows = provider_coverage_from_events(&events);
+        let verdict = coverage_verdict(&rows);
+        assert_eq!(verdict.provider_count, 43);
+        assert_eq!(
+            verdict.unavailable_count, 3,
+            "one failure plus two unusable providers — what the operator can act on"
+        );
+        assert_eq!(
+            verdict.out_of_scope_count, 40,
+            "the operator's own narrowing, counted apart"
+        );
+        assert!(!verdict.all_available_providers_answered());
+        assert!(!verdict.is_exhaustive());
+
+        // Drop the three that broke and the sweep is merely narrow, not
+        // degraded — and that distinction is the whole point.
+        let narrowed: Vec<ProviderCoverage> = rows
+            .into_iter()
+            .filter(|row| row.skip_class != Some(SkipClass::Unavailable))
+            .collect();
+        let verdict = coverage_verdict(&narrowed);
+        assert!(
+            verdict.all_available_providers_answered(),
+            "nothing broke, so nothing needs acting on"
+        );
+        assert!(
+            !verdict.is_exhaustive(),
+            "but silence from an out-of-scope provider is still not a negative"
+        );
     }
 
     #[test]
@@ -2052,7 +2216,12 @@ mod tests {
             })]);
         assert_eq!(unclassified.len(), 1);
         assert!(!unclassified[0].outcome.is_resolved());
-        assert!(!coverage_is_complete(&unclassified));
+        let verdict = coverage_verdict(&unclassified);
+        assert_eq!(
+            verdict.unavailable_count, 1,
+            "an unclassified gap counts as unusable, not as the operator's own narrowing"
+        );
+        assert!(!verdict.all_available_providers_answered());
 
         // Both gap classes still report as gaps, with their reasons intact.
         for class in [SkipClass::Scoped, SkipClass::Unavailable] {

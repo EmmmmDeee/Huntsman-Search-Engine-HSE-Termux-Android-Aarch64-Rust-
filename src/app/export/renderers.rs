@@ -1887,12 +1887,16 @@ pub(crate) fn build_scan_report(
     let provider_coverage = if coverage.is_empty() {
         serde_json::Value::Null
     } else {
+        let verdict = crate::core::intelligence::coverage_verdict(&coverage);
         serde_json::json!({
-            "complete": crate::core::intelligence::coverage_is_complete(&coverage),
-            "unresolved_count": coverage
-                .iter()
-                .filter(|row| !row.outcome.is_resolved())
-                .count(),
+            // Two axes, never summed: what BROKE and what the scan's own
+            // options put out of reach. Mixing them makes every ordinary
+            // narrowed scan read as alarming, which buries the failures.
+            "all_available_providers_answered": verdict.all_available_providers_answered(),
+            "exhaustive": verdict.is_exhaustive(),
+            "unavailable_count": verdict.unavailable_count,
+            "out_of_scope_count": verdict.out_of_scope_count,
+            "provider_count": verdict.provider_count,
             "providers": coverage,
         })
     };
