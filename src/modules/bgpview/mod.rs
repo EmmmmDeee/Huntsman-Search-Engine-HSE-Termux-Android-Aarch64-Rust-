@@ -23,7 +23,13 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 
-const SRC: &str = "bgpview";
+/// The evidence source name for BGPView-derived findings.
+///
+/// `pub(crate)` because `ip_registry` queries the SAME `api.bgpview.io/asn/{n}`
+/// and `/ip/{ip}` endpoints and must attribute what it gets back to this corpus
+/// rather than to itself — see the call sites there. Sharing the constant is
+/// what keeps the two from drifting apart into two names for one source.
+pub(crate) const SRC: &str = "bgpview";
 
 pub struct BgpView;
 

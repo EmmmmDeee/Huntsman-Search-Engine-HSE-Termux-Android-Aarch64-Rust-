@@ -623,6 +623,104 @@ fn see_know_errors_carry_the_registered_module_name_not_a_phantom_one() {
 /// `read_body_capped` — it just may not pair it with an immediate empty-Ok
 /// return.
 #[test]
+fn a_module_never_claims_another_providers_corpus_as_its_own_source() {
+    // SOURCE COUNT != SOURCE INDEPENDENCE, at the point where a source name is
+    // chosen. Several modules retrieve from a corpus that another registered
+    // module also serves — `cell_intel` geolocates towers through OpenCelliD,
+    // `wifi_intel` resolves BSSIDs through WiGLE, both with that provider's own
+    // credentials. When such a module stamps its OWN name on what comes back,
+    // and the standalone provider module later returns the same record, the two
+    // entities merge and carry two distinct corroborating sources for one row
+    // from one corpus. `Entity::source_count` feeds `c_effective`, so the same
+    // record retrieved twice buys a confidence boost it never earned.
+    //
+    // The tell is self-declared and precise: the evidence names the foreign
+    // corpus in a `source` attribute while being attributed to the module that
+    // fetched it. Both known instances did exactly that, and this fails on the
+    // next one rather than waiting for someone to read the module again.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    collect_rs_files(&root.join("src").join("modules"), &mut files);
+    let is_test_file = |p: &Path| {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        name == "tests.rs"
+            || name.ends_with("_tests.rs")
+            || p.components().any(|c| c.as_os_str() == "tests")
+    };
+    // Registered module names, lowercased and stripped of separators, so a
+    // `source` attribute spelled "OpenCelliD" matches the `opencellid` module.
+    let squash = |s: &str| -> String {
+        s.chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect::<String>()
+            .to_ascii_lowercase()
+    };
+    let registered: std::collections::HashSet<String> =
+        huntsman_search_engine::modules::registry()
+            .iter()
+            .map(|m| squash(m.name()))
+            .collect();
+
+    let mut offenders: Vec<String> = Vec::new();
+    for path in files.iter().filter(|p| !is_test_file(p)) {
+        // The module this file belongs to, from its directory (or file stem for
+        // a single-file module) — what its own `SRC`/`SOURCE` constant spells.
+        let own = squash(
+            path.parent()
+                .filter(|d| d.file_name().and_then(|n| n.to_str()) != Some("modules"))
+                .and_then(|d| d.file_name())
+                .or_else(|| path.file_stem())
+                .and_then(|n| n.to_str())
+                .unwrap_or(""),
+        );
+        let src = fs::read_to_string(path).unwrap();
+        let flat: String = src.split_whitespace().collect::<Vec<_>>().join(" ");
+        let needle = "with_attr(\"source\", \"";
+        let mut from = 0usize;
+        while let Some(hit) = flat[from..].find(needle) {
+            let start = from + hit + needle.len();
+            from = start;
+            let Some(end) = flat[start..].find('"') else {
+                break;
+            };
+            let declared = squash(&flat[start..start + end]);
+            // Only a value naming ANOTHER registered module matters: "OpenCelliD"
+            // does, "mcc-centroid" (this module's own offline derivation) does
+            // not, and neither does a module naming itself.
+            if declared == own || !registered.contains(&declared) {
+                continue;
+            }
+            // Walk back to the `Evidence::new(` this attribute hangs off and
+            // read the source argument it was given.
+            let Some(ev) = flat[..start].rfind("Evidence::new(") else {
+                continue;
+            };
+            let arg = &flat[ev + "Evidence::new(".len()..start];
+            // Attributed correctly when it names the foreign module's own SRC
+            // (`crate::modules::<name>::SRC`) or spells the provider literally.
+            let attributed = arg.contains(&format!("modules :: {declared} :: SRC"))
+                || arg.contains(&format!("modules::{declared}::SRC"))
+                || arg.contains(&format!("\"{declared}\""));
+            if !attributed {
+                offenders.push(format!(
+                    "{} claims `{}`'s corpus under its own source name",
+                    path.strip_prefix(root).unwrap().display(),
+                    declared
+                ));
+            }
+        }
+    }
+    offenders.sort();
+    offenders.dedup();
+    assert!(
+        offenders.is_empty(),
+        "evidence derived from another provider's corpus must carry THAT provider's \
+         source name, or one record retrieved twice counts as two independent \
+         sources: {offenders:?}"
+    );
+}
+
+#[test]
 fn no_module_maps_an_unreadable_body_to_an_empty_result() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();

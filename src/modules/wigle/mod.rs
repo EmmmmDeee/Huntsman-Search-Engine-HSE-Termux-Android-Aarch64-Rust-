@@ -89,7 +89,14 @@ struct Network {
     postalcode: Option<String>,
 }
 
-pub(super) const SRC: &str = "wigle";
+/// The evidence source name for WiGLE-derived findings.
+///
+/// `pub(crate)` because `wifi_intel` resolves the BSSIDs it sees through the
+/// SAME WiGLE endpoints with the SAME `HUNTSMAN_WIGLE_USER`/`_TOKEN`, and must
+/// attribute what it gets back to this corpus rather than to itself — see the
+/// call sites there. Sharing the constant is what keeps the two from drifting
+/// apart into two names for one source, which is the thing being prevented.
+pub(crate) const SRC: &str = "wigle";
 
 /// Access points emitted per geo search. A bbox query returns up to 100
 /// networks; the closest few are the ones that locate anything, and the true
