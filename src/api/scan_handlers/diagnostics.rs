@@ -260,6 +260,12 @@ pub async fn scan_benchmark(
         Ok(None) => return not_found(),
         Err(resp) => return resp,
     };
-    let report = crate::core::benchmark::report(&scan, &entities, &relations);
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let events = match super::offload_store(move || store.events_for_scan(&id2)).await {
+        Ok(events) => events,
+        Err(resp) => return resp,
+    };
+    let report = crate::core::benchmark::report(&scan, &entities, &relations, &events);
     (StatusCode::OK, Json(report)).into_response()
 }

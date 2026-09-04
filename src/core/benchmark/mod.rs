@@ -91,17 +91,80 @@ pub struct BenchmarkReport {
     pub scorecard: Scorecard,
     /// The full graph-intelligence metrics, embedded for complete traceability.
     pub metrics: ScanMetrics,
+    /// Provider coverage for the run behind this scorecard — see
+    /// [`crate::core::intelligence::CoverageVerdict`]. `None` when the scan has
+    /// no retained dispatch events, which is itself a reason not to compare.
+    pub coverage: Option<crate::core::intelligence::CoverageVerdict>,
+    /// The caveat this report needs before its scorecard is set against another
+    /// run's, or `None` when the run asked everything — see
+    /// [`BenchmarkReport::comparability_caveat`]. Carried as a field so a JSON
+    /// consumer gets it without recomputing the rule.
+    pub comparability_caveat: Option<String>,
+}
+
+impl BenchmarkReport {
+    /// Why this scorecard is not straightforwardly comparable to another run's,
+    /// or `None` when it is.
+    ///
+    /// The scorecard exists for head-to-head comparison — two configurations on
+    /// an identical seed, field by field. That reading is only sound if both
+    /// runs actually asked the same questions. A run where a third of its
+    /// providers had no credential, or whose circuits were open, yields fewer
+    /// entities for a reason that has nothing to do with the configuration under
+    /// test, and attributing the difference to the configuration is exactly the
+    /// false conclusion a benchmark is supposed to prevent.
+    ///
+    /// Unknown coverage is its own caveat: a scan whose event log has been
+    /// pruned cannot vouch for what it asked, so it is not silently treated as
+    /// having asked everything.
+    #[must_use]
+    pub fn comparability_caveat(&self) -> Option<String> {
+        let Some(coverage) = self.coverage else {
+            return Some(
+                "provider coverage for this run is unknown (no dispatch events retained), so a \
+                 yield difference cannot be attributed to the configuration under test"
+                    .to_string(),
+            );
+        };
+        if coverage.unavailable_count > 0 {
+            return Some(format!(
+                "{} of {} provider(s) could not be used during this run; a lower yield here may \
+                 reflect that rather than the configuration under test",
+                coverage.unavailable_count, coverage.provider_count
+            ));
+        }
+        if coverage.out_of_scope_count > 0 {
+            return Some(format!(
+                "{} of {} provider(s) were out of scope for this run; compare only against a run \
+                 with the same scope",
+                coverage.out_of_scope_count, coverage.provider_count
+            ));
+        }
+        None
+    }
 }
 
 /// Build the [`BenchmarkReport`] for a scan from its record and its entities and
 /// relations.
 ///
 /// Pure, deterministic, read-only — it combines [`crate::core::metrics::compute`],
-/// [`crate::core::pivot::detect`], and the scan's own performance counters into one
-/// artifact. The [`metrics`](BenchmarkReport::metrics) are embedded whole so the report
-/// is a complete, self-contained record (the traceability the verification loop wants).
+/// [`crate::core::pivot::detect`], the scan's own performance counters, and the
+/// provider coverage derived from `events` into one artifact. The
+/// [`metrics`](BenchmarkReport::metrics) are embedded whole so the report is a
+/// complete, self-contained record (the traceability the verification loop wants).
+///
+/// `events` is the scan's retained dispatch event log. It is what makes the
+/// report say whether its own scorecard is safe to compare — see
+/// [`BenchmarkReport::comparability_caveat`]. Pass an empty slice only when the
+/// log genuinely holds nothing for the scan; doing so is reported as unknown
+/// coverage, never as a complete sweep.
 #[must_use]
-pub fn report(scan: &Scan, entities: &[Entity], relations: &[Relation]) -> BenchmarkReport {
+pub fn report(
+    scan: &Scan,
+    entities: &[Entity],
+    relations: &[Relation],
+    events: &[crate::core::event::Event],
+) -> BenchmarkReport {
     let metrics = crate::core::metrics::compute(entities, relations);
     let pivots = crate::core::pivot::detect(entities, relations);
     // Structural fragility: cut vertices (articulation points) and bridges (cut
@@ -132,7 +195,10 @@ pub fn report(scan: &Scan, entities: &[Entity], relations: &[Relation]) -> Bench
         cross_scan_bridges: metrics.cross_scan_bridges,
     };
 
-    BenchmarkReport {
+    let rows = crate::core::intelligence::provider_coverage_from_events(events);
+    let coverage = (!rows.is_empty()).then(|| crate::core::intelligence::coverage_verdict(&rows));
+
+    let mut report = BenchmarkReport {
         scan_id: scan.id.clone(),
         seed: scan.target.value.clone(),
         seed_kind: scan.target.kind.canonical_str().to_string(),
@@ -146,7 +212,14 @@ pub fn report(scan: &Scan, entities: &[Entity], relations: &[Relation]) -> Bench
         top_pivot_uid: pivots.first().map(|p| p.uid.clone()),
         scorecard,
         metrics,
-    }
+        coverage,
+        // Filled immediately below: the caveat is derived from the report, so
+        // the rule lives in one place and the serialised field can never
+        // disagree with `comparability_caveat()`.
+        comparability_caveat: None,
+    };
+    report.comparability_caveat = report.comparability_caveat();
+    report
 }
 
 #[cfg(test)]

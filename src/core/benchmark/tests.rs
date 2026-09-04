@@ -36,7 +36,7 @@ fn report_consolidates_metrics_timing_and_pivots() {
     scan.modules_errored = 1;
     scan.modules_timed_out = 0;
 
-    let r = report(&scan, &entities, &relations);
+    let r = report(&scan, &entities, &relations, &[]);
 
     assert_eq!(r.scan_id, "s1");
     assert_eq!(r.seed_kind, "full_name");
@@ -99,7 +99,7 @@ fn scorecard_cut_vertex_count_is_the_full_articulation_total_past_the_pivot_cap(
         .collect();
     let mut scan = Scan::new("s1", Target::new(TargetKind::Username, "n00"));
     scan.status = ScanStatus::Complete;
-    let r = report(&scan, &nodes, &relations);
+    let r = report(&scan, &nodes, &relations, &[]);
     assert_eq!(
         r.scorecard.cut_vertex_count, 28,
         "all 28 internal path nodes are articulation points, not a cap of 25"
@@ -109,7 +109,7 @@ fn scorecard_cut_vertex_count_is_the_full_articulation_total_past_the_pivot_cap(
 #[test]
 fn report_handles_an_unfinished_empty_scan_without_panicking() {
     let scan = Scan::new("s2", Target::new(TargetKind::Domain, "example.com"));
-    let r = report(&scan, &[], &[]);
+    let r = report(&scan, &[], &[], &[]);
     assert_eq!(r.duration_secs, None, "an unfinished scan has no duration");
     assert_eq!(r.entities_per_sec, 0.0);
     assert_eq!(r.scorecard.total_entities, 0);
@@ -120,4 +120,84 @@ fn report_handles_an_unfinished_empty_scan_without_panicking() {
     assert_eq!(r.scorecard.main_core_size, 0);
     assert_eq!(r.pivot_count, 0);
     assert!(r.top_pivot_uid.is_none());
+}
+
+/// A dispatch event for the coverage-derivation tests below.
+fn module_event(kind: crate::core::event::EventKind) -> crate::core::event::Event {
+    crate::core::event::Event {
+        scan_id: "s1".to_string(),
+        ts: 0,
+        kind,
+    }
+}
+
+#[test]
+fn a_scorecard_from_a_degraded_run_says_it_is_not_comparable() {
+    use crate::core::event::{EventKind, SkipClass};
+    // The scorecard exists to be set against another run's, field by field.
+    // That reading is only sound if both runs asked the same questions: a run
+    // whose providers had no credential yields fewer entities for a reason that
+    // has nothing to do with the configuration under test, and attributing the
+    // difference to the configuration is exactly the false conclusion a
+    // benchmark is supposed to prevent.
+    let scan = Scan::new("s1", Target::new(TargetKind::FullName, "Subject Person"));
+    let entities = vec![Entity::new(EntityKind::Person, "Subject Person", 0.85, "s1")];
+
+    // Unknown coverage is its own caveat — never silently a complete sweep.
+    let blind = report(&scan, &entities, &[], &[]);
+    assert!(blind.coverage.is_none());
+    let caveat = blind
+        .comparability_caveat
+        .as_deref()
+        .expect("unknown coverage is not comparable");
+    assert!(caveat.contains("unknown"), "{caveat}");
+    assert_eq!(blind.comparability_caveat(), blind.comparability_caveat.clone());
+
+    // A provider that could not be used: the caveat names how many.
+    let degraded = report(
+        &scan,
+        &entities,
+        &[],
+        &[
+            module_event(EventKind::ModuleDone {
+                module: "answered".to_string(),
+                found: 1,
+            }),
+            module_event(EventKind::ModuleSkipped {
+                module: "unkeyed".to_string(),
+                reason: "needs API key".to_string(),
+                class: Some(SkipClass::Unavailable),
+            }),
+        ],
+    );
+    let coverage = degraded.coverage.expect("coverage was derived");
+    assert_eq!(coverage.unavailable_count, 1);
+    assert_eq!(coverage.provider_count, 2);
+    let caveat = degraded
+        .comparability_caveat
+        .as_deref()
+        .expect("a degraded run is not comparable");
+    assert!(caveat.contains("could not be used"), "{caveat}");
+
+    // A run that asked everything carries no caveat at all — the absence of one
+    // is the claim that the comparison is sound.
+    let clean = report(
+        &scan,
+        &entities,
+        &[],
+        &[module_event(EventKind::ModuleDone {
+            module: "answered".to_string(),
+            found: 1,
+        })],
+    );
+    assert!(
+        clean.coverage.expect("coverage was derived").is_exhaustive(),
+        "one provider, and it answered"
+    );
+    assert_eq!(clean.comparability_caveat, None);
+
+    // Two scorecards with identical yield are NOT interchangeable when one of
+    // the runs was degraded — which is the whole point of carrying the field.
+    assert_eq!(clean.scorecard, degraded.scorecard);
+    assert_ne!(clean.comparability_caveat, degraded.comparability_caveat);
 }
