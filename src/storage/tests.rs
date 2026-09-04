@@ -1032,6 +1032,7 @@ fn recent_module_outcome_events_filters_orders_and_bounds_across_scans() {
             EventKind::ModuleSkipped {
                 module: "crtsh".into(),
                 reason: "no key".into(),
+                class: Some(crate::core::event::SkipClass::Unavailable),
             },
         ),
     ];

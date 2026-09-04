@@ -1024,6 +1024,18 @@ pub fn provider_coverage_from_events(
         else {
             continue;
         };
+        // A skip is only a coverage gap when the provider still owes an answer.
+        // A module the engine deduped because it already ran on this target, or
+        // one that could never have spoken about a private IP, is not an outage
+        // — counting either as unresolved reports a gap that never existed and
+        // would mark almost every real scan incomplete. An event persisted
+        // before the class was recorded is treated as a gap, because unknown is
+        // not harmless.
+        if let EventKind::ModuleSkipped { class, .. } = &event.kind
+            && class.is_some_and(|c| !c.is_coverage_gap())
+        {
+            continue;
+        }
         let module = module.as_str();
         let tally = tallies.entry(module).or_insert(Tally {
             dispatches: 0,
@@ -1940,6 +1952,7 @@ mod tests {
             module_event(EventKind::ModuleSkipped {
                 module: "unasked".to_string(),
                 reason: "no credential configured".to_string(),
+                class: Some(crate::core::event::SkipClass::Unavailable),
             }),
             module_event(EventKind::ModuleDone {
                 module: "productive".to_string(),
@@ -1984,6 +1997,85 @@ mod tests {
     }
 
     #[test]
+    fn a_dedup_or_inapplicable_skip_is_not_a_coverage_gap() {
+        use crate::core::event::{EventKind, SkipClass};
+        // The engine emits ModuleSkipped for four different situations, and only
+        // two of them mean a provider still owes an answer. A module deduped
+        // because it already ran on this target HAS answered; one that could
+        // never have spoken about a private IP was never owed anything.
+        // Counting either as unresolved reports an outage that never happened
+        // and marks almost every real scan incomplete.
+        let events = vec![
+            module_event(EventKind::ModuleDone {
+                module: "registry".to_string(),
+                found: 2,
+            }),
+            module_event(EventKind::ModuleSkipped {
+                module: "registry".to_string(),
+                reason: "already dispatched for this target".to_string(),
+                class: Some(SkipClass::AlreadyCovered),
+            }),
+            module_event(EventKind::ModuleSkipped {
+                module: "shodan".to_string(),
+                reason: "private/reserved IP — external API would reject".to_string(),
+                class: Some(SkipClass::NotApplicable),
+            }),
+        ];
+        let rows = provider_coverage_from_events(&events);
+        assert_eq!(
+            rows.len(),
+            1,
+            "an inapplicable provider earns no coverage row at all: {rows:?}"
+        );
+        assert_eq!(rows[0].provider_id, "registry");
+        assert_eq!(
+            rows[0].outcome,
+            ProviderOutcome::Observed,
+            "a provider that answered and was then deduped is not an outage"
+        );
+        assert_eq!(rows[0].skips, 0);
+        assert!(coverage_is_complete(&rows));
+    }
+
+    #[test]
+    fn an_unclassified_skip_is_treated_as_a_gap() {
+        use crate::core::event::{EventKind, SkipClass};
+        // An event persisted before the class was recorded says nothing about
+        // which kind of skip it was. Unknown is not harmless: assuming the
+        // benign case would silently manufacture a clean sweep out of an old
+        // event log.
+        let unclassified =
+            provider_coverage_from_events(&[module_event(EventKind::ModuleSkipped {
+                module: "legacy".to_string(),
+                reason: "no key".to_string(),
+                class: None,
+            })]);
+        assert_eq!(unclassified.len(), 1);
+        assert!(!unclassified[0].outcome.is_resolved());
+        assert!(!coverage_is_complete(&unclassified));
+
+        // Both gap classes still report as gaps, with their reasons intact.
+        for class in [SkipClass::Scoped, SkipClass::Unavailable] {
+            assert!(class.is_coverage_gap(), "{class:?}");
+            let rows = provider_coverage_from_events(&[module_event(EventKind::ModuleSkipped {
+                module: "p".to_string(),
+                reason: "because".to_string(),
+                class: Some(class),
+            })]);
+            assert_eq!(
+                rows[0].outcome,
+                ProviderOutcome::NotAttempted {
+                    reason: "because".to_string()
+                },
+                "{class:?}"
+            );
+        }
+        for class in [SkipClass::NotApplicable, SkipClass::AlreadyCovered] {
+            assert!(!class.is_coverage_gap(), "{class:?}");
+        }
+    }
+
+    #[test]
     fn a_partial_outage_dominates_the_findings_it_sits_beside() {
         use crate::core::event::EventKind;
         let events = vec![
@@ -1998,6 +2090,7 @@ mod tests {
             module_event(EventKind::ModuleSkipped {
                 module: "registry".to_string(),
                 reason: "quota spent".to_string(),
+                class: Some(crate::core::event::SkipClass::Unavailable),
             }),
         ];
         let rows = provider_coverage_from_events(&events);

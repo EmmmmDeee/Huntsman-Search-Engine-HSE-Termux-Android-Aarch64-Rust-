@@ -497,6 +497,7 @@ fn event_log_renders_a_readable_aligned_timeline() {
             EventKind::ModuleSkipped {
                 module: "psbdmp".into(),
                 reason: "capability-quarantined".into(),
+                class: Some(crate::core::event::SkipClass::Unavailable),
             },
         ),
         Event::new(
@@ -1539,6 +1540,7 @@ fn render_full_shows_the_live_event_tally_while_a_scan_is_still_running() {
             EventKind::ModuleSkipped {
                 module: "shodan".into(),
                 reason: "needs API key".into(),
+                class: Some(crate::core::event::SkipClass::Unavailable),
             },
         ))
         .expect("module_skipped should persist");

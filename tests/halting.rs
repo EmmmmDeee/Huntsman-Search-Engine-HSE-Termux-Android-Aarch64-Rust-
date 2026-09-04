@@ -115,7 +115,7 @@ fn dispatch_outcome(store: &Store, sid: &str) -> (Vec<String>, Vec<(String, Stri
     for e in &events {
         match &e.kind {
             EventKind::ModuleStart { module } => started.push(module.clone()),
-            EventKind::ModuleSkipped { module, reason } => {
+            EventKind::ModuleSkipped { module, reason, .. } => {
                 skipped.push((module.clone(), reason.clone()));
             }
             _ => {}

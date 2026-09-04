@@ -5,6 +5,21 @@
 
 use super::*;
 
+/// Test view of [`module_skip_reason`]: the reason alone, for the many
+/// assertions below that pin WHICH gate fired. The class each reason carries
+/// is a separate contract, asserted exhaustively by
+/// `every_skip_reason_carries_the_class_that_decides_whether_it_is_a_gap`.
+fn skip_reason(
+    module: &dyn Module,
+    target: &Target,
+    opts: &ScanOptions,
+    is_expansion: bool,
+    target_distinct_sources: usize,
+) -> Option<&'static str> {
+    module_skip_reason(module, target, opts, is_expansion, target_distinct_sources)
+        .map(|(_, reason)| reason)
+}
+
 #[tokio::test]
 async fn injected_module_runtime_is_used_by_the_engine() {
     use crate::core::test_support::InMemoryStore;
@@ -972,7 +987,7 @@ fn allowlist_applies_on_expansion_rounds_not_just_the_seed() {
     };
     for is_expansion in [false, true] {
         assert_eq!(
-            module_skip_reason(hibp.as_ref(), &target, &only_name_intel, is_expansion, 0),
+            skip_reason(hibp.as_ref(), &target, &only_name_intel, is_expansion, 0),
             Some("not in allowlist"),
             "a non-allowlisted module must be skipped (is_expansion={is_expansion})"
         );
@@ -985,7 +1000,7 @@ fn allowlist_applies_on_expansion_rounds_not_just_the_seed() {
         ..Default::default()
     };
     assert_ne!(
-        module_skip_reason(hibp.as_ref(), &target, &only_hibp, true, 9),
+        skip_reason(hibp.as_ref(), &target, &only_hibp, true, 9),
         Some("not in allowlist"),
         "an allowlisted module must not be skipped for the allowlist reason"
     );
@@ -1202,14 +1217,14 @@ fn circuit_breaker_trip_skips_the_module_at_the_dispatch_gate() {
 
     // Healthy → not skipped for circuit reasons.
     assert!(
-        module_skip_reason(&m, &pub_target(), &opts, false, 0).is_none(),
+        skip_reason(&m, &pub_target(), &opts, false, 0).is_none(),
         "a healthy module must not be gated"
     );
 
     // Trip it as a 429/quota response would, then the gate skips it.
     super::circuit::record_rate_limit(m.name());
     assert_eq!(
-        module_skip_reason(&m, &pub_target(), &opts, false, 0),
+        skip_reason(&m, &pub_target(), &opts, false, 0),
         Some("circuit-open — rate-limited/quota/repeated failure (cooling down)"),
         "a tripped module must be skipped at the dispatch gate"
     );
@@ -1217,7 +1232,7 @@ fn circuit_breaker_trip_skips_the_module_at_the_dispatch_gate() {
     // A success clears the trip — the gate trusts a recovered provider again.
     super::circuit::record_success(m.name());
     assert!(
-        module_skip_reason(&m, &pub_target(), &opts, false, 0).is_none(),
+        skip_reason(&m, &pub_target(), &opts, false, 0).is_none(),
         "a recovered module must dispatch again"
     );
 }
@@ -1334,7 +1349,7 @@ fn paid_passive() -> StubModule {
 fn skip_reason_none_for_default_opts() {
     let m = free_active();
     let opts = ScanOptions::default();
-    assert!(module_skip_reason(&m, &pub_target(), &opts, false, 0).is_none());
+    assert!(skip_reason(&m, &pub_target(), &opts, false, 0).is_none());
 }
 
 #[test]
@@ -1345,7 +1360,7 @@ fn skip_reason_not_in_allowlist() {
         ..Default::default()
     };
     assert_eq!(
-        module_skip_reason(&m, &pub_target(), &opts, false, 0),
+        skip_reason(&m, &pub_target(), &opts, false, 0),
         Some("not in allowlist")
     );
 }
@@ -1357,7 +1372,7 @@ fn skip_reason_in_allowlist_passes() {
         modules: Some(vec!["test_free".into()]),
         ..Default::default()
     };
-    assert!(module_skip_reason(&m, &pub_target(), &opts, false, 0).is_none());
+    assert!(skip_reason(&m, &pub_target(), &opts, false, 0).is_none());
 }
 
 #[test]
@@ -1374,7 +1389,7 @@ fn skip_reason_gates_live_sensors_to_radar_only() {
     };
     // Default manual scan → skipped.
     assert_eq!(
-        module_skip_reason(&sensor, &pub_target(), &ScanOptions::default(), false, 0),
+        skip_reason(&sensor, &pub_target(), &ScanOptions::default(), false, 0),
         Some("live sensor — radar-only activation"),
     );
     // Even an explicit `hse scan --modules signal_radar` keeps it off: the
@@ -1384,7 +1399,7 @@ fn skip_reason_gates_live_sensors_to_radar_only() {
         ..Default::default()
     };
     assert_eq!(
-        module_skip_reason(&sensor, &pub_target(), &allowlisted, false, 0),
+        skip_reason(&sensor, &pub_target(), &allowlisted, false, 0),
         Some("live sensor — radar-only activation"),
     );
     // Radar activation → the sensor passes the gate.
@@ -1393,10 +1408,10 @@ fn skip_reason_gates_live_sensors_to_radar_only() {
         allow_live_sensors: true,
         ..Default::default()
     };
-    assert!(module_skip_reason(&sensor, &pub_target(), &radar, false, 0).is_none());
+    assert!(skip_reason(&sensor, &pub_target(), &radar, false, 0).is_none());
     // A non-sensor module is unaffected by the gate.
     assert!(
-        module_skip_reason(
+        skip_reason(
             &free_active(),
             &pub_target(),
             &ScanOptions::default(),
@@ -1415,7 +1430,7 @@ fn skip_reason_excluded() {
         ..Default::default()
     };
     assert_eq!(
-        module_skip_reason(&m, &pub_target(), &opts, false, 0),
+        skip_reason(&m, &pub_target(), &opts, false, 0),
         Some("excluded")
     );
 }
@@ -1436,7 +1451,7 @@ fn skip_reason_outside_category_focus() {
         ..Default::default()
     };
     assert_eq!(
-        module_skip_reason(&m, &pub_target(), &opts, false, 0),
+        skip_reason(&m, &pub_target(), &opts, false, 0),
         Some("outside category focus")
     );
 }
@@ -1451,12 +1466,12 @@ fn skip_reason_inside_category_focus_passes() {
         category_focus: vec![ModuleCategory::Other],
         ..Default::default()
     };
-    assert!(module_skip_reason(&m, &pub_target(), &focused, false, 0).is_none());
+    assert!(skip_reason(&m, &pub_target(), &focused, false, 0).is_none());
     let unfocused = ScanOptions {
         category_focus: Vec::new(),
         ..Default::default()
     };
-    assert!(module_skip_reason(&m, &pub_target(), &unfocused, false, 0).is_none());
+    assert!(skip_reason(&m, &pub_target(), &unfocused, false, 0).is_none());
 }
 
 #[test]
@@ -1467,7 +1482,7 @@ fn skip_reason_free_only_skips_keygated() {
         ..Default::default()
     };
     assert_eq!(
-        module_skip_reason(&m, &pub_target(), &opts, false, 0),
+        skip_reason(&m, &pub_target(), &opts, false, 0),
         Some("requires key/payment")
     );
 }
@@ -1479,7 +1494,7 @@ fn skip_reason_free_only_passes_free() {
         free_only: true,
         ..Default::default()
     };
-    assert!(module_skip_reason(&m, &pub_target(), &opts, false, 0).is_none());
+    assert!(skip_reason(&m, &pub_target(), &opts, false, 0).is_none());
 }
 
 #[test]
@@ -1490,7 +1505,7 @@ fn skip_reason_passive_only_skips_active() {
         ..Default::default()
     };
     assert_eq!(
-        module_skip_reason(&m, &pub_target(), &opts, false, 0),
+        skip_reason(&m, &pub_target(), &opts, false, 0),
         Some("not passive")
     );
 }
@@ -1502,7 +1517,7 @@ fn skip_reason_passive_only_passes_passive() {
         passive_only: true,
         ..Default::default()
     };
-    assert!(module_skip_reason(&m, &pub_target(), &opts, false, 0).is_none());
+    assert!(skip_reason(&m, &pub_target(), &opts, false, 0).is_none());
 }
 
 // ── high-value-API cross-correlation gate (oathnet_pro) ────────────────
@@ -1525,7 +1540,7 @@ fn high_value_module_runs_on_seed_regardless_of_sources() {
     let m = high_value();
     let opts = ScanOptions::default();
     assert!(
-        module_skip_reason(&m, &pub_target(), &opts, false, 0).is_none(),
+        skip_reason(&m, &pub_target(), &opts, false, 0).is_none(),
         "high-value module must run on the initial seed query"
     );
 }
@@ -1536,12 +1551,12 @@ fn high_value_module_skipped_on_expansion_below_cross_correlation() {
     let m = high_value();
     let opts = ScanOptions::default();
     assert_eq!(
-        module_skip_reason(&m, &pub_target(), &opts, true, 1),
+        skip_reason(&m, &pub_target(), &opts, true, 1),
         Some("high-value API — awaiting cross-correlation (>=2 sources)"),
         "single-source discovered entity must NOT trigger the high-value API"
     );
     // 0 sources (not yet in map) on expansion is likewise gated.
-    assert!(module_skip_reason(&m, &pub_target(), &opts, true, 0).is_some());
+    assert!(skip_reason(&m, &pub_target(), &opts, true, 0).is_some());
 }
 
 #[test]
@@ -1550,10 +1565,10 @@ fn high_value_module_runs_on_expansion_when_cross_correlated() {
     let m = high_value();
     let opts = ScanOptions::default();
     assert!(
-        module_skip_reason(&m, &pub_target(), &opts, true, 2).is_none(),
+        skip_reason(&m, &pub_target(), &opts, true, 2).is_none(),
         "cross-correlated (>=2 sources) entity must reach the high-value API on expansion"
     );
-    assert!(module_skip_reason(&m, &pub_target(), &opts, true, 5).is_none());
+    assert!(skip_reason(&m, &pub_target(), &opts, true, 5).is_none());
 }
 
 #[test]
@@ -1562,7 +1577,7 @@ fn non_high_value_module_unaffected_by_source_gate() {
     // gate, even at 0 sources on expansion.
     let m = free_active();
     let opts = ScanOptions::default();
-    assert!(module_skip_reason(&m, &pub_target(), &opts, true, 0).is_none());
+    assert!(skip_reason(&m, &pub_target(), &opts, true, 0).is_none());
 }
 
 fn wigle() -> StubModule {
@@ -1588,13 +1603,13 @@ fn wigle_finaliser_gated_on_uncorroborated_coordinate() {
     let m = wigle();
     let opts = ScanOptions::default();
     assert_eq!(
-        module_skip_reason(&m, &coords_target(), &opts, true, 1),
+        skip_reason(&m, &coords_target(), &opts, true, 1),
         Some("WiGLE finaliser — awaiting GEOINT corroboration (>=2 geo sources)"),
         "single-source coordinate must not reach the paid WiGLE finaliser"
     );
-    assert!(module_skip_reason(&m, &coords_target(), &opts, true, 0).is_some());
+    assert!(skip_reason(&m, &coords_target(), &opts, true, 0).is_some());
     assert!(
-        module_skip_reason(&m, &coords_target(), &opts, true, 2).is_none(),
+        skip_reason(&m, &coords_target(), &opts, true, 2).is_none(),
         "a coordinate >=2 geo sources agree on (high confidence) reaches WiGLE"
     );
 }
@@ -1639,7 +1654,7 @@ fn wigle_runs_on_seed_coordinate_and_on_any_bssid() {
     let opts = ScanOptions::default();
     // Seed round: a Coordinates seed is the operator's explicit target.
     assert!(
-        module_skip_reason(&m, &coords_target(), &opts, false, 0).is_none(),
+        skip_reason(&m, &coords_target(), &opts, false, 0).is_none(),
         "WiGLE runs on a coordinate SEED regardless of corroboration"
     );
     // A MacAddress/BSSID is WiGLE's PRIMARY pivot — exempt from the
@@ -1647,7 +1662,7 @@ fn wigle_runs_on_seed_coordinate_and_on_any_bssid() {
     // BSSID budget bounds it). The universal-preflight gate doesn't touch MACs.
     let mac = Target::new(TargetKind::MacAddress, "aa:bb:cc:dd:ee:ff");
     assert!(
-        module_skip_reason(&m, &mac, &opts, true, 0).is_none(),
+        skip_reason(&m, &mac, &opts, true, 0).is_none(),
         "a discovered BSSID must reach WiGLE — it is the primary resolver"
     );
 }
@@ -1661,9 +1676,70 @@ fn skip_reason_allowlist_takes_priority_over_exclude() {
         ..Default::default()
     };
     assert_eq!(
-        module_skip_reason(&m, &pub_target(), &opts, false, 0),
+        skip_reason(&m, &pub_target(), &opts, false, 0),
         Some("excluded")
     );
+}
+
+#[test]
+fn every_skip_reason_carries_the_class_that_decides_whether_it_is_a_gap() {
+    use crate::core::event::SkipClass;
+    // The class is what tells a coverage consumer whether the provider still
+    // owes an answer, and it must come from the gate that made the decision —
+    // not from a consumer re-deriving it by parsing the prose reason, which is
+    // how "already dispatched for this target" was read as an outage.
+    let m = free_active();
+    let opts = ScanOptions::default();
+
+    // Scoped: the operator narrowed the sweep. The provider could have spoken.
+    let excluded = ScanOptions {
+        exclude_modules: vec![m.name().to_string()],
+        ..Default::default()
+    };
+    let (class, reason) = module_skip_reason(&m, &pub_target(), &excluded, false, 0)
+        .expect("an excluded module is skipped");
+    assert_eq!(reason, "excluded");
+    assert_eq!(class, SkipClass::Scoped);
+    assert!(class.is_coverage_gap());
+
+    // NotApplicable: the provider had nothing to say about this target, so its
+    // silence carries no information about the subject either way.
+    let private = Target::new(TargetKind::IpAddress, "192.168.1.1");
+    let (class, reason) =
+        module_skip_reason(&m, &private, &opts, false, 0).expect("a private IP is preflighted out");
+    assert_eq!(reason, "private/reserved IP — external API would reject");
+    assert_eq!(class, SkipClass::NotApplicable);
+    assert!(!class.is_coverage_gap());
+
+    // Unavailable: the provider could not be used. A gap, and a different one
+    // from the operator's own narrowing.
+    super::circuit::record_rate_limit(m.name());
+    let (class, reason) = module_skip_reason(&m, &pub_target(), &opts, false, 0)
+        .expect("a tripped module is skipped");
+    assert_eq!(
+        reason,
+        "circuit-open — rate-limited/quota/repeated failure (cooling down)"
+    );
+    assert_eq!(class, SkipClass::Unavailable);
+    assert!(class.is_coverage_gap());
+    super::circuit::record_success(m.name());
+
+    // AlreadyCovered: a local sensor that already ran on the seed round has
+    // answered; re-skipping it on expansion is not an outage.
+    let sensor = StubModule {
+        name: super::LOCAL_PASSIVE_MODULES[0],
+        passive: true,
+        ..free_active()
+    };
+    let radar = ScanOptions {
+        allow_live_sensors: true,
+        ..Default::default()
+    };
+    let (class, reason) = module_skip_reason(&sensor, &pub_target(), &radar, true, 0)
+        .expect("a seed-round sensor is skipped on expansion");
+    assert_eq!(reason, "sensor (already ran on seed round)");
+    assert_eq!(class, SkipClass::AlreadyCovered);
+    assert!(!class.is_coverage_gap());
 }
 
 // -- universal preflight gate (private IP / local domain) --
@@ -1674,7 +1750,7 @@ fn skip_reason_rejects_private_ip_for_external_module() {
     let private = Target::new(TargetKind::IpAddress, "192.168.1.1");
     let opts = ScanOptions::default();
     assert_eq!(
-        module_skip_reason(&m, &private, &opts, false, 0),
+        skip_reason(&m, &private, &opts, false, 0),
         Some("private/reserved IP — external API would reject")
     );
 }
@@ -1685,7 +1761,7 @@ fn skip_reason_rejects_local_domain_for_external_module() {
     let local = Target::new(TargetKind::Domain, "router.local");
     let opts = ScanOptions::default();
     assert_eq!(
-        module_skip_reason(&m, &local, &opts, false, 0),
+        skip_reason(&m, &local, &opts, false, 0),
         Some("local/reserved domain — external API would reject")
     );
 }
@@ -1708,14 +1784,14 @@ fn skip_reason_lets_local_passive_module_see_private_ip() {
         allow_live_sensors: true,
         ..Default::default()
     };
-    assert!(module_skip_reason(&m, &private, &opts, false, 0).is_none());
+    assert!(skip_reason(&m, &private, &opts, false, 0).is_none());
 }
 
 #[test]
 fn skip_reason_passes_public_ip_through() {
     let m = free_active();
     let opts = ScanOptions::default();
-    assert!(module_skip_reason(&m, &pub_target(), &opts, false, 0).is_none());
+    assert!(skip_reason(&m, &pub_target(), &opts, false, 0).is_none());
 }
 
 #[test]
@@ -1734,7 +1810,7 @@ fn skip_reason_passes_public_ipv6_through() {
     ] {
         let t = Target::new(TargetKind::IpAddress, v6);
         assert!(
-            module_skip_reason(&m, &t, &opts, false, 0).is_none(),
+            skip_reason(&m, &t, &opts, false, 0).is_none(),
             "public IPv6 {v6} should NOT be rejected by the universal gate",
         );
     }
@@ -1762,7 +1838,7 @@ fn skip_reason_rejects_url_with_private_host_ssrf_gate() {
         "https://intra.internal/api",
     ] {
         let t = Target::new(TargetKind::Url, hostile);
-        let reason = module_skip_reason(&m, &t, &opts, false, 0);
+        let reason = skip_reason(&m, &t, &opts, false, 0);
         assert!(
             reason.is_some_and(|r| r.contains("SSRF") || r.contains("private")),
             "Url {hostile} should be SSRF-rejected, got {reason:?}",
@@ -1781,7 +1857,7 @@ fn skip_reason_lets_public_url_through() {
     ] {
         let t = Target::new(TargetKind::Url, benign);
         assert!(
-            module_skip_reason(&m, &t, &opts, false, 0).is_none(),
+            skip_reason(&m, &t, &opts, false, 0).is_none(),
             "Url {benign} should pass through",
         );
     }
@@ -1796,7 +1872,7 @@ fn skip_reason_still_rejects_private_ipv6() {
     for private_v6 in ["::1", "fc00::1", "fe80::1"] {
         let t = Target::new(TargetKind::IpAddress, private_v6);
         assert!(
-            module_skip_reason(&m, &t, &opts, false, 0).is_some(),
+            skip_reason(&m, &t, &opts, false, 0).is_some(),
             "private IPv6 {private_v6} should be rejected",
         );
     }

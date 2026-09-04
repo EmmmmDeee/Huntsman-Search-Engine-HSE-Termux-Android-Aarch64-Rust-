@@ -238,6 +238,7 @@ use crate::core::scan::ScanStatus;
         let skipped = EventKind::ModuleSkipped {
             module: "m".into(),
             reason: "no key".into(),
+            class: Some(SkipClass::Unavailable),
         };
         assert_eq!(module_err.log_level(), "error");
         assert_eq!(failed.log_level(), "error");
@@ -320,6 +321,7 @@ use crate::core::scan::ScanStatus;
             EventKind::ModuleSkipped {
                 module: "m".into(),
                 reason: "r".into(),
+                class: Some(SkipClass::Scoped),
             },
             EventKind::EntityFound {
                 entity: Entity::new(EntityKind::Email, "a@b.com", 0.5, "s"),
@@ -527,7 +529,7 @@ use crate::core::scan::ScanStatus;
             ev(EventKind::ModuleStart { module: "b".into() }),
             ev(EventKind::ModuleDone { module: "a".into(), found: 3 }),
             ev(EventKind::ModuleError { module: "b".into(), error: "boom".into() }),
-            ev(EventKind::ModuleSkipped { module: "c".into(), reason: "no key".into() }),
+            ev(EventKind::ModuleSkipped { module: "c".into(), reason: "no key".into(), class: Some(SkipClass::Unavailable) }),
             // Non-module events must not be counted into any bucket.
             ev(EventKind::ScanComplete { scan_id: "s".into(), entity_count: 9, status: ScanStatus::Complete }),
             ev(EventKind::ExpansionStop { reason: "depth".into() }),

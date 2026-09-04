@@ -486,12 +486,19 @@ impl ScanEngine {
 
     /// Emit a `ModuleSkipped` event — the gate-rejection path shared by
     /// `run_expansion` and both dispatchers (cancel/quota/cost-dedup/skip-rule).
-    fn emit_skipped(&self, scan_id: &str, module: &str, reason: &str) {
+    fn emit_skipped(
+        &self,
+        scan_id: &str,
+        module: &str,
+        reason: &str,
+        class: crate::core::event::SkipClass,
+    ) {
         self.emit(
             scan_id,
             EventKind::ModuleSkipped {
                 module: module.into(),
                 reason: reason.into(),
+                class: Some(class),
             },
         );
     }
