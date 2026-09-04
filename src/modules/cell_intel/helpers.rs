@@ -15,6 +15,63 @@ use crate::util::http::urlencode;
 use super::SRC;
 use super::types::{Cell, OpenCellidResp, TowerKey};
 
+/// Build the `Coordinates` entity for a tower position returned by OpenCelliD.
+///
+/// The evidence is attributed to the CORPUS the position came from
+/// ([`crate::modules::opencellid::SRC`]), not to this module.
+///
+/// The standalone `opencellid` module accepts `DeviceId` targets and looks a
+/// tower up through the same `cell/get` endpoint with the same
+/// `HUNTSMAN_OPENCELLID_KEY`. Since this module emits the `DeviceId` the engine
+/// then expands, both paths run against the same tower as a matter of course —
+/// the designed pivot, not a corner case — and both mint the position as
+/// `{lat:.6},{lon:.6}`. Same value, same kind, so the two entities share a UID
+/// and merge. Stamped with this module's own name, that merge produced TWO
+/// distinct corroborating sources for ONE record from ONE corpus, and
+/// `Entity::source_count` fed it straight into `c_effective`: a confidence
+/// boost bought entirely by retrieving the same row twice.
+///
+/// Only the OpenCelliD-derived position moves. The MCC-centroid fallback keeps
+/// this module's own `SRC`, because that really is its own offline derivation,
+/// and so does the tower's `DeviceId` evidence — the radio hardware observation
+/// AU-084 correctly treats as independent of the database.
+pub(super) fn build_opencellid_coordinate(
+    cell: &Cell,
+    key: &TowerKey,
+    radio: &str,
+    lat: f64,
+    lon: f64,
+    range: u64,
+    scan_id: &str,
+) -> Entity {
+    let coords = format!("{lat:.6},{lon:.6}");
+    let mut e = Entity::new(
+        EntityKind::Coordinates,
+        &coords,
+        crate::util::geo::cell_range_to_confidence(range),
+        scan_id,
+    );
+    e.tag("geoint");
+    e.tag(crate::core::tags::CELL_TOWER);
+    e.tag(format!("radio:{}", key.ctype.to_lowercase()));
+    crate::util::geo::tag_au_state(&mut e, lat, lon);
+    e.add_evidence(
+        Evidence::new(
+            crate::modules::opencellid::SRC,
+            format!("Cell tower {radio} {} -> {coords}", key.tower_id),
+        )
+        .with_attr("tower_id", &key.tower_id)
+        .with_attr("radio", radio)
+        .with_attr("mcc", key.mcc.as_ref())
+        .with_attr("mnc", key.mnc.as_ref())
+        .with_attr("range_m", range.to_string())
+        .with_attr("source", "OpenCelliD")
+        .with_attr("dbm", cell.dbm.unwrap_or(0).to_string())
+        .with_attr("registered", cell.registered.unwrap_or(false).to_string()),
+    );
+    e
+}
+
 /// Build the `DeviceId` entity for one cell tower. Single source of truth for
 /// the tower-survey entity shape, shared by the live `process()` path and the
 /// `parse_cells_survey` test helper so the two can never drift in their tags or
@@ -81,7 +138,12 @@ pub(super) async fn query_opencellid(
         // such service registered) and the pool would never learn the real
         // "opencellid" key was rejected/throttled, exactly the T2.153 class
         // of bug this fixes.
-        crate::util::http::note_keyed_error(status.as_u16(), "opencellid", api_key, ctx);
+        crate::util::http::note_keyed_error(
+            status.as_u16(),
+            crate::modules::opencellid::SRC,
+            api_key,
+            ctx,
+        );
         return None;
     }
 
@@ -93,7 +155,7 @@ pub(super) async fn query_opencellid(
         // caught by the status check above. Distinct from the `status:
         // "error"` case just below (a genuine "couldn't geolocate this
         // tower" negative with a real key — not a key problem).
-        crate::util::http::note_keyed_error(401, "opencellid", api_key, ctx);
+        crate::util::http::note_keyed_error(401, crate::modules::opencellid::SRC, api_key, ctx);
         return None;
     }
     if data.status.as_deref() == Some("error") {

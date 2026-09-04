@@ -31,7 +31,14 @@ use crate::core::{
 use crate::util::geo::{is_valid_coords, parse_coords};
 use crate::util::http::{RequestBuilderExt, urlencode};
 
-const SRC: &str = "opencellid";
+/// The evidence source name for OpenCelliD-derived findings.
+///
+/// `pub(crate)` because `cell_intel` performs the SAME `cell/get` lookup with
+/// the SAME `HUNTSMAN_OPENCELLID_KEY` and must attribute what it gets back to
+/// this corpus rather than to itself — see the call site there. Sharing the
+/// constant is what keeps the two from drifting apart into two names for one
+/// source, which is precisely the thing being prevented.
+pub(crate) const SRC: &str = "opencellid";
 
 /// The error returned when OpenCelliD rejects the API key in a `200` body.
 ///
