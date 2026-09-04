@@ -571,3 +571,65 @@ use super::*;
             "the session counter must equal the sum of every scan's actual admissions, with no double-count or lost increment from the concurrent contention"
         );
     }
+
+#[test]
+fn a_probe_claim_and_a_terminal_latch_belong_to_one_scan_only() {
+    // Both were process-wide atomics in `util::see_know::budget`, documented
+    // as "once per scan" — which is exactly the shape `ScanState::rate_limited`
+    // already warns about. Under `hse serve`'s concurrent scans that meant the
+    // first scan to claim the one-shot quota probe left every sibling unable to
+    // fire one (so a sibling ran pinned to the un-scaled default cap for its
+    // whole life), and one scan latching a rejected key made every sibling
+    // report a failure it never observed.
+    let b = QuotaBudget::new("probe-latch", 10, 100, "NO_SUCH_SCAN_CAP", "NO_SUCH_SESSION_CAP");
+
+    with_scan_sync("scan-a", || {
+        assert!(b.claim_probe(), "the first caller in a scan wins the probe");
+        assert!(!b.claim_probe(), "a duplicate claim in the same scan is refused");
+        b.set_terminal_latch(2);
+    });
+
+    // A sibling scan is entirely unaffected: it gets its OWN probe, and sees no
+    // latch it did not set.
+    with_scan_sync("scan-b", || {
+        assert!(
+            b.claim_probe(),
+            "a sibling scan must get its own probe, not inherit a consumed claim"
+        );
+        assert_eq!(
+            b.terminal_latch(),
+            0,
+            "a sibling must not report a terminal condition it never observed"
+        );
+        b.set_terminal_latch(1);
+    });
+
+    // And resetting one scan leaves the other's live latches alone — the second
+    // half of the old defect, where a new scan cleared a running sibling's.
+    with_scan_sync("scan-b", || b.reset_scan());
+    with_scan_sync("scan-a", || {
+        assert_eq!(b.terminal_latch(), 2, "scan-a's latch survives scan-b's reset");
+        assert!(
+            !b.claim_probe(),
+            "scan-a's probe claim survives scan-b's reset too"
+        );
+    });
+
+    // Releasing a claim (the probe failed) lets the same scan re-probe, and
+    // still touches nobody else.
+    with_scan_sync("scan-a", || {
+        b.release_probe();
+        assert!(b.claim_probe(), "a released claim can be re-taken by its own scan");
+    });
+    with_scan_sync("scan-b", || {
+        assert_eq!(b.terminal_latch(), 0, "scan-b was reset and stays reset");
+    });
+
+    // reset_scan clears both for the scan that owns them, which is what
+    // `see_know::reset_budget` relies on to re-test a corrected key.
+    with_scan_sync("scan-a", || {
+        b.reset_scan();
+        assert_eq!(b.terminal_latch(), 0);
+        assert!(b.claim_probe(), "reset restores the scan's probe");
+    });
+}

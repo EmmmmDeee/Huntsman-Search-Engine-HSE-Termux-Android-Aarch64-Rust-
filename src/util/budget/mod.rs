@@ -118,6 +118,21 @@ struct ScanState {
     /// scan's queries, and a new scan starting would clear a still-active
     /// sibling's latch out from under it.
     rate_limited: bool,
+    /// One-shot latch for a once-per-scan probe an owner module fires to size
+    /// its cap against the operator's real plan (SeekNow's `/credits` call).
+    /// Scan-scoped for the reason [`Self::rate_limited`] gives: held
+    /// process-wide, the first of `hse serve`'s concurrent scans to claim it
+    /// leaves every sibling unable to probe — so a sibling runs its whole life
+    /// pinned to the un-scaled default cap — while each new scan clears a
+    /// still-active sibling's claim out from under it.
+    probe_claimed: bool,
+    /// An owner-module-defined terminal condition latched for this scan; `0`
+    /// means none. SeekNow stores its `KeyRejection` discriminant here, so one
+    /// scan discovering a rejected key fast-fails only ITS remaining lookups.
+    /// Scan-scoped for the same reason again: a process-wide latch made every
+    /// concurrent scan report a rejection it never observed, and a new scan
+    /// starting cleared a live one.
+    terminal_latch: u8,
 }
 
 /// Shared quota lifecycle.
@@ -377,6 +392,46 @@ impl QuotaBudget {
     pub fn is_exhausted(&self) -> bool {
         let scan = current_scan();
         self.lock().get(&scan).is_some_and(|s| s.exhausted)
+    }
+
+    /// Claim this scan's one-shot probe: `true` for the first caller, `false`
+    /// for every later one until [`Self::release_probe`] or `reset_scan()`.
+    ///
+    /// The claim and the release are both scan-scoped, so two concurrently
+    /// running scans each get their own probe rather than the first consuming
+    /// the only one — see [`ScanState::probe_claimed`].
+    pub fn claim_probe(&self) -> bool {
+        let scan = current_scan();
+        let mut guard = self.lock();
+        let state = guard.entry(scan).or_default();
+        if state.probe_claimed {
+            return false;
+        }
+        state.probe_claimed = true;
+        true
+    }
+
+    /// Release this scan's probe claim, so a later call can re-probe.
+    ///
+    /// Call this ONLY when the probe the claim guarded actually failed: a
+    /// successful probe must keep the claim, or every seed re-probes.
+    pub fn release_probe(&self) {
+        let scan = current_scan();
+        self.lock().entry(scan).or_default().probe_claimed = false;
+    }
+
+    /// Latch an owner-module terminal condition for this scan — see
+    /// [`ScanState::terminal_latch`]. `0` clears it.
+    pub fn set_terminal_latch(&self, code: u8) {
+        let scan = current_scan();
+        self.lock().entry(scan).or_default().terminal_latch = code;
+    }
+
+    /// This scan's latched terminal condition, or `0` when none.
+    #[must_use]
+    pub fn terminal_latch(&self) -> u8 {
+        let scan = current_scan();
+        self.lock().get(&scan).map_or(0, |s| s.terminal_latch)
     }
 
     /// Trip the sticky rate-limited flag for the current scan — set when a

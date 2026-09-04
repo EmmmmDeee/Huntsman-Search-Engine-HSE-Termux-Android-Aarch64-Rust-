@@ -2,8 +2,6 @@
 //! key-invalid latch that fast-fails the remaining lookups once a bad key is
 //! detected.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-
 use crate::util::budget::QuotaBudget;
 
 /// Serialises every test — in this file's own `tests` module AND in
@@ -54,19 +52,20 @@ pub(super) static BUDGET: QuotaBudget = QuotaBudget::new(
     "HUNTSMAN_SEEKNOW_SESSION_CAP",
 );
 
-/// Set once per scan when the `/credits` probe completes. Reset by
-/// [`reset_budget`] so every scan gets a fresh probe. Avoids paying one
-/// extra HTTP call per target when the module processes multiple seeds.
-static QUOTA_PROBED: AtomicBool = AtomicBool::new(false);
-
 /// True if this is the first call since [`reset_budget`] — i.e. the probe
 /// has not yet run for this scan. Returns false on all subsequent calls in
 /// the same scan (probe already done or no key available). Thread-safe:
 /// the first concurrent caller wins; others see false.
+///
+/// Scan-scoped, through [`crate::util::budget::QuotaBudget::claim_probe`].
+/// Held as a process-wide atomic — which it was — the first of `hse serve`'s
+/// concurrent scans to claim the probe left every sibling unable to fire one,
+/// so a sibling ran its whole life pinned to the un-scaled default cap
+/// (≈60% under-provisioned on a large plan, the same harm
+/// [`release_quota_probe`] exists to avoid), while each new scan cleared a
+/// still-active sibling's claim out from under it.
 pub fn should_probe_quota() -> bool {
-    QUOTA_PROBED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
+    BUDGET.claim_probe()
 }
 
 /// Release the one-shot quota-probe latch [`should_probe_quota`] claimed, so a
@@ -77,7 +76,7 @@ pub fn should_probe_quota() -> bool {
 /// recovery short of a new scan. `/credits` is non-billable, so re-probing costs
 /// no quota. Left untouched on success, preserving "first caller wins".
 pub fn release_quota_probe() {
-    QUOTA_PROBED.store(false, Ordering::Release);
+    BUDGET.release_probe();
 }
 
 /// Scale the per-scan cap to the operator's actual daily allocation.
@@ -152,19 +151,26 @@ impl KeyRejection {
     }
 }
 
-/// Latched once per scan when SeekNow rejects the configured API key: `0` =
-/// not rejected, otherwise the [`KeyRejection`] discriminant.
-///
-/// curl exits 0 on an HTTP 401 (it got a response), so the shared curl client
-/// reports success and the `{"error":"invalid_api_key"}` body parses to zero
-/// items — which made SeekNow look like it "found nothing" on every seed
-/// instead of "the key is bad". This latch makes the failure explicit,
-/// fast-fails the remaining ~160 doomed lookups for the rest of the scan, and
-/// (through [`key_rejection`]) lets the module report each seed as failed
-/// rather than as a clean negative. It is cleared by [`reset_budget`] at the
-/// start of each scan so a corrected key (UI Settings / `HUNTSMAN_SEEKNOW_KEY`)
-/// recovers without a process restart.
-static KEY_REJECTED: AtomicU8 = AtomicU8::new(0);
+// The key-rejection latch: set once per scan when SeekNow rejects the
+// configured API key; `0` = not rejected, otherwise the `KeyRejection`
+// discriminant. Lives in the scan-scoped budget state (`terminal_latch`),
+// reached through `key_rejection` / `mark_key_invalid` below.
+//
+// curl exits 0 on an HTTP 401 (it got a response), so the shared curl client
+// reports success and the `{"error":"invalid_api_key"}` body parses to zero
+// items — which made SeekNow look like it "found nothing" on every seed
+// instead of "the key is bad". This latch makes the failure explicit,
+// fast-fails the remaining ~160 doomed lookups for the rest of the scan, and
+// (through `key_rejection`) lets the module report each seed as failed
+// rather than as a clean negative. It is cleared by `reset_budget` at the
+// start of each scan so a corrected key (UI Settings / `HUNTSMAN_SEEKNOW_KEY`)
+// recovers without a process restart.
+//
+// Scan-scoped rather than a process-wide atomic, which is what it was: held
+// process-wide, one of `hse serve`'s concurrent scans latching a
+// rejection made every sibling report a key failure it never observed and
+// fast-fail lookups that would have succeeded, and each new scan cleared a
+// live sibling's latch.
 
 /// Install a runtime per-scan cap. `0` clears the override (falls back
 /// to env + static default). The engine calls this once at scan start
@@ -222,13 +228,12 @@ pub fn is_quota_exhausted() -> bool {
 /// operator may have fixed and re-probes the quota — see the inline notes.
 pub fn reset_budget() {
     BUDGET.reset_scan();
-    // Re-test the key each scan: if the operator fixed it (UI Settings /
-    // HUNTSMAN_SEEKNOW_KEY) since the last scan, SeekNow recovers immediately;
-    // if it's still bad, the first call this scan re-latches (one warning, then
-    // the remaining lookups fast-fail).
-    KEY_REJECTED.store(0, Ordering::Relaxed);
-    // Allow the quota probe to fire again on the next scan.
-    QUOTA_PROBED.store(false, Ordering::Relaxed);
+    // The key-rejection and quota-probe latches live in the scan state
+    // `reset_scan()` just cleared, so both are already reset for this scan —
+    // and, unlike the process-wide atomics they replaced, resetting THIS scan
+    // no longer clears a concurrently-running sibling scan's latches. A
+    // corrected key (UI Settings / HUNTSMAN_SEEKNOW_KEY) still recovers on the
+    // next scan without a process restart, which is what those stores were for.
     // Clear the cross-module response cache: it dedups identical endpoint
     // queries WITHIN one scan (see `client::RESPONSE_CACHE`'s own doc
     // comment), but with no scan-boundary reset a long-lived `hse serve` /
@@ -269,7 +274,7 @@ pub(super) fn mark_quota_exhausted() {
 /// this from a FRESH process (before any data-bearing `search`/`get_path`
 /// call has had the chance to).
 pub fn key_rejection() -> Option<KeyRejection> {
-    match KEY_REJECTED.load(Ordering::Relaxed) {
+    match BUDGET.terminal_latch() {
         1 => Some(KeyRejection::InvalidKey),
         2 => Some(KeyRejection::PlanRequired),
         _ => None,
@@ -292,7 +297,9 @@ pub(crate) fn mark_key_invalid(body: &str) -> KeyRejection {
     // Emit the actionable guidance exactly once (the clear→latched
     // transition), naming the actual cause so the operator knows whether to
     // swap the key or upgrade the plan.
-    if KEY_REJECTED.swap(rejection as u8, Ordering::Relaxed) == 0 {
+    let previous = BUDGET.terminal_latch();
+    BUDGET.set_terminal_latch(rejection as u8);
+    if previous == 0 {
         tracing::warn!(
             "SeekNow lookups disabled for this scan: {}.",
             rejection.guidance()
