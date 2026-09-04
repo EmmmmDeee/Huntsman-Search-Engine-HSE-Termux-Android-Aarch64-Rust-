@@ -205,3 +205,51 @@ fn levenshtein_matches_known_distances() {
     // A single Cyrillic-for-Latin swap is distance 1 (scalar, not byte, compare).
     assert_eq!(levenshtein("example", "\u{0435}xample"), 1);
 }
+
+
+#[test]
+fn a_sibling_scans_dedup_never_suppresses_this_scans_findings() {
+    // The dedup is a WITHIN-scan optimisation. Held as one flat set it became a
+    // BETWEEN-scan one, and `hse serve` runs scans concurrently: once scan A had
+    // covered an apex, scan B reaching the same apex returned early and lost ALL
+    // its typosquat findings for that domain. The mirror image bit too — scan B
+    // starting cleared scan A's live set, so A re-spent DNS on candidates it had
+    // already resolved.
+    use super::{SEEN_REGISTRABLE, reset_seen};
+
+    let claim = |scan: &str, domain: &str| -> bool {
+        SEEN_REGISTRABLE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(scan.to_string())
+            .or_default()
+            .insert(domain.to_string())
+    };
+
+    reset_seen("scan-a");
+    reset_seen("scan-b");
+
+    assert!(claim("scan-a", "example.com"), "scan-a covers the apex first");
+    assert!(
+        !claim("scan-a", "example.com"),
+        "within one scan the second dispatch is still deduped"
+    );
+    assert!(
+        claim("scan-b", "example.com"),
+        "a sibling scan must still process the apex — its findings are its own"
+    );
+
+    // Starting a new scan drops only that scan's set.
+    reset_seen("scan-b");
+    assert!(
+        !claim("scan-a", "example.com"),
+        "scan-a's live within-scan dedup survives scan-b's reset"
+    );
+    assert!(
+        claim("scan-b", "example.com"),
+        "scan-b starts clean after its own reset"
+    );
+
+    reset_seen("scan-a");
+    reset_seen("scan-b");
+}

@@ -25,13 +25,25 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use tokio::sync::Semaphore;
 
-/// Session-level dedup: tracks registrable domains already fully processed by
-/// this module within one `hse` invocation. Real scan data showed `behindthename.com`
-/// dispatched 30 times (once per subdomain discovered), each triggering up to
-/// MAX_CANDIDATES DNS lookups for the same typosquat candidates. A second run
-/// on the same registrable domain produces zero new findings.
-static SEEN_REGISTRABLE: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> =
-    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+/// Per-scan dedup: registrable domains this module has already fully processed
+/// **within one scan**. Real scan data showed `behindthename.com` dispatched 30
+/// times (once per subdomain discovered), each triggering up to MAX_CANDIDATES
+/// DNS lookups for the same typosquat candidates. A second dispatch on the same
+/// registrable domain in the same scan produces zero new findings.
+///
+/// Keyed by `scan_id`, not one flat set. A flat set is a WITHIN-scan dedup
+/// implemented as a BETWEEN-scan one, and `hse serve` runs scans concurrently:
+/// once scan A had processed `example.com`, scan B reaching the same apex found
+/// it already present and returned early, silently suppressing ALL of its
+/// typosquat findings for that domain — the cross-scan data-loss
+/// [`reset_seen`] was added to prevent, still reachable because the reset was
+/// global too. The mirror image also bit: scan B starting cleared scan A's live
+/// within-scan dedup, so A re-resolved candidates it had already spent DNS on.
+/// Same shape, same fix, as `search_engines::reset_session_liveness` and
+/// `util::budget`'s per-scan state.
+static SEEN_REGISTRABLE: std::sync::LazyLock<
+    Mutex<std::collections::HashMap<String, std::collections::HashSet<String>>>,
+> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 use crate::core::{
     confidence,
@@ -55,19 +67,19 @@ const MAX_CANDIDATES: usize = 128;
 /// a mobile link while keeping the resolve phase a few seconds).
 const MAX_CONCURRENT: usize = 12;
 
-/// Clear the session dedup set at the start of each scan. Installed into the
-/// engine's injected per-scan runtime reset. Without
-/// it the process-global [`SEEN_REGISTRABLE`] set (a) grows without bound across a
-/// long-lived `serve` / `live` process and (b) silently suppresses ALL typosquat
-/// findings for any registrable domain scanned a SECOND time — a cross-scan
-/// data-loss. Resetting per scan preserves the intended WITHIN-scan dedup (a
-/// registrable domain dispatched once per discovered subdomain resolves its
-/// candidates only once) while bounding growth to a single scan's domains.
-pub fn reset_seen() {
-    let mut set = SEEN_REGISTRABLE
+/// Drop `scan_id`'s dedup set at the start of that scan. Installed into the
+/// engine's injected per-scan runtime reset.
+///
+/// Without it [`SEEN_REGISTRABLE`] grows without bound across a long-lived
+/// `serve` / `live` process. Removing only THIS scan's entry — rather than
+/// clearing the whole map, which is what this did while the set was flat —
+/// preserves the intended WITHIN-scan dedup for every concurrently-running
+/// sibling scan instead of wiping theirs as a side effect of starting a new one.
+pub fn reset_seen(scan_id: &str) {
+    let mut map = SEEN_REGISTRABLE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    set.clear();
+    map.remove(scan_id);
 }
 
 /// TLDs to swap the registered name into — common gTLDs plus the Australian
@@ -135,7 +147,13 @@ impl Module for Typosquat {
             let mut seen = SEEN_REGISTRABLE
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !seen.insert(reg.clone()) {
+            // This scan's own set: a sibling scan having already covered this
+            // apex must not suppress THIS scan's findings for it.
+            if !seen
+                .entry(ctx.scan_id.clone())
+                .or_default()
+                .insert(reg.clone())
+            {
                 return Ok(result);
             }
         }

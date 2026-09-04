@@ -320,7 +320,7 @@ impl crate::core::module_runtime::ModuleRuntime for BuiltinModuleRuntime {
         oathnet_pro::reset_budget();
         see_know::reset_budget();
         wigle::reset_budget();
-        typosquat::reset_seen();
+        typosquat::reset_seen(scan_id);
         search_engines::reset_session_liveness(scan_id);
         reset_found_keys(scan_id);
     }
