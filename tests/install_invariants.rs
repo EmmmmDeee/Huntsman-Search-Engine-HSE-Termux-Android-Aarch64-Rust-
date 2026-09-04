@@ -145,15 +145,14 @@ fn play_store_termux_is_detected_and_rejected_before_any_package_work() {
 }
 
 /// Every generated program that must not touch the raw Termux wake-lock.
-const WAKE_LOCK_WRAPPERS: &[&str] = &["WRAPPER", "WATCH", "BOOT", "AIW"];
+const WAKE_LOCK_WRAPPERS: &[&str] = &["WRAPPER", "WATCH", "BOOT"];
 
 /// The long-lived programs that must actively MANAGE the shared lock. The
 /// Termux:Boot script is deliberately absent: it only launches the others,
 /// each of which registers itself, so a lock of its own would be an unowned
-/// holder nothing ever releases. `AIW` is the `hse-ai` wrapper, added after
 /// these lists were first written and unguarded until
 /// `every_wake_lock_touching_heredoc_is_guarded` started deriving the set.
-const WAKE_LOCK_MANAGERS: &[&str] = &["WRAPPER", "WATCH", "AIW"];
+const WAKE_LOCK_MANAGERS: &[&str] = &["WRAPPER", "WATCH"];
 
 #[test]
 fn generated_wrappers_never_release_the_shared_wake_lock_directly() {
@@ -271,7 +270,7 @@ fn generated_wrappers_do_not_hardcode_the_termux_prefix() {
     // than a compiled-in guess.
     let script = install_sh();
     let mut offenders = Vec::new();
-    for tag in ["WRAPPER", "WATCH", "BOOT", "WAKELOCK", "AIW"] {
+    for tag in ["WRAPPER", "WATCH", "BOOT", "WAKELOCK"] {
         // WAKELOCK may not exist yet in older revisions; skip rather than panic.
         if !script.contains(&format!("<<'{tag}'")) {
             continue;
@@ -298,7 +297,6 @@ fn generated_wrappers_do_not_hardcode_the_termux_prefix() {
 
 /// The lists above are hand-maintained; this derives the set from install.sh
 /// itself so a new generated program that touches the shared wake-lock (the
-/// way `hse-ai` was added after the lists were written, and sat unguarded)
 /// cannot ship without joining the guards.
 #[test]
 fn every_wake_lock_touching_heredoc_is_guarded() {
@@ -399,33 +397,6 @@ fn no_df_invocation_uses_the_non_portable_megabyte_flag() {
         "toybox `df` (Termux) has no `-m`, and under `set -euo pipefail` that \
          exits the whole installer — use the `df -Pk` + `NF >= 4` + `|| true` \
          form the preflight check already established: {offenders:?}"
-    );
-}
-
-/// The optional local-AI step must not be able to fail the installer.
-///
-/// Every anticipated failure inside `setup_ai` already returns 0 with a
-/// warning, but an UNanticipated one (the `df -Pm` above) bypassed all of them,
-/// because `set -e` fires before a function's own guards can run. The call site
-/// is therefore guarded too: an optional component degrades to a warning, and
-/// an install whose every other step succeeded reports success.
-#[test]
-fn the_optional_local_ai_step_cannot_fail_the_install() {
-    let script = install_sh();
-    // The CALL, not the definition (`setup_ai() {`) — invoking it is what has
-    // to be guarded.
-    let call = script
-        .lines()
-        .find(|l| {
-            let t = l.trim_start();
-            t.starts_with("setup_ai") && !t.starts_with("setup_ai()") && !is_comment(l)
-        })
-        .expect("install.sh no longer calls setup_ai");
-    assert!(
-        call.contains("||"),
-        "the optional local-AI step must be invoked with a `||` fallback so an \
-         unanticipated failure inside it cannot fail an otherwise-successful \
-         install: {call}"
     );
 }
 

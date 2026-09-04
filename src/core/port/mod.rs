@@ -215,25 +215,6 @@ pub trait StoragePort: Send + Sync {
 
     // ── AI-daemon scan analysis (opt-in, isolated from the deterministic core —
     //    see `src/ai/` and the `Runtime AI-independence` invariant in `src/lib.rs`) ──
-    /// Persist (or overwrite) the AI-daemon's analysis for one scan. A write
-    /// failure here does not corrupt scan data — it only means the analysis
-    /// must be retried. Default no-op for test doubles; the SQLite `Store`
-    /// persists to `scan_analysis`.
-    fn upsert_scan_analysis(
-        &self,
-        _analysis: &crate::core::scan_analysis::ScanAnalysis,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    /// The persisted AI-daemon analysis for one scan, if any. Default `Ok(None)`
-    /// for test doubles.
-    fn get_scan_analysis(
-        &self,
-        _scan_id: &str,
-    ) -> Result<Option<crate::core::scan_analysis::ScanAnalysis>> {
-        Ok(None)
-    }
 
     /// Terminal scans (`Complete`/`Aborted` — see [`crate::core::scan::ScanStatus`])
     /// with no persisted analysis yet, oldest-first, bounded to `limit` — the

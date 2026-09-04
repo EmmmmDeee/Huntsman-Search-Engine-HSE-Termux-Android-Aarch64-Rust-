@@ -143,16 +143,6 @@ pub const FEATURE_TOGGLES: &[(&str, bool)] = &[
     // passive/free/exclude), and never probes a quarantined value. Turn off
     // (`hse config feature.breach_sweep off`) to end the scan at gap-fill.
     ("feature.breach_sweep", true),
-    // Opt-in AI-daemon scan analysis (`hse analyze`, `hse-ai-daemon`; see
-    // `src/ai/` and the `Runtime AI-independence` invariant in `src/lib.rs`).
-    // Default **OFF** — unlike every toggle above, arming this makes HSE call
-    // out to a locally-run Ollama instance the operator must separately
-    // install and run; nothing in a default install ever does that. Turn on
-    // (`hse config feature.ai_daemon on`) only after Ollama is set up. This is
-    // the ONE gate both the `hse analyze` subcommand and the `hse-ai-daemon`
-    // binary consult — armed or not, a scan itself never touches this toggle
-    // or `src/ai/` at all.
-    ("feature.ai_daemon", false),
 ];
 
 /// The `feature.*` key gating active gap-fill — one source of the key string so
@@ -180,21 +170,6 @@ pub const LIVE_RADAR_FEATURE: &str = "feature.live_radar";
 #[must_use]
 pub fn live_radar_enabled() -> bool {
     get_bool(LIVE_RADAR_FEATURE, true)
-}
-
-/// The `feature.*` key gating the opt-in AI-daemon scan analysis — the single
-/// source of the key string so `hse analyze`, `hse-ai-daemon`, and the toggle
-/// registry can't drift.
-pub const AI_DAEMON_FEATURE: &str = "feature.ai_daemon";
-
-/// Whether the AI-daemon scan-analysis feature is armed. **Off by default**
-/// (see [`FEATURE_TOGGLES`]) — arming it is the operator's explicit
-/// acknowledgement that a locally-run Ollama instance may be called. Both
-/// `hse analyze` and `hse-ai-daemon` consult this before doing anything else;
-/// a scan itself never consults it and never calls `src/ai/`.
-#[must_use]
-pub fn ai_daemon_enabled() -> bool {
-    get_bool(AI_DAEMON_FEATURE, false)
 }
 
 /// The feature toggles with their current effective state (override else

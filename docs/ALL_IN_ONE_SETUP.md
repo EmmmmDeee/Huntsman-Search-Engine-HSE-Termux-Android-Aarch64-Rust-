@@ -1,6 +1,6 @@
-# HSE All-In-One Complete Setup (CLI + Web UI + Ollama AI Analysis)
+# HSE All-In-One Complete Setup (CLI + Web UI)
 
-**Complete end-to-end setup guide for Huntsman Search Engine with SeekNow authentication fallback and Ollama integration.**
+**Complete end-to-end setup guide for Huntsman Search Engine with SeekNow authentication fallback.**
 
 ---
 
@@ -24,7 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HS
 **Re-run anytime to upgrade** — idempotent, preserves your keys. For exactly
 what this does, the no-build prebuilt-binary fast path, private-repo auth,
 environment knobs, and troubleshooting, see [`docs/INSTALL.md`](INSTALL.md)
-— this guide picks up from there with the SeekNow/Ollama/Web-UI setup
+— this guide picks up from there with the SeekNow/Web-UI setup
 `INSTALL.md` doesn't cover.
 
 ---
@@ -102,60 +102,6 @@ Option A (API key) instead.
 
 ---
 
-## 🤖 Step 2: Install & Configure Ollama (Optional but Recommended)
-
-Ollama provides AI-powered analysis of scan results. **Completely optional** — HSE works fine without it.
-
-### Install Ollama
-
-**Linux/Termux (if sufficient storage available):**
-```bash
-# Download and install
-curl -fsSL https://ollama.ai/install.sh | sh
-
-# Start Ollama service
-ollama serve   # Runs on http://127.0.0.1:11434
-```
-
-**macOS:**
-```bash
-# Via Homebrew or direct download from https://ollama.ai
-brew install ollama
-ollama serve
-```
-
-**Docker (if available):**
-```bash
-docker run -d -p 11434:11434 --name ollama ollama/ollama
-docker exec ollama ollama pull qwen2.5:7b
-```
-
-### Pull a model
-
-Keep Ollama running, then in another terminal:
-
-```bash
-# Pull a lightweight model (2-3 GB)
-ollama pull qwen2.5:7b
-
-# Verify it's ready
-ollama list
-# Expected: qwen2.5:7b [size]   [quantization]
-```
-
-### Enable AI analysis in HSE
-
-```bash
-# Arm the feature
-hse config feature.ai_daemon on
-
-# Verify
-hse doctor
-# Expected: "AI-Daemon: armed, model qwen2.5:7b available"
-```
-
----
-
 ## 📊 Step 3: Launch HSE Web UI
 
 ### Start the web server
@@ -193,7 +139,6 @@ hse serve
 2. Enter a target (email, username, domain, IP, phone)
 3. Click **Scan**
 4. Watch results populate in real-time
-5. When done, click **Analyze** (if Ollama is running) for AI summary
 
 ### Via CLI
 
@@ -219,7 +164,6 @@ curl -X POST http://127.0.0.1:8080/api/v1/scans \
 # Get results
 curl http://127.0.0.1:8080/api/v1/scans/latest
 
-# Analyze with Ollama
 curl -X POST http://127.0.0.1:8080/api/v1/scans/latest/analyze \
   -H "Content-Type: application/json" \
   -d '{"model": "qwen2.5:7b"}'
@@ -241,59 +185,22 @@ hse scan --seeknow-scan-cap 50 user@example.com
 echo 'export HUNTSMAN_SEEKNOW_SCAN_CAP=250' >> ~/.huntsman.env
 ```
 
-### Ollama Model Selection
-
-Use different models for different analysis:
-
-```bash
-# Use a larger, more accurate model (if you have storage/RAM)
-ollama pull mistral:7b
-
-# Analyze with Mistral instead
-hse analyze --scan-id latest --model mistral:7b
-
-# Or set for daemon
-export HUNTSMAN_OLLAMA_MODEL=mistral:7b
-hse-ai-daemon
-```
-
-**Recommended models:**
-- `qwen2.5:7b` — Lightweight, fast, good for mobile (default)
-- `mistral:7b` — Better reasoning, moderate size
-- `llama2:7b` — Alternative lightweight model
-- `neural-chat:7b` — Tuned for chat/analysis
-
 ### Background AI Analysis (Termux)
 
-Keep Ollama running in the background:
-
-```bash
 # Install termux-services
 pkg install termux-services
 
 # Create service directory
-mkdir -p $PREFIX/var/service/ollama
 
 # Create run script
-cat > $PREFIX/var/service/ollama/run <<'EOF'
 #!/data/data/com.termux/files/usr/bin/sh
-exec ollama serve
 EOF
 
-chmod +x $PREFIX/var/service/ollama/run
 
 # Enable and start
-sv-enable ollama
-sv up ollama
 
 # Check status
-sv status ollama
 ```
-
-Similarly for the HSE AI daemon — see the README's
-["Running `hse-ai-daemon` persistently (Termux)"](../README.md#running-hse-ai-daemon-persistently-termux)
-for the same `termux-services` setup plus what `sv-enable`/`sv down`/`sv up`
-do once it's running.
 
 ---
 
@@ -304,42 +211,6 @@ do once it's running.
 See `docs/SEEKNOW_WEB_AUTOMATION.md`'s Troubleshooting section ("All SeekNow
 authentication methods failed") — same fix (re-login, re-extract the token,
 re-save it to `~/.huntsman/seeknow_session.txt`), kept in one place.
-
-### "Ollama connection refused"
-
-**Problem:** Ollama not running or wrong URL.
-
-**Solution:**
-```bash
-# Verify Ollama is running
-curl http://127.0.0.1:11434/api/tags
-# Should return JSON list of models
-
-# Check environment variable
-echo $HUNTSMAN_OLLAMA_URL
-# Should be http://127.0.0.1:11434 (default)
-
-# If running on different host/port
-export HUNTSMAN_OLLAMA_URL=http://192.168.1.100:11434
-hse-ai-daemon
-```
-
-### "Model not found"
-
-**Problem:** Model pulled to Ollama, but HSE can't find it.
-
-**Solution:**
-```bash
-# List available models
-ollama list
-
-# Pull if missing
-ollama pull qwen2.5:7b
-
-# Specify exact model name
-export HUNTSMAN_OLLAMA_MODEL=qwen2.5:7b
-hse analyze --scan-id latest
-```
 
 ### "Scanner timeout / slow results"
 
@@ -362,10 +233,9 @@ hse serve  # Watch Live tab for events
 ## 📈 Next Steps
 
 1. **Run several scans** to populate history and test results
-2. **Fine-tune Ollama model** for your analysis needs — see `docs/OSINT_MODEL_FINE_TUNING.md`
-3. **Explore advanced modules** — `hse selftest` shows all 181 available modules
-4. **Set up CI/automation** — webhook integrations, scheduled scans, etc.
-5. **Share scans** — Export to JSON/CSV from Web UI or API
+2. **Explore advanced modules** — `hse selftest` shows all 181 available modules
+3. **Set up CI/automation** — webhook integrations, scheduled scans, etc.
+4. **Share scans** — Export to JSON/CSV from Web UI or API
 
 ---
 
@@ -373,7 +243,6 @@ hse serve  # Watch Live tab for events
 
 - **SeekNow integration:** `docs/SEEKNOW_SETUP.md`
 - **Turnstile workaround:** `docs/SEEKNOW_WEB_AUTOMATION.md`
-- **Ollama fine-tuning:** `docs/OSINT_MODEL_FINE_TUNING.md`
 - **Credential & session hygiene:** `docs/ADVANCED_TECHNIQUES.md`
 - **Architecture details:** README.md → Architecture section
 

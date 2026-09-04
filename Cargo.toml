@@ -13,32 +13,13 @@ default-run = "hse"
 name = "hse"
 path = "src/main.rs"
 
-# Opt-in AI-daemon background poller (`src/ai/`, `src/bin/hse_ai_daemon/`). A
-# separate binary — not an `hse` subcommand — so it can be started/stopped/
-# supervised independently of `hse serve`/`hse scan`, and so an operator who
-# never installs Ollama never runs any of this code. Deliberately UNGATED (no
-# `required-features`): it needs no dependency `hse` itself doesn't already
-# carry unconditionally (reqwest/serde_json/tokio), so gating it behind an
-# opt-in Cargo feature would only add CI/`--features` friction for zero
-# dependency-weight benefit — there is nothing extra here for a plain
-# `cargo build`/the Termux cross-build to avoid compiling.
-#
-# Before running: arm `hse config feature.ai_daemon on` and set
-# HUNTSMAN_OLLAMA_MODEL (or pass --model) to a model already pulled via
-# `ollama pull <tag>` — see README's "AI-Daemon Scan Analysis" section, or
-# run `hse doctor` to check both preconditions in one place.
-[[bin]]
-name = "hse-ai-daemon"
-path = "src/bin/hse_ai_daemon/main.rs"
-
 # Dev/build tooling: regenerates `src/util/oui/ieee.bin` (the packed IEEE
 # MA-L vendor registry `src/util/oui/ieee.rs` binary-searches at runtime)
 # from the live registry. A one-off, occasionally-run offline tool, not scan
-# engine code — same "separate binary, not an `hse` subcommand" reasoning as
-# `hse-ai-daemon` above. Replaces the former `scripts/gen_oui.py`, closing
+# engine code — a separate binary, not an `hse` subcommand. Replaces the former `scripts/gen_oui.py`, closing
 # that accepted non-Rust exception in `docs/RUST_MIGRATION_AUDIT_2026-08-27.md`.
 #
-# Deliberately UNGATED, for the identical reason `hse-ai-daemon` is: every
+# Deliberately UNGATED: every
 # dependency it needs (csv/reqwest/sha2/clap/tokio) is already unconditional
 # for the `hse` binary itself, so a `required-features` gate would add
 # `--features` friction for zero dependency-weight benefit.
@@ -51,7 +32,7 @@ path = "src/bin/gen_oui/main.rs"
 # consolidation and correctness risks — orphan/ungrounded kinds, sole
 # producers, duplicate capability signatures, fan-out blast radius. Not scan
 # engine code; same "separate binary, not an `hse` subcommand" reasoning as
-# `hse-ai-daemon`/`gen-oui` above. Replaces the former
+# `gen-oui` above. Replaces the former
 # `scripts/architecture_audit.py`, closing that accepted non-Rust exception in
 # `docs/RUST_MIGRATION_AUDIT_2026-08-27.md`.
 #

@@ -2542,7 +2542,6 @@ fn open_produces_exact_schema_and_pragmas() {
         "index|sqlite_autoindex_pathway_templates_1",
         "index|sqlite_autoindex_raw_archive_1",
         "index|sqlite_autoindex_relations_1",
-        "index|sqlite_autoindex_scan_analysis_1",
         "index|sqlite_autoindex_scans_1",
         "table|correlations",
         "table|entities",
@@ -2557,7 +2556,6 @@ fn open_produces_exact_schema_and_pragmas() {
         "table|raw_archive",
         "table|relations",
         "table|rf_sightings",
-        "table|scan_analysis",
         "table|scans",
         "table|sqlite_sequence",
         // `PRAGMA optimize` (run at open — see `Store::open`) materialises

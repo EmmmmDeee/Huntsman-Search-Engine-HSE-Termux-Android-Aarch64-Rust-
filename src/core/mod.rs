@@ -63,7 +63,6 @@ pub mod resolve;
 pub mod rf;
 pub mod roi;
 pub mod scan;
-pub mod scan_analysis;
 pub mod snake_graph;
 pub mod stealer_row;
 /// Re-export of `hse-core`'s `tags` module (moved alongside `core::entity` —

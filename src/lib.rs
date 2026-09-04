@@ -12,29 +12,24 @@
 //!   - No native-TLS or C-linked deps (rustls + bundled-sqlite only)
 //!   - GREATEST-semantics entity merge
 //!   - SHA-256 deterministic entity UIDs
-//!   - Runtime AI-independence (deterministic core): the BFS scan engine, module
-//!     dispatch, correlator, and exporters — everything that determines what a
-//!     scan finds and how it is scored — carry NO AI / ML / LLM / cloud-inference
-//!     / agent / vector-DB / embedding dependency and never call one. A scan's
-//!     findings reproduce identically on Termux aarch64 (no root), Linux, and CI
-//!     with no AI or network-inference available, and no ML/LLM SDK crate ever
-//!     enters the dependency graph — enforced by
+//!   - Runtime AI-independence: the BFS scan engine, module dispatch,
+//!     correlator, and exporters — everything that determines what a scan finds
+//!     and how it is scored — carry NO AI / ML / LLM / cloud-inference / agent /
+//!     vector-DB / embedding dependency and never call one. A scan's findings
+//!     reproduce identically on Termux aarch64 (no root), Linux, and CI with no
+//!     AI or network-inference available, and no ML/LLM SDK crate ever enters
+//!     the dependency graph — enforced by
 //!     `runtime_carries_no_ai_ml_inference_dependency` in `tests/architecture.rs`.
-//!     `src/ai/` (the `hse analyze` subcommand and the separate `hse-ai-daemon`
-//!     binary) is a deliberate, narrow, fully opt-in exception to the letter of
-//!     that principle, not a silent violation of it: it calls an operator-run
-//!     local Ollama instance over plain HTTP (no new dependency — reqwest/serde
-//!     are already unconditional deps) to add a downstream natural-language
-//!     enrichment to an ALREADY-COMPLETED scan. It never runs during a scan,
-//!     never feeds back into entity/correlation/export output, and does nothing
-//!     unless both explicitly armed (`feature.ai_daemon`, off by default) and
-//!     Ollama is actually reachable — an unreachable/misconfigured Ollama is a
-//!     surfaced `Err`, never a silent no-op or a fabricated result.
-//!     `core_does_not_import_ai` in `tests/architecture.rs` mechanically
-//!     enforces that `src/core/*` (engine, scan dispatch, correlator, module
-//!     registry, storage port) never references `src/ai`, so this exception is
-//!     structurally incapable of spreading into the deterministic core. Both
-//!     guards together are the authoritative statement of the rule.
+//!
+//!     This invariant is now UNCONDITIONAL. It previously carried a narrow,
+//!     opt-in exception — `src/ai/`, the `hse analyze` subcommand and a separate
+//!     `hse-ai-daemon` binary, which called an operator-run local Ollama over
+//!     HTTP to add downstream natural-language commentary to an already-finished
+//!     scan. That exception is gone: the module, the binary, the subcommand, the
+//!     `feature.ai_daemon` toggle, the `scan_analysis` table and the installer's
+//!     Ollama bootstrap were all removed. Nothing in the tree reaches an
+//!     inference engine, so there is no longer a carve-out to police — only the
+//!     rule.
 
 #![forbid(unsafe_code)]
 // HSE is an *application* crate: its library is read by the maintainer with
@@ -127,7 +122,6 @@ pub const MAX_BLOCKING_THREADS: usize = 16;
 /// aspirational values that never matched a real default and never had a reader.
 pub const LIVE_DEFAULT_INTERVAL_SECS: u64 = 30;
 
-pub mod ai;
 pub mod api;
 pub mod app;
 pub mod audit;

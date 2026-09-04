@@ -360,7 +360,37 @@ pub enum Command {
     /// (`--scan-id`, `latest` allowed), and/or a debug log (`--log`, JSONL or
     /// tracing text). A self-audit of every scan: it surfaces weaknesses so they
     /// can be addressed.
-    #[command(visible_alias = "score")]
+    /// One scan's full quality picture: audit + benchmark + discovery gaps in a
+    /// single pass. Runs ALL THREE by default — the comprehensive answer to "how
+    /// good was this scan, and what is it missing?" without three invocations.
+    /// Narrow with --audit / --benchmark / --gaps.
+    Report {
+        /// Stored scan id (`latest` for the most recent completed scan).
+        #[arg(long)]
+        scan_id: Option<String>,
+        /// CSV export to audit instead of a stored scan (audit lens only).
+        #[arg(long)]
+        csv: Option<String>,
+        /// Debug log / event stream to mine for source-health signals (audit lens only).
+        #[arg(long)]
+        log: Option<String>,
+        /// Machine-readable JSON. Needs exactly one lens — three JSON documents
+        /// concatenated would not be valid JSON.
+        #[arg(long)]
+        json: bool,
+        /// Only the audit lens: noise, infrastructure pollution, missed PII, source health.
+        #[arg(long)]
+        audit: bool,
+        /// Only the benchmark scorecard.
+        #[arg(long)]
+        benchmark: bool,
+        /// Only the discovery-gap analysis.
+        #[arg(long)]
+        gaps: bool,
+    },
+
+    /// (Subsumed by `hse report`; kept for scripting and the Web UI.)
+    #[command(hide = true, visible_alias = "score")]
     Audit {
         /// CSV export to audit (`hse export --format csv`).
         #[arg(long)]
@@ -375,9 +405,9 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Benchmark a scan: a consolidated scorecard of the measurable OSINT dimensions
-    /// (discovery depth, graph coverage, corroboration, density, throughput, pivots)
-    /// for a reproducible, auditable comparison against another tool on the same seed.
+    /// Benchmark a scan: a consolidated scorecard of the measurable OSINT dimensions.
+    /// (Subsumed by `hse report`; kept for scripting and the Web UI.)
+    #[command(hide = true)]
     Benchmark {
         /// Stored scan id to benchmark (`latest` for the most recent completed scan).
         #[arg(long)]
@@ -386,8 +416,9 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Discovery gaps: the validated seeds with no evidence-backed link, why each is
-    /// isolated, and the corrective scans that would connect it — the gap-resolution loop.
+    /// Discovery gaps: validated seeds with no evidence-backed link.
+    /// (Subsumed by `hse report`; kept for scripting and the Web UI.)
+    #[command(hide = true)]
     Gaps {
         /// Stored scan id to analyse (`latest` for the most recent completed scan).
         #[arg(long)]
@@ -395,32 +426,6 @@ pub enum Command {
         /// Emit the machine-readable JSON report instead of the text summary.
         #[arg(long)]
         json: bool,
-    },
-    /// AI-daemon scan analysis: prompt a locally-run Ollama instance for a
-    /// plain-language summary and ranked findings on an already-completed
-    /// scan's discovered entities. Opt-in (`hse config feature.ai_daemon on`)
-    /// and requires Ollama to be installed, running, and reachable — never
-    /// runs as part of `hse scan`/`hse serve`/`hse live`. See `src/ai/`. Also
-    /// reads `HUNTSMAN_OLLAMA_TIMEOUT_MS` (generation timeout in
-    /// milliseconds; default 120000, floor 1000) — no `--timeout` flag exists
-    /// for it, since a single analysis call has no other caller-tunable knob
-    /// to group it with.
-    Analyze {
-        /// Stored scan id to analyse (`latest` for the most recent completed scan).
-        #[arg(long)]
-        scan_id: Option<String>,
-        /// Emit the machine-readable JSON report instead of the text summary.
-        #[arg(long)]
-        json: bool,
-        /// Ollama base URL (default `http://127.0.0.1:11434`, or
-        /// `HUNTSMAN_OLLAMA_URL`).
-        #[arg(long, env = "HUNTSMAN_OLLAMA_URL")]
-        ollama_url: Option<String>,
-        /// Ollama model tag to use (or `HUNTSMAN_OLLAMA_MODEL`); required —
-        /// there is no default model, since a default would silently invoke
-        /// whatever an operator happens to have pulled.
-        #[arg(long, env = "HUNTSMAN_OLLAMA_MODEL")]
-        model: Option<String>,
     },
     /// Verify environment: DB path, key file, Termux detection, module counts.
     /// (Subsumed by `hse diagnostics`; kept for scripting and the API/UI.)
