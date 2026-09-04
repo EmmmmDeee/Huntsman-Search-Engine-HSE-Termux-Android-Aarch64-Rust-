@@ -322,9 +322,42 @@ STAGED=""
 #                              bug this exists to prevent.
 TARGET_SHA="${HSE_REQUIRE_SHA:-}"
 
+# Resolve $1 (a branch, tag or SHA) to a commit SHA using the GitHub REST API
+# over curl — no git required.
+#
+# This exists because of the ordering on a FRESH Termux: revision resolution runs
+# BEFORE the `pkg install` that provides git, so `git ls-remote` was guaranteed to
+# fail on a first install, leaving TARGET_SHA empty, which made every prebuilt
+# unverifiable and forced a full on-device Rust build — the one thing the prebuilt
+# path exists to avoid. Observed on a real device: sha256 verified, then
+# "skip … (built from a different commit than main)", then a source build.
+#
+# curl is always present here: the documented install is `curl … | bash`, so it
+# ran this script. `Accept: application/vnd.github.sha` makes the API answer with
+# the bare 40-char SHA, so no JSON parsing is needed. Unauthenticated calls are
+# rate-limited per IP (60/hour), which one lookup per install never approaches; a
+# throttled or offline call simply returns non-zero and we fall back as before.
+_sha_via_github_api() {
+    local ref="$1" slug api out
+    command -v curl >/dev/null 2>&1 || return 1
+    # github.com/OWNER/REPO(.git) -> OWNER/REPO. Anything else (a fork on another
+    # host, a local path) is not a GitHub repo and gets no API attempt.
+    case "$HSE_REPO_URL" in
+        https://github.com/*) slug="${HSE_REPO_URL#https://github.com/}" ;;
+        *) return 1 ;;
+    esac
+    slug="${slug%.git}"
+    slug="${slug%/}"
+    [[ -n "$slug" ]] || return 1
+    api="https://api.github.com/repos/$slug/commits/$ref"
+    out="$(curl -fsSL -m 20 -H 'Accept: application/vnd.github.sha' "$api" 2>>"$LOG_FILE" || true)"
+    out="$(printf '%s' "$out" | tr -d '[:space:]' | tr 'A-F' 'a-f')"
+    [[ "$out" =~ ^[0-9a-f]{40}$ ]] || return 1
+    printf '%s' "$out"
+}
+
 resolve_target_sha() {
     [[ -n "$TARGET_SHA" ]] && { hint "Target revision pinned by caller: ${TARGET_SHA:0:7}"; return 0; }
-    command -v git >/dev/null 2>&1 || { log_warn "git unavailable — cannot resolve the target revision"; return 1; }
 
     local ref="$HSE_REF" out
     # `git ls-remote` resolves a branch, a tag (peeled via ^{}), or echoes back a
@@ -339,8 +372,15 @@ resolve_target_sha() {
 
     # Prefer the peeled (^{}) line for annotated tags: that is the commit the
     # binary is built from; the bare line would be the tag object's own SHA.
-    out="$(git ls-remote "$HSE_REPO_URL" "refs/heads/$ref" "refs/tags/$ref" "refs/tags/$ref^{}" 2>>"$LOG_FILE" || true)"
-    TARGET_SHA="$(printf '%s\n' "$out" | awk '/\^\{\}$/{print $1; found=1; exit} {last=$1} END{if(!found) print last}')"
+    if command -v git >/dev/null 2>&1; then
+        out="$(git ls-remote "$HSE_REPO_URL" "refs/heads/$ref" "refs/tags/$ref" "refs/tags/$ref^{}" 2>>"$LOG_FILE" || true)"
+        TARGET_SHA="$(printf '%s\n' "$out" | awk '/\^\{\}$/{print $1; found=1; exit} {last=$1} END{if(!found) print last}')"
+    else
+        # Fresh Termux: git is not installed until later in this script. Ask
+        # GitHub directly rather than giving up, or the prebuilt can never be
+        # verified and a first install always pays for a full source build.
+        TARGET_SHA="$(_sha_via_github_api "$ref" || true)"
+    fi
     if [[ ! "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
         TARGET_SHA=""
         log_warn "could not resolve $HSE_REF at $HSE_REPO_URL — will build from source"
@@ -437,7 +477,16 @@ _validate_prebuilt() {
     # "an hse that runs" is exactly what used to get installed in place of the
     # commit the operator asked for.
     if ! _prebuilt_sha_matches "$staged"; then
-        log_warn "skip $base (built from a different commit than $HSE_REF)"
+        # "different commit" is only true when we KNOW the target. With an
+        # unresolved TARGET_SHA the honest statement is that it could not be
+        # checked — the device transcript said "built from a different commit
+        # than main" in a run whose previous line was "cannot resolve the target
+        # revision", which asserts a comparison that never happened.
+        if [[ -n "$TARGET_SHA" ]]; then
+            log_warn "skip $base (built from a different commit than $HSE_REF)"
+        else
+            log_warn "skip $base (target revision unknown — cannot verify it is $HSE_REF)"
+        fi
         rm -f "$staged" 2>/dev/null || true
         return 1
     fi
@@ -562,7 +611,12 @@ _try_download_release() {
         ok "Using downloaded prebuilt — skipping toolchain + source build"
         return 0
     fi
-    log_warn "Downloaded binary failed validation (wrong revision, or corrupt)"
+    if [[ -n "$TARGET_SHA" ]]; then
+        log_warn "Downloaded binary failed validation (wrong revision, or corrupt)"
+    else
+        log_warn "Downloaded binary could not be validated (target revision unresolved)"
+        hint "Set HSE_REQUIRE_SHA=<sha> to pin it, or HSE_ALLOW_SHA_MISMATCH=1 to accept unverified"
+    fi
     return 1
 }
 

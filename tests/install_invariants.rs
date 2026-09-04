@@ -428,3 +428,81 @@ fn the_optional_local_ai_step_cannot_fail_the_install() {
          install: {call}"
     );
 }
+
+/// Revision resolution runs before git is installed, so it must not need git.
+///
+/// Observed on a fresh Termux device: `git unavailable — cannot resolve the
+/// target revision`, then a sha256-verified prebuilt rejected, then a full
+/// on-device Rust build — the one outcome the prebuilt path exists to avoid.
+/// The cause is ordering: `resolve_target_sha` runs at the top of the script
+/// while the `pkg install` that provides git is ~20 lines further down, so on a
+/// first install `git ls-remote` could never succeed.
+///
+/// Moving the package install earlier would be the wrong fix — it forces the
+/// whole toolchain on someone a prebuilt would have served. So the resolver
+/// gained a curl-based GitHub API path, and this pins both halves of the
+/// invariant: the ordering that makes git unavailable, and the git-free
+/// fallback that copes with it.
+#[test]
+fn revision_resolution_does_not_depend_on_a_package_installed_later() {
+    let script = install_sh();
+    let line_of = |needle: &str| {
+        script
+            .lines()
+            .position(|l| l.contains(needle) && !is_comment(l))
+            .unwrap_or_else(|| panic!("install.sh no longer contains `{needle}`"))
+    };
+    let resolve_at = line_of("resolve_target_sha || true");
+    let git_installed_at = line_of("Installing Termux packages");
+    assert!(
+        resolve_at < git_installed_at,
+        "sanity: this guard exists because resolution (line {}) precedes the \
+         package install that provides git (line {})",
+        resolve_at + 1,
+        git_installed_at + 1
+    );
+
+    // Therefore the resolver must have a path that works without git.
+    assert!(
+        script.contains("_sha_via_github_api"),
+        "resolve_target_sha runs before git exists, so it needs a git-free \
+         fallback — otherwise every first install rejects its prebuilt and pays \
+         for a full source build"
+    );
+    let api_fn = script
+        .split_once("_sha_via_github_api() {")
+        .expect("the fallback must be a real function")
+        .1;
+    assert!(
+        api_fn.contains("api.github.com"),
+        "the git-free fallback must actually resolve the ref remotely"
+    );
+}
+
+/// Never claim a revision MISMATCH when the revision was never resolved.
+///
+/// The device transcript said `built from a different commit than main` on a run
+/// whose previous line was `cannot resolve the target revision` — asserting the
+/// result of a comparison that never happened. Same class as `hse doctor`
+/// reporting "no failure streak" from a tracker it never populated.
+#[test]
+fn a_prebuilt_is_never_called_wrong_when_the_target_is_unknown() {
+    let script = install_sh();
+    // The LOG LINE, not the comment above it that quotes the same text — an
+    // earlier version of this check matched its own explanatory comment and
+    // passed regardless of the code.
+    let (n, _) = script
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("built from a different commit than") && !is_comment(l))
+        .expect("install.sh no longer emits the mismatch message");
+    // The claim must sit behind a check that the target is actually known.
+    let all: Vec<&str> = script.lines().collect();
+    let window = all[n.saturating_sub(6)..n].join("\n");
+    assert!(
+        window.contains("-n \"$TARGET_SHA\""),
+        "the mismatch message must sit behind a `[[ -n \"$TARGET_SHA\" ]]` guard: \
+         with no resolved target the honest statement is that it could not be \
+         checked, not that the binary is wrong"
+    );
+}
