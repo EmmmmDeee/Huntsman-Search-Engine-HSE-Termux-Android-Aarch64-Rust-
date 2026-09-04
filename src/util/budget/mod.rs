@@ -83,7 +83,12 @@ pub async fn with_scan<F: std::future::Future>(scan_id: String, f: F) -> F::Outp
 }
 
 /// The scan currently executing on this task, or `""` when unscoped.
-fn current_scan() -> String {
+///
+/// `pub(crate)` so per-scan state that lives outside [`QuotaBudget`] — the
+/// provider response caches — can namespace itself by the same ambient the
+/// engine already establishes around every scan and every spawned module
+/// dispatch, rather than growing a second, separately-maintained one.
+pub(crate) fn current_scan() -> String {
     SCAN.try_with(String::clone).unwrap_or_default()
 }
 
@@ -91,7 +96,7 @@ fn current_scan() -> String {
 /// [`with_scan`] for sync test bodies). The production path uses the async
 /// [`with_scan`].
 #[cfg(test)]
-fn with_scan_sync<R>(scan_id: &str, f: impl FnOnce() -> R) -> R {
+pub(crate) fn with_scan_sync<R>(scan_id: &str, f: impl FnOnce() -> R) -> R {
     SCAN.sync_scope(scan_id.to_string(), f)
 }
 

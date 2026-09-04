@@ -240,7 +240,7 @@ pub fn reset_budget() {
     // `hse live` process would silently keep returning the first scan's
     // cached SeekNow records for every later re-scan of the same
     // email/username/phone, indefinitely, with no live re-check.
-    super::client::RESPONSE_CACHE.clear();
+    super::client::cache_clear_scan();
 }
 
 /// Remove `scan_id`'s tracked budget state entirely. Called by the engine at

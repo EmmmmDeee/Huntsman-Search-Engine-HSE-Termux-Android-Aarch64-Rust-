@@ -63,8 +63,20 @@ pub(super) fn typed_cache_key(path: &str, query: &str, query_type: &str) -> Stri
     }
 }
 
+/// This scan's namespace within the shared [`RESPONSE_CACHE`].
+///
+/// The cache dedups identical endpoint queries WITHIN one scan — its whole
+/// stated purpose. Keyed globally, `hse serve`'s concurrently-running scans
+/// shared it: scan B was served records scan A had retrieved, as though B had
+/// retrieved them itself, and the scan-start flush wiped a running sibling's
+/// cache. Namespacing by the ambient the engine already sets makes the
+/// within-scan cache actually within-scan.
+fn scan_ns() -> String {
+    format!("{}\u{1f}", crate::util::budget::current_scan())
+}
+
 pub(super) fn cache_get(key: &str) -> Option<Vec<Value>> {
-    RESPONSE_CACHE.get(key)
+    RESPONSE_CACHE.get(&format!("{}{key}", scan_ns()))
 }
 
 pub(super) fn cache_put(key: String, items: Vec<Value>) {
@@ -76,7 +88,12 @@ pub(super) fn cache_put(key: String, items: Vec<Value>) {
     if items.is_empty() {
         return;
     }
-    RESPONSE_CACHE.put(key, items);
+    RESPONSE_CACHE.put(format!("{}{key}", scan_ns()), items);
+}
+
+/// Drop THIS scan's cached responses — the scan-start flush.
+pub(super) fn cache_clear_scan() {
+    RESPONSE_CACHE.clear_prefix(&scan_ns());
 }
 
 /// The built-in primary endpoint absent any `HUNTSMAN_SEEKNOW_BASE` override.
