@@ -276,9 +276,17 @@ async fn fetch_feed(url: &str) -> Option<String> {
         return None;
     }
     let out = tokio::process::Command::new("curl")
+        .args(["-s", "--max-time", "15", "-A", "hse-egress/1"])
+        // The single-sourced fetch hardening every other curl content-fetch uses:
+        // `--max-filesize` bounds the body so a compromised/oversized feed host
+        // cannot stream an unbounded response into memory (an on-device OOM
+        // vector on no-root Termux), plus `--proto =http,https` / bounded redirs
+        // that reinforce the HTTPS-only check above. A legitimate proxy-feed list
+        // is a few KB, far under the cap.
+        .args(crate::util::curl::FETCH_HARDENING_ARGS)
         // `--` terminates option parsing so a feed URL beginning with `-` can never
         // be read as a curl flag.
-        .args(["-s", "--max-time", "15", "-A", "hse-egress/1", "--", url])
+        .args(["--", url])
         .output()
         .await
         .ok()?;

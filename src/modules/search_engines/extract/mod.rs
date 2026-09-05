@@ -444,7 +444,9 @@ pub(super) fn extract_family_names(
             let result_domain = extract_registrable(&result_host);
             let email_matches_domain = result_domain == *email_dom
                 || crate::util::domains::is_proper_subdomain_of(&result_host, email_dom);
-            let email_appears_in_result = lower.contains(&target.value.to_lowercase());
+            // `target_lower` (hoisted above) is `target.value.to_lowercase()` —
+            // reuse it rather than re-lowercasing the target once per result.
+            let email_appears_in_result = lower.contains(&target_lower);
 
             if !email_matches_domain && !email_appears_in_result {
                 continue;
