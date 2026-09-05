@@ -102,11 +102,13 @@ const SCHEMA_DDL: &str = "
             CREATE INDEX IF NOT EXISTS idx_entities_scan ON entities(scan_id);
             CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind);
             CREATE INDEX IF NOT EXISTS idx_scans_started ON scans(started_at DESC);
-            -- Serves scans_pending_analysis's `WHERE status IN (...) ORDER BY
-            -- started_at` (the AI-daemon poll query, run on an interval for the
-            -- process's whole lifetime) as an index range scan instead of a full
-            -- table scan of `scans`, which — unlike entities/events/relations —
-            -- is never bulk-pruned and only grows.
+            -- Serves every `status`-filtered read of `scans` as an index range
+            -- scan instead of a full table scan: `prune_events`'s live-scan
+            -- anti-join (`WHERE status IN ('pending','running') AND started_at
+            -- >= ?`) and `latest_finished_scan` (`WHERE status IN ('complete',
+            -- 'aborted') ORDER BY started_at DESC`). `scans` — unlike
+            -- entities/events/relations — is never bulk-pruned and only grows,
+            -- so the full scan it replaces gets slower for the life of the DB.
             CREATE INDEX IF NOT EXISTS idx_scans_status_started ON scans(status, started_at);
             CREATE INDEX IF NOT EXISTS idx_corr_scan     ON correlations(scan_id);
             CREATE INDEX IF NOT EXISTS idx_obs_scan      ON entity_observations(scan_id);
@@ -718,6 +720,21 @@ impl Store {
         Ok(deserialize_rows(raw, "radar_history"))
     }
 
+    /// The `latest` selector's query, filtered on the `status` COLUMN — not on
+    /// `json_extract(data_json, '$.status')`. The column is written in the same
+    /// `upsert_scan` statement as `data_json` (both from `ScanStatus::as_str`,
+    /// which is also serde's `rename_all = "lowercase"` spelling), so the two
+    /// cannot disagree, and only the column is served by
+    /// `idx_scans_status_started`: the JSON form was a full scan of a table
+    /// that only ever grows, parsing every row's JSON to read one field.
+    /// Deterministic tie-break on `id` (PRIMARY KEY): `started_at` is 1-second
+    /// resolution, so without it two scans finishing in the same second make
+    /// `latest` non-deterministic — `export/diff/audit latest` could resolve to
+    /// a different scan on identical state.
+    pub(crate) const LATEST_FINISHED_SCAN_SQL: &str = "SELECT data_json FROM scans
+         WHERE status IN ('complete', 'aborted')
+         ORDER BY started_at DESC, id DESC LIMIT 1";
+
     /// Return the most recent scan in a **terminal state that carries final
     /// data** — `complete` or `aborted` (the lower-case canonical forms from
     /// ScanStatus::as_str). Filters at the SQL layer with a JSON-extract probe
@@ -741,16 +758,7 @@ impl Store {
     /// finished scans" to `resolve_scan_id`'s callers (`export`/`diff`/`audit
     /// latest`).
     pub fn latest_finished_scan(&self) -> Result<Option<Scan>> {
-        // Deterministic tie-break on `id` (PRIMARY KEY): `started_at` is
-        // 1-second resolution, so without it two scans finishing in the same
-        // second make `latest` non-deterministic — `export/diff/audit latest`
-        // could resolve to a different scan on identical state.
-        self.query_one_json(
-            "SELECT data_json FROM scans
-             WHERE json_extract(data_json, '$.status') IN ('complete', 'aborted')
-             ORDER BY started_at DESC, id DESC LIMIT 1",
-            params![],
-        )
+        self.query_one_json(Self::LATEST_FINISHED_SCAN_SQL, params![])
     }
 
     // ── Correlations ───────────────────────────────────────────────────────

@@ -231,8 +231,8 @@ jobs:
       # filter there, so Cargo builds every default-run binary) and staying
       # correct automatically if a new ungated bin is added later, unlike
       # naming each one explicitly. Building only `hse` here previously left
-      # `hse-ai-daemon`/`gen-oui`/`architecture-audit` cross-compile-
-      # unverified for the one target a real install actually builds them on.
+      # `gen-oui`/`architecture-audit` cross-compile-unverified for the one
+      # target a real install actually builds them on.
       - name: Build (aarch64-linux-android)
         run: cargo build --locked --lib --bins --target aarch64-linux-android
 

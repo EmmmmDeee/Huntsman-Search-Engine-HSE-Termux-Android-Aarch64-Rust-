@@ -213,20 +213,6 @@ pub trait StoragePort: Send + Sync {
         Ok(0)
     }
 
-    // ── AI-daemon scan analysis (opt-in, isolated from the deterministic core —
-    //    see `src/ai/` and the `Runtime AI-independence` invariant in `src/lib.rs`) ──
-
-    /// Terminal scans (`Complete`/`Aborted` — see [`crate::core::scan::ScanStatus`])
-    /// with no persisted analysis yet, oldest-first, bounded to `limit` — the
-    /// AI daemon's poll query. `Failed`/`Pending`/`Running` scans are excluded:
-    /// a failed scan's entity set is typically empty or partial and a
-    /// pending/running one isn't finished yet. Default empty for test doubles;
-    /// the SQLite `Store` reads `scans` with a `scan_id NOT IN (SELECT ... FROM
-    /// scan_analysis)` anti-join.
-    fn scans_pending_analysis(&self, _limit: usize) -> Result<Vec<String>> {
-        Ok(Vec::new())
-    }
-
     // ── Maintenance ─────────────────────────────────────────────────────────
     /// Bound the backing store's write-ahead footprint at a safe boundary
     /// (e.g. a completed scan). Default is a no-op for backends without a

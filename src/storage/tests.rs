@@ -277,9 +277,9 @@ fn latest_finished_scan_errors_loudly_on_a_corrupt_row_instead_of_reporting_none
     let store = Store::open(&path).expect("should succeed");
     {
         let conn = store.conn.lock();
-        // Valid JSON (so the `json_extract(...) = 'complete'` SQL filter
-        // matches and the row is selected) but missing every field `Scan`
-        // requires, so `serde_json::from_str::<Scan>` fails.
+        // Selected by the `status = 'complete'` column filter; the JSON is
+        // valid but missing every field `Scan` requires, so
+        // `serde_json::from_str::<Scan>` fails.
         conn.execute(
             "INSERT INTO scans(id, target_kind, target_value, status, started_at, \
              finished_at, entity_count, error, data_json) \
@@ -339,6 +339,43 @@ fn latest_finished_scan_resolves_to_a_newer_aborted_scan_over_an_older_complete_
             .id,
         "scan-new-aborted",
         "a failed scan carries no data, so latest skips it for the aborted one"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn latest_finished_scan_is_served_by_the_status_index_not_a_json_full_scan() {
+    // `scans` is never pruned, so a full scan that parses every row's JSON to
+    // read one field gets slower for the life of the database. The `status`
+    // column is written in the same `upsert_scan` statement as the JSON, so
+    // filtering on it loses nothing and gains `idx_scans_status_started`.
+    // Lock the PLAN, not the SQL text: `EXPLAIN QUERY PLAN` on the exact
+    // query production runs must show an index search and never a `SCAN`.
+    // Measured before the change: `SCAN scans` + temp B-tree; after: `SEARCH
+    // scans USING INDEX idx_scans_status_started (status=?)`.
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    let plan: Vec<String> = {
+        let conn = store.conn.lock();
+        let mut stmt = conn
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {}",
+                Store::LATEST_FINISHED_SCAN_SQL
+            ))
+            .expect("plan");
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(3))
+            .expect("plan rows");
+        rows.map(|r| r.expect("row")).collect()
+    };
+    let joined = plan.join(" | ");
+    assert!(
+        joined.contains("idx_scans_status_started"),
+        "latest_finished_scan must be served by idx_scans_status_started; plan: {joined}"
+    );
+    assert!(
+        !plan.iter().any(|step| step.starts_with("SCAN")),
+        "latest_finished_scan must not full-scan `scans`; plan: {joined}"
     );
     let _ = std::fs::remove_file(&path);
 }

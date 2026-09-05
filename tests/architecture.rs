@@ -92,6 +92,11 @@ fn no_llm_inference_integration_exists() {
         !root.join("src/bin/hse_ai_daemon").exists(),
         "the hse-ai-daemon binary was removed"
     );
+    assert!(
+        !root.join("scripts/finetune").exists(),
+        "scripts/finetune (the model-training tooling for the removed analysis \
+         prompt) was removed with the integration it trained for"
+    );
     let cargo = fs::read_to_string(root.join("Cargo.toml")).expect("Cargo.toml");
     assert!(
         !cargo.contains("hse-ai-daemon"),
@@ -111,6 +116,128 @@ fn no_llm_inference_integration_exists() {
             "install.sh must not reference `{needle}` — the Ollama bootstrap is gone"
         );
     }
+    // The whole live tree, not just the four surfaces above. The first version
+    // of this lock checked exactly those and passed while `scripts/finetune/`
+    // (the model-training tooling, importing the deleted analysis module by
+    // path), a default-only `scans_pending_analysis` on `StoragePort`, and
+    // comments in CI and two tests still described the client as present.
+    // History may name the integration — the ledger, the changelog, dated
+    // audit records — but live code, tooling, CI and operator docs may not.
+    let leftovers = removed_integration_references(root);
+    assert!(
+        leftovers.is_empty(),
+        "live references to the removed LLM integration (a re-add needs a \
+         deliberate decision; a leftover needs deleting):\n{}",
+        leftovers.join("\n")
+    );
+}
+
+/// Identifiers a re-add of the removed integration would bring back, or that
+/// its tooling used. `scan_analysis` is matched as a whole identifier below so
+/// the unrelated SPA test `..._per_scan_analysis_endpoints` does not trip it.
+const REMOVED_INTEGRATION_IDENTIFIERS: &[&str] = &[
+    "src/ai/",
+    "src/ai`",
+    "hse_ai_daemon",
+    "hse-ai-daemon",
+    "ai_daemon",
+    "scans_pending_analysis",
+    "hse analyze",
+    "OSINT_MODEL_FINE_TUNING",
+    "scripts/finetune",
+    "finetune",
+    "Modelfile",
+];
+
+/// Roots an operator, a contributor, CI or the installer actually reads.
+/// `run/`, `CHANGELOG.md` and the dated records under `docs/` are history
+/// and deliberately outside the scan.
+const LIVE_ROOTS: &[&str] = &[
+    "src",
+    "tests",
+    "scripts",
+    ".github",
+    "docs",
+    "install.sh",
+    "Cargo.toml",
+    "README.md",
+];
+
+fn removed_integration_references(root: &Path) -> Vec<String> {
+    let mut hits = Vec::new();
+    for r in LIVE_ROOTS {
+        walk_live_text(&root.join(r), root, &mut hits);
+    }
+    hits.sort();
+    hits
+}
+
+fn is_historical_record(rel: &str) -> bool {
+    rel == "docs/REQUIREMENTS_LEDGER.md" || rel.starts_with("docs/audit/") || rel.contains("_2026-")
+}
+
+fn walk_live_text(path: &Path, root: &Path, hits: &mut Vec<String>) {
+    if path.is_dir() {
+        for entry in fs::read_dir(path).unwrap() {
+            walk_live_text(&entry.unwrap().path(), root, hits);
+        }
+        return;
+    }
+    let rel = path
+        .strip_prefix(root)
+        .unwrap()
+        .to_string_lossy()
+        .replace('\\', "/");
+    // This file names the identifiers in order to forbid them.
+    if rel == "tests/architecture.rs" || is_historical_record(&rel) {
+        return;
+    }
+    // A file NAMED for the integration is a re-add whatever it contains —
+    // falsification showed a re-created `scripts/finetune/` with clean
+    // contents slipping past a contents-only scan.
+    if REMOVED_INTEGRATION_IDENTIFIERS
+        .iter()
+        .any(|n| rel.contains(n))
+    {
+        hits.push(format!("{rel}: path names the removed integration"));
+        return;
+    }
+    // Non-UTF-8 (binary) files cannot carry a source reference.
+    let Ok(text) = fs::read_to_string(path) else {
+        return;
+    };
+    // The crate-name denylist in `runtime_carries_no_ai_ml_inference_dependency`
+    // legitimately lists `ollama` in order to forbid it as a dependency.
+    let is_crate_denylist = rel == "tests/architecture_parts/architecture_part4.rs";
+    for (i, line) in text.lines().enumerate() {
+        let ident = REMOVED_INTEGRATION_IDENTIFIERS
+            .iter()
+            .any(|n| line.contains(n))
+            || contains_identifier(line, "scan_analysis");
+        let ollama = !is_crate_denylist && line.to_ascii_lowercase().contains("ollama");
+        if ident || ollama {
+            hits.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+        }
+    }
+}
+
+/// `ident` present as a whole identifier: not preceded or followed by an
+/// identifier character.
+fn contains_identifier(line: &str, ident: &str) -> bool {
+    let bytes = line.as_bytes();
+    let is_ident_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut from = 0;
+    while let Some(pos) = line[from..].find(ident) {
+        let start = from + pos;
+        let end = start + ident.len();
+        let before_ok = start == 0 || !is_ident_char(bytes[start - 1]);
+        let after_ok = end >= bytes.len() || !is_ident_char(bytes[end]);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = end;
+    }
+    false
 }
 
 #[test]
