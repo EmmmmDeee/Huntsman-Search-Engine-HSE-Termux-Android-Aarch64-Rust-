@@ -110,6 +110,141 @@ fn every_src_file_is_wired_into_the_module_tree() {
     );
 }
 
+/// Every named import from the wasm-ui bundle (`/static/hse_wasm_ui.js`) across
+/// `src/web/js/` must resolve to a real export in the served bundle.
+///
+/// The SPA's view modules import render functions by name from the wasm-bindgen
+/// bundle — e.g. `import { renderIdentitiesHtml } from '/static/hse_wasm_ui.js'`.
+/// That bundle is the committed, `include_bytes!`-embedded
+/// `wasm-ui/pkg/hse_wasm_ui.js` (see `src/api/routes/mod.rs`): the exact file the
+/// browser imports from. If an import names an export the bundle does not provide
+/// — a Rust `#[wasm_bindgen(js_name = …)]` renamed or removed, or a new
+/// export/import pair added without regenerating the pkg — the browser throws
+/// `does not provide an export named …`, the module fails to evaluate, and that
+/// view renders blank. It compiles, it serves, and it is broken only on-device:
+/// exactly the silent lifecycle rot this suite exists to prevent.
+///
+/// This is the missing half of the web-UI wiring guarantee. `spa_bundle`
+/// (`tests/api.rs`) already verifies the referenced `/static/…` *files* are
+/// served, but it cannot see the named exports *inside* the generated JS.
+/// `scripts/wasm_ui_drift_check.sh` is the other guard in the chain: it keeps the
+/// committed pkg in sync with the Rust source (it needs a wasm build, so it runs
+/// in CI, not the quick gate). Together they close the loop:
+/// Rust `#[wasm_bindgen]` source → (drift check) → committed pkg → (this guard) →
+/// every JS import resolves. Parsing the served bundle directly — rather than
+/// re-deriving names from the Rust `js_name` attributes — keeps this faithful to
+/// what the browser actually receives and free of any model of wasm-bindgen's
+/// name mangling.
+#[test]
+fn every_wasm_ui_import_resolves_to_a_served_export() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    // The exports the browser actually receives: parse the committed, embedded
+    // bundle rather than the Rust source, so this checks the served artifact.
+    let bundle = fs::read_to_string(root.join("wasm-ui/pkg/hse_wasm_ui.js"))
+        .expect("wasm-ui/pkg/hse_wasm_ui.js must exist — it is committed and include_bytes!'d");
+    let mut exports: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for line in bundle.lines() {
+        let t = line.trim_start();
+        // `export function NAME(…` and `export class NAME …` (wasm-bindgen emits
+        // the former for every `pub fn`; the latter is future-proofing).
+        for kw in ["export function ", "export class "] {
+            if let Some(rest) = t.strip_prefix(kw) {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                    .collect();
+                if !name.is_empty() {
+                    exports.insert(name);
+                }
+            }
+        }
+        // `export { initSync, __wbg_init as default };` — in an EXPORT clause the
+        // exported name is the RIGHT side of `as` (`local as exported`).
+        if let Some(rest) = t.strip_prefix("export {")
+            && let Some((inside, _)) = rest.split_once('}')
+        {
+            for item in inside.split(',') {
+                let item = item.trim();
+                if !item.is_empty() {
+                    exports.insert(item.rsplit(" as ").next().unwrap_or(item).trim().to_string());
+                }
+            }
+        }
+    }
+    // Floor: the bundle exports ~30 render functions. A near-empty set means the
+    // wasm-bindgen output changed shape and this parser silently stopped seeing
+    // exports — which would make the guard below pass vacuously. Fail loudly.
+    assert!(
+        exports.len() >= 20,
+        "parsed only {} export(s) from hse_wasm_ui.js — the wasm-bindgen output \
+         shape changed and this parser no longer sees exports; fix the parser \
+         before trusting this guard",
+        exports.len()
+    );
+
+    // Every named import of the bundle across the SPA's JS modules.
+    fn walk_js(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk_js(&p, out);
+            } else if p.extension().is_some_and(|x| x == "js") {
+                out.push(p);
+            }
+        }
+    }
+    let mut js_files = Vec::new();
+    walk_js(&root.join("src/web/js"), &mut js_files);
+    js_files.sort();
+
+    let mut missing: Vec<String> = Vec::new();
+    for f in &js_files {
+        let text = fs::read_to_string(f).unwrap();
+        for (lineno, line) in text.lines().enumerate() {
+            // A real import statement (not a prose mention of the path in a
+            // comment) that pulls from the wasm-ui bundle specifically.
+            let t = line.trim_start();
+            if !t.starts_with("import") || !t.contains("hse_wasm_ui.js") {
+                continue;
+            }
+            // Only the `{ … }` names are checked. A leading default binding
+            // (`import initWasmUi, { … }`) is the wasm-bindgen init default, not a
+            // named export, so it is correctly outside the braces and ignored.
+            let Some(open) = line.find('{') else { continue };
+            let Some(rel_close) = line[open..].find('}') else { continue };
+            for raw in line[open + 1..open + rel_close].split(',') {
+                let raw = raw.trim();
+                if raw.is_empty() {
+                    continue;
+                }
+                // In an IMPORT clause the name that must EXIST is the LEFT side of
+                // `as` (`imported as local_binding`) — the mirror of the export
+                // clause above.
+                let imported = raw.split(" as ").next().unwrap_or(raw).trim();
+                if !exports.contains(imported) {
+                    missing.push(format!(
+                        "{}:{}  imports `{imported}` — not exported by wasm-ui/pkg/hse_wasm_ui.js",
+                        f.strip_prefix(root).unwrap_or(f).display(),
+                        lineno + 1,
+                    ));
+                }
+            }
+        }
+    }
+    missing.sort();
+    assert!(
+        missing.is_empty(),
+        "web-UI import(s) name a wasm-ui export the served bundle does not provide — \
+         the browser throws `does not provide an export named …` and the view renders \
+         blank. Rename the import to match, add the `#[wasm_bindgen(js_name = …)]` \
+         export and regenerate the pkg (scripts/wasm_ui_drift_check.sh), or drop the \
+         import:\n  {}",
+        missing.join("\n  ")
+    );
+}
+
 /// Every `docs/*.md` path cited from Rust source must actually exist.
 ///
 /// A comment pointing at a document that was never written — or was renamed and
