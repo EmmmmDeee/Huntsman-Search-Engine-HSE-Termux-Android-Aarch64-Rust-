@@ -239,6 +239,25 @@ brand, or email) mentioned on Tor-indexed onion pages?* — by querying Ahmia's
 clearnet index. It reports the mention as evidence of exposure and never fetches
 the onion address itself.
 
+### DoRkUS — the meta search engine — `hse dorkus`
+
+Where `hse query` reaches one surface at a time (clearnet engines, or `--dark`
+for the onion index), **DoRkUS runs both at once** — the clearnet multi-engine
+fan-out and the dark-web (Ahmia) exposure index — concurrently within one time
+budget, and prints one aggregated, source-attributed report. The query is passed
+through verbatim, so search-operator **dorks** (`site:`, `intitle:`, `inurl:`,
+quoted phrases) work as the underlying engines support them:
+
+```bash
+hse dorkus "acme.example"                            # clearnet + dark-web in one pass
+hse dorkus 'site:pastebin.com "acme api key"'        # a dork across both surfaces
+hse dorkus "acme.example" --dark-only --output json  # scope to one surface when you want
+```
+
+It is a composition over the same verified back-ends — no new provider or API
+key — and inherits their guarantees, including Ahmia's: it reports **where** a
+target is mentioned and never fetches an onion service.
+
 ---
 
 ## Seed Types (16 supported)

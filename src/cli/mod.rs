@@ -10,6 +10,7 @@
 
 pub(crate) mod config;
 mod diagnostics;
+mod dorkus;
 mod engines;
 mod ingest;
 mod investigate;
@@ -154,6 +155,14 @@ async fn run_command(command: Command) -> Result<()> {
             timeout,
             output,
         } => query::cmd_query(query, limit, dark, timeout, output).await,
+        Command::Dorkus {
+            query,
+            limit,
+            timeout,
+            output,
+            clearnet_only,
+            dark_only,
+        } => dorkus::cmd_dorkus(query, limit, timeout, output, clearnet_only, dark_only).await,
         Command::Config { key, value } => config::cmd_config(key, value),
         Command::Diagnostics { json } => diagnostics::cmd_diagnostics(json).await,
         Command::Report {
