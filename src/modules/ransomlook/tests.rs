@@ -1,5 +1,6 @@
 use super::{Post, RansomLook, SRC, SearchResp, build_result};
 use crate::core::{
+    confidence,
     entity::EntityKind,
     module::Module,
     scan::{Target, TargetKind},
@@ -103,4 +104,56 @@ fn empty_posts_is_a_clean_negative() {
     let target = Target::new(TargetKind::Organisation, "Acme");
     let r = build_result(&resp, &target, "s");
     assert_eq!(r.entities.len(), 0);
+}
+
+#[test]
+fn domain_label_partial_match_is_medium_high() {
+    // Domain seed whose >=4-char label ("acme") is a title token, but the FULL
+    // domain ("acme.com") is not present → the Match::Partial label arm. Pins the
+    // >=4 label floor AND the Partial (MEDIUM_HIGH) confidence.
+    let resp = SearchResp {
+        posts: vec![post("Acme Holdings", "akira", "/leaks/p")],
+    };
+    let target = Target::new(TargetKind::Domain, "acme.com");
+    let r = build_result(&resp, &target, "s");
+    let org = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Organisation)
+        .expect("partial-label victim org emitted");
+    assert_eq!(org.confidence, confidence::MEDIUM_HIGH);
+}
+
+#[test]
+fn domain_full_match_is_high_strong() {
+    // Full domain present as a title token → Match::Strong → HIGH, pinning the
+    // Strong/Partial confidence split.
+    let resp = SearchResp {
+        posts: vec![post("Breach at acme.com dump", "akira", "/leaks/p")],
+    };
+    let target = Target::new(TargetKind::Domain, "acme.com");
+    let r = build_result(&resp, &target, "s");
+    let org = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Organisation)
+        .expect("strong victim org emitted");
+    assert_eq!(org.confidence, confidence::HIGH);
+}
+
+#[test]
+fn bare_relative_link_is_resolved_against_base() {
+    // A link with no leading slash and not absolute → the else-arm inserts the
+    // joining slash: BASE + "/" + link.
+    let resp = SearchResp {
+        posts: vec![post("Acme", "clop", "leaks/q")],
+    };
+    let target = Target::new(TargetKind::Organisation, "Acme");
+    let r = build_result(&resp, &target, "s");
+    let url = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Url)
+        .expect("reference url emitted");
+    assert_eq!(url.value, "https://www.ransomlook.io/leaks/q");
 }

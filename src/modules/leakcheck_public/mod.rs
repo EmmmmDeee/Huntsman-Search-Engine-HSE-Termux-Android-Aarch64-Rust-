@@ -35,6 +35,7 @@ use crate::core::{
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
+    tags,
 };
 use crate::util::http::{fetch_json, urlencode};
 
@@ -200,9 +201,9 @@ fn build_result(resp: &PublicResp, target: &Target, scan_id: &str) -> Result<Mod
         scan_id,
     );
     e.tag(SRC);
-    e.tag("breach");
+    e.tag(tags::BREACH);
     if names.len() >= 5 {
-        e.tag("high-exposure");
+        e.tag(tags::HIGH_EXPOSURE);
     }
     // `breach:<name>` per source — lowercased to match the convention
     // `xposed_or_not`/`stolen_tax` use, so the same address hit by two corpora

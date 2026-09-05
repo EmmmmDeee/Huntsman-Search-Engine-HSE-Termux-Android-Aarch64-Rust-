@@ -36,6 +36,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::domains::is_or_subdomain_of;
 use crate::util::http::{fetch_json_or_404, urlencode};
 
 /// Stable evidence-source string.
@@ -127,31 +128,44 @@ enum Match {
 
 /// Decide whether a post's `post_title` genuinely names the seed subject, and
 /// how strongly — never matching on the free-text `description`.
-fn classify(title: &str, target: &Target) -> Option<Match> {
+fn classify(title: &str, needle: &str, target: &Target) -> Option<Match> {
     let title = title.trim().to_ascii_lowercase();
     if title.is_empty() {
         return None;
     }
-    let needle = target.value.trim().to_ascii_lowercase();
-    if needle.len() < 3 {
-        return None;
-    }
     match target.kind {
         TargetKind::Domain => {
-            if title.contains(&needle) {
+            // `title` is free text, so the seed must be matched on domain-LABEL
+            // boundaries — a raw `contains` admits `notacme.com`, `acme.company`
+            // and `acme.com.au` for seed `acme.com`. Compare each domain-shaped
+            // token in the title against the seed via the single-sourced
+            // `util::domains` authority (both directions, so a subdomain token
+            // `sub.acme.com` matches an `acme.com` seed and vice versa) — the
+            // same label-safe guard `ransomware_live` uses.
+            let label = needle.split('.').next().unwrap_or("");
+            let tokens = || {
+                title
+                    .split(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '-'))
+                    .map(|t| t.trim_matches('.'))
+                    .filter(|t| !t.is_empty())
+            };
+            if tokens()
+                .any(|tok| is_or_subdomain_of(tok, needle) || is_or_subdomain_of(needle, tok))
+            {
                 return Some(Match::Strong);
             }
-            // The registrable label (part before the first dot), matched only
-            // when it is long enough to be discriminating (avoids a 2-3 char
-            // label matching unrelated victims).
-            let label = needle.split('.').next().unwrap_or("");
-            (label.len() >= 4 && title.contains(label)).then_some(Match::Partial)
+            // Registrable-label hit: the seed's label IS a token's own
+            // registrable label (whole label before its first dot), long enough
+            // to discriminate — replaces the old `title.contains(label)`, which
+            // matched `notacme`/`acmeworld`.
+            (label.len() >= 4 && tokens().any(|tok| tok.split('.').next().unwrap_or("") == label))
+                .then_some(Match::Partial)
         }
         TargetKind::Organisation => {
             if title == needle {
                 return Some(Match::Strong);
             }
-            (title.contains(&needle) || needle.contains(&title)).then_some(Match::Partial)
+            (title.contains(needle) || needle.contains(&title)).then_some(Match::Partial)
         }
         _ => None,
     }
@@ -162,6 +176,14 @@ fn classify(title: &str, target: &Target) -> Option<Match> {
 fn build_result(resp: &SearchResp, target: &Target, scan_id: &str) -> ModuleResult {
     let mut result = ModuleResult::new();
 
+    // Loop-invariant: the lowercased seed needle is identical for every post, so
+    // derive it once and short-circuit when it is too short to discriminate
+    // (identical to the former per-post `< 3` gate).
+    let needle = target.value.trim().to_ascii_lowercase();
+    if needle.len() < 3 {
+        return result;
+    }
+
     for post in &resp.posts {
         let Some(title) = post
             .post_title
@@ -171,7 +193,7 @@ fn build_result(resp: &SearchResp, target: &Target, scan_id: &str) -> ModuleResu
         else {
             continue;
         };
-        let Some(kind) = classify(title, target) else {
+        let Some(kind) = classify(title, &needle, target) else {
             continue;
         };
         let conf = match kind {
@@ -184,23 +206,17 @@ fn build_result(resp: &SearchResp, target: &Target, scan_id: &str) -> ModuleResu
             .as_deref()
             .map(str::trim)
             .filter(|g| !g.is_empty());
-        let mut ev = Evidence::new(SRC, "RansomLook.io leak-site index");
-        for (k, val) in [("group", group), ("discovered", post.discovered.as_deref())] {
-            if let Some(val) = val.map(str::trim).filter(|s| !s.is_empty()) {
-                ev = ev.with_attr(k, val);
-            }
-        }
+        let ev = Evidence::new(SRC, "RansomLook.io leak-site index")
+            .with_optional_attrs([("group", group), ("discovered", post.discovered.as_deref())]);
         let group_tag = group.map(|g| format!("group:{}", g.to_lowercase()));
+        // `Option<&str>::as_slice` yields a 0-or-1-element `&[&str]` with no
+        // allocation — the per-record `group:` tag (if any) as extra tags.
+        let group_slice = group_tag.as_deref();
+        let group_extra: &[&str] = group_slice.as_slice();
 
         // Victim organisation (the post title).
-        let mut org = Entity::new(EntityKind::Organisation, title, conf, scan_id);
-        org.tag(SRC);
-        org.tag("ransomware-victim");
-        if let Some(t) = &group_tag {
-            org.tag(t.clone());
-        }
-        org.add_evidence(ev.clone());
-        result.push(org);
+        let org = Entity::new(EntityKind::Organisation, title, conf, scan_id);
+        result.push_with_tags(org, &ev, &[SRC, "ransomware-victim"], group_extra);
 
         // The leak-site reference as a durable Url lead (relative links made
         // absolute against the RansomLook base).
@@ -217,15 +233,13 @@ fn build_result(resp: &SearchResp, target: &Target, scan_id: &str) -> ModuleResu
             } else {
                 format!("{BASE}/{link}")
             };
-            let mut u = Entity::new(EntityKind::Url, &abs, confidence::HIGH_PLUS, scan_id);
-            u.tag(SRC);
-            u.tag("ransomware-victim");
-            u.tag("reference");
-            if let Some(t) = &group_tag {
-                u.tag(t.clone());
-            }
-            u.add_evidence(ev.clone());
-            result.push(u);
+            let u = Entity::new(EntityKind::Url, &abs, confidence::HIGH_PLUS, scan_id);
+            result.push_with_tags(
+                u,
+                &ev,
+                &[SRC, "ransomware-victim", "reference"],
+                group_extra,
+            );
         }
     }
 

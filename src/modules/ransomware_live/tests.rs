@@ -138,3 +138,30 @@ fn domain_matching_is_label_safe_via_the_shared_helper() {
             .any(|e| e.kind == EntityKind::Organisation)
     );
 }
+
+#[test]
+fn domain_seed_that_is_a_subdomain_matches_the_victim_apex() {
+    // Reverse direction of the bidirectional guard: the analyst seeds a
+    // discovered host `portal.seasiainfotech.com` while ransomware.live lists the
+    // victim at the apex `seasiainfotech.com`. The seed IS a subdomain of the
+    // victim's domain, so the second operand `is_or_subdomain_of(needle, &d)`
+    // must fire — pinning the "and vice versa" direction no other test exercises.
+    let target = Target::new(TargetKind::Domain, "portal.seasiainfotech.com");
+    let victims = vec![victim(
+        "Seasia Infotech",
+        "seasiainfotech.com",
+        "thegentlemen",
+    )];
+    let r = build_result(&victims, &target, "s");
+    assert!(
+        r.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Organisation && e.value == "Seasia Infotech")
+    );
+    // The emitted Domain is the victim's own apex, not the seed subdomain.
+    assert!(
+        r.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Domain && e.value == "seasiainfotech.com")
+    );
+}

@@ -169,7 +169,6 @@ fn feature_coords(f: &Feature) -> Option<(f64, f64)> {
 /// the first valid one is the representative fix.
 fn build_result(fc: &FeatureCollection, bssid: &str, scan_id: &str) -> ModuleResult {
     let mut result = ModuleResult::new();
-    let want = bssid.to_ascii_lowercase();
 
     for f in &fc.features {
         // Precision guard: emit a fix ONLY for a feature that positively
@@ -182,7 +181,7 @@ fn build_result(fc: &FeatureCollection, bssid: &str, scan_id: &str) -> ModuleRes
             .properties
             .as_ref()
             .and_then(|p| p.mac.as_deref())
-            .is_some_and(|mac| mac.trim().eq_ignore_ascii_case(&want));
+            .is_some_and(|mac| mac.trim().eq_ignore_ascii_case(bssid));
         if !matches_bssid {
             continue;
         }
@@ -201,24 +200,20 @@ fn build_result(fc: &FeatureCollection, bssid: &str, scan_id: &str) -> ModuleRes
         crate::util::geo::tag_au_state(&mut e, lat, lon);
 
         let p = f.properties.as_ref();
-        let mut ev = Evidence::new(SRC, format!("WiFiDB BSSID {bssid} -> {coords}"))
+        let ev = Evidence::new(SRC, format!("WiFiDB BSSID {bssid} -> {coords}"))
             .with_attr("bssid", bssid)
             .with_attr("latitude", format!("{lat:.6}"))
-            .with_attr("longitude", format!("{lon:.6}"));
-        for (k, val) in [
-            ("ssid", p.and_then(|p| p.ssid.as_deref())),
-            ("manuf", p.and_then(|p| p.manuf.as_deref())),
-            ("channel", p.and_then(|p| p.chan.as_deref())),
-            ("radio", p.and_then(|p| p.radio.as_deref())),
-            ("auth", p.and_then(|p| p.auth.as_deref())),
-            ("encryption", p.and_then(|p| p.encry.as_deref())),
-            ("first_seen", p.and_then(|p| p.fa.as_deref())),
-            ("last_seen", p.and_then(|p| p.la.as_deref())),
-        ] {
-            if let Some(val) = val.map(str::trim).filter(|s| !s.is_empty()) {
-                ev = ev.with_attr(k, val);
-            }
-        }
+            .with_attr("longitude", format!("{lon:.6}"))
+            .with_optional_attrs([
+                ("ssid", p.and_then(|p| p.ssid.as_deref())),
+                ("manuf", p.and_then(|p| p.manuf.as_deref())),
+                ("channel", p.and_then(|p| p.chan.as_deref())),
+                ("radio", p.and_then(|p| p.radio.as_deref())),
+                ("auth", p.and_then(|p| p.auth.as_deref())),
+                ("encryption", p.and_then(|p| p.encry.as_deref())),
+                ("first_seen", p.and_then(|p| p.fa.as_deref())),
+                ("last_seen", p.and_then(|p| p.la.as_deref())),
+            ]);
         e.add_evidence(ev);
         result.push(e);
         // One representative fix per BSSID.

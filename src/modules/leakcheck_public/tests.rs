@@ -148,3 +148,50 @@ fn confidence_scales_with_source_count() {
     assert!((confidence_for_sources(7) - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
     assert!((confidence_for_sources(20) - confidence::VERY_HIGH_PLUSPLUS).abs() < 1e-9);
 }
+
+#[test]
+fn clean_no_results_found_yields_no_entity() {
+    // Pin the SECOND clean-negative signal: `success:false` with a
+    // case-insensitive "No results found" is an ordinary clean miss, never a
+    // ModuleError. Untested before; deleting that clause would flip a legitimate
+    // live clean response to a spurious failure.
+    for err in ["No results found", "NO RESULTS FOUND"] {
+        let resp = PublicResp {
+            success: false,
+            found: None,
+            fields: None,
+            sources: None,
+            error: Some(err.into()),
+        };
+        let target = Target::new(TargetKind::Email, "clean@example.com");
+        let r = build_result(&resp, &target, "s").expect("no-results-found is a clean Ok");
+        assert_eq!(r.entities.len(), 0);
+    }
+}
+
+#[test]
+fn malformed_source_date_is_filtered_from_earliest() {
+    // Pin the `len==7 && byte[4]=='-'` date filter. The malformed "2010/01" is
+    // 7 chars but byte[4] is '/', and is lexically SMALLER than the valid
+    // "2018-08" ("2010" < "2018"), so if the byte-4 guard were dropped it would
+    // wrongly win `.min()` — this falsifies that regression.
+    let resp = PublicResp {
+        success: true,
+        found: Some(2),
+        fields: None,
+        sources: Some(vec![
+            src("Good Corp", "2018-08"),
+            src("Bad Corp", "2010/01"),
+        ]),
+        error: None,
+    };
+    let target = Target::new(TargetKind::Email, "pwned@example.com");
+    let r = build_result(&resp, &target, "s").expect("hit is Ok");
+    assert_eq!(
+        r.entities[0].evidence[0]
+            .attributes
+            .get("earliest_breach_date")
+            .map(String::as_str),
+        Some("2018-08")
+    );
+}

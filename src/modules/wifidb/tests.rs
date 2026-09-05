@@ -135,3 +135,22 @@ fn falls_back_to_string_lat_lon_when_geometry_missing() {
     assert_eq!(r.entities.len(), 1);
     assert_eq!(r.entities[0].value, "33.596152,-111.946942");
 }
+
+#[test]
+fn skips_invalid_matching_feature_then_emits_one_fix_for_first_valid() {
+    // Three matching features for the queried BSSID, in order:
+    //   1. Null Island (invalid) -> skipped via `continue`, NOT `break`
+    //   2. valid feature A        -> the one representative fix emitted
+    //   3. valid feature B        -> dropped by the trailing `break`
+    let fc = FeatureCollection {
+        features: vec![
+            feature("00:13:10:69:EF:11", 0.0, 0.0, "null-island"),
+            feature("00:13:10:69:EF:11", -111.9469417, 33.5961517, "A"),
+            feature("00:13:10:69:EF:11", -112.5, 34.5, "B"),
+        ],
+    };
+    let r = build_result(&fc, "00:13:10:69:EF:11", "s");
+    // continue-past-invalid reached A; break dropped B => exactly one entity.
+    assert_eq!(r.entities.len(), 1);
+    assert_eq!(r.entities[0].value, "33.596152,-111.946942");
+}

@@ -610,6 +610,27 @@ impl Evidence {
         self
     }
 
+    /// Attach several **optional** attributes in one call: each pair whose value
+    /// is `Some` and trims to a non-empty string is added via
+    /// [`with_attr`](Self::with_attr) (so its accumulate-on-collision semantics
+    /// are unchanged); `None` or blank values are skipped. The single authority
+    /// for the "conditionally add each trimmed non-empty attribute" idiom the
+    /// leak-site / BSSID collector modules build multi-attribute evidence with,
+    /// replacing the hand-rolled `for (k, v) in [...] { if let Some(v) =
+    /// v.map(str::trim).filter(...) { ev = ev.with_attr(k, v); } }` loop each had
+    /// copied verbatim.
+    pub fn with_optional_attrs<'a>(
+        mut self,
+        attrs: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
+    ) -> Self {
+        for (k, v) in attrs {
+            if let Some(v) = v.map(str::trim).filter(|s| !s.is_empty()) {
+                self = self.with_attr(k, v);
+            }
+        }
+        self
+    }
+
     /// The individual values behind `key` — the **inverse of
     /// [`with_attr`](Self::with_attr)'s accumulation**, and the only correct way
     /// to read an attribute that can hold more than one.

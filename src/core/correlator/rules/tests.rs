@@ -77,6 +77,7 @@ use crate::core::entity::Evidence;
             "hibp",
             "hudsonrock",
             "intelx",
+            "leakcheck_public",
             "leakix",
             "niamonx",
             "osintcat",
@@ -421,6 +422,53 @@ use crate::core::entity::Evidence;
             "AU-123 must fire on a numeric-variant handle pair from distinct sources"
         );
         assert_eq!(results[0].rule_id, "AU-123");
+    }
+
+    #[test]
+    fn au124_ransomware_victim_exposure_fires_and_names_the_group() {
+        // An Organisation + its Domain tagged `ransomware-victim` (as
+        // ransomware_live/ransomlook emit), plus a `reference` leak-site URL that
+        // must NOT inflate the flagged-subject count. The claiming group rides as
+        // a `group:` tag and must appear in the finding.
+        let mut org = Entity::new(EntityKind::Organisation, "Acme Corp", 0.8, "scan-au124");
+        org.tag("ransomware-victim");
+        org.tag("group:lockbit");
+        let mut dom = Entity::new(EntityKind::Domain, "acme.example", 0.8, "scan-au124");
+        dom.tag("ransomware-victim");
+        dom.tag("group:lockbit");
+        let mut url = Entity::new(EntityKind::Url, "https://www.ransomlook.io/leaks/x", 0.7, "scan-au124");
+        url.tag("ransomware-victim");
+        url.tag("reference");
+        let results = super::rule_au_124_ransomware_victim_exposure(
+            &RuleContext::new(&[org, dom, url]),
+            "scan-au124",
+            0,
+        );
+        assert_eq!(results.len(), 1, "AU-124 must fire when a ransomware-victim tag is present");
+        assert_eq!(results[0].rule_id, "AU-124");
+        assert!(
+            results[0].description.contains("lockbit"),
+            "the claiming group must be named: {}",
+            results[0].description
+        );
+        // Two subject entities (org + domain); the `reference` URL is excluded.
+        assert!(
+            results[0].description.starts_with("2 "),
+            "reference URL must not inflate the flagged count: {}",
+            results[0].description
+        );
+    }
+
+    #[test]
+    fn au124_ransomware_victim_exposure_silent_without_the_tag() {
+        // No `ransomware-victim` tag anywhere → the rule yields nothing.
+        let e = Entity::new(EntityKind::Organisation, "Innocent Ltd", 0.8, "scan-au124b");
+        let results = super::rule_au_124_ransomware_victim_exposure(
+            &RuleContext::new(&[e]),
+            "scan-au124b",
+            0,
+        );
+        assert!(results.is_empty(), "AU-124 must stay silent with no victim tag");
     }
 
 #[test]

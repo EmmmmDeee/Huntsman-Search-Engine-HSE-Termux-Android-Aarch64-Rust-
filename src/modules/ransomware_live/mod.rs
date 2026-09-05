@@ -132,11 +132,7 @@ enum Match {
 
 /// Decide whether `victim` genuinely IS the seed subject (not an incidental
 /// description mention), and how strongly.
-fn classify(victim: &Victim, target: &Target) -> Option<Match> {
-    let needle = target.value.trim().to_ascii_lowercase();
-    if needle.is_empty() {
-        return None;
-    }
+fn classify(victim: &Victim, target: &Target, needle: &str) -> Option<Match> {
     match target.kind {
         TargetKind::Domain => {
             let d = victim.domain.as_deref()?.trim().to_ascii_lowercase();
@@ -145,7 +141,7 @@ fn classify(victim: &Victim, target: &Target) -> Option<Match> {
             // the `notexample.com`-matches-`example.com` bug a bare `ends_with`
             // would admit). Checked both directions so a victim `sub.acme.com`
             // matches an `acme.com` seed and vice versa.
-            (is_or_subdomain_of(&d, &needle) || is_or_subdomain_of(&needle, &d))
+            (is_or_subdomain_of(&d, needle) || is_or_subdomain_of(needle, &d))
                 .then_some(Match::Domain)
         }
         TargetKind::Organisation => {
@@ -153,7 +149,7 @@ fn classify(victim: &Victim, target: &Target) -> Option<Match> {
             if name.is_empty() {
                 return None;
             }
-            (name == needle || name.contains(&needle) || needle.contains(&name))
+            (name == needle || name.contains(needle) || needle.contains(&name))
                 .then_some(Match::Org)
         }
         _ => None,
@@ -165,8 +161,15 @@ fn classify(victim: &Victim, target: &Target) -> Option<Match> {
 fn build_result(victims: &[Victim], target: &Target, scan_id: &str) -> ModuleResult {
     let mut result = ModuleResult::new();
 
+    // Loop-invariant: the lowercased seed needle is identical for every victim,
+    // so derive it once (was re-computed per victim inside `classify`).
+    let needle = target.value.trim().to_ascii_lowercase();
+    if needle.is_empty() {
+        return result;
+    }
+
     for v in victims {
-        let Some(kind) = classify(v, target) else {
+        let Some(kind) = classify(v, target, &needle) else {
             continue;
         };
         let conf = match kind {
@@ -176,8 +179,7 @@ fn build_result(victims: &[Victim], target: &Target, scan_id: &str) -> ModuleRes
 
         // Provenance shared by every entity this victim mints.
         let group = v.group.as_deref().map(str::trim).filter(|g| !g.is_empty());
-        let mut ev = Evidence::new(SRC, "Ransomware.live victim index");
-        for (k, val) in [
+        let ev = Evidence::new(SRC, "Ransomware.live victim index").with_optional_attrs([
             ("group", group),
             ("attackdate", v.attackdate.as_deref()),
             ("discovered", v.discovered.as_deref()),
@@ -185,25 +187,19 @@ fn build_result(victims: &[Victim], target: &Target, scan_id: &str) -> ModuleRes
             ("sector", v.activity.as_deref()),
             ("claim_url", v.claim_url.as_deref()),
             ("reference", v.url.as_deref()),
-        ] {
-            if let Some(val) = val.map(str::trim).filter(|s| !s.is_empty()) {
-                ev = ev.with_attr(k, val);
-            }
-        }
+        ]);
 
         let group_tag = group.map(|g| format!("group:{}", g.to_lowercase()));
+        // `Option<&str>::as_slice` yields a 0-or-1-element `&[&str]` with no
+        // allocation — the per-record `group:` tag (if any) as extra tags.
+        let group_slice = group_tag.as_deref();
+        let group_extra: &[&str] = group_slice.as_slice();
 
         // The victim organisation — a genuine Organisation pivot when the seed
         // was a Domain, or a reinforcement when it was the Organisation itself.
         if let Some(name) = v.victim.as_deref().map(str::trim).filter(|n| n.len() >= 2) {
-            let mut e = Entity::new(EntityKind::Organisation, name, conf, scan_id);
-            e.tag(SRC);
-            e.tag("ransomware-victim");
-            if let Some(t) = &group_tag {
-                e.tag(t.clone());
-            }
-            e.add_evidence(ev.clone());
-            result.push(e);
+            let e = Entity::new(EntityKind::Organisation, name, conf, scan_id);
+            result.push_with_tags(e, &ev, &[SRC, "ransomware-victim"], group_extra);
         }
 
         // The victim's domain — a new Domain pivot when the seed was an
@@ -217,14 +213,8 @@ fn build_result(victims: &[Victim], target: &Target, scan_id: &str) -> ModuleRes
             .map(str::trim)
             .filter(|d| d.contains('.'))
         {
-            let mut e = Entity::new(EntityKind::Domain, dom, conf, scan_id);
-            e.tag(SRC);
-            e.tag("ransomware-victim");
-            if let Some(t) = &group_tag {
-                e.tag(t.clone());
-            }
-            e.add_evidence(ev.clone());
-            result.push(e);
+            let e = Entity::new(EntityKind::Domain, dom, conf, scan_id);
+            result.push_with_tags(e, &ev, &[SRC, "ransomware-victim"], group_extra);
         }
 
         // The reference page — a durable lead for the analyst to corroborate.
@@ -234,15 +224,13 @@ fn build_result(victims: &[Victim], target: &Target, scan_id: &str) -> ModuleRes
             .map(str::trim)
             .filter(|u| u.starts_with("http"))
         {
-            let mut e = Entity::new(EntityKind::Url, reference, confidence::HIGH_PLUS, scan_id);
-            e.tag(SRC);
-            e.tag("ransomware-victim");
-            e.tag("reference");
-            if let Some(t) = &group_tag {
-                e.tag(t.clone());
-            }
-            e.add_evidence(ev.clone());
-            result.push(e);
+            let e = Entity::new(EntityKind::Url, reference, confidence::HIGH_PLUS, scan_id);
+            result.push_with_tags(
+                e,
+                &ev,
+                &[SRC, "ransomware-victim", "reference"],
+                group_extra,
+            );
         }
     }
 
