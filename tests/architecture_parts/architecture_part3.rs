@@ -1049,3 +1049,61 @@ fn production_code_never_redirects_the_data_dir() {
          production code under src/: {offenders:?}"
     );
 }
+
+/// The core binary never escalates privilege — it is a no-root Termux userland tool.
+///
+/// Termux runs unprivileged: there is no `sudo`/`su`/`doas`/`pkexec` on the
+/// device, and HSE's contract is that it never needs one. This flags any
+/// production source that would spawn a privilege-escalation binary — as a
+/// `Command` program or a subprocess argument — so the no-root guarantee can't
+/// silently rot into an on-device failure. (install.sh's `sudo apt-get` is gated
+/// to the Debian/Ubuntu fallback branch; the Termux path installs via `pkg` with
+/// no sudo. That is shell, outside this Rust guard's scope.)
+#[test]
+fn the_binary_never_escalates_privilege() {
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("readable src dir").flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|e| e == "rs")
+                && !p
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().ends_with("tests.rs"))
+            {
+                out.push(p);
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    walk(&root.join("src"), &mut files);
+    assert!(!files.is_empty());
+
+    // Privilege-escalation binaries a no-root tool must never spawn. `"su"` is
+    // matched only as a full `Command::new("su")` (never a substring, so it can't
+    // hit `Command::new("subfinder")`); the rest are distinctive literals that
+    // catch a `Command::new(..)` program or a `.arg(..)` / wrapper argument.
+    // Case-sensitive: an ATT&CK technique label like "Sudo and Sudo Caching"
+    // (capital S) is data, not an escalation, and must not trip this.
+    let escalators = ["\"sudo\"", "\"pkexec\"", "\"doas\"", "Command::new(\"su\")"];
+    let mut offenders = Vec::new();
+    for f in &files {
+        let text = std::fs::read_to_string(f).expect("readable source");
+        for (i, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue; // comments may name these binaries
+            }
+            if escalators.iter().any(|e| line.contains(e)) {
+                let rel = f.strip_prefix(root).unwrap_or(f).display().to_string();
+                offenders.push(format!("{rel}:{}", i + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "production source spawns or names a privilege-escalation binary \
+         (sudo/su/doas/pkexec) — HSE is a no-root Termux userland tool and must \
+         never require or invoke one: {offenders:?}"
+    );
+}
