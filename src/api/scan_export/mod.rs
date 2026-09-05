@@ -282,10 +282,13 @@ pub async fn scan_batch_txt(
         match params.get("site").map(String::as_str) {
             None | Some("") => crate::app::batch::sites::SITES.iter().collect(),
             Some(list) => {
-                let mut chosen = Vec::new();
+                let mut chosen: Vec<&'static crate::app::batch::sites::Site> = Vec::new();
                 for id in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
                     match crate::app::batch::sites::find(id) {
-                        Some(site) => chosen.push(site),
+                        // De-duplicate by id so `?site=oathnet,oathnet` renders
+                        // one section, matching `cli::batch::resolve_sites`.
+                        Some(site) if !chosen.iter().any(|c| c.id == site.id) => chosen.push(site),
+                        Some(_) => {}
                         None => {
                             return super::handlers::bad_request(format!(
                                 "unknown site {id:?}; known: {}",

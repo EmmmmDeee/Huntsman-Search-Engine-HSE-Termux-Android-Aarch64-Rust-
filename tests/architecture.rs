@@ -435,27 +435,52 @@ fn cli_help_uses_canonical_terminology() {
             .arg("--help")
             .output()
             .expect("run the built hse binary");
-        String::from_utf8_lossy(&out.stdout).to_string()
+        // A command that was removed or renamed makes `--help` fail; treat that
+        // as a hard error, not an empty page that would silently pass the scan.
+        assert!(
+            out.status.success(),
+            "`hse {} --help` exited with {}: {}",
+            args.join(" "),
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(
+            !stdout.trim().is_empty(),
+            "`hse {} --help` produced no output",
+            args.join(" ")
+        );
+        stdout
     };
-    let top = help(&[]);
-    // Every visible subcommand, from the top-level listing.
-    let commands: Vec<String> = top
-        .lines()
-        .skip_while(|l| !l.starts_with("Commands:"))
-        .skip(1)
-        .take_while(|l| !l.starts_with("Options:"))
-        .filter_map(|l| l.split_whitespace().next().map(str::to_string))
-        .filter(|c| c != "help")
-        .collect();
-    assert!(
-        commands.len() > 15,
-        "expected the full command list, got {commands:?}"
-    );
-    let mut pages: Vec<(String, String)> = vec![("hse".to_string(), top)];
-    for c in &commands {
-        pages.push((format!("hse {c}"), help(&[c])));
+
+    // The visible subcommand names in one help page's `Commands:` block. A
+    // subcommand entry begins at exactly two spaces of indent; a wrapped
+    // description line is indented further and is skipped. Names are
+    // lowercase/kebab tokens, which also excludes any stray prose.
+    fn subcommand_names(page: &str) -> Vec<String> {
+        page.lines()
+            .skip_while(|l| !l.starts_with("Commands:"))
+            .skip(1)
+            .take_while(|l| l.starts_with(char::is_whitespace) || l.trim().is_empty())
+            .filter(|l| l.starts_with("  ") && l.as_bytes().get(2).is_some_and(|b| *b != b' '))
+            .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+            .filter(|c| {
+                c != "help"
+                    && !c.is_empty()
+                    && c.chars()
+                        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+            })
+            .collect()
     }
-    // Hidden-but-working commands too: their help is still an operator surface.
+
+    // Walk the whole command tree, not just the first level: nested subcommands
+    // (`hse keys add --help`, `hse cells …`) are operator surfaces too and can
+    // drift. Roots are the top-level page plus the hidden-but-working commands
+    // that never appear in the top-level listing.
+    let mut pages: Vec<(String, String)> = Vec::new();
+    let mut queue: std::collections::VecDeque<Vec<String>> = std::collections::VecDeque::new();
+    let mut seen: std::collections::HashSet<Vec<String>> = std::collections::HashSet::new();
+    queue.push_back(vec![]);
     for c in [
         "audit",
         "benchmark",
@@ -467,8 +492,31 @@ fn cli_help_uses_canonical_terminology() {
         "engines",
         "oathnet-batch",
     ] {
-        pages.push((format!("hse {c}"), help(&[c])));
+        queue.push_back(vec![c.to_string()]);
     }
+    while let Some(path) = queue.pop_front() {
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let args: Vec<&str> = path.iter().map(String::as_str).collect();
+        let page = help(&args);
+        for sub in subcommand_names(&page) {
+            let mut child = path.clone();
+            child.push(sub);
+            queue.push_back(child);
+        }
+        let label = if path.is_empty() {
+            "hse".to_string()
+        } else {
+            format!("hse {}", path.join(" "))
+        };
+        pages.push((label, page));
+    }
+    assert!(
+        pages.len() > 15,
+        "expected the full command tree, got {} pages",
+        pages.len()
+    );
     let glossary =
         fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/GLOSSARY.md"))
             .expect("docs/GLOSSARY.md");

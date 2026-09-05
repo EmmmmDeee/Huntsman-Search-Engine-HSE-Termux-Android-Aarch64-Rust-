@@ -127,8 +127,17 @@ fn a_prefixed_provider_quotes_a_field_value_that_has_whitespace() {
         kind: SelectorKind::Name,
         value: "jsmith".into(),
     };
+    // An embedded quote is escaped so the `field:"…"` term never closes early.
+    let quoted = Selector {
+        kind: SelectorKind::Name,
+        value: "Ab \"Ace\" Cee".into(),
+    };
     assert_eq!(line_for(leaked, &spaced).unwrap(), "name:\"John Smith\"");
     assert_eq!(line_for(leaked, &single).unwrap(), "name:jsmith");
+    assert_eq!(
+        line_for(leaked, &quoted).unwrap(),
+        "name:\"Ab \\\"Ace\\\" Cee\""
+    );
 }
 
 #[test]

@@ -349,6 +349,12 @@ fn prep(s: &str, strip_newlines: bool, max_len: Option<usize>) -> String {
 fn print_rows(rows: &[Row], a: &SfArgs) -> Result<()> {
     let out = std::io::stdout();
     let mut w = out.lock();
+    write_rows(&mut w, rows, a)
+}
+
+/// The body of [`print_rows`], generic over the sink so the row formatting —
+/// especially the csv quoting — can be exercised against a buffer in tests.
+fn write_rows<W: Write>(w: &mut W, rows: &[Row], a: &SfArgs) -> Result<()> {
     match a.format.as_str() {
         "tab" => {
             if !a.no_header {
@@ -369,23 +375,48 @@ fn print_rows(rows: &[Row], a: &SfArgs) -> Result<()> {
             }
         }
         "csv" => {
-            let d = a.delimiter.clone().unwrap_or_else(|| ",".to_string());
+            // RFC-4180 quoting via `csv::Writer` (like `hse ingest`), so a value
+            // holding the delimiter, a quote or a newline stays one field instead
+            // of corrupting the row — the same reason SpiderFoot writes csv with
+            // Python's `csv.writer`. Unlike the client-facing scan export, this
+            // keeps SpiderFoot's fidelity and does NOT formula-guard fields:
+            // SpiderFoot's csv is unguarded, and `hse sf` reproduces its output.
+            // The delimiter is validated to a single byte in `cmd_sf`.
+            let delim = a.delimiter.as_deref().map_or(b',', |d| d.as_bytes()[0]);
+            // Build into a buffer (as `hse ingest` does) so csv errors map to
+            // one place; the finished bytes then go to stdout as an io write.
+            let csv_err = |e: csv::Error| Error::Other(format!("sf: csv write failed: {e}"));
+            let mut wtr = csv::WriterBuilder::new()
+                .delimiter(delim)
+                .terminator(csv::Terminator::Any(b'\n'))
+                .from_writer(Vec::new());
             if !a.no_header {
                 if a.include_source {
-                    writeln!(w, "Source{d}Type{d}Source Data{d}Data")?;
+                    wtr.write_record(["Source", "Type", "Source Data", "Data"])
+                        .map_err(csv_err)?;
                 } else {
-                    writeln!(w, "Source{d}Type{d}Data")?;
+                    wtr.write_record(["Source", "Type", "Data"])
+                        .map_err(csv_err)?;
                 }
             }
             for r in rows {
                 let data = prep(&r.data, a.strip_newlines, a.max_len);
                 if a.include_source {
                     let src = prep(&r.source_data, a.strip_newlines, a.max_len);
-                    writeln!(w, "{}{d}{}{d}{}{d}{}", r.module, r.type_descr, src, data)?;
+                    wtr.write_record([
+                        r.module.as_str(),
+                        r.type_descr,
+                        src.as_str(),
+                        data.as_str(),
+                    ])
+                    .map_err(csv_err)?;
                 } else {
-                    writeln!(w, "{}{d}{}{d}{}", r.module, r.type_descr, data)?;
+                    wtr.write_record([r.module.as_str(), r.type_descr, data.as_str()])
+                        .map_err(csv_err)?;
                 }
             }
+            let bytes = wtr.into_inner().map_err(csv::IntoInnerError::into_error)?;
+            w.write_all(&bytes)?;
         }
         "json" => {
             write!(w, "[")?;
@@ -497,6 +528,16 @@ pub async fn cmd_sf(a: SfArgs) -> Result<()> {
     if a.delimiter.is_some() && a.format != "csv" {
         return Err(Error::Other(
             "-D can only be used when using the csv output format.".into(),
+        ));
+    }
+    if let Some(d) = &a.delimiter
+        && d.len() != 1
+    {
+        // The csv writer takes a single-byte delimiter (as Python's
+        // `csv.writer` takes a 1-character string); reject anything else
+        // rather than silently using only its first byte.
+        return Err(Error::Other(
+            "-D delimiter must be a single character.".into(),
         ));
     }
     let Some((sf_code, target_value)) = sf_target_type(raw_target) else {
@@ -804,5 +845,74 @@ mod tests {
             );
         }
         assert!(modules_for_use_case("bogus").is_err());
+    }
+
+    fn sf_args(format: &str, delimiter: Option<&str>) -> SfArgs {
+        SfArgs {
+            target: None,
+            use_case: "all".into(),
+            modules: vec![],
+            types: vec![],
+            format: format.into(),
+            no_header: false,
+            strip_newlines: false,
+            include_source: false,
+            max_len: None,
+            delimiter: delimiter.map(str::to_string),
+            filter_types: false,
+            show_types: vec![],
+            strict: false,
+            quiet: true,
+            list_modules: false,
+            list_types: false,
+            correlate: None,
+            listen: None,
+            version: false,
+        }
+    }
+
+    fn row(module: &str, descr: &'static str, code: &'static str, data: &str) -> Row {
+        Row {
+            module: module.into(),
+            type_descr: descr,
+            type_code: code,
+            source_data: "seed".into(),
+            data: data.into(),
+            generated: 0,
+        }
+    }
+
+    #[test]
+    fn csv_output_rfc4180_quotes_fields_holding_the_delimiter_or_a_quote() {
+        // A raw string join would corrupt these rows: the coordinates carry the
+        // comma delimiter, the name carries embedded quotes. RFC-4180 quoting
+        // keeps each row exactly three fields.
+        let rows = vec![
+            row(
+                "corpus_a",
+                "Physical Coordinates",
+                "PHYSICAL_COORDINATES",
+                "-33.8,151.2",
+            ),
+            row("corpus_b", "Human Name", "HUMAN_NAME", "Ab \"Ace\" Cee"),
+        ];
+        let mut buf = Vec::new();
+        write_rows(&mut buf, &rows, &sf_args("csv", None)).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            out,
+            "Source,Type,Data\n\
+             corpus_a,Physical Coordinates,\"-33.8,151.2\"\n\
+             corpus_b,Human Name,\"Ab \"\"Ace\"\" Cee\"\n"
+        );
+    }
+
+    #[test]
+    fn csv_output_honours_a_single_character_delimiter() {
+        let rows = vec![row("m", "Email Address", "EMAILADDR", "a@b.c")];
+        let mut buf = Vec::new();
+        write_rows(&mut buf, &rows, &sf_args("csv", Some("|"))).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert_eq!(out, "Source|Type|Data\nm|Email Address|a@b.c\n");
     }
 }

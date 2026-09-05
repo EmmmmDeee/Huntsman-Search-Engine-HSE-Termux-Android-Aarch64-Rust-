@@ -154,8 +154,11 @@ pub fn line_for(site: &Site, s: &Selector) -> Option<String> {
             let field = fields.iter().find(|(k, _)| *k == s.kind)?.1;
             // A field value with whitespace must be quoted (DeHashed's
             // documented `name:"John Smith"`); a single-token value is bare.
-            if s.value.chars().any(char::is_whitespace) {
-                format!("{field}:\"{}\"", s.value)
+            // A value that itself contains a quote is also quoted, with the
+            // inner quotes backslash-escaped, so the `field:"…"` never closes
+            // early and stays a single valid term.
+            if s.value.chars().any(char::is_whitespace) || s.value.contains('"') {
+                format!("{field}:\"{}\"", s.value.replace('"', "\\\""))
             } else {
                 format!("{field}:{}", s.value)
             }
