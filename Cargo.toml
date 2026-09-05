@@ -61,8 +61,8 @@ path = "src/bin/architecture_audit/main.rs"
 # resolves one package's full `[dependencies]` graph regardless of which
 # `[[bin]]` target you name, it does not prune per-binary within a single
 # package. That cost lands squarely on the Termux/aarch64 cross-build
-# (`ci.yml`'s `aarch64-android` job, `scripts/gate.sh`'s cross-build step —
-# both `--lib --bin hse` only, no `--features`), which this project is
+# (`ci.yml`'s `aarch64-android` job builds `--lib --bins`, `scripts/gate.sh`'s
+# cross-build step `--lib --bin hse` — both without `--features`), which this project is
 # otherwise deliberately careful to keep lean. `check`/`clippy`/`test`/`docs`/
 # MSRV still verify this binary's code — they pass `--features dep-cooldown`
 # explicitly (see ci.yml, scripts/gate.sh) — only the cross-build omits it.
