@@ -18,9 +18,12 @@
 //! - HSE entity kinds print under their SpiderFoot type names where one
 //!   exists and as `HSE_…` types where SpiderFoot has none.
 //!
-//! One deliberate deviation: SpiderFoot's csv writer emits four columns on
-//! every row while its header has three unless `-r` is given; here rows and
-//! header always agree.
+//! Two deliberate deviations from SpiderFoot's csv: its writer emits four
+//! columns on every row while its header has three unless `-r` is given (here
+//! rows and header always agree), and each cell is run through HSE's shared
+//! spreadsheet formula guard so a provider-derived value cannot execute as a
+//! formula when the csv is opened in a spreadsheet — safety over byte-for-byte
+//! fidelity, the same guard the scan export uses.
 
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -378,10 +381,15 @@ fn write_rows<W: Write>(w: &mut W, rows: &[Row], a: &SfArgs) -> Result<()> {
             // RFC-4180 quoting via `csv::Writer` (like `hse ingest`), so a value
             // holding the delimiter, a quote or a newline stays one field instead
             // of corrupting the row — the same reason SpiderFoot writes csv with
-            // Python's `csv.writer`. Unlike the client-facing scan export, this
-            // keeps SpiderFoot's fidelity and does NOT formula-guard fields:
-            // SpiderFoot's csv is unguarded, and `hse sf` reproduces its output.
-            // The delimiter is validated to a single byte in `cmd_sf`.
+            // Python's `csv.writer`. Each cell is also run through the shared
+            // spreadsheet formula guard (as the scan export is): a
+            // provider-derived value starting with `=`/`+`/`-`/`@` would
+            // otherwise execute as a formula when the operator opens the csv in
+            // Excel or LibreOffice. Safety wins over byte-for-byte SpiderFoot
+            // fidelity here — the only visible effect is a leading `'` on a cell
+            // that would have been a live formula. The delimiter is validated to
+            // a single byte in `cmd_sf`.
+            use crate::app::export::formula_guard;
             let delim = a.delimiter.as_deref().map_or(b',', |d| d.as_bytes()[0]);
             // Build into a buffer (as `hse ingest` does) so csv errors map to
             // one place; the finished bytes then go to stdout as an io write.
@@ -401,17 +409,21 @@ fn write_rows<W: Write>(w: &mut W, rows: &[Row], a: &SfArgs) -> Result<()> {
             }
             for r in rows {
                 let data = prep(&r.data, a.strip_newlines, a.max_len);
+                let module = formula_guard(&r.module);
+                let descr = formula_guard(r.type_descr);
+                let data_g = formula_guard(&data);
                 if a.include_source {
                     let src = prep(&r.source_data, a.strip_newlines, a.max_len);
+                    let src_g = formula_guard(&src);
                     wtr.write_record([
-                        r.module.as_str(),
-                        r.type_descr,
-                        src.as_str(),
-                        data.as_str(),
+                        module.as_ref(),
+                        descr.as_ref(),
+                        src_g.as_ref(),
+                        data_g.as_ref(),
                     ])
                     .map_err(csv_err)?;
                 } else {
-                    wtr.write_record([r.module.as_str(), r.type_descr, data.as_str()])
+                    wtr.write_record([module.as_ref(), descr.as_ref(), data_g.as_ref()])
                         .map_err(csv_err)?;
                 }
             }
@@ -424,6 +436,10 @@ fn write_rows<W: Write>(w: &mut W, rows: &[Row], a: &SfArgs) -> Result<()> {
                 if i > 0 {
                     writeln!(w, ",")?;
                 }
+                // Apply `-n` (strip newlines) and `-S` (max length) here too, so
+                // the flags behave the same across tab/csv/json.
+                let data = prep(&r.data, a.strip_newlines, a.max_len);
+                let source = prep(&r.source_data, a.strip_newlines, a.max_len);
                 write!(
                     w,
                     "{}",
@@ -431,9 +447,9 @@ fn write_rows<W: Write>(w: &mut W, rows: &[Row], a: &SfArgs) -> Result<()> {
                         "generated": r.generated,
                         "type": r.type_descr,
                         "event_type": r.type_code,
-                        "data": r.data,
+                        "data": data,
                         "module": r.module,
-                        "source": r.source_data,
+                        "source": source,
                     })
                 )?;
             }
@@ -899,12 +915,25 @@ mod tests {
         let mut buf = Vec::new();
         write_rows(&mut buf, &rows, &sf_args("csv", None)).unwrap();
         let out = String::from_utf8(buf).unwrap();
+        // The coordinates start with `-`, so the formula guard prepends `'`
+        // before the field is quoted for the embedded comma.
         assert_eq!(
             out,
             "Source,Type,Data\n\
-             corpus_a,Physical Coordinates,\"-33.8,151.2\"\n\
+             corpus_a,Physical Coordinates,\"'-33.8,151.2\"\n\
              corpus_b,Human Name,\"Ab \"\"Ace\"\" Cee\"\n"
         );
+    }
+
+    #[test]
+    fn csv_output_defangs_a_spreadsheet_formula_cell() {
+        // A provider-derived value that would execute as a formula in a
+        // spreadsheet is guarded with a leading `'` before it reaches the file.
+        let rows = vec![row("m", "Other (HSE)", "HSE_OTHER", "=SUM(A1:A9)")];
+        let mut buf = Vec::new();
+        write_rows(&mut buf, &rows, &sf_args("csv", None)).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert_eq!(out, "Source,Type,Data\nm,Other (HSE),'=SUM(A1:A9)\n");
     }
 
     #[test]

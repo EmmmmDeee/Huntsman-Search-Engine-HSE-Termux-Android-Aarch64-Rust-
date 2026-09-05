@@ -297,7 +297,14 @@ pub async fn scan_batch_txt(
                         }
                     }
                 }
-                chosen
+                // A `site=` that is only separators (e.g. `?site=,`) names no
+                // provider; treat it as "all", like an omitted `site` and like
+                // `cli::batch::resolve_sites`, rather than returning an empty file.
+                if chosen.is_empty() {
+                    crate::app::batch::sites::SITES.iter().collect()
+                } else {
+                    chosen
+                }
             }
         };
     let bare = params.get("bare").is_some_and(|v| v == "1" || v == "true");

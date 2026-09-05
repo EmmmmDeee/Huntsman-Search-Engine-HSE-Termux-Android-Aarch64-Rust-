@@ -422,10 +422,13 @@ fn relation_builders_share_one_pairwise_loop() {
 
 /// One spelling per term on the operator surface — `docs/GLOSSARY.md`.
 ///
-/// Reads every `hse … --help` page from the built binary and the glossary
-/// itself, and fails on a retired spelling, so a new flag or help sentence
-/// cannot reintroduce `scan id`, `Oathnet`, `Seeknow`, a lowercase `api key`
-/// or a second name for the output-format / output-file flags.
+/// Walks every `hse … --help` page from the built binary (the whole command
+/// tree, nested subcommands included) and fails on a retired spelling, so a
+/// new flag or help sentence cannot reintroduce `scan id`, `Oathnet`,
+/// `Seeknow`, a lowercase `api key` or a second name for the output-format /
+/// output-file flags. The glossary is read too, but only to assert it still
+/// documents the canonical flags and the two new commands — the retired-spelling
+/// scan runs against the help pages, not the glossary.
 #[test]
 fn cli_help_uses_canonical_terminology() {
     let hse = env!("CARGO_BIN_EXE_hse");

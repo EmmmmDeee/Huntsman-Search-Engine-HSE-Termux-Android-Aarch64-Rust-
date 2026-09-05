@@ -56,8 +56,12 @@ pub async fn run_seed(target: Target, options: ScanOptions) -> Result<ScanRun> {
             cancel_on_ctrl_c.cancel();
         }
     });
-    let scan = engine.run(scan, target, ctx).await?;
+    let result = engine.run(scan, target, ctx).await;
+    // Abort the listener on both the success and error paths — propagating an
+    // engine error with `?` first would leak the spawned task until the process
+    // exits.
     ctrl_c_listener.abort();
+    let scan = result?;
 
     Ok(ScanRun {
         scan_id: sid,
