@@ -5948,3 +5948,180 @@ async fn an_unbudgeted_scan_is_not_reported_as_truncated() {
         "an uncapped, completed scan is a complete answer and must not be caveated"
     );
 }
+
+/// Emits one `Url` — a court-judgment page — for the `seed` Username. With
+/// `document` set the Url carries [`crate::core::tags::SOURCE_DOCUMENT`]; without
+/// it the same page is an ordinary Url, the control that proves the tag alone is
+/// what stops the pivot.
+struct CourtRecordModule {
+    document: bool,
+}
+
+#[async_trait::async_trait]
+impl Module for CourtRecordModule {
+    fn name(&self) -> &'static str {
+        "court_record"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Username)
+    }
+    fn produces(&self) -> &'static [EntityKind] {
+        const K: &[EntityKind] = &[EntityKind::Url];
+        K
+    }
+    async fn process(
+        &self,
+        target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        let mut r = crate::core::module::ModuleResult::new();
+        if target.value == "seed" {
+            let mut e = Entity::new(
+                EntityKind::Url,
+                "https://www.austlii.edu.au/au/cases/cth/HCA/2023/1.html",
+                0.9,
+                &ctx.scan_id,
+            );
+            if self.document {
+                e.tag(crate::core::tags::SOURCE_DOCUMENT);
+            }
+            e.add_evidence(crate::core::entity::Evidence::new(
+                "court_record",
+                "synthetic judgment reference",
+            ));
+            r.push(e);
+        }
+        Ok(r)
+    }
+}
+
+/// Accepts any `Url` and leaves a marker entity, so a test can tell whether the
+/// engine pivoted on a page (i.e. dispatched a Url-accepting module against it).
+struct PageMinerModule;
+
+#[async_trait::async_trait]
+impl Module for PageMinerModule {
+    fn name(&self) -> &'static str {
+        "page_miner"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Url)
+    }
+    fn produces(&self) -> &'static [EntityKind] {
+        const K: &[EntityKind] = &[EntityKind::Username];
+        K
+    }
+    async fn process(
+        &self,
+        _target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        let mut r = crate::core::module::ModuleResult::new();
+        let mut e = Entity::new(EntityKind::Username, "mined-from-page", 0.9, &ctx.scan_id);
+        e.add_evidence(crate::core::entity::Evidence::new(
+            "page_miner",
+            "synthetic name mined from the page",
+        ));
+        r.push(e);
+        Ok(r)
+    }
+}
+
+/// Run a `seed` Username scan through [`CourtRecordModule`] + [`PageMinerModule`]
+/// with every other expansion gate opened (all identities, no floor, no ROI) and
+/// return the persisted entity values plus every `EntityExcluded` reason the
+/// engine recorded for the judgment Url.
+async fn run_court_record_scan(document: bool) -> (Vec<String>, Vec<String>) {
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, mut rx) = tokio::sync::broadcast::channel(8192);
+    let engine = ScanEngine::new(
+        vec![
+            Arc::new(CourtRecordModule { document }),
+            Arc::new(PageMinerModule),
+        ],
+        store_port,
+        bus.clone(),
+    );
+    let opts = ScanOptions {
+        depth: 2,
+        expand_all_identities: true,
+        max_roi: false,
+        min_expand_confidence: 0.0,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Username, "seed");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("username", "seed"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let scan_id = scan.id.clone();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    engine.run(scan, target, ctx).await.expect("should succeed");
+
+    let values = store
+        .entities_for_scan(&scan_id)
+        .expect("should succeed")
+        .into_iter()
+        .map(|e| e.value)
+        .collect();
+    let mut reasons = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        if let EventKind::EntityExcluded { value, reason, .. } = ev.kind
+            && value.contains("austlii.edu.au")
+        {
+            reasons.push(reason);
+        }
+    }
+    (values, reasons)
+}
+
+#[tokio::test]
+async fn a_source_document_url_is_recorded_but_never_pivoted() {
+    // A court judgment (or any public-record document) names the judge, counsel,
+    // witnesses and the opposing party; pivoting on the page mines strangers
+    // into the subject's graph. The `source-document` tag is the structural
+    // stop: the Url is persisted as evidence, no Url-accepting module is ever
+    // dispatched against it, and the skip is recorded under its own reason so
+    // the audit ledger can account for it.
+    let (values, reasons) = run_court_record_scan(true).await;
+    assert!(
+        values.iter().any(|v| v.contains("austlii.edu.au")),
+        "the judgment Url must still be recorded as evidence: {values:?}"
+    );
+    assert!(
+        !values.iter().any(|v| v == "mined-from-page"),
+        "a source document must never be pivoted on (the page miner ran): {values:?}"
+    );
+    assert!(
+        reasons.iter().any(|r| r == "source_document_not_pivoted"),
+        "the skip must be recorded under its own reason, got {reasons:?}"
+    );
+
+    // Control: the identical page without the tag IS pivoted on, so the tag —
+    // not the floor, the identity gate or the infra gate — is what stopped it.
+    let (values, reasons) = run_court_record_scan(false).await;
+    assert!(
+        values.iter().any(|v| v == "mined-from-page"),
+        "an untagged Url at 0.9 with every gate open must be pivoted on: {values:?}"
+    );
+    assert!(
+        !reasons.iter().any(|r| r == "source_document_not_pivoted"),
+        "an untagged Url must not be recorded as a source-document skip: {reasons:?}"
+    );
+}

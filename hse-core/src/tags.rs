@@ -218,3 +218,19 @@ pub const BREACH_DERIVED: &str = "breach-derived";
 /// Entity injected from the persistent store at scan start — prior-scan
 /// knowledge recalled so the local database acts as a source, not just a sink.
 pub const RECALLED: &str = "recalled";
+
+// Document references
+/// A **document in a public corpus** the subject was searched in — a court
+/// judgment or piece of legislation (`austlii`), an archived newspaper article
+/// (`trove_au`), a search hit on a court-record host (`search_engines`) —
+/// surfaced as a `Url` the operator can open and read.
+///
+/// A document's text names third parties by its nature (the judge, counsel,
+/// witnesses and the opposing party; a newspaper page's other subjects), and
+/// the engine cannot tell which of the names, addresses and phone numbers mined
+/// from it relate to the subject. So `core::engine` **never pivots on it**: the
+/// skip is recorded as `source_document_not_pivoted`, and the URL is delivered
+/// as evidence to read rather than a seed to mine. The entity's confidence and
+/// the correlator's admissibility are untouched — only recursive expansion is
+/// withheld, the same discipline [`COARSE`] applies to an imprecise place.
+pub const SOURCE_DOCUMENT: &str = "source-document";

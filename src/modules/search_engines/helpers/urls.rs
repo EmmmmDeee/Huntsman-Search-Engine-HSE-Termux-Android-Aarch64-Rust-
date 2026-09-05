@@ -247,6 +247,40 @@ pub(in crate::modules::search_engines) fn is_search_tooling_domain(domain: &str)
     TOOLING.contains(&d)
 }
 
+/// True when `host` is a court / judgment / legislation record host — the set
+/// the AU public-records dorks in [`queries`](super::super::queries) deliberately
+/// target (`site:austlii.edu.au`, `site:courts.qld.gov.au`, the state supreme
+/// courts, `site:jade.io`). A hit there is a **document** — a judgment, a court
+/// list, a piece of legislation — that names every party, witness and officer in
+/// it, not a record about the subject alone. Callers tag such a `Url`
+/// [`SOURCE_DOCUMENT`](crate::core::tags::SOURCE_DOCUMENT) so the engine surfaces
+/// it as evidence to read and never pivots into the strangers it lists, matching
+/// the discipline the `austlii` module applies to its own hits.
+///
+/// Suffix-matched so a `www.`/court subdomain of a listed host still counts;
+/// case-insensitive.
+pub(in crate::modules::search_engines) fn is_court_record_host(host: &str) -> bool {
+    // The registrable judgment/court/legislation hosts the AU dorks query. Kept
+    // in lockstep with `queries::build_queries_fullname`'s court dorks — a host
+    // added there should be added here so its hits are treated as documents.
+    const COURT_HOSTS: &[&str] = &[
+        "austlii.edu.au",
+        "jade.io",
+        "courts.qld.gov.au",
+        "ecourts.justice.nsw.gov.au",
+        "supremecourt.vic.gov.au",
+        "supremecourt.wa.gov.au",
+        "courts.sa.gov.au",
+        "supremecourt.tas.gov.au",
+        "courts.act.gov.au",
+        "supremecourt.nt.gov.au",
+    ];
+    let h = host.trim().to_lowercase();
+    COURT_HOSTS
+        .iter()
+        .any(|c| h == *c || h.ends_with(&format!(".{c}")))
+}
+
 pub(in crate::modules::search_engines) fn is_tracking_url(url: &str) -> bool {
     // One cached aho-corasick (Teddy/SIMD) pass over the raw URL instead of
     // allocating a lowercased copy and running up to 19 separate `contains` scans.

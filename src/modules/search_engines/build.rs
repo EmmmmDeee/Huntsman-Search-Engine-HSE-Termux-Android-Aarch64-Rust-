@@ -520,6 +520,14 @@ pub(super) fn build_entities(
                 e.tag("offtarget-repo");
                 e.tag("candidate");
             }
+            // A hit on a court / judgment / legislation host is a document that
+            // names every party and officer in it, not a page about the subject
+            // alone: tag it so the engine reads it as a source rather than
+            // pivoting into the strangers it lists (same treatment `austlii`
+            // gives its own hits).
+            if is_court_record_host(&host) {
+                e.tag(tags::SOURCE_DOCUMENT);
+            }
             e.add_evidence(build_search_evidence(r));
             result.push(e);
         }
@@ -631,6 +639,11 @@ pub(super) fn build_entities(
                     e.tag("confirmed-profile");
                 } else {
                     e.tag("candidate");
+                }
+                // A court / judgment host named in a snippet is a document too —
+                // never a seed to mine (see the result-URL branch above).
+                if is_court_record_host(&s_host) {
+                    e.tag(tags::SOURCE_DOCUMENT);
                 }
                 e.add_evidence(build_search_evidence(r));
                 result.push(e);

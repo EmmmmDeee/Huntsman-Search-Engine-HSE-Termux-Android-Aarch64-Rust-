@@ -2209,6 +2209,25 @@ impl ScanEngine {
                     self.emit_excluded(scan_id, entity, "coarse_geo_not_pivoted");
                     continue;
                 }
+                // Never pivot on a SOURCE DOCUMENT — a court judgment, archived
+                // newspaper article or court-record page (tagged by `austlii`,
+                // `trove_au`, `search_engines`). Such a page names third parties
+                // by its nature: the judge, counsel, witnesses and the opposing
+                // party in a judgment; the other subjects on a newspaper page.
+                // Mining it for entities attributes those strangers — and their
+                // PII — to the subject, the same IDENTIFIER-MATCH ≠ ENTITY-IDENTITY
+                // hazard the wrong-identity and coarse-geo gates above guard, one
+                // layer earlier (before the document is even fetched). The
+                // document itself is still delivered as evidence to read; only
+                // recursive expansion into its contents is withheld, and the
+                // entity's own confidence and correlator admissibility are
+                // untouched. A module cannot self-guard: it only sees the bare
+                // (kind, value) Target, never the originating entity's tags, so
+                // the gate lives here, the one point that still has both.
+                if entity.has_tag(crate::core::tags::SOURCE_DOCUMENT) {
+                    self.emit_excluded(scan_id, entity, "source_document_not_pivoted");
+                    continue;
+                }
                 // Don't deep-expand *incidentally-discovered* haystack
                 // infrastructure — it maps a platform/CDN/provider's own estate,
                 // not the subject, and burns the round budget that should go to
