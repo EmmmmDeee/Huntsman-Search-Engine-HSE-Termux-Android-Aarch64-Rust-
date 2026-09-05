@@ -8,6 +8,7 @@
 use super::{EntityKind, ExtractedEntity, ExtractionResult};
 use crate::core::classifier as core_classifier;
 use crate::core::entity::EntityKind as CoreEntityKind;
+use crate::util::str_util::find_ascii_ci;
 
 /// Fallback label for extractor-side unknown entities. Kept as a single constant
 /// so the two fallback sites cannot drift apart.
@@ -76,18 +77,23 @@ impl EntityClassifier {
 
         match entity.kind {
             EntityKind::Email => {
-                // Boost if surrounded by email keywords
-                if context.to_lowercase().contains("email")
-                    || context.to_lowercase().contains("contact")
+                // Boost if surrounded by email keywords. `find_ascii_ci` (the
+                // crate's canonical case-insensitive substring find) instead of
+                // `context.to_lowercase().contains(…)` — exactly equivalent for
+                // these ASCII keywords, but with no per-entity full-document
+                // `String` allocation (this runs once per extracted entity, over
+                // the whole scraped context).
+                if find_ascii_ci(context, "email").is_some()
+                    || find_ascii_ci(context, "contact").is_some()
                 {
                     entity.confidence = (base_confidence + 0.10).min(1.0);
                     entity.boost_reason = Some("Email context keywords found".to_string());
                 }
             }
             EntityKind::Phone => {
-                // Boost if surrounded by phone keywords
-                if context.to_lowercase().contains("phone")
-                    || context.to_lowercase().contains("call")
+                // Boost if surrounded by phone keywords (allocation-free, as above).
+                if find_ascii_ci(context, "phone").is_some()
+                    || find_ascii_ci(context, "call").is_some()
                 {
                     entity.confidence = (base_confidence + 0.10).min(1.0);
                     entity.boost_reason = Some("Phone context keywords found".to_string());

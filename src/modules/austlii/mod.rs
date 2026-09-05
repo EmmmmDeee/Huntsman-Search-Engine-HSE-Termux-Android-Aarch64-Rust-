@@ -163,18 +163,31 @@ impl Module for AustLii {
 /// `sinosrch.cgi` is a full-text search across AustLII's entire corpus, not a
 /// party-name-scoped lookup — a judgment's title is the only text available
 /// here, and it routinely mentions people who are not litigants (witnesses,
-/// barristers, cited third parties). A link whose title shares no whole-word
-/// token with the query is still real evidence (AustLII's own relevance
-/// ranking put it in the results), just weaker than a title that actually
-/// names the subject — so it is kept, at a lower confidence and flagged
-/// `needs-identity-verification`, rather than dropped or trusted equally.
+/// barristers, cited third parties). Relevance therefore demands that the title
+/// name the WHOLE subject ([`whole_word_token_match`](crate::util::str_util::whole_word_token_match)
+/// — every query token present as a whole word), not merely SHARE a token: a
+/// case title carries the corporate legal form (`Pty`, `Ltd`) of half the
+/// companies on the register, and a person's given or family name alone is what
+/// every namesake's matter looks like ("Smith v The Queen"). A hit that clears
+/// that bar is the subject's own record; one that does not is still real
+/// evidence (AustLII's own ranking surfaced it), just weaker — so it is kept, at
+/// a lower confidence and flagged `needs-identity-verification`, rather than
+/// dropped or trusted equally.
+///
+/// Every emitted `Url` also carries [`tags::SOURCE_DOCUMENT`](crate::core::tags::SOURCE_DOCUMENT):
+/// a judgment names the judge, counsel, witnesses and the opposing party, so the
+/// engine must deliver the document to be read, never mine it for seeds. The tag
+/// is the structural stop the expansion loop honours.
 fn build_entities(links: &[(String, String)], target: &Target, scan_id: &str) -> ModuleResult {
     let mut result = ModuleResult::new();
     let query = target.value.trim();
     let mut title_matches = 0usize;
 
     for (doc_url, title) in links.iter().take(MAX_DOCS) {
-        let relevant = crate::util::str_util::shares_whole_word_token(title, query);
+        // Whole-name match, not any-token: a shared legal-form word (`Pty`,
+        // `Ltd`) or a lone given/family name does not make a full-text hit the
+        // subject's own case — it is exactly the namesake the caution warns of.
+        let relevant = crate::util::str_util::whole_word_token_match(title, query);
         if relevant {
             title_matches += 1;
         }
@@ -186,6 +199,9 @@ fn build_entities(links: &[(String, String)], target: &Target, scan_id: &str) ->
         let mut url_ent = Entity::new(EntityKind::Url, doc_url, conf, scan_id);
         url_ent.tag("court-judgment");
         url_ent.tag("austlii");
+        // A court document names third parties by its nature; record it as
+        // evidence to read, never pivot into the strangers it lists.
+        url_ent.tag(crate::core::tags::SOURCE_DOCUMENT);
         let mut ev = Evidence::new(SRC, format!("AustLII document: {title}"))
             .with_attr("title", title)
             .with_attr("source", "austlii.edu.au");

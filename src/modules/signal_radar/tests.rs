@@ -25,6 +25,14 @@ fn wifi_parse_valid_aps() {
         ap1.confidence
     );
     assert!(ap1.has_tag("band:2.4GHz"), "expected 2.4GHz band tag");
+    // HSE BLE Radar enrichment: the specific channel (2437 MHz → ch 6 via
+    // bleradar_core::wifi_frequency_to_channel) and a coarse RSSI proximity band
+    // (-45 dBm ≥ -50 → immediate via bleradar_core::proximity_label).
+    assert!(ap1.has_tag("channel:6"), "2437 MHz → channel 6");
+    assert!(
+        ap1.has_tag("proximity:immediate"),
+        "rssi -45 → immediate band"
+    );
 
     let ssid1 = &result.entities[1];
     assert_eq!(ssid1.kind, EntityKind::Ssid);
@@ -46,6 +54,10 @@ fn wifi_parse_valid_aps() {
         ap2.confidence
     );
     assert!(ap2.has_tag("band:5GHz"), "expected 5GHz band tag");
+    // 5180 MHz → channel 36; rssi -80 dBm sits at the mid/far boundary
+    // (≥ -80 → mid) — the BLE Radar's coarse band, never a fabricated distance.
+    assert!(ap2.has_tag("channel:36"), "5180 MHz → channel 36");
+    assert!(ap2.has_tag("proximity:mid"), "rssi -80 → mid band");
 
     let ssid2 = &result.entities[3];
     assert_eq!(ssid2.kind, EntityKind::Ssid);
@@ -95,17 +107,6 @@ fn wifi_parse_blank_output_is_an_empty_ok() {
                 .is_empty()
         );
     }
-}
-
-// ── wifi_band helper ──────────────────────────────────────────────────────
-
-#[test]
-fn wifi_band_classification() {
-    assert_eq!(wifi::wifi_band(Some(2412)), Some("band:2.4GHz"));
-    assert_eq!(wifi::wifi_band(Some(5180)), Some("band:5GHz"));
-    assert_eq!(wifi::wifi_band(Some(6000)), Some("band:6GHz"));
-    assert_eq!(wifi::wifi_band(Some(3000)), None);
-    assert_eq!(wifi::wifi_band(None), None);
 }
 
 // ── rssi_confidence helper ─────────────────────────────────────────────────

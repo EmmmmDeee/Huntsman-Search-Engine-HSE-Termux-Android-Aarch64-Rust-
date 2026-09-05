@@ -74,3 +74,18 @@ fn is_generic_ssid_admits_personal_name_with_wifi_suffix() {
     assert!(!is_generic_ssid("Smith-WiFi"));
     assert!(!is_generic_ssid("Johnson WLAN"));
 }
+
+/// The single home for the 2.4/5/6 GHz range boundaries — pins the mapping the
+/// `signal_radar` scan sweep and the `device_sensors` connection probe both
+/// consume (moved here when their two identical copies were consolidated).
+#[test]
+fn band_classifies_the_three_bands_and_rejects_gaps() {
+    assert_eq!(band(Some(2412)), Some("2.4GHz"));
+    assert_eq!(band(Some(5180)), Some("5GHz"));
+    assert_eq!(band(Some(5955)), Some("6GHz"));
+    assert_eq!(band(Some(6000)), Some("6GHz"));
+    assert_eq!(band(Some(0)), None);
+    assert_eq!(band(Some(1234)), None, "a gap between bands is not a band");
+    assert_eq!(band(Some(3000)), None);
+    assert_eq!(band(None), None, "absent frequency yields no band");
+}

@@ -224,3 +224,28 @@ use super::*;
     // wiring is exercised end-to-end whenever the `see_know` or
     // `oathnet` modules attempt a real call in a network-unreachable
     // test environment.
+
+    #[tokio::test]
+    async fn read_capped_bounds_an_oversized_pipe() {
+        // A pipe far larger than the cap is truncated to cap+1 bytes (one past,
+        // so the caller can detect the overflow) — never read wholesale into
+        // memory. This is what stops a hostile/broken curl's stdout OR stderr
+        // from OOM-ing the tool on a low-RAM phone.
+        let big = vec![b'x'; 200_000];
+        let out = read_capped(&big[..], 64 * 1024).await.unwrap();
+        assert_eq!(
+            out.len() as u64,
+            64 * 1024 + 1,
+            "an over-cap pipe must be bounded to cap+1, not read in full"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_capped_returns_small_and_exact_pipes_in_full() {
+        // Under the cap: returned verbatim (a real curl error message).
+        let small = b"curl: (6) Could not resolve host";
+        assert_eq!(read_capped(&small[..], STDERR_CAP).await.unwrap(), small);
+        // Exactly at the cap: still returned in full (the +1 take yields cap).
+        let exact = vec![b'y'; 1024];
+        assert_eq!(read_capped(&exact[..], 1024).await.unwrap().len(), 1024);
+    }

@@ -2684,3 +2684,49 @@ fn youtube_channel_url_yields_no_username_entity() {
         "the URL itself is still emitted"
     );
 }
+
+#[test]
+fn court_record_hits_are_source_documents_never_pivots() {
+    // The AU public-records dorks deliberately target court and judgment hosts
+    // (`site:austlii.edu.au`, `site:courts.qld.gov.au`, …). A hit there is a
+    // judgment or a court list — a document that names every party, counsel and
+    // witness in it — so the Url must carry the tag the engine refuses to pivot
+    // on, whichever host in the dork set served it. An ordinary page is untagged.
+    let target = Target::new(TargetKind::FullName, "Jordan Avery");
+    let mk = |url: &str| SearchResult {
+        url: url.to_string(),
+        title: "Avery v Someone".to_string(),
+        snippet: "judgment".to_string(),
+        engine: "duckduckgo",
+        query: "\"Jordan Avery\" site:austlii.edu.au".to_string(),
+    };
+    let results = vec![
+        mk("https://www.austlii.edu.au/cgi-bin/viewdoc/au/cases/nsw/NSWSC/2022/avery.html"),
+        mk("https://www.courts.qld.gov.au/__data/assets/pdf_file/0011/1234/avery-v-someone.pdf"),
+        mk("https://jade.io/article/9876/section/avery"),
+        mk("https://www.supremecourt.wa.gov.au/_files/avery-judgment.pdf"),
+        mk("https://example-portfolio.com/jordan-avery"),
+    ];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    let url_of = |needle: &str| {
+        res.entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Url && e.value.contains(needle))
+            .unwrap_or_else(|| panic!("a Url entity for {needle} must be emitted"))
+    };
+    for court in [
+        "austlii.edu.au",
+        "courts.qld.gov.au",
+        "jade.io",
+        "supremecourt.wa.gov.au",
+    ] {
+        assert!(
+            url_of(court).has_tag(crate::core::tags::SOURCE_DOCUMENT),
+            "{court}: a court-record page is a source document"
+        );
+    }
+    assert!(
+        !url_of("example-portfolio.com").has_tag(crate::core::tags::SOURCE_DOCUMENT),
+        "an ordinary page keeps its pivot"
+    );
+}

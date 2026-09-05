@@ -1,8 +1,8 @@
 [package]
 name        = "huntsman-search-engine"
-version     = "1.40.0"
+version     = "1.41.0"
 edition     = "2024"
-rust-version = "1.88"
+rust-version = "1.98"
 description = "Huntsman Search Engine — comprehensive on-device OSINT/GEOINT & breach-intelligence platform for Termux aarch64 (no root)"
 authors     = ["Huntsman OSINT"]
 license-file = "LICENSE"        # proprietary — all rights reserved
@@ -117,6 +117,15 @@ implicit_clone = "deny"
 inefficient_to_string = "deny"
 map_unwrap_or = "deny"
 unnested_or_patterns = "deny"
+# `result_large_err` (new in the 1.98 clippy this crate now pins) fires on the
+# api layer's deliberate `Result<T, axum::response::Response>` helpers, where the
+# Err IS the ready-to-return HTTP error response — a legitimately large type that
+# is the value returned on the error path, not an error to shrink. Boxing it
+# would ripple through every `?` caller and the handlers' `IntoResponse` return
+# types for no runtime benefit (these are per-request handlers, not a hot Result
+# returned by value in a tight loop), making the code less idiomatic. Allowed as
+# a policy decision rather than worked around per call site.
+result_large_err = "allow"
 
 [dependencies]
 tokio              = { version = "1",    features = ["rt-multi-thread", "macros", "time", "sync", "process", "io-util", "net", "fs", "signal"] }
@@ -144,10 +153,11 @@ reqwest            = { version = "0.12", default-features = false, features = ["
 # Pinned to 0.39 ON PURPOSE — do NOT bump to 0.40 without a toolchain audit.
 # 0.40 pulls `libsqlite3-sys` 0.38, whose build script uses the unstable
 # `cfg_select!` macro (rust-lang/rust#115585). That fails to compile on the
-# project's MSRV (1.88) and on current stable toolchains that have not yet
-# stabilised the feature — a hard build break on the primary target. 0.39 keeps
+# project's MSRV (1.98) and on any stable toolchain that has not yet stabilised
+# the feature — a hard build break on the primary target. 0.39 keeps
 # `libsqlite3-sys` 0.37, which builds on 1.88+. A 0.40 move must wait until
-# `cfg_select!` is stable on/below our MSRV.
+# `cfg_select!` is stable on/below our MSRV — re-audit that now that the floor is
+# 1.98 (raised for the BLE Radar dependency) rather than the former 1.88.
 rusqlite           = { version = "0.39", features = ["bundled"] }
 clap               = { version = "4",    features = ["derive", "env"] }
 regex              = "1"
@@ -237,6 +247,17 @@ time = { version = "0.3.55", default-features = false, features = ["parsing", "s
 # can be shared, unmodified, with a wasm32-unknown-unknown browser build of
 # the web UI with no dependency on tokio/rusqlite/reqwest/etc.
 hse-core = { path = "hse-core" }
+# HSE BLE Radar — the authoritative device-tracking/RSSI/proximity/geometry
+# domain, reconstructed and verified against the BLE Radar v0.3.0 APK oracle.
+# Pinned to an exact commit for reproducibility (the crate is `publish = false`,
+# so a git dependency is the only way to consume it). It is dependency-free and
+# `#![forbid(unsafe_code)]`, and cross-compiles cleanly to aarch64. HSE consumes
+# only its radar-domain surface (`signal`/`identity`/`geo`/wifi helpers); the
+# broader engines it also exports (osint/infrastructure/website/evidence/…) are
+# left unused and stripped from the shipped binary by the release-profile LTO
+# (`release_profile_stays_size_optimized`), so this does not duplicate HSE's own
+# correlator/evidence authority. Its Rust 1.98 floor is why HSE's MSRV is 1.98.
+bleradar-core = { git = "https://github.com/EmmmmDeee/HSE-BLE-API-", rev = "1e47bca0e8fa1e098ff9b022143108e055b4c960" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

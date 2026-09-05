@@ -347,6 +347,62 @@ pub enum Command {
         )]
         output: String,
     },
+    /// DoRkUS — the meta search engine. Runs the clearnet multi-engine search
+    /// AND the dark-web (Ahmia) exposure index at once, in one time budget, and
+    /// prints one aggregated, source-attributed report. The query is passed
+    /// through verbatim, so search-operator dorks (`site:`, `intitle:`,
+    /// quoted phrases) work as the underlying engines support them. HSE never
+    /// fetches the onion addresses it reports.
+    Dorkus {
+        /// The free-text search query (or a dork). Quote multi-word queries.
+        #[arg(allow_hyphen_values = true)]
+        query: String,
+        /// Maximum results to print per surface (0 = no limit).
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+        /// Overall time budget in seconds (clamped to 3–60). Bounds the whole
+        /// command; the two back-ends run concurrently within it.
+        #[arg(long)]
+        timeout: Option<u64>,
+        /// Output format: `table` (default) or `json`.
+        #[arg(
+            short = 'f',
+            long = "format",
+            alias = "output",
+            short_alias = 'o',
+            default_value = "table"
+        )]
+        output: String,
+        /// Query only the clearnet multi-engine search (skip the dark web).
+        #[arg(long, conflicts_with = "dark_only")]
+        clearnet_only: bool,
+        /// Query only the dark-web (Ahmia) exposure index (skip clearnet).
+        #[arg(long)]
+        dark_only: bool,
+    },
+    /// Generate the manual operator query pack for a target: the ranked queries
+    /// to run BY HAND against manual/paid exposure providers (IntelX, OathNet,
+    /// Stolen.tax, DeHashed, XposedOrNot, HIBP). Offline and deterministic —
+    /// nothing is fetched; it hands you the queries and where to run them. For
+    /// DISCOVERY / EXPOSURE VERIFICATION only.
+    QueryPack {
+        /// The target value (e.g. an email, username, domain, phone, or name).
+        #[arg(allow_hyphen_values = true)]
+        value: String,
+        /// Target kind: `auto` (default, inferred from the value) or an explicit
+        /// kind like `email` / `username` / `domain`.
+        #[arg(long, default_value = "auto")]
+        kind: String,
+        /// Output format: `table` (default) or `json`.
+        #[arg(
+            short = 'f',
+            long = "format",
+            alias = "output",
+            short_alias = 'o',
+            default_value = "table"
+        )]
+        output: String,
+    },
     /// View or set persistent capability toggles (universal toggleability,
     /// SpiderFoot-style). No args lists all toggles; `hse config <key> <on|off>`
     /// sets one — e.g. `hse config engine.google off`.

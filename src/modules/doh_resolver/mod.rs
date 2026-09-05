@@ -200,15 +200,13 @@ fn svcb_hints_from_wire(hex_body: &str) -> Vec<String> {
         let value = &bytes[i..i + vlen];
         match key {
             4 => {
-                for c in value.chunks_exact(4) {
-                    out.push(std::net::Ipv4Addr::new(c[0], c[1], c[2], c[3]).to_string());
+                for c in value.as_chunks::<4>().0 {
+                    out.push(std::net::Ipv4Addr::from(*c).to_string());
                 }
             }
             6 => {
-                for c in value.chunks_exact(16) {
-                    let mut o = [0u8; 16];
-                    o.copy_from_slice(c);
-                    out.push(std::net::Ipv6Addr::from(o).to_string());
+                for c in value.as_chunks::<16>().0 {
+                    out.push(std::net::Ipv6Addr::from(*c).to_string());
                 }
             }
             _ => {}

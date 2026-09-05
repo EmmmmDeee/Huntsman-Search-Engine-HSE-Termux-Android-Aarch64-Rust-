@@ -20,18 +20,6 @@ pub(super) struct ConnInfo {
     pub(super) supplicant_state: Option<String>,
 }
 
-/// Classify an 802.11 channel centre frequency (MHz) into its band.
-/// Returns `None` for absent/zero/unrecognised frequencies so callers emit
-/// no band tag rather than a misleading one.
-pub(super) fn wifi_band(freq_mhz: Option<i64>) -> Option<&'static str> {
-    match freq_mhz? {
-        2400..=2500 => Some("2.4GHz"),
-        4900..=5900 => Some("5GHz"),
-        5925..=7125 => Some("6GHz"),
-        _ => None,
-    }
-}
-
 /// Parse `termux-wifi-connectioninfo`'s JSON into the connected access point's
 /// entities (BSSID / SSID / frequency band) — the Wi-Fi the device is on, a
 /// strong co-location signal (a BSSID geolocates via wardriving databases).
@@ -75,7 +63,7 @@ pub(super) fn parse_conn(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
                 "supplicant_state",
                 info.supplicant_state.as_deref().unwrap_or("-"),
             );
-        if let Some(band) = wifi_band(info.frequency_mhz) {
+        if let Some(band) = crate::util::wifi::band(info.frequency_mhz) {
             e.tag(format!("band:{band}"));
             bssid_ev = bssid_ev.with_attr("band", band);
         }

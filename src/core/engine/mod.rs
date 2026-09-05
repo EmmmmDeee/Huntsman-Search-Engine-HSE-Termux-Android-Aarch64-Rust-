@@ -2209,6 +2209,41 @@ impl ScanEngine {
                     self.emit_excluded(scan_id, entity, "coarse_geo_not_pivoted");
                     continue;
                 }
+                // Never pivot on a SOURCE DOCUMENT — a court judgment, archived
+                // newspaper article or court-record page (tagged by `austlii`,
+                // `trove_au`, `search_engines`). Such a page names third parties
+                // by its nature: the judge, counsel, witnesses and the opposing
+                // party in a judgment; the other subjects on a newspaper page.
+                // Mining it for entities attributes those strangers — and their
+                // PII — to the subject, the same IDENTIFIER-MATCH ≠ ENTITY-IDENTITY
+                // hazard the wrong-identity and coarse-geo gates above guard, one
+                // layer earlier (before the document is even fetched). The
+                // document itself is still delivered as evidence to read; only
+                // recursive expansion into its contents is withheld, and the
+                // entity's own confidence and correlator admissibility are
+                // untouched. A module cannot self-guard: it only sees the bare
+                // (kind, value) Target, never the originating entity's tags, so
+                // the gate lives here, the one point that still has both.
+                if entity.has_tag(crate::core::tags::SOURCE_DOCUMENT) {
+                    self.emit_excluded(scan_id, entity, "source_document_not_pivoted");
+                    continue;
+                }
+                // Never fetch a Tor `.onion` service. `ahmia` surfaces dark-web
+                // exposure as `.onion` `Url` findings — WHERE a target is
+                // mentioned — but HSE is an exposure sensor, not an onion client:
+                // there is no Tor transport on the target platform, and reaching
+                // indexed dark-web content is outside the tool's defensive scope.
+                // Without this gate a discovered onion Url would be dispatched to
+                // the crawler/Url modules, which would burn the round on a
+                // guaranteed-failing fetch (and attempt to reach the service).
+                // The finding is kept; only the pivot into it is withheld, and
+                // the skip is recorded so the audit ledger accounts for it. A
+                // module cannot self-guard — it only sees the bare (kind, value)
+                // Target — so, like the non-routable-IP gate, this lives here.
+                if tk == TargetKind::Url && crate::core::validation::is_onion_url(&entity.value) {
+                    self.emit_excluded(scan_id, entity, "onion_not_fetched");
+                    continue;
+                }
                 // Don't deep-expand *incidentally-discovered* haystack
                 // infrastructure — it maps a platform/CDN/provider's own estate,
                 // not the subject, and burns the round budget that should go to

@@ -329,6 +329,45 @@ fn au088_non_register_sources_do_not_fire() {
     );
 }
 
+#[test]
+fn au088_a_court_record_is_a_document_not_a_register() {
+    // AustLII is a full-text corpus of judgments and legislation, not a register
+    // of persons or entities: a hit is a document whose title or body mentions
+    // the query, which for a person is what every namesake's case looks like.
+    // It must never be counted as an authoritative register having "returned
+    // data on the subject" — alone or as the second authority that lifts a real
+    // register's High to Critical.
+    let court = ent_from_source(
+        EntityKind::Url,
+        "https://www.austlii.edu.au/au/cases/cth/HCA/2023/1.html",
+        "austlii",
+    );
+    assert!(
+        super::rules::rule_au_088_authoritative_register_confirmation(
+            &RuleContext::new(std::slice::from_ref(&court)),
+            "s",
+            0
+        )
+        .is_empty(),
+        "a court record alone is not a register confirmation"
+    );
+
+    let p = ent_from_source(EntityKind::Person, "Jane Citizen", "ahpra");
+    let hits = super::rules::rule_au_088_authoritative_register_confirmation(
+        &RuleContext::new(&[p, court]),
+        "s",
+        0,
+    );
+    assert_eq!(hits.len(), 1);
+    assert_eq!(
+        hits[0].severity,
+        super::Severity::High,
+        "a court record must not be the second authority that makes one register Critical"
+    );
+    assert!(hits[0].description.contains("1 authoritative"));
+    assert!(!hits[0].description.contains("AustLII"));
+}
+
 // ─── Australian corporate network (AU-089) ───────────────────────────────────
 
 #[test]

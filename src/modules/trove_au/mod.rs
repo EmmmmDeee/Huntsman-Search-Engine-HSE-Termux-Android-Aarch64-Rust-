@@ -261,7 +261,10 @@ fn build_entities(
         let mut url_e = Entity::new(EntityKind::Url, u, conf, scan_id);
         url_e.tag("trove");
         url_e.tag("newspaper-archive");
-        url_e.tag("source-document");
+        // The one shared constant the engine's non-pivot gate reads, so this
+        // archive Url is delivered as a source to read, not mined for the other
+        // people a newspaper page names.
+        url_e.tag(crate::core::tags::SOURCE_DOCUMENT);
         if !relevant {
             url_e.tag("needs-identity-verification");
         }

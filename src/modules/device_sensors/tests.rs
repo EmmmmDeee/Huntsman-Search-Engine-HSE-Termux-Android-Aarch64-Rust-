@@ -1,9 +1,6 @@
 use crate::core::{confidence, entity::EntityKind, scan::Target, scan::TargetKind};
 
-use super::{
-    DeviceSensors,
-    wifi::{parse_conn, wifi_band},
-};
+use super::{DeviceSensors, wifi::parse_conn};
 
 /// The canonical `termux-location` parse bound to THIS module's evidence-source
 /// tag — the binding these tests exercise. Test scaffolding, so it lives here
@@ -66,16 +63,6 @@ fn wifi_filters_all_zero_mac() {
     let r = parse_conn(json, "test").expect("valid sensor JSON parses");
     assert_eq!(r.entities.len(), 1);
     assert_eq!(r.entities[0].kind, EntityKind::IpAddress);
-}
-
-#[test]
-fn wifi_band_classification() {
-    assert_eq!(wifi_band(Some(2412)), Some("2.4GHz"));
-    assert_eq!(wifi_band(Some(5180)), Some("5GHz"));
-    assert_eq!(wifi_band(Some(5955)), Some("6GHz"));
-    assert_eq!(wifi_band(Some(0)), None);
-    assert_eq!(wifi_band(None), None);
-    assert_eq!(wifi_band(Some(1234)), None);
 }
 
 #[test]

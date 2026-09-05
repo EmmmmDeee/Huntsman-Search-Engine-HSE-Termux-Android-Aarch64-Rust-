@@ -756,6 +756,16 @@ fn core_does_not_import_util_directly() {
                 // function rather than the whole module so the guard stays
                 // precise if `util::wifi` ever grows a non-pure item.
                 && !line.contains("util::wifi::is_generic_ssid")
+                // Pure, offline, dependency-free days→civil calendar conversion
+                // (Hinnant's `civil_from_days`; std integer arithmetic + one
+                // `format!`, no date crate, no I/O) — same leaf category as
+                // `util::oui`/`util::wifi`. `core::timeline::utc_date` renders
+                // through it instead of re-inlining the leap-year math, so the
+                // timeline engine and the id-decoding modules
+                // (`structured_id`/`discord_snowflake`) can never hold divergent
+                // copies. Scoped to the single function so the guard stays
+                // precise if `util::timefmt` ever grows a non-pure item.
+                && !line.contains("util::timefmt::civil_from_days")
                 // Pure, offline look-alike/typosquat comparison for domain
                 // labels (homoglyph skeleton fold + Levenshtein; no I/O, no
                 // deps, no Unicode tables) — same leaf category as

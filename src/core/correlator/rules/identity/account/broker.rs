@@ -194,9 +194,11 @@ fn au_register_authority(source: &str) -> Option<&'static str> {
 ///
 /// The affirmative identity-verification finding for an Australian subject. Every
 /// entity carrying evidence from an authoritative AU public register — AHPRA,
-/// ASIC, the electoral roll, the property / title register, AustLII, the ACNC,
-/// the Australian Business Register — is government-grounded fact, not a scraped
-/// or brokered listing. This rule counts how many DISTINCT register authorities
+/// ASIC, the electoral roll, the property / title register, the ACNC, the
+/// Australian Business Register — is government-grounded fact, not a scraped
+/// or brokered listing. A court-record corpus (`austlii`) is deliberately NOT
+/// among them (see [`AUTHORITATIVE_AU_REGISTERS`]): a full-text hit is a
+/// document that mentions a name, not a register record about the subject. This rule counts how many DISTINCT register authorities
 /// independently returned data on the subject and fires once per scan: a single
 /// register is a `High` confirmation, two or more is `Critical`. Multi-register
 /// agreement is the strongest identity corroboration HSE can assert, and the
@@ -328,6 +330,17 @@ pub(in crate::core::correlator) fn rule_au_108_breach_social_footprint(
 /// sub-modules deliberately collapse to one authority so three ASIC feeds count
 /// as a SINGLE independent confirmation, not three. Adding a new AU register
 /// module here makes it count toward AU-088 with no other change.
+///
+/// A **register** returns a record ABOUT the queried entity (AHPRA holds this
+/// practitioner, ASIC holds this director, the ABR holds this ABN). A full-text
+/// document corpus is not one and must not appear here: `austlii` matches a name
+/// anywhere in a judgment's text — the judge, counsel, a witness, a cited
+/// third party — so counting a court hit as a register confirmation would let a
+/// namesake's matter masquerade as government-grounded proof of the subject's
+/// identity, and let one such hit be the second authority that lifts a real
+/// register's `High` to `Critical`. The `austlii` module grades and flags its
+/// own hits (`needs-identity-verification`); AU-088 simply does not treat them
+/// as register records.
 const AUTHORITATIVE_AU_REGISTERS: &[(&str, &str)] = &[
     ("ahpra", "AHPRA (health-practitioner register)"),
     ("asic_persons", "ASIC"),
@@ -335,7 +348,6 @@ const AUTHORITATIVE_AU_REGISTERS: &[(&str, &str)] = &[
     ("asic_banned_orgs", "ASIC"),
     ("au_electoral", "AU electoral roll"),
     ("au_property", "AU property / title register"),
-    ("austlii", "AustLII (court & tribunal records)"),
     ("acnc_charities", "ACNC (charities register)"),
     ("abn_lookup", "Australian Business Register (ABN)"),
 ];

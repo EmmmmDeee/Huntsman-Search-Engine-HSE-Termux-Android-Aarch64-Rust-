@@ -191,3 +191,144 @@ fn attack_techniques_include_corporate_intel() {
         "must include victim corporate intel"
     );
 }
+
+#[test]
+fn legal_form_tokens_alone_never_make_a_title_relevant() {
+    // `Pty` / `Ltd` are in the title of half the corporate judgments on AustLII.
+    // An Organisation query that carries them must not have every "… Pty Ltd v
+    // …" title graded as naming the subject — and two such strangers must not
+    // manufacture a `legal-record` summary for the subject.
+    let links = vec![
+        (
+            "https://www.austlii.edu.au/au/cases/cth/FCA/2019/1.html".to_string(),
+            "Totally Unrelated Pty Ltd v Someone [2019] FCA 1".to_string(),
+        ),
+        (
+            "https://www.austlii.edu.au/au/cases/cth/FCA/2020/2.html".to_string(),
+            "Another Stranger Pty Ltd v Someone Else [2020] FCA 2".to_string(),
+        ),
+        (
+            "https://www.austlii.edu.au/au/cases/cth/FCA/2021/3.html".to_string(),
+            "Acme Pty Ltd v Commissioner of Taxation [2021] FCA 3".to_string(),
+        ),
+    ];
+    let target = Target::new(TargetKind::Organisation, "Acme Pty Ltd");
+    let res = build_entities(&links, &target, "scan");
+
+    for stranger in ["2019/1.html", "2020/2.html"] {
+        let e = res
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Url && e.value.contains(stranger))
+            .expect("stranger hit is still surfaced");
+        assert!(
+            (e.confidence - crate::core::confidence::LOW_MEDIUM).abs() < 1e-9,
+            "a title that shares only a legal-form word with the query must be the \
+             unverified tier, got {} for {stranger}",
+            e.confidence
+        );
+        assert!(e.has_tag("needs-identity-verification"));
+    }
+    let own = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Url && e.value.contains("2021/3.html"))
+        .expect("the subject's own case");
+    assert!((own.confidence - crate::core::confidence::HIGH_PLUS).abs() < 1e-9);
+    assert!(!own.has_tag("needs-identity-verification"));
+    // One genuine title match is below the ≥2 bar; the two strangers must not
+    // count toward it.
+    assert!(
+        !res.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Organisation && e.has_tag("legal-record")),
+        "two legal-form-only title matches must not manufacture a legal-record summary"
+    );
+}
+
+#[test]
+fn a_surname_only_title_does_not_name_a_person_subject() {
+    // Australian case titles cite individuals by surname ("Smith v The Queen",
+    // "R v Smith"), so a surname token in a title is what EVERY namesake's case
+    // looks like. Only a title carrying the whole name is graded as naming the
+    // subject; a surname-only (or given-name-only) title stays flagged.
+    let links = vec![
+        (
+            "https://www.austlii.edu.au/au/cases/cth/HCA/2021/3.html".to_string(),
+            "Smith v The Queen [2021] HCA 3".to_string(),
+        ),
+        (
+            "https://www.austlii.edu.au/au/cases/nsw/NSWSC/2020/7.html".to_string(),
+            "Re the Estate of John Doe [2020] NSWSC 7".to_string(),
+        ),
+        (
+            "https://www.austlii.edu.au/au/cases/nsw/NSWSC/2022/1.html".to_string(),
+            "R v John Smith [2022] NSWSC 1".to_string(),
+        ),
+    ];
+    let target = Target::new(TargetKind::FullName, "John Smith");
+    let res = build_entities(&links, &target, "scan");
+
+    for partial in ["2021/3.html", "2020/7.html"] {
+        let e = res
+            .entities
+            .iter()
+            .find(|e| e.value.contains(partial))
+            .expect("partial-name hit is still surfaced");
+        assert!(
+            (e.confidence - crate::core::confidence::LOW_MEDIUM).abs() < 1e-9,
+            "a title naming only part of the subject's name must be the unverified \
+             tier, got {} for {partial}",
+            e.confidence
+        );
+        assert!(e.has_tag("needs-identity-verification"));
+        assert!(
+            e.evidence[0].attributes.contains_key("caution"),
+            "the partial-name hit must carry the caution"
+        );
+    }
+    let full = res
+        .entities
+        .iter()
+        .find(|e| e.value.contains("2022/1.html"))
+        .expect("full-name hit");
+    assert!((full.confidence - crate::core::confidence::HIGH_PLUS).abs() < 1e-9);
+    assert!(!full.has_tag("needs-identity-verification"));
+}
+
+#[test]
+fn every_austlii_document_is_a_source_document_never_a_pivot() {
+    // A judgment page names the judge, counsel, witnesses and the other party;
+    // mining it for entities attributes strangers to the subject. Every AustLII
+    // hit — title-relevant or not — carries the tag the engine's expansion loop
+    // refuses to pivot on, so the URL is evidence to read, not a seed.
+    let links = vec![
+        (
+            "https://www.austlii.edu.au/au/cases/cth/HCA/2023/1.html".to_string(),
+            "Acme Corp v Someone [2023] HCA 1".to_string(),
+        ),
+        (
+            "https://www.austlii.edu.au/au/cases/cth/HCA/2023/2.html".to_string(),
+            "Unrelated Party v Other [2019] FCA 812".to_string(),
+        ),
+        (
+            "https://www.austlii.edu.au/au/legis/cth/consol_act/ca2001172/".to_string(),
+            "Corporations Act 2001".to_string(),
+        ),
+    ];
+    let target = Target::new(TargetKind::Organisation, "Acme Corp");
+    let res = build_entities(&links, &target, "scan");
+    let urls: Vec<_> = res
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Url)
+        .collect();
+    assert_eq!(urls.len(), 3);
+    for u in urls {
+        assert!(
+            u.has_tag(crate::core::tags::SOURCE_DOCUMENT),
+            "{} must be tagged as a source document",
+            u.value
+        );
+    }
+}

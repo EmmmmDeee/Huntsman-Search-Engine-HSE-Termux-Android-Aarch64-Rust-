@@ -23,16 +23,6 @@ pub(super) struct Ap {
 
 const SKIP_BSSIDS: &[&str] = &["00:00:00:00:00:00", "02:00:00:00:00:00"];
 
-/// Classify an 802.11 channel centre frequency (MHz) into its band tag.
-pub(super) fn wifi_band(freq_mhz: Option<i64>) -> Option<&'static str> {
-    match freq_mhz? {
-        2400..=2500 => Some("band:2.4GHz"),
-        4900..=5900 => Some("band:5GHz"),
-        5925..=7125 => Some("band:6GHz"),
-        _ => None,
-    }
-}
-
 /// Confidence from RSSI (dBm): stronger signal = more reliable observation.
 pub(super) fn rssi_confidence(rssi: Option<i64>) -> f64 {
     match rssi {
@@ -64,8 +54,29 @@ pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
         let mut e = Entity::new(EntityKind::MacAddress, &ap.bssid, confidence, scan_id);
         e.tag(crate::core::tags::WIFI_AP);
         e.tag("geolocatable");
-        if let Some(band) = wifi_band(ap.frequency) {
-            e.tag(band);
+        if let Some(band) = crate::util::wifi::band(ap.frequency) {
+            e.tag(format!("band:{band}"));
+        }
+        // Specific 802.11 channel from the centre frequency, via the HSE BLE
+        // Radar's verified frequency↔channel map (2.4/5/6 GHz) — `util::wifi::band`
+        // (used just above) derives only the coarse band, never the channel number.
+        let channel = ap
+            .frequency
+            .and_then(|f| u16::try_from(f).ok())
+            .and_then(bleradar_core::wifi_frequency_to_channel);
+        if let Some(ch) = channel {
+            e.tag(format!("channel:{ch}"));
+        }
+        // Coarse RSSI proximity band from the BLE Radar's proximity model — an
+        // honest signal-strength bucket (immediate/near/mid/far), never a
+        // fabricated distance. Gives the radar the RSSI axis its Bluetooth path
+        // structurally lacks (no-root Termux BT carries no RSSI), on the WiFi
+        // sensor that does report it.
+        let proximity = ap
+            .rssi
+            .map(|r| super::proximity_band_str(bleradar_core::proximity_label(r as f64)));
+        if let Some(band) = proximity {
+            e.tag(format!("proximity:{band}"));
         }
 
         let mut ev = Evidence::new(SRC, format!("Wi-Fi AP scan: {ssid}"))
@@ -73,6 +84,11 @@ pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
             .with_attr("bssid", &ap.bssid)
             .with_attr("rssi_dbm", ap.rssi.unwrap_or(0).to_string())
             .with_attr("frequency_mhz", ap.frequency.unwrap_or(0).to_string())
+            .with_attr(
+                "channel",
+                channel.map_or_else(|| "unknown".to_string(), |c| c.to_string()),
+            )
+            .with_attr("proximity", proximity.unwrap_or("unknown"))
             .with_attr(
                 "channel_width",
                 ap.channel_width.as_deref().unwrap_or("unknown"),

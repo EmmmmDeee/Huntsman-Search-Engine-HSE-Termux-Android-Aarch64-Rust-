@@ -296,6 +296,283 @@ fn no_module_reads_an_http_body_without_a_size_cap() {
     );
 }
 
+/// Every in-memory read of a byte STREAM in production is size-bounded.
+///
+/// `read_to_end` / `read_to_string` pull a whole stream into a `Vec`/`String`;
+/// on the Termux target a hostile or broken source — a subprocess pipe, stdin,
+/// a socket — writing without limit would grow that buffer until the tool is
+/// OOM-killed on an 11 GB phone. The canonical form binds the reader with
+/// `.take(N)` first (see `util::curl_client::read_capped`,
+/// `cli::investigate::read_prompt_bounded`, `modules::whois::client`). This is
+/// the same no-unbounded-read discipline `no_module_reads_an_http_body_without_a_size_cap`
+/// applies to HTTP bodies, extended to every other stream: it flags a
+/// `read_to_end`/`read_to_string` call that has no `.take(` on its own line or
+/// the code line immediately above it (the two shapes the cap idiom takes).
+#[test]
+fn no_production_read_pulls_a_stream_into_memory_without_a_size_cap() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && !p
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().ends_with("tests.rs"))
+            {
+                out.push(p);
+            }
+        }
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    walk(&root, &mut files);
+    files.sort();
+
+    let mut offenders = Vec::new();
+    for p in &files {
+        let text = fs::read_to_string(p).expect("source file readable");
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue; // doc/explanatory comments may mention the pattern
+            }
+            if !(line.contains(".read_to_end(") || line.contains(".read_to_string(")) {
+                continue;
+            }
+            // Bounded when `.take(` is on this line, or on the nearest preceding
+            // non-blank, non-comment code line (the reader was capped there).
+            let same = line.contains(".take(");
+            let prev = lines[..i]
+                .iter()
+                .rev()
+                .find(|l| {
+                    let t = l.trim_start();
+                    !t.is_empty() && !t.starts_with("//")
+                })
+                .is_some_and(|l| l.contains(".take("));
+            if !same && !prev {
+                offenders.push(format!("{}:{}", p.display(), i + 1));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "unbounded read into memory (read_to_end/read_to_string with no `.take(N)` cap) — \
+         a stream a hostile or broken source can grow without limit will OOM the tool on a \
+         low-RAM phone; bind the reader with `.take(N)` first (see \
+         `util::curl_client::read_capped`): {offenders:?}"
+    );
+}
+
+/// The release profile stays size-optimized for the aarch64 Termux artifact.
+///
+/// `opt-level="s"`, `lto=true`, `codegen-units=1` and `strip=true` are the knobs
+/// that keep the single on-device binary small; flipping any (e.g. `opt-level=3`,
+/// or dropping `strip`) silently bloats the artifact a phone has to download and
+/// store. The authoritative BYTE-size guard belongs in CI's aarch64 build (this
+/// host has no Android NDK, so the local gate skips that job), but the SETTINGS
+/// that produce a small binary are cheaply verifiable here and locked so they
+/// can't regress unnoticed between CI runs. `panic="unwind"` is deliberately NOT
+/// `abort` (a panicking module is contained at the dispatch boundary rather than
+/// aborting a long-lived `hse serve`); it is asserted too so a size-motivated
+/// flip to `abort` can't quietly reintroduce that process-abort DoS.
+#[test]
+fn release_profile_stays_size_optimized() {
+    let manifest = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+        .expect("Cargo.toml readable");
+    // Isolate `[profile.release]` — from its header to the next `[` section — so
+    // the separate `[profile.fast]` on-device build profile can't satisfy it.
+    let start = manifest
+        .find("[profile.release]")
+        .expect("[profile.release] must exist");
+    let rest = &manifest[start + "[profile.release]".len()..];
+    let end = rest.find("\n[").map_or(rest.len(), |n| n + 1);
+    // Whitespace-stripped, comment-free `key=value` lines of the section, so
+    // `opt-level = "s"` matches and a comment that merely NAMES a setting cannot
+    // stand in for the real declaration.
+    let lines: Vec<String> = rest[..end]
+        .lines()
+        .map(|l| {
+            l.split('#')
+                .next()
+                .unwrap_or("")
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+        })
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    for (setting, why) in [
+        ("opt-level=\"s\"", "size-optimized codegen"),
+        ("lto=true", "cross-crate size + inlining"),
+        ("codegen-units=1", "whole-crate optimization"),
+        ("strip=true", "no symbols in the shipped binary"),
+        ("panic=\"unwind\"", "module-panic containment — never abort"),
+    ] {
+        let want: String = setting.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            lines.contains(&want),
+            "[profile.release] must keep `{setting}` ({why}) for the aarch64 Termux \
+             artifact — the byte-size CI guard rests on these knobs staying put"
+        );
+    }
+}
+
+/// The HSE BLE Radar dependency (`bleradar-core`) must be pinned to an exact git
+/// commit AND actually consumed by the radar — never a floating branch, never
+/// dead weight.
+///
+/// `bleradar-core` is `publish = false`, so it is a git dependency. A git
+/// dependency without a full `rev` pin tracks a moving branch, so two builds of
+/// the *same* HSE commit can compile *different* BLE-Radar code — the exact
+/// "improvement disappears/changes after rebuild" failure the lifecycle
+/// discipline forbids. And a dependency nothing calls is duplicate authority
+/// carried for nothing. This locks both halves: the pin is a full 40-hex commit
+/// (no `branch`/`tag`), and `signal_radar` reaches the crate for its channel +
+/// proximity math rather than reimplementing the radar's own domain.
+#[test]
+fn ble_radar_dependency_is_pinned_and_consumed() {
+    let manifest = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+        .expect("Cargo.toml readable");
+    let dep_line = manifest
+        .lines()
+        .find(|l| l.trim_start().starts_with("bleradar-core"))
+        .expect("Cargo.toml must declare the bleradar-core (HSE BLE Radar) dependency");
+    assert!(
+        dep_line.contains("git ="),
+        "bleradar-core must be a git dependency (it is publish=false): {dep_line}"
+    );
+    let rev = dep_line
+        .split_once("rev = \"")
+        .and_then(|(_, r)| r.split('"').next())
+        .expect("bleradar-core git dependency must pin an exact `rev`");
+    assert!(
+        rev.len() == 40 && rev.chars().all(|c| c.is_ascii_hexdigit()),
+        "bleradar-core `rev` must be a full 40-hex commit for a reproducible build, got {rev:?}"
+    );
+    assert!(
+        !dep_line.contains("branch =") && !dep_line.contains("tag ="),
+        "bleradar-core must pin `rev`, never a moving branch/tag: {dep_line}"
+    );
+
+    // The crate must actually be consumed — the single authority for the radar's
+    // channel + proximity math, not a local reimplementation.
+    let wifi = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/modules/signal_radar/wifi.rs"
+    ))
+    .expect("signal_radar/wifi.rs readable");
+    for call in [
+        "bleradar_core::wifi_frequency_to_channel",
+        "bleradar_core::proximity_label",
+    ] {
+        assert!(
+            wifi.contains(call),
+            "signal_radar/wifi.rs must use the BLE Radar's `{call}` — the radar math \
+             has one authority (bleradar-core), never a local reimplementation"
+        );
+    }
+}
+
+/// The days→civil calendar conversion (Howard Hinnant's `civil_from_days`) has
+/// exactly one home: `util::timefmt`. `core::timeline::utc_date` and the
+/// id-decoding modules (`structured_id`, `discord_snowflake`) format THROUGH it
+/// rather than re-inlining the arithmetic — the "divergent copies of leap-year
+/// math" the timeline docs warn about, where a fix to one silently skips the
+/// others (`utc_date` was itself a second inline copy until it was collapsed
+/// onto `civil_from_days`).
+///
+/// The `36524`-days-per-100-years divisor is the precise fingerprint of that
+/// inverse algorithm: the forward `days_from_civil` never uses it, so it can
+/// only appear where the days→civil math is (re-)implemented. Production code
+/// (comments and strings blanked, `#[cfg(test)]` items dropped, `_` digit
+/// separators removed) must contain it in exactly one file.
+#[test]
+fn civil_from_days_has_a_single_home() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    collect_rs_files(&manifest.join("src"), &mut files);
+    collect_rs_files(&manifest.join("hse-core/src"), &mut files);
+
+    let mut homes: Vec<String> = Vec::new();
+    for f in &files {
+        if f.file_name().is_some_and(|n| n == "tests.rs") {
+            continue; // test fixtures are not a production implementation
+        }
+        let text = fs::read_to_string(f).unwrap();
+        let code: String = production_source(&text)
+            .chars()
+            .filter(|c| *c != '_')
+            .collect();
+        if code.contains("36524") {
+            homes.push(
+                f.strip_prefix(manifest)
+                    .unwrap_or(f)
+                    .display()
+                    .to_string(),
+            );
+        }
+    }
+    homes.sort();
+    assert_eq!(
+        homes,
+        vec!["src/util/timefmt.rs".to_string()],
+        "the days→civil (`civil_from_days`) algorithm must live only in \
+         `util::timefmt`; a second copy re-introduces the divergent leap-year \
+         math the timeline docs warn against — route callers through \
+         `util::timefmt::civil_from_days` (as `core::timeline::utc_date` now \
+         does). The `36524` fingerprint was found in: {homes:?}"
+    );
+}
+
+/// The 2.4/5/6 GHz WiFi band-range boundaries have exactly one home:
+/// `util::wifi::band`. The `signal_radar` scan sweep and the `device_sensors`
+/// connection probe both read it (each applying its own `band:` spelling) rather
+/// than each holding its own `2400..=2500 / 4900..=5900 / 5925..=7125` copy — two
+/// copies that had already been kept in sync only by hand. The `5925..=7125`
+/// 6 GHz upper bound is the fingerprint (whitespace-insensitive): production code
+/// must contain it in exactly one file.
+#[test]
+fn wifi_band_ranges_have_a_single_home() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    collect_rs_files(&manifest.join("src"), &mut files);
+    collect_rs_files(&manifest.join("hse-core/src"), &mut files);
+
+    let mut homes: Vec<String> = Vec::new();
+    for f in &files {
+        if f.file_name().is_some_and(|n| n == "tests.rs") {
+            continue;
+        }
+        let text = fs::read_to_string(f).unwrap();
+        let code: String = production_source(&text)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        if code.contains("5925..=7125") {
+            homes.push(
+                f.strip_prefix(manifest)
+                    .unwrap_or(f)
+                    .display()
+                    .to_string(),
+            );
+        }
+    }
+    homes.sort();
+    assert_eq!(
+        homes,
+        vec!["src/util/wifi/mod.rs".to_string()],
+        "the WiFi band-range boundaries must live only in `util::wifi::band`; a \
+         second copy is drift waiting to happen — route callers through \
+         `util::wifi::band` instead. The `5925..=7125` fingerprint was found in: {homes:?}"
+    );
+}
+
 /// The README's headline module count is hand-maintained and had drifted
 /// (stated as "60+", "63" and "89" across files while the registry held 89).
 /// Tie the authoritative "## Module Overview (N modules" figure to the live
