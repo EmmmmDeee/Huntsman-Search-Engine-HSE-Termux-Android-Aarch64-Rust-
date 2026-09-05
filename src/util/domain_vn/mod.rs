@@ -38,6 +38,7 @@
 /// Returns `None` for a domain that is not `.vn`, or a `.vn` domain registered
 /// directly under a geographic or ambiguous second-level domain that carries no
 /// registrant-type signal (e.g. a bare `example.vn` or `foo.hanoi.vn`).
+#[must_use]
 pub fn vn_domain_registrant(domain: &str) -> Option<(&'static str, &'static str)> {
     let d = domain.trim().trim_end_matches('.').to_ascii_lowercase();
     if !d.ends_with(".vn") {
