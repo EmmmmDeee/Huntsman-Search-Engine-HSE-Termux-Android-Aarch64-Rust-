@@ -258,6 +258,26 @@ It is a composition over the same verified back-ends — no new provider or API
 key — and inherits their guarantees, including Ahmia's: it reports **where** a
 target is mentioned and never fetches an onion service.
 
+### Manual operator query pack — `hse query-pack`
+
+Some exposure sources are paid, entitlement-gated, or need a human to confirm a
+hit before it's trusted. `hse query-pack <target>` generates the ranked set of
+queries to run **by hand** against those providers — IntelX, OathNet,
+Stolen.tax, DeHashed, XposedOrNot, HIBP — each with its query type, the surface
+to run it on, and the result class to expect:
+
+```bash
+hse query-pack alice@example.com                     # ranked manual queries, table
+hse query-pack acme.example --kind domain --output json
+```
+
+It is **offline and deterministic**: it hands you the queries and where to run
+them and makes no network call itself, so it declares no provider API contract.
+Result classes carry the corroboration caveats that matter — a multi-source
+gateway (Stolen.tax) is flagged as *not an independent source*, and an HIBP
+*miss is not proof of no exposure*. Scope is discovery / exposure verification /
+correlation only.
+
 ---
 
 ## Seed Types (16 supported)

@@ -22,6 +22,7 @@ mod modules;
 mod oathnet_batch;
 mod provision;
 mod query;
+mod query_pack;
 mod radar;
 mod scan;
 mod selftest;
@@ -163,6 +164,11 @@ async fn run_command(command: Command) -> Result<()> {
             clearnet_only,
             dark_only,
         } => dorkus::cmd_dorkus(query, limit, timeout, output, clearnet_only, dark_only).await,
+        Command::QueryPack {
+            value,
+            kind,
+            output,
+        } => query_pack::cmd_query_pack(value, kind, output).await,
         Command::Config { key, value } => config::cmd_config(key, value),
         Command::Diagnostics { json } => diagnostics::cmd_diagnostics(json).await,
         Command::Report {

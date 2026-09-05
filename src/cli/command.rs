@@ -362,6 +362,23 @@ pub enum Command {
         #[arg(long)]
         dark_only: bool,
     },
+    /// Generate the manual operator query pack for a target: the ranked queries
+    /// to run BY HAND against manual/paid exposure providers (IntelX, OathNet,
+    /// Stolen.tax, DeHashed, XposedOrNot, HIBP). Offline and deterministic —
+    /// nothing is fetched; it hands you the queries and where to run them. For
+    /// DISCOVERY / EXPOSURE VERIFICATION only.
+    QueryPack {
+        /// The target value (e.g. an email, username, domain, phone, or name).
+        #[arg(allow_hyphen_values = true)]
+        value: String,
+        /// Target kind: `auto` (default, inferred from the value) or an explicit
+        /// kind like `email` / `username` / `domain`.
+        #[arg(long, default_value = "auto")]
+        kind: String,
+        /// Output format: `table` (default) or `json`.
+        #[arg(short, long, default_value = "table")]
+        output: String,
+    },
     /// View or set persistent capability toggles (universal toggleability,
     /// SpiderFoot-style). No args lists all toggles; `hse config <key> <on|off>`
     /// sets one — e.g. `hse config engine.google off`.

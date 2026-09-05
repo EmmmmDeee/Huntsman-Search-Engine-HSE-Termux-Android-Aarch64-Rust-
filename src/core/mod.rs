@@ -57,6 +57,7 @@ pub mod pivot;
 pub mod platform;
 pub mod port;
 pub mod profiles;
+pub mod query_pack;
 pub mod radar_live;
 pub mod radar_track;
 pub mod relation;
