@@ -529,7 +529,7 @@ fn cli_help_uses_canonical_terminology() {
     let retired: &[(&str, &str)] = &[
         ("scan id", "scan ID"),
         ("Scan id", "scan ID"),
-        ("scan_id ", "scan ID (prose) / --scan-id (flag)"),
+        ("scan_id", "scan ID (prose) / --scan-id (flag)"),
         ("Oathnet", "OathNet"),
         ("Seeknow", "SeekNow"),
         ("Seek-Know", "SeekNow"),

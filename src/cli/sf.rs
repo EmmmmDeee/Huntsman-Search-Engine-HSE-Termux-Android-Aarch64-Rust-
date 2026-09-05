@@ -441,6 +441,9 @@ fn write_rows<W: Write>(w: &mut W, rows: &[Row], a: &SfArgs) -> Result<()> {
                         .map_err(csv_err)?;
                 }
             }
+            // `IntoInnerError::into_error` yields the underlying `io::Error`
+            // (the flush failure), which `Error` converts via `From<io::Error>`
+            // — so `?` here needs no `csv::Error` conversion. Same as `hse ingest`.
             let bytes = wtr.into_inner().map_err(csv::IntoInnerError::into_error)?;
             w.write_all(&bytes)?;
         }
@@ -626,11 +629,19 @@ pub async fn cmd_sf(a: SfArgs) -> Result<()> {
 
     let options = ScanOptions {
         modules: selected.as_ref().map(|s| s.iter().cloned().collect()),
-        passive_only: a.use_case.eq_ignore_ascii_case("passive"),
+        // Gate to passive modules only for a bare `-u passive`; an explicit
+        // `-m` list is an override, so its modules must not be dropped at
+        // dispatch (the passive use case's allowlist already keeps `-u passive`
+        // alone passive-only without the global gate).
+        passive_only: a.use_case.eq_ignore_ascii_case("passive") && a.modules.is_empty(),
+        // `-x` means seed only (no expansion); otherwise expand to the same
+        // comprehensive product depth `hse scan` uses. `ScanOptions::default()`
+        // carries depth 0, so using it here would make `hse sf` never expand and
+        // reduce `-x` to a no-op.
         depth: if a.strict {
             0
         } else {
-            ScanOptions::default().depth
+            crate::core::scan::DEFAULT_SCAN_DEPTH
         },
         ..ScanOptions::default()
     };
