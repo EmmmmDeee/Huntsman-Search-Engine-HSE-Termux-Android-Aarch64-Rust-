@@ -33,10 +33,12 @@
 
 mod catalog;
 mod derive;
+mod gap;
 mod model;
 
 pub use catalog::catalog;
 pub use derive::{derive_level, derive_state};
+pub use gap::{GapFinding, GapSeverity, findings, gap_severity};
 pub use model::{
     Applicability, AssuranceLevel, ControlState, Evidence, EvidenceKind, Profile,
     ProtectionDimension, ProtectionLevel, ProtectionNeed,
@@ -101,6 +103,11 @@ pub struct ResolvedControl {
     pub state: ControlState,
     /// The evidence-derived maturity level.
     pub level: AssuranceLevel,
+    /// The prioritised severity of this control's OPEN deficiency, or `None` when
+    /// the control is met or correctly out of scope. Computed from the control's
+    /// criticality and Schutzbedarf so those fields drive prioritisation rather
+    /// than sit unused — see [`gap::gap_severity`].
+    pub severity: Option<GapSeverity>,
 }
 
 impl GermanControl {
@@ -111,10 +118,12 @@ impl GermanControl {
     pub fn resolve(&self, prior: Option<ControlState>) -> ResolvedControl {
         let level = derive_level(&self.evidence);
         let state = derive_state(self.applicability, &self.evidence, prior);
+        let severity = gap_severity(state, self.criticality, &self.protection_need);
         ResolvedControl {
             control: self.clone(),
             state,
             level,
+            severity,
         }
     }
 }
@@ -143,6 +152,12 @@ pub struct AssuranceSummary {
     pub observed_or_higher: usize,
     /// Controls at `A6 Assured`.
     pub assured: usize,
+    /// Open deficiencies at [`GapSeverity::Critical`] — the fix-first count.
+    pub critical_findings: usize,
+    /// Open deficiencies at [`GapSeverity::High`].
+    pub high_findings: usize,
+    /// The most severe open deficiency, or `None` when there are none.
+    pub highest_open_severity: Option<GapSeverity>,
 }
 
 /// Summarise resolved controls into raw, non-fabricated counts.
@@ -167,6 +182,17 @@ pub fn summarise(resolved: &[ResolvedControl]) -> AssuranceSummary {
         }
         if r.level == AssuranceLevel::Assured && r.state == ControlState::Assured {
             s.assured += 1;
+        }
+        if let Some(sev) = r.severity {
+            match sev {
+                GapSeverity::Critical => s.critical_findings += 1,
+                GapSeverity::High => s.high_findings += 1,
+                GapSeverity::Medium | GapSeverity::Low => {}
+            }
+            s.highest_open_severity = Some(match s.highest_open_severity {
+                Some(prev) => prev.max(sev),
+                None => sev,
+            });
         }
     }
     s

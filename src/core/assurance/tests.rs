@@ -223,3 +223,184 @@ fn summary_reports_raw_counts_and_excludes_not_applicable_from_deficiencies() {
     assert_eq!(s.deficiencies, deficiencies_incl_na);
     assert!(s.total >= s.deficiencies + na);
 }
+
+// ── Gap prioritisation (Schutzbedarf + criticality made consequential) ────────
+
+/// A protection need whose max level is exactly `lvl`.
+fn need_at(lvl: ProtectionLevel) -> ProtectionNeed {
+    if lvl == ProtectionLevel::Normal {
+        ProtectionNeed::default()
+    } else {
+        ProtectionNeed {
+            elevated: vec![(ProtectionDimension::Integrity, lvl)],
+        }
+    }
+}
+
+#[test]
+fn a_met_or_not_applicable_control_has_no_severity() {
+    // Every non-deficiency state yields no finding — NOT_APPLICABLE ≠ FAILED,
+    // and a met rung is not a gap.
+    for st in [
+        ControlState::NotApplicable,
+        ControlState::Defined,
+        ControlState::Implemented,
+        ControlState::Enforced,
+        ControlState::Tested,
+        ControlState::Observed,
+        ControlState::Assured,
+    ] {
+        assert_eq!(
+            gap_severity(
+                st,
+                Criticality::Critical,
+                &need_at(ProtectionLevel::VeryHigh)
+            ),
+            None,
+            "{st:?} is not a deficiency and must carry no severity"
+        );
+    }
+}
+
+#[test]
+fn every_deficiency_carries_a_severity() {
+    for st in [
+        ControlState::Unknown,
+        ControlState::Gap,
+        ControlState::Regressed,
+    ] {
+        assert!(
+            gap_severity(st, Criticality::Routine, &ProtectionNeed::default()).is_some(),
+            "{st:?} is a deficiency and must be graded"
+        );
+    }
+}
+
+#[test]
+fn severity_is_monotone_in_criticality() {
+    let need = need_at(ProtectionLevel::High);
+    let routine = gap_severity(ControlState::Gap, Criticality::Routine, &need).unwrap();
+    let important = gap_severity(ControlState::Gap, Criticality::Important, &need).unwrap();
+    let critical = gap_severity(ControlState::Gap, Criticality::Critical, &need).unwrap();
+    assert!(routine <= important && important <= critical);
+    // And criticality genuinely CHANGES the outcome somewhere (the field is not
+    // dead weight): Routine here is High, Critical here is Critical.
+    assert!(
+        critical > routine,
+        "criticality must be able to raise severity"
+    );
+}
+
+#[test]
+fn severity_is_monotone_in_protection_need() {
+    let normal = gap_severity(
+        ControlState::Gap,
+        Criticality::Important,
+        &need_at(ProtectionLevel::Normal),
+    )
+    .unwrap();
+    let high = gap_severity(
+        ControlState::Gap,
+        Criticality::Important,
+        &need_at(ProtectionLevel::High),
+    )
+    .unwrap();
+    let very_high = gap_severity(
+        ControlState::Gap,
+        Criticality::Important,
+        &need_at(ProtectionLevel::VeryHigh),
+    )
+    .unwrap();
+    assert!(normal <= high && high <= very_high);
+    assert!(
+        very_high > normal,
+        "Schutzbedarf must be able to raise severity"
+    );
+}
+
+#[test]
+fn a_regression_is_never_less_severe_than_a_first_gap_for_the_same_control() {
+    // Same criticality + protection need: Regressed (lost ground) >= Gap >= Unknown.
+    for crit in [
+        Criticality::Routine,
+        Criticality::Important,
+        Criticality::Critical,
+    ] {
+        for lvl in [
+            ProtectionLevel::Normal,
+            ProtectionLevel::High,
+            ProtectionLevel::VeryHigh,
+        ] {
+            let need = need_at(lvl);
+            let unknown = gap_severity(ControlState::Unknown, crit, &need).unwrap();
+            let gap = gap_severity(ControlState::Gap, crit, &need).unwrap();
+            let regressed = gap_severity(ControlState::Regressed, crit, &need).unwrap();
+            assert!(
+                unknown <= gap && gap <= regressed,
+                "depth must not lower severity ({crit:?}, {lvl:?})"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_worst_case_is_critical_and_the_mildest_is_low() {
+    // A critical, very-high-Schutzbedarf control that has regressed is the
+    // fix-first finding.
+    assert_eq!(
+        gap_severity(
+            ControlState::Regressed,
+            Criticality::Critical,
+            &need_at(ProtectionLevel::VeryHigh)
+        ),
+        Some(GapSeverity::Critical)
+    );
+    // A routine, normal-need control merely unassessed is the mildest.
+    assert_eq!(
+        gap_severity(
+            ControlState::Unknown,
+            Criticality::Routine,
+            &ProtectionNeed::default()
+        ),
+        Some(GapSeverity::Low)
+    );
+}
+
+#[test]
+fn findings_are_ordered_most_severe_first_and_exclude_met_and_na() {
+    // Build a synthetic deficient control set by resolving real controls against
+    // a prior state that forces regression, plus a met control that must not
+    // appear in the findings.
+    let cat = catalog();
+    // Resolve everything fresh: the honest catalogue has NO deficiencies, so the
+    // findings list is empty and the summary reports a clean bill of health.
+    let clean = resolve_catalog();
+    assert!(
+        findings(&clean).is_empty(),
+        "the honest catalogue has no open deficiencies"
+    );
+    let s = summarise(&clean);
+    assert_eq!(s.critical_findings, 0);
+    assert_eq!(s.high_findings, 0);
+    assert_eq!(s.highest_open_severity, None);
+
+    // Now force two regressions with different impact and confirm ordering +
+    // that the met/NA controls are excluded.
+    let critical_ctrl = cat
+        .iter()
+        .find(|c| c.criticality == Criticality::Critical)
+        .expect("a Critical control exists");
+    // Prior Assured is strictly above the control's current (A4-Tested) evidence,
+    // so it derives to Regressed — a lapsed external assurance.
+    let resolved = vec![
+        critical_ctrl.resolve(Some(ControlState::Assured)), // → Regressed, high impact
+        cat[0].resolve(None),                               // met → excluded
+    ];
+    let open = findings(&resolved);
+    assert_eq!(open.len(), 1, "only the regressed control is a finding");
+    assert_eq!(open[0].control_id, critical_ctrl.id);
+    assert_eq!(open[0].state, ControlState::Regressed);
+    // The resolved control also carries the computed severity inline.
+    assert!(resolved[0].severity.is_some());
+    assert!(resolved[1].severity.is_none());
+}

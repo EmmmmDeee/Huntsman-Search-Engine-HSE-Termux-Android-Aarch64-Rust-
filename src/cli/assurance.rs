@@ -6,7 +6,7 @@
 //! green without recorded evidence — and marks a `NOT_APPLICABLE` control as
 //! out-of-scope rather than a deficiency.
 
-use crate::core::assurance::{Profile, ResolvedControl, resolve_catalog, summarise};
+use crate::core::assurance::{Profile, ResolvedControl, findings, resolve_catalog, summarise};
 use crate::core::error::{Error, Result};
 
 /// Parse a `--profile` filter value to a [`Profile`] (case-insensitive), or an
@@ -48,10 +48,12 @@ pub(super) fn cmd_assurance(profile_filter: Option<String>, as_json: bool) -> Re
         resolved.retain(|r| r.control.profile == p);
     }
     let summary = summarise(&resolved);
+    let open = findings(&resolved);
 
     if as_json {
         let payload = serde_json::json!({
             "controls": resolved,
+            "findings": open,
             "summary": summary,
         });
         println!(
@@ -65,31 +67,45 @@ pub(super) fn cmd_assurance(profile_filter: Option<String>, as_json: bool) -> Re
     // Text table.
     println!("BSI / IT-Grundschutz assurance — evidence-derived control status\n");
     println!(
-        "{:<20}  {:<10}  {:<15}  {:<4}  {:<20}",
-        "CONTROL", "MODULE", "STATE", "LVL", "PROFILE"
+        "{:<20}  {:<10}  {:<15}  {:<4}  {:<8}  {:<20}",
+        "CONTROL", "MODULE", "STATE", "LVL", "SEV", "PROFILE"
     );
-    println!("{}", "─".repeat(78));
+    println!("{}", "─".repeat(86));
     for r in &resolved {
+        let sev = r.severity.map_or("-", |s| s.label());
         println!(
-            "{:<20}  {:<10}  {:<15}  {:<4}  {:<20}",
+            "{:<20}  {:<10}  {:<15}  {:<4}  {:<8}  {:<20}",
             r.control.id,
             r.control.module,
             r.state.id(),
             r.level.code(),
+            sev,
             r.control.profile.id(),
         );
     }
     println!();
     println!(
-        "{} control(s): {} not-applicable (out of scope), {} deficiency(ies), \
-         {} tested+ (A4+), {} observed+ (A5+), {} assured (A6).",
+        "{} control(s): {} not-applicable (out of scope), {} deficiency(ies) \
+         ({} critical, {} high), {} tested+ (A4+), {} observed+ (A5+), {} assured (A6).",
         summary.total,
         summary.not_applicable,
         summary.deficiencies,
+        summary.critical_findings,
+        summary.high_findings,
         summary.tested_or_higher,
         summary.observed_or_higher,
         summary.assured,
     );
+    match summary.highest_open_severity {
+        Some(sev) => println!(
+            "Highest open finding: {}. Deficiencies are graded from each control's \
+             criticality and Schutzbedarf, worst first.",
+            sev.label()
+        ),
+        None => println!(
+            "No open deficiencies: every in-scope control holds at least its defined rung."
+        ),
+    }
     println!(
         "\nMaturity is derived from recorded evidence, never asserted. A5/A6 require \
          runtime-observation / independent-assurance evidence not held by the static \
