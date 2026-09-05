@@ -374,7 +374,9 @@ fn latest_finished_scan_is_served_by_the_status_index_not_a_json_full_scan() {
         "latest_finished_scan must be served by idx_scans_status_started; plan: {joined}"
     );
     assert!(
-        !plan.iter().any(|step| step.starts_with("SCAN")),
+        !plan
+            .iter()
+            .any(|step| step.trim_start().starts_with("SCAN")),
         "latest_finished_scan must not full-scan `scans`; plan: {joined}"
     );
     let _ = std::fs::remove_file(&path);
@@ -3177,7 +3179,9 @@ fn radar_history_is_served_by_the_target_index_not_a_json_full_scan() {
         "radar_history must be served by idx_scans_target; plan: {joined}"
     );
     assert!(
-        !plan.iter().any(|step| step.starts_with("SCAN")),
+        !plan
+            .iter()
+            .any(|step| step.trim_start().starts_with("SCAN")),
         "radar_history must not full-scan `scans`; plan: {joined}"
     );
     let _ = std::fs::remove_file(&path);

@@ -154,10 +154,13 @@ fn bootstrap_source(dir: &Path, url: &str, ref_: &str) -> Result<()> {
             )))
         }
     };
-    if dir.join(".git").exists() {
-        let _ = run(&["remote", "set-url", "origin", url]);
-    } else {
+    if !dir.join(".git").exists() {
         run(&["init", "-q"])?;
+    }
+    // A repository that exists but has no `origin` (an interrupted earlier
+    // bootstrap, or a checkout the operator made by hand) gets one; an
+    // existing `origin` is pointed at the configured URL.
+    if run(&["remote", "set-url", "origin", url]).is_err() {
         run(&["remote", "add", "origin", url])?;
     }
     run(&["fetch", "--quiet", "--depth", "1", "origin", ref_])?;
@@ -900,6 +903,12 @@ mod tests {
             Some(0),
             "re-bootstrapping checks out the new tip"
         );
+        // A repository that exists but lost (or never had) its `origin` — an
+        // interrupted earlier bootstrap — is repaired rather than failed.
+        git_fixture(&recorded, &["remote", "remove", "origin"]);
+        bootstrap_source(&recorded, remote.to_str().expect("utf-8"), "main")
+            .expect("a repo without origin gets one");
+        assert_eq!(commits_behind(&recorded), Some(0));
         assert!(
             bootstrap_source(&tmp.path().join("bad"), "/nonexistent/repo.git", "main").is_err(),
             "an unreachable repository is an error, not a silent empty directory"
