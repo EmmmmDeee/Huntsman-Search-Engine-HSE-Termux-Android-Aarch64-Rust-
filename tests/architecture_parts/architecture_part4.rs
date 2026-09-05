@@ -368,6 +368,61 @@ fn no_production_read_pulls_a_stream_into_memory_without_a_size_cap() {
     );
 }
 
+/// The release profile stays size-optimized for the aarch64 Termux artifact.
+///
+/// `opt-level="s"`, `lto=true`, `codegen-units=1` and `strip=true` are the knobs
+/// that keep the single on-device binary small; flipping any (e.g. `opt-level=3`,
+/// or dropping `strip`) silently bloats the artifact a phone has to download and
+/// store. The authoritative BYTE-size guard belongs in CI's aarch64 build (this
+/// host has no Android NDK, so the local gate skips that job), but the SETTINGS
+/// that produce a small binary are cheaply verifiable here and locked so they
+/// can't regress unnoticed between CI runs. `panic="unwind"` is deliberately NOT
+/// `abort` (a panicking module is contained at the dispatch boundary rather than
+/// aborting a long-lived `hse serve`); it is asserted too so a size-motivated
+/// flip to `abort` can't quietly reintroduce that process-abort DoS.
+#[test]
+fn release_profile_stays_size_optimized() {
+    let manifest = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+        .expect("Cargo.toml readable");
+    // Isolate `[profile.release]` — from its header to the next `[` section — so
+    // the separate `[profile.fast]` on-device build profile can't satisfy it.
+    let start = manifest
+        .find("[profile.release]")
+        .expect("[profile.release] must exist");
+    let rest = &manifest[start + "[profile.release]".len()..];
+    let end = rest.find("\n[").map_or(rest.len(), |n| n + 1);
+    // Whitespace-stripped, comment-free `key=value` lines of the section, so
+    // `opt-level = "s"` matches and a comment that merely NAMES a setting cannot
+    // stand in for the real declaration.
+    let lines: Vec<String> = rest[..end]
+        .lines()
+        .map(|l| {
+            l.split('#')
+                .next()
+                .unwrap_or("")
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+        })
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    for (setting, why) in [
+        ("opt-level=\"s\"", "size-optimized codegen"),
+        ("lto=true", "cross-crate size + inlining"),
+        ("codegen-units=1", "whole-crate optimization"),
+        ("strip=true", "no symbols in the shipped binary"),
+        ("panic=\"unwind\"", "module-panic containment — never abort"),
+    ] {
+        let want: String = setting.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            lines.contains(&want),
+            "[profile.release] must keep `{setting}` ({why}) for the aarch64 Termux \
+             artifact — the byte-size CI guard rests on these knobs staying put"
+        );
+    }
+}
+
 /// The README's headline module count is hand-maintained and had drifted
 /// (stated as "60+", "63" and "89" across files while the registry held 89).
 /// Tie the authoritative "## Module Overview (N modules" figure to the live
