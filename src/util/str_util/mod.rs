@@ -291,9 +291,13 @@ pub fn char_window(s: &str, start: usize, end: usize) -> &str {
     &s[a..b]
 }
 
-/// Fold common Latin diacritics to their base ASCII letter, lowercase, and
-/// drop everything else. Pure and dependency-free (no `deunicode`/ICU — keeps
-/// the Termux single-binary lean). A name like `"José Müller-Łódź"` folds to
+/// Fold common Latin and Vietnamese diacritics to their base ASCII letter,
+/// lowercase, and drop everything else. Pure and dependency-free (no
+/// `deunicode`/ICU — keeps the Termux single-binary lean). Vietnamese is
+/// covered in both normal forms: the precomposed (NFC) tone-marked vowels in
+/// the Latin Extended Additional block (U+1EA0–U+1EF9) and the horn letters
+/// `Ơ`/`Ư` fold directly, and NFD-decomposed input folds via its base letter
+/// with the combining marks dropped. A name like `"José Müller-Łódź"` folds to
 /// the ASCII stem real platforms actually use (`josemullerlodz`), so derived
 /// usernames/emails match. Multi-char expansions (`æ→ae`, `ß→ss`, `þ→th`) are
 /// handled; non-Latin scripts (Arabic, CJK) have no ASCII fold and are
@@ -316,6 +320,7 @@ pub fn char_window(s: &str, start: usize, end: usize) -> &str {
 /// assert_eq!(fold_ascii_lower("José Müller"), "josemuller"); // diacritics + space dropped
 /// assert_eq!(fold_ascii_lower("O'Brien-Smith"), "obriensmith"); // punctuation dropped
 /// assert_eq!(fold_ascii_lower("Straße"), "strasse"); // ß → ss
+/// assert_eq!(fold_ascii_lower("Nguyễn"), "nguyen"); // Vietnamese NFC tone marks fold
 /// assert_eq!(fold_ascii_lower("日本語"), ""); // no ASCII fold → empty
 /// assert!(
 ///     fold_ascii_lower("Zoë_99 🎉")
@@ -354,6 +359,25 @@ pub fn fold_ascii_lower(s: &str) -> String {
             'ț' | 'ţ' | 'Ț' | 'Ţ' => out.push('t'),
             'ğ' | 'Ğ' => out.push('g'),
             'ř' | 'Ř' => out.push('r'),
+            // Vietnamese: the precomposed (NFC) tone-marked vowels of the Latin
+            // Extended Additional block (U+1EA0–U+1EF9), plus the horn letters
+            // Ơ/Ư and Ĩ, which the Latin-1/Extended-A arms above do not list. A
+            // Vietnam-based engine sees these constantly; without them a name
+            // like `Nguyễn`/`Phạm`/`Hương` lost its accented vowels
+            // (`nguyn`/`phm`/`hng`) and stopped matching its ASCII stem. The
+            // block is contiguous and grouped by base letter, so each sub-range
+            // folds to one ASCII vowel. (NFD-decomposed input already folds via
+            // its base letter with the combining marks dropped below; this
+            // closes the NFC gap.)
+            'ĩ' | 'Ĩ' => out.push('i'),
+            'ơ' | 'Ơ' => out.push('o'),
+            'ư' | 'Ư' => out.push('u'),
+            '\u{1EA0}'..='\u{1EB7}' => out.push('a'),
+            '\u{1EB8}'..='\u{1EC7}' => out.push('e'),
+            '\u{1EC8}'..='\u{1ECB}' => out.push('i'),
+            '\u{1ECC}'..='\u{1EE3}' => out.push('o'),
+            '\u{1EE4}'..='\u{1EF1}' => out.push('u'),
+            '\u{1EF2}'..='\u{1EF9}' => out.push('y'),
             'æ' | 'Æ' => out.push_str("ae"),
             'œ' | 'Œ' => out.push_str("oe"),
             'ß' => out.push_str("ss"),
