@@ -7,6 +7,7 @@
 
 use clap::{Parser, Subcommand};
 
+use super::attack::AttackAction;
 use super::bsi::BsiAction;
 use super::keys_cmd::KeysAction;
 
@@ -312,6 +313,16 @@ pub enum Command {
         /// `gaps`, `regressions`, `controls`, `profile`, `verify`).
         #[command(subcommand)]
         action: BsiAction,
+    },
+    /// MITRE ATT&CK views over HSE's versioned `core::attack` layer (Enterprise
+    /// v17.1). HSE honestly claims coverage of one tactic — Reconnaissance
+    /// (TA0043) — and every covered technique resolves to the modules that are
+    /// its evidence. Sub-verbs: `status`, `coverage`, `gaps`, `navigator`.
+    Attack {
+        /// The ATT&CK sub-command to run (`status`, `coverage`, `gaps`,
+        /// `navigator`).
+        #[command(subcommand)]
+        action: AttackAction,
     },
     /// Print the git commit this binary was built from (40-char hex), for
     /// scripting. Exits non-zero when the build carries no verifiable revision —

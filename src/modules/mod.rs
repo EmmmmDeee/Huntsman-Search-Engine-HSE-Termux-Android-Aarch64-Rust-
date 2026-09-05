@@ -741,6 +741,25 @@ pub fn technique_module_index()
     &TECHNIQUE_MODULES
 }
 
+/// HSE's registry-wide MITRE ATT&CK **Reconnaissance** (TA0043) coverage — the
+/// single authority for HSE's *static* ATT&CK posture, independent of any one
+/// scan.
+///
+/// It composes every registered module's [`Module::attack_techniques`] with
+/// [`crate::core::attack::static_reconnaissance_coverage`] (which folds in the
+/// entity- and relation-kind mappings too), so the covered set, the honest gaps
+/// and the coverage fraction are all **derived from real collection capability**,
+/// never asserted. `hse attack {status,coverage,gaps,navigator}` render views of
+/// exactly this value, and [`technique_module_index`] resolves each covered
+/// technique to the modules that are its evidence.
+#[must_use]
+pub fn reconnaissance_coverage() -> crate::core::attack::Coverage {
+    let ids = MODULE_TECHNIQUES
+        .values()
+        .flat_map(|techniques| techniques.iter().copied());
+    crate::core::attack::static_reconnaissance_coverage(ids)
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");
