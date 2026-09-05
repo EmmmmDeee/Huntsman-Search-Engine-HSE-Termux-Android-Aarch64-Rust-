@@ -521,6 +521,7 @@ pub fn router(
         .route("/scans/{id}/graph.gexf", get(scan_export::scan_export_gexf))
         .route("/scans/{id}/debug.txt", get(scan_export::scan_debug_bundle))
         .route("/scans/{id}/events.log", get(scan_export::scan_events_log))
+        .route("/scans/{id}/batch.txt", get(scan_export::scan_batch_txt))
         .route(
             "/scans/{id}/correlations",
             get(scan_handlers::scan_correlations),

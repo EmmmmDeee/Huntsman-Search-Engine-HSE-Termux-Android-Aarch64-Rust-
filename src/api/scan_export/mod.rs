@@ -260,6 +260,68 @@ pub(crate) fn attachment_response(
     resp
 }
 
+/// `GET /api/v1/scans/{id}/batch.txt[?site=a,b&bare=1]` — the bulk-query list
+/// `hse batch --scan-id` prints, as a download. An OPERATOR file: it names
+/// the breach providers it is written for, by design, so it goes through
+/// [`download_response_operator`] and is never a client deliverable.
+pub async fn scan_batch_txt(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if let Some(resp) = super::scan_handlers::scan_missing(&s, &id).await {
+        return resp;
+    }
+    let store = Arc::clone(&s.store);
+    let sid = id.clone();
+    let entities = match offload_store(move || store.entities_for_scan(&sid)).await {
+        Ok(e) => e,
+        Err(resp) => return resp,
+    };
+    let sites: Vec<&'static crate::app::batch::sites::Site> =
+        match params.get("site").map(String::as_str) {
+            None | Some("") => crate::app::batch::sites::SITES.iter().collect(),
+            Some(list) => {
+                let mut chosen: Vec<&'static crate::app::batch::sites::Site> = Vec::new();
+                for id in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                    match crate::app::batch::sites::find(id) {
+                        // De-duplicate by id so `?site=oathnet,oathnet` renders
+                        // one section, matching `cli::batch::resolve_sites`.
+                        Some(site) if !chosen.iter().any(|c| c.id == site.id) => chosen.push(site),
+                        Some(_) => {}
+                        None => {
+                            return super::handlers::bad_request(format!(
+                                "unknown site {id:?}; known: {}",
+                                crate::app::batch::sites::ids().join(", ")
+                            ));
+                        }
+                    }
+                }
+                // A `site=` that is only separators (e.g. `?site=,`) names no
+                // provider; treat it as "all", like an omitted `site` and like
+                // `cli::batch::resolve_sites`, rather than returning an empty file.
+                if chosen.is_empty() {
+                    crate::app::batch::sites::SITES.iter().collect()
+                } else {
+                    chosen
+                }
+            }
+        };
+    let bare = params.get("bare").is_some_and(|v| v == "1" || v == "true");
+    let selectors = crate::app::batch::selectors_from_entities(&entities);
+    let rendered: Vec<_> = sites
+        .iter()
+        .map(|site| crate::app::batch::render(site, &selectors))
+        .collect();
+    download_response_operator(
+        crate::app::batch::to_text(&rendered, bare),
+        "text/plain; charset=utf-8",
+        &id,
+        "batch",
+        "txt",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

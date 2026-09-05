@@ -2047,3 +2047,79 @@ REQ-README-009 both cite `every_module_maps_to_valid_attack_reconnaissance_techn
 which is intentional — the two rows document the same underlying test from
 two different requirement angles (the trait contract vs. the README's claim
 built on it).
+
+## Pass 20 findings
+
+Pass 20 re-baselined on the merged Pass 19 head (`d80412a4`) and turned three
+requests — a normalised command vocabulary, a paste-ready bulk-query list for
+breach/stealer sites, and a SpiderFoot-4.0-compatible front end — into
+source-authoritative, regression-locked capabilities. Each is enforced by a
+test shown to fail on the pre-change tree.
+
+1. **One spelling per concept across the operator surface**
+   (REQ-CLI-TERM-001). Output format is `--format` (`-f` where free), an
+   output file is `--out` (`-o`), a stored scan is `--scan-id` (`latest`
+   allowed); the former `--output` / `--output-format` / `-o` / `-F`
+   spellings survive only as hidden clap aliases, so existing scripts keep
+   working while no help page advertises a retired name. Provider and noun
+   spellings are fixed too (OathNet, SeekNow, DeHashed, API key, scan ID).
+   The authority is `docs/GLOSSARY.md`; the lock
+   `cli_help_uses_canonical_terminology` (`tests/architecture.rs`) reads
+   every `hse … --help` page (visible and hidden commands) plus the glossary
+   and fails on any retired spelling or retired visible flag. Falsified: it
+   caught two real drifts on first run (an `ingest` doc mentioning the old
+   long flag, and `sf -C` help reading "scan id"), both fixed here.
+
+2. **`hse batch` — a plaintext bulk-query list per provider**
+   (REQ-BATCH-001..003). From one seed (`--value`, kind auto-detected and
+   fanned out by the same generator `oathnet-batch` uses) or a stored scan
+   (`--scan-id`, `latest` allowed), it derives the selectors a breach site
+   indexes (email, username, phone, domain, IP, name), de-duplicated across
+   the generator's breach/stealer surfaces, and renders them one query per
+   line in each provider's documented syntax — for the operator to paste by
+   hand when an API key is not available (REQ-BATCH-001). The provider table
+   (`src/app/batch/sites.rs`) is data-driven and every entry is grounded in
+   the provider's own docs at a read `evidence` URL — nine services: OathNet,
+   SeekNow, Stolen (stolen.tax), DeHashed, LeakCheck, Snusbase, Intelligence
+   X, Leak-Lookup, Have I Been Pwned — with DeHashed spelled `field:value`
+   (whitespace values quoted, `name:"John Smith"`) and the rest bare
+   (REQ-BATCH-002). One authority: the derivation and rendering live in
+   `app::batch`; the CLI and the operator-only HTTP download
+   (`GET /api/v1/scans/{id}/batch.txt`) both call it, and the download goes
+   through the provider-naming operator path, never the client-facing
+   redactor (REQ-BATCH-003). Locks: `app::batch::tests` (seed fan-out
+   de-dup, entity ordering, per-provider syntax, whitespace quoting, every
+   provider grounded and uniquely named) and `cli::batch::tests`.
+
+3. **`hse sf` — SpiderFoot 4.0's `sf.py` command line on HSE's engine**
+   (REQ-SF-001..003). The contract was read from SpiderFoot's own source at
+   tag `v4.0`: the flags and their help, the validation order and error
+   strings (`-x` requires `-t`, …), the target-type detection rules in
+   precedence order including `sf.py`'s pre-quoting of the seed
+   (REQ-SF-001), the tab/csv/json row layouts and the `-M`/`-T`/`-C`
+   listings (REQ-SF-002). A use case maps onto HSE scan options (`passive` →
+   passive-only modules, `footprint` → every module bar threat-intel,
+   `investigate`/`all` → every module); HSE entity kinds print under their
+   SpiderFoot type name where one exists and as `HSE_…` where SpiderFoot has
+   none (REQ-SF-003). One deliberate deviation, documented: SpiderFoot's csv
+   writer emits four columns under a three-column header unless `-r`; here
+   the row and header always agree. Locks: `cli::sf::tests` (target
+   detection + pre-quoting, every SF type runs as an HSE kind, the type
+   table is sorted/unique and covers every entity kind, internal-vs-external
+   URL classification, use-case module selection).
+
+### Verification commands run (Pass 20, in order)
+
+```
+$ cargo test --lib -- app::batch cli::batch cli::sf            # 13 passed
+$ cargo test --test architecture -- cli_help_uses_canonical_terminology   # FAILED pre-fix (2 drifts), ok after
+$ hse batch --site help                                        # 9 grounded providers
+$ hse batch --value jane.doe@example.com                       # per-provider paste lists; DeHashed field:value
+$ hse batch --value "Jane Doe" --site dehashed,intelx --bare   # name:"Jane Doe"; IntelX skips the full-text name
+$ hse sf -V ; hse sf -T ; hse sf -M                            # version banner, type table, module list
+$ hse sf -s contoso.com -u passive -x -t INTERNET_NAME -o csv -q   # engine → correlator → csv, seed-only passive
+```
+
+These three add one CLI-terminology lock, three batch requirements and three
+SpiderFoot-front-end requirements — 7 new rows — bringing the total from 118
+to 125.

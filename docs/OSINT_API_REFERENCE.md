@@ -209,7 +209,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **Unwired Labs / Mylnikov** | cell/wifi geolocation | ltd/free | alnum | M(mylnikov) D |
 | **macaddress.io** | MAC OUI/vendor lookup, VM-interface detection | free (key) | alnum | D C |
 | **Google/Combain geolocation** | wifi/cell→position | paid | `AIza…`/key | C |
-| *(keyless)* **mls / cell_intel / wifi_intel** | offline cell/wifi context | free | — | M |
+| *(keyless)* **beacondb / cell_intel / wifi_intel** | offline cell/wifi context | free | — | M |
 
 ## 12. Code / repository / package registries (keyless)
 

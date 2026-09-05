@@ -205,7 +205,7 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with 
 hse scan --kind domain --value example.com --depth 2        # domain recon
 hse scan --kind email --value user@example.com --free-only  # email pivot (free only)
 hse scan --kind ip --value 1.1.1.1                          # IP geolocation
-hse scan --kind domain --value example.com --output json    # machine-readable output
+hse scan --kind domain --value example.com --format json    # machine-readable output
 hse scan                                                    # bare scan: uses HUNTSMAN_DEFAULT_SEED (optional, see docs/INSTALL.md)
 hse serve                                                   # Web UI → http://127.0.0.1:8080
 hse live --kind domain --value example.com --interval 60    # continuous monitoring
@@ -230,7 +230,7 @@ deduplicated:
 
 ```bash
 hse query "who owns example.com"                    # general web search, table output
-hse query "site:gov.au grant register" --output json
+hse query "site:gov.au grant register" --format json
 hse query "acme.example" --dark                     # dark-web exposure via Ahmia (clearnet)
 ```
 
@@ -251,7 +251,7 @@ quoted phrases) work as the underlying engines support them:
 ```bash
 hse dorkus "acme.example"                            # clearnet + dark-web in one pass
 hse dorkus 'site:pastebin.com "acme api key"'        # a dork across both surfaces
-hse dorkus "acme.example" --dark-only --output json  # scope to one surface when you want
+hse dorkus "acme.example" --dark-only --format json  # scope to one surface when you want
 ```
 
 It is a composition over the same verified back-ends — no new provider or API
@@ -268,7 +268,7 @@ to run it on, and the result class to expect:
 
 ```bash
 hse query-pack alice@example.com                     # ranked manual queries, table
-hse query-pack acme.example --kind domain --output json
+hse query-pack acme.example --kind domain --format json
 ```
 
 It is **offline and deterministic**: it hands you the queries and where to run
@@ -277,6 +277,64 @@ Result classes carry the corroboration caveats that matter — a multi-source
 gateway (Stolen.tax) is flagged as *not an independent source*, and an HIBP
 *miss is not proof of no exposure*. Scope is discovery / exposure verification /
 correlation only.
+
+---
+
+### Bulk breach-site queries — `hse batch`
+
+When you have a seed (or a finished scan) and want to run it past the
+high-yield breach and stealer-log sites **by hand** — because an API key is not
+always an option — `hse batch` writes the queries for you, one per line, in the
+exact syntax each site's search or bulk page accepts:
+
+```bash
+hse batch --value jane.doe@example.com                 # every provider, from one seed
+hse batch --value "Jane Doe" --site dehashed,intelx    # just these two
+hse batch --scan-id latest --site dehashed --bare      # a whole scan's findings, no headers
+hse batch --value +61412345678 --format json           # structured plan
+hse batch --site help                                  # list the providers
+```
+
+It fans a seed out into the selectors a breach site indexes — email, username,
+phone, domain, IP, name — with the same generator `hse oathnet-batch` uses, then
+renders each provider's section: a `#` comment header naming the site and where
+to paste, then the query lines. `--bare` drops the headers for a clean paste;
+`--out FILE` writes a file. Nine services are covered, each grounded in its own
+documentation (`src/app/batch/sites.rs`): **OathNet, SeekNow, Stolen
+(stolen.tax), DeHashed, LeakCheck, Snusbase, Intelligence X, Leak-Lookup, Have I
+Been Pwned**. Most take one bare value per search and auto-detect its kind;
+DeHashed gets its `field:value` syntax (`name:"John Smith"` when a value has a
+space). A provider only gets the kinds it actually indexes — Intelligence X, for
+instance, rejects full-text names, so a name seed is skipped for it.
+
+The list names providers on purpose — it is an operator's working list, not a
+client deliverable. Over the API the same list is an operator-only download at
+`GET /api/v1/scans/{id}/batch.txt?site=a,b&bare=1`.
+
+### SpiderFoot-compatible front end — `hse sf`
+
+`hse sf` is SpiderFoot 4.0's `sf.py` command line, on HSE's engine, so an
+operator's habits and scripts carry over unchanged:
+
+```bash
+hse sf -s example.com -u passive -o csv                 # passive scan, csv output
+hse sf -s "Jane Doe" -u footprint -o json               # footprint use case, json
+hse sf -M                                               # list modules (with use cases)
+hse sf -T                                               # list SpiderFoot types → HSE kinds
+hse sf -s 192.0.2.1 -x -t IP_ADDRESS                    # seed only, no expansion
+hse sf -C latest                                        # correlation (HSE's quality report)
+```
+
+The flags are SpiderFoot's, and so are the validation rules, the target-type
+auto-detection (including `sf.py`'s pre-quoting of the seed), and the tab / csv
+/ json row layouts — all read from SpiderFoot's own source at tag `v4.0`. A
+**use case** maps onto HSE's scan options: `passive` runs passive-only modules,
+`footprint` every module bar threat-intel, `investigate` / `all` everything.
+HSE entity kinds print under their SpiderFoot type name where one exists and as
+`HSE_…` types where SpiderFoot has none (see `hse sf -T`). This is not a port of
+SpiderFoot's Python modules — HSE already is that engine, in Rust, with more
+modules — it is SpiderFoot's *command surface and scan model* reproduced on
+HSE's engine.
 
 ---
 
@@ -318,26 +376,26 @@ respectively.
 > `hse modules` or open the web UI's module wizard — never a static doc that
 > can drift from the registry.
 
-**API-Free (no keys required) — 93:**
+**API-Free (no keys required) — 96:**
 - **Breach/identity & dark-web exposure**: `ahmia`, `psbdmp`, `pwned_passwords`, `xposed_or_not`
 - **Social**: `crates_io`, `github_code_search`, `github_user`, `hacker_news`, `keybase`, `npm_author`, `reddit_user`, `social_probe`, `streaming_probe`, `username_search`, `username_variants`
 - **People**: `ahpra`, `au_electoral`, `au_people`, `au_property`, `contact_enrich`, `employer_pivot`, `gravatar`, `name_intel`, `payid`, `pgp`, `wikidata`
-- **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `domainsdb`, `hackertarget`, `mnemonic_pdns`, `rdap_domain`, `subdomain_center`, `subdomain_takeover`, `typosquat`, `whois`
+- **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `hackertarget`, `mnemonic_pdns`, `rdap_domain`, `subdomain_center`, `subdomain_takeover`, `typosquat`, `whois`
 - **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipinfo`, `ipquery`, `netblock`, `portscan`, `ripestat`, `shodan`, `urlscan`
-- **Geolocation**: `beacondb`, `breach_timezone`, `cell_local`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mls`, `mylnikov`, `open_meteo_geo`, `overpass`, `phone_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
+- **Geolocation**: `beacondb`, `breach_timezone`, `cell_local`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mylnikov`, `open_meteo_geo`, `overpass`, `phone_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
 - **Threat intel**: `urlhaus`
 - **Email**: `disposable_check`, `email_canonical`, `email_parse`, `smtp_vrfy`
 - **Phone**: `phone_au`, `phone_intl`
-- **Corporate**: `acma_rrl`, `acnc_charities`, `asic_director`, `au_unclaimed`, `austlii`, `gleif_lei`, `opencorporates`
+- **Corporate**: `acma_rrl`, `acnc_charities`, `asic_director`, `au_unclaimed`, `austlii`, `gleif_lei`
 - **Search**: `search_engines`
 - **Web analysis**: `cloud_storage`, `sitemap`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
 - **Termux sensors**: `cell_intel`, `device_sensors`, `local_net`, `signal_radar`
 - **Other**: `api_key_probe`, `chain_intel`
 
-**Key-gated / Paid — 32 (28 key-gated · 4 paid):**
-- `abn_lookup`, `abuseipdb`, `censys`, `criminal_ip`, `dehashed`, `emailrep`
+**Key-gated / Paid — 35:**
+- `abn_lookup`, `abuseipdb`, `censys`, `criminal_ip`, `dehashed`, `domainsdb`, `emailrep`
 - `epieos`, `exa_search`, `fullcontact`, `hibp`, `hlr_cnam`, `hunter_io`, `intelx`, `ipqs`
-- `leakix`, `netlas`, `niamonx`, `numverify`, `oathnet_pro`, `onyphe`, `opencellid`, `osintcat`
+- `leakix`, `netlas`, `niamonx`, `numverify`, `oathnet_pro`, `onyphe`, `opencellid`, `opencorporates`, `osintcat`
 - `securitytrails`, `see_know`, `seon`, `threatfox`, `trove_au`, `virustotal`, `whoisxml`
 - `wifi_intel`, `wigle`, `zoomeye`
 
@@ -360,7 +418,7 @@ stamps it inline with its producing module's technique(s) as
 `attack:<TECHNIQUE_ID>` tags (e.g. `attack:T1589.002` "Email Addresses"). So the
 technique that collected a datum travels with the datum — visible in the entity's
 `tags` in JSON output, on each entity in the full dossier
-(`hse export <id> --format full`) and `hse scan --output dossier`, and in the
+(`hse export --scan-id <id> --format full`) and `hse scan --format dossier`, and in the
 database — with no separate coverage report to reconcile. A finding corroborated
 by several modules carries all of their techniques (merges union the tags).
 
@@ -418,7 +476,7 @@ open-LAN behaviour for a deliberately public deployment. Key-writing
 Every seed type has a pathway to geographic coordinates:
 
 ```
-Name/Email/Username → search_engines (17 engines, free)
+Name/Email/Username → search_engines (16 engines, free)
                     → discovered emails/phones/addresses
                     → oathnet_pro (breach IPs)
                     → ip_geo + ip_whois_geo (free HTTPS)
@@ -450,16 +508,16 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 2
 ```
 
 Round 0 (seed): `"Jordan Leigh Meyers"` dispatched to all accepting modules.
-Round 1: High-confidence entities (C_eff ≥ 0.75) become new targets.
+Round 1: Entities above the expansion floor (default C_eff ≥ 0.20) become new targets.
 Round 2: Discovered IPs → geo modules → coordinates → address.
 
 | Knob | Default | Purpose |
 |------|---------|---------|
-| `--depth N` | `2` | Max expansion rounds (0 = single seed round) |
-| `--min-expand-confidence F` | `0.50` | Min C_eff to expand (0.75 = Verified-only) |
-| `--max-entities N` | none | Stop at N total entities |
+| `--depth N` | `5` | Max expansion rounds (0 = single seed round) |
+| `--min-expand-confidence F` | `0.20` | Min C_eff to expand (0.75 = Verified-only) |
+| `--max-entities N` | `2500` | Stop at N total entities |
 | `--max-wall-time SECS` | none | Stop after SECS wall-time |
-| `--max-concurrent N` | `0` | Parallel module dispatch (0=sequential) |
+| `--max-concurrent N` | `2` | Parallel module dispatch (0=sequential) |
 | `--expand-all-identities` | off | Expand every discovered username/person, even uncorroborated aliases that don't overlap the subject's handle (lifts the wrong-identity gate; implied by `--full`). Higher recall, more unrelated footprints to prune |
 
 **Nothing is a black box.** Every pivot the engine *declines* to follow — a
@@ -483,7 +541,7 @@ optional trailing year, e.g. `"Jordan Leigh Meyers 1987"`) it derives — with
 analyst would build by hand:
 
 ```bash
-hse scan --kind name --value "Jordan Leigh Meyers 1987" --modules name_intel --output json
+hse scan --kind name --value "Jordan Leigh Meyers 1987" --modules name_intel --format json
 ```
 
 - **Usernames** (≤24, scored): `first.last`, `flast`, `firstl`, reversed,
