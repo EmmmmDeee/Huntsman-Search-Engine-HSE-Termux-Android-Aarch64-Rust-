@@ -25,13 +25,6 @@ pub(super) struct Cell {
     pub(super) mnc: Option<serde_json::Value>,
 }
 
-fn json_to_str(v: &Option<serde_json::Value>) -> String {
-    v.as_ref()
-        .and_then(crate::util::json::scalar_str)
-        .map(std::borrow::Cow::into_owned)
-        .unwrap_or_default()
-}
-
 fn tech_tag(cell_type: Option<&str>) -> &'static str {
     match cell_type.map(str::to_lowercase).as_deref() {
         Some("lte") => "lte",
@@ -53,16 +46,22 @@ pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> Result<ModuleResult
     let mut result = ModuleResult::with_capacity(cells.len());
 
     for cell in cells {
-        let mcc = json_to_str(&cell.mcc);
-        let mnc = json_to_str(&cell.mnc);
+        // Single-sourced from `util::cell` — the documented sole home of the
+        // DeviceId tower-id/dedup key. All four producers MUST format it
+        // identically or one physical tower forks into two entities; `mcc_mnc_str`
+        // also borrows the common JSON-string case, sparing an allocation per
+        // cellinfo record on the Termux hot path (byte-identical to the former
+        // local `json_to_str`, which `into_owned`ed the same value).
+        let mcc = crate::util::cell::mcc_mnc_str(&cell.mcc);
+        let mnc = crate::util::cell::mcc_mnc_str(&cell.mnc);
         let cid = cell.cid.unwrap_or(0);
-        let lac = cell.lac.or(cell.tac).unwrap_or(0);
+        let lac = crate::util::cell::resolve_lac(cell.lac, cell.tac);
 
         if mcc.is_empty() || cid == 0 {
             continue;
         }
 
-        let tower_id = format!("{mcc}-{mnc}-{lac}-{cid}");
+        let tower_id = crate::util::cell::tower_id(&mcc, &mnc, lac, cid);
         let tech = tech_tag(cell.cell_type.as_deref());
         let registered = cell.registered.unwrap_or(false);
 
@@ -81,8 +80,8 @@ pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> Result<ModuleResult
         e.add_evidence(
             Evidence::new(SRC, format!("Cell tower: {tower_id}"))
                 .with_attr("tower_id", &tower_id)
-                .with_attr("mcc", &mcc)
-                .with_attr("mnc", &mnc)
+                .with_attr("mcc", mcc.as_ref())
+                .with_attr("mnc", mnc.as_ref())
                 .with_attr("lac", lac.to_string())
                 .with_attr("cid", cid.to_string())
                 .with_attr("tech", tech)

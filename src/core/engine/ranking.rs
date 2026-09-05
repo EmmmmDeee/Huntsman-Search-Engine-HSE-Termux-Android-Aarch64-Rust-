@@ -458,7 +458,13 @@ pub fn plan_autonomous_sweep<F: Fn(&str) -> usize>(
 const IDENTITY_CLUSTER_MAX_HOPS: usize = 4;
 /// Weakest-link confidence floor for a co-reference cluster to bind (matches the
 /// dossier / correlator): one tenuous edge can't fuse two strong sub-identities.
-const IDENTITY_CLUSTER_MIN_CONF: f64 = 0.50;
+///
+/// Single-sourced from [`crate::core::relation::IDENTITY_LINK_MIN_CONF`] — the
+/// same floor `resolve_identity_clusters` (called below) applies — rather than a
+/// bare `0.50`, so a recalibration of the identity-link floor can never leave the
+/// autonomous ranker silently on the stale value. (Deliberately NOT coupled to
+/// `confidence::MEDIUM`: `graph.rs` documents that these are independent axes.)
+const IDENTITY_CLUSTER_MIN_CONF: f64 = crate::core::relation::IDENTITY_LINK_MIN_CONF;
 /// How hard identity *breadth* lifts a clustered target: a person resolved across
 /// `k` distinct identifier kinds is more actionable than one known by a single
 /// selector. Multiplier is `1 + WEIGHT × ln(distinct_kinds)`, so a singleton

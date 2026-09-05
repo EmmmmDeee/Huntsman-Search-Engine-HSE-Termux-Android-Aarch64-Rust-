@@ -329,12 +329,13 @@ pub(in crate::core::correlator) fn rule_au_109_shared_registrant(
     out
 }
 
-/// Upper bound on DISTINCT registrable domains sharing one dedicated IP for
-/// AU-110 to read the co-tenancy as probable co-ownership rather than shared
-/// hosting. A real operator estate is a handful of sites; a single IP serving
-/// many *distinct* sites is a reseller / shared-hosting box — the high-fan-out
-/// shared-infra case AU-031 already aggregates as noise.
-const MAX_CO_HOSTED_REGISTRABLE: usize = 5;
+// Upper bound on DISTINCT registrable domains sharing one dedicated IP for AU-110
+// to read the co-tenancy as probable co-ownership rather than shared hosting. A
+// real operator estate is a handful of sites; a single IP serving many *distinct*
+// sites is a reseller / shared-hosting box — the high-fan-out shared-infra case
+// AU-031 already aggregates as noise. Single-sourced from the relation builders
+// (the `SameOperator` edge reads the identical cap) so the two can't disagree.
+use crate::core::relation::MAX_CO_HOSTED_REGISTRABLE;
 
 /// AU-110 — Shared dedicated-IP domain co-hosting (probable co-ownership).
 ///

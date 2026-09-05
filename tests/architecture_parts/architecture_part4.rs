@@ -573,6 +573,85 @@ fn wifi_band_ranges_have_a_single_home() {
     );
 }
 
+/// The cell-tower DeviceId key `{mcc}-{mnc}-{lac}-{cid}` must be formatted in
+/// exactly one place — `util::cell::tower_id`. Four producers (`cell_intel`,
+/// `signal_radar`, `cell_local`, `opencellid`) mint DeviceId entities for the
+/// same physical tower; if any of them re-inlines the format string with a
+/// different spacing/order, one tower forks into two entities and the whole
+/// dedup/correlation the DeviceId key exists for silently breaks. Route every
+/// producer through `util::cell::tower_id` instead of the literal.
+#[test]
+fn cell_tower_id_format_has_a_single_home() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    collect_rs_files(&manifest.join("src"), &mut files);
+    collect_rs_files(&manifest.join("hse-core/src"), &mut files);
+
+    let mut homes: Vec<String> = Vec::new();
+    for f in &files {
+        if f.file_name().is_some_and(|n| n == "tests.rs") {
+            continue;
+        }
+        // Raw text (NOT production_source): the tower-id fingerprint lives inside
+        // a `format!` string literal, which production_source blanks. The
+        // `{mcc}-{mnc}-{lac}-{cid}` fingerprint is specific enough that a raw
+        // scan across src/ has no false matches.
+        let code: String = fs::read_to_string(f)
+            .unwrap()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        if code.contains("{mcc}-{mnc}-{lac}-{cid}") {
+            homes.push(f.strip_prefix(manifest).unwrap_or(f).display().to_string());
+        }
+    }
+    homes.sort();
+    assert_eq!(
+        homes,
+        vec!["src/util/cell.rs".to_string()],
+        "the cell tower-id format must live only in `util::cell::tower_id`; a \
+         second copy forks one tower into two DeviceId entities. The \
+         `{{mcc}}-{{mnc}}-{{lac}}-{{cid}}` fingerprint was found in: {homes:?}"
+    );
+}
+
+/// The co-hosting fan-out cap `MAX_CO_HOSTED_REGISTRABLE` must be DEFINED once
+/// (in `relation::builders`, re-exported from `core::relation`). The
+/// `SameOperator` builder edge and the AU-110 co-hosting finding read the
+/// identical membership set, so a second definition is exactly the silent
+/// edge-vs-finding disagreement single-sourcing exists to prevent.
+#[test]
+fn max_co_hosted_registrable_is_defined_once() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    collect_rs_files(&manifest.join("src"), &mut files);
+    collect_rs_files(&manifest.join("hse-core/src"), &mut files);
+
+    let mut homes: Vec<String> = Vec::new();
+    for f in &files {
+        if f.file_name().is_some_and(|n| n == "tests.rs") {
+            continue;
+        }
+        let text = fs::read_to_string(f).unwrap();
+        let code: String = production_source(&text)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        if code.contains("constMAX_CO_HOSTED_REGISTRABLE:usize=") {
+            homes.push(f.strip_prefix(manifest).unwrap_or(f).display().to_string());
+        }
+    }
+    homes.sort();
+    assert_eq!(
+        homes,
+        vec!["src/core/relation/builders.rs".to_string()],
+        "MAX_CO_HOSTED_REGISTRABLE must be DEFINED once (relation::builders, \
+         re-exported from core::relation); consumers `use` it. A second \
+         definition drifts the SameOperator edge from the AU-110 finding. \
+         Found in: {homes:?}"
+    );
+}
+
 /// The README's headline module count is hand-maintained and had drifted
 /// (stated as "60+", "63" and "89" across files while the registry held 89).
 /// Tie the authoritative "## Module Overview (N modules" figure to the live
