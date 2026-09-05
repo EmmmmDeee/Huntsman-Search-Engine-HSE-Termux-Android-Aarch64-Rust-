@@ -92,6 +92,34 @@ fn a_different_bssid_feature_is_not_emitted_as_our_location() {
 }
 
 #[test]
+fn feature_without_a_mac_is_not_located() {
+    // A feature that does not positively report the queried BSSID cannot be
+    // tied to this AP, so it is skipped even with valid coordinates.
+    let mut f = feature("00:13:10:69:EF:11", -111.9469417, 33.5961517, "cryptic24g");
+    if let Some(p) = f.properties.as_mut() {
+        p.mac = None;
+    }
+    let fc = FeatureCollection { features: vec![f] };
+    let r = build_result(&fc, "00:13:10:69:EF:11", "s");
+    assert_eq!(r.entities.len(), 0);
+
+    // Same when the whole properties block is absent.
+    let bare = Feature {
+        geometry: Some(Geometry {
+            coordinates: Some(vec![-111.9469417, 33.5961517]),
+        }),
+        properties: None,
+    };
+    let fc2 = FeatureCollection {
+        features: vec![bare],
+    };
+    assert_eq!(
+        build_result(&fc2, "00:13:10:69:EF:11", "s").entities.len(),
+        0
+    );
+}
+
+#[test]
 fn empty_feature_collection_is_a_clean_negative() {
     let fc = FeatureCollection { features: vec![] };
     let r = build_result(&fc, "00:13:10:69:EF:11", "s");

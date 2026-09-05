@@ -112,3 +112,29 @@ fn empty_victim_list_yields_no_entities() {
     let r = build_result(&[], &target, "s");
     assert_eq!(r.entities.len(), 0);
 }
+
+#[test]
+fn domain_matching_is_label_safe_via_the_shared_helper() {
+    let target = Target::new(TargetKind::Domain, "seasiainfotech.com");
+
+    // A mid-label near-miss must NOT match (the bug a bare `ends_with` admits).
+    let near_miss = vec![victim(
+        "Not Seasia",
+        "notseasiainfotech.com",
+        "thegentlemen",
+    )];
+    assert_eq!(build_result(&near_miss, &target, "s").entities.len(), 0);
+
+    // A genuine subdomain of the seed DOES match.
+    let sub = vec![victim(
+        "Seasia Infotech",
+        "portal.seasiainfotech.com",
+        "thegentlemen",
+    )];
+    assert!(
+        build_result(&sub, &target, "s")
+            .entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Organisation)
+    );
+}

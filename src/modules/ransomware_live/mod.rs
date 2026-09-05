@@ -32,6 +32,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::domains::is_or_subdomain_of;
 use crate::util::http::{fetch_json_or_404, urlencode};
 
 /// Stable evidence-source string. `pub(crate)` so a test can pin it and no
@@ -139,10 +140,13 @@ fn classify(victim: &Victim, target: &Target) -> Option<Match> {
     match target.kind {
         TargetKind::Domain => {
             let d = victim.domain.as_deref()?.trim().to_ascii_lowercase();
-            (d == needle
-                || d.ends_with(&format!(".{needle}"))
-                || needle.ends_with(&format!(".{d}")))
-            .then_some(Match::Domain)
+            // Label-safe equality-or-sub/parent-domain via the single-sourced
+            // `util::domains` authority (no `format!` allocation, and it rejects
+            // the `notexample.com`-matches-`example.com` bug a bare `ends_with`
+            // would admit). Checked both directions so a victim `sub.acme.com`
+            // matches an `acme.com` seed and vice versa.
+            (is_or_subdomain_of(&d, &needle) || is_or_subdomain_of(&needle, &d))
+                .then_some(Match::Domain)
         }
         TargetKind::Organisation => {
             let name = victim.victim.as_deref()?.trim().to_ascii_lowercase();
@@ -203,8 +207,10 @@ fn build_result(victims: &[Victim], target: &Target, scan_id: &str) -> ModuleRes
         }
 
         // The victim's domain — a new Domain pivot when the seed was an
-        // Organisation (skipped when it merely echoes a Domain seed handled
-        // above, since a self-referential pivot adds nothing).
+        // Organisation, and a useful reinforcement when the seed was that
+        // Domain itself: emitting it re-stamps the domain with the
+        // `ransomware-victim` tag and the claiming group, so it is emitted
+        // whenever the record carries one (it merges with a Domain seed).
         if let Some(dom) = v
             .domain
             .as_deref()

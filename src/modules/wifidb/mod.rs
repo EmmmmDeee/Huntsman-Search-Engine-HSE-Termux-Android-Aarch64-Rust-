@@ -172,12 +172,18 @@ fn build_result(fc: &FeatureCollection, bssid: &str, scan_id: &str) -> ModuleRes
     let want = bssid.to_ascii_lowercase();
 
     for f in &fc.features {
-        // Guard: only trust a feature that actually reports the queried BSSID
-        // (the search is by mac, so this should always hold — but never emit a
-        // location for a different AP if the upstream ever returns extras).
-        if let Some(mac) = f.properties.as_ref().and_then(|p| p.mac.as_deref())
-            && !mac.trim().eq_ignore_ascii_case(&want)
-        {
+        // Precision guard: emit a fix ONLY for a feature that positively
+        // reports the queried BSSID. The search is by mac so this should always
+        // hold; a feature whose `mac` is absent (or mismatched) cannot be
+        // confirmed to be this AP, so it is skipped rather than located on
+        // coordinates alone — never attribute a location we cannot tie to the
+        // queried BSSID.
+        let matches_bssid = f
+            .properties
+            .as_ref()
+            .and_then(|p| p.mac.as_deref())
+            .is_some_and(|mac| mac.trim().eq_ignore_ascii_case(&want));
+        if !matches_bssid {
             continue;
         }
         let Some((lat, lon)) = feature_coords(f) else {
