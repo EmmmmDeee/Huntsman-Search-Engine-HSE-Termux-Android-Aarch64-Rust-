@@ -317,8 +317,8 @@ struct BuiltinModuleRuntime;
 
 impl crate::core::module_runtime::ModuleRuntime for BuiltinModuleRuntime {
     fn reset_per_scan(&self, scan_id: &str) {
-        oathnet_pro::reset_budget();
-        see_know::reset_budget();
+        crate::util::oathnet::reset_budget();
+        crate::util::see_know::reset_budget();
         wigle::reset_budget();
         typosquat::reset_seen(scan_id);
         search_engines::reset_session_liveness(scan_id);
@@ -338,9 +338,13 @@ impl crate::core::module_runtime::ModuleRuntime for BuiltinModuleRuntime {
     }
 
     fn cleanup_scan_budgets(&self, scan_id: &str) {
-        oathnet_pro::cleanup_scan(scan_id);
-        see_know::cleanup_scan(scan_id);
+        crate::util::oathnet::cleanup_scan(scan_id);
+        crate::util::see_know::cleanup_scan(scan_id);
         wigle::cleanup_scan(scan_id);
+    }
+
+    fn set_seeknow_scan_cap(&self, cap: u32) {
+        crate::util::see_know::set_scan_cap_override(cap);
     }
 }
 
@@ -660,3 +664,6 @@ pub fn technique_module_index()
 mod tests {
     include!("tests.rs");
 }
+
+#[cfg(test)]
+mod keyed_tests;

@@ -11,7 +11,6 @@ use crate::core::{
 
 mod archive; // `impl Store`: inter-scan entity cache (`raw_archive`)
 mod entities; // `impl Store`: entity persistence + FTS query
-mod intelligence; // crash-safe persistence for intelligence frontier checkpoints
 mod signal; // `impl Store`: per-sighting RF (WiGLE + radar) persistence
 mod stealer_rows; // `impl Store`: paired stealer-log credential row persistence
 mod templates; // `impl Store`: cross-scan pathway-template learning
@@ -38,6 +37,16 @@ const SCHEMA_VERSION: i32 = 1;
 /// same batch as the (env-tunable) pragmas, so the resulting database is
 /// byte-for-byte what the previous inline DDL produced.
 const SCHEMA_DDL: &str = "
+            -- removed-integration-cleanup: begin
+            -- The local-AI integration (removed 2026-09) persisted model-generated
+            -- prose per scan in this table. Nothing reads it, and RULE 1 keeps
+            -- synthetic text out of the evidentiary store, so a database from an
+            -- older install drops it on open. Idempotent: absent on a fresh
+            -- database, gone after the first open of an upgraded one. This marked
+            -- region is the one place the retired name may appear in live code.
+            DROP TABLE IF EXISTS scan_analysis;
+            -- removed-integration-cleanup: end
+
             CREATE TABLE IF NOT EXISTS scans (
                 id           TEXT PRIMARY KEY,
                 target_kind  TEXT NOT NULL,
@@ -928,15 +937,21 @@ impl Store {
     // Typed entity-to-entity edges. Idempotent on the deterministic `id` so a
     // re-scan that re-derives the same edge does not duplicate it.
 
-    pub fn upsert_relation(&self, r: &Relation) -> Result<()> {
+    /// The one relations INSERT, shared by the single-row and batch paths so
+    /// the column list and the binding order cannot drift apart: relations
+    /// are evidence edges, and a column added to one path and missed in the
+    /// other would surface only at runtime as a bind-count error — or, for two
+    /// same-typed fields, as a silently transposed column.
+    const RELATION_UPSERT_SQL: &str = "INSERT INTO relations(id, scan_id, from_uid, to_uid, kind, confidence, observed_at, data_json)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(id) DO NOTHING";
+
+    /// Bind and execute [`Self::RELATION_UPSERT_SQL`] for one relation on
+    /// `conn` (a plain connection or an open transaction).
+    fn upsert_relation_on(conn: &rusqlite::Connection, r: &Relation) -> Result<()> {
         let json = serde_json::to_string(r)?;
-        let conn = self.conn.lock();
-        conn.prepare_cached(
-            "INSERT INTO relations(id, scan_id, from_uid, to_uid, kind, confidence, observed_at, data_json)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(id) DO NOTHING",
-        )?
-        .execute(params![
+        conn.prepare_cached(Self::RELATION_UPSERT_SQL)?
+            .execute(params![
                 r.id,
                 r.scan_id,
                 r.from_uid,
@@ -945,9 +960,12 @@ impl Store {
                 r.confidence,
                 r.observed_at as i64,
                 json,
-            ],
-        )?;
+            ])?;
         Ok(())
+    }
+
+    pub fn upsert_relation(&self, r: &Relation) -> Result<()> {
+        Self::upsert_relation_on(&self.conn.lock(), r)
     }
 
     /// Batch-insert relations in ONE transaction (one autocommit → one fsync
@@ -959,22 +977,7 @@ impl Store {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
         for r in rels {
-            let json = serde_json::to_string(r)?;
-            tx.prepare_cached(
-                "INSERT INTO relations(id, scan_id, from_uid, to_uid, kind, confidence, observed_at, data_json)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT(id) DO NOTHING",
-            )?
-            .execute(params![
-                r.id,
-                r.scan_id,
-                r.from_uid,
-                r.to_uid,
-                r.kind.as_str(),
-                r.confidence,
-                r.observed_at as i64,
-                json,
-            ])?;
+            Self::upsert_relation_on(&tx, r)?;
         }
         tx.commit()?;
         Ok(rels.len())

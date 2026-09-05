@@ -175,9 +175,7 @@ impl Module for Fofa {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let Some(key) = ctx.key_opt(KEY_ENV) else {
-            return Ok(ModuleResult::new());
-        };
+        let key = ctx.key(KEY_ENV)?;
 
         let filter = match fofa_filter(target) {
             Some(f) => f,

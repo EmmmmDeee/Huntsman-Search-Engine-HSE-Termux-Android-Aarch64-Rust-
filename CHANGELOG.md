@@ -42,6 +42,10 @@ All notable changes to this project are documented here. Format per [Keep a Chan
 
 ### Changed
 
+- The dormant second scheduler in `core::intelligence` (`BoundedFrontier` and its checkpoint) is deleted; `core::roi` and the engine round loop are the one scheduler. The provider-coverage code the product actually uses moved to its own module, `core::coverage`. What remains in `core::intelligence` is the staged claim ledger, and its doc now says so.
+- `hse doctor` reports the egress proxy pool when one is configured: it refreshes the pool in-process and prints usable/total and one redacted line per proxy. An all-dead pool is a doctor failure, because a configured pool never falls back to a direct connection.
+- The installer retires the local-AI leftovers an older release put on the device: the `hse-ai` wrapper (stopped first), its pid/log, and the `HUNTSMAN_OLLAMA_MODEL` line in `~/.huntsman.env`; the database drops the orphaned `scan_analysis` table on open. `.env.example` no longer documents the removed subsystem.
+- The SeekNow per-scan cap now reaches the module layer through `ModuleRuntime` like every other module mutation, so an engine built without modules no longer writes into the process-wide budget.
 - AU-002 rule now surfaces MAX_PER_KIND limit-exceeded cases as Medium-severity rejection findings instead of silent drops
 - AU-092 rule now distinguishes conflict case with separate rule_id "AU-092-CONFLICT" (was previously reusing "AU-092")
 - `GET /api/v1/health` is exempt from the non-loopback bearer-token gate (GET only; every other verb on the path stays gated). The Railway/container deployment (`hse serve --bind 0.0.0.0`) could never pass its own credential-less `healthcheckPath` probe before this; `railway.json` is now pinned to `api::auth::HEALTH_PATH` by test.
@@ -51,6 +55,7 @@ All notable changes to this project are documented here. Format per [Keep a Chan
 
 ### Fixed
 
+- Fifteen keyed modules reported a missing API key as "searched, found nothing". Coverage counted them as having answered, so `is_exhaustive()` could vouch for a sweep nobody made. They now report the missing key, which coverage records as not attempted.
 - Four read endpoints bypassed the candidate quarantine every sibling enforces by default: `GET /scans/{id}/path`, `/communities`, `/trust` and `/gaps` ran the raw entity/relation set through path search, community detection, trust propagation and gap analysis, so an unverified same-name breach record the correlator had quarantined could be returned by value as a path node, join or name a community, be ranked, or be reported as an actionable "orphan" — without `?include_candidates=1`. All four are gated now (`connect_cross_scan` gates its own cross-scan graph).
 - `report.json` now resolves against itself: a correlation's `entity_uids` always name entities in the same document. A platform-infra entity a finding references (AU-004 on a compromised hosting IP) is restored under the default `include_infra=false`; a finding on a hidden candidate is dropped.
 - Five silent key failures, the class the SeekNow fix above closed: Numverify's and SEON's HTTP-200 error envelopes, BuiltWith's `Errors[]` (codes -2/-3/-5), a domainsdb `429` across the whole zone sweep, and `github_user` never sending the configured token on its profile, SSH-key and events calls. Each now reports the key to the pool and surfaces an error naming the provider's own detail instead of reading as "found nothing".

@@ -376,9 +376,7 @@ impl Module for Epieos {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let Some(key) = ctx.key_opt(KEY_ENV) else {
-            return Ok(ModuleResult::new());
-        };
+        let key = ctx.key(KEY_ENV)?;
 
         let email = target.value.trim();
         if !email.contains('@') {

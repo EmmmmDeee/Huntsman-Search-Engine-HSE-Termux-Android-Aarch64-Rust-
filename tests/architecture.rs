@@ -110,10 +110,36 @@ fn no_llm_inference_integration_exists() {
         "the `hse analyze` subcommand was removed with its backend"
     );
     let install = fs::read_to_string(root.join("install.sh")).expect("install.sh");
+    // The installer may name the retired artifacts in exactly one place: the
+    // marked region that REMOVES them from upgraded devices (the wrapper the
+    // old installer wrote stayed executable — and would still start a model
+    // server under the wake-lock — after the code using it was deleted).
+    // Everything outside that region is held to the full ban, and the region
+    // itself may only delete: no heredoc, no invocation of the model server.
+    let (outside, region) = split_cleanup_region(&install);
     for needle in ["ollama", "Ollama", "hse-ai", "HSE_WITH_AI"] {
         assert!(
-            !install.contains(needle),
-            "install.sh must not reference `{needle}` — the Ollama bootstrap is gone"
+            !outside.contains(needle),
+            "install.sh must not reference `{needle}` outside the removed-integration \
+             cleanup region — the Ollama bootstrap is gone"
+        );
+    }
+    assert!(
+        !region.is_empty() && region.contains("purge_removed_integration"),
+        "install.sh must carry the removed-integration cleanup region that purges \
+         the retired wrapper from upgraded devices"
+    );
+    // `ollama` as a whole word is the model-server command; the retired env
+    // key `HUNTSMAN_OLLAMA_MODEL`, which the region comments out, is not.
+    for line in region
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'))
+    {
+        assert!(
+            !line.contains("<<") && !contains_identifier(&line.to_ascii_lowercase(), "ollama"),
+            "the cleanup region may only remove: it must not write a wrapper or \
+             invoke the model server; offending line: {line}"
         );
     }
     // The whole live tree, not just the four surfaces above. The first version
@@ -147,6 +173,8 @@ const REMOVED_INTEGRATION_IDENTIFIERS: &[&str] = &[
     "scripts/finetune",
     "finetune",
     "Modelfile",
+    "AI-daemon",
+    "ai-daemon",
 ];
 
 /// Roots an operator, a contributor, CI or the installer actually reads.
@@ -161,7 +189,41 @@ const LIVE_ROOTS: &[&str] = &[
     "install.sh",
     "Cargo.toml",
     "README.md",
+    "Dockerfile",
+    ".dockerignore",
+    "docker-entrypoint.sh",
+    "railway.json",
+    ".env.example",
 ];
+
+/// Region markers around the one block, per file, that is allowed to name the
+/// retired integration because it REMOVES its artifacts: the installer's
+/// purge of the old wrapper, and the storage layer's `DROP TABLE` of its
+/// orphaned table. Lines between the markers are exempt from the scan.
+const CLEANUP_BEGIN: &str = "removed-integration-cleanup: begin";
+const CLEANUP_END: &str = "removed-integration-cleanup: end";
+
+/// `(text outside the cleanup region, text inside it)`. A file with no region
+/// is returned whole as "outside".
+fn split_cleanup_region(text: &str) -> (String, String) {
+    let mut outside = String::new();
+    let mut inside = String::new();
+    let mut in_region = false;
+    for line in text.lines() {
+        if line.contains(CLEANUP_BEGIN) {
+            in_region = true;
+            continue;
+        }
+        if line.contains(CLEANUP_END) {
+            in_region = false;
+            continue;
+        }
+        let target = if in_region { &mut inside } else { &mut outside };
+        target.push_str(line);
+        target.push('\n');
+    }
+    (outside, inside)
+}
 
 fn removed_integration_references(root: &Path) -> Vec<String> {
     let mut hits = Vec::new();
@@ -209,7 +271,21 @@ fn walk_live_text(path: &Path, root: &Path, hits: &mut Vec<String>) {
     // The crate-name denylist in `runtime_carries_no_ai_ml_inference_dependency`
     // legitimately lists `ollama` in order to forbid it as a dependency.
     let is_crate_denylist = rel == "tests/architecture_parts/architecture_part4.rs";
+    let mut in_cleanup_region = false;
     for (i, line) in text.lines().enumerate() {
+        // The marked removal regions (see `split_cleanup_region`) may name what
+        // they delete.
+        if line.contains(CLEANUP_BEGIN) {
+            in_cleanup_region = true;
+            continue;
+        }
+        if line.contains(CLEANUP_END) {
+            in_cleanup_region = false;
+            continue;
+        }
+        if in_cleanup_region {
+            continue;
+        }
         let ident = REMOVED_INTEGRATION_IDENTIFIERS
             .iter()
             .any(|n| line.contains(n))
@@ -238,6 +314,110 @@ fn contains_identifier(line: &str, ident: &str) -> bool {
         from = end;
     }
     false
+}
+
+/// The `Module::consumes()` probe loop exists once.
+///
+/// The trait default used to inline a byte-identical copy of
+/// `dependency::consumes_via_probe` while that function's doc claimed the
+/// trait called it — two hand-kept copies of the loop that builds the
+/// dependency graph and dispatch index for every module, free to drift, with
+/// the function's own tests exercising the copy production never ran. The
+/// default now delegates; this pins that it keeps doing so.
+#[test]
+fn module_consumes_probe_loop_has_one_implementation() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let module = fs::read_to_string(root.join("src/core/module/mod.rs")).expect("module.rs");
+    let default_body = module
+        .split("fn consumes(&self) -> Vec<TargetKind> {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n    }\n").next())
+        .expect("Module::consumes default body");
+    assert!(
+        default_body.contains("consumes_via_probe(self)"),
+        "Module::consumes() must delegate to dependency::consumes_via_probe, not \
+         carry its own copy of the probe loop; body was:\n{default_body}"
+    );
+    assert!(
+        !default_body.contains("ALL_TARGET_KINDS"),
+        "the probe loop over ALL_TARGET_KINDS belongs in consumes_via_probe only"
+    );
+}
+
+/// One scheduler. `docs/DEVELOPMENT_RULES.md`: "use the existing ROI/frontier
+/// system wherever viable; consolidate rather than introducing another
+/// scheduler". The existing one is `core::roi` plus the engine round loop.
+///
+/// `core::intelligence::BoundedFrontier` was a second, dormant scheduler with
+/// a third ranking formula (`PathCandidate::score`) beside the two the engine
+/// runs, kept on the strength of a restart checkpoint that turned out to have
+/// no caller. Deleted; this pins that a parallel frontier does not come back
+/// under the old names.
+#[test]
+fn no_second_scheduler_exists() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(
+        !root.join("src/storage/intelligence.rs").exists(),
+        "the frontier checkpoint persistence was removed with the frontier"
+    );
+    let v = scan_for_violations(
+        &root.join("src"),
+        &["BoundedFrontier", "PathCandidate", "FrontierBudget"],
+    );
+    assert!(
+        v.is_empty(),
+        "a second scheduler beside core::roi + the engine round loop:\n{}",
+        v.join("\n")
+    );
+}
+
+/// `hse doctor` reports the egress proxy pool when one is configured.
+///
+/// `util::egress` runs a real rotation pool in production (curl selects and
+/// reports through it; the engine host refreshes it) and shipped diagnostics
+/// accessors over it that nothing called, so a pool dying under an operator
+/// relying on `HUNTSMAN_PROXY_FEEDS` was invisible until scans failed. Doctor
+/// now refreshes the pool in-process and renders it; this pins the call site.
+#[test]
+fn doctor_reports_the_egress_pool_when_configured() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let doctor = fs::read_to_string(root.join("src/app/doctor/mod.rs")).expect("doctor");
+    assert!(
+        doctor.contains("egress::refresh_pool().await")
+            && doctor.contains("egress::format_pool_health("),
+        "hse doctor must refresh and render the egress pool (util::egress) when configured"
+    );
+    let egress = fs::read_to_string(root.join("src/util/egress/mod.rs")).expect("egress");
+    assert!(
+        !egress.contains("pub fn next_proxy()"),
+        "next_proxy() was a caller-less duplicate of next_proxy_excluding(&[])"
+    );
+}
+
+/// The pairwise-clique loop behind every group-based relation builder exists
+/// once, in `relation::builders::emit_pairwise`. Three builders re-inlined it
+/// to add a skip guard; the direction/dedup/ordering invariant the graph
+/// walkers and the AU-047/048/067/071 rules depend on lived in four copies.
+#[test]
+fn relation_builders_share_one_pairwise_loop() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let builders =
+        fs::read_to_string(root.join("src/core/relation/builders.rs")).expect("builders.rs");
+    for name in [
+        "derive_handles",
+        "derive_kinship",
+        "derive_regional_kinship",
+    ] {
+        let start = builders
+            .find(&format!("pub fn {name}("))
+            .unwrap_or_else(|| panic!("{name} exists"));
+        let body = &builders[start..start + builders[start..].find("\n}\n").expect("fn end")];
+        assert!(
+            body.contains("emit_pairwise(") && !body.contains("for j in (i + 1)"),
+            "{name} must delegate to emit_pairwise (with a skip predicate) instead of \
+             carrying its own copy of the pairwise loop"
+        );
+    }
 }
 
 #[test]
@@ -431,8 +611,6 @@ fn core_does_not_import_util_directly() {
                 && !line.contains("util::url_util::is_tracking_param_key")
                 && !line.contains("util::preflight")
                 && !line.contains("util::keys::signup_hint")
-                && !line.contains("util::oathnet::reset_budget")
-                && !line.contains("util::see_know::set_scan_cap_override")
                 // Pure task-local setter (no I/O): the foreign-key scan-scope
                 // ambient. The engine wraps each scan + each spawned dispatch task in
                 // `found_keys::with_scan` so the per-response key scanner attributes a

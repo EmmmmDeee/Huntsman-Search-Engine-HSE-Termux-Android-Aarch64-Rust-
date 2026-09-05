@@ -92,9 +92,9 @@ pub struct BenchmarkReport {
     /// The full graph-intelligence metrics, embedded for complete traceability.
     pub metrics: ScanMetrics,
     /// Provider coverage for the run behind this scorecard — see
-    /// [`crate::core::intelligence::CoverageVerdict`]. `None` when the scan has
+    /// [`crate::core::coverage::CoverageVerdict`]. `None` when the scan has
     /// no retained dispatch events, which is itself a reason not to compare.
-    pub coverage: Option<crate::core::intelligence::CoverageVerdict>,
+    pub coverage: Option<crate::core::coverage::CoverageVerdict>,
     /// The caveat this report needs before its scorecard is set against another
     /// run's, or `None` when the run asked everything — see
     /// [`BenchmarkReport::comparability_caveat`]. Carried as a field so a JSON
@@ -195,8 +195,8 @@ pub fn report(
         cross_scan_bridges: metrics.cross_scan_bridges,
     };
 
-    let rows = crate::core::intelligence::provider_coverage_from_events(events);
-    let coverage = (!rows.is_empty()).then(|| crate::core::intelligence::coverage_verdict(&rows));
+    let rows = crate::core::coverage::provider_coverage_from_events(events);
+    let coverage = (!rows.is_empty()).then(|| crate::core::coverage::coverage_verdict(&rows));
 
     let mut report = BenchmarkReport {
         scan_id: scan.id.clone(),

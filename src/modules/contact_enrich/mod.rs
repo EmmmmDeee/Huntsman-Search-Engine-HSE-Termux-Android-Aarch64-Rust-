@@ -172,11 +172,11 @@ impl Module for ContactEnrich {
 // ---------------------------------------------------------------------------
 
 async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-    // Graceful skip when the API key is not configured.
-    let key = match ctx.key(NUMVERIFY_KEY_ENV) {
-        Ok(k) => k,
-        Err(_) => return Ok(ModuleResult::new()),
-    };
+    // No key → `Error::MissingKey`, which dispatch renders as a "needs API
+    // key" skip and coverage reads as NotAttempted. Returning `Ok(empty)` here
+    // recorded the provider as queried-and-empty: a clean negative for a
+    // source that was never asked (see `modules::keyed_tests`).
+    let key = ctx.key(NUMVERIFY_KEY_ENV)?;
 
     let mut phone = String::with_capacity(target.value.len());
     phone.extend(

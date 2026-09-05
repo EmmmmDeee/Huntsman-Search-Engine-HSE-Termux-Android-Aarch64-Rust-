@@ -3097,3 +3097,52 @@ fn prune_events_spares_a_live_scans_events_but_not_a_finished_or_zombie_scans() 
         "3 aged zombie rows + 1 excess finished-scan row"
     );
 }
+
+// removed-integration-cleanup: begin — this test seeds the retired table to
+// prove it is dropped, and is exempt from the live-tree name ban for that reason.
+#[test]
+fn a_retired_scan_analysis_table_is_dropped_on_open() {
+    // A database written by an install that still carried the local-AI
+    // integration holds a `scan_analysis` table of model-generated prose. The
+    // integration is gone; the table must go with it on the next open rather
+    // than sit in the evidentiary store forever (RULE 1), and a fresh database
+    // must never gain it.
+    let path = tmp_db();
+    {
+        let conn = rusqlite::Connection::open(&path).expect("raw open");
+        conn.execute_batch(
+            "CREATE TABLE scan_analysis (scan_id TEXT PRIMARY KEY, analysis TEXT NOT NULL);
+             INSERT INTO scan_analysis VALUES ('scan-1', 'model prose');",
+        )
+        .expect("seed the retired table");
+    }
+    let store = Store::open(&path).expect("should succeed");
+    let present: i64 = store
+        .conn
+        .lock()
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'scan_analysis'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("sqlite_master");
+    assert_eq!(
+        present, 0,
+        "the retired scan_analysis table must be dropped on open"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+// removed-integration-cleanup: end
+
+#[test]
+fn the_relations_insert_exists_once() {
+    // `upsert_relation` and `upsert_relations_batch` used to carry their own
+    // copies of the 8-column INSERT and its bindings, with only a doc comment
+    // asserting they agreed. One statement, one binder, both paths.
+    let source = include_str!("mod.rs");
+    assert_eq!(
+        source.matches("INSERT INTO relations(").count(),
+        1,
+        "the relations INSERT must have exactly one definition (RELATION_UPSERT_SQL)"
+    );
+}

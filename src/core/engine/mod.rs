@@ -717,11 +717,12 @@ impl ScanEngine {
 
         // Apply per-scan SeekNow budget override if the operator asked
         // for one. Capped at 500 so a single scan cannot blow the
-        // per-session ceiling. `reset_budget` above cleared any prior
-        // override; this re-installs it for the current scan only.
+        // per-session ceiling. `reset_per_scan` above cleared any prior
+        // override; this re-installs it for the current scan only — through
+        // the module runtime, so a module-free engine never touches the
+        // process-wide budget.
         if let Some(cap) = scan.options.seeknow_scan_cap {
-            let clamped = cap.min(500);
-            crate::util::see_know::set_scan_cap_override(clamped);
+            self.module_runtime.set_seeknow_scan_cap(cap.min(500));
         }
 
         self.emit(

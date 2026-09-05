@@ -756,7 +756,7 @@ pub(super) fn sort_edges(edges: &mut [Relation]) {
 /// once in canonical direction (smaller UID → larger) and deduped, then sorted —
 /// deterministic regardless of entity order.
 pub fn derive_handles(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
 
     let mut by_key: HashMap<String, Vec<&Entity>> = HashMap::new();
     for e in entities {
@@ -765,32 +765,15 @@ pub fn derive_handles(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
         }
     }
 
-    let mut seen: HashSet<(String, String)> = HashSet::new();
-    let mut out = Vec::new();
-    for group in by_key.values() {
-        for i in 0..group.len() {
-            for j in (i + 1)..group.len() {
-                let (a, b) = (group[i], group[j]);
-                // Same entity, or two spellings that normalise identically — not
-                // an alias between *distinct* identifiers.
-                if a.uid == b.uid || a.value == b.value {
-                    continue;
-                }
-                let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
-                if seen.insert((from.uid.clone(), to.uid.clone())) {
-                    out.push(Relation::new(
-                        from.uid.as_str(),
-                        to.uid.as_str(),
-                        RelationKind::AliasOf,
-                        from.confidence.min(to.confidence),
-                        scan_id,
-                    ));
-                }
-            }
-        }
-    }
-    sort_edges(&mut out);
-    out
+    emit_pairwise(
+        by_key.into_values(),
+        RelationKind::AliasOf,
+        scan_id,
+        |a, b| a.confidence.min(b.confidence),
+        // Two spellings that normalise identically — not an alias between
+        // *distinct* identifiers.
+        |a, b| a.value == b.value,
+    )
 }
 
 /// Derive `SharesSecretWith` edges between Email/Username entities proven to
@@ -874,9 +857,13 @@ pub fn derive_reused_secret_link(entities: &[Entity], scan_id: &str) -> Vec<Rela
         (members.len() >= 2).then_some(members)
     });
 
-    emit_pairwise(groups, RelationKind::SharesSecretWith, scan_id, |a, b| {
-        a.confidence.min(b.confidence)
-    })
+    emit_pairwise(
+        groups,
+        RelationKind::SharesSecretWith,
+        scan_id,
+        |a, b| a.confidence.min(b.confidence),
+        |_, _| false,
+    )
 }
 
 /// Derive `IdentifiedBy` edges (Person → Email/Username/Phone) binding the subject
@@ -1029,7 +1016,7 @@ pub fn derive_residency(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
 /// and clearly typed as a candidate. Symmetric, canonically directed, deduped,
 /// deterministic.
 pub fn derive_kinship(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
 
     let mut by_surname: HashMap<String, Vec<&Entity>> = HashMap::new();
     for p in entities.iter().filter(|e| e.kind == EntityKind::Person) {
@@ -1038,45 +1025,27 @@ pub fn derive_kinship(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
         }
     }
 
-    let mut seen: HashSet<(String, String)> = HashSet::new();
-    let mut out = Vec::new();
-    for (surname, group) in &by_surname {
-        // A COMMON surname (Smith, Jones, Nguyen, Wang…) is shared by countless
-        // unrelated strangers; pairing everyone who happens to carry one would
-        // manufacture O(n²) false "associate" edges from a single popular name.
-        // Only a DISTINCTIVE surname is itself evidence of likely kinship — mirror
-        // the commonness discount the leads/engine paths already apply. (A genuine
-        // relative of a common-surname subject still surfaces through the
-        // evidence-grounded co-residence / declared-association passes.)
-        if crate::util::surnames::is_common(surname) {
-            continue;
-        }
-        for i in 0..group.len() {
-            for j in (i + 1)..group.len() {
-                let (a, b) = (group[i], group[j]);
-                // Distinct people only — not the same Person surfaced twice, and
-                // not two spellings of one full name.
-                if a.uid == b.uid
-                    || crate::core::scan::identity_norm(&a.value)
-                        == crate::core::scan::identity_norm(&b.value)
-                {
-                    continue;
-                }
-                let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
-                if seen.insert((from.uid.clone(), to.uid.clone())) {
-                    out.push(Relation::new(
-                        from.uid.as_str(),
-                        to.uid.as_str(),
-                        RelationKind::AssociatedWith,
-                        from.confidence.min(to.confidence) * KINSHIP_DAMP,
-                        scan_id,
-                    ));
-                }
-            }
-        }
-    }
-    sort_edges(&mut out);
-    out
+    // A COMMON surname (Smith, Jones, Nguyen, Wang…) is shared by countless
+    // unrelated strangers; pairing everyone who happens to carry one would
+    // manufacture O(n²) false "associate" edges from a single popular name.
+    // Only a DISTINCTIVE surname is itself evidence of likely kinship — mirror
+    // the commonness discount the leads/engine paths already apply. (A genuine
+    // relative of a common-surname subject still surfaces through the
+    // evidence-grounded co-residence / declared-association passes.)
+    // Distinct people only — not the same Person surfaced twice, and
+    // not two spellings of one full name.
+    emit_pairwise(
+        by_surname
+            .into_iter()
+            .filter(|(surname, _)| !crate::util::surnames::is_common(surname))
+            .map(|(_, group)| group),
+        RelationKind::AssociatedWith,
+        scan_id,
+        |a, b| a.confidence.min(b.confidence) * KINSHIP_DAMP,
+        |a, b| {
+            crate::core::scan::identity_norm(&a.value) == crate::core::scan::identity_norm(&b.value)
+        },
+    )
 }
 
 /// Confidence damp for a geo-corroborated common-surname family lead — a shared
@@ -1103,7 +1072,7 @@ const REGIONAL_KINSHIP_DAMP: f64 = 0.45;
 /// touches an edge `derive_kinship` emitted. Distinct people only (different UID
 /// and folded name); symmetric, canonically directed, deduped, deterministic.
 pub fn derive_regional_kinship(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
 
     // Index common-surname Persons that carry an AU postcode, keyed by
     // (surname, postcode) — i.e. same family name AND same town.
@@ -1121,33 +1090,15 @@ pub fn derive_regional_kinship(entities: &[Entity], scan_id: &str) -> Vec<Relati
         by_town.entry((surname, postcode)).or_default().push(p);
     }
 
-    let mut seen: HashSet<(String, String)> = HashSet::new();
-    let mut out = Vec::new();
-    for group in by_town.values() {
-        for i in 0..group.len() {
-            for j in (i + 1)..group.len() {
-                let (a, b) = (group[i], group[j]);
-                if a.uid == b.uid
-                    || crate::core::scan::identity_norm(&a.value)
-                        == crate::core::scan::identity_norm(&b.value)
-                {
-                    continue; // same person / two spellings of one name
-                }
-                let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
-                if seen.insert((from.uid.clone(), to.uid.clone())) {
-                    out.push(Relation::new(
-                        from.uid.as_str(),
-                        to.uid.as_str(),
-                        RelationKind::AssociatedWith,
-                        from.confidence.min(to.confidence) * REGIONAL_KINSHIP_DAMP,
-                        scan_id,
-                    ));
-                }
-            }
-        }
-    }
-    sort_edges(&mut out);
-    out
+    emit_pairwise(
+        by_town.into_values(),
+        RelationKind::AssociatedWith,
+        scan_id,
+        |a, b| a.confidence.min(b.confidence) * REGIONAL_KINSHIP_DAMP,
+        |a, b| {
+            crate::core::scan::identity_norm(&a.value) == crate::core::scan::identity_norm(&b.value)
+        },
+    )
 }
 
 /// Evidence attribute keys whose value names another person this entity is
@@ -1277,9 +1228,13 @@ pub fn derive_co_residence(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
                 residents
             })
         });
-    emit_pairwise(groups, RelationKind::AssociatedWith, scan_id, |a, b| {
-        a.confidence.min(b.confidence) * CO_RESIDENCE_DAMP
-    })
+    emit_pairwise(
+        groups,
+        RelationKind::AssociatedWith,
+        scan_id,
+        |a, b| a.confidence.min(b.confidence) * CO_RESIDENCE_DAMP,
+        |_, _| false,
+    )
 }
 
 /// Emit one canonically-directed (`smaller-uid → larger`), deduplicated `kind` edge
@@ -1291,11 +1246,19 @@ pub fn derive_co_residence(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
 /// deterministic final ordering ONCE, instead of every builder re-implementing the
 /// same nested loop. Members are sorted by UID, so the edge set is independent of how
 /// a caller ordered each group.
+///
+/// `skip(a, b)` excludes a pair the builder judges not to be two DISTINCT
+/// identities even though their UIDs differ — two spellings of one handle,
+/// one person's name normalising two ways. Same-UID pairs are always skipped.
+/// Three builders used to re-inline this whole loop just to add that guard;
+/// the direction/dedup/ordering invariant that the graph walkers and the
+/// AU-047/048/067/071 rules depend on now has one implementation.
 fn emit_pairwise<'a>(
     groups: impl IntoIterator<Item = Vec<&'a Entity>>,
     kind: RelationKind,
     scan_id: &str,
     conf: impl Fn(&Entity, &Entity) -> f64,
+    skip: impl Fn(&Entity, &Entity) -> bool,
 ) -> Vec<Relation> {
     use std::collections::HashSet;
 
@@ -1306,6 +1269,9 @@ fn emit_pairwise<'a>(
         for i in 0..members.len() {
             for j in (i + 1)..members.len() {
                 let (a, b) = (members[i], members[j]);
+                if skip(a, b) {
+                    continue;
+                }
                 let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
                 if from.uid != to.uid && seen.insert((from.uid.clone(), to.uid.clone())) {
                     out.push(Relation::new(
@@ -1397,9 +1363,13 @@ fn link_by_shared_attribute(
     let groups = by_value
         .into_values()
         .filter(|members| (2..=crowd_cap).contains(&members.len()));
-    emit_pairwise(groups, RelationKind::AssociatedWith, scan_id, |a, b| {
-        a.confidence.min(b.confidence) * damp
-    })
+    emit_pairwise(
+        groups,
+        RelationKind::AssociatedWith,
+        scan_id,
+        |a, b| a.confidence.min(b.confidence) * damp,
+        |_, _| false,
+    )
 }
 
 /// Derive `AssociatedWith` CO-MENTION edges between distinct Persons NAMED IN THE
@@ -1486,9 +1456,13 @@ pub fn derive_canonical_identities(entities: &[Entity], scan_id: &str) -> Vec<Re
             .filter_map(|uid| by_uid.get(uid.as_str()).copied())
             .collect::<Vec<&Entity>>()
     });
-    emit_pairwise(entity_groups, RelationKind::SameAs, scan_id, |a, b| {
-        a.confidence.min(b.confidence)
-    })
+    emit_pairwise(
+        entity_groups,
+        RelationKind::SameAs,
+        scan_id,
+        |a, b| a.confidence.min(b.confidence),
+        |_, _| false,
+    )
 }
 
 /// Minimum [`crate::core::coref::resolve_coreferences`] score for a co-reference
