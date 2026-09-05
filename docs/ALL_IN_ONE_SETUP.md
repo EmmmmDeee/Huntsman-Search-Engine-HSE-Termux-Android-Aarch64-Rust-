@@ -164,9 +164,6 @@ curl -X POST http://127.0.0.1:8080/api/v1/scans \
 # Get results
 curl http://127.0.0.1:8080/api/v1/scans/latest
 
-curl -X POST http://127.0.0.1:8080/api/v1/scans/latest/analyze \
-  -H "Content-Type: application/json" \
-  -d '{"model": "qwen2.5:7b"}'
 ```
 
 ---
@@ -179,27 +176,10 @@ Control how many credits per scan HSE can use:
 
 ```bash
 # Limit to 50 credits per scan
-hse scan --seeknow-scan-cap 50 user@example.com
+hse scan --seeknow-scan-cap 50 --value user@example.com
 
 # Or set globally
 echo 'export HUNTSMAN_SEEKNOW_SCAN_CAP=250' >> ~/.huntsman.env
-```
-
-### Background AI Analysis (Termux)
-
-# Install termux-services
-pkg install termux-services
-
-# Create service directory
-
-# Create run script
-#!/data/data/com.termux/files/usr/bin/sh
-EOF
-
-
-# Enable and start
-
-# Check status
 ```
 
 ---
@@ -221,9 +201,6 @@ re-save it to `~/.huntsman/seeknow_session.txt`), kept in one place.
 # Increase timeout
 export HUNTSMAN_SEEKNOW_TIMEOUT=120  # seconds
 
-# Run in dry-run mode first
-hse scan --dry-run user@example.com
-
 # Check real-time progress
 hse serve  # Watch Live tab for events
 ```
@@ -233,7 +210,7 @@ hse serve  # Watch Live tab for events
 ## 📈 Next Steps
 
 1. **Run several scans** to populate history and test results
-2. **Explore advanced modules** — `hse selftest` shows all 181 available modules
+2. **Explore advanced modules** — `hse modules` lists all 188 available modules
 3. **Set up CI/automation** — webhook integrations, scheduled scans, etc.
 4. **Share scans** — Export to JSON/CSV from Web UI or API
 
@@ -254,4 +231,4 @@ hse serve  # Watch Live tab for events
 
 **Full diagnostic bundle:** Settings → Diagnostics → Download (in Web UI).
 
-**Health check:** `hse selftest` or `hse live-capability-probe`.
+**Health check:** `hse selftest`, or `hse doctor --live` for a live provider probe.

@@ -337,26 +337,26 @@ respectively.
 > `hse modules` or open the web UI's module wizard — never a static doc that
 > can drift from the registry.
 
-**API-Free (no keys required) — 92:**
+**API-Free (no keys required) — 95:**
 - **Breach/identity**: `psbdmp`, `pwned_passwords`, `xposed_or_not`
 - **Social**: `crates_io`, `github_code_search`, `github_user`, `hacker_news`, `keybase`, `npm_author`, `reddit_user`, `social_probe`, `streaming_probe`, `username_search`, `username_variants`
 - **People**: `ahpra`, `au_electoral`, `au_people`, `au_property`, `contact_enrich`, `employer_pivot`, `gravatar`, `name_intel`, `payid`, `pgp`, `wikidata`
-- **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `domainsdb`, `hackertarget`, `mnemonic_pdns`, `rdap_domain`, `subdomain_center`, `subdomain_takeover`, `typosquat`, `whois`
+- **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `hackertarget`, `mnemonic_pdns`, `rdap_domain`, `subdomain_center`, `subdomain_takeover`, `typosquat`, `whois`
 - **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipinfo`, `ipquery`, `netblock`, `portscan`, `ripestat`, `shodan`, `urlscan`
-- **Geolocation**: `beacondb`, `breach_timezone`, `cell_local`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mls`, `mylnikov`, `open_meteo_geo`, `overpass`, `phone_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
+- **Geolocation**: `beacondb`, `breach_timezone`, `cell_local`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mylnikov`, `open_meteo_geo`, `overpass`, `phone_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
 - **Threat intel**: `urlhaus`
 - **Email**: `disposable_check`, `email_canonical`, `email_parse`, `smtp_vrfy`
 - **Phone**: `phone_au`, `phone_intl`
-- **Corporate**: `acma_rrl`, `acnc_charities`, `asic_director`, `au_unclaimed`, `austlii`, `gleif_lei`, `opencorporates`
+- **Corporate**: `acma_rrl`, `acnc_charities`, `asic_director`, `au_unclaimed`, `austlii`, `gleif_lei`
 - **Search**: `search_engines`
 - **Web analysis**: `cloud_storage`, `sitemap`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
 - **Termux sensors**: `cell_intel`, `device_sensors`, `local_net`, `signal_radar`
 - **Other**: `api_key_probe`, `chain_intel`
 
-**Key-gated / Paid — 32 (28 key-gated · 4 paid):**
-- `abn_lookup`, `abuseipdb`, `censys`, `criminal_ip`, `dehashed`, `emailrep`
+**Key-gated / Paid — 31:**
+- `abn_lookup`, `abuseipdb`, `censys`, `criminal_ip`, `dehashed`, `domainsdb`, `emailrep`
 - `epieos`, `exa_search`, `fullcontact`, `hibp`, `hlr_cnam`, `hunter_io`, `intelx`, `ipqs`
-- `leakix`, `netlas`, `niamonx`, `numverify`, `oathnet_pro`, `onyphe`, `opencellid`, `osintcat`
+- `leakix`, `netlas`, `niamonx`, `numverify`, `oathnet_pro`, `onyphe`, `opencellid`, `opencorporates`, `osintcat`
 - `securitytrails`, `see_know`, `seon`, `threatfox`, `trove_au`, `virustotal`, `whoisxml`
 - `wifi_intel`, `wigle`, `zoomeye`
 
@@ -379,7 +379,7 @@ stamps it inline with its producing module's technique(s) as
 `attack:<TECHNIQUE_ID>` tags (e.g. `attack:T1589.002` "Email Addresses"). So the
 technique that collected a datum travels with the datum — visible in the entity's
 `tags` in JSON output, on each entity in the full dossier
-(`hse export <id> --format full`) and `hse scan --format dossier`, and in the
+(`hse export --scan-id <id> --format full`) and `hse scan --format dossier`, and in the
 database — with no separate coverage report to reconcile. A finding corroborated
 by several modules carries all of their techniques (merges union the tags).
 
@@ -437,7 +437,7 @@ open-LAN behaviour for a deliberately public deployment. Key-writing
 Every seed type has a pathway to geographic coordinates:
 
 ```
-Name/Email/Username → search_engines (17 engines, free)
+Name/Email/Username → search_engines (16 engines, free)
                     → discovered emails/phones/addresses
                     → oathnet_pro (breach IPs)
                     → ip_geo + ip_whois_geo (free HTTPS)
@@ -469,16 +469,16 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 2
 ```
 
 Round 0 (seed): `"Jordan Leigh Meyers"` dispatched to all accepting modules.
-Round 1: High-confidence entities (C_eff ≥ 0.75) become new targets.
+Round 1: Entities above the expansion floor (default C_eff ≥ 0.20) become new targets.
 Round 2: Discovered IPs → geo modules → coordinates → address.
 
 | Knob | Default | Purpose |
 |------|---------|---------|
-| `--depth N` | `2` | Max expansion rounds (0 = single seed round) |
-| `--min-expand-confidence F` | `0.50` | Min C_eff to expand (0.75 = Verified-only) |
-| `--max-entities N` | none | Stop at N total entities |
+| `--depth N` | `5` | Max expansion rounds (0 = single seed round) |
+| `--min-expand-confidence F` | `0.20` | Min C_eff to expand (0.75 = Verified-only) |
+| `--max-entities N` | `2500` | Stop at N total entities |
 | `--max-wall-time SECS` | none | Stop after SECS wall-time |
-| `--max-concurrent N` | `0` | Parallel module dispatch (0=sequential) |
+| `--max-concurrent N` | `2` | Parallel module dispatch (0=sequential) |
 | `--expand-all-identities` | off | Expand every discovered username/person, even uncorroborated aliases that don't overlap the subject's handle (lifts the wrong-identity gate; implied by `--full`). Higher recall, more unrelated footprints to prune |
 
 **Nothing is a black box.** Every pivot the engine *declines* to follow — a
