@@ -22,6 +22,11 @@ use crate::core::{
 
 const SRC: &str = "geo_domain_classifier";
 
+/// Zero-API geo-indicative domain classifier. Infers a coarse country/region
+/// location from a domain name or TLD (ccTLD tables, known corporate/bank/
+/// university domains, and AU / VN jurisdiction rules) and emits `Address` /
+/// `Coordinates` entities. See the module-level documentation for the full
+/// classification order and evidence semantics.
 pub struct GeoDomainClassifier;
 
 #[async_trait]
