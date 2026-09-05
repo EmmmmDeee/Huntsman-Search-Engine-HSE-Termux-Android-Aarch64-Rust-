@@ -22,6 +22,7 @@ pub mod diagnostics;
 pub mod dmarc;
 pub mod dns;
 pub mod document_parse;
+pub mod domain_vn;
 pub mod domains;
 pub mod egress;
 pub mod endpoint_override;

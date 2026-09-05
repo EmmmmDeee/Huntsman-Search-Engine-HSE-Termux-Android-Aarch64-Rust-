@@ -336,3 +336,85 @@ fn classifies_known_australian_service() {
         assert!(addr.has_tag("au-registrant:commercial"));
         assert!(addr.has_tag("au-relevant"));
     }
+
+    #[test]
+    fn vietnamese_second_level_domains_now_classify_as_vietnam() {
+        // Regression: before the VNNIC namespace was tabulated, only `.com.vn`
+        // classified — every other real `.vn` 2LD (`gov`/`edu`/`ac`/`org`/`net`/
+        // `biz`/`name`) and a directly-registered `.vn` fell through to NO
+        // classification, so a Vietnamese government or university domain produced
+        // no jurisdiction signal at all. All now resolve to Vietnam at ccTLD grain.
+        for domain in [
+            "mps.gov.vn",
+            "vnu.edu.vn",
+            "vast.ac.vn",
+            "redcross.org.vn",
+            "isp.net.vn",
+            "shop.biz.vn",
+            "nguyen-van-a.name.vn",
+            "chinhphu.vn",   // directly-registered under the bare ccTLD
+            "example.com.vn",
+        ] {
+            let geo = classify_domain(domain)
+                .unwrap_or_else(|| panic!("{domain} must classify as Vietnam"));
+            assert_eq!(geo.country_code, "VN", "{domain}");
+            assert_eq!(geo.location, "Vietnam", "{domain}");
+            assert_eq!(geo.method, "cctld", "{domain}");
+            assert_eq!(geo.au_state, None, "{domain} is not an AU jurisdiction");
+        }
+    }
+
+    #[tokio::test]
+    async fn vn_government_domain_emits_tagged_vietnam_address_without_a_coordinate() {
+        // A `.gov.vn` domain yields exactly one Vietnam Address carrying the
+        // VN-jurisdiction + registrant tags — and NO Coordinates, because the
+        // country-grain "Vietnam" is not a geocodable city (no fabricated point).
+        let m = GeoDomainClassifier;
+        let r = m
+            .process(&Target::new(TargetKind::Domain, "mps.gov.vn"), &test_ctx())
+            .await
+            .expect("should succeed");
+        assert!(
+            r.entities.iter().all(|e| e.kind == EntityKind::Address),
+            "no Coordinates entity for a country-grain location"
+        );
+        let addr = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Address)
+            .expect("a .gov.vn domain yields a VN location");
+        assert_eq!(addr.value, "Vietnam");
+        assert!(addr.has_tag("domain-inferred"));
+        assert!(addr.has_tag("vn-registrant:government"));
+        assert!(addr.has_tag("vn-relevant"));
+        assert!(
+            addr.evidence
+                .iter()
+                .any(|ev| ev.attributes.get("vn_registrant").map(String::as_str)
+                    == Some("government")),
+            "the registrant category is recorded as evidence"
+        );
+        assert!(!r.entities.iter().any(|e| e.kind == EntityKind::Coordinates));
+    }
+
+    #[tokio::test]
+    async fn individual_name_vn_domain_is_tagged_people_centric() {
+        // A `.name.vn` domain is a natural-person Vietnamese registrant — the VN
+        // analogue of `.id.au` — so the emitted location carries the individual
+        // registrant tag.
+        let m = GeoDomainClassifier;
+        let r = m
+            .process(
+                &Target::new(TargetKind::Domain, "nguyen-van-a.name.vn"),
+                &test_ctx(),
+            )
+            .await
+            .expect("should succeed");
+        let addr = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Address)
+            .expect("a .name.vn domain yields a VN location");
+        assert!(addr.has_tag("vn-registrant:individual"));
+        assert!(addr.has_tag("vn-relevant"));
+    }
