@@ -296,6 +296,78 @@ fn no_module_reads_an_http_body_without_a_size_cap() {
     );
 }
 
+/// Every in-memory read of a byte STREAM in production is size-bounded.
+///
+/// `read_to_end` / `read_to_string` pull a whole stream into a `Vec`/`String`;
+/// on the Termux target a hostile or broken source — a subprocess pipe, stdin,
+/// a socket — writing without limit would grow that buffer until the tool is
+/// OOM-killed on an 11 GB phone. The canonical form binds the reader with
+/// `.take(N)` first (see `util::curl_client::read_capped`,
+/// `cli::investigate::read_prompt_bounded`, `modules::whois::client`). This is
+/// the same no-unbounded-read discipline `no_module_reads_an_http_body_without_a_size_cap`
+/// applies to HTTP bodies, extended to every other stream: it flags a
+/// `read_to_end`/`read_to_string` call that has no `.take(` on its own line or
+/// the code line immediately above it (the two shapes the cap idiom takes).
+#[test]
+fn no_production_read_pulls_a_stream_into_memory_without_a_size_cap() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && !p
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().ends_with("tests.rs"))
+            {
+                out.push(p);
+            }
+        }
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    walk(&root, &mut files);
+    files.sort();
+
+    let mut offenders = Vec::new();
+    for p in &files {
+        let text = fs::read_to_string(p).expect("source file readable");
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue; // doc/explanatory comments may mention the pattern
+            }
+            if !(line.contains(".read_to_end(") || line.contains(".read_to_string(")) {
+                continue;
+            }
+            // Bounded when `.take(` is on this line, or on the nearest preceding
+            // non-blank, non-comment code line (the reader was capped there).
+            let same = line.contains(".take(");
+            let prev = lines[..i]
+                .iter()
+                .rev()
+                .find(|l| {
+                    let t = l.trim_start();
+                    !t.is_empty() && !t.starts_with("//")
+                })
+                .is_some_and(|l| l.contains(".take("));
+            if !same && !prev {
+                offenders.push(format!("{}:{}", p.display(), i + 1));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "unbounded read into memory (read_to_end/read_to_string with no `.take(N)` cap) — \
+         a stream a hostile or broken source can grow without limit will OOM the tool on a \
+         low-RAM phone; bind the reader with `.take(N)` first (see \
+         `util::curl_client::read_capped`): {offenders:?}"
+    );
+}
+
 /// The README's headline module count is hand-maintained and had drifted
 /// (stated as "60+", "63" and "89" across files while the registry held 89).
 /// Tie the authoritative "## Module Overview (N modules" figure to the live

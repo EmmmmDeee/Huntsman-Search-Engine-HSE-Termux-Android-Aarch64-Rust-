@@ -268,23 +268,28 @@ impl CurlClient {
         cmd.stderr(std::process::Stdio::piped());
 
         timeout(Duration::from_millis(self.outer_timeout_ms), async {
-            use tokio::io::AsyncReadExt as _;
             let mut child = cmd
                 .spawn()
                 .map_err(|e| Error::module(self.module, e.to_string()))?;
             let mut child_out = child.stdout.take().expect("stdout piped");
             let mut child_err = child.stderr.take().expect("stderr piped");
             let cap = crate::util::http::JSON_BODY_CAP as u64;
-            let mut body = Vec::new();
-            let mut err = Vec::new();
-            // `take(cap + 1)` reads one byte past the ceiling so an exactly-cap
-            // body still succeeds while a bomb trips the guard below.
-            let mut capped_out = (&mut child_out).take(cap + 1);
-            let (out_res, _err_res) = tokio::join!(
-                capped_out.read_to_end(&mut body),
-                child_err.read_to_end(&mut err),
+            // Drain BOTH pipes through the one bounded reader ([`read_capped`]):
+            // stdout so a `--compressed` decompression bomb can't OOM the tool
+            // (the guard below turns an over-cap read into an error), and stderr
+            // so a hostile or broken curl writing without bound to its error
+            // stream can't either. `read_capped`'s `take(cap + 1)` reads one byte
+            // past the ceiling so an exactly-cap body still succeeds while a bomb
+            // trips the guard; draining concurrently keeps a full pipe from
+            // deadlocking the child.
+            let (out_res, err_res) = tokio::join!(
+                read_capped(&mut child_out, cap),
+                read_capped(&mut child_err, STDERR_CAP),
             );
-            out_res.map_err(|e| Error::module(self.module, e.to_string()))?;
+            let body = out_res.map_err(|e| Error::module(self.module, e.to_string()))?;
+            // stderr is diagnostic only: it is capped and truncated, and a read
+            // hiccup on it must never mask the real result.
+            let err = err_res.unwrap_or_default();
             if body.len() as u64 > cap {
                 // Over the decoded ceiling → decompression bomb. Returning drops
                 // `child`, and `kill_on_drop(true)` reaps the still-writing curl.
@@ -465,6 +470,33 @@ fn split_status(raw: &str) -> (String, u16) {
             }
         }
     }
+}
+
+/// Cap on the bytes read from a curl child's **stderr** (64 KiB). curl's error
+/// stream is diagnostic — a `(6) Could not resolve host`, a `(28) timeout` — and
+/// tiny in every real case; the cap only bounds the pathological one (a hostile
+/// or broken curl writing without limit to stderr), so it can never grow an
+/// in-memory buffer and OOM the tool on a low-RAM phone. Generous for any real
+/// message, and stderr past it is simply truncated (see [`read_capped`]).
+const STDERR_CAP: u64 = 64 * 1024;
+
+/// Read up to `cap` bytes — plus one, so the caller can tell an exactly-cap read
+/// from an over-cap one — from an async pipe into memory.
+///
+/// The **one** bounded-read authority for [`CurlClient`]'s subprocess pipes:
+/// both a curl child's stdout AND its stderr go through it, so neither a
+/// decompression-bomb body nor a curl spewing to its error stream can grow an
+/// in-memory buffer without limit and OOM the tool on a low-RAM phone. Pure over
+/// its reader (no other I/O), so it is unit-tested against an in-memory slice
+/// rather than a live subprocess.
+async fn read_capped<R>(reader: R, cap: u64) -> std::io::Result<Vec<u8>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt as _;
+    let mut buf = Vec::new();
+    reader.take(cap + 1).read_to_end(&mut buf).await?;
+    Ok(buf)
 }
 
 #[cfg(test)]
