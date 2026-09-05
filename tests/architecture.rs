@@ -494,6 +494,7 @@ fn cli_help_uses_canonical_terminology() {
         "set-key",
         "engines",
         "oathnet-batch",
+        "build-sha",
     ] {
         queue.push_back(vec![c.to_string()]);
     }

@@ -59,9 +59,13 @@ pub struct SfArgs {
 // ── Target-type detection: sf.py + helpers.targetTypeFromString, in order ──
 
 /// SpiderFoot type code of a seed string, after `sf.py`'s pre-quoting: a
-/// value with a space, or one with no `.` that neither starts with `+` nor is
-/// already quoted, is wrapped in quotes first — so `jsmith` is a USERNAME and
-/// `John Smith` a HUMAN_NAME. `None` when no rule matches, as SpiderFoot.
+/// value with a space, or one with no `.` that neither starts with `+`, is
+/// already quoted, nor contains a `:`, is wrapped in quotes first — so
+/// `jsmith` is a USERNAME and `John Smith` a HUMAN_NAME. The `:` exclusion is
+/// a deliberate, functional divergence from SpiderFoot, which would quote a
+/// bare IPv6 address and mislabel it USERNAME; here `2001:db8::1` stays
+/// unquoted and reaches IPV6_ADDRESS / NETBLOCKV6_OWNER detection. `None` when
+/// no rule matches, as SpiderFoot.
 #[must_use]
 pub fn sf_target_type(raw: &str) -> Option<(&'static str, String)> {
     let mut target = raw.trim().to_string();
@@ -69,7 +73,10 @@ pub fn sf_target_type(raw: &str) -> Option<(&'static str, String)> {
         return None;
     }
     if target.contains(' ')
-        || (!target.contains('.') && !target.starts_with('+') && !target.contains('"'))
+        || (!target.contains('.')
+            && !target.contains(':')
+            && !target.starts_with('+')
+            && !target.contains('"'))
     {
         target = format!("\"{target}\"");
     }
@@ -749,6 +756,16 @@ mod tests {
         assert_eq!(
             t("sub.example.co.uk"),
             Some(("INTERNET_NAME", "sub.example.co.uk".into()))
+        );
+        // A bare IPv6 address / netblock has colons but no dot: it must NOT be
+        // pre-quoted into a USERNAME, so its IPv6 detection stays reachable.
+        assert_eq!(
+            t("2001:db8::1"),
+            Some(("IPV6_ADDRESS", "2001:db8::1".into()))
+        );
+        assert_eq!(
+            t("2001:db8::/32"),
+            Some(("NETBLOCKV6_OWNER", "2001:db8::/32".into()))
         );
         assert_eq!(t(""), None);
         // A dotted, unquoted string that is no valid host (trailing `!`) matches
