@@ -361,3 +361,45 @@ fn a_refusal_to_serve_an_image_is_not_an_absence_of_metadata() {
         );
     }
 }
+
+// ── XMP identity metadata → Person leads ───────────────────
+
+#[test]
+fn emit_xmp_turns_tagged_people_and_creator_into_person_leads() {
+    use crate::core::module::ModuleResult;
+    use crate::util::xmp::ImageXmp;
+
+    let xmp = ImageXmp {
+        people: vec!["Jane Roe".to_string(), "John Public".to_string()],
+        creators: vec!["Bob Photographer".to_string()],
+        keywords: vec!["protest".to_string()],
+        location: Some("Sydney, NSW, Australia".to_string()),
+        description: Some("Rally at Town Hall".to_string()),
+    };
+    let mut r = ModuleResult::new();
+    super::emit_xmp(&mut r, "https://example.com/p.jpg", &xmp, "scan-1");
+
+    // Two tagged people + one by-line = three Person leads, all Person kind.
+    assert_eq!(r.entities.len(), 3);
+    assert!(r.entities.iter().all(|e| e.kind == EntityKind::Person));
+    let values: Vec<&str> = r.entities.iter().map(|e| e.value.as_str()).collect();
+    assert!(values.contains(&"Jane Roe"));
+    assert!(values.contains(&"John Public"));
+    assert!(values.contains(&"Bob Photographer"));
+}
+
+#[test]
+fn emit_xmp_is_a_noop_without_identity_metadata() {
+    use crate::core::module::ModuleResult;
+    use crate::util::xmp::ImageXmp;
+
+    // A re-encoded, metadata-stripped image yields an empty ImageXmp — no leads.
+    let mut r = ModuleResult::new();
+    super::emit_xmp(
+        &mut r,
+        "https://example.com/p.jpg",
+        &ImageXmp::default(),
+        "s",
+    );
+    assert!(r.entities.is_empty());
+}
