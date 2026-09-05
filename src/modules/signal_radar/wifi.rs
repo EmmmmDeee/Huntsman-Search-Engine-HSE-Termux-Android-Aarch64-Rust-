@@ -67,12 +67,38 @@ pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
         if let Some(band) = wifi_band(ap.frequency) {
             e.tag(band);
         }
+        // Specific 802.11 channel from the centre frequency, via the HSE BLE
+        // Radar's verified frequency↔channel map (2.4/5/6 GHz) — HSE's own
+        // `wifi_band` derives only the coarse band, never the channel number.
+        let channel = ap
+            .frequency
+            .and_then(|f| u16::try_from(f).ok())
+            .and_then(bleradar_core::wifi_frequency_to_channel);
+        if let Some(ch) = channel {
+            e.tag(format!("channel:{ch}"));
+        }
+        // Coarse RSSI proximity band from the BLE Radar's proximity model — an
+        // honest signal-strength bucket (immediate/near/mid/far), never a
+        // fabricated distance. Gives the radar the RSSI axis its Bluetooth path
+        // structurally lacks (no-root Termux BT carries no RSSI), on the WiFi
+        // sensor that does report it.
+        let proximity = ap
+            .rssi
+            .map(|r| super::proximity_band_str(bleradar_core::proximity_label(r as f64)));
+        if let Some(band) = proximity {
+            e.tag(format!("proximity:{band}"));
+        }
 
         let mut ev = Evidence::new(SRC, format!("Wi-Fi AP scan: {ssid}"))
             .with_attr("ssid", ssid)
             .with_attr("bssid", &ap.bssid)
             .with_attr("rssi_dbm", ap.rssi.unwrap_or(0).to_string())
             .with_attr("frequency_mhz", ap.frequency.unwrap_or(0).to_string())
+            .with_attr(
+                "channel",
+                channel.map_or_else(|| "unknown".to_string(), |c| c.to_string()),
+            )
+            .with_attr("proximity", proximity.unwrap_or("unknown"))
             .with_attr(
                 "channel_width",
                 ap.channel_width.as_deref().unwrap_or("unknown"),

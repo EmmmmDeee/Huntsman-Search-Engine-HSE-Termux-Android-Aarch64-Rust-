@@ -45,7 +45,7 @@ pub(super) fn parse_oathnet_report(body: &str, sid: &str) -> (Vec<Entity>, Impor
     // The DATABASE LOGS section ends where OSINT ENRICHMENT begins; stop feeding
     // `Entry`/`key: value` lines there so an enrichment `key: value` (e.g. `org:`)
     // can't be mistaken for a breach field.
-    let logs_end = body.find("=== OSINT ENRICHMENT").map_or(body.len(), |i| i);
+    let logs_end = body.find("=== OSINT ENRICHMENT").unwrap_or(body.len());
 
     for raw in body[..logs_end].lines() {
         let trimmed = raw.trim();

@@ -309,6 +309,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "bleradar-core"
+version = "0.4.5"
+source = "git+https://github.com/EmmmmDeee/HSE-BLE-API-?rev=1e47bca0e8fa1e098ff9b022143108e055b4c960#1e47bca0e8fa1e098ff9b022143108e055b4c960"
+
+[[package]]
 name = "block-buffer"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1096,12 +1101,13 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "huntsman-search-engine"
-version = "1.40.0"
+version = "1.41.0"
 dependencies = [
  "aho-corasick",
  "async-trait",
  "axum",
  "base64",
+ "bleradar-core",
  "clap",
  "criterion",
  "csv",

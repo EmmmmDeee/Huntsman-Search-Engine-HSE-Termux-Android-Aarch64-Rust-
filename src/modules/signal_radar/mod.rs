@@ -1,6 +1,13 @@
 //! Real-time multi-sensor signal radar — WiFi AP scan, Bluetooth scan,
 //! cell tower survey, GPS fix, and LAN ARP discovery in a single parallel pass.
 //!
+//! The RSSI-bearing WiFi sweep is enriched by the **HSE BLE Radar**
+//! (`bleradar-core`, reconstructed and verified against the BLE Radar v0.3.0
+//! oracle): its `wifi_frequency_to_channel` derives the specific 802.11 channel
+//! and its `proximity_label` reports a coarse signal-proximity band. HSE uses
+//! only the radar crate's verified `signal`/`geo` primitives — never a fabricated
+//! distance — so the radar math has one authority rather than a reimplementation.
+//!
 //! All sensors run concurrently via `tokio::join!`.  Off-device (no Termux
 //! binaries) every termux-backed sub-sensor no-ops cleanly.  The LAN ARP
 //! sensor reads `/proc/net/arp`, which an unprivileged app cannot read on the
@@ -49,6 +56,20 @@ pub(super) use crate::modules::termux_sensor::{Sensor, is_blank};
 /// name a tool this module actually reads.
 pub(super) fn unparseable(sensor: Sensor, e: &serde_json::Error) -> Error {
     crate::modules::termux_sensor::unparseable_for(SRC, sensor, e)
+}
+
+/// Stable lowercase label for the HSE BLE Radar's coarse RSSI proximity band
+/// (`bleradar_core::ProximityBand`). The radar crate deliberately reports a
+/// coarse band, not a fabricated distance, so this is an honest signal-strength
+/// bucket — never metres.
+pub(super) fn proximity_band_str(band: bleradar_core::ProximityBand) -> &'static str {
+    use bleradar_core::ProximityBand::{Far, Immediate, Mid, Near};
+    match band {
+        Immediate => "immediate",
+        Near => "near",
+        Mid => "mid",
+        Far => "far",
+    }
 }
 
 pub struct SignalRadar;

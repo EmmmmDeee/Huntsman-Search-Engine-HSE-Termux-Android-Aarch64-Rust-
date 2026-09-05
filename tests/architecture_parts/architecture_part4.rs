@@ -423,6 +423,62 @@ fn release_profile_stays_size_optimized() {
     }
 }
 
+/// The HSE BLE Radar dependency (`bleradar-core`) must be pinned to an exact git
+/// commit AND actually consumed by the radar — never a floating branch, never
+/// dead weight.
+///
+/// `bleradar-core` is `publish = false`, so it is a git dependency. A git
+/// dependency without a full `rev` pin tracks a moving branch, so two builds of
+/// the *same* HSE commit can compile *different* BLE-Radar code — the exact
+/// "improvement disappears/changes after rebuild" failure the lifecycle
+/// discipline forbids. And a dependency nothing calls is duplicate authority
+/// carried for nothing. This locks both halves: the pin is a full 40-hex commit
+/// (no `branch`/`tag`), and `signal_radar` reaches the crate for its channel +
+/// proximity math rather than reimplementing the radar's own domain.
+#[test]
+fn ble_radar_dependency_is_pinned_and_consumed() {
+    let manifest = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+        .expect("Cargo.toml readable");
+    let dep_line = manifest
+        .lines()
+        .find(|l| l.trim_start().starts_with("bleradar-core"))
+        .expect("Cargo.toml must declare the bleradar-core (HSE BLE Radar) dependency");
+    assert!(
+        dep_line.contains("git ="),
+        "bleradar-core must be a git dependency (it is publish=false): {dep_line}"
+    );
+    let rev = dep_line
+        .split_once("rev = \"")
+        .and_then(|(_, r)| r.split('"').next())
+        .expect("bleradar-core git dependency must pin an exact `rev`");
+    assert!(
+        rev.len() == 40 && rev.chars().all(|c| c.is_ascii_hexdigit()),
+        "bleradar-core `rev` must be a full 40-hex commit for a reproducible build, got {rev:?}"
+    );
+    assert!(
+        !dep_line.contains("branch =") && !dep_line.contains("tag ="),
+        "bleradar-core must pin `rev`, never a moving branch/tag: {dep_line}"
+    );
+
+    // The crate must actually be consumed — the single authority for the radar's
+    // channel + proximity math, not a local reimplementation.
+    let wifi = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/modules/signal_radar/wifi.rs"
+    ))
+    .expect("signal_radar/wifi.rs readable");
+    for call in [
+        "bleradar_core::wifi_frequency_to_channel",
+        "bleradar_core::proximity_label",
+    ] {
+        assert!(
+            wifi.contains(call),
+            "signal_radar/wifi.rs must use the BLE Radar's `{call}` — the radar math \
+             has one authority (bleradar-core), never a local reimplementation"
+        );
+    }
+}
+
 /// The README's headline module count is hand-maintained and had drifted
 /// (stated as "60+", "63" and "89" across files while the registry held 89).
 /// Tie the authoritative "## Module Overview (N modules" figure to the live

@@ -230,7 +230,7 @@ fn extract_meta_location(html: &str) -> Option<String> {
         // closing `>` (capped). Both delimiters are ASCII and `char_window`
         // clamps the forward cap to a char boundary, so slicing untrusted HTML
         // here can never split a multibyte character.
-        let lo = html[..tag_pos].rfind('<').map_or(tag_pos, |p| p);
+        let lo = html[..tag_pos].rfind('<').unwrap_or(tag_pos);
         let windowed = crate::util::str_util::char_window(html, lo, tag_pos + 300);
         let element = windowed.split('>').next().unwrap_or(windowed);
 

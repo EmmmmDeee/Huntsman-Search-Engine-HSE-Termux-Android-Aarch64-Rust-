@@ -30,7 +30,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
-          toolchain: 1.97.1
+          toolchain: 1.98.0
           components: rustfmt, clippy
 
       - name: Cache cargo
@@ -92,7 +92,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
-          toolchain: 1.97.1
+          toolchain: 1.98.0
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
@@ -171,24 +171,28 @@ jobs:
         run: scripts/wasm_ui_drift_check.sh
 
   msrv:
-    name: MSRV (1.88)
+    name: MSRV (1.98)
     runs-on: ubuntu-latest
     # CRITICAL: rustup resolves an ambient rust-toolchain.toml (repo root)
     # ABOVE a plain `rustup default` — which is all `dtolnay/rust-toolchain`
-    # sets — so without this override the repo's new rust-toolchain.toml pin
-    # (1.97.1) would silently hijack every `cargo` invocation below back onto
-    # 1.97.1, defeating the MSRV gate while staying green. RUSTUP_TOOLCHAIN is
-    # rustup's highest-precedence resolution source (above rust-toolchain.toml
-    # AND `rustup default`), so this keeps 1.88 authoritative regardless.
+    # sets — so without this override the repo's rust-toolchain.toml pin would
+    # silently hijack every `cargo` invocation below onto the pinned channel,
+    # defeating the MSRV gate while staying green. RUSTUP_TOOLCHAIN is rustup's
+    # highest-precedence resolution source (above rust-toolchain.toml AND
+    # `rustup default`), so this keeps the declared MSRV floor authoritative here
+    # regardless of the pin. Today the floor (1.98) equals the pin (1.98.0)
+    # because the `bleradar-core` dependency requires 1.98; the override still
+    # matters, so a *future* channel bump above 1.98 can never silently widen the
+    # crate's real MSRV floor without this job going red.
     env:
-      RUSTUP_TOOLCHAIN: "1.88"
+      RUSTUP_TOOLCHAIN: "1.98"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install pinned MSRV toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
-          toolchain: 1.88
+          toolchain: 1.98
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (v2.9.2)
@@ -207,7 +211,7 @@ jobs:
       - name: Install Rust toolchain + aarch64 Android target
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
-          toolchain: 1.97.1
+          toolchain: 1.98.0
           targets: aarch64-linux-android
 
       - name: Cache cargo
