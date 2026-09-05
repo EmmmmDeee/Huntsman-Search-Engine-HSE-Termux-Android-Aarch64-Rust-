@@ -224,7 +224,9 @@ impl super::Store {
     }
 
     /// Devices with a fixed hardware address — the only ones whose recurrence
-    /// across sightings means anything (AU-122).
+    /// across sightings means anything (AU-122). This filter is the ONE
+    /// definition of "trackable": the `rf_trackable` SQL view that encoded the
+    /// same predicate was queried by nothing and is retired on open.
     pub fn rf_trackable_devices(&self, scan_id: &str) -> Result<Vec<RfDeviceRow>> {
         Ok(self
             .rf_devices_for_scan(scan_id)?

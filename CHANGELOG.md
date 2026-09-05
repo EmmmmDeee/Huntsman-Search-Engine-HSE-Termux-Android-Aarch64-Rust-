@@ -55,6 +55,9 @@ All notable changes to this project are documented here. Format per [Keep a Chan
 
 ### Fixed
 
+- `contact_enrich`, `wikidata_geo`, `username_search` and `social_probe` no longer stamp their own name on records from a corpus another module owns (Gravatar, Numverify, Wikidata, Keybase), so one record read by two modules no longer counts as two independent sources.
+- `POST /api/v1/scans` rejects unrecognised module names with a 400 that names them, as `hse scan` already warned; a typo used to run a scan of zero modules and report it as a narrowed sweep.
+- The radar-history lookup uses the indexed target columns instead of parsing every scan's JSON; the unused `rf_trackable` view is retired.
 - Fifteen keyed modules reported a missing API key as "searched, found nothing". Coverage counted them as having answered, so `is_exhaustive()` could vouch for a sweep nobody made. They now report the missing key, which coverage records as not attempted.
 - Four read endpoints bypassed the candidate quarantine every sibling enforces by default: `GET /scans/{id}/path`, `/communities`, `/trust` and `/gaps` ran the raw entity/relation set through path search, community detection, trust propagation and gap analysis, so an unverified same-name breach record the correlator had quarantined could be returned by value as a path node, join or name a community, be ranked, or be reported as an actionable "orphan" — without `?include_candidates=1`. All four are gated now (`connect_cross_scan` gates its own cross-scan graph).
 - `report.json` now resolves against itself: a correlation's `entity_uids` always name entities in the same document. A platform-infra entity a finding references (AU-004 on a compromised hosting IP) is restored under the default `include_infra=false`; a finding on a hidden candidate is dropped.

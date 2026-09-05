@@ -123,7 +123,9 @@ fn build_entities(query_coord: &str, bindings: &[Binding], scan_id: &str) -> Vec
             || format!("Wikidata entity {qid} near {query_coord}"),
             |l| format!("Wikidata place '{l}' ({qid}) near {query_coord}"),
         );
-        let mut ev = Evidence::new(SRC, summary)
+        // Wikidata's corpus, read through SPARQL: the `wikidata` module reads the
+        // same items, so the evidence names Wikidata or one item counts twice.
+        let mut ev = Evidence::new(crate::modules::wikidata::SRC, summary)
             .with_attr("qid", qid)
             .with_attr("url", format!("https://www.wikidata.org/entity/{qid}"));
         if let Some(l) = label {

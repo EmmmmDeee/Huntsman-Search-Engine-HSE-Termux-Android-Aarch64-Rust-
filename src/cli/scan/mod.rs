@@ -243,7 +243,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     // leaving the operator with an empty scan and no idea why. Surface it:
     // "nothing is a black box".
     let include_modules = split_csv(cmd.modules);
-    let unknown = unknown_module_names(&include_modules, &exclude_modules);
+    let unknown = crate::modules::unknown_module_names(&include_modules, &exclude_modules);
     if !unknown.is_empty() {
         eprintln!(
             "warning: ignoring {} unrecognised module name(s) in --modules/--exclude: {} \
@@ -589,26 +589,6 @@ fn filter_infra_entities(entities: &mut Vec<crate::core::entity::Entity>, includ
     }
 }
 
-/// The `--modules` / `--exclude` names that are not registered modules
-/// (deduplicated, sorted), checked against the live registry. A typo, or a name
-/// removed in an upgrade, was silently dropped from the filter; surfacing it
-/// lets the operator see why a scan ran fewer modules than they requested.
-fn unknown_module_names(requested: &Option<Vec<String>>, excluded: &[String]) -> Vec<String> {
-    let known: std::collections::HashSet<&str> = crate::modules::registry()
-        .iter()
-        .map(|m| m.name())
-        .collect();
-    requested
-        .iter()
-        .flatten()
-        .chain(excluded.iter())
-        .filter(|m| !known.contains(m.as_str()))
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
 /// Resolve the effective `(depth, min_expand_confidence, max_concurrent)` from
 /// the scan-mode flags. **Pure**: the `--auto` tuning is supplied lazily through
 /// `optimal`, so no key/file IO (nor its `eprintln`) happens off the auto path.
@@ -749,7 +729,7 @@ alice@example.com
             "ipapi".to_string(),         // removed     → must be flagged
             "totally_bogus".to_string(), // typo        → must be flagged
         ]);
-        let unknown = unknown_module_names(&req, &[]);
+        let unknown = crate::modules::unknown_module_names(&req, &[]);
         assert!(
             !unknown.iter().any(|m| m == "ip_geo"),
             "a registered module must not be flagged"
@@ -763,11 +743,15 @@ alice@example.com
             "a typo'd name must be flagged"
         );
         // Excluded names are validated too; output is sorted + deduplicated.
-        let unknown_ex =
-            unknown_module_names(&None, &["whois".to_string(), "no_such_excl".to_string()]);
+        let unknown_ex = crate::modules::unknown_module_names(
+            &None,
+            &["whois".to_string(), "no_such_excl".to_string()],
+        );
         assert_eq!(unknown_ex, vec!["no_such_excl".to_string()]);
         // An all-valid request flags nothing.
-        assert!(unknown_module_names(&Some(vec!["ip_geo".to_string()]), &[]).is_empty());
+        assert!(
+            crate::modules::unknown_module_names(&Some(vec!["ip_geo".to_string()]), &[]).is_empty()
+        );
     }
 
     #[test]

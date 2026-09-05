@@ -25,7 +25,10 @@ use crate::core::{
 use crate::util::http::RequestBuilderExt;
 use crate::util::http::urlencode;
 
-const SRC: &str = "numverify";
+/// `pub(crate)`: `contact_enrich`'s phone path queries the same validation
+/// endpoint and must attribute what it mints to THIS corpus, or one Numverify
+/// answer counts as two independent sources when the entities merge.
+pub(crate) const SRC: &str = "numverify";
 const KEY_ENV: &str = "HUNTSMAN_NUMVERIFY_KEY";
 
 pub struct NumVerify;

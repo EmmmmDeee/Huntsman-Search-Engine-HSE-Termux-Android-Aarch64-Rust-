@@ -340,3 +340,62 @@ fn gravatar_hash_normalises_email_per_spec() {
         "0bc83cb571cd1c50ba6f3e8a78ef1346"
     );
 }
+
+// ── Corpus attribution (SOURCE COUNT ≠ SOURCE INDEPENDENCE) ──────────────
+
+#[test]
+fn gravatar_derived_entities_are_attributed_to_the_gravatar_corpus() {
+    // The standalone `gravatar` module fetches the same profile document. If
+    // this module stamps its own name on what it mints, the two modules'
+    // outputs merge into one entity carrying two "independent" sources for one
+    // Gravatar row, and `c_effective` pays for corroboration that never
+    // happened.
+    let entry = gravatar(
+        r#"{ "entry": [{ "preferredUsername": "cher", "name": {"formatted": "Cher"},
+             "currentLocation": "Sydney, NSW", "urls": [{"value": "https://example.com/"}] }] }"#,
+    );
+    let ents = build_email_entities(&entry, &email_target("x@y.com"), "x@y.com", "h", "s");
+    assert!(
+        ents.len() >= 3,
+        "fixture must mint several entities: {}",
+        ents.len()
+    );
+    for e in &ents {
+        for ev in &e.evidence {
+            assert_eq!(
+                ev.source,
+                crate::modules::gravatar::SRC,
+                "{:?} {} carries evidence attributed to `{}` — a Gravatar row must name Gravatar",
+                e.kind,
+                e.value,
+                ev.source
+            );
+        }
+    }
+}
+
+#[test]
+fn numverify_derived_entities_are_attributed_to_the_numverify_corpus() {
+    // Same rule for the phone path: the `numverify` module queries the same
+    // validation service, so a Numverify answer must carry Numverify's name.
+    let body = numverify(
+        r#"{"valid":true,"number":"61400000000","local_format":"0400000000",
+            "international_format":"+61400000000","country_prefix":"+61",
+            "country_code":"AU","country_name":"Australia","location":"Sydney",
+            "carrier":"Telstra","line_type":"mobile"}"#,
+    );
+    let ents = build_phone_entities(&body, &phone_target("+61400000000"), "https", "s");
+    assert!(!ents.is_empty());
+    for e in &ents {
+        for ev in &e.evidence {
+            assert_eq!(
+                ev.source,
+                crate::modules::numverify::SRC,
+                "{:?} {} carries evidence attributed to `{}` — a Numverify answer must name Numverify",
+                e.kind,
+                e.value,
+                ev.source
+            );
+        }
+    }
+}

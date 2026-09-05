@@ -431,18 +431,21 @@ impl Module for SocialProbe {
                     "weak-detection"
                 });
                 entity.add_evidence(
-                    Evidence::new(SRC, format!("Profile found on {}", platform.name))
-                        .with_attr("platform", platform.name)
-                        .with_attr("http_status", code.to_string())
-                        .with_attr("profile_url", &url)
-                        .with_attr(
-                            "detection",
-                            if verified {
-                                "body-marker"
-                            } else {
-                                "status-only"
-                            },
-                        ),
+                    Evidence::new(
+                        crate::modules::corpus_source(&url, SRC),
+                        format!("Profile found on {}", platform.name),
+                    )
+                    .with_attr("platform", platform.name)
+                    .with_attr("http_status", code.to_string())
+                    .with_attr("profile_url", &url)
+                    .with_attr(
+                        "detection",
+                        if verified {
+                            "body-marker"
+                        } else {
+                            "status-only"
+                        },
+                    ),
                 );
                 result.push(entity);
 
@@ -466,7 +469,7 @@ impl Module for SocialProbe {
                     dom.tag("social-platform");
                     dom.add_evidence(
                         Evidence::new(
-                            SRC,
+                            crate::modules::corpus_source(&url, SRC),
                             format!("Platform domain from {} profile", platform.name),
                         )
                         .with_attr("platform", platform.name),

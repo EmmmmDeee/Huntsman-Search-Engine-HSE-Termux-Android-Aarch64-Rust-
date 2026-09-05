@@ -101,6 +101,14 @@ pub(super) struct NumverifyResp {
 // Evidence source constant
 // ---------------------------------------------------------------------------
 
+/// This module's name — on its HTTP requests and its errors only. Every
+/// entity it mints comes from a corpus another registered module also serves
+/// (Gravatar's profile document, Numverify's validation answer), so the
+/// EVIDENCE is attributed to that provider's `SRC`: stamping `contact_enrich`
+/// on a Gravatar row let the same record, fetched by both modules, merge into
+/// one entity carrying two "independent" sources (SOURCE COUNT ≠ SOURCE
+/// INDEPENDENCE — the class `tests/architecture_parts/architecture_part7.rs`
+/// guards).
 pub(super) const SRC: &str = "contact_enrich";
 
 // ---------------------------------------------------------------------------
@@ -326,7 +334,7 @@ pub(super) fn build_phone_entities(
     .filter_map(|(k, v)| v.filter(|val| !val.is_empty()).map(|val| (k, val)))
     .fold(
         Evidence::new(
-            SRC,
+            crate::modules::numverify::SRC,
             format!("Numverify confirmed valid phone {}", target.value),
         )
         .with_attr("transport", transport),
@@ -352,7 +360,7 @@ pub(super) fn build_phone_entities(
             ae.tag("country:AU");
         }
         ae.add_evidence(Evidence::new(
-            SRC,
+            crate::modules::numverify::SRC,
             format!("Numverify location for {}", target.value),
         ));
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
@@ -367,7 +375,7 @@ pub(super) fn build_phone_entities(
             c.tag("addr-derived");
             c.tag("geoint");
             c.add_evidence(Evidence::new(
-                SRC,
+                crate::modules::numverify::SRC,
                 format!("Geocode of Numverify location for {}", target.value),
             ));
             result.push(c);
@@ -451,9 +459,12 @@ pub(super) fn build_email_entities(
 ) -> Vec<Entity> {
     let mut entity = target.to_entity(confidence::EXPERT, scan_id);
     entity.tag("gravatar");
-    let mut ev = Evidence::new(SRC, format!("Gravatar profile for {normalised}"))
-        .with_attr("md5", hash)
-        .with_attr("profile_url", format!("https://www.gravatar.com/{hash}"));
+    let mut ev = Evidence::new(
+        crate::modules::gravatar::SRC,
+        format!("Gravatar profile for {normalised}"),
+    )
+    .with_attr("md5", hash)
+    .with_attr("profile_url", format!("https://www.gravatar.com/{hash}"));
     // Skip blank/empty evidence attributes (dead-field hygiene).
     if let Some(d) = entry.display_name.as_deref().filter(|s| !s.is_empty()) {
         ev = ev.with_attr("display_name", d);
@@ -511,7 +522,7 @@ pub(super) fn build_email_entities(
         let mut pe = Entity::new(EntityKind::Person, name, confidence::VERY_HIGH, scan_id);
         pe.tag("gravatar");
         pe.add_evidence(Evidence::new(
-            SRC,
+            crate::modules::gravatar::SRC,
             format!("Gravatar name for {normalised}"),
         ));
         result.push(pe);
@@ -527,7 +538,7 @@ pub(super) fn build_email_entities(
         );
         ue.tag("gravatar");
         ue.add_evidence(Evidence::new(
-            SRC,
+            crate::modules::gravatar::SRC,
             format!("Gravatar username for {normalised}"),
         ));
         result.push(ue);
@@ -543,7 +554,7 @@ pub(super) fn build_email_entities(
             ae.tag("country:AU");
         }
         ae.add_evidence(Evidence::new(
-            SRC,
+            crate::modules::gravatar::SRC,
             format!("Gravatar location for {normalised}"),
         ));
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
@@ -558,7 +569,7 @@ pub(super) fn build_email_entities(
             c.tag("addr-derived");
             c.tag("geoint");
             c.add_evidence(Evidence::new(
-                SRC,
+                crate::modules::gravatar::SRC,
                 format!("Geocode of Gravatar location for {normalised}"),
             ));
             result.push(c);
@@ -573,7 +584,7 @@ pub(super) fn build_email_entities(
         let mut ue = Entity::new(EntityKind::Url, url, confidence::MEDIUM_PLUS, scan_id);
         ue.tag("gravatar");
         ue.add_evidence(Evidence::new(
-            SRC,
+            crate::modules::gravatar::SRC,
             format!("Gravatar link for {normalised}"),
         ));
         Some(ue)

@@ -471,6 +471,29 @@ async fn scan_create_rejects_invalid_target() {
     assert!(json.get("error").is_some(), "response must contain error");
 }
 
+#[tokio::test]
+async fn scan_create_rejects_unknown_module_names() {
+    // `--modules ipapi` on the CLI warns (a name removed when that module was
+    // folded into ip_whois_geo). Over HTTP the same request was accepted with
+    // 202 and ran a scan of ZERO modules — every module skipped as "not in
+    // allowlist", the result reported as a legitimately narrowed sweep. Both
+    // surfaces now validate against the one registry.
+    let app = test_app("scan_unknown_module");
+    let body = r#"{"kind":"email","value":"probe@contoso.com","options":{"modules":["ipapi","totally_bogus"]}}"#;
+    let resp = app.oneshot(post_json("/api/v1/scans", body)).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        400,
+        "an allowlist naming no registered module is a client error"
+    );
+    let json = body_json(resp).await;
+    let err = json["error"].as_str().unwrap_or_default().to_string();
+    assert!(
+        err.contains("ipapi") && err.contains("totally_bogus"),
+        "the error must name the unrecognised modules: {err}"
+    );
+}
+
 // ── 5b. Live Signal Radar (button activation) ─────────────────────────────
 
 #[tokio::test]

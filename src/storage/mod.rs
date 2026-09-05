@@ -111,6 +111,11 @@ const SCHEMA_DDL: &str = "
             CREATE INDEX IF NOT EXISTS idx_entities_scan ON entities(scan_id);
             CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind);
             CREATE INDEX IF NOT EXISTS idx_scans_started ON scans(started_at DESC);
+            -- Serves `radar_history`'s sentinel lookup (`WHERE target_kind = ?
+            -- AND target_value = ?`) as an index probe. The two columns were
+            -- written on every scan and read by nothing: the lookup parsed the
+            -- JSON of every row of a table that only grows.
+            CREATE INDEX IF NOT EXISTS idx_scans_target ON scans(target_kind, target_value);
             -- Serves every `status`-filtered read of `scans` as an index range
             -- scan instead of a full table scan: `prune_events`'s live-scan
             -- anti-join (`WHERE status IN ('pending','running') AND started_at
@@ -224,7 +229,7 @@ const SCHEMA_DDL: &str = "
             -- the winner's DROP+CREATE ran in between the loser's own
             -- DROP and CREATE. Both sides run the same schema, so
             -- whichever wins defines an identical view.
-            DROP VIEW IF EXISTS rf_trackable;
+            DROP VIEW IF EXISTS rf_trackable; -- retired, see below
             DROP VIEW IF EXISTS rf_shared_names;
             DROP VIEW IF EXISTS rf_devices;
             CREATE VIEW IF NOT EXISTS rf_devices AS
@@ -287,10 +292,10 @@ const SCHEMA_DDL: &str = "
              GROUP BY scan_id, name
             HAVING COUNT(DISTINCT network_id) > 1;
 
-            -- Only fixed-address devices are followable across sightings; a
-            -- randomised address seen twice is not evidence of one device.
-            CREATE VIEW IF NOT EXISTS rf_trackable AS
-            SELECT * FROM rf_devices WHERE locally_admin = 0;
+            -- `rf_trackable` (fixed-address devices only) was a view nothing
+            -- queried: `Store::rf_trackable_devices` filters `rf_devices` in
+            -- Rust, and that filter is the one definition of trackable. The
+            -- DROP above retires the view on databases from older binaries.
 
             -- Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN). Keyed by
             -- `module:target_kind:normalised_target` so a repeat scan of the
@@ -690,11 +695,13 @@ impl Store {
     /// Chronological (newest-first) list of past **radar sweeps** — scans
     /// whose target is one of `radar_scan_spec`'s two sentinel anchors
     /// (`Coordinates "0,0"` or `MacAddress "00:00:00:00:00:00"`; the sensors
-    /// ignore the value, so it is never a real target). Filters at the SQL
-    /// layer with the same `json_extract` technique as
-    /// [`Store::latest_finished_scan`], so a deployment with thousands of
-    /// ordinary scans doesn't pay to deserialise every one just to find the
-    /// radar-tagged handful.
+    /// ignore the value, so it is never a real target). Filters on the
+    /// `target_kind`/`target_value` COLUMNS — written in the same `upsert_scan`
+    /// statement as `data_json`, from `TargetKind::canonical_str`, which is
+    /// also serde's spelling (`target_kind_canonical_str_matches_serde`) — so
+    /// `idx_scans_target` serves it as a probe. The previous
+    /// `json_extract(data_json, …)` form was a full scan parsing every row's
+    /// JSON, on the one table that is never pruned.
     ///
     /// Sourced entirely from the persisted `scans` table — unlike the
     /// in-memory `LiveSession` bookkeeping (cleared on every restart), this
@@ -710,24 +717,29 @@ impl Store {
         // through unchanged. Sourced from `core::scan`'s single-defined
         // constants (not re-hardcoded) so this query can't silently drift from
         // what `radar_scan_spec` / `cli::radar` actually seed a sweep with.
-        let query = format!(
-            "SELECT data_json FROM scans
-             WHERE (json_extract(data_json, '$.target.kind') = 'coordinates'
-                    AND json_extract(data_json, '$.target.value') = '{}')
-                OR (json_extract(data_json, '$.target.kind') = 'mac_address'
-                    AND json_extract(data_json, '$.target.value') = '{}')
-             ORDER BY started_at DESC, id DESC LIMIT ?1",
-            crate::core::scan::RADAR_SENTINEL_COORD_NORMALISED,
-            crate::core::scan::RADAR_SENTINEL_MAC,
-        );
         let raw: Vec<String> = {
             let conn = self.conn.lock();
-            let mut stmt = conn.prepare_cached(&query)?;
-            let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
+            let mut stmt = conn.prepare_cached(Self::RADAR_HISTORY_SQL)?;
+            let rows = stmt.query_map(
+                params![
+                    crate::core::scan::RADAR_SENTINEL_COORD_NORMALISED,
+                    crate::core::scan::RADAR_SENTINEL_MAC,
+                    limit as i64
+                ],
+                |r| r.get::<_, String>(0),
+            )?;
             collect_rows(rows, "radar_history")
         };
         Ok(deserialize_rows(raw, "radar_history"))
     }
+
+    /// [`Self::radar_history`]'s query: the sentinel anchors are bound as
+    /// `?1`/`?2` (not formatted in) so the statement is a constant the
+    /// prepared-statement cache and the query-plan lock both see.
+    pub(crate) const RADAR_HISTORY_SQL: &str = "SELECT data_json FROM scans
+         WHERE (target_kind = 'coordinates' AND target_value = ?1)
+            OR (target_kind = 'mac_address' AND target_value = ?2)
+         ORDER BY started_at DESC, id DESC LIMIT ?3";
 
     /// The `latest` selector's query, filtered on the `status` COLUMN — not on
     /// `json_extract(data_json, '$.status')`. The column is written in the same

@@ -31,7 +31,10 @@ use crate::core::{
 use crate::util::gravatar::{Entry, Profile as GravatarResp, hash as gravatar_hash};
 use crate::util::http::fetch_json_or_404;
 
-const SRC: &str = "gravatar";
+/// `pub(crate)`: `contact_enrich` reads the same profile document and must
+/// attribute what it mints to THIS corpus, or one Gravatar record counts as
+/// two independent sources when the entities merge.
+pub(crate) const SRC: &str = "gravatar";
 
 pub struct Gravatar;
 

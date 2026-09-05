@@ -2571,6 +2571,7 @@ fn open_produces_exact_schema_and_pragmas() {
         "index|idx_rf_scan",
         "index|idx_scans_started",
         "index|idx_scans_status_started",
+        "index|idx_scans_target",
         "index|idx_stealer_rows_log",
         "index|idx_stealer_rows_scan",
         "index|sqlite_autoindex_correlations_1",
@@ -2605,7 +2606,6 @@ fn open_produces_exact_schema_and_pragmas() {
         "table|stealer_rows",
         "view|rf_devices",
         "view|rf_shared_names",
-        "view|rf_trackable",
     ];
     assert_eq!(got, expected, "schema (tables + indexes) must be identical");
 
@@ -3145,4 +3145,75 @@ fn the_relations_insert_exists_once() {
         1,
         "the relations INSERT must have exactly one definition (RELATION_UPSERT_SQL)"
     );
+}
+
+#[test]
+fn radar_history_is_served_by_the_target_index_not_a_json_full_scan() {
+    // `scans` is never pruned; `radar_history` used to parse every row's JSON
+    // to compare two fields that exist as columns, written in the same upsert.
+    // Lock the plan on the exact production SQL: an index probe, never a SCAN.
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    let plan: Vec<String> = {
+        let conn = store.conn.lock();
+        let mut stmt = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {}", Store::RADAR_HISTORY_SQL))
+            .expect("plan");
+        let rows = stmt
+            .query_map(
+                rusqlite::params![
+                    crate::core::scan::RADAR_SENTINEL_COORD_NORMALISED,
+                    crate::core::scan::RADAR_SENTINEL_MAC,
+                    10_i64
+                ],
+                |r| r.get::<_, String>(3),
+            )
+            .expect("plan rows");
+        rows.map(|r| r.expect("row")).collect()
+    };
+    let joined = plan.join(" | ");
+    assert!(
+        joined.contains("idx_scans_target"),
+        "radar_history must be served by idx_scans_target; plan: {joined}"
+    );
+    assert!(
+        !plan.iter().any(|step| step.starts_with("SCAN")),
+        "radar_history must not full-scan `scans`; plan: {joined}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn radar_history_finds_a_sweep_by_its_sentinel_columns() {
+    // The column filter must select exactly what the JSON filter selected:
+    // the two sentinel anchors, and nothing else.
+    use crate::core::scan::{RADAR_SENTINEL_COORD_NORMALISED, RADAR_SENTINEL_MAC};
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    let mk = |id: &str, kind: TargetKind, value: &str, started_at: u64| {
+        let mut s = Scan::new(id, Target::new(kind, value));
+        s.started_at = started_at;
+        store.upsert_scan(&s).expect("should succeed");
+    };
+    mk("ordinary", TargetKind::Email, "x@y.com", 1);
+    mk(
+        "sweep-coord",
+        TargetKind::Coordinates,
+        RADAR_SENTINEL_COORD_NORMALISED,
+        2,
+    );
+    mk("sweep-mac", TargetKind::MacAddress, RADAR_SENTINEL_MAC, 3);
+    mk("real-mac", TargetKind::MacAddress, "aa:bb:cc:dd:ee:ff", 4);
+    let ids: Vec<String> = store
+        .radar_history(10)
+        .expect("query")
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["sweep-mac", "sweep-coord"],
+        "only the sentinel-anchored sweeps, newest first"
+    );
+    let _ = std::fs::remove_file(&path);
 }
