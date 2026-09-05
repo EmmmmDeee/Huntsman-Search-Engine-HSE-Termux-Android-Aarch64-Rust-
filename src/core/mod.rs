@@ -3,6 +3,7 @@
 //! Nothing in `core` imports from `modules/` — modules depend on core, never
 //! the other way around. This keeps the engine module-agnostic.
 
+pub mod assurance;
 pub mod attack;
 pub mod benchmark;
 pub mod breach_consensus;
