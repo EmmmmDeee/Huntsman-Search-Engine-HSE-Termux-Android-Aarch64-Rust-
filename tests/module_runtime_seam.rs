@@ -61,8 +61,9 @@ async fn run_with_cap(suffix: &str, cap: Option<u32>) -> Vec<u32> {
         ..Default::default()
     });
     engine.run(scan, target, ctx).await.unwrap();
-    let caps = runtime.caps.lock().unwrap().clone();
-    caps
+    let recorded = runtime.caps.lock().unwrap().clone();
+    drop(engine);
+    recorded
 }
 
 #[tokio::test]
