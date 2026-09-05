@@ -111,9 +111,13 @@ pub fn sf_target_type(raw: &str) -> Option<(&'static str, String)> {
         "BGP_AS_OWNER"
     } else if lower.bytes().all(|b| b.is_ascii_hexdigit() || b == b':') {
         "IPV6_ADDRESS"
-    } else if lower.split_once("::/").is_some_and(|(a, b)| {
-        a.bytes().all(|c| c.is_ascii_hexdigit() || c == b':')
-            && b.bytes().all(|c| c.is_ascii_digit())
+    } else if lower.split_once('/').is_some_and(|(net, bits)| {
+        // Any IPv6 prefix `hex:.../len`, not only the `::/` shorthand — so
+        // `2001:db8:1234:5678/64` is detected as well as `2001:db8::/32`.
+        net.contains(':')
+            && net.bytes().all(|c| c.is_ascii_hexdigit() || c == b':')
+            && !bits.is_empty()
+            && bits.bytes().all(|c| c.is_ascii_digit())
     }) {
         "NETBLOCKV6_OWNER"
     } else if is_internet_name(&lower) {
@@ -766,6 +770,11 @@ mod tests {
         assert_eq!(
             t("2001:db8::/32"),
             Some(("NETBLOCKV6_OWNER", "2001:db8::/32".into()))
+        );
+        // A full IPv6 prefix without the `::` shorthand is a netblock too.
+        assert_eq!(
+            t("2001:db8:1234:5678/64"),
+            Some(("NETBLOCKV6_OWNER", "2001:db8:1234:5678/64".into()))
         );
         assert_eq!(t(""), None);
         // A dotted, unquoted string that is no valid host (trailing `!`) matches

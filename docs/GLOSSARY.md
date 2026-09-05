@@ -55,7 +55,7 @@ provider's own docs — see `src/app/batch/sites.rs`):
 |---|---|---|
 | Output format | `--format` (`-f` where free) | `scan`, `query`, `import`, `ingest`, `export`, `diff`, `batch`. The older `--output` / `--output-format` / `-o` / `-F` spellings still work as hidden aliases. |
 | Output file | `--out` (`-o`) | `export`, `ingest`, `batch`. `--output` still works on `ingest` as a hidden alias. |
-| A stored scan | `--scan-id` (`-s`), `latest` allowed | `report`, `export`, `signal`, `batch`, and the hidden `audit` / `benchmark` / `gaps`. |
+| A stored scan | `--scan-id`, `latest` allowed (short `-s` on `export` and `batch`) | `report`, `export`, `signal`, `batch`, and the hidden `audit` / `benchmark` / `gaps`. |
 | A seed | `--kind` (`-k`) + `--value` (`-v`) | `scan`, `live`, `batch`, `oathnet-batch`. |
 | Module selection | `--modules` (`-m`) / `--exclude` | `scan`, `live`. |
 | Machine output | `--json` | Commands whose only formats are human and JSON. |
