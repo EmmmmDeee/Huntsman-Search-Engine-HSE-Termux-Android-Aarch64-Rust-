@@ -1557,8 +1557,17 @@ WATCHLIST
     BOOT_DIR="$HOME/.termux/boot"
     if [[ -d "$BOOT_DIR" ]]; then
         BOOT_SCRIPT="$BOOT_DIR/hse-autostart"
-        if [[ ! -f "$BOOT_SCRIPT" ]]; then
+        # Regenerated on every install like the wrappers it launches — a boot
+        # script from an earlier release (before `hse-watch start`, or under an
+        # older wake-lock policy) used to be kept forever because this was
+        # write-once. Only a script the installer can positively call its own
+        # is replaced: one carrying the managed marker, or one whose every
+        # line is a comment, blank, or an `hse-*` command (the shape every
+        # earlier installer generated). A hand-edited script is left alone.
+        if [[ ! -f "$BOOT_SCRIPT" ]] || _hse_is_owned "$BOOT_SCRIPT" \
+            || ! grep -qvE '^[[:space:]]*(#|hse-(bg|watch)([[:space:]]|$)|$)' "$BOOT_SCRIPT"; then
             printf '#!%s/bin/bash\n' "$PREFIX" > "$BOOT_SCRIPT"
+            printf '# %s\n' "$HSE_MANAGED_MARKER" >> "$BOOT_SCRIPT"
             cat >> "$BOOT_SCRIPT" <<'BOOT'
 # Autostart for Termux:Boot. Deliberately takes NO wake-lock of its own:
 # hse-bg and hse-watch each register with the refcounted hse-wakelock helper,
@@ -1572,6 +1581,8 @@ hse-watch start
 BOOT
             chmod 0755 "$BOOT_SCRIPT"
             ok "Termux:Boot autostart installed → ${BOOT_SCRIPT}"
+        else
+            log_warn "Termux:Boot script at ${BOOT_SCRIPT} is not the installer's — left untouched"
         fi
     else
         hint "Optional: install Termux:Boot from F-Droid for auto-start on device boot"

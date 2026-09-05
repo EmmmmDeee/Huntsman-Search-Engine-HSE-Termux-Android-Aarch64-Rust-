@@ -87,50 +87,174 @@ fn is_hse_source(p: &Path) -> bool {
     p.join("Cargo.toml").exists() && p.join("install.sh").exists()
 }
 
-/// `git fetch` then count commits on `@{u}` not in `HEAD`.
-/// Returns `None` when git is absent or the remote is unreachable.
-pub fn commits_behind(dir: &Path) -> Option<u64> {
-    let _ = std::process::Command::new("git")
-        .args(["fetch", "--quiet"])
+/// The repository the installer fetches from; `HSE_REPO_URL` overrides it
+/// exactly as it does for `install.sh`.
+const REPO_URL: &str =
+    "https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git";
+
+fn env_non_empty(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.trim().is_empty())
+}
+
+fn repo_url() -> String {
+    env_non_empty("HSE_REPO_URL").unwrap_or_else(|| REPO_URL.to_string())
+}
+
+/// The ref the installer checks out (`HSE_REF`, default `main`).
+fn install_ref() -> String {
+    env_non_empty("HSE_REF").unwrap_or_else(|| "main".to_string())
+}
+
+/// The install directory, bootstrapping a source tree there when the
+/// installer recorded one but never populated it.
+///
+/// The prebuilt fast path (a GitHub Release, or the Downloads cache it seeds —
+/// the path a clean Termux takes FIRST) skips the clone yet still records
+/// `HUNTSMAN_INSTALL_DIR`, so `hse update` found a directory with no
+/// `install.sh` and dead-ended with "No local source found", and the serve
+/// loop's auto-update was a silent no-op. Updating from that state needs the
+/// source tree the installer would have fetched; fetching it here, by the
+/// installer's own sequence, makes every update path self-sufficient.
+pub fn ensure_install_dir() -> Option<PathBuf> {
+    if let Some(dir) = find_install_dir() {
+        return Some(dir);
+    }
+    let env_file = PathBuf::from(crate::util::keys::env_path());
+    let recorded = PathBuf::from(install_dir_var(&env_file)?);
+    match bootstrap_source(&recorded, &repo_url(), &install_ref()) {
+        Ok(()) if is_hse_source(&recorded) => Some(recorded),
+        Ok(()) => None,
+        Err(e) => {
+            tracing::warn!(dir = %recorded.display(), error = %e, "could not bootstrap the source tree for updates");
+            None
+        }
+    }
+}
+
+/// `git init` + `remote add origin` + `fetch --depth 1 origin <ref>` +
+/// `checkout -B <ref> FETCH_HEAD`: the installer's own sequence, so a tree
+/// bootstrapped here is indistinguishable from one it fetched.
+fn bootstrap_source(dir: &Path, url: &str, ref_: &str) -> Result<()> {
+    std::fs::create_dir_all(dir).map_err(|e| Error::Other(format!("{}: {e}", dir.display())))?;
+    let run = |args: &[&str]| -> Result<()> {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|e| Error::Other(format!("could not run git: {e}")))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(Error::Other(format!(
+                "git {} failed in {}",
+                args.join(" "),
+                dir.display()
+            )))
+        }
+    };
+    if dir.join(".git").exists() {
+        let _ = run(&["remote", "set-url", "origin", url]);
+    } else {
+        run(&["init", "-q"])?;
+        run(&["remote", "add", "origin", url])?;
+    }
+    run(&["fetch", "--quiet", "--depth", "1", "origin", ref_])?;
+    run(&["checkout", "-q", "-B", ref_, "FETCH_HEAD"])
+}
+
+fn git_stdout(dir: &Path, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8(out.stdout).ok())
+        .flatten()
+        .map(|s| s.trim().to_string())
+}
+
+/// The branch the installer checked out (`checkout -B <ref>`), or the
+/// configured ref when HEAD is detached.
+fn current_branch(dir: &Path) -> String {
+    git_stdout(dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .filter(|b| !b.is_empty() && b != "HEAD")
+        .unwrap_or_else(install_ref)
+}
+
+/// `refs/remotes/origin/<branch>` — the ref [`fetch_origin_tip`] fills and
+/// every comparison below reads.
+fn origin_ref(dir: &Path) -> String {
+    format!("refs/remotes/origin/{}", current_branch(dir))
+}
+
+/// Fetch the current branch's tip from `origin` into its remote-tracking ref
+/// and return that ref.
+///
+/// The installer builds the source tree with `git init` + `fetch --depth 1
+/// origin <sha>` + `checkout -B <ref> FETCH_HEAD`, which configures no branch
+/// tracking, so `@{u}` never resolved on a curl-pipe install and every
+/// comparison against it read as "unreachable": auto-update and `hse update
+/// --check` were inert on the primary install path — while a `git clone`d
+/// checkout, which does set tracking, worked. An explicit refspec needs no
+/// tracking config and no config mutation. `None` when git is absent, there is
+/// no `origin`, or the remote is unreachable.
+fn fetch_origin_tip(dir: &Path) -> Option<String> {
+    let branch = current_branch(dir);
+    let remote_ref = format!("refs/remotes/origin/{branch}");
+    let status = std::process::Command::new("git")
+        .args([
+            "fetch",
+            "--quiet",
+            "origin",
+            &format!("+{branch}:{remote_ref}"),
+        ])
         .current_dir(dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status();
-
-    std::process::Command::new("git")
-        .args(["rev-list", "--count", "HEAD..@{u}"])
-        .current_dir(dir)
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|s| s.trim().parse().ok())
+        .status()
+        .ok()?;
+    status.success().then_some(remote_ref)
 }
 
-/// One-line subjects for commits on `@{u}` not in `HEAD`.
-/// Returns an empty `Vec` when git is absent, the remote is unreachable, or
-/// there are no new commits.
+/// Fetch, then count commits on `origin/<branch>` not in `HEAD`.
+/// Returns `None` when git is absent or the remote is unreachable.
+pub fn commits_behind(dir: &Path) -> Option<u64> {
+    let remote_ref = fetch_origin_tip(dir)?;
+    git_stdout(
+        dir,
+        &["rev-list", "--count", &format!("HEAD..{remote_ref}")],
+    )
+    .and_then(|s| s.parse().ok())
+}
+
+/// One-line subjects for commits on `origin/<branch>` not in `HEAD`, as of the
+/// last fetch. Returns an empty `Vec` when git is absent, nothing has been
+/// fetched, or there are no new commits.
 pub fn changelog_lines(dir: &Path) -> Vec<String> {
-    std::process::Command::new("git")
-        .args(["log", "--oneline", "HEAD..@{u}"])
-        .current_dir(dir)
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.lines().map(str::to_owned).collect())
-        .unwrap_or_default()
+    git_stdout(
+        dir,
+        &["log", "--oneline", &format!("HEAD..{}", origin_ref(dir))],
+    )
+    .map(|s| s.lines().map(str::to_owned).collect())
+    .unwrap_or_default()
 }
 
-/// The commit the tracking branch (`@{u}`) currently points at.
+/// The commit `origin/<branch>` currently points at.
 ///
 /// Read straight after [`commits_behind`]'s fetch, so it names the same upstream
 /// state the "N commits behind" figure was computed from. This is the revision an
 /// update must actually land on — passing it to the installer is what stops the
 /// installer picking a *different* build that merely reports the same version.
-/// `None` when git is absent, no upstream is configured, or the remote is
+/// `None` when git is absent, nothing has been fetched, or the remote is
 /// unreachable.
 pub fn upstream_sha(dir: &Path) -> Option<String> {
+    let remote_ref = origin_ref(dir);
     let out = std::process::Command::new("git")
-        .args(["rev-parse", "@{u}"])
+        .args(["rev-parse", &remote_ref])
         .current_dir(dir)
         .output()
         .ok()?;
@@ -154,7 +278,7 @@ pub struct UpstreamState {
 /// Convenience wrapper: find the install dir and report upstream state.
 /// Returns `None` when offline or no install dir.
 pub fn check_upstream() -> Option<UpstreamState> {
-    let dir = find_install_dir()?;
+    let dir = ensure_install_dir()?;
     let behind = commits_behind(&dir)?;
     Some(UpstreamState {
         behind,
@@ -165,7 +289,7 @@ pub fn check_upstream() -> Option<UpstreamState> {
 /// Convenience wrapper: find the install dir and return how many commits behind
 /// the tracking branch HEAD is. Returns `None` when offline or no install dir.
 pub fn check_updates() -> Option<u64> {
-    find_install_dir().and_then(|d| commits_behind(&d))
+    ensure_install_dir().and_then(|d| commits_behind(&d))
 }
 
 // ── Opportunistic CLI self-update ────────────────────────────────────────────
@@ -262,7 +386,7 @@ pub fn record_check_stamp(now: u64) {
 /// "update" to a cached or latest-release build that reports the same version
 /// while being older than the commit that triggered this update.
 fn spawn_detached_update(target_sha: Option<&str>) {
-    let Some(dir) = find_install_dir() else {
+    let Some(dir) = ensure_install_dir() else {
         return;
     };
     let script = dir.join("install.sh");
@@ -354,7 +478,7 @@ pub async fn maybe_auto_update() -> AutoUpdateOutcome {
 /// non-zero. Does not print banners (designed for headless background use).
 pub async fn apply_update(ref_: Option<String>) -> Result<()> {
     // ── Locate install.sh ────────────────────────────────────────────────────
-    let script = find_install_dir()
+    let script = ensure_install_dir()
         .map(|d| d.join("install.sh"))
         .filter(|s| s.exists());
 
@@ -382,7 +506,13 @@ pub async fn apply_update(ref_: Option<String>) -> Result<()> {
         // is an older commit, and verifies the installed binary before
         // declaring success — restoring the previous one if it cannot.
         None => {
-            if let Some(sha) = find_install_dir().as_deref().and_then(upstream_sha) {
+            // Fetch first: this path is reached without a prior `--check`, and
+            // the pin must name the tip that exists NOW, not the one the last
+            // check saw.
+            if let Some(sha) = find_install_dir().as_deref().and_then(|d| {
+                let _ = fetch_origin_tip(d);
+                upstream_sha(d)
+            }) {
                 cmd.env("HSE_REQUIRE_SHA", sha);
             }
         }
@@ -658,6 +788,124 @@ mod tests {
     /// a clone with upstream tracking) rather than trusting the subprocess
     /// wiring untested. No network: the "remote" is a local filesystem path,
     /// so `git fetch`/`git clone` never leave the temp directory.
+    fn rev_parse_head(dir: &Path) -> String {
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir)
+            .output()
+            .expect("git");
+        String::from_utf8(out.stdout)
+            .expect("utf-8")
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn an_installer_style_checkout_sees_upstream_commits() {
+        // install.sh builds the source tree with `git init` + `remote add` +
+        // `fetch --depth 1 origin <sha>` + `checkout -B main FETCH_HEAD`. None
+        // of that configures branch tracking, so `@{u}` never resolved on a
+        // curl-pipe install and every comparison against it read as
+        // "unreachable": auto-update and `hse update --check` were inert on
+        // the primary install path — while the `git clone` fixture below, which
+        // does set tracking, kept passing. Same sequence as the installer, so
+        // this cannot pass for a reason the device does not have.
+        if !git_available() {
+            eprintln!(
+                "skipping an_installer_style_checkout_sees_upstream_commits: git not installed"
+            );
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("should succeed");
+        let remote = tmp.path().join("remote");
+        let local = tmp.path().join("local");
+        std::fs::create_dir(&remote).expect("should succeed");
+        std::fs::create_dir(&local).expect("should succeed");
+        git_fixture(&remote, &["init", "-q", "--initial-branch=main"]);
+        git_fixture(
+            &remote,
+            &["config", "uploadpack.allowAnySHA1InWant", "true"],
+        );
+        git_fixture(&remote, &["commit", "-q", "-m", "init", "--allow-empty"]);
+        let tip = rev_parse_head(&remote);
+        git_fixture(&local, &["init", "-q"]);
+        git_fixture(
+            &local,
+            &["remote", "add", "origin", remote.to_str().expect("utf-8")],
+        );
+        git_fixture(&local, &["fetch", "-q", "--depth", "1", "origin", &tip]);
+        git_fixture(&local, &["checkout", "-q", "-B", "main", "FETCH_HEAD"]);
+
+        assert_eq!(
+            commits_behind(&local),
+            Some(0),
+            "an up-to-date installer checkout must read as 0 behind, not as unreachable"
+        );
+        git_fixture(
+            &remote,
+            &["commit", "-q", "-m", "upstream fix", "--allow-empty"],
+        );
+        let new_tip = rev_parse_head(&remote);
+        assert_eq!(
+            commits_behind(&local),
+            Some(1),
+            "one new upstream commit must be counted"
+        );
+        assert_eq!(changelog_lines(&local).len(), 1, "and listed");
+        assert_eq!(
+            upstream_sha(&local).as_deref(),
+            Some(new_tip.as_str()),
+            "and the update must be pinned to that exact commit"
+        );
+    }
+
+    #[test]
+    fn a_recorded_but_empty_install_dir_is_bootstrapped_like_the_installer_would() {
+        // The prebuilt fast path records HUNTSMAN_INSTALL_DIR without ever
+        // fetching a source tree there. `hse update` must fetch it itself —
+        // the same shallow sequence the installer runs — and then behave as
+        // on a built-from-source install: up to date, then one behind.
+        if !git_available() {
+            eprintln!(
+                "skipping a_recorded_but_empty_install_dir_is_bootstrapped_like_the_installer_would: git not installed"
+            );
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("should succeed");
+        let remote = tmp.path().join("remote");
+        let recorded = tmp.path().join("hse"); // does not exist yet
+        std::fs::create_dir(&remote).expect("should succeed");
+        git_fixture(&remote, &["init", "-q", "--initial-branch=main"]);
+        std::fs::write(remote.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write");
+        std::fs::write(remote.join("install.sh"), "#!/bin/bash\n").expect("write");
+        git_fixture(&remote, &["add", "."]);
+        git_fixture(&remote, &["commit", "-q", "-m", "source"]);
+
+        assert!(!is_hse_source(&recorded));
+        bootstrap_source(&recorded, remote.to_str().expect("utf-8"), "main").expect("bootstrap");
+        assert!(
+            is_hse_source(&recorded),
+            "the bootstrapped tree carries Cargo.toml + install.sh"
+        );
+        assert_eq!(commits_behind(&recorded), Some(0));
+        git_fixture(
+            &remote,
+            &["commit", "-q", "-m", "upstream fix", "--allow-empty"],
+        );
+        assert_eq!(commits_behind(&recorded), Some(1));
+        // A second bootstrap over the existing tree is idempotent.
+        bootstrap_source(&recorded, remote.to_str().expect("utf-8"), "main").expect("re-bootstrap");
+        assert_eq!(
+            commits_behind(&recorded),
+            Some(0),
+            "re-bootstrapping checks out the new tip"
+        );
+        assert!(
+            bootstrap_source(&tmp.path().join("bad"), "/nonexistent/repo.git", "main").is_err(),
+            "an unreachable repository is an error, not a silent empty directory"
+        );
+    }
+
     #[test]
     fn commits_behind_and_changelog_lines_reflect_real_git_state() {
         if !git_available() {

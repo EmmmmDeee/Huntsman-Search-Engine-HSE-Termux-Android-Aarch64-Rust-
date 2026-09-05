@@ -55,6 +55,9 @@ All notable changes to this project are documented here. Format per [Keep a Chan
 
 ### Fixed
 
+- Auto-update and `hse update --check` now work on the tree the installer actually builds. The installer's shallow checkout sets no branch tracking, and every update check compared against `@{u}`, so on a `curl | bash` install updates were silently never detected. Update checks fetch the branch by explicit refspec instead.
+- `hse update` works after a prebuilt install. The fast path recorded a source directory it never cloned; the updater now fetches the source tree there itself, the way the installer would have.
+- The Termux:Boot autostart script is regenerated on upgrade when it is the installer's own, so devices installed before it gained `hse-watch start` receive it.
 - `contact_enrich`, `wikidata_geo`, `username_search` and `social_probe` no longer stamp their own name on records from a corpus another module owns (Gravatar, Numverify, Wikidata, Keybase), so one record read by two modules no longer counts as two independent sources.
 - `POST /api/v1/scans` rejects unrecognised module names with a 400 that names them, as `hse scan` already warned; a typo used to run a scan of zero modules and report it as a narrowed sweep.
 - The radar-history lookup uses the indexed target columns instead of parsing every scan's JSON; the unused `rf_trackable` view is retired.

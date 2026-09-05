@@ -532,3 +532,42 @@ fn an_upgrade_purges_the_retired_local_ai_wrapper() {
     );
 }
 // removed-integration-cleanup: end
+
+#[test]
+fn the_boot_script_is_regenerated_when_it_is_the_installers_own() {
+    // hse-bg, hse-watch and the wake-lock helper are rewritten on every
+    // install, so upgrades pick up their fixes; the Termux:Boot script was the
+    // one write-once exception, so a device that installed before the boot
+    // body gained `hse-watch start` never received it. It is now regenerated
+    // whenever the installer can call the existing file its own — marked, or
+    // consisting only of comments and `hse-*` commands — and stamped with the
+    // managed marker so the next upgrade recognises it without the heuristic.
+    let script = install_sh();
+    let block = script
+        .split("BOOT_SCRIPT=\"$BOOT_DIR/hse-autostart\"")
+        .nth(1)
+        .expect("install.sh installs a Termux:Boot script");
+    let guard = block
+        .lines()
+        .find(|l| l.contains("if [[ ! -f \"$BOOT_SCRIPT\" ]]"))
+        .expect("the boot script has an existence guard");
+    assert!(
+        guard.contains("_hse_is_owned \"$BOOT_SCRIPT\""),
+        "a managed boot script must be regenerated, not kept forever: {guard}"
+    );
+    assert!(
+        block.contains(
+            "grep -qvE '^[[:space:]]*(#|hse-(bg|watch)([[:space:]]|$)|$)' \"$BOOT_SCRIPT\""
+        ),
+        "an unmarked script from an earlier installer (comments and hse-* commands only) must be recognised as ours"
+    );
+    assert!(
+        block.contains("printf '# %s\\n' \"$HSE_MANAGED_MARKER\" >> \"$BOOT_SCRIPT\""),
+        "the regenerated boot script must carry the managed marker"
+    );
+    let body = heredoc(block, "BOOT");
+    assert!(
+        body.contains("hse-bg start") && body.contains("hse-watch start"),
+        "the boot body starts both long-running wrappers"
+    );
+}
