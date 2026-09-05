@@ -124,17 +124,6 @@ pub(super) fn fold_endpoint_result(
     }
 }
 
-/// Re-export budget reset for the engine.
-pub fn reset_budget() {
-    crate::util::see_know::reset_budget();
-}
-
-/// Re-export the per-scan budget cleanup for the engine, called at scan
-/// finalisation.
-pub fn cleanup_scan(scan_id: &str) {
-    crate::util::see_know::cleanup_scan(scan_id);
-}
-
 /// Re-export the per-round budget refresh for the engine's expansion loop, so
 /// SeekNow is utilised in every iteration of a scan.
 pub fn refresh_round_budget() {

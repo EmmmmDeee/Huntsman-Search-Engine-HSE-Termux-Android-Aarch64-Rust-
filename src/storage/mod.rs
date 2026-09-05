@@ -11,7 +11,6 @@ use crate::core::{
 
 mod archive; // `impl Store`: inter-scan entity cache (`raw_archive`)
 mod entities; // `impl Store`: entity persistence + FTS query
-mod intelligence; // crash-safe persistence for intelligence frontier checkpoints
 mod signal; // `impl Store`: per-sighting RF (WiGLE + radar) persistence
 mod stealer_rows; // `impl Store`: paired stealer-log credential row persistence
 mod templates; // `impl Store`: cross-scan pathway-template learning
@@ -38,6 +37,16 @@ const SCHEMA_VERSION: i32 = 1;
 /// same batch as the (env-tunable) pragmas, so the resulting database is
 /// byte-for-byte what the previous inline DDL produced.
 const SCHEMA_DDL: &str = "
+            -- removed-integration-cleanup: begin
+            -- The local-AI integration (removed 2026-09) persisted model-generated
+            -- prose per scan in this table. Nothing reads it, and RULE 1 keeps
+            -- synthetic text out of the evidentiary store, so a database from an
+            -- older install drops it on open. Idempotent: absent on a fresh
+            -- database, gone after the first open of an upgraded one. This marked
+            -- region is the one place the retired name may appear in live code.
+            DROP TABLE IF EXISTS scan_analysis;
+            -- removed-integration-cleanup: end
+
             CREATE TABLE IF NOT EXISTS scans (
                 id           TEXT PRIMARY KEY,
                 target_kind  TEXT NOT NULL,
@@ -102,11 +111,18 @@ const SCHEMA_DDL: &str = "
             CREATE INDEX IF NOT EXISTS idx_entities_scan ON entities(scan_id);
             CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind);
             CREATE INDEX IF NOT EXISTS idx_scans_started ON scans(started_at DESC);
-            -- Serves scans_pending_analysis's `WHERE status IN (...) ORDER BY
-            -- started_at` (the AI-daemon poll query, run on an interval for the
-            -- process's whole lifetime) as an index range scan instead of a full
-            -- table scan of `scans`, which — unlike entities/events/relations —
-            -- is never bulk-pruned and only grows.
+            -- Serves `radar_history`'s sentinel lookup (`WHERE target_kind = ?
+            -- AND target_value = ?`) as an index probe. The two columns were
+            -- written on every scan and read by nothing: the lookup parsed the
+            -- JSON of every row of a table that only grows.
+            CREATE INDEX IF NOT EXISTS idx_scans_target ON scans(target_kind, target_value);
+            -- Serves every `status`-filtered read of `scans` as an index range
+            -- scan instead of a full table scan: `prune_events`'s live-scan
+            -- anti-join (`WHERE status IN ('pending','running') AND started_at
+            -- >= ?`) and `latest_finished_scan` (`WHERE status IN ('complete',
+            -- 'aborted') ORDER BY started_at DESC`). `scans` — unlike
+            -- entities/events/relations — is never bulk-pruned and only grows,
+            -- so the full scan it replaces gets slower for the life of the DB.
             CREATE INDEX IF NOT EXISTS idx_scans_status_started ON scans(status, started_at);
             CREATE INDEX IF NOT EXISTS idx_corr_scan     ON correlations(scan_id);
             CREATE INDEX IF NOT EXISTS idx_obs_scan      ON entity_observations(scan_id);
@@ -213,7 +229,7 @@ const SCHEMA_DDL: &str = "
             -- the winner's DROP+CREATE ran in between the loser's own
             -- DROP and CREATE. Both sides run the same schema, so
             -- whichever wins defines an identical view.
-            DROP VIEW IF EXISTS rf_trackable;
+            DROP VIEW IF EXISTS rf_trackable; -- retired, see below
             DROP VIEW IF EXISTS rf_shared_names;
             DROP VIEW IF EXISTS rf_devices;
             CREATE VIEW IF NOT EXISTS rf_devices AS
@@ -276,10 +292,10 @@ const SCHEMA_DDL: &str = "
              GROUP BY scan_id, name
             HAVING COUNT(DISTINCT network_id) > 1;
 
-            -- Only fixed-address devices are followable across sightings; a
-            -- randomised address seen twice is not evidence of one device.
-            CREATE VIEW IF NOT EXISTS rf_trackable AS
-            SELECT * FROM rf_devices WHERE locally_admin = 0;
+            -- `rf_trackable` (fixed-address devices only) was a view nothing
+            -- queried: `Store::rf_trackable_devices` filters `rf_devices` in
+            -- Rust, and that filter is the one definition of trackable. The
+            -- DROP above retires the view on databases from older binaries.
 
             -- Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN). Keyed by
             -- `module:target_kind:normalised_target` so a repeat scan of the
@@ -679,11 +695,13 @@ impl Store {
     /// Chronological (newest-first) list of past **radar sweeps** — scans
     /// whose target is one of `radar_scan_spec`'s two sentinel anchors
     /// (`Coordinates "0,0"` or `MacAddress "00:00:00:00:00:00"`; the sensors
-    /// ignore the value, so it is never a real target). Filters at the SQL
-    /// layer with the same `json_extract` technique as
-    /// [`Store::latest_finished_scan`], so a deployment with thousands of
-    /// ordinary scans doesn't pay to deserialise every one just to find the
-    /// radar-tagged handful.
+    /// ignore the value, so it is never a real target). Filters on the
+    /// `target_kind`/`target_value` COLUMNS — written in the same `upsert_scan`
+    /// statement as `data_json`, from `TargetKind::canonical_str`, which is
+    /// also serde's spelling (`target_kind_canonical_str_matches_serde`) — so
+    /// `idx_scans_target` serves it as a probe. The previous
+    /// `json_extract(data_json, …)` form was a full scan parsing every row's
+    /// JSON, on the one table that is never pruned.
     ///
     /// Sourced entirely from the persisted `scans` table — unlike the
     /// in-memory `LiveSession` bookkeeping (cleared on every restart), this
@@ -699,24 +717,44 @@ impl Store {
         // through unchanged. Sourced from `core::scan`'s single-defined
         // constants (not re-hardcoded) so this query can't silently drift from
         // what `radar_scan_spec` / `cli::radar` actually seed a sweep with.
-        let query = format!(
-            "SELECT data_json FROM scans
-             WHERE (json_extract(data_json, '$.target.kind') = 'coordinates'
-                    AND json_extract(data_json, '$.target.value') = '{}')
-                OR (json_extract(data_json, '$.target.kind') = 'mac_address'
-                    AND json_extract(data_json, '$.target.value') = '{}')
-             ORDER BY started_at DESC, id DESC LIMIT ?1",
-            crate::core::scan::RADAR_SENTINEL_COORD_NORMALISED,
-            crate::core::scan::RADAR_SENTINEL_MAC,
-        );
         let raw: Vec<String> = {
             let conn = self.conn.lock();
-            let mut stmt = conn.prepare_cached(&query)?;
-            let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
+            let mut stmt = conn.prepare_cached(Self::RADAR_HISTORY_SQL)?;
+            let rows = stmt.query_map(
+                params![
+                    crate::core::scan::RADAR_SENTINEL_COORD_NORMALISED,
+                    crate::core::scan::RADAR_SENTINEL_MAC,
+                    limit as i64
+                ],
+                |r| r.get::<_, String>(0),
+            )?;
             collect_rows(rows, "radar_history")
         };
         Ok(deserialize_rows(raw, "radar_history"))
     }
+
+    /// [`Self::radar_history`]'s query: the sentinel anchors are bound as
+    /// `?1`/`?2` (not formatted in) so the statement is a constant the
+    /// prepared-statement cache and the query-plan lock both see.
+    pub(crate) const RADAR_HISTORY_SQL: &str = "SELECT data_json FROM scans
+         WHERE (target_kind = 'coordinates' AND target_value = ?1)
+            OR (target_kind = 'mac_address' AND target_value = ?2)
+         ORDER BY started_at DESC, id DESC LIMIT ?3";
+
+    /// The `latest` selector's query, filtered on the `status` COLUMN — not on
+    /// `json_extract(data_json, '$.status')`. The column is written in the same
+    /// `upsert_scan` statement as `data_json` (both from `ScanStatus::as_str`,
+    /// which is also serde's `rename_all = "lowercase"` spelling), so the two
+    /// cannot disagree, and only the column is served by
+    /// `idx_scans_status_started`: the JSON form was a full scan of a table
+    /// that only ever grows, parsing every row's JSON to read one field.
+    /// Deterministic tie-break on `id` (PRIMARY KEY): `started_at` is 1-second
+    /// resolution, so without it two scans finishing in the same second make
+    /// `latest` non-deterministic — `export/diff/audit latest` could resolve to
+    /// a different scan on identical state.
+    pub(crate) const LATEST_FINISHED_SCAN_SQL: &str = "SELECT data_json FROM scans
+         WHERE status IN ('complete', 'aborted')
+         ORDER BY started_at DESC, id DESC LIMIT 1";
 
     /// Return the most recent scan in a **terminal state that carries final
     /// data** — `complete` or `aborted` (the lower-case canonical forms from
@@ -741,16 +779,7 @@ impl Store {
     /// finished scans" to `resolve_scan_id`'s callers (`export`/`diff`/`audit
     /// latest`).
     pub fn latest_finished_scan(&self) -> Result<Option<Scan>> {
-        // Deterministic tie-break on `id` (PRIMARY KEY): `started_at` is
-        // 1-second resolution, so without it two scans finishing in the same
-        // second make `latest` non-deterministic — `export/diff/audit latest`
-        // could resolve to a different scan on identical state.
-        self.query_one_json(
-            "SELECT data_json FROM scans
-             WHERE json_extract(data_json, '$.status') IN ('complete', 'aborted')
-             ORDER BY started_at DESC, id DESC LIMIT 1",
-            params![],
-        )
+        self.query_one_json(Self::LATEST_FINISHED_SCAN_SQL, params![])
     }
 
     // ── Correlations ───────────────────────────────────────────────────────
@@ -920,15 +949,21 @@ impl Store {
     // Typed entity-to-entity edges. Idempotent on the deterministic `id` so a
     // re-scan that re-derives the same edge does not duplicate it.
 
-    pub fn upsert_relation(&self, r: &Relation) -> Result<()> {
+    /// The one relations INSERT, shared by the single-row and batch paths so
+    /// the column list and the binding order cannot drift apart: relations
+    /// are evidence edges, and a column added to one path and missed in the
+    /// other would surface only at runtime as a bind-count error — or, for two
+    /// same-typed fields, as a silently transposed column.
+    const RELATION_UPSERT_SQL: &str = "INSERT INTO relations(id, scan_id, from_uid, to_uid, kind, confidence, observed_at, data_json)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(id) DO NOTHING";
+
+    /// Bind and execute [`Self::RELATION_UPSERT_SQL`] for one relation on
+    /// `conn` (a plain connection or an open transaction).
+    fn upsert_relation_on(conn: &rusqlite::Connection, r: &Relation) -> Result<()> {
         let json = serde_json::to_string(r)?;
-        let conn = self.conn.lock();
-        conn.prepare_cached(
-            "INSERT INTO relations(id, scan_id, from_uid, to_uid, kind, confidence, observed_at, data_json)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(id) DO NOTHING",
-        )?
-        .execute(params![
+        conn.prepare_cached(Self::RELATION_UPSERT_SQL)?
+            .execute(params![
                 r.id,
                 r.scan_id,
                 r.from_uid,
@@ -937,9 +972,12 @@ impl Store {
                 r.confidence,
                 r.observed_at as i64,
                 json,
-            ],
-        )?;
+            ])?;
         Ok(())
+    }
+
+    pub fn upsert_relation(&self, r: &Relation) -> Result<()> {
+        Self::upsert_relation_on(&self.conn.lock(), r)
     }
 
     /// Batch-insert relations in ONE transaction (one autocommit → one fsync
@@ -951,22 +989,7 @@ impl Store {
         let conn = self.conn.lock();
         let tx = conn.unchecked_transaction()?;
         for r in rels {
-            let json = serde_json::to_string(r)?;
-            tx.prepare_cached(
-                "INSERT INTO relations(id, scan_id, from_uid, to_uid, kind, confidence, observed_at, data_json)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT(id) DO NOTHING",
-            )?
-            .execute(params![
-                r.id,
-                r.scan_id,
-                r.from_uid,
-                r.to_uid,
-                r.kind.as_str(),
-                r.confidence,
-                r.observed_at as i64,
-                json,
-            ])?;
+            Self::upsert_relation_on(&tx, r)?;
         }
         tx.commit()?;
         Ok(rels.len())

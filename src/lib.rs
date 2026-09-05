@@ -22,14 +22,15 @@
 //!     `runtime_carries_no_ai_ml_inference_dependency` in `tests/architecture.rs`.
 //!
 //!     This invariant is now UNCONDITIONAL. It previously carried a narrow,
-//!     opt-in exception — `src/ai/`, the `hse analyze` subcommand and a separate
-//!     `hse-ai-daemon` binary, which called an operator-run local Ollama over
+//!     opt-in exception: an `ai` module, an `analyze` subcommand and a separate
+//!     daemon binary, which called an operator-run local inference server over
 //!     HTTP to add downstream natural-language commentary to an already-finished
-//!     scan. That exception is gone: the module, the binary, the subcommand, the
-//!     `feature.ai_daemon` toggle, the `scan_analysis` table and the installer's
-//!     Ollama bootstrap were all removed. Nothing in the tree reaches an
-//!     inference engine, so there is no longer a carve-out to police — only the
-//!     rule.
+//!     scan. That exception is gone: the module, the binary, the subcommand, its
+//!     feature toggle, its analysis table and the installer's model bootstrap
+//!     were all removed. Nothing in the tree reaches an inference engine, so
+//!     there is no longer a carve-out to police — only the rule.
+//!     `no_llm_inference_integration_exists` (`tests/architecture.rs`) scans the
+//!     live tree so the removal cannot quietly regress.
 
 #![forbid(unsafe_code)]
 // HSE is an *application* crate: its library is read by the maintainer with

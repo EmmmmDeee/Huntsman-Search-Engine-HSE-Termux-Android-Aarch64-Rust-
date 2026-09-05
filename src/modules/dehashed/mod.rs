@@ -140,9 +140,7 @@ impl Module for DeHashed {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let Some(initial_key) = ctx.key_opt(KEY_ENV) else {
-            return Ok(ModuleResult::new());
-        };
+        let initial_key = ctx.key(KEY_ENV)?;
         let Some(selector) = selector_for(target.kind) else {
             return Ok(ModuleResult::new());
         };

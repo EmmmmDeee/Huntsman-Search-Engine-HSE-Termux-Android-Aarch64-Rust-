@@ -344,3 +344,15 @@ impl StoragePort for InMemoryStore {
             .map(|(_, _, entities)| entities.clone()))
     }
 }
+
+/// A bare engine event on scan `scan-1` at t=0, for tests that only care
+/// about the kind — the coverage aggregation and the ledger both read events
+/// this way, so the fixture lives here rather than in either test module.
+#[must_use]
+pub fn module_event(kind: crate::core::event::EventKind) -> Event {
+    Event {
+        scan_id: "scan-1".to_string(),
+        ts: 0,
+        kind,
+    }
+}

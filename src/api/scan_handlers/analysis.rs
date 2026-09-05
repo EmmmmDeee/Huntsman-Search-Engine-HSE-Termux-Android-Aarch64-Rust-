@@ -115,7 +115,7 @@ pub async fn scan_exposure(
 /// identically in every other view, so the web console — the primary interface
 /// on a Termux/Android device — gets the same derivation `report.json` and the
 /// CLI dossier carry, from the same
-/// [`crate::core::intelligence::provider_coverage_from_events`], rather than a
+/// [`crate::core::coverage::provider_coverage_from_events`], rather than a
 /// second opinion assembled client-side.
 ///
 /// The two coverage axes are reported apart and never summed: `unavailable_count`
@@ -142,7 +142,7 @@ pub async fn scan_coverage(
         Ok(events) => events,
         Err(resp) => return resp,
     };
-    let rows = crate::core::intelligence::provider_coverage_from_events(&events);
+    let rows = crate::core::coverage::provider_coverage_from_events(&events);
     if rows.is_empty() {
         return Json(json!({
             "all_available_providers_answered": serde_json::Value::Null,
@@ -154,7 +154,7 @@ pub async fn scan_coverage(
         }))
         .into_response();
     }
-    let verdict = crate::core::intelligence::coverage_verdict(&rows);
+    let verdict = crate::core::coverage::coverage_verdict(&rows);
     Json(json!({
         "all_available_providers_answered": verdict.all_available_providers_answered(),
         "exhaustive": verdict.is_exhaustive(),

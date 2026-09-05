@@ -153,17 +153,17 @@ impl Collection {
     /// and found little looks the same as one where a third of its sources
     /// broke or were never configured, and only the first is evidence of
     /// absence. Derived from this scan's own dispatch events by
-    /// [`crate::core::intelligence::provider_coverage_from_events`], the same
+    /// [`crate::core::coverage::provider_coverage_from_events`], the same
     /// derivation `report.json` carries, so the on-device and over-the-wire
     /// dossiers cannot disagree about what was covered.
     fn print_coverage(&self) {
-        let rows = crate::core::intelligence::provider_coverage_from_events(&self.events);
+        let rows = crate::core::coverage::provider_coverage_from_events(&self.events);
         if rows.is_empty() {
             // Not "everything answered" — nothing is known about coverage.
             println!("  Coverage: no dispatch events retained for this scan.");
             return;
         }
-        let verdict = crate::core::intelligence::coverage_verdict(&rows);
+        let verdict = crate::core::coverage::coverage_verdict(&rows);
         if verdict.is_exhaustive() {
             println!(
                 "  Coverage: all {} provider(s) answered — a thin result here is a real negative.",
@@ -190,7 +190,7 @@ impl Collection {
         }
         // Only the unusable ones are listed: they are what the operator can act
         // on, and an out-of-scope provider is already explained by the options.
-        let unavailable: Vec<&crate::core::intelligence::ProviderCoverage> = rows
+        let unavailable: Vec<&crate::core::coverage::ProviderCoverage> = rows
             .iter()
             .filter(|row| {
                 matches!(

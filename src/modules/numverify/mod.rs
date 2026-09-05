@@ -25,7 +25,10 @@ use crate::core::{
 use crate::util::http::RequestBuilderExt;
 use crate::util::http::urlencode;
 
-const SRC: &str = "numverify";
+/// `pub(crate)`: `contact_enrich`'s phone path queries the same validation
+/// endpoint and must attribute what it mints to THIS corpus, or one Numverify
+/// answer counts as two independent sources when the entities merge.
+pub(crate) const SRC: &str = "numverify";
 const KEY_ENV: &str = "HUNTSMAN_NUMVERIFY_KEY";
 
 pub struct NumVerify;
@@ -89,9 +92,7 @@ impl Module for NumVerify {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let Some(key) = ctx.key_opt(KEY_ENV) else {
-            return Ok(ModuleResult::new());
-        };
+        let key = ctx.key(KEY_ENV)?;
         let number = target.value.trim();
         let url = format!(
             "https://api.apilayer.com/number_verification/validate?number={}",

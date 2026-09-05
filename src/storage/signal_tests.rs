@@ -435,8 +435,7 @@ fn reopening_replaces_a_stale_view_definition() {
     {
         let conn = rusqlite::Connection::open(path).expect("raw open");
         conn.execute_batch(
-            "DROP VIEW rf_trackable;
-             DROP VIEW rf_devices;
+            "DROP VIEW rf_devices;
              CREATE VIEW rf_devices AS
              SELECT scan_id, network_id, radio, locally_admin, oui, device_class,
                     0 AS sightings, NULL AS first_epoch, NULL AS last_epoch,
@@ -458,4 +457,15 @@ fn reopening_replaces_a_stale_view_definition() {
         "the reopen must have replaced the stale definition, not kept it"
     );
     assert_eq!((d.best_latitude, d.best_longitude), (Some(-26.81), Some(153.08)));
+    // The retired `rf_trackable` view an older binary created is gone too.
+    let stale_views: i64 = store
+        .conn
+        .lock()
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'view' AND name = 'rf_trackable'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("sqlite_master");
+    assert_eq!(stale_views, 0, "a retired view must be dropped on open, not carried forever");
 }

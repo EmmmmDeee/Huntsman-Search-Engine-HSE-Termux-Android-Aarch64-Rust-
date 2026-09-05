@@ -317,8 +317,8 @@ struct BuiltinModuleRuntime;
 
 impl crate::core::module_runtime::ModuleRuntime for BuiltinModuleRuntime {
     fn reset_per_scan(&self, scan_id: &str) {
-        oathnet_pro::reset_budget();
-        see_know::reset_budget();
+        crate::util::oathnet::reset_budget();
+        crate::util::see_know::reset_budget();
         wigle::reset_budget();
         typosquat::reset_seen(scan_id);
         search_engines::reset_session_liveness(scan_id);
@@ -338,9 +338,13 @@ impl crate::core::module_runtime::ModuleRuntime for BuiltinModuleRuntime {
     }
 
     fn cleanup_scan_budgets(&self, scan_id: &str) {
-        oathnet_pro::cleanup_scan(scan_id);
-        see_know::cleanup_scan(scan_id);
+        crate::util::oathnet::cleanup_scan(scan_id);
+        crate::util::see_know::cleanup_scan(scan_id);
         wigle::cleanup_scan(scan_id);
+    }
+
+    fn set_seeknow_scan_cap(&self, cap: u32) {
+        crate::util::see_know::set_scan_cap_override(cap);
     }
 }
 
@@ -594,6 +598,60 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
 /// off` printed "○ off", changed nothing, and left the operator believing the
 /// module was disabled. Lives in this layer (not `util::settings`) because it
 /// needs the engine catalogue and the registry, which `util` must not import.
+/// The requested / excluded module names that are not registered modules
+/// (deduplicated, sorted), checked against the live registry. A typo, or a
+/// name removed in an upgrade (`ipapi`, folded into `ip_whois_geo`), used to
+/// be dropped silently — and a non-empty allowlist matching no module makes
+/// the engine skip EVERY module as "not in allowlist", a scan that completes
+/// with nothing and reads as a legitimate narrowed sweep. Lives here, beside
+/// [`is_known_toggle_key`], so `hse scan` and `POST /api/v1/scans` validate
+/// against the same catalogue.
+pub fn unknown_module_names(requested: &Option<Vec<String>>, excluded: &[String]) -> Vec<String> {
+    let known: std::collections::HashSet<&str> = registry().iter().map(|m| m.name()).collect();
+    requested
+        .iter()
+        .flatten()
+        .chain(excluded.iter())
+        .filter(|m| !known.contains(m.as_str()))
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// The registered module that OWNS a corpus other modules also read, by the
+/// host they read it from. Evidence minted from such a read carries the
+/// owner's source name, not the reader's: SOURCE COUNT ≠ SOURCE INDEPENDENCE,
+/// and one record fetched by two modules must not merge into an entity
+/// carrying two "independent" sources. `cell_intel`/`wifi_intel`/`ip_registry`
+/// (Pass 17), `contact_enrich` and `wikidata_geo` attribute directly to the
+/// owner's `SRC`; the probe modules (`username_search`, `social_probe`) run
+/// hundreds of sites through one evidence path and look the site up here.
+const CORPUS_OWNERS: &[(&str, &str)] = &[
+    ("gravatar.com", gravatar::SRC),
+    ("keybase.io", keybase::SRC),
+    ("wikidata.org", wikidata::SRC),
+];
+
+/// The source name evidence derived from `url` must carry: the owning
+/// module's when the host is (or is under) a corpus another module owns,
+/// else `own`.
+#[must_use]
+pub fn corpus_source(url: &str, own: &'static str) -> &'static str {
+    let host = url
+        .split("://")
+        .nth(1)
+        .unwrap_or(url)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    CORPUS_OWNERS
+        .iter()
+        .find(|(h, _)| host == *h || host.ends_with(&format!(".{h}")))
+        .map_or(own, |(_, src)| *src)
+}
+
 pub fn is_known_toggle_key(key: &str, modules: &[Arc<dyn Module>]) -> bool {
     if let Some(name) = key.strip_prefix("module.") {
         return modules.iter().any(|m| m.name() == name);
@@ -660,3 +718,6 @@ pub fn technique_module_index()
 mod tests {
     include!("tests.rs");
 }
+
+#[cfg(test)]
+mod keyed_tests;

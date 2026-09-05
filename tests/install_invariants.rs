@@ -477,3 +477,97 @@ fn a_prebuilt_is_never_called_wrong_when_the_target_is_unknown() {
          checked, not that the binary is wrong"
     );
 }
+
+// removed-integration-cleanup: begin — this test names the artifacts the
+// installer purges, and is exempt from the live-tree name ban for that reason.
+#[test]
+fn an_upgrade_purges_the_retired_local_ai_wrapper() {
+    // Releases up to 2026-09-04 wrote an `hse-ai` wrapper that ran a local
+    // model server under the shared HSE wake-lock, put a model name in
+    // ~/.huntsman.env and kept a pid/log pair in ~/.cache. Removing the
+    // integration from the tree did nothing about a device that already had
+    // all of that: the wrapper stayed executable after the code using it was
+    // gone. The installer's idempotent upgrade path must retire it — and must
+    // do so AFTER `hse provision` has written the env file it edits, and only
+    // inside the region the architecture lock exempts from the name ban.
+    // Built from parts so no line of THIS file carries a whole marker: the
+    // architecture lock's walker toggles on marker lines, and a literal
+    // "…: end" here would end the exemption for this test early.
+    const MARK: &str = "removed-integration-cleanup";
+    let script = install_sh();
+    let begin = script
+        .find(&format!("{MARK}: begin"))
+        .expect("install.sh carries the removed-integration cleanup region");
+    let end = script[begin..]
+        .find(&format!("{MARK}: end"))
+        .map(|i| begin + i)
+        .expect("the cleanup region is terminated");
+    let region = &script[begin..end];
+    for needle in [
+        "purge_removed_integration() {",
+        "\"$HSE_BIN_DIR/hse-ai\"",
+        "hse-ai.pid",
+        "hse-ai.log",
+        "^HUNTSMAN_OLLAMA_MODEL=",
+        "purge_removed_integration || log_warn",
+    ] {
+        assert!(
+            region.contains(needle),
+            "the cleanup region must contain `{needle}`; region was:\n{region}"
+        );
+    }
+    let provision = script
+        .find("provision --env-only --discover")
+        .expect("install.sh delegates key provisioning to `hse provision`");
+    assert!(
+        provision < begin,
+        "the purge edits ~/.huntsman.env, so it must run after `hse provision` has written it"
+    );
+    let record = script
+        .find("HUNTSMAN_INSTALL_DIR=%s")
+        .expect("install.sh records HUNTSMAN_INSTALL_DIR for `hse update`");
+    assert!(
+        end < record,
+        "the purge must run before the env file is rewritten for HUNTSMAN_INSTALL_DIR"
+    );
+}
+// removed-integration-cleanup: end
+
+#[test]
+fn the_boot_script_is_regenerated_when_it_is_the_installers_own() {
+    // hse-bg, hse-watch and the wake-lock helper are rewritten on every
+    // install, so upgrades pick up their fixes; the Termux:Boot script was the
+    // one write-once exception, so a device that installed before the boot
+    // body gained `hse-watch start` never received it. It is now regenerated
+    // whenever the installer can call the existing file its own — marked, or
+    // consisting only of comments and `hse-*` commands — and stamped with the
+    // managed marker so the next upgrade recognises it without the heuristic.
+    let script = install_sh();
+    let block = script
+        .split("BOOT_SCRIPT=\"$BOOT_DIR/hse-autostart\"")
+        .nth(1)
+        .expect("install.sh installs a Termux:Boot script");
+    let guard = block
+        .lines()
+        .find(|l| l.contains("if [[ ! -f \"$BOOT_SCRIPT\" ]]"))
+        .expect("the boot script has an existence guard");
+    assert!(
+        guard.contains("_hse_is_owned \"$BOOT_SCRIPT\""),
+        "a managed boot script must be regenerated, not kept forever: {guard}"
+    );
+    assert!(
+        block.contains(
+            "grep -qvE '^[[:space:]]*(#|hse-(bg|watch)([[:space:]]|$)|$)' \"$BOOT_SCRIPT\""
+        ),
+        "an unmarked script from an earlier installer (comments and hse-* commands only) must be recognised as ours"
+    );
+    assert!(
+        block.contains("printf '# %s\\n' \"$HSE_MANAGED_MARKER\" >> \"$BOOT_SCRIPT\""),
+        "the regenerated boot script must carry the managed marker"
+    );
+    let body = heredoc(block, "BOOT");
+    assert!(
+        body.contains("hse-bg start") && body.contains("hse-watch start"),
+        "the boot body starts both long-running wrappers"
+    );
+}

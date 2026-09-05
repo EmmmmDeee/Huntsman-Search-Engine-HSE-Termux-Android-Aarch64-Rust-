@@ -277,9 +277,9 @@ fn latest_finished_scan_errors_loudly_on_a_corrupt_row_instead_of_reporting_none
     let store = Store::open(&path).expect("should succeed");
     {
         let conn = store.conn.lock();
-        // Valid JSON (so the `json_extract(...) = 'complete'` SQL filter
-        // matches and the row is selected) but missing every field `Scan`
-        // requires, so `serde_json::from_str::<Scan>` fails.
+        // Selected by the `status = 'complete'` column filter; the JSON is
+        // valid but missing every field `Scan` requires, so
+        // `serde_json::from_str::<Scan>` fails.
         conn.execute(
             "INSERT INTO scans(id, target_kind, target_value, status, started_at, \
              finished_at, entity_count, error, data_json) \
@@ -339,6 +339,45 @@ fn latest_finished_scan_resolves_to_a_newer_aborted_scan_over_an_older_complete_
             .id,
         "scan-new-aborted",
         "a failed scan carries no data, so latest skips it for the aborted one"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn latest_finished_scan_is_served_by_the_status_index_not_a_json_full_scan() {
+    // `scans` is never pruned, so a full scan that parses every row's JSON to
+    // read one field gets slower for the life of the database. The `status`
+    // column is written in the same `upsert_scan` statement as the JSON, so
+    // filtering on it loses nothing and gains `idx_scans_status_started`.
+    // Lock the PLAN, not the SQL text: `EXPLAIN QUERY PLAN` on the exact
+    // query production runs must show an index search and never a `SCAN`.
+    // Measured before the change: `SCAN scans` + temp B-tree; after: `SEARCH
+    // scans USING INDEX idx_scans_status_started (status=?)`.
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    let plan: Vec<String> = {
+        let conn = store.conn.lock();
+        let mut stmt = conn
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {}",
+                Store::LATEST_FINISHED_SCAN_SQL
+            ))
+            .expect("plan");
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(3))
+            .expect("plan rows");
+        rows.map(|r| r.expect("row")).collect()
+    };
+    let joined = plan.join(" | ");
+    assert!(
+        joined.contains("idx_scans_status_started"),
+        "latest_finished_scan must be served by idx_scans_status_started; plan: {joined}"
+    );
+    assert!(
+        !plan
+            .iter()
+            .any(|step| step.trim_start().starts_with("SCAN")),
+        "latest_finished_scan must not full-scan `scans`; plan: {joined}"
     );
     let _ = std::fs::remove_file(&path);
 }
@@ -2534,6 +2573,7 @@ fn open_produces_exact_schema_and_pragmas() {
         "index|idx_rf_scan",
         "index|idx_scans_started",
         "index|idx_scans_status_started",
+        "index|idx_scans_target",
         "index|idx_stealer_rows_log",
         "index|idx_stealer_rows_scan",
         "index|sqlite_autoindex_correlations_1",
@@ -2568,7 +2608,6 @@ fn open_produces_exact_schema_and_pragmas() {
         "table|stealer_rows",
         "view|rf_devices",
         "view|rf_shared_names",
-        "view|rf_trackable",
     ];
     assert_eq!(got, expected, "schema (tables + indexes) must be identical");
 
@@ -3059,4 +3098,126 @@ fn prune_events_spares_a_live_scans_events_but_not_a_finished_or_zombie_scans() 
         3 + 1,
         "3 aged zombie rows + 1 excess finished-scan row"
     );
+}
+
+// removed-integration-cleanup: begin — this test seeds the retired table to
+// prove it is dropped, and is exempt from the live-tree name ban for that reason.
+#[test]
+fn a_retired_scan_analysis_table_is_dropped_on_open() {
+    // A database written by an install that still carried the local-AI
+    // integration holds a `scan_analysis` table of model-generated prose. The
+    // integration is gone; the table must go with it on the next open rather
+    // than sit in the evidentiary store forever (RULE 1), and a fresh database
+    // must never gain it.
+    let path = tmp_db();
+    {
+        let conn = rusqlite::Connection::open(&path).expect("raw open");
+        conn.execute_batch(
+            "CREATE TABLE scan_analysis (scan_id TEXT PRIMARY KEY, analysis TEXT NOT NULL);
+             INSERT INTO scan_analysis VALUES ('scan-1', 'model prose');",
+        )
+        .expect("seed the retired table");
+    }
+    let store = Store::open(&path).expect("should succeed");
+    let present: i64 = store
+        .conn
+        .lock()
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'scan_analysis'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("sqlite_master");
+    assert_eq!(
+        present, 0,
+        "the retired scan_analysis table must be dropped on open"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+// removed-integration-cleanup: end
+
+#[test]
+fn the_relations_insert_exists_once() {
+    // `upsert_relation` and `upsert_relations_batch` used to carry their own
+    // copies of the 8-column INSERT and its bindings, with only a doc comment
+    // asserting they agreed. One statement, one binder, both paths.
+    let source = include_str!("mod.rs");
+    assert_eq!(
+        source.matches("INSERT INTO relations(").count(),
+        1,
+        "the relations INSERT must have exactly one definition (RELATION_UPSERT_SQL)"
+    );
+}
+
+#[test]
+fn radar_history_is_served_by_the_target_index_not_a_json_full_scan() {
+    // `scans` is never pruned; `radar_history` used to parse every row's JSON
+    // to compare two fields that exist as columns, written in the same upsert.
+    // Lock the plan on the exact production SQL: an index probe, never a SCAN.
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    let plan: Vec<String> = {
+        let conn = store.conn.lock();
+        let mut stmt = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {}", Store::RADAR_HISTORY_SQL))
+            .expect("plan");
+        let rows = stmt
+            .query_map(
+                rusqlite::params![
+                    crate::core::scan::RADAR_SENTINEL_COORD_NORMALISED,
+                    crate::core::scan::RADAR_SENTINEL_MAC,
+                    10_i64
+                ],
+                |r| r.get::<_, String>(3),
+            )
+            .expect("plan rows");
+        rows.map(|r| r.expect("row")).collect()
+    };
+    let joined = plan.join(" | ");
+    assert!(
+        joined.contains("idx_scans_target"),
+        "radar_history must be served by idx_scans_target; plan: {joined}"
+    );
+    assert!(
+        !plan
+            .iter()
+            .any(|step| step.trim_start().starts_with("SCAN")),
+        "radar_history must not full-scan `scans`; plan: {joined}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn radar_history_finds_a_sweep_by_its_sentinel_columns() {
+    // The column filter must select exactly what the JSON filter selected:
+    // the two sentinel anchors, and nothing else.
+    use crate::core::scan::{RADAR_SENTINEL_COORD_NORMALISED, RADAR_SENTINEL_MAC};
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    let mk = |id: &str, kind: TargetKind, value: &str, started_at: u64| {
+        let mut s = Scan::new(id, Target::new(kind, value));
+        s.started_at = started_at;
+        store.upsert_scan(&s).expect("should succeed");
+    };
+    mk("ordinary", TargetKind::Email, "x@y.com", 1);
+    mk(
+        "sweep-coord",
+        TargetKind::Coordinates,
+        RADAR_SENTINEL_COORD_NORMALISED,
+        2,
+    );
+    mk("sweep-mac", TargetKind::MacAddress, RADAR_SENTINEL_MAC, 3);
+    mk("real-mac", TargetKind::MacAddress, "aa:bb:cc:dd:ee:ff", 4);
+    let ids: Vec<String> = store
+        .radar_history(10)
+        .expect("query")
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["sweep-mac", "sweep-coord"],
+        "only the sentinel-anchored sweeps, newest first"
+    );
+    let _ = std::fs::remove_file(&path);
 }

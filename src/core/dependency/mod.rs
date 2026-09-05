@@ -76,10 +76,14 @@ pub const ALL_TARGET_KINDS: &[TargetKind] = &[
 pub(crate) const PROBE_VALUE: &str = "huntsman-graph-probe-1.2.3.4@example.com";
 
 /// Run `m.accepts()` against every `TargetKind` to discover which kinds
-/// the module dispatches on. Used as the default body for
-/// [`Module::consumes()`] so modules that don't override the method
-/// still report sensible data.
-pub fn consumes_via_probe(m: &dyn Module) -> Vec<TargetKind> {
+/// the module dispatches on. This IS the default body of
+/// [`Module::consumes()`] — the trait delegates here — so the probe loop
+/// that feeds the dependency graph and the dispatch index for every module
+/// exists exactly once. It used to exist twice: the trait default inlined a
+/// copy of this loop while this doc claimed the trait called it, and the
+/// comment on [`ALL_TARGET_KINDS`] records what drift in this machinery
+/// costs (a module's whole `Ssid` branch dead at runtime).
+pub fn consumes_via_probe<M: Module + ?Sized>(m: &M) -> Vec<TargetKind> {
     ALL_TARGET_KINDS
         .iter()
         .copied()

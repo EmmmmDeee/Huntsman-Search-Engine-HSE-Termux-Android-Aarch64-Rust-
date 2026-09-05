@@ -113,6 +113,42 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
         println!("{}", curl_missing_message());
     }
 
+    // ── Egress proxy pool (only when the operator configured one) ─────
+    // `refresh_pool` fetches the configured feeds and probe-validates the due
+    // entries IN THIS PROCESS, so what prints is a measurement made now — not
+    // the per-process history a fresh `hse doctor` could never have observed
+    // (the trap the module-health line above fell into). The pool's three
+    // accessors existed with no caller; an operator relying on
+    // HUNTSMAN_PROXY_FEEDS had no way to see a silently-dying pool until scans
+    // started failing.
+    {
+        use crate::util::egress;
+        let configured = std::env::var_os(egress::PROXY_ENV).is_some()
+            || std::env::var_os(egress::PROXY_FEEDS_ENV).is_some();
+        if configured {
+            println!("\nEgress proxy pool:");
+            let (fed, validated) = egress::refresh_pool().await;
+            match egress::format_pool_health(&egress::proxy_pool_snapshot()) {
+                Some(body) => {
+                    if body.contains("FAIL") {
+                        critical = true;
+                    }
+                    println!("{body}");
+                }
+                None => {
+                    critical = true;
+                    println!(
+                        "  FAIL — {} / {} is set but no proxy entered the pool \
+                         (feeds fetched: {fed}, validated: {validated}); every request \
+                         will fail rather than leak a direct connection",
+                        egress::PROXY_ENV,
+                        egress::PROXY_FEEDS_ENV
+                    );
+                }
+            }
+        }
+    }
+
     println!("\nModules ({} registered):", mods.len());
     let mut by_cost = std::collections::BTreeMap::<&str, usize>::new();
     for m in &mods {

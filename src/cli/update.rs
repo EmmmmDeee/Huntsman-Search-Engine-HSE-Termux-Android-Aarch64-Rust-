@@ -11,7 +11,7 @@ pub(super) async fn cmd_update(check: bool, ref_: Option<String>) -> Result<()> 
     println!("hse {} — update", crate::VERSION);
 
     if check {
-        match update::find_install_dir() {
+        match update::ensure_install_dir() {
             Some(dir) => {
                 print!("Source: {}  ", dir.display());
                 match update::commits_behind(&dir) {

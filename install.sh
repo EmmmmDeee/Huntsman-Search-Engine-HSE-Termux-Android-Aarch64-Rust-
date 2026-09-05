@@ -1557,8 +1557,17 @@ WATCHLIST
     BOOT_DIR="$HOME/.termux/boot"
     if [[ -d "$BOOT_DIR" ]]; then
         BOOT_SCRIPT="$BOOT_DIR/hse-autostart"
-        if [[ ! -f "$BOOT_SCRIPT" ]]; then
+        # Regenerated on every install like the wrappers it launches — a boot
+        # script from an earlier release (before `hse-watch start`, or under an
+        # older wake-lock policy) used to be kept forever because this was
+        # write-once. Only a script the installer can positively call its own
+        # is replaced: one carrying the managed marker, or one whose every
+        # line is a comment, blank, or an `hse-*` command (the shape every
+        # earlier installer generated). A hand-edited script is left alone.
+        if [[ ! -f "$BOOT_SCRIPT" ]] || _hse_is_owned "$BOOT_SCRIPT" \
+            || ! grep -qvE '^[[:space:]]*(#|hse-(bg|watch)([[:space:]]|$)|$)' "$BOOT_SCRIPT"; then
             printf '#!%s/bin/bash\n' "$PREFIX" > "$BOOT_SCRIPT"
+            printf '# %s\n' "$HSE_MANAGED_MARKER" >> "$BOOT_SCRIPT"
             cat >> "$BOOT_SCRIPT" <<'BOOT'
 # Autostart for Termux:Boot. Deliberately takes NO wake-lock of its own:
 # hse-bg and hse-watch each register with the refcounted hse-wakelock helper,
@@ -1572,6 +1581,8 @@ hse-watch start
 BOOT
             chmod 0755 "$BOOT_SCRIPT"
             ok "Termux:Boot autostart installed → ${BOOT_SCRIPT}"
+        else
+            log_warn "Termux:Boot script at ${BOOT_SCRIPT} is not the installer's — left untouched"
         fi
     else
         hint "Optional: install Termux:Boot from F-Droid for auto-start on device boot"
@@ -1625,6 +1636,40 @@ KEYS_PATH="$HOME/.huntsman.env"
 step "Configuring keys at $KEYS_PATH (canonical template + autonomous key discovery)"
 "$HSE_BIN_DIR/hse" provision --env-only --discover \
     || log_warn "hse provision failed — configure keys later: hse provision --env-only --discover"
+
+# removed-integration-cleanup: begin
+# ─── Purge the retired local-AI integration from upgraded devices ────────────
+# Releases up to 2026-09-04 installed an `hse-ai` wrapper that ran a local
+# model server under the shared HSE wake-lock, wrote the model name into
+# ~/.huntsman.env, and kept a pid/log pair under ~/.cache. The integration is
+# gone from the tree (tests/architecture.rs pins that it stays gone), but an
+# in-place upgrade never revisited what the OLD installer had already placed on
+# the device: the wrapper stayed executable — and would still start a model
+# server under the wake-lock — after every line of code that used it was
+# deleted. This block is the one place the retired names may appear; the
+# architecture lock skips exactly this marked region and forbids them
+# everywhere else. Best-effort, idempotent, touches only artifacts it can
+# positively name — never ~/.huntsman/ or anything unrecognised.
+purge_removed_integration() {
+    local W="$HSE_BIN_DIR/hse-ai" removed=0
+    if [[ -x "$W" ]]; then
+        # Stop a server the old wrapper may have left running (it holds a
+        # wake-lock refcount until told to stop), then remove the wrapper.
+        timeout 20 "$W" stop >/dev/null 2>&1 || true
+        rm -f "$W" 2>/dev/null && { ok "removed the retired hse-ai wrapper"; removed=$((removed + 1)); }
+    fi
+    rm -f "$HOME/.cache/hse-ai.pid" "$HOME/.cache/hse-ai.log" 2>/dev/null || true
+    if [[ -f "$KEYS_PATH" ]] && grep -q '^HUNTSMAN_OLLAMA_MODEL=' "$KEYS_PATH" 2>/dev/null; then
+        # Comment the retired key out rather than deleting the line, so the
+        # operator's own value stays visible in the file they own. No
+        # operator-controlled text enters the sed expression.
+        sed -i 's|^HUNTSMAN_OLLAMA_MODEL=|# retired (local AI removed 2026-09): HUNTSMAN_OLLAMA_MODEL=|' "$KEYS_PATH" \
+            && { ok "retired HUNTSMAN_OLLAMA_MODEL in $KEYS_PATH"; removed=$((removed + 1)); }
+    fi
+    [[ $removed -eq 0 ]] || ok "cleaned $removed artifact(s) of the retired local-AI integration"
+}
+purge_removed_integration || log_warn "retired-integration cleanup skipped (non-fatal)"
+# removed-integration-cleanup: end
 
 # ─── Record install location for `hse update` ────────────────────────────────
 # hse update reads HUNTSMAN_INSTALL_DIR from ~/.huntsman.env to find install.sh.

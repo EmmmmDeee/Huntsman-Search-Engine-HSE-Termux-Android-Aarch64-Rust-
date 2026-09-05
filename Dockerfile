@@ -20,8 +20,8 @@ COPY src ./src
 COPY benches ./benches
 
 # --locked: the image must build from exactly the committed Cargo.lock, never
-# a silently re-resolved one. --bin hse: skip the AI-daemon and dep-cooldown
-# dev-tooling binaries, which have no place in a production server image.
+# a silently re-resolved one. --bin hse: skip gen-oui, architecture-audit and
+# dep-cooldown — maintainer tooling with no place in a production server image.
 RUN cargo build --release --locked --bin hse
 
 FROM debian:bookworm-slim AS runtime

@@ -406,11 +406,11 @@ fn readme_correlator_rule_count_matches_registry() {
 /// unaffected.
 ///
 /// This claim is now UNCONDITIONAL. It previously carved out one exception —
-/// `src/ai`, a hand-rolled HTTP client for a local Ollama server behind
-/// `hse analyze` and `hse-ai-daemon`, which no crate-name denylist could see —
-/// guarded by a companion test that kept its output out of the evidence graph.
-/// That integration was removed wholesale, so there is no runtime LLM path left
-/// to carve out; `no_llm_inference_integration_exists` pins that it stays gone.
+/// a hand-rolled HTTP client for a local inference server, which no crate-name
+/// denylist could see — guarded by a companion test that kept its output out of
+/// the evidence graph. That integration was removed wholesale, so there is no
+/// runtime LLM path left to carve out; `no_llm_inference_integration_exists`
+/// scans the live tree so it stays gone.
 #[test]
 fn runtime_carries_no_ai_ml_inference_dependency() {
     let lock = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"))
@@ -478,8 +478,8 @@ fn runtime_carries_no_ai_ml_inference_dependency() {
         offenders.is_empty(),
         "RUNTIME_INDEPENDENCE violation — AI/ML/inference crate(s) entered the \
          dependency tree: {offenders:?}. Every finding-producing runtime path \
-         must stay deterministic Rust; the only LLM integration is the optional \
-         local Ollama client in src/ai, whose output never becomes a finding."
+         must stay deterministic Rust, and HSE carries no LLM integration at all \
+         (see `no_llm_inference_integration_exists`)."
     );
 }
 

@@ -21,6 +21,35 @@ use super::{registry, technique_module_index};
     /// a strict *superset* of the probed-accepts set is fine (value-shape
     /// gates legitimately declare kinds the generic probe value can't match).
     #[test]
+    fn corpus_owners_are_registered_modules_and_probes_consult_them() {
+        // Every owner in the table is a registered module whose name is the
+        // source it lends; the lookup matches the host and its subdomains and
+        // nothing that merely resembles them.
+        let registry = crate::modules::registry();
+        for (host, src) in super::CORPUS_OWNERS {
+            assert!(
+                registry.iter().any(|m| m.name() == *src),
+                "corpus owner `{src}` for {host} is not a registered module"
+            );
+            assert_eq!(super::corpus_source(&format!("https://{host}/u"), "me"), *src);
+            assert_eq!(super::corpus_source(&format!("https://www.{host}/u?x=1"), "me"), *src);
+            assert_eq!(super::corpus_source(&format!("https://not{host}/u"), "me"), "me");
+        }
+        assert_eq!(super::corpus_source("https://example.org/u", "me"), "me");
+        // The two probe engines mint hundreds of sites through one evidence
+        // path each; that path must consult the table.
+        for (name, src) in [
+            ("username_search", include_str!("username_search/mod.rs")),
+            ("social_probe", include_str!("social_probe/mod.rs")),
+        ] {
+            assert!(
+                src.contains("corpus_source("),
+                "{name} must attribute a hit on an owned corpus to its owner"
+            );
+        }
+    }
+
+    #[test]
     fn module_consumes_covers_probed_accepts() {
         let mut violations = Vec::new();
         for m in registry() {

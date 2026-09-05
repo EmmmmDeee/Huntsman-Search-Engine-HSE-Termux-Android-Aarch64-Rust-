@@ -145,7 +145,7 @@ fn html_error_summary(body: &str) -> Option<String> {
 /// connection reset must never be able to manufacture one.
 ///
 /// ABSENCE OF EASY EVIDENCE ≠ ABSENCE OF A NEXUS, at the transport layer.
-/// `core::intelligence::ProviderOutcome::Failed` carries the same distinction
+/// `core::coverage::ProviderOutcome::Failed` carries the same distinction
 /// once a module has a claim to attach it to.
 ///
 /// # Errors

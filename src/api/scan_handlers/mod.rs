@@ -83,6 +83,18 @@ pub(super) fn build_scan_from_request(req: ScanRequest) -> Result<(Scan, Target)
         // `min_confidence`, `webhook_url`, …) the moment a profile was named.
         opts = crate::core::profiles::apply_profile_overlay(opts, profile_opts);
     }
+    // Same catalogue check as `hse scan`. The CLI warns and drops the names;
+    // over HTTP a request naming a module that does not exist is a client
+    // error, because a non-empty allowlist that matches nothing runs a scan of
+    // zero modules and reports it as a narrowed sweep — a false "nothing found"
+    // the client cannot distinguish from a real one.
+    let unknown = crate::modules::unknown_module_names(&opts.modules, &opts.exclude_modules);
+    if !unknown.is_empty() {
+        return Err(format!(
+            "unrecognised module name(s): {} — see GET /api/v1/modules for the catalogue",
+            unknown.join(", ")
+        ));
+    }
     let scan = Scan::new(sid, target.clone()).with_options(opts.clamp_depth());
     Ok((scan, target))
 }

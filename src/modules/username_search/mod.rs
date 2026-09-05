@@ -317,19 +317,24 @@ fn aggregate_results(
             e.tag("weak-detection");
         }
         e.add_evidence(
-            Evidence::new(SRC, format!("@{username} has a profile on {site_name}"))
-                .with_attr("platform", site_name)
-                .with_attr("category", site_cat)
-                .with_attr("username", username)
-                .with_attr("url", *url)
-                .with_attr(
-                    "detection",
-                    if verified {
-                        "body-marker"
-                    } else {
-                        "status-only"
-                    },
-                ),
+            // A site another module owns (Keybase, Gravatar) is that module's
+            // corpus: the hit carries its name, or the same profile counts twice.
+            Evidence::new(
+                crate::modules::corpus_source(url, SRC),
+                format!("@{username} has a profile on {site_name}"),
+            )
+            .with_attr("platform", site_name)
+            .with_attr("category", site_cat)
+            .with_attr("username", username)
+            .with_attr("url", *url)
+            .with_attr(
+                "detection",
+                if verified {
+                    "body-marker"
+                } else {
+                    "status-only"
+                },
+            ),
         );
         module_result.push(e);
     }

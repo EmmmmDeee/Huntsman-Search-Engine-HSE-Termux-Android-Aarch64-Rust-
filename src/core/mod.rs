@@ -37,6 +37,7 @@ pub mod engine_host;
 /// history). A WASM build calling these methods directly closes that class of
 /// bug permanently instead of just re-guarding against it.
 pub use hse_core as entity;
+pub mod coverage;
 pub mod error;
 pub mod event;
 pub mod exposure;

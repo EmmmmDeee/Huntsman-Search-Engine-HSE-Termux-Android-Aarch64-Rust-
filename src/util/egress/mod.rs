@@ -61,13 +61,6 @@ fn proxy_pool() -> &'static Mutex<EgressPool> {
     })
 }
 
-/// The next validated proxy to route through, or `None` for a direct
-/// connection. Health-ranked + round-robin; skips dead proxies.
-#[must_use]
-pub fn next_proxy() -> Option<String> {
-    proxy_pool().lock().select()
-}
-
 /// The next validated proxy excluding `exclude` — the failover call: after a
 /// request fails through one proxy, retry with it excluded so a single dead
 /// path never renders a resource unreachable.
@@ -96,6 +89,64 @@ pub fn proxy_pool_snapshot() -> Vec<(String, EgressState, u32, f64)> {
 pub fn proxy_pool_counts() -> (usize, usize) {
     let p = proxy_pool().lock();
     (p.usable_count(), p.len())
+}
+
+/// Render the pool for `hse doctor`: a usable/total line, then one line per
+/// proxy with its state and last latency. `None` when the pool is empty, so a
+/// device with no proxy configured never prints a "0/0" line that reads as a
+/// fault. Pure over a [`proxy_pool_snapshot`] so the rendering is testable
+/// without a live pool; the doctor call site refreshes the pool first, so what
+/// it prints is a probe made in that process, not stale history.
+///
+/// Credentials in a spec (`scheme://user:pass@host:port`) are redacted: doctor
+/// output gets pasted into issues.
+#[must_use]
+pub fn format_pool_health(snapshot: &[(String, EgressState, u32, f64)]) -> Option<String> {
+    if snapshot.is_empty() {
+        return None;
+    }
+    let count = |want: EgressState| snapshot.iter().filter(|(_, st, _, _)| *st == want).count();
+    let total = snapshot.len();
+    let dead = count(EgressState::Dead);
+    let usable = total - dead;
+    let mut out = format!(
+        "  proxies:   {usable}/{total} usable ({} healthy, {} degraded, {} untested, {dead} dead)",
+        count(EgressState::Healthy),
+        count(EgressState::Degraded),
+        count(EgressState::Untested),
+    );
+    if usable == 0 {
+        out.push_str(
+            "\n  FAIL — every configured proxy is dead: requests will fail rather than \
+             leak a direct connection (a configured pool never falls back to direct). \
+             Replace the entries or unset the proxy variables.",
+        );
+    }
+    for (spec, state, latency_ms, _) in snapshot {
+        out.push_str(&format!(
+            "\n    {:<9} {:>6} ms  {}",
+            format!("{state:?}"),
+            latency_ms,
+            redact_userinfo(spec)
+        ));
+    }
+    Some(out)
+}
+
+/// `scheme://user:pass@host:port` → `scheme://<redacted>@host:port`; a spec
+/// without userinfo is returned unchanged.
+fn redact_userinfo(spec: &str) -> String {
+    let (scheme, rest) = match spec.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme), rest),
+        None => (None, spec),
+    };
+    let Some((_, host)) = rest.rsplit_once('@') else {
+        return spec.to_string();
+    };
+    match scheme {
+        Some(scheme) => format!("{scheme}://<redacted>@{host}"),
+        None => format!("<redacted>@{host}"),
+    }
 }
 
 /// True when the operator has asserted an intent to proxy — i.e. the pool holds
@@ -240,6 +291,81 @@ async fn fetch_feed(url: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pool_health_is_silent_when_nothing_is_configured() {
+        assert_eq!(format_pool_health(&[]), None);
+    }
+
+    #[test]
+    fn pool_health_counts_every_state_and_redacts_credentials() {
+        let snap = vec![
+            (
+                "http://user:s3cret@10.0.0.1:8080".to_string(),
+                EgressState::Healthy,
+                120,
+                0.9,
+            ),
+            (
+                "socks5://10.0.0.2:1080".to_string(),
+                EgressState::Degraded,
+                900,
+                0.4,
+            ),
+            ("10.0.0.3:3128".to_string(), EgressState::Untested, 0, 0.5),
+            (
+                "http://10.0.0.4:8080".to_string(),
+                EgressState::Dead,
+                0,
+                0.0,
+            ),
+        ];
+        let out = format_pool_health(&snap).expect("configured pool renders");
+        assert!(
+            out.contains("3/4 usable (1 healthy, 1 degraded, 1 untested, 1 dead)"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("s3cret"),
+            "credentials must be redacted: {out}"
+        );
+        assert!(out.contains("http://<redacted>@10.0.0.1:8080"), "{out}");
+        assert!(out.contains("socks5://10.0.0.2:1080"), "{out}");
+        assert!(
+            !out.contains("FAIL"),
+            "a pool with usable proxies is not a failure: {out}"
+        );
+    }
+
+    #[test]
+    fn an_all_dead_pool_is_reported_as_a_failure_not_a_count() {
+        let snap = vec![(
+            "http://10.0.0.4:8080".to_string(),
+            EgressState::Dead,
+            0,
+            0.0,
+        )];
+        let out = format_pool_health(&snap).expect("configured pool renders");
+        assert!(out.contains("0/1 usable"), "{out}");
+        assert!(
+            out.contains("FAIL"),
+            "all-dead must be named as a failure: {out}"
+        );
+        assert!(out.contains("never falls back to direct"), "{out}");
+    }
+
+    #[test]
+    fn redaction_leaves_a_credential_free_spec_alone() {
+        assert_eq!(
+            redact_userinfo("http://10.0.0.1:8080"),
+            "http://10.0.0.1:8080"
+        );
+        assert_eq!(redact_userinfo("10.0.0.1:8080"), "10.0.0.1:8080");
+        assert_eq!(
+            redact_userinfo("u:p@10.0.0.1:8080"),
+            "<redacted>@10.0.0.1:8080"
+        );
+    }
+
     use super::*;
 
     #[test]

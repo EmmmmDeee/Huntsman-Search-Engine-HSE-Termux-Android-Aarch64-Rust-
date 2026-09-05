@@ -46,6 +46,15 @@ pub trait ModuleRuntime: Send + Sync {
     /// per-scan maps without bound as scans come and go — mirrors
     /// `drain_found_keys`'s per-scan cleanup for the found-key sink.
     fn cleanup_scan_budgets(&self, _scan_id: &str) {}
+
+    /// Install the operator's per-scan SeekNow record cap (already clamped
+    /// by the engine) for the scan about to start. Module budget state is
+    /// process-wide, so this belongs behind the seam like every other module
+    /// mutation: the engine used to reach into `util::see_know` directly under
+    /// an architecture-test exemption, so an engine built with
+    /// [`NoopModuleRuntime`] still wrote the override into the real budget —
+    /// the exact cross-engine leak this trait exists to prevent.
+    fn set_seeknow_scan_cap(&self, _cap: u32) {}
 }
 
 /// Runtime used by tests and deliberately module-free engine instances.
@@ -66,5 +75,6 @@ mod tests {
         assert_eq!(runtime.identify_api_key("candidate"), None);
         assert!(runtime.drain_found_keys("scan").is_empty());
         runtime.cleanup_scan_budgets("scan");
+        runtime.set_seeknow_scan_cap(7);
     }
 }

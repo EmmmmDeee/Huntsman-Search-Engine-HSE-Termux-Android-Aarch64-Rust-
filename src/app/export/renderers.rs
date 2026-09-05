@@ -1883,11 +1883,11 @@ pub(crate) fn build_scan_report(
     // would read as "every provider answered", which is precisely the false
     // clean negative this block exists to prevent.
     let coverage =
-        crate::core::intelligence::provider_coverage_from_events(&store.events_for_scan(scan_id)?);
+        crate::core::coverage::provider_coverage_from_events(&store.events_for_scan(scan_id)?);
     let provider_coverage = if coverage.is_empty() {
         serde_json::Value::Null
     } else {
-        let verdict = crate::core::intelligence::coverage_verdict(&coverage);
+        let verdict = crate::core::coverage::coverage_verdict(&coverage);
         serde_json::json!({
             // Two axes, never summed: what BROKE and what the scan's own
             // options put out of reach. Mixing them makes every ordinary

@@ -143,9 +143,7 @@ impl Module for OpenSanctions {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let Some(key) = ctx.key_opt(KEY_ENV) else {
-            return Ok(ModuleResult::new());
-        };
+        let key = ctx.key(KEY_ENV)?;
 
         let name = target.value.trim();
 
