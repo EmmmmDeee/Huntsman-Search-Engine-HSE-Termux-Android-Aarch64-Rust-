@@ -198,7 +198,10 @@ pub fn sf_type_of(e: &Entity, seed_domain: Option<&str>) -> (&'static str, &'sta
                 url::Url::parse(&e.value)
                     .ok()
                     .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
-                    .is_some_and(|h| h == d || h.ends_with(&format!(".{d}")))
+                    // Label-safe apex-or-subdomain test (the repo's one helper),
+                    // not an ad-hoc `ends_with` that would match `notexample.com`
+                    // against `example.com`. Both sides are already lowercase.
+                    .is_some_and(|h| crate::util::domains::is_or_subdomain_of(&h, d))
             });
             if internal {
                 ("LINKED_URL_INTERNAL", "Linked URL - Internal")

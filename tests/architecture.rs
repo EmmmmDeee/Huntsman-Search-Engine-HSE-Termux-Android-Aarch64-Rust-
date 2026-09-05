@@ -464,7 +464,7 @@ fn cli_help_uses_canonical_terminology() {
         page.lines()
             .skip_while(|l| !l.starts_with("Commands:"))
             .skip(1)
-            .take_while(|l| l.starts_with(char::is_whitespace) || l.trim().is_empty())
+            .take_while(|l| l.chars().next().is_none_or(char::is_whitespace))
             .filter(|l| l.starts_with("  ") && l.as_bytes().get(2).is_some_and(|b| *b != b' '))
             .filter_map(|l| l.split_whitespace().next().map(str::to_string))
             .filter(|c| {
