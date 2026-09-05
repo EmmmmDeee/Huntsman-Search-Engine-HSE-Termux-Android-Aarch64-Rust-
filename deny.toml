@@ -100,3 +100,9 @@ ignore = [
 # unreviewed git or alternate-registry crate from silently entering the graph.
 unknown-registry = "deny"
 unknown-git = "deny"
+# The one sanctioned exception: the HSE BLE Radar (`bleradar-core`), a
+# first-party crate consumed from its own GitHub repo and pinned to an exact
+# commit in Cargo.toml (it is `publish = false`, so a git source is the only way
+# to depend on it). Allow that single repository; every other git source stays
+# denied. Kept in lockstep with the `bleradar-core` dependency in Cargo.toml.
+allow-git = ["https://github.com/EmmmmDeee/HSE-BLE-API-"]
