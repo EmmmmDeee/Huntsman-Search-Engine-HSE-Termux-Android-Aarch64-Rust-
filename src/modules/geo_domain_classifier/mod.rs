@@ -22,6 +22,11 @@ use crate::core::{
 
 const SRC: &str = "geo_domain_classifier";
 
+/// Zero-API geo-indicative domain classifier. Infers a coarse country/region
+/// location from a domain name or TLD (ccTLD tables, known corporate/bank/
+/// university domains, and AU / VN jurisdiction rules) and emits `Address` /
+/// `Coordinates` entities. See the module-level documentation for the full
+/// classification order and evidence semantics.
 pub struct GeoDomainClassifier;
 
 #[async_trait]
@@ -156,6 +161,22 @@ impl Module for GeoDomainClassifier {
                 e.add_evidence(
                     Evidence::new(SRC, format!("`.au` domain '{domain}' → {label}"))
                         .with_attr("au_registrant", category)
+                        .with_attr("domain", &domain),
+                );
+            }
+            // The `.vn` second-level domain encodes the registrant's entity type
+            // under the VNNIC namespace — `gov.vn` a government body, `edu.vn`/
+            // `ac.vn` an education/research institution, `com.vn`/`net.vn`/`biz.vn`
+            // a commercial entity, `org.vn` a non-profit, `name.vn` a natural
+            // person. Tag it so the people-vs-organisation and VN-jurisdiction
+            // signals are captured alongside the location, mirroring the `.au`
+            // registrant tagging above (purely additive to the Address).
+            if let Some((category, label)) = crate::util::domain_vn::vn_domain_registrant(&domain) {
+                e.tag(format!("vn-registrant:{category}"));
+                e.tag("vn-relevant");
+                e.add_evidence(
+                    Evidence::new(SRC, format!("`.vn` domain '{domain}' → {label}"))
+                        .with_attr("vn_registrant", category)
                         .with_attr("domain", &domain),
                 );
             }
@@ -440,7 +461,29 @@ const CCTLD_MAP: &[(&str, &str, &str)] = &[
     (".com.eg", "Egypt", "EG"),
     (".com.pk", "Pakistan", "PK"),
     (".com.bd", "Bangladesh", "BD"),
+    // Vietnam — the full VNNIC second-level namespace (Circular 24/2015/TT-BTTTT,
+    // mirrored in the Public Suffix List's `vn` section). Previously only
+    // `.com.vn` was tabulated, so `.gov.vn`, `.edu.vn`, `.ac.vn`, `.org.vn`,
+    // `.net.vn`, `.biz.vn`, `.name.vn` and directly-registered `.vn` domains fell
+    // through to NO classification at all — the same "real 2LD, no jurisdiction
+    // signal" gap the `.id.au`/`.asn.au` rows above closed for Australia. The
+    // registrant *type* each 2LD encodes is tagged in `process` via
+    // `crate::util::domain_vn::vn_domain_registrant`. The bare `.vn` fallback is
+    // ordered last so a more specific 2LD wins (all VN rows resolve to the same
+    // country, so order is not correctness-load-bearing, only intent).
     (".com.vn", "Vietnam", "VN"),
+    (".gov.vn", "Vietnam", "VN"),
+    (".edu.vn", "Vietnam", "VN"),
+    (".ac.vn", "Vietnam", "VN"),
+    (".org.vn", "Vietnam", "VN"),
+    (".net.vn", "Vietnam", "VN"),
+    (".biz.vn", "Vietnam", "VN"),
+    (".name.vn", "Vietnam", "VN"),
+    (".pro.vn", "Vietnam", "VN"),
+    (".info.vn", "Vietnam", "VN"),
+    (".health.vn", "Vietnam", "VN"),
+    (".int.vn", "Vietnam", "VN"),
+    (".vn", "Vietnam", "VN"),
     (".com.tr", "Turkey", "TR"),
     (".com.ua", "Ukraine", "UA"),
     // Simple ccTLDs (lower confidence — many are used internationally)

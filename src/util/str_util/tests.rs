@@ -173,6 +173,28 @@ use super::{
         assert_eq!(fold_ascii_lower("علي"), "");
     }
 
+    #[test]
+    fn folds_vietnamese_diacritics() {
+        // Precomposed (NFC) Vietnamese: the tone-marked vowels (U+1EA0–U+1EF9)
+        // and the horn letters ơ/ư must fold to their base ASCII vowel so a
+        // Vietnamese name matches its ASCII stem across sources. Before this the
+        // whole tone-marked block was dropped (`Nguyễn` → `nguyn`).
+        assert_eq!(fold_ascii_lower("Nguyễn"), "nguyen");
+        assert_eq!(fold_ascii_lower("Phạm"), "pham");
+        assert_eq!(fold_ascii_lower("Hương"), "huong"); // horn ư + ơ
+        assert_eq!(fold_ascii_lower("Lê Đức Thọ"), "leductho");
+        assert_eq!(fold_ascii_lower("Trần Hưng Đạo"), "tranhungdao");
+        assert_eq!(fold_ascii_lower("Võ Nguyên Giáp"), "vonguyengiap");
+        assert_eq!(fold_ascii_lower("Đỗ Mười"), "domuoi");
+        assert_eq!(fold_ascii_lower("Dương Thị Ỹ"), "duongthiy"); // y-range Ỹ
+        // The same name decomposed (NFD) folds identically — base letter kept,
+        // combining marks dropped — so NFC and NFD inputs agree.
+        assert_eq!(
+            fold_ascii_lower("Nguye\u{0302}\u{0303}n"),
+            fold_ascii_lower("Nguyễn"),
+        );
+    }
+
     /// Charset guarantee, proved EXHAUSTIVELY: for every Unicode scalar
     /// value, folding it yields only `[a-z0-9]` and never panics. Because the
     /// fold is per-character, this covers the entire input domain for the
