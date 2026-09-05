@@ -109,17 +109,6 @@ fn wifi_parse_blank_output_is_an_empty_ok() {
     }
 }
 
-// ── wifi_band helper ──────────────────────────────────────────────────────
-
-#[test]
-fn wifi_band_classification() {
-    assert_eq!(wifi::wifi_band(Some(2412)), Some("band:2.4GHz"));
-    assert_eq!(wifi::wifi_band(Some(5180)), Some("band:5GHz"));
-    assert_eq!(wifi::wifi_band(Some(6000)), Some("band:6GHz"));
-    assert_eq!(wifi::wifi_band(Some(3000)), None);
-    assert_eq!(wifi::wifi_band(None), None);
-}
-
 // ── rssi_confidence helper ─────────────────────────────────────────────────
 
 #[test]

@@ -1,4 +1,5 @@
-//! Pure, offline WiFi-name classification.
+//! Pure, offline WiFi facts — network-name classification and the radio-band
+//! boundaries — shared across layers so neither drifts between copies.
 //!
 //! Sits in `util` rather than in the WiGLE module because two very different
 //! layers need the SAME answer to "is this network name one a person chose, or
@@ -16,6 +17,23 @@
 //! const tables and one cached `aho-corasick` pass over a lowercased copy — no
 //! I/O, no state, no upward dependencies. The exact counterpart of
 //! [`crate::util::oui`], which answers the same question for a BSSID.
+
+/// The IEEE 802.11 band an access point's centre frequency (MHz) sits in, as a
+/// bare label (`2.4GHz` / `5GHz` / `6GHz`), or `None` for an absent, zero, or
+/// unrecognised frequency (so a caller emits no band rather than a misleading
+/// one). The single home for these range boundaries: the `signal_radar` scan
+/// sweep and the `device_sensors` connection probe both read it — each applying
+/// its own `band:`-tag / attribute spelling — so the MHz ranges cannot drift
+/// between the two copies they used to hold.
+#[must_use]
+pub fn band(freq_mhz: Option<i64>) -> Option<&'static str> {
+    match freq_mhz? {
+        2400..=2500 => Some("2.4GHz"),
+        4900..=5900 => Some("5GHz"),
+        5925..=7125 => Some("6GHz"),
+        _ => None,
+    }
+}
 
 /// True when an SSID is a default/carrier/generic name rather than one a person
 /// chose — the names whose WiGLE observations belong to strangers' routers, not

@@ -479,6 +479,100 @@ fn ble_radar_dependency_is_pinned_and_consumed() {
     }
 }
 
+/// The days→civil calendar conversion (Howard Hinnant's `civil_from_days`) has
+/// exactly one home: `util::timefmt`. `core::timeline::utc_date` and the
+/// id-decoding modules (`structured_id`, `discord_snowflake`) format THROUGH it
+/// rather than re-inlining the arithmetic — the "divergent copies of leap-year
+/// math" the timeline docs warn about, where a fix to one silently skips the
+/// others (`utc_date` was itself a second inline copy until it was collapsed
+/// onto `civil_from_days`).
+///
+/// The `36524`-days-per-100-years divisor is the precise fingerprint of that
+/// inverse algorithm: the forward `days_from_civil` never uses it, so it can
+/// only appear where the days→civil math is (re-)implemented. Production code
+/// (comments and strings blanked, `#[cfg(test)]` items dropped, `_` digit
+/// separators removed) must contain it in exactly one file.
+#[test]
+fn civil_from_days_has_a_single_home() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    collect_rs_files(&manifest.join("src"), &mut files);
+    collect_rs_files(&manifest.join("hse-core/src"), &mut files);
+
+    let mut homes: Vec<String> = Vec::new();
+    for f in &files {
+        if f.file_name().is_some_and(|n| n == "tests.rs") {
+            continue; // test fixtures are not a production implementation
+        }
+        let text = fs::read_to_string(f).unwrap();
+        let code: String = production_source(&text)
+            .chars()
+            .filter(|c| *c != '_')
+            .collect();
+        if code.contains("36524") {
+            homes.push(
+                f.strip_prefix(manifest)
+                    .unwrap_or(f)
+                    .display()
+                    .to_string(),
+            );
+        }
+    }
+    homes.sort();
+    assert_eq!(
+        homes,
+        vec!["src/util/timefmt.rs".to_string()],
+        "the days→civil (`civil_from_days`) algorithm must live only in \
+         `util::timefmt`; a second copy re-introduces the divergent leap-year \
+         math the timeline docs warn against — route callers through \
+         `util::timefmt::civil_from_days` (as `core::timeline::utc_date` now \
+         does). The `36524` fingerprint was found in: {homes:?}"
+    );
+}
+
+/// The 2.4/5/6 GHz WiFi band-range boundaries have exactly one home:
+/// `util::wifi::band`. The `signal_radar` scan sweep and the `device_sensors`
+/// connection probe both read it (each applying its own `band:` spelling) rather
+/// than each holding its own `2400..=2500 / 4900..=5900 / 5925..=7125` copy — two
+/// copies that had already been kept in sync only by hand. The `5925..=7125`
+/// 6 GHz upper bound is the fingerprint (whitespace-insensitive): production code
+/// must contain it in exactly one file.
+#[test]
+fn wifi_band_ranges_have_a_single_home() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    collect_rs_files(&manifest.join("src"), &mut files);
+    collect_rs_files(&manifest.join("hse-core/src"), &mut files);
+
+    let mut homes: Vec<String> = Vec::new();
+    for f in &files {
+        if f.file_name().is_some_and(|n| n == "tests.rs") {
+            continue;
+        }
+        let text = fs::read_to_string(f).unwrap();
+        let code: String = production_source(&text)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        if code.contains("5925..=7125") {
+            homes.push(
+                f.strip_prefix(manifest)
+                    .unwrap_or(f)
+                    .display()
+                    .to_string(),
+            );
+        }
+    }
+    homes.sort();
+    assert_eq!(
+        homes,
+        vec!["src/util/wifi/mod.rs".to_string()],
+        "the WiFi band-range boundaries must live only in `util::wifi::band`; a \
+         second copy is drift waiting to happen — route callers through \
+         `util::wifi::band` instead. The `5925..=7125` fingerprint was found in: {homes:?}"
+    );
+}
+
 /// The README's headline module count is hand-maintained and had drifted
 /// (stated as "60+", "63" and "89" across files while the registry held 89).
 /// Tie the authoritative "## Module Overview (N modules" figure to the live

@@ -23,16 +23,6 @@ pub(super) struct Ap {
 
 const SKIP_BSSIDS: &[&str] = &["00:00:00:00:00:00", "02:00:00:00:00:00"];
 
-/// Classify an 802.11 channel centre frequency (MHz) into its band tag.
-pub(super) fn wifi_band(freq_mhz: Option<i64>) -> Option<&'static str> {
-    match freq_mhz? {
-        2400..=2500 => Some("band:2.4GHz"),
-        4900..=5900 => Some("band:5GHz"),
-        5925..=7125 => Some("band:6GHz"),
-        _ => None,
-    }
-}
-
 /// Confidence from RSSI (dBm): stronger signal = more reliable observation.
 pub(super) fn rssi_confidence(rssi: Option<i64>) -> f64 {
     match rssi {
@@ -64,12 +54,12 @@ pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
         let mut e = Entity::new(EntityKind::MacAddress, &ap.bssid, confidence, scan_id);
         e.tag(crate::core::tags::WIFI_AP);
         e.tag("geolocatable");
-        if let Some(band) = wifi_band(ap.frequency) {
-            e.tag(band);
+        if let Some(band) = crate::util::wifi::band(ap.frequency) {
+            e.tag(format!("band:{band}"));
         }
         // Specific 802.11 channel from the centre frequency, via the HSE BLE
-        // Radar's verified frequency↔channel map (2.4/5/6 GHz) — HSE's own
-        // `wifi_band` derives only the coarse band, never the channel number.
+        // Radar's verified frequency↔channel map (2.4/5/6 GHz) — `util::wifi::band`
+        // (used just above) derives only the coarse band, never the channel number.
         let channel = ap
             .frequency
             .and_then(|f| u16::try_from(f).ok())
