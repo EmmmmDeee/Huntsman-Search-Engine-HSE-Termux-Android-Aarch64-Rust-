@@ -257,8 +257,12 @@ pub(in crate::modules::search_engines) fn is_search_tooling_domain(domain: &str)
 /// it as evidence to read and never pivots into the strangers it lists, matching
 /// the discipline the `austlii` module applies to its own hits.
 ///
-/// Suffix-matched so a `www.`/court subdomain of a listed host still counts;
-/// case-insensitive.
+/// A listed host itself or a subdomain of it counts (so a `www.`/court
+/// subdomain matches). `host` is expected already lowercased, as
+/// [`extract_host`] returns it (every caller passes that); matching is via the
+/// crate's canonical allocation-free [`crate::util::domains::is_or_subdomain_of`]
+/// rather than a per-entry `ends_with(format!(".{c}"))`, which allocates on this
+/// per-result hot path and is the idiom the repo consolidated away.
 pub(in crate::modules::search_engines) fn is_court_record_host(host: &str) -> bool {
     // The registrable judgment/court/legislation hosts the AU dorks query. Kept
     // in lockstep with `queries::build_queries_fullname`'s court dorks — a host
@@ -275,10 +279,9 @@ pub(in crate::modules::search_engines) fn is_court_record_host(host: &str) -> bo
         "courts.act.gov.au",
         "supremecourt.nt.gov.au",
     ];
-    let h = host.trim().to_lowercase();
     COURT_HOSTS
         .iter()
-        .any(|c| h == *c || h.ends_with(&format!(".{c}")))
+        .any(|c| crate::util::domains::is_or_subdomain_of(host, c))
 }
 
 pub(in crate::modules::search_engines) fn is_tracking_url(url: &str) -> bool {
