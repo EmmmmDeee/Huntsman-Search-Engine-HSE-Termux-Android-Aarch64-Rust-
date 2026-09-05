@@ -205,7 +205,7 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with 
 hse scan --kind domain --value example.com --depth 2        # domain recon
 hse scan --kind email --value user@example.com --free-only  # email pivot (free only)
 hse scan --kind ip --value 1.1.1.1                          # IP geolocation
-hse scan --kind domain --value example.com --output json    # machine-readable output
+hse scan --kind domain --value example.com --format json    # machine-readable output
 hse scan                                                    # bare scan: uses HUNTSMAN_DEFAULT_SEED (optional, see docs/INSTALL.md)
 hse serve                                                   # Web UI → http://127.0.0.1:8080
 hse live --kind domain --value example.com --interval 60    # continuous monitoring
@@ -230,7 +230,7 @@ deduplicated:
 
 ```bash
 hse query "who owns example.com"                    # general web search, table output
-hse query "site:gov.au grant register" --output json
+hse query "site:gov.au grant register" --format json
 hse query "acme.example" --dark                     # dark-web exposure via Ahmia (clearnet)
 ```
 
@@ -238,6 +238,64 @@ hse query "acme.example" --dark                     # dark-web exposure via Ahmi
 brand, or email) mentioned on Tor-indexed onion pages?* — by querying Ahmia's
 clearnet index. It reports the mention as evidence of exposure and never fetches
 the onion address itself.
+
+---
+
+### Bulk breach-site queries — `hse batch`
+
+When you have a seed (or a finished scan) and want to run it past the
+high-yield breach and stealer-log sites **by hand** — because an API key is not
+always an option — `hse batch` writes the queries for you, one per line, in the
+exact syntax each site's search or bulk page accepts:
+
+```bash
+hse batch --value jane.doe@example.com                 # every provider, from one seed
+hse batch --value "Jane Doe" --site dehashed,intelx    # just these two
+hse batch --scan-id latest --site dehashed --bare      # a whole scan's findings, no headers
+hse batch --value +61412345678 --format json           # structured plan
+hse batch --site help                                  # list the providers
+```
+
+It fans a seed out into the selectors a breach site indexes — email, username,
+phone, domain, IP, name — with the same generator `hse oathnet-batch` uses, then
+renders each provider's section: a `#` comment header naming the site and where
+to paste, then the query lines. `--bare` drops the headers for a clean paste;
+`--out FILE` writes a file. Nine services are covered, each grounded in its own
+documentation (`src/app/batch/sites.rs`): **OathNet, SeekNow, Stolen
+(stolen.tax), DeHashed, LeakCheck, Snusbase, Intelligence X, Leak-Lookup, Have I
+Been Pwned**. Most take one bare value per search and auto-detect its kind;
+DeHashed gets its `field:value` syntax (`name:"John Smith"` when a value has a
+space). A provider only gets the kinds it actually indexes — Intelligence X, for
+instance, rejects full-text names, so a name seed is skipped for it.
+
+The list names providers on purpose — it is an operator's working list, not a
+client deliverable. Over the API the same list is an operator-only download at
+`GET /api/v1/scans/{id}/batch.txt?site=a,b&bare=1`.
+
+### SpiderFoot-compatible front end — `hse sf`
+
+`hse sf` is SpiderFoot 4.0's `sf.py` command line, on HSE's engine, so an
+operator's habits and scripts carry over unchanged:
+
+```bash
+hse sf -s example.com -u passive -o csv                 # passive scan, csv output
+hse sf -s "Jane Doe" -u footprint -o json               # footprint use case, json
+hse sf -M                                               # list modules (with use cases)
+hse sf -T                                               # list SpiderFoot types → HSE kinds
+hse sf -s 192.0.2.1 -x -t IP_ADDRESS                    # seed only, no expansion
+hse sf -C latest                                        # correlation (HSE's quality report)
+```
+
+The flags are SpiderFoot's, and so are the validation rules, the target-type
+auto-detection (including `sf.py`'s pre-quoting of the seed), and the tab / csv
+/ json row layouts — all read from SpiderFoot's own source at tag `v4.0`. A
+**use case** maps onto HSE's scan options: `passive` runs passive-only modules,
+`footprint` every module bar threat-intel, `investigate` / `all` everything.
+HSE entity kinds print under their SpiderFoot type name where one exists and as
+`HSE_…` types where SpiderFoot has none (see `hse sf -T`). This is not a port of
+SpiderFoot's Python modules — HSE already is that engine, in Rust, with more
+modules — it is SpiderFoot's *command surface and scan model* reproduced on
+HSE's engine.
 
 ---
 
@@ -321,7 +379,7 @@ stamps it inline with its producing module's technique(s) as
 `attack:<TECHNIQUE_ID>` tags (e.g. `attack:T1589.002` "Email Addresses"). So the
 technique that collected a datum travels with the datum — visible in the entity's
 `tags` in JSON output, on each entity in the full dossier
-(`hse export <id> --format full`) and `hse scan --output dossier`, and in the
+(`hse export <id> --format full`) and `hse scan --format dossier`, and in the
 database — with no separate coverage report to reconcile. A finding corroborated
 by several modules carries all of their techniques (merges union the tags).
 
@@ -444,7 +502,7 @@ optional trailing year, e.g. `"Jordan Leigh Meyers 1987"`) it derives — with
 analyst would build by hand:
 
 ```bash
-hse scan --kind name --value "Jordan Leigh Meyers 1987" --modules name_intel --output json
+hse scan --kind name --value "Jordan Leigh Meyers 1987" --modules name_intel --format json
 ```
 
 - **Usernames** (≤24, scored): `first.last`, `flast`, `firstl`, reversed,

@@ -8,6 +8,7 @@
 //! the binary in place via `install.sh`. See `hse --help` for the
 //! full reference.
 
+mod batch;
 pub(crate) mod config;
 mod diagnostics;
 mod engines;
@@ -25,6 +26,7 @@ mod radar;
 mod scan;
 mod selftest;
 mod serve;
+mod sf;
 pub(crate) mod update;
 
 use crate::{
@@ -293,6 +295,73 @@ async fn run_command(command: Command) -> Result<()> {
         } => crate::app::export::cmd_export(scan_id, format, out, include_infra, redact).await,
         Command::Diff { from, to, format } => crate::app::diff::cmd_diff(from, to, format),
         Command::Update { check, r#ref } => update::cmd_update(check, r#ref).await,
+        Command::Batch {
+            scan_id,
+            value,
+            kind,
+            site,
+            bare,
+            out,
+            format,
+            no_permute,
+            synthesize_emails,
+            max,
+        } => batch::cmd_batch(batch::BatchArgs {
+            scan_id,
+            value,
+            kind,
+            site,
+            bare,
+            out,
+            format,
+            no_permute,
+            synthesize_emails,
+            max,
+        }),
+        Command::Sf {
+            target,
+            use_case,
+            modules,
+            types,
+            format,
+            no_header,
+            strip_newlines,
+            include_source,
+            max_len,
+            delimiter,
+            filter_types,
+            show_types,
+            strict,
+            quiet,
+            list_modules,
+            list_types,
+            correlate,
+            listen,
+            version,
+        } => {
+            sf::cmd_sf(sf::SfArgs {
+                target,
+                use_case,
+                modules,
+                types,
+                format,
+                no_header,
+                strip_newlines,
+                include_source,
+                max_len,
+                delimiter,
+                filter_types,
+                show_types,
+                strict,
+                quiet,
+                list_modules,
+                list_types,
+                correlate,
+                listen,
+                version,
+            })
+            .await
+        }
         Command::OathnetBatch {
             value,
             kind,

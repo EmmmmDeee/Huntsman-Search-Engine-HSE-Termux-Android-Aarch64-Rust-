@@ -420,6 +420,122 @@ fn relation_builders_share_one_pairwise_loop() {
     }
 }
 
+/// One spelling per term on the operator surface — `docs/GLOSSARY.md`.
+///
+/// Reads every `hse … --help` page from the built binary and the glossary
+/// itself, and fails on a retired spelling, so a new flag or help sentence
+/// cannot reintroduce `scan id`, `Oathnet`, `Seeknow`, a lowercase `api key`
+/// or a second name for the output-format / output-file flags.
+#[test]
+fn cli_help_uses_canonical_terminology() {
+    let hse = env!("CARGO_BIN_EXE_hse");
+    let help = |args: &[&str]| -> String {
+        let out = std::process::Command::new(hse)
+            .args(args)
+            .arg("--help")
+            .output()
+            .expect("run the built hse binary");
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let top = help(&[]);
+    // Every visible subcommand, from the top-level listing.
+    let commands: Vec<String> = top
+        .lines()
+        .skip_while(|l| !l.starts_with("Commands:"))
+        .skip(1)
+        .take_while(|l| !l.starts_with("Options:"))
+        .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+        .filter(|c| c != "help")
+        .collect();
+    assert!(
+        commands.len() > 15,
+        "expected the full command list, got {commands:?}"
+    );
+    let mut pages: Vec<(String, String)> = vec![("hse".to_string(), top)];
+    for c in &commands {
+        pages.push((format!("hse {c}"), help(&[c])));
+    }
+    // Hidden-but-working commands too: their help is still an operator surface.
+    for c in [
+        "audit",
+        "benchmark",
+        "gaps",
+        "doctor",
+        "selftest",
+        "provision",
+        "set-key",
+        "engines",
+        "oathnet-batch",
+    ] {
+        pages.push((format!("hse {c}"), help(&[c])));
+    }
+    let glossary =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/GLOSSARY.md"))
+            .expect("docs/GLOSSARY.md");
+    // (retired spelling, what it should be). Matched on whole words in prose;
+    // flag names and value placeholders are checked separately below.
+    let retired: &[(&str, &str)] = &[
+        ("scan id", "scan ID"),
+        ("Scan id", "scan ID"),
+        ("scan_id ", "scan ID (prose) / --scan-id (flag)"),
+        ("Oathnet", "OathNet"),
+        ("Seeknow", "SeekNow"),
+        ("Seek-Know", "SeekNow"),
+        ("SeeKnow", "SeekNow"),
+        ("Dehashed", "DeHashed"),
+        ("api key", "API key"),
+        ("Api key", "API key"),
+        ("e-mail", "email"),
+        ("--output-format", "--format"),
+    ];
+    let mut offenders = Vec::new();
+    for (page, text) in &pages {
+        for (bad, good) in retired {
+            for line in text.lines().filter(|l| l.contains(bad)) {
+                // The glossary's own retired-spellings table is the one place
+                // these may appear; help pages may not. `--output` survives only
+                // as a hidden alias, which clap never prints.
+                offenders.push(format!("{page}: `{bad}` → `{good}`: {}", line.trim()));
+            }
+        }
+        // Output format is `--format`, an output file is `--out`: no help page
+        // may show the retired long names as its visible flag.
+        for line in text.lines() {
+            let t = line.trim_start();
+            if t.starts_with("-o, --output <")
+                || t.starts_with("--output <")
+                || t.starts_with("--output-format")
+            {
+                offenders.push(format!(
+                    "{page}: visible flag must be --format / --out: {}",
+                    line.trim()
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "retired terminology on the operator surface (see docs/GLOSSARY.md):\n{}",
+        offenders.join("\n")
+    );
+    // The glossary defines every visible command's flags it claims to.
+    for term in [
+        "--format",
+        "--out",
+        "--scan-id",
+        "--kind",
+        "--value",
+        "--json",
+        "hse batch",
+        "hse sf",
+    ] {
+        assert!(
+            glossary.contains(term),
+            "docs/GLOSSARY.md must cover `{term}`"
+        );
+    }
+}
+
 #[test]
 fn api_does_not_import_storage_directly() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api");

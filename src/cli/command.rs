@@ -102,7 +102,7 @@ pub enum Command {
         /// Batch mode: path to a file of seeds, one target per line (blank lines
         /// and `#` comments ignored). Runs the SAME scan for every listed seed —
         /// bulk-scan an IP / domain / email / username list. When set, `--value`
-        /// is ignored; each seed's findings are stored and exportable per scan_id.
+        /// is ignored; each seed's findings are stored and exportable per scan ID.
         #[arg(long, value_name = "PATH")]
         input_file: Option<String>,
         /// Comma-separated allowlist of module names.
@@ -255,11 +255,17 @@ pub enum Command {
         /// Preset bundle (recommended | passive | footprint | investigate | fast).
         /// `recommended` is the zero-setup out-of-box default: free/keyless sources,
         /// one expansion round for cross-service correlation, phone-safe budgets.
-        /// Sets depth/free-only/budgets; `--modules`/`--exclude`/`--output` still apply.
+        /// Sets depth/free-only/budgets; `--modules`/`--exclude`/`--format` still apply.
         #[arg(long)]
         profile: Option<String>,
         /// Output format: table | json | dossier. "dossier" shows full intel grouped by category.
-        #[arg(short, long, default_value = "table")]
+        #[arg(
+            short = 'f',
+            long = "format",
+            alias = "output",
+            short_alias = 'o',
+            default_value = "table"
+        )]
         output: String,
         /// Include platform-infrastructure entities (cloud buckets, CDN IPs,
         /// analytics tracking IDs from platforms) in scan output. Excluded by
@@ -332,7 +338,13 @@ pub enum Command {
         #[arg(long)]
         timeout: Option<u64>,
         /// Output format: `table` (default) or `json`.
-        #[arg(short, long, default_value = "table")]
+        #[arg(
+            short = 'f',
+            long = "format",
+            alias = "output",
+            short_alias = 'o',
+            default_value = "table"
+        )]
         output: String,
     },
     /// View or set persistent capability toggles (universal toggleability,
@@ -365,7 +377,7 @@ pub enum Command {
     /// good was this scan, and what is it missing?" without three invocations.
     /// Narrow with --audit / --benchmark / --gaps.
     Report {
-        /// Stored scan id (`latest` for the most recent completed scan).
+        /// Stored scan ID (`latest` for the most recent completed scan).
         #[arg(long)]
         scan_id: Option<String>,
         /// CSV export to audit instead of a stored scan (audit lens only).
@@ -395,7 +407,7 @@ pub enum Command {
         /// CSV export to audit (`hse export --format csv`).
         #[arg(long)]
         csv: Option<String>,
-        /// Stored scan id to audit (`latest` for the most recent completed scan).
+        /// Stored scan ID to audit (`latest` for the most recent completed scan).
         #[arg(long)]
         scan_id: Option<String>,
         /// Debug log / event stream to mine for source-health signals.
@@ -409,7 +421,7 @@ pub enum Command {
     /// (Subsumed by `hse report`; kept for scripting and the Web UI.)
     #[command(hide = true)]
     Benchmark {
-        /// Stored scan id to benchmark (`latest` for the most recent completed scan).
+        /// Stored scan ID to benchmark (`latest` for the most recent completed scan).
         #[arg(long)]
         scan_id: Option<String>,
         /// Emit the machine-readable JSON report instead of the text scorecard.
@@ -420,7 +432,7 @@ pub enum Command {
     /// (Subsumed by `hse report`; kept for scripting and the Web UI.)
     #[command(hide = true)]
     Gaps {
-        /// Stored scan id to analyse (`latest` for the most recent completed scan).
+        /// Stored scan ID to analyse (`latest` for the most recent completed scan).
         #[arg(long)]
         scan_id: Option<String>,
         /// Emit the machine-readable JSON report instead of the text summary.
@@ -493,7 +505,13 @@ pub enum Command {
         /// Path to the OathNet export JSON file.
         file: String,
         /// Output format: json, table, dossier.
-        #[arg(short, long, default_value = "table")]
+        #[arg(
+            short = 'f',
+            long = "format",
+            alias = "output",
+            short_alias = 'o',
+            default_value = "table"
+        )]
         output: String,
     },
     /// Parse documents (image/PDF/CSV/JSON/JSONL/text), extract entities (email, IPv4, IPv6, domain, URL, social handle, MD5/SHA hashes),
@@ -504,10 +522,14 @@ pub enum Command {
         file: String,
         /// Output format: jsonl (default), json, csv, table, or hse
         /// (full core::entity::Entity records ready for the scan pipeline).
-        ///
-        /// Short flag is `-F`: `-f` is the input file and `-o` the output
-        /// file, and clap panics at startup on a duplicate short name.
-        #[arg(short = 'F', long, default_value = "jsonl")]
+        /// No short form: `-f` is the input file. The former long spelling and
+        /// its `-F` short form are kept as hidden aliases.
+        #[arg(
+            long = "format",
+            alias = "output-format",
+            short_alias = 'F',
+            default_value = "jsonl"
+        )]
         output_format: String,
         /// Minimum confidence threshold (0.0-1.0, default 0.30).
         #[arg(long, default_value = "0.30", value_parser = confidence_floor)]
@@ -518,7 +540,7 @@ pub enum Command {
         #[arg(long)]
         auto_scan: bool,
         /// Output file (default: stdout).
-        #[arg(short, long)]
+        #[arg(short = 'o', long = "out", alias = "output")]
         output: Option<String>,
         /// Extract EXIF geolocation from images.
         #[arg(long)]
@@ -747,6 +769,123 @@ pub enum Command {
         /// Output format: text | json. Default `text`.
         #[arg(short, long, default_value = "text")]
         format: String,
+    },
+
+    /// Bulk queries for breach and stealer-log sites, as plaintext to paste by hand.
+    ///
+    /// Derives every email, username, phone, domain, IP and name worth asking a
+    /// breach site about — from one seed (`--value`, fanned out into derived
+    /// fields and handle permutations) or from everything a stored scan found
+    /// (`--scan-id`, `latest` allowed) — and prints one section per provider in
+    /// the syntax that provider's search or bulk page accepts, one query per
+    /// line. No API key is needed: this is the list you paste. `--site` narrows
+    /// to one or more providers (`hse batch --site help` lists them), `--bare`
+    /// drops the `#` headers, `--out` writes a file, `--format json` is for
+    /// tooling. The same list is downloadable from the web console and at
+    /// `GET /api/v1/scans/{id}/batch.txt`.
+    #[command(visible_alias = "bulk")]
+    Batch {
+        /// Stored scan whose findings become the queries (`latest` allowed).
+        #[arg(short, long, conflicts_with = "value")]
+        scan_id: Option<String>,
+        /// One seed to fan out (e.g. `jane.doe@example.com`, `"Jane Doe"`, `+61412345678`).
+        #[arg(short, long, allow_hyphen_values = true)]
+        value: Option<String>,
+        /// Seed kind (same vocabulary as `scan --kind`); omit to auto-detect.
+        #[arg(short, long)]
+        kind: Option<String>,
+        /// Provider(s) to render, comma-separated; omit for every provider.
+        #[arg(long, value_delimiter = ',')]
+        site: Vec<String>,
+        /// Only the query lines — no `#` header comments.
+        #[arg(long)]
+        bare: bool,
+        /// Write to this file instead of stdout.
+        #[arg(short, long)]
+        out: Option<String>,
+        /// Output format: `text` (default) or `json`.
+        #[arg(short, long, default_value = "text")]
+        format: String,
+        /// Don't fan names / email local parts out into handle permutations.
+        #[arg(long)]
+        no_permute: bool,
+        /// Also synthesise candidate emails (handle crossed with common providers).
+        #[arg(long)]
+        synthesize_emails: bool,
+        /// Cap the number of selectors per seed after de-duplication (0 = no cap).
+        #[arg(long, default_value_t = 0)]
+        max: usize,
+    },
+
+    /// SpiderFoot-compatible front end: `sf.py`'s command line on HSE's engine.
+    ///
+    /// The flags are SpiderFoot 4.0's, so an operator's habits and scripts carry
+    /// over: `hse sf -s <target> -u passive -o csv`. The target kind is
+    /// auto-detected as SpiderFoot does; a use case maps onto HSE's scan
+    /// options (`passive` → passive-only modules, `footprint` → every module
+    /// except threat-intel, `investigate` and `all` → every module); `-m`
+    /// selects HSE modules by name; `-t` / `-F` filter the printed rows by
+    /// SpiderFoot type name (`-T` lists them with HSE's kinds); `-x` runs the
+    /// seed only, with no expansion. Rows print as SpiderFoot does: Source,
+    /// Type, Data (plus Source Data with `-r`), as tab, csv or json.
+    Sf {
+        /// Target (seed) — kind auto-detected, as SpiderFoot's `-s`.
+        #[arg(short = 's', long = "target", allow_hyphen_values = true)]
+        target: Option<String>,
+        /// Use case: all | footprint | investigate | passive.
+        #[arg(short = 'u', long = "use-case", default_value = "all")]
+        use_case: String,
+        /// Modules to enable, comma-separated (HSE module names; see `-M`).
+        #[arg(short = 'm', long = "modules", value_delimiter = ',')]
+        modules: Vec<String>,
+        /// Types to collect, comma-separated (SpiderFoot type names; see `-T`).
+        #[arg(short = 't', long = "types", value_delimiter = ',')]
+        types: Vec<String>,
+        /// Output format: tab | csv | json.
+        #[arg(short = 'o', long = "format", alias = "output", default_value = "tab")]
+        format: String,
+        /// Don't print field headers.
+        #[arg(short = 'H')]
+        no_header: bool,
+        /// Strip newlines from data.
+        #[arg(short = 'n')]
+        strip_newlines: bool,
+        /// Include the source data field in the output.
+        #[arg(short = 'r')]
+        include_source: bool,
+        /// Maximum data length to display (longer values are truncated).
+        #[arg(short = 'S')]
+        max_len: Option<usize>,
+        /// Delimiter for csv output (default `,`).
+        #[arg(short = 'D')]
+        delimiter: Option<String>,
+        /// Filter out other types not specified with `-t`.
+        #[arg(short = 'f')]
+        filter_types: bool,
+        /// Show only these types in the output, comma-separated.
+        #[arg(short = 'F', value_delimiter = ',')]
+        show_types: Vec<String>,
+        /// Strict: run only against the target itself, with no expansion.
+        #[arg(short = 'x')]
+        strict: bool,
+        /// Quiet: no progress notices on stderr.
+        #[arg(short = 'q')]
+        quiet: bool,
+        /// List the modules available.
+        #[arg(short = 'M', long = "list-modules")]
+        list_modules: bool,
+        /// List the types available.
+        #[arg(short = 'T', long = "list-types")]
+        list_types: bool,
+        /// Run correlation (HSE: the quality report) on a stored scan ID.
+        #[arg(short = 'C', long = "correlate")]
+        correlate: Option<String>,
+        /// Start the web console on IP:port.
+        #[arg(short = 'l', long = "listen")]
+        listen: Option<String>,
+        /// Print the version.
+        #[arg(short = 'V', long = "sf-version")]
+        version: bool,
     },
 
     /// Generate (and optionally run) a large batch of OathNet queries from one seed.

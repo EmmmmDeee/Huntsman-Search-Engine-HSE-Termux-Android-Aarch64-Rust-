@@ -6,9 +6,8 @@
 
 mod dossier;
 
-use crate::core::module::ModuleContext;
-use crate::core::scan::{Scan, ScanOptions, Target};
-use crate::util::{keys, uid::scan_id};
+use crate::core::scan::{ScanOptions, Target};
+use crate::util::keys;
 
 use super::{color_confidence, color_severity, parse_target_kind, split_csv, truncate, use_color};
 
@@ -127,7 +126,7 @@ fn validate_scan_output_format(output: &str) -> crate::core::error::Result<()> {
     match output {
         "table" | "json" | "dossier" => Ok(()),
         other => Err(crate::core::error::Error::Other(format!(
-            "unknown --output format {other:?} (expected `table`, `json`, or `dossier`)"
+            "unknown --format {other:?} (expected `table`, `json`, or `dossier`)"
         ))),
     }
 }
@@ -322,40 +321,13 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         );
     }
 
-    let sid = scan_id(target_kind.canonical_str(), &cmd.value);
-    let crate::app::runtime::ApplicationRuntime { store, bus, engine } =
-        crate::app::runtime::build_runtime(64)?;
-
-    let scan = Scan::new(sid.clone(), target.clone()).with_options(options);
-    let keys = keys::populate_and_load().await;
-    let ctx = ModuleContext {
-        scan_id: sid.clone(),
-        bus,
-        // Stamp outbound calls with this scan's id so a proxy/upstream access log
-        // can be matched back to the scan (and its NDJSON logs carry the same id).
-        http: crate::util::http::build_client_with_trace(&sid),
-        keys,
-        cancel: crate::core::cancel::CancelHandle::new(),
-    };
-
-    // Wire an operator Ctrl-C to the engine's cooperative cancel flag — without
-    // this, SIGINT falls through to the OS default (immediate process kill),
-    // skipping `finalise_scan` entirely: the scan row stays stuck at `Running`
-    // forever and any in-flight module tasks are simply abandoned mid-request
-    // rather than stopped. Cloning the handle before `ctx` moves into `run`
-    // lets this listener signal the SAME flag the engine polls; once `run`
-    // returns (normally or via cooperative cancellation, which persists a
-    // clean `Aborted` scan with everything collected so far) the listener is
-    // aborted so it doesn't outlive the scan.
-    let cancel_on_ctrl_c = ctx.cancel.clone();
-    let ctrl_c_listener = tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            eprintln!("\nstopping scan…");
-            cancel_on_ctrl_c.cancel();
-        }
-    });
-    let scan = engine.run(scan, target, ctx).await?;
-    ctrl_c_listener.abort();
+    // One authority for running a seed in-process (runtime, keys, Ctrl-C →
+    // cooperative cancel, run): `hse sf` shares it. See `app::scan_run`.
+    let crate::app::scan_run::ScanRun {
+        scan_id: sid,
+        scan,
+        store,
+    } = crate::app::scan_run::run_seed(target.clone(), options).await?;
     let mut entities = store.entities_for_scan(&sid)?;
     filter_infra_entities(&mut entities, cmd.include_infra);
     let correlations = store.correlations_for_scan(&sid)?;
